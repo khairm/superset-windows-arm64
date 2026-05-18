@@ -206,18 +206,32 @@ jobs:
           #     drop-in @lydell/node-pty fork which ships a win32-arm64 prebuilt. The desktop
           #     app already uses this alias (Patch 10); extend it to the two packages that
           #     still pin the bare package so the whole build is prebuilt-only.
+          #     Idempotent: the non-deterministic "Apply Windows patches" AI
+          #     step sometimes already extends Patch 10's @lydell alias to
+          #     these packages — detect that and skip rather than aborting.
           $pkgs = @('packages/host-service/package.json', 'packages/pty-daemon/package.json')
           foreach ($p in $pkgs) {
             if (-not (Test-Path $p)) { Write-Error "Missing $p"; exit 1 }
             $c = Get-Content -Raw $p
-            if ($c -notmatch '"node-pty"\s*:\s*"1\.1\.0"') {
-              Write-Error "$p does not pin node-pty 1.1.0 as expected (upstream structure changed); aborting."
+            if ($c -match '"node-pty"\s*:\s*"npm:@lydell/node-pty') {
+              Write-Host "(A) $p already aliased to @lydell/node-pty (AI patch step) — skip"
+            } elseif ($c -match '"node-pty"\s*:\s*"1\.1\.0"') {
+              $c = $c -replace '"node-pty"\s*:\s*"1\.1\.0"', '"node-pty": "npm:@lydell/node-pty@^1.0.1"'
+              Set-Content -Path $p -Value $c -NoNewline
+              Write-Host "(A) Aliased node-pty -> @lydell/node-pty in $p"
+            } elseif ($c -notmatch '"node-pty"') {
+              Write-Host "(A) $p has no node-pty dependency — skip (nothing to alias)"
+            } else {
+              Write-Error "$p has node-pty at an unexpected value (not 1.1.0, not the @lydell alias); upstream/patch structure changed — aborting."
               exit 1
             }
-            $c = $c -replace '"node-pty"\s*:\s*"1\.1\.0"', '"node-pty": "npm:@lydell/node-pty@^1.0.1"'
-            Set-Content -Path $p -Value $c -NoNewline
-            Write-Host "(A) Aliased node-pty -> @lydell/node-pty in $p"
           }
+          # Fail fast if neither package ended up with node-pty routed to @lydell.
+          $aliasOk = $false
+          foreach ($p in $pkgs) {
+            if ((Get-Content -Raw $p) -match '"node-pty"\s*:\s*"npm:@lydell/node-pty') { $aliasOk = $true }
+          }
+          if (-not $aliasOk) { Write-Error "(A) no node-pty -> @lydell alias present in host-service/pty-daemon after fixup; aborting."; exit 1 }
 
           # (B) Upstream build-bundled-cli.ts has no win32/arm64 Bun compile target. Add it.
           $cli = 'apps/desktop/scripts/build-bundled-cli.ts'
