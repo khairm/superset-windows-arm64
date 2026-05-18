@@ -258,11 +258,53 @@ jobs:
           if ((Get-Content -Raw 'apps/desktop/electron-builder.ts') -notmatch 'node-pty-win32-arm64') {
             Write-Error "electron-builder.ts has no node-pty-win32-arm64 reference after fixup"; exit 1
           }
-          Write-Host "ARM64 arch fixup verified (A + B + C)."
+
+          # (D) validate-native-runtime.ts hardcodes the win32 platform packages
+          #     to x64. Make the libsql + ast-grep candidates arch-aware so the
+          #     build-time guard accepts the arm64 variants we supply.
+          $vnr = 'apps/desktop/scripts/validate-native-runtime.ts'
+          if (-not (Test-Path $vnr)) { Write-Error "Missing $vnr"; exit 1 }
+          $c = Get-Content -Raw $vnr
+          if ($c -notmatch '\["@libsql/win32-x64-msvc"\]' -or $c -notmatch '\["@ast-grep/napi-win32-x64-msvc"\]') {
+            Write-Error "$vnr win32 candidate lists changed upstream; aborting."; exit 1
+          }
+          $c = $c -replace '\["@libsql/win32-x64-msvc"\]', '[targetArch === "arm64" ? "@libsql/win32-arm64-msvc" : "@libsql/win32-x64-msvc"]'
+          $c = $c -replace '\["@ast-grep/napi-win32-x64-msvc"\]', '[targetArch === "arm64" ? "@ast-grep/napi-win32-arm64-msvc" : "@ast-grep/napi-win32-x64-msvc"]'
+          Set-Content -Path $vnr -Value $c -NoNewline
+          if ((Get-Content -Raw $vnr) -notmatch 'win32-arm64-msvc') { Write-Error "(D) validate-native-runtime arm64 patch failed"; exit 1 }
+          Write-Host "(D) validate-native-runtime.ts win32 candidates made arch-aware"
+
+          # (E) electron-builder.ts win target hardcodes arch ["x64"]; build ARM64 only.
+          $eb = 'apps/desktop/electron-builder.ts'
+          $c = Get-Content -Raw $eb
+          if ($c -match 'arch:\s*\[\s*"x64"\s*\]') {
+            $c = $c -replace 'arch:\s*\[\s*"x64"\s*\]', 'arch: ["arm64"]'
+            Set-Content -Path $eb -Value $c -NoNewline
+            Write-Host "(E) electron-builder.ts win target arch -> arm64"
+          } else {
+            Write-Host "(E) no hardcoded win arch [x64] found (ok if upstream changed; --arm64 CLI still applies)"
+          }
+
+          # (F) Stage the deterministic Bun-store native-payload repair script
+          #     (root-cause fix for electron-builder's Bun collector on win-arm64)
+          #     from this patches repo into the upstream clone.
+          $mat = '../scripts/materialize-native-closure.sh'
+          if (-not (Test-Path $mat)) { Write-Error "Missing $mat in patches repo"; exit 1 }
+          New-Item -ItemType Directory -Force scripts | Out-Null
+          Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
+          Write-Host "(F) staged scripts/materialize-native-closure.sh"
+
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + F)."
 
       - name: Install dependencies
         working-directory: superset
         shell: bash
+        env:
+          # Skip the flaky @electron/rebuild postinstall (install:deps). On
+          # win-arm64 it can't build native trustedDeps; the deterministic
+          # Bun-store payload repair (below) handles them instead. This matches
+          # the sequence validated on real ARM64 hardware.
+          SUPERSET_POSTINSTALL_RUNNING: '1'
         run: bun install
 
       - name: Generate file icons
@@ -275,6 +317,39 @@ jobs:
         shell: bash
         run: bun run compile:app
 
+      - name: Fetch @libsql/win32-arm64-msvc + materialize native closure
+        working-directory: superset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # libsql version Superset resolved (Turso publishes no win-arm64 build;
+          # khairm/libsql-windows-arm64 publishes a per-version Release of it).
+          LV=$(ls -d node_modules/.bun/libsql@* 2>/dev/null | sed 's#.*/libsql@##' | sort -V | tail -1)
+          [ -n "$LV" ] || { echo "::error::could not determine resolved libsql version"; exit 1; }
+          echo "Resolved libsql: $LV"
+          rm -rf libsql-dl libsql-arm64
+          if ! gh release download "$LV" --repo khairm/libsql-windows-arm64 \
+                 -p 'libsql-win32-arm64-msvc.tar.gz' -p 'libsql-win32-arm64-msvc.tar.gz.sha256' -D libsql-dl; then
+            echo "::error::No @libsql/win32-arm64-msvc Release for libsql $LV in khairm/libsql-windows-arm64."
+            echo "::error::Trigger that repo's nightly (workflow_dispatch -f libsql_version=$LV) then re-run."
+            exit 1
+          fi
+          ( cd libsql-dl && sha256sum -c libsql-win32-arm64-msvc.tar.gz.sha256 )
+          mkdir -p libsql-arm64
+          tar -xzf libsql-dl/libsql-win32-arm64-msvc.tar.gz -C libsql-arm64
+          [ -f libsql-arm64/index.node ] || { echo "::error::libsql artifact missing index.node"; exit 1; }
+          # Electron ABI from the resolved electron major (electron N -> NODE_MODULE_VERSION N+103).
+          EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
+          ABI=$((EM + 103))
+          echo "electron major=$EM -> ABI=$ABI"
+          export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64"
+          bash scripts/materialize-native-closure.sh
+          # persist for later steps
+          echo "ELECTRON_ABI=$ABI" >> "$GITHUB_ENV"
+          echo "LIBSQL_ARM64_DIR=$PWD/libsql-arm64" >> "$GITHUB_ENV"
+
       - name: Prepare native modules (ARM64 target)
         working-directory: superset/apps/desktop
         shell: bash
@@ -282,6 +357,19 @@ jobs:
           TARGET_ARCH: arm64
           TARGET_PLATFORM: win32
         run: bun run copy:native-modules
+
+      - name: Validate native runtime (ARM64 fail-fast gate)
+        working-directory: superset
+        shell: bash
+        env:
+          TARGET_ARCH: arm64
+          TARGET_PLATFORM: win32
+        run: |
+          set -euo pipefail
+          # copy:native-modules can rewrite the @libsql dir — re-assert (idempotent).
+          bash scripts/materialize-native-closure.sh
+          cd apps/desktop
+          bun run validate:native-runtime
 
       - name: Build Windows ARM64 installer
         working-directory: superset/apps/desktop
