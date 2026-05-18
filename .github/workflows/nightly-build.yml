@@ -343,6 +343,51 @@ jobs:
           if ((Get-Content -Raw $eb) -notmatch 'tokenizers-win32-arm64-msvc') { Write-Error "(I) extraResources patch failed"; exit 1 }
           Write-Host "(I) electron-builder.ts extraResources += @anush008/tokenizers-win32-arm64-msvc"
 
+          # (J) Terminal "Daemon unavailable" fix. host-service's DaemonSupervisor
+          #     spawns the V2 pty-daemon via process.execPath (the Electron
+          #     binary) but omits ELECTRON_RUN_AS_NODE — and host-service.js's
+          #     electron-vite banner has already deleted that var from its own
+          #     process.env, so the spread {...process.env} can't carry it. The
+          #     daemon child then boots the full Electron GUI app instead of
+          #     pty-daemon.js and never binds its named pipe. Re-assert the var
+          #     in childEnv (harmless under plain Node; matches the v1
+          #     terminal-host spawn). Diagnosed + proven on real ARM64 hardware.
+          $ds = 'packages/host-service/src/daemon/DaemonSupervisor.ts'
+          if (-not (Test-Path $ds)) { Write-Error "(J) missing $ds"; exit 1 }
+          $c = Get-Content -Raw $ds
+          if ($c -match 'ELECTRON_RUN_AS_NODE') {
+            Write-Host "(J) DaemonSupervisor already sets ELECTRON_RUN_AS_NODE — skip"
+          } elseif ($c -match 'SUPERSET_PTY_DAEMON_VERSION: EXPECTED_DAEMON_VERSION,') {
+            $c = $c -replace '(SUPERSET_PTY_DAEMON_VERSION: EXPECTED_DAEMON_VERSION,)', "`$1`r`n`t`t`tELECTRON_RUN_AS_NODE: `"1`","
+            Set-Content -Path $ds -Value $c -NoNewline
+          } else {
+            Write-Error "(J) childEnv anchor not found in $ds; upstream changed — aborting (terminal daemon would break)."
+            exit 1
+          }
+          if ((Get-Content -Raw $ds) -notmatch 'ELECTRON_RUN_AS_NODE') { Write-Error "(J) DaemonSupervisor patch failed"; exit 1 }
+          Write-Host "(J) DaemonSupervisor.ts childEnv += ELECTRON_RUN_AS_NODE=1 (pty-daemon runs as Node)"
+
+          # (K) Agents "Couldn't load agent settings: Failed to fetch" fix. The
+          #     packaged renderer loads from the superset-app:// custom protocol;
+          #     its Origin (superset-app://app) is not in host-service's CORS
+          #     allowedOrigins (only the dev Vite ports), so every renderer
+          #     fetch to host-service /trpc is blocked at the CORS preflight.
+          #     Add the packaged origin. Diagnosed + proven on real ARM64 hardware.
+          $hs = 'apps/desktop/src/main/host-service/index.ts'
+          if (-not (Test-Path $hs)) { Write-Error "(K) missing $hs"; exit 1 }
+          $c = Get-Content -Raw $hs
+          if ($c -match 'superset-app://app') {
+            Write-Host "(K) host-service allowedOrigins already includes superset-app://app — skip"
+          } elseif ($c -match 'allowedOrigins: \[') {
+            $c = $c -replace '(allowedOrigins: \[)', "`$1`r`n`t`t`t`t`"superset-app://app`","
+            Set-Content -Path $hs -Value $c -NoNewline
+          } else {
+            Write-Error "(K) allowedOrigins anchor not found in $hs; upstream changed — aborting (agent settings fetch would break)."
+            exit 1
+          }
+          if ((Get-Content -Raw $hs) -notmatch 'superset-app://app') { Write-Error "(K) host-service CORS patch failed"; exit 1 }
+          Write-Host "(K) host-service/index.ts allowedOrigins += superset-app://app (renderer CORS)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -352,7 +397,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + F)."
 
       - name: Install dependencies
         working-directory: superset

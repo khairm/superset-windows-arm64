@@ -22,7 +22,14 @@
 >   the target Electron — a PE-arch check alone is insufficient);
 > - ships a **single one-click** NSIS installer (`oneClick: true`);
 > - adds a Windows `titleBarOverlay` (upstream is frameless + macOS-centric, so
->   Windows otherwise has no visible window controls).
+>   Windows otherwise has no visible window controls);
+> - re-asserts `ELECTRON_RUN_AS_NODE=1` in `DaemonSupervisor`'s child env so the
+>   V2 terminal `pty-daemon` runs as Node instead of booting the GUI app
+>   (Patch 2's bundle banner strips the var from `host-service.js`, breaking the
+>   packaged daemon spawn — "Daemon unavailable");
+> - adds the packaged renderer origin `superset-app://app` to the host-service
+>   CORS allowlist so renderer fetches (e.g. agent settings) aren't blocked at
+>   the preflight ("Couldn't load agent settings: Failed to fetch").
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
