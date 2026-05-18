@@ -12,13 +12,17 @@
 # Electron-ABI win32-arm64 better_sqlite3.node) makes every consumer's existing
 # bun symlink resolve, and the whole closure resolves through bun's intact graph.
 #
-# Also supply @libsql/win32-arm64-msvc (registry publishes none) at app-root for
-# runtime packaging/validate (the collector skips it: not in any `dependencies`).
+# Also supply the registry-less win32-arm64 platform packages at app-root for
+# runtime packaging/validate (the collector skips them: not in any required
+# `dependencies`): @libsql/win32-arm64-msvc and
+# @anush008/tokenizers-win32-arm64-msvc (the latter is fastembed's tokenizer;
+# upstream publishes no win-arm64 build — khairm/tokenizers-windows-arm64 does).
 # Platform pkgs (@lydell/node-pty, @ast-grep/napi, @parcel/watcher win32-arm64)
 # resolve via bun graph + copy:native-modules already.
 #
 # Run AFTER a fresh `bun install`, AFTER compile:app, BEFORE copy:native-modules.
-# Idempotent. Env: ELECTRON_ABI (default 143), LIBSQL_ARM64_DIR.
+# Idempotent. Env: ELECTRON_ABI (default 143), LIBSQL_ARM64_DIR,
+# TOKENIZERS_ARM64_DIR.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ABI="${ELECTRON_ABI:-143}"
@@ -39,7 +43,15 @@ for n in $TRUSTED; do
   [ -n "$ENTRY" ] || { echo "[mat] $n: no .bun entry (skip — aliased/absent)"; continue; }
   VER="$(basename "$ENTRY" | sed "s#^$(printf '%s' "$n"|tr / +)@##")"
   PAY="$ENTRY/node_modules/$n"
-  if [ -f "$PAY/package.json" ] && { [ "$n" != better-sqlite3 ] || { [ -f "$PAY/build/Release/better_sqlite3.node" ] && [ "$(pearch "$PAY/build/Release/better_sqlite3.node")" = 64aa ]; }; }; then
+  # better-sqlite3 is V8-ABI bound (NOT N-API): a win32-arm64 .node is only
+  # correct if its NODE_MODULE_VERSION matches the target Electron ABI. A
+  # PE-machine (0xAA64) check alone is NOT sufficient — a Node-ABI (e.g.
+  # node-v127) ARM64 prebuilt in the bun store passes that yet crashes Electron
+  # with "compiled against a different Node.js version". So NEVER trust the
+  # store copy for better-sqlite3: always re-populate (the populate path below
+  # fetches the exact electron-v$ABI prebuilt and overwrites). All other
+  # trustedDeps are satisfied by npm-tarball extraction alone.
+  if [ -f "$PAY/package.json" ] && [ "$n" != better-sqlite3 ]; then
     echo "[mat] $n@$VER payload OK"; continue
   fi
   echo "[mat] populating $n@$VER .bun payload"
@@ -67,5 +79,19 @@ else
   rm -rf "$LSQ"; mkdir -p "$APPNM/@libsql"
   cp -r "$LIBSQL_ARM64_DIR" "$LSQ"
   echo "[mat] @libsql/win32-arm64-msvc <- $LIBSQL_ARM64_DIR"
+fi
+
+# --- 3. Supply @anush008/tokenizers-win32-arm64-msvc (registry has none;
+#     fastembed -> @anush008/tokenizers bare-requires it). N-API addon, so one
+#     arm64 build covers any Electron — no per-ABI variant. Same injection
+#     model as @libsql (collector skips it: optionalDependency, not required). ---
+TOK="$APPNM/@anush008/tokenizers-win32-arm64-msvc"
+if [ -f "$TOK/tokenizers.win32-arm64-msvc.node" ] && [ "$(pearch "$TOK/tokenizers.win32-arm64-msvc.node")" = 64aa ]; then
+  echo "[mat] @anush008/tokenizers-win32-arm64-msvc already present"
+else
+  [ -n "${TOKENIZERS_ARM64_DIR:-}" ] && [ -f "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" ] || { echo "[mat] TOKENIZERS_ARM64_DIR missing tokenizers.win32-arm64-msvc.node"; exit 1; }
+  rm -rf "$TOK"; mkdir -p "$APPNM/@anush008"
+  cp -r "$TOKENIZERS_ARM64_DIR" "$TOK"
+  echo "[mat] @anush008/tokenizers-win32-arm64-msvc <- $TOKENIZERS_ARM64_DIR"
 fi
 echo "[mat] minimal native repair complete"

@@ -7,10 +7,24 @@
 >
 > The patches below reference the **x64** native binary
 > `@lydell/node-pty-win32-x64` (Patches 12 & 14). For this **native ARM64** build
-> those references are rewritten to `@lydell/node-pty-win32-arm64`
-> **deterministically** by the workflow's `ARM64 arch fixup` step (with fail-fast
-> assertions), and the installer is built with `electron-builder --win --arm64`.
-> This keeps the patch set portable while making the architecture handling
+> the workflow's `ARM64 arch fixup` step deterministically (with fail-fast
+> assertions) also:
+>
+> - rewrites node-pty / build-target / validate-runtime references x64 → arm64
+>   and builds with `electron-builder --win --arm64`;
+> - injects the win32-arm64 platform packages upstream/registries do **not**
+>   publish — `@libsql/win32-arm64-msvc` and `@anush008/tokenizers-win32-arm64-msvc`
+>   (built by [`khairm/libsql-windows-arm64`](https://github.com/khairm/libsql-windows-arm64)
+>   and [`khairm/tokenizers-windows-arm64`](https://github.com/khairm/tokenizers-windows-arm64))
+>   via `scripts/materialize-native-closure.sh`;
+> - replaces the `better-sqlite3` Bun-store payload with the **exact
+>   `electron-v<ABI>` win32-arm64 prebuilt** (its NODE_MODULE_VERSION must match
+>   the target Electron — a PE-arch check alone is insufficient);
+> - ships a **single one-click** NSIS installer (`oneClick: true`);
+> - adds a Windows `titleBarOverlay` (upstream is frameless + macOS-centric, so
+>   Windows otherwise has no visible window controls).
+>
+> This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
 
 ---

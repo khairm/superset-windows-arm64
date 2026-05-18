@@ -285,6 +285,39 @@ jobs:
             Write-Host "(E) no hardcoded win arch [x64] found (ok if upstream changed; --arm64 CLI still applies)"
           }
 
+          # (G) NSIS: ship a single one-click installer. Upstream is the
+          #     assisted wizard (oneClick:false). allowToChangeInstallationDirectory
+          #     is assisted-only (ignored when oneClick:true) — set false to match.
+          $c = Get-Content -Raw $eb
+          if ($c -notmatch 'oneClick:\s*false') {
+            Write-Error "(G) electron-builder.ts nsis.oneClick:false not found; upstream NSIS config changed — aborting (goal requires a one-click binary)."
+            exit 1
+          }
+          $c = $c -replace 'oneClick:\s*false', 'oneClick: true'
+          $c = $c -replace 'allowToChangeInstallationDirectory:\s*true', 'allowToChangeInstallationDirectory: false'
+          Set-Content -Path $eb -Value $c -NoNewline
+          if ((Get-Content -Raw $eb) -notmatch 'oneClick:\s*true') { Write-Error "(G) oneClick patch failed"; exit 1 }
+          Write-Host "(G) electron-builder.ts NSIS -> oneClick: true (single one-click binary)"
+
+          # (H) Windows titlebar: upstream is frameless + macOS-centric
+          #     (frame:false, trafficLightPosition) so Windows has no visible
+          #     window controls. On win32 use titleBarStyle:hidden + a native
+          #     titleBarOverlay (visible min/max/close); keep mac unchanged.
+          #     NOTE: frame:false suppresses the Windows overlay, so the win32
+          #     branch must NOT set frame:false.
+          $mw = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $mw)) { Write-Error "Missing $mw"; exit 1 }
+          $c = Get-Content -Raw $mw
+          if ($c -notmatch 'frame: false,\s*titleBarStyle: "hidden",\s*trafficLightPosition: \{ x: 16, y: 16 \},') {
+            Write-Error "(H) expected frameless/trafficLight window block not found in $mw; upstream window config changed — aborting."
+            exit 1
+          }
+          $repl = '...(process.platform === "win32" ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#1f1f1f", symbolColor: "#e6e6e6", height: 36 } } : { frame: false, titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 16 } }),'
+          $c = $c -replace 'frame: false,\s*titleBarStyle: "hidden",\s*trafficLightPosition: \{ x: 16, y: 16 \},', $repl
+          Set-Content -Path $mw -Value $c -NoNewline
+          if ((Get-Content -Raw $mw) -notmatch 'titleBarOverlay') { Write-Error "(H) titleBarOverlay patch failed"; exit 1 }
+          Write-Host "(H) main.ts -> Windows titleBarOverlay (visible native window controls)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -294,7 +327,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + F)."
 
       - name: Install dependencies
         working-directory: superset
@@ -317,7 +350,7 @@ jobs:
         shell: bash
         run: bun run compile:app
 
-      - name: Fetch @libsql/win32-arm64-msvc + materialize native closure
+      - name: Fetch @libsql + @anush008/tokenizers win32-arm64 + materialize native closure
         working-directory: superset
         shell: bash
         env:
@@ -340,15 +373,35 @@ jobs:
           mkdir -p libsql-arm64
           tar -xzf libsql-dl/libsql-win32-arm64-msvc.tar.gz -C libsql-arm64
           [ -f libsql-arm64/index.node ] || { echo "::error::libsql artifact missing index.node"; exit 1; }
+
+          # @anush008/tokenizers version Superset resolved (fastembed dep; the
+          # author publishes no win-arm64 build — khairm/tokenizers-windows-arm64
+          # publishes a per-version Release of it). N-API: one build, any Electron.
+          TV=$(ls -d node_modules/.bun/@anush008+tokenizers@* 2>/dev/null | sed 's#.*/@anush008+tokenizers@##' | sort -V | tail -1)
+          [ -n "$TV" ] || { echo "::error::could not determine resolved @anush008/tokenizers version"; exit 1; }
+          echo "Resolved @anush008/tokenizers: $TV"
+          rm -rf tok-dl tokenizers-arm64
+          if ! gh release download "$TV" --repo khairm/tokenizers-windows-arm64 \
+                 -p 'tokenizers-win32-arm64-msvc.tar.gz' -p 'tokenizers-win32-arm64-msvc.tar.gz.sha256' -D tok-dl; then
+            echo "::error::No @anush008/tokenizers-win32-arm64-msvc Release for tokenizers $TV in khairm/tokenizers-windows-arm64."
+            echo "::error::Trigger that repo's nightly (workflow_dispatch -f tokenizers_version=$TV) then re-run."
+            exit 1
+          fi
+          ( cd tok-dl && sha256sum -c tokenizers-win32-arm64-msvc.tar.gz.sha256 )
+          mkdir -p tokenizers-arm64
+          tar -xzf tok-dl/tokenizers-win32-arm64-msvc.tar.gz -C tokenizers-arm64
+          [ -f tokenizers-arm64/tokenizers.win32-arm64-msvc.node ] || { echo "::error::tokenizers artifact missing .node"; exit 1; }
+
           # Electron ABI from the resolved electron major (electron N -> NODE_MODULE_VERSION N+103).
           EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
           ABI=$((EM + 103))
           echo "electron major=$EM -> ABI=$ABI"
-          export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64"
+          export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64" TOKENIZERS_ARM64_DIR="$PWD/tokenizers-arm64"
           bash scripts/materialize-native-closure.sh
           # persist for later steps
           echo "ELECTRON_ABI=$ABI" >> "$GITHUB_ENV"
           echo "LIBSQL_ARM64_DIR=$PWD/libsql-arm64" >> "$GITHUB_ENV"
+          echo "TOKENIZERS_ARM64_DIR=$PWD/tokenizers-arm64" >> "$GITHUB_ENV"
 
       - name: Prepare native modules (ARM64 target)
         working-directory: superset/apps/desktop
