@@ -1,0 +1,312 @@
+name: Nightly Windows ARM64 Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'  # 12:00 AM UTC daily
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.compare.outputs.should_build }}
+      upstream_version: ${{ steps.compare.outputs.upstream_version }}
+      is_beta: ${{ steps.compare.outputs.is_beta }}
+      release_tag: ${{ steps.compare.outputs.release_tag }}
+    steps:
+      - name: Check upstream for new release
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+
+          # Get latest release from upstream
+          LATEST=$(gh release view --repo superset-sh/superset --json tagName -q .tagName 2>/dev/null || echo "")
+          if [ -z "$LATEST" ]; then
+            echo "No upstream release found"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "is_beta=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "upstream_version=$LATEST" >> $GITHUB_OUTPUT
+
+          # Check if we already have this version
+          if gh release view "$LATEST" --repo ${{ github.repository }} &>/dev/null; then
+            echo "Already built $LATEST"
+            if [ "$IS_MANUAL" = "true" ]; then
+              echo "Manual trigger: building beta pre-release"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+              echo "is_beta=true" >> $GITHUB_OUTPUT
+              echo "release_tag=${LATEST}-beta" >> $GITHUB_OUTPUT
+            else
+              echo "should_build=false" >> $GITHUB_OUTPUT
+              echo "is_beta=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "New version found: $LATEST"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "is_beta=false" >> $GITHUB_OUTPUT
+            echo "release_tag=$LATEST" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    # Native Windows ARM64 runner (free for public repos).
+    runs-on: windows-11-arm
+    steps:
+      - name: Checkout patches repo
+        uses: actions/checkout@v5
+
+      - name: Clone upstream Superset
+        shell: bash
+        run: |
+          git config --global core.longpaths true
+          git clone --depth 1 --branch ${{ needs.check.outputs.upstream_version }} https://github.com/superset-sh/superset.git superset
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun (native Windows ARM64)
+        uses: oven-sh/setup-bun@v2
+        with:
+          # 1.3.14 = last stable Zig release; first native win-arm64 shipped in 1.3.10.
+          # (Avoid the Rust canary; it does not claim Windows ARM64 parity.)
+          bun-version: '1.3.14'
+
+      - name: Verify Bun is native ARM64 (fail fast, fall back to official zip)
+        shell: pwsh
+        run: |
+          function Get-PEMachine($p){ $fs=[IO.File]::OpenRead($p); $br=New-Object IO.BinaryReader($fs); $fs.Position=0x3C; $pe=$br.ReadInt32(); $fs.Position=$pe+4; $m=$br.ReadUInt16(); $br.Close(); return $m }
+          $bun = (Get-Command bun).Source
+          $m = Get-PEMachine $bun
+          $ver = (& bun --version).Trim()
+          Write-Host "bun: $bun  version=$ver  PEmachine=0x$('{0:X}' -f $m)"
+          if ($m -ne 0xAA64) {
+            Write-Host "::warning::setup-bun did not provide native ARM64 bun (machine 0x$('{0:X}' -f $m)); downloading official bun-windows-aarch64"
+            $zip = Join-Path $env:RUNNER_TEMP 'bun-arm64.zip'
+            Invoke-WebRequest -Uri 'https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-aarch64.zip' -OutFile $zip
+            $dest = Join-Path $env:RUNNER_TEMP 'bun-arm64'
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+            $found = Get-ChildItem -Recurse -Filter bun.exe $dest | Select-Object -First 1
+            if (-not $found) { Write-Error 'bun.exe not found in official ARM64 zip'; exit 1 }
+            $m2 = Get-PEMachine $found.FullName
+            if ($m2 -ne 0xAA64) { Write-Error "Official zip bun.exe is not ARM64 (0x$('{0:X}' -f $m2))"; exit 1 }
+            Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
+            Write-Host "Prepended native ARM64 bun ($($found.DirectoryName)) to PATH"
+          }
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Apply Windows patches
+        working-directory: superset
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+        shell: bash
+        run: |
+          claude --dangerously-skip-permissions --effort medium --verbose \
+            -p "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Apply all changes directly and immediately.
+
+          You are inside a fresh clone of superset-sh/superset. Read the file ../PATCHES.md and apply ALL the patches described in it to this codebase. Read each target file before editing. Create new files where specified. Do not skip any patch."
+
+      - name: Pin Mastra dependencies
+        working-directory: superset
+        shell: bash
+        run: |
+          node <<'NODE'
+          import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+          import { join, relative } from "node:path";
+
+          const pins = {
+            "@mastra/core": "1.33.0",
+            mastracode: "0.18.0",
+          };
+          const dependencySections = ["dependencies", "devDependencies", "optionalDependencies"];
+          const searchRoots = ["apps", "packages", "tooling"];
+          const packageJsonFiles = ["package.json"];
+
+          function collectPackageJsonFiles(directory) {
+            if (!existsSync(directory)) return;
+
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              const entryPath = join(directory, entry.name);
+
+              if (entry.isDirectory()) {
+                if ([".git", ".bun", "dist", "node_modules", "release"].includes(entry.name)) continue;
+                collectPackageJsonFiles(entryPath);
+                continue;
+              }
+
+              if (entry.name === "package.json") {
+                packageJsonFiles.push(entryPath);
+              }
+            }
+          }
+
+          for (const root of searchRoots) collectPackageJsonFiles(root);
+
+          const changes = [];
+          for (const file of packageJsonFiles) {
+            const packageJson = JSON.parse(readFileSync(file, "utf8"));
+            let changed = false;
+
+            if (file === "package.json") {
+              packageJson.overrides ??= {};
+              for (const [name, version] of Object.entries(pins)) {
+                if (packageJson.overrides[name] !== version) {
+                  packageJson.overrides[name] = version;
+                  changes.push(`${relative(process.cwd(), file)} overrides.${name}=${version}`);
+                  changed = true;
+                }
+              }
+            }
+
+            for (const section of dependencySections) {
+              const dependencies = packageJson[section];
+              if (!dependencies) continue;
+
+              for (const [name, version] of Object.entries(pins)) {
+                if (dependencies[name] && dependencies[name] !== version) {
+                  dependencies[name] = version;
+                  changes.push(`${relative(process.cwd(), file)} ${section}.${name}=${version}`);
+                  changed = true;
+                }
+              }
+            }
+
+            if (changed) writeFileSync(file, `${JSON.stringify(packageJson, null, "\t")}\n`);
+          }
+
+          if (changes.length === 0) {
+            console.log("Mastra dependency pins already applied.");
+          } else {
+            console.log(`Applied Mastra dependency pins:\n${changes.join("\n")}`);
+          }
+          NODE
+
+      - name: ARM64 arch fixup (deterministic, fail-fast)
+        working-directory: superset
+        shell: pwsh
+        run: |
+          # The patches (12 & 14) hardcode the x64 native pty binary. Rewrite to ARM64
+          # deterministically so the build is correct regardless of LLM non-determinism.
+          $files = @(
+            'apps/desktop/scripts/copy-native-modules.ts',
+            'apps/desktop/electron-builder.ts'
+          )
+          $changed = $false
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { Write-Error "Expected patched file missing: $f (did the patch apply?)"; exit 1 }
+            $c = Get-Content -Raw $f
+            if ($c -match 'node-pty-win32-x64') {
+              Set-Content -Path $f -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
+              Write-Host "Rewrote node-pty-win32-x64 -> node-pty-win32-arm64 in $f"
+              $changed = $true
+            }
+          }
+          if (-not $changed) {
+            Write-Error "ARM64 fixup found no 'node-pty-win32-x64' references. Patch 12/14 structure changed; aborting to avoid shipping a broken or x64 build."
+            exit 1
+          }
+          foreach ($f in $files) {
+            $c = Get-Content -Raw $f
+            if ($c -match 'node-pty-win32-x64') { Write-Error "Residual node-pty-win32-x64 in $f after fixup"; exit 1 }
+          }
+          if (-not ((Get-Content -Raw 'apps/desktop/electron-builder.ts') -match 'node-pty-win32-arm64')) {
+            Write-Error "electron-builder.ts has no node-pty-win32-arm64 reference after fixup"
+            exit 1
+          }
+          Write-Host "ARM64 arch fixup verified."
+
+      - name: Install dependencies
+        working-directory: superset
+        shell: bash
+        run: bun install
+
+      - name: Generate file icons
+        working-directory: superset/apps/desktop
+        shell: bash
+        run: bun run generate:icons
+
+      - name: Build app
+        working-directory: superset/apps/desktop
+        shell: bash
+        run: bun run compile:app
+
+      - name: Prepare native modules (ARM64 target)
+        working-directory: superset/apps/desktop
+        shell: bash
+        env:
+          TARGET_ARCH: arm64
+          TARGET_PLATFORM: win32
+        run: bun run copy:native-modules
+
+      - name: Build Windows ARM64 installer
+        working-directory: superset/apps/desktop
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npx electron-builder --win --arm64 --publish never --config electron-builder.ts
+          echo "--- release dir ---"
+          ls -la release || true
+
+      - name: Archive patched source
+        shell: bash
+        run: tar -czf superset-patched-source.tar.gz --exclude='node_modules' --exclude='.bun' --exclude='dist' --exclude='release' superset/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.check.outputs.upstream_version }}"
+          RELEASE_TAG="${{ needs.check.outputs.release_tag }}"
+          IS_BETA="${{ needs.check.outputs.is_beta }}"
+
+          PRERELEASE_FLAG=""
+          TITLE_SUFFIX=""
+          if [ "$IS_BETA" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+            TITLE_SUFFIX=" [Beta]"
+            # Delete existing beta release if it exists so we can recreate it
+            gh release delete "$RELEASE_TAG" --repo ${{ github.repository }} --yes 2>/dev/null || true
+            git push --delete origin "refs/tags/$RELEASE_TAG" 2>/dev/null || true
+          fi
+
+          # electron-builder emits an -arm64 .exe artifact; resolve it resiliently.
+          ASSET=$(ls superset/apps/desktop/release/*arm64*.exe 2>/dev/null | head -1 || true)
+          if [ -z "$ASSET" ]; then
+            ASSET=$(ls superset/apps/desktop/release/*.exe 2>/dev/null | grep -v blockmap | head -1 || true)
+          fi
+          if [ -z "$ASSET" ]; then
+            echo "ERROR: no .exe produced in release/"
+            ls -la superset/apps/desktop/release || true
+            exit 1
+          fi
+          echo "Publishing asset: $ASSET"
+
+          gh release create "$RELEASE_TAG" \
+            "$ASSET" \
+            superset-patched-source.tar.gz \
+            --repo ${{ github.repository }} \
+            --title "Superset $VERSION (Windows ARM64)${TITLE_SUFFIX}" \
+            $PRERELEASE_FLAG \
+            --notes "Automated **native Windows ARM64** build of [superset-sh/superset](https://github.com/superset-sh/superset) $VERSION.
+
+          Built with Windows compatibility patches applied via AI agent (see [PATCHES.md](https://github.com/${{ github.repository }}/blob/main/PATCHES.md)). ARM64 native-module values are enforced deterministically by the workflow's *ARM64 arch fixup* step. Installer is **unsigned**.
+
+          **Assets:**
+          - \`$(basename "$ASSET")\` — native Windows ARM64 installer
+          - \`superset-patched-source.tar.gz\` — modified source code (for reviewing the AI-applied changes against the upstream tag)
+
+          Not the official superset-sh distribution."
