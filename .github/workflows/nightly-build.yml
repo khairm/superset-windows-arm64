@@ -318,6 +318,31 @@ jobs:
           if ((Get-Content -Raw $mw) -notmatch 'titleBarOverlay') { Write-Error "(H) titleBarOverlay patch failed"; exit 1 }
           Write-Host "(H) main.ts -> Windows titleBarOverlay (visible native window controls)"
 
+          # (I) Force-package @anush008/tokenizers-win32-arm64-msvc outside the
+          #     asar. @anush008/tokenizers (transitive via fastembed) bare-
+          #     requires its win-arm64 platform pkg, but @anush008/tokenizers
+          #     @0.0.0 does NOT declare it in optionalDependencies, so the
+          #     electron-builder collector never packages it — and
+          #     copy:native-modules has no tokenizers handling (unlike libsql).
+          #     An extraResources entry copies it to
+          #     <app>/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc;
+          #     @anush008/tokenizers's runtime require() then resolves it via
+          #     Node's asar -> resources/node_modules fall-through (verified on
+          #     real ARM64 hardware). materialize stages the dir at
+          #     apps/desktop/node_modules/@anush008/tokenizers-win32-arm64-msvc.
+          $c = Get-Content -Raw $eb
+          if ($c -notmatch 'extraResources:\s*\[') {
+            Write-Error "(I) electron-builder.ts has no extraResources array; upstream changed — aborting."
+            exit 1
+          }
+          if ($c -notmatch 'tokenizers-win32-arm64-msvc') {
+            $tokEntry = "extraResources: [`r`n`t`t`t{`r`n`t`t`t`tfrom: `"node_modules/@anush008/tokenizers-win32-arm64-msvc`",`r`n`t`t`t`tto: `"node_modules/@anush008/tokenizers-win32-arm64-msvc`",`r`n`t`t`t`tfilter: [`"**/*`"],`r`n`t`t`t},"
+            $c = $c -replace 'extraResources:\s*\[', $tokEntry
+            Set-Content -Path $eb -Value $c -NoNewline
+          }
+          if ((Get-Content -Raw $eb) -notmatch 'tokenizers-win32-arm64-msvc') { Write-Error "(I) extraResources patch failed"; exit 1 }
+          Write-Host "(I) electron-builder.ts extraResources += @anush008/tokenizers-win32-arm64-msvc"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -327,7 +352,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + F)."
 
       - name: Install dependencies
         working-directory: superset
@@ -430,9 +455,45 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
+          set -euo pipefail
           npx electron-builder --win --arm64 --publish never --config electron-builder.ts
           echo "--- release dir ---"
           ls -la release || true
+
+      - name: Verify packaged native closure (ARM64 fail-fast gate)
+        working-directory: superset/apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The unpacked app electron-builder produced before NSIS packaging.
+          APP="release/win-arm64-unpacked"
+          [ -d "$APP" ] || { echo "::error::$APP not found"; exit 1; }
+          pearch() { od -An -tx1 -j"$(( $(od -An -tu4 -j60 -N4 "$1"|tr -d ' ')+4 ))" -N2 "$1" | tr -d ' '; }
+          fail=0
+          # 1) Superset.exe must be native ARM64.
+          m="$(pearch "$APP/Superset.exe")"
+          [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
+          # 2) @anush008/tokenizers-win32-arm64-msvc must be packaged (extraResources,
+          #    outside the asar) — this is the gap that crashed prior builds.
+          TOK="$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node"
+          if [ -f "$TOK" ] && [ "$(pearch "$TOK")" = 64aa ]; then
+            echo "OK  @anush008/tokenizers-win32-arm64-msvc packaged (ARM64)"
+          else
+            echo "::error::@anush008/tokenizers-win32-arm64-msvc missing/!ARM64 at $TOK"; fail=1
+          fi
+          # 3) Every win32-arm64 native .node in the unpacked app must be ARM64,
+          #    and no win32-arm64 path may contain an x64 binary.
+          while IFS= read -r f; do
+            case "$f" in
+              *darwin*|*linux*|*musl*|*win32-ia32*|*win32-x64*|*win32_x64*|*win32_ia32*) continue ;;
+            esac
+            a="$(pearch "$f" 2>/dev/null || echo '')"
+            if echo "$f" | grep -Eqi 'win32.?arm64|win32_arm64'; then
+              [ "$a" = 64aa ] || { echo "::error::win32-arm64 native not ARM64: $f (0x$a)"; fail=1; }
+            fi
+          done < <(find "$APP/resources" -name '*.node' 2>/dev/null)
+          [ "$fail" = 0 ] || { echo "::error::packaged native closure verification FAILED"; exit 1; }
+          echo "Packaged native closure verified (ARM64)."
 
       - name: Archive patched source
         shell: bash

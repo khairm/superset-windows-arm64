@@ -90,8 +90,13 @@ if [ -f "$TOK/tokenizers.win32-arm64-msvc.node" ] && [ "$(pearch "$TOK/tokenizer
   echo "[mat] @anush008/tokenizers-win32-arm64-msvc already present"
 else
   [ -n "${TOKENIZERS_ARM64_DIR:-}" ] && [ -f "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" ] || { echo "[mat] TOKENIZERS_ARM64_DIR missing tokenizers.win32-arm64-msvc.node"; exit 1; }
-  rm -rf "$TOK"; mkdir -p "$APPNM/@anush008"
-  cp -r "$TOKENIZERS_ARM64_DIR" "$TOK"
+  [ -f "$TOKENIZERS_ARM64_DIR/package.json" ] || { echo "[mat] TOKENIZERS_ARM64_DIR missing package.json"; exit 1; }
+  # Copy only the two files the platform package needs — never cp -r the source
+  # dir (it may also hold the downloaded tarball/checksum; this dir is shipped
+  # verbatim by electron-builder extraResources with a **/* filter).
+  rm -rf "$TOK"; mkdir -p "$TOK"
+  cp "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" "$TOK/tokenizers.win32-arm64-msvc.node"
+  cp "$TOKENIZERS_ARM64_DIR/package.json" "$TOK/package.json"
   echo "[mat] @anush008/tokenizers-win32-arm64-msvc <- $TOKENIZERS_ARM64_DIR"
 fi
 echo "[mat] minimal native repair complete"
