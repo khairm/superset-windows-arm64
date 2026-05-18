@@ -1,17 +1,17 @@
 # Windows ARM64 Compatibility Patches
 
-> **ARM64 fork note.** This file is reproduced from
-> [`Ashesh3/superset-windows`](https://github.com/Ashesh3/superset-windows) so the
-> nightly workflow applies the *same* Windows-compatibility patches the "same way"
-> (an AI agent reads this file and applies every patch to a fresh upstream clone).
+> **ARM64 build note.** The nightly workflow applies the Windows-compatibility
+> patches below to a fresh clone of
+> [`superset-sh/superset`](https://github.com/superset-sh/superset) (an AI agent
+> reads this file and applies every patch).
 >
-> The patches below intentionally still reference the **x64** native binary
-> `@lydell/node-pty-win32-x64` (Patches 12 & 14). For this **native ARM64** fork
+> The patches below reference the **x64** native binary
+> `@lydell/node-pty-win32-x64` (Patches 12 & 14). For this **native ARM64** build
 > those references are rewritten to `@lydell/node-pty-win32-arm64`
 > **deterministically** by the workflow's `ARM64 arch fixup` step (with fail-fast
 > assertions), and the installer is built with `electron-builder --win --arm64`.
-> This keeps PATCHES.md faithful to the upstream port while making the
-> architecture handling reproducible and independent of LLM non-determinism.
+> This keeps the patch set portable while making the architecture handling
+> reproducible and independent of LLM non-determinism.
 
 ---
 
