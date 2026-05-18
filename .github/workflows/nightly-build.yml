@@ -197,35 +197,68 @@ jobs:
         working-directory: superset
         shell: pwsh
         run: |
-          # The patches (12 & 14) hardcode the x64 native pty binary. Rewrite to ARM64
-          # deterministically so the build is correct regardless of LLM non-determinism.
-          $files = @(
-            'apps/desktop/scripts/copy-native-modules.ts',
-            'apps/desktop/electron-builder.ts'
-          )
+          # These three fixups are arch-critical and MUST be correct, so they are applied
+          # deterministically here rather than relying on the non-deterministic AI patch step.
+          # Each is validated locally on real Windows ARM64 hardware.
+          $ErrorActionPreference = 'Stop'
+
+          # (A) Route bare microsoft/node-pty (no win32-arm64 prebuilt; needs node-gyp) to the
+          #     drop-in @lydell/node-pty fork which ships a win32-arm64 prebuilt. The desktop
+          #     app already uses this alias (Patch 10); extend it to the two packages that
+          #     still pin the bare package so the whole build is prebuilt-only.
+          $pkgs = @('packages/host-service/package.json', 'packages/pty-daemon/package.json')
+          foreach ($p in $pkgs) {
+            if (-not (Test-Path $p)) { Write-Error "Missing $p"; exit 1 }
+            $c = Get-Content -Raw $p
+            if ($c -notmatch '"node-pty"\s*:\s*"1\.1\.0"') {
+              Write-Error "$p does not pin node-pty 1.1.0 as expected (upstream structure changed); aborting."
+              exit 1
+            }
+            $c = $c -replace '"node-pty"\s*:\s*"1\.1\.0"', '"node-pty": "npm:@lydell/node-pty@^1.0.1"'
+            Set-Content -Path $p -Value $c -NoNewline
+            Write-Host "(A) Aliased node-pty -> @lydell/node-pty in $p"
+          }
+
+          # (B) Upstream build-bundled-cli.ts has no win32/arm64 Bun compile target. Add it.
+          $cli = 'apps/desktop/scripts/build-bundled-cli.ts'
+          if (-not (Test-Path $cli)) { Write-Error "Missing $cli"; exit 1 }
+          $c = Get-Content -Raw $cli
+          if ($c -notmatch '"bun-windows-x64"') {
+            Write-Error "$cli has no bun-windows-x64 target (upstream structure changed); aborting."
+            exit 1
+          }
+          if ($c -notmatch '"bun-windows-arm64"') {
+            $c = $c -replace '(\bx64:\s*"bun-windows-x64",)', "`$1`r`n`t`tarm64: `"bun-windows-arm64`","
+            Set-Content -Path $cli -Value $c -NoNewline
+            Write-Host "(B) Added arm64 -> bun-windows-arm64 target to $cli"
+          }
+          if ((Get-Content -Raw $cli) -notmatch '"bun-windows-arm64"') {
+            Write-Error "(B) failed: $cli still has no bun-windows-arm64 target"; exit 1
+          }
+
+          # (C) Patches 12 & 14 hardcode the x64 native pty binary. Rewrite to ARM64.
+          $files = @('apps/desktop/scripts/copy-native-modules.ts', 'apps/desktop/electron-builder.ts')
           $changed = $false
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { Write-Error "Expected patched file missing: $f (did the patch apply?)"; exit 1 }
             $c = Get-Content -Raw $f
             if ($c -match 'node-pty-win32-x64') {
               Set-Content -Path $f -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
-              Write-Host "Rewrote node-pty-win32-x64 -> node-pty-win32-arm64 in $f"
+              Write-Host "(C) Rewrote node-pty-win32-x64 -> node-pty-win32-arm64 in $f"
               $changed = $true
             }
           }
           if (-not $changed) {
-            Write-Error "ARM64 fixup found no 'node-pty-win32-x64' references. Patch 12/14 structure changed; aborting to avoid shipping a broken or x64 build."
+            Write-Error "(C) found no 'node-pty-win32-x64' references. Patch 12/14 structure changed; aborting to avoid shipping a broken or x64 build."
             exit 1
           }
           foreach ($f in $files) {
-            $c = Get-Content -Raw $f
-            if ($c -match 'node-pty-win32-x64') { Write-Error "Residual node-pty-win32-x64 in $f after fixup"; exit 1 }
+            if ((Get-Content -Raw $f) -match 'node-pty-win32-x64') { Write-Error "Residual node-pty-win32-x64 in $f after fixup"; exit 1 }
           }
-          if (-not ((Get-Content -Raw 'apps/desktop/electron-builder.ts') -match 'node-pty-win32-arm64')) {
-            Write-Error "electron-builder.ts has no node-pty-win32-arm64 reference after fixup"
-            exit 1
+          if ((Get-Content -Raw 'apps/desktop/electron-builder.ts') -notmatch 'node-pty-win32-arm64') {
+            Write-Error "electron-builder.ts has no node-pty-win32-arm64 reference after fixup"; exit 1
           }
-          Write-Host "ARM64 arch fixup verified."
+          Write-Host "ARM64 arch fixup verified (A + B + C)."
 
       - name: Install dependencies
         working-directory: superset
