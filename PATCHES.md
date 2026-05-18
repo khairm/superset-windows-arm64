@@ -1019,14 +1019,15 @@ img-src 'self' data: blob: https: http:; media-src 'self' data:; font-src 'self'
 
 **File: `apps/desktop/src/renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/WorkspaceListItem.tsx`**
 
-1. Add import for the hotkeys store at the top of the file:
-   ```typescript
-   import { useHotkeysStore } from "renderer/stores/hotkeys";
-   ```
+1. Do NOT add any new import. This file already imports `electronTrpc` (from
+   `renderer/lib/electron-trpc`) — reuse it. There is no `renderer/stores/hotkeys`
+   module; `electronTrpc.window.getPlatform` is the existing tRPC route that
+   returns `process.platform`.
 
-2. Inside the `WorkspaceListItem` component function body (near the top where other hooks are called), add:
+2. Inside the `WorkspaceListItem` component function body (near the top where the
+   other hooks/queries are called), add a platform query:
    ```typescript
-   const platform = useHotkeysStore((state) => state.platform);
+   const { data: platform } = electronTrpc.window.getPlatform.useQuery();
    ```
 
 3. Find the hardcoded shortcut display:
