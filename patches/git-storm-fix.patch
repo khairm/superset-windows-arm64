@@ -1,0 +1,118 @@
+diff --git a/packages/host-service/src/events/git-watcher.ts b/packages/host-service/src/events/git-watcher.ts
+index a3e36f0..b35e263 100644
+--- a/packages/host-service/src/events/git-watcher.ts
++++ b/packages/host-service/src/events/git-watcher.ts
+@@ -11,6 +11,39 @@ const execFileAsync = promisify(execFile);
+ const RESCAN_INTERVAL_MS = 30_000;
+ const DEBOUNCE_MS = 300;
+ 
++/**
++ * `.git/` paths whose changes never alter `git status` / branch state but
++ * churn constantly: transient `*.lock` files, the fsmonitor daemon's own
++ * bookkeeping under `fsmonitor--daemon/`, raw object writes (always paired
++ * with a ref/index update the watcher still sees), and reflogs.
++ *
++ * Filtering these out of the recursive `.git/` watch is essential on Windows:
++ * `git status` pokes fsmonitor cookie files inside `.git/`, so an unfiltered
++ * recursive watch turns every status read into a fresh `git:changed` event —
++ * a self-sustaining spawn storm. `fs.watch` reports OS-native separators, so
++ * the filename is normalized to `/` before matching.
++ */
++function isIgnoredGitDirChange(filename: string): boolean {
++	// Windows file systems are case-insensitive; git's own metadata is
++	// lowercase but lowercasing is defensive. `fs.watch` yields OS-native
++	// separators, so normalize to `/` first.
++	const path = filename.replace(/\\/g, "/").toLowerCase();
++	if (path.endsWith(".lock")) return true;
++	if (path === "objects" || path.startsWith("objects/")) return true;
++	if (path === "logs" || path.startsWith("logs/")) return true;
++	// The fsmonitor daemon's cookie dir churns on every `git status`. Match it
++	// at the top level OR nested: linked worktrees and submodules resolve
++	// `.git` elsewhere and can nest gitdirs under `modules/`/`worktrees/`.
++	if (
++		path === "fsmonitor--daemon" ||
++		path.startsWith("fsmonitor--daemon/") ||
++		path.includes("/fsmonitor--daemon/")
++	) {
++		return true;
++	}
++	return false;
++}
++
+ export interface GitChangedEvent {
+ 	workspaceId: string;
+ 	/**
+@@ -231,7 +264,16 @@ export class GitWatcher {
+ 
+ 		let watcher: FSWatcher;
+ 		try {
+-			watcher = watch(gitDir, { recursive: true }, () => {
++			watcher = watch(gitDir, { recursive: true }, (_event, filename) => {
++				// Drop git's own internal churn (lock files, fsmonitor cookies,
++				// object/reflog writes) so a `git status` triggered by this
++				// watcher can't re-trigger it — see isIgnoredGitDirChange.
++				// `filename` is null on some platforms/events; when unknown,
++				// fall through and treat the change as meaningful rather than
++				// risk dropping a real event.
++				if (filename && isIgnoredGitDirChange(filename.toString())) {
++					return;
++				}
+ 				this.markGitDirDirty(workspaceId);
+ 			});
+ 		} catch {
+diff --git a/packages/host-service/src/runtime/git/git.ts b/packages/host-service/src/runtime/git/git.ts
+index 3606dff..e598562 100644
+--- a/packages/host-service/src/runtime/git/git.ts
++++ b/packages/host-service/src/runtime/git/git.ts
+@@ -1,12 +1,50 @@
++import type { SimpleGit } from "simple-git";
+ import { createUserSimpleGit } from "./simple-git";
+ import type { GitCredentialProvider, GitFactory } from "./types";
+ import { getRemoteUrl } from "./utils";
+ 
++// `git remote get-url origin` was spawned on every single `ctx.git()` call —
++// a hot path hit by every git-status poll and PR-runtime sync. The remote URL
++// is effectively static for a session, so resolved values are cached briefly
++// per repo and concurrent lookups share one spawn. A `null` result (no
++// `origin`) is never cached, so a remote added later is still picked up.
++const REMOTE_URL_TTL_MS = 60_000;
++const remoteUrlCache = new Map<string, { url: string; expiresAt: number }>();
++const remoteUrlInFlight = new Map<string, Promise<string | null>>();
++
++function getRemoteUrlCached(
++	repoPath: string,
++	git: SimpleGit,
++): Promise<string | null> {
++	const cached = remoteUrlCache.get(repoPath);
++	if (cached && cached.expiresAt > Date.now()) {
++		return Promise.resolve(cached.url);
++	}
++	const inFlight = remoteUrlInFlight.get(repoPath);
++	if (inFlight) return inFlight;
++
++	const promise = getRemoteUrl(git)
++		.then((url) => {
++			if (url) {
++				remoteUrlCache.set(repoPath, {
++					url,
++					expiresAt: Date.now() + REMOTE_URL_TTL_MS,
++				});
++			}
++			return url;
++		})
++		.finally(() => {
++			remoteUrlInFlight.delete(repoPath);
++		});
++	remoteUrlInFlight.set(repoPath, promise);
++	return promise;
++}
++
+ export function createGitFactory(provider: GitCredentialProvider): GitFactory {
+ 	return async (repoPath: string) => {
+ 		const initialCredentials = await provider.getCredentials(null);
+ 		const git = createUserSimpleGit(repoPath).env(initialCredentials.env);
+-		const remoteUrl = await getRemoteUrl(git);
++		const remoteUrl = await getRemoteUrlCached(repoPath, git);
+ 		const credentials = await provider.getCredentials(remoteUrl);
+ 
+ 		return git.env({

@@ -29,7 +29,16 @@
 >   packaged daemon spawn — "Daemon unavailable");
 > - adds the packaged renderer origin `superset-app://app` to the host-service
 >   CORS allowlist so renderer fetches (e.g. agent settings) aren't blocked at
->   the preflight ("Couldn't load agent settings: Failed to fetch").
+>   the preflight ("Couldn't load agent settings: Failed to fetch");
+> - filters git's own internal churn (`*.lock`, `fsmonitor--daemon/`,
+>   `objects/`, `logs/`) out of host-service's recursive `.git/` `fs.watch` and
+>   memoizes `getRemoteUrl`. Unfiltered, every `git status` writes inside `.git/`
+>   and re-triggers the watcher — a self-sustaining ~25 `git.exe`/sec storm that
+>   saturates host-service's single Node event loop on Windows (sluggish UI,
+>   terminal-keystroke lag, host-service killed → "Failed to fetch"). Applied
+>   deterministically via `patches/git-storm-fix.patch` (`git apply`, idempotent
+>   + fail-fast); diagnosed, Codex-reviewed, and **measured on real ARM64
+>   hardware: ~25/sec → ~0.1/sec idle**.
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.

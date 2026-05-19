@@ -402,6 +402,39 @@ jobs:
           if ((Get-Content -Raw $hs) -notmatch 'superset-app://app') { Write-Error "(K) host-service CORS patch failed"; exit 1 }
           Write-Host "(K) host-service/index.ts allowedOrigins += superset-app://app (renderer CORS)"
 
+          # (L) Git-status spawn-storm fix (host-service). An unfiltered
+          #     recursive fs.watch on .git/ turns every `git status` into a
+          #     fresh git:changed event — git's own fsmonitor-cookie / lock
+          #     writes inside .git/ re-trigger the watcher, a self-sustaining
+          #     ~25 git.exe/sec storm that saturates host-service's single
+          #     Node event loop on Windows (sluggish UI, terminal-keystroke
+          #     lag, host-service killed -> "Failed to fetch"/"Failed to run
+          #     preset"). Fix: filter git's internal churn out of the .git/
+          #     watch (the loop-breaker) + memoize getRemoteUrl (was spawned
+          #     on every ctx.git()). Diagnosed, Codex-reviewed, and MEASURED
+          #     on real ARM64 hardware: ~25/sec -> ~0.1/sec idle. Shipped as a
+          #     git patch (multi-line block inserts; anchor-regex would be
+          #     brittle). Idempotent + fail-fast.
+          $gp = '../patches/git-storm-fix.patch'
+          if (-not (Test-Path $gp)) { Write-Error "(L) missing $gp in patches repo"; exit 1 }
+          $gw = 'packages/host-service/src/events/git-watcher.ts'
+          $grt = 'packages/host-service/src/runtime/git/git.ts'
+          if (-not (Test-Path $gw)) { Write-Error "(L) missing $gw"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'isIgnoredGitDirChange' $gw) {
+            Write-Host "(L) git-storm fix already present — skip"
+          } else {
+            git apply --check $gp 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(L) git-storm-fix.patch does not apply cleanly — git-watcher.ts/git.ts changed upstream; aborting rather than shipping the ~25 git/sec storm. Regenerate patches/git-storm-fix.patch against the new upstream."
+              exit 1
+            }
+            git apply $gp
+            if ($LASTEXITCODE -ne 0) { Write-Error "(L) git apply failed"; exit 1 }
+          }
+          if ((Get-Content -Raw $gw) -notmatch 'isIgnoredGitDirChange') { Write-Error "(L) git-watcher .git/ filter missing after apply"; exit 1 }
+          if ((Get-Content -Raw $grt) -notmatch 'getRemoteUrlCached') { Write-Error "(L) getRemoteUrl cache missing after apply"; exit 1 }
+          Write-Host "(L) git-storm fix applied (git-watcher .git/ noise filter + getRemoteUrl cache)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -411,7 +444,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + F)."
 
       - name: Install dependencies
         working-directory: superset
