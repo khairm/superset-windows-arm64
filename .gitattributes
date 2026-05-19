@@ -1,0 +1,7 @@
+# Patch files MUST stay LF — the nightly runs `git apply patches/*.patch`
+# on a Windows ARM64 runner (git default core.autocrlf=true). A CRLF patch
+# fails to apply against LF upstream sources and aborts the build.
+*.patch text eol=lf
+
+# Shell scripts are executed by bash in CI; CRLF breaks the shebang/`\r`.
+*.sh text eol=lf
