@@ -8,10 +8,17 @@ A **build-automation repo**, not app source. It produces a native Windows
 ## Layout
 
 - `.github/workflows/nightly-build.yml` — nightly: detect new upstream release →
-  clone → Claude Code applies `PATCHES.md` → deterministic ARM64 arch-fixup +
-  native-closure → `electron-builder --win --arm64` → publish Release.
+  clone → Claude Code applies `PATCHES.md` → deterministic fixup step (ARM64
+  arch, native-closure, source patches A–L incl. `git apply` of `patches/*.patch`)
+  → `electron-builder --win --arm64` → publish Release.
 - `PATCHES.md` — the Windows-compat patches (AI-applied each night).
+- `patches/*.patch` — deterministic `git diff` patches the workflow `git apply`s
+  (idempotent + fail-fast). Used for multi-line code fixes too brittle for
+  anchor-regex — e.g. `git-storm-fix.patch` (host-service `.git/`-watch
+  feedback loop that pegged Windows; measured ~25→~0.2 git spawns/sec).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
+- `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
+  Windows runner fails on CRLF.
 - `README.md` — user-facing download/build docs.
 
 Upstream app source is **not** in this repo; it's cloned fresh at build time.
