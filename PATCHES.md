@@ -64,27 +64,39 @@
 >   Express server (port 51741) → wrapper-script chain is broken across four
 >   independent layers on Windows. Fix: add a Node `fs.watch` on
 >   `~/.claude/projects/<encoded-cwd>/*.jsonl` that tails session
->   transcripts, derives `Start` / `Stop` lifecycle events from entry types
->   (real user prompts and assistant/tool/thinking entries → working with a
->   3-second inactivity timer; `stop_reason:"end_turn"`, `hookEvent:"Stop"`,
->   and `subtype:"stop_hook_summary"` → review immediate). Lines are
->   processed in arrival order and the idle timer is per-encoded-dir (not
->   per-file) so sibling session JSONLs in the same cwd can't double-fire
->   stale Stops. The watcher emits `{ eventType, cwd }` and lets the
->   **renderer** resolve `cwd → paneId` against the live Zustand store —
->   resolving in the main process via `appState.tabsState` would miss
->   newly-opened terminals because that state is debounced LowDB
->   persistence (confirmed against upstream's `resolve-pane-id.ts` which
->   explicitly documents the lag). The live resolution is added alongside
->   existing paneId/sessionId paths in `resolve-notification-target.ts`.
->   v1 scope: Claude only, no `PermissionRequest` detection, first matching
->   pane wins when 2+ terminals share a cwd. Applied deterministically via
->   `patches/agent-jsonl-watcher.patch` — 5-file touch: new
->   `agent-jsonl-watcher/{agent-jsonl-watcher.ts,index.ts}`,
->   `main/windows/main.ts` wiring, `shared/notification-types.ts` adds
->   `cwd?: string` to `NotificationIds`, and `renderer/stores/tabs/utils/
+>   transcripts (Claude `~/.claude/projects/<encoded-cwd>/*.jsonl`,
+>   Codex `~/.codex/sessions/**\/rollout-*.jsonl`), derives lifecycle
+>   events per-agent (real user prompts and assistant/tool/thinking
+>   entries → working with a 3-second inactivity timer;
+>   `stop_reason:"end_turn"`, `hookEvent:"Stop"`,
+>   `subtype:"stop_hook_summary"` → review immediate;
+>   `hookEvent:"PermissionRequest"` for Claude and
+>   `exec_approval_request`/`apply_patch_approval_request`/`request_user_input`
+>   for Codex → permission). Lines processed in arrival order; dedup
+>   state keyed per **session id** (from JSONL filename UUID) so sibling
+>   sessions in the same cwd never suppress each other. Watcher emits
+>   `{ eventType, cwd, [paneId, tabId, workspaceId] }` and lets the
+>   **renderer** resolve against the live Zustand store — resolving in
+>   the main process via `appState.tabsState` would miss newly-opened
+>   terminals (debounced LowDB persistence; confirmed against upstream's
+>   `resolve-pane-id.ts` which explicitly documents the lag). The live
+>   cwd lookup is added alongside existing paneId/sessionId paths in
+>   `resolve-notification-target.ts`. A companion `pane-map-hook.ts`
+>   installs a portable Python (uv) SessionStart hook into
+>   `~/.claude/settings.json` and `~/.codex/hooks.json` that records
+>   `{sessionId → paneId/tabId/workspaceId}` mapping files at
+>   `~/.superset/session-pane-map/`; the watcher reads them for precise
+>   per-pane identity when 2+ terminals share a cwd. Hook coexists with
+>   upstream's bash `notify.sh` (different filename = different identity
+>   in the merge logic). Per-file fs.watch processing avoids full
+>   recursive scans of large Codex archives on every append. Applied
+>   deterministically via `patches/agent-jsonl-watcher.patch` — 6-file
+>   touch: new `agent-jsonl-watcher/{agent-jsonl-watcher.ts,
+>   pane-map-hook.ts, index.ts}`, `main/windows/main.ts` wiring (start
+>   + stop), `shared/notification-types.ts` adds `cwd?: string` to
+>   `NotificationIds`, and `renderer/stores/tabs/utils/
 >   resolve-notification-target.ts` adds the cwd lookup (`git apply`,
->   idempotent + fail-fast).
+>   idempotent + fail-fast). Reviewed in 6 Codex passes.
 > - renders **per-terminal** status dots inline with each workspace name in
 >   the sidebar. Upstream `WorkspaceListItem.tsx` rolls all pane statuses up
 >   to a single overlay indicator on the workspace icon — useful, but hides
@@ -1957,6 +1969,9 @@ After applying all patches, verify:
 - [ ] Quit confirmation dialog appears BEFORE window closes on Windows
 - [ ] New terminal renders cleanly without garbled/overlapping text on Windows
 - [ ] Green "review" status dot appears on the workspace icon when Claude finishes a turn in a Superset terminal (was: never appeared on Windows — bash hook chain broken; see `patches/agent-jsonl-watcher.patch`)
+- [ ] Same as above also works for Codex sessions (Codex `task_complete` → green; uses `~/.codex/sessions/**/*.jsonl`)
+- [ ] Red "permission" dot appears when Claude requests permission outside bypassPermissions mode, OR when Codex emits exec_approval_request / apply_patch_approval_request / request_user_input
+- [ ] After opening a Claude session in a Superset terminal, `~/.superset/session-pane-map/<sessionId>.json` gets written by the pane-map hook
 - [ ] Sidebar workspace rows show one small coloured dot per active terminal pane, inline with the workspace name (see `patches/per-terminal-dots.patch`)
 - [ ] NSIS installer builds successfully
 - [ ] V1 note: terminal connectivity should work, but workspace switching may still freeze on Windows; prefer V2

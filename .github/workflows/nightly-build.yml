@@ -508,11 +508,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { Write-Error "(N) git apply failed"; exit 1 }
           }
           if (-not (Test-Path 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts')) { Write-Error "(N) watcher source file missing after apply"; exit 1 }
+          if (-not (Test-Path 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts')) { Write-Error "(N) pane-map-hook source file missing after apply"; exit 1 }
           if ((Get-Content -Raw $mw) -notmatch 'startAgentJsonlWatcher') { Write-Error "(N) startAgentJsonlWatcher wiring missing in main.ts after apply"; exit 1 }
           if ((Get-Content -Raw $mw) -notmatch 'stopAgentJsonlWatcher') { Write-Error "(N) stopAgentJsonlWatcher cleanup missing in main.ts after apply (watcher leak on window close)"; exit 1 }
           if ((Get-Content -Raw $nt) -notmatch 'cwd\?: string') { Write-Error "(N) NotificationIds.cwd field missing after apply"; exit 1 }
           if ((Get-Content -Raw $rnt) -notmatch 'paneIdFromCwd') { Write-Error "(N) cwd-based pane resolution missing after apply"; exit 1 }
-          Write-Host "(N) agent-jsonl-watcher applied (Claude JSONL transcripts -> notificationsEmitter -> live cwd resolution -> green review badge)"
+          $watcher = Get-Content -Raw 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          if ($watcher -notmatch 'CODEX_PARSER') { Write-Error "(N) Codex parser missing in watcher after apply"; exit 1 }
+          if ($watcher -notmatch 'isPermissionRequest') { Write-Error "(N) PermissionRequest detection missing in watcher after apply"; exit 1 }
+          if ($watcher -notmatch 'installPaneMapHook') { Write-Error "(N) pane-map-hook installation call missing in watcher after apply"; exit 1 }
+          Write-Host "(N) agent-jsonl-watcher applied (Claude + Codex JSONL -> session-keyed dedup -> cwd+paneId mapping -> green/amber/red badges)"
 
           # (O) Per-terminal status dots on the sidebar workspace rows.
           #     Upstream renders ONE rolled-up indicator (highest-priority

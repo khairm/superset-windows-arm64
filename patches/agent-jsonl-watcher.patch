@@ -1,63 +1,178 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,582 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
 +import path from "node:path";
 +import { NOTIFICATION_EVENTS } from "shared/constants";
 +import type { AgentLifecycleEvent } from "shared/notification-types";
++import { installPaneMapHook } from "./pane-map-hook";
 +
 +/**
 + * Windows fallback for Claude/Codex agent lifecycle: tail per-session JSONL
-+ * transcripts that Claude writes to ~/.claude/projects/<encoded-cwd>/*.jsonl
-+ * and forward state transitions into notificationsEmitter as if they came
-+ * from the v1/v2 hook server.
++ * transcripts and forward state transitions into notificationsEmitter as if
++ * they came from the v1/v2 hook server.
 + *
 + * Sidesteps the bash-only hook chain (settings.json command, notify.sh,
 + * notification server, claude wrapper) which is broken on Windows. See
 + * AGENTS.md and the project memory `superset-windows-hook-chain-broken`.
 + *
-+ * State machine (validated against actual Claude Code 2.1.145 logs):
-+ *   - real user prompt OR any assistant/tool_use/tool_result/thinking entry
-+ *     → working (start/extend the inactivity timer)
-+ *   - `stop_reason:"end_turn"` in assistant entry, or any of the Stop-shaped
-+ *     hook attachments → review (immediate, cancels idle timer)
-+ *   - no new entries for IDLE_TIMEOUT_MS after last activity → review
++ * Sources:
++ *   - Claude: ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
++ *   - Codex:  ~/.codex/sessions/**\/rollout-<ts>-<uuid>.jsonl
 + *
-+ * Each JSONL line is processed in arrival order; an activity line resets the
-+ * idle timer even if a stop line preceded it in the same chunk (turn N+1
-+ * after turn N's stop within a 250ms scan window).
++ * State derived per-agent (see CLAUDE_PARSER / CODEX_PARSER) and
++ * deduplicated per **session id** (from the JSONL filename) so each
++ * session has its own independent lastStatus + idle timer — sibling
++ * sessions in the same workspace cwd never suppress each other.
 + *
-+ * Pane resolution is deferred to the RENDERER (live Zustand store) via the
-+ * `cwd` field on the emitted event. Resolving here against the main-process
-+ * `appState.tabsState` would miss newly-opened terminals — that state is
-+ * persisted from the renderer via debounced storage and lags by hundreds of
-+ * ms. See `resolve-notification-target.ts` for the cwd → paneId lookup.
++ * Pane resolution is deferred to the renderer (live Zustand store) via the
++ * `cwd` field on the emitted event. The companion `pane-map-hook.ts`
++ * installs a small Python SessionStart hook that writes a {sessionId →
++ * paneId/tabId/workspaceId} mapping file; when present, those IDs are
++ * attached to emitted events for precise per-pane resolution (the
++ * renderer prefers them over cwd-based lookup).
 + */
 +
++interface AgentParser {
++	readonly id: "claude" | "codex";
++	isActivity(line: string): boolean;
++	isExplicitStop(line: string): boolean;
++	isPermissionRequest(line: string): boolean;
++}
++
++interface AgentSource {
++	readonly logsDir: string;
++	readonly parser: AgentParser;
++}
++
 +const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
++const CODEX_SESSIONS_DIR = path.join(os.homedir(), ".codex", "sessions");
++const SUPERSET_PANE_MAP_DIR = path.join(
++	os.homedir(),
++	".superset",
++	"session-pane-map",
++);
++
 +const POLL_DEBOUNCE_MS = 250;
-+// How long after the last JSONL activity to consider Claude "done" with the
-+// turn. End-of-turn isn't reliably marked in every Claude session (only
-+// ~3 of 8 turns in the test corpus carried stop_reason:"end_turn"), so an
-+// inactivity fallback is essential.
++// How long after the last JSONL activity to consider an agent "done" with
++// the turn. End-of-turn isn't reliably marked in every session (only
++// ~3 of 8 Claude turns in the test corpus carried stop_reason:"end_turn"),
++// so an inactivity fallback is essential.
 +const IDLE_TIMEOUT_MS = 3000;
++
++const CWD_REGEX = /"cwd":"((?:[^"\\]|\\.)+)"/;
++const UUID_RE =
++	/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
++
++// ---------------------------------------------------------------------------
++// Per-agent parsers
++// ---------------------------------------------------------------------------
++
++const CLAUDE_PARSER: AgentParser = {
++	id: "claude",
++	isActivity(line) {
++		if (line.includes('"type":"assistant"')) return true;
++		if (line.includes('"type":"tool_use"')) return true;
++		if (line.includes('"type":"tool_result"')) return true;
++		if (line.includes('"type":"thinking"')) return true;
++		if (line.includes('"type":"user"')) {
++			// Filter tool_result echoes — they have type:"user" but
++			// `tool_use_id` set; 218 of 226 user entries in the test corpus
++			// were echoes, not real prompts.
++			if (line.includes('"tool_use_id"')) return false;
++			if (line.includes('"role":"user"')) return true;
++		}
++		return false;
++	},
++	isExplicitStop(line) {
++		if (line.includes('"stop_reason":"end_turn"')) return true;
++		if (line.includes('"hookEvent":"Stop"')) return true;
++		if (line.includes('"subtype":"stop_hook_summary"')) return true;
++		if (line.includes('"subtype":"turn_duration"')) return true;
++		return false;
++	},
++	isPermissionRequest(line) {
++		// Claude fires this as a registered hook event when running outside
++		// bypassPermissions mode. Coded to the documented schema (the test
++		// corpus has 0 hits across 12091 jsonl files because the user runs
++		// bypass mode); will activate the moment a non-bypass session runs.
++		return line.includes('"hookEvent":"PermissionRequest"');
++	},
++};
++
++const CODEX_PARSER: AgentParser = {
++	id: "codex",
++	isActivity(line) {
++		// Codex writes coarser events than Claude. `task_started` and any
++		// `agent_message` / `user_message` / `token_count` event_msg
++		// indicates the turn is alive.
++		if (line.includes('"type":"event_msg"')) {
++			if (line.includes('"type":"task_started"')) return true;
++			if (line.includes('"type":"agent_message"')) return true;
++			if (line.includes('"type":"user_message"')) return true;
++			if (line.includes('"type":"token_count"')) return true;
++		}
++		// `response_item` covers tool calls and messages.
++		if (line.includes('"type":"response_item"')) return true;
++		return false;
++	},
++	isExplicitStop(line) {
++		if (line.includes('"type":"task_complete"')) return true;
++		if (line.includes('"type":"agent-turn-complete"')) return true;
++		if (line.includes('"type":"turn_aborted"')) return true;
++		return false;
++	},
++	isPermissionRequest(line) {
++		if (line.includes('"type":"exec_approval_request"')) return true;
++		if (line.includes('"type":"apply_patch_approval_request"')) return true;
++		if (line.includes('"type":"request_user_input"')) return true;
++		return false;
++	},
++};
++
++const SOURCES: AgentSource[] = [
++	{ logsDir: CLAUDE_PROJECTS_DIR, parser: CLAUDE_PARSER },
++	{ logsDir: CODEX_SESSIONS_DIR, parser: CODEX_PARSER },
++];
++
++// ---------------------------------------------------------------------------
++// Watcher state
++// ---------------------------------------------------------------------------
 +
 +interface FileState {
 +	offset: number;
 +	leftover: string;
 +	cwd: string | null;
++	sessionId: string | null;
++	parser: AgentParser;
 +}
 +
-+// Per-encoded-dir state. Multiple session JSONLs in the same project dir
-+// share the same terminal pane (the user has one cwd → one pane mapping);
-+// timers/last-status must be deduped at the dir level, not per file. A
-+// stale idle timer from a previous file in the same dir would otherwise
-+// fire after a new file's activity and force the pane back to "review".
-+interface DirState {
-+	lastStatus: "working" | "review" | null;
++// Dedup state is keyed per agent session (`session:<uuid>` from the
++// filename) so each session has an independent lastStatus + idle timer.
++// Sibling sessions in the same workspace cwd don't suppress each
++// other's transitions; mapping appearing mid-session doesn't migrate
++// keys. Falls back to `cwd:<normalized>` only for files without a
++// derivable session id (shouldn't happen in practice — both Claude and
++// Codex filenames are UUID-shaped).
++type Status = "working" | "review" | "permission";
++interface LifecycleState {
++	lastStatus: Status | null;
++	/**
++	 * Whether the last emit for this session carried a paneId mapping.
++	 * If a cwd-only Start fired before the Python hook wrote the mapping
++	 * file, we need to re-emit the same status once the mapping appears
++	 * so the renderer can rebind to the precise paneId.
++	 */
++	lastEmittedHadMapping: boolean;
 +	idleTimer: NodeJS.Timeout | null;
++}
++
++interface PaneMapping {
++	paneId?: string;
++	tabId?: string;
++	workspaceId?: string;
 +}
 +
 +interface WatcherDeps {
@@ -65,110 +180,182 @@
 +}
 +
 +const fileStates = new Map<string, FileState>();
-+const dirStates = new Map<string, DirState>();
-+let watcher: fs.FSWatcher | null = null;
++const lifecycleStates = new Map<string, LifecycleState>();
++const watchers = new Map<string, fs.FSWatcher>();
 +let scanTimer: NodeJS.Timeout | null = null;
 +let deps: WatcherDeps | null = null;
 +
++function normalizeCwd(cwd: string): string {
++	return cwd.replace(/\\/g, "/").toLowerCase();
++}
++
 +/**
-+ * Recover the cwd from a JSONL entry — every entry Claude writes carries
-+ * the original cwd as a top-level field. We sniff the first chunk we see
-+ * rather than relying on directory-name decoding (which is lossy on
-+ * Windows: drive colons are stripped, so `C--Users-foo` and `Users-foo`
-+ * would round-trip identically).
++ * Recover the cwd from a JSONL entry. Both Claude and Codex stamp the
++ * original cwd into nearly every entry. Sniffing the first chunk avoids
++ * Windows directory-name decoding (drive colons are stripped, so
++ * `C--Users-foo` and `Users-foo` would round-trip identically).
 + */
 +function extractCwd(line: string): string | null {
-+	const m = line.match(/"cwd":"((?:[^"\\]|\\.)+)"/);
++	const m = line.match(CWD_REGEX);
 +	if (!m) return null;
-+	// Unescape JSON string (just the backslash sequences Claude actually emits).
 +	return m[1].replace(/\\\\/g, "\\").replace(/\\"/g, '"');
 +}
 +
 +/**
-+ * True for JSONL entries that signal Claude is actively doing work. Used
-+ * to set "working" status and reset the inactivity timer.
-+ *
-+ * Critical to filter `type:"user"` entries that are actually tool_result
-+ * echoes (they have `tool_use_id`) — those would otherwise fire spurious
-+ * Start events mid-turn. In the test corpus 218 of 226 `type:"user"`
-+ * entries were tool_result echoes; only 8 were real user prompts.
++ * Recover the agent session id from the filename:
++ *   Claude: <session-uuid>.jsonl
++ *   Codex:  rollout-<timestamp>-<session-uuid>.jsonl
 + */
-+function isActivity(line: string): boolean {
-+	if (line.includes('"type":"assistant"')) return true;
-+	if (line.includes('"type":"tool_use"')) return true;
-+	if (line.includes('"type":"tool_result"')) return true;
-+	if (line.includes('"type":"thinking"')) return true;
-+	if (line.includes('"type":"user"')) {
-+		if (line.includes('"tool_use_id"')) return false; // tool_result echo
-+		if (line.includes('"role":"user"')) return true;
++function extractSessionIdFromFilename(filePath: string): string | null {
++	const base = path.basename(filePath, ".jsonl");
++	if (base.startsWith("rollout-")) {
++		const m = base.match(UUID_RE);
++		return m ? m[0].toLowerCase() : null;
 +	}
-+	return false;
++	if (UUID_RE.test(base)) return base.toLowerCase();
++	return null;
 +}
 +
 +/**
-+ * True for JSONL entries that explicitly signal turn-end. We still fall
-+ * back to the inactivity timer because these are unreliable: in the test
-+ * corpus only 3 of 8 turns carried `stop_reason:"end_turn"`, and the
-+ * `hookEvent:"Stop"` bash hook fires once per session (not per turn) on
-+ * Windows where it errors out (`/usr/bin/[: cannot execute binary file`).
++ * Load a {sessionId → pane/tab/workspace} mapping written by the
++ * Superset-managed SessionStart hook (`superset-pane-map.py`). Returns
++ * undefined if absent — the renderer falls back to cwd-based resolution.
 + */
-+function isExplicitStop(line: string): boolean {
-+	if (line.includes('"stop_reason":"end_turn"')) return true;
-+	if (line.includes('"hookEvent":"Stop"')) return true;
-+	if (line.includes('"subtype":"stop_hook_summary"')) return true;
-+	if (line.includes('"subtype":"turn_duration"')) return true;
-+	return false;
++function loadPaneMapping(sessionId: string): PaneMapping | undefined {
++	const file = path.join(SUPERSET_PANE_MAP_DIR, `${sessionId}.json`);
++	try {
++		const raw = fs.readFileSync(file, "utf8");
++		const parsed = JSON.parse(raw);
++		if (typeof parsed !== "object" || parsed === null) return undefined;
++		return {
++			paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
++			tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
++			workspaceId:
++				typeof parsed.workspaceId === "string"
++					? parsed.workspaceId
++					: undefined,
++		};
++	} catch {
++		return undefined;
++	}
 +}
 +
-+function emit(eventType: "Start" | "Stop", cwd: string): void {
++function emit(
++	eventType: "Start" | "Stop" | "PermissionRequest",
++	sessionId: string | null,
++	cwd: string,
++	mapping: PaneMapping | undefined,
++): void {
 +	if (!deps) return;
-+	const event: AgentLifecycleEvent = { eventType, cwd };
++	const event: AgentLifecycleEvent = {
++		eventType,
++		cwd,
++		sessionId: sessionId ?? undefined,
++		...(mapping ?? {}),
++	};
 +	deps.notificationsEmitter.emit(NOTIFICATION_EVENTS.AGENT_LIFECYCLE, event);
 +}
 +
-+function getDirState(encodedDir: string): DirState {
-+	let s = dirStates.get(encodedDir);
-+	if (!s) {
-+		s = { lastStatus: null, idleTimer: null };
-+		dirStates.set(encodedDir, s);
-+	}
-+	return s;
++/**
++ * Key for the dedup/timer state map. Prefer the agent session id (from
++ * the JSONL filename — Claude `<uuid>.jsonl`, Codex `rollout-...<uuid>`)
++ * so each session has its own independent state machine and sibling
++ * sessions in the same workspace don't suppress each other's emits.
++ * Falls back to normalized cwd only for files we couldn't extract a
++ * session id from. Keying by paneId or cwd alone conflates concurrent
++ * sessions in the same pane/dir; keying by session id matches the
++ * lifecycle granularity the renderer's pane.status state machine
++ * expects (one Start/Stop sequence per agent turn).
++ */
++function getStateKey(sessionId: string | null, cwd: string): string {
++	if (sessionId) return `session:${sessionId}`;
++	return `cwd:${normalizeCwd(cwd)}`;
 +}
 +
-+function cancelIdleTimer(s: DirState): void {
++function getState(
++	sessionId: string | null,
++	cwd: string,
++): { key: string; state: LifecycleState } {
++	const key = getStateKey(sessionId, cwd);
++	let s = lifecycleStates.get(key);
++	if (!s) {
++		s = { lastStatus: null, lastEmittedHadMapping: false, idleTimer: null };
++		lifecycleStates.set(key, s);
++	}
++	return { key, state: s };
++}
++
++function cancelIdleTimer(s: LifecycleState): void {
 +	if (s.idleTimer) {
 +		clearTimeout(s.idleTimer);
 +		s.idleTimer = null;
 +	}
 +}
 +
-+function transitionToWorking(s: DirState, cwd: string): void {
-+	if (s.lastStatus === "working") return;
-+	s.lastStatus = "working";
-+	emit("Start", cwd);
++function transitionTo(
++	target: Status,
++	sessionId: string | null,
++	cwd: string,
++	mapping: PaneMapping | undefined,
++): void {
++	const { state: s } = getState(sessionId, cwd);
++	const hasMapping = !!mapping?.paneId;
++	// Re-emit the same status when mapping has been refined (cwd-only
++	// → paneId-precise) so the renderer can rebind to the right pane.
++	const mappingNewlyRefined = hasMapping && !s.lastEmittedHadMapping;
++	if (s.lastStatus === target && !mappingNewlyRefined) return;
++	s.lastStatus = target;
++	s.lastEmittedHadMapping = hasMapping;
++	if (target === "working") emit("Start", sessionId, cwd, mapping);
++	else if (target === "review") emit("Stop", sessionId, cwd, mapping);
++	else if (target === "permission")
++		emit("PermissionRequest", sessionId, cwd, mapping);
 +}
 +
-+function transitionToReview(s: DirState, cwd: string): void {
-+	if (s.lastStatus === "review") return;
-+	s.lastStatus = "review";
-+	emit("Stop", cwd);
-+}
-+
-+function scheduleIdleTimer(s: DirState, encodedDir: string, cwd: string): void {
++function scheduleIdleTimer(
++	sessionId: string | null,
++	cwd: string,
++	mapping: PaneMapping | undefined,
++): void {
++	const { key, state: s } = getState(sessionId, cwd);
 +	cancelIdleTimer(s);
 +	s.idleTimer = setTimeout(() => {
-+		const current = dirStates.get(encodedDir);
++		const current = lifecycleStates.get(key);
 +		if (!current) return;
 +		current.idleTimer = null;
-+		transitionToReview(current, cwd);
++		// Only transition working → review on idle; if we ended on
++		// permission, the agent is genuinely blocked waiting on the user
++		// and the indicator should stay red.
++		if (current.lastStatus === "working") {
++			// Reload mapping — the Python SessionStart hook may have
++			// written the mapping file between schedule and fire. Using
++			// the closure's stale mapping would emit Stop with the wrong
++			// (or missing) paneId.
++			const freshMapping = sessionId
++				? loadPaneMapping(sessionId)
++				: mapping;
++			current.lastStatus = "review";
++			current.lastEmittedHadMapping = !!freshMapping?.paneId;
++			emit("Stop", sessionId, cwd, freshMapping);
++		}
 +	}, IDLE_TIMEOUT_MS);
 +}
 +
-+function processFile(filePath: string, seedOnly: boolean): void {
++function processFile(
++	filePath: string,
++	source: AgentSource,
++	seedOnly: boolean,
++): void {
 +	let state = fileStates.get(filePath);
 +	const isFirstSeen = !state;
 +	if (!state) {
-+		state = { offset: 0, leftover: "", cwd: null };
++		state = {
++			offset: 0,
++			leftover: "",
++			cwd: null,
++			sessionId: extractSessionIdFromFilename(filePath),
++			parser: source.parser,
++		};
 +		fileStates.set(filePath, state);
 +	}
 +
@@ -181,14 +368,35 @@
 +
 +	// First time we've seen this file during a seed pass: skip its history
 +	// (the user already saw those state transitions) and start tailing from
-+	// the current end-of-file.
++	// the current end-of-file. Before jumping, read enough of the header to
++	// cache cwd — for Codex the cwd lives only in the first session_meta
++	// entry, so we'd otherwise never see it once we'd skipped past.
 +	if (isFirstSeen && seedOnly) {
++		try {
++			const headerBytes = Math.min(8192, stat.size);
++			if (headerBytes > 0) {
++				const fd = fs.openSync(filePath, "r");
++				const buf = Buffer.allocUnsafe(headerBytes);
++				fs.readSync(fd, buf, 0, headerBytes, 0);
++				fs.closeSync(fd);
++				for (const line of buf.toString("utf8").split("\n")) {
++					const cwd = extractCwd(line);
++					if (cwd) {
++						state.cwd = cwd;
++						break;
++					}
++				}
++			}
++		} catch {
++			// Header read is best-effort; the regular processing path will
++			// retry cwd discovery on the next append.
++		}
 +		state.offset = stat.size;
 +		return;
 +	}
 +
-+	// Truncation/rotation: reset offset and re-read from the start. Falling
-+	// through (not returning) ensures replacement content isn't skipped
++	// Truncation/rotation: reset offset and re-read from the start. Fall
++	// through (don't return early) so replacement content isn't skipped
 +	// until the next append.
 +	if (stat.size < state.offset) {
 +		state.offset = 0;
@@ -212,12 +420,12 @@
 +	const newLeftover = allLines.pop() ?? "";
 +	const lines = allLines;
 +
-+	// Discover cwd from any entry in this file (first chunk usually has it).
-+	// If no line in this chunk carries cwd, leave state.offset / state.leftover
-+	// untouched so the same bytes are re-read on the next chunk — losing
-+	// complete lines here would silently drop activity transitions. In
-+	// practice ~75% of Claude's JSONL entries include cwd so this path is
-+	// only exercised on metadata-only initial chunks.
++	// Discover cwd from any line in this chunk. If no chunk line carries
++	// cwd, leave state.offset / state.leftover untouched so the same bytes
++	// are re-read on the next chunk — losing complete lines here would
++	// silently drop activity transitions. ~75% of entries include cwd in
++	// practice so this path is only exercised on metadata-only initial
++	// chunks.
 +	if (!state.cwd) {
 +		for (const line of lines) {
 +			const cwd = extractCwd(line);
@@ -232,90 +440,413 @@
 +	state.offset = newOffset;
 +	state.leftover = newLeftover;
 +	const cwd = state.cwd;
-+	const encodedDir = path.basename(path.dirname(filePath));
-+	const dirState = getDirState(encodedDir);
++	const mapping = state.sessionId ? loadPaneMapping(state.sessionId) : undefined;
++	const { parser } = state;
 +
 +	// Process lines in arrival order so a Start in turn N+1 isn't masked
 +	// by a Stop from turn N within the same chunk.
++	const { sessionId } = state;
 +	for (const line of lines) {
 +		if (!line) continue;
-+		if (isExplicitStop(line)) {
-+			cancelIdleTimer(dirState);
-+			transitionToReview(dirState, cwd);
-+		} else if (isActivity(line)) {
-+			transitionToWorking(dirState, cwd);
-+			scheduleIdleTimer(dirState, encodedDir, cwd);
++		if (parser.isPermissionRequest(line)) {
++			const { state: s } = getState(sessionId, cwd);
++			cancelIdleTimer(s);
++			transitionTo("permission", sessionId, cwd, mapping);
++		} else if (parser.isExplicitStop(line)) {
++			const { state: s } = getState(sessionId, cwd);
++			cancelIdleTimer(s);
++			transitionTo("review", sessionId, cwd, mapping);
++		} else if (parser.isActivity(line)) {
++			transitionTo("working", sessionId, cwd, mapping);
++			scheduleIdleTimer(sessionId, cwd, mapping);
 +		}
 +	}
 +}
 +
-+function scanAll(seedOnly = false): void {
-+	if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return;
-+	let entries: fs.Dirent[];
-+	try {
-+		entries = fs.readdirSync(CLAUDE_PROJECTS_DIR, { withFileTypes: true });
-+	} catch {
-+		return;
-+	}
-+	for (const entry of entries) {
-+		if (!entry.isDirectory()) continue;
-+		const projectDir = path.join(CLAUDE_PROJECTS_DIR, entry.name);
-+		let files: string[];
++function scanAll(source: AgentSource, seedOnly = false): void {
++	if (!fs.existsSync(source.logsDir)) return;
++	// Walk source.logsDir recursively to discover .jsonl files. Claude
++	// nests one level (encoded-cwd); Codex nests three (year/month/day).
++	// Only used at startup (seedOnly) and as a fallback when fs.watch
++	// doesn't provide a filename — the steady-state path processes only
++	// the file whose name comes from the watch event.
++	const walk = (dir: string): void => {
++		let entries: fs.Dirent[];
 +		try {
-+			files = fs.readdirSync(projectDir);
++			entries = fs.readdirSync(dir, { withFileTypes: true });
 +		} catch {
-+			continue;
++			return;
 +		}
-+		for (const file of files) {
-+			if (!file.endsWith(".jsonl")) continue;
-+			processFile(path.join(projectDir, file), seedOnly);
++		for (const entry of entries) {
++			const full = path.join(dir, entry.name);
++			if (entry.isDirectory()) {
++				walk(full);
++			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
++				processFile(full, source, seedOnly);
++			}
 +		}
-+	}
++	};
++	walk(source.logsDir);
++}
++
++// Pending per-file processing keyed by absolute path. Debounce window
++// coalesces tight bursts of write events on the same file.
++const pendingFiles = new Map<
++	string,
++	{ source: AgentSource; timer: NodeJS.Timeout }
++>();
++
++function schedulePerFileProcess(filePath: string, source: AgentSource): void {
++	const existing = pendingFiles.get(filePath);
++	if (existing) clearTimeout(existing.timer);
++	const timer = setTimeout(() => {
++		pendingFiles.delete(filePath);
++		processFile(filePath, source, false);
++	}, POLL_DEBOUNCE_MS);
++	pendingFiles.set(filePath, { source, timer });
 +}
 +
 +/**
-+ * Start watching ~/.claude/projects/ for JSONL session updates and forward
-+ * derived agent lifecycle events into notificationsEmitter.
++ * Start watching ~/.claude/projects/ and ~/.codex/sessions/ for JSONL
++ * session updates and forward derived agent lifecycle events into
++ * notificationsEmitter.
 + */
 +export function startAgentJsonlWatcher(d: WatcherDeps): void {
 +	deps = d;
-+	if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) {
++
++	// Side-channel: write the SessionStart hook that maps each new agent
++	// session id → Superset pane identity. Without this, the watcher can
++	// only resolve panes by cwd, which is ambiguous when two terminals
++	// in the same workspace cwd are running concurrent sessions.
++	installPaneMapHook();
++
++	for (const source of SOURCES) {
++		if (!fs.existsSync(source.logsDir)) {
++			try {
++				fs.mkdirSync(source.logsDir, { recursive: true });
++			} catch {
++				// Agent may not be installed; that's fine — source idles.
++			}
++		}
 +		try {
-+			fs.mkdirSync(CLAUDE_PROJECTS_DIR, { recursive: true });
-+		} catch {
-+			// Claude may not be installed; that's fine — watcher idles.
++			const w = fs.watch(
++				source.logsDir,
++				{ recursive: true },
++				(_eventType, filename) => {
++					// Steady-state: process only the changed .jsonl file. A
++					// full recursive scan over every Codex year/month/day
++					// archive on each append would block the main process
++					// on large session histories.
++					if (filename && typeof filename === "string") {
++						if (!filename.endsWith(".jsonl")) return;
++						schedulePerFileProcess(
++							path.join(source.logsDir, filename),
++							source,
++						);
++						return;
++					}
++					// Fallback when the platform didn't give us a filename:
++					// debounced full scan of just this source.
++					if (scanTimer) return;
++					scanTimer = setTimeout(() => {
++						scanTimer = null;
++						scanAll(source);
++					}, POLL_DEBOUNCE_MS);
++				},
++			);
++			watchers.set(source.logsDir, w);
++		} catch (error) {
++			console.warn(
++				`[agent-jsonl-watcher] fs.watch failed for ${source.logsDir}:`,
++				error,
++			);
 +		}
 +	}
 +
-+	try {
-+		watcher = fs.watch(CLAUDE_PROJECTS_DIR, { recursive: true }, () => {
-+			if (scanTimer) return;
-+			scanTimer = setTimeout(() => {
-+				scanTimer = null;
-+				scanAll();
-+			}, POLL_DEBOUNCE_MS);
-+		});
-+	} catch (error) {
-+		console.warn("[agent-jsonl-watcher] fs.watch failed:", error);
-+	}
-+
-+	scanAll(true); // seed offsets for existing files so we don't re-emit history
++	for (const source of SOURCES) scanAll(source, true);
 +	console.log(
-+		`[agent-jsonl-watcher] Watching ${CLAUDE_PROJECTS_DIR} for agent lifecycle`,
++		`[agent-jsonl-watcher] Watching ${SOURCES.map((s) => s.logsDir).join(", ")} for agent lifecycle`,
 +	);
 +}
 +
 +export function stopAgentJsonlWatcher(): void {
-+	watcher?.close();
-+	watcher = null;
++	for (const w of watchers.values()) w.close();
++	watchers.clear();
 +	if (scanTimer) {
 +		clearTimeout(scanTimer);
 +		scanTimer = null;
 +	}
-+	for (const s of dirStates.values()) cancelIdleTimer(s);
-+	dirStates.clear();
++	for (const { timer } of pendingFiles.values()) clearTimeout(timer);
++	pendingFiles.clear();
++	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
++	lifecycleStates.clear();
 +	fileStates.clear();
 +	deps = null;
++}
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -0,0 +1,262 @@
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++
++/**
++ * Companion to `agent-jsonl-watcher.ts`: installs a tiny portable
++ * Python (`uv run python`) SessionStart hook that records the Superset
++ * pane/tab/workspace identity alongside each Claude/Codex session id.
++ *
++ * The watcher reads these mapping files at
++ * `~/.superset/session-pane-map/<sessionId>.json` so it can emit
++ * `AgentLifecycleEvent`s with a precise paneId — resolving the
++ * "multiple terminals in the same cwd" ambiguity that cwd-only
++ * resolution can't disambiguate.
++ *
++ * Why install here (not via agent-setup) — upstream's `agent-wrappers`
++ * already manages a bash hook that's broken on Windows; rather than
++ * patch the wrapper-registration code, we add an additional managed
++ * entry directly. Coexistence is safe: upstream identifies its own
++ * entries by `notify.sh` path; we identify ours by the script
++ * filename below. The two won't conflict.
++ */
++
++const SCRIPT_FILENAME = "superset-pane-map.py";
++const SCRIPT_DIR = path.join(os.homedir(), ".superset", "hooks");
++const SCRIPT_PATH = path.join(SCRIPT_DIR, SCRIPT_FILENAME);
++const CLAUDE_SETTINGS_PATH = path.join(
++	os.homedir(),
++	".claude",
++	"settings.json",
++);
++const CODEX_HOOKS_PATH = path.join(os.homedir(), ".codex", "hooks.json");
++
++/**
++ * The Python script. Reads SUPERSET_PANE_ID / SUPERSET_TAB_ID /
++ * SUPERSET_WORKSPACE_ID from the environment (set by Superset's
++ * terminal launcher in `main/lib/terminal/env.ts`) and the hook payload
++ * from stdin (Claude / Mastra / Droid) OR argv[1] (Codex). Writes
++ * `~/.superset/session-pane-map/<sessionId>.json`. Silent on every
++ * failure path — a broken hook must not abort the agent.
++ */
++const PANE_MAP_SCRIPT = `#!/usr/bin/env python3
++"""Superset pane-map SessionStart hook (v1).
++
++Installed by agent-jsonl-watcher/pane-map-hook.ts. Writes a
++{paneId, tabId, workspaceId} record keyed by the agent session id
++so the watcher can resolve per-pane identity beyond cwd matching.
++"""
++import json
++import os
++import pathlib
++import sys
++
++
++def _read_payload() -> dict:
++    # Codex passes the hook payload as argv[1]; Claude/Mastra/Droid
++    # pipe via stdin. Try both. Always coerce to dict — a stray JSON
++    # string/list/number would crash payload.get() downstream.
++    candidates = []
++    if len(sys.argv) > 1:
++        candidates.append(sys.argv[1])
++    try:
++        raw = sys.stdin.read()
++        if raw:
++            candidates.append(raw)
++    except (OSError, ValueError):
++        pass
++    for src in candidates:
++        try:
++            parsed = json.loads(src)
++        except (ValueError, TypeError):
++            continue
++        if isinstance(parsed, dict):
++            return parsed
++    return {}
++
++
++def main() -> None:
++    pane_id = os.environ.get("SUPERSET_PANE_ID", "").strip()
++    if not pane_id:
++        return  # not inside a Superset-launched terminal — nothing to map
++    tab_id = os.environ.get("SUPERSET_TAB_ID", "").strip()
++    workspace_id = os.environ.get("SUPERSET_WORKSPACE_ID", "").strip()
++
++    payload = _read_payload()
++    session_id = (
++        payload.get("session_id")
++        or payload.get("sessionId")
++        or payload.get("resourceId")
++        or payload.get("resource_id")
++    )
++    if not session_id or not isinstance(session_id, str):
++        return
++
++    out_dir = pathlib.Path.home() / ".superset" / "session-pane-map"
++    try:
++        out_dir.mkdir(parents=True, exist_ok=True)
++    except OSError:
++        return
++    out_path = out_dir / f"{session_id}.json"
++    try:
++        out_path.write_text(
++            json.dumps(
++                {
++                    "paneId": pane_id,
++                    "tabId": tab_id,
++                    "workspaceId": workspace_id,
++                }
++            ),
++            encoding="utf-8",
++        )
++    except OSError:
++        return
++
++
++if __name__ == "__main__":
++    main()
++`;
++
++function escapeForJsonString(p: string): string {
++	return p.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
++}
++
++/** Hook command embedded in Claude's settings.json / Codex's hooks.json. */
++function hookCommand(): string {
++	return `uv run python "${escapeForJsonString(SCRIPT_PATH)}"`;
++}
++
++interface HookSpec {
++	type: "command";
++	command: string;
++}
++interface HookEntry {
++	matcher?: string;
++	hooks?: HookSpec[];
++}
++interface HooksRoot {
++	hooks?: Record<string, HookEntry[]>;
++	[k: string]: unknown;
++}
++
++function isPaneMapHook(spec: unknown): boolean {
++	if (typeof spec !== "object" || spec === null) return false;
++	const cmd = (spec as { command?: unknown }).command;
++	return typeof cmd === "string" && cmd.includes(SCRIPT_FILENAME);
++}
++
++/**
++ * Returns true if the pane-map script is on disk with the expected
++ * contents. False if any I/O step failed — caller MUST skip the hook
++ * registration in that case, otherwise we'd point Claude/Codex at a
++ * missing or stale script.
++ */
++function writeScriptIfChanged(): boolean {
++	try {
++		fs.mkdirSync(SCRIPT_DIR, { recursive: true });
++		let existing: string | null = null;
++		try {
++			existing = fs.readFileSync(SCRIPT_PATH, "utf8");
++		} catch {
++			// ENOENT — write fresh.
++		}
++		if (existing !== PANE_MAP_SCRIPT) {
++			fs.writeFileSync(SCRIPT_PATH, PANE_MAP_SCRIPT, { mode: 0o755 });
++		} else {
++			try {
++				fs.chmodSync(SCRIPT_PATH, 0o755);
++			} catch {
++				// best effort — Windows ignores +x
++			}
++		}
++		return true;
++	} catch (error) {
++		console.warn(
++			"[pane-map-hook] failed to write pane-map script:",
++			error,
++		);
++		return false;
++	}
++}
++
++function mergeHook(filePath: string): void {
++	// Atomic-ish merge: read → mutate in memory → write. Wrapped in
++	// try/catch so a malformed settings file doesn't abort startup.
++	try {
++		let parsed: HooksRoot = {};
++		try {
++			const raw = fs.readFileSync(filePath, "utf8");
++			const candidate = JSON.parse(raw);
++			if (typeof candidate === "object" && candidate !== null) {
++				parsed = candidate as HooksRoot;
++			} else {
++				return; // not an object — leave it alone
++			}
++		} catch (error) {
++			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
++				// JSON parse error — don't stomp on user-edited file
++				console.warn(
++					`[pane-map-hook] could not parse ${filePath}; skipping merge:`,
++					error,
++				);
++				return;
++			}
++		}
++
++		const hooks = parsed.hooks ?? {};
++		const existing = Array.isArray(hooks.SessionStart)
++			? hooks.SessionStart
++			: [];
++
++		// Drop only our hook commands from each entry, preserving any
++		// unrelated co-located hooks. Drop the whole entry only when
++		// nothing else is left inside its hooks list. Idempotent.
++		const cleaned: HookEntry[] = [];
++		for (const entry of existing) {
++			const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
++			const keptHooks = innerHooks.filter((spec) => !isPaneMapHook(spec));
++			if (keptHooks.length === innerHooks.length) {
++				cleaned.push(entry);
++			} else if (keptHooks.length > 0) {
++				cleaned.push({ ...entry, hooks: keptHooks });
++			}
++			// else: entry was wholly ours — drop it.
++		}
++		cleaned.push({
++			hooks: [{ type: "command", command: hookCommand() }],
++		});
++
++		hooks.SessionStart = cleaned;
++		parsed.hooks = hooks;
++
++		try {
++			fs.mkdirSync(path.dirname(filePath), { recursive: true });
++		} catch {
++			// best effort
++		}
++		fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2));
++	} catch (error) {
++		console.warn(
++			`[pane-map-hook] failed to merge hook into ${filePath}:`,
++			error,
++		);
++	}
++}
++
++/**
++ * Install the pane-map script and register it as a SessionStart hook in
++ * Claude's and Codex's hook config files. Idempotent — calling on every
++ * app launch is safe.
++ */
++export function installPaneMapHook(): void {
++	// Skip hook registration entirely if the script didn't land on disk —
++	// pointing Claude/Codex at a missing path would silently no-op every
++	// session (or worse, log noise from the agent's hook runner).
++	if (!writeScriptIfChanged()) return;
++	if (fs.existsSync(path.dirname(CLAUDE_SETTINGS_PATH))) {
++		mergeHook(CLAUDE_SETTINGS_PATH);
++	}
++	if (fs.existsSync(path.dirname(CODEX_HOOKS_PATH))) {
++		mergeHook(CODEX_HOOKS_PATH);
++	}
 +}
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/index.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/index.ts
@@ -402,7 +933,7 @@
   */
  export function resolveNotificationTarget(
  	ids: NotificationIds | undefined,
-@@ -20,17 +36,31 @@
+@@ -20,17 +36,39 @@
  ): ResolvedTarget | null {
  	if (!ids) return null;
  
@@ -416,13 +947,21 @@
  		: undefined;
 +	const paneIdFromCwd = cwd
 +		? (() => {
++				// Only resolve via cwd when EXACTLY one terminal pane
++				// matches — with multiple matches we'd misroute the
++				// indicator to whichever pane came first. Wait for a
++				// precise mapping (the Python pane-map hook writes one)
++				// instead of guessing.
 +				const target = normalizeCwd(cwd);
++				let match: string | undefined;
 +				for (const [id, p] of Object.entries(state.panes)) {
 +					if (p.type !== "terminal") continue;
 +					if (!p.cwd) continue;
-+					if (normalizeCwd(p.cwd) === target) return id;
++					if (normalizeCwd(p.cwd) !== target) continue;
++					if (match !== undefined) return undefined; // ambiguous
++					match = id;
 +				}
-+				return undefined;
++				return match;
 +			})()
 +		: undefined;
  	const resolvedPaneId =
