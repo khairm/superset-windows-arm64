@@ -1717,10 +1717,26 @@ overwriting worktree-specific config.
    }
    ```
 
-2. In `workspaces.ts`, after a newly-created/adopted workspace is persisted
-   locally and before setup terminals are started, read the local workspace row
-   and call the helper with `localProject.repoPath` and the persisted
-   `worktreePath`.
+2. In `workspaces.ts`, place the helper call **inside the `if (!alreadyExists) { ... }` block** that wraps the `startSetupTerminalIfPresent` call, immediately before that call. Two important details:
+   - **Scope-correctness:** `worktreePath` is declared as `let worktreePath: string;` (uninitialized) and only conditionally assigned by the worktree-creation branches. Placing the call OUTSIDE `if (!alreadyExists)` triggers a `TS2454: 'worktreePath' is used before being assigned` typecheck error. TypeScript's flow analysis also can't prove the cross-variable invariant ("alreadyExists === false ⇒ worktreePath assigned") because the two flags are set in different branches — so **also change the declaration to `let worktreePath = "";`** (initialize to empty string). All downstream creation paths still overwrite it; the empty-string fallback only ever survives when `alreadyExists` is true, in which case the new call never reads it.
+   - **Semantics-correctness:** the copy should only run on first-create, not on workspace re-adoption — adopted/existing worktrees already have whatever `.superset` state they have, and re-copying could overwrite worktree-specific config. Gating on `!alreadyExists` is correct on both counts.
+
+   Example placement:
+   ```typescript
+   const terminalsResult: Array<{ terminalId: string; label?: string }> = [];
+
+   if (!alreadyExists) {
+     // V1 parity: copy main-repo `.superset` into worktree if it doesn't have one.
+     copyProjectSupersetConfigToWorktree(localProject.repoPath, worktreePath);
+
+     const { terminal, warning } = await startSetupTerminalIfPresent({
+       // ...
+     });
+     // ...
+   }
+   ```
+
+   Also import the helper at the top: `import { copyProjectSupersetConfigToWorktree } from "../workspace-creation/shared/project-superset-config";` (or the correct relative path from the file).
 
 This is intentionally **not** a hard override: if the worktree already has a
 `.superset` directory, V2 leaves it alone, matching V1 behavior.
