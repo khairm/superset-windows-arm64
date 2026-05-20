@@ -9,13 +9,18 @@ A **build-automation repo**, not app source. It produces a native Windows
 
 - `.github/workflows/nightly-build.yml` — nightly: detect new upstream release →
   clone → Claude Code applies `PATCHES.md` → deterministic fixup step (ARM64
-  arch, native-closure, source patches A–L incl. `git apply` of `patches/*.patch`)
+  arch, native-closure, source patches A–O incl. `git apply` of `patches/*.patch`)
   → `electron-builder --win --arm64` → publish Release.
 - `PATCHES.md` — the Windows-compat patches (AI-applied each night).
 - `patches/*.patch` — deterministic `git diff` patches the workflow `git apply`s
   (idempotent + fail-fast). Used for multi-line code fixes too brittle for
-  anchor-regex — e.g. `git-storm-fix.patch` (host-service `.git/`-watch
-  feedback loop that pegged Windows; measured ~25→~0.2 git spawns/sec) and
+  anchor-regex — `git-storm-fix.patch` (host-service `.git/`-watch
+  feedback loop that pegged Windows; measured ~25→~0.2 git spawns/sec),
+  `skip-quit-confirmation-windows.patch` (drops Patch 19's quit-confirmation
+  dialog from `window.on("close")` on Windows — the dialog is a `#32770`
+  parented to the main window, easy to miss when alt-tabbed, hangs Electron
+  main on the `await` and holds the single-instance lock so the next launch
+  silently no-ops; supersedes the misdiagnosis in `kill-on-close.patch`),
   `agent-jsonl-watcher.patch` (Claude + Codex state-indicator: bash hook
   chain is broken across 4 layers on Windows, so we tail JSONL
   transcripts from `~/.claude/projects/` and `~/.codex/sessions/`,
