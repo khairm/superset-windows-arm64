@@ -50,6 +50,55 @@
 >   (`taskkill /F /T` then SIGKILL on stragglers) and await termination before
 >   `app.exit(0)`. Applied deterministically via `patches/kill-on-close.patch`
 >   (`git apply`, idempotent + fail-fast).
+> - forwards Claude Code agent state from per-session JSONL transcripts into
+>   Superset's existing `notificationsEmitter` → `pane.status` UI pipeline.
+>   Upstream's `agent-wrappers-claude-codex-opencode.ts` writes a bash-only
+>   hook command into `~/.claude/settings.json` (`[ -n "$SUPERSET_HOME_DIR" ]
+>   && [ -x "$SUPERSET_HOME_DIR/hooks/notify.sh" ] && ... || true`); on
+>   Windows Claude executes that via Git Bash, where `/usr/bin/[` errors out,
+>   `|| true` swallows the failure, and the recorded `hookEvent: "SessionStart"`
+>   JSONL entry deceptively says `"exitCode": 0` with `"type": "hook_success"`.
+>   Net effect: the green "review" / amber "working" / red "permission" status
+>   indicators on workspace icons never light up because no `AGENT_LIFECYCLE`
+>   event ever reaches the renderer. The full bash → `notify.sh` → Electron
+>   Express server (port 51741) → wrapper-script chain is broken across four
+>   independent layers on Windows. Fix: add a Node `fs.watch` on
+>   `~/.claude/projects/<encoded-cwd>/*.jsonl` that tails session
+>   transcripts, derives `Start` / `Stop` lifecycle events from entry types
+>   (real user prompts and assistant/tool/thinking entries → working with a
+>   3-second inactivity timer; `stop_reason:"end_turn"`, `hookEvent:"Stop"`,
+>   and `subtype:"stop_hook_summary"` → review immediate). Lines are
+>   processed in arrival order and the idle timer is per-encoded-dir (not
+>   per-file) so sibling session JSONLs in the same cwd can't double-fire
+>   stale Stops. The watcher emits `{ eventType, cwd }` and lets the
+>   **renderer** resolve `cwd → paneId` against the live Zustand store —
+>   resolving in the main process via `appState.tabsState` would miss
+>   newly-opened terminals because that state is debounced LowDB
+>   persistence (confirmed against upstream's `resolve-pane-id.ts` which
+>   explicitly documents the lag). The live resolution is added alongside
+>   existing paneId/sessionId paths in `resolve-notification-target.ts`.
+>   v1 scope: Claude only, no `PermissionRequest` detection, first matching
+>   pane wins when 2+ terminals share a cwd. Applied deterministically via
+>   `patches/agent-jsonl-watcher.patch` — 5-file touch: new
+>   `agent-jsonl-watcher/{agent-jsonl-watcher.ts,index.ts}`,
+>   `main/windows/main.ts` wiring, `shared/notification-types.ts` adds
+>   `cwd?: string` to `NotificationIds`, and `renderer/stores/tabs/utils/
+>   resolve-notification-target.ts` adds the cwd lookup (`git apply`,
+>   idempotent + fail-fast).
+> - renders **per-terminal** status dots inline with each workspace name in
+>   the sidebar. Upstream `WorkspaceListItem.tsx` rolls all pane statuses up
+>   to a single overlay indicator on the workspace icon — useful, but hides
+>   per-terminal granularity when a workspace has 2+ terminals each running
+>   an agent. Fix: add a `useTabsStore` selector that returns the active
+>   terminal-pane statuses (comma-joined for stable referential equality —
+>   avoids the shallow-equality footgun on array-returning Zustand selectors),
+>   render one `<StatusIndicator>` per non-idle terminal pane next to the
+>   workspace name. Reuses the existing red-pulse/amber-pulse/green-static
+>   visual language so it matches the rolled-up overlay. Companion to the
+>   JSONL-watcher patch above — without the watcher, `pane.status` never
+>   leaves `"idle"` on Windows and this row would always be empty. Applied
+>   deterministically via `patches/per-terminal-dots.patch` (`git apply`,
+>   idempotent + fail-fast).
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
@@ -1907,5 +1956,7 @@ After applying all patches, verify:
 - [ ] Ctrl+V pastes from clipboard in terminal (Windows)
 - [ ] Quit confirmation dialog appears BEFORE window closes on Windows
 - [ ] New terminal renders cleanly without garbled/overlapping text on Windows
+- [ ] Green "review" status dot appears on the workspace icon when Claude finishes a turn in a Superset terminal (was: never appeared on Windows — bash hook chain broken; see `patches/agent-jsonl-watcher.patch`)
+- [ ] Sidebar workspace rows show one small coloured dot per active terminal pane, inline with the workspace name (see `patches/per-terminal-dots.patch`)
 - [ ] NSIS installer builds successfully
 - [ ] V1 note: terminal connectivity should work, but workspace switching may still freeze on Windows; prefer V2

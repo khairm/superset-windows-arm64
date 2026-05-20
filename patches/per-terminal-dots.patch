@@ -1,0 +1,63 @@
+--- a/apps/desktop/src/renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/WorkspaceListItem.tsx
++++ b/apps/desktop/src/renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/WorkspaceListItem.tsx
+@@ -11,6 +11,7 @@
+ import { useHoverGitHubStatus } from "renderer/lib/githubQueryPolicy";
+ import { useWorkspaceDeleteHandler } from "renderer/react-query/workspaces";
+ import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
++import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
+ import { WorkspaceRunIndicator } from "renderer/screens/main/components/WorkspaceRunIndicator";
+ import { useBranchSyncInvalidation } from "renderer/screens/main/hooks/useBranchSyncInvalidation";
+ import { useGitChangesStatus } from "renderer/screens/main/hooks/useGitChangesStatus";
+@@ -19,7 +20,10 @@
+ import { useTabsStore } from "renderer/stores/tabs/store";
+ import { extractPaneIdsFromLayout } from "renderer/stores/tabs/utils";
+ import { useWorkspaceSelectionStore } from "renderer/stores/workspace-selection";
+-import { getHighestPriorityStatus } from "shared/tabs-types";
++import {
++	type ActivePaneStatus,
++	getHighestPriorityStatus,
++} from "shared/tabs-types";
+ import { CollapsedWorkspaceItem } from "./CollapsedWorkspaceItem";
+ import { DeleteWorkspaceDialog } from "./components";
+ import {
+@@ -96,6 +100,24 @@
+ 		}
+ 		return null;
+ 	});
++	// Per-terminal status row. Encoded as a comma-joined string so the
++	// selector returns a primitive (stable equality, no spurious re-renders).
++	const terminalStatusesKey = useTabsStore((state) => {
++		const statuses: string[] = [];
++		for (const tab of state.tabs) {
++			if (tab.workspaceId !== id) continue;
++			for (const paneId of extractPaneIdsFromLayout(tab.layout)) {
++				const pane = state.panes[paneId];
++				if (pane?.type !== "terminal") continue;
++				if (!pane.status || pane.status === "idle") continue;
++				statuses.push(pane.status);
++			}
++		}
++		return statuses.join(",");
++	});
++	const terminalStatuses: ActivePaneStatus[] = terminalStatusesKey
++		? (terminalStatusesKey.split(",") as ActivePaneStatus[])
++		: [];
+ 	const clearWorkspaceAttentionStatus = useTabsStore(
+ 		(s) => s.clearWorkspaceAttentionStatus,
+ 	);
+@@ -388,6 +410,15 @@
+ 								{isBranchWorkspace ? "local" : name || branch}
+ 							</span>
+ 
++							{terminalStatuses.length > 0 && (
++								<div className="flex items-center gap-1 shrink-0">
++									{terminalStatuses.map((status, i) => (
++										// biome-ignore lint/suspicious/noArrayIndexKey: per-terminal order is the identity here; status array is rebuilt per render
++										<StatusIndicator key={i} status={status} />
++									))}
++								</div>
++							)}
++
+ 							{isBranchWorkspace && aheadBehind && (
+ 								<WorkspaceAheadBehind
+ 									ahead={aheadBehind.ahead}

@@ -1,0 +1,437 @@
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -0,0 +1,316 @@
++import type EventEmitter from "node:events";
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { NOTIFICATION_EVENTS } from "shared/constants";
++import type { AgentLifecycleEvent } from "shared/notification-types";
++
++/**
++ * Windows fallback for Claude/Codex agent lifecycle: tail per-session JSONL
++ * transcripts that Claude writes to ~/.claude/projects/<encoded-cwd>/*.jsonl
++ * and forward state transitions into notificationsEmitter as if they came
++ * from the v1/v2 hook server.
++ *
++ * Sidesteps the bash-only hook chain (settings.json command, notify.sh,
++ * notification server, claude wrapper) which is broken on Windows. See
++ * AGENTS.md and the project memory `superset-windows-hook-chain-broken`.
++ *
++ * State machine (validated against actual Claude Code 2.1.145 logs):
++ *   - real user prompt OR any assistant/tool_use/tool_result/thinking entry
++ *     → working (start/extend the inactivity timer)
++ *   - `stop_reason:"end_turn"` in assistant entry, or any of the Stop-shaped
++ *     hook attachments → review (immediate, cancels idle timer)
++ *   - no new entries for IDLE_TIMEOUT_MS after last activity → review
++ *
++ * Each JSONL line is processed in arrival order; an activity line resets the
++ * idle timer even if a stop line preceded it in the same chunk (turn N+1
++ * after turn N's stop within a 250ms scan window).
++ *
++ * Pane resolution is deferred to the RENDERER (live Zustand store) via the
++ * `cwd` field on the emitted event. Resolving here against the main-process
++ * `appState.tabsState` would miss newly-opened terminals — that state is
++ * persisted from the renderer via debounced storage and lags by hundreds of
++ * ms. See `resolve-notification-target.ts` for the cwd → paneId lookup.
++ */
++
++const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
++const POLL_DEBOUNCE_MS = 250;
++// How long after the last JSONL activity to consider Claude "done" with the
++// turn. End-of-turn isn't reliably marked in every Claude session (only
++// ~3 of 8 turns in the test corpus carried stop_reason:"end_turn"), so an
++// inactivity fallback is essential.
++const IDLE_TIMEOUT_MS = 3000;
++
++interface FileState {
++	offset: number;
++	leftover: string;
++	cwd: string | null;
++}
++
++// Per-encoded-dir state. Multiple session JSONLs in the same project dir
++// share the same terminal pane (the user has one cwd → one pane mapping);
++// timers/last-status must be deduped at the dir level, not per file. A
++// stale idle timer from a previous file in the same dir would otherwise
++// fire after a new file's activity and force the pane back to "review".
++interface DirState {
++	lastStatus: "working" | "review" | null;
++	idleTimer: NodeJS.Timeout | null;
++}
++
++interface WatcherDeps {
++	notificationsEmitter: EventEmitter;
++}
++
++const fileStates = new Map<string, FileState>();
++const dirStates = new Map<string, DirState>();
++let watcher: fs.FSWatcher | null = null;
++let scanTimer: NodeJS.Timeout | null = null;
++let deps: WatcherDeps | null = null;
++
++/**
++ * Recover the cwd from a JSONL entry — every entry Claude writes carries
++ * the original cwd as a top-level field. We sniff the first chunk we see
++ * rather than relying on directory-name decoding (which is lossy on
++ * Windows: drive colons are stripped, so `C--Users-foo` and `Users-foo`
++ * would round-trip identically).
++ */
++function extractCwd(line: string): string | null {
++	const m = line.match(/"cwd":"((?:[^"\\]|\\.)+)"/);
++	if (!m) return null;
++	// Unescape JSON string (just the backslash sequences Claude actually emits).
++	return m[1].replace(/\\\\/g, "\\").replace(/\\"/g, '"');
++}
++
++/**
++ * True for JSONL entries that signal Claude is actively doing work. Used
++ * to set "working" status and reset the inactivity timer.
++ *
++ * Critical to filter `type:"user"` entries that are actually tool_result
++ * echoes (they have `tool_use_id`) — those would otherwise fire spurious
++ * Start events mid-turn. In the test corpus 218 of 226 `type:"user"`
++ * entries were tool_result echoes; only 8 were real user prompts.
++ */
++function isActivity(line: string): boolean {
++	if (line.includes('"type":"assistant"')) return true;
++	if (line.includes('"type":"tool_use"')) return true;
++	if (line.includes('"type":"tool_result"')) return true;
++	if (line.includes('"type":"thinking"')) return true;
++	if (line.includes('"type":"user"')) {
++		if (line.includes('"tool_use_id"')) return false; // tool_result echo
++		if (line.includes('"role":"user"')) return true;
++	}
++	return false;
++}
++
++/**
++ * True for JSONL entries that explicitly signal turn-end. We still fall
++ * back to the inactivity timer because these are unreliable: in the test
++ * corpus only 3 of 8 turns carried `stop_reason:"end_turn"`, and the
++ * `hookEvent:"Stop"` bash hook fires once per session (not per turn) on
++ * Windows where it errors out (`/usr/bin/[: cannot execute binary file`).
++ */
++function isExplicitStop(line: string): boolean {
++	if (line.includes('"stop_reason":"end_turn"')) return true;
++	if (line.includes('"hookEvent":"Stop"')) return true;
++	if (line.includes('"subtype":"stop_hook_summary"')) return true;
++	if (line.includes('"subtype":"turn_duration"')) return true;
++	return false;
++}
++
++function emit(eventType: "Start" | "Stop", cwd: string): void {
++	if (!deps) return;
++	const event: AgentLifecycleEvent = { eventType, cwd };
++	deps.notificationsEmitter.emit(NOTIFICATION_EVENTS.AGENT_LIFECYCLE, event);
++}
++
++function getDirState(encodedDir: string): DirState {
++	let s = dirStates.get(encodedDir);
++	if (!s) {
++		s = { lastStatus: null, idleTimer: null };
++		dirStates.set(encodedDir, s);
++	}
++	return s;
++}
++
++function cancelIdleTimer(s: DirState): void {
++	if (s.idleTimer) {
++		clearTimeout(s.idleTimer);
++		s.idleTimer = null;
++	}
++}
++
++function transitionToWorking(s: DirState, cwd: string): void {
++	if (s.lastStatus === "working") return;
++	s.lastStatus = "working";
++	emit("Start", cwd);
++}
++
++function transitionToReview(s: DirState, cwd: string): void {
++	if (s.lastStatus === "review") return;
++	s.lastStatus = "review";
++	emit("Stop", cwd);
++}
++
++function scheduleIdleTimer(s: DirState, encodedDir: string, cwd: string): void {
++	cancelIdleTimer(s);
++	s.idleTimer = setTimeout(() => {
++		const current = dirStates.get(encodedDir);
++		if (!current) return;
++		current.idleTimer = null;
++		transitionToReview(current, cwd);
++	}, IDLE_TIMEOUT_MS);
++}
++
++function processFile(filePath: string, seedOnly: boolean): void {
++	let state = fileStates.get(filePath);
++	const isFirstSeen = !state;
++	if (!state) {
++		state = { offset: 0, leftover: "", cwd: null };
++		fileStates.set(filePath, state);
++	}
++
++	let stat: fs.Stats;
++	try {
++		stat = fs.statSync(filePath);
++	} catch {
++		return;
++	}
++
++	// First time we've seen this file during a seed pass: skip its history
++	// (the user already saw those state transitions) and start tailing from
++	// the current end-of-file.
++	if (isFirstSeen && seedOnly) {
++		state.offset = stat.size;
++		return;
++	}
++
++	// Truncation/rotation: reset offset and re-read from the start. Falling
++	// through (not returning) ensures replacement content isn't skipped
++	// until the next append.
++	if (stat.size < state.offset) {
++		state.offset = 0;
++		state.leftover = "";
++	}
++	if (stat.size === state.offset) return;
++
++	const newOffset = stat.size;
++	let chunk: string;
++	try {
++		const fd = fs.openSync(filePath, "r");
++		const buf = Buffer.allocUnsafe(newOffset - state.offset);
++		fs.readSync(fd, buf, 0, buf.length, state.offset);
++		fs.closeSync(fd);
++		chunk = state.leftover + buf.toString("utf8");
++	} catch {
++		return;
++	}
++
++	const allLines = chunk.split("\n");
++	const newLeftover = allLines.pop() ?? "";
++	const lines = allLines;
++
++	// Discover cwd from any entry in this file (first chunk usually has it).
++	// If no line in this chunk carries cwd, leave state.offset / state.leftover
++	// untouched so the same bytes are re-read on the next chunk — losing
++	// complete lines here would silently drop activity transitions. In
++	// practice ~75% of Claude's JSONL entries include cwd so this path is
++	// only exercised on metadata-only initial chunks.
++	if (!state.cwd) {
++		for (const line of lines) {
++			const cwd = extractCwd(line);
++			if (cwd) {
++				state.cwd = cwd;
++				break;
++			}
++		}
++		if (!state.cwd) return;
++	}
++
++	state.offset = newOffset;
++	state.leftover = newLeftover;
++	const cwd = state.cwd;
++	const encodedDir = path.basename(path.dirname(filePath));
++	const dirState = getDirState(encodedDir);
++
++	// Process lines in arrival order so a Start in turn N+1 isn't masked
++	// by a Stop from turn N within the same chunk.
++	for (const line of lines) {
++		if (!line) continue;
++		if (isExplicitStop(line)) {
++			cancelIdleTimer(dirState);
++			transitionToReview(dirState, cwd);
++		} else if (isActivity(line)) {
++			transitionToWorking(dirState, cwd);
++			scheduleIdleTimer(dirState, encodedDir, cwd);
++		}
++	}
++}
++
++function scanAll(seedOnly = false): void {
++	if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return;
++	let entries: fs.Dirent[];
++	try {
++		entries = fs.readdirSync(CLAUDE_PROJECTS_DIR, { withFileTypes: true });
++	} catch {
++		return;
++	}
++	for (const entry of entries) {
++		if (!entry.isDirectory()) continue;
++		const projectDir = path.join(CLAUDE_PROJECTS_DIR, entry.name);
++		let files: string[];
++		try {
++			files = fs.readdirSync(projectDir);
++		} catch {
++			continue;
++		}
++		for (const file of files) {
++			if (!file.endsWith(".jsonl")) continue;
++			processFile(path.join(projectDir, file), seedOnly);
++		}
++	}
++}
++
++/**
++ * Start watching ~/.claude/projects/ for JSONL session updates and forward
++ * derived agent lifecycle events into notificationsEmitter.
++ */
++export function startAgentJsonlWatcher(d: WatcherDeps): void {
++	deps = d;
++	if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) {
++		try {
++			fs.mkdirSync(CLAUDE_PROJECTS_DIR, { recursive: true });
++		} catch {
++			// Claude may not be installed; that's fine — watcher idles.
++		}
++	}
++
++	try {
++		watcher = fs.watch(CLAUDE_PROJECTS_DIR, { recursive: true }, () => {
++			if (scanTimer) return;
++			scanTimer = setTimeout(() => {
++				scanTimer = null;
++				scanAll();
++			}, POLL_DEBOUNCE_MS);
++		});
++	} catch (error) {
++		console.warn("[agent-jsonl-watcher] fs.watch failed:", error);
++	}
++
++	scanAll(true); // seed offsets for existing files so we don't re-emit history
++	console.log(
++		`[agent-jsonl-watcher] Watching ${CLAUDE_PROJECTS_DIR} for agent lifecycle`,
++	);
++}
++
++export function stopAgentJsonlWatcher(): void {
++	watcher?.close();
++	watcher = null;
++	if (scanTimer) {
++		clearTimeout(scanTimer);
++		scanTimer = null;
++	}
++	for (const s of dirStates.values()) cancelIdleTimer(s);
++	dirStates.clear();
++	fileStates.clear();
++	deps = null;
++}
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/index.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/index.ts
+@@ -0,0 +1,4 @@
++export {
++	startAgentJsonlWatcher,
++	stopAgentJsonlWatcher,
++} from "./agent-jsonl-watcher";
+--- a/apps/desktop/src/main/windows/main.ts
++++ b/apps/desktop/src/main/windows/main.ts
+@@ -15,6 +15,10 @@
+ import type { AgentLifecycleEvent } from "shared/notification-types";
+ import { createIPCHandler } from "trpc-electron/main";
+ import { productName } from "~/package.json";
++import {
++	startAgentJsonlWatcher,
++	stopAgentJsonlWatcher,
++} from "../lib/agent-jsonl-watcher";
+ import { appState } from "../lib/app-state";
+ import { browserManager } from "../lib/browser/browser-manager";
+ import { createApplicationMenu } from "../lib/menu";
+@@ -189,6 +193,12 @@
+ 		},
+ 	);
+ 
++	// Windows: forward agent state from Claude's JSONL session transcripts
++	// to notificationsEmitter, sidestepping the bash-only hook chain that
++	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
++	// and the fork's project memory `superset-windows-hook-chain-broken`.
++	startAgentJsonlWatcher({ notificationsEmitter });
++
+ 	const notificationManager = new NotificationManager({
+ 		isSupported: () => Notification.isSupported(),
+ 		createNotification: (opts) => new Notification(opts),
+@@ -361,6 +371,7 @@
+ 		browserManager.unregisterAll();
+ 		server.close();
+ 		notificationManager.dispose();
++		stopAgentJsonlWatcher();
+ 		notificationsEmitter.removeAllListeners();
+ 		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+ 		ipcHandler?.detachWindow(window);
+--- a/apps/desktop/src/shared/notification-types.ts
++++ b/apps/desktop/src/shared/notification-types.ts
+@@ -9,6 +9,13 @@
+ 	workspaceId?: string;
+ 	sessionId?: string;
+ 	terminalId?: string;
++	/**
++	 * Working directory of the agent process. Used by the Windows
++	 * JSONL-watcher fallback when no other identity is available — the
++	 * renderer resolves it against the live tabs store via
++	 * `resolveNotificationTarget`. See `patches/agent-jsonl-watcher.patch`.
++	 */
++	cwd?: string;
+ }
+ 
+ export interface AgentLifecycleEvent extends NotificationIds {
+--- a/apps/desktop/src/renderer/stores/tabs/utils/resolve-notification-target.ts
++++ b/apps/desktop/src/renderer/stores/tabs/utils/resolve-notification-target.ts
+@@ -11,8 +11,24 @@
+ }
+ 
+ /**
++ * Normalize a cwd for comparison: lowercase + forward slashes.
++ * Windows paths can vary in case ("C:\Users\..." vs "c:\users\...") and
++ * separator style depending on how the cwd was captured.
++ */
++function normalizeCwd(cwd: string): string {
++	return cwd.replace(/\\/g, "/").toLowerCase();
++}
++
++/**
+  * Resolves notification target IDs by looking up missing values from state.
+- * Priority: valid paneId > sessionId > pane's tab > event tabId > tab's workspace
++ * Priority: valid paneId > sessionId > cwd (terminal panes) > pane's tab
++ * > event tabId > tab's workspace
++ *
++ * cwd lookup is the fallback path used by the Windows JSONL-watcher
++ * (`patches/agent-jsonl-watcher.patch`) — Claude's session transcripts
++ * give us cwd but no Superset pane identity, so we match against the live
++ * renderer Zustand state here rather than the (debounced/stale)
++ * main-process appState.
+  */
+ export function resolveNotificationTarget(
+ 	ids: NotificationIds | undefined,
+@@ -20,17 +36,31 @@
+ ): ResolvedTarget | null {
+ 	if (!ids) return null;
+ 
+-	const { paneId, sessionId, tabId, workspaceId } = ids;
++	const { paneId, sessionId, tabId, workspaceId, cwd } = ids;
+ 
+ 	const paneIdFromSession = sessionId
+ 		? Object.entries(state.panes).find(
+ 				([_paneId, pane]) => pane.chat?.sessionId === sessionId,
+ 			)?.[0]
+ 		: undefined;
++	const paneIdFromCwd = cwd
++		? (() => {
++				const target = normalizeCwd(cwd);
++				for (const [id, p] of Object.entries(state.panes)) {
++					if (p.type !== "terminal") continue;
++					if (!p.cwd) continue;
++					if (normalizeCwd(p.cwd) === target) return id;
++				}
++				return undefined;
++			})()
++		: undefined;
+ 	const resolvedPaneId =
+ 		(paneId && state.panes[paneId] ? paneId : undefined) ??
+ 		(paneIdFromSession && state.panes[paneIdFromSession]
+ 			? paneIdFromSession
++			: undefined) ??
++		(paneIdFromCwd && state.panes[paneIdFromCwd]
++			? paneIdFromCwd
+ 			: undefined);
+ 	const pane = resolvedPaneId ? state.panes[resolvedPaneId] : undefined;
+ 

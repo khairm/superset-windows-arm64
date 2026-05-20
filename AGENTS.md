@@ -15,7 +15,13 @@ A **build-automation repo**, not app source. It produces a native Windows
 - `patches/*.patch` — deterministic `git diff` patches the workflow `git apply`s
   (idempotent + fail-fast). Used for multi-line code fixes too brittle for
   anchor-regex — e.g. `git-storm-fix.patch` (host-service `.git/`-watch
-  feedback loop that pegged Windows; measured ~25→~0.2 git spawns/sec).
+  feedback loop that pegged Windows; measured ~25→~0.2 git spawns/sec) and
+  `agent-jsonl-watcher.patch` (Claude state-indicator: bash hook chain is
+  broken across 4 layers on Windows, so we tail JSONL transcripts instead
+  and emit straight into Superset's `notificationsEmitter` — green review
+  badge etc.), and `per-terminal-dots.patch` (companion UI: one
+  `<StatusIndicator>` per active terminal pane inline with the sidebar
+  workspace name, replacing upstream's single rolled-up overlay).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
   Windows runner fails on CRLF.

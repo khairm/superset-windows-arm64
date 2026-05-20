@@ -491,13 +491,17 @@ jobs:
           $jw = '../patches/agent-jsonl-watcher.patch'
           if (-not (Test-Path $jw)) { Write-Error "(N) missing $jw in patches repo"; exit 1 }
           $mw = 'apps/desktop/src/main/windows/main.ts'
+          $nt = 'apps/desktop/src/shared/notification-types.ts'
+          $rnt = 'apps/desktop/src/renderer/stores/tabs/utils/resolve-notification-target.ts'
           if (-not (Test-Path $mw)) { Write-Error "(N) missing $mw"; exit 1 }
+          if (-not (Test-Path $nt)) { Write-Error "(N) missing $nt"; exit 1 }
+          if (-not (Test-Path $rnt)) { Write-Error "(N) missing $rnt"; exit 1 }
           if (Select-String -Quiet -SimpleMatch 'startAgentJsonlWatcher' $mw) {
             Write-Host "(N) agent-jsonl-watcher fix already present — skip"
           } else {
             git apply --check $jw 2>$null
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "(N) agent-jsonl-watcher.patch does not apply cleanly — main.ts notification-server wiring changed upstream; aborting rather than shipping with the green-badge indicator broken. Regenerate patches/agent-jsonl-watcher.patch against the new upstream."
+              Write-Error "(N) agent-jsonl-watcher.patch does not apply cleanly — one of main.ts / shared/notification-types.ts / resolve-notification-target.ts changed upstream; aborting rather than shipping with the green-badge indicator broken. Regenerate patches/agent-jsonl-watcher.patch against the new upstream."
               exit 1
             }
             git apply $jw
@@ -505,7 +509,41 @@ jobs:
           }
           if (-not (Test-Path 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts')) { Write-Error "(N) watcher source file missing after apply"; exit 1 }
           if ((Get-Content -Raw $mw) -notmatch 'startAgentJsonlWatcher') { Write-Error "(N) startAgentJsonlWatcher wiring missing in main.ts after apply"; exit 1 }
-          Write-Host "(N) agent-jsonl-watcher applied (Claude JSONL transcripts -> notificationsEmitter -> green review badge)"
+          if ((Get-Content -Raw $mw) -notmatch 'stopAgentJsonlWatcher') { Write-Error "(N) stopAgentJsonlWatcher cleanup missing in main.ts after apply (watcher leak on window close)"; exit 1 }
+          if ((Get-Content -Raw $nt) -notmatch 'cwd\?: string') { Write-Error "(N) NotificationIds.cwd field missing after apply"; exit 1 }
+          if ((Get-Content -Raw $rnt) -notmatch 'paneIdFromCwd') { Write-Error "(N) cwd-based pane resolution missing after apply"; exit 1 }
+          Write-Host "(N) agent-jsonl-watcher applied (Claude JSONL transcripts -> notificationsEmitter -> live cwd resolution -> green review badge)"
+
+          # (O) Per-terminal status dots on the sidebar workspace rows.
+          #     Upstream renders ONE rolled-up indicator (highest-priority
+          #     pane status) as an overlay on the workspace icon — useful but
+          #     hides the per-terminal granularity when a workspace has 2+
+          #     terminals each running Claude. Fix: add an inline row of
+          #     <StatusIndicator> dots next to the workspace name, one per
+          #     terminal pane whose status is non-idle. Reuses the existing
+          #     StatusIndicator component (red-pulse/amber-pulse/green-static)
+          #     so visual language matches upstream's rollup. Companion to
+          #     (N) — without the JSONL watcher, pane.status never leaves
+          #     "idle" on Windows so this row would always be empty.
+          #     Idempotent + fail-fast.
+          $td = '../patches/per-terminal-dots.patch'
+          if (-not (Test-Path $td)) { Write-Error "(O) missing $td in patches repo"; exit 1 }
+          $wli = 'apps/desktop/src/renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/WorkspaceListItem.tsx'
+          if (-not (Test-Path $wli)) { Write-Error "(O) missing $wli"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'terminalStatusesKey' $wli) {
+            Write-Host "(O) per-terminal-dots already present — skip"
+          } else {
+            git apply --check $td 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(O) per-terminal-dots.patch does not apply cleanly — WorkspaceListItem.tsx changed upstream; aborting rather than shipping with the per-terminal indicator broken. Regenerate patches/per-terminal-dots.patch against the new upstream."
+              exit 1
+            }
+            git apply $td
+            if ($LASTEXITCODE -ne 0) { Write-Error "(O) git apply failed"; exit 1 }
+          }
+          if ((Get-Content -Raw $wli) -notmatch 'terminalStatusesKey') { Write-Error "(O) terminalStatusesKey missing after apply"; exit 1 }
+          if ((Get-Content -Raw $wli) -notmatch 'StatusIndicator') { Write-Error "(O) StatusIndicator import/render missing after apply"; exit 1 }
+          Write-Host "(O) per-terminal-dots applied (sidebar workspace rows show one StatusIndicator per active terminal)"
 
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
