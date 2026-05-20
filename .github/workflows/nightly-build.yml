@@ -435,39 +435,43 @@ jobs:
           if ((Get-Content -Raw $grt) -notmatch 'getRemoteUrlCached') { Write-Error "(L) getRemoteUrl cache missing after apply"; exit 1 }
           Write-Host "(L) git-storm fix applied (git-watcher .git/ noise filter + getRemoteUrl cache)"
 
-          # (M) Kill-on-close fix (Electron main process). On Windows,
-          #     HostServiceCoordinator.stopAll() sends SIGTERM via process.kill
-          #     which only terminates the host-service process itself — its
-          #     grandchildren (pty-daemon, terminal-host) outlive it, orphan,
-          #     and hold the single-instance lock so the next launch silently
-          #     no-ops ("clicked Superset, nothing opens"). Symptom observed:
-          #     9 leftover Superset processes (incl. ones from the previous
-          #     day) after closing the window. Fix: in the before-quit handler
-          #     on Windows, walk the host-service process tree via tree-kill
-          #     (taskkill /F /T) with SIGKILL escalation. Shipped as a git
-          #     patch (lifecycle code; anchor-regex would be brittle).
-          #     Idempotent + fail-fast.
-          $kc = '../patches/kill-on-close.patch'
-          if (-not (Test-Path $kc)) { Write-Error "(M) missing $kc in patches repo"; exit 1 }
-          $mi = 'apps/desktop/src/main/index.ts'
-          $hc = 'apps/desktop/src/main/lib/host-service-coordinator.ts'
-          if (-not (Test-Path $mi)) { Write-Error "(M) missing $mi"; exit 1 }
-          if (-not (Test-Path $hc)) { Write-Error "(M) missing $hc"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'stopAllAndWaitTree' $hc) {
-            Write-Host "(M) kill-on-close fix already present — skip"
+          # (M) Skip quit-confirmation dialog on Windows. Patch 19 (PATCHES.md)
+          #     moves the quit-confirmation dialog into window.on("close") so it
+          #     appears BEFORE the window closes. The dialog is a Win32 #32770
+          #     parented to the main window — small, easy to miss if the user
+          #     alt-tabs away after clicking X. If the user doesn't see/click
+          #     the dialog, event.preventDefault() keeps Electron main alive
+          #     indefinitely awaiting the dialog response. The dangling main
+          #     process holds the single-instance lock; the next launch hits
+          #     `gotTheLock === false` and calls app.exit(0) silently —
+          #     "clicked Superset, nothing opens". Symptom: ~6-9 leftover
+          #     Superset.exe processes (1 stuck Electron + helpers + released
+          #     host-services from prior sessions). Reproduced live: closing
+          #     the window with CloseMainWindow() left PID alive 30s+ with a
+          #     visible "Quit Superset" dialog at hWnd 48169566; sending Enter
+          #     to the dialog → app exited cleanly. Fix: remove Patch 19's
+          #     dialog block in window.on("close"). Close→destroy→quit, no
+          #     prompt. Patch 19's before-quit !PLATFORM.IS_WINDOWS gate stays,
+          #     so neither path shows a dialog on Windows. Idempotent +
+          #     fail-fast.
+          $sq = '../patches/skip-quit-confirmation-windows.patch'
+          if (-not (Test-Path $sq)) { Write-Error "(M) missing $sq in patches repo"; exit 1 }
+          $mw = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $mw)) { Write-Error "(M) missing $mw"; exit 1 }
+          if (-not (Select-String -Quiet -SimpleMatch 'show quit confirmation BEFORE the window closes' $mw)) {
+            Write-Host "(M) skip-quit-confirmation already applied (dialog block absent) — skip"
           } else {
-            git apply --check $kc 2>$null
+            git apply --check $sq 2>$null
             if ($LASTEXITCODE -ne 0) {
-              Write-Error "(M) kill-on-close.patch does not apply cleanly — before-quit handler or HostServiceCoordinator changed upstream; aborting rather than shipping the orphan-process leak. Regenerate patches/kill-on-close.patch against the new upstream."
+              Write-Error "(M) skip-quit-confirmation-windows.patch does not apply cleanly — Patch 19's dialog block in window.on('close') changed upstream or in PATCHES.md; aborting rather than shipping the lock-hang bug. Regenerate patches/skip-quit-confirmation-windows.patch against the new post-Patch-19 state."
               exit 1
             }
-            git apply $kc
+            git apply $sq
             if ($LASTEXITCODE -ne 0) { Write-Error "(M) git apply failed"; exit 1 }
           }
-          if ((Get-Content -Raw $hc) -notmatch 'stopAllAndWaitTree') { Write-Error "(M) stopAllAndWaitTree missing after apply"; exit 1 }
-          if ((Get-Content -Raw $hc) -notmatch 'treeKillWithEscalation') { Write-Error "(M) treeKillWithEscalation import/call missing after apply"; exit 1 }
-          if ((Get-Content -Raw $mi) -notmatch 'stopAllAndWaitTree') { Write-Error "(M) before-quit Windows branch missing after apply"; exit 1 }
-          Write-Host "(M) kill-on-close fix applied (before-quit tree-kills host-service descendants on Windows)"
+          if ((Get-Content -Raw $mw) -match 'show quit confirmation BEFORE the window closes') { Write-Error "(M) dialog block still present after apply"; exit 1 }
+          if ((Get-Content -Raw $mw) -match 'Are you sure you want to quit\?') { Write-Error "(M) dialog message text still present after apply"; exit 1 }
+          Write-Host "(M) skip-quit-confirmation applied (window.on('close') no longer shows the lock-hanging dialog on Windows)"
 
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only

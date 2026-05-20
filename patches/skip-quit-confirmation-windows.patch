@@ -1,0 +1,39 @@
+diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
+--- a/apps/desktop/src/main/windows/main.ts
++++ b/apps/desktop/src/main/windows/main.ts
+@@ -374,35 +374,6 @@
+ 	});
+ 
+ 	window.on("close", (event) => {
+-		// Windows: show quit confirmation BEFORE the window closes.
+-		// The before-quit handler fires too late on Windows (window is already gone).
+-		if (PLATFORM.IS_WINDOWS) {
+-			let confirmOnQuit = DEFAULT_CONFIRM_ON_QUIT;
+-			try {
+-				const row = localDb.select().from(settings).get();
+-				confirmOnQuit = row?.confirmOnQuit ?? DEFAULT_CONFIRM_ON_QUIT;
+-			} catch {}
+-
+-			if (confirmOnQuit) {
+-				event.preventDefault();
+-				dialog
+-					.showMessageBox(window, {
+-						type: "question",
+-						buttons: ["Quit", "Cancel"],
+-						defaultId: 0,
+-						cancelId: 1,
+-						title: "Quit Superset",
+-						message: "Are you sure you want to quit?",
+-					})
+-					.then(({ response }) => {
+-						if (response === 0) {
+-							window.destroy(); // Bypass close event to avoid loop
+-						}
+-					});
+-				return;
+-			}
+-		}
+-
+ 		// Save window state first, before any cleanup
+ 		const isMaximized = window.isMaximized();
+ 		const bounds = isMaximized ? window.getNormalBounds() : window.getBounds();

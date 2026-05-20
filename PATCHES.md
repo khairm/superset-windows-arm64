@@ -39,17 +39,29 @@
 >   deterministically via `patches/git-storm-fix.patch` (`git apply`, idempotent
 >   + fail-fast); diagnosed, Codex-reviewed, and **measured on real ARM64
 >   hardware: ~25/sec → ~0.1/sec idle**.
-> - hard-kills the host-service process tree on Electron quit (Windows).
->   Upstream's `HostServiceCoordinator.stopAll()` SIGTERMs the host-service
->   process itself, but on Windows `process.kill()` doesn't propagate to its
->   grandchildren (pty-daemon, terminal-host) — they orphan, hold the
->   single-instance lock, and the next app launch silently no-ops ("clicked
->   Superset, nothing opens"; symptom: `Get-Process Superset` shows N stale
->   processes incl. ones from previous days). Fix: on Windows in `before-quit`,
->   walk each tracked PID via the existing `treeKillWithEscalation`
->   (`taskkill /F /T` then SIGKILL on stragglers) and await termination before
->   `app.exit(0)`. Applied deterministically via `patches/kill-on-close.patch`
->   (`git apply`, idempotent + fail-fast).
+> - skips the quit-confirmation dialog on Windows so closing the window
+>   actually closes the app. Patch 19 moves the dialog into `window.on("close")`
+>   so it appears BEFORE the window disappears — but on Windows the dialog is a
+>   Win32 `#32770` parented to the main window and easy to miss if the user
+>   alt-tabs away. `event.preventDefault()` keeps Electron main alive
+>   indefinitely awaiting a dialog response that never comes; the dangling main
+>   process holds the single-instance lock and the next launch hits
+>   `gotTheLock === false` → silent `app.exit(0)` ("clicked Superset, nothing
+>   opens"; symptom: ~6+ leftover `Superset.exe` processes — one stuck Electron
+>   tree plus released host-services from prior sessions). Reproduced live:
+>   `CloseMainWindow()` left the main PID alive 30s+ with a visible "Quit
+>   Superset" dialog at `hWnd 48169566`; sending Enter to the dialog made the
+>   app exit cleanly. Fix: remove Patch 19's `if (PLATFORM.IS_WINDOWS) { … }`
+>   block from `window.on("close")` so closing the window destroys it and
+>   triggers `before-quit` → `releaseAll()` → `app.exit(0)` without a prompt.
+>   Patch 19's `!PLATFORM.IS_WINDOWS` gate in `before-quit` stays, so neither
+>   path shows a dialog on Windows. Applied deterministically via
+>   `patches/skip-quit-confirmation-windows.patch` (`git apply`, idempotent +
+>   fail-fast). Supersedes the misdiagnosis in commit 860df5a
+>   (`patches/kill-on-close.patch`, removed) — that patch targeted
+>   `HostServiceCoordinator.stopAll()` in `before-quit`, but v1.9.6/v1.9.9 use
+>   `releaseAll()` there (host-services are intentionally left alive for
+>   re-adoption); the orphan was a red herring.
 > - forwards Claude Code agent state from per-session JSONL transcripts into
 >   Superset's existing `notificationsEmitter` → `pane.status` UI pipeline.
 >   Upstream's `agent-wrappers-claude-codex-opencode.ts` writes a bash-only
