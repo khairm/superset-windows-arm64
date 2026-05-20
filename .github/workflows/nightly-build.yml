@@ -435,6 +435,78 @@ jobs:
           if ((Get-Content -Raw $grt) -notmatch 'getRemoteUrlCached') { Write-Error "(L) getRemoteUrl cache missing after apply"; exit 1 }
           Write-Host "(L) git-storm fix applied (git-watcher .git/ noise filter + getRemoteUrl cache)"
 
+          # (M) Kill-on-close fix (Electron main process). On Windows,
+          #     HostServiceCoordinator.stopAll() sends SIGTERM via process.kill
+          #     which only terminates the host-service process itself — its
+          #     grandchildren (pty-daemon, terminal-host) outlive it, orphan,
+          #     and hold the single-instance lock so the next launch silently
+          #     no-ops ("clicked Superset, nothing opens"). Symptom observed:
+          #     9 leftover Superset processes (incl. ones from the previous
+          #     day) after closing the window. Fix: in the before-quit handler
+          #     on Windows, walk the host-service process tree via tree-kill
+          #     (taskkill /F /T) with SIGKILL escalation. Shipped as a git
+          #     patch (lifecycle code; anchor-regex would be brittle).
+          #     Idempotent + fail-fast.
+          $kc = '../patches/kill-on-close.patch'
+          if (-not (Test-Path $kc)) { Write-Error "(M) missing $kc in patches repo"; exit 1 }
+          $mi = 'apps/desktop/src/main/index.ts'
+          $hc = 'apps/desktop/src/main/lib/host-service-coordinator.ts'
+          if (-not (Test-Path $mi)) { Write-Error "(M) missing $mi"; exit 1 }
+          if (-not (Test-Path $hc)) { Write-Error "(M) missing $hc"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'stopAllAndWaitTree' $hc) {
+            Write-Host "(M) kill-on-close fix already present — skip"
+          } else {
+            git apply --check $kc 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(M) kill-on-close.patch does not apply cleanly — before-quit handler or HostServiceCoordinator changed upstream; aborting rather than shipping the orphan-process leak. Regenerate patches/kill-on-close.patch against the new upstream."
+              exit 1
+            }
+            git apply $kc
+            if ($LASTEXITCODE -ne 0) { Write-Error "(M) git apply failed"; exit 1 }
+          }
+          if ((Get-Content -Raw $hc) -notmatch 'stopAllAndWaitTree') { Write-Error "(M) stopAllAndWaitTree missing after apply"; exit 1 }
+          if ((Get-Content -Raw $hc) -notmatch 'treeKillWithEscalation') { Write-Error "(M) treeKillWithEscalation import/call missing after apply"; exit 1 }
+          if ((Get-Content -Raw $mi) -notmatch 'stopAllAndWaitTree') { Write-Error "(M) before-quit Windows branch missing after apply"; exit 1 }
+          Write-Host "(M) kill-on-close fix applied (before-quit tree-kills host-service descendants on Windows)"
+
+          # (N) Agent JSONL watcher (main process). Upstream's
+          #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
+          #     hook command in ~/.claude/settings.json
+          #     ([ -n "$SUPERSET_HOME_DIR" ] && [ -x ... ] && notify.sh || true).
+          #     On Windows Claude executes that via Git Bash, where /usr/bin/[
+          #     errors and `|| true` swallows the failure — exitCode:0 is
+          #     recorded in the JSONL but no AGENT_LIFECYCLE event ever reaches
+          #     the renderer, so the green "review"/amber "working"/red
+          #     "permission" status indicators on workspace icons never light up.
+          #     Full chain (settings.json hooks, notify.sh, Express notification
+          #     server on 51741, ~/.superset/bin/claude wrapper) is broken
+          #     across four independent layers on Windows. Fix: add a Node
+          #     fs.watch on ~/.claude/projects/**/*.jsonl that tails session
+          #     transcripts, derives Start/Stop lifecycle events from entry
+          #     types, resolves the owning pane via cwd-encoding match against
+          #     appState.tabsState, and emits into the existing
+          #     notificationsEmitter — sidestepping the bash chain entirely.
+          #     Shipped as a git patch (new file + main.ts wiring). Idempotent
+          #     + fail-fast.
+          $jw = '../patches/agent-jsonl-watcher.patch'
+          if (-not (Test-Path $jw)) { Write-Error "(N) missing $jw in patches repo"; exit 1 }
+          $mw = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $mw)) { Write-Error "(N) missing $mw"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'startAgentJsonlWatcher' $mw) {
+            Write-Host "(N) agent-jsonl-watcher fix already present — skip"
+          } else {
+            git apply --check $jw 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(N) agent-jsonl-watcher.patch does not apply cleanly — main.ts notification-server wiring changed upstream; aborting rather than shipping with the green-badge indicator broken. Regenerate patches/agent-jsonl-watcher.patch against the new upstream."
+              exit 1
+            }
+            git apply $jw
+            if ($LASTEXITCODE -ne 0) { Write-Error "(N) git apply failed"; exit 1 }
+          }
+          if (-not (Test-Path 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts')) { Write-Error "(N) watcher source file missing after apply"; exit 1 }
+          if ((Get-Content -Raw $mw) -notmatch 'startAgentJsonlWatcher') { Write-Error "(N) startAgentJsonlWatcher wiring missing in main.ts after apply"; exit 1 }
+          Write-Host "(N) agent-jsonl-watcher applied (Claude JSONL transcripts -> notificationsEmitter -> green review badge)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -444,7 +516,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + F)."
 
       - name: Install dependencies
         working-directory: superset

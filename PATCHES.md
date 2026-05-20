@@ -39,6 +39,17 @@
 >   deterministically via `patches/git-storm-fix.patch` (`git apply`, idempotent
 >   + fail-fast); diagnosed, Codex-reviewed, and **measured on real ARM64
 >   hardware: ~25/sec → ~0.1/sec idle**.
+> - hard-kills the host-service process tree on Electron quit (Windows).
+>   Upstream's `HostServiceCoordinator.stopAll()` SIGTERMs the host-service
+>   process itself, but on Windows `process.kill()` doesn't propagate to its
+>   grandchildren (pty-daemon, terminal-host) — they orphan, hold the
+>   single-instance lock, and the next app launch silently no-ops ("clicked
+>   Superset, nothing opens"; symptom: `Get-Process Superset` shows N stale
+>   processes incl. ones from previous days). Fix: on Windows in `before-quit`,
+>   walk each tracked PID via the existing `treeKillWithEscalation`
+>   (`taskkill /F /T` then SIGKILL on stragglers) and await termination before
+>   `app.exit(0)`. Applied deterministically via `patches/kill-on-close.patch`
+>   (`git apply`, idempotent + fail-fast).
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
