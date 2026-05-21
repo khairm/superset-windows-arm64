@@ -1,4 +1,3 @@
-diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
 --- a/apps/desktop/src/main/windows/main.ts
 +++ b/apps/desktop/src/main/windows/main.ts
 @@ -374,35 +374,6 @@
