@@ -9,7 +9,7 @@ A **build-automation repo**, not app source. It produces a native Windows
 
 - `.github/workflows/nightly-build.yml` — nightly: detect new upstream release →
   clone → Claude Code applies `PATCHES.md` → deterministic fixup step (ARM64
-  arch, native-closure, source patches A–Q incl. `git apply` of `patches/*.patch`)
+  arch, native-closure, source patches A–R incl. `git apply` of `patches/*.patch`)
   → `electron-builder --win --arm64` → publish Release.
 - `PATCHES.md` — the Windows-compat patches (AI-applied each night).
 - `patches/*.patch` — deterministic `git diff` patches the workflow `git apply`s
@@ -36,7 +36,12 @@ A **build-automation repo**, not app source. It produces a native Windows
   `DashboardSidebarExpandedWorkspaceRow`), and
   `v2-per-tab-read.patch` (drops the workspace-level `clearWorkspaceAttention`
   bulk-clear from `handleClick`; per-tab mark-as-read survives via the
-  existing `useClearActivePaneAttention` hook firing on active-pane focus).
+  existing `useClearActivePaneAttention` hook firing on active-pane focus),
+  and `windows-shell-fallback.patch` (`getDefaultShell` validates the
+  resolved shell exists on PATH+PATHEXT; falls back to `cmd.exe` when
+  `pwsh.exe` is configured as default but not installed — was the
+  root cause of "Failed to run preset open <uuid>: spawn failed
+  (shell=pwsh.exe ...)" toasts).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
   Windows runner fails on CRLF.

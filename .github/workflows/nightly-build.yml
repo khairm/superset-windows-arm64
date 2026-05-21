@@ -669,6 +669,33 @@ jobs:
           if ($clickFn2 -match 'clearWorkspaceAttention\(workspaceId\)') { Write-Error "(Q) bulk-clear still present in handleClick after apply"; exit 1 }
           Write-Host "(Q) v2-per-tab-read applied (workspace click no longer bulk-clears every terminal's unread state)"
 
+          # (R) Windows shell fallback. The `default-shell` npm package
+          #     returns whatever is configured as system default —
+          #     commonly pwsh.exe — without verifying the binary is on
+          #     disk. If PowerShell 7 isn't installed, every preset
+          #     spawn throws "File not found" and the user gets
+          #     "Failed to run preset open <uuid>: spawn failed
+          #     (shell=pwsh.exe ...)" toasts. Validate the resolved
+          #     shell against PATH+PATHEXT and fall back to cmd.exe
+          #     when missing. Idempotent + fail-fast.
+          $sf = '../patches/windows-shell-fallback.patch'
+          if (-not (Test-Path $sf)) { Write-Error "(R) missing $sf in patches repo"; exit 1 }
+          $envts = 'apps/desktop/src/main/lib/terminal/env.ts'
+          if (-not (Test-Path $envts)) { Write-Error "(R) missing $envts"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'resolved shell "${resolvedDefaultShell}" not on PATH' $envts) {
+            Write-Host "(R) windows-shell-fallback already present — skip"
+          } else {
+            git apply --check $sf 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(R) windows-shell-fallback.patch does not apply cleanly — env.ts shape changed upstream; aborting rather than shipping with preset spawn broken when pwsh is missing. Regenerate patches/windows-shell-fallback.patch."
+              exit 1
+            }
+            git apply $sf
+            if ($LASTEXITCODE -ne 0) { Write-Error "(R) git apply failed"; exit 1 }
+          }
+          if ((Get-Content -Raw $envts) -notmatch 'FALLBACK_SHELL') { Write-Error "(R) FALLBACK_SHELL reference missing in env.ts after apply"; exit 1 }
+          Write-Host "(R) windows-shell-fallback applied (getDefaultShell now validates the resolved shell exists on PATH; falls back to cmd.exe)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.

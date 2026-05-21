@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,601 @@
+@@ -0,0 +1,606 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -60,7 +60,12 @@
 +// the turn. End-of-turn isn't reliably marked in every session (only
 +// ~3 of 8 Claude turns in the test corpus carried stop_reason:"end_turn"),
 +// so an inactivity fallback is essential.
-+const IDLE_TIMEOUT_MS = 3000;
++// Long enough that pauses between Claude tool calls within a single
++// turn don't trigger a fake "review" transition (which plays the
++// notification sound). The explicit-stop parsers (isExplicitStop) are
++// the primary signal; this is only a fallback when the JSONL never
++// writes a clean end-of-turn marker.
++const IDLE_TIMEOUT_MS = 45000;
 +
 +const CWD_REGEX = /"cwd":"((?:[^"\\]|\\.)+)"/;
 +const UUID_RE =
