@@ -27,7 +27,14 @@ A **build-automation repo**, not app source. It produces a native Windows
   derive working/review/permission lifecycle, install a portable Python
   SessionStart hook for precise per-pane mapping, and emit into
   Superset's `notificationsEmitter` — green/amber/red badges, see
-  `patches/agent-jsonl-watcher.patch` + companion `pane-map-hook.ts`),
+  `patches/agent-jsonl-watcher.patch` + companion `pane-map-hook.ts`.
+  Permission (red) is driven by the `AskUserQuestion` tool_use; only
+  literal `Request interrupted by user`/`Request cancelled by user`
+  markers release it on ESC — broader user-line matching wrongly
+  cleared it on Claude's own tool_result echoes. Writes a forensic
+  log to `~/.superset/agent-watcher-debug.log` (every line
+  classification + transition + emit; gate with
+  `SUPERSET_AGENT_WATCHER_DEBUG=0`, rotates at 2 MB)),
   `per-terminal-dots.patch` (companion UI: one `<StatusIndicator>`
   per active terminal pane inline with the sidebar workspace name,
   replacing upstream's single rolled-up overlay),
@@ -64,7 +71,8 @@ Companion repos build the ARM64 native packages consumed at build time:
 - **Unsigned** installer → Windows SmartScreen warns ("More info" → "Run anyway").
 - **Non-deterministic** build: an AI agent applies `PATCHES.md` nightly. It
   **fails loud** (won't ship broken) but a new upstream version can flake — fix
-  the patch when it does.
+  the patch when it does. The patch step retries 3× on transient Anthropic
+  API socket drops before failing.
 - **Daemon updates can't preserve sessions on Windows.** Upstream gates
   fd-handoff on `IS_WINDOWS` (`DaemonSupervisor.ts`); "Force restart" closes
   open terminals. This is **upstream behaviour, not a fork bug** — leave it.
