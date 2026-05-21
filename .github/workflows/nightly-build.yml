@@ -113,10 +113,38 @@ jobs:
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         shell: bash
         run: |
-          claude --dangerously-skip-permissions --effort medium --verbose \
-            -p "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Apply all changes directly and immediately.
+          # Retry up to 3 times on transient API/socket failures. The
+          # Anthropic API occasionally drops the streaming socket from
+          # GitHub Actions Windows runners ("API Error: The socket
+          # connection was closed unexpectedly") — a fresh CLI invocation
+          # immediately after almost always succeeds. Use a 30s backoff
+          # between attempts to let any rate-limit or pool exhaustion
+          # recover. If all three attempts fail we surface the original
+          # exit code and let the build abort.
+          PROMPT='IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Apply all changes directly and immediately.
 
-          You are inside a fresh clone of superset-sh/superset. Read the file ../PATCHES.md and apply ALL the patches described in it to this codebase. Read each target file before editing. Create new files where specified. Do not skip any patch."
+          You are inside a fresh clone of superset-sh/superset. Read the file ../PATCHES.md and apply ALL the patches described in it to this codebase. Read each target file before editing. Create new files where specified. Do not skip any patch.'
+          attempt=1
+          max=3
+          backoff=30
+          rc=1
+          while [ $attempt -le $max ]; do
+            echo "::group::claude attempt $attempt/$max"
+            if claude --dangerously-skip-permissions --effort medium --verbose -p "$PROMPT"; then
+              rc=0
+              echo "::endgroup::"
+              break
+            fi
+            rc=$?
+            echo "::endgroup::"
+            echo "::warning::claude attempt $attempt failed with exit $rc"
+            if [ $attempt -lt $max ]; then
+              echo "Sleeping ${backoff}s before retry…"
+              sleep $backoff
+            fi
+            attempt=$((attempt + 1))
+          done
+          exit $rc
 
       - name: Pin Mastra dependencies
         working-directory: superset
