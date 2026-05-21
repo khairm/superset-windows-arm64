@@ -523,6 +523,21 @@ jobs:
           if ($watcher -notmatch 'installPaneMapHook') { Write-Error "(N) pane-map-hook installation call missing in watcher after apply"; exit 1 }
           Write-Host "(N) agent-jsonl-watcher applied (Claude + Codex JSONL -> session-keyed dedup -> cwd+paneId mapping -> green/amber/red badges)"
 
+          # (N-guard) Fail FAST if the embedded Python PANE_MAP_SCRIPT template
+          #     literal contains an unescaped backtick or ${ — both terminate
+          #     the JS template literal early and esbuild fails compile:app
+          #     eight minutes later. Run this check the moment the patch
+          #     lands so the failure points to the offending edit.
+          $hookFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          $hookSrc = Get-Content -Raw $hookFile
+          $startIdx = $hookSrc.IndexOf('const PANE_MAP_SCRIPT = `')
+          $endIdx = $hookSrc.IndexOf('`;', $startIdx + 25)
+          if ($startIdx -lt 0 -or $endIdx -lt 0) { Write-Error "(N-guard) could not locate PANE_MAP_SCRIPT template bounds"; exit 1 }
+          $body = $hookSrc.Substring($startIdx + 25, $endIdx - ($startIdx + 25))
+          if ($body.Contains('`')) { Write-Error "(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped backtick — esbuild will fail compile:app. Remove the backtick from the Python source."; exit 1 }
+          if ($body.Contains('${')) { Write-Error "(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped \${ — JS will try to interpolate it. Escape with \\\${ or remove."; exit 1 }
+          Write-Host "(N-guard) PANE_MAP_SCRIPT template literal is well-formed"
+
           # (O) Per-terminal status dots on the sidebar workspace rows.
           #     Upstream renders ONE rolled-up indicator (highest-priority
           #     pane status) as an overlay on the workspace icon — useful but
