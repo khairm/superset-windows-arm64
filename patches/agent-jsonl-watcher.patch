@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,681 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -40,6 +40,17 @@
 +	isActivity(line: string): boolean;
 +	isExplicitStop(line: string): boolean;
 +	isPermissionRequest(line: string): boolean;
++	/**
++	 * Real user-role line — answer to AskUserQuestion, ESC interrupt
++	 * marker, or a brand-new prompt. When in `permission` state, seeing
++	 * one of these means the user has unblocked the agent (either by
++	 * answering or by cancelling); the next assistant line will retake
++	 * `working` if Claude actually resumes, otherwise the state should
++	 * fall back to `review` so the dot doesn't linger yellow.
++	 * Optional — agents that don't have a permission/user-response cycle
++	 * (Codex) can skip implementing this.
++	 */
++	isUserLine?(line: string): boolean;
 +}
 +
 +interface AgentSource {
@@ -54,6 +65,29 @@
 +	".superset",
 +	"session-pane-map",
 +);
++
++// Diagnostic log. Set SUPERSET_AGENT_WATCHER_DEBUG=0 to disable. Logs
++// every line classification, state transition, and emit (with mapping)
++// so the user can share the file when debugging "wrong-colour-dot"
++// issues. Auto-rotates when the file exceeds ~2 MB.
++const DEBUG_LOG_PATH = path.join(os.homedir(), ".superset", "agent-watcher-debug.log");
++const DEBUG_MAX_BYTES = 2 * 1024 * 1024;
++const DEBUG_ENABLED = process.env.SUPERSET_AGENT_WATCHER_DEBUG !== "0";
++function dbg(kind: string, fields: Record<string, unknown>): void {
++	if (!DEBUG_ENABLED) return;
++	try {
++		try {
++			const st = fs.statSync(DEBUG_LOG_PATH);
++			if (st.size > DEBUG_MAX_BYTES) {
++				fs.renameSync(DEBUG_LOG_PATH, DEBUG_LOG_PATH + ".prev");
++			}
++		} catch {}
++		const line = `${new Date().toISOString()} ${kind} ${JSON.stringify(fields)}\n`;
++		fs.appendFileSync(DEBUG_LOG_PATH, line, "utf8");
++	} catch {
++		// never let logging crash the watcher
++	}
++}
 +
 +const POLL_DEBOUNCE_MS = 250;
 +// How long after the last JSONL activity to consider an agent "done" with
@@ -78,24 +112,25 @@
 +const CLAUDE_PARSER: AgentParser = {
 +	id: "claude",
 +	isActivity(line) {
++		// "Activity" = Claude is working. Only Claude's own output counts:
++		// assistant messages, tool calls, thinking. User-role lines never
++		// indicate Claude is working — they are either prompts (the next
++		// assistant line will flip to working naturally), tool_result
++		// echoes (filtered), or interrupt markers like
++		// "[Request interrupted by user]" (handled below via isUserLine).
 +		if (line.includes('"type":"assistant"')) return true;
 +		if (line.includes('"type":"tool_use"')) return true;
 +		if (line.includes('"type":"thinking"')) return true;
-+		// Note: a bare `"type":"tool_result"` substring check is NOT safe
-+		// here — tool_result chunks arrive nested inside type:"user"
-+		// wrapper lines (the "user just answered the AskUserQuestion"
-+		// echo) and treating them as activity flips status from
-+		// permission/idle to working, leaving a stuck spinner until the
-+		// idle timer fires 45s later. The type:user branch below filters
-+		// those echoes correctly via the tool_use_id sentinel.
-+		if (line.includes('"type":"user"')) {
-+			// Filter tool_result echoes — they have type:"user" but
-+			// `tool_use_id` set; 218 of 226 user entries in the test corpus
-+			// were echoes, not real prompts.
-+			if (line.includes('"tool_use_id"')) return false;
-+			if (line.includes('"role":"user"')) return true;
-+		}
 +		return false;
++	},
++	isUserLine(line) {
++		// Detect a real user-role entry (not a tool_result echo). Used to
++		// resolve permission state when the user answers OR cancels an
++		// AskUserQuestion — both look the same in the JSONL until the
++		// next assistant line arrives (or doesn't, on ESC).
++		if (!line.includes('"type":"user"')) return false;
++		if (line.includes('"tool_use_id"')) return false;
++		return line.includes('"role":"user"');
 +	},
 +	isExplicitStop(line) {
 +		if (line.includes('"stop_reason":"end_turn"')) return true;
@@ -282,6 +317,14 @@
 +		sessionId: sessionId ?? undefined,
 +		...(mapping ?? {}),
 +	};
++	dbg("emit", {
++		eventType,
++		sessionId: sessionId ?? null,
++		cwd,
++		paneId: mapping?.paneId ?? null,
++		terminalId: mapping?.terminalId ?? null,
++		workspaceId: mapping?.workspaceId ?? null,
++	});
 +	deps.notificationsEmitter.emit(NOTIFICATION_EVENTS.AGENT_LIFECYCLE, event);
 +}
 +
@@ -336,7 +379,11 @@
 +	// Re-emit the same status when mapping has been refined (cwd-only
 +	// → ID-precise) so the renderer can rebind to the right pane.
 +	const mappingNewlyRefined = hasMapping && !s.lastEmittedHadMapping;
-+	if (s.lastStatus === target && !mappingNewlyRefined) return;
++	if (s.lastStatus === target && !mappingNewlyRefined) {
++		dbg("transition-suppressed", { sessionId, target, lastStatus: s.lastStatus, hasMapping });
++		return;
++	}
++	dbg("transition", { sessionId, from: s.lastStatus, to: target, hasMapping, mappingNewlyRefined });
 +	s.lastStatus = target;
 +	s.lastEmittedHadMapping = hasMapping;
 +	if (target === "working") emit("Start", sessionId, cwd, mapping);
@@ -484,14 +531,31 @@
 +	for (const line of lines) {
 +		if (!line) continue;
 +		if (parser.isPermissionRequest(line)) {
++			dbg("line", { sessionId, kind: "permission", snippet: line.slice(0, 160) });
 +			const { state: s } = getState(sessionId, cwd);
 +			cancelIdleTimer(s);
 +			transitionTo("permission", sessionId, cwd, mapping);
 +		} else if (parser.isExplicitStop(line)) {
++			dbg("line", { sessionId, kind: "explicit-stop", snippet: line.slice(0, 160) });
 +			const { state: s } = getState(sessionId, cwd);
 +			cancelIdleTimer(s);
 +			transitionTo("review", sessionId, cwd, mapping);
++		} else if (parser.isUserLine?.(line)) {
++			// User answered or cancelled. If we were blocked on permission,
++			// release that state — the next assistant line (if any) will
++			// flip back to working. This avoids the 30-60s "stuck yellow"
++			// on ESC, where Claude writes a "[Request interrupted by user]"
++			// user line and then nothing else.
++			const { state: s } = getState(sessionId, cwd);
++			dbg("line", { sessionId, kind: "user-line", lastStatus: s.lastStatus, snippet: line.slice(0, 160) });
++			if (s.lastStatus === "permission") {
++				cancelIdleTimer(s);
++				transitionTo("review", sessionId, cwd, mapping);
++			}
++			// Outside permission state, user lines are prompts — don't
++			// transition; let the subsequent assistant line drive the state.
 +		} else if (parser.isActivity(line)) {
++			dbg("line", { sessionId, kind: "activity", snippet: line.slice(0, 160) });
 +			transitionTo("working", sessionId, cwd, mapping);
 +			scheduleIdleTimer(sessionId, cwd, mapping);
 +		}
