@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,593 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -172,6 +172,7 @@
 +interface PaneMapping {
 +	paneId?: string;
 +	tabId?: string;
++	terminalId?: string;
 +	workspaceId?: string;
 +}
 +
@@ -230,6 +231,10 @@
 +		return {
 +			paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
 +			tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
++			terminalId:
++				typeof parsed.terminalId === "string"
++					? parsed.terminalId
++					: undefined,
 +			workspaceId:
 +				typeof parsed.workspaceId === "string"
 +					? parsed.workspaceId
@@ -299,9 +304,13 @@
 +	mapping: PaneMapping | undefined,
 +): void {
 +	const { state: s } = getState(sessionId, cwd);
-+	const hasMapping = !!mapping?.paneId;
++	// "Refined" means we now have either paneId (v1) or terminalId (v2)
++	// or both — either is sufficient to bypass cwd-based fallback in the
++	// renderer's resolver and for V2NotificationController's bridge
++	// (which requires terminalId for v2).
++	const hasMapping = !!(mapping?.paneId || mapping?.terminalId);
 +	// Re-emit the same status when mapping has been refined (cwd-only
-+	// → paneId-precise) so the renderer can rebind to the right pane.
++	// → ID-precise) so the renderer can rebind to the right pane.
 +	const mappingNewlyRefined = hasMapping && !s.lastEmittedHadMapping;
 +	if (s.lastStatus === target && !mappingNewlyRefined) return;
 +	s.lastStatus = target;
@@ -335,7 +344,9 @@
 +				? loadPaneMapping(sessionId)
 +				: mapping;
 +			current.lastStatus = "review";
-+			current.lastEmittedHadMapping = !!freshMapping?.paneId;
++			current.lastEmittedHadMapping = !!(
++				freshMapping?.paneId || freshMapping?.terminalId
++			);
 +			emit("Stop", sessionId, cwd, freshMapping);
 +		}
 +	}, IDLE_TIMEOUT_MS);
@@ -585,7 +596,7 @@
 +}
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,277 @@
 +import fs from "node:fs";
 +import os from "node:os";
 +import path from "node:path";
@@ -620,12 +631,17 @@
 +const CODEX_HOOKS_PATH = path.join(os.homedir(), ".codex", "hooks.json");
 +
 +/**
-+ * The Python script. Reads SUPERSET_PANE_ID / SUPERSET_TAB_ID /
-+ * SUPERSET_WORKSPACE_ID from the environment (set by Superset's
-+ * terminal launcher in `main/lib/terminal/env.ts`) and the hook payload
-+ * from stdin (Claude / Mastra / Droid) OR argv[1] (Codex). Writes
-+ * `~/.superset/session-pane-map/<sessionId>.json`. Silent on every
-+ * failure path — a broken hook must not abort the agent.
++ * The Python script. Reads Superset terminal-identity env vars set by
++ * the terminal launcher and writes
++ * `~/.superset/session-pane-map/<sessionId>.json`. Both v1 and v2
++ * terminal stacks are handled — v1 sets SUPERSET_PANE_ID/TAB_ID/
++ * WORKSPACE_ID (apps/desktop/src/main/lib/terminal/env.ts), v2 sets
++ * SUPERSET_TERMINAL_ID/WORKSPACE_ID (packages/host-service/src/
++ * terminal/env.ts). The renderer's V2NotificationController bridge
++ * requires `terminalId` (not paneId), so v2 sessions must carry that
++ * field through to the AGENT_LIFECYCLE event. The hook payload comes
++ * from stdin (Claude / Mastra / Droid) OR argv[1] (Codex). Silent on
++ * every failure path — a broken hook must not abort the agent.
 + */
 +const PANE_MAP_SCRIPT = `#!/usr/bin/env python3
 +"""Superset pane-map SessionStart hook (v1).
@@ -664,11 +680,15 @@
 +
 +
 +def main() -> None:
++    # Read both v1 and v2 terminal-identity env vars. At least one of
++    # pane_id (v1) or terminal_id (v2) must be present to indicate this
++    # is a Superset-launched terminal.
 +    pane_id = os.environ.get("SUPERSET_PANE_ID", "").strip()
-+    if not pane_id:
-+        return  # not inside a Superset-launched terminal — nothing to map
 +    tab_id = os.environ.get("SUPERSET_TAB_ID", "").strip()
++    terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
 +    workspace_id = os.environ.get("SUPERSET_WORKSPACE_ID", "").strip()
++    if not pane_id and not terminal_id:
++        return  # not inside a Superset-launched terminal
 +
 +    payload = _read_payload()
 +    session_id = (
@@ -680,6 +700,18 @@
 +    if not session_id or not isinstance(session_id, str):
 +        return
 +
++    # Only emit fields that have values — keeps the mapping file
++    # minimal and lets the watcher's `...mapping` spread skip undefined.
++    mapping: dict = {}
++    if pane_id:
++        mapping["paneId"] = pane_id
++    if tab_id:
++        mapping["tabId"] = tab_id
++    if terminal_id:
++        mapping["terminalId"] = terminal_id
++    if workspace_id:
++        mapping["workspaceId"] = workspace_id
++
 +    out_dir = pathlib.Path.home() / ".superset" / "session-pane-map"
 +    try:
 +        out_dir.mkdir(parents=True, exist_ok=True)
@@ -688,13 +720,7 @@
 +    out_path = out_dir / f"{session_id}.json"
 +    try:
 +        out_path.write_text(
-+            json.dumps(
-+                {
-+                    "paneId": pane_id,
-+                    "tabId": tab_id,
-+                    "workspaceId": workspace_id,
-+                }
-+            ),
++            json.dumps(mapping),
 +            encoding="utf-8",
 +        )
 +    except OSError:
