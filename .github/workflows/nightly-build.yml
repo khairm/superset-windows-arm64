@@ -696,6 +696,37 @@ jobs:
           if ((Get-Content -Raw $envts) -notmatch 'FALLBACK_SHELL') { Write-Error "(R) FALLBACK_SHELL reference missing in env.ts after apply"; exit 1 }
           Write-Host "(R) windows-shell-fallback applied (getDefaultShell now validates the resolved shell exists on PATH; falls back to cmd.exe)"
 
+          # (S) v2 terminal: await resolveLaunchShell. Upstream v1.10.x
+          #     calls `const shell = resolveLaunchShell(baseEnv);` at
+          #     packages/host-service/src/terminal/terminal.ts:1118
+          #     without await. resolveLaunchShell returns Promise<string>,
+          #     so `shell` is a Promise that downstream code passes into
+          #     path.basename(shell) → throws "The 'path' argument must
+          #     be of type string. Received an instance of Promise". The
+          #     v2 "Claude" / "Open terminal" presets fail with this
+          #     message on every Windows install. Enclosing function
+          #     createTerminalSessionInternal is already `async` so the
+          #     fix is a one-token await. Idempotent + fail-fast.
+          $tw = '../patches/v2-terminal-await-shell.patch'
+          if (-not (Test-Path $tw)) { Write-Error "(S) missing $tw in patches repo"; exit 1 }
+          $tt = 'packages/host-service/src/terminal/terminal.ts'
+          if (-not (Test-Path $tt)) { Write-Error "(S) missing $tt"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'const shell = await resolveLaunchShell(baseEnv)' $tt) {
+            Write-Host "(S) v2-terminal-await-shell already present — skip"
+          } else {
+            git apply --check $tw 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(S) v2-terminal-await-shell.patch does not apply cleanly — terminal.ts shape changed upstream; aborting rather than shipping with v2 terminal spawn broken. Regenerate patches/v2-terminal-await-shell.patch."
+              exit 1
+            }
+            git apply $tw
+            if ($LASTEXITCODE -ne 0) { Write-Error "(S) git apply failed"; exit 1 }
+          }
+          $ttBody = Get-Content -Raw $tt
+          if ($ttBody -notmatch 'const shell = await resolveLaunchShell\(baseEnv\)') { Write-Error "(S) await keyword missing on resolveLaunchShell call after apply"; exit 1 }
+          if ($ttBody -match 'const shell = resolveLaunchShell\(baseEnv\)') { Write-Error "(S) un-awaited resolveLaunchShell call still present after apply"; exit 1 }
+          Write-Host "(S) v2-terminal-await-shell applied (createTerminalSessionInternal now awaits the shell promise)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
