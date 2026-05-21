@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,606 @@
+@@ -0,0 +1,617 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -80,8 +80,14 @@
 +	isActivity(line) {
 +		if (line.includes('"type":"assistant"')) return true;
 +		if (line.includes('"type":"tool_use"')) return true;
-+		if (line.includes('"type":"tool_result"')) return true;
 +		if (line.includes('"type":"thinking"')) return true;
++		// Note: a bare `"type":"tool_result"` substring check is NOT safe
++		// here — tool_result chunks arrive nested inside type:"user"
++		// wrapper lines (the "user just answered the AskUserQuestion"
++		// echo) and treating them as activity flips status from
++		// permission/idle to working, leaving a stuck spinner until the
++		// idle timer fires 45s later. The type:user branch below filters
++		// those echoes correctly via the tool_use_id sentinel.
 +		if (line.includes('"type":"user"')) {
 +			// Filter tool_result echoes — they have type:"user" but
 +			// `tool_use_id` set; 218 of 226 user entries in the test corpus
@@ -99,18 +105,23 @@
 +		return false;
 +	},
 +	isPermissionRequest(line) {
-+		// Two cases for Claude:
++		// Three cases for Claude:
 +		// 1. Out-of-bypass mode: Claude fires a "PermissionRequest" hookEvent.
 +		//    Coded to the documented schema; activates when a non-bypass
 +		//    session runs.
-+		// 2. ask_user tool call: Claude blocks waiting for user input via
-+		//    the in-app ask_user tool. The JSONL writes a tool_use line;
-+		//    the tool_result comes back when the user answers, at which
-+		//    point isActivity (the next tool_use) flips status back to
-+		//    "working". Double-substring guard avoids matching the literal
-+		//    string "ask_user" inside free-form text content.
++		// 2. Built-in AskUserQuestion tool call: Claude blocks waiting for
++		//    a user response via the Superset overlay. The JSONL writes a
++		//    tool_use line for tool name "AskUserQuestion"; the tool_result
++		//    comes back when the user answers (or ESCs out). Double-
++		//    substring guard avoids matching the literal string in
++		//    free-form text content.
++		// 3. Legacy/custom ask_user tool name — kept for any agent that
++		//    registers a tool with the snake_case identifier.
 +		if (line.includes('"hookEvent":"PermissionRequest"')) return true;
-+		if (line.includes('"type":"tool_use"') && line.includes('"name":"ask_user"')) return true;
++		if (line.includes('"type":"tool_use"')) {
++			if (line.includes('"name":"AskUserQuestion"')) return true;
++			if (line.includes('"name":"ask_user"')) return true;
++		}
 +		return false;
 +	},
 +};
