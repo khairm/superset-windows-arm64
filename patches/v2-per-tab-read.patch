@@ -1,0 +1,15 @@
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts
+@@ -57,7 +57,11 @@
+
+ 	const handleClick = () => {
+ 		if (isRenaming) return;
+-		clearWorkspaceAttention(workspaceId);
++		// Per-tab mark-as-read: workspace click navigates only. The
++		// downstream useClearActivePaneAttention hook clears just the
++		// active terminal's source on focus, so unfocused terminals keep
++		// their unread dot until the user actually visits them — matching
++		// the per-terminal-dots indicator we render in the sidebar row.
+ 		navigate({
+ 			to: "/v2-workspace/$workspaceId",
+ 			params: { workspaceId },

@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,593 @@
+@@ -0,0 +1,601 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -94,11 +94,19 @@
 +		return false;
 +	},
 +	isPermissionRequest(line) {
-+		// Claude fires this as a registered hook event when running outside
-+		// bypassPermissions mode. Coded to the documented schema (the test
-+		// corpus has 0 hits across 12091 jsonl files because the user runs
-+		// bypass mode); will activate the moment a non-bypass session runs.
-+		return line.includes('"hookEvent":"PermissionRequest"');
++		// Two cases for Claude:
++		// 1. Out-of-bypass mode: Claude fires a "PermissionRequest" hookEvent.
++		//    Coded to the documented schema; activates when a non-bypass
++		//    session runs.
++		// 2. ask_user tool call: Claude blocks waiting for user input via
++		//    the in-app ask_user tool. The JSONL writes a tool_use line;
++		//    the tool_result comes back when the user answers, at which
++		//    point isActivity (the next tool_use) flips status back to
++		//    "working". Double-substring guard avoids matching the literal
++		//    string "ask_user" inside free-form text content.
++		if (line.includes('"hookEvent":"PermissionRequest"')) return true;
++		if (line.includes('"type":"tool_use"') && line.includes('"name":"ask_user"')) return true;
++		return false;
 +	},
 +};
 +

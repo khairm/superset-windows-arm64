@@ -9,7 +9,7 @@ A **build-automation repo**, not app source. It produces a native Windows
 
 - `.github/workflows/nightly-build.yml` — nightly: detect new upstream release →
   clone → Claude Code applies `PATCHES.md` → deterministic fixup step (ARM64
-  arch, native-closure, source patches A–O incl. `git apply` of `patches/*.patch`)
+  arch, native-closure, source patches A–Q incl. `git apply` of `patches/*.patch`)
   → `electron-builder --win --arm64` → publish Release.
 - `PATCHES.md` — the Windows-compat patches (AI-applied each night).
 - `patches/*.patch` — deterministic `git diff` patches the workflow `git apply`s
@@ -28,9 +28,15 @@ A **build-automation repo**, not app source. It produces a native Windows
   SessionStart hook for precise per-pane mapping, and emit into
   Superset's `notificationsEmitter` — green/amber/red badges, see
   `patches/agent-jsonl-watcher.patch` + companion `pane-map-hook.ts`),
-  and `per-terminal-dots.patch` (companion UI: one `<StatusIndicator>`
+  `per-terminal-dots.patch` (companion UI: one `<StatusIndicator>`
   per active terminal pane inline with the sidebar workspace name,
-  replacing upstream's single rolled-up overlay).
+  replacing upstream's single rolled-up overlay),
+  `v2-per-terminal-dots.patch` (the v2-workspace equivalent — adds
+  `selectV2WorkspaceTerminalStatuses` + renders dots in
+  `DashboardSidebarExpandedWorkspaceRow`), and
+  `v2-per-tab-read.patch` (drops the workspace-level `clearWorkspaceAttention`
+  bulk-clear from `handleClick`; per-tab mark-as-read survives via the
+  existing `useClearActivePaneAttention` hook firing on active-pane focus).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
   Windows runner fails on CRLF.

@@ -597,6 +597,39 @@ jobs:
           if ((Get-Content -Raw $vrow) -notmatch 'terminalStatuses') { Write-Error "(P) terminalStatuses prop wiring missing after apply"; exit 1 }
           Write-Host "(P) v2-per-terminal-dots applied (v2 DashboardSidebar workspace rows render one StatusIndicator per active terminal)"
 
+          # (Q) Per-tab mark-as-read on v2 workspace click.
+          #     Upstream's handleClick on a workspace row calls
+          #     clearWorkspaceAttention(workspaceId), which iterates every
+          #     source in the store and deletes review-status entries for
+          #     that workspace — clearing the dot on ALL terminals at once.
+          #     With the per-terminal indicators we render in (P), that
+          #     bulk-clear is wrong: opening a workspace shouldn't mark
+          #     terminals the user hasn't actually visited as read. The
+          #     existing useClearActivePaneAttention hook already clears
+          #     just the active pane's source on focus; this patch drops
+          #     the redundant bulk-clear so per-tab semantics survive.
+          #     Idempotent + fail-fast.
+          $vr = '../patches/v2-per-tab-read.patch'
+          if (-not (Test-Path $vr)) { Write-Error "(Q) missing $vr in patches repo"; exit 1 }
+          $actions = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts'
+          if (-not (Test-Path $actions)) { Write-Error "(Q) missing $actions"; exit 1 }
+          $actionsBody = Get-Content -Raw $actions
+          $clickFn = if ($actionsBody -match '(?s)const handleClick = \(\) => \{(.+?)\};') { $matches[1] } else { '' }
+          if (-not ($clickFn -match 'clearWorkspaceAttention\(workspaceId\)')) {
+            Write-Host "(Q) handleClick bulk-clear already removed — skip"
+          } else {
+            git apply --check $vr 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(Q) v2-per-tab-read.patch does not apply cleanly — useDashboardSidebarWorkspaceItemActions changed upstream; aborting rather than shipping with per-tab read broken. Regenerate patches/v2-per-tab-read.patch."
+              exit 1
+            }
+            git apply $vr
+            if ($LASTEXITCODE -ne 0) { Write-Error "(Q) git apply failed"; exit 1 }
+          }
+          $clickFn2 = if ((Get-Content -Raw $actions) -match '(?s)const handleClick = \(\) => \{(.+?)\};') { $matches[1] } else { '' }
+          if ($clickFn2 -match 'clearWorkspaceAttention\(workspaceId\)') { Write-Error "(Q) bulk-clear still present in handleClick after apply"; exit 1 }
+          Write-Host "(Q) v2-per-tab-read applied (workspace click no longer bulk-clears every terminal's unread state)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
