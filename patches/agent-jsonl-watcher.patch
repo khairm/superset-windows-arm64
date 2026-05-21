@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,681 @@
+@@ -0,0 +1,685 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -124,12 +124,16 @@
 +		return false;
 +	},
 +	isUserLine(line) {
-+		// Detect a real user-role entry (not a tool_result echo). Used to
-+		// resolve permission state when the user answers OR cancels an
-+		// AskUserQuestion — both look the same in the JSONL until the
-+		// next assistant line arrives (or doesn't, on ESC).
++		// Any type:"user" line — whether a fresh user prompt (no
++		// tool_use_id) or an AskUserQuestion ANSWER (carries tool_use_id
++		// pointing back at the AskUserQuestion tool_use) or an ESC
++		// interrupt marker (also no tool_use_id) — means the user
++		// either unblocked Claude or sent input. The dispatcher only
++		// reacts to this when lastStatus === "permission" (treating it
++		// as a permission release); outside permission state it's a
++		// no-op, so this method intentionally returns true broadly. The
++		// caller decides what to do based on current state.
 +		if (!line.includes('"type":"user"')) return false;
-+		if (line.includes('"tool_use_id"')) return false;
 +		return line.includes('"role":"user"');
 +	},
 +	isExplicitStop(line) {
