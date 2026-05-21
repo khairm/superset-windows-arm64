@@ -534,8 +534,8 @@ jobs:
           $endIdx = $hookSrc.IndexOf('`;', $startIdx + 25)
           if ($startIdx -lt 0 -or $endIdx -lt 0) { Write-Error "(N-guard) could not locate PANE_MAP_SCRIPT template bounds"; exit 1 }
           $body = $hookSrc.Substring($startIdx + 25, $endIdx - ($startIdx + 25))
-          if ($body.Contains('`')) { Write-Error "(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped backtick — esbuild will fail compile:app. Remove the backtick from the Python source."; exit 1 }
-          if ($body.Contains('${')) { Write-Error "(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped \${ — JS will try to interpolate it. Escape with \\\${ or remove."; exit 1 }
+          if ($body.Contains('`')) { Write-Error '(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped backtick — esbuild will fail compile:app. Remove the backtick from the Python source.'; exit 1 }
+          if ($body.Contains('${')) { Write-Error '(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped dollar-brace — JS will try to interpolate it. Escape the dollar with a backslash, or remove.'; exit 1 }
           Write-Host "(N-guard) PANE_MAP_SCRIPT template literal is well-formed"
 
           # (O) Per-terminal status dots on the sidebar workspace rows.
