@@ -482,8 +482,34 @@ jobs:
           }
           $verify = Get-Content -Raw $mw
           if ($verify -match 'show quit confirmation BEFORE the window closes') { Write-Error "(M) dialog comment still present after removal"; exit 1 }
-          if ($verify -match 'Are you sure you want to quit\?') { Write-Error "(M) dialog message text still present after removal"; exit 1 }
           if ($verify -notmatch 'Save window state first') { Write-Error "(M) collateral damage — 'Save window state first' was removed too"; exit 1 }
+          # The actual bug is dialog.showMessageBox INSIDE window.on('close'),
+          # which causes the lock-hang. A "Are you sure you want to quit?"
+          # string anywhere else in main.ts (constants, unrelated handler,
+          # before-quit gating) is harmless. Extract just the close handler
+          # body via brace counting and check there.
+          $openMatch = [regex]::Match($verify, 'window\.on\(\s*"close"\s*,\s*\([^)]*\)\s*=>\s*\{')
+          if ($openMatch.Success) {
+            $depth = 0
+            $bodyStart = $openMatch.Index + $openMatch.Length
+            $bodyEnd = -1
+            for ($i = $openMatch.Index + $openMatch.Length - 1; $i -lt $verify.Length; $i++) {
+              $c = $verify[$i]
+              if ($c -eq '{') { $depth++ }
+              elseif ($c -eq '}') { $depth--; if ($depth -eq 0) { $bodyEnd = $i; break } }
+            }
+            if ($bodyEnd -gt $bodyStart) {
+              $closeBody = $verify.Substring($bodyStart, $bodyEnd - $bodyStart)
+              if ($closeBody -match 'dialog\.showMessageBox') {
+                Write-Error "(M) dialog.showMessageBox still inside window.on('close') after removal — lock-hang risk remains. The AI inserted the dialog with a comment my anchor missed. Inspect main.ts in the failed artifact and update step (M)."
+                exit 1
+              }
+              if ($closeBody -match 'PLATFORM\.IS_WINDOWS' -and $closeBody -match 'preventDefault') {
+                Write-Error "(M) Windows-gated preventDefault still inside window.on('close') — even without showMessageBox this can hang on the await chain. Check what the AI inserted."
+                exit 1
+              }
+            }
+          }
           Write-Host "(M) skip-quit-confirmation applied (window.on('close') no longer shows the lock-hanging dialog on Windows)"
 
           # (N) Agent JSONL watcher (main process). Upstream's
