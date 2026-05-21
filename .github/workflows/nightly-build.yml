@@ -454,23 +454,36 @@ jobs:
           #     prompt. Patch 19's before-quit !PLATFORM.IS_WINDOWS gate stays,
           #     so neither path shows a dialog on Windows. Idempotent +
           #     fail-fast.
-          $sq = '../patches/skip-quit-confirmation-windows.patch'
-          if (-not (Test-Path $sq)) { Write-Error "(M) missing $sq in patches repo"; exit 1 }
+          # Implementation note: a git-apply approach is too brittle here —
+          # the surrounding context of Patch 19's dialog block drifts between
+          # AI runs (whitespace, comment wording, exact body) and `git apply`
+          # fails on context mismatch. Instead, do a regex-anchored removal
+          # from inside window.on("close") between two stable fingerprints:
+          #   start anchor: the comment "Windows: show quit confirmation
+          #                 BEFORE the window closes." (verbatim per PATCHES.md
+          #                 step 5 — the AI has reproduced this exact line
+          #                 every run)
+          #   end anchor:   the upstream comment "Save window state first"
+          #                 which is the next thing inside the close handler
+          # That covers any reformatting between the two anchors.
           $mw = 'apps/desktop/src/main/windows/main.ts'
           if (-not (Test-Path $mw)) { Write-Error "(M) missing $mw"; exit 1 }
-          if (-not (Select-String -Quiet -SimpleMatch 'show quit confirmation BEFORE the window closes' $mw)) {
-            Write-Host "(M) skip-quit-confirmation already applied (dialog block absent) — skip"
+          $mwBody = Get-Content -Raw $mw
+          if ($mwBody -notmatch 'show quit confirmation BEFORE the window closes') {
+            Write-Host "(M) dialog block absent — Patch 19 didn't insert it this run; skip"
           } else {
-            git apply --check $sq 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "(M) skip-quit-confirmation-windows.patch does not apply cleanly — Patch 19's dialog block in window.on('close') changed upstream or in PATCHES.md; aborting rather than shipping the lock-hang bug. Regenerate patches/skip-quit-confirmation-windows.patch against the new post-Patch-19 state."
+            if ($mwBody -notmatch '(?s)(\s*)//\s*Windows: show quit confirmation BEFORE the window closes\..*?(?=\s*//\s*Save window state first)') {
+              Write-Error "(M) found the dialog start anchor but not the 'Save window state first' end anchor; main.ts shape changed too far. Either Patch 19 dropped the trailing save block or the AI renamed it. Inspect main.ts in the failed run's artifact and update step (M) anchors."
               exit 1
             }
-            git apply $sq
-            if ($LASTEXITCODE -ne 0) { Write-Error "(M) git apply failed"; exit 1 }
+            $mwBody = $mwBody -replace '(?s)(\s*)//\s*Windows: show quit confirmation BEFORE the window closes\..*?(?=\s*//\s*Save window state first)', ''
+            Set-Content -Path $mw -Value $mwBody -NoNewline
+            Write-Host "(M) Removed quit-confirmation dialog block from window.on('close') via regex anchors"
           }
-          if ((Get-Content -Raw $mw) -match 'show quit confirmation BEFORE the window closes') { Write-Error "(M) dialog block still present after apply"; exit 1 }
-          if ((Get-Content -Raw $mw) -match 'Are you sure you want to quit\?') { Write-Error "(M) dialog message text still present after apply"; exit 1 }
+          $verify = Get-Content -Raw $mw
+          if ($verify -match 'show quit confirmation BEFORE the window closes') { Write-Error "(M) dialog comment still present after removal"; exit 1 }
+          if ($verify -match 'Are you sure you want to quit\?') { Write-Error "(M) dialog message text still present after removal"; exit 1 }
+          if ($verify -notmatch 'Save window state first') { Write-Error "(M) collateral damage — 'Save window state first' was removed too"; exit 1 }
           Write-Host "(M) skip-quit-confirmation applied (window.on('close') no longer shows the lock-hanging dialog on Windows)"
 
           # (N) Agent JSONL watcher (main process). Upstream's
