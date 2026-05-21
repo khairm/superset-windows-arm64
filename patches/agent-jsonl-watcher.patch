@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,701 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -124,17 +124,33 @@
 +		return false;
 +	},
 +	isUserLine(line) {
-+		// Any type:"user" line — whether a fresh user prompt (no
-+		// tool_use_id) or an AskUserQuestion ANSWER (carries tool_use_id
-+		// pointing back at the AskUserQuestion tool_use) or an ESC
-+		// interrupt marker (also no tool_use_id) — means the user
-+		// either unblocked Claude or sent input. The dispatcher only
-+		// reacts to this when lastStatus === "permission" (treating it
-+		// as a permission release); outside permission state it's a
-+		// no-op, so this method intentionally returns true broadly. The
-+		// caller decides what to do based on current state.
++		// Narrow scope: ONLY interrupt markers ("Request interrupted by
++		// user" / "Request cancelled by user"). A broader "any user-role
++		// line clears permission" classifier caught spurious lines like
++		// system tool_result validation errors and prematurely cleared
++		// the red dot before the user actually answered.
++		//
++		// When the user genuinely answers an AskUserQuestion, Claude
++		// writes its next assistant tool_use line within ~100ms and
++		// isActivity flips state to "working" naturally — no special
++		// handling needed for the answer path.
++		//
++		// When the user ESCs, Claude writes only an interrupt-marker
++		// user line and no follow-up assistant content. That's the
++		// case this method must detect so the dispatcher can release
++		// permission state.
 +		if (!line.includes('"type":"user"')) return false;
-+		return line.includes('"role":"user"');
++		if (!line.includes('"role":"user"')) return false;
++		// Verified against ~12k Claude JSONL lines in the user's corpus:
++		// "Request interrupted by user" covers all user-ESC variants
++		// (bare ESC, ESC mid-tool-use, ESC with follow-up text). The
++		// "Request cancelled by user" form is rare but real. Both are
++		// always inside a user-role line. "Request cancelled by Hub" is
++		// a different, hub-initiated cancellation that the user did NOT
++		// trigger, so explicitly NOT matched.
++		if (line.includes("Request interrupted by user")) return true;
++		if (line.includes("Request cancelled by user")) return true;
++		return false;
 +	},
 +	isExplicitStop(line) {
 +		if (line.includes('"stop_reason":"end_turn"')) return true;
