@@ -701,7 +701,7 @@
 +        return
 +
 +    # Only emit fields that have values — keeps the mapping file
-+    # minimal and lets the watcher's `...mapping` spread skip undefined.
++    # minimal and lets the watcher's spread skip undefined fields.
 +    mapping: dict = {}
 +    if pane_id:
 +        mapping["paneId"] = pane_id
