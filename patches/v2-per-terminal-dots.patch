@@ -1,0 +1,148 @@
+--- a/apps/desktop/src/renderer/stores/v2-notifications/index.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/index.ts
+@@ -13,6 +13,7 @@
+ 	selectV2TerminalNotificationStatus,
+ 	selectV2WorkspaceIsUnread,
+ 	selectV2WorkspaceNotificationStatus,
++	selectV2WorkspaceTerminalStatuses,
+ 	useV2ChatNotificationStatus,
+ 	useV2NotificationStore,
+ 	useV2PaneNotificationStatus,
+@@ -21,6 +22,7 @@
+ 	useV2TerminalNotificationStatus,
+ 	useV2WorkspaceIsUnread,
+ 	useV2WorkspaceNotificationStatus,
++	useV2WorkspaceTerminalStatuses,
+ 	type V2NotificationPaneLike,
+ 	type V2NotificationSource,
+ 	type V2NotificationSourceInput,
+--- a/apps/desktop/src/renderer/stores/v2-notifications/store.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+@@ -263,6 +263,35 @@
+ 	};
+ }
+ 
++/**
++ * Per-terminal statuses for a workspace, encoded as a comma-joined
++ * string for stable referential equality in the Zustand selector
++ * (returning an array would re-fire the subscription on every store
++ * change because [...] !== [...]). Callers split the string back to an
++ * array. Only terminal sources are included — chat sources excluded —
++ * with non-idle status; idle/missing entries are filtered.
++ */
++export function selectV2WorkspaceTerminalStatuses(workspaceId: string) {
++	return (state: V2NotificationState): string => {
++		const parts: string[] = [];
++		for (const entry of Object.values(state.sources)) {
++			if (entry.workspaceId !== workspaceId) continue;
++			if (entry.source.type !== "terminal") continue;
++			parts.push(entry.status);
++		}
++		return parts.join(",");
++	};
++}
++
++export function useV2WorkspaceTerminalStatuses(
++	workspaceId: string,
++): ActivePaneStatus[] {
++	const key = useV2NotificationStore(
++		selectV2WorkspaceTerminalStatuses(workspaceId),
++	);
++	return key ? (key.split(",") as ActivePaneStatus[]) : [];
++}
++
+ export function selectV2TabNotificationStatus(
+ 	workspaceId: string,
+ 	tab: V2NotificationTabLike | null | undefined,
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
+@@ -3,7 +3,10 @@
+ import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+ import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
+ import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
+-import { useV2WorkspaceNotificationStatus } from "renderer/stores/v2-notifications";
++import {
++	useV2WorkspaceNotificationStatus,
++	useV2WorkspaceTerminalStatuses,
++} from "renderer/stores/v2-notifications";
+ import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
+ import type { DashboardSidebarWorkspace } from "../../types";
+ import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
+@@ -41,6 +44,7 @@
+ 	const isMainWorkspace = workspace.type === "main";
+ 	const diffStats = useDiffStats(id);
+ 	const workspaceStatus = useV2WorkspaceNotificationStatus(id);
++	const terminalStatuses = useV2WorkspaceTerminalStatuses(id);
+ 	const {
+ 		cancelRename,
+ 		handleClick,
+@@ -214,6 +218,7 @@
+ 				shortcutLabel={shortcutLabel}
+ 				diffStats={isPending ? null : diffStats}
+ 				workspaceStatus={workspaceStatus}
++				terminalStatuses={terminalStatuses}
+ 				isInSection={isInSection}
+ 				onClick={handleClick}
+ 				onDoubleClick={isPending ? undefined : startRename}
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
+@@ -11,6 +11,7 @@
+ import { HotkeyLabel } from "renderer/hotkeys";
+ import { electronTrpc } from "renderer/lib/electron-trpc";
+ import { RenameInput } from "renderer/screens/main/components/WorkspaceSidebar/RenameInput";
++import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
+ import type { ActivePaneStatus } from "shared/tabs-types";
+ import type {
+ 	DashboardSidebarWorkspace,
+@@ -38,6 +39,11 @@
+ 	shortcutLabel?: string;
+ 	diffStats: DiffStats | null;
+ 	workspaceStatus?: ActivePaneStatus | null;
++	/**
++	 * One status per active terminal in the workspace. Rendered as a row
++	 * of dots inline with the workspace name. Pass an empty array to hide.
++	 */
++	terminalStatuses?: ActivePaneStatus[];
+ 	isInSection?: boolean;
+ 	onClick?: () => void;
+ 	onDoubleClick?: () => void;
+@@ -61,6 +67,7 @@
+ 			shortcutLabel,
+ 			diffStats,
+ 			workspaceStatus = null,
++			terminalStatuses = [],
+ 			isInSection = false,
+ 			onClick,
+ 			onDoubleClick,
+@@ -240,14 +247,24 @@
+ 							)}
+ 						/>
+ 					) : (
+-						<span
+-							className={cn(
+-								"truncate text-[13px] leading-tight transition-colors",
+-								isActive ? "text-foreground" : "text-foreground/80",
++						<div className="flex min-w-0 items-center gap-1.5">
++							<span
++								className={cn(
++									"truncate text-[13px] leading-tight transition-colors",
++									isActive ? "text-foreground" : "text-foreground/80",
++								)}
++							>
++								{name || branch}
++							</span>
++							{terminalStatuses.length > 0 && (
++								<div className="flex shrink-0 items-center gap-1">
++									{terminalStatuses.map((s, i) => (
++										// biome-ignore lint/suspicious/noArrayIndexKey: per-terminal order is identity; array rebuilt per render
++										<StatusIndicator key={i} status={s} />
++									))}
++								</div>
+ 							)}
+-						>
+-							{name || branch}
+-						</span>
++						</div>
+ 					)}
+ 
+ 					<div className="col-start-2 row-start-1 grid h-5 shrink-0 items-center justify-items-end [&>*]:col-start-1 [&>*]:row-start-1">
