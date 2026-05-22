@@ -805,51 +805,27 @@ jobs:
           if ($mwBody -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload recovery missing in main.ts after apply"; exit 1 }
           Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)"
 
-          # (U) v2-cwd-fallback.patch
-          #     Per-terminal agent dots in the v2 workspace UI only light up when
-          #     the AGENT_LIFECYCLE event carries terminalId + workspaceId. Those
-          #     ids come solely from the pane-map hook file (N), which is ABSENT
-          #     for Codex sessions (no Codex hook) and for Claude sessions whose
-          #     id rotated (resume / /clear / compaction / re-adopted/worktree
-          #     shells). In those cases the event still has a valid cwd but no
-          #     ids, so V2NotificationController bails and no dot appears. This
-          #     patch adds a renderer-side cwd fallback: it matches the cwd
-          #     against each workspace's host-service worktree path to recover the
-          #     workspace, then derives a terminalId from that workspace's pane
-          #     layout (exact-one tie-break; else lowest terminalId).
+          # (U) v2-cwd-fallback.patch — DISABLED 2026-05-22.
+          #     The patch applied cleanly to apps/desktop/.../V2NotificationController.tsx
+          #     in the build that became Superset-1.10.2-arm64.exe (10:27 UTC), but at
+          #     runtime that build navigated to a v2-workspace route, fired
+          #     `did-start-loading`, and NEVER reached `did-finish-load` — the renderer
+          #     hung mid-mount of V2NotificationController, leaving terminals visible
+          #     but with no live xterm bound to input ("can't type in terminal
+          #     windows"). Reverted to the pre-(U) v1.10.2 build to recover.
           #
-          #     IMPORTANT — this guard SKIPS (warns) instead of aborting when the
-          #     patch doesn't apply. The nightly sometimes builds an older 1.9.x
-          #     (upstream's "Latest" flag flip-flops) whose V2NotificationController
-          #     shape predates this patch's context; those builds must not be
-          #     blocked just because this v2-only enhancement can't apply. Worst
-          #     case on skip: v2 dots fall back to upstream behaviour (only
-          #     hook-mapped sessions light up) — no regression vs not having it.
-          $cf = '../patches/v2-cwd-fallback.patch'
-          if (-not (Test-Path $cf)) { Write-Host "::warning::(U) missing $cf in patches repo — skipping v2 cwd fallback"; }
-          else {
-            $cfv = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx'
-            if (-not (Test-Path $cfv)) {
-              Write-Host "::warning::(U) $cfv not present in this upstream — skipping v2 cwd fallback (likely an older 1.9.x build)."
-            } elseif (Select-String -Quiet -SimpleMatch 'resolveTerminalIdFromPaneLayout' $cfv) {
-              Write-Host "(U) v2-cwd-fallback already present — skip"
-            } else {
-              git apply --check $cf 2>$null
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(U) v2-cwd-fallback.patch does not apply cleanly against this upstream — skipping (NOT aborting). v2 per-terminal dots will only light up for hook-mapped sessions until patches/v2-cwd-fallback.patch is regenerated."
-              } else {
-                git apply $cf
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(U) git apply failed after a clean --check — skipping v2 cwd fallback."
-                } else {
-                  $cfBody = Get-Content -Raw $cfv
-                  if ($cfBody -notmatch 'resolveTerminalIdFromPaneLayout') { Write-Error "(U) resolveTerminalIdFromPaneLayout missing after apply"; exit 1 }
-                  if ($cfBody -notmatch 'refreshCwdCache') { Write-Error "(U) refreshCwdCache missing after apply"; exit 1 }
-                  Write-Host "(U) v2-cwd-fallback applied (V2NotificationController resolves cwd-only agent events to terminal + workspace)"
-                }
-              }
-            }
-          }
+          #     The patch file `patches/v2-cwd-fallback.patch` is kept in the repo so
+          #     the design (cwd → workspace via worktreePath cache, terminalId via
+          #     pane-layout iteration) can be salvaged. Re-enabling requires running
+          #     the patched controller in a real Superset render before any user-
+          #     visible install — the runtime symptom didn't surface in `git apply
+          #     --check` or in TS compile, and there was no clear error in
+          #     `~/AppData/Roaming/Superset/logs/main.log`, so static checks alone
+          #     can't catch it. Likely fixes to try: confirm `getHostServiceClientByUrl`
+          #     and `workspace.get` are valid at runtime (not just types); confirm
+          #     `useEffectEvent` calling another `useEffectEvent` is safe in this
+          #     React version; consider moving the resolver to the main process so
+          #     it's not in the renderer's mount path at all.
 
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)

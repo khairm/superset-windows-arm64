@@ -146,31 +146,21 @@
 >   the AI-applied patches. Applied deterministically via
 >   `patches/fix-hidden-window-watchdog.patch` (`git apply`, idempotent +
 >   fail-fast).
-> - closes a gap in the **v2 workspace** per-terminal agent indicator: the
->   dots only ever lit up when the `AGENT_LIFECYCLE` event carried
->   `terminalId` + `workspaceId`, which are populated solely by the Python
->   pane-map SessionStart hook. That hook is **absent** for Codex sessions
->   (no Codex hook) and for Claude sessions whose id rotated (resume /
->   `/clear` / compaction / re-adopted or worktree shells), so the
->   `V2NotificationController` handler bailed at the missing-ids check and
->   no dot appeared even though the watcher correctly emitted the event
->   with a valid `cwd`. Fix: when the event lacks ids but has a `cwd`,
->   resolve them in the renderer — match the normalized cwd against each
->   workspace's host-service `worktreePath` (queried via
->   `getHostServiceClientByUrl(...).workspace.get` and cached in a
->   `useRef`-backed `Map<normalizedCwd, workspaceId>`), then derive a
->   `terminalId` from that workspace's `paneLayout` terminals
->   (exact-one tie-break; multi-terminal: lexicographically smallest
->   `terminalId`, deterministically). Cache is populated lazily on first
->   miss and the watcher's idle/refined-mapping re-emit guarantees a
->   subsequent event will resolve. Single-file change to
->   `apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx`.
->   Applied deterministically via `patches/v2-cwd-fallback.patch`
->   (`git apply`). **Guard step (U) in the nightly SKIPS with
->   `::warning::` instead of aborting on apply-check failure** — older
->   1.9.x builds whose context predates the patch must not be blocked;
->   worst case on skip is upstream behaviour (only hook-mapped sessions
->   light up), no regression.
+> - ~~closes a gap in the **v2 workspace** per-terminal agent indicator~~
+>   **DISABLED 2026-05-22** — `patches/v2-cwd-fallback.patch` is kept in
+>   the repo but the nightly workflow no longer applies it. The build
+>   that shipped it (Superset-1.10.2-arm64.exe, 10:27 UTC) booted to a
+>   blank state: navigation to a v2-workspace fired `did-start-loading`
+>   but never reached `did-finish-load`, the renderer hung mid-mount of
+>   `V2NotificationController`, and terminals were visible but had no
+>   live xterm bound to input. `git apply --check` and TS compile both
+>   passed; `main.log` showed no error. The runtime symptom only
+>   surfaced when a real Superset render tried to mount the patched
+>   component. **Static patch checks are not sufficient for renderer
+>   patches** — any future revival of this fix must be runtime-validated
+>   end-to-end in a real Superset before user-visible install, and
+>   probably belongs in the main process (where we can validate with
+>   logs) rather than the renderer mount path.
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.

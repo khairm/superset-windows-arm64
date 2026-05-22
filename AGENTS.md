@@ -64,19 +64,23 @@ A **build-automation repo**, not app source. It produces a native Windows
   crash, and moves the window-lifecycle logs to `electron-log` so
   `main.log` captures the cause. Touches only the load/crash handlers, so
   it coexists with the close-handler patches), and
-  `v2-cwd-fallback.patch` (v2 per-terminal dots only lit up when the
-  AGENT_LIFECYCLE event carried `terminalId`/`workspaceId` — present only
-  via the pane-map hook file, ABSENT for Codex + id-rotated Claude
-  sessions. Adds a renderer-side cwd fallback in
-  `V2NotificationController`: matches `cwd` → workspace via each
-  workspace's host-service worktree path (queried + cached), then derives
-  a `terminalId` from that workspace's pane layout (exact-one tie-break,
-  else lowest id). Riskiest assumption: the renderer has no live
-  per-terminal cwd, so it matches on the worktree root only. Its workflow
-  guard (U) **SKIPS with `::warning::` instead of aborting** on
-  apply-check failure — an older 1.9.x build whose context predates the
-  patch must not be blocked; worst case is upstream behaviour, no
-  regression).
+  `v2-cwd-fallback.patch` (**DISABLED 2026-05-22** — patch file kept in
+  repo for future revival but the workflow no longer applies it. The
+  applied build navigated to a v2-workspace route, fired
+  `did-start-loading`, and NEVER reached `did-finish-load`: the renderer
+  hung mid-mount of `V2NotificationController`, leaving terminals
+  visible but with no live xterm bound to input. Static checks
+  (`git apply --check`, TS compile) and `main.log` showed nothing; the
+  fault only surfaced when a real Superset instance tried to mount the
+  component. **Lesson:** any renderer-side patch must run end-to-end in
+  a real Superset render before any user-visible install — runtime hook
+  / IPC issues won't show up in build-time validation. Design intent
+  preserved in `patches/v2-cwd-fallback.patch`: match `cwd` → workspace
+  via each workspace's host-service worktree path, derive `terminalId`
+  from the workspace's pane layout. To revive, validate at runtime that
+  `getHostServiceClientByUrl` and `workspace.get` work as the patch
+  assumes, and consider moving the resolver to the main process so it
+  never blocks renderer mount).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin
