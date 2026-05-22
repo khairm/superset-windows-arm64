@@ -827,6 +827,49 @@ jobs:
           #     React version; consider moving the resolver to the main process so
           #     it's not in the renderer's mount path at all.
 
+          # (V) xterm-screen-reader-mode.patch
+          #     xterm.js defaults to screenReaderMode=false. With that off, the
+          #     canvas is opaque to Windows UI Automation — voice-to-text tools
+          #     (WisprFlow) and screen readers find no TextPattern provider and
+          #     silently drop input, even though Ctrl+V still works (xterm reads
+          #     the clipboard directly on paste). Flipping the flag makes xterm
+          #     expose its hidden <textarea> as a UIA TextPattern provider so
+          #     those tools work. Negligible CPU cost; no known regressions in
+          #     xterm.js. Touches two files: the v1 Terminal/config.ts (flips
+          #     the explicit false → true) and the v2 terminal-runtime.ts
+          #     (adds the option, which was previously omitted, defaulting
+          #     false). Guard SKIPS (warns) instead of aborting — an older
+          #     upstream whose context doesn't match must not block the build;
+          #     worst case on skip is upstream behaviour (WisprFlow keeps not
+          #     working), no regression.
+          $sr = '../patches/xterm-screen-reader-mode.patch'
+          if (-not (Test-Path $sr)) { Write-Host "::warning::(V) missing $sr in patches repo — skipping xterm screen-reader-mode" }
+          else {
+            $srv1 = 'apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts'
+            $srv2 = 'apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts'
+            if (-not (Test-Path $srv1) -or -not (Test-Path $srv2)) {
+              Write-Host "::warning::(V) one of the xterm config files is missing in this upstream — skipping screen-reader-mode (likely older 1.9.x)."
+            } elseif ((Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv1) -and (Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv2)) {
+              Write-Host "(V) xterm screen-reader-mode already present — skip"
+            } else {
+              git apply --check $sr 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::(V) xterm-screen-reader-mode.patch does not apply cleanly against this upstream — skipping (NOT aborting). WisprFlow / UIA voice input will silently no-op in terminals until patches/xterm-screen-reader-mode.patch is regenerated."
+              } else {
+                git apply $sr
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::(V) git apply failed after a clean --check — skipping xterm screen-reader-mode."
+                } else {
+                  $srv1Body = Get-Content -Raw $srv1
+                  $srv2Body = Get-Content -Raw $srv2
+                  if ($srv1Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv1 after apply"; exit 1 }
+                  if ($srv2Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv2 after apply"; exit 1 }
+                  Write-Host "(V) xterm screen-reader-mode applied (xterm hidden textarea exposed as UIA TextPattern; WisprFlow / screen readers can inject input)"
+                }
+              }
+            }
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -836,7 +879,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + F). (U disabled — see comment above.)"
 
       - name: Install dependencies
         working-directory: superset

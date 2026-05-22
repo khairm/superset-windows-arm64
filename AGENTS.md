@@ -80,7 +80,17 @@ A **build-automation repo**, not app source. It produces a native Windows
   from the workspace's pane layout. To revive, validate at runtime that
   `getHostServiceClientByUrl` and `workspace.get` work as the patch
   assumes, and consider moving the resolver to the main process so it
-  never blocks renderer mount).
+  never blocks renderer mount), and
+  `xterm-screen-reader-mode.patch` (xterm.js defaults to
+  `screenReaderMode: false`, which makes the canvas opaque to Windows UI
+  Automation — voice-to-text tools like WisprFlow and screen readers find
+  no `TextPattern` provider and silently drop input, even though `Ctrl+V`
+  still works (xterm reads the clipboard directly on paste). Flips both
+  the v1 `Terminal/config.ts` and v2 `terminal-runtime.ts` to
+  `screenReaderMode: true` so xterm exposes its hidden `<textarea>` as a
+  UIA TextPattern provider. Negligible CPU cost; documented xterm.js
+  option, no known regressions. Guard (V) SKIPS rather than aborts on
+  apply-failure — older 1.9.x context drift mustn't block the build).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin

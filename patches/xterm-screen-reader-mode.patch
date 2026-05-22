@@ -1,0 +1,35 @@
+diff --git a/apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts b/apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts
+index 53cd363..d2f65cf 100644
+--- a/apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts
++++ b/apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts
+@@ -57,6 +57,10 @@ function createTerminal(
+ 		fontSize: appearance.fontSize,
+ 		theme: appearance.theme,
+ 		allowProposedApi: true,
++		// See Terminal/config.ts — screenReaderMode: true makes the hidden
++		// xterm <textarea> a UIA TextPattern provider so voice-to-text +
++		// screen readers can inject input.
++		screenReaderMode: true,
+ 		scrollback: DEFAULT_TERMINAL_SCROLLBACK,
+ 		macOptionIsMeta: false,
+ 		cursorStyle: "block",
+diff --git a/apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts b/apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts
+index 06ac544..b7cf03a 100644
+--- a/apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts
++++ b/apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts
+@@ -34,7 +34,14 @@ export const TERMINAL_OPTIONS: ITerminalOptions = {
+ 	cursorStyle: "block",
+ 	cursorInactiveStyle: "outline",
+ 	vtExtensions: { kittyKeyboard: true },
+-	screenReaderMode: false,
++	// screenReaderMode: true exposes xterm's hidden <textarea> as a UI
++	// Automation TextPattern provider, which lets voice-to-text tools (e.g.
++	// WisprFlow) and screen readers inject input. Without it, xterm's canvas
++	// is opaque to UIA and those tools silently no-op — even though Ctrl+V
++	// still works (xterm reads the clipboard directly on paste). Negligible
++	// CPU cost; no known regressions in xterm.js. See
++	// patches/xterm-screen-reader-mode.patch.
++	screenReaderMode: true,
+ 	// xterm's fit addon permanently reserves scrollbar width from usable columns.
+ 	// Hide the built-in scrollbar so terminal content can use the full pane width.
+ 	scrollbar: {
