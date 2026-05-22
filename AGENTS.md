@@ -54,8 +54,26 @@ A **build-automation repo**, not app source. It produces a native Windows
   `packages/host-service/src/terminal/terminal.ts`, leaking a
   Promise into `path.basename()` downstream and crashing every v2
   preset spawn with "The 'path' argument must be of type string.
-  Received an instance of Promise").
+  Received an instance of Promise"), and
+  `fix-hidden-window-watchdog.patch` (the main window is created
+  `show: false` and only shown from `did-finish-load`/`did-fail-load`; if
+  NEITHER fires — renderer crash mid-load, or a load/visibility race under
+  `superset-app://` — every `Superset.exe` stays alive but the window is
+  permanently hidden ("spins up in Task Manager, nothing hits the UI").
+  Adds a 12 s show-watchdog force-show + one-time renderer reload on early
+  crash, and moves the window-lifecycle logs to `electron-log` so
+  `main.log` captures the cause. Touches only the load/crash handlers, so
+  it coexists with the close-handler patches).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
+- `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
+  `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin
+  deps published inside that window (e.g. the whole expo stack), failing
+  `bun install` ("No version matching … blocked by minimum-release-age"). The
+  install step catches *only* that error, runs this resolver to repin each
+  blocked package to its latest aged-safe version (`<=` upstream's pin, via the
+  npm registry → `overrides` + dep entries), and retries (≤5×) — so the nightly
+  never waits a night for packages to age. Generalises the hardcoded
+  "Pin Mastra dependencies" step; any *other* install failure still fails loud.
 - `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
   Windows runner fails on CRLF.
 - `README.md` — user-facing download/build docs.

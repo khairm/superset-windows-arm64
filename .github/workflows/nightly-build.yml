@@ -755,6 +755,40 @@ jobs:
           if ($ttBody -match 'const shell = resolveLaunchShell\(baseEnv\)') { Write-Error "(S) un-awaited resolveLaunchShell call still present after apply"; exit 1 }
           Write-Host "(S) v2-terminal-await-shell applied (createTerminalSessionInternal now awaits the shell promise)"
 
+          # (T) fix-hidden-window-watchdog.patch
+          #     The main window is created with `show: false` and is only made
+          #     visible by the did-finish-load / did-fail-load handlers in
+          #     MainWindow(). On Windows ARM64 we have seen launches where
+          #     NEITHER event fires (renderer crash mid-load with no reload, or a
+          #     load/visibility race under the superset-app:// protocol): every
+          #     Superset.exe process stays alive but the window is permanently
+          #     hidden ("spins up in Task Manager, nothing hits the UI"). Adds a
+          #     12s show-watchdog (force-show + loud electron-log error), a
+          #     one-time renderer reload on early crash, and routes the window
+          #     lifecycle logs through electron-log so main.log captures the
+          #     cause next time. Hunks target only the load/crash handlers (not
+          #     the close handler Patch 19/skip-quit rewrite), so it applies on
+          #     top of the AI-applied patches. Idempotent + fail-fast.
+          $hw = '../patches/fix-hidden-window-watchdog.patch'
+          if (-not (Test-Path $hw)) { Write-Error "(T) missing $hw in patches repo"; exit 1 }
+          $mwf = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $mwf)) { Write-Error "(T) missing $mwf"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'show-watchdog fired' $mwf) {
+            Write-Host "(T) fix-hidden-window-watchdog already present — skip"
+          } else {
+            git apply --check $hw 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(T) fix-hidden-window-watchdog.patch does not apply cleanly — the did-finish-load / did-fail-load / render-process-gone handlers in main.ts changed upstream; aborting rather than shipping a build that can launch with no visible window. Regenerate patches/fix-hidden-window-watchdog.patch against the new upstream."
+              exit 1
+            }
+            git apply $hw
+            if ($LASTEXITCODE -ne 0) { Write-Error "(T) git apply failed"; exit 1 }
+          }
+          $mwBody = Get-Content -Raw $mwf
+          if ($mwBody -notmatch 'show-watchdog fired') { Write-Error "(T) show-watchdog missing in main.ts after apply"; exit 1 }
+          if ($mwBody -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload recovery missing in main.ts after apply"; exit 1 }
+          Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)"
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -764,7 +798,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + F)."
 
       - name: Install dependencies
         working-directory: superset
@@ -775,7 +809,36 @@ jobs:
           # Bun-store payload repair (below) handles them instead. This matches
           # the sequence validated on real ARM64 hardware.
           SUPERSET_POSTINSTALL_RUNNING: '1'
-        run: bun install
+        run: |
+          # Resilient `bun install`. Upstream's bunfig sets
+          # minimumReleaseAge (72h); a fresh upstream release can pin deps
+          # published inside that window, which makes `bun install` fail
+          # loud (e.g. the whole expo stack: "No version matching ...
+          # blocked by minimum-release-age"). That is a timing race, not a
+          # breakage — an older version of each package is already aged
+          # past the gate. On such a failure we resolve every blocked
+          # package to its latest aged-safe version (<= upstream's pin) via
+          # scripts/resolve-release-age.mjs and retry, so the nightly never
+          # has to wait a night for packages to age. Any OTHER install
+          # failure fails the step immediately — no masking.
+          log="$RUNNER_TEMP/bun-install.log"
+          for attempt in 1 2 3 4 5; do
+            echo "::group::bun install (attempt $attempt)"
+            if bun install 2>&1 | tee "$log"; then
+              echo "::endgroup::"
+              echo "bun install succeeded on attempt $attempt."
+              exit 0
+            fi
+            echo "::endgroup::"
+            if ! grep -q "minimum-release-age" "$log"; then
+              echo "::error::bun install failed for a reason other than minimum-release-age."
+              exit 1
+            fi
+            echo "Detected minimum-release-age block(s); resolving to aged-safe versions..."
+            node ../scripts/resolve-release-age.mjs "$log"
+          done
+          echo "::error::Still blocked by minimum-release-age after 5 attempts."
+          exit 1
 
       - name: Generate file icons
         working-directory: superset/apps/desktop

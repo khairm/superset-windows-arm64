@@ -5,3 +5,8 @@
 
 # Shell scripts are executed by bash in CI; CRLF breaks the shebang/`\r`.
 *.sh text eol=lf
+
+# Node helper scripts run on the Windows runner; keep LF for consistency
+# with the rest of the build tooling (node tolerates CRLF, but LF avoids
+# noisy diffs and surprises).
+*.mjs text eol=lf

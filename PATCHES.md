@@ -123,6 +123,29 @@
 >   leaves `"idle"` on Windows and this row would always be empty. Applied
 >   deterministically via `patches/per-terminal-dots.patch` (`git apply`,
 >   idempotent + fail-fast).
+> - guarantees the main window becomes visible even when its load events
+>   never fire. `MainWindow()` creates the `BrowserWindow` with `show: false`
+>   and only calls `window.show()` from the `did-finish-load` (success) or
+>   `did-fail-load` (failure) handlers — there is **no fallback if NEITHER
+>   fires**. On Windows ARM64 that gap is reachable: the renderer can crash
+>   mid-load (`render-process-gone`) with nothing reloading it, or a
+>   load/visibility race under the `superset-app://` protocol can swallow both
+>   events, leaving every `Superset.exe` process alive but the window
+>   permanently hidden ("spins up in Task Manager, nothing hits the UI").
+>   Diagnosed live via Win32 `EnumWindows`: the window was present, on-screen,
+>   sane bounds, but `IsWindowVisible == false`; a manual `ShowWindow` revealed
+>   a fully-loaded UI — so the renderer had loaded, `show()` was simply never
+>   called. Fix adds a 12 s **show-watchdog** (force-show + `focus()` + a loud
+>   `electron-log` error when the window is still hidden), a **one-time
+>   renderer reload** when the renderer dies before the first load, and routes
+>   the window-lifecycle logs through `electron-log` — the show path previously
+>   used `console.log`, which does **not** persist to `main.log`, so the failed
+>   launch left zero diagnostic trace. Hunks touch only the
+>   `did-finish-load`/`did-fail-load`/`render-process-gone` handlers (not the
+>   close handler that Patch 19 / `skip-quit` rewrite), so it applies on top of
+>   the AI-applied patches. Applied deterministically via
+>   `patches/fix-hidden-window-watchdog.patch` (`git apply`, idempotent +
+>   fail-fast).
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
@@ -1976,6 +1999,7 @@ After applying all patches, verify:
 - [ ] `bun run compile:app` builds with 0 TypeScript errors
 - [ ] `bun run copy:native-modules` completes without EPERM on `@superset/macos-process-metrics`
 - [ ] `electron dist/main/index.js` launches without TDZ or path errors
+- [ ] App launches to a **visible window**. If the renderer's load events never fire, the show-watchdog forces the window visible within ~12 s and writes `[main-window] show-watchdog fired` to `main.log` (was: processes alive in Task Manager but no window on Windows)
 - [ ] Terminal opens without "Connection lost" or "PTY not spawned" errors
 - [ ] V2 terminal settings show `pty-daemon` running, not "daemon unavailable"
 - [ ] V2 terminal opens without `node-pty master fd unavailable`
