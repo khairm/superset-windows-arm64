@@ -2,6 +2,11 @@ name: Nightly Windows ARM64 Build
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream desktop-vX.Y.Z to build (overrides auto-detected Latest; leave blank to use upstream Latest).'
+        required: false
+        default: ''
   schedule:
     - cron: '0 0 * * *'  # 12:00 AM UTC daily
 
@@ -23,9 +28,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+          TAG_INPUT="${{ github.event.inputs.tag }}"
 
-          # Get latest release from upstream
-          LATEST=$(gh release view --repo superset-sh/superset --json tagName -q .tagName 2>/dev/null || echo "")
+          # Manual override (workflow_dispatch input) wins over upstream Latest.
+          # Lets a manual build pin a known-good tag (e.g. desktop-v1.10.2) when
+          # upstream's Latest pointer flip-flops to an older release whose source
+          # shape doesn't fit the v2-era patches (P/Q/R/S/T target 1.10.x).
+          # Empty input on schedule/nightly -> falls through to the gh-release lookup,
+          # preserving the original auto-detect behavior unchanged.
+          if [ -n "$TAG_INPUT" ]; then
+            echo "Manual tag override: $TAG_INPUT"
+            LATEST="$TAG_INPUT"
+          else
+            LATEST=$(gh release view --repo superset-sh/superset --json tagName -q .tagName 2>/dev/null || echo "")
+          fi
           if [ -z "$LATEST" ]; then
             echo "No upstream release found"
             echo "should_build=false" >> $GITHUB_OUTPUT
