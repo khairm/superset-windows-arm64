@@ -1,0 +1,215 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
+index d007a82..259b194 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
+@@ -1,10 +1,14 @@
+ import type { WorkspaceState } from "@superset/panes";
+ import { buildHostRoutingKey } from "@superset/shared/host-routing";
+ import { useLiveQuery } from "@tanstack/react-db";
+-import { useEffectEvent, useMemo } from "react";
++import { useEffectEvent, useMemo, useRef } from "react";
+ import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+ import { electronTrpc } from "renderer/lib/electron-trpc";
+-import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
++import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
++import type {
++	PaneViewerData,
++	TerminalPaneData,
++} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+ import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+ import { NOTIFICATION_EVENTS } from "shared/constants";
+@@ -15,6 +19,46 @@ import {
+ } from "./components/HostNotificationSubscriber";
+ import { handleV2AgentLifecycleStatusEvent } from "./lib/lifecycleEvents";
+ 
++/**
++ * Normalize a cwd/worktree path for comparison: lowercase + forward slashes.
++ * Matches the normalization the Windows JSONL-watcher applies before emitting
++ * (`patches/agent-jsonl-watcher.patch`) so the strings line up on Windows,
++ * where path case and separator style vary between sources.
++ */
++function normalizeCwd(cwd: string): string {
++	return cwd.replace(/\\/g, "/").toLowerCase();
++}
++
++/**
++ * Resolve a terminalId for a workspace from its pane layout, given that the
++ * agent lifecycle event only told us the workspace (via cwd). Used by the
++ * Windows JSONL-watcher fallback when the event lacks a precise terminalId.
++ *
++ * Tie-break when a workspace has several terminals: the agent's cwd alone
++ * can't say which terminal it runs in, so we pick the lexicographically
++ * smallest terminalId deterministically. This keeps the dot stable across
++ * re-renders rather than flickering between terminals; the precise
++ * pane-map hook (when present) supersedes this with the real terminalId.
++ */
++function resolveTerminalIdFromPaneLayout(
++	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
++): string | null {
++	if (!paneLayout?.tabs) return null;
++	const terminalIds: string[] = [];
++	for (const tab of paneLayout.tabs) {
++		for (const pane of Object.values(tab.panes)) {
++			if (pane.kind !== "terminal") continue;
++			const data = pane.data as Partial<TerminalPaneData>;
++			if (typeof data.terminalId === "string" && data.terminalId) {
++				terminalIds.push(data.terminalId);
++			}
++		}
++	}
++	if (terminalIds.length === 0) return null;
++	if (terminalIds.length === 1) return terminalIds[0] ?? null;
++	return terminalIds.sort()[0] ?? null;
++}
++
+ interface WorkspaceHostRow {
+ 	workspaceId: string;
+ 	organizationId: string;
+@@ -100,24 +144,105 @@ export function V2NotificationController() {
+ 		[workspaceHosts, workspaceStatesById, machineId, activeHostUrl, relayUrl],
+ 	);
+ 
++	// Per-workspace host URL, so a cwd-only event can be matched against the
++	// right host-service's worktree path. Mirrors getHostUrlForWorkspace, keyed
++	// by workspaceId for O(1) lookup in the (rare) cwd-fallback path.
++	const hostUrlByWorkspaceId = useMemo(() => {
++		const map = new Map<string, string>();
++		for (const workspace of workspaceHosts) {
++			const hostUrl = getHostUrlForWorkspace({
++				organizationId: workspace.organizationId,
++				hostId: workspace.hostId,
++				machineId,
++				activeHostUrl,
++				relayUrl,
++			});
++			if (hostUrl) map.set(workspace.workspaceId, hostUrl);
++		}
++		return map;
++	}, [workspaceHosts, machineId, activeHostUrl, relayUrl]);
++
++	// Cache of normalized-worktree-path -> workspaceId, populated lazily the
++	// first time a cwd-only event needs it. worktreePath comes from the
++	// host-service `workspace.get` query and is effectively immutable for a
++	// workspace, so a process-lifetime cache is safe and avoids re-querying
++	// every host on each fallback event.
++	const cwdToWorkspaceIdRef = useRef(new Map<string, string>());
++
++	/**
++	 * Windows JSONL-watcher fallback: the agent lifecycle event carried a cwd
++	 * but no terminalId/workspaceId (Codex sessions, or Claude sessions whose
++	 * id rotated so the pane-map hook file is absent — see
++	 * `patches/agent-jsonl-watcher.patch`). Match the cwd against each
++	 * workspace's worktree path to recover the workspace, then derive a
++	 * terminalId from its pane layout. Returns null when nothing matches yet
++	 * (cache is repopulated for next time, so a retried/idle event resolves).
++	 */
++	const resolveFromCwd = useEffectEvent(
++		(
++			cwd: string,
++		): { workspaceId: string; terminalId: string } | null => {
++			const target = normalizeCwd(cwd);
++
++			const finish = (
++				workspaceId: string,
++			): { workspaceId: string; terminalId: string } | null => {
++				const workspace = workspaceStatesById.get(workspaceId);
++				if (!workspace) return null;
++				const terminalId = resolveTerminalIdFromPaneLayout(
++					workspace.paneLayout,
++				);
++				return terminalId ? { workspaceId, terminalId } : null;
++			};
++
++			const cached = cwdToWorkspaceIdRef.current.get(target);
++			if (cached) return finish(cached);
++
++			// Cache miss: refresh worktree paths for all known workspaces in the
++			// background, then this event won't resolve now but the next one
++			// (watcher re-emits on idle/refined-mapping) will hit the cache.
++			void refreshCwdCache({
++				hostUrlByWorkspaceId,
++				cache: cwdToWorkspaceIdRef.current,
++			});
++			return null;
++		},
++	);
++
+ 	const handleElectronAgentLifecycle = useEffectEvent(
+ 		(event: ElectronNotificationEvent) => {
+ 			if (event.type !== NOTIFICATION_EVENTS.AGENT_LIFECYCLE) return;
+ 			const data = event.data;
+-			if (!data?.workspaceId || !data.terminalId) return;
+-			const workspace = workspaceStatesById.get(data.workspaceId);
++			if (!data) return;
++
++			let workspaceId = data.workspaceId;
++			let terminalId = data.terminalId;
++
++			// cwd fallback: when the precise ids are missing but a cwd is
++			// present, recover workspace + terminal from the cwd. Without this
++			// the v2 dots never light up for Codex / id-rotated Claude sessions.
++			if ((!workspaceId || !terminalId) && data.cwd) {
++				const resolved = resolveFromCwd(data.cwd);
++				if (resolved) {
++					workspaceId = resolved.workspaceId;
++					terminalId = resolved.terminalId;
++				}
++			}
++
++			if (!workspaceId || !terminalId) return;
++			const workspace = workspaceStatesById.get(workspaceId);
+ 			if (!workspace) return;
+ 
+ 			// Adopted shells keep their launch-time host-service hook URL. When
+ 			// that URL is stale, the Electron fallback still has terminal context.
+ 			handleV2AgentLifecycleStatusEvent({
+-				workspaceId: data.workspaceId,
++				workspaceId,
+ 				payload: {
+ 					eventType:
+ 						data.eventType === "PendingQuestion"
+ 							? "PermissionRequest"
+ 							: data.eventType,
+-					terminalId: data.terminalId,
++					terminalId,
+ 					occurredAt: Date.now(),
+ 				},
+ 				paneLayout: workspace.paneLayout,
+@@ -250,3 +375,36 @@ function getHostUrlForWorkspace({
+ 	}
+ 	return `${relayUrl}/hosts/${buildHostRoutingKey(organizationId, hostId)}`;
+ }
++
++/**
++ * Best-effort populate of the normalized-worktree-path -> workspaceId cache
++ * used by the cwd fallback. Queries each workspace's host-service
++ * `workspace.get` (which returns `worktreePath`). Failures are swallowed
++ * per-workspace — a single unreachable host must not break resolution for the
++ * others, and the cwd fallback only ever degrades to "no dot", never to a
++ * crash.
++ */
++async function refreshCwdCache({
++	hostUrlByWorkspaceId,
++	cache,
++}: {
++	hostUrlByWorkspaceId: Map<string, string>;
++	cache: Map<string, string>;
++}): Promise<void> {
++	await Promise.all(
++		[...hostUrlByWorkspaceId.entries()].map(async ([workspaceId, hostUrl]) => {
++			try {
++				const workspace = await getHostServiceClientByUrl(
++					hostUrl,
++				).workspace.get.query({ id: workspaceId });
++				const worktreePath = (workspace as { worktreePath?: unknown })
++					.worktreePath;
++				if (typeof worktreePath === "string" && worktreePath) {
++					cache.set(normalizeCwd(worktreePath), workspaceId);
++				}
++			} catch {
++				// Host unreachable or workspace gone — skip; retried on next miss.
++			}
++		}),
++	);
++}

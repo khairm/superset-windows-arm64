@@ -789,6 +789,52 @@ jobs:
           if ($mwBody -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload recovery missing in main.ts after apply"; exit 1 }
           Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)"
 
+          # (U) v2-cwd-fallback.patch
+          #     Per-terminal agent dots in the v2 workspace UI only light up when
+          #     the AGENT_LIFECYCLE event carries terminalId + workspaceId. Those
+          #     ids come solely from the pane-map hook file (N), which is ABSENT
+          #     for Codex sessions (no Codex hook) and for Claude sessions whose
+          #     id rotated (resume / /clear / compaction / re-adopted/worktree
+          #     shells). In those cases the event still has a valid cwd but no
+          #     ids, so V2NotificationController bails and no dot appears. This
+          #     patch adds a renderer-side cwd fallback: it matches the cwd
+          #     against each workspace's host-service worktree path to recover the
+          #     workspace, then derives a terminalId from that workspace's pane
+          #     layout (exact-one tie-break; else lowest terminalId).
+          #
+          #     IMPORTANT — this guard SKIPS (warns) instead of aborting when the
+          #     patch doesn't apply. The nightly sometimes builds an older 1.9.x
+          #     (upstream's "Latest" flag flip-flops) whose V2NotificationController
+          #     shape predates this patch's context; those builds must not be
+          #     blocked just because this v2-only enhancement can't apply. Worst
+          #     case on skip: v2 dots fall back to upstream behaviour (only
+          #     hook-mapped sessions light up) — no regression vs not having it.
+          $cf = '../patches/v2-cwd-fallback.patch'
+          if (-not (Test-Path $cf)) { Write-Host "::warning::(U) missing $cf in patches repo — skipping v2 cwd fallback"; }
+          else {
+            $cfv = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx'
+            if (-not (Test-Path $cfv)) {
+              Write-Host "::warning::(U) $cfv not present in this upstream — skipping v2 cwd fallback (likely an older 1.9.x build)."
+            } elseif (Select-String -Quiet -SimpleMatch 'resolveTerminalIdFromPaneLayout' $cfv) {
+              Write-Host "(U) v2-cwd-fallback already present — skip"
+            } else {
+              git apply --check $cf 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::(U) v2-cwd-fallback.patch does not apply cleanly against this upstream — skipping (NOT aborting). v2 per-terminal dots will only light up for hook-mapped sessions until patches/v2-cwd-fallback.patch is regenerated."
+              } else {
+                git apply $cf
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::(U) git apply failed after a clean --check — skipping v2 cwd fallback."
+                } else {
+                  $cfBody = Get-Content -Raw $cfv
+                  if ($cfBody -notmatch 'resolveTerminalIdFromPaneLayout') { Write-Error "(U) resolveTerminalIdFromPaneLayout missing after apply"; exit 1 }
+                  if ($cfBody -notmatch 'refreshCwdCache') { Write-Error "(U) refreshCwdCache missing after apply"; exit 1 }
+                  Write-Host "(U) v2-cwd-fallback applied (V2NotificationController resolves cwd-only agent events to terminal + workspace)"
+                }
+              }
+            }
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -798,7 +844,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + F)."
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + U + F)."
 
       - name: Install dependencies
         working-directory: superset

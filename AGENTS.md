@@ -63,7 +63,20 @@ A **build-automation repo**, not app source. It produces a native Windows
   Adds a 12 s show-watchdog force-show + one-time renderer reload on early
   crash, and moves the window-lifecycle logs to `electron-log` so
   `main.log` captures the cause. Touches only the load/crash handlers, so
-  it coexists with the close-handler patches).
+  it coexists with the close-handler patches), and
+  `v2-cwd-fallback.patch` (v2 per-terminal dots only lit up when the
+  AGENT_LIFECYCLE event carried `terminalId`/`workspaceId` — present only
+  via the pane-map hook file, ABSENT for Codex + id-rotated Claude
+  sessions. Adds a renderer-side cwd fallback in
+  `V2NotificationController`: matches `cwd` → workspace via each
+  workspace's host-service worktree path (queried + cached), then derives
+  a `terminalId` from that workspace's pane layout (exact-one tie-break,
+  else lowest id). Riskiest assumption: the renderer has no live
+  per-terminal cwd, so it matches on the worktree root only. Its workflow
+  guard (U) **SKIPS with `::warning::` instead of aborting** on
+  apply-check failure — an older 1.9.x build whose context predates the
+  patch must not be blocked; worst case is upstream behaviour, no
+  regression).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin

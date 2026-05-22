@@ -146,6 +146,31 @@
 >   the AI-applied patches. Applied deterministically via
 >   `patches/fix-hidden-window-watchdog.patch` (`git apply`, idempotent +
 >   fail-fast).
+> - closes a gap in the **v2 workspace** per-terminal agent indicator: the
+>   dots only ever lit up when the `AGENT_LIFECYCLE` event carried
+>   `terminalId` + `workspaceId`, which are populated solely by the Python
+>   pane-map SessionStart hook. That hook is **absent** for Codex sessions
+>   (no Codex hook) and for Claude sessions whose id rotated (resume /
+>   `/clear` / compaction / re-adopted or worktree shells), so the
+>   `V2NotificationController` handler bailed at the missing-ids check and
+>   no dot appeared even though the watcher correctly emitted the event
+>   with a valid `cwd`. Fix: when the event lacks ids but has a `cwd`,
+>   resolve them in the renderer — match the normalized cwd against each
+>   workspace's host-service `worktreePath` (queried via
+>   `getHostServiceClientByUrl(...).workspace.get` and cached in a
+>   `useRef`-backed `Map<normalizedCwd, workspaceId>`), then derive a
+>   `terminalId` from that workspace's `paneLayout` terminals
+>   (exact-one tie-break; multi-terminal: lexicographically smallest
+>   `terminalId`, deterministically). Cache is populated lazily on first
+>   miss and the watcher's idle/refined-mapping re-emit guarantees a
+>   subsequent event will resolve. Single-file change to
+>   `apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx`.
+>   Applied deterministically via `patches/v2-cwd-fallback.patch`
+>   (`git apply`). **Guard step (U) in the nightly SKIPS with
+>   `::warning::` instead of aborting on apply-check failure** — older
+>   1.9.x builds whose context predates the patch must not be blocked;
+>   worst case on skip is upstream behaviour (only hook-mapped sessions
+>   light up), no regression.
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.
