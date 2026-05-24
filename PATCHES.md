@@ -161,6 +161,29 @@
 >   end-to-end in a real Superset before user-visible install, and
 >   probably belongs in the main process (where we can validate with
 >   logs) rather than the renderer mount path.
+> - adds **diagnostic logging only** (no behaviour/logic change) across the
+>   agent-status-dots pipeline so a shipped build can be used to debug
+>   flaky/inconsistent dots. Applied via `patches/notification-logging.patch`
+>   AFTER the JSONL-watcher and xterm patches. The pane-map hook's Python
+>   gains a `_log()` writing one JSON line per invocation to
+>   `~/.superset/pane-map-hook.log` (records phase + skipReason:
+>   missing-terminal-env / missing-session-id / invalid-payload-json /
+>   payload-not-object / mkdir-failed / write-failed, gated by
+>   `SUPERSET_AGENT_WATCHER_DEBUG`); the watcher gains an `eventId`
+>   join-key plus `mapping_load` and enriched `transition` /
+>   `transition-suppressed` records in `~/.superset/agent-watcher-debug.log`;
+>   `main/windows/main.ts` gains a **production** `console-message`
+>   forwarder that persists renderer `[agent-dots]` lines to `electron-log`
+>   (`main.log`); and the renderer (`V2NotificationController`,
+>   `lifecycleEvents.ts`, the `v2-notifications` store) emits `[agent-dots]`
+>   records — `electron_agent_lifecycle_received`, a per-`return`
+>   `…_drop` carrying a `reason` (missing-workspaceId / missing-terminalId /
+>   workspace-not-loaded — the highest-value diagnostic for "dot never
+>   lit"), `status_transition_computed`, and `store_mutation`. Selectors
+>   (hot path) are deliberately not instrumented. Every log site is gated
+>   and wrapped so it can never throw. Guard SKIPS (warns) rather than
+>   aborts — diagnostics are non-essential and must not block the build
+>   (`git apply`, idempotent; marker `pane-map-hook.log`).
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.

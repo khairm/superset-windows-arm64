@@ -1,0 +1,32 @@
+diff --git a/apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts b/apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts
+index 1b7edf8..f6f5991 100644
+--- a/apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts
++++ b/apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts
+@@ -76,6 +76,27 @@ export function createTerminalKeyEventHandler(
+ 			return false;
+ 		}
+ 
++		// Tab / Shift+Tab must reach the shell/TUI (e.g. Claude Code completion)
++		// and must NOT traverse DOM focus out of the terminal. xterm still sends
++		// \t to the PTY, but with screenReaderMode enabled (see Terminal/config.ts
++		// + terminal-runtime.ts, patches/xterm-screen-reader-mode.patch) xterm no
++		// longer cancels the keydown's default action, so the browser's focus
++		// traversal fires and steals focus to the next element. This handler runs
++		// before xterm's encoder, so preventing the default here stops the
++		// traversal while we still return true to let xterm encode + send the key.
++		if (
++			(event.key === "Tab" || event.code === "Tab") &&
++			!event.ctrlKey &&
++			!event.altKey &&
++			!event.metaKey &&
++			// During IME composition, Tab commits/selects a candidate — leave it
++			// to the IME instead of trapping it for the terminal.
++			!event.isComposing
++		) {
++			if (event.type === "keydown") event.preventDefault();
++			return true;
++		}
++
+ 		return true;
+ 	};
+ }

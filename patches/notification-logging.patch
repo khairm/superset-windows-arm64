@@ -1,0 +1,639 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index cacc763..9dca73b 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -86,6 +86,16 @@ function dbg(kind: string, fields: Record<string, unknown>): void {
+ 	}
+ }
+ 
++// Monotonic event id for joining a watcher emit to the renderer-side
++// console line it produces. Format: agent-lifecycle:<pid>:<seq>. The seq
++// resets per process; the pid keeps it unique across reloads in a shared
++// main.log. Logging-only — not attached to the emitted event payload.
++let eventIdSeq = 0;
++function nextEventId(): string {
++	eventIdSeq += 1;
++	return `agent-lifecycle:${process.pid}:${eventIdSeq}`;
++}
++
+ const POLL_DEBOUNCE_MS = 250;
+ // How long after the last JSONL activity to consider an agent "done" with
+ // the turn. End-of-turn isn't reliably marked in every session (only
+@@ -300,25 +310,56 @@ function extractSessionIdFromFilename(filePath: string): string | null {
+  */
+ function loadPaneMapping(sessionId: string): PaneMapping | undefined {
+ 	const file = path.join(SUPERSET_PANE_MAP_DIR, `${sessionId}.json`);
++	// Diagnostic-only state captured for the mapping_load dbg below. Never
++	// changes the return value or control flow.
++	let exists = false;
++	let mtimeMs: number | null = null;
++	let parseOk = false;
++	let result: PaneMapping | undefined;
+ 	try {
++		try {
++			const st = fs.statSync(file);
++			exists = true;
++			mtimeMs = st.mtimeMs;
++		} catch {
++			// missing or unstatable — leave diagnostic fields at defaults
++		}
+ 		const raw = fs.readFileSync(file, "utf8");
+ 		const parsed = JSON.parse(raw);
+-		if (typeof parsed !== "object" || parsed === null) return undefined;
+-		return {
+-			paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
+-			tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
+-			terminalId:
+-				typeof parsed.terminalId === "string"
+-					? parsed.terminalId
+-					: undefined,
+-			workspaceId:
+-				typeof parsed.workspaceId === "string"
+-					? parsed.workspaceId
+-					: undefined,
+-		};
++		parseOk = true;
++		if (typeof parsed !== "object" || parsed === null) {
++			result = undefined;
++		} else {
++			result = {
++				paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
++				tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
++				terminalId:
++					typeof parsed.terminalId === "string"
++						? parsed.terminalId
++						: undefined,
++				workspaceId:
++					typeof parsed.workspaceId === "string"
++						? parsed.workspaceId
++						: undefined,
++			};
++		}
+ 	} catch {
+-		return undefined;
++		result = undefined;
+ 	}
++	const missingFields: string[] = [];
++	if (!result?.paneId) missingFields.push("paneId");
++	if (!result?.terminalId) missingFields.push("terminalId");
++	if (!result?.workspaceId) missingFields.push("workspaceId");
++	dbg("mapping_load", {
++		sessionId,
++		mappingPath: file,
++		exists,
++		mtimeMs,
++		parseOk,
++		mapping: result ?? null,
++		missingFields,
++	});
++	return result;
+ }
+ 
+ function emit(
+@@ -326,6 +367,10 @@ function emit(
+ 	sessionId: string | null,
+ 	cwd: string,
+ 	mapping: PaneMapping | undefined,
++	// Logging-only join key. Defaults to a fresh id for emits that don't
++	// originate from a transition (e.g. the idle timer). Not part of the
++	// emitted event payload — only the dbg record below.
++	eventId: string = nextEventId(),
+ ): void {
+ 	if (!deps) return;
+ 	const event: AgentLifecycleEvent = {
+@@ -335,12 +380,14 @@ function emit(
+ 		...(mapping ?? {}),
+ 	};
+ 	dbg("emit", {
++		eventId,
+ 		eventType,
+ 		sessionId: sessionId ?? null,
+ 		cwd,
+ 		paneId: mapping?.paneId ?? null,
+ 		terminalId: mapping?.terminalId ?? null,
+ 		workspaceId: mapping?.workspaceId ?? null,
++		hadFullV2Target: !!(mapping?.terminalId && mapping?.workspaceId),
+ 	});
+ 	deps.notificationsEmitter.emit(NOTIFICATION_EVENTS.AGENT_LIFECYCLE, event);
+ }
+@@ -387,7 +434,7 @@ function transitionTo(
+ 	cwd: string,
+ 	mapping: PaneMapping | undefined,
+ ): void {
+-	const { state: s } = getState(sessionId, cwd);
++	const { key: stateKey, state: s } = getState(sessionId, cwd);
+ 	// "Refined" means we now have either paneId (v1) or terminalId (v2)
+ 	// or both — either is sufficient to bypass cwd-based fallback in the
+ 	// renderer's resolver and for V2NotificationController's bridge
+@@ -397,16 +444,33 @@ function transitionTo(
+ 	// → ID-precise) so the renderer can rebind to the right pane.
+ 	const mappingNewlyRefined = hasMapping && !s.lastEmittedHadMapping;
+ 	if (s.lastStatus === target && !mappingNewlyRefined) {
+-		dbg("transition-suppressed", { sessionId, target, lastStatus: s.lastStatus, hasMapping });
++		dbg("transition-suppressed", {
++			sessionId,
++			target,
++			lastStatus: s.lastStatus,
++			hasMapping,
++			stateKey,
++			lastEmittedHadMapping: s.lastEmittedHadMapping,
++			hasTerminalId: !!mapping?.terminalId,
++			hasWorkspaceId: !!mapping?.workspaceId,
++		});
+ 		return;
+ 	}
+-	dbg("transition", { sessionId, from: s.lastStatus, to: target, hasMapping, mappingNewlyRefined });
++	const eventId = nextEventId();
++	dbg("transition", {
++		eventId,
++		sessionId,
++		from: s.lastStatus,
++		to: target,
++		hasMapping,
++		mappingNewlyRefined,
++	});
+ 	s.lastStatus = target;
+ 	s.lastEmittedHadMapping = hasMapping;
+-	if (target === "working") emit("Start", sessionId, cwd, mapping);
+-	else if (target === "review") emit("Stop", sessionId, cwd, mapping);
++	if (target === "working") emit("Start", sessionId, cwd, mapping, eventId);
++	else if (target === "review") emit("Stop", sessionId, cwd, mapping, eventId);
+ 	else if (target === "permission")
+-		emit("PermissionRequest", sessionId, cwd, mapping);
++		emit("PermissionRequest", sessionId, cwd, mapping, eventId);
+ }
+ 
+ function scheduleIdleTimer(
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index 0b5e059..08d2b3f 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -50,37 +50,78 @@ const PANE_MAP_SCRIPT = `#!/usr/bin/env python3
+ Installed by agent-jsonl-watcher/pane-map-hook.ts. Writes a
+ {paneId, tabId, workspaceId} record keyed by the agent session id
+ so the watcher can resolve per-pane identity beyond cwd matching.
++
++Logging: every invocation appends one JSON line to
++~/.superset/pane-map-hook.log (gate with SUPERSET_AGENT_WATCHER_DEBUG=0).
++The logger can never raise — a broken hook must not abort the agent.
+ """
++import datetime
+ import json
+ import os
+ import pathlib
+ import sys
+ 
+ 
+-def _read_payload() -> dict:
++def _log(record: dict) -> None:
++    # Append one JSON line to ~/.superset/pane-map-hook.log. Fully
++    # self-contained and never raises: any failure (disk, perms,
++    # serialization) is swallowed so the hook can never break the agent.
++    if os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0":
++        return
++    try:
++        record["ts"] = datetime.datetime.now().isoformat()
++        record["phase"] = "hook"
++        log_dir = pathlib.Path.home() / ".superset"
++        log_dir.mkdir(parents=True, exist_ok=True)
++        log_path = log_dir / "pane-map-hook.log"
++        with open(log_path, "a", encoding="utf-8") as handle:
++            handle.write(json.dumps(record) + "\\n")
++    except Exception:
++        pass
++
++
++def _read_payload():
+     # Codex passes the hook payload as argv[1]; Claude/Mastra/Droid
+-    # pipe via stdin. Try both. Always coerce to dict — a stray JSON
+-    # string/list/number would crash payload.get() downstream.
++    # pipe via stdin. Try both. Returns (payload_or_None, source,
++    # skip_reason). source is "argv[1]" | "stdin" | "none". skip_reason
++    # distinguishes invalid-payload-json vs payload-not-object for the
++    # diagnostic log; main() decides whether to abort.
++    stdin_bytes = 0
+     candidates = []
+     if len(sys.argv) > 1:
+-        candidates.append(sys.argv[1])
++        candidates.append(("argv[1]", sys.argv[1]))
+     try:
+         raw = sys.stdin.read()
+         if raw:
+-            candidates.append(raw)
++            stdin_bytes = len(raw.encode("utf-8", "replace"))
++            candidates.append(("stdin", raw))
+     except (OSError, ValueError):
+         pass
+-    for src in candidates:
++    if not candidates:
++        return None, "none", "none", stdin_bytes
++    saw_parse_error = False
++    for source, src in candidates:
+         try:
+             parsed = json.loads(src)
+         except (ValueError, TypeError):
++            saw_parse_error = True
+             continue
+         if isinstance(parsed, dict):
+-            return parsed
+-    return {}
++            return parsed, source, None, stdin_bytes
++        return None, source, "payload-not-object", stdin_bytes
++    return None, candidates[0][0], "invalid-payload-json" if saw_parse_error else "none", stdin_bytes
+ 
+ 
+ def main() -> None:
++    pid = os.getpid()
++    argv_count = len(sys.argv)
++    superset_env = {
++        "SUPERSET_PANE_ID": os.environ.get("SUPERSET_PANE_ID", ""),
++        "SUPERSET_TAB_ID": os.environ.get("SUPERSET_TAB_ID", ""),
++        "SUPERSET_TERMINAL_ID": os.environ.get("SUPERSET_TERMINAL_ID", ""),
++        "SUPERSET_WORKSPACE_ID": os.environ.get("SUPERSET_WORKSPACE_ID", ""),
++    }
++
+     # Read both v1 and v2 terminal-identity env vars. At least one of
+     # pane_id (v1) or terminal_id (v2) must be present to indicate this
+     # is a Superset-launched terminal.
+@@ -89,16 +130,72 @@ def main() -> None:
+     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
+     workspace_id = os.environ.get("SUPERSET_WORKSPACE_ID", "").strip()
+     if not pane_id and not terminal_id:
++        _log({
++            "pid": pid,
++            "argvCount": argv_count,
++            "stdinBytes": 0,
++            "payloadSource": "none",
++            "payloadKeys": [],
++            "rawSessionIdFields": {},
++            "sessionId": None,
++            "supersetEnv": superset_env,
++            "mapping": None,
++            "action": "skip",
++            "skipReason": "missing-terminal-env",
++            "outPath": None,
++            "error": None,
++        })
+         return  # not inside a Superset-launched terminal
+ 
+-    payload = _read_payload()
++    payload, payload_source, payload_skip, stdin_bytes = _read_payload()
++    payload_dict = payload if isinstance(payload, dict) else {}
++    payload_keys = sorted(payload_dict.keys())
++    raw_session_id_fields = {
++        "session_id": payload_dict.get("session_id"),
++        "sessionId": payload_dict.get("sessionId"),
++        "resourceId": payload_dict.get("resourceId"),
++        "resource_id": payload_dict.get("resource_id"),
++    }
++    if payload_skip in ("invalid-payload-json", "payload-not-object"):
++        _log({
++            "pid": pid,
++            "argvCount": argv_count,
++            "stdinBytes": stdin_bytes,
++            "payloadSource": payload_source,
++            "payloadKeys": payload_keys,
++            "rawSessionIdFields": raw_session_id_fields,
++            "sessionId": None,
++            "supersetEnv": superset_env,
++            "mapping": None,
++            "action": "skip",
++            "skipReason": payload_skip,
++            "outPath": None,
++            "error": None,
++        })
++        return
++
+     session_id = (
+-        payload.get("session_id")
+-        or payload.get("sessionId")
+-        or payload.get("resourceId")
+-        or payload.get("resource_id")
++        payload_dict.get("session_id")
++        or payload_dict.get("sessionId")
++        or payload_dict.get("resourceId")
++        or payload_dict.get("resource_id")
+     )
+     if not session_id or not isinstance(session_id, str):
++        _log({
++            "pid": pid,
++            "argvCount": argv_count,
++            "stdinBytes": stdin_bytes,
++            "payloadSource": payload_source,
++            "payloadKeys": payload_keys,
++            "rawSessionIdFields": raw_session_id_fields,
++            "sessionId": session_id if isinstance(session_id, str) else None,
++            "supersetEnv": superset_env,
++            "mapping": None,
++            "action": "skip",
++            "skipReason": "missing-session-id",
++            "outPath": None,
++            "error": None,
++        })
+         return
+ 
+     # Only emit fields that have values — keeps the mapping file
+@@ -116,7 +213,22 @@ def main() -> None:
+     out_dir = pathlib.Path.home() / ".superset" / "session-pane-map"
+     try:
+         out_dir.mkdir(parents=True, exist_ok=True)
+-    except OSError:
++    except OSError as exc:
++        _log({
++            "pid": pid,
++            "argvCount": argv_count,
++            "stdinBytes": stdin_bytes,
++            "payloadSource": payload_source,
++            "payloadKeys": payload_keys,
++            "rawSessionIdFields": raw_session_id_fields,
++            "sessionId": session_id,
++            "supersetEnv": superset_env,
++            "mapping": mapping,
++            "action": "skip",
++            "skipReason": "mkdir-failed",
++            "outPath": None,
++            "error": str(exc),
++        })
+         return
+     out_path = out_dir / f"{session_id}.json"
+     try:
+@@ -124,9 +236,40 @@ def main() -> None:
+             json.dumps(mapping),
+             encoding="utf-8",
+         )
+-    except OSError:
++    except OSError as exc:
++        _log({
++            "pid": pid,
++            "argvCount": argv_count,
++            "stdinBytes": stdin_bytes,
++            "payloadSource": payload_source,
++            "payloadKeys": payload_keys,
++            "rawSessionIdFields": raw_session_id_fields,
++            "sessionId": session_id,
++            "supersetEnv": superset_env,
++            "mapping": mapping,
++            "action": "skip",
++            "skipReason": "write-failed",
++            "outPath": str(out_path),
++            "error": str(exc),
++        })
+         return
+ 
++    _log({
++        "pid": pid,
++        "argvCount": argv_count,
++        "stdinBytes": stdin_bytes,
++        "payloadSource": payload_source,
++        "payloadKeys": payload_keys,
++        "rawSessionIdFields": raw_session_id_fields,
++        "sessionId": session_id,
++        "supersetEnv": superset_env,
++        "mapping": mapping,
++        "action": "write",
++        "skipReason": None,
++        "outPath": str(out_path),
++        "error": None,
++    })
++
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
+index ff75ad5..0187791 100644
+--- a/apps/desktop/src/main/windows/main.ts
++++ b/apps/desktop/src/main/windows/main.ts
+@@ -174,6 +174,25 @@ export async function MainWindow() {
+ 		});
+ 	}
+ 
++	// Production diagnostic: persist renderer "[agent-dots]" console lines to
++	// electron-log (main.log) so the agent-status-dots pipeline can be
++	// investigated from a shipped build without a devtools session. Logging
++	// only — never alters behaviour. Companion to the watcher's
++	// ~/.superset/agent-watcher-debug.log + ~/.superset/pane-map-hook.log.
++	// See patches/notification-logging.patch.
++	window.webContents.on(
++		"console-message",
++		(_event, _level, message) => {
++			try {
++				if (typeof message === "string" && message.startsWith("[agent-dots]")) {
++					log.info(message);
++				}
++			} catch {
++				// never let logging crash the main process
++			}
++		},
++	);
++
+ 	if (ipcHandler) {
+ 		ipcHandler.attachWindow(window);
+ 	} else {
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
+index d007a82..395bd5a 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx
+@@ -15,6 +15,23 @@ import {
+ } from "./components/HostNotificationSubscriber";
+ import { handleV2AgentLifecycleStatusEvent } from "./lib/lifecycleEvents";
+ 
++// Diagnostic logging for the agent-status-dots pipeline. Emitted via
++// console.info with an "[agent-dots]" prefix so the main process's
++// production console-message forwarder persists them to electron-log
++// (main.log). Flip to false to silence. Logging-only — never alters
++// behaviour. See patches/notification-logging.patch.
++const NLOG = true;
++function ndots(record: Record<string, unknown>): void {
++	if (!NLOG) return;
++	try {
++		console.info(
++			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
++		);
++	} catch {
++		// never let logging crash the renderer
++	}
++}
++
+ interface WorkspaceHostRow {
+ 	workspaceId: string;
+ 	organizationId: string;
+@@ -104,9 +121,46 @@ export function V2NotificationController() {
+ 		(event: ElectronNotificationEvent) => {
+ 			if (event.type !== NOTIFICATION_EVENTS.AGENT_LIFECYCLE) return;
+ 			const data = event.data;
+-			if (!data?.workspaceId || !data.terminalId) return;
++			// eventId is logging-only; the watcher emits it on its dbg
++			// records and may attach it to the payload in future. Read
++			// defensively without depending on the shared type.
++			const eventId = (data as { eventId?: string } | undefined)?.eventId;
++			ndots({
++				event: "electron_agent_lifecycle_received",
++				eventId,
++				eventType: data?.eventType,
++				sessionId: data?.sessionId,
++				cwd: data?.cwd,
++				terminalId: data?.terminalId,
++				workspaceId: data?.workspaceId,
++				hasWorkspace: !!(
++					data?.workspaceId && workspaceStatesById.has(data.workspaceId)
++				),
++				workspaceStatesCount: workspaceStatesById.size,
++			});
++			if (!data?.workspaceId || !data.terminalId) {
++				ndots({
++					event: "electron_agent_lifecycle_drop",
++					reason: !data?.workspaceId ? "missing-workspaceId" : "missing-terminalId",
++					eventId,
++					sessionId: data?.sessionId,
++					terminalId: data?.terminalId,
++					workspaceId: data?.workspaceId,
++				});
++				return;
++			}
+ 			const workspace = workspaceStatesById.get(data.workspaceId);
+-			if (!workspace) return;
++			if (!workspace) {
++				ndots({
++					event: "electron_agent_lifecycle_drop",
++					reason: "workspace-not-loaded",
++					eventId,
++					sessionId: data.sessionId,
++					terminalId: data.terminalId,
++					workspaceId: data.workspaceId,
++				});
++				return;
++			}
+ 
+ 			// Adopted shells keep their launch-time host-service hook URL. When
+ 			// that URL is stale, the Electron fallback still has terminal context.
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+index 1ed8369..88c2496 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+@@ -20,6 +20,22 @@ import {
+ } from "./resolveV2NotificationTarget";
+ import { resolveV2AgentStatusTransition } from "./statusTransitions";
+ 
++// Diagnostic logging for the agent-status-dots pipeline. Emitted via
++// console.info("[agent-dots] ...") so the main process forwarder persists
++// it to electron-log (main.log). Logging-only; flip NLOG to silence. See
++// patches/notification-logging.patch.
++const NLOG = true;
++function ndots(record: Record<string, unknown>): void {
++	if (!NLOG) return;
++	try {
++		console.info(
++			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
++		);
++	} catch {
++		// never let logging crash the renderer
++	}
++}
++
+ /**
+  * Updates pane status indicators (working/review/permission/idle) and plays
+  * the completion chime client-side, so the playback path works when
+@@ -131,6 +147,15 @@ function updatePaneStatus(
+ 		targetVisible,
+ 	});
+ 
++	ndots({
++		event: "status_transition_computed",
++		workspaceId,
++		terminalId: target.terminalId,
++		target,
++		clearSources: transition.clearSources,
++		setStatus: transition.setStatus,
++	});
++
+ 	clearSources(workspaceId, transition.clearSources);
+ 	if (transition.setStatus) {
+ 		store.setSourceStatus(
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/store.ts b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+index 2cf2bca..061bb19 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/store.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+@@ -5,6 +5,23 @@ import {
+ } from "shared/tabs-types";
+ import { create } from "zustand";
+ 
++// Diagnostic logging for the agent-status-dots pipeline. console.info with
++// an "[agent-dots]" prefix so the main process forwarder persists it to
++// electron-log (main.log). Logging-only; flip NLOG to silence. NOTE: only
++// the mutators are instrumented — selectors (selectStatusForSourceKeys) are
++// hot and intentionally left untouched. See patches/notification-logging.patch.
++const NLOG = true;
++function ndots(record: Record<string, unknown>): void {
++	if (!NLOG) return;
++	try {
++		console.info(
++			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
++		);
++	} catch {
++		// never let logging crash the renderer
++	}
++}
++
+ export type V2NotificationPaneLike = Pick<Pane<unknown>, "kind" | "data">;
+ export type V2NotificationTabLike = Pick<Tab<unknown>, "panes">;
+ 
+@@ -68,6 +85,15 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 	sources: {},
+ 	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
+ 		const sourceKey = getV2NotificationSourceKey(source);
++		ndots({
++			event: "store_mutation",
++			mutation: "setSourceStatus",
++			sourceKey,
++			workspaceId,
++			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
++			to: status,
++			occurredAt,
++		});
+ 		set((state) => ({
+ 			sources: {
+ 				...state.sources,
+@@ -112,6 +138,15 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 	},
+ 	clearSourceStatus: (source, workspaceId) => {
+ 		const sourceKey = getV2NotificationSourceKey(source);
++		ndots({
++			event: "store_mutation",
++			mutation: "clearSourceStatus",
++			sourceKey,
++			workspaceId: workspaceId ?? null,
++			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
++			to: null,
++			occurredAt: Date.now(),
++		});
+ 		set((state) => {
+ 			const entry = state.sources[sourceKey];
+ 			if (!entry || (workspaceId && entry.workspaceId !== workspaceId)) {
+@@ -171,6 +206,27 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 		});
+ 	},
+ 	clearWorkspaceAttention: (workspaceId) => {
++		{
++			// Log each source this call will clear (workspace match +
++			// status "review"). One line per source so each carries its
++			// own sourceKey. Read-only snapshot — no logic change.
++			const now = Date.now();
++			for (const [sourceKey, source] of Object.entries(
++				useV2NotificationStore.getState().sources,
++			)) {
++				if (source.workspaceId === workspaceId && source.status === "review") {
++					ndots({
++						event: "store_mutation",
++						mutation: "clearWorkspaceAttention",
++						sourceKey,
++						workspaceId,
++						from: source.status,
++						to: null,
++						occurredAt: now,
++					});
++				}
++			}
++		}
+ 		set((state) => {
+ 			const sources: Record<string, V2NotificationStatusEntry> = {};
+ 			let changed = false;

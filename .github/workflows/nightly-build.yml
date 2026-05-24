@@ -870,6 +870,85 @@ jobs:
             }
           }
 
+          # (X) terminal-tab-focus-trap.patch
+          #     Counteracts a side-effect of (V): with screenReaderMode: true,
+          #     xterm still sends \t to the PTY but no longer cancels the Tab
+          #     keydown's default action, so the browser's focus traversal fires
+          #     and Tab steals focus OUT of the terminal (breaks Claude Code tab
+          #     completion staying in-pane). Adds a branch to our shared
+          #     attachCustomKeyEventHandler: for Tab/Shift+Tab (no ctrl/alt/meta,
+          #     not during IME composition) preventDefault on keydown then return
+          #     true so xterm still encodes+sends the key. Guard SKIPS (warns)
+          #     instead of aborting — older upstream context drift mustn't block
+          #     the build; worst case on skip is Tab escapes focus again (the
+          #     (V) side-effect), no worse than not having it.
+          $tt = '../patches/terminal-tab-focus-trap.patch'
+          if (-not (Test-Path $tt)) { Write-Host "::warning::(X) missing $tt in patches repo — skipping tab focus-trap" }
+          else {
+            $ttf = 'apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts'
+            if (-not (Test-Path $ttf)) {
+              Write-Host "::warning::(X) $ttf not present in this upstream — skipping tab focus-trap (likely older 1.9.x)."
+            } elseif (Select-String -Quiet -SimpleMatch 'must NOT traverse DOM focus' $ttf) {
+              Write-Host "(X) terminal-tab-focus-trap already present — skip"
+            } else {
+              git apply --check $tt 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::(X) terminal-tab-focus-trap.patch does not apply cleanly against this upstream — skipping (NOT aborting). Tab may steal focus out of terminals until patches/terminal-tab-focus-trap.patch is regenerated."
+              } else {
+                git apply $tt
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::(X) git apply failed after a clean --check — skipping tab focus-trap."
+                } else {
+                  if ((Get-Content -Raw $ttf) -notmatch 'must NOT traverse DOM focus') { Write-Error "(X) tab focus-trap marker missing in $ttf after apply"; exit 1 }
+                  Write-Host "(X) terminal-tab-focus-trap applied (Tab/Shift+Tab no longer steal focus out of the terminal)"
+                }
+              }
+            }
+          }
+
+          # (W) notification-logging.patch
+          #     Pure additive diagnostic logging for the agent-status-dots
+          #     pipeline (no behaviour/logic change). Applies AFTER (N) and
+          #     (V): the hook Python string gains a _log() that appends one
+          #     JSON line per invocation to ~/.superset/pane-map-hook.log
+          #     (gated by SUPERSET_AGENT_WATCHER_DEBUG); the watcher gains an
+          #     eventId join-key + mapping_load / enriched transition dbg
+          #     records (~/.superset/agent-watcher-debug.log); main.ts gains a
+          #     PRODUCTION console-message forwarder that persists renderer
+          #     "[agent-dots]" lines to electron-log (main.log); and the
+          #     renderer (V2NotificationController, lifecycleEvents, the
+          #     v2-notifications store) emits "[agent-dots]" lifecycle /
+          #     drop / transition / store-mutation records. Touches files (N)
+          #     creates (pane-map-hook.ts, agent-jsonl-watcher.ts, main.ts)
+          #     plus three renderer files (N) doesn't. Guard SKIPS (warns)
+          #     instead of aborting — logging is non-essential, so context
+          #     drift on an older upstream must not block the build; worst
+          #     case on skip is the next build ships without the extra
+          #     diagnostics, no regression.
+          $nl = '../patches/notification-logging.patch'
+          if (-not (Test-Path $nl)) { Write-Host "::warning::(W) missing $nl in patches repo — skipping notification logging" }
+          else {
+            $nlHook = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+            if (-not (Test-Path $nlHook)) {
+              Write-Host "::warning::(W) $nlHook is missing in this upstream — skipping notification logging (did (N) apply?)."
+            } elseif (Select-String -Quiet -SimpleMatch 'pane-map-hook.log' $nlHook) {
+              Write-Host "(W) notification logging already present — skip"
+            } else {
+              git apply --check $nl 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::(W) notification-logging.patch does not apply cleanly against this upstream (post N+V) — skipping (NOT aborting). The next build will ship without the extra agent-dots diagnostics until patches/notification-logging.patch is regenerated."
+              } else {
+                git apply $nl
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::(W) git apply failed after a clean --check — skipping notification logging."
+                } else {
+                  if ((Get-Content -Raw $nlHook) -notmatch 'pane-map-hook\.log') { Write-Error "(W) pane-map-hook.log logging missing in $nlHook after apply"; exit 1 }
+                  Write-Host "(W) notification logging applied (hook -> ~/.superset/pane-map-hook.log; renderer [agent-dots] lines -> electron-log main.log)"
+                }
+              }
+            }
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -879,7 +958,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + X + W + F). (U disabled — see comment above.)"
 
       - name: Install dependencies
         working-directory: superset

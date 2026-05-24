@@ -90,7 +90,37 @@ A **build-automation repo**, not app source. It produces a native Windows
   `screenReaderMode: true` so xterm exposes its hidden `<textarea>` as a
   UIA TextPattern provider. Negligible CPU cost; documented xterm.js
   option, no known regressions. Guard (V) SKIPS rather than aborts on
-  apply-failure — older 1.9.x context drift mustn't block the build).
+  apply-failure — older 1.9.x context drift mustn't block the build), and
+  `notification-logging.patch` (**logging-only**, no behaviour/logic
+  change — additive diagnostics for the agent-status-dots pipeline so a
+  shipped build can be used to debug flaky/inconsistent dots. Applies
+  AFTER (N) and (V): the pane-map hook's Python gains a `_log()` writing
+  one JSON line per invocation to `~/.superset/pane-map-hook.log`
+  (every phase incl. skip-reason: missing-terminal-env / missing-session-id
+  / invalid-payload-json / payload-not-object / mkdir-failed / write-failed;
+  gate with `SUPERSET_AGENT_WATCHER_DEBUG=0`); the watcher gains an
+  `eventId` join-key + `mapping_load` + enriched `transition` /
+  `transition-suppressed` dbg records (`~/.superset/agent-watcher-debug.log`);
+  `main.ts` gains a PRODUCTION `console-message` forwarder that persists
+  renderer `[agent-dots]` lines to `electron-log` (`main.log`); and the
+  renderer (`V2NotificationController`, `lib/lifecycleEvents.ts`, the
+  `v2-notifications` store) emits `[agent-dots]` records —
+  `electron_agent_lifecycle_received`, per-`return` `…_drop` with a
+  `reason` (missing-workspaceId / missing-terminalId / workspace-not-loaded;
+  the highest-value diagnostic), `status_transition_computed`, and
+  `store_mutation`. Selectors are left untouched (hot path). Guard (W)
+  SKIPS rather than aborts on apply-failure — logging is non-essential, so
+  context drift mustn't block the build; marker `pane-map-hook.log`), and
+  `terminal-tab-focus-trap.patch` (counteracts a side-effect of (V): with
+  `screenReaderMode: true` xterm still sends `\t` to the PTY but no longer
+  cancels the Tab keydown's default action, so the browser's focus traversal
+  fires and Tab steals focus OUT of the terminal — breaking Claude Code tab
+  completion staying in-pane. Adds a branch to our shared
+  `attachCustomKeyEventHandler` (`terminal-key-event-handler.ts`, used by
+  both v1 + v2): for Tab/Shift+Tab with no ctrl/alt/meta and not during IME
+  composition, `preventDefault()` on keydown then `return true` so xterm
+  still encodes + sends the key under the kitty-keyboard protocol. Guard (X)
+  SKIPS rather than aborts on apply-failure).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin
