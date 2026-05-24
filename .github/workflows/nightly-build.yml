@@ -294,28 +294,66 @@ jobs:
             Write-Error "(B) failed: $cli still has no bun-windows-arm64 target"; exit 1
           }
 
-          # (C) Patches 12 & 14 hardcode the x64 native pty binary. Rewrite to ARM64.
-          $files = @('apps/desktop/scripts/copy-native-modules.ts', 'apps/desktop/electron-builder.ts')
-          $changed = $false
-          foreach ($f in $files) {
-            if (-not (Test-Path $f)) { Write-Error "Expected patched file missing: $f (did the patch apply?)"; exit 1 }
-            $c = Get-Content -Raw $f
-            if ($c -match 'node-pty-win32-x64') {
-              Set-Content -Path $f -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
-              Write-Host "(C) Rewrote node-pty-win32-x64 -> node-pty-win32-arm64 in $f"
-              $changed = $true
-            }
+          # (C) Native pty binary must target ARM64. PATCHES.md Patch 12 (step 5,
+          #     electron-builder.ts win: block) and Patch 14 (copy-native-modules.ts)
+          #     are AI-applied and introduce the x64 @lydell/node-pty-win32-x64
+          #     packaging; this step makes the result ARM64. It is SELF-SUFFICIENT:
+          #     if the AI patch step flaked and the packaging is absent, it splices
+          #     the arm64 form in deterministically from scripts/fixup-snippets/ so a
+          #     single non-deterministic AI miss can't abort the whole build (Patch 14
+          #     is fragile: its `NATIVE_MODULE_DEPS` anchor no longer exists upstream).
+          #     Per file: x64 present -> rewrite; arm64 present -> ok; neither ->
+          #     inject. Idempotent. Verifies BOTH files end up arm64 (the old guard
+          #     aborted only if NEITHER file had the literal — a partial AI miss could
+          #     ship with node-pty unmaterialized; this closes that gap).
+          $ebSnippet = Get-Content -Raw '../scripts/fixup-snippets/node-pty-arm64-electron-builder.snippet'
+          $cnmSnippet = Get-Content -Raw '../scripts/fixup-snippets/node-pty-arm64-copy-native.snippet'
+          if (-not $ebSnippet) { Write-Error "(C) missing electron-builder arm64 snippet"; exit 1 }
+          if (-not $cnmSnippet) { Write-Error "(C) missing copy-native arm64 snippet"; exit 1 }
+
+          # electron-builder.ts: node-pty packaging lives in the win: block.
+          $eb = 'apps/desktop/electron-builder.ts'
+          if (-not (Test-Path $eb)) { Write-Error "(C) expected file missing: $eb"; exit 1 }
+          $c = Get-Content -Raw $eb
+          if ($c -match 'node-pty-win32-x64') {
+            Set-Content -Path $eb -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
+            Write-Host "(C) electron-builder.ts: rewrote node-pty-win32-x64 -> arm64"
+          } elseif ($c -match 'node-pty-win32-arm64') {
+            Write-Host "(C) electron-builder.ts: node-pty-win32-arm64 already present (ok)"
+          } else {
+            # AI Patch 12 step 5 absent -> inject after the win: block artifactName
+            # (uniquely contains ${pkg.version}; linux's artifactName uses ${version}).
+            $m = [regex]::Match($c, '(?m)^[\t ]*artifactName:.*\$\{pkg\.version\}.*\r?\n')
+            if (-not $m.Success) { Write-Error "(C) electron-builder.ts: node-pty packaging absent AND win artifactName anchor not found; cannot inject -- aborting."; exit 1 }
+            Set-Content -Path $eb -Value ($c.Insert($m.Index + $m.Length, $ebSnippet)) -NoNewline
+            Write-Host "(C) electron-builder.ts: AI patch absent -- injected arm64 node-pty packaging into win block"
           }
-          if (-not $changed) {
-            Write-Error "(C) found no 'node-pty-win32-x64' references. Patch 12/14 structure changed; aborting to avoid shipping a broken or x64 build."
-            exit 1
+
+          # copy-native-modules.ts: materializes the @lydell platform binary.
+          $cnm = 'apps/desktop/scripts/copy-native-modules.ts'
+          if (-not (Test-Path $cnm)) { Write-Error "(C) expected file missing: $cnm"; exit 1 }
+          $c = Get-Content -Raw $cnm
+          if ($c -match 'node-pty-win32-x64') {
+            Set-Content -Path $cnm -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
+            Write-Host "(C) copy-native-modules.ts: rewrote node-pty-win32-x64 -> arm64"
+          } elseif ($c -match 'node-pty-win32-arm64') {
+            Write-Host "(C) copy-native-modules.ts: node-pty-win32-arm64 already present (ok)"
+          } else {
+            # AI Patch 14 absent -> inject the const + Bun-store copy loop before the
+            # final console.log("\nDone!") inside prepareNativeModules() (in-scope vars).
+            $m = [regex]::Match($c, '(?m)^[\t ]*console\.log\("\\nDone!"\);')
+            if (-not $m.Success) { Write-Error "(C) copy-native-modules.ts: node-pty packaging absent AND Done! anchor not found; cannot inject -- aborting."; exit 1 }
+            Set-Content -Path $cnm -Value ($c.Insert($m.Index, $cnmSnippet)) -NoNewline
+            Write-Host "(C) copy-native-modules.ts: AI patch absent -- injected arm64 node-pty materialization"
           }
-          foreach ($f in $files) {
-            if ((Get-Content -Raw $f) -match 'node-pty-win32-x64') { Write-Error "Residual node-pty-win32-x64 in $f after fixup"; exit 1 }
+
+          # Verify BOTH files: arm64 present, no residual x64.
+          foreach ($f in @($eb, $cnm)) {
+            $cc = Get-Content -Raw $f
+            if ($cc -match 'node-pty-win32-x64') { Write-Error "(C) residual node-pty-win32-x64 in $f after fixup"; exit 1 }
+            if ($cc -notmatch 'node-pty-win32-arm64') { Write-Error "(C) $f has no node-pty-win32-arm64 reference after fixup"; exit 1 }
           }
-          if ((Get-Content -Raw 'apps/desktop/electron-builder.ts') -notmatch 'node-pty-win32-arm64') {
-            Write-Error "electron-builder.ts has no node-pty-win32-arm64 reference after fixup"; exit 1
-          }
+          Write-Host "(C) node-pty win32 packaging is ARM64 in electron-builder.ts + copy-native-modules.ts"
 
           # (D) validate-native-runtime.ts hardcodes the win32 platform packages
           #     to x64. Make the libsql + ast-grep candidates arch-aware so the
@@ -934,9 +972,15 @@ jobs:
             } elseif (Select-String -Quiet -SimpleMatch 'pane-map-hook.log' $nlHook) {
               Write-Host "(W) notification logging already present — skip"
             } else {
-              git apply --check $nl 2>$null
+              # Capture --check stderr (don't suppress) so a drift is diagnosable
+              # from the build log without a guess-and-rebuild cycle. main.ts is the
+              # likely culprit: it carries AI Patch 19 + inline (H) + (T) that this
+              # patch's context may not match.
+              $wErr = "$env:RUNNER_TEMP/w-apply-check.txt"
+              git apply --check $nl 2>$wErr
               if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(W) notification-logging.patch does not apply cleanly against this upstream (post N+V) — skipping (NOT aborting). The next build will ship without the extra agent-dots diagnostics until patches/notification-logging.patch is regenerated."
+                Write-Host "::warning::(W) notification-logging.patch does not apply cleanly against this upstream (post N+V) — skipping (NOT aborting). The next build will ship without the extra agent-dots diagnostics until patches/notification-logging.patch is regenerated. git apply --check output:"
+                if (Test-Path $wErr) { Get-Content $wErr | ForEach-Object { Write-Host "    (W-check) $_" } }
               } else {
                 git apply $nl
                 if ($LASTEXITCODE -ne 0) {
@@ -959,6 +1003,14 @@ jobs:
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
           Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + X + W + F). (U disabled — see comment above.)"
+
+          # Reaching here means every fail-loud guard passed (each aborts with an
+          # explicit `exit 1` earlier). The skip-not-abort guards (V/X/W) run
+          # `git apply --check` whose failure leaves $LASTEXITCODE=1; since (W) is
+          # the last native command, pwsh's trailing `exit $LASTEXITCODE` would
+          # otherwise fail the whole step even though the skip is intentional.
+          # Force a clean exit to reflect "all mandatory fixups applied".
+          exit 0
 
       - name: Install dependencies
         working-directory: superset

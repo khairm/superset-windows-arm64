@@ -131,7 +131,22 @@ A **build-automation repo**, not app source. It produces a native Windows
   npm registry → `overrides` + dep entries), and retries (≤5×) — so the nightly
   never waits a night for packages to age. Generalises the hardcoded
   "Pin Mastra dependencies" step; any *other* install failure still fails loud.
-- `.gitattributes` — forces `*.patch`/`*.sh` to LF; CI `git apply` on the
+- `scripts/fixup-snippets/*.snippet` — plain-TS fragments spliced verbatim into
+  upstream files by inline fixup **(C)**, which is now **self-sufficient**: it
+  rewrites `node-pty-win32-x64`→`-arm64` when the AI applied PATCHES.md Patch 12/14
+  (the common case), skips if already arm64, and **injects the arm64 packaging
+  deterministically when the AI flaked** (Patch 14's `NATIVE_MODULE_DEPS` anchor no
+  longer exists upstream, so it's drop-prone). (C) verifies *both* electron-builder.ts
+  and copy-native-modules.ts end up arm64 — the old guard aborted only if *neither*
+  had the literal, which could ship with node-pty unmaterialized. So a single
+  non-deterministic AI miss can no longer abort the build.
+- The fixup step ends with `exit 0`. The skip-not-abort guards (V/X/W) run
+  `git apply --check`, whose failure leaves `$LASTEXITCODE=1`; since (W) is the last
+  native command, pwsh's trailing `exit $LASTEXITCODE` would otherwise fail the whole
+  step even when the skip is intentional (this bug actually failed a build once (W)
+  first drifted). (W)'s `--check` stderr is logged on failure so drift is diagnosable
+  without a guess-and-rebuild cycle.
+- `.gitattributes` — forces `*.patch`/`*.sh`/`*.snippet` to LF; CI `git apply` on the
   Windows runner fails on CRLF.
 - `README.md` — user-facing download/build docs.
 

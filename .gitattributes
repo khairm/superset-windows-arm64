@@ -10,3 +10,7 @@
 # with the rest of the build tooling (node tolerates CRLF, but LF avoids
 # noisy diffs and surprises).
 *.mjs text eol=lf
+
+# Fixup snippets are spliced verbatim into upstream TS files by the ARM64
+# fixup step (C). Keep LF so the spliced result matches upstream's LF source.
+*.snippet text eol=lf

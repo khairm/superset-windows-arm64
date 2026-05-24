@@ -1,0 +1,53 @@
+	// (C) ARM64 fixup fallback: materialize @lydell/node-pty's platform binary
+	// from Bun's store. Spliced in deterministically when AI Patch 14 did not
+	// apply (its `NATIVE_MODULE_DEPS` anchor no longer exists upstream — the file
+	// now uses requiredMaterializedNodeModules). Mirrors Patch 14, arm64 win32.
+	const OPTIONAL_PLATFORM_MODULES = [
+		...(process.platform === "win32" ? ["@lydell/node-pty-win32-arm64"] : []),
+		...(process.platform === "darwin" && process.arch === "arm64"
+			? ["@lydell/node-pty-darwin-arm64"]
+			: []),
+		...(process.platform === "darwin" && process.arch === "x64"
+			? ["@lydell/node-pty-darwin-x64"]
+			: []),
+		...(process.platform === "linux" && process.arch === "x64"
+			? ["@lydell/node-pty-linux-x64"]
+			: []),
+		...(process.platform === "linux" && process.arch === "arm64"
+			? ["@lydell/node-pty-linux-arm64"]
+			: []),
+	] as const;
+	if (OPTIONAL_PLATFORM_MODULES.length > 0) {
+		console.log("\nPreparing platform-specific optional modules...");
+		const bunStoreDir = getBunStoreDir(nodeModulesDir);
+		for (const moduleName of OPTIONAL_PLATFORM_MODULES) {
+			const destPath = join(nodeModulesDir, moduleName);
+			if (existsSync(destPath)) {
+				console.log(`  ${moduleName}: already exists`);
+				continue;
+			}
+			const bunPrefix = moduleName.startsWith("@")
+				? moduleName.replace("/", "+")
+				: moduleName;
+			const bunStoreEntries = existsSync(bunStoreDir)
+				? readdirSync(bunStoreDir).filter((e) => e.startsWith(`${bunPrefix}@`))
+				: [];
+			if (bunStoreEntries.length === 0) {
+				console.warn(`  ${moduleName}: not found in Bun store (skipping)`);
+				continue;
+			}
+			const sourcePath = join(
+				bunStoreDir,
+				bunStoreEntries.sort().reverse()[0],
+				"node_modules",
+				moduleName,
+			);
+			if (!existsSync(sourcePath)) {
+				console.warn(`  ${moduleName}: Bun store path missing (${sourcePath})`);
+				continue;
+			}
+			console.log(`  ${moduleName}: copying from Bun store`);
+			mkdirSync(dirname(destPath), { recursive: true });
+			cpSync(sourcePath, destPath, { recursive: true });
+		}
+	}
