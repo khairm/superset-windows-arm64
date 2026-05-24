@@ -134,9 +134,12 @@ A **build-automation repo**, not app source. It produces a native Windows
 - `scripts/fixup-snippets/*.snippet` — plain-TS fragments spliced verbatim into
   upstream files by inline fixup **(C)**, which is now **self-sufficient**: it
   rewrites `node-pty-win32-x64`→`-arm64` when the AI applied PATCHES.md Patch 12/14
-  (the common case), skips if already arm64, and **injects the arm64 packaging
-  deterministically when the AI flaked** (Patch 14's `NATIVE_MODULE_DEPS` anchor no
-  longer exists upstream, so it's drop-prone). (C) verifies *both* electron-builder.ts
+  with the x64 literal, skips when the materialization is already present in *any*
+  form (arm64 literal, or the AI's elaborated `copyNodePtyPlatformBinary` /
+  process.arch `OPTIONAL_PLATFORM_MODULES` variant — detecting only the literal once
+  injected a colliding 2nd const and TDZ-crashed `prepareNativeModules`), and
+  **injects the arm64 packaging deterministically only on a total AI flake** (Patch
+  14's `NATIVE_MODULE_DEPS` anchor no longer exists upstream, so it's drop-prone). (C) verifies *both* electron-builder.ts
   and copy-native-modules.ts end up arm64 — the old guard aborted only if *neither*
   had the literal, which could ship with node-pty unmaterialized. So a single
   non-deterministic AI miss can no longer abort the build.

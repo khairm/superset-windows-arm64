@@ -301,11 +301,12 @@ jobs:
           #     if the AI patch step flaked and the packaging is absent, it splices
           #     the arm64 form in deterministically from scripts/fixup-snippets/ so a
           #     single non-deterministic AI miss can't abort the whole build (Patch 14
-          #     is fragile: its `NATIVE_MODULE_DEPS` anchor no longer exists upstream).
-          #     Per file: x64 present -> rewrite; arm64 present -> ok; neither ->
-          #     inject. Idempotent. Verifies BOTH files end up arm64 (the old guard
-          #     aborted only if NEITHER file had the literal — a partial AI miss could
-          #     ship with node-pty unmaterialized; this closes that gap).
+          #     is fragile: its `NATIVE_MODULE_DEPS` anchor no longer exists upstream,
+          #     and the AI applies it as varying shapes — see copy-native note below).
+          #     Per file: x64 literal -> rewrite; arm64/variant already present -> ok;
+          #     truly absent -> inject. Idempotent. Verifies no residual x64 ships (the
+          #     old guard aborted only if NEITHER file had the literal — a partial AI
+          #     miss could ship with node-pty unmaterialized; this closes that gap).
           $ebSnippet = Get-Content -Raw '../scripts/fixup-snippets/node-pty-arm64-electron-builder.snippet'
           $cnmSnippet = Get-Content -Raw '../scripts/fixup-snippets/node-pty-arm64-copy-native.snippet'
           if (-not $ebSnippet) { Write-Error "(C) missing electron-builder arm64 snippet"; exit 1 }
@@ -330,16 +331,27 @@ jobs:
           }
 
           # copy-native-modules.ts: materializes the @lydell platform binary.
+          #     The AI's Patch 14 application VARIES run-to-run: canonical (literal
+          #     node-pty-win32-x64) OR an elaborated variant — a copyNodePtyPlatformBinary
+          #     helper + a module-level, process.arch-based OPTIONAL_PLATFORM_MODULES
+          #     with NO literal. Absence of the literal does NOT mean Patch 14 is
+          #     absent. Inject ONLY on a total flake (no literal AND no variant marker):
+          #     injecting a second `const OPTIONAL_PLATFORM_MODULES` shadows the AI's at
+          #     function scope and crashes prepareNativeModules() with a TDZ
+          #     "Cannot access 'OPTIONAL_PLATFORM_MODULES' before initialization"
+          #     (this failed run 26372273783). When the variant is present we trust it —
+          #     the runner is native win-arm64 so process.arch resolves arm64, the same
+          #     trust 1.10.x builds already place in the AI's Patch 14.
           $cnm = 'apps/desktop/scripts/copy-native-modules.ts'
           if (-not (Test-Path $cnm)) { Write-Error "(C) expected file missing: $cnm"; exit 1 }
           $c = Get-Content -Raw $cnm
           if ($c -match 'node-pty-win32-x64') {
             Set-Content -Path $cnm -Value ($c -replace 'node-pty-win32-x64','node-pty-win32-arm64') -NoNewline
             Write-Host "(C) copy-native-modules.ts: rewrote node-pty-win32-x64 -> arm64"
-          } elseif ($c -match 'node-pty-win32-arm64') {
-            Write-Host "(C) copy-native-modules.ts: node-pty-win32-arm64 already present (ok)"
+          } elseif ($c -match 'node-pty-win32-arm64' -or $c -match 'OPTIONAL_PLATFORM_MODULES' -or $c -match 'copyNodePtyPlatformBinary') {
+            Write-Host "(C) copy-native-modules.ts: node-pty platform materialization already present (ok)"
           } else {
-            # AI Patch 14 absent -> inject the const + Bun-store copy loop before the
+            # Total AI flake -> inject the const + Bun-store copy loop before the
             # final console.log("\nDone!") inside prepareNativeModules() (in-scope vars).
             $m = [regex]::Match($c, '(?m)^[\t ]*console\.log\("\\nDone!"\);')
             if (-not $m.Success) { Write-Error "(C) copy-native-modules.ts: node-pty packaging absent AND Done! anchor not found; cannot inject -- aborting."; exit 1 }
@@ -347,13 +359,16 @@ jobs:
             Write-Host "(C) copy-native-modules.ts: AI patch absent -- injected arm64 node-pty materialization"
           }
 
-          # Verify BOTH files: arm64 present, no residual x64.
+          # Verify no residual hardcoded x64 in either file. electron-builder must
+          # also carry the arm64 literal (its asarUnpack/files globs are always
+          # literal paths). copy-native-modules.ts may legitimately have no literal
+          # (the AI's process.arch variant computes the name), so only assert there
+          # that nothing is hardcoded to x64.
           foreach ($f in @($eb, $cnm)) {
-            $cc = Get-Content -Raw $f
-            if ($cc -match 'node-pty-win32-x64') { Write-Error "(C) residual node-pty-win32-x64 in $f after fixup"; exit 1 }
-            if ($cc -notmatch 'node-pty-win32-arm64') { Write-Error "(C) $f has no node-pty-win32-arm64 reference after fixup"; exit 1 }
+            if ((Get-Content -Raw $f) -match 'node-pty-win32-x64') { Write-Error "(C) residual node-pty-win32-x64 in $f after fixup"; exit 1 }
           }
-          Write-Host "(C) node-pty win32 packaging is ARM64 in electron-builder.ts + copy-native-modules.ts"
+          if ((Get-Content -Raw $eb) -notmatch 'node-pty-win32-arm64') { Write-Error "(C) electron-builder.ts has no node-pty-win32-arm64 reference after fixup"; exit 1 }
+          Write-Host "(C) node-pty win32 packaging is ARM64 (electron-builder.ts literal; copy-native-modules.ts arm64/variant)"
 
           # (D) validate-native-runtime.ts hardcodes the win32 platform packages
           #     to x64. Make the libsql + ast-grep candidates arch-aware so the
