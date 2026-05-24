@@ -120,7 +120,15 @@ A **build-automation repo**, not app source. It produces a native Windows
   both v1 + v2): for Tab/Shift+Tab with no ctrl/alt/meta and not during IME
   composition, `preventDefault()` on keydown then `return true` so xterm
   still encodes + sends the key under the kitty-keyboard protocol. Guard (X)
-  SKIPS rather than aborts on apply-failure).
+  SKIPS rather than aborts on apply-failure), and
+  `windows-force-foreground.patch` (`focusMainWindow()` — the second-instance /
+  deep-link handler — did only `show()`+`focus()`, which Windows' foreground lock
+  ignores: relaunching Superset while its window was buried in z-order behind the
+  app holding the foreground surfaced nothing (`IsWindowVisible` true, just not
+  raised; distinct from the (T) hidden-window case). Adds a brief always-on-top
+  pin (exempt from the lock) to force the window to the top on Windows, released
+  on the next tick. Guard (Y) SKIPS rather than aborts on apply-failure — it's a
+  recovery QoL fix, marker `Windows holds a foreground lock`).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin

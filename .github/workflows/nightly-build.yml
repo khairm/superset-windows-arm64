@@ -1008,6 +1008,42 @@ jobs:
             }
           }
 
+          # (Y) windows-force-foreground.patch
+          #     focusMainWindow() (the second-instance / deep-link handler) did only
+          #     show()+focus(), which Windows' foreground lock ignores — so
+          #     relaunching Superset while its window was buried in z-order surfaced
+          #     nothing (the window is visible per IsWindowVisible, just behind the
+          #     app that holds the foreground; needed a manual Win32 raise to recover).
+          #     Adds a brief always-on-top pin (exempt from the lock) to force the
+          #     window to the top on Windows. Guard SKIPS (warns) instead of aborting —
+          #     it's a recovery QoL fix, not load-bearing, so context drift mustn't
+          #     block the build. Marker: 'Windows holds a foreground lock'.
+          $ff = '../patches/windows-force-foreground.patch'
+          if (-not (Test-Path $ff)) { Write-Host "::warning::(Y) missing $ff in patches repo — skipping force-foreground" }
+          else {
+            $ffFile = 'apps/desktop/src/main/index.ts'
+            if (-not (Test-Path $ffFile)) {
+              Write-Host "::warning::(Y) $ffFile is missing in this upstream — skipping force-foreground."
+            } elseif (Select-String -Quiet -SimpleMatch 'Windows holds a foreground lock' $ffFile) {
+              Write-Host "(Y) force-foreground already present — skip"
+            } else {
+              $yErr = "$env:RUNNER_TEMP/y-apply-check.txt"
+              git apply --check $ff 2>$yErr
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::(Y) windows-force-foreground.patch does not apply cleanly — skipping (NOT aborting). Relaunching a buried window may not surface it until patches/windows-force-foreground.patch is regenerated. git apply --check output:"
+                if (Test-Path $yErr) { Get-Content $yErr | ForEach-Object { Write-Host "    (Y-check) $_" } }
+              } else {
+                git apply $ff
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "::warning::(Y) git apply failed after a clean --check — skipping force-foreground."
+                } else {
+                  if ((Get-Content -Raw $ffFile) -notmatch 'setAlwaysOnTop') { Write-Error "(Y) setAlwaysOnTop missing in $ffFile after apply"; exit 1 }
+                  Write-Host "(Y) windows-force-foreground applied (focusMainWindow raises past the Windows foreground lock; relaunch now surfaces a buried window)"
+                }
+              }
+            }
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1017,7 +1053,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + X + W + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + X + W + Y + F). (U disabled — see comment above.)"
 
           # Reaching here means every fail-loud guard passed (each aborts with an
           # explicit `exit 1` earlier). The skip-not-abort guards (V/X/W) run

@@ -1,0 +1,27 @@
+diff --git a/apps/desktop/src/main/index.ts b/apps/desktop/src/main/index.ts
+index 64831c6..c0244d8 100644
+--- a/apps/desktop/src/main/index.ts
++++ b/apps/desktop/src/main/index.ts
+@@ -115,7 +115,21 @@ export function focusMainWindow(): void {
+ 			mainWindow.restore();
+ 		}
+ 		mainWindow.show();
+-		mainWindow.focus();
++		// Windows holds a foreground lock: show()/focus() alone leave the window
++		// buried in z-order when another app owns the foreground, so relaunching
++		// Superset (which routes here via the second-instance handler) looks like
++		// it did nothing. A brief always-on-top pin is exempt from the lock and
++		// forces the window to the top; release it on the next tick so it isn't
++		// left permanently pinned above other apps. No-op cost on macOS/Linux.
++		if (process.platform === "win32") {
++			mainWindow.setAlwaysOnTop(true);
++			mainWindow.focus();
++			setTimeout(() => {
++				if (!mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
++			}, 250);
++		} else {
++			mainWindow.focus();
++		}
+ 	} else {
+ 		// Triggers window creation via makeAppSetup's activate handler
+ 		app.emit("activate");
