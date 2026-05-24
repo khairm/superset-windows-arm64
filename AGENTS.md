@@ -49,12 +49,14 @@ A **build-automation repo**, not app source. It produces a native Windows
   `pwsh.exe` is configured as default but not installed — was the
   root cause of "Failed to run preset open <uuid>: spawn failed
   (shell=pwsh.exe ...)" toasts), and
-  `v2-terminal-await-shell.patch` (upstream v1.10.x forgot `await`
-  on `resolveLaunchShell(baseEnv)` in
-  `packages/host-service/src/terminal/terminal.ts`, leaking a
-  Promise into `path.basename()` downstream and crashing every v2
-  preset spawn with "The 'path' argument must be of type string.
-  Received an instance of Promise"), and
+  (v2-terminal-await-shell was a `.patch` but is now the inline regex fixup
+  **(S)** — upstream forgot `await` on `resolveLaunchShell(baseEnv)` in
+  `packages/host-service/src/terminal/terminal.ts`, leaking a Promise into
+  `path.basename()` and crashing every v2 preset spawn with "The 'path'
+  argument must be of type string. Received an instance of Promise". The
+  line-anchored patch hard-aborted when the AI's other `terminal.ts` edits
+  shifted its `@@` context even though the target line was untouched, so (S)
+  now inserts the one-token `await` by regex, immune to line drift), and
   `fix-hidden-window-watchdog.patch` (the main window is created
   `show: false` and only shown from `did-finish-load`/`did-fail-load`; if
   NEITHER fires — renderer crash mid-load, or a load/visibility race under

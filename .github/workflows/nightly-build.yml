@@ -793,36 +793,39 @@ jobs:
           if ((Get-Content -Raw $envts) -notmatch 'FALLBACK_SHELL') { Write-Error "(R) FALLBACK_SHELL reference missing in env.ts after apply"; exit 1 }
           Write-Host "(R) windows-shell-fallback applied (getDefaultShell now validates the resolved shell exists on PATH; falls back to cmd.exe)"
 
-          # (S) v2 terminal: await resolveLaunchShell. Upstream v1.10.x
-          #     calls `const shell = resolveLaunchShell(baseEnv);` at
-          #     packages/host-service/src/terminal/terminal.ts:1118
-          #     without await. resolveLaunchShell returns Promise<string>,
-          #     so `shell` is a Promise that downstream code passes into
-          #     path.basename(shell) → throws "The 'path' argument must
-          #     be of type string. Received an instance of Promise". The
-          #     v2 "Claude" / "Open terminal" presets fail with this
-          #     message on every Windows install. Enclosing function
-          #     createTerminalSessionInternal is already `async` so the
-          #     fix is a one-token await. Idempotent + fail-fast.
-          $tw = '../patches/v2-terminal-await-shell.patch'
-          if (-not (Test-Path $tw)) { Write-Error "(S) missing $tw in patches repo"; exit 1 }
+          # (S) v2 terminal: await resolveLaunchShell. Upstream calls
+          #     `const shell = resolveLaunchShell(baseEnv);` in
+          #     packages/host-service/src/terminal/terminal.ts without await.
+          #     resolveLaunchShell returns Promise<string>, so `shell` is a Promise
+          #     that downstream path.basename(shell) rejects ("The 'path' argument
+          #     must be of type string. Received an instance of Promise") — every v2
+          #     "Claude"/"Open terminal" preset spawn fails. createTerminalSessionInternal
+          #     is already `async`, so the fix is a one-token await.
+          #     Applied by DETERMINISTIC REGEX, not git apply: terminal.ts is also
+          #     edited by the non-deterministic AI patch step (Patch 15 \r-EOL etc.),
+          #     which shifts the line-anchored patch's @@ context. The old git-apply
+          #     guard HARD-ABORTED on a clean run (26374550323) purely from that drift,
+          #     even though the target line was untouched. Regex keys off the line
+          #     content, not line numbers, so AI edits elsewhere in the file no longer
+          #     matter. Idempotent + fail-fast (still aborts if the line is gone —
+          #     it's load-bearing). patches/v2-terminal-await-shell.patch retired.
           $tt = 'packages/host-service/src/terminal/terminal.ts'
           if (-not (Test-Path $tt)) { Write-Error "(S) missing $tt"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'const shell = await resolveLaunchShell(baseEnv)' $tt) {
-            Write-Host "(S) v2-terminal-await-shell already present — skip"
+          $c = Get-Content -Raw $tt
+          if ($c -match 'const\s+shell\s*=\s*await\s+resolveLaunchShell\(baseEnv\)') {
+            Write-Host "(S) v2 terminal already awaits resolveLaunchShell — skip"
+          } elseif ($c -match '(const\s+shell\s*=\s*)resolveLaunchShell\(baseEnv\)') {
+            $c = $c -replace '(const\s+shell\s*=\s*)resolveLaunchShell\(baseEnv\)', '${1}await resolveLaunchShell(baseEnv)'
+            Set-Content -Path $tt -Value $c -NoNewline
+            Write-Host "(S) v2-terminal-await-shell applied via regex (createTerminalSessionInternal now awaits the shell promise)"
           } else {
-            git apply --check $tw 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "(S) v2-terminal-await-shell.patch does not apply cleanly — terminal.ts shape changed upstream; aborting rather than shipping with v2 terminal spawn broken. Regenerate patches/v2-terminal-await-shell.patch."
-              exit 1
-            }
-            git apply $tw
-            if ($LASTEXITCODE -ne 0) { Write-Error "(S) git apply failed"; exit 1 }
+            Write-Error "(S) no 'const shell = resolveLaunchShell(baseEnv)' (awaited or not) in $tt — upstream shape changed; aborting rather than shipping with v2 terminal spawn broken."
+            exit 1
           }
           $ttBody = Get-Content -Raw $tt
-          if ($ttBody -notmatch 'const shell = await resolveLaunchShell\(baseEnv\)') { Write-Error "(S) await keyword missing on resolveLaunchShell call after apply"; exit 1 }
-          if ($ttBody -match 'const shell = resolveLaunchShell\(baseEnv\)') { Write-Error "(S) un-awaited resolveLaunchShell call still present after apply"; exit 1 }
-          Write-Host "(S) v2-terminal-await-shell applied (createTerminalSessionInternal now awaits the shell promise)"
+          if ($ttBody -notmatch 'const\s+shell\s*=\s*await\s+resolveLaunchShell\(baseEnv\)') { Write-Error "(S) await keyword missing on resolveLaunchShell call after fixup"; exit 1 }
+          if ($ttBody -match 'const\s+shell\s*=\s*resolveLaunchShell\(baseEnv\)') { Write-Error "(S) un-awaited resolveLaunchShell call still present after fixup"; exit 1 }
+          Write-Host "(S) v2 terminal awaits resolveLaunchShell (no Promise leak into path.basename)"
 
           # (T) fix-hidden-window-watchdog.patch
           #     The main window is created with `show: false` and is only made
