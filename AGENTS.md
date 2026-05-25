@@ -115,10 +115,16 @@ A **build-automation repo**, not app source. It produces a native Windows
   `reason` (missing-workspaceId / missing-terminalId / workspace-not-loaded;
   the highest-value diagnostic), `status_transition_computed`, and
   `store_mutation`. Selectors are left untouched (hot path). Guard (W)
-  HARD-ABORTS on apply-failure — the agent-dots diagnostics (incl. the
-  `main.ts` `[agent-dots]`→`main.log` forwarder that (Z)'s blank-pane logging
-  also relies on) must ship in EVERY build; main.ts is the likely drift point
-  (AI-edited), so regenerate/harden on failure; marker `pane-map-hook.log`), and
+  HARD-ABORTS on apply-failure (mandatory in every build). The `main.ts`
+  `[agent-dots]`→`main.log` forwarder (which (Z)'s blank-pane logging also
+  relies on) is now inserted DETERMINISTICALLY by inline fixup **(W.1)** —
+  regex `.IndexOf`/`.Insert` before the stable `if (ipcHandler) {` anchor,
+  UTF-8-no-BOM round-trip — because `main.ts` is AI-edited and the old
+  line-anchored git-apply hunk drifted and failed build 26419405280. The
+  `notification-logging.patch` git-apply now covers only the 5 stable files
+  (the two (N)-created watcher files + `V2NotificationController` /
+  `lifecycleEvents` / the `v2-notifications` store); marker
+  `pane-map-hook.log`), and
   `terminal-tab-focus-trap.patch` (counteracts a side-effect of (V): with
   `screenReaderMode: true` xterm still sends `\t` to the PTY but no longer
   cancels the Tab keydown's default action, so the browser's focus traversal

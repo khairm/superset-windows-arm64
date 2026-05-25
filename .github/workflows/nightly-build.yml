@@ -1011,10 +1011,34 @@ jobs:
           #     drop / transition / store-mutation records. Touches files (N)
           #     creates (pane-map-hook.ts, agent-jsonl-watcher.ts, main.ts)
           #     plus three renderer files (N) doesn't. Guard HARD-ABORTS on any
-          #     apply failure — the agent-dots diagnostics (incl. the main.ts
-          #     [agent-dots] -> main.log forwarder that (Z)'s logging also relies
-          #     on) ship in EVERY build; regenerate the patch on drift rather than
-          #     ship without it. main.ts is the likely drift point (AI-edited).
+          #     apply failure — the agent-dots diagnostics ship in EVERY build.
+          #     The main.ts [agent-dots] -> main.log forwarder (which (Z)'s
+          #     blank-pane logging also relies on) is inserted DETERMINISTICALLY
+          #     in (W.1) below (regex, NOT git apply): main.ts is AI-edited and a
+          #     line-anchored hunk drifts — it failed build 26419405280 at
+          #     main.ts:174. The rest of (W) (renderer files + (N)-created watcher
+          #     files) stays git apply and applies cleanly.
+          #
+          # (W.1) main.ts forwarder — deterministic insert before the stable
+          #       `if (ipcHandler) {` anchor in MainWindow(). Idempotent + fail-fast.
+          #       UTF-8 (no BOM) round-trip so non-ASCII elsewhere in main.ts is safe.
+          $wmain = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $wmain)) { Write-Error "(W.1) $wmain missing in this upstream"; exit 1 }
+          $wmainAbs = (Resolve-Path $wmain).Path
+          $wcontent = [System.IO.File]::ReadAllText($wmainAbs)
+          if ($wcontent -match 'startsWith\("\[agent-dots\]"\)') {
+            Write-Host "(W.1) main.ts [agent-dots] forwarder already present — skip"
+          } else {
+            $wanchor = "`tif (ipcHandler) {"
+            $widx = $wcontent.IndexOf($wanchor)
+            if ($widx -lt 0) { Write-Error "(W.1) 'if (ipcHandler) {' anchor not found in main.ts — upstream shape changed; re-anchor the (W.1) inline insert rather than ship without the [agent-dots] forwarder."; exit 1 }
+            $fwd = "`t// Production diagnostic: persist renderer ""[agent-dots]"" console lines to`n`t// electron-log (main.log) so the agent-status-dots pipeline + the v2-workspace`n`t// blank-pane diagnostics survive a shipped build (no devtools session).`n`t// Logging only -- never alters behaviour. Inserted deterministically by (W.1)`n`t// because main.ts is AI-edited and a line-anchored hunk drifts.`n`twindow.webContents.on(`n`t`t""console-message"",`n`t`t(_event, _level, message) => {`n`t`t`ttry {`n`t`t`t`tif (typeof message === ""string"" && message.startsWith(""[agent-dots]"")) {`n`t`t`t`t`tlog.info(message);`n`t`t`t`t}`n`t`t`t} catch {`n`t`t`t`t// never let logging crash the main process`n`t`t`t}`n`t`t},`n`t);`n`n"
+            $wcontent = $wcontent.Insert($widx, $fwd)
+            [System.IO.File]::WriteAllText($wmainAbs, $wcontent, (New-Object System.Text.UTF8Encoding $false))
+            if (([System.IO.File]::ReadAllText($wmainAbs)) -notmatch 'startsWith\("\[agent-dots\]"\)') { Write-Error "(W.1) [agent-dots] forwarder missing in main.ts after insert"; exit 1 }
+            Write-Host "(W.1) main.ts [agent-dots] -> main.log forwarder inserted (deterministic, before if (ipcHandler))"
+          }
+
           $nl = '../patches/notification-logging.patch'
           if (-not (Test-Path $nl)) { Write-Error "(W) missing $nl in patches repo"; exit 1 }
           $nlHook = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
