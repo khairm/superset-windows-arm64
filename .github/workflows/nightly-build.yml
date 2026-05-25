@@ -551,63 +551,69 @@ jobs:
           #     prompt. Patch 19's before-quit !PLATFORM.IS_WINDOWS gate stays,
           #     so neither path shows a dialog on Windows. Idempotent +
           #     fail-fast.
-          # Implementation note: a git-apply approach is too brittle here —
-          # the surrounding context of Patch 19's dialog block drifts between
-          # AI runs (whitespace, comment wording, exact body) and `git apply`
-          # fails on context mismatch. Instead, do a regex-anchored removal
-          # from inside window.on("close") between two stable fingerprints:
-          #   start anchor: the comment "Windows: show quit confirmation
-          #                 BEFORE the window closes." (verbatim per PATCHES.md
-          #                 step 5 — the AI has reproduced this exact line
-          #                 every run)
-          #   end anchor:   the upstream comment "Save window state first"
-          #                 which is the next thing inside the close handler
-          # That covers any reformatting between the two anchors.
+          # Implementation: the AI's Patch 19 close-handler output is NON-
+          # deterministic — sometimes the full showMessageBox dialog, sometimes
+          # just `if (PLATFORM.IS_WINDOWS) { event.preventDefault(); ... }` with
+          # NO dialog (which still hangs the close on the await chain). The old
+          # dialog-comment-anchored removal missed the no-dialog variant and
+          # HARD-FAILED build 26420178793 at the verify gate. So we remove the
+          # WHOLE `if (PLATFORM.IS_WINDOWS) { ... }` block from inside
+          # window.on("close") by BRACE MATCHING (handles nested braces, any
+          # reformatting, dialog or no-dialog) — exactly what PATCHES.md
+          # prescribes: "remove Patch 19's if (PLATFORM.IS_WINDOWS) { … } block
+          # from window.on('close')". Deterministic, idempotent (skips when no
+          # such block remains), fail-fast (verify the close body has no
+          # preventDefault / showMessageBox / IS_WINDOWS left). UTF-8 no-BOM
+          # round-trip so non-ASCII elsewhere in main.ts is preserved.
+          function Find-MatchEnd([string]$s, [int]$fromOpenBrace) {
+            $depth = 0
+            for ($bi = $fromOpenBrace; $bi -lt $s.Length; $bi++) {
+              $bc = $s[$bi]
+              if ($bc -eq [char]123) { $depth++ }
+              elseif ($bc -eq [char]125) { $depth--; if ($depth -eq 0) { return $bi } }
+            }
+            return -1
+          }
+          function Get-CloseBody([string]$s) {
+            $cm = [regex]::Match($s, 'window\.on\(\s*"close"\s*,\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{')
+            if (-not $cm.Success) { return $null }
+            $ob = $s.IndexOf([char]123, $cm.Index + $cm.Length - 1)
+            $en = Find-MatchEnd $s $ob
+            if ($en -lt 0) { return $null }
+            return [pscustomobject]@{ Start = $ob + 1; End = $en }
+          }
           $mw = 'apps/desktop/src/main/windows/main.ts'
           if (-not (Test-Path $mw)) { Write-Error "(M) missing $mw"; exit 1 }
-          $mwBody = Get-Content -Raw $mw
-          if ($mwBody -notmatch 'show quit confirmation BEFORE the window closes') {
-            Write-Host "(M) dialog block absent — Patch 19 didn't insert it this run; skip"
+          $mwAbs = (Resolve-Path $mw).Path
+          $mwBody = [System.IO.File]::ReadAllText($mwAbs)
+          $cb = Get-CloseBody $mwBody
+          if ($null -eq $cb) {
+            Write-Host "(M) no window.on('close') handler found — Patch 19 close-move absent this run; skip"
           } else {
-            if ($mwBody -notmatch '(?s)(\s*)//\s*Windows: show quit confirmation BEFORE the window closes\..*?(?=\s*//\s*Save window state first)') {
-              Write-Error "(M) found the dialog start anchor but not the 'Save window state first' end anchor; main.ts shape changed too far. Either Patch 19 dropped the trailing save block or the AI renamed it. Inspect main.ts in the failed run's artifact and update step (M) anchors."
-              exit 1
-            }
-            $mwBody = $mwBody -replace '(?s)(\s*)//\s*Windows: show quit confirmation BEFORE the window closes\..*?(?=\s*//\s*Save window state first)', ''
-            Set-Content -Path $mw -Value $mwBody -NoNewline
-            Write-Host "(M) Removed quit-confirmation dialog block from window.on('close') via regex anchors"
-          }
-          $verify = Get-Content -Raw $mw
-          if ($verify -match 'show quit confirmation BEFORE the window closes') { Write-Error "(M) dialog comment still present after removal"; exit 1 }
-          if ($verify -notmatch 'Save window state first') { Write-Error "(M) collateral damage — 'Save window state first' was removed too"; exit 1 }
-          # The actual bug is dialog.showMessageBox INSIDE window.on('close'),
-          # which causes the lock-hang. A "Are you sure you want to quit?"
-          # string anywhere else in main.ts (constants, unrelated handler,
-          # before-quit gating) is harmless. Extract just the close handler
-          # body via brace counting and check there.
-          $openMatch = [regex]::Match($verify, 'window\.on\(\s*"close"\s*,\s*\([^)]*\)\s*=>\s*\{')
-          if ($openMatch.Success) {
-            $depth = 0
-            $bodyStart = $openMatch.Index + $openMatch.Length
-            $bodyEnd = -1
-            for ($i = $openMatch.Index + $openMatch.Length - 1; $i -lt $verify.Length; $i++) {
-              $c = $verify[$i]
-              if ($c -eq '{') { $depth++ }
-              elseif ($c -eq '}') { $depth--; if ($depth -eq 0) { $bodyEnd = $i; break } }
-            }
-            if ($bodyEnd -gt $bodyStart) {
-              $closeBody = $verify.Substring($bodyStart, $bodyEnd - $bodyStart)
-              if ($closeBody -match 'dialog\.showMessageBox') {
-                Write-Error "(M) dialog.showMessageBox still inside window.on('close') after removal — lock-hang risk remains. The AI inserted the dialog with a comment my anchor missed. Inspect main.ts in the failed artifact and update step (M)."
-                exit 1
-              }
-              if ($closeBody -match 'PLATFORM\.IS_WINDOWS' -and $closeBody -match 'preventDefault') {
-                Write-Error "(M) Windows-gated preventDefault still inside window.on('close') — even without showMessageBox this can hang on the await chain. Check what the AI inserted."
-                exit 1
-              }
+            $closeBody = $mwBody.Substring($cb.Start, $cb.End - $cb.Start)
+            $ifM = [regex]::Match($closeBody, 'if\s*\(\s*PLATFORM\.IS_WINDOWS\s*\)\s*\{')
+            if (-not $ifM.Success) {
+              Write-Host "(M) no if (PLATFORM.IS_WINDOWS) block inside window.on('close') — already clean / quit-confirmation not inserted; skip"
+            } else {
+              $ifOb = $closeBody.IndexOf([char]123, $ifM.Index + $ifM.Length - 1)
+              $ifEnd = Find-MatchEnd $closeBody $ifOb
+              if ($ifEnd -lt 0) { Write-Error "(M) could not brace-match the if (PLATFORM.IS_WINDOWS) block in window.on('close')"; exit 1 }
+              $newClose = $closeBody.Remove($ifM.Index, $ifEnd - $ifM.Index + 1)
+              $newMw = $mwBody.Substring(0, $cb.Start) + $newClose + $mwBody.Substring($cb.End)
+              [System.IO.File]::WriteAllText($mwAbs, $newMw, (New-Object System.Text.UTF8Encoding $false))
+              Write-Host "(M) removed if (PLATFORM.IS_WINDOWS) quit-confirmation block from window.on('close') (brace-matched, AI-variant-agnostic)"
             }
           }
-          Write-Host "(M) skip-quit-confirmation applied (window.on('close') no longer shows the lock-hanging dialog on Windows)"
+          # verify: the close-handler body must have no quit-confirmation / hang risk left
+          $verify = [System.IO.File]::ReadAllText($mwAbs)
+          $vcb = Get-CloseBody $verify
+          if ($null -ne $vcb) {
+            $vBody = $verify.Substring($vcb.Start, $vcb.End - $vcb.Start)
+            if ($vBody -match 'dialog\.showMessageBox') { Write-Error "(M) dialog.showMessageBox still inside window.on('close') after removal — lock-hang risk remains"; exit 1 }
+            if ($vBody -match 'preventDefault') { Write-Error "(M) preventDefault still inside window.on('close') after removal — close-hang risk remains"; exit 1 }
+            if ($vBody -match 'PLATFORM\.IS_WINDOWS') { Write-Error "(M) PLATFORM.IS_WINDOWS still inside window.on('close') after removal"; exit 1 }
+          }
+          Write-Host "(M) skip-quit-confirmation applied (no quit dialog / preventDefault in window.on('close') on Windows)"
 
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
