@@ -1,0 +1,4 @@
+# Local scratch / build-inspection artifacts. Per CLAUDE.md, tmp/ holds
+# temporary files (downloaded installers, extracted upstream source, diffs).
+# Never commit it — the extracted source + installers are hundreds of MB.
+tmp/

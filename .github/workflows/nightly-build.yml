@@ -793,6 +793,37 @@ jobs:
           if ((Get-Content -Raw $envts) -notmatch 'FALLBACK_SHELL') { Write-Error "(R) FALLBACK_SHELL reference missing in env.ts after apply"; exit 1 }
           Write-Host "(R) windows-shell-fallback applied (getDefaultShell now validates the resolved shell exists on PATH; falls back to cmd.exe)"
 
+          # (Z) v2-workspace blank-pane fix + diagnostics. Upstream's
+          #     v2-workspace/layout.tsx blanks the ENTIRE workspace content
+          #     area (returns an empty <div className="flex h-full w-full"/>)
+          #     whenever the v2Workspaces live query transiently returns
+          #     undefined/empty with isReady=false — an Electric re-sync blip,
+          #     no user action. The pane stays blank until a manual Ctrl+R
+          #     remount. This violates upstream's own apps/desktop AGENTS.md
+          #     rule 9 (cache-first: never blank existing data on !isReady).
+          #     Fix holds the last resolved workspace for the current id across
+          #     the transient (so panes don't blank) and logs the render
+          #     decision via the [agent-dots] -> main.log forwarder. Idempotent
+          #     + fail-fast. layout.tsx is pure upstream (no AI-patch overlap),
+          #     so it only drifts if upstream edits this file — regenerate then.
+          $bp = '../patches/v2-workspace-blank-fix.patch'
+          if (-not (Test-Path $bp)) { Write-Error "(Z) missing $bp in patches repo"; exit 1 }
+          $bpFile = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/layout.tsx'
+          if (-not (Test-Path $bpFile)) { Write-Error "(Z) missing $bpFile"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'lastResolvedWorkspaceRef' $bpFile) {
+            Write-Host "(Z) v2-workspace blank-pane fix already present — skip"
+          } else {
+            git apply --check $bp 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "(Z) v2-workspace-blank-fix.patch does not apply cleanly — v2-workspace/layout.tsx changed upstream; aborting rather than shipping with the workspace-content blank-pane bug unfixed. Regenerate patches/v2-workspace-blank-fix.patch against the new upstream."
+              exit 1
+            }
+            git apply $bp
+            if ($LASTEXITCODE -ne 0) { Write-Error "(Z) git apply failed"; exit 1 }
+          }
+          if ((Get-Content -Raw $bpFile) -notmatch 'heldWorkspace') { Write-Error "(Z) heldWorkspace reference missing in layout.tsx after apply"; exit 1 }
+          Write-Host "(Z) v2-workspace blank-pane fix applied (cache-first hold-last-good; blank-render decision logged via [agent-dots])"
+
           # (S) v2 terminal: await resolveLaunchShell. Upstream calls
           #     `const shell = resolveLaunchShell(baseEnv);` in
           #     packages/host-service/src/terminal/terminal.ts without await.
@@ -1072,7 +1103,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + T + V + X + W + Y + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + Y + Z + F). (U disabled — see comment above.)"
 
           # Reaching here means every fail-loud guard passed (each aborts with an
           # explicit `exit 1` earlier). The skip-not-abort guards (V/X/W) run

@@ -134,7 +134,22 @@ A **build-automation repo**, not app source. It produces a native Windows
   raised; distinct from the (T) hidden-window case). Adds a brief always-on-top
   pin (exempt from the lock) to force the window to the top on Windows, released
   on the next tick. Guard (Y) SKIPS rather than aborts on apply-failure — it's a
-  recovery QoL fix, marker `Windows holds a foreground lock`).
+  recovery QoL fix, marker `Windows holds a foreground lock`), and
+  `v2-workspace-blank-fix.patch` (the v2-workspace `layout.tsx` blanked the
+  ENTIRE workspace content area — returned an empty
+  `<div className="flex h-full w-full"/>` — whenever the `v2Workspaces`
+  `useLiveQuery` transiently returned undefined/empty with `isReady=false` on a
+  background Electric re-sync, no user action; pane stayed blank until a manual
+  Ctrl+R remount. Violates upstream's own `apps/desktop/AGENTS.md` rule 9
+  (cache-first: never blank existing data on `!isReady`). Fix is cache-first
+  hold-last-good: keep the last resolved workspace for the current id and reuse
+  it (incl. into `useRemoteHostStatus`, so the dead `hostStatus==="loading"`
+  branch can't re-blank) through the transient. Also logs the per-transition
+  render decision (`branch`: blank-data-not-ready / held-through-transient /
+  not-found / ready) via `console.info("[agent-dots] ...")` → the (W) main.ts
+  forwarder → `main.log`. `layout.tsx` is pure upstream (no PATCHES.md/AI
+  overlap), so (Z) HARD-ABORTS on drift — it's a load-bearing user-facing fix;
+  marker `lastResolvedWorkspaceRef`).
 - `scripts/materialize-native-closure.sh` — deterministic ARM64 native modules.
 - `scripts/resolve-release-age.mjs` — makes `bun install` self-healing. Upstream's
   `bunfig.toml` sets `minimumReleaseAge` (72h); a fresh upstream release can pin
