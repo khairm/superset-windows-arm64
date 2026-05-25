@@ -65,7 +65,11 @@ A **build-automation repo**, not app source. It produces a native Windows
   Adds a 12 s show-watchdog force-show + one-time renderer reload on early
   crash, and moves the window-lifecycle logs to `electron-log` so
   `main.log` captures the cause. Touches only the load/crash handlers, so
-  it coexists with the close-handler patches), and
+  it coexists with the close-handler patches. Guard (T) SKIPS rather than
+  aborts on apply-failure — its multi-hunk main.ts context drifts with the
+  AI patch step and once hard-aborted a green build; it's a failsafe, and a
+  hidden/buried window stays recoverable via (Y) + relaunch when (T) is
+  skipped), and
   `v2-cwd-fallback.patch` (**DISABLED 2026-05-22** — patch file kept in
   repo for future revival but the workflow no longer applies it. The
   applied build navigated to a v2-workspace route, fired
