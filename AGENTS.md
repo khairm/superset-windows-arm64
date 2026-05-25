@@ -87,16 +87,18 @@ A **build-automation repo**, not app source. It produces a native Windows
   `getHostServiceClientByUrl` and `workspace.get` work as the patch
   assumes, and consider moving the resolver to the main process so it
   never blocks renderer mount), and
-  `xterm-screen-reader-mode.patch` (xterm.js defaults to
-  `screenReaderMode: false`, which makes the canvas opaque to Windows UI
-  Automation — voice-to-text tools like WisprFlow and screen readers find
-  no `TextPattern` provider and silently drop input, even though `Ctrl+V`
-  still works (xterm reads the clipboard directly on paste). Flips both
-  the v1 `Terminal/config.ts` and v2 `terminal-runtime.ts` to
-  `screenReaderMode: true` so xterm exposes its hidden `<textarea>` as a
-  UIA TextPattern provider. Negligible CPU cost; documented xterm.js
-  option, no known regressions. Guard (V) HARD-ABORTS on apply-failure
-  (every build must include it; regenerate the patch on upstream drift)), and
+  `xterm-screen-reader-mode.patch` (**DISABLED 2026-05-25** — kept in repo
+  for reference, not applied). Flipped `screenReaderMode: true` (v1
+  `Terminal/config.ts` + v2 `terminal-runtime.ts`) on the THEORY it would
+  expose xterm's hidden `<textarea>` to UIA for voice-to-text (WisprFlow) +
+  screen readers. It BROKE WisprFlow instead: with `screenReaderMode: true`
+  xterm's accessibility manager owns/syncs the textarea, so WisprFlow's
+  injected text never reaches the PTY — "nothing appears" when dictating
+  into a terminal (user-confirmed 2026-05-25; WisprFlow works fine in
+  non-terminal boxes). Upstream default `screenReaderMode: false` is the
+  known-good state (pre-(V) 1.10.2 had no (V) and WisprFlow pasted fine).
+  To revive screen-reader support, expose the textarea to UIA WITHOUT
+  xterm's accessibility manager clobbering injected input)), and
   `notification-logging.patch` (**logging-only**, no behaviour/logic
   change — additive diagnostics for the agent-status-dots pipeline so a
   shipped build can be used to debug flaky/inconsistent dots. Applies
@@ -125,16 +127,13 @@ A **build-automation repo**, not app source. It produces a native Windows
   (the two (N)-created watcher files + `V2NotificationController` /
   `lifecycleEvents` / the `v2-notifications` store); marker
   `pane-map-hook.log`), and
-  `terminal-tab-focus-trap.patch` (counteracts a side-effect of (V): with
-  `screenReaderMode: true` xterm still sends `\t` to the PTY but no longer
-  cancels the Tab keydown's default action, so the browser's focus traversal
-  fires and Tab steals focus OUT of the terminal — breaking Claude Code tab
-  completion staying in-pane. Adds a branch to our shared
-  `attachCustomKeyEventHandler` (`terminal-key-event-handler.ts`, used by
-  both v1 + v2): for Tab/Shift+Tab with no ctrl/alt/meta and not during IME
-  composition, `preventDefault()` on keydown then `return true` so xterm
-  still encodes + sends the key under the kitty-keyboard protocol. Guard (X)
-  HARD-ABORTS on apply-failure (every build must include it; regenerate on drift)), and
+  `terminal-tab-focus-trap.patch` (**DISABLED 2026-05-25 with (V)** — kept
+  in repo for reference, not applied). Only ever existed to counteract (V)
+  `screenReaderMode: true`'s Tab focus-escape side-effect (xterm no longer
+  cancelling the Tab keydown default). With (V) disabled (screenReaderMode
+  back to default false), xterm cancels Tab's default itself, so Tab stays
+  in-terminal without this patch — it is unnecessary. Revive only if (V)
+  is ever revived)), and
   `windows-force-foreground.patch` (`focusMainWindow()` — the second-instance /
   deep-link handler — did only `show()`+`focus()`, which Windows' foreground lock
   ignores: relaunching Superset while its window was buried in z-order behind the
