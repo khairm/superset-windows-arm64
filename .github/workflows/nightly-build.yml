@@ -877,35 +877,30 @@ jobs:
           #     so its @@ context intermittently drifts and HARD-ABORTED an otherwise
           #     green build (run 26374965746) even though the target handlers were
           #     functionally intact. The watchdog is a FAILSAFE — when it's absent a
-          #     hidden/buried window is still recoverable via (Y) force-foreground +
-          #     relaunch — so a skipped run ships a slightly-degraded failsafe rather
-          #     than no build at all. Logs the --check stderr so drift is diagnosable.
+          #     Guard HARD-ABORTS on any apply failure (every build must include
+          #     the watchdog) and logs the --check stderr so drift is diagnosable
+          #     without a guess-and-rebuild cycle.
           $hw = '../patches/fix-hidden-window-watchdog.patch'
-          if (-not (Test-Path $hw)) { Write-Host "::warning::(T) missing $hw in patches repo — skipping hidden-window watchdog" }
-          else {
-            $mwf = 'apps/desktop/src/main/windows/main.ts'
-            if (-not (Test-Path $mwf)) {
-              Write-Host "::warning::(T) $mwf missing in this upstream — skipping hidden-window watchdog."
-            } elseif (Select-String -Quiet -SimpleMatch 'show-watchdog fired' $mwf) {
-              Write-Host "(T) fix-hidden-window-watchdog already present — skip"
-            } else {
-              $tErr = "$env:RUNNER_TEMP/t-apply-check.txt"
-              git apply --check $hw 2>$tErr
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(T) fix-hidden-window-watchdog.patch does not apply cleanly (AI drift in main.ts load/crash handlers) — skipping (NOT aborting). A hidden/buried window stays recoverable via (Y) force-foreground + relaunch. Regenerate patches/fix-hidden-window-watchdog.patch. git apply --check output:"
-                if (Test-Path $tErr) { Get-Content $tErr | ForEach-Object { Write-Host "    (T-check) $_" } }
-              } else {
-                git apply $hw
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(T) git apply failed after a clean --check — skipping hidden-window watchdog."
-                } else {
-                  $mwBody = Get-Content -Raw $mwf
-                  if ($mwBody -notmatch 'show-watchdog fired') { Write-Host "::warning::(T) show-watchdog marker missing after apply — skipping." }
-                  elseif ($mwBody -notmatch 'reloading renderer after early crash') { Write-Host "::warning::(T) early-crash reload marker missing after apply — skipping." }
-                  else { Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)" }
-                }
-              }
+          if (-not (Test-Path $hw)) { Write-Error "(T) missing $hw in patches repo"; exit 1 }
+          $mwf = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $mwf)) { Write-Error "(T) $mwf missing in this upstream — aborting (every build must include the hidden-window watchdog)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'show-watchdog fired' $mwf) {
+            Write-Host "(T) fix-hidden-window-watchdog already present — skip"
+          } else {
+            $tErr = "$env:RUNNER_TEMP/t-apply-check.txt"
+            git apply --check $hw 2>$tErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(T) fix-hidden-window-watchdog.patch does not apply cleanly (AI drift in main.ts load/crash handlers). git apply --check output:"
+              if (Test-Path $tErr) { Get-Content $tErr | ForEach-Object { Write-Host "    (T-check) $_" } }
+              Write-Error "(T) fix-hidden-window-watchdog.patch failed to apply — ABORTING. Every build must include the hidden-window watchdog. Regenerate/harden patches/fix-hidden-window-watchdog.patch against this upstream."
+              exit 1
             }
+            git apply $hw
+            if ($LASTEXITCODE -ne 0) { Write-Error "(T) git apply failed after a clean --check"; exit 1 }
+            $mwBody = Get-Content -Raw $mwf
+            if ($mwBody -notmatch 'show-watchdog fired') { Write-Error "(T) show-watchdog marker missing after apply"; exit 1 }
+            if ($mwBody -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload marker missing after apply"; exit 1 }
+            Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)"
           }
 
           # (U) v2-cwd-fallback.patch — DISABLED 2026-05-22.
@@ -941,36 +936,32 @@ jobs:
           #     xterm.js. Touches two files: the v1 Terminal/config.ts (flips
           #     the explicit false → true) and the v2 terminal-runtime.ts
           #     (adds the option, which was previously omitted, defaulting
-          #     false). Guard SKIPS (warns) instead of aborting — an older
-          #     upstream whose context doesn't match must not block the build;
-          #     worst case on skip is upstream behaviour (WisprFlow keeps not
-          #     working), no regression.
+          #     false). Guard HARD-ABORTS on any apply failure — every build
+          #     must include screen-reader-mode; if the upstream layout changed,
+          #     regenerate the patch rather than ship without it.
           $sr = '../patches/xterm-screen-reader-mode.patch'
-          if (-not (Test-Path $sr)) { Write-Host "::warning::(V) missing $sr in patches repo — skipping xterm screen-reader-mode" }
-          else {
-            $srv1 = 'apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts'
-            $srv2 = 'apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts'
-            if (-not (Test-Path $srv1) -or -not (Test-Path $srv2)) {
-              Write-Host "::warning::(V) one of the xterm config files is missing in this upstream — skipping screen-reader-mode (likely older 1.9.x)."
-            } elseif ((Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv1) -and (Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv2)) {
-              Write-Host "(V) xterm screen-reader-mode already present — skip"
-            } else {
-              git apply --check $sr 2>$null
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(V) xterm-screen-reader-mode.patch does not apply cleanly against this upstream — skipping (NOT aborting). WisprFlow / UIA voice input will silently no-op in terminals until patches/xterm-screen-reader-mode.patch is regenerated."
-              } else {
-                git apply $sr
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(V) git apply failed after a clean --check — skipping xterm screen-reader-mode."
-                } else {
-                  $srv1Body = Get-Content -Raw $srv1
-                  $srv2Body = Get-Content -Raw $srv2
-                  if ($srv1Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv1 after apply"; exit 1 }
-                  if ($srv2Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv2 after apply"; exit 1 }
-                  Write-Host "(V) xterm screen-reader-mode applied (xterm hidden textarea exposed as UIA TextPattern; WisprFlow / screen readers can inject input)"
-                }
-              }
+          if (-not (Test-Path $sr)) { Write-Error "(V) missing $sr in patches repo"; exit 1 }
+          $srv1 = 'apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts'
+          $srv2 = 'apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts'
+          if (-not (Test-Path $srv1) -or -not (Test-Path $srv2)) { Write-Error "(V) one of the xterm config files is missing in this upstream — aborting; regenerate patches/xterm-screen-reader-mode.patch for the new layout"; exit 1 }
+          if ((Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv1) -and (Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv2)) {
+            Write-Host "(V) xterm screen-reader-mode already present — skip"
+          } else {
+            $vErr = "$env:RUNNER_TEMP/v-apply-check.txt"
+            git apply --check $sr 2>$vErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(V) xterm-screen-reader-mode.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $vErr) { Get-Content $vErr | ForEach-Object { Write-Host "    (V-check) $_" } }
+              Write-Error "(V) xterm-screen-reader-mode.patch failed to apply — ABORTING. Regenerate patches/xterm-screen-reader-mode.patch against this upstream."
+              exit 1
             }
+            git apply $sr
+            if ($LASTEXITCODE -ne 0) { Write-Error "(V) git apply failed after a clean --check"; exit 1 }
+            $srv1Body = Get-Content -Raw $srv1
+            $srv2Body = Get-Content -Raw $srv2
+            if ($srv1Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv1 after apply"; exit 1 }
+            if ($srv2Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv2 after apply"; exit 1 }
+            Write-Host "(V) xterm screen-reader-mode applied (xterm hidden textarea exposed as UIA TextPattern; WisprFlow / screen readers can inject input)"
           }
 
           # (X) terminal-tab-focus-trap.patch
@@ -981,32 +972,28 @@ jobs:
           #     completion staying in-pane). Adds a branch to our shared
           #     attachCustomKeyEventHandler: for Tab/Shift+Tab (no ctrl/alt/meta,
           #     not during IME composition) preventDefault on keydown then return
-          #     true so xterm still encodes+sends the key. Guard SKIPS (warns)
-          #     instead of aborting — older upstream context drift mustn't block
-          #     the build; worst case on skip is Tab escapes focus again (the
-          #     (V) side-effect), no worse than not having it.
+          #     true so xterm still encodes+sends the key. Guard HARD-ABORTS on
+          #     any apply failure — every build must include the focus-trap;
+          #     regenerate the patch if upstream drifts rather than ship without it.
           $tt = '../patches/terminal-tab-focus-trap.patch'
-          if (-not (Test-Path $tt)) { Write-Host "::warning::(X) missing $tt in patches repo — skipping tab focus-trap" }
-          else {
-            $ttf = 'apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts'
-            if (-not (Test-Path $ttf)) {
-              Write-Host "::warning::(X) $ttf not present in this upstream — skipping tab focus-trap (likely older 1.9.x)."
-            } elseif (Select-String -Quiet -SimpleMatch 'must NOT traverse DOM focus' $ttf) {
-              Write-Host "(X) terminal-tab-focus-trap already present — skip"
-            } else {
-              git apply --check $tt 2>$null
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(X) terminal-tab-focus-trap.patch does not apply cleanly against this upstream — skipping (NOT aborting). Tab may steal focus out of terminals until patches/terminal-tab-focus-trap.patch is regenerated."
-              } else {
-                git apply $tt
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(X) git apply failed after a clean --check — skipping tab focus-trap."
-                } else {
-                  if ((Get-Content -Raw $ttf) -notmatch 'must NOT traverse DOM focus') { Write-Error "(X) tab focus-trap marker missing in $ttf after apply"; exit 1 }
-                  Write-Host "(X) terminal-tab-focus-trap applied (Tab/Shift+Tab no longer steal focus out of the terminal)"
-                }
-              }
+          if (-not (Test-Path $tt)) { Write-Error "(X) missing $tt in patches repo"; exit 1 }
+          $ttf = 'apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts'
+          if (-not (Test-Path $ttf)) { Write-Error "(X) $ttf not present in this upstream — aborting; regenerate patches/terminal-tab-focus-trap.patch for the new layout"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'must NOT traverse DOM focus' $ttf) {
+            Write-Host "(X) terminal-tab-focus-trap already present — skip"
+          } else {
+            $xErr = "$env:RUNNER_TEMP/x-apply-check.txt"
+            git apply --check $tt 2>$xErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(X) terminal-tab-focus-trap.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $xErr) { Get-Content $xErr | ForEach-Object { Write-Host "    (X-check) $_" } }
+              Write-Error "(X) terminal-tab-focus-trap.patch failed to apply — ABORTING. Regenerate patches/terminal-tab-focus-trap.patch against this upstream."
+              exit 1
             }
+            git apply $tt
+            if ($LASTEXITCODE -ne 0) { Write-Error "(X) git apply failed after a clean --check"; exit 1 }
+            if ((Get-Content -Raw $ttf) -notmatch 'must NOT traverse DOM focus') { Write-Error "(X) tab focus-trap marker missing in $ttf after apply"; exit 1 }
+            Write-Host "(X) terminal-tab-focus-trap applied (Tab/Shift+Tab no longer steal focus out of the terminal)"
           }
 
           # (W) notification-logging.patch
@@ -1023,39 +1010,33 @@ jobs:
           #     v2-notifications store) emits "[agent-dots]" lifecycle /
           #     drop / transition / store-mutation records. Touches files (N)
           #     creates (pane-map-hook.ts, agent-jsonl-watcher.ts, main.ts)
-          #     plus three renderer files (N) doesn't. Guard SKIPS (warns)
-          #     instead of aborting — logging is non-essential, so context
-          #     drift on an older upstream must not block the build; worst
-          #     case on skip is the next build ships without the extra
-          #     diagnostics, no regression.
+          #     plus three renderer files (N) doesn't. Guard HARD-ABORTS on any
+          #     apply failure — the agent-dots diagnostics (incl. the main.ts
+          #     [agent-dots] -> main.log forwarder that (Z)'s logging also relies
+          #     on) ship in EVERY build; regenerate the patch on drift rather than
+          #     ship without it. main.ts is the likely drift point (AI-edited).
           $nl = '../patches/notification-logging.patch'
-          if (-not (Test-Path $nl)) { Write-Host "::warning::(W) missing $nl in patches repo — skipping notification logging" }
-          else {
-            $nlHook = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
-            if (-not (Test-Path $nlHook)) {
-              Write-Host "::warning::(W) $nlHook is missing in this upstream — skipping notification logging (did (N) apply?)."
-            } elseif (Select-String -Quiet -SimpleMatch 'pane-map-hook.log' $nlHook) {
-              Write-Host "(W) notification logging already present — skip"
-            } else {
-              # Capture --check stderr (don't suppress) so a drift is diagnosable
-              # from the build log without a guess-and-rebuild cycle. main.ts is the
-              # likely culprit: it carries AI Patch 19 + inline (H) + (T) that this
-              # patch's context may not match.
-              $wErr = "$env:RUNNER_TEMP/w-apply-check.txt"
-              git apply --check $nl 2>$wErr
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(W) notification-logging.patch does not apply cleanly against this upstream (post N+V) — skipping (NOT aborting). The next build will ship without the extra agent-dots diagnostics until patches/notification-logging.patch is regenerated. git apply --check output:"
-                if (Test-Path $wErr) { Get-Content $wErr | ForEach-Object { Write-Host "    (W-check) $_" } }
-              } else {
-                git apply $nl
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(W) git apply failed after a clean --check — skipping notification logging."
-                } else {
-                  if ((Get-Content -Raw $nlHook) -notmatch 'pane-map-hook\.log') { Write-Error "(W) pane-map-hook.log logging missing in $nlHook after apply"; exit 1 }
-                  Write-Host "(W) notification logging applied (hook -> ~/.superset/pane-map-hook.log; renderer [agent-dots] lines -> electron-log main.log)"
-                }
-              }
+          if (-not (Test-Path $nl)) { Write-Error "(W) missing $nl in patches repo"; exit 1 }
+          $nlHook = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $nlHook)) { Write-Error "(W) $nlHook is missing in this upstream — aborting (did (N) apply? notification logging is mandatory)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'pane-map-hook.log' $nlHook) {
+            Write-Host "(W) notification logging already present — skip"
+          } else {
+            # Capture --check stderr (don't suppress) so a drift is diagnosable
+            # from the build log. main.ts is the likely culprit: it carries AI
+            # Patch 19 + inline (H) + (T) that this patch's context may not match.
+            $wErr = "$env:RUNNER_TEMP/w-apply-check.txt"
+            git apply --check $nl 2>$wErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(W) notification-logging.patch does not apply cleanly (post N+V). git apply --check output:"
+              if (Test-Path $wErr) { Get-Content $wErr | ForEach-Object { Write-Host "    (W-check) $_" } }
+              Write-Error "(W) notification-logging.patch failed to apply — ABORTING. Every build must include the agent-dots diagnostics. Regenerate/harden patches/notification-logging.patch against this upstream."
+              exit 1
             }
+            git apply $nl
+            if ($LASTEXITCODE -ne 0) { Write-Error "(W) git apply failed after a clean --check"; exit 1 }
+            if ((Get-Content -Raw $nlHook) -notmatch 'pane-map-hook\.log') { Write-Error "(W) pane-map-hook.log logging missing in $nlHook after apply"; exit 1 }
+            Write-Host "(W) notification logging applied (hook -> ~/.superset/pane-map-hook.log; renderer [agent-dots] lines -> electron-log main.log)"
           }
 
           # (Y) windows-force-foreground.patch
@@ -1065,33 +1046,29 @@ jobs:
           #     nothing (the window is visible per IsWindowVisible, just behind the
           #     app that holds the foreground; needed a manual Win32 raise to recover).
           #     Adds a brief always-on-top pin (exempt from the lock) to force the
-          #     window to the top on Windows. Guard SKIPS (warns) instead of aborting —
-          #     it's a recovery QoL fix, not load-bearing, so context drift mustn't
-          #     block the build. Marker: 'Windows holds a foreground lock'.
+          #     window to the top on Windows. Guard HARD-ABORTS on any apply
+          #     failure — every build must include force-foreground; regenerate
+          #     the patch on drift rather than ship without it.
+          #     Marker: 'Windows holds a foreground lock'.
           $ff = '../patches/windows-force-foreground.patch'
-          if (-not (Test-Path $ff)) { Write-Host "::warning::(Y) missing $ff in patches repo — skipping force-foreground" }
-          else {
-            $ffFile = 'apps/desktop/src/main/index.ts'
-            if (-not (Test-Path $ffFile)) {
-              Write-Host "::warning::(Y) $ffFile is missing in this upstream — skipping force-foreground."
-            } elseif (Select-String -Quiet -SimpleMatch 'Windows holds a foreground lock' $ffFile) {
-              Write-Host "(Y) force-foreground already present — skip"
-            } else {
-              $yErr = "$env:RUNNER_TEMP/y-apply-check.txt"
-              git apply --check $ff 2>$yErr
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host "::warning::(Y) windows-force-foreground.patch does not apply cleanly — skipping (NOT aborting). Relaunching a buried window may not surface it until patches/windows-force-foreground.patch is regenerated. git apply --check output:"
-                if (Test-Path $yErr) { Get-Content $yErr | ForEach-Object { Write-Host "    (Y-check) $_" } }
-              } else {
-                git apply $ff
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "::warning::(Y) git apply failed after a clean --check — skipping force-foreground."
-                } else {
-                  if ((Get-Content -Raw $ffFile) -notmatch 'setAlwaysOnTop') { Write-Error "(Y) setAlwaysOnTop missing in $ffFile after apply"; exit 1 }
-                  Write-Host "(Y) windows-force-foreground applied (focusMainWindow raises past the Windows foreground lock; relaunch now surfaces a buried window)"
-                }
-              }
+          if (-not (Test-Path $ff)) { Write-Error "(Y) missing $ff in patches repo"; exit 1 }
+          $ffFile = 'apps/desktop/src/main/index.ts'
+          if (-not (Test-Path $ffFile)) { Write-Error "(Y) $ffFile is missing in this upstream — aborting; regenerate patches/windows-force-foreground.patch for the new layout"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'Windows holds a foreground lock' $ffFile) {
+            Write-Host "(Y) force-foreground already present — skip"
+          } else {
+            $yErr = "$env:RUNNER_TEMP/y-apply-check.txt"
+            git apply --check $ff 2>$yErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(Y) windows-force-foreground.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $yErr) { Get-Content $yErr | ForEach-Object { Write-Host "    (Y-check) $_" } }
+              Write-Error "(Y) windows-force-foreground.patch failed to apply — ABORTING. Regenerate patches/windows-force-foreground.patch against this upstream."
+              exit 1
             }
+            git apply $ff
+            if ($LASTEXITCODE -ne 0) { Write-Error "(Y) git apply failed after a clean --check"; exit 1 }
+            if ((Get-Content -Raw $ffFile) -notmatch 'setAlwaysOnTop') { Write-Error "(Y) setAlwaysOnTop missing in $ffFile after apply"; exit 1 }
+            Write-Host "(Y) windows-force-foreground applied (focusMainWindow raises past the Windows foreground lock; relaunch now surfaces a buried window)"
           }
 
           # (F) Stage the deterministic Bun-store native-payload repair script
@@ -1105,12 +1082,13 @@ jobs:
 
           Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + Y + Z + F). (U disabled — see comment above.)"
 
-          # Reaching here means every fail-loud guard passed (each aborts with an
-          # explicit `exit 1` earlier). The skip-not-abort guards (V/X/W) run
-          # `git apply --check` whose failure leaves $LASTEXITCODE=1; since (W) is
-          # the last native command, pwsh's trailing `exit $LASTEXITCODE` would
-          # otherwise fail the whole step even though the skip is intentional.
-          # Force a clean exit to reflect "all mandatory fixups applied".
+          # Reaching here means EVERY patch/fixup applied — ALL guards now
+          # hard-abort (Write-Error + exit 1) on any failure, so a build either
+          # contains the complete patch set or fails loudly. There are no
+          # skip-not-abort guards anymore: every build = latest upstream + the
+          # full set (L M N O P Q R S T V X W Y Z), never partial. A trailing
+          # `git apply --check`/Get-Content can leave $LASTEXITCODE=1 even on
+          # success, so force a clean exit to reflect "all fixups applied".
           exit 0
 
       - name: Install dependencies

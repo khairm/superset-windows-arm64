@@ -65,11 +65,11 @@ A **build-automation repo**, not app source. It produces a native Windows
   Adds a 12 s show-watchdog force-show + one-time renderer reload on early
   crash, and moves the window-lifecycle logs to `electron-log` so
   `main.log` captures the cause. Touches only the load/crash handlers, so
-  it coexists with the close-handler patches. Guard (T) SKIPS rather than
-  aborts on apply-failure — its multi-hunk main.ts context drifts with the
-  AI patch step and once hard-aborted a green build; it's a failsafe, and a
-  hidden/buried window stays recoverable via (Y) + relaunch when (T) is
-  skipped), and
+  it coexists with the close-handler patches. Guard (T) HARD-ABORTS on
+  apply-failure (2026-05-25: NO skip-not-abort anywhere — every build must
+  contain the full patch set or fail loudly); its multi-hunk main.ts context
+  can drift with the AI patch step, so on failure the build aborts and the
+  patch is regenerated/hardened rather than shipped without the watchdog), and
   `v2-cwd-fallback.patch` (**DISABLED 2026-05-22** — patch file kept in
   repo for future revival but the workflow no longer applies it. The
   applied build navigated to a v2-workspace route, fired
@@ -95,8 +95,8 @@ A **build-automation repo**, not app source. It produces a native Windows
   the v1 `Terminal/config.ts` and v2 `terminal-runtime.ts` to
   `screenReaderMode: true` so xterm exposes its hidden `<textarea>` as a
   UIA TextPattern provider. Negligible CPU cost; documented xterm.js
-  option, no known regressions. Guard (V) SKIPS rather than aborts on
-  apply-failure — older 1.9.x context drift mustn't block the build), and
+  option, no known regressions. Guard (V) HARD-ABORTS on apply-failure
+  (every build must include it; regenerate the patch on upstream drift)), and
   `notification-logging.patch` (**logging-only**, no behaviour/logic
   change — additive diagnostics for the agent-status-dots pipeline so a
   shipped build can be used to debug flaky/inconsistent dots. Applies
@@ -115,8 +115,10 @@ A **build-automation repo**, not app source. It produces a native Windows
   `reason` (missing-workspaceId / missing-terminalId / workspace-not-loaded;
   the highest-value diagnostic), `status_transition_computed`, and
   `store_mutation`. Selectors are left untouched (hot path). Guard (W)
-  SKIPS rather than aborts on apply-failure — logging is non-essential, so
-  context drift mustn't block the build; marker `pane-map-hook.log`), and
+  HARD-ABORTS on apply-failure — the agent-dots diagnostics (incl. the
+  `main.ts` `[agent-dots]`→`main.log` forwarder that (Z)'s blank-pane logging
+  also relies on) must ship in EVERY build; main.ts is the likely drift point
+  (AI-edited), so regenerate/harden on failure; marker `pane-map-hook.log`), and
   `terminal-tab-focus-trap.patch` (counteracts a side-effect of (V): with
   `screenReaderMode: true` xterm still sends `\t` to the PTY but no longer
   cancels the Tab keydown's default action, so the browser's focus traversal
@@ -126,15 +128,15 @@ A **build-automation repo**, not app source. It produces a native Windows
   both v1 + v2): for Tab/Shift+Tab with no ctrl/alt/meta and not during IME
   composition, `preventDefault()` on keydown then `return true` so xterm
   still encodes + sends the key under the kitty-keyboard protocol. Guard (X)
-  SKIPS rather than aborts on apply-failure), and
+  HARD-ABORTS on apply-failure (every build must include it; regenerate on drift)), and
   `windows-force-foreground.patch` (`focusMainWindow()` — the second-instance /
   deep-link handler — did only `show()`+`focus()`, which Windows' foreground lock
   ignores: relaunching Superset while its window was buried in z-order behind the
   app holding the foreground surfaced nothing (`IsWindowVisible` true, just not
   raised; distinct from the (T) hidden-window case). Adds a brief always-on-top
   pin (exempt from the lock) to force the window to the top on Windows, released
-  on the next tick. Guard (Y) SKIPS rather than aborts on apply-failure — it's a
-  recovery QoL fix, marker `Windows holds a foreground lock`), and
+  on the next tick. Guard (Y) HARD-ABORTS on apply-failure (every build must
+  include it; regenerate on drift), marker `Windows holds a foreground lock`), and
   `v2-workspace-blank-fix.patch` (the v2-workspace `layout.tsx` blanked the
   ENTIRE workspace content area — returned an empty
   `<div className="flex h-full w-full"/>` — whenever the `v2Workspaces`
@@ -172,12 +174,17 @@ A **build-automation repo**, not app source. It produces a native Windows
   and copy-native-modules.ts end up arm64 — the old guard aborted only if *neither*
   had the literal, which could ship with node-pty unmaterialized. So a single
   non-deterministic AI miss can no longer abort the build.
-- The fixup step ends with `exit 0`. The skip-not-abort guards (V/X/W) run
-  `git apply --check`, whose failure leaves `$LASTEXITCODE=1`; since (W) is the last
-  native command, pwsh's trailing `exit $LASTEXITCODE` would otherwise fail the whole
-  step even when the skip is intentional (this bug actually failed a build once (W)
-  first drifted). (W)'s `--check` stderr is logged on failure so drift is diagnosable
-  without a guess-and-rebuild cycle.
+- **NO skip-not-abort guards (2026-05-25).** Every patch/fixup HARD-ABORTS on
+  apply-failure: a build either contains the COMPLETE set (latest upstream + all of
+  L M N O P Q R S T V X W Y Z) or fails loudly — never ships partial. (Previously
+  V/X/W/Y/T were skip-not-abort and silently dropped on AI-drift; that shipped
+  incomplete builds, e.g. (W) + (Z)'s logging missing from desktop-v1.11.3-beta.)
+  When a patch drifts (main.ts ones — T, W — are the AI-edited drift risk), the
+  build fails with the `git apply --check` stderr logged; regenerate/harden that
+  patch (deterministic regex like (S)/(C) if it keeps drifting) and re-run — do NOT
+  reintroduce skipping.
+- The fixup step still ends with `exit 0`: a trailing `git apply --check`/Get-Content
+  can leave `$LASTEXITCODE=1` even on full success, so force a clean exit code.
 - `.gitattributes` — forces `*.patch`/`*.sh`/`*.snippet` to LF; CI `git apply` on the
   Windows runner fails on CRLF.
 - `README.md` — user-facing download/build docs.
