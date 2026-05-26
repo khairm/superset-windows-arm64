@@ -83,6 +83,10 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 - (W) notification-logging — `[agent-dots]` diagnostics → `~/.superset/*.log` + `main.log`
   [git apply: renderer + (N)-created watcher files] **+ (W.1)** the `main.ts`
   console-message forwarder, inserted before the `if (ipcHandler)` anchor [inline]
+  **+ (AB)** `log.transports.console.level = false;` inserted in the same atomic
+  block so `[agent-dots]` lines stay in `main.log` and do NOT leak to electron-log's
+  console transport (which was corrupting external Claude Code TUI sessions in the
+  user's plain pwsh windows for this cwd) [inline]
 
 **Disabled (kept in `patches/` for reference, NOT applied):**
 - (U) v2-cwd-fallback — hung the renderer at `V2NotificationController` mount.

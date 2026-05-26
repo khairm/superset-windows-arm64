@@ -1038,21 +1038,40 @@ jobs:
           # (W.1) main.ts forwarder — deterministic insert before the stable
           #       `if (ipcHandler) {` anchor in MainWindow(). Idempotent + fail-fast.
           #       UTF-8 (no BOM) round-trip so non-ASCII elsewhere in main.ts is safe.
+          #
+          # (AB) console-transport silence — also inserted here, in the same atomic
+          #      block as the forwarder. Sets `log.transports.console.level = false`
+          #      BEFORE attaching the forwarder so the `log.info(message)` call only
+          #      writes to the file transport (~/AppData/Roaming/Superset/logs/main.log)
+          #      and NOT to electron-log's console transport. Without this, every
+          #      `[agent-dots]` line was being written to the main process's
+          #      `process.stderr` (electron-log's default console transport uses
+          #      stderr/stdout) — that output then leaked into external Claude Code
+          #      TUI sessions running in the user's plain PowerShell windows whenever
+          #      Superset's renderer emitted lifecycle events for that cwd's Claude
+          #      session. The leak corrupted Claude's TUI rendering ("persistent cyan
+          #      separator strokes", text not clearing, only resize fixes it). File
+          #      logging continues normally so the dots-diagnostic pipeline (which
+          #      relies on main.log) is unaffected. Codex xhigh root-caused this
+          #      2026-05-26 + cited electron-log's documented `console.level = false`
+          #      as the right disable switch. Both inserts verified after write.
           $wmain = 'apps/desktop/src/main/windows/main.ts'
           if (-not (Test-Path $wmain)) { Write-Error "(W.1) $wmain missing in this upstream"; exit 1 }
           $wmainAbs = (Resolve-Path $wmain).Path
           $wcontent = [System.IO.File]::ReadAllText($wmainAbs)
-          if ($wcontent -match 'startsWith\("\[agent-dots\]"\)') {
-            Write-Host "(W.1) main.ts [agent-dots] forwarder already present — skip"
+          if ($wcontent -match 'startsWith\("\[agent-dots\]"\)' -and $wcontent -match 'log\.transports\.console\.level\s*=\s*false') {
+            Write-Host "(W.1)+(AB) main.ts [agent-dots] forwarder + console-silence already present — skip"
           } else {
             $wanchor = "`tif (ipcHandler) {"
             $widx = $wcontent.IndexOf($wanchor)
             if ($widx -lt 0) { Write-Error "(W.1) 'if (ipcHandler) {' anchor not found in main.ts — upstream shape changed; re-anchor the (W.1) inline insert rather than ship without the [agent-dots] forwarder."; exit 1 }
-            $fwd = "`t// Production diagnostic: persist renderer ""[agent-dots]"" console lines to`n`t// electron-log (main.log) so the agent-status-dots pipeline + the v2-workspace`n`t// blank-pane diagnostics survive a shipped build (no devtools session).`n`t// Logging only -- never alters behaviour. Inserted deterministically by (W.1)`n`t// because main.ts is AI-edited and a line-anchored hunk drifts.`n`twindow.webContents.on(`n`t`t""console-message"",`n`t`t(_event, _level, message) => {`n`t`t`ttry {`n`t`t`t`tif (typeof message === ""string"" && message.startsWith(""[agent-dots]"")) {`n`t`t`t`t`tlog.info(message);`n`t`t`t`t}`n`t`t`t} catch {`n`t`t`t`t// never let logging crash the main process`n`t`t`t}`n`t`t},`n`t);`n`n"
+            $fwd = "`t// (AB) Silence electron-log's console transport so [agent-dots] lines do`n`t// NOT leak into any attached parent console / pipe / external Claude Code TUI.`n`t// Main.log file transport continues normally. Without this, [agent-dots] lines`n`t// emitted via log.info(message) below were corrupting external pwsh Claude`n`t// sessions' TUI rendering for this cwd's Claude sessions. Codex-confirmed`n`t// root cause 2026-05-26 via electron-log docs.`n`tlog.transports.console.level = false;`n`n`t// (W.1) Production diagnostic: persist renderer ""[agent-dots]"" console lines to`n`t// electron-log (main.log) so the agent-status-dots pipeline + the v2-workspace`n`t// blank-pane diagnostics survive a shipped build (no devtools session).`n`t// Logging only -- never alters behaviour. Inserted deterministically by (W.1)`n`t// because main.ts is AI-edited and a line-anchored hunk drifts.`n`twindow.webContents.on(`n`t`t""console-message"",`n`t`t(_event, _level, message) => {`n`t`t`ttry {`n`t`t`t`tif (typeof message === ""string"" && message.startsWith(""[agent-dots]"")) {`n`t`t`t`t`tlog.info(message);`n`t`t`t`t}`n`t`t`t} catch {`n`t`t`t`t// never let logging crash the main process`n`t`t`t}`n`t`t},`n`t);`n`n"
             $wcontent = $wcontent.Insert($widx, $fwd)
             [System.IO.File]::WriteAllText($wmainAbs, $wcontent, (New-Object System.Text.UTF8Encoding $false))
-            if (([System.IO.File]::ReadAllText($wmainAbs)) -notmatch 'startsWith\("\[agent-dots\]"\)') { Write-Error "(W.1) [agent-dots] forwarder missing in main.ts after insert"; exit 1 }
-            Write-Host "(W.1) main.ts [agent-dots] -> main.log forwarder inserted (deterministic, before if (ipcHandler))"
+            $verifyContent = [System.IO.File]::ReadAllText($wmainAbs)
+            if ($verifyContent -notmatch 'startsWith\("\[agent-dots\]"\)') { Write-Error "(W.1) [agent-dots] forwarder missing in main.ts after insert"; exit 1 }
+            if ($verifyContent -notmatch 'log\.transports\.console\.level\s*=\s*false') { Write-Error "(AB) electron-log console-transport silencer missing in main.ts after insert"; exit 1 }
+            Write-Host "(W.1)+(AB) main.ts [agent-dots] forwarder + console-transport silence inserted (deterministic, before if (ipcHandler))"
           }
 
           $nl = '../patches/notification-logging.patch'
@@ -1185,7 +1204,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + AA + Y + Z + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + W.1 + AA + AB + Y + Z + F). (U disabled — see comment above.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
