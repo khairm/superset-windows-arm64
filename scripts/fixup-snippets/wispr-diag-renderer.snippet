@@ -1,0 +1,70 @@
+	// [WISPR-DIAG] Renderer instrumentation: log xterm textarea DOM state +
+	// every input/composition/focus event so we can diagnose why Wispr Flow's
+	// UIA injection silently no-ops into terminals while keyboard + Ctrl+V
+	// work. All logs are [agent-dots] [wispr-diag] -prefixed so the (W.1)
+	// main.ts console-message forwarder persists them to electron-log main.log.
+	(function installWisprDiag() {
+		const tryAttach = () => {
+			const el = (terminal as any).element as HTMLElement | undefined;
+			if (!el) { setTimeout(tryAttach, 50); return; }
+			const ta = el.querySelector("textarea") as HTMLTextAreaElement | null;
+			if (!ta) { setTimeout(tryAttach, 50); return; }
+			try {
+				console.log("[agent-dots] [wispr-diag] textarea-init " + JSON.stringify({
+					origin: "v2",
+					screenReaderModeOption: (terminal as any).options?.screenReaderMode ?? null,
+					role: ta.getAttribute("role"),
+					ariaMultiline: ta.getAttribute("aria-multiline"),
+					ariaLabel: ta.getAttribute("aria-label"),
+					ariaHidden: ta.getAttribute("aria-hidden"),
+					tabIndex: ta.tabIndex,
+					parentTag: ta.parentElement ? ta.parentElement.tagName : null,
+					parentRole: ta.parentElement ? ta.parentElement.getAttribute("role") : null,
+				}));
+			} catch (_e) { /* never block on logging */ }
+			const eventTypes = ["input", "beforeinput", "change", "keydown", "keypress", "keyup",
+				"compositionstart", "compositionupdate", "compositionend", "focus", "blur"];
+			for (const t of eventTypes) {
+				ta.addEventListener(t, (e: any) => {
+					try {
+						console.log("[agent-dots] [wispr-diag] event " + JSON.stringify({
+							origin: "v2",
+							type: t,
+							data: ("data" in e ? e.data : null),
+							inputType: ("inputType" in e ? e.inputType : null),
+							isComposing: ("isComposing" in e ? e.isComposing : null),
+							keyCode: ("keyCode" in e ? e.keyCode : null),
+							valueLen: ta.value.length,
+							valueTail: ta.value.slice(-20),
+							activeIsTa: document.activeElement === ta,
+						}));
+					} catch (_e) { /* never block on logging */ }
+				}, true);
+			}
+			let lastValue = ta.value;
+			let lastActiveTag: string | null = null;
+			setInterval(() => {
+				try {
+					const cur = document.activeElement as HTMLElement | null;
+					const tag = cur ? cur.tagName : null;
+					const isTa = cur === ta;
+					if (ta.value !== lastValue) {
+						console.log("[agent-dots] [wispr-diag] value-changed " + JSON.stringify({
+							origin: "v2",
+							oldLen: lastValue.length, oldTail: lastValue.slice(-20),
+							newLen: ta.value.length, newTail: ta.value.slice(-20),
+							activeIsTa: isTa, activeTag: tag,
+						}));
+						lastValue = ta.value;
+					}
+					if (lastActiveTag !== tag) {
+						console.log("[agent-dots] [wispr-diag] focus-changed " + JSON.stringify({
+							origin: "v2", activeTag: tag, isXtermTa: isTa,
+						}));
+						lastActiveTag = tag;
+					}
+				} catch (_e) { /* never block on logging */ }
+			}, 250);
+		};
+		tryAttach();
+	})();

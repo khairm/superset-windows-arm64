@@ -1,0 +1,30 @@
+	// [WISPR-DIAG] Enable Electron's accessibility support so xterm's
+	// screenReaderMode:true (which adds aria-* to the hidden <textarea>) is
+	// actually visible to Windows UI Automation. Wispr Flow's voice input uses
+	// UIA (IUIAutomationValuePattern/TextPattern); without UIA exposure, ARIA on
+	// the textarea is invisible to it and injection silently no-ops — keyboard
+	// + Ctrl+V still work because they route through xterm's keydown listener
+	// and paste handler, not UIA. Electron only fully materializes its
+	// accessibility tree on Windows when this flag is set OR when a registered
+	// screen reader is detected (Wispr Flow does NOT register as a screen reader).
+	try {
+		const { app } = require("electron") as typeof import("electron");
+		console.log("[agent-dots] [wispr-diag] electron-accessibility-before " + JSON.stringify({
+			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
+			accessibilitySupportEnabled: (app as any).accessibilitySupportEnabled,
+			electronVersion: process.versions.electron,
+			chromeVersion: process.versions.chrome,
+			platform: process.platform,
+			arch: process.arch,
+		}));
+		if (typeof (app as any).setAccessibilitySupportEnabled === "function") {
+			(app as any).setAccessibilitySupportEnabled(true);
+			console.log("[agent-dots] [wispr-diag] setAccessibilitySupportEnabled(true) called");
+		}
+		console.log("[agent-dots] [wispr-diag] electron-accessibility-after " + JSON.stringify({
+			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
+		}));
+	} catch (_e) {
+		try { console.log("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
+	}
+

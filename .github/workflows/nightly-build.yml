@@ -1079,6 +1079,71 @@ jobs:
             Write-Host "(W) notification logging applied (hook -> ~/.superset/pane-map-hook.log; renderer [agent-dots] lines -> electron-log main.log)"
           }
 
+          # (AA) wispr-flow-diag — diagnose + likely-fix Wispr Flow voice input
+          #      into terminals. Two coordinated inline fixups, both hard-abort:
+          #      (AA.1) main.ts: enables Electron accessibility support
+          #             (app.setAccessibilitySupportEnabled(true)) so the UIA tree
+          #             materializes — without this, xterm's screenReaderMode:true
+          #             ARIA on the hidden <textarea> is invisible to Windows UI
+          #             Automation (Wispr Flow's voice input uses UIA's
+          #             IUIAutomationValuePattern/TextPattern). Keyboard + Ctrl+V
+          #             still work because they route through xterm's keydown
+          #             listener + paste handler, NOT through UIA — so the
+          #             symptom is "Wispr no-ops, kbd works" instead of "terminal
+          #             broken". Also logs the before/after accessibility state +
+          #             Electron/Chrome versions to [agent-dots] for diagnosis.
+          #      (AA.2) terminal-runtime.ts: instruments v2 xterm textarea — logs
+          #             textarea aria-* + every input/composition/focus event +
+          #             periodic value-diff snapshot (catches UIA SetValue too)
+          #             so we can see exactly what Wispr's injection does at the
+          #             DOM level. Logging only — no behavior change.
+          #      Both rely on (W.1)'s main.ts forwarder being already inserted (it
+          #      runs above), so the [agent-dots] [wispr-diag] lines reach
+          #      ~/AppData/Roaming/Superset/logs/main.log.
+          # (AA.1) main.ts: enable Electron accessibility support + log state.
+          #        Anchor: `\tif (ipcHandler) {` (same stable anchor (W.1) uses;
+          #        (W.1) runs first, so (AA.1) inserts AFTER (W.1)'s forwarder code).
+          $aaMain = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $aaMain)) { Write-Error "(AA.1) $aaMain missing in this upstream"; exit 1 }
+          $aaMainAbs = (Resolve-Path $aaMain).Path
+          $aaSnippet = Get-Content -Raw '../scripts/fixup-snippets/wispr-diag-main.snippet'
+          if (-not $aaSnippet) { Write-Error "(AA.1) missing scripts/fixup-snippets/wispr-diag-main.snippet"; exit 1 }
+          $aaContent = [System.IO.File]::ReadAllText($aaMainAbs)
+          if ($aaContent -match 'setAccessibilitySupportEnabled\(true\)') {
+            Write-Host "(AA.1) wispr-diag main.ts already present — skip"
+          } else {
+            $aaAnchor = "`tif (ipcHandler) {"
+            $aaIdx = $aaContent.IndexOf($aaAnchor)
+            if ($aaIdx -lt 0) { Write-Error "(AA.1) 'if (ipcHandler) {' anchor not found in $aaMain — upstream shape changed; re-anchor (AA.1) rather than ship without Wispr Flow / UIA support."; exit 1 }
+            $aaContent = $aaContent.Insert($aaIdx, $aaSnippet)
+            [System.IO.File]::WriteAllText($aaMainAbs, $aaContent, (New-Object System.Text.UTF8Encoding $false))
+            if (([System.IO.File]::ReadAllText($aaMainAbs)) -notmatch 'setAccessibilitySupportEnabled\(true\)') { Write-Error "(AA.1) setAccessibilitySupportEnabled marker missing after insert"; exit 1 }
+            Write-Host "(AA.1) main.ts setAccessibilitySupportEnabled(true) + wispr-diag accessibility logging inserted (deterministic, before if (ipcHandler))"
+          }
+
+          # (AA.2) terminal-runtime.ts: install renderer wispr-diag after the v2
+          #        createTerminal()'s `terminal.loadAddon(serializeAddon);` anchor.
+          #        (V) modifies the same file above, so (AA.2) runs AFTER (V)
+          #        applies — order is fine. Logs every textarea event + value-diff.
+          $aaTr = 'apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts'
+          if (-not (Test-Path $aaTr)) { Write-Error "(AA.2) $aaTr missing in this upstream"; exit 1 }
+          $aaTrAbs = (Resolve-Path $aaTr).Path
+          $aaTrSnippet = Get-Content -Raw '../scripts/fixup-snippets/wispr-diag-renderer.snippet'
+          if (-not $aaTrSnippet) { Write-Error "(AA.2) missing scripts/fixup-snippets/wispr-diag-renderer.snippet"; exit 1 }
+          $aaTrContent = [System.IO.File]::ReadAllText($aaTrAbs)
+          if ($aaTrContent -match 'installWisprDiag') {
+            Write-Host "(AA.2) wispr-diag renderer already present — skip"
+          } else {
+            $aaTrAnchor = "`tterminal.loadAddon(serializeAddon);"
+            $aaTrIdx = $aaTrContent.IndexOf($aaTrAnchor)
+            if ($aaTrIdx -lt 0) { Write-Error "(AA.2) 'terminal.loadAddon(serializeAddon);' anchor not found in $aaTr — upstream shape changed; re-anchor (AA.2)"; exit 1 }
+            $aaTrInsertAt = $aaTrIdx + $aaTrAnchor.Length + 1
+            $aaTrContent = $aaTrContent.Insert($aaTrInsertAt, $aaTrSnippet)
+            [System.IO.File]::WriteAllText($aaTrAbs, $aaTrContent, (New-Object System.Text.UTF8Encoding $false))
+            if (([System.IO.File]::ReadAllText($aaTrAbs)) -notmatch 'installWisprDiag') { Write-Error "(AA.2) installWisprDiag marker missing after insert"; exit 1 }
+            Write-Host "(AA.2) terminal-runtime.ts wispr-diag instrumentation inserted (deterministic, after terminal.loadAddon(serializeAddon))"
+          }
+
           # (Y) windows-force-foreground.patch
           #     focusMainWindow() (the second-instance / deep-link handler) did only
           #     show()+focus(), which Windows' foreground lock ignores — so
@@ -1120,7 +1185,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + Y + Z + F). (U disabled — see comment above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + AA + Y + Z + F). (U disabled — see comment above.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

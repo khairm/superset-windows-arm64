@@ -62,6 +62,13 @@ renderer CORS `allowedOrigins += superset-app://` (K).
   Post-compile guard verifies the flag in both built bundles [git apply]
 - (X) terminal-tab-focus-trap — companion to (V): with `screenReaderMode: true`, xterm
   no longer cancels Tab's default, so without this Tab steals focus out of the terminal [git apply]
+- (AA) wispr-flow-diag — two inline fixups: **(AA.1)** `main.ts` calls
+  `app.setAccessibilitySupportEnabled(true)` so Electron's UIA tree materializes on
+  Windows (xterm's `screenReaderMode: true` ARIA is otherwise invisible to UIA without
+  a registered screen reader); **(AA.2)** `terminal-runtime.ts` instruments the v2
+  xterm textarea with event listeners + periodic value-diff snapshots, logging to
+  `[agent-dots] [wispr-diag]` so the (W.1) forwarder persists everything to `main.log`
+  for live Wispr Flow diagnosis [inline]
 - (Y) force-foreground — `focusMainWindow` raises past the Windows foreground lock
   so relaunch surfaces a buried window [git apply]
 - (Z) v2-workspace blank-pane fix — cache-first hold-last-good in `layout.tsx` so an
