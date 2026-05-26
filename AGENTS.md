@@ -56,19 +56,16 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 - (S) `await resolveLaunchShell` — one-token await; fixes v2 preset spawn [inline regex]
 - (T) hidden-window watchdog — 12s force-show + early-crash reload + electron-log
   lifecycle logging (window is `show:false` until a load event that may never fire) [git apply]
-- (V) xterm `screenReaderMode: true` — exposes the hidden xterm `<textarea>` as a UIA
-  TextPattern provider so Wispr Flow / screen readers can inject input. Touches BOTH
-  v1 `Terminal/config.ts` AND v2 `terminal-runtime.ts` (independent xterm option objects).
-  Post-compile guard verifies the flag in both built bundles [git apply]
-- (X) terminal-tab-focus-trap — companion to (V): with `screenReaderMode: true`, xterm
-  no longer cancels Tab's default, so without this Tab steals focus out of the terminal [git apply]
-- (AA) wispr-flow-diag — two inline fixups: **(AA.1)** `main.ts` calls
-  `app.setAccessibilitySupportEnabled(true)` so Electron's UIA tree materializes on
-  Windows (xterm's `screenReaderMode: true` ARIA is otherwise invisible to UIA without
-  a registered screen reader); **(AA.2)** `terminal-runtime.ts` instruments the v2
-  xterm textarea with event listeners + periodic value-diff snapshots, logging to
-  `[agent-dots] [wispr-diag]` so the (W.1) forwarder persists everything to `main.log`
-  for live Wispr Flow diagnosis [inline]
+- (AA) wispr-flow — the Wispr Flow voice-input fix (with (V) reverted). Two inline
+  fixups: **(AA.1)** `main.ts` calls `app.setAccessibilitySupportEnabled(true)` so
+  Electron materializes its UIA tree on Windows — THIS is what puts the hidden xterm
+  `<textarea>` in the UIA tree so Wispr Flow's injection can target it (independent of
+  `screenReaderMode`, which must stay false — see disabled (V)). Logs a11y state via
+  `log.info` (main process; `console.log` would not reach `main.log`). **(AA.2)**
+  `terminal-runtime.ts` instruments the v2 xterm textarea (every event, snapshotted
+  sync/microtask/rAF + a value-setter hook + a document-level `focusin` UIA scanner),
+  logging `[agent-dots] [wispr-diag]` so the (W.1) forwarder persists to `main.log` —
+  used to VERIFY Wispr's `insertText` now reaches the PTY [inline]
 - (Y) force-foreground — `focusMainWindow` raises past the Windows foreground lock
   so relaunch surfaces a buried window [git apply]
 - (Z) v2-workspace blank-pane fix — cache-first hold-last-good in `layout.tsx` so an
@@ -90,6 +87,15 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 
 **Disabled (kept in `patches/` for reference, NOT applied):**
 - (U) v2-cwd-fallback — hung the renderer at `V2NotificationController` mount.
+- (V) xterm `screenReaderMode: true` — **was the Wispr Flow regression.** xterm's
+  `_inputEvent` forwards programmatic `insertText` to the PTY ONLY when
+  `screenReaderMode` is false; with it true, Wispr's injected text is silently dropped
+  (keyboard + Ctrl+V use other paths, so they kept working). xterm's default (false) —
+  what VS Code ships — is correct. UIA reachability comes from (AA.1), not this. The
+  post-compile guard is now INVERTED: it hard-aborts if `screenReaderMode` is truthy.
+  DO NOT re-enable (wrongly re-enabled twice already).
+- (X) terminal-tab-focus-trap — only existed to compensate for (V)'s Tab side-effect;
+  redundant once `screenReaderMode` is false (xterm cancels Tab natively). Reverted with (V).
 
 ## Key files / scripts
 
