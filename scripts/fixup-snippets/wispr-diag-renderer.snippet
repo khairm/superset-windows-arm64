@@ -1,14 +1,27 @@
-	// [WISPR-DIAG] Renderer instrumentation: log xterm textarea DOM state +
-	// every input/composition/focus event so we can diagnose why Wispr Flow's
-	// UIA injection silently no-ops into terminals while keyboard + Ctrl+V
-	// work. All logs are [agent-dots] [wispr-diag] -prefixed so the (W.1)
-	// main.ts console-message forwarder persists them to electron-log main.log.
+
+	// [WISPR-DIAG v2] Renderer instrumentation to diagnose why Wispr Flow's UIA
+	// injection silently no-ops into the xterm terminal while keyboard + Ctrl+V
+	// (and Wispr into the search popup / tab-title input) all work. Logging only,
+	// no behaviour change. All lines are [agent-dots] [wispr-diag] -prefixed so the
+	// (W.1) main.ts console-message forwarder persists them to electron-log main.log.
+	//
+	// Three probes:
+	//   (1) Per xterm <textarea>: every input/composition/key/focus event, snapshotted
+	//       SYNCHRONOUSLY + at microtask + at requestAnimationFrame, so we see whether
+	//       xterm clears an injected value before Wispr's read-back probe can see it.
+	//   (2) A value-setter hook on the textarea logging old/new + a stack trace, to
+	//       attribute exactly WHO clears the value (xterm's _onData reset vs Wispr).
+	//   (3) A document-level focusin UIA-profile scanner (installed once) that dumps
+	//       role/aria-*/contentEditable/rect/computed-style/parent-chain for ANY focused
+	//       element — lets us diff a WORKING Wispr target (search input) against the
+	//       xterm textarea that fails.
 	(function installWisprDiag() {
 		const tryAttach = () => {
 			const el = (terminal as any).element as HTMLElement | undefined;
 			if (!el) { setTimeout(tryAttach, 50); return; }
 			const ta = el.querySelector("textarea") as HTMLTextAreaElement | null;
 			if (!ta) { setTimeout(tryAttach, 50); return; }
+			const rectOf = (node: Element) => { const r = node.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; };
 			try {
 				console.log("[agent-dots] [wispr-diag] textarea-init " + JSON.stringify({
 					origin: "v2",
@@ -18,53 +31,128 @@
 					ariaLabel: ta.getAttribute("aria-label"),
 					ariaHidden: ta.getAttribute("aria-hidden"),
 					tabIndex: ta.tabIndex,
+					contentEditable: ta.isContentEditable,
+					readOnly: ta.readOnly,
 					parentTag: ta.parentElement ? ta.parentElement.tagName : null,
 					parentRole: ta.parentElement ? ta.parentElement.getAttribute("role") : null,
+					rect: rectOf(ta),
 				}));
 			} catch (_e) { /* never block on logging */ }
+
+			const snap = (phase: string, ev: any) => {
+				try {
+					const cs = getComputedStyle(ta);
+					const r = ta.getBoundingClientRect();
+					console.log("[agent-dots] [wispr-diag] ta-event " + JSON.stringify({
+						origin: "v2",
+						phase,
+						type: ev ? ev.type : null,
+						inputType: ev && "inputType" in ev ? ev.inputType : null,
+						data: ev && "data" in ev ? ev.data : null,
+						isComposing: ev && "isComposing" in ev ? ev.isComposing : null,
+						isTrusted: ev ? ev.isTrusted : null,
+						keyCode: ev && "keyCode" in ev ? ev.keyCode : null,
+						valueLen: ta.value.length,
+						valueTail: ta.value.slice(-24),
+						activeIsTa: document.activeElement === ta,
+						visibility: cs.visibility,
+						display: cs.display,
+						opacity: cs.opacity,
+						rectW: Math.round(r.width),
+						rectH: Math.round(r.height),
+					}));
+				} catch (_e) { /* never block on logging */ }
+			};
+			const onEv = (ev: any) => {
+				snap("sync", ev);
+				queueMicrotask(() => snap("microtask", ev));
+				requestAnimationFrame(() => snap("raf", ev));
+			};
 			const eventTypes = ["input", "beforeinput", "change", "keydown", "keypress", "keyup",
 				"compositionstart", "compositionupdate", "compositionend", "focus", "blur"];
 			for (const t of eventTypes) {
-				ta.addEventListener(t, (e: any) => {
-					try {
-						console.log("[agent-dots] [wispr-diag] event " + JSON.stringify({
-							origin: "v2",
-							type: t,
-							data: ("data" in e ? e.data : null),
-							inputType: ("inputType" in e ? e.inputType : null),
-							isComposing: ("isComposing" in e ? e.isComposing : null),
-							keyCode: ("keyCode" in e ? e.keyCode : null),
-							valueLen: ta.value.length,
-							valueTail: ta.value.slice(-20),
-							activeIsTa: document.activeElement === ta,
-						}));
-					} catch (_e) { /* never block on logging */ }
-				}, true);
+				ta.addEventListener(t, onEv, true);
 			}
-			let lastValue = ta.value;
-			let lastActiveTag: string | null = null;
-			setInterval(() => {
-				try {
-					const cur = document.activeElement as HTMLElement | null;
-					const tag = cur ? cur.tagName : null;
-					const isTa = cur === ta;
-					if (ta.value !== lastValue) {
-						console.log("[agent-dots] [wispr-diag] value-changed " + JSON.stringify({
-							origin: "v2",
-							oldLen: lastValue.length, oldTail: lastValue.slice(-20),
-							newLen: ta.value.length, newTail: ta.value.slice(-20),
-							activeIsTa: isTa, activeTag: tag,
-						}));
-						lastValue = ta.value;
-					}
-					if (lastActiveTag !== tag) {
-						console.log("[agent-dots] [wispr-diag] focus-changed " + JSON.stringify({
-							origin: "v2", activeTag: tag, isXtermTa: isTa,
-						}));
-						lastActiveTag = tag;
-					}
-				} catch (_e) { /* never block on logging */ }
-			}, 250);
+
+			// (2) Hook the value setter (pass-through) to attribute clears with a stack.
+			try {
+				const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+				if (desc && desc.get && desc.set && !(ta as any).__wisprValueHooked) {
+					(ta as any).__wisprValueHooked = true;
+					const getV = desc.get;
+					const setV = desc.set;
+					Object.defineProperty(ta, "value", {
+						configurable: true,
+						get() { return getV.call(this); },
+						set(v) {
+							const old = getV.call(this);
+							setV.call(this, v);
+							if (old !== v && (String(old).length > 0 || String(v).length > 0)) {
+								try {
+									console.log("[agent-dots] [wispr-diag] value-set " + JSON.stringify({
+										origin: "v2",
+										oldLen: String(old).length,
+										oldTail: String(old).slice(-24),
+										newLen: String(v).length,
+										newTail: String(v).slice(-24),
+										activeIsTa: document.activeElement === ta,
+										stack: (new Error().stack || "").split("\n").slice(1, 6).join(" || "),
+									}));
+								} catch (_e) { /* never block on logging */ }
+							}
+						},
+					});
+				}
+			} catch (_e) { /* never block on logging */ }
 		};
 		tryAttach();
+
+		// (3) Global (install once across all terminals): focusin UIA-profile scanner.
+		if (!(window as any).__wisprDiagGlobal) {
+			(window as any).__wisprDiagGlobal = true;
+			const profile = (node: Element | null): any => {
+				if (!node) { return null; }
+				const attrs: Record<string, string> = {};
+				try {
+					for (const a of Array.from(node.attributes)) {
+						if (a.name === "role" || a.name.indexOf("aria-") === 0) { attrs[a.name] = a.value; }
+					}
+				} catch (_e) { /* ignore */ }
+				let chain = "";
+				let p: Element | null = node.parentElement;
+				let depth = 0;
+				while (p && depth < 6) {
+					const role = p.getAttribute("role");
+					const label = p.getAttribute("aria-label");
+					chain += " > " + p.tagName + (role ? "[role=" + role + "]" : "") + (label ? "[aria-label=" + label + "]" : "");
+					p = p.parentElement;
+					depth++;
+				}
+				const cs = getComputedStyle(node);
+				const r = node.getBoundingClientRect();
+				return {
+					tag: node.tagName,
+					attrs,
+					contentEditable: (node as any).isContentEditable ?? null,
+					tabIndex: (node as any).tabIndex ?? null,
+					inputType: (node as any).type ?? null,
+					readOnly: (node as any).readOnly ?? null,
+					rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+					visibility: cs.visibility,
+					display: cs.display,
+					opacity: cs.opacity,
+					position: cs.position,
+					chain,
+				};
+			};
+			document.addEventListener("focusin", (e: any) => {
+				try {
+					console.log("[agent-dots] [wispr-diag] focusin " + JSON.stringify({
+						origin: "v2",
+						info: profile(e.target as Element),
+					}));
+				} catch (_e) { /* never block on logging */ }
+			}, true);
+			console.log("[agent-dots] [wispr-diag] global-focusin-scanner-installed");
+		}
 	})();

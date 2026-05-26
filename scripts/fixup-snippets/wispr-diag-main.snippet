@@ -7,9 +7,14 @@
 	// and paste handler, not UIA. Electron only fully materializes its
 	// accessibility tree on Windows when this flag is set OR when a registered
 	// screen reader is detected (Wispr Flow does NOT register as a screen reader).
+	//
+	// NOTE: logs via electron-log `log.info` (NOT console.log). This snippet runs
+	// in the MAIN process; the (W.1) forwarder only relays RENDERER console
+	// messages to main.log, so a main-process console.log would never surface.
+	// `log` is in scope here — (W.1)/(AB) use it at this same anchor.
 	try {
 		const { app } = require("electron") as typeof import("electron");
-		console.log("[agent-dots] [wispr-diag] electron-accessibility-before " + JSON.stringify({
+		log.info("[agent-dots] [wispr-diag] electron-accessibility-before " + JSON.stringify({
 			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
 			accessibilitySupportEnabled: (app as any).accessibilitySupportEnabled,
 			electronVersion: process.versions.electron,
@@ -19,12 +24,12 @@
 		}));
 		if (typeof (app as any).setAccessibilitySupportEnabled === "function") {
 			(app as any).setAccessibilitySupportEnabled(true);
-			console.log("[agent-dots] [wispr-diag] setAccessibilitySupportEnabled(true) called");
+			log.info("[agent-dots] [wispr-diag] setAccessibilitySupportEnabled(true) called");
 		}
-		console.log("[agent-dots] [wispr-diag] electron-accessibility-after " + JSON.stringify({
+		log.info("[agent-dots] [wispr-diag] electron-accessibility-after " + JSON.stringify({
 			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
 		}));
 	} catch (_e) {
-		try { console.log("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
+		try { log.info("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
 	}
 
