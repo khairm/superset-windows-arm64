@@ -931,33 +931,86 @@ jobs:
           #     React version; consider moving the resolver to the main process so
           #     it's not in the renderer's mount path at all.
 
-          # (V) xterm-screen-reader-mode.patch — DISABLED 2026-05-25.
-          #     This flipped screenReaderMode: true (v1 Terminal/config.ts + v2
-          #     terminal-runtime.ts) on the THEORY that exposing xterm's hidden
-          #     <textarea> as a UIA TextPattern provider would help voice-to-text
-          #     (WisprFlow) + screen readers. In practice it BROKE WisprFlow: with
-          #     screenReaderMode: true, xterm's accessibility manager owns/syncs the
-          #     textarea, so WisprFlow's injected text never reaches the PTY —
-          #     "nothing appears" when dictating into a terminal (user-confirmed
-          #     2026-05-25; WisprFlow still works in non-terminal boxes). The
-          #     known-good state is the upstream default screenReaderMode: false
-          #     (their pre-(V) 1.10.2 had no (V) and WisprFlow pasted fine). So we
-          #     do NOT apply this — upstream default false stands.
-          #     patches/xterm-screen-reader-mode.patch kept in repo for reference.
-          #     (X) terminal-tab-focus-trap is disabled with it (it only existed to
-          #     counteract (V)'s Tab focus-escape side-effect; with screenReaderMode
-          #     false, xterm cancels Tab's default itself, so (X) is unneeded).
-          #     To revive screen-reader support without breaking WisprFlow, find a
-          #     mechanism that exposes the textarea to UIA WITHOUT xterm's
-          #     accessibility manager overwriting injected input.
+          # (V) xterm-screen-reader-mode.patch — REQUIRED for Wispr Flow / UIA.
+          #     xterm defaults screenReaderMode=false. With that off, the canvas
+          #     is opaque to Windows UI Automation — voice-to-text tools (Wispr
+          #     Flow) and screen readers find no TextPattern provider and silently
+          #     drop input, even though Ctrl+V still works (xterm reads the
+          #     clipboard directly on paste) and raw keyboard works (handled via
+          #     xterm's keydown listener on the textarea). Flipping the flag makes
+          #     xterm expose its hidden <textarea> as a UIA TextPattern provider so
+          #     those tools work. Negligible CPU cost; no known regressions in
+          #     xterm.js itself — the only side-effect is the Tab/Shift+Tab focus
+          #     escape, which is handled by companion patch (X) below. Touches two
+          #     files: v1 Terminal/config.ts (flips the explicit false → true) and
+          #     v2 terminal-runtime.ts (adds the option, which was previously
+          #     omitted, defaulting false). Both edits are MANDATORY — v1 and v2
+          #     use independent xterm option objects, patching only one leaves the
+          #     other path broken (Wispr Flow into a v2 terminal still no-ops).
+          #     Disable-then-re-enable history: was disabled 2026-05-25 in 4b70111
+          #     on the WRONG diagnosis that (V) broke Wispr Flow; user-verified
+          #     2026-05-26 that the opposite is true (without (V), Wispr Flow's
+          #     UIA injection has no target). Codex xhigh + xterm docs confirm
+          #     screenReaderMode IS the UIA exposure mechanism on Windows.
+          #     Guard HARD-ABORTS on any apply failure — every build must include
+          #     screen-reader-mode; if upstream layout shifts, regenerate the
+          #     patch rather than ship without it.
+          $sr = '../patches/xterm-screen-reader-mode.patch'
+          if (-not (Test-Path $sr)) { Write-Error "(V) missing $sr in patches repo"; exit 1 }
+          $srv1 = 'apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/config.ts'
+          $srv2 = 'apps/desktop/src/renderer/lib/terminal/terminal-runtime.ts'
+          if (-not (Test-Path $srv1) -or -not (Test-Path $srv2)) { Write-Error "(V) one of the xterm config files is missing in this upstream — aborting; regenerate patches/xterm-screen-reader-mode.patch for the new layout"; exit 1 }
+          if ((Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv1) -and (Select-String -Quiet -SimpleMatch 'screenReaderMode: true' $srv2)) {
+            Write-Host "(V) xterm screen-reader-mode already present — skip"
+          } else {
+            $vErr = "$env:RUNNER_TEMP/v-apply-check.txt"
+            git apply --check $sr 2>$vErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(V) xterm-screen-reader-mode.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $vErr) { Get-Content $vErr | ForEach-Object { Write-Host "    (V-check) $_" } }
+              Write-Error "(V) xterm-screen-reader-mode.patch failed to apply — ABORTING. Regenerate patches/xterm-screen-reader-mode.patch against this upstream."
+              exit 1
+            }
+            git apply $sr
+            if ($LASTEXITCODE -ne 0) { Write-Error "(V) git apply failed after a clean --check"; exit 1 }
+            $srv1Body = Get-Content -Raw $srv1
+            $srv2Body = Get-Content -Raw $srv2
+            if ($srv1Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv1 after apply"; exit 1 }
+            if ($srv2Body -notmatch 'screenReaderMode: true') { Write-Error "(V) screenReaderMode flag missing in $srv2 after apply"; exit 1 }
+            Write-Host "(V) xterm screen-reader-mode applied (xterm hidden textarea exposed as UIA TextPattern; WisprFlow / screen readers can inject input)"
+          }
 
-          # (X) terminal-tab-focus-trap.patch — DISABLED 2026-05-25 with (V).
-          #     This only ever existed to counteract (V) screenReaderMode: true's
-          #     Tab focus-escape side-effect. With (V) disabled (screenReaderMode
-          #     back to the upstream default false), xterm cancels Tab's default
-          #     action itself, so Tab stays in the terminal without this patch —
-          #     it is now unnecessary. patches/terminal-tab-focus-trap.patch kept
-          #     in repo for reference; revive only if (V) is ever revived.
+          # (X) terminal-tab-focus-trap.patch
+          #     Counteracts a side-effect of (V): with screenReaderMode: true,
+          #     xterm still sends \t to the PTY but no longer cancels the Tab
+          #     keydown's default action, so the browser's focus traversal fires
+          #     and Tab steals focus OUT of the terminal (breaks Claude Code tab
+          #     completion staying in-pane). Adds a branch to our shared
+          #     attachCustomKeyEventHandler: for Tab/Shift+Tab (no ctrl/alt/meta,
+          #     not during IME composition) preventDefault on keydown then return
+          #     true so xterm still encodes+sends the key. Guard HARD-ABORTS on
+          #     any apply failure — every build must include the focus-trap;
+          #     regenerate the patch if upstream drifts rather than ship without it.
+          $tt = '../patches/terminal-tab-focus-trap.patch'
+          if (-not (Test-Path $tt)) { Write-Error "(X) missing $tt in patches repo"; exit 1 }
+          $ttf = 'apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts'
+          if (-not (Test-Path $ttf)) { Write-Error "(X) $ttf not present in this upstream — aborting; regenerate patches/terminal-tab-focus-trap.patch for the new layout"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'must NOT traverse DOM focus' $ttf) {
+            Write-Host "(X) terminal-tab-focus-trap already present — skip"
+          } else {
+            $xErr = "$env:RUNNER_TEMP/x-apply-check.txt"
+            git apply --check $tt 2>$xErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(X) terminal-tab-focus-trap.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $xErr) { Get-Content $xErr | ForEach-Object { Write-Host "    (X-check) $_" } }
+              Write-Error "(X) terminal-tab-focus-trap.patch failed to apply — ABORTING. Regenerate patches/terminal-tab-focus-trap.patch against this upstream."
+              exit 1
+            }
+            git apply $tt
+            if ($LASTEXITCODE -ne 0) { Write-Error "(X) git apply failed after a clean --check"; exit 1 }
+            if ((Get-Content -Raw $ttf) -notmatch 'must NOT traverse DOM focus') { Write-Error "(X) tab focus-trap marker missing in $ttf after apply"; exit 1 }
+            Write-Host "(X) terminal-tab-focus-trap applied (Tab/Shift+Tab no longer steal focus out of the terminal)"
+          }
 
           # (W) notification-logging.patch
           #     Pure additive diagnostic logging for the agent-status-dots
@@ -1067,7 +1120,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + W + Y + Z + F). (U, V, X disabled — see comments above.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + V + X + W + Y + Z + F). (U disabled — see comment above.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
@@ -1127,6 +1180,40 @@ jobs:
         working-directory: superset/apps/desktop
         shell: bash
         run: bun run compile:app
+
+      # Post-compile hard-fail: confirm (V) screenReaderMode landed in BOTH the
+      # v1 (config-*.js) and v2 (terminal-runtime-*.js) built renderer chunks.
+      # The two paths use independent xterm option objects; patching only one
+      # leaves the other broken silently — exactly the regression that shipped
+      # in build 26421565819 (only v1 was caught by the v1-only hot-patch).
+      # Accept minified truthy (`!0`) as well as literal `true` (production
+      # bundles minify true → !0 in places). Hard-aborts if either chunk lacks
+      # the flag, so a build can NEVER ship with Wispr Flow broken again.
+      - name: Verify (V) screenReaderMode landed in both v1 and v2 renderer bundles
+        working-directory: superset/apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets_dir="dist/renderer/assets"
+          [ -d "$assets_dir" ] || { echo "::error::renderer assets dir not found at $assets_dir"; exit 1; }
+          v1_chunk=$(ls -1 "$assets_dir"/config-*.js 2>/dev/null | head -1 || true)
+          v2_chunk=$(ls -1 "$assets_dir"/terminal-runtime-*.js 2>/dev/null | head -1 || true)
+          [ -n "$v1_chunk" ] || { echo "::error::v1 config-*.js chunk not found in $assets_dir (renderer build layout changed?)"; exit 1; }
+          [ -n "$v2_chunk" ] || { echo "::error::v2 terminal-runtime-*.js chunk not found in $assets_dir (renderer build layout changed?)"; exit 1; }
+          echo "v1 chunk: $v1_chunk"
+          echo "v2 chunk: $v2_chunk"
+          # Accept either literal `screenReaderMode: true` or minified `screenReaderMode:!0`
+          if ! grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v1_chunk"; then
+            echo "::error::(V) screenReaderMode truthy NOT found in v1 chunk $v1_chunk — patch (V) failed to land in the v1 TERMINAL_OPTIONS"
+            grep -n screenReaderMode "$v1_chunk" || true
+            exit 1
+          fi
+          if ! grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v2_chunk"; then
+            echo "::error::(V) screenReaderMode truthy NOT found in v2 chunk $v2_chunk — patch (V) failed to land in the v2 inline xterm options (terminal-runtime.ts)"
+            grep -n screenReaderMode "$v2_chunk" || true
+            exit 1
+          fi
+          echo "(V) verified in both renderer bundles — Wispr Flow / UIA exposure present in v1 and v2 terminals."
 
       - name: Fetch @libsql + @anush008/tokenizers win32-arm64 + materialize native closure
         working-directory: superset

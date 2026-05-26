@@ -56,6 +56,12 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 - (S) `await resolveLaunchShell` — one-token await; fixes v2 preset spawn [inline regex]
 - (T) hidden-window watchdog — 12s force-show + early-crash reload + electron-log
   lifecycle logging (window is `show:false` until a load event that may never fire) [git apply]
+- (V) xterm `screenReaderMode: true` — exposes the hidden xterm `<textarea>` as a UIA
+  TextPattern provider so Wispr Flow / screen readers can inject input. Touches BOTH
+  v1 `Terminal/config.ts` AND v2 `terminal-runtime.ts` (independent xterm option objects).
+  Post-compile guard verifies the flag in both built bundles [git apply]
+- (X) terminal-tab-focus-trap — companion to (V): with `screenReaderMode: true`, xterm
+  no longer cancels Tab's default, so without this Tab steals focus out of the terminal [git apply]
 - (Y) force-foreground — `focusMainWindow` raises past the Windows foreground lock
   so relaunch surfaces a buried window [git apply]
 - (Z) v2-workspace blank-pane fix — cache-first hold-last-good in `layout.tsx` so an
@@ -73,9 +79,6 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 
 **Disabled (kept in `patches/` for reference, NOT applied):**
 - (U) v2-cwd-fallback — hung the renderer at `V2NotificationController` mount.
-- (V) xterm `screenReaderMode:true` — broke WisprFlow paste into terminals (xterm's
-  accessibility manager clobbers injected input); upstream default `false` is known-good.
-- (X) terminal-tab-focus-trap — only countered (V)'s Tab side-effect; unneeded with (V) off.
 
 ## Key files / scripts
 
