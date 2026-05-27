@@ -1115,6 +1115,41 @@ jobs:
             Write-Host "(AA.2) terminal-runtime.ts wispr-diag instrumentation inserted (deterministic, after terminal.loadAddon(serializeAddon))"
           }
 
+          # (AC) windows-terminal-paste — make SYNTHETIC Ctrl+V paste in the terminal.
+          #      Wispr Flow voice dictation copies its transcript to the clipboard then
+          #      sends an OS-level SendInput Ctrl+V. Superset's terminal paste relies on
+          #      the browser keydown->`paste` event (shouldBubbleClipboardShortcut, gated
+          #      on event.code === "KeyV"), which Chrome only fires for TRUSTED REAL keys;
+          #      synthetic keys fall through and xterm encodes ^V (0x16) into the PTY
+          #      (Codex reads that as paste-image -> "failed to paste image"). Splices a
+          #      Ctrl+V branch into the SHARED createTerminalKeyEventHandler (covers v1 +
+          #      v2; both call installTerminalKeyEventHandler) just BEFORE its final
+          #      `return true;`, so the branch runs ONLY for a Ctrl+V the clipboard-bubble
+          #      check did NOT already handle — i.e. the synthetic case — leaving the
+          #      (user-confirmed perfectly working) MANUAL Ctrl+V path untouched. Reads
+          #      via navigator.clipboard.readText() (same API as right-click Paste; the
+          #      sandboxed renderer has NO electron clipboard bridge) and terminal.paste()s
+          #      the text. [wispr-diag]-instrumented so we can verify the intercept +
+          #      readText result in main.log. Hard-aborts if the anchor is gone —
+          #      regenerate rather than ship without terminal paste for voice input.
+          $acFile = 'apps/desktop/src/renderer/lib/terminal/terminal-key-event-handler.ts'
+          if (-not (Test-Path $acFile)) { Write-Error "(AC) $acFile missing in this upstream — re-anchor windows-terminal-paste for the new layout"; exit 1 }
+          $acAbs = (Resolve-Path $acFile).Path
+          $acSnippet = Get-Content -Raw '../scripts/fixup-snippets/windows-terminal-paste.snippet'
+          if (-not $acSnippet) { Write-Error "(AC) missing scripts/fixup-snippets/windows-terminal-paste.snippet"; exit 1 }
+          $acContent = [System.IO.File]::ReadAllText($acAbs)
+          if ($acContent -match 'win-paste-intercept') {
+            Write-Host "(AC) windows-terminal-paste already present — skip"
+          } else {
+            $acAnchor = "`n`t`treturn true;"
+            $acIdx = $acContent.IndexOf($acAnchor)
+            if ($acIdx -lt 0) { Write-Error "(AC) handler-final 'return true;' anchor not found in $acFile — createTerminalKeyEventHandler shape changed; re-anchor (AC) rather than ship without terminal paste for Wispr Flow voice input."; exit 1 }
+            $acContent = $acContent.Insert($acIdx + 1, $acSnippet + "`n")
+            [System.IO.File]::WriteAllText($acAbs, $acContent, (New-Object System.Text.UTF8Encoding $false))
+            if (([System.IO.File]::ReadAllText($acAbs)) -notmatch 'win-paste-intercept') { Write-Error "(AC) win-paste-intercept marker missing after insert"; exit 1 }
+            Write-Host "(AC) windows-terminal-paste inserted (deterministic, before createTerminalKeyEventHandler's final return true)"
+          }
+
           # (Y) windows-force-foreground.patch
           #     focusMainWindow() (the second-instance / deep-link handler) did only
           #     show()+focus(), which Windows' foreground lock ignores — so
@@ -1156,7 +1191,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + W + W.1 + AA + AB + Y + Z + F). (U, V, X disabled — see comments above; V/X were the Wispr Flow regression.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + W + W.1 + AA + AB + AC + Y + Z + F). (U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

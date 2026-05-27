@@ -56,16 +56,27 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 - (S) `await resolveLaunchShell` — one-token await; fixes v2 preset spawn [inline regex]
 - (T) hidden-window watchdog — 12s force-show + early-crash reload + electron-log
   lifecycle logging (window is `show:false` until a load event that may never fire) [git apply]
-- (AA) wispr-flow — the Wispr Flow voice-input fix (with (V) reverted). Two inline
-  fixups: **(AA.1)** `main.ts` calls `app.setAccessibilitySupportEnabled(true)` so
-  Electron materializes its UIA tree on Windows — THIS is what puts the hidden xterm
-  `<textarea>` in the UIA tree so Wispr Flow's injection can target it (independent of
-  `screenReaderMode`, which must stay false — see disabled (V)). Logs a11y state via
-  `log.info` (main process; `console.log` would not reach `main.log`). **(AA.2)**
-  `terminal-runtime.ts` instruments the v2 xterm textarea (every event, snapshotted
-  sync/microtask/rAF + a value-setter hook + a document-level `focusin` UIA scanner),
-  logging `[agent-dots] [wispr-diag]` so the (W.1) forwarder persists to `main.log` —
-  used to VERIFY Wispr's `insertText` now reaches the PTY [inline]
+- (AA) wispr-flow accessibility + diag (with (V) reverted). Two inline fixups:
+  **(AA.1)** `main.ts` calls `app.setAccessibilitySupportEnabled(true)` so Electron
+  materializes its UIA tree on Windows — this is what makes Wispr Flow recognize the
+  terminal as an editable target at all (independent of `screenReaderMode`, which must
+  stay false — see disabled (V)). Logs a11y state via `log.info` (main process;
+  `console.log` would not reach `main.log`). **(AA.2)** `terminal-runtime.ts` instruments
+  the v2 xterm textarea (every event, snapshotted sync/microtask/rAF, with
+  `code`/`key`/modifier fields + a value-setter hook + a document-level `focusin` UIA
+  scanner), logging `[agent-dots] [wispr-diag]` so the (W.1) forwarder persists to
+  `main.log` — used to VERIFY the (AC) paste path [inline]
+- (AC) windows-terminal-paste — the actual Wispr Flow terminal fix. With
+  `screenReaderMode` false, Wispr injects by copying its transcript to the clipboard +
+  sending a synthetic OS-level Ctrl+V. Superset's paste relies on the browser
+  keydown→`paste` event (`shouldBubbleClipboardShortcut`, gated on `event.code==="KeyV"`),
+  which Chrome fires only for trusted real keys — so synthetic Ctrl+V fell through and
+  xterm encoded `^V` (0x16) to the PTY. Splices a Ctrl+V branch into the SHARED
+  `createTerminalKeyEventHandler` (v1 + v2) just before its final `return true;`, so it
+  runs ONLY for a Ctrl+V the clipboard-bubble check didn't already handle — i.e. the
+  synthetic case — leaving the (confirmed perfect) MANUAL Ctrl+V path untouched. Reads
+  `navigator.clipboard.readText()` (same API as right-click Paste; sandboxed renderer has
+  no electron clipboard bridge) and `terminal.paste()`s it [inline]
 - (Y) force-foreground — `focusMainWindow` raises past the Windows foreground lock
   so relaunch surfaces a buried window [git apply]
 - (Z) v2-workspace blank-pane fix — cache-first hold-last-good in `layout.tsx` so an

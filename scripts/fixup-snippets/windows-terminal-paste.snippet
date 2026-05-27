@@ -1,0 +1,65 @@
+		// (AC) Windows terminal paste fix for SYNTHETIC Ctrl+V (e.g. Wispr Flow voice
+		// dictation: it copies its transcript to the clipboard, then sends an
+		// OS-level SendInput Ctrl+V). Real keyboard Ctrl+V works via the browser
+		// keydown->`paste` pipeline that shouldBubbleClipboardShortcut() relies on,
+		// but Chrome only fires that for trusted keys with event.code === "KeyV";
+		// synthetic keys fall through to here and xterm would otherwise encode the
+		// chord as ^V (0x16) into the PTY (Codex reads that as paste-image and shows
+		// "failed to paste image"). We reach this point ONLY for a Ctrl+V the
+		// clipboard-bubble check above did NOT already short-circuit — i.e. the
+		// synthetic case — so handling it here never touches the (perfectly working)
+		// MANUAL paste path. navigator.clipboard.readText() is the same API Superset's
+		// right-click Paste uses (the sandboxed renderer has no electron clipboard
+		// bridge); it's async, so fire-and-forget to keep this handler synchronous.
+		// terminal.paste() is bracketed-paste safe.
+		if (
+			isWindows &&
+			event.ctrlKey &&
+			!event.altKey &&
+			!event.metaKey &&
+			(event.code === "KeyV" ||
+				(typeof event.key === "string" && event.key.toLowerCase() === "v") ||
+				event.keyCode === 86)
+		) {
+			if (event.type === "keydown") {
+				event.preventDefault();
+				try {
+					console.log(
+						"[agent-dots] [wispr-diag] win-paste-intercept " +
+							JSON.stringify({
+								code: event.code,
+								key: event.key,
+								keyCode: event.keyCode,
+								shiftKey: event.shiftKey,
+								isTrusted: event.isTrusted,
+							}),
+					);
+				} catch (_e) {
+					/* never block on logging */
+				}
+				navigator.clipboard
+					.readText()
+					.then((clipText) => {
+						try {
+							console.log(
+								"[agent-dots] [wispr-diag] win-paste-readText " +
+									JSON.stringify({ ok: true, len: clipText ? clipText.length : 0 }),
+							);
+						} catch (_e) {
+							/* ignore */
+						}
+						if (clipText) terminal.paste(clipText);
+					})
+					.catch((err) => {
+						try {
+							console.log(
+								"[agent-dots] [wispr-diag] win-paste-readText " +
+									JSON.stringify({ ok: false, err: String(err) }),
+							);
+						} catch (_e) {
+							/* ignore */
+						}
+					});
+			}
+			return false;
+		}
