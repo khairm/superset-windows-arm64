@@ -1,0 +1,78 @@
+	// (T) hidden-window watchdog — failsafe for "all Superset.exe processes alive
+	// but no window" on Windows ARM64. The main window is created `show: false`
+	// and only revealed by the did-finish-load / did-fail-load handlers; we've
+	// seen launches where NEITHER fires (renderer crash mid-load with no reload,
+	// or a load/visibility race under the superset-app:// protocol), leaving the
+	// window permanently hidden. Applied as an INLINE fixup that ADDS independent
+	// webContents listeners (EventEmitter allows many) rather than modifying the
+	// AI-edited handler bodies — that modification is what made the old git-apply
+	// (T) drift and hard-abort. Depends only on `window` + `log` (both in scope
+	// here, used by W.1/AA.1/AB) and a stable anchor, so it can't drift.
+	const SHOW_WATCHDOG_MS = 12_000;
+	let __twFirstLoadDone = false;
+	let __twReloadAttempts = 0;
+	const __twShowWatchdog = setTimeout(() => {
+		if (window.isDestroyed() || window.isVisible()) return;
+		log.error(
+			"[main-window] show-watchdog fired: window still hidden after timeout — forcing show",
+			{
+				timeoutMs: SHOW_WATCHDOG_MS,
+				url: window.webContents.getURL(),
+				isLoading: window.webContents.isLoading(),
+				isCrashed: window.webContents.isCrashed(),
+			},
+		);
+		try {
+			window.show();
+			window.focus();
+		} catch (_e) {
+			/* window may have been destroyed between the guard and show() */
+		}
+	}, SHOW_WATCHDOG_MS);
+	__twShowWatchdog.unref?.();
+	window.webContents.on("did-finish-load", () => {
+		__twFirstLoadDone = true;
+		clearTimeout(__twShowWatchdog);
+		log.info("[main-window] did-finish-load (watchdog cleared)");
+	});
+	window.webContents.on(
+		"did-fail-load",
+		(_event, errorCode, errorDescription, validatedURL) => {
+			log.error("[main-window] did-fail-load", {
+				errorCode,
+				errorDescription,
+				url: validatedURL,
+			});
+			clearTimeout(__twShowWatchdog);
+			if (!__twFirstLoadDone && !window.isDestroyed() && !window.isVisible()) {
+				try {
+					window.show();
+				} catch (_e) {
+					/* ignore */
+				}
+			}
+		},
+	);
+	window.webContents.on("render-process-gone", (_event, details) => {
+		log.error("[main-window] render-process-gone", details);
+		// Reload once if the renderer dies before the first successful load —
+		// otherwise the show trigger never fires; the watchdog is the backstop.
+		if (
+			!__twFirstLoadDone &&
+			!window.isDestroyed() &&
+			details.reason !== "clean-exit" &&
+			__twReloadAttempts < 1
+		) {
+			__twReloadAttempts += 1;
+			log.warn("[main-window] reloading renderer after early crash", {
+				attempt: __twReloadAttempts,
+				reason: details.reason,
+			});
+			try {
+				window.webContents.reload();
+			} catch (_e) {
+				/* ignore */
+			}
+		}
+	});
+

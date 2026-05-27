@@ -143,9 +143,11 @@
 >   launch left zero diagnostic trace. Hunks touch only the
 >   `did-finish-load`/`did-fail-load`/`render-process-gone` handlers (not the
 >   close handler that Patch 19 / `skip-quit` rewrite), so it applies on top of
->   the AI-applied patches. Applied deterministically via
->   `patches/fix-hidden-window-watchdog.patch` (`git apply`, idempotent +
->   fail-fast).
+>   the AI-applied patches. Applied deterministically as an **inline fixup**
+>   (`scripts/fixup-snippets/hidden-window-watchdog.snippet`, spliced as ADDITIVE
+>   `webContents` listeners before the `did-finish-load` registration; idempotent +
+>   fail-fast) — converted from a git-apply patch that drifted on the AI-edited
+>   handler bodies and hard-aborted (main.ts:323).
 > - ~~closes a gap in the **v2 workspace** per-terminal agent indicator~~
 >   **DISABLED 2026-05-22** — `patches/v2-cwd-fallback.patch` is kept in
 >   the repo but the nightly workflow no longer applies it. The build

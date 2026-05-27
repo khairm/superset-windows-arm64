@@ -864,49 +864,39 @@ jobs:
           if ($ttBody -match 'const\s+shell\s*=\s*resolveLaunchShell\(baseEnv\)') { Write-Error "(S) un-awaited resolveLaunchShell call still present after fixup"; exit 1 }
           Write-Host "(S) v2 terminal awaits resolveLaunchShell (no Promise leak into path.basename)"
 
-          # (T) fix-hidden-window-watchdog.patch
-          #     The main window is created with `show: false` and is only made
-          #     visible by the did-finish-load / did-fail-load handlers in
-          #     MainWindow(). On Windows ARM64 we have seen launches where
-          #     NEITHER event fires (renderer crash mid-load with no reload, or a
-          #     load/visibility race under the superset-app:// protocol): every
-          #     Superset.exe process stays alive but the window is permanently
-          #     hidden ("spins up in Task Manager, nothing hits the UI"). Adds a
-          #     12s show-watchdog (force-show + loud electron-log error), a
-          #     one-time renderer reload on early crash, and routes the window
-          #     lifecycle logs through electron-log so main.log captures the
-          #     cause next time. Hunks target only the load/crash handlers (not
-          #     the close handler Patch 19/skip-quit rewrite), so it applies on
-          #     top of the AI-applied patches.
-          #     Guard SKIPS (warns) instead of aborting: this multi-hunk patch
-          #     targets main.ts handlers the AI patch step edits non-deterministically,
-          #     so its @@ context intermittently drifts and HARD-ABORTED an otherwise
-          #     green build (run 26374965746) even though the target handlers were
-          #     functionally intact. The watchdog is a FAILSAFE — when it's absent a
-          #     Guard HARD-ABORTS on any apply failure (every build must include
-          #     the watchdog) and logs the --check stderr so drift is diagnosable
-          #     without a guess-and-rebuild cycle.
-          $hw = '../patches/fix-hidden-window-watchdog.patch'
-          if (-not (Test-Path $hw)) { Write-Error "(T) missing $hw in patches repo"; exit 1 }
-          $mwf = 'apps/desktop/src/main/windows/main.ts'
-          if (-not (Test-Path $mwf)) { Write-Error "(T) $mwf missing in this upstream — aborting (every build must include the hidden-window watchdog)"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'show-watchdog fired' $mwf) {
-            Write-Host "(T) fix-hidden-window-watchdog already present — skip"
+          # (T) hidden-window-watchdog — INLINE fixup (was a git-apply patch that
+          #     drifted on the AI-edited main.ts load/crash handlers and hard-aborted,
+          #     e.g. run 26487262015 at main.ts:323). The window is created
+          #     `show: false` and only revealed by the did-finish-load/did-fail-load
+          #     handlers; on Windows ARM64 we've seen launches where NEITHER fires
+          #     (renderer crash mid-load, or a load/visibility race under
+          #     superset-app://), leaving every Superset.exe alive but the window
+          #     permanently hidden. This splices ADDITIVE webContents listeners
+          #     (EventEmitter allows many) BEFORE the stable
+          #     `window.webContents.on("did-finish-load"` registration instead of
+          #     MODIFYING the AI-touched handler bodies — so it can't drift. Keeps the
+          #     full watchdog: 12s force-show, one-time early-crash reload, and
+          #     electron-log lifecycle logging. Depends only on `window` + `log` (in
+          #     scope, used by W.1/AA.1/AB). Hard-aborts if the anchor is gone —
+          #     re-anchor rather than ship without the watchdog.
+          $hwFile = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $hwFile)) { Write-Error "(T) $hwFile missing in this upstream — aborting (every build must include the hidden-window watchdog)"; exit 1 }
+          $hwAbs = (Resolve-Path $hwFile).Path
+          $hwSnippet = Get-Content -Raw '../scripts/fixup-snippets/hidden-window-watchdog.snippet'
+          if (-not $hwSnippet) { Write-Error "(T) missing scripts/fixup-snippets/hidden-window-watchdog.snippet"; exit 1 }
+          $hwContent = [System.IO.File]::ReadAllText($hwAbs)
+          if ($hwContent -match 'show-watchdog fired') {
+            Write-Host "(T) hidden-window-watchdog already present — skip"
           } else {
-            $tErr = "$env:RUNNER_TEMP/t-apply-check.txt"
-            git apply --check $hw 2>$tErr
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "(T) fix-hidden-window-watchdog.patch does not apply cleanly (AI drift in main.ts load/crash handlers). git apply --check output:"
-              if (Test-Path $tErr) { Get-Content $tErr | ForEach-Object { Write-Host "    (T-check) $_" } }
-              Write-Error "(T) fix-hidden-window-watchdog.patch failed to apply — ABORTING. Every build must include the hidden-window watchdog. Regenerate/harden patches/fix-hidden-window-watchdog.patch against this upstream."
-              exit 1
-            }
-            git apply $hw
-            if ($LASTEXITCODE -ne 0) { Write-Error "(T) git apply failed after a clean --check"; exit 1 }
-            $mwBody = Get-Content -Raw $mwf
-            if ($mwBody -notmatch 'show-watchdog fired') { Write-Error "(T) show-watchdog marker missing after apply"; exit 1 }
-            if ($mwBody -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload marker missing after apply"; exit 1 }
-            Write-Host "(T) fix-hidden-window-watchdog applied (show-watchdog + early-crash reload + electron-log lifecycle logging)"
+            $hwAnchor = 'window.webContents.on("did-finish-load"'
+            $hwIdx = $hwContent.IndexOf($hwAnchor)
+            if ($hwIdx -lt 0) { Write-Error "(T) 'window.webContents.on(did-finish-load)' anchor not found in $hwFile — MainWindow load-handler shape changed; re-anchor (T) rather than ship without the hidden-window watchdog."; exit 1 }
+            $hwContent = $hwContent.Insert($hwIdx, $hwSnippet)
+            [System.IO.File]::WriteAllText($hwAbs, $hwContent, (New-Object System.Text.UTF8Encoding $false))
+            $hwVerify = [System.IO.File]::ReadAllText($hwAbs)
+            if ($hwVerify -notmatch 'show-watchdog fired') { Write-Error "(T) show-watchdog marker missing after insert"; exit 1 }
+            if ($hwVerify -notmatch 'reloading renderer after early crash') { Write-Error "(T) early-crash reload marker missing after insert"; exit 1 }
+            Write-Host "(T) hidden-window-watchdog inserted inline (additive listeners before did-finish-load; show-watchdog + early-crash reload + electron-log lifecycle logging)"
           }
 
           # (U) v2-cwd-fallback.patch — DISABLED 2026-05-22.

@@ -55,7 +55,10 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 - (R) windows-shell-fallback — `getDefaultShell` → cmd.exe when pwsh missing [git apply]
 - (S) `await resolveLaunchShell` — one-token await; fixes v2 preset spawn [inline regex]
 - (T) hidden-window watchdog — 12s force-show + early-crash reload + electron-log
-  lifecycle logging (window is `show:false` until a load event that may never fire) [git apply]
+  lifecycle logging (window is `show:false` until a load event that may never fire).
+  Splices ADDITIVE `webContents` listeners before the `did-finish-load` registration
+  (not modifications of the AI-edited handler bodies — that drifted the old git-apply
+  and hard-aborted, e.g. main.ts:323) [inline]
 - (AA) wispr-flow accessibility + diag (with (V) reverted). Two inline fixups:
   **(AA.1)** `main.ts` calls `app.setAccessibilitySupportEnabled(true)` so Electron
   materializes its UIA tree on Windows — this is what makes Wispr Flow recognize the
