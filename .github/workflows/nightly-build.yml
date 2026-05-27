@@ -1354,6 +1354,18 @@ jobs:
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Native modules that @electron/rebuild compiles FROM SOURCE (e.g.
+          # native-keymap@3.3.9) use V8 APIs Electron 40 deprecated
+          # (v8::Object::GetAlignedPointerFromInternalField). MSVC emits C4996
+          # and these modules build with warnings-as-errors, so node-gyp fails
+          # ("node-gyp failed to rebuild 'native-keymap'", run 26488351649). The
+          # API still works at runtime in Electron 40 — this is a deprecation, not
+          # a removal. cl.exe reads the CL env var and prepends it to every compile,
+          # so /wd4996 disables just that one warning for ALL native rebuilds
+          # (deterministic fix; a prior build happened to use a prebuilt and dodged
+          # the source compile, but the float can't be relied on). Harmless to the
+          # other native modules, which already compiled clean.
+          CL: '/wd4996'
         run: |
           set -euo pipefail
           npx electron-builder --win --arm64 --publish never --config electron-builder.ts
