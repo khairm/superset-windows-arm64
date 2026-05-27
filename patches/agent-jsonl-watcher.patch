@@ -1,6 +1,6 @@
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,712 @@
 +import type EventEmitter from "node:events";
 +import fs from "node:fs";
 +import os from "node:os";
@@ -438,6 +438,7 @@
 +			current.lastEmittedHadMapping = !!(
 +				freshMapping?.paneId || freshMapping?.terminalId
 +			);
++			dbg("idle-timeout-fired", { sessionId, cwd, from: "working", to: "review", timeoutMs: IDLE_TIMEOUT_MS });
 +			emit("Stop", sessionId, cwd, freshMapping);
 +		}
 +	}, IDLE_TIMEOUT_MS);
@@ -460,6 +461,7 @@
 +		};
 +		fileStates.set(filePath, state);
 +	}
++	if (isFirstSeen) dbg("file-first-seen", { filePath, sessionId: state.sessionId, seedOnly });
 +
 +	let stat: fs.Stats;
 +	try {
@@ -493,6 +495,7 @@
 +			// Header read is best-effort; the regular processing path will
 +			// retry cwd discovery on the next append.
 +		}
++		dbg("seed-skip", { filePath, sessionId: state.sessionId, size: stat.size, cwdFound: !!state.cwd });
 +		state.offset = stat.size;
 +		return;
 +	}
@@ -501,6 +504,7 @@
 +	// through (don't return early) so replacement content isn't skipped
 +	// until the next append.
 +	if (stat.size < state.offset) {
++		dbg("file-truncated", { filePath, sessionId: state.sessionId, oldOffset: state.offset, newSize: stat.size });
 +		state.offset = 0;
 +		state.leftover = "";
 +	}
@@ -536,9 +540,13 @@
 +				break;
 +			}
 +		}
-+		if (!state.cwd) return;
++		if (!state.cwd) {
++			dbg("cwd-unknown-skip", { filePath, sessionId: state.sessionId, lineCount: lines.length });
++			return;
++		}
 +	}
 +
++	const prevOffset = state.offset;
 +	state.offset = newOffset;
 +	state.leftover = newLeftover;
 +	const cwd = state.cwd;
@@ -548,6 +556,8 @@
 +	// Process lines in arrival order so a Start in turn N+1 isn't masked
 +	// by a Stop from turn N within the same chunk.
 +	const { sessionId } = state;
++	let unclassified = 0;
++	let sampleUnclassified = "";
 +	for (const line of lines) {
 +		if (!line) continue;
 +		if (parser.isPermissionRequest(line)) {
@@ -578,8 +588,12 @@
 +			dbg("line", { sessionId, kind: "activity", snippet: line.slice(0, 160) });
 +			transitionTo("working", sessionId, cwd, mapping);
 +			scheduleIdleTimer(sessionId, cwd, mapping);
++		} else {
++			unclassified++;
++			if (!sampleUnclassified) sampleUnclassified = line.slice(0, 160);
 +		}
 +	}
++	dbg("chunk", { sessionId, filePath, newBytes: newOffset - prevOffset, lineCount: lines.length, cwdKnown: !!cwd, unclassified, sampleUnclassified });
 +}
 +
 +function scanAll(source: AgentSource, seedOnly = false): void {
@@ -675,17 +689,14 @@
 +			);
 +			watchers.set(source.logsDir, w);
 +		} catch (error) {
-+			console.warn(
-+				`[agent-jsonl-watcher] fs.watch failed for ${source.logsDir}:`,
-+				error,
-+			);
++			dbg("watch-fail", { logsDir: source.logsDir, error: String(error) });
 +		}
 +	}
 +
-+	for (const source of SOURCES) scanAll(source, true);
-+	console.log(
-+		`[agent-jsonl-watcher] Watching ${SOURCES.map((s) => s.logsDir).join(", ")} for agent lifecycle`,
-+	);
++	for (const source of SOURCES) {
++		scanAll(source, true);
++		dbg("watch-start", { logsDir: source.logsDir, exists: fs.existsSync(source.logsDir) });
++	}
 +}
 +
 +export function stopAgentJsonlWatcher(): void {

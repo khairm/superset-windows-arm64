@@ -85,7 +85,12 @@ renderer CORS `allowedOrigins += superset-app://` (K).
 **Agent status dots (Claude + Codex):**
 - (N) agent-jsonl-watcher — tail `~/.claude/projects` + `~/.codex/sessions` JSONL,
   derive working/review/permission, emit to `notificationsEmitter`; portable Python
-  SessionStart hook for per-pane mapping [git apply]
+  SessionStart hook for per-pane mapping [git apply]. The watcher's `dbg()` (default-on,
+  `~/.superset/agent-watcher-debug.log`) now also records, for Claude-Code dot debugging:
+  `watch-start`/`watch-fail` (did we watch the dir), `file-first-seen`/`seed-skip`/
+  `file-truncated`/`cwd-unknown-skip`, a per-chunk `chunk` summary (`newBytes`/`lineCount`/
+  `cwdKnown` + an `unclassified` count & sample → catches "dot stuck idle / wrong colour"),
+  and `idle-timeout-fired` (distinguishes "watcher gave up" from a real end-of-turn).
 - (O) v1 per-terminal dots; (P) v2 per-terminal dots; (Q) v2 per-tab read (drop the
   workspace-level bulk-clear) [git apply]
 - (W) notification-logging — `[agent-dots]` diagnostics → `~/.superset/*.log` + `main.log`
