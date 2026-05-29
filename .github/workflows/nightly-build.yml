@@ -499,6 +499,77 @@ jobs:
           if ((Get-Content -Raw $hs) -notmatch 'superset-app://app') { Write-Error "(K) host-service CORS patch failed"; exit 1 }
           Write-Host "(K) host-service/index.ts allowedOrigins += superset-app://app (renderer CORS)"
 
+          # (AE) Non-git workspaces — the BULK of the feature as a git-apply patch:
+          #      host-service create path (kind:"nonGitFolder" + probePath +
+          #      non-strict main workspace using the inert NON_GIT_BRANCH marker),
+          #      server-side isGitRepo guards (git.ts assertGitRepo + read empties,
+          #      pull-requests, workspace-creation procedures), git-watcher fs-watch
+          #      for non-git folders + Windows path fix, renderer git-gating
+          #      (Changes/Review/PR/branch/diff hidden when non-git), the non-git
+          #      badge PROP RECEIVERS (Icon/Collapsed/ContextMenu), and the new
+          #      runtime/git/non-git.ts + useIsGitRepo hook. Applied BEFORE (L) so
+          #      (L)'s git-watcher hunks layer on top of this patch's git-watcher
+          #      reorder (verified coexisting). EXCLUDES workspaces.ts (PATCHES.md
+          #      Patch 28 overlap -> (AF) inline) and the 2 patch-P badge files
+          #      Item/ExpandedRow (-> (AG) inline). Idempotent + fail-fast.
+          $ng = '../patches/nongit-workspaces.patch'
+          if (-not (Test-Path $ng)) { Write-Error "(AE) missing $ng in patches repo"; exit 1 }
+          if (Test-Path 'packages/host-service/src/runtime/git/non-git.ts') {
+            Write-Host "(AE) non-git-workspaces already present — skip"
+          } else {
+            $aeErr = "$env:RUNNER_TEMP/ae-apply-check.txt"
+            git apply --check $ng 2>$aeErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AE) nongit-workspaces.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $aeErr) { Get-Content $aeErr | ForEach-Object { Write-Host "    (AE-check) $_" } }
+              Write-Error "(AE) nongit-workspaces.patch failed to apply — host-service/renderer shape changed upstream. Regenerate it (author flow: implement in a clone, git diff excluding workspaces.ts + the 2 badge files). ABORTING rather than ship a partial non-git feature."
+              exit 1
+            }
+            git apply $ng
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AE) git apply failed after a clean --check"; exit 1 }
+          }
+          if (-not (Test-Path 'packages/host-service/src/runtime/git/non-git.ts')) { Write-Error "(AE) non-git.ts missing after apply"; exit 1 }
+          if (-not (Test-Path 'apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/useIsGitRepo.ts')) { Write-Error "(AE) useIsGitRepo hook missing after apply"; exit 1 }
+          if ((Get-Content -Raw 'packages/host-service/src/trpc/router/project/project.ts') -notmatch 'nonGitFolder') { Write-Error "(AE) nonGitFolder create mode missing after apply"; exit 1 }
+          if ((Get-Content -Raw 'packages/host-service/src/trpc/router/git/git.ts') -notmatch 'assertGitRepo') { Write-Error "(AE) git.ts isGitRepo guards missing after apply"; exit 1 }
+          Write-Host "(AE) non-git-workspaces applied (create path + server-side git guards + renderer gating + badge receivers)"
+
+          # (AF) workspaces.create non-git guard — workspaces.ts is ALSO edited by
+          #      PATCHES.md Patch 28, so splice the guard INLINE (anchor-based)
+          #      instead of via (AE)'s git-apply, to avoid a patch-vs-patch
+          #      collision. Adds the isGitRepo import + a guard after the FIRST
+          #      `const localProject = requireLocalProject(ctx, input.projectId);`
+          #      (the create mutation; a later occurrence belongs to another
+          #      procedure). Splices the TS from scripts/fixup-snippets/.
+          #      Idempotent + fail-fast.
+          $wsf = 'packages/host-service/src/trpc/router/workspaces/workspaces.ts'
+          if (-not (Test-Path $wsf)) { Write-Error "(AF) missing $wsf"; exit 1 }
+          $wsfAbs = (Resolve-Path $wsf).Path
+          $wsc = [System.IO.File]::ReadAllText($wsfAbs)
+          if ($wsc -match 'Cannot create a branch/worktree in a non-git workspace') {
+            Write-Host "(AF) workspaces.create non-git guard already present — skip"
+          } else {
+            $afSnippet = Get-Content -Raw '../scripts/fixup-snippets/nongit-create-guard.snippet'
+            if (-not $afSnippet) { Write-Error "(AF) missing scripts/fixup-snippets/nongit-create-guard.snippet"; exit 1 }
+            if ($wsc -notmatch 'runtime/git/non-git') {
+              $imp = 'import { workspaces } from "../../../db/schema";'
+              $impIdx = $wsc.IndexOf($imp)
+              if ($impIdx -lt 0) { Write-Error "(AF) db/schema import anchor not found in workspaces.ts — re-anchor (AF)"; exit 1 }
+              $impEnd = $wsc.IndexOf("`n", $impIdx)
+              $wsc = $wsc.Insert($impEnd + 1, 'import { isGitRepo } from "../../../runtime/git/non-git";' + "`n")
+            }
+            $anchor = 'const localProject = requireLocalProject(ctx, input.projectId);'
+            $aIdx = $wsc.IndexOf($anchor)
+            if ($aIdx -lt 0) { Write-Error "(AF) requireLocalProject anchor not found in workspaces.ts — Patch 28 / upstream shape changed; re-anchor (AF) rather than ship the create factory unguarded for non-git."; exit 1 }
+            $aEnd = $wsc.IndexOf("`n", $aIdx)
+            $wsc = $wsc.Insert($aEnd + 1, "`n" + $afSnippet)
+            [System.IO.File]::WriteAllText($wsfAbs, $wsc, (New-Object System.Text.UTF8Encoding $false))
+          }
+          $wsv = [System.IO.File]::ReadAllText($wsfAbs)
+          if ($wsv -notmatch 'Cannot create a branch/worktree in a non-git workspace') { Write-Error "(AF) workspaces.create non-git guard missing after splice"; exit 1 }
+          if ($wsv -notmatch 'runtime/git/non-git') { Write-Error "(AF) isGitRepo import missing in workspaces.ts after splice"; exit 1 }
+          Write-Host "(AF) workspaces.create non-git guard spliced (rejects worktree creation in a non-git project)"
+
           # (L) Git-status spawn-storm fix (host-service). An unfiltered
           #     recursive fs.watch on .git/ turns every `git status` into a
           #     fresh git:changed event — git's own fsmonitor-cookie / lock
@@ -680,36 +751,42 @@ jobs:
           if ($body.Contains('${')) { Write-Error '(N-guard) PANE_MAP_SCRIPT template literal contains an unescaped dollar-brace — JS will try to interpolate it. Escape the dollar with a backslash, or remove.'; exit 1 }
           Write-Host "(N-guard) PANE_MAP_SCRIPT template literal is well-formed"
 
-          # (O) Per-terminal status dots on the sidebar workspace rows.
-          #     Upstream renders ONE rolled-up indicator (highest-priority
-          #     pane status) as an overlay on the workspace icon — useful but
-          #     hides the per-terminal granularity when a workspace has 2+
-          #     terminals each running Claude. Fix: add an inline row of
-          #     <StatusIndicator> dots next to the workspace name, one per
-          #     terminal pane whose status is non-idle. Reuses the existing
-          #     StatusIndicator component (red-pulse/amber-pulse/green-static)
-          #     so visual language matches upstream's rollup. Companion to
-          #     (N) — without the JSONL watcher, pane.status never leaves
-          #     "idle" on Windows so this row would always be empty.
-          #     Idempotent + fail-fast.
-          $td = '../patches/per-terminal-dots.patch'
-          if (-not (Test-Path $td)) { Write-Error "(O) missing $td in patches repo"; exit 1 }
-          $wli = 'apps/desktop/src/renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/WorkspaceListItem.tsx'
-          if (-not (Test-Path $wli)) { Write-Error "(O) missing $wli"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'terminalStatusesKey' $wli) {
-            Write-Host "(O) per-terminal-dots already present — skip"
+          # (O) RETIRED 2026-05-29 — was v1 per-terminal-dots (the legacy
+          #     screens/main WorkspaceListItem.tsx sidebar row). The fork is now
+          #     V2-ONLY (see (AD) v2-pin below), so that v1 row never renders.
+          #     patches/per-terminal-dots.patch deleted; (P) provides the same
+          #     per-terminal dots on the active v2 DashboardSidebar.
+          #
+          # (AD) v2-pin — the fork is V2-ONLY, FOREVER. Upstream gates the whole
+          #      v2 UI on useIsV2CloudEnabled() = `v2Only || optInV2 === true`,
+          #      where v2Only is account-age conditional (created >= 2026-05-15)
+          #      and optInV2 is a persisted opt-in toggle. We force the hook to
+          #      always return true so EVERY account renders v2 and every
+          #      v2-targeted patch (P/Q/Z + the non-git-workspace feature) always
+          #      applies — no v1 path to maintain. Deterministic regex edit on a
+          #      stable, unique anchor (the hook body); also strips the now-unused
+          #      store import so Biome (CI fails on warnings) stays clean.
+          #      Idempotent + fail-fast.
+          $v2h = 'apps/desktop/src/renderer/hooks/useIsV2CloudEnabled.ts'
+          if (-not (Test-Path $v2h)) { Write-Error "(AD) missing $v2h — upstream layout changed; re-anchor the v2-pin rather than ship without it."; exit 1 }
+          $v2hAbs = (Resolve-Path $v2h).Path
+          $v2c = [System.IO.File]::ReadAllText($v2hAbs)
+          if ($v2c -match '\(V2-PIN\)') {
+            Write-Host "(AD) v2-pin already present — skip"
           } else {
-            git apply --check $td 2>$null
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "(O) per-terminal-dots.patch does not apply cleanly — WorkspaceListItem.tsx changed upstream; aborting rather than shipping with the per-terminal indicator broken. Regenerate patches/per-terminal-dots.patch against the new upstream."
+            if ($v2c -notmatch '(?s)const v2Only = useIsV2OnlyUser\(\);.*?return v2Only \|\| optInV2 === true;') {
+              Write-Error "(AD) useIsV2CloudEnabled body anchor not found in $v2h — upstream changed; re-anchor the v2-pin rather than ship without it (a missed pin would let a pre-cutoff account render the unpatched v1 UI)."
               exit 1
             }
-            git apply $td
-            if ($LASTEXITCODE -ne 0) { Write-Error "(O) git apply failed"; exit 1 }
+            $v2c = $v2c -replace '(?s)const v2Only = useIsV2OnlyUser\(\);.*?return v2Only \|\| optInV2 === true;', "// (V2-PIN) Fork is v2-only, forever -- always report v2 active`n`t// regardless of account age or the opt-in toggle.`n`treturn true;"
+            # Drop the now-unused store import (Biome treats unused imports as errors -> CI fails).
+            $v2c = $v2c -replace '(?m)^import \{ useV2LocalOverrideStore \} from "renderer/stores/v2-local-override";\r?\n', ''
+            [System.IO.File]::WriteAllText($v2hAbs, $v2c, (New-Object System.Text.UTF8Encoding $false))
+            $v2v = [System.IO.File]::ReadAllText($v2hAbs)
+            if ($v2v -notmatch '\(V2-PIN\)') { Write-Error "(AD) v2-pin marker missing after edit"; exit 1 }
+            if ($v2v -match 'useV2LocalOverrideStore') { Write-Error "(AD) unused useV2LocalOverrideStore import still present after v2-pin (Biome will fail the build)"; exit 1 }
+            Write-Host "(AD) v2-pin applied (useIsV2CloudEnabled always true; unused store import removed)"
           }
-          if ((Get-Content -Raw $wli) -notmatch 'terminalStatusesKey') { Write-Error "(O) terminalStatusesKey missing after apply"; exit 1 }
-          if ((Get-Content -Raw $wli) -notmatch 'StatusIndicator') { Write-Error "(O) StatusIndicator import/render missing after apply"; exit 1 }
-          Write-Host "(O) per-terminal-dots applied (v1 sidebar workspace rows show one StatusIndicator per active terminal)"
 
           # (P) Same per-terminal-dots treatment for the v2-workspace
           #     sidebar (DashboardSidebarExpandedWorkspaceRow). The v1
@@ -738,6 +815,51 @@ jobs:
           if ((Get-Content -Raw $vstore) -notmatch 'selectV2WorkspaceTerminalStatuses') { Write-Error "(P) selectV2WorkspaceTerminalStatuses missing after apply"; exit 1 }
           if ((Get-Content -Raw $vrow) -notmatch 'terminalStatuses') { Write-Error "(P) terminalStatuses prop wiring missing after apply"; exit 1 }
           Write-Host "(P) v2-per-terminal-dots applied (v2 DashboardSidebar workspace rows render one StatusIndicator per active terminal)"
+
+          # (AG) Non-git badge threading for the two patch-(P) files. Item.tsx and
+          #      DashboardSidebarExpandedWorkspaceRow.tsx are edited by (P)
+          #      (per-terminal dots), so splice the badge INLINE here, AFTER (P),
+          #      by stable anchors — a git-apply diff would collide with (P).
+          #      Item computes isNonGit via useIsGitRepo (skipped while pending) and
+          #      threads it to the CollapsedButton / ExpandedRow / both context
+          #      menus; ExpandedRow forwards it to its icon. The icon/menu PROP
+          #      RECEIVERS already shipped in (AE). Verifies 4 + 2 prop-passes.
+          #      Idempotent + fail-fast.
+          $nl = "`n"
+          $agItem = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx'
+          $agEr = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx'
+          if (-not (Test-Path $agItem)) { Write-Error "(AG) missing $agItem — re-anchor (AG)"; exit 1 }
+          if (-not (Test-Path $agEr)) { Write-Error "(AG) missing $agEr — re-anchor (AG)"; exit 1 }
+          $agItemAbs = (Resolve-Path $agItem).Path
+          $c = [System.IO.File]::ReadAllText($agItemAbs)
+          if ($c -match 'isNonGit') {
+            Write-Host "(AG) Item.tsx non-git badge already present — skip"
+          } else {
+            $c = [regex]::Replace($c, '(import \{ useDiffStats \} from "renderer/hooks/host-service/useDiffStats";)', ('$1' + $nl + 'import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";'))
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(const workspaceStatus = useV2WorkspaceNotificationStatus\(id\);)', ('$1$2$3$1$2' + '// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.' + '$1$2' + 'const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");'))
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(pullRequestState=\{pullRequest\?\.state \?\? null\})', '$1$2$3$1$2isNonGit={isNonGit}')
+            $c = [regex]::Replace($c, '(terminalStatuses=\{terminalStatuses\}\r?\n)([ \t]*)(isInSection=\{isInSection\})', ('$1$2$3' + $nl + '$2isNonGit={isNonGit}'))
+            $c = [regex]::Replace($c, '(isUnread=\{isUnread\}\r?\n)([ \t]*)(isLocalWorkspace=\{hostType === "local-device"\})', ('$1$2$3' + $nl + '$2isNonGit={isNonGit}'))
+            $c = [regex]::Replace($c, '([ \t]*)(isLocalWorkspace=\{hostType === "local-device"\})(\r?\n[ \t]*isPinned=\{isMainWorkspace && hostType === "local-device"\}\r?\n[ \t]*onOpenInFinder=\{handleOpenInFinder\})', ('$1$2' + $nl + '$1isNonGit={isNonGit}$3'))
+            [System.IO.File]::WriteAllText($agItemAbs, $c, (New-Object System.Text.UTF8Encoding $false))
+          }
+          $itemN = ([regex]::Matches([System.IO.File]::ReadAllText($agItemAbs), 'isNonGit=\{isNonGit\}')).Count
+          if ($itemN -lt 4) { Write-Error "(AG) Item.tsx expected 4 isNonGit prop-passes, found $itemN — patch (P) shape changed; re-anchor (AG)"; exit 1 }
+          if (([System.IO.File]::ReadAllText($agItemAbs)) -notmatch 'useIsGitRepo') { Write-Error "(AG) Item.tsx useIsGitRepo import/use missing after splice"; exit 1 }
+          $agErAbs = (Resolve-Path $agEr).Path
+          $c = [System.IO.File]::ReadAllText($agErAbs)
+          if ($c -match 'isNonGit') {
+            Write-Host "(AG) ExpandedRow.tsx non-git badge already present — skip"
+          } else {
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(isInSection\?: boolean;)', '$1$2$3$1$2isNonGit?: boolean;')
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(isInSection = false,)', '$1$2$3$1$2isNonGit = false,')
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(pullRequestState=\{pullRequest\.state\})', '$1$2$3$1$2isNonGit={isNonGit}')
+            $c = [regex]::Replace($c, '(\r?\n)([ \t]*)(pullRequestState=\{null\})', '$1$2$3$1$2isNonGit={isNonGit}')
+            [System.IO.File]::WriteAllText($agErAbs, $c, (New-Object System.Text.UTF8Encoding $false))
+          }
+          $erN = ([regex]::Matches([System.IO.File]::ReadAllText($agErAbs), 'isNonGit=\{isNonGit\}')).Count
+          if ($erN -lt 2) { Write-Error "(AG) ExpandedRow.tsx expected 2 isNonGit prop-passes, found $erN — re-anchor (AG)"; exit 1 }
+          Write-Host "(AG) non-git badge threaded into Item + ExpandedRow (after patch P)"
 
           # (Q) Per-tab mark-as-read on v2 workspace click.
           #     Upstream's handleClick on a workspace row calls
@@ -1181,7 +1303,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + L + M + N + O + P + Q + R + S + T + W + W.1 + AA + AB + AC + Y + Z + F). (U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

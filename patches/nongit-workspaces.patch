@@ -1,0 +1,1350 @@
+diff --git a/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts b/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
+index 3cb2ca6..2ff5b38 100644
+--- a/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
++++ b/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
+@@ -1,6 +1,7 @@
+ import { useQuery, useQueryClient } from "@tanstack/react-query";
+ import { useCallback, useMemo } from "react";
+ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
++import { useIsGitRepo } from "../useIsGitRepo";
+ import { useWorkspaceEvent } from "../useWorkspaceEvent";
+ import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";
+ 
+@@ -11,6 +12,11 @@ export interface DiffStats {
+ 
+ export function useDiffStats(workspaceId: string): DiffStats | null {
+ 	const hostUrl = useWorkspaceHostUrl(workspaceId);
++	// (NON-GIT WORKSPACE) Skip the git.getStatus fan-out for non-git folders —
++	// the marker branch must never reach a git command. `useIsGitRepo` stays
++	// true until the query positively resolves non-git, so real repos never
++	// flicker-skip on mount.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 	const queryClient = useQueryClient();
+ 	const queryKey = useMemo(
+ 		() => ["diff-stats", hostUrl, workspaceId] as const,
+@@ -19,7 +25,7 @@ export function useDiffStats(workspaceId: string): DiffStats | null {
+ 
+ 	const { data: status } = useQuery({
+ 		queryKey,
+-		enabled: Boolean(workspaceId) && Boolean(hostUrl),
++		enabled: isGitRepo && Boolean(workspaceId) && Boolean(hostUrl),
+ 		queryFn: () => {
+ 			if (!hostUrl) return null;
+ 			return getHostServiceClientByUrl(hostUrl).git.getStatus.query({
+diff --git a/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/index.ts b/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/index.ts
+new file mode 100644
+index 0000000..615ddfa
+--- /dev/null
++++ b/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/index.ts
+@@ -0,0 +1 @@
++export { useIsGitRepo } from "./useIsGitRepo";
+diff --git a/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/useIsGitRepo.ts b/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/useIsGitRepo.ts
+new file mode 100644
+index 0000000..9dbc7ba
+--- /dev/null
++++ b/apps/desktop/src/renderer/hooks/host-service/useIsGitRepo/useIsGitRepo.ts
+@@ -0,0 +1,48 @@
++import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { useCallback, useMemo } from "react";
++import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
++import { useWorkspaceEvent } from "../useWorkspaceEvent";
++import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";
++
++/**
++ * (NON-GIT WORKSPACE) True when the workspace's worktree is a real git repo.
++ *
++ * Defaults to `true` while the `git.isRepo` query is loading so git UI never
++ * flicker-hides for a genuine repo on mount — we only HIDE git affordances once
++ * we positively know the folder is non-git (`isGitRepo === false`). Mirrors the
++ * `useDiffStats` ergonomics (host client by URL + tanstack query + `git:changed`
++ * live invalidation) so a mid-session `git init`/de-init is re-detected.
++ */
++export function useIsGitRepo(workspaceId: string, enabled = true): boolean {
++	const hostUrl = useWorkspaceHostUrl(workspaceId);
++	const queryClient = useQueryClient();
++	const queryKey = useMemo(
++		() => ["is-git-repo", hostUrl, workspaceId] as const,
++		[hostUrl, workspaceId],
++	);
++
++	const queryEnabled = enabled && Boolean(workspaceId) && Boolean(hostUrl);
++
++	const { data } = useQuery({
++		queryKey,
++		enabled: queryEnabled,
++		queryFn: () => {
++			if (!hostUrl) return null;
++			return getHostServiceClientByUrl(hostUrl).git.isRepo.query({
++				workspaceId,
++			});
++		},
++		refetchOnWindowFocus: false,
++		staleTime: Number.POSITIVE_INFINITY,
++	});
++
++	const invalidate = useCallback(() => {
++		void queryClient.invalidateQueries({ queryKey });
++	}, [queryClient, queryKey]);
++
++	useWorkspaceEvent("git:changed", workspaceId, invalidate, queryEnabled);
++
++	// Default true until the query resolves: only hide git UI once we positively
++	// know the folder is non-git.
++	return data?.isGitRepo ?? true;
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport/useFolderFirstImport.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport/useFolderFirstImport.ts
+index 61d73e5..b72ebad 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport/useFolderFirstImport.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport/useFolderFirstImport.ts
+@@ -90,9 +90,17 @@ export function useFolderFirstImport(options?: {
+ 					mainWorkspaceId: setupResult.mainWorkspaceId,
+ 				};
+ 			} else {
++				// (NON-GIT WORKSPACE) Filesystem/git is the source of truth: probe the
++				// picked folder and route a non-git folder through kind:"nonGitFolder"
++				// so it becomes a plain workspace instead of erroring on importLocal.
++				const { isGitRepo } = await client.project.probePath.query({
++					repoPath,
++				});
+ 				result = await client.project.create.mutate({
+ 					name: getBaseName(repoPath),
+-					mode: { kind: "importLocal", repoPath },
++					mode: isGitRepo
++						? { kind: "importLocal", repoPath }
++						: { kind: "nonGitFolder", repoPath },
+ 				});
+ 			}
+ 			finalizeSetup(activeHostUrl, result);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
+index ed72072..e3f79b6 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
+@@ -17,6 +17,7 @@ interface DashboardSidebarCollapsedWorkspaceButtonProps
+ 	workspaceStatus?: ActivePaneStatus | null;
+ 	isCreatePending: boolean;
+ 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
++	isNonGit?: boolean;
+ }
+ 
+ export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
+@@ -32,6 +33,7 @@ export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
+ 			workspaceStatus = null,
+ 			isCreatePending,
+ 			pullRequestState = null,
++			isNonGit = false,
+ 			className,
+ 			...props
+ 		},
+@@ -58,6 +60,7 @@ export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
+ 					workspaceStatus={workspaceStatus}
+ 					isCreatePending={isCreatePending}
+ 					pullRequestState={pullRequestState}
++					isNonGit={isNonGit}
+ 				/>
+ 			</button>
+ 		);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
+index 4b79bc2..b30e769 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
+@@ -32,6 +32,7 @@ interface DashboardSidebarWorkspaceContextMenuProps {
+ 	projectId: string;
+ 	isInSection?: boolean;
+ 	isLocalWorkspace: boolean;
++	isNonGit?: boolean;
+ 	isPinned?: boolean;
+ 	isUnread: boolean;
+ 	showDeleteHotkey?: boolean;
+@@ -51,6 +52,7 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 	projectId,
+ 	isInSection,
+ 	isLocalWorkspace,
++	isNonGit = false,
+ 	isPinned = false,
+ 	isUnread,
+ 	showDeleteHotkey = false,
+@@ -107,11 +109,17 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 						</ContextMenuItem>
+ 					</>
+ 				)}
+-				{!isLocalWorkspace && <ContextMenuSeparator />}
+-				<ContextMenuItem onSelect={onCopyBranchName}>
+-					<LuGitBranch className="size-4 mr-2" />
+-					Copy Branch Name
+-				</ContextMenuItem>
++				{/* (NON-GIT WORKSPACE) hide branch/git actions — the marker branch is
++				not a real ref, so copying it is meaningless. */}
++				{!isNonGit && (
++					<>
++						{!isLocalWorkspace && <ContextMenuSeparator />}
++						<ContextMenuItem onSelect={onCopyBranchName}>
++							<LuGitBranch className="size-4 mr-2" />
++							Copy Branch Name
++						</ContextMenuItem>
++					</>
++				)}
+ 				<ContextMenuSeparator />
+ 				<ContextMenuItem onSelect={onToggleUnread}>
+ 					{isUnread ? (
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
+index 178bdf2..0c0e330 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
+@@ -1,6 +1,7 @@
+ import { cn } from "@superset/ui/utils";
+ import { CgLaptop } from "react-icons/cg";
+ import {
++	LuFolder,
+ 	LuGitMerge,
+ 	LuGitPullRequest,
+ 	LuGitPullRequestClosed,
+@@ -26,6 +27,9 @@ interface DashboardSidebarWorkspaceIconProps {
+ 	workspaceStatus?: ActivePaneStatus | null;
+ 	isCreatePending: boolean;
+ 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
++	// (NON-GIT WORKSPACE) folder isn't a git repo — resolved by useIsGitRepo in
++	// the parent item and threaded down so this leaf stays hook-free.
++	isNonGit?: boolean;
+ }
+ 
+ const OVERLAY_POSITION = {
+@@ -56,9 +60,14 @@ export function DashboardSidebarWorkspaceIcon({
+ 	workspaceStatus = null,
+ 	isCreatePending,
+ 	pullRequestState = null,
++	isNonGit = false,
+ }: DashboardSidebarWorkspaceIconProps) {
+ 	const overlayPosition = OVERLAY_POSITION[variant];
+ 	const iconColor = isActive ? "text-foreground" : "text-muted-foreground";
++	// The overlay slot is shared: a real status badge wins; the non-git glyph
++	// only fills it when there's no status to show.
++	const overlayStatus =
++		workspaceStatus && workspaceStatus !== "working" ? workspaceStatus : null;
+ 	const isRemoteDeviceOffline =
+ 		hostType === "remote-device" && hostIsOnline === false;
+ 
+@@ -107,10 +116,22 @@ export function DashboardSidebarWorkspaceIcon({
+ 			) : (
+ 				renderPrimaryIcon()
+ 			)}
+-			{workspaceStatus && workspaceStatus !== "working" && (
++			{overlayStatus ? (
+ 				<span className={cn("absolute", overlayPosition)}>
+-					<StatusIndicator status={workspaceStatus} />
++					<StatusIndicator status={overlayStatus} />
+ 				</span>
++			) : (
++				isNonGit && (
++					<span
++						className={cn("absolute", overlayPosition)}
++						title="Not a git repository"
++					>
++						<LuFolder
++							className="size-2.5 text-muted-foreground/70"
++							strokeWidth={2}
++						/>
++					</span>
++				)
+ 			)}
+ 		</>
+ 	);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
+index 5008e0c..8e3ae55 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
+@@ -5,6 +5,7 @@ import { useLiveQuery } from "@tanstack/react-db";
+ import { Search } from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+ import { LuFile, LuGitCompareArrows } from "react-icons/lu";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+ import { useSettings } from "renderer/stores/settings";
+@@ -89,6 +90,11 @@ export function WorkspaceSidebar({
+ 	workspaceId,
+ }: WorkspaceSidebarProps) {
+ 	const gitStatus = useWorkspaceGitStatus();
++	// (NON-GIT WORKSPACE) A non-git folder has no Changes/Review/PR — only the
++	// Files tab (plus terminal + agents, which live outside this sidebar). Stays
++	// true until the query positively resolves non-git so a real repo never
++	// flicker-drops its git tabs on mount.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 	const collections = useCollections();
+ 	const { data: [localState] = [] } = useLiveQuery(
+ 		(query) =>
+@@ -170,24 +176,33 @@ export function WorkspaceSidebar({
+ 		),
+ 	};
+ 
+-	const tabs: SidebarTabDefinition[] = [filesTab, changesTab, reviewTab];
+-	const activeTabDef = tabs.find((t) => t.id === activeTab);
++	// (NON-GIT WORKSPACE) Drop the Changes + Review tabs (and the PR header
++	// below) for a non-git folder — keep only Files. Terminal + agents live
++	// outside this sidebar and are unaffected.
++	const tabs: SidebarTabDefinition[] = isGitRepo
++		? [filesTab, changesTab, reviewTab]
++		: [filesTab];
++	// The persisted activeTab may be a git tab ("changes"/"review") that no
++	// longer exists for a non-git folder; fall back to Files so content renders.
++	const activeTabDef = tabs.find((t) => t.id === activeTab) ?? filesTab;
+ 
+ 	return (
+ 		<div
+ 			ref={containerRef}
+ 			className="isolate flex h-full w-full min-h-0 flex-col overflow-hidden bg-background"
+ 		>
+-			<PRActionHeader
+-				workspaceId={workspaceId}
+-				state={flowState}
+-				dispatch={dispatch}
+-				onRetry={onRetry}
+-				createPREnabled={CREATE_PR_BUTTON_ENABLED}
+-			/>
++			{isGitRepo && (
++				<PRActionHeader
++					workspaceId={workspaceId}
++					state={flowState}
++					dispatch={dispatch}
++					onRetry={onRetry}
++					createPREnabled={CREATE_PR_BUTTON_ENABLED}
++				/>
++			)}
+ 			<SidebarHeader
+ 				tabs={tabs}
+-				activeTab={activeTab}
++				activeTab={activeTabDef.id}
+ 				onTabChange={setActiveTab}
+ 				compact={compact}
+ 			/>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useChangesTab/useChangesTab.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useChangesTab/useChangesTab.tsx
+index c775268..4a0b343 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useChangesTab/useChangesTab.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useChangesTab/useChangesTab.tsx
+@@ -5,6 +5,7 @@ import { cn } from "@superset/ui/utils";
+ import { workspaceTrpc } from "@superset/workspace-client";
+ import { RefreshCw } from "lucide-react";
+ import { useCallback, useState } from "react";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import { useChangeset } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
+ import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
+ import { useSidebarDiffRef } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useSidebarDiffRef";
+@@ -35,6 +36,12 @@ export function useChangesTab({
+ 	onOpenFile,
+ }: UseChangesTabParams): SidebarTabDefinition {
+ 	const status = useWorkspaceGitStatus();
++	// (NON-GIT WORKSPACE) Don't fire any git query/mutation for a non-git
++	// folder — the marker branch must never reach a git command. Stays true
++	// until the query positively resolves non-git so a real repo never
++	// flicker-skips on mount. The Changes tab itself isn't rendered for a
++	// non-git folder (see WorkspaceSidebar), but this hook still runs.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 	const collections = useCollections();
+ 	const utils = workspaceTrpc.useUtils();
+ 	const localState = collections.v2WorkspaceLocalState.get(workspaceId);
+@@ -46,7 +53,7 @@ export function useChangesTab({
+ 
+ 	const baseBranchQuery = workspaceTrpc.git.getBaseBranch.useQuery(
+ 		{ workspaceId },
+-		{ staleTime: Number.POSITIVE_INFINITY },
++		{ enabled: isGitRepo, staleTime: Number.POSITIVE_INFINITY },
+ 	);
+ 	const baseBranch = baseBranchQuery.data?.baseBranch ?? null;
+ 
+@@ -101,25 +108,27 @@ export function useChangesTab({
+ 
+ 	const setBaseBranch = useCallback(
+ 		(branchName: string) => {
++			if (!isGitRepo) return;
+ 			setBaseBranchMutation.mutate({ workspaceId, baseBranch: branchName });
+ 		},
+-		[setBaseBranchMutation, workspaceId],
++		[isGitRepo, setBaseBranchMutation, workspaceId],
+ 	);
+ 
+ 	const commits = workspaceTrpc.git.listCommits.useQuery(
+ 		{ workspaceId, baseBranch: baseBranch ?? undefined },
+-		{ refetchOnWindowFocus: true },
++		{ enabled: isGitRepo, refetchOnWindowFocus: true },
+ 	);
+ 
+ 	const branches = workspaceTrpc.git.listBranches.useQuery(
+ 		{ workspaceId },
+-		{ refetchInterval: 30_000, refetchOnWindowFocus: true },
++		{ enabled: isGitRepo, refetchInterval: 30_000, refetchOnWindowFocus: true },
+ 	);
+ 
+ 	const renameBranchMutation = workspaceTrpc.git.renameBranch.useMutation();
+ 
+ 	const handleRenameBranch = useCallback(
+ 		(newName: string) => {
++			if (!isGitRepo) return;
+ 			const currentName = status.data?.currentBranch.name;
+ 			if (!currentName) return;
+ 			toast.promise(
+@@ -136,7 +145,12 @@ export function useChangesTab({
+ 				},
+ 			);
+ 		},
+-		[workspaceId, status.data?.currentBranch.name, renameBranchMutation],
++		[
++			isGitRepo,
++			workspaceId,
++			status.data?.currentBranch.name,
++			renameBranchMutation,
++		],
+ 	);
+ 
+ 	const canRenameBranch = !status.data?.currentBranch.upstream;
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/usePRFlowState/usePRFlowState.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/usePRFlowState/usePRFlowState.ts
+index d07dd90..9d889de 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/usePRFlowState/usePRFlowState.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/usePRFlowState/usePRFlowState.ts
+@@ -1,5 +1,6 @@
+ import { workspaceTrpc } from "@superset/workspace-client";
+ import { useMemo } from "react";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import {
+ 	type PullRequest as FlowPullRequest,
+ 	getPRFlowState,
+@@ -12,10 +13,16 @@ interface UsePRFlowStateResult {
+ }
+ 
+ export function usePRFlowState(workspaceId: string): UsePRFlowStateResult {
++	// (NON-GIT WORKSPACE) No PR / branch-sync state for a non-git folder — skip
++	// both queries. Stays true until the query positively resolves non-git so a
++	// real repo never flicker-skips on mount. The PR header that consumes this
++	// flow state isn't rendered for a non-git folder (see WorkspaceSidebar), but
++	// this hook still runs.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 	const prQuery = workspaceTrpc.git.getPullRequest.useQuery(
+ 		{ workspaceId },
+ 		{
+-			enabled: !!workspaceId,
++			enabled: isGitRepo && !!workspaceId,
+ 			refetchInterval: 10_000,
+ 			refetchOnWindowFocus: true,
+ 			staleTime: 10_000,
+@@ -25,7 +32,7 @@ export function usePRFlowState(workspaceId: string): UsePRFlowStateResult {
+ 	const syncQuery = workspaceTrpc.git.getBranchSyncStatus.useQuery(
+ 		{ workspaceId },
+ 		{
+-			enabled: !!workspaceId,
++			enabled: isGitRepo && !!workspaceId,
+ 			refetchInterval: 10_000,
+ 			refetchOnWindowFocus: true,
+ 			staleTime: 5_000,
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useReviewTab/useReviewTab.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useReviewTab/useReviewTab.tsx
+index 2ee713b..47ae1be 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useReviewTab/useReviewTab.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useReviewTab/useReviewTab.tsx
+@@ -3,6 +3,7 @@ import { workspaceTrpc } from "@superset/workspace-client";
+ import type { inferRouterOutputs } from "@trpc/server";
+ import { useMemo } from "react";
+ import { LuMessageSquare } from "react-icons/lu";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import type { CommentPaneData, DiffFocusSide } from "../../../../types";
+ import {
+ 	coerceCheckStatus,
+@@ -31,10 +32,15 @@ export function useReviewTab({
+ 	onOpenComment,
+ 	onOpenInDiff,
+ }: UseReviewTabParams): SidebarTabDefinition {
++	// (NON-GIT WORKSPACE) A non-git folder has no PR — skip the PR + threads
++	// queries entirely. Stays true until the query positively resolves non-git
++	// so a real repo never flicker-skips on mount. The Review tab itself isn't
++	// rendered for a non-git folder (see WorkspaceSidebar), but this hook runs.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 	const prQuery = workspaceTrpc.git.getPullRequest.useQuery(
+ 		{ workspaceId },
+ 		{
+-			enabled: !!workspaceId,
++			enabled: isGitRepo && !!workspaceId,
+ 			refetchInterval: 10_000,
+ 			refetchOnWindowFocus: true,
+ 			staleTime: 10_000,
+@@ -45,7 +51,7 @@ export function useReviewTab({
+ 	const threadsQuery = workspaceTrpc.git.getPullRequestThreads.useQuery(
+ 		{ workspaceId },
+ 		{
+-			enabled: !!workspaceId && hasPR,
++			enabled: isGitRepo && !!workspaceId && hasPR,
+ 			refetchInterval: 30_000,
+ 			refetchOnWindowFocus: true,
+ 		},
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/DiffPane/hooks/useDiffCodeViewItems/useDiffCodeViewItems.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/DiffPane/hooks/useDiffCodeViewItems/useDiffCodeViewItems.ts
+index 58c7609..f03b21e 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/DiffPane/hooks/useDiffCodeViewItems/useDiffCodeViewItems.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/DiffPane/hooks/useDiffCodeViewItems/useDiffCodeViewItems.ts
+@@ -9,6 +9,7 @@ import { useQueries } from "@tanstack/react-query";
+ import { getQueryKey } from "@trpc/react-query";
+ import type { inferRouterInputs } from "@trpc/server";
+ import { useMemo } from "react";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import type { ChangesetFile } from "../../../../../useChangeset";
+ import type { DiffAnnotationMetadata } from "../useDiffAnnotations";
+ 
+@@ -46,6 +47,11 @@ export function useDiffCodeViewItems({
+ 	extraAnnotationsByItemId,
+ }: UseDiffCodeViewItemsOptions): UseDiffCodeViewItemsResult {
+ 	const { trpcClient } = useWorkspaceClient();
++	// (NON-GIT WORKSPACE) Never run git.getDiff for a non-git folder — the
++	// marker branch must never reach a git command. Stays true until the query
++	// positively resolves non-git so a real repo never flicker-skips on mount.
++	// A non-git folder has no changeset files anyway, so this is defense-in-depth.
++	const isGitRepo = useIsGitRepo(workspaceId);
+ 
+ 	const diffRequests = useMemo(
+ 		() =>
+@@ -60,6 +66,7 @@ export function useDiffCodeViewItems({
+ 		queries: diffRequests.map(({ input }) => ({
+ 			queryKey: getQueryKey(workspaceTrpc.git.getDiff, input, "query"),
+ 			queryFn: () => trpcClient.git.getDiff.query(input),
++			enabled: isGitRepo,
+ 			staleTime: Number.POSITIVE_INFINITY,
+ 		})),
+ 	});
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider/WorkspaceGitStatusProvider.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider/WorkspaceGitStatusProvider.tsx
+index 5388690..5d77fa2 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider/WorkspaceGitStatusProvider.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider/WorkspaceGitStatusProvider.tsx
+@@ -1,6 +1,7 @@
+ import type { WorkspaceStore } from "@superset/panes";
+ import { createContext, useContext, useSyncExternalStore } from "react";
+ import { useGitStatus } from "renderer/hooks/host-service/useGitStatus";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import type { StoreApi } from "zustand/vanilla";
+ import type { PaneViewerData } from "../../types";
+ 
+@@ -24,7 +25,15 @@ export function WorkspaceGitStatusProvider({
+ 	workspaceId,
+ }: WorkspaceGitStatusProviderProps) {
+ 	const hasDiffPane = useHasDiffPane(store);
+-	const gitStatus = useGitStatus(workspaceId, sidebarOpen || hasDiffPane);
++	// (NON-GIT WORKSPACE) Don't poll git status for a non-git folder — the
++	// marker branch must never reach a git command. `useIsGitRepo` stays true
++	// until the query positively resolves non-git, so a real repo never
++	// flicker-skips on mount.
++	const isGitRepo = useIsGitRepo(workspaceId);
++	const gitStatus = useGitStatus(
++		workspaceId,
++		isGitRepo && (sidebarOpen || hasDiffPane),
++	);
+ 
+ 	return (
+ 		<WorkspaceGitStatusContext.Provider value={gitStatus}>
+diff --git a/packages/host-service/src/events/git-watcher.ts b/packages/host-service/src/events/git-watcher.ts
+index a3e36f0..17b7f18 100644
+--- a/packages/host-service/src/events/git-watcher.ts
++++ b/packages/host-service/src/events/git-watcher.ts
+@@ -1,5 +1,6 @@
+ import { execFile } from "node:child_process";
+ import { type FSWatcher, watch } from "node:fs";
++import { isAbsolute, join } from "node:path";
+ import { promisify } from "node:util";
+ import type { FsWatchEvent } from "@superset/workspace-fs/host";
+ import type { HostDb } from "../db/index.ts";
+@@ -33,8 +34,14 @@ interface PendingBatch {
+ interface WatchedWorkspace {
+ 	workspaceId: string;
+ 	worktreePath: string;
+-	gitDir: string;
+-	watcher: FSWatcher;
++	/**
++	 * Resolved `.git` directory, or `null` for a non-git folder workspace
++	 * (NON-GIT WORKSPACE) — those still get a worktree-root fs watch but have
++	 * no `.git/` metadata to watch.
++	 */
++	gitDir: string | null;
++	/** `.git/` metadata watcher; `null` for a non-git folder workspace. */
++	watcher: FSWatcher | null;
+ 	disposeWorktreeWatch: () => void;
+ }
+ 
+@@ -105,7 +112,7 @@ export class GitWatcher {
+ 		this.debounceTimers.clear();
+ 		this.pendingBatches.clear();
+ 		for (const entry of this.watched.values()) {
+-			entry.watcher.close();
++			entry.watcher?.close();
+ 			entry.disposeWorktreeWatch();
+ 		}
+ 		this.watched.clear();
+@@ -183,7 +190,7 @@ export class GitWatcher {
+ 		// Remove watchers for workspaces that no longer exist
+ 		for (const [id, entry] of this.watched) {
+ 			if (!currentIds.has(id)) {
+-				entry.watcher.close();
++				entry.watcher?.close();
+ 				entry.disposeWorktreeWatch();
+ 				this.watched.delete(id);
+ 			}
+@@ -202,21 +209,26 @@ export class GitWatcher {
+ 	): Promise<void> {
+ 		if (this.closed) return;
+ 
+-		let gitDir: string;
++		// Resolve the `.git` directory. Failure here means the folder is not a
++		// git repo (NON-GIT WORKSPACE) or the path is gone — that must NOT skip
++		// the worktree-root fs watch below; only the `.git/`-specific watch is
++		// git-dependent. So we keep going with `gitDir = null`.
++		let gitDir: string | null = null;
+ 		try {
+ 			const { stdout } = await execFileAsync(
+ 				"git",
+ 				["rev-parse", "--git-dir"],
+ 				{ cwd: worktreePath },
+ 			);
+-			gitDir = stdout.trim();
+-			// If relative, resolve against worktree path
+-			if (!gitDir.startsWith("/")) {
+-				gitDir = `${worktreePath}/${gitDir}`;
+-			}
++			const raw = stdout.trim();
++			// `git` returns the git-dir relative to the worktree; resolve it.
++			// Use `isAbsolute`/`join` so a Windows drive path (C:\...) isn't
++			// mistaken for relative by a POSIX `startsWith("/")` check.
++			gitDir = isAbsolute(raw) ? raw : join(worktreePath, raw);
+ 		} catch {
+-			// Not a git repo or path doesn't exist — skip
+-			return;
++			// Not a git repo or path doesn't exist — no `.git/` watch, but the
++			// worktree-root watch (file tree / change detection) still runs.
++			gitDir = null;
+ 		}
+ 
+ 		if (this.closed || this.watched.has(workspaceId)) return;
+@@ -224,19 +236,41 @@ export class GitWatcher {
+ 		// Start the worktree watch first so we have a dispose handle to capture
+ 		// in the .git watcher's error handler closure. This avoids a race where
+ 		// the error handler could fire before `this.watched.set(...)` runs.
++		// This watch is git-independent and always runs (incl. non-git folders).
+ 		const disposeWorktreeWatch = this.startWorktreeWatch(
+ 			workspaceId,
+ 			worktreePath,
+ 		);
+ 
++		// NON-GIT WORKSPACE: no `.git/` dir to watch, but the worktree-root watch
++		// above (file tree / change detection) is already live. Register with a
++		// null `.git/` watcher and stop — the only git-dependent step is below.
++		if (gitDir === null) {
++			this.watched.set(workspaceId, {
++				workspaceId,
++				worktreePath,
++				gitDir: null,
++				watcher: null,
++				disposeWorktreeWatch,
++			});
++			return;
++		}
++
+ 		let watcher: FSWatcher;
+ 		try {
+ 			watcher = watch(gitDir, { recursive: true }, () => {
+ 				this.markGitDirDirty(workspaceId);
+ 			});
+ 		} catch {
+-			// fs.watch failed (e.g. directory doesn't exist)
+-			disposeWorktreeWatch();
++			// fs.watch failed (e.g. directory doesn't exist). The worktree watch
++			// is still valid, so keep that entry rather than dropping both.
++			this.watched.set(workspaceId, {
++				workspaceId,
++				worktreePath,
++				gitDir,
++				watcher: null,
++				disposeWorktreeWatch,
++			});
+ 			return;
+ 		}
+ 
+diff --git a/packages/host-service/src/runtime/git/non-git.ts b/packages/host-service/src/runtime/git/non-git.ts
+new file mode 100644
+index 0000000..ab8b3c9
+--- /dev/null
++++ b/packages/host-service/src/runtime/git/non-git.ts
+@@ -0,0 +1,70 @@
++import { resolve } from "node:path";
++import { createUserSimpleGit } from "./simple-git";
++
++/**
++ * (NON-GIT WORKSPACE) Inert, explicit marker stored in the NOT NULL `branch`
++ * column for a non-git workspace.
++ *
++ * The cloud `v2_workspaces.branch` column is NOT NULL (and the fork cannot
++ * migrate the cloud schema), so a non-git workspace row still needs *some*
++ * branch value. This is a DECLARED representation forced by an immutable
++ * schema — NOT a "sensible default": it is explicit, named, and NEVER used as
++ * a real git ref. Every git-executing path is guarded by `isGitRepo()` and
++ * fails loud (or no-ops) before this value could reach a git command.
++ */
++export const NON_GIT_BRANCH = "__superset_non_git__";
++
++interface CacheEntry {
++	value: boolean;
++	expiresAt: number;
++}
++
++/**
++ * Short-TTL cache. `git rev-parse` is cheap but `isGitRepo` is consulted by
++ * many procedures; the TTL (not a permanent cache) means a folder that gets
++ * `git init`'d — or de-init'd — mid-session is re-detected within a few
++ * seconds. The filesystem/git is the source of truth for git-ness; we never
++ * persist a flag.
++ */
++const CACHE_TTL_MS = 5_000;
++const cache = new Map<string, CacheEntry>();
++
++/**
++ * Normalize the cache key so the same directory is a single entry regardless
++ * of how the path was spelled — trailing slash, relative vs resolved, or
++ * drive-letter case on Windows (this fork's target). Without this, e.g.
++ * `project.probePath` (raw renderer-supplied path) and `resolveNonGitFolder`
++ * (already `resolve`d) would key the same folder twice and double the work.
++ */
++function normalizeKey(dirPath: string): string {
++	const resolved = resolve(dirPath);
++	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
++}
++
++/**
++ * True when `dirPath` is inside a git working tree.
++ *
++ * The authoritative, filesystem-derived signal for "is this a git repo" —
++ * used by the non-git create path, the server-side git guards, and the
++ * renderer-facing `git.isRepo` query. A non-repo, a missing directory, or git
++ * not being on PATH all resolve to `false` (none is a usable git workspace).
++ */
++export async function isGitRepo(dirPath: string): Promise<boolean> {
++	const key = normalizeKey(dirPath);
++	const now = Date.now();
++	const hit = cache.get(key);
++	if (hit) {
++		if (hit.expiresAt > now) return hit.value;
++		// Evict expired on read so the Map can't grow unbounded in a
++		// long-lived host-service process.
++		cache.delete(key);
++	}
++	let value = false;
++	try {
++		value = await createUserSimpleGit(dirPath).checkIsRepo();
++	} catch {
++		value = false;
++	}
++	cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
++	return value;
++}
+diff --git a/packages/host-service/src/runtime/pull-requests/pull-requests.ts b/packages/host-service/src/runtime/pull-requests/pull-requests.ts
+index 37ee517..b4cb0b0 100644
+--- a/packages/host-service/src/runtime/pull-requests/pull-requests.ts
++++ b/packages/host-service/src/runtime/pull-requests/pull-requests.ts
+@@ -7,6 +7,7 @@ import { projects, pullRequests, workspaces } from "../../db/schema";
+ import type { GitWatcher } from "../../events/git-watcher";
+ import type { ExecGh } from "../../trpc/router/workspace-creation/utils/exec-gh";
+ import type { GitFactory } from "../git";
++import { isGitRepo } from "../git/non-git";
+ import {
+ 	fetchPullRequestByHead,
+ 	fetchPullRequestByHeadFromGh,
+@@ -514,6 +515,10 @@ export class PullRequestRuntimeManager {
+ 	private async syncWorkspaceRow(
+ 		workspace: typeof workspaces.$inferSelect,
+ 	): Promise<string | null> {
++		// (NON-GIT WORKSPACE) A non-git workspace has no branch/HEAD/upstream
++		// to read and no PR to sync. Skip before touching git so the inert
++		// branch marker never reaches a git command.
++		if (!(await isGitRepo(workspace.worktreePath))) return null;
+ 		try {
+ 			const git = await this.git(workspace.worktreePath);
+ 			const branch = await getCurrentBranchName(git);
+@@ -616,11 +621,25 @@ export class PullRequestRuntimeManager {
+ 		const repo = await this.getProjectRepository(projectId);
+ 		if (!repo) return;
+ 
+-		const projectWorkspaces = this.db
++		const allProjectWorkspaces = this.db
+ 			.select()
+ 			.from(workspaces)
+ 			.where(eq(workspaces.projectId, projectId))
+ 			.all();
++		if (allProjectWorkspaces.length === 0) return;
++
++		// (NON-GIT WORKSPACE) Drop non-git workspaces before any PR work — they
++		// have no upstream/branch to query and must not have their (always null)
++		// pullRequestId touched by the propagation loop below. Filesystem/git is
++		// the truth; isGitRepo's short-TTL cache keeps these checks cheap.
++		const gitFlags = await Promise.all(
++			allProjectWorkspaces.map((workspace) =>
++				isGitRepo(workspace.worktreePath),
++			),
++		);
++		const projectWorkspaces = allProjectWorkspaces.filter(
++			(_workspace, index) => gitFlags[index],
++		);
+ 		if (projectWorkspaces.length === 0) return;
+ 
+ 		const wantedRefs = new Map<string, GitHubPullRequestHeadRef>();
+diff --git a/packages/host-service/src/trpc/router/git/git.ts b/packages/host-service/src/trpc/router/git/git.ts
+index e871f8f..af322d4 100644
+--- a/packages/host-service/src/trpc/router/git/git.ts
++++ b/packages/host-service/src/trpc/router/git/git.ts
+@@ -4,9 +4,11 @@ import { TRPCError } from "@trpc/server";
+ import { eq } from "drizzle-orm";
+ import { z } from "zod";
+ import { pullRequests, workspaces } from "../../../db/schema";
++import { isGitRepo } from "../../../runtime/git/non-git";
+ import { protectedProcedure, queryProcedure, router } from "../../index";
+ import { resolveGithubRepo } from "../workspace-creation/shared/project-helpers";
+ import type {
++	ChangedFile,
+ 	CheckConclusionState,
+ 	CheckRun,
+ 	CheckStatusState,
+@@ -23,7 +25,7 @@ import {
+ 	getDefaultBranchName,
+ 	resolveBaseComparison,
+ } from "./utils/git-helpers";
+-import { getGitStatusSnapshot } from "./utils/git-status";
++import { emptyGitStatusSnapshot, getGitStatusSnapshot } from "./utils/git-status";
+ import { gitStatusRefreshLimiter } from "./utils/git-status-refresh-limiter";
+ import {
+ 	type GraphQLThreadsResult,
+@@ -54,11 +56,35 @@ function assertSafeRelativePath(filePath: string): void {
+ 	}
+ }
+ 
++/**
++ * (NON-GIT WORKSPACE) Shared guard for git mutations: throw a uniform
++ * BAD_REQUEST when the workspace folder is not a git repository, so the inert
++ * NON_GIT_BRANCH marker can never reach a git command.
++ */
++async function assertGitRepo(worktreePath: string): Promise<void> {
++	if (!(await isGitRepo(worktreePath))) {
++		throw new TRPCError({
++			code: "BAD_REQUEST",
++			message: "This workspace is not a git repository.",
++		});
++	}
++}
++
+ export const gitRouter = router({
++	isRepo: queryProcedure
++		.input(z.object({ workspaceId: z.string() }))
++		.query(async ({ ctx, input }) => {
++			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			return { isGitRepo: await isGitRepo(worktreePath) };
++		}),
++
+ 	listBranches: queryProcedure
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				return { branches: [] as { name: string; isHead: boolean }[] };
++			}
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			// `%(HEAD)` emits "*" for the checked-out branch, " " otherwise.
+@@ -109,6 +135,9 @@ export const gitRouter = router({
+ 				priority: input.priority,
+ 				run: async () => {
+ 					const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++					if (!(await isGitRepo(worktreePath))) {
++						return emptyGitStatusSnapshot();
++					}
+ 					const git = await ctx.git(worktreePath);
+ 					return getGitStatusSnapshot({
+ 						git,
+@@ -129,6 +158,9 @@ export const gitRouter = router({
+ 		)
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				return { commits: [] as Commit[] };
++			}
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			const base = await resolveBaseComparison(git, input.baseBranch);
+@@ -168,6 +200,9 @@ export const gitRouter = router({
+ 		)
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				return { files: [] as ChangedFile[] };
++			}
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			const from = input.fromHash ? input.fromHash : `${input.commitHash}^`;
+@@ -180,6 +215,9 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				return { baseBranch: null as string | null };
++			}
+ 			const git = await ctx.git(worktreePath);
+ 			const currentBranch = (
+ 				await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
+@@ -204,6 +242,7 @@ export const gitRouter = router({
+ 		)
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			const currentBranch = (
+ 				await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
+@@ -240,6 +279,7 @@ export const gitRouter = router({
+ 		)
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			// Check if branch has been pushed to remote
+@@ -275,6 +315,7 @@ export const gitRouter = router({
+ 		.mutation(async ({ ctx, input }) => {
+ 			assertSafeRelativePath(input.filePath);
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			const status = await git.status();
+ 			const isUntracked = status.not_added.includes(input.filePath);
+@@ -290,6 +331,7 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			await git.raw(["checkout", "--", "."]);
+ 			await git.raw(["clean", "-fd"]);
+@@ -300,6 +342,7 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			const status = await git.status();
+ 
+@@ -352,6 +395,7 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			await git.raw(["add", "-A"]);
+ 			return { success: true };
+@@ -361,6 +405,7 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.mutation(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			await assertGitRepo(worktreePath);
+ 			const git = await ctx.git(worktreePath);
+ 			await git.raw(["reset", "HEAD"]);
+ 			return { success: true };
+@@ -380,6 +425,13 @@ export const gitRouter = router({
+ 		)
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				const emptyName = input.path.split("/").pop() ?? input.path;
++				return {
++					oldFile: { name: emptyName, contents: "" },
++					newFile: { name: emptyName, contents: "" },
++				};
++			}
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			let originalContent = "";
+@@ -450,6 +502,19 @@ export const gitRouter = router({
+ 		.input(z.object({ workspaceId: z.string() }))
+ 		.query(async ({ ctx, input }) => {
+ 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
++			if (!(await isGitRepo(worktreePath))) {
++				return {
++					hasRepo: false,
++					hasUpstream: false,
++					pushCount: 0,
++					pullCount: 0,
++					isDefaultBranch: false,
++					isDetached: false,
++					hasUncommitted: false,
++					currentBranch: null as string | null,
++					defaultBranch: null as string | null,
++				};
++			}
+ 			const git = await ctx.git(worktreePath);
+ 
+ 			const currentBranch = (
+diff --git a/packages/host-service/src/trpc/router/git/utils/git-status.ts b/packages/host-service/src/trpc/router/git/utils/git-status.ts
+index 071bf22..21ff29e 100644
+--- a/packages/host-service/src/trpc/router/git/utils/git-status.ts
++++ b/packages/host-service/src/trpc/router/git/utils/git-status.ts
+@@ -19,6 +19,31 @@ export interface GitStatusSnapshot {
+ 	ignoredPaths: string[];
+ }
+ 
++/**
++ * (NON-GIT WORKSPACE) The empty snapshot for a non-git workspace. Single
++ * source of truth for the "no git" shape so it can't drift from
++ * GitStatusSnapshot / Branch when a field is added.
++ */
++export function emptyGitStatusSnapshot(): GitStatusSnapshot {
++	const emptyBranch: Branch = {
++		name: "",
++		isHead: false,
++		upstream: null,
++		aheadCount: 0,
++		behindCount: 0,
++		lastCommitHash: "",
++		lastCommitDate: "",
++	};
++	return {
++		currentBranch: emptyBranch,
++		defaultBranch: emptyBranch,
++		againstBase: [],
++		staged: [],
++		unstaged: [],
++		ignoredPaths: [],
++	};
++}
++
+ export async function getGitStatusSnapshot({
+ 	git,
+ 	worktreePath,
+diff --git a/packages/host-service/src/trpc/router/project/handlers.ts b/packages/host-service/src/trpc/router/project/handlers.ts
+index 6e94b7b..0eaf133 100644
+--- a/packages/host-service/src/trpc/router/project/handlers.ts
++++ b/packages/host-service/src/trpc/router/project/handlers.ts
+@@ -12,6 +12,7 @@ import {
+ 	initEmptyRepo,
+ 	type ResolvedRepo,
+ 	resolveLocalRepo,
++	resolveNonGitFolder,
+ } from "./utils/resolve-repo";
+ import { templateUrlFor } from "./utils/templates";
+ 
+@@ -114,6 +115,9 @@ async function persistFromResolved(
+ 		resolved: ResolvedRepo;
+ 		cleanupRepoPathOnFailure: boolean;
+ 		repoCloneUrlForCloud?: string;
++		/** (NON-GIT WORKSPACE) Create the main workspace without reading a git
++		 *  branch (uses the inert NON_GIT_BRANCH marker). */
++		nonGit?: boolean;
+ 	},
+ ): Promise<CreateResult> {
+ 	const projectId = randomUUID();
+@@ -135,6 +139,7 @@ async function persistFromResolved(
+ 			ctx,
+ 			projectId,
+ 			args.resolved.repoPath,
++			{ nonGit: args.nonGit },
+ 		);
+ 
+ 		return {
+@@ -210,6 +215,27 @@ export async function createFromImportLocal(
+ 	});
+ }
+ 
++/**
++ * (NON-GIT WORKSPACE) Import a plain folder that is NOT a git repository.
++ * Skips the `git rev-parse` that `createFromImportLocal` performs, persists a
++ * project + a single non-git main workspace (inert branch marker), and never
++ * removes the user's folder on failure. The created project has no remote and
++ * all git UI/operations stay disabled (see the server-side git guards).
++ */
++export async function createFromNonGitFolder(
++	ctx: HostServiceContext,
++	args: { name: string; repoPath: string },
++): Promise<CreateResult> {
++	const resolved = resolveNonGitFolder(args.repoPath);
++	return persistFromResolved(ctx, {
++		name: args.name,
++		resolved,
++		// User pointed us at an existing folder; never rm it.
++		cleanupRepoPathOnFailure: false,
++		nonGit: true,
++	});
++}
++
+ /**
+  * Empty mode: mkdir + git init + initial commit, then run the saga.
+  * The project lives local-only — no GitHub remote until first push.
+diff --git a/packages/host-service/src/trpc/router/project/project.ts b/packages/host-service/src/trpc/router/project/project.ts
+index 668e75e..de0f180 100644
+--- a/packages/host-service/src/trpc/router/project/project.ts
++++ b/packages/host-service/src/trpc/router/project/project.ts
+@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
+ import { eq } from "drizzle-orm";
+ import { z } from "zod";
+ import { projects, workspaces } from "../../../db/schema";
++import { isGitRepo } from "../../../runtime/git/non-git";
+ import { createUserSimpleGit } from "../../../runtime/git/simple-git";
+ import { protectedProcedure, router } from "../../index";
+ import { normalizeWorktreeBaseDir } from "../workspace-creation/shared/worktree-paths";
+@@ -15,6 +16,7 @@ import {
+ 	createFromClone,
+ 	createFromEmpty,
+ 	createFromImportLocal,
++	createFromNonGitFolder,
+ 	createFromTemplate,
+ } from "./handlers";
+ import { ensureMainWorkspace } from "./utils/ensure-main-workspace";
+@@ -25,6 +27,7 @@ import {
+ 	type ResolvedRepo,
+ 	resolveLocalRepo,
+ 	resolveMatchingSlug,
++	resolveNonGitFolder,
+ } from "./utils/resolve-repo";
+ 
+ export const projectRouter = router({
+@@ -162,6 +165,31 @@ export const projectRouter = router({
+ 			}),
+ 		)
+ 		.query(async ({ ctx, input }) => {
++			// (NON-GIT WORKSPACE) A non-git folder can't be rev-parsed. Look up an
++			// existing local non-git project by its resolved path and return it
++			// (or no candidates) WITHOUT throwing, so the folder-import flow can
++			// route a create through kind:"nonGitFolder" (see probePath).
++			if (!(await isGitRepo(input.repoPath))) {
++				const folder = resolveNonGitFolder(input.repoPath).repoPath;
++				const localProject = ctx.db.query.projects
++					.findFirst({ where: eq(projects.repoPath, folder) })
++					.sync();
++				return {
++					candidates: localProject
++						? [
++								{
++									id: localProject.id,
++									name: localProject.repoName ?? basename(folder),
++									repoCloneUrl: localProject.repoUrl ?? null,
++									source: "local-path" as const,
++									matchesExpected: false,
++									staleLocalLink: false,
++								},
++							]
++						: [],
++					cloudErrors: [] as { url: string; message: string }[],
++				};
++			}
+ 			const resolved = await resolveLocalRepo(input.repoPath);
+ 			const gitRoot = resolved.repoPath;
+ 
+@@ -374,6 +402,18 @@ export const projectRouter = router({
+ 			return { candidates, cloudErrors };
+ 		}),
+ 
++	/**
++	 * (NON-GIT WORKSPACE) Probe whether a folder is a git working tree so the
++	 * renderer can choose the create kind: a git repo -> kind:"importLocal";
++	 * anything else -> kind:"nonGitFolder". Filesystem/git is the source of
++	 * truth — never a persisted flag.
++	 */
++	probePath: protectedProcedure
++		.input(z.object({ repoPath: z.string().min(1) }))
++		.query(async ({ input }) => {
++			return { isGitRepo: await isGitRepo(input.repoPath) };
++		}),
++
+ 	create: protectedProcedure
+ 		.input(
+ 			z.object({
+@@ -392,6 +432,10 @@ export const projectRouter = router({
+ 						kind: z.literal("importLocal"),
+ 						repoPath: z.string().min(1),
+ 					}),
++					z.object({
++						kind: z.literal("nonGitFolder"),
++						repoPath: z.string().min(1),
++					}),
+ 					z.object({
+ 						kind: z.literal("template"),
+ 						parentDir: z.string().min(1),
+@@ -424,6 +468,11 @@ export const projectRouter = router({
+ 						name: input.name,
+ 						repoPath: input.mode.repoPath,
+ 					});
++				case "nonGitFolder":
++					return createFromNonGitFolder(ctx, {
++						name: input.name,
++						repoPath: input.mode.repoPath,
++					});
+ 			}
+ 		}),
+ 
+diff --git a/packages/host-service/src/trpc/router/project/utils/ensure-main-workspace.ts b/packages/host-service/src/trpc/router/project/utils/ensure-main-workspace.ts
+index 122e2b6..cbd718b 100644
+--- a/packages/host-service/src/trpc/router/project/utils/ensure-main-workspace.ts
++++ b/packages/host-service/src/trpc/router/project/utils/ensure-main-workspace.ts
+@@ -1,6 +1,8 @@
++import { basename } from "node:path";
+ import { getHostId, getHostName } from "@superset/shared/host-info";
+ import { TRPCError } from "@trpc/server";
+ import { workspaces } from "../../../../db/schema";
++import { NON_GIT_BRANCH } from "../../../../runtime/git/non-git";
+ import type { HostServiceContext } from "../../../../types";
+ 
+ export type EnsureMainWorkspaceContext = Pick<
+@@ -36,9 +38,10 @@ export async function ensureMainWorkspace(
+ 	ctx: EnsureMainWorkspaceContext,
+ 	projectId: string,
+ 	repoPath: string,
++	opts?: { nonGit?: boolean },
+ ): Promise<{ id: string } | null> {
+ 	try {
+-		return await ensureMainWorkspaceStrict(ctx, projectId, repoPath);
++		return await ensureMainWorkspaceStrict(ctx, projectId, repoPath, opts);
+ 	} catch (err) {
+ 		console.warn(
+ 			`[ensureMainWorkspace] failed for ${projectId} at ${repoPath}; will retry via startup sweep`,
+@@ -58,15 +61,28 @@ export async function ensureMainWorkspaceStrict(
+ 	ctx: EnsureMainWorkspaceContext,
+ 	projectId: string,
+ 	repoPath: string,
++	opts?: { nonGit?: boolean },
+ ): Promise<{ id: string }> {
+-	const git = await ctx.git(repoPath);
+-	const branch = await getCurrentBranchName(git);
+-	if (!branch) {
+-		throw new TRPCError({
+-			code: "PRECONDITION_FAILED",
+-			message:
+-				"Repository is in detached-HEAD state. Check out a branch (e.g. `git checkout main`) before creating the project on this device.",
+-		});
++	// (NON-GIT WORKSPACE) A non-git folder has no git HEAD to read. Store the
++	// inert NON_GIT_BRANCH marker (gated everywhere git runs) and use the folder
++	// name as the workspace name. Git projects keep deriving the real branch.
++	let branch: string;
++	let name: string;
++	if (opts?.nonGit) {
++		branch = NON_GIT_BRANCH;
++		name = basename(repoPath) || NON_GIT_BRANCH;
++	} else {
++		const git = await ctx.git(repoPath);
++		const currentBranch = await getCurrentBranchName(git);
++		if (!currentBranch) {
++			throw new TRPCError({
++				code: "PRECONDITION_FAILED",
++				message:
++					"Repository is in detached-HEAD state. Check out a branch (e.g. `git checkout main`) before creating the project on this device.",
++			});
++		}
++		branch = currentBranch;
++		name = currentBranch;
+ 	}
+ 
+ 	const host = await ctx.api.host.ensure.mutate({
+@@ -78,7 +94,7 @@ export async function ensureMainWorkspaceStrict(
+ 	const cloudRow = await ctx.api.v2Workspace.create.mutate({
+ 		organizationId: ctx.organizationId,
+ 		projectId,
+-		name: branch,
++		name,
+ 		branch,
+ 		hostId: host.machineId,
+ 		type: "main",
+diff --git a/packages/host-service/src/trpc/router/project/utils/resolve-repo.ts b/packages/host-service/src/trpc/router/project/utils/resolve-repo.ts
+index a46a04d..9b30846 100644
+--- a/packages/host-service/src/trpc/router/project/utils/resolve-repo.ts
++++ b/packages/host-service/src/trpc/router/project/utils/resolve-repo.ts
+@@ -129,6 +129,21 @@ export async function resolveLocalRepo(
+ 	return { repoPath: gitRoot, remoteName: firstName, parsed: firstParsed };
+ }
+ 
++/**
++ * (NON-GIT WORKSPACE) Resolve a plain, non-git folder as a project root.
++ * Validates only that the path is an existing directory — deliberately does
++ * NOT run `git rev-parse` (cf. resolveLocalRepo), so a folder that is not a
++ * git repo is accepted. The result carries no remote/parsed metadata, exactly
++ * like a local-only repo. Callers must have already established the folder is
++ * NOT a git repo (see isGitRepo); the project's git operations stay disabled
++ * via the server-side git guards.
++ */
++export function resolveNonGitFolder(repoPath: string): ResolvedRepo {
++	const resolved = resolvePath(repoPath);
++	validateDirectoryPath(resolved, "Path");
++	return { repoPath: resolved, remoteName: null, parsed: null };
++}
++
+ /**
+  * Validates that a path is a git working tree and returns the canonical git
+  * root plus the GitHub remote whose `owner/name` matches `expectedSlug`.
+diff --git a/packages/host-service/src/trpc/router/workspace-creation/procedures/adopt.ts b/packages/host-service/src/trpc/router/workspace-creation/procedures/adopt.ts
+index 224ae10..ff34759 100644
+--- a/packages/host-service/src/trpc/router/workspace-creation/procedures/adopt.ts
++++ b/packages/host-service/src/trpc/router/workspace-creation/procedures/adopt.ts
+@@ -1,5 +1,6 @@
+ import { getHostId, getHostName } from "@superset/shared/host-info";
+ import { TRPCError } from "@trpc/server";
++import { isGitRepo } from "../../../../runtime/git/non-git";
+ import { protectedProcedure } from "../../../index";
+ import { ensureMainWorkspace } from "../../project/utils/ensure-main-workspace";
+ import { adoptInputSchema } from "../schemas";
+@@ -22,6 +23,17 @@ export const adopt = protectedProcedure
+ 	.input(adoptInputSchema)
+ 	.mutation(async ({ ctx, input }) => {
+ 		const localProject = requireLocalProject(ctx, input.projectId);
++
++		// (NON-GIT WORKSPACE) Adoption pulls an existing git worktree into a
++		// workspace row. A non-git project folder has no worktrees to adopt —
++		// fail loud before touching git.
++		if (!(await isGitRepo(localProject.repoPath))) {
++			throw new TRPCError({
++				code: "BAD_REQUEST",
++				message: "Cannot adopt a worktree in a non-git workspace.",
++			});
++		}
++
+ 		await ensureMainWorkspace(ctx, input.projectId, localProject.repoPath);
+ 
+ 		let branch = input.branch.trim();
+diff --git a/packages/host-service/src/trpc/router/workspace-creation/procedures/list-project-worktrees.ts b/packages/host-service/src/trpc/router/workspace-creation/procedures/list-project-worktrees.ts
+index 4eafc39..ba953ce 100644
+--- a/packages/host-service/src/trpc/router/workspace-creation/procedures/list-project-worktrees.ts
++++ b/packages/host-service/src/trpc/router/workspace-creation/procedures/list-project-worktrees.ts
+@@ -1,4 +1,5 @@
+ import { z } from "zod";
++import { isGitRepo } from "../../../../runtime/git/non-git";
+ import { protectedProcedure } from "../../../index";
+ import { requireLocalProject } from "../shared/local-project";
+ import { listGitWorktrees } from "../shared/worktree-list";
+@@ -14,6 +15,13 @@ export const listProjectWorktrees = protectedProcedure
+ 	.input(z.object({ projectId: z.string() }))
+ 	.query(async ({ ctx, input }) => {
+ 		const localProject = requireLocalProject(ctx, input.projectId);
++
++		// (NON-GIT WORKSPACE) A non-git project has no git worktrees to list —
++		// return an empty set before touching git.
++		if (!(await isGitRepo(localProject.repoPath))) {
++			return { worktrees: [] as { branch: string; path: string }[] };
++		}
++
+ 		const git = await ctx.git(localProject.repoPath);
+ 		const records = await listGitWorktrees(git);
+ 		const worktrees: { branch: string; path: string }[] = [];
+diff --git a/packages/host-service/src/trpc/router/workspace-creation/procedures/search-branches.ts b/packages/host-service/src/trpc/router/workspace-creation/procedures/search-branches.ts
+index 6dc7907..2081c84 100644
+--- a/packages/host-service/src/trpc/router/workspace-creation/procedures/search-branches.ts
++++ b/packages/host-service/src/trpc/router/workspace-creation/procedures/search-branches.ts
+@@ -1,5 +1,6 @@
+ import { eq } from "drizzle-orm";
+ import { workspaces } from "../../../../db/schema";
++import { isGitRepo } from "../../../../runtime/git/non-git";
+ import { resolveDefaultBranchName } from "../../../../runtime/git/refs";
+ import { protectedProcedure } from "../../../index";
+ import { searchBranchesInputSchema } from "../schemas";
+@@ -36,6 +37,16 @@ export const searchBranches = protectedProcedure
+ 			};
+ 		}
+ 
++		// (NON-GIT WORKSPACE) A non-git project has no branches to search —
++		// return the same empty page as a missing project before touching git.
++		if (!(await isGitRepo(localProject.repoPath))) {
++			return {
++				defaultBranch: null as string | null,
++				items: [] as BranchRow[],
++				nextCursor: null as string | null,
++			};
++		}
++
+ 		const git = await ctx.git(localProject.repoPath);
+ 
+ 		// Honor `refresh` only if TTL elapsed — prevents thrashing `git fetch`

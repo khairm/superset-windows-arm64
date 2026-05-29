@@ -84,6 +84,30 @@ renderer CORS `allowedOrigins += superset-app://` (K).
   so relaunch surfaces a buried window [git apply]
 - (Z) v2-workspace blank-pane fix — cache-first hold-last-good in `layout.tsx` so an
   Electric re-sync can't blank the workspace content (rule-9: never blank on `!isReady`) [git apply]
+- (AD) v2-pin — fork is **v2-only, forever**. Forces `useIsV2CloudEnabled()` to
+  always return true (+ strips the now-unused store import) so every account
+  renders v2 and all v2-targeted patches always apply; no v1 path to maintain
+  [inline]
+- (AE/AF/AG) **non-git / multi-repo workspaces** — open ANY folder, not just a git
+  repo. Upstream hard-wires 1 workspace = 1 branch = 1 repo; git-ness is the
+  filesystem truth via `isGitRepo()` (live `git rev-parse --is-inside-work-tree`,
+  cached) — no persisted flag, no schema migration (the cloud `branch` NOT-NULL col
+  gets an inert, gated `NON_GIT_BRANCH` marker that never reaches git).
+  **(AE)** [git apply `nongit-workspaces.patch`, applied BEFORE (L) so (L)'s
+  git-watcher hunks layer on top] — the bulk: host-service `kind:"nonGitFolder"`
+  create path + `project.probePath` (renderer routes git→importLocal / non-git→
+  nonGitFolder) + non-strict main workspace + server-side `isGitRepo` guards
+  (`git.ts` `assertGitRepo`, pull-requests, workspace-creation procedures) +
+  git-watcher fs-watch for non-git + Windows `path.isAbsolute` fix + renderer
+  git-UI gating (Changes/Review/PR/branch/diff hidden) + non-git badge prop
+  receivers + new `runtime/git/non-git.ts` & `useIsGitRepo` hook. **(AF)** [inline]
+  `workspaces.create` non-git guard — workspaces.ts is also edited by Patch 28, so
+  inline-spliced (anchor: first `requireLocalProject`), not git apply. **(AG)**
+  [inline, AFTER (P)] non-git badge threaded into the two patch-(P) files
+  (Item/ExpandedRow). A folder whose root isn't a repo opens as a plain non-git
+  workspace (terminal+agents+file-tree work); no same-name branch fan-out (it
+  doesn't exist upstream). True N-repo-in-one-workspace is OUT (needs the cloud
+  schema, can't be a fork patch).
 
 **Agent status dots (Claude + Codex):**
 - (N) agent-jsonl-watcher — tail `~/.claude/projects` + `~/.codex/sessions` JSONL,
@@ -94,8 +118,9 @@ renderer CORS `allowedOrigins += superset-app://` (K).
   `file-truncated`/`cwd-unknown-skip`, a per-chunk `chunk` summary (`newBytes`/`lineCount`/
   `cwdKnown` + an `unclassified` count & sample → catches "dot stuck idle / wrong colour"),
   and `idle-timeout-fired` (distinguishes "watcher gave up" from a real end-of-turn).
-- (O) v1 per-terminal dots; (P) v2 per-terminal dots; (Q) v2 per-tab read (drop the
-  workspace-level bulk-clear) [git apply]
+- (P) v2 per-terminal dots; (Q) v2 per-tab read (drop the workspace-level
+  bulk-clear) [git apply]. ((O) v1 per-terminal dots RETIRED 2026-05-29 — fork
+  is v2-only, the v1 row never renders; (P) covers v2.)
 - (W) notification-logging — `[agent-dots]` diagnostics → `~/.superset/*.log` + `main.log`
   [git apply: renderer + (N)-created watcher files] **+ (W.1)** the `main.ts`
   console-message forwarder, inserted before the `if (ipcHandler)` anchor [inline]

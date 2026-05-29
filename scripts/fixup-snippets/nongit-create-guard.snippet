@@ -1,0 +1,10 @@
+			// (NON-GIT WORKSPACE) `create` is a git worktree factory — every path
+			// below forks a branch / adds a worktree. Reject a non-git project
+			// before any git work runs so the inert NON_GIT_BRANCH marker can
+			// never reach a git command.
+			if (!(await isGitRepo(localProject.repoPath))) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Cannot create a branch/worktree in a non-git workspace.",
+				});
+			}
