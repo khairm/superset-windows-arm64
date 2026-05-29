@@ -46,8 +46,11 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport
-  off (AB)[inline]; prune orphan dots to live panes (AI)[git]; red→working on the
-  AskUserQuestion answer (AJ)[git].
+  off (AB)[inline]; red→working on the AskUserQuestion answer (AJ)[git]; fs.watch
+  poll-fallback so dots are reliable on Windows — fs.watch drops trailing
+  appends/creates, which caused "ask-user stayed green" + "no dot on respond"
+  (AK)[git]. ((AI) prune-orphans REVERTED — it removed LIVE sources inside
+  Superset, causing "no dot"; revisit duplicates with a safer approach.)
 
 ## Traps (do NOT repeat)
 

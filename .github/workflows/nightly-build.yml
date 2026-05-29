@@ -1190,36 +1190,35 @@ jobs:
             Write-Host "(AH) workspace-delete-decouple applied (locked worktree no longer aborts delete; record deletes first-try, folder left on disk with a warning)"
           }
 
-          # (AI) v2-dots-prune — reconcile the v2 notification store to LIVE panes
-          #      so agent-status dots stop lingering/duplicating. The store keys
-          #      sources by raw terminalId and never prunes them; a terminal that
-          #      reloads/adopts/reconnects gets a NEW id, orphaning the old source
-          #      which the sidebar dot row still renders (duplicate dot) and which
-          #      inflates the workspace rollup (never-clears). Adds a
-          #      pruneTerminalSourcesToLive store mutator + a V2NotificationController
-          #      effect that drops terminal sources not present in the workspace's
-          #      live paneLayout. Layers on top of (P)+(W) store.ts/controller.
-          $dp = '../patches/v2-dots-prune.patch'
-          $dpStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
-          $dpCtl = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx'
-          if (-not (Test-Path $dp)) { Write-Error "(AI) missing $dp in patches repo"; exit 1 }
-          if (-not (Test-Path $dpStore)) { Write-Error "(AI) $dpStore missing in this upstream"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'pruneTerminalSourcesToLive' $dpStore) {
-            Write-Host "(AI) v2-dots-prune already present — skip"
+          # (AK) watcher-poll-fallback — fs.watch (ReadDirectoryChangesW) on
+          #      Windows drops events for a transcript's LAST append before the
+          #      writer idles (the AskUserQuestion case) and some appends/creates
+          #      generally, so the watcher never read the line -> dot never went
+          #      red / never showed working ("ask-user stayed green", "no dot when
+          #      I responded"). Adds two poll timers that re-stat tracked files for
+          #      growth (fast) and rescan for new files, so every transition lands
+          #      within a couple seconds regardless of fs.watch. Layers on (N)+(AJ)
+          #      watcher. (NOTE: the (AI) v2-dots-prune patch was REVERTED — it
+          #      wrongly removed live sources inside Superset, causing "no dot".)
+          $wp = '../patches/watcher-poll-fallback.patch'
+          $wpFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          if (-not (Test-Path $wp)) { Write-Error "(AK) missing $wp in patches repo"; exit 1 }
+          if (-not (Test-Path $wpFile)) { Write-Error "(AK) $wpFile missing — did (N) apply?"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'pollKnownFilesForGrowth' $wpFile) {
+            Write-Host "(AK) watcher-poll-fallback already present — skip"
           } else {
-            $dpErr = "$env:RUNNER_TEMP/ai-apply-check.txt"
-            git apply --check $dp 2>$dpErr
+            $wpErr = "$env:RUNNER_TEMP/ak-apply-check.txt"
+            git apply --check $wp 2>$wpErr
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "(AI) v2-dots-prune.patch does not apply cleanly (post P+W). git apply --check output:"
-              if (Test-Path $dpErr) { Get-Content $dpErr | ForEach-Object { Write-Host "    (AI-check) $_" } }
-              Write-Error "(AI) v2-dots-prune.patch failed to apply — store.ts/V2NotificationController shape changed (P/W drift?). Regenerate it against post-(P)+(W) upstream."
+              Write-Host "(AK) watcher-poll-fallback.patch does not apply cleanly (post N+AJ). git apply --check output:"
+              if (Test-Path $wpErr) { Get-Content $wpErr | ForEach-Object { Write-Host "    (AK-check) $_" } }
+              Write-Error "(AK) watcher-poll-fallback.patch failed to apply — agent-jsonl-watcher shape changed (N/AJ drift?). Regenerate it against post-(N)+(AJ) watcher."
               exit 1
             }
-            git apply $dp
-            if ($LASTEXITCODE -ne 0) { Write-Error "(AI) git apply failed after a clean --check"; exit 1 }
-            if (-not (Select-String -Quiet -SimpleMatch 'pruneTerminalSourcesToLive' $dpStore)) { Write-Error "(AI) prune mutator missing in store.ts after apply"; exit 1 }
-            if (-not (Select-String -Quiet -SimpleMatch 'collectLiveTerminalIds' $dpCtl)) { Write-Error "(AI) prune effect missing in V2NotificationController after apply"; exit 1 }
-            Write-Host "(AI) v2-dots-prune applied (orphaned terminal sources pruned to live panes; no duplicate/never-clearing dots)"
+            git apply $wp
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AK) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'pollKnownTimer = setInterval' $wpFile)) { Write-Error "(AK) poll timer wiring missing after apply"; exit 1 }
+            Write-Host "(AK) watcher-poll-fallback applied (poll catches fs.watch-missed appends/creates; dots reliable on Windows)"
           }
 
           # (AJ) watcher-ask-answer — release the RED (permission) dot to YELLOW

@@ -1,0 +1,99 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index bfb75d2..dbce3e7 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -97,6 +97,16 @@ function nextEventId(): string {
+ }
+ 
+ const POLL_DEBOUNCE_MS = 250;
++// fs.watch (ReadDirectoryChangesW) on Windows does NOT reliably deliver an
++// event for a transcript's LAST append before the writer goes idle — exactly
++// the AskUserQuestion case (agent writes the question line, then waits for the
++// user). Without a fallback the watcher never reads that line, so the dot never
++// turns red. POLL_KNOWN_MS re-stats already-tracked files for growth (fast, so
++// red/working/answer land within a couple seconds even when fs.watch drops the
++// event); POLL_DISCOVER_MS rescans for brand-new session files whose creation
++// event was also missed.
++const POLL_KNOWN_MS = 2500;
++const POLL_DISCOVER_MS = 12000;
+ // How long after the last JSONL activity to consider an agent "done" with
+ // the turn. End-of-turn isn't reliably marked in every session (only
+ // ~3 of 8 Claude turns in the test corpus carried stop_reason:"end_turn"),
+@@ -279,6 +289,8 @@ const fileStates = new Map<string, FileState>();
+ const lifecycleStates = new Map<string, LifecycleState>();
+ const watchers = new Map<string, fs.FSWatcher>();
+ let scanTimer: NodeJS.Timeout | null = null;
++let pollKnownTimer: NodeJS.Timeout | null = null;
++let pollDiscoverTimer: NodeJS.Timeout | null = null;
+ let deps: WatcherDeps | null = null;
+ 
+ function normalizeCwd(cwd: string): string {
+@@ -746,6 +758,39 @@ function schedulePerFileProcess(filePath: string, source: AgentSource): void {
+ 	pendingFiles.set(filePath, { source, timer });
+ }
+ 
++function sourceForParser(parser: AgentParser): AgentSource | undefined {
++	return SOURCES.find((s) => s.parser === parser);
++}
++
++/**
++ * fs.watch fallback: re-stat every tracked transcript and process any that
++ * grew since we last read it. Catches the missed-trailing-append case (e.g. a
++ * pending AskUserQuestion, or the agent's first working line) that
++ * ReadDirectoryChangesW drops on Windows. Routes through the same debounced
++ * path as fs.watch so a real event + a poll for the same file coalesce.
++ */
++function pollKnownFilesForGrowth(): void {
++	for (const [filePath, state] of fileStates) {
++		let st: fs.Stats;
++		try {
++			st = fs.statSync(filePath);
++		} catch {
++			continue;
++		}
++		if (st.size > state.offset) {
++			const source = sourceForParser(state.parser);
++			if (source) {
++				dbg("poll-grown", {
++					filePath,
++					sessionId: state.sessionId,
++					delta: st.size - state.offset,
++				});
++				schedulePerFileProcess(filePath, source);
++			}
++		}
++	}
++}
++
+ /**
+  * Start watching ~/.claude/projects/ and ~/.codex/sessions/ for JSONL
+  * session updates and forward derived agent lifecycle events into
+@@ -804,6 +849,13 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 		scanAll(source, true);
+ 		dbg("watch-start", { logsDir: source.logsDir, exists: fs.existsSync(source.logsDir) });
+ 	}
++
++	// fs.watch is unreliable on Windows for trailing appends / some creates.
++	// These polls are the safety net that keeps dots accurate regardless.
++	pollKnownTimer = setInterval(pollKnownFilesForGrowth, POLL_KNOWN_MS);
++	pollDiscoverTimer = setInterval(() => {
++		for (const source of SOURCES) scanAll(source);
++	}, POLL_DISCOVER_MS);
+ }
+ 
+ export function stopAgentJsonlWatcher(): void {
+@@ -813,6 +865,14 @@ export function stopAgentJsonlWatcher(): void {
+ 		clearTimeout(scanTimer);
+ 		scanTimer = null;
+ 	}
++	if (pollKnownTimer) {
++		clearInterval(pollKnownTimer);
++		pollKnownTimer = null;
++	}
++	if (pollDiscoverTimer) {
++		clearInterval(pollDiscoverTimer);
++		pollDiscoverTimer = null;
++	}
+ 	for (const { timer } of pendingFiles.values()) clearTimeout(timer);
+ 	pendingFiles.clear();
+ 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
