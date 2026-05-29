@@ -1844,63 +1844,22 @@ bun test apps\desktop\src\renderer\lib\argv.test.ts packages\host-service\src\tr
 
 ---
 
-## Patch 30: Best-effort cleanup for leftover deleted worktree folders on Windows
+## Patch 30: (RETIRED) Worktree-delete cleanup — superseded by deterministic fixup (AH)
 
-**Why:** V2 workspace deletion already removes the cloud row and asks git to
-remove the worktree, but on Windows a deleted workspace can still leave behind
-an orphaned folder tree on disk — usually `node_modules` content with pnpm
-junctions or other files git no longer tracks as a worktree. In practice the
-user sees the workspace disappear in-app, but `D:\superset-wt\...` still
-contains a branch-named folder. When the directory is locked by VS Code or
-another process, Windows returns `permission denied` / `being used by another
-process`, so the cleanup path should be best-effort and the warning should point
-at the likely lock instead of pretending the worktree still exists in git.
+The original Patch 30 (best-effort leftover-folder removal via `rmSync` /
+PowerShell `Remove-Item`) is **retired**. Workspace-delete on Windows is now
+fixed deterministically by `patches/workspace-delete-decouple.patch`, applied as
+git-apply step **(AH)** in `.github/workflows/nightly-build.yml`. It converts the
+two worktree-step throws in `runDestroy()` into warnings (+ `git worktree
+prune`) so the workspace record deletes on the FIRST attempt even when the
+worktree folder is locked by another process; the locked folder is left on disk
+and surfaced as a warning. (The user chose decouple-only over the old
+force-removal behavior.)
 
-**Files:**
-- `packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts`
-- `packages/host-service/test/workspace-cleanup.test.ts`
-
-1. In `workspace-cleanup.ts`, add helpers that:
-   - normalize cleanup error messages,
-   - detect the "missing worktree" git cases (`ENOENT`, `is not a working tree`,
-     etc.),
-   - format user-facing warnings with an extra hint for `permission denied` /
-     `Access is denied` / `EPERM`,
-   - recursively remove leftover filesystem paths after git removal succeeds or
-     partially succeeds.
-
-2. For the filesystem cleanup helper, use:
-   - `rmSync(worktreePath, { recursive: true, force: true, maxRetries, retryDelay })`
-     on Windows,
-   - a plain recursive `rmSync` on other platforms,
-   - and, if the path still exists on Windows, a fallback
-     `powershell.exe -Command "Remove-Item -LiteralPath ... -Recurse -Force"` run
-     with `windowsHide: true`.
-
-3. After a leftover path is removed successfully, also prune any now-empty
-   ancestor directories (for example the generated per-project container folder
-   under the configured worktree root) with a small helper that walks upward and
-   calls `rmSync(current, { recursive: false })` until a directory is not empty.
-
-4. In the phase-3 worktree cleanup block, keep `git worktree remove --force` as
-   the first attempt, but if git removal fails for a non-missing reason:
-   - try the leftover filesystem cleanup anyway,
-   - if that succeeds, treat the worktree as removed and retry
-     `git worktree remove --force` once so stale git metadata can clear,
-   - only surface warnings if git metadata cleanup or leftover file cleanup still
-     fails after those attempts.
-
-5. Add a regression test in `workspace-cleanup.test.ts` that simulates git
-   failing with a "directory not empty" style error on the first remove call,
-   verifies the leftover directory is actually deleted from disk, verifies the
-   git removal is retried, and verifies no warning is surfaced for that success
-   path.
-
-**Expected result:** deleting a V2 workspace should usually remove the on-disk
-worktree folder as well. If Windows still cannot remove it because another
-process is holding the directory open, the workspace delete should still succeed
-but the warning should clearly point at an external lock rather than a stale git
-worktree.
+**Do NOT modify
+`packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts`
+here** — the deterministic (AH) patch owns that file and a competing AI edit
+would collide with it.
 
 ---
 

@@ -1,0 +1,89 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index 342fa92..bfb75d2 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -253,6 +253,15 @@ interface LifecycleState {
+ 	 */
+ 	lastEmittedHadMapping: boolean;
+ 	idleTimer: NodeJS.Timeout | null;
++	/**
++	 * tool_use id of the AskUserQuestion that put this session into
++	 * `permission` (red). When the matching tool_result (the user's answer)
++	 * arrives we release red -> working promptly, instead of waiting for
++	 * Claude's next assistant line / the idle fallback. Matched on the exact
++	 * id so unrelated tool_results never clear the dot. Null when not blocked
++	 * on an AskUserQuestion (e.g. a bare PermissionRequest hookEvent).
++	 */
++	pendingAskToolUseId: string | null;
+ }
+ 
+ interface PaneMapping {
+@@ -415,7 +424,12 @@ function getState(
+ 	const key = getStateKey(sessionId, cwd);
+ 	let s = lifecycleStates.get(key);
+ 	if (!s) {
+-		s = { lastStatus: null, lastEmittedHadMapping: false, idleTimer: null };
++		s = {
++			lastStatus: null,
++			lastEmittedHadMapping: false,
++			idleTimer: null,
++			pendingAskToolUseId: null,
++		};
+ 		lifecycleStates.set(key, s);
+ 	}
+ 	return { key, state: s };
+@@ -621,15 +635,46 @@ function processFile(
+ 	let sampleUnclassified = "";
+ 	for (const line of lines) {
+ 		if (!line) continue;
++		// (red->working on answer) If blocked on an AskUserQuestion and THIS
++		// line is that question's tool_result (the user's answer), release
++		// permission to working — Claude is about to resume. Matched on the
++		// exact tool_use_id so unrelated tool_results never clear the red dot.
++		{
++			const { state: s } = getState(sessionId, cwd);
++			if (
++				s.lastStatus === "permission" &&
++				s.pendingAskToolUseId &&
++				line.includes(`"tool_use_id":"${s.pendingAskToolUseId}"`)
++			) {
++				dbg("line", {
++					sessionId,
++					kind: "ask-answer",
++					snippet: line.slice(0, 160),
++				});
++				s.pendingAskToolUseId = null;
++				cancelIdleTimer(s);
++				transitionTo("working", sessionId, cwd, mapping);
++				scheduleIdleTimer(sessionId, cwd, mapping);
++				continue;
++			}
++		}
+ 		if (parser.isPermissionRequest(line)) {
+ 			dbg("line", { sessionId, kind: "permission", snippet: line.slice(0, 160) });
+ 			const { state: s } = getState(sessionId, cwd);
+ 			cancelIdleTimer(s);
++			// Capture the AskUserQuestion tool_use id so the matching
++			// tool_result (the answer) can release the red dot. Serialized
++			// form is stable: `"id":"toolu_...","name":"AskUserQuestion"`.
++			const askMatch = line.match(
++				/"id":"(toolu_[A-Za-z0-9_-]+)","name":"AskUserQuestion"/,
++			);
++			s.pendingAskToolUseId = askMatch ? askMatch[1] : null;
+ 			transitionTo("permission", sessionId, cwd, mapping);
+ 		} else if (parser.isExplicitStop(line)) {
+ 			dbg("line", { sessionId, kind: "explicit-stop", snippet: line.slice(0, 160) });
+ 			const { state: s } = getState(sessionId, cwd);
+ 			cancelIdleTimer(s);
++			s.pendingAskToolUseId = null;
+ 			transitionTo("review", sessionId, cwd, mapping);
+ 		} else if (parser.isUserLine?.(line)) {
+ 			// User answered or cancelled. If we were blocked on permission,
+@@ -641,6 +686,7 @@ function processFile(
+ 			dbg("line", { sessionId, kind: "user-line", lastStatus: s.lastStatus, snippet: line.slice(0, 160) });
+ 			if (s.lastStatus === "permission") {
+ 				cancelIdleTimer(s);
++				s.pendingAskToolUseId = null;
+ 				transitionTo("review", sessionId, cwd, mapping);
+ 			}
+ 			// Outside permission state, user lines are prompts — don't

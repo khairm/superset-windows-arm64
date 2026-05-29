@@ -1,0 +1,42 @@
+diff --git a/packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts b/packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts
+index 202e418..3b47c3c 100644
+--- a/packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts
++++ b/packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts
+@@ -291,12 +291,9 @@ async function runDestroy(
+ 			git = await ctx.git(project.repoPath);
+ 		} catch (err) {
+ 			const message = err instanceof Error ? err.message : String(err);
+-			if (!worktreeRemoved) {
+-				throw new TRPCError({
+-					code: "INTERNAL_SERVER_ERROR",
+-					message: `Failed to open project repo at ${project.repoPath}: ${message}`,
+-				});
+-			}
++			// (AH) Decouple: never abort the delete because the repo couldn't
++			// be opened. Warn and continue so the cloud + local-row delete
++			// below run on the FIRST attempt; the worktree dir is left on disk.
+ 			warnings.push(
+ 				`Failed to open project repo at ${project.repoPath}: ${message}`,
+ 			);
+@@ -317,10 +314,17 @@ async function runDestroy(
+ 				if (!existsSync(local.worktreePath)) {
+ 					worktreeRemoved = true;
+ 				} else {
+-					throw new TRPCError({
+-						code: "INTERNAL_SERVER_ERROR",
+-						message: `Failed to remove worktree at ${local.worktreePath}: ${message}`,
+-					});
++					// (AH) Decouple: a locked worktree (held by an editor/terminal)
++					// must NOT abort the delete. Warn, prune git's stale worktree
++					// metadata, and continue — the cloud + local-row delete below
++					// run first-try; the folder is left on disk for the user to
++					// remove once the lock is released.
++					warnings.push(
++						`Failed to remove worktree at ${local.worktreePath}: ${message}. It may be locked by another process (editor/terminal); the workspace was deleted and the folder left on disk.`,
++					);
++					try {
++						await git.raw(["worktree", "prune"]);
++					} catch {}
+ 				}
+ 			}
+ 		}

@@ -1156,6 +1156,101 @@ jobs:
             Write-Host "(W) notification logging applied (hook -> ~/.superset/pane-map-hook.log; renderer [agent-dots] lines -> electron-log main.log)"
           }
 
+          # ──────────────────────────────────────────────────────────────
+          # (AH) workspace-delete-decouple — delete a workspace FIRST-TRY even
+          #      when its git worktree is LOCKED on Windows. Upstream runDestroy()
+          #      removes the worktree BEFORE the cloud + local-row delete and
+          #      THROWS on a locked dir, aborting before the record is deleted ->
+          #      the renderer's optimistic row-hide rolls back and the row
+          #      reappears (the reported "delete twice" bug). This converts the
+          #      two Step-2b throws into warnings (+ `git worktree prune`) so the
+          #      record deletes first-try; the locked folder is left on disk and
+          #      surfaced as a warning. RETIRES the rejected force-remove
+          #      PATCHES.md Patch 30. workspace-cleanup.ts is touched by NO other
+          #      patch, so this applies on pristine upstream.
+          $wd = '../patches/workspace-delete-decouple.patch'
+          $wdFile = 'packages/host-service/src/trpc/router/workspace-cleanup/workspace-cleanup.ts'
+          if (-not (Test-Path $wd)) { Write-Error "(AH) missing $wd in patches repo"; exit 1 }
+          if (-not (Test-Path $wdFile)) { Write-Error "(AH) $wdFile missing in this upstream — workspace-cleanup moved; re-anchor (AH)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'the workspace was deleted and the folder left on disk' $wdFile) {
+            Write-Host "(AH) workspace-delete-decouple already present — skip"
+          } else {
+            $wdErr = "$env:RUNNER_TEMP/ah-apply-check.txt"
+            git apply --check $wd 2>$wdErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AH) workspace-delete-decouple.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $wdErr) { Get-Content $wdErr | ForEach-Object { Write-Host "    (AH-check) $_" } }
+              Write-Error "(AH) workspace-delete-decouple.patch failed to apply — runDestroy() Step-2b shape changed upstream. Regenerate it (convert the worktree-remove + repo-open throws to warnings + prune) rather than shipping the delete-twice bug."
+              exit 1
+            }
+            git apply $wd
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AH) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'the workspace was deleted and the folder left on disk' $wdFile)) { Write-Error "(AH) decouple warning missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch '"worktree", "prune"' $wdFile)) { Write-Error "(AH) git worktree prune missing after apply"; exit 1 }
+            Write-Host "(AH) workspace-delete-decouple applied (locked worktree no longer aborts delete; record deletes first-try, folder left on disk with a warning)"
+          }
+
+          # (AI) v2-dots-prune — reconcile the v2 notification store to LIVE panes
+          #      so agent-status dots stop lingering/duplicating. The store keys
+          #      sources by raw terminalId and never prunes them; a terminal that
+          #      reloads/adopts/reconnects gets a NEW id, orphaning the old source
+          #      which the sidebar dot row still renders (duplicate dot) and which
+          #      inflates the workspace rollup (never-clears). Adds a
+          #      pruneTerminalSourcesToLive store mutator + a V2NotificationController
+          #      effect that drops terminal sources not present in the workspace's
+          #      live paneLayout. Layers on top of (P)+(W) store.ts/controller.
+          $dp = '../patches/v2-dots-prune.patch'
+          $dpStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
+          $dpCtl = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx'
+          if (-not (Test-Path $dp)) { Write-Error "(AI) missing $dp in patches repo"; exit 1 }
+          if (-not (Test-Path $dpStore)) { Write-Error "(AI) $dpStore missing in this upstream"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'pruneTerminalSourcesToLive' $dpStore) {
+            Write-Host "(AI) v2-dots-prune already present — skip"
+          } else {
+            $dpErr = "$env:RUNNER_TEMP/ai-apply-check.txt"
+            git apply --check $dp 2>$dpErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AI) v2-dots-prune.patch does not apply cleanly (post P+W). git apply --check output:"
+              if (Test-Path $dpErr) { Get-Content $dpErr | ForEach-Object { Write-Host "    (AI-check) $_" } }
+              Write-Error "(AI) v2-dots-prune.patch failed to apply — store.ts/V2NotificationController shape changed (P/W drift?). Regenerate it against post-(P)+(W) upstream."
+              exit 1
+            }
+            git apply $dp
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AI) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'pruneTerminalSourcesToLive' $dpStore)) { Write-Error "(AI) prune mutator missing in store.ts after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'collectLiveTerminalIds' $dpCtl)) { Write-Error "(AI) prune effect missing in V2NotificationController after apply"; exit 1 }
+            Write-Host "(AI) v2-dots-prune applied (orphaned terminal sources pruned to live panes; no duplicate/never-clearing dots)"
+          }
+
+          # (AJ) watcher-ask-answer — release the RED (permission) dot to YELLOW
+          #      (working) the moment the user ANSWERS an AskUserQuestion, instead
+          #      of waiting for Claude's next assistant line / the idle fallback
+          #      (the "answered ask-user but stayed red" bug). The watcher captures
+          #      the AskUserQuestion tool_use id on the permission line and, when
+          #      the matching tool_result (the answer) arrives, transitions
+          #      permission -> working. Matched on the exact tool_use_id so
+          #      unrelated tool_results never clear the dot. Layers on (N)+(W) watcher.
+          $wa = '../patches/watcher-ask-answer.patch'
+          $waFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          if (-not (Test-Path $wa)) { Write-Error "(AJ) missing $wa in patches repo"; exit 1 }
+          if (-not (Test-Path $waFile)) { Write-Error "(AJ) $waFile missing — did (N) apply?"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'pendingAskToolUseId' $waFile) {
+            Write-Host "(AJ) watcher-ask-answer already present — skip"
+          } else {
+            $waErr = "$env:RUNNER_TEMP/aj-apply-check.txt"
+            git apply --check $wa 2>$waErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AJ) watcher-ask-answer.patch does not apply cleanly (post N+W). git apply --check output:"
+              if (Test-Path $waErr) { Get-Content $waErr | ForEach-Object { Write-Host "    (AJ-check) $_" } }
+              Write-Error "(AJ) watcher-ask-answer.patch failed to apply — agent-jsonl-watcher shape changed (N/W drift?). Regenerate it against post-(N)+(W) watcher."
+              exit 1
+            }
+            git apply $wa
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AJ) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'kind: "ask-answer"' $waFile)) { Write-Error "(AJ) ask-answer dispatch branch missing after apply"; exit 1 }
+            Write-Host "(AJ) watcher-ask-answer applied (red releases to working on the matched AskUserQuestion answer)"
+          }
+
           # (AA) wispr-flow — the LOAD-BEARING Wispr Flow fix (was "diag"), now that
           #      (V) screenReaderMode is reverted. Two coordinated inline fixups,
           #      both hard-abort:

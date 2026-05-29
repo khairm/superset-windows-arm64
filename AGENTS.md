@@ -108,6 +108,16 @@ renderer CORS `allowedOrigins += superset-app://` (K).
   workspace (terminal+agents+file-tree work); no same-name branch fan-out (it
   doesn't exist upstream). True N-repo-in-one-workspace is OUT (needs the cloud
   schema, can't be a fork patch).
+- (AH) workspace-delete-decouple — V2 workspace delete now succeeds on the FIRST
+  try when the git worktree is locked on Windows. Upstream `runDestroy()` removes
+  the worktree BEFORE the cloud + local-row delete and THROWS on a locked dir,
+  aborting before the record is deleted → the renderer's optimistic row-hide
+  (DeletingWorkspacesProvider) rolls back and the row reappears (the reported
+  "delete twice"). Converts the two Step-2b throws to `warnings.push` (+ `git
+  worktree prune`) so cloud+local-row delete run first-try; the locked folder is
+  left on disk + surfaced as a warning. Decouple-only — the old force-remove
+  PATCHES.md Patch 30 is RETIRED [git apply `workspace-delete-decouple.patch`, on
+  pristine upstream — no other patch touches `workspace-cleanup.ts`]
 
 **Agent status dots (Claude + Codex):**
 - (N) agent-jsonl-watcher — tail `~/.claude/projects` + `~/.codex/sessions` JSONL,
@@ -128,6 +138,31 @@ renderer CORS `allowedOrigins += superset-app://` (K).
   block so `[agent-dots]` lines stay in `main.log` and do NOT leak to electron-log's
   console transport (which was corrupting external Claude Code TUI sessions in the
   user's plain pwsh windows for this cwd) [inline]
+- (AI) v2-dots-prune — reconcile the v2 notification store to LIVE panes so dots
+  stop lingering/duplicating. Sources are keyed by raw terminalId and never pruned
+  (the bulk pruner `clearWorkspaceStatuses` has zero callers); a terminal that
+  reloads/adopts/reconnects gets a NEW id, orphaning the old source — the sidebar
+  row (`selectV2WorkspaceTerminalStatuses`) still renders it (duplicate dot) and it
+  keeps the workspace rollup non-green (never-clears). Adds a
+  `pruneTerminalSourcesToLive` store mutator + a `V2NotificationController` effect
+  that drops terminal sources absent from the workspace's live `paneLayout`
+  (derived with the same `tabs→panes→terminalId` walk the dots use; skips
+  layout-less workspaces so a live terminal is never pruned mid-sync) [git apply
+  `v2-dots-prune.patch`, AFTER (P)+(W)]
+- (AJ) watcher-ask-answer — release the RED (permission) dot to YELLOW (working)
+  the moment the user ANSWERS an AskUserQuestion, instead of waiting for Claude's
+  next assistant line / the 45s idle fallback (the reported "answered ask-user but
+  it stayed red ~30s"). The watcher captures the AskUserQuestion tool_use id on the
+  permission line (`"id":"toolu_…","name":"AskUserQuestion"`) and, when the matching
+  `tool_result` (the answer) arrives, transitions permission→working. Matched on the
+  EXACT tool_use_id so unrelated tool_results never clear the dot (the false-clear
+  the `isUserLine` comments warn about) [git apply `watcher-ask-answer.patch`, AFTER
+  (N)+(W)]. NOTE: a faster-green / lower idle-timeout change was considered and
+  SKIPPED — explicit-stop markers (`stop_hook_summary`/`turn_duration`/`Stop`) are
+  written natively to the transcript and already caught by `isExplicitStop`, so
+  healthy in-Superset turns go green promptly; the 45s idle fallback only bit
+  degraded/external sessions. Lowering it would risk false mid-turn "review"
+  flapping. (Diagnosis: `tmp/dots-and-delete-diagnosis.html`.)
 
 **Disabled (kept in `patches/` for reference, NOT applied):**
 - (U) v2-cwd-fallback — hung the renderer at `V2NotificationController` mount.
