@@ -5,6 +5,29 @@
 > [`superset-sh/superset`](https://github.com/superset-sh/superset) (an AI agent
 > reads this file and applies every patch).
 >
+> ### ⚠️ Patch-application safety rules — READ FIRST, apply to EVERY patch
+>
+> The build gate is **esbuild** (`compile:app`); invalid syntax is a HARD build
+> failure (no tsc/biome runs, so only syntax/escape/import errors fail — and they
+> fail loud). When applying ANY patch you MUST:
+>
+> 1. **No legacy octal escapes** (`\033`, `\007`, `\0`+digit) in JS/TS string or
+>    template literals — esbuild rejects them (*"Legacy octal escape sequences
+>    cannot be used in template literals"*). Use hex/unicode. A fish shell
+>    integration prompt mark MUST be `` `printf '\x1b]133;A\x07'` `` — **never**
+>    `` `printf '\033]133;A\007'` ``. If upstream already uses an escape, copy it
+>    **verbatim**; never re-encode hex→octal.
+> 2. **No regex literals for simple suffix/prefix checks** — a `/[\r\n]$/` has been
+>    emitted with a literal CR-LF inside the character class (*"Unterminated
+>    regular expression"*). Use `command.endsWith("\n") || command.endsWith("\r")`.
+> 3. **Make ONLY the edits each patch describes.** Do NOT reformat, regenerate, or
+>    rewrite surrounding code or whole files; preserve all unrelated code and its
+>    escape sequences byte-for-byte. Over-rewriting is precisely how (1) and (2)
+>    get introduced — e.g. while editing `shell-launch.ts` for shell resolution,
+>    leave its POSIX/fish shell-integration strings untouched.
+> 4. Every edit must be **valid TypeScript esbuild accepts** — a syntax/escape
+>    error hard-aborts the whole build.
+>
 > The patches below reference the **x64** native binary
 > `@lydell/node-pty-win32-x64` (Patches 12 & 14). For this **native ARM64** build
 > the workflow's `ARM64 arch fixup` step deterministically (with fail-fast
