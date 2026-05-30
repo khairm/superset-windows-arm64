@@ -1017,10 +1017,19 @@ const cmd = initialCommand.endsWith("\n")
 with:
 
 ```typescript
-const cmd = /[\r\n]$/.test(initialCommand)
+const cmd = initialCommand.endsWith("\n") || initialCommand.endsWith("\r")
   ? initialCommand
   : `${initialCommand}${TERMINAL_COMMAND_EOL}`;
 ```
+
+**Apply this with `.endsWith()`, NEVER a regex literal.** A `/[\r\n]$/` here has
+been mangled into an *unterminated regular expression* (a literal CR-LF emitted
+inside the character class) during AI application, hard-failing the esbuild build
+(`terminal.ts:662: Unterminated regular expression`). The `.endsWith` form is
+escape-safe and matches the `launch-command.ts` half above. If the exact anchor
+(`queueInitialCommand`) isn't present in this upstream, apply the same
+EOL-append at whatever path performs the initial command write — still using
+`.endsWith`, not a regex.
 
 Without this host-service change, V2 presets such as Claude open a terminal
 with the command typed but do not execute it until the user manually presses
