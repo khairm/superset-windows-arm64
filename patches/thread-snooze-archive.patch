@@ -1,0 +1,1891 @@
+diff --git a/apps/desktop/src/renderer/commandPalette/ui/RemoveFromSidebarMount/RemoveFromSidebarMount.tsx b/apps/desktop/src/renderer/commandPalette/ui/RemoveFromSidebarMount/RemoveFromSidebarMount.tsx
+index 7d6aa14..7212e85 100644
+--- a/apps/desktop/src/renderer/commandPalette/ui/RemoveFromSidebarMount/RemoveFromSidebarMount.tsx
++++ b/apps/desktop/src/renderer/commandPalette/ui/RemoveFromSidebarMount/RemoveFromSidebarMount.tsx
+@@ -15,7 +15,7 @@ import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-fro
+ export function RemoveFromSidebarMount() {
+ 	const target = useRemoveFromSidebarIntent((s) => s.target);
+ 	const clear = useRemoveFromSidebarIntent((s) => s.clear);
+-	const { hideWorkspaceInSidebar, removeWorkspaceFromSidebar } =
++	const { archiveWorkspace, hideWorkspaceInSidebar } =
+ 		useDashboardSidebarState();
+ 	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
+ 
+@@ -32,14 +32,17 @@ export function RemoveFromSidebarMount() {
+ 		if (target.isMain) {
+ 			hideWorkspaceInSidebar(target.workspaceId, target.projectId);
+ 		} else {
+-			removeWorkspaceFromSidebar(target.workspaceId);
++			// Non-main threads ARCHIVE (recoverable, session + worktree intact)
++			// instead of a hard remove — "Remove from Sidebar" is the Archive
++			// action now, so the thread reappears under the project's Archived section.
++			archiveWorkspace(target.workspaceId);
+ 		}
+ 		clear();
+ 	}, [
+ 		target,
+ 		navigateAwayFromWorkspace,
+ 		hideWorkspaceInSidebar,
+-		removeWorkspaceFromSidebar,
++		archiveWorkspace,
+ 		clear,
+ 	]);
+ 
+diff --git a/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts b/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
+index 2ff5b38..81b072c 100644
+--- a/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
++++ b/apps/desktop/src/renderer/hooks/host-service/useDiffStats/useDiffStats.ts
+@@ -10,7 +10,10 @@ export interface DiffStats {
+ 	deletions: number;
+ }
+ 
+-export function useDiffStats(workspaceId: string): DiffStats | null {
++export function useDiffStats(
++	workspaceId: string,
++	enabled = true,
++): DiffStats | null {
+ 	const hostUrl = useWorkspaceHostUrl(workspaceId);
+ 	// (NON-GIT WORKSPACE) Skip the git.getStatus fan-out for non-git folders —
+ 	// the marker branch must never reach a git command. `useIsGitRepo` stays
+@@ -22,10 +25,16 @@ export function useDiffStats(workspaceId: string): DiffStats | null {
+ 		() => ["diff-stats", hostUrl, workspaceId] as const,
+ 		[hostUrl, workspaceId],
+ 	);
++	// Skip the per-row git.getStatus RPC + git:changed subscription when the row
++	// is parked in a Snoozed/Archived section (caller passes enabled=false), so
++	// revealing a large section doesn't fan out an unbounded burst of requests.
++	const isEnabled = enabled && Boolean(workspaceId) && Boolean(hostUrl);
+ 
+ 	const { data: status } = useQuery({
+ 		queryKey,
+-		enabled: isGitRepo && Boolean(workspaceId) && Boolean(hostUrl),
++		// Non-git folders skip the git.getStatus query (AE); a row parked in a
++		// Snoozed/Archived section also skips it (feature passes enabled=false).
++		enabled: isGitRepo && isEnabled,
+ 		queryFn: () => {
+ 			if (!hostUrl) return null;
+ 			return getHostServiceClientByUrl(hostUrl).git.getStatus.query({
+@@ -41,12 +50,7 @@ export function useDiffStats(workspaceId: string): DiffStats | null {
+ 		void queryClient.invalidateQueries({ queryKey });
+ 	}, [queryClient, queryKey]);
+ 
+-	useWorkspaceEvent(
+-		"git:changed",
+-		workspaceId,
+-		invalidate,
+-		Boolean(workspaceId) && Boolean(hostUrl),
+-	);
++	useWorkspaceEvent("git:changed", workspaceId, invalidate, isEnabled);
+ 
+ 	return useMemo<DiffStats | null>(() => {
+ 		if (!status) return null;
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
+index ecbd1a2..0a67f7f 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
+@@ -153,6 +153,14 @@ export function DashboardSidebar({
+ 					}
+ 				}
+ 			}
++			// View-in-place: the open thread may be snoozed or archived (still shown
++			// in the main pane) — keep its project resolved so the footer persists.
++			for (const ws of project.snoozedWorkspaces) {
++				if (ws.id === activeV2WorkspaceId) return project;
++			}
++			for (const ws of project.archivedWorkspaces) {
++				if (ws.id === activeV2WorkspaceId) return project;
++			}
+ 		}
+ 		return null;
+ 	}, [groups, activeV2WorkspaceId]);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx
+index df2d8c2..2f50737 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx
+@@ -5,12 +5,14 @@ import type {
+ import { cn } from "@superset/ui/utils";
+ import { AnimatePresence, motion } from "framer-motion";
+ import { useMemo } from "react";
++import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+ import type { DashboardSidebarProject } from "../../types";
+ import { getProjectChildrenWorkspaces } from "../../utils/projectChildren";
+ import { DashboardSidebarCollapsedProjectContent } from "./components/DashboardSidebarCollapsedProjectContent";
+ import { DashboardSidebarExpandedProjectContent } from "./components/DashboardSidebarExpandedProjectContent";
+ import { DashboardSidebarProjectContextMenu } from "./components/DashboardSidebarProjectContextMenu";
+ import { DashboardSidebarProjectRow } from "./components/DashboardSidebarProjectRow";
++import { DashboardSidebarStateSection } from "./components/DashboardSidebarStateSection";
+ import { useDashboardSidebarProjectSectionActions } from "./hooks/useDashboardSidebarProjectSectionActions";
+ 
+ interface DashboardSidebarProjectSectionProps {
+@@ -58,8 +60,41 @@ export function DashboardSidebarProjectSection({
+ 		project,
+ 	});
+ 
++	const {
++		toggleProjectSectionFlag,
++		setProjectSectionFlag,
++		unsnoozeAllInProject,
++		unarchiveWorkspaces,
++	} = useDashboardSidebarState();
++
+ 	const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
+ 
++	// Snoozed + Archived render through the same DashboardSidebarStateSection;
++	// one config entry per variant keeps the two reveal blocks in sync.
++	const stateSections = [
++		{
++			variant: "snoozed" as const,
++			show: project.showSnoozed,
++			workspaces: project.snoozedWorkspaces,
++			collapsed: project.snoozedCollapsed,
++			collapsedFlag: "snoozedCollapsed" as const,
++			showFlag: "showSnoozed" as const,
++			onRestoreAll: () => unsnoozeAllInProject(project.id),
++		},
++		{
++			variant: "archived" as const,
++			show: project.showArchived,
++			workspaces: project.archivedWorkspaces,
++			collapsed: project.archivedCollapsed,
++			collapsedFlag: "archivedCollapsed" as const,
++			showFlag: "showArchived" as const,
++			onRestoreAll: () =>
++				unarchiveWorkspaces(
++					project.archivedWorkspaces.map((workspace) => workspace.id),
++				),
++		},
++	];
++
+ 	if (isSidebarCollapsed) {
+ 		return (
+ 			<DashboardSidebarProjectContextMenu
+@@ -93,6 +128,14 @@ export function DashboardSidebarProjectSection({
+ 				onOpenSettings={handleOpenSettings}
+ 				onRemoveFromSidebar={confirmRemoveFromSidebar}
+ 				onRename={startRename}
++					showSnoozed={project.showSnoozed}
++					showArchived={project.showArchived}
++					onToggleSnoozed={() =>
++						toggleProjectSectionFlag(project.id, "showSnoozed")
++					}
++					onToggleArchived={() =>
++						toggleProjectSectionFlag(project.id, "showArchived")
++					}
+ 			>
+ 				<DashboardSidebarProjectRow
+ 					projectName={project.name}
+@@ -131,6 +174,25 @@ export function DashboardSidebarProjectSection({
+ 							onRenameSection={renameSection}
+ 							onToggleSectionCollapse={toggleSectionCollapsed}
+ 						/>
++					{!project.isCollapsed &&
++							stateSections
++								.filter((section) => section.show)
++								.map((section) => (
++									<DashboardSidebarStateSection
++										key={section.variant}
++										variant={section.variant}
++										workspaces={section.workspaces}
++										collapsed={section.collapsed}
++										onToggleCollapsed={() =>
++											toggleProjectSectionFlag(project.id, section.collapsedFlag)
++										}
++										onHide={() =>
++											setProjectSectionFlag(project.id, section.showFlag, false)
++										}
++										onRestoreAll={section.onRestoreAll}
++										onWorkspaceHover={onWorkspaceHover}
++									/>
++								))}
+ 					</motion.div>
+ 				)}
+ 			</AnimatePresence>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarProjectContextMenu/DashboardSidebarProjectContextMenu.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarProjectContextMenu/DashboardSidebarProjectContextMenu.tsx
+index c7f93cd..f79d755 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarProjectContextMenu/DashboardSidebarProjectContextMenu.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarProjectContextMenu/DashboardSidebarProjectContextMenu.tsx
+@@ -6,6 +6,8 @@ import {
+ 	ContextMenuTrigger,
+ } from "@superset/ui/context-menu";
+ import {
++	LuArchive,
++	LuClock,
+ 	LuFolderOpen,
+ 	LuFolderPlus,
+ 	LuPencil,
+@@ -14,20 +16,30 @@ import {
+ } from "react-icons/lu";
+ 
+ interface DashboardSidebarProjectContextMenuProps {
++	/** Snooze/Archive reveal toggles. Omitted in the collapsed sidebar — it
++	 * renders no sections — so the menu items are hidden there too. */
++	showSnoozed?: boolean;
++	showArchived?: boolean;
+ 	onCreateSection: () => void;
+ 	onOpenInFinder: () => void;
+ 	onOpenSettings: () => void;
+ 	onRemoveFromSidebar: () => void;
+ 	onRename: () => void;
++	onToggleSnoozed?: () => void;
++	onToggleArchived?: () => void;
+ 	children: React.ReactNode;
+ }
+ 
+ export function DashboardSidebarProjectContextMenu({
++	showSnoozed,
++	showArchived,
+ 	onCreateSection,
+ 	onOpenInFinder,
+ 	onOpenSettings,
+ 	onRemoveFromSidebar,
+ 	onRename,
++	onToggleSnoozed,
++	onToggleArchived,
+ 	children,
+ }: DashboardSidebarProjectContextMenuProps) {
+ 	return (
+@@ -51,6 +63,19 @@ export function DashboardSidebarProjectContextMenu({
+ 					<LuFolderPlus className="size-4 mr-2" />
+ 					New group
+ 				</ContextMenuItem>
++				{onToggleSnoozed && onToggleArchived && (
++					<>
++						<ContextMenuSeparator />
++						<ContextMenuItem onSelect={onToggleSnoozed}>
++							<LuClock className="size-4 mr-2" />
++							{showSnoozed ? "Hide snoozed" : "Show snoozed"}
++						</ContextMenuItem>
++						<ContextMenuItem onSelect={onToggleArchived}>
++							<LuArchive className="size-4 mr-2" />
++							{showArchived ? "Hide archived" : "Show archived"}
++						</ContextMenuItem>
++					</>
++				)}
+ 				<ContextMenuSeparator />
+ 				<ContextMenuItem
+ 					onSelect={onRemoveFromSidebar}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx
+new file mode 100644
+index 0000000..c8b93f2
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx
+@@ -0,0 +1,99 @@
++import {
++	Collapsible,
++	CollapsibleContent,
++	CollapsibleTrigger,
++} from "@superset/ui/collapsible";
++import {
++	ContextMenu,
++	ContextMenuContent,
++	ContextMenuItem,
++	ContextMenuSeparator,
++	ContextMenuTrigger,
++} from "@superset/ui/context-menu";
++import { cn } from "@superset/ui/utils";
++import { LuChevronRight } from "react-icons/lu";
++import type { DashboardSidebarWorkspace } from "../../../../types";
++import { DashboardSidebarWorkspaceItem } from "../../../DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem";
++
++interface DashboardSidebarStateSectionProps {
++	variant: "snoozed" | "archived";
++	workspaces: DashboardSidebarWorkspace[];
++	collapsed: boolean;
++	onToggleCollapsed: () => void;
++	onHide: () => void;
++	onRestoreAll: () => void;
++	onWorkspaceHover: (workspaceId: string) => void | Promise<void>;
++}
++
++const COPY = {
++	snoozed: { title: "Snoozed", hide: "Hide snoozed", restoreAll: "Unsnooze all" },
++	archived: {
++		title: "Archived",
++		hide: "Hide archived",
++		restoreAll: "Unarchive all",
++	},
++} as const;
++
++/**
++ * A reveal-able, collapsible section listing a project's snoozed or archived
++ * threads. The whole section (header included) only renders when the project
++ * has it revealed; right-clicking the header hides it again or bulk-restores.
++ */
++export function DashboardSidebarStateSection({
++	variant,
++	workspaces,
++	collapsed,
++	onToggleCollapsed,
++	onHide,
++	onRestoreAll,
++	onWorkspaceHover,
++}: DashboardSidebarStateSectionProps) {
++	const copy = COPY[variant];
++
++	return (
++		<Collapsible open={!collapsed} onOpenChange={() => onToggleCollapsed()}>
++			<ContextMenu>
++				<ContextMenuTrigger asChild>
++					<div className="flex items-center">
++						<CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pl-5 pr-2 text-left text-xs text-muted-foreground hover:bg-muted/50">
++							<LuChevronRight
++								className={cn(
++									"size-3 shrink-0 transition-transform",
++									!collapsed && "rotate-90",
++								)}
++							/>
++							<span className="truncate font-medium">{copy.title}</span>
++							<span className="shrink-0 text-[10px] tabular-nums opacity-70">
++								({workspaces.length})
++							</span>
++						</CollapsibleTrigger>
++					</div>
++				</ContextMenuTrigger>
++				<ContextMenuContent
++					onCloseAutoFocus={(event) => event.preventDefault()}
++				>
++					{workspaces.length > 0 && (
++						<>
++							<ContextMenuItem onSelect={onRestoreAll}>
++								{copy.restoreAll}
++							</ContextMenuItem>
++							<ContextMenuSeparator />
++						</>
++					)}
++					<ContextMenuItem onSelect={onHide}>{copy.hide}</ContextMenuItem>
++				</ContextMenuContent>
++			</ContextMenu>
++			<CollapsibleContent>
++				{workspaces.map((workspace) => (
++					<DashboardSidebarWorkspaceItem
++						key={workspace.id}
++						workspace={workspace}
++						sectionState={variant}
++						isInSection
++						onHoverCardOpen={() => onWorkspaceHover(workspace.id)}
++					/>
++				))}
++			</CollapsibleContent>
++		</Collapsible>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/index.ts
+new file mode 100644
+index 0000000..a68a522
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/index.ts
+@@ -0,0 +1 @@
++export { DashboardSidebarStateSection } from "./DashboardSidebarStateSection";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
+index 4f29b4b..a85ede4 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
+@@ -22,6 +22,7 @@ interface DashboardSidebarWorkspaceItemProps {
+ 	shortcutLabel?: string;
+ 	isCollapsed?: boolean;
+ 	isInSection?: boolean;
++	sectionState?: "snoozed" | "archived";
+ }
+ 
+ export function DashboardSidebarWorkspaceItem({
+@@ -30,6 +31,7 @@ export function DashboardSidebarWorkspaceItem({
+ 	shortcutLabel,
+ 	isCollapsed = false,
+ 	isInSection = false,
++	sectionState,
+ }: DashboardSidebarWorkspaceItemProps) {
+ 	const {
+ 		id,
+@@ -43,7 +45,9 @@ export function DashboardSidebarWorkspaceItem({
+ 		pullRequest,
+ 	} = workspace;
+ 	const isMainWorkspace = workspace.type === "main";
+-	const diffStats = useDiffStats(id);
++	// Snoozed/archived rows live in a collapsible section — don't fire their
++	// per-row git status RPC + subscription (A6: avoid a reveal-time RPC storm).
++	const diffStats = useDiffStats(id, !sectionState);
+ 	const workspaceStatus = useV2WorkspaceNotificationStatus(id);
+ 	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
+ 	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
+@@ -55,9 +59,13 @@ export function DashboardSidebarWorkspaceItem({
+ 		handleCopyBranchName,
+ 		handleCreateSection,
+ 		handleDeleted,
++		handleArchive,
+ 		handleOpenInFinder,
+ 		handleRemoveFromSidebar,
++		handleSnooze,
+ 		handleToggleUnread,
++		handleUnarchive,
++		handleUnsnooze,
+ 		isActive,
+ 		isDeleteDialogOpen,
+ 		isUnread,
+@@ -164,6 +172,7 @@ export function DashboardSidebarWorkspaceItem({
+ 							isLocalWorkspace={hostType === "local-device"}
+ 							isNonGit={isNonGit}
+ 							isPinned={isMainWorkspace && hostType === "local-device"}
++							isMainWorkspace={isMainWorkspace}
+ 							onCreateSection={handleCreateSection}
+ 							showDeleteHotkey={isActive}
+ 							onMoveToSection={(targetSectionId) =>
+@@ -178,6 +187,11 @@ export function DashboardSidebarWorkspaceItem({
+ 								isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
+ 							}
+ 							onToggleUnread={handleToggleUnread}
++							sectionState={sectionState}
++							onSnooze={handleSnooze}
++							onUnsnooze={handleUnsnooze}
++							onArchive={handleArchive}
++							onUnarchive={handleUnarchive}
+ 						>
+ 							{content}
+ 						</DashboardSidebarWorkspaceContextMenu>
+@@ -230,6 +244,10 @@ export function DashboardSidebarWorkspaceItem({
+ 				onDoubleClick={isPending ? undefined : startRename}
+ 				onRemoveFromSidebarClick={handleRemoveFromSidebar}
+ 				onCloseWorkspaceClick={() => setIsDeleteDialogOpen(true)}
++				sectionState={sectionState}
++				onRestoreClick={
++					sectionState === "snoozed" ? handleUnsnooze : handleUnarchive
++				}
+ 				onRenameValueChange={setRenameValue}
+ 				onSubmitRename={submitRename}
+ 				onCancelRename={cancelRename}
+@@ -254,6 +272,7 @@ export function DashboardSidebarWorkspaceItem({
+ 						isLocalWorkspace={hostType === "local-device"}
+ 						isNonGit={isNonGit}
+ 						isPinned={isMainWorkspace && hostType === "local-device"}
++						isMainWorkspace={isMainWorkspace}
+ 						onOpenInFinder={handleOpenInFinder}
+ 						showDeleteHotkey={isActive}
+ 						onCopyPath={handleCopyPath}
+@@ -264,6 +283,11 @@ export function DashboardSidebarWorkspaceItem({
+ 							isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
+ 						}
+ 						onToggleUnread={handleToggleUnread}
++						sectionState={sectionState}
++						onSnooze={handleSnooze}
++						onUnsnooze={handleUnsnooze}
++						onArchive={handleArchive}
++						onUnarchive={handleUnarchive}
+ 					>
+ 						{expandedContent}
+ 					</DashboardSidebarWorkspaceContextMenu>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
+index b419737..6a46059 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
+@@ -7,6 +7,7 @@ import {
+ 	useRef,
+ } from "react";
+ import { HiMiniMinus, HiMiniXMark } from "react-icons/hi2";
++import { LuUndo2 } from "react-icons/lu";
+ import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
+ import { HotkeyLabel } from "renderer/hotkeys";
+ import { electronTrpc } from "renderer/lib/electron-trpc";
+@@ -46,6 +47,8 @@ interface DashboardSidebarExpandedWorkspaceRowProps
+ 	terminalStatuses?: ActivePaneStatus[];
+ 	isInSection?: boolean;
+ 	isNonGit?: boolean;
++	sectionState?: "snoozed" | "archived";
++	onRestoreClick?: () => void;
+ 	onClick?: () => void;
+ 	onDoubleClick?: () => void;
+ 	onCloseWorkspaceClick: () => void;
+@@ -71,6 +74,8 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 			terminalStatuses = [],
+ 			isInSection = false,
+ 			isNonGit = false,
++			sectionState,
++			onRestoreClick,
+ 			onClick,
+ 			onDoubleClick,
+ 			onCloseWorkspaceClick,
+@@ -93,6 +98,9 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 			pendingTransaction,
+ 		} = workspace;
+ 		const isPending = pendingTransaction?.type === "insert";
++		// Precomputed in the data hook from the live tick (so it counts down).
++		const snoozeRemaining =
++			sectionState === "snoozed" ? (workspace.snoozeRemainingLabel ?? "") : "";
+ 		const showsStandaloneActiveStripe = accentColor == null;
+ 		const localRef = useRef<HTMLDivElement>(null);
+ 		const openUrl = electronTrpc.external.openUrl.useMutation();
+@@ -144,6 +152,13 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 					"group",
+ 					"py-2",
+ 					isActive && "bg-muted",
++					// Subtle one-shot highlight when a snoozed thread auto-returns;
++					// the flag self-clears after a few seconds and the ring fades out.
++					// GREEN (snooze itself is amber) so "returned" reads differently.
++					"transition-shadow duration-1000",
++					workspace.justReturned && "ring-1 ring-inset ring-green-500/50",
++					// Archived rows are visually dimmed vs active/snoozed.
++					sectionState === "archived" && "opacity-60",
+ 					className,
+ 				)}
+ 				{...props}
+@@ -260,6 +275,11 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 							>
+ 								{name || branch}
+ 							</span>
++							{snoozeRemaining && (
++								<span className="ml-auto shrink-0 text-[10px] tabular-nums text-amber-500/80">
++									{snoozeRemaining}
++								</span>
++							)}
+ 							{terminalStatuses.length > 0 && (
+ 								<div className="flex shrink-0 items-center gap-1">
+ 									{terminalStatuses.map((s, i) => (
+@@ -293,7 +313,41 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 										{shortcutLabel}
+ 									</span>
+ 								)}
+-								{isMainWorkspace ? (
++								{sectionState ? (
++									<Tooltip delayDuration={300}>
++										<TooltipTrigger asChild>
++											<button
++												type="button"
++												onClick={(event) => {
++													event.stopPropagation();
++													onRestoreClick?.();
++												}}
++												onKeyDown={(event) => {
++													if (
++														event.key === "Enter" ||
++														event.key === " " ||
++														event.key === "Spacebar"
++													) {
++														event.stopPropagation();
++													}
++												}}
++												className="flex items-center justify-center text-muted-foreground hover:text-foreground"
++												aria-label={
++													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
++												}
++											>
++												<LuUndo2 className="size-3.5" />
++											</button>
++										</TooltipTrigger>
++										<TooltipContent side="top" sideOffset={4}>
++											<HotkeyLabel
++												label={
++													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
++												}
++											/>
++										</TooltipContent>
++									</Tooltip>
++								) : isMainWorkspace ? (
+ 									<Tooltip delayDuration={300}>
+ 										<TooltipTrigger asChild>
+ 											<button
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
+index b30e769..7dff0e7 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
+@@ -11,9 +11,13 @@ import {
+ } from "@superset/ui/context-menu";
+ import { eq } from "@tanstack/db";
+ import { useLiveQuery } from "@tanstack/react-db";
++import { useState } from "react";
+ import {
++	LuArchive,
++	LuArchiveRestore,
+ 	LuArrowRightLeft,
+ 	LuArrowUp,
++	LuClock,
+ 	LuCopy,
+ 	LuEye,
+ 	LuEyeOff,
+@@ -22,20 +26,34 @@ import {
+ 	LuGitBranch,
+ 	LuPencil,
+ 	LuTrash2,
++	LuUndo2,
+ 	LuX,
+ } from "react-icons/lu";
+ import { useHotkeyDisplay } from "renderer/hotkeys";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import {
++	SNOOZE_PRESET_OPTIONS,
++	type SnoozeDuration,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ import { useDashboardSidebarHover } from "../../../../providers/DashboardSidebarHoverProvider";
+ 
++/** Which reveal-able section a workspace row is rendered inside, if any. */
++export type WorkspaceSectionState = "snoozed" | "archived";
++
+ interface DashboardSidebarWorkspaceContextMenuProps {
+ 	projectId: string;
+ 	isInSection?: boolean;
+ 	isLocalWorkspace: boolean;
+ 	isNonGit?: boolean;
+ 	isPinned?: boolean;
++	/** True for the project's main workspace on ANY host (local or remote). Main
++	 * workspaces cannot be snoozed/archived — only removed from the sidebar. */
++	isMainWorkspace?: boolean;
+ 	isUnread: boolean;
+ 	showDeleteHotkey?: boolean;
++	/** Set when the row lives in the Snoozed / Archived section — swaps the
++	 * snooze/archive actions for the matching restore actions. */
++	sectionState?: WorkspaceSectionState;
+ 	onCreateSection: () => void;
+ 	onMoveToSection: (sectionId: string | null) => void;
+ 	onOpenInFinder: () => void;
+@@ -45,17 +63,81 @@ interface DashboardSidebarWorkspaceContextMenuProps {
+ 	onRename: () => void;
+ 	onDelete?: () => void;
+ 	onToggleUnread: () => void;
++	onSnooze: (duration: SnoozeDuration) => void;
++	onUnsnooze: () => void;
++	onArchive: () => void;
++	onUnarchive: () => void;
+ 	children: React.ReactNode;
+ }
+ 
++/** Snooze duration picker: the presets plus an inline "N hours" field. */
++function SnoozeSubmenu({
++	label,
++	onSnooze,
++}: {
++	label: string;
++	onSnooze: (duration: SnoozeDuration) => void;
++}) {
++	const [hours, setHours] = useState("");
++	const submitHours = () => {
++		// Round fractional input to whole hours; reject non-positive / non-finite.
++		const parsed = Math.round(Number(hours));
++		if (Number.isFinite(parsed) && parsed > 0) {
++			onSnooze({ kind: "hours", hours: parsed });
++		}
++	};
++
++	return (
++		<ContextMenuSub>
++			<ContextMenuSubTrigger>
++				<LuClock className="size-4 mr-2" />
++				{label}
++			</ContextMenuSubTrigger>
++			<ContextMenuSubContent>
++				{SNOOZE_PRESET_OPTIONS.map((option) => (
++					<ContextMenuItem
++						key={option.id}
++						onSelect={() => onSnooze(option.duration)}
++					>
++						{option.label}
++					</ContextMenuItem>
++				))}
++				<ContextMenuSeparator />
++				<div className="flex items-center gap-1.5 px-2 py-1">
++					<input
++						type="number"
++						min={1}
++						value={hours}
++						placeholder="N"
++						aria-label="Custom snooze hours"
++						className="h-6 w-12 rounded border border-input bg-transparent px-1 text-xs outline-none"
++						onClick={(event) => event.stopPropagation()}
++						onChange={(event) => setHours(event.target.value)}
++						onKeyDown={(event) => {
++							event.stopPropagation();
++							if (event.key === "Enter") {
++								event.preventDefault();
++								submitHours();
++							}
++						}}
++					/>
++					<span className="text-xs text-muted-foreground">hours</span>
++				</div>
++			</ContextMenuSubContent>
++		</ContextMenuSub>
++	);
++}
++
+ export function DashboardSidebarWorkspaceContextMenu({
+ 	projectId,
+ 	isInSection,
+ 	isLocalWorkspace,
+ 	isNonGit = false,
+ 	isPinned = false,
++	isMainWorkspace = false,
+ 	isUnread,
+ 	showDeleteHotkey = false,
++	sectionState,
+ 	onCreateSection,
+ 	onMoveToSection,
+ 	onOpenInFinder,
+@@ -65,6 +147,10 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 	onRename,
+ 	onDelete,
+ 	onToggleUnread,
++	onSnooze,
++	onUnsnooze,
++	onArchive,
++	onUnarchive,
+ 	children,
+ }: DashboardSidebarWorkspaceContextMenuProps) {
+ 	const collections = useCollections();
+@@ -72,6 +158,7 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 	const deleteHotkeyText = useHotkeyDisplay("CLOSE_WORKSPACE").text;
+ 	const showDeleteShortcut =
+ 		showDeleteHotkey && deleteHotkeyText !== "Unassigned";
++	const isSectioned = sectionState !== undefined;
+ 	const { data: sections = [] } = useLiveQuery(
+ 		(q) =>
+ 			q
+@@ -120,21 +207,25 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 						</ContextMenuItem>
+ 					</>
+ 				)}
+-				<ContextMenuSeparator />
+-				<ContextMenuItem onSelect={onToggleUnread}>
+-					{isUnread ? (
+-						<>
+-							<LuEye className="size-4 mr-2" />
+-							Mark as Read
+-						</>
+-					) : (
+-						<>
+-							<LuEyeOff className="size-4 mr-2" />
+-							Mark as Unread
+-						</>
+-					)}
+-				</ContextMenuItem>
+-				{!isPinned && (
++				{!isSectioned && (
++					<>
++						<ContextMenuSeparator />
++						<ContextMenuItem onSelect={onToggleUnread}>
++							{isUnread ? (
++								<>
++									<LuEye className="size-4 mr-2" />
++									Mark as Read
++								</>
++							) : (
++								<>
++									<LuEyeOff className="size-4 mr-2" />
++									Mark as Unread
++								</>
++							)}
++						</ContextMenuItem>
++					</>
++				)}
++				{!isPinned && !isSectioned && (
+ 					<>
+ 						<ContextMenuSeparator />
+ 						<ContextMenuItem onSelect={onCreateSection}>
+@@ -175,24 +266,57 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 					</>
+ 				)}
+ 				<ContextMenuSeparator />
+-				<ContextMenuItem
+-					onSelect={onRemoveFromSidebar}
+-					className="text-destructive focus:text-destructive"
+-				>
+-					<LuX className="size-4 mr-2 text-destructive" />
+-					Remove from Sidebar
+-				</ContextMenuItem>
+-				{onDelete ? (
++				{sectionState === "snoozed" ? (
++					<>
++						<ContextMenuItem onSelect={onUnsnooze}>
++							<LuUndo2 className="size-4 mr-2" />
++							Unsnooze now
++						</ContextMenuItem>
++						<SnoozeSubmenu label="Re-snooze" onSnooze={onSnooze} />
++						<ContextMenuItem onSelect={onArchive}>
++							<LuArchive className="size-4 mr-2" />
++							Archive
++						</ContextMenuItem>
++					</>
++				) : sectionState === "archived" ? (
++					<>
++						<ContextMenuItem onSelect={onUnarchive}>
++							<LuArchiveRestore className="size-4 mr-2" />
++							Unarchive
++						</ContextMenuItem>
++						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
++					</>
++				) : isPinned || isMainWorkspace ? (
+ 					<ContextMenuItem
+-						onSelect={onDelete}
++						onSelect={onRemoveFromSidebar}
+ 						className="text-destructive focus:text-destructive"
+ 					>
+-						<LuTrash2 className="size-4 mr-2 text-destructive" />
+-						Delete
+-						{showDeleteShortcut && (
+-							<ContextMenuShortcut>{deleteHotkeyText}</ContextMenuShortcut>
+-						)}
++						<LuX className="size-4 mr-2 text-destructive" />
++						Remove from Sidebar
+ 					</ContextMenuItem>
++				) : (
++					<>
++						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
++						<ContextMenuItem onSelect={onArchive}>
++							<LuArchive className="size-4 mr-2" />
++							Archive
++						</ContextMenuItem>
++					</>
++				)}
++				{onDelete ? (
++					<>
++						<ContextMenuSeparator />
++						<ContextMenuItem
++							onSelect={onDelete}
++							className="text-destructive focus:text-destructive"
++						>
++							<LuTrash2 className="size-4 mr-2 text-destructive" />
++							Delete
++							{showDeleteShortcut && (
++								<ContextMenuShortcut>{deleteHotkeyText}</ContextMenuShortcut>
++							)}
++						</ContextMenuItem>
++					</>
+ 				) : null}
+ 			</ContextMenuContent>
+ 		</ContextMenu>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts
+index 1cfe574..f268513 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts
+@@ -8,6 +8,10 @@ import { electronTrpcClient } from "renderer/lib/trpc-client";
+ import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
+ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+ import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
++import {
++	computeSnoozeUntil,
++	type SnoozeDuration,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+ import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
+ import {
+@@ -42,8 +46,15 @@ export function useDashboardSidebarWorkspaceItemActions({
+ 	);
+ 	const setManualUnread = useV2NotificationStore((s) => s.setManualUnread);
+ 	const isUnread = useV2WorkspaceIsUnread(workspaceId);
+-	const { createSection, moveWorkspaceToSection, removeWorkspaceFromSidebar } =
+-		useDashboardSidebarState();
++	const {
++		archiveWorkspace,
++		createSection,
++		moveWorkspaceToSection,
++		removeWorkspaceFromSidebar,
++		snoozeWorkspace,
++		unarchiveWorkspace,
++		unsnoozeWorkspace,
++	} = useDashboardSidebarState();
+ 
+ 	const [isRenaming, setIsRenaming] = useState(false);
+ 	const [renameValue, setRenameValue] = useState(workspaceName);
+@@ -98,6 +109,22 @@ export function useDashboardSidebarWorkspaceItemActions({
+ 		});
+ 	};
+ 
++	const handleSnooze = (duration: SnoozeDuration) => {
++		snoozeWorkspace(workspaceId, computeSnoozeUntil(duration));
++	};
++
++	const handleUnsnooze = () => {
++		unsnoozeWorkspace(workspaceId);
++	};
++
++	const handleArchive = () => {
++		archiveWorkspace(workspaceId);
++	};
++
++	const handleUnarchive = () => {
++		unarchiveWorkspace(workspaceId);
++	};
++
+ 	const handleCreateSection = () => {
+ 		const sectionId = createSection(projectId);
+ 		moveWorkspaceToSection(workspaceId, projectId, sectionId);
+@@ -176,9 +203,13 @@ export function useDashboardSidebarWorkspaceItemActions({
+ 		handleCopyBranchName,
+ 		handleCreateSection,
+ 		handleDeleted,
++		handleArchive,
+ 		handleOpenInFinder,
+ 		handleRemoveFromSidebar,
++		handleSnooze,
+ 		handleToggleUnread,
++		handleUnarchive,
++		handleUnsnooze,
+ 		isActive,
+ 		isDeleteDialogOpen,
+ 		isRenaming,
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
+index 646b1de..bc5f30d 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
+@@ -1,12 +1,16 @@
+ import { eq } from "@tanstack/db";
+ import { useLiveQuery } from "@tanstack/react-db";
+ import { useQueries, useQueryClient } from "@tanstack/react-query";
+-import { useCallback, useEffect, useMemo, useRef } from "react";
++import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+ import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+-import { getVisibleSidebarWorkspaces } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import {
++	APP_LAUNCH_ID,
++	formatSnoozeRemaining,
++	getWorkspaceSidebarBucket,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+ import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
+ import type {
+@@ -127,7 +131,8 @@ export function useDashboardSidebarData() {
+ 	const collections = useCollections();
+ 	const { machineId, activeHostUrl } = useLocalHostService();
+ 	const relayUrl = useRelayUrl();
+-	const { toggleProjectCollapsed } = useDashboardSidebarState();
++	const { toggleProjectCollapsed, unsnoozeWorkspace } =
++		useDashboardSidebarState();
+ 	const queryClient = useQueryClient();
+ 	const workspaceTransactionsById = useWorkspaceTransactionsStore(
+ 		(state) => state.byWorkspaceId,
+@@ -175,6 +180,10 @@ export function useDashboardSidebarData() {
+ 					createdAt: projects.createdAt,
+ 					updatedAt: projects.updatedAt,
+ 					isCollapsed: sidebarProjects.isCollapsed,
++						showSnoozed: sidebarProjects.showSnoozed,
++						showArchived: sidebarProjects.showArchived,
++						snoozedCollapsed: sidebarProjects.snoozedCollapsed,
++						archivedCollapsed: sidebarProjects.archivedCollapsed,
+ 				})),
+ 		[collections],
+ 	);
+@@ -185,6 +194,12 @@ export function useDashboardSidebarData() {
+ 				...project,
+ 				githubOwner: project.githubOwner ?? null,
+ 				githubRepoName: project.githubRepoName ?? null,
++				// Heal legacy project rows persisted before the reveal flags existed
++				// (they read back undefined despite the boolean type).
++				showSnoozed: project.showSnoozed ?? false,
++				showArchived: project.showArchived ?? false,
++				snoozedCollapsed: project.snoozedCollapsed ?? false,
++				archivedCollapsed: project.archivedCollapsed ?? false,
+ 			})),
+ 		[rawSidebarProjects],
+ 	);
+@@ -233,6 +248,9 @@ export function useDashboardSidebarData() {
+ 					tabOrder: sidebarWorkspaces.sidebarState.tabOrder,
+ 					sectionId: sidebarWorkspaces.sidebarState.sectionId,
+ 					isHidden: sidebarWorkspaces.sidebarState.isHidden,
++						snoozeUntil: sidebarWorkspaces.sidebarState.snoozeUntil,
++						snoozeLaunchId: sidebarWorkspaces.sidebarState.snoozeLaunchId,
++						archivedAt: sidebarWorkspaces.sidebarState.archivedAt,
+ 				})),
+ 		[collections],
+ 	);
+@@ -246,10 +264,149 @@ export function useDashboardSidebarData() {
+ 		[hostsByMachineId, rawSidebarWorkspaces, workspaceTransactionsById],
+ 	);
+ 
+-	const sidebarWorkspaces = useMemo(
+-		() => getVisibleSidebarWorkspaces(rawSidebarWorkspacesWithHostStatus),
+-		[rawSidebarWorkspacesWithHostStatus],
++	// Re-evaluate snooze expiry on a coarse timer so a snoozed thread pops back
++	// into the active lane shortly after its deadline. The ticker only runs while
++	// at least one row carries a snooze, so an idle sidebar isn't churning.
++	const [nowMs, setNowMs] = useState(() => Date.now());
++	// Gate the ticker on a TIMED snooze only. An "until next launch" snooze has no
++	// wall-clock deadline (it clears on relaunch via APP_LAUNCH_ID), so counting it
++	// here would keep the interval running forever doing nothing.
++	const hasPendingSnooze = useMemo(
++		() => rawSidebarWorkspaces.some((workspace) => workspace.snoozeUntil != null),
++		[rawSidebarWorkspaces],
+ 	);
++	useEffect(() => {
++		if (!hasPendingSnooze) return;
++		const interval = setInterval(() => setNowMs(Date.now()), 60_000);
++		return () => clearInterval(interval);
++	}, [hasPendingSnooze]);
++
++	// Ids whose snooze expired by TIMER (not via manual "Unsnooze now") — only
++	// these flash the just-returned highlight when they re-enter the active lane.
++	const autoReturnedIdsRef = useRef<Set<string>>(new Set());
++
++	// Lazily clear snooze fields once they expire (a past deadline, or an
++	// "until next launch" snooze from a previous launch) so stale markers don't
++	// accumulate and a returned thread carries no leftover snooze state.
++	useEffect(() => {
++		const expiredIds: string[] = [];
++		for (const workspace of rawSidebarWorkspaces) {
++			const staleLaunch =
++				workspace.snoozeLaunchId != null &&
++				workspace.snoozeLaunchId !== APP_LAUNCH_ID;
++			const expiredTimer =
++				typeof workspace.snoozeUntil === "number" &&
++				workspace.snoozeUntil <= nowMs;
++			if (staleLaunch || expiredTimer) {
++				expiredIds.push(workspace.id);
++				// Timer expiry is an auto-return (flashes); a stale-launch return on
++				// relaunch is not, to avoid a burst of highlights at startup.
++				if (expiredTimer) autoReturnedIdsRef.current.add(workspace.id);
++			}
++		}
++		if (expiredIds.length === 0) return;
++		for (const id of expiredIds) unsnoozeWorkspace(id);
++	}, [nowMs, rawSidebarWorkspaces, unsnoozeWorkspace]);
++
++	const {
++		sidebarWorkspaces,
++		snoozedSidebarWorkspaces,
++		archivedSidebarWorkspaces,
++	} = useMemo(() => {
++		type SidebarWorkspaceRow =
++			(typeof rawSidebarWorkspacesWithHostStatus)[number];
++		const active: SidebarWorkspaceRow[] = [];
++		const snoozed: SidebarWorkspaceRow[] = [];
++		const archived: SidebarWorkspaceRow[] = [];
++		for (const workspace of rawSidebarWorkspacesWithHostStatus) {
++			// Single source of truth: getWorkspaceSidebarBucket reads the row's
++			// type, so a removed non-main thread surfaces under Archived while a
++			// removed main workspace stays hidden — matching ensureSidebarWorkspaceRecord.
++			switch (getWorkspaceSidebarBucket(workspace, nowMs)) {
++				case "archived":
++					archived.push(workspace);
++					break;
++				case "snoozed":
++					snoozed.push(workspace);
++					break;
++				case "hidden":
++					// Removed main/pinned workspace (isHidden, not archived): excluded
++					// from the active lane entirely — not shown anywhere, not resurrected.
++					break;
++				default:
++					active.push(workspace);
++			}
++		}
++		return {
++			sidebarWorkspaces: active,
++			snoozedSidebarWorkspaces: snoozed,
++			archivedSidebarWorkspaces: archived,
++		};
++	}, [rawSidebarWorkspacesWithHostStatus, nowMs]);
++
++	// Flash a subtle one-shot highlight on threads that just AUTO-returned from
++	// snooze (timer expiry flipped them snoozed -> active). Manual "Unsnooze now"
++	// is excluded — only ids the expiry ticker marked in autoReturnedIdsRef flash.
++	// Removal timers are owned by a ref-keyed map (not the effect's cleanup) so an
++	// unrelated re-render can't cancel a fade and strand the highlight.
++	const previousSnoozedIdsRef = useRef<Set<string>>(new Set());
++	const [justReturnedIds, setJustReturnedIds] = useState<ReadonlySet<string>>(
++		() => new Set(),
++	);
++	const justReturnedTimersRef = useRef<
++		Map<string, ReturnType<typeof setTimeout>>
++	>(new Map());
++	useEffect(() => {
++		const currentSnoozed = new Set(
++			snoozedSidebarWorkspaces.map((workspace) => workspace.id),
++		);
++		const activeIds = new Set(
++			sidebarWorkspaces.map((workspace) => workspace.id),
++		);
++		const returned: string[] = [];
++		for (const id of previousSnoozedIdsRef.current) {
++			if (
++				!currentSnoozed.has(id) &&
++				activeIds.has(id) &&
++				autoReturnedIdsRef.current.has(id)
++			) {
++				returned.push(id);
++				autoReturnedIdsRef.current.delete(id);
++			}
++		}
++		previousSnoozedIdsRef.current = currentSnoozed;
++		if (returned.length === 0) return;
++		setJustReturnedIds((previous) => {
++			const next = new Set(previous);
++			for (const id of returned) next.add(id);
++			return next;
++		});
++		const timers = justReturnedTimersRef.current;
++		for (const id of returned) {
++			const existing = timers.get(id);
++			if (existing) clearTimeout(existing);
++			timers.set(
++				id,
++				setTimeout(() => {
++					timers.delete(id);
++					setJustReturnedIds((previous) => {
++						if (!previous.has(id)) return previous;
++						const next = new Set(previous);
++						next.delete(id);
++						return next;
++					});
++				}, 3_000),
++			);
++		}
++	}, [snoozedSidebarWorkspaces, sidebarWorkspaces]);
++	// Clear any pending highlight timers only on unmount.
++	useEffect(() => {
++		const timers = justReturnedTimersRef.current;
++		return () => {
++			for (const timeout of timers.values()) clearTimeout(timeout);
++			timers.clear();
++		};
++	}, []);
+ 
+ 	const localStateWorkspaceIds = useMemo(
+ 		() => new Set(rawSidebarWorkspaces.map((workspace) => workspace.id)),
+@@ -364,13 +521,30 @@ export function useDashboardSidebarData() {
+ 		return rows;
+ 	}, [pullRequestQueries]);
+ 
++	// Keep the latest hover-target inputs in a ref so refreshWorkspacePullRequest
++	// keeps a STABLE identity. Its inputs derive from the nowMs partition, so
++	// without this it would change every 60s tick and churn the onWorkspaceHover
++	// prop on every memoised row.
++	const pullRequestRefreshInputsRef = useRef({
++		visibleSidebarWorkspaces,
++		pullRequestQueryTargets,
++	});
++	pullRequestRefreshInputsRef.current = {
++		visibleSidebarWorkspaces,
++		pullRequestQueryTargets,
++	};
++
+ 	const refreshWorkspacePullRequest = useCallback(
+ 		async (workspaceId: string) => {
+-			const workspace = visibleSidebarWorkspaces.find(
++			const {
++				visibleSidebarWorkspaces: latestWorkspaces,
++				pullRequestQueryTargets: latestTargets,
++			} = pullRequestRefreshInputsRef.current;
++			const workspace = latestWorkspaces.find(
+ 				(candidate) => candidate.id === workspaceId,
+ 			);
+ 			if (!workspace) return;
+-			const target = pullRequestQueryTargets.find(
++			const target = latestTargets.find(
+ 				(candidate) => candidate.machineId === workspace.hostId,
+ 			);
+ 			if (!target) return;
+@@ -383,7 +557,7 @@ export function useDashboardSidebarData() {
+ 				queryKey: getDashboardSidebarPullRequestQueryKey(target),
+ 			});
+ 		},
+-		[pullRequestQueryTargets, queryClient, visibleSidebarWorkspaces],
++		[queryClient],
+ 	);
+ 
+ 	const pullRequestsByWorkspaceId =
+@@ -405,6 +579,8 @@ export function useDashboardSidebarData() {
+ 			projectsById.set(project.id, {
+ 				...project,
+ 				children: [],
++				snoozedWorkspaces: [],
++				archivedWorkspaces: [],
+ 				sectionMap: new Map(),
+ 				childEntries: [],
+ 			});
+@@ -461,6 +637,7 @@ export function useDashboardSidebarData() {
+ 				updatedAt: workspace.updatedAt,
+ 				taskId: workspace.taskId,
+ 				pendingTransaction: workspace.pendingTransaction,
++				justReturned: justReturnedIds.has(workspace.id),
+ 			};
+ 
+ 			if (workspace.sectionId) {
+@@ -483,6 +660,62 @@ export function useDashboardSidebarData() {
+ 			});
+ 		}
+ 
++		const buildInactiveWorkspace = (
++			workspace: (typeof snoozedSidebarWorkspaces)[number],
++			project: DashboardSidebarProject,
++		): DashboardSidebarWorkspace => {
++			const hostType: DashboardSidebarWorkspace["hostType"] =
++				workspace.hostId === machineId ? "local-device" : "remote-device";
++			return {
++				id: workspace.id,
++				projectId: workspace.projectId,
++				hostId: workspace.hostId,
++				hostType,
++				type: workspace.type,
++				hostIsOnline:
++					hostType === "remote-device" ? workspace.hostIsOnline : null,
++				accentColor: null,
++				name: workspace.name,
++				branch: workspace.branch,
++				pullRequest: null,
++				repoUrl:
++					project.githubOwner && project.githubRepoName
++						? `https://github.com/${project.githubOwner}/${project.githubRepoName}`
++						: null,
++				branchExistsOnRemote:
++					project.githubOwner !== null && project.githubRepoName !== null,
++				previewUrl: null,
++				needsRebase: null,
++				behindCount: null,
++				createdAt: workspace.createdAt,
++				updatedAt: workspace.updatedAt,
++				taskId: workspace.taskId,
++				pendingTransaction: workspace.pendingTransaction,
++				snoozeUntil: workspace.snoozeUntil ?? null,
++				snoozeLaunchId: workspace.snoozeLaunchId ?? null,
++				archivedAt: workspace.archivedAt ?? null,
++				snoozeRemainingLabel: formatSnoozeRemaining(
++					workspace.snoozeUntil,
++					workspace.snoozeLaunchId,
++					nowMs,
++				),
++			};
++		};
++
++		for (const workspace of snoozedSidebarWorkspaces) {
++			const project = projectsById.get(workspace.projectId);
++			if (!project) continue;
++			project.snoozedWorkspaces.push(buildInactiveWorkspace(workspace, project));
++		}
++
++		for (const workspace of archivedSidebarWorkspaces) {
++			const project = projectsById.get(workspace.projectId);
++			if (!project) continue;
++			project.archivedWorkspaces.push(
++				buildInactiveWorkspace(workspace, project),
++			);
++		}
++
+ 		return sidebarProjects.flatMap((project) => {
+ 			const resolvedProject = projectsById.get(project.id);
+ 			if (!resolvedProject) return [];
+@@ -528,14 +761,26 @@ export function useDashboardSidebarData() {
+ 				}
+ 			}
+ 			sidebarProject.children = children;
++			sidebarProject.snoozedWorkspaces.sort(
++				(left, right) =>
++					(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
++					(right.snoozeUntil ?? Number.MAX_SAFE_INTEGER),
++			);
++			sidebarProject.archivedWorkspaces.sort(
++				(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
++			);
+ 			return [sidebarProject];
+ 		});
+ 	}, [
+ 		machineId,
++		nowMs,
++		justReturnedIds,
+ 		pullRequestsByWorkspaceId,
+ 		sidebarProjects,
+ 		sidebarSections,
+ 		visibleSidebarWorkspaces,
++		snoozedSidebarWorkspaces,
++		archivedSidebarWorkspaces,
+ 	]);
+ 	const groups = useStableDashboardSidebarProjects(computedGroups);
+ 
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
+index 7beceba..7e00685 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
+@@ -44,6 +44,17 @@ export interface DashboardSidebarWorkspace {
+ 	updatedAt: Date;
+ 	taskId: string | null;
+ 	pendingTransaction: WorkspaceTransactionSnapshot | null;
++	// Snooze / archive state — populated for items rendered inside the
++	// Snoozed / Archived sections (used for sort + the "time left" badge).
++	snoozeUntil?: number | null;
++	snoozeLaunchId?: string | null;
++	archivedAt?: number | null;
++	/** Precomputed "time left" label for a snoozed row (e.g. "3d"), derived in
++	 * the data hook from the live tick so the badge actually counts down. */
++	snoozeRemainingLabel?: string;
++	/** Set briefly on an active row that just auto-returned from snooze, to
++	 * drive a subtle one-shot "just returned" highlight. */
++	justReturned?: boolean;
+ }
+ 
+ export interface DashboardSidebarSection {
+@@ -79,4 +90,13 @@ export interface DashboardSidebarProject {
+ 	updatedAt: Date;
+ 	isCollapsed: boolean;
+ 	children: DashboardSidebarProjectChild[];
++	// Snoozed / archived threads live outside `children` (so they don't count
++	// toward the active badge or the DnD lane) and render in their own
++	// reveal-able sections below the active list.
++	snoozedWorkspaces: DashboardSidebarWorkspace[];
++	archivedWorkspaces: DashboardSidebarWorkspace[];
++	showSnoozed: boolean;
++	showArchived: boolean;
++	snoozedCollapsed: boolean;
++	archivedCollapsed: boolean;
+ }
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/getFlattenedV2WorkspaceIds/getFlattenedV2WorkspaceIds.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/getFlattenedV2WorkspaceIds/getFlattenedV2WorkspaceIds.ts
+index 6bb07fc..c24c7fa 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/getFlattenedV2WorkspaceIds/getFlattenedV2WorkspaceIds.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/getFlattenedV2WorkspaceIds/getFlattenedV2WorkspaceIds.ts
+@@ -1,5 +1,5 @@
+ import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
+-import { getVisibleSidebarWorkspaces } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import { getWorkspaceSidebarBucket } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ 
+ type TopLevelItem =
+ 	| { kind: "workspace"; tabOrder: number; workspaceId: string }
+@@ -18,7 +18,11 @@ export function getFlattenedV2WorkspaceIds(
+ 	const allWorkspaces = Array.from(
+ 		collections.v2WorkspaceLocalState.state.values(),
+ 	);
+-	const visibleWorkspaces = getVisibleSidebarWorkspaces(allWorkspaces);
++	// Only ACTIVE threads belong in the removal/navigation order — snoozed,
++	// archived, and hidden rows must never be navigated into.
++	const visibleWorkspaces = allWorkspaces.filter(
++		(workspace) => getWorkspaceSidebarBucket(workspace) === "active",
++	);
+ 
+ 	const result: string[] = [];
+ 
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesList/components/V2WorkspaceRow/V2WorkspaceRow.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesList/components/V2WorkspaceRow/V2WorkspaceRow.tsx
+index 75b7b93..32884fe 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesList/components/V2WorkspaceRow/V2WorkspaceRow.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacesList/components/V2WorkspaceRow/V2WorkspaceRow.tsx
+@@ -48,7 +48,8 @@ export function V2WorkspaceRow({
+ }: V2WorkspaceRowProps) {
+ 	const navigate = useNavigate();
+ 	const { gateFeature } = usePaywall();
+-	const { ensureWorkspaceInSidebar } = useDashboardSidebarState();
++	const { ensureWorkspaceInSidebar, unarchiveWorkspace } =
++		useDashboardSidebarState();
+ 	const isMainWorkspace = workspace.type === "main";
+ 
+ 	const HostIcon = hostIconFor(workspace.hostType);
+@@ -68,8 +69,15 @@ export function V2WorkspaceRow({
+ 	const handleAddToSidebar = useCallback(
+ 		(event: React.MouseEvent) => {
+ 			event.stopPropagation();
+-			const add = () =>
+-				ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
++			const add = () => {
++				// An archived thread is already in the sidebar's data — restore it
++				// instead of re-inserting (ensureWorkspaceInSidebar no-ops on it).
++				if (workspace.isArchived) {
++					unarchiveWorkspace(workspace.id);
++				} else {
++					ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
++				}
++			};
+ 			if (workspace.hostType === "local-device") {
+ 				add();
+ 				return;
+@@ -78,9 +86,11 @@ export function V2WorkspaceRow({
+ 		},
+ 		[
+ 			ensureWorkspaceInSidebar,
++			unarchiveWorkspace,
+ 			gateFeature,
+ 			workspace.hostType,
+ 			workspace.id,
++			workspace.isArchived,
+ 			workspace.projectId,
+ 		],
+ 	);
+@@ -198,13 +208,17 @@ export function V2WorkspaceRow({
+ 									size="icon"
+ 									variant="ghost"
+ 									onClick={handleAddToSidebar}
+-									aria-label="Add to sidebar"
++									aria-label={
++										workspace.isArchived ? "Unarchive" : "Add to sidebar"
++									}
+ 									className="size-7"
+ 								>
+ 									<LuPlus className="size-3.5" />
+ 								</Button>
+ 							</TooltipTrigger>
+-							<TooltipContent side="right">Add to sidebar</TooltipContent>
++							<TooltipContent side="right">
++								{workspace.isArchived ? "Unarchive" : "Add to sidebar"}
++							</TooltipContent>
+ 						</Tooltip>
+ 					)}
+ 				</div>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces/useAccessibleV2Workspaces.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces/useAccessibleV2Workspaces.ts
+index eb90457..74baa3d 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces/useAccessibleV2Workspaces.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces/useAccessibleV2Workspaces.ts
+@@ -12,7 +12,10 @@ import {
+ 	type V2WorkspacesProjectFilter,
+ } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/stores/v2WorkspacesFilterStore";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+-import { isSidebarWorkspaceVisible } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import {
++	getWorkspaceSidebarBucket,
++	isSidebarWorkspaceVisible,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+ import { MOCK_ORG_ID } from "shared/constants";
+ 
+@@ -63,6 +66,9 @@ export interface AccessibleV2Workspace {
+ 	hostIsOnline: boolean;
+ 	hostType: V2WorkspaceHostType;
+ 	isInSidebar: boolean;
++	/** Archived (lives in the project's Archived section). Its sidebar "+" action
++	 * must unarchive rather than re-add (ensureWorkspaceInSidebar no-ops on it). */
++	isArchived: boolean;
+ 	pr: V2WorkspacePrSummary | null;
+ }
+ 
+@@ -292,6 +298,10 @@ export function useAccessibleV2Workspaces(
+ 						sidebarProjectId: sidebarProject?.projectId ?? null,
+ 						sidebarWorkspaceId: sidebarState?.workspaceId ?? null,
+ 						sidebarIsHidden: sidebarState?.sidebarState.isHidden ?? false,
++						sidebarArchivedAt: sidebarState?.sidebarState.archivedAt ?? null,
++						sidebarSnoozeUntil: sidebarState?.sidebarState.snoozeUntil ?? null,
++						sidebarSnoozeLaunchId:
++							sidebarState?.sidebarState.snoozeLaunchId ?? null,
+ 					}),
+ 				),
+ 		[activeOrganizationId, collections, currentUserId],
+@@ -375,6 +385,18 @@ export function useAccessibleV2Workspaces(
+ 			const isInSidebar =
+ 				isSidebarWorkspaceVisible({ isHidden: row.sidebarIsHidden }) &&
+ 				(row.sidebarWorkspaceId != null || isAutoVisibleMain);
++			const isArchived =
++				row.sidebarWorkspaceId != null &&
++				getWorkspaceSidebarBucket(
++					{
++						isHidden: row.sidebarIsHidden,
++						archivedAt: row.sidebarArchivedAt,
++						snoozeUntil: row.sidebarSnoozeUntil,
++						snoozeLaunchId: row.sidebarSnoozeLaunchId,
++					},
++					Date.now(),
++					row.type,
++				) === "archived";
+ 			const pr = row.projectRepoId
+ 				? (prsByRepoBranch.get(`${row.projectRepoId}::${row.branch}`) ?? null)
+ 				: null;
+@@ -399,6 +421,7 @@ export function useAccessibleV2Workspaces(
+ 				hostIsOnline: row.hostIsOnline,
+ 				hostType,
+ 				isInSidebar,
++				isArchived,
+ 				pr,
+ 			});
+ 		}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts b/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts
+index 829d82a..4288061 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts
+@@ -9,12 +9,21 @@ import {
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+ import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
+ import {
++	APP_LAUNCH_ID,
+ 	getNextTabOrder,
+ 	getPrependTabOrder,
++	getWorkspaceSidebarBucket,
+ 	isSidebarWorkspaceVisible,
+ } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+ import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
+ 
++/** The four per-project reveal/collapse booleans on the sidebar project row. */
++export type ProjectSectionFlag =
++	| "showSnoozed"
++	| "showArchived"
++	| "snoozedCollapsed"
++	| "archivedCollapsed";
++
+ type ProjectTopLevelItem = {
+ 	type: "workspace" | "section";
+ 	id: string;
+@@ -132,14 +141,26 @@ function ensureSidebarProjectRecord(
+ function ensureSidebarWorkspaceRecord(
+ 	collections: Pick<
+ 		AppCollections,
+-		"v2SidebarSections" | "v2WorkspaceLocalState"
++		"v2SidebarSections" | "v2WorkspaceLocalState" | "v2Workspaces"
+ 	>,
+ 	workspaceId: string,
+ 	projectId: string,
+ ): void {
+ 	const existing = collections.v2WorkspaceLocalState.get(workspaceId);
+-	if (existing && isSidebarWorkspaceVisible(existing)) {
+-		return;
++	// Already placed — don't resurrect into active. An active row, a snoozed row,
++	// or an archived row (archivedAt set, OR a removed non-main thread surfaced
++	// under Archived) all stay put on re-open (view-in-place). Only a "hidden"
++	// row (a removed MAIN workspace: isHidden, no archive) is pulled back into the
++	// active lane when explicitly opened. Classified via the shared
++	// getWorkspaceSidebarBucket so the rule matches exactly what the sidebar renders.
++	if (existing) {
++		const workspaceType =
++			collections.v2Workspaces.get(workspaceId)?.type ?? null;
++		if (
++			getWorkspaceSidebarBucket(existing, Date.now(), workspaceType) !== "hidden"
++		) {
++			return;
++		}
+ 	}
+ 
+ 	const topLevelItems = getProjectTopLevelItems(collections, projectId);
+@@ -508,7 +529,114 @@ export function useDashboardSidebarState() {
+ 		[collections],
+ 	);
+ 
++	// --- Snooze / Archive ---------------------------------------------------
++	// All visual-only: they only flip local sidebar flags. Unlike
++	// hideWorkspaceInSidebar (which tears down pane runtimes + clears the
++	// layout), these intentionally leave the worktree and any running session
++	// untouched so a restored thread comes back exactly as it was.
++
++	const archiveWorkspace = useCallback(
++		(workspaceId: string) => {
++			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
++			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
++				draft.sidebarState.isHidden = true;
++				draft.sidebarState.archivedAt = Date.now();
++				draft.sidebarState.snoozeUntil = null;
++				draft.sidebarState.snoozeLaunchId = null;
++			});
++		},
++		[collections],
++	);
++
++	const snoozeWorkspace = useCallback(
++		(workspaceId: string, until: number | "next-launch") => {
++			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
++			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
++				if (until === "next-launch") {
++					draft.sidebarState.snoozeUntil = null;
++					draft.sidebarState.snoozeLaunchId = APP_LAUNCH_ID;
++				} else {
++					draft.sidebarState.snoozeUntil = until;
++					draft.sidebarState.snoozeLaunchId = null;
++				}
++				draft.sidebarState.isHidden = false;
++				draft.sidebarState.archivedAt = null;
++			});
++		},
++		[collections],
++	);
++
++	const unsnoozeWorkspace = useCallback(
++		(workspaceId: string) => {
++			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
++			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
++				draft.sidebarState.snoozeUntil = null;
++				draft.sidebarState.snoozeLaunchId = null;
++			});
++		},
++		[collections],
++	);
++
++	const unsnoozeAllInProject = useCallback(
++		(projectId: string) => {
++			for (const workspace of collections.v2WorkspaceLocalState.state.values()) {
++				if (workspace.sidebarState.projectId !== projectId) continue;
++				if (
++					workspace.sidebarState.snoozeUntil == null &&
++					workspace.sidebarState.snoozeLaunchId == null
++				) {
++					continue;
++				}
++				unsnoozeWorkspace(workspace.workspaceId);
++			}
++		},
++		[collections, unsnoozeWorkspace],
++	);
++
++	// Restore exactly the rows the caller passes (the ids rendered in the
++	// project's Archived section). Id-based rather than re-deriving from isHidden
++	// so a removed main/pinned workspace — which is hidden but NOT archived, and
++	// therefore never shown in the section — is never accidentally un-hidden.
++	const unarchiveWorkspaces = useCallback(
++		(workspaceIds: readonly string[]) => {
++			for (const workspaceId of workspaceIds) {
++				if (!collections.v2WorkspaceLocalState.get(workspaceId)) continue;
++				collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
++					draft.sidebarState.isHidden = false;
++					draft.sidebarState.archivedAt = null;
++				});
++			}
++		},
++		[collections],
++	);
++
++	// Single-id convenience wrapper around unarchiveWorkspaces.
++	const unarchiveWorkspace = useCallback(
++		(workspaceId: string) => unarchiveWorkspaces([workspaceId]),
++		[unarchiveWorkspaces],
++	);
++
++	const setProjectSectionFlag = useCallback(
++		(projectId: string, flag: ProjectSectionFlag, value: boolean) => {
++			ensureSidebarProjectRecord(collections, projectId);
++			collections.v2SidebarProjects.update(projectId, (draft) => {
++				draft[flag] = value;
++			});
++		},
++		[collections],
++	);
++
++	const toggleProjectSectionFlag = useCallback(
++		(projectId: string, flag: ProjectSectionFlag) => {
++			const current =
++				collections.v2SidebarProjects.get(projectId)?.[flag] ?? false;
++			setProjectSectionFlag(projectId, flag, !current);
++		},
++		[collections, setProjectSectionFlag],
++	);
++
+ 	return {
++		archiveWorkspace,
+ 		createSection,
+ 		deleteSection,
+ 		ensureProjectInSidebar,
+@@ -522,8 +650,15 @@ export function useDashboardSidebarState() {
+ 		reorderProjects,
+ 		reorderWorkspaces,
+ 		renameSection,
++		setProjectSectionFlag,
+ 		setSectionColor,
++		snoozeWorkspace,
+ 		toggleProjectCollapsed,
++		toggleProjectSectionFlag,
+ 		toggleSectionCollapsed,
++		unarchiveWorkspace,
++		unarchiveWorkspaces,
++		unsnoozeAllInProject,
++		unsnoozeWorkspace,
+ 	};
+ }
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
+index 3f9c379..eac11ce 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
+@@ -13,6 +13,14 @@ export const dashboardSidebarProjectSchema = z.object({
+ 	isCollapsed: z.boolean().default(false),
+ 	tabOrder: z.number().int().default(0),
+ 	defaultOpenInApp: z.string().nullable().default(null),
++	// Per-project reveal state for the Snoozed / Archived sections. Each
++	// section is hidden until the user explicitly reveals it (right-click the
++	// project), and once revealed can be collapsed independently. Remembered
++	// across restarts (local-only, like every other sidebar preference).
++	showSnoozed: z.boolean().default(false),
++	showArchived: z.boolean().default(false),
++	snoozedCollapsed: z.boolean().default(false),
++	archivedCollapsed: z.boolean().default(false),
+ });
+ 
+ const paneWorkspaceStateSchema = z.custom<WorkspaceState<unknown>>();
+@@ -62,7 +70,17 @@ export const workspaceLocalStateSchema = z.object({
+ 		changesFilter: changesFilterSchema.default({ kind: "all" }),
+ 		changesViewMode: z.enum(["folders", "tree"]).default("folders"),
+ 		activeTab: z.enum(["changes", "files", "review"]).default("changes"),
++		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
++		// from the active lane and surfaced under the project's Archived section.
++		// `archivedAt` orders that section (most-recently-archived first); legacy
++		// hidden rows have no timestamp and sort last. `snooze*` is the timed-hide
++		// state (mutually exclusive with archived): a thread is snoozed while
++		// `snoozeUntil` is in the future, or `snoozeLaunchId` matches the current
++		// app launch ("until next launch"). All local-only, visual-only.
+ 		isHidden: z.boolean().default(false),
++		archivedAt: z.number().nullable().default(null),
++		snoozeUntil: z.number().nullable().default(null),
++		snoozeLaunchId: z.string().nullable().default(null),
+ 	}),
+ 	paneLayout: paneWorkspaceStateSchema,
+ 	viewedFiles: z.array(z.string()).default([]),
+@@ -90,6 +108,9 @@ const SIDEBAR_STATE_DEFAULTS = {
+ 	changesViewMode: "folders",
+ 	activeTab: "changes",
+ 	isHidden: false,
++	archivedAt: null,
++	snoozeUntil: null,
++	snoozeLaunchId: null,
+ } as const;
+ 
+ const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
+index 9cf2b5c..d9745af 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
+@@ -22,3 +22,175 @@ export function getVisibleSidebarWorkspaces<
+ >(workspaces: readonly Workspace[]): Workspace[] {
+ 	return workspaces.filter(isSidebarWorkspaceVisible);
+ }
++
++// ---------------------------------------------------------------------------
++// Snooze / Archive — thread states layered on top of the local sidebar row.
++//
++// archived := sidebarState.archivedAt != null   (an explicit archive timestamp).
++//             archiveWorkspace also sets isHidden so the row leaves the active
++//             lane, but the ARCHIVED signal is archivedAt — NOT raw isHidden,
++//             which is still used by the main/pinned "Remove from Sidebar" +
++//             teardown path and must not surface as archived.
++// snoozed  := snooze timer still in the future, OR an "until next launch"
++//             snooze whose launch id matches THIS app launch.
++// active   := neither.
++//
++// All local-only and visual-only — these helpers only classify; nothing here
++// touches a worktree or a running session.
++// ---------------------------------------------------------------------------
++
++/** One id per app launch. An "until next launch" snooze stores this; on the
++ * next launch the id differs, so the thread is no longer snoozed. */
++export const APP_LAUNCH_ID = crypto.randomUUID();
++
++interface SidebarWorkspaceStateFields {
++	isHidden?: boolean | null;
++	archivedAt?: number | null;
++	snoozeUntil?: number | null;
++	snoozeLaunchId?: string | null;
++}
++
++type SidebarWorkspaceStateSource =
++	| (SidebarWorkspaceStateFields & { type?: string | null })
++	| { sidebarState: SidebarWorkspaceStateFields; type?: string | null };
++
++function readSidebarWorkspaceState(
++	workspace: SidebarWorkspaceStateSource,
++): SidebarWorkspaceStateFields {
++	return "sidebarState" in workspace ? workspace.sidebarState : workspace;
++}
++
++/** The workspace "type" (e.g. "main") lives on the workspace row, alongside the
++ * sidebar state. Reading it lets the classifier treat a removed non-main thread
++ * as archived while keeping a removed main workspace merely hidden. */
++function readWorkspaceType(
++	workspace: SidebarWorkspaceStateSource,
++): string | null | undefined {
++	return (workspace as { type?: string | null }).type;
++}
++
++export function isWorkspaceArchived(
++	workspace: SidebarWorkspaceStateSource,
++	workspaceType?: string | null,
++): boolean {
++	const state = readSidebarWorkspaceState(workspace);
++	if (state.archivedAt != null) return true;
++	// A non-main thread removed via "Remove from Sidebar" (isHidden, no archive
++	// timestamp) surfaces under Archived — recoverable. A removed main/pinned
++	// workspace stays fully hidden and is never treated as archived.
++	const type = workspaceType ?? readWorkspaceType(workspace);
++	return state.isHidden === true && type !== "main";
++}
++
++export function isWorkspaceSnoozed(
++	workspace: SidebarWorkspaceStateSource,
++	nowMs: number = Date.now(),
++): boolean {
++	const state = readSidebarWorkspaceState(workspace);
++	if (state.snoozeLaunchId != null && state.snoozeLaunchId === APP_LAUNCH_ID) {
++		return true;
++	}
++	return typeof state.snoozeUntil === "number" && state.snoozeUntil > nowMs;
++}
++
++export type SidebarWorkspaceBucket =
++	| "active"
++	| "snoozed"
++	| "archived"
++	| "hidden";
++
++export function getWorkspaceSidebarBucket(
++	workspace: SidebarWorkspaceStateSource,
++	nowMs: number = Date.now(),
++	workspaceType?: string | null,
++): SidebarWorkspaceBucket {
++	// A main workspace can never be snoozed or archived (the UI gates those off
++	// main); guard it structurally here so no upstream caller can mis-bucket a
++	// main into the Snoozed/Archived sections regardless of its stored fields.
++	const type = workspaceType ?? readWorkspaceType(workspace);
++	if (type === "main") {
++		return readSidebarWorkspaceState(workspace).isHidden === true
++			? "hidden"
++			: "active";
++	}
++	if (isWorkspaceArchived(workspace, workspaceType)) return "archived";
++	if (isWorkspaceSnoozed(workspace, nowMs)) return "snoozed";
++	// A removed non-main workspace (isHidden, no archive timestamp) is hidden
++	// outright — not archived, not snoozed, and NOT in the active lane.
++	if (readSidebarWorkspaceState(workspace).isHidden === true) return "hidden";
++	return "active";
++}
++
++const HOUR_MS = 3_600_000;
++const DAY_MS = 24 * HOUR_MS;
++
++export type SnoozeDuration =
++	| { kind: "next-launch" }
++	| { kind: "tomorrow" }
++	| { kind: "ms"; ms: number }
++	| { kind: "hours"; hours: number };
++
++export interface SnoozePresetOption {
++	id: string;
++	label: string;
++	duration: SnoozeDuration;
++}
++
++/** Preset entries for the Snooze submenu, in display order. The custom
++ * "N hours" entry is rendered separately as an inline field. */
++export const SNOOZE_PRESET_OPTIONS: readonly SnoozePresetOption[] = [
++	{ id: "tomorrow", label: "Until tomorrow", duration: { kind: "tomorrow" } },
++	{ id: "1d", label: "1 day", duration: { kind: "ms", ms: DAY_MS } },
++	{ id: "3d", label: "3 days", duration: { kind: "ms", ms: 3 * DAY_MS } },
++	{ id: "1w", label: "1 week", duration: { kind: "ms", ms: 7 * DAY_MS } },
++	{
++		id: "next-launch",
++		label: "Until next launch",
++		duration: { kind: "next-launch" },
++	},
++] as const;
++
++/** Resolve a chosen duration to a stored snooze value: an absolute epoch-ms
++ * deadline, or the "next-launch" sentinel handled by the caller. */
++export function computeSnoozeUntil(
++	duration: SnoozeDuration,
++	nowMs: number = Date.now(),
++): number | "next-launch" {
++	switch (duration.kind) {
++		case "next-launch":
++			return "next-launch";
++		case "hours":
++			return nowMs + Math.max(1, Math.round(duration.hours * HOUR_MS));
++		case "ms":
++			return nowMs + duration.ms;
++		case "tomorrow": {
++			const tomorrow = new Date(nowMs);
++			tomorrow.setDate(tomorrow.getDate() + 1);
++			tomorrow.setHours(9, 0, 0, 0);
++			return tomorrow.getTime();
++		}
++	}
++}
++
++/** Short label for how long a snooze has left: "launch", "5m", "3h", "2d". */
++export function formatSnoozeRemaining(
++	snoozeUntil: number | null | undefined,
++	snoozeLaunchId: string | null | undefined,
++	nowMs: number = Date.now(),
++): string {
++	if (
++		snoozeLaunchId != null &&
++		snoozeLaunchId === APP_LAUNCH_ID &&
++		(typeof snoozeUntil !== "number" || snoozeUntil <= nowMs)
++	) {
++		return "launch";
++	}
++	if (typeof snoozeUntil !== "number") return "";
++	const remaining = snoozeUntil - nowMs;
++	if (remaining <= 0) return "";
++	const minutes = Math.round(remaining / 60_000);
++	if (minutes < 60) return `${Math.max(1, minutes)}m`;
++	const hours = Math.round(minutes / 60);
++	if (hours < 24) return `${hours}h`;
++	return `${Math.round(hours / 24)}d`;
++}

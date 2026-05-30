@@ -186,6 +186,25 @@
 >   and wrapped so it can never throw. Guard SKIPS (warns) rather than
 >   aborts — diagnostics are non-essential and must not block the build
 >   (`git apply`, idempotent; marker `pane-map-hook.log`).
+> - adds per-thread **Snooze** (timed hide that auto-returns) and **Archive**
+>   (sticky bucket) states to the v2 dashboard sidebar, plus per-project
+>   revealable collapsible Snoozed/Archived sections (reveal + collapse remembered
+>   per project; active-only count badge; hover restore icons; bulk
+>   unsnooze/unarchive on the section header). Snooze persists an absolute
+>   `snoozeUntil` (+ a per-launch id for "until next launch") and a ~30s ticker
+>   auto-returns expired snoozes; Archive reuses the existing
+>   `isHidden`/remove-from-sidebar plumbing keyed on a new `archivedAt`, replacing
+>   the per-thread "Remove from Sidebar" (legacy hidden rows resurface as
+>   archived). Local-only (no cloud schema change); snooze/archive never tear down
+>   the worktree or running session. Applied deterministically via
+>   `patches/thread-snooze-archive.patch` as git-apply step **(AL)** (`git apply`,
+>   idempotent + fail-fast; markers `snoozeUntil` / `archivedAt` /
+>   `DashboardSidebarStateSection`). Re-anchored on top of **(AE)**
+>   nongit-workspaces + **(AG)** badge — which also edit
+>   `DashboardSidebarWorkspaceContextMenu`/`useDiffStats` and
+>   `DashboardSidebarWorkspaceItem`/`DashboardSidebarExpandedWorkspaceRow` — so
+>   **(AL)** must run after them (it does); validated by a real `git apply` on a
+>   fresh base+(AE)+(AG) LF tree. No AI patch (0–33) edits these files.
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.

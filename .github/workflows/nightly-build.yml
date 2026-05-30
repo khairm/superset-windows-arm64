@@ -1250,6 +1250,43 @@ jobs:
             Write-Host "(AJ) watcher-ask-answer applied (red releases to working on the matched AskUserQuestion answer)"
           }
 
+          # (AL) thread-snooze-archive — per-thread Snooze (timed hide that
+          #      auto-returns) and Archive (sticky bucket) sidebar states, plus
+          #      per-project revealable collapsible Snoozed/Archived sections.
+          #      Adds snooze/archive flags to the local sidebar schema, partitions
+          #      active/snoozed/archived in the data layer, wires the workspace +
+          #      project context-menu actions, and adds the new
+          #      DashboardSidebarStateSection component. Archive reuses the existing
+          #      isHidden/remove-from-sidebar plumbing (+ an archivedAt predicate);
+          #      local-only, no cloud schema change. RE-ANCHORED on top of (AE)
+          #      nongit-workspaces + (AG) badge — which ALSO edit
+          #      WorkspaceContextMenu/useDiffStats and WorkspaceItem/ExpandedRow — so
+          #      (AL) MUST run after (AE)+(AG) (it does; this step is far below them).
+          #      Validated by a real git apply on a fresh base+(AE)+(AG) LF tree.
+          $tsa = '../patches/thread-snooze-archive.patch'
+          $tsaSchema = 'apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts'
+          $tsaSidebarDir = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar'
+          if (-not (Test-Path $tsa)) { Write-Error "(AL) missing $tsa in patches repo"; exit 1 }
+          if (-not (Test-Path $tsaSchema)) { Write-Error "(AL) $tsaSchema missing in this upstream — dashboardSidebarLocal schema moved; re-anchor (AL)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'snoozeUntil' $tsaSchema) {
+            Write-Host "(AL) thread-snooze-archive already present — skip"
+          } else {
+            $tsaErr = "$env:RUNNER_TEMP/al-apply-check.txt"
+            git apply --check $tsa 2>$tsaErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AL) thread-snooze-archive.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $tsaErr) { Get-Content $tsaErr | ForEach-Object { Write-Host "    (AL-check) $_" } }
+              Write-Error "(AL) thread-snooze-archive.patch failed to apply — dashboard sidebar shape changed upstream. Regenerate it against the current sidebar (dashboardSidebarLocal schema + useDashboardSidebarState/Data + workspace/project context menus + DashboardSidebarStateSection)."
+              exit 1
+            }
+            git apply $tsa
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AL) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'snoozeUntil' $tsaSchema)) { Write-Error "(AL) snoozeUntil field missing in $tsaSchema after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'archivedAt' $tsaSchema)) { Write-Error "(AL) archivedAt field missing in $tsaSchema after apply"; exit 1 }
+            if (-not (Get-ChildItem -Path $tsaSidebarDir -Recurse -Filter 'DashboardSidebarStateSection.tsx' -ErrorAction SilentlyContinue)) { Write-Error "(AL) DashboardSidebarStateSection component missing after apply"; exit 1 }
+            Write-Host "(AL) thread-snooze-archive applied (per-thread Snooze/Archive states + per-project Snoozed/Archived sections)"
+          }
+
           # (AA) wispr-flow — the LOAD-BEARING Wispr Flow fix (was "diag"), now that
           #      (V) screenReaderMode is reverted. Two coordinated inline fixups,
           #      both hard-abort:

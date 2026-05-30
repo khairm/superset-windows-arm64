@@ -42,7 +42,9 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   the real Wispr fix (AC)[inline]; force-foreground (Y)[git]; v2 blank-pane
   hold-last-good (Z)[git]; v2-pin (AD)[inline]; non-git/multi-repo workspaces — bulk
   (AE)[git, before L] + create-guard (AF)[inline] + badge (AG)[inline];
-  workspace-delete decouple — a locked worktree no longer blocks delete (AH)[git].
+  workspace-delete decouple — a locked worktree no longer blocks delete (AH)[git];
+  thread snooze/archive — per-thread timed Snooze + sticky Archive with per-project
+  revealable Snoozed/Archived sections (AL)[git].
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport
