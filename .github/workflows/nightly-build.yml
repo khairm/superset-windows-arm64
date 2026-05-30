@@ -1446,6 +1446,45 @@ jobs:
             Write-Host "(Y) windows-force-foreground applied (focusMainWindow raises past the Windows foreground lock; relaunch now surfaces a buried window)"
           }
 
+          # (AN) Startup-stall fix + boot phase logging + blocked-event-loop guard.
+          #      ROOT CAUSE (multi-agent trace): startAgentJsonlWatcher's startup
+          #      seed scan was a SYNCHRONOUS recursive fs walk over ~/.claude/projects
+          #      + ~/.codex/sessions, run inside MainWindow()'s synchronous body AFTER
+          #      the renderer navigation was kicked off but BEFORE the event loop could
+          #      service its load events (and the (T) show-watchdog timer) -- so a large
+          #      history blocked the main thread and the window stayed blank for minutes
+          #      ("watchdog cleared but never fired"; renderer JS never ran). Fix: defer
+          #      + chunk the seed scan (setImmediate + fs.promises + per-file yields).
+          #      Plus boot phase-timing logs + a renderer [boot-renderer] marker + an
+          #      event-loop lag monitor, so any future stall lands in one labeled phase
+          #      in main.log. Applies LAST (after every inline fixup + git patch) against
+          #      the fully-patched tree; re-anchor against superset-patched-source.tar.gz
+          #      if the boot code shape changes upstream.
+          $sf2 = '../patches/startup-stall-fix.patch'
+          if (-not (Test-Path $sf2)) { Write-Error "(AN) missing $sf2 in patches repo"; exit 1 }
+          $awFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          if (-not (Test-Path $awFile)) { Write-Error "(AN) $awFile missing in this upstream -- regenerate patches/startup-stall-fix.patch"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'seedScanAllAsync' $awFile) {
+            Write-Host "(AN) startup-stall-fix already present -- skip"
+          } else {
+            $anErr = "$env:RUNNER_TEMP/an-apply-check.txt"
+            git apply --check $sf2 2>$anErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AN) startup-stall-fix.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $anErr) { Get-Content $anErr | ForEach-Object { Write-Host "    (AN-check) $_" } }
+              Write-Error "(AN) startup-stall-fix.patch failed to apply -- ABORTING. Boot/startup code shape changed upstream; re-anchor patches/startup-stall-fix.patch against the fully-patched source."
+              exit 1
+            }
+            git apply $sf2
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AN) git apply failed after a clean --check"; exit 1 }
+            if (-not ((Get-Content -Raw $awFile).Contains('seedScanAllAsync'))) { Write-Error "(AN) seedScanAllAsync missing in $awFile after apply"; exit 1 }
+            $ixFile = 'apps/desktop/src/main/index.ts'
+            if (-not ((Get-Content -Raw $ixFile).Contains('[boot] awaiting app.whenReady'))) { Write-Error "(AN) [boot] whenReady marker missing in $ixFile after apply"; exit 1 }
+            $rxFile = 'apps/desktop/src/renderer/index.tsx'
+            if (-not ((Get-Content -Raw $rxFile).Contains('boot-renderer'))) { Write-Error "(AN) [boot-renderer] marker missing in $rxFile after apply"; exit 1 }
+            Write-Host "(AN) startup-stall-fix applied (non-blocking seed scan + boot phase logging + event-loop lag guard)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1455,7 +1494,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AN + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

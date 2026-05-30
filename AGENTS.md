@@ -45,7 +45,12 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   workspace-delete decouple — a locked worktree no longer blocks delete (AH)[git];
   thread snooze/archive — per-thread timed Snooze + sticky Archive with per-project
   revealable Snoozed/Archived sections (AL)[git]; startup cold-start timing →
-  `main.log` via `log.info` (AM)[inline].
+  `main.log` via `log.info` (AM)[inline]; non-blocking agent-watcher seed scan +
+  boot phase logging + event-loop lag guard (AN)[git] — fixes the intermittent
+  ~5-min blank-window cold start caused by the dots watcher's SYNCHRONOUS startup
+  fs-walk over `~/.claude`+`~/.codex` blocking the main loop before the renderer
+  could load (found via a multi-agent boot trace; `[boot]`/`[boot-renderer]` phase
+  logs in main.log pinpoint any future stall).
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport
@@ -57,6 +62,12 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
 
 ## Traps (do NOT repeat)
 
+- **Never do synchronous fs work on the main thread at startup.** The agent-dots
+  watcher's startup seed scan was a sync recursive walk over `~/.claude`+`~/.codex`;
+  on a large history it blocked the event loop *after* navigation was kicked off,
+  so the window stayed blank for minutes and the (T) watchdog timer couldn't even
+  fire ("watchdog cleared but never fired"). Keep the seed scan deferred + chunked
+  async (`setImmediate` + `fs.promises` + per-file yields) — see (AN).
 - **Never re-enable xterm `screenReaderMode`** — it was the Wispr regression (drops
   injected `insertText`); the post-compile guard hard-aborts if truthy. UIA
   reachability comes from (AA.1), not this. (Wrongly re-enabled twice already.)

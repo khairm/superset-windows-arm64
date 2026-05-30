@@ -1,0 +1,241 @@
+diff --git a/apps/desktop/src/lib/window-loader.ts b/apps/desktop/src/lib/window-loader.ts
+index 612d630..2fcd35d 100644
+--- a/apps/desktop/src/lib/window-loader.ts
++++ b/apps/desktop/src/lib/window-loader.ts
+@@ -1,4 +1,5 @@
+ import type { BrowserWindow } from "electron";
++import log from "electron-log/main";
+ import { env } from "shared/env.shared";
+ 
+ /** Window IDs defined in the router configuration */
+@@ -37,8 +38,30 @@ export function registerRoute(props: {
+ 		props.browserWindow.loadFile(props.htmlFile, { hash: "/" });
+ 	}
+ 
++	// (AN) Boot diagnostics: navigation kickoff + load-phase markers + a
++	// liveness heartbeat. If heartbeats STOP during a slow startup the main
++	// event loop is BLOCKED (a synchronous task) rather than the navigation
++	// being slow — the distinction that pins the ~5-min cold-start stall.
++	const __anBootMs = () => Math.round(process.uptime() * 1000);
++	log.info("[boot] navigation kicked off (" + props.id + ") +" + __anBootMs() + "ms");
++	const __anHeartbeat = setInterval(() => {
++		log.info(
++			"[boot] still-loading (" + props.id + ") isLoading=" +
++				props.browserWindow.webContents.isLoading() + " +" + __anBootMs() + "ms",
++		);
++	}, 5000);
++	__anHeartbeat.unref?.();
++	props.browserWindow.webContents.on("did-start-loading", () => {
++		log.info("[boot] did-start-loading (" + props.id + ") +" + __anBootMs() + "ms");
++	});
++	props.browserWindow.webContents.on("dom-ready", () => {
++		log.info("[boot] dom-ready (" + props.id + ") +" + __anBootMs() + "ms");
++	});
++
+ 	// Log successful loads
+ 	props.browserWindow.webContents.on("did-finish-load", () => {
++		clearInterval(__anHeartbeat);
++		log.info("[boot] did-finish-load (" + props.id + ") +" + __anBootMs() + "ms");
+ 		console.log(
+ 			"[window-loader] Successfully loaded:",
+ 			props.browserWindow.webContents.getURL(),
+diff --git a/apps/desktop/src/main/index.ts b/apps/desktop/src/main/index.ts
+index 722ddb6..25d7ddc 100644
+--- a/apps/desktop/src/main/index.ts
++++ b/apps/desktop/src/main/index.ts
+@@ -1,4 +1,5 @@
+ import path from "node:path";
++import log from "electron-log/main";
+ import { pathToFileURL } from "node:url";
+ import { settings } from "@superset/local-db";
+ import {
+@@ -364,7 +365,34 @@ if (!gotTheLock) {
+ 	});
+ 
+ 	(async () => {
++		// (AN) Boot phase timing + blocked-event-loop guard. We log each
++		// startup milestone so an intermittent stall lands in one labeled
++		// phase instead of a silent gap, and the lag monitor fires loud if
++		// the main event loop is ever blocked (e.g. a synchronous fs walk) —
++		// the failure mode behind the multi-minute blank-window cold start.
++		const bootMs = () => Math.round(process.uptime() * 1000);
++		let __anLagLast = Date.now();
++		const __anLagTimer = setInterval(() => {
++			const now = Date.now();
++			const drift = now - __anLagLast - 1000;
++			if (drift > 1500) {
++				log.error("[boot] event-loop BLOCKED for ~" + drift + "ms +" + bootMs() + "ms");
++			}
++			__anLagLast = now;
++		}, 1000);
++		__anLagTimer.unref?.();
++		log.info("[boot] awaiting app.whenReady +" + bootMs() + "ms");
+ 		await app.whenReady();
++		log.info("[boot] app.whenReady resolved +" + bootMs() + "ms");
++		try {
++			session
++				.fromPartition("persist:superset")
++				.resolveProxy("https://api.superset.sh")
++				.then((p) => log.info("[boot] resolveProxy=" + p + " +" + bootMs() + "ms"))
++				.catch(() => {});
++		} catch (_e) {
++			/* never let the probe break startup */
++		}
+ 		registerWithMacOSNotificationCenter();
+ 		requestAppleEventsAccess();
+ 		requestLocalNetworkAccess();
+@@ -455,19 +483,27 @@ if (!gotTheLock) {
+ 		ensureProjectIconsDir();
+ 		setWorkspaceDockIcon();
+ 		initSentry();
++		log.info("[boot] step initAppState start +" + bootMs() + "ms");
+ 		await initAppState();
++		log.info("[boot] step initAppState done +" + bootMs() + "ms");
+ 		initTanstackDbPersistence();
+ 
+ 		try {
++			log.info("[boot] step startNetworkLogger start +" + bootMs() + "ms");
+ 			await startNetworkLogger();
++			log.info("[boot] step startNetworkLogger done +" + bootMs() + "ms");
+ 		} catch (error) {
+ 			console.error("[main] Failed to start network logger:", error);
+ 		}
+ 
++		log.info("[boot] step loadWebviewBrowserExtension start +" + bootMs() + "ms");
+ 		await loadWebviewBrowserExtension();
++		log.info("[boot] step loadWebviewBrowserExtension done +" + bootMs() + "ms");
+ 
+ 		// Must happen before renderer restore runs
++		log.info("[boot] step reconcileDaemonSessions start +" + bootMs() + "ms");
+ 		await reconcileDaemonSessions();
++		log.info("[boot] step reconcileDaemonSessions done +" + bootMs() + "ms");
+ 		prewarmTerminalRuntime();
+ 
+ 		try {
+@@ -489,7 +525,9 @@ if (!gotTheLock) {
+ 			});
+ 		}
+ 
++		log.info("[boot] step makeAppSetup (MainWindow) start +" + bootMs() + "ms");
+ 		await makeAppSetup(() => MainWindow());
++		log.info("[boot] step makeAppSetup done +" + bootMs() + "ms");
+ 		setupAutoUpdater();
+ 		initTray();
+ 
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index dbce3e7..dbc540b 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -796,6 +796,52 @@ function pollKnownFilesForGrowth(): void {
+  * session updates and forward derived agent lifecycle events into
+  * notificationsEmitter.
+  */
++// (AN) Yield-chunked async variant of the startup seed scan. A large
++// ~/.claude/projects or ~/.codex/sessions history made the original
++// synchronous recursive walk block the main event loop during MainWindow()
++// — after the renderer navigation was kicked off but before its load
++// events (and the (T) show-watchdog timer) could be serviced — which
++// surfaced as the intermittent multi-minute blank-window cold start. This
++// walks with fs.promises and hands control back to the loop every
++// SEED_SCAN_YIELD_EVERY files so discovery never blocks startup or input.
++const SEED_SCAN_YIELD_EVERY = 25;
++
++async function seedScanAllAsync(): Promise<void> {
++	for (const source of SOURCES) {
++		if (!fs.existsSync(source.logsDir)) {
++			dbg("watch-start", { logsDir: source.logsDir, exists: false });
++			continue;
++		}
++		const stack: string[] = [source.logsDir];
++		let processed = 0;
++		while (stack.length > 0) {
++			const dir = stack.pop();
++			if (dir === undefined) break;
++			let entries: fs.Dirent[];
++			try {
++				entries = await fs.promises.readdir(dir, { withFileTypes: true });
++			} catch {
++				continue;
++			}
++			for (const entry of entries) {
++				const full = path.join(dir, entry.name);
++				if (entry.isDirectory()) {
++					stack.push(full);
++				} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
++					processFile(full, source, true);
++					processed += 1;
++					if (processed % SEED_SCAN_YIELD_EVERY === 0) {
++						await new Promise<void>((resolve) => {
++							setImmediate(resolve);
++						});
++					}
++				}
++			}
++		}
++		dbg("watch-start", { logsDir: source.logsDir, exists: true, seeded: processed });
++	}
++}
++
+ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 	deps = d;
+ 
+@@ -845,10 +891,13 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 		}
+ 	}
+ 
+-	for (const source of SOURCES) {
+-		scanAll(source, true);
+-		dbg("watch-start", { logsDir: source.logsDir, exists: fs.existsSync(source.logsDir) });
+-	}
++	// (AN) Seed scan deferred + chunked so it can't block window startup.
++	// (Was a synchronous recursive walk that ran here inside MainWindow()'s
++	// synchronous body and starved the renderer's load events for minutes on
++	// large histories — the root cause of the ~5-min cold-start stall.)
++	setImmediate(() => {
++		void seedScanAllAsync();
++	});
+ 
+ 	// fs.watch is unreliable on Windows for trailing appends / some creates.
+ 	// These polls are the safety net that keeps dots accurate regardless.
+diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
+index 3a6832e..dbefcf6 100644
+--- a/apps/desktop/src/main/windows/main.ts
++++ b/apps/desktop/src/main/windows/main.ts
+@@ -93,6 +93,7 @@ app.on("child-process-gone", (_event, details) => {
+ });
+ 
+ export async function MainWindow() {
++	log.info("[boot] MainWindow() entered +" + Math.round(process.uptime() * 1000) + "ms");
+ 	const savedWindowState = loadWindowState();
+ 	const initialBounds = getInitialWindowBounds(savedWindowState);
+ 	let persistedZoomLevel = savedWindowState?.zoomLevel;
+@@ -256,7 +257,9 @@ export async function MainWindow() {
+ 	// to notificationsEmitter, sidestepping the bash-only hook chain that
+ 	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
+ 	// and the fork's project memory `superset-windows-hook-chain-broken`.
++	log.info("[boot] startAgentJsonlWatcher (seed scan deferred) +" + Math.round(process.uptime() * 1000) + "ms");
+ 	startAgentJsonlWatcher({ notificationsEmitter });
++	log.info("[boot] startAgentJsonlWatcher returned +" + Math.round(process.uptime() * 1000) + "ms");
+ 
+ 	const notificationManager = new NotificationManager({
+ 		isSupported: () => Notification.isSupported(),
+diff --git a/apps/desktop/src/renderer/index.tsx b/apps/desktop/src/renderer/index.tsx
+index d3422a7..3cb4e0b 100644
+--- a/apps/desktop/src/renderer/index.tsx
++++ b/apps/desktop/src/renderer/index.tsx
+@@ -1,5 +1,15 @@
+ import { initSentry } from "./lib/sentry";
+ 
++// (AN) boot diagnostic: first renderer body statement. Prefixed [agent-dots]
++// so the (W.1) main-process console forwarder relays it to main.log in prod
++// — the decisive "did the renderer JS actually start" signal vs a
++// main-process / navigation stall before any renderer code runs.
++console.log(
++	"[agent-dots] [boot-renderer] entry eval start +" +
++		(typeof performance !== "undefined" ? Math.round(performance.now()) : 0) +
++		"ms",
++);
++
+ initSentry();
+ 
+ import { createRouter, RouterProvider } from "@tanstack/react-router";
