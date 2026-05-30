@@ -52,7 +52,17 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   files, AND a 12 s discover poll that synchronously replayed every first-seen
   file's full body ~5.6 GB when it raced the seed), starving the renderer's
   `superset-app://` loader (found via boot trace + I/O measurement;
-  `[boot]`/`[boot-renderer]` logs in main.log pinpoint any future stall).
+  `[boot]`/`[boot-renderer]` logs in main.log pinpoint any future stall);
+  gemini/cursor agent-hook bash-wrap (AO)[git] — Gemini + Cursor write their hook
+  `command` as a raw `~/.superset/hooks/<agent>-hook.sh` path, which Windows
+  ShellExecutes, so the file OPENS in the user's default `.sh` editor instead of
+  running (the "random .sh text file pops open" bug). `buildAgentHookCommand`
+  wraps it in Git-for-Windows `bin/bash.exe` (MSYS so the hook's grep/sed/curl
+  resolve; forward-slash path; NEVER System32 WSL bash — it can't read `C:/`);
+  when no Git bash is found it writes no managed entry AND reconcile drops any
+  stale raw-.sh entry (self-healing, no popup). POSIX output byte-for-byte
+  unchanged. Copilot intentionally EXCLUDED — project-level `bash:`-field hook
+  (different exec model); verify before wrapping it.
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport

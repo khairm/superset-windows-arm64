@@ -1446,6 +1446,45 @@ jobs:
             Write-Host "(Y) windows-force-foreground applied (focusMainWindow raises past the Windows foreground lock; relaunch now surfaces a buried window)"
           }
 
+          # (AO) Windows agent-hook bash-wrap. Gemini + Cursor write their hook
+          #      `command` as a raw `~/.superset/hooks/<agent>-hook.sh` path; on
+          #      Windows the agent CLI ShellExecutes that `.sh`, so instead of
+          #      RUNNING it the file opens in the user's default `.sh` editor (the
+          #      "random text file pops open" bug). buildAgentHookCommand wraps the
+          #      script in Git-for-Windows bash (bin/bash.exe sets up MSYS so the
+          #      hook's grep/sed/curl resolve; forward-slash path; NEVER System32
+          #      WSL bash, which can't read C:/ paths). When no Git bash is found it
+          #      returns null and reconcile writes no managed entry AND drops any
+          #      stale raw-.sh entry — self-healing, no popup. POSIX behaviour is
+          #      byte-for-byte unchanged. Copilot is intentionally excluded: it uses
+          #      a project-level `bash:`-field hook (different exec model) — verify
+          #      that separately before wrapping it. Touches agent-setup files no
+          #      other patch touches, so it anchors on pure upstream.
+          $ag = '../patches/windows-agent-hook-bash-wrap.patch'
+          if (-not (Test-Path $ag)) { Write-Error "(AO) missing $ag in patches repo"; exit 1 }
+          $acFile = 'apps/desktop/src/main/lib/agent-setup/agent-wrappers-common.ts'
+          if (-not (Test-Path $acFile)) { Write-Error "(AO) $acFile missing in this upstream -- re-anchor patches/windows-agent-hook-bash-wrap.patch"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'buildAgentHookCommand' $acFile) {
+            Write-Host "(AO) windows-agent-hook-bash-wrap already present -- skip"
+          } else {
+            $aoErr = "$env:RUNNER_TEMP/ao-apply-check.txt"
+            git apply --check $ag 2>$aoErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AO) windows-agent-hook-bash-wrap.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $aoErr) { Get-Content $aoErr | ForEach-Object { Write-Host "    (AO-check) $_" } }
+              Write-Error "(AO) windows-agent-hook-bash-wrap.patch failed to apply -- ABORTING. agent-wrappers-{common,gemini,cursor}.ts changed upstream; re-anchor patches/windows-agent-hook-bash-wrap.patch against the new upstream."
+              exit 1
+            }
+            git apply $ag
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AO) git apply failed after a clean --check"; exit 1 }
+            if (-not ((Get-Content -Raw $acFile).Contains('buildAgentHookCommand'))) { Write-Error "(AO) buildAgentHookCommand missing in $acFile after apply"; exit 1 }
+            $agFile = 'apps/desktop/src/main/lib/agent-setup/agent-wrappers-gemini.ts'
+            if (-not ((Get-Content -Raw $agFile).Contains('buildAgentHookCommand(hookScriptPath)'))) { Write-Error "(AO) gemini wrapper not rewired in $agFile after apply"; exit 1 }
+            $auFile = 'apps/desktop/src/main/lib/agent-setup/agent-wrappers-cursor.ts'
+            if (-not ((Get-Content -Raw $auFile).Contains('buildAgentHookCommand(hookScriptPath, hookArg)'))) { Write-Error "(AO) cursor wrapper not rewired in $auFile after apply"; exit 1 }
+            Write-Host "(AO) windows-agent-hook-bash-wrap applied (Gemini+Cursor hooks run via Git bash on Windows; no more .sh editor popup)"
+          }
+
           # (AN) Startup-stall fix + boot phase logging + blocked-event-loop guard.
           #      ROOT CAUSE (multi-agent trace + I/O measurement): the agent-dots
           #      watcher did BLOCKING fs work on the main thread at startup, starving
@@ -1496,7 +1535,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AN + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
