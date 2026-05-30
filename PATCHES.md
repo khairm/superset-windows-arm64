@@ -228,6 +228,14 @@
 >   `DashboardSidebarWorkspaceItem`/`DashboardSidebarExpandedWorkspaceRow` — so
 >   **(AL)** must run after them (it does); validated by a real `git apply` on a
 >   fresh base+(AE)+(AG) LF tree. No AI patch (0–33) edits these files.
+> - **(AM) startup cold-start timing** [inline fixup — deterministic, not
+>   AI-applied]: appends a `log.info("[startup] cold start: " +
+>   Math.round(process.uptime()*1000) + "ms ...")` immediately after the upstream
+>   renderer `did-finish-load` boot log in `main.ts`, so every launch records its
+>   cold-start ms in `main.log` (electron-log file transport — raw `console.*` may
+>   not reach it). Literal `.Replace` anchored on the stable boot-log string (no
+>   `$`/template-literal traps); idempotent + hard-aborts (exit 1) if the anchor is
+>   missing. Read it with `Select-String '[startup] cold start' <main.log>`.
 >
 > This keeps the patch set portable while making the ARM64 handling
 > reproducible and independent of LLM non-determinism.

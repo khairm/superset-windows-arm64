@@ -44,7 +44,8 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   (AE)[git, before L] + create-guard (AF)[inline] + badge (AG)[inline];
   workspace-delete decouple — a locked worktree no longer blocks delete (AH)[git];
   thread snooze/archive — per-thread timed Snooze + sticky Archive with per-project
-  revealable Snoozed/Archived sections (AL)[git].
+  revealable Snoozed/Archived sections (AL)[git]; startup cold-start timing →
+  `main.log` via `log.info` (AM)[inline].
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport

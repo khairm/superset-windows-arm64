@@ -429,6 +429,27 @@ jobs:
           if ((Get-Content -Raw $mw) -notmatch 'titleBarOverlay') { Write-Error "(H) titleBarOverlay patch failed"; exit 1 }
           Write-Host "(H) main.ts -> Windows titleBarOverlay (visible native window controls)"
 
+          # (AM) startup-timing: log cold-start ms (process start -> renderer
+          #      did-finish-load) via electron-log (log.info) so it reaches
+          #      main.log; raw console.* may only hit the terminal transport
+          #      (auto-updater.ts notes "use log.* not console.*" for the file).
+          #      Anchored on the stable upstream boot log; literal .Replace +
+          #      string concat (no regex/$ or template-literal traps).
+          $c = Get-Content -Raw $mw
+          $amAnchor = 'console.log("[main-window] Renderer loaded successfully");'
+          $amLine = 'log.info("[startup] cold start: " + Math.round(process.uptime() * 1000) + "ms (process start -> did-finish-load)");'
+          if ($c.Contains('[startup] cold start')) {
+            Write-Host "(AM) startup-timing already present -- skip"
+          } elseif (-not $c.Contains($amAnchor)) {
+            Write-Error "(AM) boot-log anchor not found in $mw; upstream changed -- re-anchor (AM)"; exit 1
+          } else {
+            $c = $c.Replace($amAnchor, $amAnchor + "`r`n`t`t" + $amLine)
+            Set-Content -Path $mw -Value $c -NoNewline
+            Write-Host "(AM) main.ts -> cold-start timing log added after renderer did-finish-load"
+          }
+          if (-not ((Get-Content -Raw $mw).Contains('[startup] cold start'))) { Write-Error "(AM) startup-timing verify failed"; exit 1 }
+          Write-Host "(AM) startup-timing verified"
+
           # (I) Force-package @anush008/tokenizers-win32-arm64-msvc outside the
           #     asar. @anush008/tokenizers (transitive via fastembed) bare-
           #     requires its win-arm64 platform pkg, but @anush008/tokenizers
