@@ -377,7 +377,7 @@ index 0000000..a68a522
 @@ -0,0 +1 @@
 +export { DashboardSidebarStateSection } from "./DashboardSidebarStateSection";
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
-index 4f29b4b..a85ede4 100644
+index 4f29b4b..cddb7d7 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
 +++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
 @@ -22,6 +22,7 @@ interface DashboardSidebarWorkspaceItemProps {
@@ -421,15 +421,13 @@ index 4f29b4b..a85ede4 100644
  		isActive,
  		isDeleteDialogOpen,
  		isUnread,
-@@ -164,6 +172,7 @@ export function DashboardSidebarWorkspaceItem({
- 							isLocalWorkspace={hostType === "local-device"}
- 							isNonGit={isNonGit}
- 							isPinned={isMainWorkspace && hostType === "local-device"}
-+							isMainWorkspace={isMainWorkspace}
- 							onCreateSection={handleCreateSection}
- 							showDeleteHotkey={isActive}
- 							onMoveToSection={(targetSectionId) =>
-@@ -178,6 +187,11 @@ export function DashboardSidebarWorkspaceItem({
+@@ -172,12 +180,16 @@ export function DashboardSidebarWorkspaceItem({
+ 							onOpenInFinder={handleOpenInFinder}
+ 							onCopyPath={handleCopyPath}
+ 							onCopyBranchName={handleCopyBranchName}
+-							onRemoveFromSidebar={handleRemoveFromSidebar}
+ 							onRename={startRename}
+ 							onDelete={
  								isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
  							}
  							onToggleUnread={handleToggleUnread}
@@ -441,7 +439,7 @@ index 4f29b4b..a85ede4 100644
  						>
  							{content}
  						</DashboardSidebarWorkspaceContextMenu>
-@@ -230,6 +244,10 @@ export function DashboardSidebarWorkspaceItem({
+@@ -230,6 +242,10 @@ export function DashboardSidebarWorkspaceItem({
  				onDoubleClick={isPending ? undefined : startRename}
  				onRemoveFromSidebarClick={handleRemoveFromSidebar}
  				onCloseWorkspaceClick={() => setIsDeleteDialogOpen(true)}
@@ -452,15 +450,13 @@ index 4f29b4b..a85ede4 100644
  				onRenameValueChange={setRenameValue}
  				onSubmitRename={submitRename}
  				onCancelRename={cancelRename}
-@@ -254,6 +272,7 @@ export function DashboardSidebarWorkspaceItem({
- 						isLocalWorkspace={hostType === "local-device"}
- 						isNonGit={isNonGit}
- 						isPinned={isMainWorkspace && hostType === "local-device"}
-+						isMainWorkspace={isMainWorkspace}
- 						onOpenInFinder={handleOpenInFinder}
+@@ -258,12 +274,16 @@ export function DashboardSidebarWorkspaceItem({
  						showDeleteHotkey={isActive}
  						onCopyPath={handleCopyPath}
-@@ -264,6 +283,11 @@ export function DashboardSidebarWorkspaceItem({
+ 						onCopyBranchName={handleCopyBranchName}
+-						onRemoveFromSidebar={handleRemoveFromSidebar}
+ 						onRename={startRename}
+ 						onDelete={
  							isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
  						}
  						onToggleUnread={handleToggleUnread}
@@ -582,7 +578,7 @@ index b419737..6a46059 100644
  										<TooltipTrigger asChild>
  											<button
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
-index b30e769..7dff0e7 100644
+index b30e769..d9207d6 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
 +++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx
 @@ -11,9 +11,13 @@ import {
@@ -599,12 +595,12 @@ index b30e769..7dff0e7 100644
  	LuCopy,
  	LuEye,
  	LuEyeOff,
-@@ -22,20 +26,34 @@ import {
+@@ -22,12 +26,19 @@ import {
  	LuGitBranch,
  	LuPencil,
  	LuTrash2,
+-	LuX,
 +	LuUndo2,
- 	LuX,
  } from "react-icons/lu";
  import { useHotkeyDisplay } from "renderer/hotkeys";
  import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -620,12 +616,8 @@ index b30e769..7dff0e7 100644
  interface DashboardSidebarWorkspaceContextMenuProps {
  	projectId: string;
  	isInSection?: boolean;
- 	isLocalWorkspace: boolean;
- 	isNonGit?: boolean;
+@@ -36,18 +47,82 @@ interface DashboardSidebarWorkspaceContextMenuProps {
  	isPinned?: boolean;
-+	/** True for the project's main workspace on ANY host (local or remote). Main
-+	 * workspaces cannot be snoozed/archived — only removed from the sidebar. */
-+	isMainWorkspace?: boolean;
  	isUnread: boolean;
  	showDeleteHotkey?: boolean;
 +	/** Set when the row lives in the Snoozed / Archived section — swaps the
@@ -634,7 +626,9 @@ index b30e769..7dff0e7 100644
  	onCreateSection: () => void;
  	onMoveToSection: (sectionId: string | null) => void;
  	onOpenInFinder: () => void;
-@@ -45,17 +63,81 @@ interface DashboardSidebarWorkspaceContextMenuProps {
+ 	onCopyPath: () => void;
+ 	onCopyBranchName: () => void;
+-	onRemoveFromSidebar: () => void;
  	onRename: () => void;
  	onDelete?: () => void;
  	onToggleUnread: () => void;
@@ -706,17 +700,17 @@ index b30e769..7dff0e7 100644
  export function DashboardSidebarWorkspaceContextMenu({
  	projectId,
  	isInSection,
- 	isLocalWorkspace,
- 	isNonGit = false,
+@@ -56,15 +131,19 @@ export function DashboardSidebarWorkspaceContextMenu({
  	isPinned = false,
-+	isMainWorkspace = false,
  	isUnread,
  	showDeleteHotkey = false,
 +	sectionState,
  	onCreateSection,
  	onMoveToSection,
  	onOpenInFinder,
-@@ -65,6 +147,10 @@ export function DashboardSidebarWorkspaceContextMenu({
+ 	onCopyPath,
+ 	onCopyBranchName,
+-	onRemoveFromSidebar,
  	onRename,
  	onDelete,
  	onToggleUnread,
@@ -727,7 +721,7 @@ index b30e769..7dff0e7 100644
  	children,
  }: DashboardSidebarWorkspaceContextMenuProps) {
  	const collections = useCollections();
-@@ -72,6 +158,7 @@ export function DashboardSidebarWorkspaceContextMenu({
+@@ -72,6 +151,7 @@ export function DashboardSidebarWorkspaceContextMenu({
  	const deleteHotkeyText = useHotkeyDisplay("CLOSE_WORKSPACE").text;
  	const showDeleteShortcut =
  		showDeleteHotkey && deleteHotkeyText !== "Unassigned";
@@ -735,7 +729,7 @@ index b30e769..7dff0e7 100644
  	const { data: sections = [] } = useLiveQuery(
  		(q) =>
  			q
-@@ -120,21 +207,25 @@ export function DashboardSidebarWorkspaceContextMenu({
+@@ -120,21 +200,25 @@ export function DashboardSidebarWorkspaceContextMenu({
  						</ContextMenuItem>
  					</>
  				)}
@@ -776,7 +770,7 @@ index b30e769..7dff0e7 100644
  					<>
  						<ContextMenuSeparator />
  						<ContextMenuItem onSelect={onCreateSection}>
-@@ -175,24 +266,57 @@ export function DashboardSidebarWorkspaceContextMenu({
+@@ -175,24 +259,49 @@ export function DashboardSidebarWorkspaceContextMenu({
  					</>
  				)}
  				<ContextMenuSeparator />
@@ -787,7 +781,6 @@ index b30e769..7dff0e7 100644
 -					<LuX className="size-4 mr-2 text-destructive" />
 -					Remove from Sidebar
 -				</ContextMenuItem>
--				{onDelete ? (
 +				{sectionState === "snoozed" ? (
 +					<>
 +						<ContextMenuItem onSelect={onUnsnooze}>
@@ -808,20 +801,6 @@ index b30e769..7dff0e7 100644
 +						</ContextMenuItem>
 +						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
 +					</>
-+				) : isPinned || isMainWorkspace ? (
- 					<ContextMenuItem
--						onSelect={onDelete}
-+						onSelect={onRemoveFromSidebar}
- 						className="text-destructive focus:text-destructive"
- 					>
--						<LuTrash2 className="size-4 mr-2 text-destructive" />
--						Delete
--						{showDeleteShortcut && (
--							<ContextMenuShortcut>{deleteHotkeyText}</ContextMenuShortcut>
--						)}
-+						<LuX className="size-4 mr-2 text-destructive" />
-+						Remove from Sidebar
- 					</ContextMenuItem>
 +				) : (
 +					<>
 +						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
@@ -831,7 +810,17 @@ index b30e769..7dff0e7 100644
 +						</ContextMenuItem>
 +					</>
 +				)}
-+				{onDelete ? (
+ 				{onDelete ? (
+-					<ContextMenuItem
+-						onSelect={onDelete}
+-						className="text-destructive focus:text-destructive"
+-					>
+-						<LuTrash2 className="size-4 mr-2 text-destructive" />
+-						Delete
+-						{showDeleteShortcut && (
+-							<ContextMenuShortcut>{deleteHotkeyText}</ContextMenuShortcut>
+-						)}
+-					</ContextMenuItem>
 +					<>
 +						<ContextMenuSeparator />
 +						<ContextMenuItem
@@ -1710,10 +1699,10 @@ index 3f9c379..eac11ce 100644
  
  const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
-index 9cf2b5c..d9745af 100644
+index 9cf2b5c..0179d17 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
 +++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility.ts
-@@ -22,3 +22,175 @@ export function getVisibleSidebarWorkspaces<
+@@ -22,3 +22,171 @@ export function getVisibleSidebarWorkspaces<
  >(workspaces: readonly Workspace[]): Workspace[] {
  	return workspaces.filter(isSidebarWorkspaceVisible);
  }
@@ -1799,15 +1788,11 @@ index 9cf2b5c..d9745af 100644
 +	nowMs: number = Date.now(),
 +	workspaceType?: string | null,
 +): SidebarWorkspaceBucket {
-+	// A main workspace can never be snoozed or archived (the UI gates those off
-+	// main); guard it structurally here so no upstream caller can mis-bucket a
-+	// main into the Snoozed/Archived sections regardless of its stored fields.
-+	const type = workspaceType ?? readWorkspaceType(workspace);
-+	if (type === "main") {
-+		return readSidebarWorkspaceState(workspace).isHidden === true
-+			? "hidden"
-+			: "active";
-+	}
++	// Main rows can be snoozed/archived on purpose (the UI offers it). A main with
++	// archivedAt set buckets "archived" below; a main hidden WITHOUT an archive
++	// timestamp stays merely "hidden" — isWorkspaceArchived's `&& type !== "main"`
++	// keeps an accidental remove out of "archived" (so it still resurrects on
++	// reopen, never silently archived).
 +	if (isWorkspaceArchived(workspace, workspaceType)) return "archived";
 +	if (isWorkspaceSnoozed(workspace, nowMs)) return "snoozed";
 +	// A removed non-main workspace (isHidden, no archive timestamp) is hidden
