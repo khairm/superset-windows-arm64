@@ -1447,14 +1447,16 @@ jobs:
           }
 
           # (AN) Startup-stall fix + boot phase logging + blocked-event-loop guard.
-          #      ROOT CAUSE (multi-agent trace): startAgentJsonlWatcher's startup
-          #      seed scan was a SYNCHRONOUS recursive fs walk over ~/.claude/projects
-          #      + ~/.codex/sessions, run inside MainWindow()'s synchronous body AFTER
-          #      the renderer navigation was kicked off but BEFORE the event loop could
-          #      service its load events (and the (T) show-watchdog timer) -- so a large
-          #      history blocked the main thread and the window stayed blank for minutes
-          #      ("watchdog cleared but never fired"; renderer JS never ran). Fix: defer
-          #      + chunk the seed scan (setImmediate + fs.promises + per-file yields).
+          #      ROOT CAUSE (multi-agent trace + I/O measurement): the agent-dots
+          #      watcher did BLOCKING fs work on the main thread at startup, starving
+          #      the renderer's superset-app:// protocol handler so the window stayed
+          #      blank for minutes ("watchdog cleared but never fired"; renderer JS
+          #      never ran). TWO blockers: (1) a SYNCHRONOUS ~8 KB-header seed over
+          #      ~11k ~/.claude + ~/.codex files (~5 min cold); (2) the 12 s discover
+          #      poll synchronously REPLAYED every first-seen file's full body (~5.6 GB)
+          #      when it raced the seed (~9 min). Fix: async (fs.promises) seed + the
+          #      discover poll held until the seed tails every file to EOF, then it
+          #      only touches genuinely-new files.
           #      Plus boot phase-timing logs + a renderer [boot-renderer] marker + an
           #      event-loop lag monitor, so any future stall lands in one labeled phase
           #      in main.log. Applies LAST (after every inline fixup + git patch) against

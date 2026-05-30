@@ -45,12 +45,14 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   workspace-delete decouple — a locked worktree no longer blocks delete (AH)[git];
   thread snooze/archive — per-thread timed Snooze + sticky Archive with per-project
   revealable Snoozed/Archived sections (AL)[git]; startup cold-start timing →
-  `main.log` via `log.info` (AM)[inline]; non-blocking agent-watcher seed scan +
-  boot phase logging + event-loop lag guard (AN)[git] — fixes the intermittent
-  ~5-min blank-window cold start caused by the dots watcher's SYNCHRONOUS startup
-  fs-walk over `~/.claude`+`~/.codex` blocking the main loop before the renderer
-  could load (found via a multi-agent boot trace; `[boot]`/`[boot-renderer]` phase
-  logs in main.log pinpoint any future stall).
+  `main.log` via `log.info` (AM)[inline]; non-blocking agent-watcher seed + gated
+  discover poll + boot phase logging + event-loop lag guard (AN)[git] — fixes the
+  intermittent multi-minute blank-window cold start: the dots watcher did BLOCKING
+  fs on the main thread (sync 8 KB-header seed over ~11k `~/.claude`+`~/.codex`
+  files, AND a 12 s discover poll that synchronously replayed every first-seen
+  file's full body ~5.6 GB when it raced the seed), starving the renderer's
+  `superset-app://` loader (found via boot trace + I/O measurement;
+  `[boot]`/`[boot-renderer]` logs in main.log pinpoint any future stall).
 - **Agent status dots (Claude+Codex)**: JSONL watcher → notificationsEmitter +
   pane-map hook (N)[git]; v2 per-terminal dots (P) + per-tab read (Q)[git];
   `[agent-dots]` logging (W)[git] + main.ts console forwarder (W.1) + console-transport
@@ -62,12 +64,16 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
 
 ## Traps (do NOT repeat)
 
-- **Never do synchronous fs work on the main thread at startup.** The agent-dots
-  watcher's startup seed scan was a sync recursive walk over `~/.claude`+`~/.codex`;
-  on a large history it blocked the event loop *after* navigation was kicked off,
-  so the window stayed blank for minutes and the (T) watchdog timer couldn't even
-  fire ("watchdog cleared but never fired"). Keep the seed scan deferred + chunked
-  async (`setImmediate` + `fs.promises` + per-file yields) — see (AN).
+- **Never do synchronous/blocking fs work on the main thread at startup — and
+  DEFERRING isn't enough if the work is still synchronous.** The agent-dots watcher
+  starved the renderer's `superset-app://` loader two ways: a sync 8 KB-header seed
+  over ~11k files, and a 12 s discover poll that synchronously REPLAYED every
+  first-seen file's full body (~5.6 GB) when it raced the deferred seed. The window
+  stayed blank for minutes and the (T) watchdog couldn't fire ("watchdog cleared but
+  never fired"). Use async I/O (`fs.promises`), yield-chunk the walk, AND gate the
+  discover poll until the seed tails every file to EOF so it never replays history —
+  see (AN). (AN-v1 only deferred+chunked the seed but kept sync reads and an
+  un-gated discover poll, which made it WORSE — confirm fixes by I/O measurement.)
 - **Never re-enable xterm `screenReaderMode`** — it was the Wispr regression (drops
   injected `insertText`); the post-compile guard hard-aborts if truthy. UIA
   reachability comes from (AA.1), not this. (Wrongly re-enabled twice already.)

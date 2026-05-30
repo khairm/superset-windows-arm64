@@ -123,22 +123,160 @@ index 722ddb6..25d7ddc 100644
  		initTray();
  
 diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-index dbce3e7..dbc540b 100644
+index dbce3e7..3ac7175 100644
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
-@@ -796,6 +796,52 @@ function pollKnownFilesForGrowth(): void {
-  * session updates and forward derived agent lifecycle events into
-  * notificationsEmitter.
-  */
-+// (AN) Yield-chunked async variant of the startup seed scan. A large
-+// ~/.claude/projects or ~/.codex/sessions history made the original
-+// synchronous recursive walk block the main event loop during MainWindow()
-+// — after the renderer navigation was kicked off but before its load
-+// events (and the (T) show-watchdog timer) could be serviced — which
-+// surfaced as the intermittent multi-minute blank-window cold start. This
-+// walks with fs.promises and hands control back to the loop every
-+// SEED_SCAN_YIELD_EVERY files so discovery never blocks startup or input.
+@@ -715,32 +715,6 @@ function processFile(
+ 	dbg("chunk", { sessionId, filePath, newBytes: newOffset - prevOffset, lineCount: lines.length, cwdKnown: !!cwd, unclassified, sampleUnclassified });
+ }
+ 
+-function scanAll(source: AgentSource, seedOnly = false): void {
+-	if (!fs.existsSync(source.logsDir)) return;
+-	// Walk source.logsDir recursively to discover .jsonl files. Claude
+-	// nests one level (encoded-cwd); Codex nests three (year/month/day).
+-	// Only used at startup (seedOnly) and as a fallback when fs.watch
+-	// doesn't provide a filename — the steady-state path processes only
+-	// the file whose name comes from the watch event.
+-	const walk = (dir: string): void => {
+-		let entries: fs.Dirent[];
+-		try {
+-			entries = fs.readdirSync(dir, { withFileTypes: true });
+-		} catch {
+-			return;
+-		}
+-		for (const entry of entries) {
+-			const full = path.join(dir, entry.name);
+-			if (entry.isDirectory()) {
+-				walk(full);
+-			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+-				processFile(full, source, seedOnly);
+-			}
+-		}
+-	};
+-	walk(source.logsDir);
+-}
+-
+ // Pending per-file processing keyed by absolute path. Debounce window
+ // coalesces tight bursts of write events on the same file.
+ const pendingFiles = new Map<
+@@ -791,6 +765,160 @@ function pollKnownFilesForGrowth(): void {
+ 	}
+ }
+ 
++// (AN) The startup seed scan and the discovery poll must never do BLOCKING
++// fs work on the main thread. A large ~/.claude/projects + ~/.codex/sessions
++// history (thousands of .jsonl, tens of GB) otherwise starves the renderer's
++// superset-app:// protocol handler for minutes — the multi-minute blank-
++// window cold start. Two distinct blockers are addressed here:
++//   1. The header seed reads each file's first 8 KB. Done SYNCHRONOUSLY
++//      (statSync + readSync) across ~11k files on cold storage it alone was
++//      ~5 min. -> seedFileAsync uses fs.promises so the I/O runs off the main
++//      thread, and walkJsonlAsync yields every SEED_SCAN_YIELD_EVERY files.
++//   2. The 12 s discover poll replayed each first-seen file's ENTIRE body.
++//      If it fired before the seed finished it synchronously read the whole
++//      multi-GB history (~10 MB/s for ~9 min). -> the discover poll is held
++//      until the seed has tailed every existing file to EOF, then only ever
++//      touches genuinely-new files, and walks asynchronously.
 +const SEED_SCAN_YIELD_EVERY = 25;
++
++// True once the initial seed has tailed every existing file to EOF. Until
++// then the discover poll must not run — it would replay the full history.
++let seedComplete = false;
++// Prevents overlapping discover walks (a slow walk + the 12 s timer).
++let discoverInFlight = false;
++
++/**
++ * Async recursive walk of a logs dir, invoking `onFile` for each `.jsonl`
++ * and yielding to the event loop every SEED_SCAN_YIELD_EVERY files so even a
++ * huge tree never blocks the main thread. `onFile` may be async (awaited).
++ */
++async function walkJsonlAsync(
++	logsDir: string,
++	onFile: (full: string) => void | Promise<void>,
++): Promise<void> {
++	const stack: string[] = [logsDir];
++	let n = 0;
++	while (stack.length > 0) {
++		const dir = stack.pop();
++		if (dir === undefined) break;
++		let entries: fs.Dirent[];
++		try {
++			entries = await fs.promises.readdir(dir, { withFileTypes: true });
++		} catch {
++			continue;
++		}
++		for (const entry of entries) {
++			const full = path.join(dir, entry.name);
++			if (entry.isDirectory()) {
++				stack.push(full);
++			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
++				await onFile(full);
++				n += 1;
++				if (n % SEED_SCAN_YIELD_EVERY === 0) {
++					await new Promise<void>((resolve) => {
++						setImmediate(resolve);
++					});
++				}
++			}
++		}
++	}
++}
++
++/**
++ * Async, non-blocking equivalent of processFile(seedOnly=true) for a
++ * first-seen file: stat + read only the 8 KB header (to cache cwd — Codex
++ * stamps it only in the first session_meta entry) via fs.promises, then
++ * start tailing from EOF so the file's history is never replayed. All I/O is
++ * async, so the main thread is never blocked during the seed.
++ */
++async function seedFileAsync(
++	filePath: string,
++	source: AgentSource,
++): Promise<void> {
++	if (fileStates.has(filePath)) return;
++	let stat: fs.Stats;
++	try {
++		stat = await fs.promises.stat(filePath);
++	} catch {
++		return;
++	}
++	const state: FileState = {
++		offset: 0,
++		leftover: "",
++		cwd: null,
++		sessionId: extractSessionIdFromFilename(filePath),
++		parser: source.parser,
++	};
++	try {
++		const headerBytes = Math.min(8192, stat.size);
++		if (headerBytes > 0) {
++			const fh = await fs.promises.open(filePath, "r");
++			try {
++				const buf = Buffer.allocUnsafe(headerBytes);
++				await fh.read(buf, 0, headerBytes, 0);
++				for (const line of buf.toString("utf8").split("\n")) {
++					const cwd = extractCwd(line);
++					if (cwd) {
++						state.cwd = cwd;
++						break;
++					}
++				}
++			} finally {
++				await fh.close();
++			}
++		}
++	} catch {
++		// Header read is best-effort; the steady-state path retries cwd.
++	}
++	state.offset = stat.size;
++	fileStates.set(filePath, state);
++	dbg("seed-skip", {
++		filePath,
++		sessionId: state.sessionId,
++		size: stat.size,
++		cwdFound: !!state.cwd,
++	});
++}
 +
 +async function seedScanAllAsync(): Promise<void> {
 +	for (const source of SOURCES) {
@@ -146,40 +284,58 @@ index dbce3e7..dbc540b 100644
 +			dbg("watch-start", { logsDir: source.logsDir, exists: false });
 +			continue;
 +		}
-+		const stack: string[] = [source.logsDir];
-+		let processed = 0;
-+		while (stack.length > 0) {
-+			const dir = stack.pop();
-+			if (dir === undefined) break;
-+			let entries: fs.Dirent[];
-+			try {
-+				entries = await fs.promises.readdir(dir, { withFileTypes: true });
-+			} catch {
-+				continue;
-+			}
-+			for (const entry of entries) {
-+				const full = path.join(dir, entry.name);
-+				if (entry.isDirectory()) {
-+					stack.push(full);
-+				} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-+					processFile(full, source, true);
-+					processed += 1;
-+					if (processed % SEED_SCAN_YIELD_EVERY === 0) {
-+						await new Promise<void>((resolve) => {
-+							setImmediate(resolve);
-+						});
-+					}
-+				}
-+			}
-+		}
-+		dbg("watch-start", { logsDir: source.logsDir, exists: true, seeded: processed });
++		let seeded = 0;
++		await walkJsonlAsync(source.logsDir, async (full) => {
++			await seedFileAsync(full, source);
++			seeded += 1;
++		});
++		dbg("watch-start", { logsDir: source.logsDir, exists: true, seeded });
 +	}
 +}
 +
- export function startAgentJsonlWatcher(d: WatcherDeps): void {
- 	deps = d;
- 
-@@ -845,10 +891,13 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
++/**
++ * Discover poll body. Picks up files created after the seed (whose fs.watch
++ * create event Windows dropped) and reads their bodies to derive the new
++ * session's current state. Runs ONLY after the seed completes — by then
++ * every pre-existing file is already tracked, so the in-memory
++ * `fileStates.has()` check skips the entire history with no I/O and only
++ * genuinely-new (small, recent) files are read. The walk is async so even
++ * the directory traversal never blocks the main thread.
++ */
++async function discoverNewFilesAsync(): Promise<void> {
++	if (!seedComplete || discoverInFlight) return;
++	discoverInFlight = true;
++	try {
++		for (const source of SOURCES) {
++			if (!fs.existsSync(source.logsDir)) continue;
++			await walkJsonlAsync(source.logsDir, (full) => {
++				if (!fileStates.has(full)) processFile(full, source, false);
++			});
++		}
++	} finally {
++		discoverInFlight = false;
++	}
++}
++
+ /**
+  * Start watching ~/.claude/projects/ and ~/.codex/sessions/ for JSONL
+  * session updates and forward derived agent lifecycle events into
+@@ -831,11 +959,12 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 						return;
+ 					}
+ 					// Fallback when the platform didn't give us a filename:
+-					// debounced full scan of just this source.
++					// debounced async discovery (gated on seed completion, so it
++					// never replays the existing history).
+ 					if (scanTimer) return;
+ 					scanTimer = setTimeout(() => {
+ 						scanTimer = null;
+-						scanAll(source);
++						void discoverNewFilesAsync();
+ 					}, POLL_DEBOUNCE_MS);
+ 				},
+ 			);
+@@ -845,17 +974,25 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
  		}
  	}
  
@@ -187,16 +343,45 @@ index dbce3e7..dbc540b 100644
 -		scanAll(source, true);
 -		dbg("watch-start", { logsDir: source.logsDir, exists: fs.existsSync(source.logsDir) });
 -	}
-+	// (AN) Seed scan deferred + chunked so it can't block window startup.
-+	// (Was a synchronous recursive walk that ran here inside MainWindow()'s
-+	// synchronous body and starved the renderer's load events for minutes on
-+	// large histories — the root cause of the ~5-min cold-start stall.)
+-
+-	// fs.watch is unreliable on Windows for trailing appends / some creates.
+-	// These polls are the safety net that keeps dots accurate regardless.
++	// (AN) pollKnown re-stats only ALREADY-tracked files and reads their
++	// (small) growth delta, so it is safe to run from t=0 and preserves the
++	// (AK) trailing-append safety net for any session the user starts at once.
+ 	pollKnownTimer = setInterval(pollKnownFilesForGrowth, POLL_KNOWN_MS);
+-	pollDiscoverTimer = setInterval(() => {
+-		for (const source of SOURCES) scanAll(source);
+-	}, POLL_DISCOVER_MS);
++
++	// (AN) Seed deferred + fully async so it never blocks window startup, and
++	// the discover poll is started ONLY after the seed has tailed every
++	// existing file to EOF. Otherwise the discover poll races the seed and
++	// synchronously replays the entire multi-GB history (the real cause of the
++	// multi-minute blank-window cold start). Once seeded, pollDiscover only
++	// ever sees genuinely-new files.
 +	setImmediate(() => {
-+		void seedScanAllAsync();
++		void seedScanAllAsync().finally(() => {
++			seedComplete = true;
++			pollDiscoverTimer = setInterval(() => {
++				void discoverNewFilesAsync();
++			}, POLL_DISCOVER_MS);
++		});
 +	});
+ }
  
- 	// fs.watch is unreliable on Windows for trailing appends / some creates.
- 	// These polls are the safety net that keeps dots accurate regardless.
+ export function stopAgentJsonlWatcher(): void {
+@@ -878,5 +1015,10 @@ export function stopAgentJsonlWatcher(): void {
+ 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
+ 	lifecycleStates.clear();
+ 	fileStates.clear();
++	// (AN) Reset the seed gate so a stop -> start cycle re-seeds before the
++	// discover poll runs again (fileStates was just cleared; a stale
++	// seedComplete would let discover replay the whole history).
++	seedComplete = false;
++	discoverInFlight = false;
+ 	deps = null;
+ }
 diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
 index 3a6832e..dbefcf6 100644
 --- a/apps/desktop/src/main/windows/main.ts
