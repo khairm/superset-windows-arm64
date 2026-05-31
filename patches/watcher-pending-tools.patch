@@ -1,0 +1,580 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index 3ac7175..7894655 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -48,6 +48,29 @@ interface AgentParser {
+ 	 * (Codex) can skip implementing this.
+ 	 */
+ 	isUserLine?(line: string): boolean;
++	/**
++	 * tool_use ids opened on this line (Claude emits `tool_use` blocks when
++	 * it calls a tool). Used to track "a tool is running" so the idle
++	 * fallback never flips the dot to `review` (green) while the agent is
++	 * genuinely busy waiting on a shell/build/subagent. Optional — agents
++	 * whose transcript doesn't expose stable tool ids return [].
++	 */
++	openToolIds?(line: string): string[];
++	/**
++	 * tool_use ids whose result arrives on this line (Claude writes a
++	 * `tool_result` echo carrying the originating `tool_use_id` when a tool
++	 * finishes). Removing these from the open set re-enables the idle
++	 * fallback once nothing is running.
++	 */
++	closeToolIds?(line: string): string[];
++	/**
++	 * True if this activity line indicates the turn will CONTINUE (Claude
++	 * committed to a tool call) rather than end — i.e. stop_reason:"tool_use".
++	 * Used so the idle fallback holds yellow through a long generation gap
++	 * (assistant/thinking line now, the tool_use record tens of seconds later)
++	 * instead of false-greening mid-turn. Optional.
++	 */
++	expectsContinuation?(line: string): boolean;
+ }
+ 
+ interface AgentSource {
+@@ -62,6 +85,18 @@ const SUPERSET_PANE_MAP_DIR = path.join(
+ 	".superset",
+ 	"session-pane-map",
+ );
++// Deterministic AskUserQuestion red signal. The PreToolUse:AskUserQuestion
++// hook (installed by pane-map-hook.ts) writes `<sessionId>.json` here the
++// instant Claude shows a question, and the PostToolUse hook deletes it on
++// answer. We poll this dir (fs.watch is unreliable on Windows) so red lands
++// within POLL_KNOWN_MS regardless of the JSONL read lag — the transcript's
++// own AskUserQuestion line can be read many seconds late on Windows, which
++// left the dot showing the leftover (often green) state during the wait.
++const SUPERSET_ASK_PENDING_DIR = path.join(
++	os.homedir(),
++	".superset",
++	"agent-ask-pending",
++);
+ 
+ // Diagnostic log. Set SUPERSET_AGENT_WATCHER_DEBUG=0 to disable. Logs
+ // every line classification, state transition, and emit (with mapping)
+@@ -196,6 +231,41 @@ const CLAUDE_PARSER: AgentParser = {
+ 		}
+ 		return false;
+ 	},
++	openToolIds(line) {
++		// An assistant line can carry several tool_use blocks (parallel tool
++		// calls), so collect every id. Serialized form is stable:
++		// `"type":"tool_use","id":"toolu_..."`.
++		if (!line.includes('"type":"tool_use"')) return [];
++		const ids: string[] = [];
++		const re = /"type":"tool_use","id":"(toolu_[A-Za-z0-9_-]+)"/g;
++		let m: RegExpExecArray | null = re.exec(line);
++		while (m) {
++			ids.push(m[1]);
++			m = re.exec(line);
++		}
++		return ids;
++	},
++	closeToolIds(line) {
++		// tool_result echoes (type:"user" lines) carry the originating
++		// `tool_use_id`. PostToolUse hook lines use the camelCase
++		// `toolUseID` key instead, so they never match here — intentional.
++		if (!line.includes('"tool_use_id"')) return [];
++		const ids: string[] = [];
++		const re = /"tool_use_id":"(toolu_[A-Za-z0-9_-]+)"/g;
++		let m: RegExpExecArray | null = re.exec(line);
++		while (m) {
++			ids.push(m[1]);
++			m = re.exec(line);
++		}
++		return ids;
++	},
++	expectsContinuation(line) {
++		// stop_reason:"tool_use" means the model stopped specifically to call
++		// a tool — the turn is not finished. (end_turn / other reasons do not
++		// set this; they are handled by isExplicitStop or fall to the idle
++		// fallback.)
++		return line.includes('"stop_reason":"tool_use"');
++	},
+ };
+ 
+ const CODEX_PARSER: AgentParser = {
+@@ -272,6 +342,40 @@ interface LifecycleState {
+ 	 * on an AskUserQuestion (e.g. a bare PermissionRequest hookEvent).
+ 	 */
+ 	pendingAskToolUseId: string | null;
++	/**
++	 * tool_use ids that have been opened (Claude called the tool) but whose
++	 * tool_result has not yet been read. Non-empty ⇒ a tool/shell/subagent
++	 * is still running, i.e. the agent is WORKING — so the idle fallback
++	 * must NOT downgrade the dot to `review` (green). Cleared on explicit
++	 * stop / interrupt. This is what keeps a long `bun install` (or any
++	 * >IDLE_TIMEOUT_MS tool) showing yellow instead of a false green.
++	 */
++	pendingToolUseIds: Set<string>;
++	/**
++	 * Epoch ms until which a BACKGROUND subagent of this session is known to
++	 * be working. Claude subagent transcripts are separate files
++	 * (<cwd>/<sessionId>/subagents/agent-*.jsonl) with no pane mapping; their
++	 * activity is mirrored here so the PARENT terminal shows yellow while a
++	 * subagent runs — even after the main agent emitted Stop (the blocking
++	 * Task/Agent case is already covered by pendingToolUseIds). Each subagent
++	 * activity chunk pushes this out by IDLE_TIMEOUT_MS; the idle handler holds
++	 * yellow until it lapses. Undefined when no subagent is active.
++	 */
++	subagentActiveUntil?: number;
++	/**
++	 * The most recent activity line carried stop_reason:"tool_use" — Claude
++	 * committed to a tool call, so the turn continues even though no tool_use
++	 * record / further line has arrived yet. Set/cleared on every activity
++	 * line; cleared on stop / interrupt. Lets the idle handler hold yellow
++	 * through a long generation gap instead of false-greening mid-turn.
++	 */
++	turnExpectsMore?: boolean;
++	/**
++	 * True once the idle handler has already granted the single extra
++	 * grace window for turnExpectsMore, so a stalled turn can't defer green
++	 * forever. Reset on every fresh activity line.
++	 */
++	deferredForContinuation?: boolean;
+ }
+ 
+ interface PaneMapping {
+@@ -288,6 +392,11 @@ interface WatcherDeps {
+ const fileStates = new Map<string, FileState>();
+ const lifecycleStates = new Map<string, LifecycleState>();
+ const watchers = new Map<string, fs.FSWatcher>();
++// Sessions currently flagged "asking" by a PreToolUse:AskUserQuestion marker
++// file. Diffed against the marker dir each poll: a newly-present marker emits
++// `permission` (red); a vanished marker (PostToolUse deleted it on answer)
++// releases back to `working`.
++const markedAskingSessions = new Set<string>();
+ let scanTimer: NodeJS.Timeout | null = null;
+ let pollKnownTimer: NodeJS.Timeout | null = null;
+ let pollDiscoverTimer: NodeJS.Timeout | null = null;
+@@ -441,6 +550,7 @@ function getState(
+ 			lastEmittedHadMapping: false,
+ 			idleTimer: null,
+ 			pendingAskToolUseId: null,
++			pendingToolUseIds: new Set<string>(),
+ 		};
+ 		lifecycleStates.set(key, s);
+ 	}
+@@ -514,6 +624,49 @@ function scheduleIdleTimer(
+ 		// permission, the agent is genuinely blocked waiting on the user
+ 		// and the indicator should stay red.
+ 		if (current.lastStatus === "working") {
++			// A tool/shell/subagent is still running (opened tool_use with no
++			// tool_result yet) ⇒ the agent IS working, transcript is just
++			// quiet. Never flip to green here; re-arm and re-check later.
++			// This is the core fix for "green dot while a shell runs".
++			if (current.pendingToolUseIds.size > 0) {
++				dbg("idle-deferred-tool-pending", {
++					sessionId,
++					cwd,
++					openTools: current.pendingToolUseIds.size,
++					timeoutMs: IDLE_TIMEOUT_MS,
++				});
++				scheduleIdleTimer(sessionId, cwd, mapping);
++				return;
++			}
++			// A background subagent is still writing its transcript ⇒ work is
++			// ongoing in this terminal even though the main agent went quiet.
++			// Hold yellow until the subagent deadline lapses.
++			if (
++				current.subagentActiveUntil &&
++				Date.now() < current.subagentActiveUntil
++			) {
++				dbg("idle-deferred-subagent", {
++					sessionId,
++					cwd,
++					until: current.subagentActiveUntil,
++				});
++				scheduleIdleTimer(sessionId, cwd, mapping);
++				return;
++			}
++			// The last activity line was an assistant/thinking line with
++			// stop_reason:"tool_use" — Claude has COMMITTED to calling a tool,
++			// so the turn is not over; the next tool_use record can land tens
++			// of seconds later (long generation), with no JSONL write in
++			// between (so the growth poll never re-arms us). Hold yellow for
++			// ONE more idle window instead of false-greening mid-turn. Bounded
++			// by deferredForContinuation so a genuinely dead/abandoned turn
++			// still greens after ~2*IDLE_TIMEOUT_MS — never permanently stuck.
++			if (current.turnExpectsMore && !current.deferredForContinuation) {
++				current.deferredForContinuation = true;
++				dbg("idle-deferred-generation", { sessionId, cwd, timeoutMs: IDLE_TIMEOUT_MS });
++				scheduleIdleTimer(sessionId, cwd, mapping);
++				return;
++			}
+ 			// Reload mapping — the Python SessionStart hook may have
+ 			// written the mapping file between schedule and fire. Using
+ 			// the closure's stale mapping would emit Stop with the wrong
+@@ -557,6 +710,25 @@ function processFile(
+ 		return;
+ 	}
+ 
++	// Background-subagent transcript (Task or workflow/TeamCreate)? It never
++	// drives its own dot; its activity is mirrored to the parent terminal.
++	const subagentParent = getSubagentParentSessionId(filePath);
++	// First sight of ANY subagent file (detected by the agent-* name, even if
++	// the parent session id can't be derived from a deeper-nested path): skip
++	// history unconditionally. Only FUTURE activity matters, and a discover-
++	// poll first-sight would otherwise read the whole file on the main thread
++	// — the (AN) big-read trap, which workflow subagent files (hundreds, up to
++	// ~600 KB each) would re-introduce.
++	if (isFirstSeen && isSubagentFile(filePath)) {
++		dbg("subagent-seed-skip", {
++			filePath,
++			parentSessionId: subagentParent,
++			size: stat.size,
++		});
++		state.offset = stat.size;
++		return;
++	}
++
+ 	// First time we've seen this file during a seed pass: skip its history
+ 	// (the user already saw those state transitions) and start tailing from
+ 	// the current end-of-file. Before jumping, read enough of the header to
+@@ -613,6 +785,16 @@ function processFile(
+ 	const newLeftover = allLines.pop() ?? "";
+ 	const lines = allLines;
+ 
++	// Subagent transcript: mirror activity to the parent terminal (so it shows
++	// yellow while the subagent runs) and stop here — these files carry no cwd
++	// of their own, so they must bypass the own-cwd gate below.
++	if (subagentParent) {
++		state.offset = newOffset;
++		state.leftover = newLeftover;
++		mirrorSubagentToParent(subagentParent, lines, state.parser);
++		return;
++	}
++
+ 	// Discover cwd from any line in this chunk. If no chunk line carries
+ 	// cwd, leave state.offset / state.leftover untouched so the same bytes
+ 	// are re-read on the next chunk — losing complete lines here would
+@@ -647,6 +829,29 @@ function processFile(
+ 	let sampleUnclassified = "";
+ 	for (const line of lines) {
+ 		if (!line) continue;
++		// Close any tools whose tool_result lands on this line. When the open
++		// set empties again, restart the idle countdown from now so a
++		// genuinely finished turn still greens after IDLE_TIMEOUT_MS; while any
++		// tool remains open the idle handler keeps the dot yellow (the "green
++		// while a shell runs" fix). Runs before classification because a
++		// tool_result line is otherwise unclassified.
++		{
++			const closeIds = parser.closeToolIds?.(line);
++			if (closeIds && closeIds.length) {
++				const { state: s } = getState(sessionId, cwd);
++				let changed = false;
++				for (const id of closeIds) {
++					if (s.pendingToolUseIds.delete(id)) changed = true;
++				}
++				if (
++					changed &&
++					s.pendingToolUseIds.size === 0 &&
++					s.lastStatus === "working"
++				) {
++					scheduleIdleTimer(sessionId, cwd, mapping);
++				}
++			}
++		}
+ 		// (red->working on answer) If blocked on an AskUserQuestion and THIS
+ 		// line is that question's tool_result (the user's answer), release
+ 		// permission to working — Claude is about to resume. Matched on the
+@@ -681,13 +886,28 @@ function processFile(
+ 				/"id":"(toolu_[A-Za-z0-9_-]+)","name":"AskUserQuestion"/,
+ 			);
+ 			s.pendingAskToolUseId = askMatch ? askMatch[1] : null;
++			// Track the ask's tool_use id as open so the idle handler treats a
++			// pending question as "still busy" (red holds; never idle-greens).
++			for (const id of parser.openToolIds?.(line) ?? [])
++				s.pendingToolUseIds.add(id);
+ 			transitionTo("permission", sessionId, cwd, mapping);
+ 		} else if (parser.isExplicitStop(line)) {
+ 			dbg("line", { sessionId, kind: "explicit-stop", snippet: line.slice(0, 160) });
+ 			const { state: s } = getState(sessionId, cwd);
+ 			cancelIdleTimer(s);
+ 			s.pendingAskToolUseId = null;
+-			transitionTo("review", sessionId, cwd, mapping);
++			// Main agent's own tools are done; the turn no longer expects more.
++			s.pendingToolUseIds.clear();
++			s.turnExpectsMore = false;
++			s.deferredForContinuation = false;
++			if (s.subagentActiveUntil && Date.now() < s.subagentActiveUntil) {
++				// Main agent finished its turn but a background subagent is
++				// still working ⇒ keep the terminal yellow, not green.
++				transitionTo("working", sessionId, cwd, mapping);
++				scheduleIdleTimer(sessionId, cwd, mapping);
++			} else {
++				transitionTo("review", sessionId, cwd, mapping);
++			}
+ 		} else if (parser.isUserLine?.(line)) {
+ 			// User answered or cancelled. If we were blocked on permission,
+ 			// release that state — the next assistant line (if any) will
+@@ -696,9 +916,21 @@ function processFile(
+ 			// user line and then nothing else.
+ 			const { state: s } = getState(sessionId, cwd);
+ 			dbg("line", { sessionId, kind: "user-line", lastStatus: s.lastStatus, snippet: line.slice(0, 160) });
++			// An ESC/interrupt (or new prompt) aborts whatever was running and
++			// starts a clean slate: drop tool tracking, the generation-gap
++			// flags, and any stale subagent deadline from a prior turn (#7).
++			s.pendingToolUseIds.clear();
++			s.turnExpectsMore = false;
++			s.deferredForContinuation = false;
++			s.subagentActiveUntil = undefined;
+ 			if (s.lastStatus === "permission") {
+ 				cancelIdleTimer(s);
+ 				s.pendingAskToolUseId = null;
++				// The ask was answered/cancelled outside the marker hook's
++				// PostToolUse (e.g. an ESC, which fires no PostToolUse). Clear
++				// the deterministic-red marker layer too, or a stale per-session
++				// marker would block RED for every later question this session.
++				releaseAskMarker(sessionId);
+ 				transitionTo("review", sessionId, cwd, mapping);
+ 			}
+ 			// Outside permission state, user lines are prompts — don't
+@@ -706,6 +938,17 @@ function processFile(
+ 		} else if (parser.isActivity(line)) {
+ 			dbg("line", { sessionId, kind: "activity", snippet: line.slice(0, 160) });
+ 			transitionTo("working", sessionId, cwd, mapping);
++			const { state: s } = getState(sessionId, cwd);
++			// A tool_use line opens a tool that keeps running until its
++			// tool_result; track it so the idle handler holds yellow meanwhile
++			// instead of falsely greening a long shell/build/subagent.
++			const openIds = parser.openToolIds?.(line) ?? [];
++			for (const id of openIds) s.pendingToolUseIds.add(id);
++			// Does THIS (latest) line commit Claude to more work
++			// (stop_reason:"tool_use")? Drives the generation-gap idle defer.
++			// A fresh activity line also refreshes the one-shot defer budget.
++			s.turnExpectsMore = parser.expectsContinuation?.(line) ?? false;
++			s.deferredForContinuation = false;
+ 			scheduleIdleTimer(sessionId, cwd, mapping);
+ 		} else {
+ 			unclassified++;
+@@ -763,6 +1006,11 @@ function pollKnownFilesForGrowth(): void {
+ 			}
+ 		}
+ 	}
++	// Drive the deterministic AskUserQuestion red dot on the FAST cadence
++	// (POLL_KNOWN_MS, 2.5s) — NOT coupled to the seed/12s-discover gating — so
++	// red lands promptly when a question appears and releases promptly on
++	// answer. A cheap readdir + tiny-file reads on a small dir; safe from t=0.
++	scanAskMarkers();
+ }
+ 
+ // (AN) The startup seed scan and the discovery poll must never do BLOCKING
+@@ -824,6 +1072,185 @@ async function walkJsonlAsync(
+ 	}
+ }
+ 
++function cwdForSession(sessionId: string): string | null {
++	for (const st of fileStates.values()) {
++		if (st.sessionId === sessionId && st.cwd) return st.cwd;
++	}
++	return null;
++}
++
++function isSubagentFile(filePath: string): boolean {
++	// Claude names every subagent transcript `agent-<hex>.jsonl` (Task tool
++	// subagents AND workflow/TeamCreate subagents). Used so the first-seen
++	// history-skip always runs for a subagent even when its parent session id
++	// can't be derived — never full-read a subagent body on the main thread.
++	return path.basename(filePath).startsWith("agent-");
++}
++
++function getSubagentParentSessionId(filePath: string): string | null {
++	// Claude background-subagent transcripts live UNDER a `subagents` dir:
++	//   <cwd>/<parentSessionId>/subagents/agent-*.jsonl                (Task)
++	//   <cwd>/<parentSessionId>/subagents/workflows/wf_*/agent-*.jsonl (workflow/TeamCreate)
++	// So find the LAST `subagents` segment and take the nearest UUID-shaped
++	// segment ABOVE it as the parent — handles both depths. Returns null for
++	// normal transcripts (no `subagents` ancestor).
++	const parts = path.dirname(filePath).split(/[\\/]/);
++	const idx = parts.lastIndexOf("subagents");
++	if (idx <= 0) return null;
++	for (let i = idx - 1; i >= 0; i--) {
++		if (UUID_RE.test(parts[i])) return parts[i];
++	}
++	return null;
++}
++
++/**
++ * Keep the PARENT terminal yellow while a background subagent is working.
++ * Subagent transcripts have no pane mapping and never drive their own dot;
++ * instead each activity chunk pushes the parent's subagentActiveUntil deadline
++ * out by IDLE_TIMEOUT_MS and flips a review (green) parent back to working.
++ * Leaves a pending question (red) untouched.
++ */
++function mirrorSubagentToParent(
++	parentSessionId: string,
++	lines: string[],
++	parser: AgentParser,
++): void {
++	let active = false;
++	for (const line of lines) {
++		if (line && parser.isActivity(line)) {
++			active = true;
++			break;
++		}
++	}
++	if (!active) return;
++	const cwd = cwdForSession(parentSessionId);
++	if (!cwd) return; // parent not tracked yet — nothing to keep alive
++	const { state: s } = getState(parentSessionId, cwd);
++	if (s.lastStatus === "permission") return; // don't disturb a red dot
++	s.subagentActiveUntil = Date.now() + IDLE_TIMEOUT_MS;
++	const mapping = loadPaneMapping(parentSessionId);
++	dbg("subagent-activity", { parentSessionId, cwd, lastStatus: s.lastStatus });
++	if (s.lastStatus !== "working") {
++		// Main agent emitted Stop (green) but a subagent is still running.
++		cancelIdleTimer(s);
++		transitionTo("working", parentSessionId, cwd, mapping);
++	}
++	scheduleIdleTimer(parentSessionId, cwd, mapping);
++}
++
++function markerMapping(marker: {
++	terminalId?: string;
++	workspaceId?: string;
++}): PaneMapping | undefined {
++	if (marker.terminalId || marker.workspaceId) {
++		return { terminalId: marker.terminalId, workspaceId: marker.workspaceId };
++	}
++	return undefined;
++}
++
++/**
++ * Drop the deterministic-red marker for a session (file + in-memory flag).
++ * Called when the watcher releases permission via a path the PostToolUse hook
++ * doesn't cover (an ESC/interrupt fires no PostToolUse:AskUserQuestion), so a
++ * stale per-session marker can't block RED for a later question. Best-effort.
++ */
++function releaseAskMarker(sessionId: string | null): void {
++	if (!sessionId) return;
++	if (!markedAskingSessions.delete(sessionId)) {
++		// not tracked; still try to remove any orphan file below
++	}
++	try {
++		fs.unlinkSync(path.join(SUPERSET_ASK_PENDING_DIR, `${sessionId}.json`));
++	} catch {
++		// no file / already gone
++	}
++}
++
++/**
++ * Poll the AskUserQuestion marker dir and drive the red dot from it. A newly
++ * present `<sessionId>.json` (written by the PreToolUse hook the instant the
++ * question appears) emits `permission` (red); a vanished marker (PostToolUse
++ * deleted it on answer) releases to `working`. Deterministic — does NOT depend
++ * on the JSONL read latency, which on Windows can lag the question line by
++ * tens of seconds. Keyed by the same sessionId+cwd as the JSONL flow, so the
++ * two paths are idempotent (transitionTo suppresses same-status emits).
++ */
++function scanAskMarkers(): void {
++	let files: string[] = [];
++	try {
++		files = fs.readdirSync(SUPERSET_ASK_PENDING_DIR);
++	} catch {
++		// dir absent until the first ask fires → treat as empty
++	}
++	const present = new Set<string>();
++	for (const f of files) {
++		if (!f.endsWith(".json")) continue;
++		const sessionId = f.slice(0, -5);
++		present.add(sessionId);
++		const markerPath = path.join(SUPERSET_ASK_PENDING_DIR, f);
++		if (markedAskingSessions.has(sessionId)) {
++			// Already tracked red. But if the lifecycle has since LEFT permission
++			// (the question was answered/ESCed via the JSONL flow while this
++			// marker lingered — e.g. PostToolUse didn't fire on an ESC, or the
++			// delete failed), the marker is stale. Reconcile it: drop the marker
++			// + set entry so a LATER question in this (long-lived) session can
++			// re-fire red. Without this, a single stale marker permanently
++			// suppresses RED for the rest of the session.
++			const rcwd = cwdForSession(sessionId);
++			if (rcwd) {
++				const { state: rs } = getState(sessionId, rcwd);
++				if (rs.lastStatus !== "permission") {
++					markedAskingSessions.delete(sessionId);
++					try {
++						fs.unlinkSync(markerPath);
++					} catch {}
++					present.delete(sessionId);
++					dbg("ask-marker", { sessionId, kind: "reconcile-stale", cwd: rcwd });
++				}
++			}
++			continue;
++		}
++		let marker: { cwd?: string; terminalId?: string; workspaceId?: string };
++		try {
++			marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
++		} catch {
++			// half-written marker — leave it "present" and retry next poll
++			continue;
++		}
++		let cwd = typeof marker.cwd === "string" ? marker.cwd : null;
++		if (!cwd) cwd = cwdForSession(sessionId);
++		if (!cwd) continue; // can't key state without a cwd; retry next poll
++		markedAskingSessions.add(sessionId);
++		const { state: s } = getState(sessionId, cwd);
++		cancelIdleTimer(s);
++		const mapping = loadPaneMapping(sessionId) ?? markerMapping(marker);
++		dbg("ask-marker", { sessionId, kind: "create", cwd });
++		transitionTo("permission", sessionId, cwd, mapping);
++	}
++	if (markedAskingSessions.size === 0) return;
++	for (const sessionId of [...markedAskingSessions]) {
++		if (present.has(sessionId)) continue;
++		markedAskingSessions.delete(sessionId);
++		const cwd = cwdForSession(sessionId);
++		if (!cwd) continue;
++		const { state: s } = getState(sessionId, cwd);
++		// Only release if still red — don't clobber a state the JSONL flow
++		// already advanced (e.g. an explicit stop arriving after the answer).
++		if (s.lastStatus === "permission") {
++			// The blocking ask is resolved; drop its id from the open-tool set
++			// so the idle handler can green once nothing else is running,
++			// instead of waiting for the (laggy) JSONL tool_result to close it.
++			if (s.pendingAskToolUseId)
++				s.pendingToolUseIds.delete(s.pendingAskToolUseId);
++			s.pendingAskToolUseId = null;
++			const mapping = loadPaneMapping(sessionId);
++			dbg("ask-marker", { sessionId, kind: "release", cwd });
++			transitionTo("working", sessionId, cwd, mapping);
++			scheduleIdleTimer(sessionId, cwd, mapping);
++		}
++	}
++}
++
+ /**
+  * Async, non-blocking equivalent of processFile(seedOnly=true) for a
+  * first-seen file: stat + read only the 8 KB header (to cache cwd — Codex
+@@ -927,6 +1354,24 @@ async function discoverNewFilesAsync(): Promise<void> {
+ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 	deps = d;
+ 
++	// Purge any AskUserQuestion markers left over from a previous run. A
++	// force-quit (or an ESC that fired no PostToolUse) can orphan a marker;
++	// on the next launch its session is no longer tracked, so it would be
++	// read as a fresh "create" and paint a false RED on a resumed terminal.
++	// The question overlay never survives a renderer reload, so any pre-start
++	// marker is by definition stale.
++	try {
++		for (const f of fs.readdirSync(SUPERSET_ASK_PENDING_DIR)) {
++			if (f.endsWith(".json")) {
++				try {
++					fs.unlinkSync(path.join(SUPERSET_ASK_PENDING_DIR, f));
++				} catch {}
++			}
++		}
++	} catch {
++		// dir doesn't exist yet — nothing to purge
++	}
++
+ 	// Side-channel: write the SessionStart hook that maps each new agent
+ 	// session id → Superset pane identity. Without this, the watcher can
+ 	// only resolve panes by cwd, which is ambiguous when two terminals
+@@ -1015,6 +1460,7 @@ export function stopAgentJsonlWatcher(): void {
+ 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
+ 	lifecycleStates.clear();
+ 	fileStates.clear();
++	markedAskingSessions.clear();
+ 	// (AN) Reset the seed gate so a stop -> start cycle re-seeds before the
+ 	// discover poll runs again (fileStates was just cleared; a stale
+ 	// seedComplete would let discover replay the whole history).

@@ -1,0 +1,77 @@
+diff --git a/apps/desktop/src/main/windows/main.ts b/apps/desktop/src/main/windows/main.ts
+index 3a6832e..250a58e 100644
+--- a/apps/desktop/src/main/windows/main.ts
++++ b/apps/desktop/src/main/windows/main.ts
+@@ -1,3 +1,5 @@
++import { appendFileSync, renameSync, statSync } from "node:fs";
++import { homedir } from "node:os";
+ import { join } from "node:path";
+ import { settings, workspaces, worktrees } from "@superset/local-db";
+ import { eq } from "drizzle-orm";
+@@ -191,6 +193,27 @@ export async function MainWindow() {
+ 			try {
+ 				if (typeof message === "string" && message.startsWith("[agent-dots]")) {
+ 					log.info(message);
++				} else if (
++					typeof message === "string" &&
++					message.startsWith("[render-dot]")
++				) {
++					// (render-dot) Persist renderer dot-render snapshots to a
++					// SEPARATE log so the actually-rendered colour can be matched
++					// against the watcher emit log by source key + workspaceId.
++					// Append-only with a simple ~2 MB rotation; never throws.
++					try {
++						const p = join(homedir(), ".superset", "agent-dot-render.log");
++						try {
++							if (statSync(p).size > 2 * 1024 * 1024) {
++								renameSync(p, `${p}.prev`);
++							}
++						} catch {
++							// no existing file to rotate
++						}
++						appendFileSync(p, `${new Date().toISOString()} ${message}\n`, "utf8");
++					} catch {
++						// never let render-dot logging crash the main process
++					}
+ 				}
+ 			} catch {
+ 				// never let logging crash the main process
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/store.ts b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+index f1a77e2..d77c616 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/store.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+@@ -496,3 +496,34 @@ function getChatIdForPane(
+ 	const sessionId = (pane.data as { sessionId?: unknown }).sessionId;
+ 	return typeof sessionId === "string" && sessionId ? sessionId : null;
+ }
++
++// (render-dot diagnostic) Snapshot every dot's ACTUALLY-rendered status once
++// per second into a SEPARATE log so it can be matched against the watcher's
++// emit log (~/.superset/agent-watcher-debug.log) by source key + workspaceId.
++// The store is the single source the StatusIndicator dots render from, so this
++// faithfully captures what the user sees. Renderer-only, started once per
++// window. Forwarded via console.info with a "[render-dot]" prefix that the
++// main process (main.ts) routes to ~/.superset/agent-dot-render.log. Never
++// throws; logs nothing when no sources exist (idle window).
++{
++	const w = globalThis as { __supersetDotRenderLog?: boolean };
++	if (typeof window !== "undefined" && !w.__supersetDotRenderLog) {
++		w.__supersetDotRenderLog = true;
++		setInterval(() => {
++			try {
++				const dots = Object.entries(
++					useV2NotificationStore.getState().sources,
++				).map(([key, entry]) => ({
++					key,
++					workspaceId: entry.workspaceId,
++					status: entry.status,
++				}));
++				if (dots.length > 0) {
++					console.info(`[render-dot] ${JSON.stringify({ dots })}`);
++				}
++			} catch {
++				// never let diagnostics break the renderer
++			}
++		}, 1000);
++	}
++}

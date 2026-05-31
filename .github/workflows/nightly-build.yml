@@ -1526,6 +1526,99 @@ jobs:
             Write-Host "(AN) startup-stall-fix applied (non-blocking seed scan + boot phase logging + event-loop lag guard)"
           }
 
+          # (AP) watcher-dot-accuracy — three dot-correctness fixes on the watcher,
+          #      layered AFTER (AN) (which also rewrites the watcher seed/poll):
+          #      (1) track open tool_use ids (pendingToolUseIds) so the 45s idle
+          #      fallback never flips a terminal to review (GREEN) while a
+          #      shell/build/Task tool is still running — the "green dot while
+          #      working / yellow won't stick" bug; (2) read the AskUserQuestion
+          #      marker dir (~/.superset/agent-ask-pending, written by the (AQ) hook)
+          #      and drive permission (RED) -> working deterministically, bypassing
+          #      JSONL read lag (the question line can be read tens of seconds late
+          #      on Windows); (3) mirror BACKGROUND subagent activity
+          #      (<cwd>/<sessionId>/subagents/agent-*.jsonl) to the PARENT terminal so
+          #      it stays YELLOW while subagents run even after the main agent emitted
+          #      Stop. Authored against the POST-(AN) watcher.
+          $wpt = '../patches/watcher-pending-tools.patch'
+          $wptFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          if (-not (Test-Path $wpt)) { Write-Error "(AP) missing $wpt in patches repo"; exit 1 }
+          if (-not (Test-Path $wptFile)) { Write-Error "(AP) $wptFile missing — did (N) apply?"; exit 1 }
+          if (-not (Select-String -Quiet -SimpleMatch 'seedScanAllAsync' $wptFile)) { Write-Error "(AP) (AN) markers absent — (AP) MUST apply after (AN); fix ordering"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'pendingToolUseIds' $wptFile) {
+            Write-Host "(AP) watcher-dot-accuracy already present — skip"
+          } else {
+            $wptErr = "$env:RUNNER_TEMP/ap-apply-check.txt"
+            git apply --check $wpt 2>$wptErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AP) watcher-pending-tools.patch does not apply cleanly (post AN). git apply --check output:"
+              if (Test-Path $wptErr) { Get-Content $wptErr | ForEach-Object { Write-Host "    (AP-check) $_" } }
+              Write-Error "(AP) watcher-pending-tools.patch failed to apply — watcher shape changed (N/AK/AJ/AN drift). Regenerate it against the POST-(AN) watcher."
+              exit 1
+            }
+            git apply $wpt
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AP) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'function scanAskMarkers' $wptFile)) { Write-Error "(AP) scanAskMarkers missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'subagentActiveUntil' $wptFile)) { Write-Error "(AP) subagent keepalive missing after apply"; exit 1 }
+            Write-Host "(AP) watcher-dot-accuracy applied (no false-green during tools/subagents; deterministic ask-marker red)"
+          }
+
+          # (AQ) ask-marker-hook — install a Python PreToolUse + PostToolUse hook
+          #      (matcher AskUserQuestion) into ~/.claude/settings.json, modeled on
+          #      the (N) pane-map hook (uv run python, so it runs on Windows). It
+          #      writes ~/.superset/agent-ask-pending/<sessionId>.json the instant a
+          #      question appears and deletes it on answer; the (AP) watcher polls
+          #      that dir to show RED deterministically. Extends pane-map-hook.ts
+          #      (created by N), so applies after (N).
+          $amh = '../patches/ask-marker-hook.patch'
+          $amhFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $amh)) { Write-Error "(AQ) missing $amh in patches repo"; exit 1 }
+          if (-not (Test-Path $amhFile)) { Write-Error "(AQ) $amhFile missing — did (N) apply?"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'mergeAskHook' $amhFile) {
+            Write-Host "(AQ) ask-marker-hook already present — skip"
+          } else {
+            $amhErr = "$env:RUNNER_TEMP/aq-apply-check.txt"
+            git apply --check $amh 2>$amhErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AQ) ask-marker-hook.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $amhErr) { Get-Content $amhErr | ForEach-Object { Write-Host "    (AQ-check) $_" } }
+              Write-Error "(AQ) ask-marker-hook.patch failed to apply — pane-map-hook.ts shape changed (N drift). Regenerate against post-(N) pane-map-hook."
+              exit 1
+            }
+            git apply $amh
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AQ) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'ASK_MARKER_SCRIPT' $amhFile)) { Write-Error "(AQ) ask-marker script missing after apply"; exit 1 }
+            Write-Host "(AQ) ask-marker-hook applied (deterministic AskUserQuestion red via Python marker hook)"
+          }
+
+          # (AR) render-dot-logging — DIAGNOSTIC, no behaviour change. Snapshot every
+          #      rendered dot's status once per second from the v2-notifications store
+          #      to a SEPARATE log (~/.superset/agent-dot-render.log) so the
+          #      actually-rendered colour can be matched against the watcher emit log
+          #      by source key + workspaceId. Renderer store.ts (post-P) emits
+          #      console.info "[render-dot] ..."; main.ts (post-N/W, and AN) routes
+          #      that prefix to the separate file.
+          $rdl = '../patches/render-dot-logging.patch'
+          $rdlStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
+          $rdlMain = 'apps/desktop/src/main/windows/main.ts'
+          if (-not (Test-Path $rdl)) { Write-Error "(AR) missing $rdl in patches repo"; exit 1 }
+          if (-not (Test-Path $rdlStore)) { Write-Error "(AR) $rdlStore missing — v2-notifications store moved; re-anchor (AR)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch '__supersetDotRenderLog' $rdlStore) {
+            Write-Host "(AR) render-dot-logging already present — skip"
+          } else {
+            $rdlErr = "$env:RUNNER_TEMP/ar-apply-check.txt"
+            git apply --check $rdl 2>$rdlErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AR) render-dot-logging.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $rdlErr) { Get-Content $rdlErr | ForEach-Object { Write-Host "    (AR-check) $_" } }
+              Write-Error "(AR) render-dot-logging.patch failed to apply — store.ts (post-P) or main.ts (post-N/W/AN) shape changed. Regenerate it."
+              exit 1
+            }
+            git apply $rdl
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AR) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'render-dot' $rdlMain)) { Write-Error "(AR) render-dot main.ts forwarder missing after apply"; exit 1 }
+            Write-Host "(AR) render-dot-logging applied (per-second rendered-dot snapshot -> ~/.superset/agent-dot-render.log)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.

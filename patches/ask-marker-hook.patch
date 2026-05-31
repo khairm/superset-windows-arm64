@@ -1,0 +1,281 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index 08d2b3f..da921a3 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -31,6 +31,17 @@ const CLAUDE_SETTINGS_PATH = path.join(
+ );
+ const CODEX_HOOKS_PATH = path.join(os.homedir(), ".codex", "hooks.json");
+ 
++// AskUserQuestion deterministic-red hook. A second Python hook, scoped by a
++// settings.json matcher to the AskUserQuestion tool, writes a per-session
++// marker on PreToolUse (question shown) and deletes it on PostToolUse
++// (answered). The agent-jsonl-watcher polls the marker dir and drives the red
++// dot from it — independent of JSONL read latency, which on Windows can lag
++// the transcript's own AskUserQuestion line by tens of seconds and leave the
++// dot showing the leftover (often green) state during the wait. Python +
++// `uv run` so it runs on Windows exactly like the pane-map hook.
++const ASK_MARKER_SCRIPT_FILENAME = "superset-ask-marker.py";
++const ASK_MARKER_SCRIPT_PATH = path.join(SCRIPT_DIR, ASK_MARKER_SCRIPT_FILENAME);
++
+ /**
+  * The Python script. Reads Superset terminal-identity env vars set by
+  * the terminal launcher and writes
+@@ -271,6 +282,107 @@ def main() -> None:
+     })
+ 
+ 
++if __name__ == "__main__":
++    main()
++`;
++
++const ASK_MARKER_SCRIPT = `#!/usr/bin/env python3
++"""Superset AskUserQuestion marker hook.
++
++Installed by agent-jsonl-watcher/pane-map-hook.ts as PreToolUse + PostToolUse
++hooks, scoped by a settings.json matcher to the AskUserQuestion tool. On
++PreToolUse it writes ~/.superset/agent-ask-pending/<sessionId>.json the instant
++Claude shows a question; on PostToolUse it deletes that marker when the user
++answers. The agent-jsonl-watcher polls that dir and drives the red dot from it,
++so red is deterministic and does not depend on the JSONL read latency. Silent
++on every failure path — a broken hook must not abort the agent.
++"""
++import datetime
++import json
++import os
++import pathlib
++import sys
++
++
++def _log(record):
++    if os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0":
++        return
++    try:
++        record["ts"] = datetime.datetime.now().isoformat()
++        log_dir = pathlib.Path.home() / ".superset"
++        log_dir.mkdir(parents=True, exist_ok=True)
++        with open(log_dir / "ask-marker-hook.log", "a", encoding="utf-8") as h:
++            h.write(json.dumps(record) + "\\n")
++    except Exception:
++        pass
++
++
++def _read_payload():
++    candidates = []
++    if len(sys.argv) > 1:
++        candidates.append(sys.argv[1])
++    try:
++        raw = sys.stdin.read()
++        if raw:
++            candidates.append(raw)
++    except (OSError, ValueError):
++        pass
++    for src in candidates:
++        try:
++            parsed = json.loads(src)
++        except (ValueError, TypeError):
++            continue
++        if isinstance(parsed, dict):
++            return parsed
++    return {}
++
++
++def main():
++    payload = _read_payload()
++    session_id = (payload.get("session_id") or payload.get("sessionId") or "").strip()
++    event = (payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
++    tool = (payload.get("tool_name") or payload.get("toolName") or "").strip()
++    cwd = (payload.get("cwd") or "").strip()
++    terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
++    workspace_id = os.environ.get("SUPERSET_WORKSPACE_ID", "").strip()
++
++    # The settings.json matcher already scopes us to AskUserQuestion; double-
++    # check when the payload carries a tool name so a misconfig can't misfire.
++    if tool and tool != "AskUserQuestion":
++        return
++    if not session_id:
++        _log({"action": "skip", "reason": "no-session-id", "event": event})
++        return
++
++    marker_dir = pathlib.Path.home() / ".superset" / "agent-ask-pending"
++    marker_path = marker_dir / (session_id + ".json")
++
++    if event == "PreToolUse":
++        try:
++            marker_dir.mkdir(parents=True, exist_ok=True)
++            with open(marker_path, "w", encoding="utf-8") as h:
++                json.dump({
++                    "sessionId": session_id,
++                    "cwd": cwd,
++                    "terminalId": terminal_id,
++                    "workspaceId": workspace_id,
++                    "ts": datetime.datetime.now().isoformat(),
++                }, h)
++            _log({"action": "write", "sessionId": session_id, "cwd": cwd})
++        except Exception as exc:
++            _log({"action": "write-error", "error": str(exc)})
++    else:
++        # PostToolUse (or any non-Pre event) → clear, so a stray event can
++        # never leave the dot stuck red.
++        try:
++            marker_path.unlink()
++            _log({"action": "delete", "sessionId": session_id, "event": event})
++        except FileNotFoundError:
++            pass
++        except Exception as exc:
++            _log({"action": "delete-error", "error": str(exc)})
++
++
+ if __name__ == "__main__":
+     main()
+ `;
+@@ -284,6 +396,11 @@ function hookCommand(): string {
+ 	return `uv run python "${escapeForJsonString(SCRIPT_PATH)}"`;
+ }
+ 
++/** Hook command for the AskUserQuestion marker script (Claude only). */
++function askHookCommand(): string {
++	return `uv run python "${escapeForJsonString(ASK_MARKER_SCRIPT_PATH)}"`;
++}
++
+ interface HookSpec {
+ 	type: "command";
+ 	command: string;
+@@ -303,6 +420,12 @@ function isPaneMapHook(spec: unknown): boolean {
+ 	return typeof cmd === "string" && cmd.includes(SCRIPT_FILENAME);
+ }
+ 
++function isAskMarkerHook(spec: unknown): boolean {
++	if (typeof spec !== "object" || spec === null) return false;
++	const cmd = (spec as { command?: unknown }).command;
++	return typeof cmd === "string" && cmd.includes(ASK_MARKER_SCRIPT_FILENAME);
++}
++
+ /**
+  * Returns true if the pane-map script is on disk with the expected
+  * contents. False if any I/O step failed — caller MUST skip the hook
+@@ -337,6 +460,40 @@ function writeScriptIfChanged(): boolean {
+ 	}
+ }
+ 
++/**
++ * Mirror of writeScriptIfChanged for the AskUserQuestion marker script.
++ * Returns false (caller skips ask-hook registration) if it didn't land.
++ */
++function writeAskMarkerScriptIfChanged(): boolean {
++	try {
++		fs.mkdirSync(SCRIPT_DIR, { recursive: true });
++		let existing: string | null = null;
++		try {
++			existing = fs.readFileSync(ASK_MARKER_SCRIPT_PATH, "utf8");
++		} catch {
++			// ENOENT — write fresh.
++		}
++		if (existing !== ASK_MARKER_SCRIPT) {
++			fs.writeFileSync(ASK_MARKER_SCRIPT_PATH, ASK_MARKER_SCRIPT, {
++				mode: 0o755,
++			});
++		} else {
++			try {
++				fs.chmodSync(ASK_MARKER_SCRIPT_PATH, 0o755);
++			} catch {
++				// best effort — Windows ignores +x
++			}
++		}
++		return true;
++	} catch (error) {
++		console.warn(
++			"[pane-map-hook] failed to write ask-marker script:",
++			error,
++		);
++		return false;
++	}
++}
++
+ function mergeHook(filePath: string): void {
+ 	// Atomic-ish merge: read → mutate in memory → write. Wrapped in
+ 	// try/catch so a malformed settings file doesn't abort startup.
+@@ -401,6 +558,71 @@ function mergeHook(filePath: string): void {
+ 	}
+ }
+ 
++/**
++ * Register the AskUserQuestion marker script as PreToolUse + PostToolUse
++ * hooks (matcher "AskUserQuestion") in Claude's settings.json. Idempotent and
++ * preserves unrelated co-located hooks, mirroring mergeHook. Claude-only —
++ * AskUserQuestion is a Claude tool, so this is never merged into Codex.
++ */
++function mergeAskHook(filePath: string): void {
++	try {
++		let parsed: HooksRoot = {};
++		try {
++			const raw = fs.readFileSync(filePath, "utf8");
++			const candidate = JSON.parse(raw);
++			if (typeof candidate === "object" && candidate !== null) {
++				parsed = candidate as HooksRoot;
++			} else {
++				return; // not an object — leave it alone
++			}
++		} catch (error) {
++			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
++				console.warn(
++					`[pane-map-hook] could not parse ${filePath}; skipping ask merge:`,
++					error,
++				);
++				return;
++			}
++		}
++
++		const hooks = parsed.hooks ?? {};
++		for (const eventName of ["PreToolUse", "PostToolUse"] as const) {
++			const existing = Array.isArray(hooks[eventName])
++				? (hooks[eventName] as HookEntry[])
++				: [];
++			const cleaned: HookEntry[] = [];
++			for (const entry of existing) {
++				const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
++				const keptHooks = innerHooks.filter((spec) => !isAskMarkerHook(spec));
++				if (keptHooks.length === innerHooks.length) {
++					cleaned.push(entry);
++				} else if (keptHooks.length > 0) {
++					cleaned.push({ ...entry, hooks: keptHooks });
++				}
++				// else: entry was wholly ours — drop it.
++			}
++			cleaned.push({
++				matcher: "AskUserQuestion",
++				hooks: [{ type: "command", command: askHookCommand() }],
++			});
++			hooks[eventName] = cleaned;
++		}
++		parsed.hooks = hooks;
++
++		try {
++			fs.mkdirSync(path.dirname(filePath), { recursive: true });
++		} catch {
++			// best effort
++		}
++		fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2));
++	} catch (error) {
++		console.warn(
++			`[pane-map-hook] failed to merge ask hook into ${filePath}:`,
++			error,
++		);
++	}
++}
++
+ /**
+  * Install the pane-map script and register it as a SessionStart hook in
+  * Claude's and Codex's hook config files. Idempotent — calling on every
+@@ -411,8 +633,12 @@ export function installPaneMapHook(): void {
+ 	// pointing Claude/Codex at a missing path would silently no-op every
+ 	// session (or worse, log noise from the agent's hook runner).
+ 	if (!writeScriptIfChanged()) return;
++	// The ask-marker script is best-effort: if it didn't land we skip ITS hook
++	// registration but still install the pane-map hook below.
++	const askOk = writeAskMarkerScriptIfChanged();
+ 	if (fs.existsSync(path.dirname(CLAUDE_SETTINGS_PATH))) {
+ 		mergeHook(CLAUDE_SETTINGS_PATH);
++		if (askOk) mergeAskHook(CLAUDE_SETTINGS_PATH);
+ 	}
+ 	if (fs.existsSync(path.dirname(CODEX_HOOKS_PATH))) {
+ 		mergeHook(CODEX_HOOKS_PATH);

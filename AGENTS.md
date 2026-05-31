@@ -71,6 +71,20 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   appends/creates, which caused "ask-user stayed green" + "no dot on respond"
   (AK)[git]. ((AI) prune-orphans REVERTED — it removed LIVE sources inside
   Superset, causing "no dot"; revisit duplicates with a safer approach.)
+  watcher-dot-accuracy (AP)[git, after AN] — three fixes: pendingToolUseIds so
+  the 45 s idle never false-greens while a shell/build/Task tool runs ("green
+  while working"); read the AskUserQuestion marker dir to drive RED
+  deterministically (JSONL read lag on Windows shows the question line tens of s
+  late); mirror BACKGROUND subagent activity (`<cwd>/<sid>/subagents/agent-*`)
+  to the PARENT terminal so it stays YELLOW while subagents run even after the
+  main agent Stops. ask-marker-hook (AQ)[git, after N] — Python PreToolUse +
+  PostToolUse:AskUserQuestion hook (uv-run, Windows-safe like pane-map) writes/
+  deletes `~/.superset/agent-ask-pending/<sid>.json` that (AP) polls. render-dot
+  logging (AR)[git, diagnostic] — 1 s snapshot of the v2-notifications store →
+  `~/.superset/agent-dot-render.log` to match rendered colour vs the watcher
+  emit log. Root cause was emit-side (idle false-green + ask read-lag), proven
+  from `~/.superset/agent-watcher-debug.log`; System 2 (notify.sh hooks) is
+  dead on Windows so System 1 (JSONL watcher) drives all dots.
 
 ## Traps (do NOT repeat)
 
