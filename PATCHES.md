@@ -1009,16 +1009,21 @@ V1 and some renderer-driven command launches go through
 
 **File: `apps/desktop/src/renderer/lib/terminal/launch-command.ts`**
 
-Find the `normalizeTerminalCommand` function:
+Find the `normalizeTerminalCommand` function (current upstream EXPORTS it —
+`useSendToTerminalAgent.ts` imports it as a named export, so it is `export
+function`; older upstreams had a bare `function`):
 ```typescript
-function normalizeTerminalCommand(command: string): string {
+export function normalizeTerminalCommand(command: string): string {
   return command.endsWith("\n") ? command : `${command}\n`;
 }
 ```
 
-Replace with:
+Replace with (**KEEP the `export` keyword EXACTLY as it appears in the source** —
+dropping it makes the renderer build fail with `"normalizeTerminalCommand" is
+not exported by launch-command.ts`; if the source has no `export`, do not add
+one):
 ```typescript
-function normalizeTerminalCommand(command: string): string {
+export function normalizeTerminalCommand(command: string): string {
   // Windows ConPTY expects \r (carriage return) to execute a command,
   // while Unix terminals use \n (newline). Use \r for cross-platform compat
   // as most Unix terminal emulators also accept \r.
