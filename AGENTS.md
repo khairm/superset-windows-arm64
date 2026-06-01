@@ -36,7 +36,16 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   oneClick (G); bundle tokenizers-win32-arm64 (I); pty-daemon `ELECTRON_RUN_AS_NODE`
   (J); renderer CORS `superset-app://` (K).
 - **Windows UX / behaviour**: titleBarOverlay window controls (H)[inline]; git-storm
-  fix (L)[git]; skip quit-confirm (M)[inline]; cmd.exe shell fallback (R)[git];
+  fix (L)[git]; skip quit-confirm (M)[inline] + before-quit Windows gate (M2)[inline,
+  after M — deep-review #2: the AI Patch 19 before-quit step anchored on a
+  `const shouldConfirm` that doesn't exist in 1.12.1, so the dialog still fired on
+  Windows close; M2 `.Replace`s the real `if (!skipQuitConfirmation && !isDev &&
+  getConfirmOnQuitSetting()) {` to add `!PLATFORM.IS_WINDOWS &&`]; webgl render
+  recovery (AV)[inline, replaces retired AI Patch 20 — deep-review #1: Patch 20's
+  anchor (createTerminalInstance/loadRenderer/rendererRef) is gone in 1.12.1; AV
+  splices `clearTextureAtlas?.()`+`refresh()` after the real
+  `terminal.loadAddon(webglAddon)` in `lib/terminal/terminal-addons.ts` loadAddons
+  rAF — verify first-paint on device]; cmd.exe shell fallback (R)[git];
   `await resolveLaunchShell` (S)[inline]; hidden-window watchdog (T)[inline]; Wispr
   accessibility/UIA (AA.1)[inline] + diag (AA.2)[inline]; windows-terminal-paste —
   the real Wispr fix (AC)[inline]; force-foreground (Y)[git]; v2 blank-pane
@@ -198,3 +207,32 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
 - **The build runs no test / biome / tsc** (`compile:app` = electron-vite/esbuild
   only), so type/format errors won't fail it — validate patches locally and exercise
   startup / login / terminal / agents / WisprFlow end-to-end before shipping.
+- **Stale [AI] PATCHES.md instructions are a silent-skip / misapply hazard** — an
+  Opus deep review (2026-06-01, 22 reviewers + adversarial verify) found several AI
+  patches anchored on symbols upstream 1.12.1 renamed/removed. Dispositions:
+  Patch 6 (feature-flag blank-screen) RETIRED — upstream no longer gates render on
+  an undefined flag; Patch 18 (Ctrl+C/V) RETIRED — native via
+  `shouldBubbleClipboardShortcut` + covered by (AC); Patch 20 (webgl recovery)
+  RETIRED as [AI] → re-implemented deterministically as (AV); Patch 19 before-quit
+  gate → deterministic (M2); Patch 27 (worktree base dir) re-anchored
+  SATISFIED-BY-UPSTREAM (host-DB `worktreeBaseDir` + `getHostWorktreeBaseDir`; do
+  NOT inject `SUPERSET_WORKTREE_BASE_DIR` — the live var is
+  `SUPERSET_LEGACY_WORKTREE_BASE_DIR`, DB is source of truth); Patch 15 extended to
+  the `runCommand` `\r` path; Patch 8 corrected ("~5"→7 occurrences, name
+  `isSocketLive`). **Rule: a "mandatory" AI patch whose anchor has drifted must be
+  RETIRED or re-anchored — never left dangling** (no gate catches a silent skip /
+  scope-broken misapply under the no-tsc build).
+- **ABI is derived authoritatively, not `EM+103`** — that linear guess was correct
+  only at Electron 40; the real node-abi map is non-linear. nightly-build.yml now
+  prefers `node-abi getAbi(EV,'electron')`, falls back to a pinned 36–42 map, and
+  HARD-FAILS on an unknown major (better-sqlite3 is V8-ABI-bound; a wrong ABI
+  silently fetches a crashing prebuilt that the PE-arch check can't detect).
+- **KNOWN-LOW, deferred (deep-review #9):** re-importing an ALREADY-set-up *non-git*
+  folder routes `useFolderFirstImport` → `project.setup({mode:"import"})` →
+  `resolveLocalRepo` → `git rev-parse` → throws BAD_REQUEST. (AE) guards
+  `findByPath`/`project.create` (adds `nonGitFolder`) but NOT `project.setup`'s
+  import case. Fails LOUD, no corruption, narrow edge. Fix = guard `project.setup`
+  import with `isGitRepo()` and route non-git through `resolveNonGitFolder` +
+  `ensureMainWorkspace({nonGit:true})` — but it touches the shipped non-git feature
+  and MUST be runtime-validated, so it's a separate validated follow-up, not folded
+  into a fixup build.

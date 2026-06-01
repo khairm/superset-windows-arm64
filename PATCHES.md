@@ -536,34 +536,20 @@ Find the production branch that loads from file (the `else` clause after the dev
 
 ---
 
-## Patch 6: Feature flag default to prevent infinite render block
+## Patch 6: (RETIRED — upstream no longer gates render on an undefined feature flag)
 
-**Why:** When PostHog is not configured (no key), feature flags stay `undefined` forever. The app blocks rendering waiting for them, causing a permanent blank/white screen.
-
-**File: `apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/CollectionsProvider.tsx`**
-
-Find the block that returns `null` when the feature flag is undefined. It looks like this (may include an `env.SKIP_ENV_VALIDATION` guard):
-```typescript
-if (useElectricCloud === undefined && !env.SKIP_ENV_VALIDATION) {
-  return null;
-}
-```
-
-**Delete that entire `if` block** (remove all 3 lines). Then, immediately before the `setElectricUrl(...)` call, add:
-```typescript
-// When PostHog is not configured (no key), feature flags stay undefined forever.
-// Default to false (use proxy) so the app doesn't block rendering.
-const isElectricCloud = useElectricCloud ?? false;
-```
-
-Then change the `setElectricUrl` call to use `isElectricCloud` instead of `useElectricCloud`:
-```typescript
-setElectricUrl(
-  isElectricCloud
-    ? env.NEXT_PUBLIC_ELECTRIC_URL
-    : env.NEXT_PUBLIC_ELECTRIC_PROXY_URL,
-);
-```
+**This patch is intentionally retired (2026-06-01 deep review, finding #11).** It
+targeted `useElectricCloud` / `setElectricUrl` / `NEXT_PUBLIC_ELECTRIC_PROXY_URL`
+in `CollectionsProvider.tsx`. As of upstream 1.12.1 **none of those symbols
+exist** (grep returns zero): the electric URL is now unconditional
+(`collections.ts`: `const electricUrl = ${env.NEXT_PUBLIC_ELECTRIC_URL}/v1/shape`)
+and v2 selection moved to `useIsV2CloudEnabled()`. `CollectionsProvider.tsx` only
+gates on `if (!contextValue || isSwitching) { return null; }`, so the
+PostHog-undefined-flag infinite-blank-screen this patch fixed no longer
+reproduces. The AI applier finds no anchor and makes no change — but a dead
+instruction in a "mandatory" set is a re-anchoring hazard, so it is removed. If a
+blank-screen-on-missing-flag risk is reintroduced upstream, re-author against the
+then-current anchor rather than reviving this. **Do NOT apply any edit for Patch 6.**
 
 ---
 
@@ -657,7 +643,16 @@ export const TERMINAL_HOST_PATHS = {
    ```typescript
    if (!IS_WINDOWS && !existsSync(SOCKET_PATH)) {
    ```
-   There should be approximately 5 occurrences.
+   There are **7 occurrences** in upstream 1.12.1 (not ~5) — patch **all** of
+   them, and in particular **`isSocketLive()`** (it opens with
+   `if (!existsSync(SOCKET_PATH)) { resolve(false); return; }`). An unpatched
+   `isSocketLive()` returns false for a `\\.\pipe\...` named pipe (existsSync is
+   always false on a pipe), so `waitForDaemon` throws and `spawnDaemon`
+   needlessly re-spawns. With the gate fixed it falls through to
+   `connect(SOCKET_PATH)`, which works for Windows named pipes. (This V1
+   terminal-host client is a dead path under the (AD) v2-pin — the live runtime
+   is the V2 pty-daemon — but keep the edit complete to avoid a re-anchoring
+   trap. Deep review 2026-06-01, finding #6.)
 5. Find `if (existsSync(SOCKET_PATH))` in the `spawnDaemon` method. Change to:
    ```typescript
    if (IS_WINDOWS || existsSync(SOCKET_PATH)) {
@@ -1058,6 +1053,23 @@ const cmd = initialCommand.endsWith("\n") || initialCommand.endsWith("\r")
   : `${initialCommand}${TERMINAL_COMMAND_EOL}`;
 ```
 
+3. **Also patch the third `\n`-only path: `runCommand(command)`** (deep review
+   2026-06-01, finding #5). `terminal.ts` `runCommand` (the remote-control write
+   path, called from `remote-control/route.ts`) has its own append:
+   ```typescript
+   const cmd = command.endsWith("\n") ? command : `${command}\n`;
+   ```
+   Change it (same `.endsWith` form, reuse `TERMINAL_COMMAND_EOL`, **never a
+   regex**) to:
+   ```typescript
+   const cmd = command.endsWith("\n") || command.endsWith("\r")
+     ? command
+     : `${command}${TERMINAL_COMMAND_EOL}`;
+   ```
+   Without this, commands sent via the remote-control route type into the
+   Windows terminal but do not execute (ConPTY needs `\r`) — the same bug
+   `queueInitialCommand` fixes, on a path Patch 15 previously missed.
+
 **Apply this with `.endsWith()`, NEVER a regex literal.** A `/[\r\n]$/` here has
 been mangled into an *unterminated regular expression* (a literal CR-LF emitted
 inside the character class) during AI application, hard-failing the esbuild build
@@ -1266,68 +1278,21 @@ img-src 'self' data: blob: https: http:; media-src 'self' data:; font-src 'self'
 
 ---
 
-## Patch 18: Windows Ctrl+C (copy) and Ctrl+V (paste) in terminal
+## Patch 18: (RETIRED — Windows Ctrl+C/Ctrl+V is now native upstream + covered by (AC))
 
-**Why:** xterm.js is a terminal emulator, so it follows Unix terminal conventions:
-- **Ctrl+C** always sends SIGINT (interrupt) to the process, even when text is selected. On Windows, users expect Ctrl+C to copy selected text (and only interrupt when nothing is selected).
-- **Ctrl+V** sends the literal `\x16` character (ASCII SYN) to the terminal instead of pasting. On Windows, users expect Ctrl+V to paste from clipboard. (Ctrl+Shift+V works because xterm.js has built-in support for that as the "terminal paste" shortcut.)
-
-**File: `apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/helpers.ts`**
-
-Find the `setupKeyboardHandler()` function. Inside the `handler` function, find the line:
-```typescript
-if (isTerminalReservedEvent(event)) return true;
-```
-
-**Immediately before** that line (after the Ctrl+Right word navigation block), add the following two blocks:
-
-```typescript
-// Windows: Ctrl+C copies selected text to clipboard; if nothing is
-// selected, fall through to send the normal interrupt signal.
-if (
-  isWindows &&
-  event.type === "keydown" &&
-  event.ctrlKey &&
-  !event.shiftKey &&
-  !event.altKey &&
-  event.key === "c"
-) {
-  if (xterm.hasSelection()) {
-    navigator.clipboard.writeText(xterm.getSelection());
-    xterm.clearSelection();
-    return false; // Copied — don't send interrupt
-  }
-  // No selection — fall through to terminal reserved handler (interrupt)
-}
-
-// Windows: Ctrl+V pastes from clipboard.
-// xterm.js defaults to sending \x16 for Ctrl+V (Unix "quoted insert").
-// Return false to block \x16 — the browser will fire a native paste event
-// which setupPasteHandler() already handles (with chunking, bracketed paste, etc.).
-if (
-  isWindows &&
-  event.type === "keydown" &&
-  event.ctrlKey &&
-  !event.shiftKey &&
-  !event.altKey &&
-  event.key === "v"
-) {
-  return false; // Block \x16; native paste event handles the rest
-}
-```
-
-The result should look like:
-```typescript
-    // ... Ctrl+Right word navigation block above ...
-
-    // Windows: Ctrl+C copies selected text ...
-    if (isWindows && ...) { ... }
-
-    // Windows: Ctrl+V pastes from clipboard ...
-    if (isWindows && ...) { ... }
-
-    if (isTerminalReservedEvent(event)) return true;
-```
+**This patch is intentionally retired (2026-06-01 deep review, finding #12).** Its
+anchors no longer exist in upstream 1.12.1: `setupKeyboardHandler` and
+`setupPasteHandler` are gone (grep zero in `apps/desktop/src`), and
+`isTerminalReservedEvent` now lives under `renderer/hotkeys`, not `helpers.ts`.
+The Windows behaviour it added is now **native**: `lib/terminal/clipboard-shortcuts.ts`
+`shouldBubbleClipboardShortcut` already implements the Windows branch
+(`if (event.code === "KeyV" && (onlyCtrl || ctrlShiftOnly)) return true;` and
+`if (event.code === "KeyC" && onlyCtrl && hasSelection) return true;`), and the
+synthetic-Ctrl+V intercept is handled deterministically by the **(AC)
+windows-terminal-paste** inline splice (which hard-aborts on drift). Leaving this
+mandatory against a nonexistent anchor invites a silent skip or a dead-code
+misapply with no gate to catch it, so it is removed. **Do NOT apply any edit for
+Patch 18** — Windows Ctrl+C/Ctrl+V is covered by upstream + (AC).
 
 ---
 
@@ -1403,55 +1368,45 @@ The result should look like:
    });
    ```
 
-**File: `apps/desktop/src/main/index.ts`**
+**File: `apps/desktop/src/main/index.ts`** — the before-quit Windows gate is now
+applied **deterministically by the `(M2)` inline fixup** in `nightly-build.yml`,
+NOT by this AI step. Do NOT edit `index.ts` before-quit here.
 
-In the `app.on("before-quit", ...)` handler, skip the confirmation on Windows since it's now handled at the window `close` event level. Find:
-```typescript
-const shouldConfirm =
-  !skipConfirmation && !isDev && getConfirmOnQuitSetting();
-```
-
-Change to:
-```typescript
-const shouldConfirm =
-  !skipConfirmation && !isDev && !PLATFORM.IS_WINDOWS && getConfirmOnQuitSetting();
-```
-
-Make sure `PLATFORM` is imported from `shared/constants` in this file (check the existing imports and add if missing).
+> **Why this moved to an inline fixup (2026-06-01 deep review, finding #2):** this
+> step used to say "find `const shouldConfirm = !skipConfirmation && !isDev &&
+> getConfirmOnQuitSetting();` and add `!PLATFORM.IS_WINDOWS`". That `const
+> shouldConfirm` **does not exist** in upstream 1.12.1 — the real code at
+> `index.ts` before-quit is an inline `if (!skipQuitConfirmation && !isDev &&
+> getConfirmOnQuitSetting()) {`. The AI found no anchor and silently skipped, so
+> the quit-confirmation dialog still fired on Windows close (window-all-closed →
+> app.quit() → before-quit), defeating the (M) goal. `(M2)` now does a
+> deterministic `.Replace` on the real anchor (inserting `!PLATFORM.IS_WINDOWS &&`)
+> with a post-apply verify + hard-abort. `PLATFORM` is already imported in
+> `index.ts`. The window.on("close") removal stays owned by the `(M)` inline step.
 
 ---
 
-## Patch 20: Fix terminal rendering on initial open (Windows)
+## Patch 20: (RETIRED as an [AI] step — re-implemented deterministically as the `(AV)` inline fixup)
 
-**Why:** When a new terminal opens on Windows, the content appears garbled/overlapping — text renders on top of itself with wrong column/row calculations. Programs that use alternate screen mode (like Claude Code, vim, less) show old content underneath instead of a clean screen. Switching to another tab and back fixes it because `runReattachRecovery()` fires which calls `clearTextureAtlas()` + `fit()` + `refresh()`. The root cause is that after the WebGL renderer loads asynchronously and swaps from the DOM renderer, no recovery is performed. The fix: trigger the same recovery sequence that tab-switching does, after the WebGL renderer loads.
+**Moved to a deterministic inline fixup (2026-06-01 deep review, finding #1).** The
+intent stands — a new terminal can render garbled/overlapping on first paint on
+Windows because `xterm.open()` instantiates the DOM renderer and then WebGL swaps
+in on the next frame with a stale glyph atlas, and only a tab-switch
+(`clearTextureAtlas()` + `refresh()`) recovers it. But this step's anchors
+(`createTerminalInstance`, `loadRenderer`, `rendererRef`, a local `fitAddon` in
+that block) **do not exist in upstream 1.12.1** (grep zero across
+`apps/desktop/src`). Left as an [AI] step it either silently skips (garble
+unfixed) or "adapts" and splices code referencing undefined symbols that esbuild
+(no tsc) passes and that throws a ReferenceError at terminal-open — crashing a
+core feature with no gate to catch it.
 
-**File: `apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/helpers.ts`**
-
-Find the `requestAnimationFrame` block that loads the WebGL renderer inside `createTerminalInstance()`:
-```typescript
-rafId = requestAnimationFrame(() => {
-  rafId = null;
-  if (isDisposed) return;
-  rendererRef.current = loadRenderer(xterm);
-});
-```
-
-Replace with:
-```typescript
-rafId = requestAnimationFrame(() => {
-  rafId = null;
-  if (isDisposed) return;
-  rendererRef.current = loadRenderer(xterm);
-  // Run the same recovery that tab-switching triggers (runReattachRecovery):
-  // clear stale WebGL glyph cache, refit dimensions, and force a full repaint.
-  // Without this, the terminal shows garbled/overlapping text on Windows because
-  // the WebGL renderer has different metrics than the initial DOM renderer, and
-  // alternate screen mode transitions (Claude Code, vim) don't render cleanly.
-  rendererRef.current.clearTextureAtlas?.();
-  fitAddon.fit();
-  xterm.refresh(0, xterm.rows - 1);
-});
-```
+The real v2 WebGL load site is `renderer/lib/terminal/terminal-addons.ts`
+`loadAddons()`, deferred to rAF: `terminal.loadAddon(webglAddon);`. The `(AV)`
+inline fixup in `nightly-build.yml` splices `webglAddon.clearTextureAtlas?.();` +
+`terminal.refresh(0, terminal.rows - 1);` immediately after that line
+(idempotent, hard-abort on anchor drift, post-apply marker verify). **Do NOT apply
+any edit for Patch 20** — `(AV)` owns it. (Renderer behaviour change — verify
+terminal first-paint on the device after install.)
 
 ---
 
@@ -1772,35 +1727,48 @@ can set `SUPERSET_TERMINAL_SHELL` before launching the app.
 
 ---
 
-## Patch 27: Honor configured worktree base dir in V2 host-service
+## Patch 27: (SATISFIED BY UPSTREAM — configurable V2 worktree base dir is now native; do NOT inject env vars)
 
-**Why:** V2 workspace creation runs in `packages/host-service`, not the older
-desktop workspaces router. The desktop router honored the global/project
-worktree setting, but the V2 host-service path resolver hard-coded
-`~/.superset/worktrees`, so new V2 worktrees ignored the configured Windows
-location such as `D:\superset-wt`.
+**Re-anchored to 1.12.1 reality (2026-06-01 deep review, findings #3/#7/#8).** The
+goal — make new V2 worktrees honor a configured base dir (e.g. `D:\superset-wt`)
+instead of hard-coded `~/.superset/worktrees` — is **already implemented upstream
+via the host DB**, and the symbols this patch targeted are gone. Applying it
+literally is dead code; "adapting" it risks a **DB/env desync** (violates
+DB-is-source-of-truth). So all three parts are now no-ops to be verified, not
+applied:
 
-**Files:**
-- `apps/desktop/src/main/lib/host-service-coordinator.ts`
-- `apps/desktop/src/lib/trpc/routers/settings/index.ts`
-- `packages/host-service/src/trpc/router/workspace-creation/shared/worktree-paths.ts`
+- **Part 2 (was: add `process.env.SUPERSET_WORKTREE_BASE_DIR` fallback in
+  `supersetWorktreesRoot()`):** `supersetWorktreesRoot()` **does not exist** (grep
+  zero). Upstream exposes `defaultWorktreesRoot()` and
+  `projectWorktreesRoot(projectId, worktreeBaseDir?)` (the latter falls back
+  `worktreeBaseDir ?? defaultWorktreesRoot()`), and the base dir is threaded
+  explicitly: `workspaces.ts` does `localProject.worktreeBaseDir ??
+  getHostWorktreeBaseDir(ctx)` → `safeResolveWorktreePath`, where
+  `getHostWorktreeBaseDir` reads `hostSettings.worktreeBaseDir` from the host DB.
+  **Do NOT add an env fallback** — `SUPERSET_WORKTREE_BASE_DIR` is read nowhere,
+  and the fallback branch is only reached when nothing is configured, so it could
+  never override a configured value anyway.
 
-1. In `host-service-coordinator.ts`, read `settings.worktreeBaseDir` from
-   `localDb` in `buildEnv()` and pass it to the child host-service as
-   `SUPERSET_WORKTREE_BASE_DIR` when set.
+- **Part 1 (was: inject `SUPERSET_WORKTREE_BASE_DIR` into the child env in
+  `host-service-coordinator.ts buildEnv()`):** `buildEnv()` **already** reads
+  `settings.worktreeBaseDir` from `localDb` and passes it as
+  **`SUPERSET_LEGACY_WORKTREE_BASE_DIR`** (consumed by `getHostWorktreeBaseDir` to
+  seed the host DB on first run). Injecting a second, differently-named
+  `SUPERSET_WORKTREE_BASE_DIR` is unconsumed dead code; renaming the existing one
+  would break the legacy-seed path. **Reference the existing var; inject nothing.**
 
-2. In `worktree-paths.ts`, have `supersetWorktreesRoot()` prefer
-   `process.env.SUPERSET_WORKTREE_BASE_DIR?.trim()` before falling back to
-   `join(homedir(), ".superset", "worktrees")`.
+- **Part 3 (was: restart host-service children in `setWorktreeBaseDir` so the new
+  base takes effect):** false premise. V2 reads `worktreeBaseDir` **live from the
+  host DB on every create** (`getHostWorktreeBaseDir`); the V2 UI writes it via
+  `worktreeLocationRouter.set`, so it takes effect immediately with **no restart**.
+  The legacy env is consulted only on first-run when `hostSettings` has no row.
+  **No restart edit needed** (at most a documented first-run-only refresh — not
+  justified by a steady-state-caching claim, which is false).
 
-3. In `settings/index.ts`, update `setWorktreeBaseDir` to restart active
-   host-service children after saving, the same way the relay setting restart
-   works. Otherwise a running V2 host-service keeps the old environment until
-   app restart.
-
-The intended Windows behavior is that setting the worktree folder to
-`D:\superset-wt` makes new V2 worktrees land under that base instead of
-`C:\Users\<user>\.superset\worktrees`.
+**Action: apply NOTHING for Patch 27.** Instead verify end-to-end on Windows that
+setting the worktree folder in V2 settings lands new worktrees under that base
+(host-DB path: `worktreeLocationRouter.set` → `hostSettings.worktreeBaseDir` →
+`getHostWorktreeBaseDir` → `safeResolveWorktreePath`).
 
 ---
 

@@ -707,6 +707,65 @@ jobs:
           }
           Write-Host "(M) skip-quit-confirmation applied (no quit dialog / preventDefault in window.on('close') on Windows)"
 
+          # (M2) before-quit Windows gate — companion to (M). PATCHES.md Patch 19
+          #      part 2 told the AI to add !PLATFORM.IS_WINDOWS to a
+          #      `const shouldConfirm = !skipConfirmation && ...` that DOES NOT
+          #      EXIST in upstream 1.12.1 (real code is an inline
+          #      `if (!skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {`
+          #      in index.ts before-quit). So the gate was never applied and the
+          #      quit-confirmation dialog still fired on Windows close
+          #      (window-all-closed -> app.quit() -> before-quit). The (M) step
+          #      only removes the window.on("close") dialog, never this one.
+          #      Deterministic .Replace on the real anchor; PLATFORM is already
+          #      imported in index.ts. Idempotent + hard-abort on drift.
+          $ix = 'apps/desktop/src/main/index.ts'
+          if (-not (Test-Path $ix)) { Write-Error "(M2) missing $ix"; exit 1 }
+          $c = Get-Content -Raw $ix
+          $m2Anchor = 'if (!skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {'
+          $m2Done   = 'if (!PLATFORM.IS_WINDOWS && !skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {'
+          if ($c.Contains($m2Done)) {
+            Write-Host "(M2) before-quit Windows gate already present — skip"
+          } elseif (-not $c.Contains($m2Anchor)) {
+            Write-Error "(M2) before-quit anchor not found in $ix; upstream changed -- re-anchor (M2)"; exit 1
+          } else {
+            if (-not ($c -match 'PLATFORM')) { Write-Error "(M2) PLATFORM not imported in $ix -- cannot gate before-quit"; exit 1 }
+            $c = $c.Replace($m2Anchor, $m2Done)
+            Set-Content -Path $ix -Value $c -NoNewline
+            Write-Host "(M2) before-quit gated with !PLATFORM.IS_WINDOWS (no quit dialog on Windows)"
+          }
+          if (-not ((Get-Content -Raw $ix).Contains($m2Done))) { Write-Error "(M2) before-quit gate verify failed"; exit 1 }
+
+          # (AV) webgl render recovery — REPLACES retired [AI] Patch 20, whose
+          #      anchor (createTerminalInstance / loadRenderer / rendererRef /
+          #      clearTextureAtlas-on-a-local) no longer exists in 1.12.1. The
+          #      real WebGL load is in renderer/lib/terminal/terminal-addons.ts
+          #      loadAddons(), deferred to rAF: `terminal.loadAddon(webglAddon)`.
+          #      xterm.open() instantiates the DOM renderer first; when WebGL
+          #      swaps in on the next frame the first paint can be garbled /
+          #      overlapping on Windows (the original Patch 20 bug) because the
+          #      DOM glyph atlas is stale. Splice the same recovery tab-switching
+          #      does — clear the texture atlas + force a full refresh — right
+          #      after the addon loads. clearTextureAtlas?.() + refresh are safe
+          #      idempotent xterm ops (no-op if unneeded). Deterministic
+          #      .Replace on the bare unique anchor; idempotent + hard-abort on
+          #      drift. (Renderer behaviour change — verify terminal first-paint
+          #      on the device after install.)
+          $ta = 'apps/desktop/src/renderer/lib/terminal/terminal-addons.ts'
+          if (-not (Test-Path $ta)) { Write-Error "(AV) missing $ta"; exit 1 }
+          $c = Get-Content -Raw $ta
+          $avAnchor = 'terminal.loadAddon(webglAddon);'
+          $avAdd = "`r`n`t`t`twebglAddon.clearTextureAtlas?.();`r`n`t`t`tterminal.refresh(0, terminal.rows - 1);"
+          if ($c.Contains('webglAddon.clearTextureAtlas?.()')) {
+            Write-Host "(AV) webgl render recovery already present — skip"
+          } elseif (-not $c.Contains($avAnchor)) {
+            Write-Error "(AV) 'terminal.loadAddon(webglAddon);' anchor not found in $ta; upstream changed -- re-anchor (AV)"; exit 1
+          } else {
+            $c = $c.Replace($avAnchor, $avAnchor + $avAdd)
+            Set-Content -Path $ta -Value $c -NoNewline
+            Write-Host "(AV) webgl render recovery spliced after terminal.loadAddon(webglAddon)"
+          }
+          if (-not ((Get-Content -Raw $ta).Contains('webglAddon.clearTextureAtlas?.()'))) { Write-Error "(AV) webgl recovery verify failed"; exit 1 }
+
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
           #     hook command in ~/.claude/settings.json
@@ -1218,8 +1277,11 @@ jobs:
           #      red / never showed working ("ask-user stayed green", "no dot when
           #      I responded"). Adds two poll timers that re-stat tracked files for
           #      growth (fast) and rescan for new files, so every transition lands
-          #      within a couple seconds regardless of fs.watch. Layers on (N)+(AJ)
-          #      watcher. (NOTE: the (AI) v2-dots-prune patch was REVERTED — it
+          #      within a couple seconds regardless of fs.watch. Applies BEFORE
+          #      (AJ) below, so its true base is post-(N)+(W) watcher (W also
+          #      edits agent-jsonl-watcher.ts); AK and AJ touch non-overlapping
+          #      regions so plain git apply succeeds in this order. (NOTE: the
+          #      (AI) v2-dots-prune patch was REVERTED — it
           #      wrongly removed live sources inside Superset, causing "no dot".)
           $wp = '../patches/watcher-poll-fallback.patch'
           $wpFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
@@ -1231,9 +1293,9 @@ jobs:
             $wpErr = "$env:RUNNER_TEMP/ak-apply-check.txt"
             git apply --check $wp 2>$wpErr
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "(AK) watcher-poll-fallback.patch does not apply cleanly (post N+AJ). git apply --check output:"
+              Write-Host "(AK) watcher-poll-fallback.patch does not apply cleanly (post N+W). git apply --check output:"
               if (Test-Path $wpErr) { Get-Content $wpErr | ForEach-Object { Write-Host "    (AK-check) $_" } }
-              Write-Error "(AK) watcher-poll-fallback.patch failed to apply — agent-jsonl-watcher shape changed (N/AJ drift?). Regenerate it against post-(N)+(AJ) watcher."
+              Write-Error "(AK) watcher-poll-fallback.patch failed to apply — agent-jsonl-watcher shape changed (N/W drift?). Regenerate it against post-(N)+(W) watcher (AK applies before AJ)."
               exit 1
             }
             git apply $wp
@@ -1754,7 +1816,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
@@ -1890,10 +1952,30 @@ jobs:
           tar -xzf tok-dl/tokenizers-win32-arm64-msvc.tar.gz -C tokenizers-arm64
           [ -f tokenizers-arm64/tokenizers.win32-arm64-msvc.node ] || { echo "::error::tokenizers artifact missing .node"; exit 1; }
 
-          # Electron ABI from the resolved electron major (electron N -> NODE_MODULE_VERSION N+103).
+          # Electron NODE_MODULE_VERSION (V8 ABI) for the resolved electron.
+          # better-sqlite3 is V8-ABI-bound (not N-API): a WRONG ABI fetches a
+          # prebuilt that crashes Electron ("compiled against a different
+          # Node.js version"), and the only post-download check is a PE-arch
+          # assert that cannot detect an ABI mismatch. The old `EM + 103` was
+          # linear and correct ONLY at Electron 40 (40+103=143); the real
+          # node-abi map is non-linear (38->139, 39->140, 40->143, 41->145,
+          # 42->146). Derive authoritatively: prefer node-abi against the
+          # resolved FULL electron version, fall back to a pinned map, and
+          # HARD-FAIL on an unknown major (never silently guess).
           EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
-          ABI=$((EM + 103))
-          echo "electron major=$EM -> ABI=$ABI"
+          EV=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | sort -V | tail -1)
+          [ -n "$EM" ] || { echo "::error::could not determine resolved electron version"; exit 1; }
+          ABI=$(node -e "try{process.stdout.write(String(require('node-abi').getAbi('$EV','electron')))}catch(e){}" 2>/dev/null || true)
+          if printf '%s' "$ABI" | grep -Eq '^[0-9]+$'; then
+            echo "ABI from node-abi getAbi('$EV','electron') = $ABI"
+          else
+            case "$EM" in
+              36) ABI=135;; 37) ABI=136;; 38) ABI=139;; 39) ABI=140;; 40) ABI=143;; 41) ABI=145;; 42) ABI=146;;
+              *) echo "::error::Unknown Electron major $EM and node-abi unavailable — add its NODE_MODULE_VERSION (node-abi getAbi('$EV','electron')) to the ABI map in nightly-build.yml"; exit 1;;
+            esac
+            echo "ABI from pinned map (node-abi unavailable) = $ABI"
+          fi
+          echo "electron version=$EV major=$EM -> ABI=$ABI"
           export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64" TOKENIZERS_ARM64_DIR="$PWD/tokenizers-arm64"
           bash scripts/materialize-native-closure.sh
           # persist for later steps
