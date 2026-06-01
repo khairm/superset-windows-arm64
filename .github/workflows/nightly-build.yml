@@ -766,6 +766,45 @@ jobs:
           }
           if (-not ((Get-Content -Raw $ta).Contains('webglAddon.clearTextureAtlas?.()'))) { Write-Error "(AV) webgl recovery verify failed"; exit 1 }
 
+          # (AW) red-over-yellow precedence — a pending AskUserQuestion/permission
+          #      (RED) must never be downgraded to working (YELLOW) by the
+          #      background-subagent keep-alive. The System-1 watcher mirror
+          #      (windows-notify-hook.patch) FORCE-asserts activity on the parent
+          #      terminal while background subagents run, but it CANNOT observe the
+          #      POST-hook-driven red (split-brain), so it used to emit "Start"
+          #      (-> working) and stomp the red dot (user ignored a question because
+          #      it showed yellow). The mirror now emits the distinct eventType
+          #      "SubagentActive"; this fixup teaches the renderer's status-transition
+          #      reducer to treat it as working ONLY when the source is not already
+          #      "permission" (red wins). The legit answer-release stays "Start"
+          #      (PostToolUse) and still clears red -> working. Deterministic
+          #      .Replace before the Start case; idempotent + hard-abort on drift.
+          $st = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/statusTransitions.ts'
+          if (-not (Test-Path $st)) { Write-Error "(AW) missing $st"; exit 1 }
+          $c = Get-Content -Raw $st
+          $stAnchor = 'if (payload.eventType === "Start") {'
+          # Match the EXACT inserted branch (not a bare "SubagentActive" token) so a
+          # stray occurrence upstream — in a type/comment/other branch — can never
+          # false-positive the idempotency skip or the verify and silently drop the
+          # red-over-yellow guard (deep review: 2x codex flagged the bare-substring check).
+          $stMarker = 'if (payload.eventType === "SubagentActive") {'
+          $stAdd = "if (payload.eventType === `"SubagentActive`") {`r`n`t`tconst subagentEntry = statuses[terminalSourceKey];`r`n`t`tif (subagentEntry?.workspaceId === workspaceId && subagentEntry.status === `"permission`") {`r`n`t`t`treturn { clearSources: [], setStatus: null };`r`n`t`t}`r`n`t`treturn { clearSources: [], setStatus: { source: terminalSource, status: `"working`" } };`r`n`t}`r`n`r`n`t"
+          if ($c.Contains($stMarker)) {
+            Write-Host "(AW) red-over-yellow (SubagentActive) already present — skip"
+          } elseif (-not $c.Contains($stAnchor)) {
+            Write-Error "(AW) statusTransitions Start anchor not found in $st; upstream changed -- re-anchor (AW)"; exit 1
+          } else {
+            # Fail loud if the Start anchor isn't unique: String.Replace is
+            # all-occurrences, so a future upstream with 2+ Start cases would
+            # inject the branch before each. Assert exactly one (deep review: claude).
+            $anchorCount = ([regex]::Matches($c, [regex]::Escape($stAnchor))).Count
+            if ($anchorCount -ne 1) { Write-Error "(AW) expected exactly 1 Start-case anchor in $st, found $anchorCount -- re-anchor (AW)"; exit 1 }
+            $c = $c.Replace($stAnchor, $stAdd + $stAnchor)
+            Set-Content -Path $st -Value $c -NoNewline
+            Write-Host "(AW) statusTransitions: SubagentActive keep-alive yields to permission (red > yellow)"
+          }
+          if (-not ((Get-Content -Raw $st).Contains($stMarker))) { Write-Error "(AW) red-over-yellow verify failed"; exit 1 }
+
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
           #     hook command in ~/.claude/settings.json
@@ -1816,7 +1855,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

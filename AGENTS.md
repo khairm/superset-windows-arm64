@@ -168,6 +168,28 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   filesystem-safe marker name). Residual R2 (Stop vs last SubagentStop) is
   safe-direction (stuck-yellow, self-corrects next turn). The (AS) interrupt-
   release (ESC) still greens directly — accepted.
+  red-over-yellow (AW)[git emit-tag + inline statusTransitions fixup, after AS/AU]
+  — RED (AskUserQuestion/permission) must TRUMP yellow whenever both are true; a
+  pending question showed YELLOW (user ignored it for ages) when background
+  subagents were running. Root cause: the store is last-writer-wins and the
+  renderer's `resolveV2AgentStatusTransition` maps `Start`->working
+  UNCONDITIONALLY, while the System-1 background-subagent MIRROR
+  (windows-notify-hook.patch `mirrorSubagentToParent`) FORCE-asserts activity on
+  the parent terminal every time a fork writes its transcript. The mirror is
+  blind to the POST-hook-driven red (split-brain: System 2 sets permission, the
+  watcher's own `lastStatus` never sees it), so its `emit("Start")` repeatedly
+  stomped the red->yellow. Fix: the mirror now emits the DISTINCT eventType
+  `SubagentActive` (emit-union widened in agent-jsonl-watcher.patch); the (AW)
+  inline fixup adds a `SubagentActive` branch to `statusTransitions.ts` that sets
+  working ONLY when the source is not already `permission` (red wins; otherwise
+  it still overrides a false-green review->working, the mirror's real job). The
+  legit answer-release stays `Start` (PostToolUse) so it still clears red->working
+  — that's why the mirror needed its OWN eventType rather than a blanket "Start
+  never clears red". A new SubagentStart can't fire mid-AskUserQuestion (the main
+  turn is single-threaded and blocked), so (AU)'s System-2 SubagentStart->Start is
+  not a clobberer and was left as-is. The System-1 IPC path passes `SubagentActive`
+  through unfiltered (precedent: `PendingQuestion`); validated by running the (AW)
+  .Replace on the real statusTransitions.ts + esbuild.
 
 ## Traps (do NOT repeat)
 

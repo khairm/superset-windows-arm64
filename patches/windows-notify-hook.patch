@@ -632,7 +632,7 @@ index 7894655..0729c0b 100644
 +	s.lastStatus = "working";
 +	s.lastEmittedHadMapping = !!(mapping?.paneId || mapping?.terminalId);
 +	dbg("subagent-activity", { parentSessionId, cwd });
-+	emit("Start", parentSessionId, cwd, mapping);
++	emit("SubagentActive", parentSessionId, cwd, mapping);
  }
  
  /**

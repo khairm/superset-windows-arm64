@@ -325,7 +325,7 @@
 +}
 +
 +function emit(
-+	eventType: "Start" | "Stop" | "PermissionRequest",
++	eventType: "Start" | "Stop" | "PermissionRequest" | "SubagentActive",
 +	sessionId: string | null,
 +	cwd: string,
 +	mapping: PaneMapping | undefined,
