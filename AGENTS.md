@@ -106,6 +106,59 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   caught by review + esbuild + py_compile + node-repro, not the build). Net:
   System 2 (host-service POST) drives Claude; System 1 (JSONL) drives Codex +
   the Claude bg-subagent mirror.
+  v2-dots-open-tabs (AT)[git, after AS] — the sidebar dot row (+ workspace-icon
+  status + unread badge) must represent ONLY currently-OPEN terminals; a closed
+  tab is never representable. (P)'s per-terminal dots rendered one dot per
+  `terminal:<id>` entry in the in-memory v2-notifications store with NO
+  tab-gating, so a `review` emitted ONCE at startup for a terminal never opened
+  as a tab stuck green forever ("orphan/legacy green dots" — proven from
+  main.log: each stuck dot had a single `None->review` store mutation, never
+  cleared; store is in-memory, absent from Local Storage). Fix derives the
+  workspace's OPEN-terminal id set from the persisted `v2WorkspaceLocalState`
+  `.paneLayout` (useLiveQuery — the SAME cross-workspace source
+  `V2NotificationController` reads) and gates the three workspace-level
+  selectors (NotificationStatus / TerminalStatuses / IsUnread) to terminal
+  sources in that set, INSIDE the `useV2Workspace*` hooks so all callers
+  (DashboardSidebarWorkspaceItem / the actions hook / collapsed button) are
+  UNCHANGED. Render-time filter only — no store mutation, no reconcile race;
+  chat/manual sources ungated (chat-orphan analogue deferred). SAFE form of the
+  reverted (AI) prune: signal = the renderer's open-tabs layout, NOT JSONL
+  session presence (which killed live-but-quiet dots). store.ts ONLY (gated on
+  P+W+AR). TRAP (caught by the codex+architect plan review): `useTabsStore` is
+  the v1 tab store — EMPTY under the v2-pin (AD) — so gating against it would
+  show ZERO dots everywhere; the v2 source of truth is the `v2WorkspaceLocalState`
+  paneLayout collection, not `renderer/stores/tabs`.
+  v2-subagent-yellow-hold (AU)[git, after AS] — keep a terminal WORKING (yellow)
+  while its delegated BACKGROUND subagents run, instead of greening at the main
+  agent's turn-end Stop. (AS) POSTs Stop->review(green) when the main agent ends
+  its turn — but with BACKGROUND Task subagents the turn ends (Stop fires) WHILE
+  they run, so the dot wrongly greened (proven: Stop POST at turn-end + the JSONL
+  subagent-mirror missed the new subagent files on Windows — last mirror emit
+  hours stale). Docs say Stop fires AFTER subagents, but that's the FOREGROUND
+  case; background subagents outlive the turn. Fix: extend superset-notify.py
+  with a NO-TIMER marker state machine keyed by the SubagentStart/SubagentStop
+  `agent_id` pair key (one marker per subagent under
+  `~/.superset/agent-subagent-running/<terminalId>/` + a `.mainstopped` sentinel):
+  SubagentStart->Start; main Stop is SUPPRESSED while any marker exists (writes
+  the sentinel, stays yellow); the LAST SubagentStop greens iff main already
+  stopped; UserPromptSubmit clears the sentinel (keeps live markers); SessionEnd
+  clears all. Registers SubagentStart+SubagentStop in `mergeNotifyHook`. Hook-
+  dispatched (NOT fs.watch) so it's reliable on Windows; failure mode is the SAFE
+  direction (a leaked marker stays yellow, never a false green). Leaves the (AS)
+  JSONL subagent-mirror in place (harmless — it only ever force-yellows).
+  pane-map-hook.ts ONLY. TRAP: the script is a JS template literal (backticks) —
+  NO backtick chars inside the embedded Python (esbuild closes the template early
+  + fails; py_compile alone won't catch it). 2 codex reviews REJECTED on a
+  theoretical false-green race (SubagentStart's marker not yet written when the
+  main Stop counts); EMPIRICALLY DISPOSITIONED by a live hook-ordering probe
+  (temp logging hooks; settings.json hot-reloads): SubagentStart fired ~9 s
+  before the main Stop (zero overlap) and `agent_id` is always present + matched
+  on Start/Stop — the race needs Stop within ~150 ms of launch, which the
+  architectural tool→PostToolUse→final-text→Stop gap precludes, and it
+  self-corrects on the next UserPromptSubmit. Hardened agent_id (sanitized to a
+  filesystem-safe marker name). Residual R2 (Stop vs last SubagentStop) is
+  safe-direction (stuck-yellow, self-corrects next turn). The (AS) interrupt-
+  release (ESC) still greens directly — accepted.
 
 ## Traps (do NOT repeat)
 

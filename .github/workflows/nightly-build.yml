@@ -1661,6 +1661,90 @@ jobs:
             Write-Host "(AS) windows-notify-hook applied (Claude dots event-driven via host-service POST; System 1 timing heuristics retired for Claude; Codex unchanged)"
           }
 
+          # (AT) v2-dots-open-tabs — agent-status dots (AND the workspace icon
+          #      status + unread badge) must represent ONLY currently-OPEN
+          #      terminals. (P)'s per-terminal dots rendered one dot per
+          #      `terminal:<id>` entry in the in-memory v2-notifications store
+          #      with NO tab-gating, so a stale "review" entry emitted ONCE at
+          #      startup for a terminal that was never opened as a tab became a
+          #      permanent green "orphan" dot (proven: each stuck dot had a single
+          #      None->review store mutation, never cleared, store is in-memory).
+          #      This gates the three workspace-level selectors (NotificationStatus
+          #      / TerminalStatuses / IsUnread) to terminal sources whose id
+          #      belongs to an OPEN pane in the persisted v2 layout
+          #      (`v2WorkspaceLocalState.paneLayout`, read via useLiveQuery — the
+          #      SAME source V2NotificationController already reads). Safe form of
+          #      the reverted (AI) prune: the signal is the renderer's OPEN-TABS
+          #      registry, NOT JSONL session presence (which killed live-but-quiet
+          #      dots). Render-time filter ONLY (no store mutation, no reconcile
+          #      race); chat/manual sources untouched. store.ts ONLY; gating lives
+          #      inside the useV2Workspace* hooks so all callers are unchanged.
+          #      MUST apply AFTER (P)+(W)+(AR) (store.ts shape).
+          $dot = '../patches/v2-dots-open-tabs.patch'
+          $dotStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
+          if (-not (Test-Path $dot)) { Write-Error "(AT) missing $dot in patches repo"; exit 1 }
+          if (-not (Test-Path $dotStore)) { Write-Error "(AT) $dotStore missing — v2-notifications store moved; re-anchor (AT)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'useV2WorkspaceOpenTerminalIds' $dotStore) {
+            Write-Host "(AT) v2-dots-open-tabs already present — skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'selectV2WorkspaceTerminalStatuses' $dotStore)) { Write-Error "(AT) (P) markers absent — (AT) MUST apply after (P); fix ordering"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch '__supersetDotRenderLog' $dotStore)) { Write-Error "(AT) (AR) markers absent — (AT) MUST apply after (AR); fix ordering"; exit 1 }
+            $dotErr = "$env:RUNNER_TEMP/at-apply-check.txt"
+            git apply --check $dot 2>$dotErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AT) v2-dots-open-tabs.patch does not apply cleanly (post P/W/AR). git apply --check output:"
+              if (Test-Path $dotErr) { Get-Content $dotErr | ForEach-Object { Write-Host "    (AT-check) $_" } }
+              Write-Error "(AT) v2-dots-open-tabs.patch failed to apply — v2-notifications store.ts shape changed (P/W/AR drift). Regenerate it against the POST-(P)+(W)+(AR) store.ts."
+              exit 1
+            }
+            git apply $dot
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AT) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'useV2WorkspaceOpenTerminalIds' $dotStore)) { Write-Error "(AT) open-terminal gate hook missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'v2WorkspaceLocalState' $dotStore)) { Write-Error "(AT) paneLayout source (v2WorkspaceLocalState) missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'openTerminalIds' $dotStore)) { Write-Error "(AT) gating param missing after apply"; exit 1 }
+            Write-Host "(AT) v2-dots-open-tabs applied (dots/icon/unread gated to OPEN terminals via v2WorkspaceLocalState.paneLayout; orphan green dots no longer representable)"
+          }
+
+          # (AU) v2-subagent-yellow-hold — keep a terminal WORKING (yellow) while
+          #      its delegated BACKGROUND subagents run, instead of greening at the
+          #      main agent's turn-end Stop. (AS) drives Claude dots via host-service
+          #      POST; when the main agent launches background Task subagents and
+          #      ends its turn, Claude fires Stop -> review (green) WHILE the
+          #      subagents are still running (proven: Stop POST at turn-end + the
+          #      JSONL subagent-mirror missed the new subagent files on Windows).
+          #      This extends superset-notify.py with a NO-TIMER marker state machine
+          #      keyed by the SubagentStart/SubagentStop agent_id pair key (markers
+          #      under ~/.superset/agent-subagent-running/<terminalId>/ + a
+          #      .mainstopped sentinel): SubagentStart -> Start; the main Stop is
+          #      SUPPRESSED while any marker exists (sentinel set, stay yellow); the
+          #      last SubagentStop greens iff main already stopped; SessionEnd clears
+          #      all. Registers SubagentStart + SubagentStop in mergeNotifyHook.
+          #      Safe failure mode (a leaked marker stays yellow, never false-green).
+          #      pane-map-hook.ts ONLY; MUST apply AFTER (AS).
+          $syh = '../patches/v2-subagent-yellow-hold.patch'
+          $syhPane = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $syh)) { Write-Error "(AU) missing $syh in patches repo"; exit 1 }
+          if (-not (Test-Path $syhPane)) { Write-Error "(AU) $syhPane missing — did (N) apply?"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'agent-subagent-running' $syhPane) {
+            Write-Host "(AU) v2-subagent-yellow-hold already present — skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'mergeNotifyHook' $syhPane)) { Write-Error "(AU) (AS) markers absent — (AU) MUST apply after (AS); fix ordering"; exit 1 }
+            $syhErr = "$env:RUNNER_TEMP/au-apply-check.txt"
+            git apply --check $syh 2>$syhErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AU) v2-subagent-yellow-hold.patch does not apply cleanly (post AS). git apply --check output:"
+              if (Test-Path $syhErr) { Get-Content $syhErr | ForEach-Object { Write-Host "    (AU-check) $_" } }
+              Write-Error "(AU) v2-subagent-yellow-hold.patch failed to apply — pane-map-hook.ts shape changed (AS drift). Regenerate it against the POST-(AS) tree."
+              exit 1
+            }
+            git apply $syh
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AU) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'agent-subagent-running' $syhPane)) { Write-Error "(AU) subagent marker dir missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch '_decide_event_type' $syhPane)) { Write-Error "(AU) decision fn missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'SubagentStart' $syhPane)) { Write-Error "(AU) SubagentStart registration missing after apply"; exit 1 }
+            Write-Host "(AU) v2-subagent-yellow-hold applied (parent terminal holds yellow while background subagents run; greens on last SubagentStop)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1670,7 +1754,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

@@ -1,0 +1,169 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index 5306cea..cc15874 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -311,11 +311,18 @@ dots are driven event-driven — reviving what the dead bash notify.sh did.
+ Event -> eventType mapping (NEVER defaults to Stop on an unknown event; an
+ unmapped event is a silent no-op, exactly like notify.sh):
+   UserPromptSubmit            -> Start            (working / yellow)
+-  Stop|SessionEnd             -> Stop             (review  / green)
++  Stop                        -> Stop             (review/green) UNLESS a
++                                 subagent is still running (then suppressed —
++                                 stay yellow; greens on the last SubagentStop)
++  SessionEnd                  -> Stop             (review  / green; clears state)
+   Notification                -> PermissionRequest (permission / red)
+   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
+   PostToolUse(any tool)       -> Start             (working — clears red after
+                                  a permission approval or an answered question)
++  SubagentStart               -> Start            (working — a delegated subagent
++                                 began; holds yellow through the main Stop)
++  SubagentStop                -> Stop iff it was the LAST subagent AND main had
++                                 already stopped, else no-op (see _decide_event_type)
+ 
+ Server maps Start->working, Stop->review, PermissionRequest->permission and
+ returns {"result":{"data":{"json":{"success":true,...}}}}. Uses only stdlib
+@@ -364,11 +371,91 @@ def _read_payload():
+     return {}
+ 
+ 
+-def _map_event_type(event, tool):
++def _subagent_dir(terminal_id):
++    return pathlib.Path.home() / ".superset" / "agent-subagent-running" / terminal_id
++
++
++def _sentinel_path(terminal_id):
++    return (
++        pathlib.Path.home()
++        / ".superset"
++        / "agent-subagent-running"
++        / (terminal_id + ".mainstopped")
++    )
++
++
++def _touch(p):
++    try:
++        p.parent.mkdir(parents=True, exist_ok=True)
++        p.touch()
++    except Exception:
++        pass
++
++
++def _remove(p):
++    try:
++        p.unlink()
++    except Exception:
++        pass
++
++
++def _running_count(d):
++    try:
++        return sum(1 for _ in d.iterdir())
++    except Exception:
++        return 0
++
++
++def _clear_dir(d):
++    try:
++        for f in d.iterdir():
++            _remove(f)
++    except Exception:
++        pass
++
++
++def _decide_event_type(event, tool, terminal_id, sub_agent_id):
+     # Returns the host-service eventType or None (None => silent no-op).
++    #
++    # Background-subagent YELLOW-HOLD state machine (no timers, no polling):
++    # while any subagent is running for this terminal the main agent's Stop is
++    # SUPPRESSED so the dot stays working/yellow, and the terminal greens only
++    # once the main agent has stopped AND the last subagent has finished. One
++    # marker file per subagent (keyed by the SubagentStart/SubagentStop
++    # agent_id pair key, so parallel subagents are counted) lives under
++    # ~/.superset/agent-subagent-running/<terminalId>/, plus a
++    # <terminalId>.mainstopped sentinel recording "main stopped while subagents
++    # were still running". Foreground subagents finish inside the turn (dir
++    # empties before Stop) so they green normally; background subagents outlive
++    # the turn (Stop fires first) and hold yellow until their SubagentStop.
++    # Failure mode is the SAFE direction: a leaked marker keeps it yellow (never
++    # a false green) and SessionEnd clears everything. Marker ops never raise.
++    run_dir = _subagent_dir(terminal_id)
++    sentinel = _sentinel_path(terminal_id)
++
++    if event == "SubagentStart":
++        if sub_agent_id:
++            _touch(run_dir / sub_agent_id)
++        return "Start"
++    if event == "SubagentStop":
++        if sub_agent_id:
++            _remove(run_dir / sub_agent_id)
++        if _running_count(run_dir) == 0 and sentinel.exists():
++            _remove(sentinel)
++            return "Stop"  # main already stopped + last subagent done -> green
++        return None  # other subagents running, or main still working
+     if event == "UserPromptSubmit":
++        _remove(sentinel)  # main working again; keep live subagent markers
+         return "Start"
+-    if event in ("Stop", "SessionEnd"):
++    if event == "Stop":
++        if _running_count(run_dir) > 0:
++            _touch(sentinel)  # defer the green; subagents still running
++            return None  # stay yellow
++        _remove(sentinel)
++        return "Stop"
++    if event == "SessionEnd":
++        _clear_dir(run_dir)
++        _remove(sentinel)
+         return "Stop"
+     if event == "Notification":
+         return "PermissionRequest"
+@@ -390,20 +477,35 @@ def main():
+     )
+     event = (payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
+     tool = (payload.get("tool_name") or payload.get("toolName") or "").strip()
++    # SubagentStart/SubagentStop pair key (distinct from the POST agentId).
++    # Verified present + hex in practice; sanitize to a filesystem-safe marker
++    # name so a marker write can never fail on an unexpected path character.
++    sub_agent_id = (payload.get("agent_id") or payload.get("agentId") or "").strip()
++    sub_agent_id = "".join(c for c in sub_agent_id if c.isalnum() or c in "-_")
+ 
+     url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
+     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
+     agent_id = (os.environ.get("SUPERSET_AGENT_ID") or "claude").strip()
+ 
+-    if not url or not terminal_id:
++    if not terminal_id:
+         _log({
+             "event": event, "tool": tool, "mappedEventType": None,
+             "terminalId": terminal_id, "sessionId": session_id, "url": url,
+-            "action": "skip-no-env",
++            "action": "skip-no-terminal",
+         })
+         return
+ 
+-    event_type = _map_event_type(event, tool)
++    # Also performs the SubagentStart/Stop marker side-effects, so the
++    # yellow-hold state stays consistent even when url is momentarily absent.
++    event_type = _decide_event_type(event, tool, terminal_id, sub_agent_id)
++
++    if not url:
++        _log({
++            "event": event, "tool": tool, "mappedEventType": event_type,
++            "terminalId": terminal_id, "sessionId": session_id, "url": url,
++            "action": "skip-no-url",
++        })
++        return
+     if event_type is None:
+         _log({
+             "event": event, "tool": tool, "mappedEventType": None,
+@@ -640,6 +742,11 @@ function mergeNotifyHook(filePath: string): void {
+ 		{ event: "Notification", matcher: "permission_prompt" },
+ 		{ event: "PreToolUse", matcher: "AskUserQuestion" },
+ 		{ event: "PostToolUse" },
++		// Background-subagent yellow-hold: keep the parent terminal working
++		// (yellow) while delegated subagents run after the main turn's Stop,
++		// and green only once the last one finishes. See _decide_event_type.
++		{ event: "SubagentStart" },
++		{ event: "SubagentStop" },
+ 	];
+ 	try {
+ 		let parsed: HooksRoot = {};
