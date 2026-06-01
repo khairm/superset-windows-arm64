@@ -190,6 +190,24 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   not a clobberer and was left as-is. The System-1 IPC path passes `SubagentActive`
   through unfiltered (precedent: `PendingQuestion`); validated by running the (AW)
   .Replace on the real statusTransitions.ts + esbuild.
+  rate-limit-stop-green (AX)[git, in windows-notify-hook + v2-subagent-yellow-hold]
+  — when a Claude turn ENDS on an API rate-limit/error, the dot stayed YELLOW
+  forever. Claude Code fires NO `Stop` hook on an API error — it fires a separate
+  **`StopFailure`** hook (matchers rate_limit/server_error/billing_error/
+  authentication_failed/unknown; notification-only — output ignored but it can run
+  our POST). Authoritatively confirmed via Claude Code docs ("Stop hooks do not
+  fire on user interrupts. API errors fire StopFailure instead"). Fix is HOOK-based,
+  NOT JSONL text-matching (the user correctly rejected a `"Server is temporarily
+  limiting requests"` transcript-grep as the fragile thing the System-2 hook design
+  retired): `mergeNotifyHook` registers `{ event: "StopFailure" }` (no matcher = all
+  error types), and `_decide_event_type` runs it through the **SessionEnd** branch
+  (`_clear_dir(run_dir)` + `_remove(sentinel)` + return "Stop"/green). Treated like
+  SessionEnd — NOT a plain Stop — because a rate-limit kills the WHOLE tree (main +
+  subagents share the API), so the leaked (AU) subagent markers from rate-limited
+  subagents (whose SubagentStop never fired — undocumented for the error case) must
+  be cleared, and the green must NOT be suppressed by the yellow-hold. The ONLY
+  remaining JSONL-detected case is ESC mid-turn (docs confirm NO hook fires on
+  interrupt) — that stays the documented (AS) exception. ([[project_dots_open_tabs_and_subagent_hold]])
 
 ## Traps (do NOT repeat)
 

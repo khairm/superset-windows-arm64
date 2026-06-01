@@ -10,7 +10,7 @@ index 5306cea..cc15874 100644
 +  Stop                        -> Stop             (review/green) UNLESS a
 +                                 subagent is still running (then suppressed —
 +                                 stay yellow; greens on the last SubagentStop)
-+  SessionEnd                  -> Stop             (review  / green; clears state)
++  SessionEnd|StopFailure      -> Stop             (review  / green; clears state)
    Notification                -> PermissionRequest (permission / red)
    PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
    PostToolUse(any tool)       -> Start             (working — clears red after
@@ -110,7 +110,7 @@ index 5306cea..cc15874 100644
 +            return None  # stay yellow
 +        _remove(sentinel)
 +        return "Stop"
-+    if event == "SessionEnd":
++    if event in ("SessionEnd", "StopFailure"):
 +        _clear_dir(run_dir)
 +        _remove(sentinel)
          return "Stop"
@@ -155,7 +155,7 @@ index 5306cea..cc15874 100644
      if event_type is None:
          _log({
              "event": event, "tool": tool, "mappedEventType": None,
-@@ -640,6 +742,11 @@ function mergeNotifyHook(filePath: string): void {
+@@ -640,6 +742,12 @@ function mergeNotifyHook(filePath: string): void {
  		{ event: "Notification", matcher: "permission_prompt" },
  		{ event: "PreToolUse", matcher: "AskUserQuestion" },
  		{ event: "PostToolUse" },
@@ -164,6 +164,7 @@ index 5306cea..cc15874 100644
 +		// and green only once the last one finishes. See _decide_event_type.
 +		{ event: "SubagentStart" },
 +		{ event: "SubagentStop" },
++		{ event: "StopFailure" }, // rate-limit/API-error abort: Claude fires StopFailure (not Stop) -> green
  	];
  	try {
  		let parsed: HooksRoot = {};
