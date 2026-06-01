@@ -83,8 +83,29 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   logging (AR)[git, diagnostic] — 1 s snapshot of the v2-notifications store →
   `~/.superset/agent-dot-render.log` to match rendered colour vs the watcher
   emit log. Root cause was emit-side (idle false-green + ask read-lag), proven
-  from `~/.superset/agent-watcher-debug.log`; System 2 (notify.sh hooks) is
-  dead on Windows so System 1 (JSONL watcher) drives all dots.
+  from `~/.superset/agent-watcher-debug.log` — but the REAL fix is (AS) below.
+  windows-notify-hook (AS)[git, after AP/AQ/AR] — REVIVES System 2 on Windows
+  for Claude. A Windows-safe Python port of the dead bash notify.sh
+  (`superset-notify.py`, uv-run, stdlib urllib) POSTs each Claude lifecycle
+  event to the host-service (`$SUPERSET_HOST_AGENT_HOOK_URL` +
+  `$SUPERSET_TERMINAL_ID` are injected per-terminal; proven live: Start→working,
+  Stop→review, PermissionRequest→red, through upstream's own mapEventType→store→
+  render). PURE event-driven — NO 45 s idle, NO 2.5 s poll, NO TTLs (owner
+  banned timing fallbacks). `mergeNotifyHook` registers it on UserPromptSubmit/
+  Stop/SessionEnd/Notification(permission_prompt)/PreToolUse(AskUserQuestion)/
+  PostToolUse + self-heals stale (AQ) ask-marker entries. RETIRES System 1 for
+  Claude: gates ALL Claude main JSONL lifecycle, keeps ONLY the background-
+  subagent mirror (force-asserts YELLOW so a POST-green can't stick while a bg
+  subagent runs; greens on the next main POST Stop — may linger yellow till next
+  turn, the safe no-timer direction) + an interrupt→review release (Claude fires
+  no hook on ESC); DELETES the (AP) idle/pending-tool heuristics + the (AQ) ask-
+  marker path for Claude. Codex STILL uses the JSONL state machine (no host-
+  service hook yet — [[project_codex_dots_plan]] is the Codex follow-up).
+  Hardened by a 16-agent swarm review (caught a TDZ ReferenceError crash + a
+  subagent false-green pre-ship; build runs no tsc so scope/type errors are
+  caught by review + esbuild + py_compile + node-repro, not the build). Net:
+  System 2 (host-service POST) drives Claude; System 1 (JSONL) drives Codex +
+  the Claude bg-subagent mirror.
 
 ## Traps (do NOT repeat)
 

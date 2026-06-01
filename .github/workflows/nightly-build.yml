@@ -1619,6 +1619,48 @@ jobs:
             Write-Host "(AR) render-dot-logging applied (per-second rendered-dot snapshot -> ~/.superset/agent-dot-render.log)"
           }
 
+          # (AS) windows-notify-hook — RETIRE the JSONL "System 1" timing heuristics
+          #      for Claude and drive Claude dots PURELY event-driven via a Windows-safe
+          #      Python hook (superset-notify.py) that POSTs each lifecycle event to the
+          #      host-service ($SUPERSET_HOST_AGENT_HOOK_URL) — reviving what the dead
+          #      bash notify.sh did (Start->working, Stop->review, PermissionRequest->red;
+          #      keyed by SUPERSET_TERMINAL_ID, instant, no polling/timers). mergeNotifyHook
+          #      registers it (Claude settings.json) on UserPromptSubmit/Stop/SessionEnd/
+          #      Notification(permission_prompt)/PreToolUse(AskUserQuestion)/PostToolUse,
+          #      and self-heals stale (AQ) ask-marker entries. The watcher gates ALL Claude
+          #      main-agent JSONL lifecycle in processFile (keeping ONLY the background-
+          #      subagent mirror, which force-asserts YELLOW, + an interrupt->review release
+          #      since Claude fires no hook on ESC). DELETES the (AP) idle/pending-tool
+          #      heuristics + the (AQ) ask-marker path for Claude — no 45s idle, no TTLs
+          #      (the owner banned timing fallbacks). Codex keeps the JSONL state machine
+          #      UNCHANGED. Authored on top of (AP)+(AQ)+(AR); MUST apply AFTER them.
+          $wnh = '../patches/windows-notify-hook.patch'
+          $wnhWatch = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
+          $wnhPane = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $wnh)) { Write-Error "(AS) missing $wnh in patches repo"; exit 1 }
+          if (-not (Test-Path $wnhPane)) { Write-Error "(AS) $wnhPane missing — did (N) apply?"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'mergeNotifyHook' $wnhPane) {
+            Write-Host "(AS) windows-notify-hook already present — skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'pendingToolUseIds' $wnhWatch)) { Write-Error "(AS) (AP) markers absent — (AS) MUST apply after (AP); fix ordering"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'mergeAskHook' $wnhPane)) { Write-Error "(AS) (AQ) markers absent — (AS) MUST apply after (AQ); fix ordering"; exit 1 }
+            $wnhErr = "$env:RUNNER_TEMP/as-apply-check.txt"
+            git apply --check $wnh 2>$wnhErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AS) windows-notify-hook.patch does not apply cleanly (post AP/AQ/AR). git apply --check output:"
+              if (Test-Path $wnhErr) { Get-Content $wnhErr | ForEach-Object { Write-Host "    (AS-check) $_" } }
+              Write-Error "(AS) windows-notify-hook.patch failed to apply — watcher/pane-map shape changed (N/AK/AJ/AN/AP/AQ drift). Regenerate it against the POST-(AP)+(AQ)+(AR) tree."
+              exit 1
+            }
+            git apply $wnh
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AS) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'mergeNotifyHook' $wnhPane)) { Write-Error "(AS) mergeNotifyHook missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'superset-notify.py' $wnhPane)) { Write-Error "(AS) superset-notify script missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'claude-gated' $wnhWatch)) { Write-Error "(AS) Claude gate missing after apply"; exit 1 }
+            if (Select-String -Quiet -SimpleMatch 'pendingToolUseIds' $wnhWatch) { Write-Error "(AS) (AP) heuristics still present after apply — patch did not retire System 1 for Claude"; exit 1 }
+            Write-Host "(AS) windows-notify-hook applied (Claude dots event-driven via host-service POST; System 1 timing heuristics retired for Claude; Codex unchanged)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1628,7 +1670,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + F). (AE/AF/AG = non-git workspaces; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

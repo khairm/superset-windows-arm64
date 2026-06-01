@@ -1,0 +1,1082 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+index 7894655..0729c0b 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts
+@@ -15,6 +15,14 @@ import { installPaneMapHook } from "./pane-map-hook";
+  * notification server, claude wrapper) which is broken on Windows. See
+  * AGENTS.md and the project memory `superset-windows-hook-chain-broken`.
+  *
++ * Claude dots are driven by the host-service POST hook (superset-notify.py,
++ * installed by pane-map-hook.ts); this watcher only MIRRORS background-subagent
++ * activity for Claude (so the parent terminal stays yellow while subagents run
++ * even after the main agent Stops). All other Claude lifecycle transitions are
++ * suppressed here — the POST hook owns working/review/permission, so the JSONL
++ * idle-timer/tool-tracking heuristics were removed for Claude. Codex still uses
++ * the JSONL state machine below (no host-service hook on Windows yet).
++ *
+  * Sources:
+  *   - Claude: ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl
+  *   - Codex:  ~/.codex/sessions/**\/rollout-<ts>-<uuid>.jsonl
+@@ -37,40 +45,6 @@ interface AgentParser {
+ 	isActivity(line: string): boolean;
+ 	isExplicitStop(line: string): boolean;
+ 	isPermissionRequest(line: string): boolean;
+-	/**
+-	 * Real user-role line — answer to AskUserQuestion, ESC interrupt
+-	 * marker, or a brand-new prompt. When in `permission` state, seeing
+-	 * one of these means the user has unblocked the agent (either by
+-	 * answering or by cancelling); the next assistant line will retake
+-	 * `working` if Claude actually resumes, otherwise the state should
+-	 * fall back to `review` so the dot doesn't linger yellow.
+-	 * Optional — agents that don't have a permission/user-response cycle
+-	 * (Codex) can skip implementing this.
+-	 */
+-	isUserLine?(line: string): boolean;
+-	/**
+-	 * tool_use ids opened on this line (Claude emits `tool_use` blocks when
+-	 * it calls a tool). Used to track "a tool is running" so the idle
+-	 * fallback never flips the dot to `review` (green) while the agent is
+-	 * genuinely busy waiting on a shell/build/subagent. Optional — agents
+-	 * whose transcript doesn't expose stable tool ids return [].
+-	 */
+-	openToolIds?(line: string): string[];
+-	/**
+-	 * tool_use ids whose result arrives on this line (Claude writes a
+-	 * `tool_result` echo carrying the originating `tool_use_id` when a tool
+-	 * finishes). Removing these from the open set re-enables the idle
+-	 * fallback once nothing is running.
+-	 */
+-	closeToolIds?(line: string): string[];
+-	/**
+-	 * True if this activity line indicates the turn will CONTINUE (Claude
+-	 * committed to a tool call) rather than end — i.e. stop_reason:"tool_use".
+-	 * Used so the idle fallback holds yellow through a long generation gap
+-	 * (assistant/thinking line now, the tool_use record tens of seconds later)
+-	 * instead of false-greening mid-turn. Optional.
+-	 */
+-	expectsContinuation?(line: string): boolean;
+ }
+ 
+ interface AgentSource {
+@@ -85,18 +59,6 @@ const SUPERSET_PANE_MAP_DIR = path.join(
+ 	".superset",
+ 	"session-pane-map",
+ );
+-// Deterministic AskUserQuestion red signal. The PreToolUse:AskUserQuestion
+-// hook (installed by pane-map-hook.ts) writes `<sessionId>.json` here the
+-// instant Claude shows a question, and the PostToolUse hook deletes it on
+-// answer. We poll this dir (fs.watch is unreliable on Windows) so red lands
+-// within POLL_KNOWN_MS regardless of the JSONL read lag — the transcript's
+-// own AskUserQuestion line can be read many seconds late on Windows, which
+-// left the dot showing the leftover (often green) state during the wait.
+-const SUPERSET_ASK_PENDING_DIR = path.join(
+-	os.homedir(),
+-	".superset",
+-	"agent-ask-pending",
+-);
+ 
+ // Diagnostic log. Set SUPERSET_AGENT_WATCHER_DEBUG=0 to disable. Logs
+ // every line classification, state transition, and emit (with mapping)
+@@ -169,41 +131,12 @@ const CLAUDE_PARSER: AgentParser = {
+ 		// indicate Claude is working — they are either prompts (the next
+ 		// assistant line will flip to working naturally), tool_result
+ 		// echoes (filtered), or interrupt markers like
+-		// "[Request interrupted by user]" (handled below via isUserLine).
++		// "[Request interrupted by user]".
+ 		if (line.includes('"type":"assistant"')) return true;
+ 		if (line.includes('"type":"tool_use"')) return true;
+ 		if (line.includes('"type":"thinking"')) return true;
+ 		return false;
+ 	},
+-	isUserLine(line) {
+-		// Narrow scope: ONLY interrupt markers ("Request interrupted by
+-		// user" / "Request cancelled by user"). A broader "any user-role
+-		// line clears permission" classifier caught spurious lines like
+-		// system tool_result validation errors and prematurely cleared
+-		// the red dot before the user actually answered.
+-		//
+-		// When the user genuinely answers an AskUserQuestion, Claude
+-		// writes its next assistant tool_use line within ~100ms and
+-		// isActivity flips state to "working" naturally — no special
+-		// handling needed for the answer path.
+-		//
+-		// When the user ESCs, Claude writes only an interrupt-marker
+-		// user line and no follow-up assistant content. That's the
+-		// case this method must detect so the dispatcher can release
+-		// permission state.
+-		if (!line.includes('"type":"user"')) return false;
+-		if (!line.includes('"role":"user"')) return false;
+-		// Verified against ~12k Claude JSONL lines in the user's corpus:
+-		// "Request interrupted by user" covers all user-ESC variants
+-		// (bare ESC, ESC mid-tool-use, ESC with follow-up text). The
+-		// "Request cancelled by user" form is rare but real. Both are
+-		// always inside a user-role line. "Request cancelled by Hub" is
+-		// a different, hub-initiated cancellation that the user did NOT
+-		// trigger, so explicitly NOT matched.
+-		if (line.includes("Request interrupted by user")) return true;
+-		if (line.includes("Request cancelled by user")) return true;
+-		return false;
+-	},
+ 	isExplicitStop(line) {
+ 		if (line.includes('"stop_reason":"end_turn"')) return true;
+ 		if (line.includes('"hookEvent":"Stop"')) return true;
+@@ -231,41 +164,6 @@ const CLAUDE_PARSER: AgentParser = {
+ 		}
+ 		return false;
+ 	},
+-	openToolIds(line) {
+-		// An assistant line can carry several tool_use blocks (parallel tool
+-		// calls), so collect every id. Serialized form is stable:
+-		// `"type":"tool_use","id":"toolu_..."`.
+-		if (!line.includes('"type":"tool_use"')) return [];
+-		const ids: string[] = [];
+-		const re = /"type":"tool_use","id":"(toolu_[A-Za-z0-9_-]+)"/g;
+-		let m: RegExpExecArray | null = re.exec(line);
+-		while (m) {
+-			ids.push(m[1]);
+-			m = re.exec(line);
+-		}
+-		return ids;
+-	},
+-	closeToolIds(line) {
+-		// tool_result echoes (type:"user" lines) carry the originating
+-		// `tool_use_id`. PostToolUse hook lines use the camelCase
+-		// `toolUseID` key instead, so they never match here — intentional.
+-		if (!line.includes('"tool_use_id"')) return [];
+-		const ids: string[] = [];
+-		const re = /"tool_use_id":"(toolu_[A-Za-z0-9_-]+)"/g;
+-		let m: RegExpExecArray | null = re.exec(line);
+-		while (m) {
+-			ids.push(m[1]);
+-			m = re.exec(line);
+-		}
+-		return ids;
+-	},
+-	expectsContinuation(line) {
+-		// stop_reason:"tool_use" means the model stopped specifically to call
+-		// a tool — the turn is not finished. (end_turn / other reasons do not
+-		// set this; they are handled by isExplicitStop or fall to the idle
+-		// fallback.)
+-		return line.includes('"stop_reason":"tool_use"');
+-	},
+ };
+ 
+ const CODEX_PARSER: AgentParser = {
+@@ -333,49 +231,6 @@ interface LifecycleState {
+ 	 */
+ 	lastEmittedHadMapping: boolean;
+ 	idleTimer: NodeJS.Timeout | null;
+-	/**
+-	 * tool_use id of the AskUserQuestion that put this session into
+-	 * `permission` (red). When the matching tool_result (the user's answer)
+-	 * arrives we release red -> working promptly, instead of waiting for
+-	 * Claude's next assistant line / the idle fallback. Matched on the exact
+-	 * id so unrelated tool_results never clear the dot. Null when not blocked
+-	 * on an AskUserQuestion (e.g. a bare PermissionRequest hookEvent).
+-	 */
+-	pendingAskToolUseId: string | null;
+-	/**
+-	 * tool_use ids that have been opened (Claude called the tool) but whose
+-	 * tool_result has not yet been read. Non-empty ⇒ a tool/shell/subagent
+-	 * is still running, i.e. the agent is WORKING — so the idle fallback
+-	 * must NOT downgrade the dot to `review` (green). Cleared on explicit
+-	 * stop / interrupt. This is what keeps a long `bun install` (or any
+-	 * >IDLE_TIMEOUT_MS tool) showing yellow instead of a false green.
+-	 */
+-	pendingToolUseIds: Set<string>;
+-	/**
+-	 * Epoch ms until which a BACKGROUND subagent of this session is known to
+-	 * be working. Claude subagent transcripts are separate files
+-	 * (<cwd>/<sessionId>/subagents/agent-*.jsonl) with no pane mapping; their
+-	 * activity is mirrored here so the PARENT terminal shows yellow while a
+-	 * subagent runs — even after the main agent emitted Stop (the blocking
+-	 * Task/Agent case is already covered by pendingToolUseIds). Each subagent
+-	 * activity chunk pushes this out by IDLE_TIMEOUT_MS; the idle handler holds
+-	 * yellow until it lapses. Undefined when no subagent is active.
+-	 */
+-	subagentActiveUntil?: number;
+-	/**
+-	 * The most recent activity line carried stop_reason:"tool_use" — Claude
+-	 * committed to a tool call, so the turn continues even though no tool_use
+-	 * record / further line has arrived yet. Set/cleared on every activity
+-	 * line; cleared on stop / interrupt. Lets the idle handler hold yellow
+-	 * through a long generation gap instead of false-greening mid-turn.
+-	 */
+-	turnExpectsMore?: boolean;
+-	/**
+-	 * True once the idle handler has already granted the single extra
+-	 * grace window for turnExpectsMore, so a stalled turn can't defer green
+-	 * forever. Reset on every fresh activity line.
+-	 */
+-	deferredForContinuation?: boolean;
+ }
+ 
+ interface PaneMapping {
+@@ -392,11 +247,6 @@ interface WatcherDeps {
+ const fileStates = new Map<string, FileState>();
+ const lifecycleStates = new Map<string, LifecycleState>();
+ const watchers = new Map<string, fs.FSWatcher>();
+-// Sessions currently flagged "asking" by a PreToolUse:AskUserQuestion marker
+-// file. Diffed against the marker dir each poll: a newly-present marker emits
+-// `permission` (red); a vanished marker (PostToolUse deleted it on answer)
+-// releases back to `working`.
+-const markedAskingSessions = new Set<string>();
+ let scanTimer: NodeJS.Timeout | null = null;
+ let pollKnownTimer: NodeJS.Timeout | null = null;
+ let pollDiscoverTimer: NodeJS.Timeout | null = null;
+@@ -549,8 +399,6 @@ function getState(
+ 			lastStatus: null,
+ 			lastEmittedHadMapping: false,
+ 			idleTimer: null,
+-			pendingAskToolUseId: null,
+-			pendingToolUseIds: new Set<string>(),
+ 		};
+ 		lifecycleStates.set(key, s);
+ 	}
+@@ -609,6 +457,11 @@ function transitionTo(
+ 		emit("PermissionRequest", sessionId, cwd, mapping, eventId);
+ }
+ 
++// Idle fallback. Used ONLY by the Codex JSONL state machine (no clean
++// end-of-turn marker in every session). NOT used for Claude at all: the
++// background-subagent mirror force-asserts working with no timer, and the
++// Claude main agent is driven by the host-service POST hook
++// (superset-notify.py), which owns Claude working/review/permission.
+ function scheduleIdleTimer(
+ 	sessionId: string | null,
+ 	cwd: string,
+@@ -624,49 +477,6 @@ function scheduleIdleTimer(
+ 		// permission, the agent is genuinely blocked waiting on the user
+ 		// and the indicator should stay red.
+ 		if (current.lastStatus === "working") {
+-			// A tool/shell/subagent is still running (opened tool_use with no
+-			// tool_result yet) ⇒ the agent IS working, transcript is just
+-			// quiet. Never flip to green here; re-arm and re-check later.
+-			// This is the core fix for "green dot while a shell runs".
+-			if (current.pendingToolUseIds.size > 0) {
+-				dbg("idle-deferred-tool-pending", {
+-					sessionId,
+-					cwd,
+-					openTools: current.pendingToolUseIds.size,
+-					timeoutMs: IDLE_TIMEOUT_MS,
+-				});
+-				scheduleIdleTimer(sessionId, cwd, mapping);
+-				return;
+-			}
+-			// A background subagent is still writing its transcript ⇒ work is
+-			// ongoing in this terminal even though the main agent went quiet.
+-			// Hold yellow until the subagent deadline lapses.
+-			if (
+-				current.subagentActiveUntil &&
+-				Date.now() < current.subagentActiveUntil
+-			) {
+-				dbg("idle-deferred-subagent", {
+-					sessionId,
+-					cwd,
+-					until: current.subagentActiveUntil,
+-				});
+-				scheduleIdleTimer(sessionId, cwd, mapping);
+-				return;
+-			}
+-			// The last activity line was an assistant/thinking line with
+-			// stop_reason:"tool_use" — Claude has COMMITTED to calling a tool,
+-			// so the turn is not over; the next tool_use record can land tens
+-			// of seconds later (long generation), with no JSONL write in
+-			// between (so the growth poll never re-arms us). Hold yellow for
+-			// ONE more idle window instead of false-greening mid-turn. Bounded
+-			// by deferredForContinuation so a genuinely dead/abandoned turn
+-			// still greens after ~2*IDLE_TIMEOUT_MS — never permanently stuck.
+-			if (current.turnExpectsMore && !current.deferredForContinuation) {
+-				current.deferredForContinuation = true;
+-				dbg("idle-deferred-generation", { sessionId, cwd, timeoutMs: IDLE_TIMEOUT_MS });
+-				scheduleIdleTimer(sessionId, cwd, mapping);
+-				return;
+-			}
+ 			// Reload mapping — the Python SessionStart hook may have
+ 			// written the mapping file between schedule and fire. Using
+ 			// the closure's stale mapping would emit Stop with the wrong
+@@ -822,6 +632,38 @@ function processFile(
+ 	const mapping = state.sessionId ? loadPaneMapping(state.sessionId) : undefined;
+ 	const { parser } = state;
+ 
++	// Claude dots are driven by the host-service POST hook (superset-notify.py);
++	// System 1 only mirrors background-subagent activity for Claude (handled
++	// above in the subagent branch of processFile). The JSONL lifecycle state
++	// machine below is therefore Codex-only — gated here at the single
++	// dispatch chokepoint so Claude main-agent lines never emit (which caused
++	// the live "stuck working" split-brain against the POST hook). The banned
++	// timing fallbacks (idle tool-tracking, ask tool_use_id release, ESC/user-
++	// line handling, generation-gap defer) were removed entirely with this gate.
++	if (parser.id === "claude") {
++		// Claude main-agent lifecycle is owned by the host-service POST hook
++		// (superset-notify.py). The ONLY thing the watcher still does for a Claude
++		// main line is clear a stuck RED on a user interrupt/ESC: Claude Code fires
++		// NO hook on interrupt, so the POST hook cannot release an AskUserQuestion
++		// red — we detect the transcript's interrupt marker and emit review.
++		// Event-driven, no timer. (Use state.sessionId — the block-scoped
++		// `const { sessionId }` below is in the temporal dead zone here.)
++		for (const line of lines) {
++			if (
++				line &&
++				line.includes('"type":"user"') &&
++				(line.includes("Request interrupted by user") ||
++					line.includes("Request cancelled by user"))
++			) {
++				dbg("claude-interrupt-release", { sessionId: state.sessionId, filePath });
++				emit("Stop", state.sessionId, cwd, mapping);
++				break;
++			}
++		}
++		dbg("claude-gated", { sessionId: state.sessionId, filePath, lineCount: lines.length });
++		return;
++	}
++
+ 	// Process lines in arrival order so a Start in turn N+1 isn't masked
+ 	// by a Stop from turn N within the same chunk.
+ 	const { sessionId } = state;
+@@ -829,126 +671,19 @@ function processFile(
+ 	let sampleUnclassified = "";
+ 	for (const line of lines) {
+ 		if (!line) continue;
+-		// Close any tools whose tool_result lands on this line. When the open
+-		// set empties again, restart the idle countdown from now so a
+-		// genuinely finished turn still greens after IDLE_TIMEOUT_MS; while any
+-		// tool remains open the idle handler keeps the dot yellow (the "green
+-		// while a shell runs" fix). Runs before classification because a
+-		// tool_result line is otherwise unclassified.
+-		{
+-			const closeIds = parser.closeToolIds?.(line);
+-			if (closeIds && closeIds.length) {
+-				const { state: s } = getState(sessionId, cwd);
+-				let changed = false;
+-				for (const id of closeIds) {
+-					if (s.pendingToolUseIds.delete(id)) changed = true;
+-				}
+-				if (
+-					changed &&
+-					s.pendingToolUseIds.size === 0 &&
+-					s.lastStatus === "working"
+-				) {
+-					scheduleIdleTimer(sessionId, cwd, mapping);
+-				}
+-			}
+-		}
+-		// (red->working on answer) If blocked on an AskUserQuestion and THIS
+-		// line is that question's tool_result (the user's answer), release
+-		// permission to working — Claude is about to resume. Matched on the
+-		// exact tool_use_id so unrelated tool_results never clear the red dot.
+-		{
+-			const { state: s } = getState(sessionId, cwd);
+-			if (
+-				s.lastStatus === "permission" &&
+-				s.pendingAskToolUseId &&
+-				line.includes(`"tool_use_id":"${s.pendingAskToolUseId}"`)
+-			) {
+-				dbg("line", {
+-					sessionId,
+-					kind: "ask-answer",
+-					snippet: line.slice(0, 160),
+-				});
+-				s.pendingAskToolUseId = null;
+-				cancelIdleTimer(s);
+-				transitionTo("working", sessionId, cwd, mapping);
+-				scheduleIdleTimer(sessionId, cwd, mapping);
+-				continue;
+-			}
+-		}
+ 		if (parser.isPermissionRequest(line)) {
+ 			dbg("line", { sessionId, kind: "permission", snippet: line.slice(0, 160) });
+ 			const { state: s } = getState(sessionId, cwd);
+ 			cancelIdleTimer(s);
+-			// Capture the AskUserQuestion tool_use id so the matching
+-			// tool_result (the answer) can release the red dot. Serialized
+-			// form is stable: `"id":"toolu_...","name":"AskUserQuestion"`.
+-			const askMatch = line.match(
+-				/"id":"(toolu_[A-Za-z0-9_-]+)","name":"AskUserQuestion"/,
+-			);
+-			s.pendingAskToolUseId = askMatch ? askMatch[1] : null;
+-			// Track the ask's tool_use id as open so the idle handler treats a
+-			// pending question as "still busy" (red holds; never idle-greens).
+-			for (const id of parser.openToolIds?.(line) ?? [])
+-				s.pendingToolUseIds.add(id);
+ 			transitionTo("permission", sessionId, cwd, mapping);
+ 		} else if (parser.isExplicitStop(line)) {
+ 			dbg("line", { sessionId, kind: "explicit-stop", snippet: line.slice(0, 160) });
+ 			const { state: s } = getState(sessionId, cwd);
+ 			cancelIdleTimer(s);
+-			s.pendingAskToolUseId = null;
+-			// Main agent's own tools are done; the turn no longer expects more.
+-			s.pendingToolUseIds.clear();
+-			s.turnExpectsMore = false;
+-			s.deferredForContinuation = false;
+-			if (s.subagentActiveUntil && Date.now() < s.subagentActiveUntil) {
+-				// Main agent finished its turn but a background subagent is
+-				// still working ⇒ keep the terminal yellow, not green.
+-				transitionTo("working", sessionId, cwd, mapping);
+-				scheduleIdleTimer(sessionId, cwd, mapping);
+-			} else {
+-				transitionTo("review", sessionId, cwd, mapping);
+-			}
+-		} else if (parser.isUserLine?.(line)) {
+-			// User answered or cancelled. If we were blocked on permission,
+-			// release that state — the next assistant line (if any) will
+-			// flip back to working. This avoids the 30-60s "stuck yellow"
+-			// on ESC, where Claude writes a "[Request interrupted by user]"
+-			// user line and then nothing else.
+-			const { state: s } = getState(sessionId, cwd);
+-			dbg("line", { sessionId, kind: "user-line", lastStatus: s.lastStatus, snippet: line.slice(0, 160) });
+-			// An ESC/interrupt (or new prompt) aborts whatever was running and
+-			// starts a clean slate: drop tool tracking, the generation-gap
+-			// flags, and any stale subagent deadline from a prior turn (#7).
+-			s.pendingToolUseIds.clear();
+-			s.turnExpectsMore = false;
+-			s.deferredForContinuation = false;
+-			s.subagentActiveUntil = undefined;
+-			if (s.lastStatus === "permission") {
+-				cancelIdleTimer(s);
+-				s.pendingAskToolUseId = null;
+-				// The ask was answered/cancelled outside the marker hook's
+-				// PostToolUse (e.g. an ESC, which fires no PostToolUse). Clear
+-				// the deterministic-red marker layer too, or a stale per-session
+-				// marker would block RED for every later question this session.
+-				releaseAskMarker(sessionId);
+-				transitionTo("review", sessionId, cwd, mapping);
+-			}
+-			// Outside permission state, user lines are prompts — don't
+-			// transition; let the subsequent assistant line drive the state.
++			transitionTo("review", sessionId, cwd, mapping);
+ 		} else if (parser.isActivity(line)) {
+ 			dbg("line", { sessionId, kind: "activity", snippet: line.slice(0, 160) });
+ 			transitionTo("working", sessionId, cwd, mapping);
+-			const { state: s } = getState(sessionId, cwd);
+-			// A tool_use line opens a tool that keeps running until its
+-			// tool_result; track it so the idle handler holds yellow meanwhile
+-			// instead of falsely greening a long shell/build/subagent.
+-			const openIds = parser.openToolIds?.(line) ?? [];
+-			for (const id of openIds) s.pendingToolUseIds.add(id);
+-			// Does THIS (latest) line commit Claude to more work
+-			// (stop_reason:"tool_use")? Drives the generation-gap idle defer.
+-			// A fresh activity line also refreshes the one-shot defer budget.
+-			s.turnExpectsMore = parser.expectsContinuation?.(line) ?? false;
+-			s.deferredForContinuation = false;
+ 			scheduleIdleTimer(sessionId, cwd, mapping);
+ 		} else {
+ 			unclassified++;
+@@ -1006,11 +741,6 @@ function pollKnownFilesForGrowth(): void {
+ 			}
+ 		}
+ 	}
+-	// Drive the deterministic AskUserQuestion red dot on the FAST cadence
+-	// (POLL_KNOWN_MS, 2.5s) — NOT coupled to the seed/12s-discover gating — so
+-	// red lands promptly when a question appears and releases promptly on
+-	// answer. A cheap readdir + tiny-file reads on a small dir; safe from t=0.
+-	scanAskMarkers();
+ }
+ 
+ // (AN) The startup seed scan and the discovery poll must never do BLOCKING
+@@ -1105,10 +835,14 @@ function getSubagentParentSessionId(filePath: string): string | null {
+ 
+ /**
+  * Keep the PARENT terminal yellow while a background subagent is working.
+- * Subagent transcripts have no pane mapping and never drive their own dot;
+- * instead each activity chunk pushes the parent's subagentActiveUntil deadline
+- * out by IDLE_TIMEOUT_MS and flips a review (green) parent back to working.
+- * Leaves a pending question (red) untouched.
++ * Subagent transcripts have no pane mapping and never drive their own dot.
++ * The Claude parent dot is owned by the host-service POST hook, which this
++ * watcher cannot observe, so each activity chunk FORCE-asserts working
++ * (emit directly, bypassing transitionTo's same-status dedup) to override a
++ * POST Stop that may have greened the dot while a subagent is still running.
++ * NO timer and we NEVER green from here: the parent greens again only on the
++ * main agent's next host-service POST Stop (it may linger yellow until then —
++ * the safe direction). Leaves a watcher-known pending question (red) untouched.
+  */
+ function mirrorSubagentToParent(
+ 	parentSessionId: string,
+@@ -1126,129 +860,20 @@ function mirrorSubagentToParent(
+ 	const cwd = cwdForSession(parentSessionId);
+ 	if (!cwd) return; // parent not tracked yet — nothing to keep alive
+ 	const { state: s } = getState(parentSessionId, cwd);
+-	if (s.lastStatus === "permission") return; // don't disturb a red dot
+-	s.subagentActiveUntil = Date.now() + IDLE_TIMEOUT_MS;
++	if (s.lastStatus === "permission") return; // best-effort: don't stomp a watcher-known red
++	// The Claude parent dot is owned by the host-service POST hook; this watcher
++	// CANNOT observe POST-driven greens, so we must NOT dedup on our own stale
++	// lastStatus. FORCE-assert working on every subagent-activity chunk (calling
++	// emit directly, bypassing transitionTo's same-status suppression) so a POST
++	// Stop that greened the dot while a background subagent is still running is
++	// overridden back to yellow. We NEVER green from here — the parent greens on
++	// the main agent's next POST Stop (it may linger yellow until the next turn;
++	// the safe direction, and never a timer).
+ 	const mapping = loadPaneMapping(parentSessionId);
+-	dbg("subagent-activity", { parentSessionId, cwd, lastStatus: s.lastStatus });
+-	if (s.lastStatus !== "working") {
+-		// Main agent emitted Stop (green) but a subagent is still running.
+-		cancelIdleTimer(s);
+-		transitionTo("working", parentSessionId, cwd, mapping);
+-	}
+-	scheduleIdleTimer(parentSessionId, cwd, mapping);
+-}
+-
+-function markerMapping(marker: {
+-	terminalId?: string;
+-	workspaceId?: string;
+-}): PaneMapping | undefined {
+-	if (marker.terminalId || marker.workspaceId) {
+-		return { terminalId: marker.terminalId, workspaceId: marker.workspaceId };
+-	}
+-	return undefined;
+-}
+-
+-/**
+- * Drop the deterministic-red marker for a session (file + in-memory flag).
+- * Called when the watcher releases permission via a path the PostToolUse hook
+- * doesn't cover (an ESC/interrupt fires no PostToolUse:AskUserQuestion), so a
+- * stale per-session marker can't block RED for a later question. Best-effort.
+- */
+-function releaseAskMarker(sessionId: string | null): void {
+-	if (!sessionId) return;
+-	if (!markedAskingSessions.delete(sessionId)) {
+-		// not tracked; still try to remove any orphan file below
+-	}
+-	try {
+-		fs.unlinkSync(path.join(SUPERSET_ASK_PENDING_DIR, `${sessionId}.json`));
+-	} catch {
+-		// no file / already gone
+-	}
+-}
+-
+-/**
+- * Poll the AskUserQuestion marker dir and drive the red dot from it. A newly
+- * present `<sessionId>.json` (written by the PreToolUse hook the instant the
+- * question appears) emits `permission` (red); a vanished marker (PostToolUse
+- * deleted it on answer) releases to `working`. Deterministic — does NOT depend
+- * on the JSONL read latency, which on Windows can lag the question line by
+- * tens of seconds. Keyed by the same sessionId+cwd as the JSONL flow, so the
+- * two paths are idempotent (transitionTo suppresses same-status emits).
+- */
+-function scanAskMarkers(): void {
+-	let files: string[] = [];
+-	try {
+-		files = fs.readdirSync(SUPERSET_ASK_PENDING_DIR);
+-	} catch {
+-		// dir absent until the first ask fires → treat as empty
+-	}
+-	const present = new Set<string>();
+-	for (const f of files) {
+-		if (!f.endsWith(".json")) continue;
+-		const sessionId = f.slice(0, -5);
+-		present.add(sessionId);
+-		const markerPath = path.join(SUPERSET_ASK_PENDING_DIR, f);
+-		if (markedAskingSessions.has(sessionId)) {
+-			// Already tracked red. But if the lifecycle has since LEFT permission
+-			// (the question was answered/ESCed via the JSONL flow while this
+-			// marker lingered — e.g. PostToolUse didn't fire on an ESC, or the
+-			// delete failed), the marker is stale. Reconcile it: drop the marker
+-			// + set entry so a LATER question in this (long-lived) session can
+-			// re-fire red. Without this, a single stale marker permanently
+-			// suppresses RED for the rest of the session.
+-			const rcwd = cwdForSession(sessionId);
+-			if (rcwd) {
+-				const { state: rs } = getState(sessionId, rcwd);
+-				if (rs.lastStatus !== "permission") {
+-					markedAskingSessions.delete(sessionId);
+-					try {
+-						fs.unlinkSync(markerPath);
+-					} catch {}
+-					present.delete(sessionId);
+-					dbg("ask-marker", { sessionId, kind: "reconcile-stale", cwd: rcwd });
+-				}
+-			}
+-			continue;
+-		}
+-		let marker: { cwd?: string; terminalId?: string; workspaceId?: string };
+-		try {
+-			marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+-		} catch {
+-			// half-written marker — leave it "present" and retry next poll
+-			continue;
+-		}
+-		let cwd = typeof marker.cwd === "string" ? marker.cwd : null;
+-		if (!cwd) cwd = cwdForSession(sessionId);
+-		if (!cwd) continue; // can't key state without a cwd; retry next poll
+-		markedAskingSessions.add(sessionId);
+-		const { state: s } = getState(sessionId, cwd);
+-		cancelIdleTimer(s);
+-		const mapping = loadPaneMapping(sessionId) ?? markerMapping(marker);
+-		dbg("ask-marker", { sessionId, kind: "create", cwd });
+-		transitionTo("permission", sessionId, cwd, mapping);
+-	}
+-	if (markedAskingSessions.size === 0) return;
+-	for (const sessionId of [...markedAskingSessions]) {
+-		if (present.has(sessionId)) continue;
+-		markedAskingSessions.delete(sessionId);
+-		const cwd = cwdForSession(sessionId);
+-		if (!cwd) continue;
+-		const { state: s } = getState(sessionId, cwd);
+-		// Only release if still red — don't clobber a state the JSONL flow
+-		// already advanced (e.g. an explicit stop arriving after the answer).
+-		if (s.lastStatus === "permission") {
+-			// The blocking ask is resolved; drop its id from the open-tool set
+-			// so the idle handler can green once nothing else is running,
+-			// instead of waiting for the (laggy) JSONL tool_result to close it.
+-			if (s.pendingAskToolUseId)
+-				s.pendingToolUseIds.delete(s.pendingAskToolUseId);
+-			s.pendingAskToolUseId = null;
+-			const mapping = loadPaneMapping(sessionId);
+-			dbg("ask-marker", { sessionId, kind: "release", cwd });
+-			transitionTo("working", sessionId, cwd, mapping);
+-			scheduleIdleTimer(sessionId, cwd, mapping);
+-		}
+-	}
++	s.lastStatus = "working";
++	s.lastEmittedHadMapping = !!(mapping?.paneId || mapping?.terminalId);
++	dbg("subagent-activity", { parentSessionId, cwd });
++	emit("Start", parentSessionId, cwd, mapping);
+ }
+ 
+ /**
+@@ -1354,24 +979,6 @@ async function discoverNewFilesAsync(): Promise<void> {
+ export function startAgentJsonlWatcher(d: WatcherDeps): void {
+ 	deps = d;
+ 
+-	// Purge any AskUserQuestion markers left over from a previous run. A
+-	// force-quit (or an ESC that fired no PostToolUse) can orphan a marker;
+-	// on the next launch its session is no longer tracked, so it would be
+-	// read as a fresh "create" and paint a false RED on a resumed terminal.
+-	// The question overlay never survives a renderer reload, so any pre-start
+-	// marker is by definition stale.
+-	try {
+-		for (const f of fs.readdirSync(SUPERSET_ASK_PENDING_DIR)) {
+-			if (f.endsWith(".json")) {
+-				try {
+-					fs.unlinkSync(path.join(SUPERSET_ASK_PENDING_DIR, f));
+-				} catch {}
+-			}
+-		}
+-	} catch {
+-		// dir doesn't exist yet — nothing to purge
+-	}
+-
+ 	// Side-channel: write the SessionStart hook that maps each new agent
+ 	// session id → Superset pane identity. Without this, the watcher can
+ 	// only resolve panes by cwd, which is ambiguous when two terminals
+@@ -1460,7 +1067,6 @@ export function stopAgentJsonlWatcher(): void {
+ 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
+ 	lifecycleStates.clear();
+ 	fileStates.clear();
+-	markedAskingSessions.clear();
+ 	// (AN) Reset the seed gate so a stop -> start cycle re-seeds before the
+ 	// discover poll runs again (fileStates was just cleared; a stale
+ 	// seedComplete would let discover replay the whole history).
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index da921a3..5306cea 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -31,16 +31,31 @@ const CLAUDE_SETTINGS_PATH = path.join(
+ );
+ const CODEX_HOOKS_PATH = path.join(os.homedir(), ".codex", "hooks.json");
+ 
+-// AskUserQuestion deterministic-red hook. A second Python hook, scoped by a
+-// settings.json matcher to the AskUserQuestion tool, writes a per-session
+-// marker on PreToolUse (question shown) and deletes it on PostToolUse
+-// (answered). The agent-jsonl-watcher polls the marker dir and drives the red
+-// dot from it — independent of JSONL read latency, which on Windows can lag
+-// the transcript's own AskUserQuestion line by tens of seconds and leave the
+-// dot showing the leftover (often green) state during the wait. Python +
+-// `uv run` so it runs on Windows exactly like the pane-map hook.
++// Legacy AskUserQuestion deterministic-red hook. RETIRED: superset-notify.py
++// now owns the AskUserQuestion red (PreToolUse:AskUserQuestion). Only the
++// filename constant survives so mergeNotifyHook can self-heal away any stale
++// ask-marker hook a prior build registered; the script body, its writer, its
++// command builder, and its merge function were all deleted.
++// Still referenced by isAskMarkerHook below, which mergeNotifyHook uses to
++// self-heal (drop) any stale ask-marker hook left by a prior build — the
++// notify hook now owns the AskUserQuestion red. The ask-marker SCRIPT itself
++// is no longer written or registered.
+ const ASK_MARKER_SCRIPT_FILENAME = "superset-ask-marker.py";
+-const ASK_MARKER_SCRIPT_PATH = path.join(SCRIPT_DIR, ASK_MARKER_SCRIPT_FILENAME);
++
++// Claude agent-status hook. A third Python hook POSTs each Claude lifecycle
++// event to the host-service so the dots are driven event-driven (no JSONL
++// timing heuristics) — reviving what the dead bash `~/.superset/hooks/notify.sh`
++// did. Registered (Claude settings.json only) on UserPromptSubmit / Stop /
++// SessionEnd / Notification(permission_prompt) and on PreToolUse scoped to
++// AskUserQuestion plus an unscoped PostToolUse (any tool completion re-asserts
++// working, clearing red after a permission approval or an answered question).
++// The server maps Start→working, Stop→review, PermissionRequest→permission.
++// This hook now OWNS Claude working/review/permission (including the
++// AskUserQuestion red, so the separate ask-marker hook is no longer registered
++// for Claude). Python + `uv run` so it runs on Windows exactly like the
++// pane-map hook.
++const NOTIFY_SCRIPT_FILENAME = "superset-notify.py";
++const NOTIFY_SCRIPT_PATH = path.join(SCRIPT_DIR, NOTIFY_SCRIPT_FILENAME);
+ 
+ /**
+  * The Python script. Reads Superset terminal-identity env vars set by
+@@ -286,32 +301,44 @@ if __name__ == "__main__":
+     main()
+ `;
+ 
+-const ASK_MARKER_SCRIPT = `#!/usr/bin/env python3
+-"""Superset AskUserQuestion marker hook.
+-
+-Installed by agent-jsonl-watcher/pane-map-hook.ts as PreToolUse + PostToolUse
+-hooks, scoped by a settings.json matcher to the AskUserQuestion tool. On
+-PreToolUse it writes ~/.superset/agent-ask-pending/<sessionId>.json the instant
+-Claude shows a question; on PostToolUse it deletes that marker when the user
+-answers. The agent-jsonl-watcher polls that dir and drives the red dot from it,
+-so red is deterministic and does not depend on the JSONL read latency. Silent
+-on every failure path — a broken hook must not abort the agent.
++const NOTIFY_SCRIPT = `#!/usr/bin/env python3
++"""Superset Claude agent-status notify hook.
++
++Installed by agent-jsonl-watcher/pane-map-hook.ts. POSTs each Claude lifecycle
++event to the host-service (SUPERSET_HOST_AGENT_HOOK_URL) so the agent-status
++dots are driven event-driven — reviving what the dead bash notify.sh did.
++
++Event -> eventType mapping (NEVER defaults to Stop on an unknown event; an
++unmapped event is a silent no-op, exactly like notify.sh):
++  UserPromptSubmit            -> Start            (working / yellow)
++  Stop|SessionEnd             -> Stop             (review  / green)
++  Notification                -> PermissionRequest (permission / red)
++  PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
++  PostToolUse(any tool)       -> Start             (working — clears red after
++                                 a permission approval or an answered question)
++
++Server maps Start->working, Stop->review, PermissionRequest->permission and
++returns {"result":{"data":{"json":{"success":true,...}}}}. Uses only stdlib
++urllib so it has no third-party dependency. Silent on every failure path — a
++broken hook must NEVER raise or abort the agent.
+ """
+ import datetime
+ import json
+ import os
+ import pathlib
+ import sys
++import urllib.request
+ 
+ 
+ def _log(record):
++    # Append one JSON line to ~/.superset/agent-notify-hook.log. Never raises.
+     if os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0":
+         return
+     try:
+         record["ts"] = datetime.datetime.now().isoformat()
+         log_dir = pathlib.Path.home() / ".superset"
+         log_dir.mkdir(parents=True, exist_ok=True)
+-        with open(log_dir / "ask-marker-hook.log", "a", encoding="utf-8") as h:
++        with open(log_dir / "agent-notify-hook.log", "a", encoding="utf-8") as h:
+             h.write(json.dumps(record) + "\\n")
+     except Exception:
+         pass
+@@ -319,14 +346,14 @@ def _log(record):
+ 
+ def _read_payload():
+     candidates = []
+-    if len(sys.argv) > 1:
+-        candidates.append(sys.argv[1])
+     try:
+         raw = sys.stdin.read()
+         if raw:
+             candidates.append(raw)
+     except (OSError, ValueError):
+         pass
++    if len(sys.argv) > 1:
++        candidates.append(sys.argv[1])
+     for src in candidates:
+         try:
+             parsed = json.loads(src)
+@@ -337,50 +364,83 @@ def _read_payload():
+     return {}
+ 
+ 
++def _map_event_type(event, tool):
++    # Returns the host-service eventType or None (None => silent no-op).
++    if event == "UserPromptSubmit":
++        return "Start"
++    if event in ("Stop", "SessionEnd"):
++        return "Stop"
++    if event == "Notification":
++        return "PermissionRequest"
++    if event == "PreToolUse":
++        return "PermissionRequest" if tool == "AskUserQuestion" else None
++    if event == "PostToolUse":
++        return "Start"
++    return None
++
++
+ def main():
+     payload = _read_payload()
+-    session_id = (payload.get("session_id") or payload.get("sessionId") or "").strip()
++    session_id = (
++        payload.get("session_id")
++        or payload.get("sessionId")
++        or payload.get("resourceId")
++        or payload.get("resource_id")
++        or ""
++    )
+     event = (payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
+     tool = (payload.get("tool_name") or payload.get("toolName") or "").strip()
+-    cwd = (payload.get("cwd") or "").strip()
++
++    url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
+     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
+-    workspace_id = os.environ.get("SUPERSET_WORKSPACE_ID", "").strip()
++    agent_id = (os.environ.get("SUPERSET_AGENT_ID") or "claude").strip()
+ 
+-    # The settings.json matcher already scopes us to AskUserQuestion; double-
+-    # check when the payload carries a tool name so a misconfig can't misfire.
+-    if tool and tool != "AskUserQuestion":
++    if not url or not terminal_id:
++        _log({
++            "event": event, "tool": tool, "mappedEventType": None,
++            "terminalId": terminal_id, "sessionId": session_id, "url": url,
++            "action": "skip-no-env",
++        })
+         return
+-    if not session_id:
+-        _log({"action": "skip", "reason": "no-session-id", "event": event})
++
++    event_type = _map_event_type(event, tool)
++    if event_type is None:
++        _log({
++            "event": event, "tool": tool, "mappedEventType": None,
++            "terminalId": terminal_id, "sessionId": session_id, "url": url,
++            "action": "skip-unmapped",
++        })
+         return
+ 
+-    marker_dir = pathlib.Path.home() / ".superset" / "agent-ask-pending"
+-    marker_path = marker_dir / (session_id + ".json")
++    body = json.dumps({
++        "json": {
++            "terminalId": terminal_id,
++            "eventType": event_type,
++            "agent": {"agentId": agent_id, "sessionId": session_id},
++        }
++    }).encode("utf-8")
+ 
+-    if event == "PreToolUse":
+-        try:
+-            marker_dir.mkdir(parents=True, exist_ok=True)
+-            with open(marker_path, "w", encoding="utf-8") as h:
+-                json.dump({
+-                    "sessionId": session_id,
+-                    "cwd": cwd,
+-                    "terminalId": terminal_id,
+-                    "workspaceId": workspace_id,
+-                    "ts": datetime.datetime.now().isoformat(),
+-                }, h)
+-            _log({"action": "write", "sessionId": session_id, "cwd": cwd})
+-        except Exception as exc:
+-            _log({"action": "write-error", "error": str(exc)})
+-    else:
+-        # PostToolUse (or any non-Pre event) → clear, so a stray event can
+-        # never leave the dot stuck red.
+-        try:
+-            marker_path.unlink()
+-            _log({"action": "delete", "sessionId": session_id, "event": event})
+-        except FileNotFoundError:
+-            pass
+-        except Exception as exc:
+-            _log({"action": "delete-error", "error": str(exc)})
++    try:
++        req = urllib.request.Request(
++            url,
++            data=body,
++            headers={"Content-Type": "application/json"},
++            method="POST",
++        )
++        with urllib.request.urlopen(req, timeout=1.5) as resp:
++            status = resp.status
++        _log({
++            "event": event, "tool": tool, "mappedEventType": event_type,
++            "terminalId": terminal_id, "sessionId": session_id, "url": url,
++            "httpStatus": status, "action": "posted",
++        })
++    except Exception as exc:
++        _log({
++            "event": event, "tool": tool, "mappedEventType": event_type,
++            "terminalId": terminal_id, "sessionId": session_id, "url": url,
++            "error": str(exc), "action": "post-error",
++        })
++    return
+ 
+ 
+ if __name__ == "__main__":
+@@ -396,9 +456,9 @@ function hookCommand(): string {
+ 	return `uv run python "${escapeForJsonString(SCRIPT_PATH)}"`;
+ }
+ 
+-/** Hook command for the AskUserQuestion marker script (Claude only). */
+-function askHookCommand(): string {
+-	return `uv run python "${escapeForJsonString(ASK_MARKER_SCRIPT_PATH)}"`;
++/** Hook command for the Claude agent-status notify script (Claude only). */
++function notifyHookCommand(): string {
++	return `uv run python "${escapeForJsonString(NOTIFY_SCRIPT_PATH)}"`;
+ }
+ 
+ interface HookSpec {
+@@ -426,6 +486,12 @@ function isAskMarkerHook(spec: unknown): boolean {
+ 	return typeof cmd === "string" && cmd.includes(ASK_MARKER_SCRIPT_FILENAME);
+ }
+ 
++function isNotifyHook(spec: unknown): boolean {
++	if (typeof spec !== "object" || spec === null) return false;
++	const cmd = (spec as { command?: unknown }).command;
++	return typeof cmd === "string" && cmd.includes(NOTIFY_SCRIPT_FILENAME);
++}
++
+ /**
+  * Returns true if the pane-map script is on disk with the expected
+  * contents. False if any I/O step failed — caller MUST skip the hook
+@@ -461,25 +527,23 @@ function writeScriptIfChanged(): boolean {
+ }
+ 
+ /**
+- * Mirror of writeScriptIfChanged for the AskUserQuestion marker script.
+- * Returns false (caller skips ask-hook registration) if it didn't land.
++ * Mirror of writeScriptIfChanged for the Claude agent-status notify script.
++ * Returns false (caller skips notify-hook registration) if it didn't land.
+  */
+-function writeAskMarkerScriptIfChanged(): boolean {
++function writeNotifyScriptIfChanged(): boolean {
+ 	try {
+ 		fs.mkdirSync(SCRIPT_DIR, { recursive: true });
+ 		let existing: string | null = null;
+ 		try {
+-			existing = fs.readFileSync(ASK_MARKER_SCRIPT_PATH, "utf8");
++			existing = fs.readFileSync(NOTIFY_SCRIPT_PATH, "utf8");
+ 		} catch {
+ 			// ENOENT — write fresh.
+ 		}
+-		if (existing !== ASK_MARKER_SCRIPT) {
+-			fs.writeFileSync(ASK_MARKER_SCRIPT_PATH, ASK_MARKER_SCRIPT, {
+-				mode: 0o755,
+-			});
++		if (existing !== NOTIFY_SCRIPT) {
++			fs.writeFileSync(NOTIFY_SCRIPT_PATH, NOTIFY_SCRIPT, { mode: 0o755 });
+ 		} else {
+ 			try {
+-				fs.chmodSync(ASK_MARKER_SCRIPT_PATH, 0o755);
++				fs.chmodSync(NOTIFY_SCRIPT_PATH, 0o755);
+ 			} catch {
+ 				// best effort — Windows ignores +x
+ 			}
+@@ -487,7 +551,7 @@ function writeAskMarkerScriptIfChanged(): boolean {
+ 		return true;
+ 	} catch (error) {
+ 		console.warn(
+-			"[pane-map-hook] failed to write ask-marker script:",
++			"[pane-map-hook] failed to write notify script:",
+ 			error,
+ 		);
+ 		return false;
+@@ -559,12 +623,24 @@ function mergeHook(filePath: string): void {
+ }
+ 
+ /**
+- * Register the AskUserQuestion marker script as PreToolUse + PostToolUse
+- * hooks (matcher "AskUserQuestion") in Claude's settings.json. Idempotent and
+- * preserves unrelated co-located hooks, mirroring mergeHook. Claude-only —
+- * AskUserQuestion is a Claude tool, so this is never merged into Codex.
++ * Register the Claude agent-status notify script across the lifecycle hook
++ * events in Claude's settings.json. Each event is cleaned of prior notify
++ * entries (idempotent) then gets a fresh entry appended. The notify hook owns
++ * Claude working/review/permission — including the AskUserQuestion red, via the
++ * PreToolUse:AskUserQuestion entry (with an unscoped PostToolUse re-asserting
++ * working on any tool completion) — so the ask-marker hook is no longer
++ * registered for Claude. Claude-only: never merged into Codex.
+  */
+-function mergeAskHook(filePath: string): void {
++function mergeNotifyHook(filePath: string): void {
++	// Event -> optional matcher. Each is a SEPARATE entry under its event.
++	const registrations: Array<{ event: string; matcher?: string }> = [
++		{ event: "UserPromptSubmit" },
++		{ event: "Stop" },
++		{ event: "SessionEnd" },
++		{ event: "Notification", matcher: "permission_prompt" },
++		{ event: "PreToolUse", matcher: "AskUserQuestion" },
++		{ event: "PostToolUse" },
++	];
+ 	try {
+ 		let parsed: HooksRoot = {};
+ 		try {
+@@ -578,7 +654,7 @@ function mergeAskHook(filePath: string): void {
+ 		} catch (error) {
+ 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+ 				console.warn(
+-					`[pane-map-hook] could not parse ${filePath}; skipping ask merge:`,
++					`[pane-map-hook] could not parse ${filePath}; skipping notify merge:`,
+ 					error,
+ 				);
+ 				return;
+@@ -586,14 +662,21 @@ function mergeAskHook(filePath: string): void {
+ 		}
+ 
+ 		const hooks = parsed.hooks ?? {};
+-		for (const eventName of ["PreToolUse", "PostToolUse"] as const) {
+-			const existing = Array.isArray(hooks[eventName])
+-				? (hooks[eventName] as HookEntry[])
++		for (const { event, matcher } of registrations) {
++			const existing = Array.isArray(hooks[event])
++				? (hooks[event] as HookEntry[])
+ 				: [];
++			// Drop our notify hook commands (idempotent re-merge) AND any stale
++			// ask-marker hook from a prior build: superset-notify.py now owns the
++			// AskUserQuestion red, so the old ask-marker hook must stop firing
++			// after an upgrade (it wrote a marker nothing reads anymore).
++			// Co-located unrelated hooks are preserved.
+ 			const cleaned: HookEntry[] = [];
+ 			for (const entry of existing) {
+ 				const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
+-				const keptHooks = innerHooks.filter((spec) => !isAskMarkerHook(spec));
++				const keptHooks = innerHooks.filter(
++					(spec) => !isNotifyHook(spec) && !isAskMarkerHook(spec),
++				);
+ 				if (keptHooks.length === innerHooks.length) {
+ 					cleaned.push(entry);
+ 				} else if (keptHooks.length > 0) {
+@@ -602,10 +685,10 @@ function mergeAskHook(filePath: string): void {
+ 				// else: entry was wholly ours — drop it.
+ 			}
+ 			cleaned.push({
+-				matcher: "AskUserQuestion",
+-				hooks: [{ type: "command", command: askHookCommand() }],
++				...(matcher ? { matcher } : {}),
++				hooks: [{ type: "command", command: notifyHookCommand() }],
+ 			});
+-			hooks[eventName] = cleaned;
++			hooks[event] = cleaned;
+ 		}
+ 		parsed.hooks = hooks;
+ 
+@@ -617,7 +700,7 @@ function mergeAskHook(filePath: string): void {
+ 		fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2));
+ 	} catch (error) {
+ 		console.warn(
+-			`[pane-map-hook] failed to merge ask hook into ${filePath}:`,
++			`[pane-map-hook] failed to merge notify hook into ${filePath}:`,
+ 			error,
+ 		);
+ 	}
+@@ -633,12 +716,14 @@ export function installPaneMapHook(): void {
+ 	// pointing Claude/Codex at a missing path would silently no-op every
+ 	// session (or worse, log noise from the agent's hook runner).
+ 	if (!writeScriptIfChanged()) return;
+-	// The ask-marker script is best-effort: if it didn't land we skip ITS hook
+-	// registration but still install the pane-map hook below.
+-	const askOk = writeAskMarkerScriptIfChanged();
++	// The notify script (Claude agent-status dots via the host-service POST) is
++	// best-effort: if it didn't land we skip ITS hook registration but still
++	// install the pane-map hook below. It OWNS the Claude AskUserQuestion red
++	// now, so the ask-marker hook is no longer registered for Claude.
++	const notifyOk = writeNotifyScriptIfChanged();
+ 	if (fs.existsSync(path.dirname(CLAUDE_SETTINGS_PATH))) {
+ 		mergeHook(CLAUDE_SETTINGS_PATH);
+-		if (askOk) mergeAskHook(CLAUDE_SETTINGS_PATH);
++		if (notifyOk) mergeNotifyHook(CLAUDE_SETTINGS_PATH);
+ 	}
+ 	if (fs.existsSync(path.dirname(CODEX_HOOKS_PATH))) {
+ 		mergeHook(CODEX_HOOKS_PATH);
