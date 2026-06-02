@@ -805,35 +805,19 @@ jobs:
           }
           if (-not ((Get-Content -Raw $st).Contains($stMarker))) { Write-Error "(AW) red-over-yellow verify failed"; exit 1 }
 
-          # (BA) cloud-session blue dot — statusTransitions branch (INLINE,
-          #      post-AW, because statusTransitions.ts is touched by the (AW)
-          #      inline .Replace, not a [git] patch). When the notify hook emits
-          #      "BackgroundRunning" (the local turn ended but a Claude cloud/
-          #      background session is still running — see the (BA) git patch
-          #      below), clear the agent source to idle so the SEPARATE
-          #      background-running BLUE axis shows instead of green. Inserted
-          #      before the same Start anchor (AW) uses (AW already put its
-          #      SubagentActive branch there; order among the pre-Start branches
-          #      is immaterial — distinct eventTypes). Idempotent + exact-count
-          #      anchor guard, mirroring (AW).
-          $bst = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/statusTransitions.ts'
-          if (-not (Test-Path $bst)) { Write-Error "(BA) missing $bst"; exit 1 }
-          $bstC = Get-Content -Raw $bst
-          $bstAnchor = 'if (payload.eventType === "Start") {'
-          $bstMarker = 'if (payload.eventType === "BackgroundRunning") {'
-          $bstAdd = "if (payload.eventType === `"BackgroundRunning`") {`r`n`t`treturn { clearSources: [terminalSource], setStatus: null };`r`n`t}`r`n`r`n`t"
-          if ($bstC.Contains($bstMarker)) {
-            Write-Host "(BA) statusTransitions BackgroundRunning branch already present — skip"
-          } elseif (-not $bstC.Contains($bstAnchor)) {
-            Write-Error "(BA) statusTransitions Start anchor not found in $bst; upstream changed -- re-anchor (BA)"; exit 1
-          } else {
-            $bstAnchorCount = ([regex]::Matches($bstC, [regex]::Escape($bstAnchor))).Count
-            if ($bstAnchorCount -ne 1) { Write-Error "(BA) expected exactly 1 Start-case anchor in $bst, found $bstAnchorCount -- re-anchor (BA)"; exit 1 }
-            $bstC = $bstC.Replace($bstAnchor, $bstAdd + $bstAnchor)
-            Set-Content -NoNewline -Path $bst -Value $bstC
-            Write-Host "(BA) statusTransitions: BackgroundRunning clears agent source to idle (cloud-session blue shows)"
-          }
-          if (-not ((Get-Content -Raw $bst).Contains($bstMarker))) { Write-Error "(BA) statusTransitions verify failed"; exit 1 }
+          # (BA) NOTE: the cloud-session "BackgroundRunning" eventType is
+          #      DELIBERATELY NOT handled in statusTransitions.ts (no fixup). It
+          #      falls through to the SAME default branch as Stop (review-or-clear,
+          #      respecting targetVisible), so the agent dot stays GREEN at
+          #      turn-end — precedence is strictly red > yellow > green > blue. The
+          #      (BA) [git] patch sets a SEPARATE blue axis
+          #      (backgroundRunningTerminals) in lifecycleEvents.updatePaneStatus;
+          #      since agent status outranks blue, the cloud-blue shows ONLY once
+          #      the green review clears to idle (immediate for the focused tab via
+          #      targetVisible). So a running shell never masks a fresh review
+          #      green, and blue fills in when the agent is idle — whether the
+          #      command was launched by you or by the agent. Intentional: no
+          #      statusTransitions change for (BA).
 
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
@@ -1963,10 +1947,14 @@ jobs:
           #      hold — local subagents (run_dir markers) keep taking precedence
           #      -> yellow; cloud sessions that fire no SubagentStart fall through
           #      to blue. Precedence render-time: agent > shell-running >
-          #      background-running > idle. MUST apply AFTER (AS)+(AU)+(AT)+(AY)
-          #      (pane-map-hook + store/lifecycle/StatusIndicator bases). The
-          #      statusTransitions "BackgroundRunning" branch is the (BA) INLINE
-          #      fixup above (post-AW). map-event-type.ts is pristine. Pure
+          #      background-running > idle (strict — a fresh review green is
+          #      NEVER masked by blue; blue fills in once review clears to idle).
+          #      MUST apply AFTER (AS)+(AU)+(AT)+(AY) (pane-map-hook +
+          #      store/lifecycle/StatusIndicator bases). "BackgroundRunning" is
+          #      intentionally NOT given a statusTransitions branch — it falls
+          #      through to the default Stop logic (review-or-clear) on the agent
+          #      axis and only adds the separate blue axis (see the NOTE after the
+          #      (AW) fixup above). map-event-type.ts is pristine. Pure
           #      event-driven, no timers. Authored against the reconstructed
           #      post-stack tree.
           $cs = '../patches/cloud-session-dot.patch'

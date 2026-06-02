@@ -266,41 +266,45 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   the prompt fn). Host-service restart adopts with a fresh scan state
   (`commandRunning=false`): misses one in-flight command's blue, recovers on the
   next D/A (safe direction). ([[project_dots_open_tabs_and_subagent_hold]])
-- **cloud-session blue dot (BA)**[git `cloud-session-dot.patch` + inline
-  statusTransitions fixup, after AS/AU/AT/AY/AW] — when the local Claude turn
-  ENDS but a cloud/background session (e.g. `/ultrareview`) is still running,
-  show the **same blue** dot (tooltip "Cloud session running") instead of green,
-  clearing to green when it finishes. Signal is the `Stop` hook payload's
-  `background_tasks[]` (Claude Code ≥ 2.1.145; absent on older → falsy → today's
-  behaviour — no text-parsing, the owner-banned fragile path). `superset-notify.py`
-  reads `has_background` and emits a NEW eventType **`BackgroundRunning`** from the
-  `Stop`/`SubagentStop` decision (after the (AU) `run_dir`>0 yellow-hold check, so
-  LOCAL subagents still win → yellow; cloud sessions that fire no SubagentStart
-  fall through to blue). `map-event-type.ts` widens `AgentLifecycleEventType` and
-  passes it through; the renderer's `resolveV2AgentStatusTransition` (the inline
-  fixup, post-AW) maps `BackgroundRunning` → clear the agent source to IDLE so the
-  blue shows (agent status would otherwise win); a SEPARATE store axis
+- **cloud-session blue dot (BA)**[git `cloud-session-dot.patch`, after
+  AS/AU/AT/AY] — when the local Claude turn ENDS but a cloud/background session
+  (e.g. `/ultrareview`, or a `run_in_background` shell) is still running, show the
+  **same blue** dot (tooltip "Cloud session running"), clearing to green/idle when
+  it finishes. Detection does NOT care whether YOU or the agent launched the work.
+  Signal is the `Stop` hook payload's `background_tasks[]` (Claude Code ≥ 2.1.145;
+  absent on older → falsy → today's behaviour — no text-parsing, the owner-banned
+  fragile path). `superset-notify.py` reads `has_background` and emits a NEW
+  eventType **`BackgroundRunning`** from the `Stop`/`SubagentStop` decision (after
+  the (AU) `run_dir`>0 yellow-hold check, so LOCAL subagents still win → yellow;
+  cloud/background tasks that fire no SubagentStart fall through to blue).
+  `map-event-type.ts` widens `AgentLifecycleEventType` and passes it through.
+  **PRECEDENCE IS STRICT red > yellow > green > blue** (owner rule): so
+  `BackgroundRunning` is DELIBERATELY *not* handled in `statusTransitions.ts` — it
+  falls through to the SAME default as `Stop` (review-or-clear, respecting
+  `targetVisible`), keeping the agent dot GREEN at turn-end; a SEPARATE store axis
   `backgroundRunningTerminals` (mirrors the (AY) `shellRunningTerminals`, reuses
-  `V2ShellRunningEntry`) drives the blue with DisplayStatus `background-running`
-  (same blue as shell-running). Precedence render-time: **agent > shell-running >
-  background-running > idle**, gated to OPEN tabs (reuses (AT)
-  `useV2WorkspaceOpenTerminalIds`). `lifecycleEvents.ts` `updatePaneStatus` sets
-  the axis on `BackgroundRunning` and CLEARS it on every other agent event (the
-  cloud-idle state is superseded; OSC shell-running axis NEVER touched here), and
-  `handleV2AgentLifecycleEvent` suppresses sound/notification for it. NO timers:
-  cleared by the next Stop (bg empty → green) / UserPromptSubmit / SubagentStop /
-  SessionEnd / StopFailure. CRITICAL teardown (2-reviewer REJECT→fix): the blue
-  has NO OSC self-clear (unlike (AY)), so `clearTerminalBackgroundRunning` is also
-  called on PTY `exit` (lifecycleEvents), on Ctrl+C/Esc interrupt + pane close (via
-  the shared `clearV2TerminalRunStatus` in store.ts), and on `clearWorkspaceStatuses`
-  — else a stale blue lingers on a live terminal. Known-accepted nuance: while the
-  `claude` CLI is the foreground command (OSC shell-running set), shell-running
-  wins so the tooltip reads "Command running" — still blue; the cloud-blue is the
-  fallback that guarantees blue when claude isn't foreground. statusTransitions is
-  the [inline] fixup (post-AW, mirrors (AW)'s `.Replace` + anchor-count guard)
-  because that file is touched by (AW) inline, not a patch; everything else is the
-  [git] patch. Authored against the reconstructed post-(AT/AU/AY) tree; 2 reviewers
-  (codex + code-reviewer) + 1 fix pass. ([[project_dots_open_tabs_and_subagent_hold]])
+  `V2ShellRunningEntry`, DisplayStatus `background-running` = same blue) is set in
+  `lifecycleEvents.ts updatePaneStatus`. Since agent status outranks blue, the blue
+  shows ONLY once the review green clears to idle (immediate for the focused tab
+  via `targetVisible`) — a running shell NEVER masks a fresh review green. Render
+  precedence: **agent > shell-running > background-running > idle**, gated to OPEN
+  tabs (reuses (AT) `useV2WorkspaceOpenTerminalIds`). `updatePaneStatus` sets the
+  axis on `BackgroundRunning` and CLEARS it on every other agent event (OSC
+  shell-running axis NEVER touched here); `handleV2AgentLifecycleEvent` suppresses
+  sound/notification for it (so a bg-turn-end is silent — minor, revisitable). NO
+  timers: cleared by the next Stop (bg empty → green) / UserPromptSubmit /
+  SubagentStop / SessionEnd / StopFailure. CRITICAL teardown (codex REJECT→fix):
+  the blue has NO OSC self-clear (unlike (AY)), so `clearTerminalBackgroundRunning`
+  is ALSO called on PTY `exit` (lifecycleEvents), on Ctrl+C/Esc interrupt + pane
+  close (via the shared `clearV2TerminalRunStatus` in store.ts), and on
+  `clearWorkspaceStatuses` — else a stale blue lingers on a live terminal.
+  Known-accepted nuance: while the `claude` CLI is the foreground command (OSC
+  shell-running set), shell-running wins so the tooltip reads "Command running" —
+  still blue. NO statusTransitions fixup (earlier draft cleared-to-idle, which
+  inverted green>blue — corrected per owner precedence). Authored against the
+  reconstructed post-(AT/AU/AY) tree; 2 reviewers (codex xhigh + code-reviewer) +
+  2 fix passes (teardown/shift+alt/false-toast, then precedence).
+  ([[project_dots_open_tabs_and_subagent_hold]])
 - **single-click hyperlink copy (AZ)**[git `terminal-link-single-click-copy.patch`]
   — a PLAIN (no-modifier) left click on a terminal URL that the configurable click
   policy maps to "do nothing" (`urlPolicy.getAction`→null, the default `plain`

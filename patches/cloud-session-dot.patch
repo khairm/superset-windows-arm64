@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
-index 13f3775..4c57f2f 100644
+index 13f3775..adcc435 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
 +++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
 @@ -60,7 +60,10 @@ export function handleV2AgentLifecycleEvent({
@@ -26,18 +26,20 @@ index 13f3775..4c57f2f 100644
  	clearSources(workspaceId, [
  		getV2TerminalNotificationSource(payload.terminalId),
  	]);
-@@ -156,6 +161,23 @@ function updatePaneStatus(
+@@ -156,6 +161,25 @@ function updatePaneStatus(
  			payload.occurredAt,
  		);
  	}
 +
 +	// (BA) Cloud/background-running blue axis. The notify hook emits
 +	// "BackgroundRunning" when the turn ended but a Claude cloud/background
-+	// session is still running; the statusTransitions reducer clears the agent
-+	// source to idle for that event so this blue shows instead of green. Any
-+	// OTHER agent event supersedes the cloud-idle state (a new turn, a real
-+	// turn-end green, a permission), so clear it — the next Stop re-derives it
-+	// from the live background_tasks. Never touches the OSC shell-running axis.
++	// session is still running. Its agent-status transition (above) is the SAME
++	// as a normal turn-end (review-or-clear) — there is no special idle branch —
++	// so a fresh review green still wins (precedence red > yellow > green >
++	// blue); this blue shows only once that green clears to idle (immediate for
++	// the focused tab). Any OTHER agent event re-derives state, so clear the
++	// axis — the next Stop re-sets it from the live background_tasks. NEVER
++	// touches the OSC shell-running axis.
 +	if (payload.eventType === "BackgroundRunning") {
 +		store.setTerminalBackgroundRunning(
 +			payload.terminalId,
@@ -349,17 +351,19 @@ index 52b5dc7..79cf8a2 100644
  
  export function selectV2WorkspaceIsUnread(
 diff --git a/packages/host-service/src/events/map-event-type.ts b/packages/host-service/src/events/map-event-type.ts
-index a428b5b..83bbc32 100644
+index a428b5b..aba5d2e 100644
 --- a/packages/host-service/src/events/map-event-type.ts
 +++ b/packages/host-service/src/events/map-event-type.ts
-@@ -7,13 +7,18 @@
+@@ -7,13 +7,20 @@
   * - `Attached` / `Detached`: session-lifetime signal — drives the pane icon
   *   binding only. NOT working state: SessionStart fires on agent boot when
   *   the agent is still idle waiting for input.
 + * - `BackgroundRunning`: (BA) the main turn ENDED but a cloud/background session
 + *   is still running (non-empty `background_tasks` in the Stop hook payload).
-+ *   Drives the pulsing BLUE shell-running dot on a separate render axis — the
-+ *   agent source is cleared to idle so the blue shows instead of green.
++ *   Drives the pulsing BLUE dot on a SEPARATE render axis. The agent dot itself
++ *   is handled exactly like a normal turn-end (review-or-clear) — so the blue
++ *   NEVER masks a fresh review green (precedence: red > yellow > green > blue);
++ *   the blue shows only once that review clears to idle.
   */
  export type AgentLifecycleEventType =
  	| "Start"
@@ -372,7 +376,7 @@ index a428b5b..83bbc32 100644
  
  export function mapEventType(
  	eventType: string | undefined,
-@@ -39,6 +44,10 @@ export function mapEventType(
+@@ -39,6 +46,10 @@ export function mapEventType(
  	) {
  		return "Detached";
  	}
@@ -384,10 +388,10 @@ index a428b5b..83bbc32 100644
  		eventType === "Start" ||
  		eventType === "UserPromptSubmit" ||
 diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
-index cab6a15..951bf5a 100644
+index cab6a15..3c88951 100644
 --- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
 +++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
-@@ -414,9 +414,19 @@ def _clear_dir(d):
+@@ -414,9 +414,23 @@ def _clear_dir(d):
          pass
  
  
@@ -399,16 +403,20 @@ index cab6a15..951bf5a 100644
 +    # the last local subagent finishes (SubagentStop) but a cloud/background
 +    # session is still running (has_background, from the Stop payload's
 +    # background_tasks[]), emit "BackgroundRunning" instead of "Stop". The
-+    # renderer clears the agent dot to idle and shows the pulsing BLUE
-+    # shell-running-style dot until the next turn/Stop re-derives it (green when
-+    # background_tasks is empty). Local subagents (run_dir markers) keep taking
-+    # precedence -> YELLOW; cloud sessions that fire no SubagentStart fall
-+    # through to this blue. Safe direction: blue lingers, never a false green.
++    # renderer treats it like a normal turn-end on the AGENT axis (review green,
++    # or idle if the tab is focused) AND sets a SEPARATE blue axis; since agent
++    # status outranks blue (red > yellow > green > blue), the blue shows once the
++    # review green clears to idle — a running shell never masks a fresh review.
++    # Cleared to green when background_tasks is empty (next Stop). Local subagents
++    # (run_dir markers) keep taking precedence -> YELLOW; cloud sessions that fire
++    # no SubagentStart fall through to this blue. Detection does not care whether
++    # YOU or the agent launched the work. Safe direction: blue lingers, never a
++    # false green.
 +    #
      # Background-subagent YELLOW-HOLD state machine (no timers, no polling):
      # while any subagent is running for this terminal the main agent's Stop is
      # SUPPRESSED so the dot stays working/yellow, and the terminal greens only
-@@ -442,6 +452,15 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
+@@ -442,6 +456,15 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
              _remove(run_dir / sub_agent_id)
          if _running_count(run_dir) == 0 and sentinel.exists():
              _remove(sentinel)
@@ -424,7 +432,7 @@ index cab6a15..951bf5a 100644
              return "Stop"  # main already stopped + last subagent done -> green
          return None  # other subagents running, or main still working
      if event == "UserPromptSubmit":
-@@ -452,6 +471,8 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
+@@ -452,6 +475,8 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
              _touch(sentinel)  # defer the green; subagents still running
              return None  # stay yellow
          _remove(sentinel)
@@ -433,7 +441,7 @@ index cab6a15..951bf5a 100644
          return "Stop"
      if event in ("SessionEnd", "StopFailure"):
          _clear_dir(run_dir)
-@@ -482,6 +503,14 @@ def main():
+@@ -482,6 +507,14 @@ def main():
      # name so a marker write can never fail on an unexpected path character.
      sub_agent_id = (payload.get("agent_id") or payload.get("agentId") or "").strip()
      sub_agent_id = "".join(c for c in sub_agent_id if c.isalnum() or c in "-_")
@@ -448,7 +456,7 @@ index cab6a15..951bf5a 100644
  
      url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
      terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
-@@ -497,7 +526,9 @@ def main():
+@@ -497,7 +530,9 @@ def main():
  
      # Also performs the SubagentStart/Stop marker side-effects, so the
      # yellow-hold state stays consistent even when url is momentarily absent.
