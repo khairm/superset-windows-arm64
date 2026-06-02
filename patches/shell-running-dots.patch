@@ -1,0 +1,1327 @@
+diff --git a/apps/desktop/src/main/lib/agent-setup/index.ts b/apps/desktop/src/main/lib/agent-setup/index.ts
+index 94a028b..d7eaf64 100644
+--- a/apps/desktop/src/main/lib/agent-setup/index.ts
++++ b/apps/desktop/src/main/lib/agent-setup/index.ts
+@@ -12,6 +12,7 @@ import {
+ } from "./paths";
+ import {
+ 	createBashWrapper,
++	createPwshWrapper,
+ 	createZshWrapper,
+ 	getCommandShellArgs,
+ 	getShellArgs,
+@@ -31,6 +32,9 @@ export function setupAgentHooks(): void {
+ 
+ 	createZshWrapper();
+ 	createBashWrapper();
++	// (AY) PowerShell integration profile (OSC 133 C/D/A markers for the
++	// shell-running blue dot). Written on every launch like the others.
++	createPwshWrapper();
+ 
+ 	console.log("[agent-setup] Agent hooks initialized");
+ }
+diff --git a/apps/desktop/src/main/lib/agent-setup/shell-wrappers.ts b/apps/desktop/src/main/lib/agent-setup/shell-wrappers.ts
+index 0d7096b..e4aa75e 100644
+--- a/apps/desktop/src/main/lib/agent-setup/shell-wrappers.ts
++++ b/apps/desktop/src/main/lib/agent-setup/shell-wrappers.ts
+@@ -22,7 +22,10 @@ const DEFAULT_PATHS: ShellWrapperPaths = {
+ const modeDiagnosticsLogged = new Set<string>();
+ 
+ function getShellName(shell: string): string {
+-	return shell.split("/").pop() || shell;
++	// (AY) Normalize across separators and a Windows `.exe` suffix so a
++	// `C:\...\pwsh.exe` path matches the "pwsh" branch.
++	const base = shell.split(/[\\/]/).pop() || shell;
++	return base.replace(/\.exe$/i, "");
+ }
+ 
+ /**
+@@ -45,6 +48,13 @@ function quoteShellLiteral(value: string): string {
+ 	return `'${value.replaceAll("'", `'"'"'`)}'`;
+ }
+ 
++// (AY) PowerShell single-quoted literal: a `'` inside is escaped by doubling it
++// (`''`). A Windows username/path CAN legitimately contain an apostrophe
++// (e.g. C:\Users\O'Brien\...), so escape rather than assume it's absent.
++function quotePwshSingleQuoted(value: string): string {
++	return `'${value.replaceAll("'", "''")}'`;
++}
++
+ function logModeDiagnostics(shellName: string): void {
+ 	const key = `${shellName}:native`;
+ 	if (modeDiagnosticsLogged.has(key)) return;
+@@ -225,11 +235,21 @@ rehash 2>/dev/null || true
+ # superset of markers; daemons that only get restarted on protocol bumps
+ # still match against their own scanner.
+ # Protocol ref: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
++# (AY) Emit OSC 133;D;<exit> (command end) before A so the host-service C/D
++# scanner can clear the shell-running blue dot. \$? must be captured FIRST.
+ __superset_prompt_mark() {
+-  printf "\\033]777;superset-shell-ready\\007\\033]133;A\\007"
++  local ec=$?
++  printf "\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007" "$ec"
++}
++# (AY) Command start (OSC 133;C) via zsh's preexec hook, which fires right
++# before each entered command line runs.
++_superset_cmd_start() {
++  printf "\\033]133;C\\007"
+ }
+-# Keep our hook LAST so it fires after direnv and other precmd hooks complete.
++typeset -ga preexec_functions 2>/dev/null || true
++# Keep our hooks LAST so they fire after direnv and other hooks complete.
+ precmd_functions=(\${precmd_functions[@]} __superset_prompt_mark)
++preexec_functions=(\${preexec_functions[@]} _superset_cmd_start)
+ export ZDOTDIR="$_superset_home"
+ `;
+ 	const wroteZlogin = writeFileIfChanged(zloginPath, zloginScript, 0o644);
+@@ -274,10 +294,31 @@ hash -r 2>/dev/null || true
+ # Minimal prompt (path/env shown in toolbar) - emerald to match app theme
+ export PS1=$'\\[\\e[1;38;2;52;211;153m\\]❯\\[\\e[0m\\] '
+ # Shell readiness markers — see zsh wrapper for rationale on emitting both.
++# (AY) Also emit OSC 133;D;<exit> (command end) before A so the host-service
++# C/D scanner can clear the shell-running blue dot. \$? must be captured FIRST,
++# before any other command runs, so it reflects the user's last command. Reset
++# the command-start latch so the NEXT entered command re-arms a single C.
+ # Protocol ref: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
+ __superset_prompt_mark() {
+-  printf "\\033]777;superset-shell-ready\\007\\033]133;A\\007"
++  local ec=$?
++  _superset_cmd_started=
++  printf "\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007" "$ec"
+ }
++# (AY) Command start (OSC 133;C) via the DEBUG trap (fires before each simple
++# command). The DEBUG trap fires many times per command line and also for our
++# own prompt machinery, so: (1) skip our helpers / PROMPT_COMMAND via
++# \$BASH_COMMAND, and (2) latch _superset_cmd_started so C is emitted at most
++# once per entered line; __superset_prompt_mark clears the latch at the next
++# prompt. \$BASH_COMMAND names the about-to-run command.
++__superset_cmd_start() {
++  case "\${BASH_COMMAND:-}" in
++    __superset_*|_superset_*|*PROMPT_COMMAND*) return ;;
++  esac
++  if [ -n "\${_superset_cmd_started:-}" ]; then return; fi
++  _superset_cmd_started=1
++  printf "\\033]133;C\\007"
++}
++trap '__superset_cmd_start' DEBUG
+ # Hook via PROMPT_COMMAND. Supports both scalar and array forms (Bash 5.1+).
+ if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
+   PROMPT_COMMAND=("\${PROMPT_COMMAND[@]}" "__superset_prompt_mark")
+@@ -294,6 +335,104 @@ fi
+ 	console.log(`[agent-setup] ${changed ? "Updated" : "Verified"} bash wrapper`);
+ }
+ 
++/**
++ * (AY) PowerShell integration profile content.
++ *
++ * Written verbatim to BIN_DIR/superset-pwsh-integration.ps1 by
++ * {@link createPwshWrapper} and dot-sourced by the pwsh launch args
++ * (shell-launch.ts buildPwshInitCommand). It emits OSC 133 markers so the
++ * host-service C/D scanner can drive the shell-running blue dot AND the
++ * existing shell-ready (133;A) detection.
++ *
++ * CRITICAL: this is built from an array of SINGLE-QUOTED JS strings joined by
++ * "\n" — NEVER a template literal (backticks). pwsh's `$LASTEXITCODE` and
++ * `$(...)`/`${}` syntax would either break a JS template literal at esbuild
++ * time or be wrongly interpolated; single-quoted JS strings pass them through
++ * byte-for-byte. Keep every line single-quoted and free of backticks.
++ *
++ * - Wrap (don't replace) the user's prompt: save $function:prompt, then a new
++ *   global:prompt emits 133;D;<exit> + 133;A and appends the original prompt's
++ *   output. $LASTEXITCODE is captured FIRST (a null on a fresh session -> 0).
++ * - Command start (133;C) is emitted from a PSReadLine key handler on the
++ *   Enter chords, just before AcceptLine submits the line. The handler FIRST
++ *   asks PSReadLine for the buffer's parse state (GetBufferState) and emits C
++ *   ONLY when the buffer is a complete, executable statement — i.e. there are
++ *   no `IncompleteInput` parse errors. On incomplete multi-line input (an open
++ *   brace, pipe, quote, etc.) Enter just continues the line, so we emit NOTHING
++ *   and let PSReadLine insert the newline — no false-blue mid-edit. Wrapped in
++ *   try/catch so Windows PowerShell 5.1 without PSReadLine still loads the
++ *   profile (it just won't show blue — D+A still fire, safe degrade).
++ */
++const PWSH_INTEGRATION_SCRIPT = [
++	"# Superset PowerShell integration (OSC 133 shell-running markers).",
++	"# Auto-generated by Superset; dot-sourced into interactive pwsh sessions.",
++	"$global:__supersetOriginalPrompt = $function:prompt",
++	"function global:prompt {",
++	"  $ec = $LASTEXITCODE",
++	"  if ($null -eq $ec) { $ec = 0 }",
++	"  $m = \"$([char]0x1b)]133;D;$ec$([char]0x07)$([char]0x1b)]133;A$([char]0x07)\"",
++	"  $u = ''",
++	"  if ($global:__supersetOriginalPrompt) {",
++	"    $u = & $global:__supersetOriginalPrompt",
++	"  }",
++	"  # Restore $LASTEXITCODE for any user prompt logic that reads it.",
++	"  $global:LASTEXITCODE = $ec",
++	"  return \"$m$u\"",
++	"}",
++	"if (Get-Module -ListAvailable PSReadLine) {",
++	"  Import-Module PSReadLine -ErrorAction SilentlyContinue",
++	"  # Returns $true only when the current buffer parses as a COMPLETE statement",
++	"  # (Enter will actually run it). Any IncompleteInput parse error means Enter",
++	"  # continues a multi-line edit, so we must NOT emit 133;C yet.",
++	"  function global:__SupersetBufferIsComplete {",
++	"    $tokens = $null",
++	"    $perrors = $null",
++	"    $ast = $null",
++	"    $cursor = 0",
++	"    try {",
++	"      [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$ast, [ref]$tokens, [ref]$perrors, [ref]$cursor)",
++	"    } catch {",
++	"      # If we cannot inspect the buffer, assume complete (fail toward emitting",
++	"      # C so a real command still lights up; worst case a rare false-blue).",
++	"      return $true",
++	"    }",
++	"    if ($null -eq $perrors) { return $true }",
++	"    foreach ($e in $perrors) {",
++	"      if ($e.IncompleteInput) { return $false }",
++	"    }",
++	"    return $true",
++	"  }",
++	"  $supersetCmdStart = {",
++	"    if (__SupersetBufferIsComplete) {",
++	"      [Console]::Write(\"$([char]0x1b)]133;C$([char]0x07)\")",
++	"    }",
++	"    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()",
++	"  }",
++	"  foreach ($chord in 'Enter','Ctrl+m','Ctrl+j') {",
++	"    try {",
++	"      Set-PSReadLineKeyHandler -Chord $chord -ScriptBlock $supersetCmdStart",
++	"    } catch {}",
++	"  }",
++	"}",
++	"",
++].join("\n");
++
++/**
++ * (AY) Write the PowerShell integration profile into BIN_DIR. pwsh launch args
++ * dot-source it. No-op rewrite when unchanged (writeFileIfChanged). Mode 0o644
++ * mirrors the other wrappers (ignored on Windows but harmless).
++ */
++export function createPwshWrapper(
++	paths: ShellWrapperPaths = DEFAULT_PATHS,
++): void {
++	logModeDiagnostics("pwsh");
++	const ps1Path = path.join(paths.BIN_DIR, "superset-pwsh-integration.ps1");
++	const changed = writeFileIfChanged(ps1Path, PWSH_INTEGRATION_SCRIPT, 0o644);
++	console.log(
++		`[agent-setup] ${changed ? "Updated" : "Verified"} pwsh wrapper`,
++	);
++}
++
+ export function getShellEnv(
+ 	shell: string,
+ 	paths: ShellWrapperPaths = DEFAULT_PATHS,
+@@ -330,12 +469,31 @@ export function getShellArgs(
+ 				`set -l _superset_bin "${escapedBinDir}"`,
+ 				`contains -- "$_superset_bin" $PATH`,
+ 				`or set -gx PATH "$_superset_bin" $PATH`,
++				// (AY) Command start: fish_preexec -> OSC 133;C (blue dot).
++				`function _superset_cmd_start --on-event fish_preexec`,
++				`printf '\\033]133;C\\007'`,
++				`end`,
++				// (AY) Command end + prompt: capture $status FIRST, emit
++				// 133;D;<exit> then the existing 777 + 133;A markers.
+ 				`function _superset_prompt_mark --on-event fish_prompt`,
+-				`printf '\\033]777;superset-shell-ready\\007\\033]133;A\\007'`,
++				`set -l _superset_ec $status`,
++				`printf '\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007' $_superset_ec`,
+ 				`end`,
+ 			].join("; "),
+ 		];
+ 	}
++	if (shellName === "pwsh" || shellName === "powershell") {
++		// (AY) Dot-source the integration profile (written by createPwshWrapper)
++		// into the interactive session for OSC 133 C/D/A markers. -NoExit keeps
++		// it interactive; Bypass survives a restrictive machine policy.
++		return [
++			"-NoExit",
++			"-ExecutionPolicy",
++			"Bypass",
++			"-Command",
++			`. ${quotePwshSingleQuoted(path.join(paths.BIN_DIR, "superset-pwsh-integration.ps1"))}`,
++		];
++	}
+ 	if (["zsh", "sh", "ksh"].includes(shellName)) {
+ 		return ["-l"];
+ 	}
+@@ -359,6 +517,13 @@ export function getCommandShellArgs(
+ ): string[] {
+ 	const shellName = getShellName(shell);
+ 	logModeDiagnostics(shellName);
++	// (AY) pwsh/powershell take POSIX prelude/`-c` syntax poorly; run the
++	// command directly with -Command. No prompt markers here — this is a
++	// one-shot non-interactive invocation, not an interactive session, so the
++	// shell-running dot does not apply.
++	if (shellName === "pwsh" || shellName === "powershell") {
++		return ["-NoProfile", "-Command", command];
++	}
+ 	const zshRc = path.join(paths.ZSH_DIR, ".zshrc");
+ 	const bashRcfile = path.join(paths.BASH_DIR, "rcfile");
+ 	const commandWithManagedPrelude = `${buildManagedCommandPrelude(shellName, paths.BIN_DIR)}\n${command}`;
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
+index cddb7d7..8a1c947 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx
+@@ -5,7 +5,7 @@ import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/h
+ import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
+ import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
+ import {
+-	useV2WorkspaceNotificationStatus,
++	useV2WorkspaceDisplayStatus,
+ 	useV2WorkspaceTerminalStatuses,
+ } from "renderer/stores/v2-notifications";
+ import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
+@@ -48,7 +48,9 @@ export function DashboardSidebarWorkspaceItem({
+ 	// Snoozed/archived rows live in a collapsible section — don't fire their
+ 	// per-row git status RPC + subscription (A6: avoid a reveal-time RPC storm).
+ 	const diffStats = useDiffStats(id, !sectionState);
+-	const workspaceStatus = useV2WorkspaceNotificationStatus(id);
++	// (AY) Display status merges the agent rollup with the shell-running blue
++	// fallback (agent wins). Drives the workspace-icon dot.
++	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
+ 	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
+ 	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
+ 	const terminalStatuses = useV2WorkspaceTerminalStatuses(id);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
+index e3f79b6..a45a092 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarCollapsedWorkspaceButton/DashboardSidebarCollapsedWorkspaceButton.tsx
+@@ -1,6 +1,6 @@
+ import { cn } from "@superset/ui/utils";
+ import { type ComponentPropsWithoutRef, forwardRef } from "react";
+-import type { ActivePaneStatus } from "shared/tabs-types";
++import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
+ import type {
+ 	DashboardSidebarWorkspaceHostType,
+ 	DashboardSidebarWorkspacePullRequest,
+@@ -14,7 +14,7 @@ interface DashboardSidebarCollapsedWorkspaceButtonProps
+ 	workspaceType: DashboardSidebarWorkspaceType;
+ 	hostIsOnline: boolean | null;
+ 	isActive: boolean;
+-	workspaceStatus?: ActivePaneStatus | null;
++	workspaceStatus?: DisplayStatus | null;
+ 	isCreatePending: boolean;
+ 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
+ 	isNonGit?: boolean;
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
+index 6a46059..37ed57e 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
+@@ -12,8 +12,10 @@ import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
+ import { HotkeyLabel } from "renderer/hotkeys";
+ import { electronTrpc } from "renderer/lib/electron-trpc";
+ import { RenameInput } from "renderer/screens/main/components/WorkspaceSidebar/RenameInput";
+-import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
+-import type { ActivePaneStatus } from "shared/tabs-types";
++import {
++	type DisplayStatus,
++	StatusIndicator,
++} from "renderer/screens/main/components/StatusIndicator";
+ import type {
+ 	DashboardSidebarWorkspace,
+ 	DashboardSidebarWorkspacePullRequest,
+@@ -39,12 +41,13 @@ interface DashboardSidebarExpandedWorkspaceRowProps
+ 	renameValue: string;
+ 	shortcutLabel?: string;
+ 	diffStats: DiffStats | null;
+-	workspaceStatus?: ActivePaneStatus | null;
++	workspaceStatus?: DisplayStatus | null;
+ 	/**
+-	 * One status per active terminal in the workspace. Rendered as a row
+-	 * of dots inline with the workspace name. Pass an empty array to hide.
++	 * One display status per active terminal in the workspace (agent status, or
++	 * the shell-running blue fallback). Rendered as a row of dots inline with
++	 * the workspace name, keyed by terminalId. Pass an empty array to hide.
+ 	 */
+-	terminalStatuses?: ActivePaneStatus[];
++	terminalStatuses?: Array<{ terminalId: string; status: DisplayStatus }>;
+ 	isInSection?: boolean;
+ 	isNonGit?: boolean;
+ 	sectionState?: "snoozed" | "archived";
+@@ -282,9 +285,8 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
+ 							)}
+ 							{terminalStatuses.length > 0 && (
+ 								<div className="flex shrink-0 items-center gap-1">
+-									{terminalStatuses.map((s, i) => (
+-										// biome-ignore lint/suspicious/noArrayIndexKey: per-terminal order is identity; array rebuilt per render
+-										<StatusIndicator key={i} status={s} />
++									{terminalStatuses.map(({ terminalId, status }) => (
++										<StatusIndicator key={terminalId} status={status} />
+ 									))}
+ 								</div>
+ 							)}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
+index 0c0e330..f9e7adb 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceIcon/DashboardSidebarWorkspaceIcon.tsx
+@@ -10,8 +10,10 @@ import {
+ import { RxDot } from "react-icons/rx";
+ import { TbCloud, TbCloudOff } from "react-icons/tb";
+ import { AsciiSpinner } from "renderer/screens/main/components/AsciiSpinner";
+-import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
+-import type { ActivePaneStatus } from "shared/tabs-types";
++import {
++	type DisplayStatus,
++	StatusIndicator,
++} from "renderer/screens/main/components/StatusIndicator";
+ import type {
+ 	DashboardSidebarWorkspaceHostType,
+ 	DashboardSidebarWorkspacePullRequest,
+@@ -24,7 +26,7 @@ interface DashboardSidebarWorkspaceIconProps {
+ 	hostIsOnline: boolean | null;
+ 	isActive: boolean;
+ 	variant: "collapsed" | "expanded";
+-	workspaceStatus?: ActivePaneStatus | null;
++	workspaceStatus?: DisplayStatus | null;
+ 	isCreatePending: boolean;
+ 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
+ 	// (NON-GIT WORKSPACE) folder isn't a git repo — resolved by useIsGitRepo in
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+index 88c2496..d2fa3dd 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+@@ -122,7 +122,23 @@ export function handleV2TerminalLifecycleEvent({
+ 	workspaceId: string;
+ 	payload: TerminalLifecyclePayload;
+ }): void {
+-	if (payload.eventType !== "exit") return;
++	const store = useV2NotificationStore.getState();
++	// (AY) Command lifecycle drives the shell-running blue dot on a SEPARATE
++	// axis — no sound, no native notification, no agent-status mutation.
++	if (payload.eventType === "command-start") {
++		store.setTerminalShellRunning(
++			payload.terminalId,
++			workspaceId,
++			payload.occurredAt,
++		);
++		return;
++	}
++	if (payload.eventType === "command-end") {
++		store.clearTerminalShellRunning(payload.terminalId);
++		return;
++	}
++	// exit: clear both the agent source AND any lingering shell-running entry.
++	store.clearTerminalShellRunning(payload.terminalId);
+ 	clearSources(workspaceId, [
+ 		getV2TerminalNotificationSource(payload.terminalId),
+ 	]);
+diff --git a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
+index d0e20d8..0d5d696 100644
+--- a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
++++ b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
+@@ -4,6 +4,15 @@ import type { ActivePaneStatus } from "shared/tabs-types";
+ // Re-export for consumers
+ export type { ActivePaneStatus } from "shared/tabs-types";
+ 
++/**
++ * (AY) Render-only status union: the agent statuses plus "shell-running" (a
++ * pulsing BLUE dot meaning a foreground command is running). NOT a PaneStatus —
++ * it lives on a separate axis in the v2-notifications store and is merged in
++ * with agent status taking precedence. Widening the prop to this is
++ * non-breaking: every ActivePaneStatus is still a DisplayStatus.
++ */
++export type DisplayStatus = ActivePaneStatus | "shell-running";
++
+ /** Lookup object for status indicator styling - avoids if/else chains */
+ const STATUS_CONFIG = {
+ 	permission: {
+@@ -24,13 +33,20 @@ const STATUS_CONFIG = {
+ 		pulse: false,
+ 		tooltip: "Ready for review",
+ 	},
++	// (AY) shell-running: a foreground command is running in the terminal.
++	"shell-running": {
++		pingColor: "bg-blue-400",
++		dotColor: "bg-blue-500",
++		pulse: true,
++		tooltip: "Command running",
++	},
+ } as const satisfies Record<
+-	ActivePaneStatus,
++	DisplayStatus,
+ 	{ pingColor: string; dotColor: string; pulse: boolean; tooltip: string }
+ >;
+ 
+ interface StatusIndicatorProps {
+-	status: ActivePaneStatus;
++	status: DisplayStatus;
+ 	className?: string;
+ }
+ 
+@@ -64,6 +80,6 @@ export function StatusIndicator({ status, className }: StatusIndicatorProps) {
+ }
+ 
+ /** Get tooltip text for a status - for consumers that wrap with Tooltip */
+-export function getStatusTooltip(status: ActivePaneStatus): string {
++export function getStatusTooltip(status: DisplayStatus): string {
+ 	return STATUS_CONFIG[status].tooltip;
+ }
+diff --git a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/index.ts b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/index.ts
+index e3a18a4..84e10d0 100644
+--- a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/index.ts
++++ b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/index.ts
+@@ -1,5 +1,6 @@
+ export {
+ 	type ActivePaneStatus,
++	type DisplayStatus,
+ 	getStatusTooltip,
+ 	StatusIndicator,
+ } from "./StatusIndicator";
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/index.ts b/apps/desktop/src/renderer/stores/v2-notifications/index.ts
+index f1f0170..9dd4a3d 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/index.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/index.ts
+@@ -13,6 +13,7 @@ export {
+ 	selectV2TerminalNotificationStatus,
+ 	selectV2WorkspaceIsUnread,
+ 	selectV2WorkspaceNotificationStatus,
++	selectV2WorkspaceShellRunningKey,
+ 	selectV2WorkspaceTerminalStatuses,
+ 	useV2ChatNotificationStatus,
+ 	useV2NotificationStore,
+@@ -20,8 +21,10 @@ export {
+ 	useV2SourcesNotificationStatus,
+ 	useV2TabNotificationStatus,
+ 	useV2TerminalNotificationStatus,
++	useV2WorkspaceDisplayStatus,
+ 	useV2WorkspaceIsUnread,
+ 	useV2WorkspaceNotificationStatus,
++	useV2WorkspaceShellRunningTerminalIds,
+ 	useV2WorkspaceTerminalStatuses,
+ 	type V2NotificationPaneLike,
+ 	type V2NotificationSource,
+@@ -31,4 +34,5 @@ export {
+ 	type V2NotificationState,
+ 	type V2NotificationStatusEntry,
+ 	type V2NotificationTabLike,
++	type V2ShellRunningEntry,
+ } from "./store";
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/store.ts b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+index 85fe672..52b5dc7 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/store.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+@@ -3,6 +3,10 @@ import { eq } from "@tanstack/db";
+ import { useLiveQuery } from "@tanstack/react-db";
+ import { useMemo } from "react";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++// (AY) DisplayStatus (ActivePaneStatus | "shell-running") is owned by the
++// StatusIndicator that renders it; the store consumes it as the render type for
++// the merged agent+shell-running dots. Single source of truth — no re-declare.
++import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
+ import {
+ 	type ActivePaneStatus,
+ 	getHighestPriorityStatus,
+@@ -48,8 +52,28 @@ export interface V2NotificationStatusEntry {
+ 	occurredAt: number;
+ }
+ 
++/**
++ * (AY) A foreground command currently running in a terminal (OSC 133 C with no
++ * matching D yet), keyed by terminalId. Separate axis from `sources`: it never
++ * participates in agent-status aggregation; it only drives the blue dot when no
++ * agent status outranks it. Cleared on command-end / exit / prompt-redraw-end.
++ */
++export interface V2ShellRunningEntry {
++	workspaceId: string;
++	occurredAt: number;
++}
++
+ export interface V2NotificationState {
+ 	sources: Record<string, V2NotificationStatusEntry>;
++	// (AY) Separate shell-running axis (see V2ShellRunningEntry). Keyed by
++	// terminalId. Never merged into `sources`.
++	shellRunningTerminals: Record<string, V2ShellRunningEntry>;
++	setTerminalShellRunning: (
++		terminalId: string,
++		workspaceId: string,
++		occurredAt?: number,
++	) => void;
++	clearTerminalShellRunning: (terminalId: string) => void;
+ 	setSourceStatus: (
+ 		source: V2NotificationSource,
+ 		workspaceId: string,
+@@ -87,6 +111,31 @@ export interface V2NotificationState {
+ 
+ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 	sources: {},
++	shellRunningTerminals: {},
++	setTerminalShellRunning: (
++		terminalId,
++		workspaceId,
++		occurredAt = Date.now(),
++	) => {
++		set((state) => {
++			const prev = state.shellRunningTerminals[terminalId];
++			if (prev && prev.workspaceId === workspaceId) return state;
++			return {
++				shellRunningTerminals: {
++					...state.shellRunningTerminals,
++					[terminalId]: { workspaceId, occurredAt },
++				},
++			};
++		});
++	},
++	clearTerminalShellRunning: (terminalId) => {
++		set((state) => {
++			if (!state.shellRunningTerminals[terminalId]) return state;
++			const { [terminalId]: _removed, ...shellRunningTerminals } =
++				state.shellRunningTerminals;
++			return { shellRunningTerminals };
++		});
++	},
+ 	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
+ 		const sourceKey = getV2NotificationSourceKey(source);
+ 		ndots({
+@@ -402,12 +451,13 @@ export function selectV2WorkspaceNotificationStatus(
+ }
+ 
+ /**
+- * Per-terminal statuses for a workspace, encoded as a comma-joined
+- * string for stable referential equality in the Zustand selector
+- * (returning an array would re-fire the subscription on every store
+- * change because [...] !== [...]). Callers split the string back to an
+- * array. Only terminal sources are included — chat sources excluded —
+- * with non-idle status; idle/missing entries are filtered.
++ * Per-terminal AGENT statuses for a workspace, encoded as a comma-joined
++ * `terminalId=status` string for stable referential equality in the Zustand
++ * selector (returning an array/object would re-fire the subscription on every
++ * store change because [...] !== [...]). Callers decode the string back to
++ * pairs. Only terminal sources are included — chat sources excluded — with
++ * non-idle status; idle/missing entries are filtered. The terminalId is now
++ * carried (was status-only) so (AY) can merge the shell-running fallback by id.
+  */
+ export function selectV2WorkspaceTerminalStatuses(
+ 	workspaceId: string,
+@@ -419,22 +469,96 @@ export function selectV2WorkspaceTerminalStatuses(
+ 			if (entry.workspaceId !== workspaceId) continue;
+ 			if (entry.source.type !== "terminal") continue;
+ 			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
+-			parts.push(entry.status);
++			parts.push(`${entry.source.id}=${entry.status}`);
+ 		}
++		// Sort for a deterministic key (store iteration order is insertion order;
++		// sorting keeps the referential-equality key stable across re-emits).
++		parts.sort();
+ 		return parts.join(",");
+ 	};
+ }
+ 
+-export function useV2WorkspaceTerminalStatuses(
++/**
++ * (AY) Per-terminal shell-running terminal ids for a workspace, gated to OPEN
++ * terminals and encoded as a sorted comma-joined string for referential
++ * stability. Drives the per-terminal blue dot fallback + the workspace rollup.
++ */
++export function selectV2WorkspaceShellRunningKey(
++	workspaceId: string,
++	openTerminalIds?: ReadonlySet<string>,
++) {
++	return (state: V2NotificationState): string => {
++		const ids: string[] = [];
++		for (const [terminalId, entry] of Object.entries(
++			state.shellRunningTerminals,
++		)) {
++			if (entry.workspaceId !== workspaceId) continue;
++			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
++			ids.push(terminalId);
++		}
++		ids.sort();
++		return ids.join(",");
++	};
++}
++
++/**
++ * (AY) Set of terminalIds with a foreground command running, gated to OPEN
++ * terminals. Referentially stable — identity changes only when the id set does.
++ */
++export function useV2WorkspaceShellRunningTerminalIds(
+ 	workspaceId: string,
+-): ActivePaneStatus[] {
++): ReadonlySet<string> {
+ 	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+ 	const selector = useMemo(
+-		() => selectV2WorkspaceTerminalStatuses(workspaceId, openTerminalIds),
++		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
+ 		[workspaceId, openTerminalIds],
+ 	);
+ 	const key = useV2NotificationStore(selector);
+-	return key ? (key.split(",") as ActivePaneStatus[]) : [];
++	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
++}
++
++/**
++ * (AY) Per-terminal DISPLAY statuses: the agent status per terminal, then the
++ * shell-running blue fallback for OPEN terminals that have NO agent status.
++ * Agent status always wins (permission/working/review > shell-running). Both
++ * inputs are referentially-stable keyed strings, so this only recomputes when
++ * either set actually changes.
++ */
++export function useV2WorkspaceTerminalStatuses(
++	workspaceId: string,
++): Array<{ terminalId: string; status: DisplayStatus }> {
++	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
++	const agentSelector = useMemo(
++		() => selectV2WorkspaceTerminalStatuses(workspaceId, openTerminalIds),
++		[workspaceId, openTerminalIds],
++	);
++	const shellSelector = useMemo(
++		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
++		[workspaceId, openTerminalIds],
++	);
++	const agentKey = useV2NotificationStore(agentSelector);
++	const shellKey = useV2NotificationStore(shellSelector);
++	return useMemo(() => {
++		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
++		const agentIds = new Set<string>();
++		if (agentKey) {
++			for (const pair of agentKey.split(",")) {
++				const eq = pair.indexOf("=");
++				if (eq < 0) continue;
++				const terminalId = pair.slice(0, eq);
++				const status = pair.slice(eq + 1) as ActivePaneStatus;
++				agentIds.add(terminalId);
++				result.push({ terminalId, status });
++			}
++		}
++		if (shellKey) {
++			for (const terminalId of shellKey.split(",")) {
++				if (!terminalId || agentIds.has(terminalId)) continue;
++				result.push({ terminalId, status: "shell-running" });
++			}
++		}
++		return result;
++	}, [agentKey, shellKey]);
+ }
+ 
+ export function selectV2TabNotificationStatus(
+@@ -495,6 +619,22 @@ export function useV2WorkspaceNotificationStatus(workspaceId: string) {
+ 	return useV2NotificationStore(selector);
+ }
+ 
++/**
++ * (AY) The single status the WORKSPACE ICON should render: the agent rollup
++ * status if any (permission/working/review), else "shell-running" (blue) when
++ * any OPEN terminal has a foreground command running, else null. Agent status
++ * always wins — the precedence merge happens HERE (and per-terminal in
++ * useV2WorkspaceTerminalStatuses), never in the `sources` aggregation.
++ */
++export function useV2WorkspaceDisplayStatus(
++	workspaceId: string,
++): DisplayStatus | null {
++	const agentStatus = useV2WorkspaceNotificationStatus(workspaceId);
++	const shellRunningIds = useV2WorkspaceShellRunningTerminalIds(workspaceId);
++	if (agentStatus) return agentStatus;
++	return shellRunningIds.size > 0 ? "shell-running" : null;
++}
++
+ export function selectV2WorkspaceIsUnread(
+ 	workspaceId: string,
+ 	openTerminalIds?: ReadonlySet<string>,
+diff --git a/packages/host-service/src/events/types.ts b/packages/host-service/src/events/types.ts
+index fa20138..b69b484 100644
+--- a/packages/host-service/src/events/types.ts
++++ b/packages/host-service/src/events/types.ts
+@@ -34,15 +34,39 @@ export interface AgentLifecycleMessage {
+ 	occurredAt: number;
+ }
+ 
+-export interface TerminalLifecycleMessage {
+-	type: "terminal:lifecycle";
+-	workspaceId: string;
+-	terminalId: string;
+-	eventType: "exit";
+-	exitCode: number;
+-	signal: number;
+-	occurredAt: number;
+-}
++/**
++ * Terminal process / command lifecycle, fanned out to renderer clients.
++ *
++ * - "exit": the PTY process ended (existing behaviour).
++ * - "command-start" / "command-end": a foreground command began / finished in
++ *   the shell, detected from OSC 133 C/D markers (shell-running blue dot). These
++ *   are NOT agent statuses — they drive a separate render-only axis.
++ */
++export type TerminalLifecycleMessage =
++	| {
++			type: "terminal:lifecycle";
++			workspaceId: string;
++			terminalId: string;
++			eventType: "exit";
++			exitCode: number;
++			signal: number;
++			occurredAt: number;
++	  }
++	| {
++			type: "terminal:lifecycle";
++			workspaceId: string;
++			terminalId: string;
++			eventType: "command-start";
++			occurredAt: number;
++	  }
++	| {
++			type: "terminal:lifecycle";
++			workspaceId: string;
++			terminalId: string;
++			eventType: "command-end";
++			exitCode: number | null;
++			occurredAt: number;
++	  };
+ 
+ export interface PortChangedMessage {
+ 	type: "port:changed";
+diff --git a/packages/host-service/src/terminal/shell-launch.ts b/packages/host-service/src/terminal/shell-launch.ts
+index ee65880..5a5f6bb 100644
+--- a/packages/host-service/src/terminal/shell-launch.ts
++++ b/packages/host-service/src/terminal/shell-launch.ts
+@@ -36,7 +36,12 @@ export function getSupersetShellPaths(supersetHomeDir: string): {
+ }
+ 
+ function getShellName(shell: string): string {
+-	return path.basename(shell);
++	// Normalize across separators (`/` and Windows `\`) and strip a `.exe`
++	// suffix so `C:\...\pwsh.exe` and `/usr/bin/pwsh` both resolve to `pwsh`.
++	// path.basename only handles the platform's own separator; do both
++	// explicitly so a Windows path resolved on a POSIX dev box still matches.
++	const base = shell.split(/[\\/]/).pop() || shell;
++	return base.replace(/\.exe$/i, "");
+ }
+ 
+ /**
+@@ -54,12 +59,44 @@ function buildFishInitCommand(binDir: string): string {
+ 		`set -l _superset_bin "${escaped}"`,
+ 		`contains -- "$_superset_bin" $PATH`,
+ 		`or set -gx PATH "$_superset_bin" $PATH`,
++		// (AY) Command start: fish_preexec fires after a command line is read,
++		// just before it runs -> OSC 133;C (command-running blue dot).
++		`function _superset_cmd_start --on-event fish_preexec`,
++		`printf '\\033]133;C\\007'`,
++		`end`,
++		// (AY) Command end + prompt start: fish_prompt fires before drawing the
++		// prompt. $status is the previous command's exit. Emit 133;D;<exit> then
++		// the existing 133;A. Capture $status FIRST so the D printf doesn't clobber
++		// it for downstream prompt logic.
+ 		`function _superset_prompt_mark --on-event fish_prompt`,
+-		`printf '\\033]133;A\\007'`,
++		`set -l _superset_ec $status`,
++		`printf '\\033]133;D;%s\\007\\033]133;A\\007' $_superset_ec`,
+ 		`end`,
+ 	].join("; ");
+ }
+ 
++/**
++ * (AY) PowerShell single-quoted literal: a `'` inside is escaped by doubling it
++ * (`''`). A Windows username/path CAN legitimately contain an apostrophe
++ * (e.g. `C:\Users\O'Brien\...`), so escape it rather than assume it's absent.
++ */
++function quotePwshSingleQuoted(value: string): string {
++	return `'${value.replaceAll("'", "''")}'`;
++}
++
++/**
++ * (AY) PowerShell launch args. Dot-source the integration profile (written by
++ * createPwshWrapper to BIN_DIR/superset-pwsh-integration.ps1) so it runs in the
++ * interactive session WITHOUT replacing the user's own profile. -NoExit keeps
++ * the session interactive; -ExecutionPolicy Bypass lets the dot-source run even
++ * under a restrictive machine policy. The script path is a single-quoted pwsh
++ * literal (spaces safe; `'` doubled) — see quotePwshSingleQuoted.
++ */
++function buildPwshInitCommand(binDir: string): string {
++	const ps1Path = path.join(binDir, "superset-pwsh-integration.ps1");
++	return `. ${quotePwshSingleQuoted(ps1Path)}`;
++}
++
+ export interface ShellBootstrapParams {
+ 	shell: string;
+ 	baseEnv: Record<string, string>;
+@@ -116,6 +153,16 @@ export function getShellLaunchArgs(params: ShellLaunchParams): string[] {
+ 		return ["-l", "--init-command", buildFishInitCommand(paths.BIN_DIR)];
+ 	}
+ 
++	if (shellName === "pwsh" || shellName === "powershell") {
++		return [
++			"-NoExit",
++			"-ExecutionPolicy",
++			"Bypass",
++			"-Command",
++			buildPwshInitCommand(paths.BIN_DIR),
++		];
++	}
++
+ 	if (shellName === "sh" || shellName === "ksh") {
+ 		return ["-l"];
+ 	}
+diff --git a/packages/host-service/src/terminal/terminal.ts b/packages/host-service/src/terminal/terminal.ts
+index 006932e..1021118 100644
+--- a/packages/host-service/src/terminal/terminal.ts
++++ b/packages/host-service/src/terminal/terminal.ts
+@@ -9,6 +9,11 @@ import {
+ 	type ShellReadyScanState,
+ 	scanForShellReady,
+ } from "@superset/shared/shell-ready-scanner";
++import {
++	createOsc133CdScanState,
++	type Osc133CdScanState,
++	scanForOsc133Cd,
++} from "@superset/shared/shell-osc133-cd-scanner";
+ import {
+ 	createTerminalTitleScanState,
+ 	scanForTerminalTitle,
+@@ -281,6 +286,16 @@ interface TerminalSession {
+ 	scanState: ShellReadyScanState;
+ 	initialCommandQueued: boolean;
+ 
++	// (AY) OSC 133 C/D command-running detection — drives the shell-running blue
++	// dot. `cdScanState` is null for shells we don't instrument (sh/ksh, adopted
++	// sessions). `commandRunning` tracks whether we've seen a `133;C` without a
++	// matching `133;D` yet, so a stray `133;A` (prompt redraw) can synthesize a
++	// command-end self-heal. A host-service restart adopts with a fresh state +
++	// commandRunning=false: it misses an in-flight command's blue dot but
++	// recovers on the next D/A (safe direction — never a stuck blue).
++	cdScanState: Osc133CdScanState | null;
++	commandRunning: boolean;
++
+ 	/**
+ 	 * Side-channel UTF-8 decoder. portManager.checkOutputForHint takes a
+ 	 * string and does text-pattern matching for "Local: http://…" hints,
+@@ -1220,9 +1235,20 @@ export async function createTerminalSessionInternal({
+ 	// Determine shell readiness support. Adopted sessions are already past
+ 	// shell startup, so treat them as immediately ready — the OSC 133;A
+ 	// marker has already flown by and we don't want to gate writes on it.
+-	const shellName = shell.split("/").pop() || shell;
++	// Normalize the basename across separators and a Windows `.exe` suffix so
++	// `C:\...\pwsh.exe` / `/usr/bin/zsh` both resolve to a plain shell name.
++	const shellName = (shell.split(/[\\/]/).pop() || shell).replace(
++		/\.exe$/i,
++		"",
++	);
+ 	const shellSupportsReady =
+ 		!isAdopted && SHELLS_WITH_READY_MARKER.has(shellName);
++	// (AY) Instrument the OSC 133 C/D command scanner for the same marker-
++	// emitting shells (zsh/bash/fish/pwsh/powershell) — sh/ksh are excluded
++	// because their wrappers emit no markers. Adopted sessions get a fresh
++	// scanner too (commandRunning starts false): they miss an in-flight
++	// command's blue dot but self-heal on the next D/A.
++	const cdScannerSupported = SHELLS_WITH_READY_MARKER.has(shellName);
+ 
+ 	let shellReadyResolve: (() => void) | null = null;
+ 	const shellReadyPromise = shellSupportsReady
+@@ -1261,6 +1287,8 @@ export async function createTerminalSessionInternal({
+ 		shellReadyPromise,
+ 		shellReadyTimeoutId: null,
+ 		scanState: createScanState(),
++		cdScanState: cdScannerSupported ? createOsc133CdScanState() : null,
++		commandRunning: false,
+ 		// Adopted sessions have already run their initialCommand in the prior
+ 		// host-service lifetime — flag it as queued so we don't double-fire it.
+ 		initialCommandQueued: isAdopted,
+@@ -1302,6 +1330,60 @@ export async function createTerminalSessionInternal({
+ 						resolveShellReady(session, "ready");
+ 					}
+ 				}
++				// (AY) CHAIN the C/D scanner on the OUTPUT of the shell-ready pass —
++				// never behind an else-if. The wrappers emit `D;<exit>` (command end)
++				// and then `A` (prompt start) together at the FIRST prompt; the A-scanner
++				// (while pending) consumes only that first `A`, so the leading `D` (and
++				// any `C`) would otherwise leak as a visible `]133;D;0` artifact at the
++				// top of every new terminal. Running the C/D scanner on the already-A-
++				// stripped bytes strips that D (a `command-end` with commandRunning=false
++				// is a harmless no-op) plus all later C/D and subsequent A. The first `A`
++				// is removed by the A-scanner before the C/D scanner sees it, so no A is
++				// double-stripped — each `A` is handled by exactly one scanner.
++				if (session.cdScanState) {
++					const cdResult = scanForOsc133Cd(session.cdScanState, bytes);
++					bytes = cdResult.output;
++					for (const ev of cdResult.events) {
++						if (ev.kind === "command-start") {
++							session.commandRunning = true;
++							eventBus?.broadcastTerminalLifecycle({
++								workspaceId,
++								terminalId,
++								eventType: "command-start",
++								occurredAt: Date.now(),
++							});
++						} else if (ev.kind === "command-end") {
++							// Only broadcast a real end-of-command transition. A `D` with
++							// no preceding `C` — notably the first prompt's `D;<exit>` that
++							// fires before any command (now stripped here thanks to the
++							// chained scanner) — is a no-op: strip the marker, emit nothing.
++							if (session.commandRunning) {
++								session.commandRunning = false;
++								eventBus?.broadcastTerminalLifecycle({
++									workspaceId,
++									terminalId,
++									eventType: "command-end",
++									exitCode: ev.exitCode,
++									occurredAt: Date.now(),
++								});
++							}
++						} else if (ev.kind === "prompt-redraw") {
++							// A prompt redraw while a command was running means we
++							// missed (or never got) its `133;D`. Synthesize a
++							// command-end with unknown exit so the blue dot self-heals.
++							if (session.commandRunning) {
++								session.commandRunning = false;
++								eventBus?.broadcastTerminalLifecycle({
++									workspaceId,
++									terminalId,
++									eventType: "command-end",
++									exitCode: null,
++									occurredAt: Date.now(),
++								});
++							}
++						}
++					}
++				}
+ 				if (bytes.byteLength === 0) return;
+ 
+ 				// portManager.checkOutputForHint runs URL/port regexes on
+diff --git a/packages/shared/package.json b/packages/shared/package.json
+index cef601d..d601a8b 100644
+--- a/packages/shared/package.json
++++ b/packages/shared/package.json
+@@ -124,6 +124,10 @@
+ 			"types": "./src/shell-ready-scanner.ts",
+ 			"default": "./src/shell-ready-scanner.ts"
+ 		},
++		"./shell-osc133-cd-scanner": {
++			"types": "./src/shell-osc133-cd-scanner.ts",
++			"default": "./src/shell-osc133-cd-scanner.ts"
++		},
+ 		"./terminal-title-scanner": {
+ 			"types": "./src/terminal-title-scanner.ts",
+ 			"default": "./src/terminal-title-scanner.ts"
+diff --git a/packages/shared/src/shell-osc133-cd-scanner.ts b/packages/shared/src/shell-osc133-cd-scanner.ts
+new file mode 100644
+index 0000000..769a5f2
+--- /dev/null
++++ b/packages/shared/src/shell-osc133-cd-scanner.ts
+@@ -0,0 +1,226 @@
++/**
++ * OSC 133 C/D command-lifecycle scanner (FinalTerm semantic prompt standard).
++ *
++ * Companion to {@link ./shell-ready-scanner.ts}, which owns the `133;A`
++ * (prompt-start) marker. This scanner detects the COMMAND boundaries:
++ *
++ *   - `\x1b]133;C\x07`         command start  (pre-exec)        -> command-start
++ *   - `\x1b]133;D;<exit>\x07`  command end with exit code       -> command-end
++ *   - `\x1b]133;D\x07`         command end, exit unknown        -> command-end (null)
++ *   - `\x1b]133;A\x07`         prompt redraw while a command is
++ *                              running (self-heal signal)       -> prompt-redraw
++ *
++ * "running" = saw `C`, not yet `D`. A later `A` (prompt redraw) while a command
++ * is considered running lets the host synthesize a command-end (exit unknown),
++ * so a missed `D` self-heals on the next prompt. Event-driven; no timers.
++ *
++ * Byte-oriented like the ready scanner: the markers are pure ASCII, so byte
++ * matching is identical to char matching while keeping PTY output opaque bytes.
++ * Matching bytes are HELD back from output and discarded on a full match; on a
++ * mismatch, held bytes are flushed verbatim so nothing the user typed/saw is
++ * dropped. Markers may span chunk boundaries — the state carries the partial.
++ *
++ * Terminators: BEL (0x07) OR ST (ESC `\` = 0x1b 0x5c). Both are accepted per
++ * the spec (xterm emits BEL; some emitters use ST).
++ *
++ * Protocol ref: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
++ */
++
++const ESC = 0x1b;
++const BEL = 0x07;
++const ST_TAIL = 0x5c; // backslash — second byte of the ST sequence (ESC \)
++
++/** Common prefix shared by every 133 marker: `\x1b]133;`. */
++const OSC_133_PREFIX = Uint8Array.from(
++	[..."\x1b]133;"].map((c) => c.charCodeAt(0)),
++);
++
++/**
++ * Phase of the byte-by-byte scan.
++ * - "prefix":  matching `\x1b]133;` (matchPos tracks how many bytes matched)
++ * - "kind":    prefix matched; reading the discriminator byte (A/C/D)
++ * - "params":  inside a recognized marker body; collecting param bytes until a
++ *              terminator (BEL or ST). On ESC we may be starting an ST.
++ */
++type ScanPhase = "prefix" | "kind" | "params";
++
++export type Osc133CdEvent =
++	| { kind: "command-start" }
++	| { kind: "command-end"; exitCode: number | null }
++	| { kind: "prompt-redraw" };
++
++export interface Osc133CdScanState {
++	phase: ScanPhase;
++	/** How many bytes of OSC_133_PREFIX have matched so far (phase "prefix"). */
++	matchPos: number;
++	/** Bytes withheld from output while a candidate marker is in progress. */
++	heldBytes: number[];
++	/** The recognized discriminator for the current marker: "A" | "C" | "D". */
++	kind: "A" | "C" | "D" | null;
++	/** Param bytes collected after the discriminator (phase "params"). */
++	paramBytes: number[];
++	/** True once we saw an ESC inside params and are awaiting the ST tail. */
++	sawEscInParams: boolean;
++}
++
++export interface Osc133CdScanResult {
++	// Tight ArrayBuffer-backed shape: matches Buffer and what hono/ws
++	// WSContext.send accepts, so callers don't need casts.
++	output: Uint8Array<ArrayBuffer>;
++	events: Osc133CdEvent[];
++}
++
++export function createOsc133CdScanState(): Osc133CdScanState {
++	return {
++		phase: "prefix",
++		matchPos: 0,
++		heldBytes: [],
++		kind: null,
++		paramBytes: [],
++		sawEscInParams: false,
++	};
++}
++
++/** Reset to the idle prefix-matching phase; clears any in-progress capture. */
++function resetToPrefix(state: Osc133CdScanState): void {
++	state.phase = "prefix";
++	state.matchPos = 0;
++	state.heldBytes.length = 0;
++	state.kind = null;
++	state.paramBytes.length = 0;
++	state.sawEscInParams = false;
++}
++
++/** Parse the exit code out of a `D` marker's params (`D;<exit>` or `D`). */
++function parseExitCode(paramBytes: number[]): number | null {
++	// paramBytes is the text AFTER the "D" discriminator, e.g. ";0" or ";130"
++	// or "" (bare D). Strip a single leading ';' then parse the leading integer.
++	if (paramBytes.length === 0) return null;
++	let s = String.fromCharCode(...paramBytes);
++	if (s.startsWith(";")) s = s.slice(1);
++	// FinalTerm D params can carry extra ';'-separated fields (e.g.
++	// "D;<exit>;<aid>"); only the first field is the exit status.
++	const firstField = s.split(";")[0] ?? "";
++	if (firstField === "") return null;
++	const n = Number.parseInt(firstField, 10);
++	return Number.isFinite(n) ? n : null;
++}
++
++/** Emit the event for a completed marker and reset to prefix-matching. */
++function finishMarker(state: Osc133CdScanState, events: Osc133CdEvent[]): void {
++	if (state.kind === "C") {
++		events.push({ kind: "command-start" });
++	} else if (state.kind === "D") {
++		events.push({ kind: "command-end", exitCode: parseExitCode(state.paramBytes) });
++	} else if (state.kind === "A") {
++		events.push({ kind: "prompt-redraw" });
++	}
++	resetToPrefix(state);
++}
++
++/**
++ * Scan a chunk of PTY output for OSC 133 C/D (and A-while-running) markers.
++ *
++ * Returns the chunk with recognized markers stripped, plus any lifecycle events
++ * detected in order. Held bytes for an in-progress (partial) marker are carried
++ * in `state` across calls and emitted to `output` only if the candidate later
++ * turns out NOT to be a marker.
++ */
++export function scanForOsc133Cd(
++	state: Osc133CdScanState,
++	data: Uint8Array,
++): Osc133CdScanResult {
++	const out: number[] = [];
++	const events: Osc133CdEvent[] = [];
++
++	for (let i = 0; i < data.length; i++) {
++		const b = data[i] as number;
++
++		if (state.phase === "prefix") {
++			if (b === OSC_133_PREFIX[state.matchPos]) {
++				state.heldBytes.push(b);
++				state.matchPos++;
++				if (state.matchPos === OSC_133_PREFIX.length) {
++					state.phase = "kind";
++				}
++			} else {
++				// Mismatch: flush everything we held, then re-seed on the current
++				// byte (it may itself start a fresh prefix, e.g. a back-to-back ESC).
++				for (const h of state.heldBytes) out.push(h);
++				state.heldBytes.length = 0;
++				state.matchPos = 0;
++				if (b === OSC_133_PREFIX[0]) {
++					state.heldBytes.push(b);
++					state.matchPos = 1;
++				} else {
++					out.push(b);
++				}
++			}
++			continue;
++		}
++
++		if (state.phase === "kind") {
++			if (b === 0x41 /* A */ || b === 0x43 /* C */ || b === 0x44 /* D */) {
++				state.kind = b === 0x41 ? "A" : b === 0x43 ? "C" : "D";
++				state.heldBytes.push(b);
++				state.phase = "params";
++			} else if (b === BEL) {
++				// `\x1b]133;\x07` with no discriminator — not a marker we handle.
++				// Flush held bytes (incl. this BEL) and resume prefix matching.
++				for (const h of state.heldBytes) out.push(h);
++				out.push(b);
++				resetToPrefix(state);
++			} else {
++				// Some other OSC 133 subcommand (e.g. `133;P`) or noise. Flush the
++				// held prefix and re-process this byte as a potential new prefix.
++				for (const h of state.heldBytes) out.push(h);
++				resetToPrefix(state);
++				if (b === OSC_133_PREFIX[0]) {
++					state.heldBytes.push(b);
++					state.matchPos = 1;
++				} else {
++					out.push(b);
++				}
++			}
++			continue;
++		}
++
++		// phase === "params": collecting body bytes until a terminator.
++		if (state.sawEscInParams) {
++			// We are one byte past an ESC inside params; this byte decides whether
++			// it was an ST terminator (ESC \) or just an ESC inside the body.
++			if (b === ST_TAIL) {
++				state.heldBytes.push(b);
++				finishMarker(state, events);
++			} else {
++				// Not ST — the ESC was body content; keep both bytes as params.
++				state.paramBytes.push(ESC);
++				state.heldBytes.push(ESC);
++				state.sawEscInParams = false;
++				// Re-process the current byte in the (now non-ESC) params context.
++				if (b === BEL) {
++					state.heldBytes.push(b);
++					finishMarker(state, events);
++				} else {
++					state.paramBytes.push(b);
++					state.heldBytes.push(b);
++				}
++			}
++			continue;
++		}
++
++		if (b === BEL) {
++			state.heldBytes.push(b);
++			finishMarker(state, events);
++		} else if (b === ESC) {
++			// Possible ST terminator; defer until the next byte.
++			state.heldBytes.push(b);
++			state.sawEscInParams = true;
++		} else {
++			state.paramBytes.push(b);
++			state.heldBytes.push(b);
++		}
++	}
++
++	return { output: Uint8Array.from(out), events };
++}
+diff --git a/packages/shared/src/shell-ready-scanner.ts b/packages/shared/src/shell-ready-scanner.ts
+index d32c901..e9ed275 100644
+--- a/packages/shared/src/shell-ready-scanner.ts
++++ b/packages/shared/src/shell-ready-scanner.ts
+@@ -16,7 +16,17 @@ const OSC_133_A_BYTES = Uint8Array.from(
+ const BEL_BYTE = 0x07;
+ 
+ /** Shells whose wrapper files inject OSC 133 markers. */
+-export const SHELLS_WITH_READY_MARKER = new Set(["zsh", "bash", "fish"]);
++export const SHELLS_WITH_READY_MARKER = new Set([
++	"zsh",
++	"bash",
++	"fish",
++	// pwsh/powershell emit `133;A` (and the C/D command markers) via the
++	// superset-pwsh-integration.ps1 prompt function. Listing them here engages
++	// the A-scan so the C/D command-running scanner (which only activates once
++	// shell-ready is no longer "pending") can take over stripping.
++	"powershell",
++	"pwsh",
++]);
+ 
+ /**
+  * Mutable state for the byte-by-byte scanner.
+diff --git a/packages/workspace-client/src/lib/eventBus.ts b/packages/workspace-client/src/lib/eventBus.ts
+index 91a25b0..5adb464 100644
+--- a/packages/workspace-client/src/lib/eventBus.ts
++++ b/packages/workspace-client/src/lib/eventBus.ts
+@@ -36,13 +36,25 @@ export interface AgentLifecyclePayload {
+ 	occurredAt: number;
+ }
+ 
+-export interface TerminalLifecyclePayload {
+-	eventType: "exit";
+-	terminalId: string;
+-	exitCode: number;
+-	signal: number;
+-	occurredAt: number;
+-}
++export type TerminalLifecyclePayload =
++	| {
++			eventType: "exit";
++			terminalId: string;
++			exitCode: number;
++			signal: number;
++			occurredAt: number;
++	  }
++	| {
++			eventType: "command-start";
++			terminalId: string;
++			occurredAt: number;
++	  }
++	| {
++			eventType: "command-end";
++			terminalId: string;
++			exitCode: number | null;
++			occurredAt: number;
++	  };
+ 
+ type PortChangedMessage = Extract<ServerMessage, { type: "port:changed" }>;
+ 
+@@ -153,15 +165,33 @@ function handleMessage(state: ConnectionState, data: unknown): void {
+ 				},
+ 			);
+ 		} else if (message.type === "terminal:lifecycle") {
++			// Re-narrow the discriminated union per eventType so each payload
++			// carries only its own fields (exit -> exitCode+signal; command-end ->
++			// exitCode:number|null; command-start -> neither).
++			const payload: TerminalLifecyclePayload =
++				message.eventType === "exit"
++					? {
++							eventType: "exit",
++							terminalId: message.terminalId,
++							exitCode: message.exitCode,
++							signal: message.signal,
++							occurredAt: message.occurredAt,
++						}
++					: message.eventType === "command-end"
++						? {
++								eventType: "command-end",
++								terminalId: message.terminalId,
++								exitCode: message.exitCode,
++								occurredAt: message.occurredAt,
++							}
++						: {
++								eventType: "command-start",
++								terminalId: message.terminalId,
++								occurredAt: message.occurredAt,
++							};
+ 			(entry.callback as EventListener<"terminal:lifecycle">)(
+ 				message.workspaceId,
+-				{
+-					eventType: message.eventType,
+-					terminalId: message.terminalId,
+-					exitCode: message.exitCode,
+-					signal: message.signal,
+-					occurredAt: message.occurredAt,
+-				},
++				payload,
+ 			);
+ 		} else if (message.type === "port:changed") {
+ 			(entry.callback as EventListener<"port:changed">)(message.workspaceId, {

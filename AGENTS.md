@@ -208,6 +208,56 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   be cleared, and the green must NOT be suppressed by the yellow-hold. The ONLY
   remaining JSONL-detected case is ESC mid-turn (docs confirm NO hook fires on
   interrupt) — that stays the documented (AS) exception. ([[project_dots_open_tabs_and_subagent_hold]])
+- **shell-running dot (AY)**[git, after AT/AU] — a pulsing **BLUE** per-terminal
+  dot (+ workspace-icon rollup) when a FOREGROUND command is running in the
+  shell, cleared instantly on finish. Detection is OSC 133 **C** (command-start,
+  pre-exec) / **D;`<exit>`** (command-end, precmd); running = saw C, no D yet.
+  Self-heals: a later `133;A` (prompt redraw) while running synthesizes a
+  command-end (exit unknown) — pure event-driven, NO timers/polling, and the
+  existing `133;A` shell-ready detection still works (the new C/D scanner only
+  engages once shell-ready is past `pending`, then it also strips A). Precedence
+  is **agent > blue** (permission > working > review > shell-running > idle): blue
+  shows ONLY when no agent state. CRITICAL design: shell-running is a SEPARATE
+  store axis (`shellRunningTerminals: Record<terminalId,{workspaceId,occurredAt}>`)
+  — NOT a 5th `PaneStatus`, NOT in the `sources` record or
+  `getHighestPriorityStatus`; the precedence merge is RENDER-time only
+  (`useV2WorkspaceDisplayStatus` for the icon + the refactored
+  `useV2WorkspaceTerminalStatuses` returning `{terminalId,status:DisplayStatus}[]`),
+  REUSING the (AT) `useV2WorkspaceOpenTerminalIds` gate so closed/never-opened tabs
+  are never representable. NEW byte-scanner
+  `packages/shared/src/shell-osc133-cd-scanner.ts` mirrors `shell-ready-scanner.ts`
+  (held-bytes/strip, chunk-spanning, BEL or ST terminator, tolerates `D;<exit>;<aid>`
+  extras); host-service `terminal.ts` runs it in `onOutput` after `scanForShellReady`
+  and broadcasts `command-start`/`command-end` via the WIDENED
+  `terminal:lifecycle` union (events/types.ts + workspace-client eventBus.ts);
+  renderer `lifecycleEvents.ts` sets/clears the blue axis (NO sound/notification).
+  Shells: bash (`trap DEBUG`→C, latched once/line + cleared at precmd; D;`$?` in
+  `__superset_prompt_mark`), zsh (`preexec_functions`→C; D;`$?`), fish
+  (`fish_preexec`→C; D;`$status` in fish_prompt) — both the agent-setup
+  `shell-wrappers.ts` AND the v2 host-service `shell-launch.ts` fish init. pwsh is a
+  **SEPARATE `superset-pwsh-integration.ps1`** written by `createPwshWrapper()`
+  (dot-sourced via `-NoExit -ExecutionPolicy Bypass -Command ". '<ps1>'"`, path
+  single-quoted with `'`→`''` escaping for `C:\\Users\\O'Brien\\…`) — its prompt
+  fn emits D+A and a PSReadLine Enter-chord handler emits C ONLY when
+  `GetBufferState` reports the buffer is a COMPLETE statement (no `IncompleteInput`
+  parse error), so multi-line edits don't false-blue. The .ps1 is built from
+  SINGLE/DOUBLE-quoted JS strings, **NEVER a JS template literal** (pwsh
+  `$LASTEXITCODE`/`$(...)`/`${}` would break the esbuild backtick template — the
+  same trap as the embedded Python hooks). `getShellName` strips `\\`/`/`/`.exe`
+  so `pwsh.exe` matches. CHAINING (deep-review #1): terminal.ts runs the C/D
+  scanner on the OUTPUT of the shell-ready (A) pass — NOT behind an else-if — so
+  the first prompt's `D;<exit>` (emitted before the first `A` by the wrappers) is
+  stripped instead of leaking a visible `]133;D;0` artifact; the first `A` is
+  consumed by the A-scanner before the C/D scanner sees it (each `A` handled by
+  exactly one scanner, no double-strip), and a `D` with no preceding `C` strips
+  but broadcasts nothing (no-op, no false blue). store.ts/StatusIndicator/sidebar
+  are co-patched by P/W/AR/AT (+ AE/AG/AL for the sidebar/Icon) — authored against
+  the reconstructed post-stack tree. TRAP: pwsh `133;C` on ConPTY/ARM64 is the
+  on-device UNKNOWN — if C is unreliable, the safe fallback is D+A only for pwsh
+  (drop the Enter-chord handler: no blue, never a wrong-blue; D/A still fire from
+  the prompt fn). Host-service restart adopts with a fresh scan state
+  (`commandRunning=false`): misses one in-flight command's blue, recovers on the
+  next D/A (safe direction). ([[project_dots_open_tabs_and_subagent_hold]])
 
 ## Traps (do NOT repeat)
 

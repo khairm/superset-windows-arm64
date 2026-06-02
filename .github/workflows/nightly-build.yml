@@ -1846,6 +1846,58 @@ jobs:
             Write-Host "(AU) v2-subagent-yellow-hold applied (parent terminal holds yellow while background subagents run; greens on last SubagentStop)"
           }
 
+          # (AY) shell-running blue dot — a pulsing BLUE dot per terminal (and a
+          #      workspace-icon rollup) whenever a FOREGROUND command is running
+          #      in the shell, detected from OSC 133 C (command-start) / D
+          #      (command-end) markers; cleared instantly on finish; self-heals on
+          #      the next 133;A prompt redraw if a D is missed. Precedence is
+          #      agent > blue (permission > working > review > shell-running >
+          #      idle) — blue only shows when NO agent status is present. Lives on
+          #      a SEPARATE store axis (shellRunningTerminals), NOT a 5th
+          #      PaneStatus, so agent aggregation is untouched; the precedence
+          #      merge is render-time only (useV2WorkspaceDisplayStatus + the
+          #      refactored useV2WorkspaceTerminalStatuses), reusing the (AT)
+          #      useV2WorkspaceOpenTerminalIds gate so closed tabs are never
+          #      representable. New byte-scanner packages/shared/.../
+          #      shell-osc133-cd-scanner.ts mirrors the shell-ready scanner;
+          #      host-service terminal.ts runs it after shell-ready and broadcasts
+          #      command-start/-end via the widened terminal:lifecycle union; the
+          #      renderer lifecycleEvents handler sets/clears the blue axis (no
+          #      sound/notification). bash/zsh/fish wrappers + the v2 shell-launch
+          #      fish init emit C (preexec) + D;<exit> (precmd), and a NEW separate
+          #      superset-pwsh-integration.ps1 (written by createPwshWrapper, NOT a
+          #      JS template literal) emits them for pwsh/powershell. MUST apply
+          #      AFTER (AT)+(AU) (store.ts/sidebar shape). Authored against the
+          #      reconstructed post-stack tree; pure event-driven, no timers.
+          $sr = '../patches/shell-running-dots.patch'
+          $srScan = 'packages/shared/src/shell-osc133-cd-scanner.ts'
+          $srTerm = 'packages/host-service/src/terminal/terminal.ts'
+          $srStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
+          if (-not (Test-Path $sr)) { Write-Error "(AY) missing $sr in patches repo"; exit 1 }
+          if (-not (Test-Path $srTerm)) { Write-Error "(AY) $srTerm missing in this upstream — re-anchor (AY)"; exit 1 }
+          if (Test-Path $srScan) {
+            Write-Host "(AY) shell-running-dots already present — skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'useV2WorkspaceOpenTerminalIds' $srStore)) { Write-Error "(AY) (AT) markers absent — (AY) MUST apply after (AT); fix ordering"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'agent-subagent-running' 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts')) { Write-Error "(AY) (AU) markers absent — (AY) MUST apply after (AU); fix ordering"; exit 1 }
+            $srErr = "$env:RUNNER_TEMP/ay-apply-check.txt"
+            git apply --check $sr 2>$srErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AY) shell-running-dots.patch does not apply cleanly (post AT/AU). git apply --check output:"
+              if (Test-Path $srErr) { Get-Content $srErr | ForEach-Object { Write-Host "    (AY-check) $_" } }
+              Write-Error "(AY) shell-running-dots.patch failed to apply — store.ts/sidebar/shell-launch/terminal shape changed (P/W/AR/AT/AU or upstream drift). Regenerate it against the POST-(AT)+(AU) tree (reconstruct: pristine 1.12.1 + the [git] stack through AT/AU, then git diff)."
+              exit 1
+            }
+            git apply $sr
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AY) git apply failed after a clean --check"; exit 1 }
+            if (-not (Test-Path $srScan)) { Write-Error "(AY) shell-osc133-cd-scanner.ts missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'scanForOsc133Cd' $srScan)) { Write-Error "(AY) scanForOsc133Cd missing in scanner after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'scanForOsc133Cd' $srTerm)) { Write-Error "(AY) terminal.ts not wired to scanForOsc133Cd after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'shellRunningTerminals' $srStore)) { Write-Error "(AY) shellRunningTerminals store axis missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'superset-pwsh-integration.ps1' 'apps/desktop/src/main/lib/agent-setup/shell-wrappers.ts')) { Write-Error "(AY) pwsh integration wrapper missing after apply"; exit 1 }
+            Write-Host "(AY) shell-running-dots applied (OSC 133 C/D -> blue shell-running dot; separate store axis, agent>blue precedence, gated to open tabs; pwsh/bash/zsh/fish)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1855,7 +1907,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
