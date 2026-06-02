@@ -43,12 +43,6 @@ diff --git a/apps/desktop/src/main/index.ts b/apps/desktop/src/main/index.ts
 index 722ddb6..25d7ddc 100644
 --- a/apps/desktop/src/main/index.ts
 +++ b/apps/desktop/src/main/index.ts
-@@ -1,4 +1,5 @@
- import path from "node:path";
-+import log from "electron-log/main";
- import { pathToFileURL } from "node:url";
- import { settings } from "@superset/local-db";
- import {
 @@ -364,7 +365,34 @@ if (!gotTheLock) {
  	});
  

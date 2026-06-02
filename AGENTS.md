@@ -55,7 +55,15 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   thread snooze/archive — per-thread timed Snooze + sticky Archive with per-project
   revealable Snoozed/Archived sections (AL)[git]; startup cold-start timing →
   `main.log` via `log.info` (AM)[inline]; non-blocking agent-watcher seed + gated
-  discover poll + boot phase logging + event-loop lag guard (AN)[git] — fixes the
+  discover poll + boot phase logging + event-loop lag guard (AN)[git] + (AN-import)
+  [inline, before AN] — (AN)'s `import log from "electron-log/main"` was MOVED out
+  of the [git] patch (its top-of-imports hunk `@@ -1,4 +1,5 @@` was perturbed
+  ~50% of runs by the AI-applied Patch 23 inserting its own import in that block →
+  intermittent `git apply` HARD-FAIL at index.ts:1, "retry-and-hope" wasted 2+
+  builds) into a deterministic inline fixup anchored on the stable single line
+  `import path from "node:path";` (AI never edits it; idempotent). Per the
+  re-anchor-don't-retry rule. (AN)[git] now only carries the mid-file boot hunks
+  (stable context). Fixes the
   intermittent multi-minute blank-window cold start: the dots watcher did BLOCKING
   fs on the main thread (sync 8 KB-header seed over ~11k `~/.claude`+`~/.codex`
   files, AND a 12 s discover poll that synchronously replayed every first-seen

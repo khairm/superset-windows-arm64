@@ -1602,6 +1602,29 @@ jobs:
           #      in main.log. Applies LAST (after every inline fixup + git patch) against
           #      the fully-patched tree; re-anchor against superset-patched-source.tar.gz
           #      if the boot code shape changes upstream.
+          # (AN-import) The `import log from "electron-log/main"` that (AN)'s boot
+          #      logs need is added here as a DETERMINISTIC inline fixup instead of
+          #      a [git] hunk. (AN)'s old top-of-file import hunk anchored on the
+          #      first 4 import lines (`@@ -1,4 +1,5 @@`), but the AI-applied
+          #      PATCHES.md (Patch 23 inserts its OWN import in that same block)
+          #      reorders it non-deterministically, so ~half of runs shifted the
+          #      context and (AN)'s git apply HARD-FAILED at index.ts:1 ("retry-and-
+          #      hope" wasted builds). Anchored on the stable single line
+          #      `import path from "node:path";` (the AI never edits it). Idempotent.
+          $ixI = 'apps/desktop/src/main/index.ts'
+          if (-not (Test-Path $ixI)) { Write-Error "(AN-import) missing $ixI"; exit 1 }
+          $ixIc = Get-Content -Raw $ixI
+          $ixIAnchor = 'import path from "node:path";'
+          if ($ixIc.Contains('electron-log/main')) {
+            Write-Host "(AN-import) electron-log import already present -- skip"
+          } elseif (-not $ixIc.Contains($ixIAnchor)) {
+            Write-Error "(AN-import) anchor 'import path from `"node:path`";' not found in $ixI -- re-anchor (AN-import)"; exit 1
+          } else {
+            $ixIc = $ixIc.Replace($ixIAnchor, $ixIAnchor + "`r`n" + 'import log from "electron-log/main";')
+            Set-Content -Path $ixI -Value $ixIc -NoNewline
+            Write-Host "(AN-import) inserted electron-log import after 'import path from \"node:path\";'"
+          }
+          if (-not ((Get-Content -Raw $ixI).Contains('electron-log/main'))) { Write-Error "(AN-import) electron-log import verify failed"; exit 1 }
           $sf2 = '../patches/startup-stall-fix.patch'
           if (-not (Test-Path $sf2)) { Write-Error "(AN) missing $sf2 in patches repo"; exit 1 }
           $awFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts'
