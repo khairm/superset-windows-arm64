@@ -266,6 +266,56 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   the prompt fn). Host-service restart adopts with a fresh scan state
   (`commandRunning=false`): misses one in-flight command's blue, recovers on the
   next D/A (safe direction). ([[project_dots_open_tabs_and_subagent_hold]])
+- **cloud-session blue dot (BA)**[git `cloud-session-dot.patch` + inline
+  statusTransitions fixup, after AS/AU/AT/AY/AW] — when the local Claude turn
+  ENDS but a cloud/background session (e.g. `/ultrareview`) is still running,
+  show the **same blue** dot (tooltip "Cloud session running") instead of green,
+  clearing to green when it finishes. Signal is the `Stop` hook payload's
+  `background_tasks[]` (Claude Code ≥ 2.1.145; absent on older → falsy → today's
+  behaviour — no text-parsing, the owner-banned fragile path). `superset-notify.py`
+  reads `has_background` and emits a NEW eventType **`BackgroundRunning`** from the
+  `Stop`/`SubagentStop` decision (after the (AU) `run_dir`>0 yellow-hold check, so
+  LOCAL subagents still win → yellow; cloud sessions that fire no SubagentStart
+  fall through to blue). `map-event-type.ts` widens `AgentLifecycleEventType` and
+  passes it through; the renderer's `resolveV2AgentStatusTransition` (the inline
+  fixup, post-AW) maps `BackgroundRunning` → clear the agent source to IDLE so the
+  blue shows (agent status would otherwise win); a SEPARATE store axis
+  `backgroundRunningTerminals` (mirrors the (AY) `shellRunningTerminals`, reuses
+  `V2ShellRunningEntry`) drives the blue with DisplayStatus `background-running`
+  (same blue as shell-running). Precedence render-time: **agent > shell-running >
+  background-running > idle**, gated to OPEN tabs (reuses (AT)
+  `useV2WorkspaceOpenTerminalIds`). `lifecycleEvents.ts` `updatePaneStatus` sets
+  the axis on `BackgroundRunning` and CLEARS it on every other agent event (the
+  cloud-idle state is superseded; OSC shell-running axis NEVER touched here), and
+  `handleV2AgentLifecycleEvent` suppresses sound/notification for it. NO timers:
+  cleared by the next Stop (bg empty → green) / UserPromptSubmit / SubagentStop /
+  SessionEnd / StopFailure. CRITICAL teardown (2-reviewer REJECT→fix): the blue
+  has NO OSC self-clear (unlike (AY)), so `clearTerminalBackgroundRunning` is also
+  called on PTY `exit` (lifecycleEvents), on Ctrl+C/Esc interrupt + pane close (via
+  the shared `clearV2TerminalRunStatus` in store.ts), and on `clearWorkspaceStatuses`
+  — else a stale blue lingers on a live terminal. Known-accepted nuance: while the
+  `claude` CLI is the foreground command (OSC shell-running set), shell-running
+  wins so the tooltip reads "Command running" — still blue; the cloud-blue is the
+  fallback that guarantees blue when claude isn't foreground. statusTransitions is
+  the [inline] fixup (post-AW, mirrors (AW)'s `.Replace` + anchor-count guard)
+  because that file is touched by (AW) inline, not a patch; everything else is the
+  [git] patch. Authored against the reconstructed post-(AT/AU/AY) tree; 2 reviewers
+  (codex + code-reviewer) + 1 fix pass. ([[project_dots_open_tabs_and_subagent_hold]])
+- **single-click hyperlink copy (AZ)**[git `terminal-link-single-click-copy.patch`]
+  — a PLAIN (no-modifier) left click on a terminal URL that the configurable click
+  policy maps to "do nothing" (`urlPolicy.getAction`→null, the default `plain`
+  tier) now COPIES the URL to the clipboard and flashes "Copied!" in the existing
+  near-cursor hint bubble; Ctrl/Cmd+click still opens in-app (the `action!==null`
+  path is unchanged). v2 path only (`TerminalPane.tsx` `onUrlClick`; v1 helpers.ts
+  is dormant under (AD)). `useLinkClickHint` gains an UNCAPPED `showCopied` (the
+  educational unbound-link hint stays capped at 2/session; the copy confirmation
+  must show every time); `LinkHoverHint` renders `clickHint.label ?? UNBOUND_HINT`.
+  Copy routes through the MAIN-PROCESS clipboard (`electronTrpcClient.external.
+  copyText`, always available in Electron, avoids the renderer Async-Clipboard
+  permission surface) and flashes ONLY on `.then()` success — never a false
+  "Copied!" (codex REJECT→fix). Gated to PLAIN clicks: shift-click (also null by
+  default) keeps the original no-op + hint (codex caught the over-broad
+  `action===null`). Pristine files — no ordering dependency.
 
 ## Traps (do NOT repeat)
 

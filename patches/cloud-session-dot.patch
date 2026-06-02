@@ -1,0 +1,461 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+index 13f3775..4c57f2f 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+@@ -60,7 +60,10 @@ export function handleV2AgentLifecycleEvent({
+ 	if (
+ 		payload.eventType === "Start" ||
+ 		payload.eventType === "Attached" ||
+-		payload.eventType === "Detached"
++		payload.eventType === "Detached" ||
++		// (BA) cloud/background-running is a quiet blue-dot signal, not a
++		// "your agent finished" moment — no chime, no native notification.
++		payload.eventType === "BackgroundRunning"
+ 	) {
+ 		return;
+ 	}
+@@ -121,8 +124,10 @@ export function handleV2TerminalLifecycleEvent({
+ 		store.clearTerminalShellRunning(payload.terminalId);
+ 		return;
+ 	}
+-	// exit: clear both the agent source AND any lingering shell-running entry.
++	// exit: clear the agent source AND any lingering shell-running / (BA)
++	// background-running entry (the cloud-blue axis has no OSC self-clear).
+ 	store.clearTerminalShellRunning(payload.terminalId);
++	store.clearTerminalBackgroundRunning(payload.terminalId);
+ 	clearSources(workspaceId, [
+ 		getV2TerminalNotificationSource(payload.terminalId),
+ 	]);
+@@ -156,6 +161,23 @@ function updatePaneStatus(
+ 			payload.occurredAt,
+ 		);
+ 	}
++
++	// (BA) Cloud/background-running blue axis. The notify hook emits
++	// "BackgroundRunning" when the turn ended but a Claude cloud/background
++	// session is still running; the statusTransitions reducer clears the agent
++	// source to idle for that event so this blue shows instead of green. Any
++	// OTHER agent event supersedes the cloud-idle state (a new turn, a real
++	// turn-end green, a permission), so clear it — the next Stop re-derives it
++	// from the live background_tasks. Never touches the OSC shell-running axis.
++	if (payload.eventType === "BackgroundRunning") {
++		store.setTerminalBackgroundRunning(
++			payload.terminalId,
++			workspaceId,
++			payload.occurredAt,
++		);
++	} else {
++		store.clearTerminalBackgroundRunning(payload.terminalId);
++	}
+ }
+ 
+ function updateV2AgentLifecycleStatus({
+diff --git a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
+index 2ab2b10..a23bec9 100644
+--- a/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
++++ b/apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx
+@@ -6,12 +6,17 @@ export type { ActivePaneStatus } from "shared/tabs-types";
+ 
+ /**
+  * (AY) Render-only status union: the agent statuses plus "shell-running" (a
+- * pulsing BLUE dot meaning a foreground command is running). NOT a PaneStatus —
+- * it lives on a separate axis in the v2-notifications store and is merged in
+- * with agent status taking precedence. Widening the prop to this is
+- * non-breaking: every ActivePaneStatus is still a DisplayStatus.
++ * pulsing BLUE dot meaning a foreground command is running) and (BA)
++ * "background-running" (the SAME blue, meaning the agent's turn ended but a
++ * cloud/background session is still running). NOT PaneStatuses — they live on
++ * separate axes in the v2-notifications store and are merged in with agent
++ * status taking precedence. Widening the prop to this is non-breaking: every
++ * ActivePaneStatus is still a DisplayStatus.
+  */
+-export type DisplayStatus = ActivePaneStatus | "shell-running";
++export type DisplayStatus =
++	| ActivePaneStatus
++	| "shell-running"
++	| "background-running";
+ 
+ /** Lookup object for status indicator styling - avoids if/else chains */
+ const STATUS_CONFIG = {
+@@ -40,6 +45,14 @@ const STATUS_CONFIG = {
+ 		pulse: true,
+ 		tooltip: "Command running",
+ 	},
++	// (BA) background-running: the turn ended but a cloud/background session is
++	// still running. Same blue as shell-running; distinct tooltip.
++	"background-running": {
++		pingColor: "bg-blue-400",
++		dotColor: "bg-blue-500",
++		pulse: true,
++		tooltip: "Cloud session running",
++	},
+ } as const satisfies Record<
+ 	DisplayStatus,
+ 	{ pingColor: string; dotColor: string; pulse: boolean; tooltip: string }
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/index.ts b/apps/desktop/src/renderer/stores/v2-notifications/index.ts
+index b170cfb..b3e1d64 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/index.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/index.ts
+@@ -12,6 +12,7 @@ export {
+ 	selectV2TabNotificationStatus,
+ 	selectV2TerminalNotificationStatus,
+ 	selectV2WorkspaceIsUnread,
++	selectV2WorkspaceBackgroundRunningKey,
+ 	selectV2WorkspaceNotificationStatus,
+ 	selectV2WorkspaceShellRunningKey,
+ 	selectV2WorkspaceTerminalStatuses,
+@@ -21,6 +22,7 @@ export {
+ 	useV2SourcesNotificationStatus,
+ 	useV2TabNotificationStatus,
+ 	useV2TerminalNotificationStatus,
++	useV2WorkspaceBackgroundRunningTerminalIds,
+ 	useV2WorkspaceDisplayStatus,
+ 	useV2WorkspaceIsUnread,
+ 	useV2WorkspaceNotificationStatus,
+diff --git a/apps/desktop/src/renderer/stores/v2-notifications/store.ts b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+index 52b5dc7..79cf8a2 100644
+--- a/apps/desktop/src/renderer/stores/v2-notifications/store.ts
++++ b/apps/desktop/src/renderer/stores/v2-notifications/store.ts
+@@ -74,6 +74,17 @@ export interface V2NotificationState {
+ 		occurredAt?: number,
+ 	) => void;
+ 	clearTerminalShellRunning: (terminalId: string) => void;
++	// (BA) Separate cloud/background-session axis: the agent's turn ended but a
++	// Claude cloud/background task is still running. Same render colour as
++	// shell-running (blue), distinct tooltip. Driven by the notify hook's
++	// BackgroundRunning event; never merged into `sources`.
++	backgroundRunningTerminals: Record<string, V2ShellRunningEntry>;
++	setTerminalBackgroundRunning: (
++		terminalId: string,
++		workspaceId: string,
++		occurredAt?: number,
++	) => void;
++	clearTerminalBackgroundRunning: (terminalId: string) => void;
+ 	setSourceStatus: (
+ 		source: V2NotificationSource,
+ 		workspaceId: string,
+@@ -136,6 +147,31 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 			return { shellRunningTerminals };
+ 		});
+ 	},
++	backgroundRunningTerminals: {},
++	setTerminalBackgroundRunning: (
++		terminalId,
++		workspaceId,
++		occurredAt = Date.now(),
++	) => {
++		set((state) => {
++			const prev = state.backgroundRunningTerminals[terminalId];
++			if (prev && prev.workspaceId === workspaceId) return state;
++			return {
++				backgroundRunningTerminals: {
++					...state.backgroundRunningTerminals,
++					[terminalId]: { workspaceId, occurredAt },
++				},
++			};
++		});
++	},
++	clearTerminalBackgroundRunning: (terminalId) => {
++		set((state) => {
++			if (!state.backgroundRunningTerminals[terminalId]) return state;
++			const { [terminalId]: _removed, ...backgroundRunningTerminals } =
++				state.backgroundRunningTerminals;
++			return { backgroundRunningTerminals };
++		});
++	},
+ 	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
+ 		const sourceKey = getV2NotificationSourceKey(source);
+ 		ndots({
+@@ -255,7 +291,27 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
+ 				}
+ 				sources[sourceKey] = source;
+ 			}
+-			return changed ? { sources } : state;
++			// (BA) Also drop background-running entries for this workspace — the
++			// blue axis has no OSC self-clear, so a workspace teardown must purge
++			// it too or a stale entry survives (hidden by the open-tab gate, but
++			// still leaked).
++			const backgroundRunningTerminals: Record<string, V2ShellRunningEntry> =
++				{};
++			let bgChanged = false;
++			for (const [tid, entry] of Object.entries(
++				state.backgroundRunningTerminals,
++			)) {
++				if (entry.workspaceId === workspaceId) {
++					bgChanged = true;
++					continue;
++				}
++				backgroundRunningTerminals[tid] = entry;
++			}
++			if (!changed && !bgChanged) return state;
++			const next: Partial<V2NotificationState> = {};
++			if (changed) next.sources = sources;
++			if (bgChanged) next.backgroundRunningTerminals = backgroundRunningTerminals;
++			return next;
+ 		});
+ 	},
+ 	clearWorkspaceAttention: (workspaceId) => {
+@@ -351,12 +407,17 @@ export function clearV2TerminalRunStatus(
+ 	terminalId: string,
+ 	workspaceId: string,
+ ): void {
+-	useV2NotificationStore
+-		.getState()
+-		.clearSourceStatus(
+-			getV2TerminalNotificationSource(terminalId),
+-			workspaceId,
+-		);
++	const store = useV2NotificationStore.getState();
++	store.clearSourceStatus(
++		getV2TerminalNotificationSource(terminalId),
++		workspaceId,
++	);
++	// (BA) The cloud/background-running blue axis has NO OSC self-clear (unlike
++	// shell-running, which clears on the 133;D command-end). Both interrupt
++	// (Ctrl+C/Esc, useTerminalInterruptClear) and pane close (usePaneRegistry
++	// onAfterClose) route through here, so clear it too — otherwise a stale blue
++	// dot lingers on a live/closed terminal until some later agent event.
++	store.clearTerminalBackgroundRunning(terminalId);
+ }
+ 
+ /**
+@@ -517,12 +578,52 @@ export function useV2WorkspaceShellRunningTerminalIds(
+ 	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
+ }
+ 
++/**
++ * (BA) Per-terminal cloud/background-running terminal ids for a workspace, gated
++ * to OPEN terminals and encoded as a sorted comma-joined string for referential
++ * stability. Mirrors the shell-running selector on the separate background axis.
++ */
++export function selectV2WorkspaceBackgroundRunningKey(
++	workspaceId: string,
++	openTerminalIds?: ReadonlySet<string>,
++) {
++	return (state: V2NotificationState): string => {
++		const ids: string[] = [];
++		for (const [terminalId, entry] of Object.entries(
++			state.backgroundRunningTerminals,
++		)) {
++			if (entry.workspaceId !== workspaceId) continue;
++			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
++			ids.push(terminalId);
++		}
++		ids.sort();
++		return ids.join(",");
++	};
++}
++
++/**
++ * (BA) Set of terminalIds with a cloud/background session running, gated to OPEN
++ * terminals. Referentially stable — identity changes only when the id set does.
++ */
++export function useV2WorkspaceBackgroundRunningTerminalIds(
++	workspaceId: string,
++): ReadonlySet<string> {
++	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
++	const selector = useMemo(
++		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
++		[workspaceId, openTerminalIds],
++	);
++	const key = useV2NotificationStore(selector);
++	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
++}
++
+ /**
+  * (AY) Per-terminal DISPLAY statuses: the agent status per terminal, then the
+- * shell-running blue fallback for OPEN terminals that have NO agent status.
+- * Agent status always wins (permission/working/review > shell-running). Both
+- * inputs are referentially-stable keyed strings, so this only recomputes when
+- * either set actually changes.
++ * shell-running blue fallback for OPEN terminals that have NO agent status,
++ * then (BA) the cloud/background-running blue fallback for the remainder.
++ * Agent status always wins (permission/working/review > shell-running >
++ * background-running). All inputs are referentially-stable keyed strings, so
++ * this only recomputes when one of the sets actually changes.
+  */
+ export function useV2WorkspaceTerminalStatuses(
+ 	workspaceId: string,
+@@ -536,8 +637,13 @@ export function useV2WorkspaceTerminalStatuses(
+ 		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
+ 		[workspaceId, openTerminalIds],
+ 	);
++	const backgroundSelector = useMemo(
++		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
++		[workspaceId, openTerminalIds],
++	);
+ 	const agentKey = useV2NotificationStore(agentSelector);
+ 	const shellKey = useV2NotificationStore(shellSelector);
++	const backgroundKey = useV2NotificationStore(backgroundSelector);
+ 	return useMemo(() => {
+ 		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
+ 		const agentIds = new Set<string>();
+@@ -551,14 +657,27 @@ export function useV2WorkspaceTerminalStatuses(
+ 				result.push({ terminalId, status });
+ 			}
+ 		}
++		const shellIds = new Set<string>();
+ 		if (shellKey) {
+ 			for (const terminalId of shellKey.split(",")) {
+ 				if (!terminalId || agentIds.has(terminalId)) continue;
++				shellIds.add(terminalId);
+ 				result.push({ terminalId, status: "shell-running" });
+ 			}
+ 		}
++		if (backgroundKey) {
++			for (const terminalId of backgroundKey.split(",")) {
++				if (
++					!terminalId ||
++					agentIds.has(terminalId) ||
++					shellIds.has(terminalId)
++				)
++					continue;
++				result.push({ terminalId, status: "background-running" });
++			}
++		}
+ 		return result;
+-	}, [agentKey, shellKey]);
++	}, [agentKey, shellKey, backgroundKey]);
+ }
+ 
+ export function selectV2TabNotificationStatus(
+@@ -620,10 +739,12 @@ export function useV2WorkspaceNotificationStatus(workspaceId: string) {
+ }
+ 
+ /**
+- * (AY) The single status the WORKSPACE ICON should render: the agent rollup
++ * (AY/BA) The single status the WORKSPACE ICON should render: the agent rollup
+  * status if any (permission/working/review), else "shell-running" (blue) when
+- * any OPEN terminal has a foreground command running, else null. Agent status
+- * always wins — the precedence merge happens HERE (and per-terminal in
++ * any OPEN terminal has a foreground command running, else (BA)
++ * "background-running" (the same blue) when any OPEN terminal has a
++ * cloud/background session running, else null. Agent status always wins — the
++ * precedence merge happens HERE (and per-terminal in
+  * useV2WorkspaceTerminalStatuses), never in the `sources` aggregation.
+  */
+ export function useV2WorkspaceDisplayStatus(
+@@ -631,8 +752,11 @@ export function useV2WorkspaceDisplayStatus(
+ ): DisplayStatus | null {
+ 	const agentStatus = useV2WorkspaceNotificationStatus(workspaceId);
+ 	const shellRunningIds = useV2WorkspaceShellRunningTerminalIds(workspaceId);
++	const backgroundRunningIds =
++		useV2WorkspaceBackgroundRunningTerminalIds(workspaceId);
+ 	if (agentStatus) return agentStatus;
+-	return shellRunningIds.size > 0 ? "shell-running" : null;
++	if (shellRunningIds.size > 0) return "shell-running";
++	return backgroundRunningIds.size > 0 ? "background-running" : null;
+ }
+ 
+ export function selectV2WorkspaceIsUnread(
+diff --git a/packages/host-service/src/events/map-event-type.ts b/packages/host-service/src/events/map-event-type.ts
+index a428b5b..83bbc32 100644
+--- a/packages/host-service/src/events/map-event-type.ts
++++ b/packages/host-service/src/events/map-event-type.ts
+@@ -7,13 +7,18 @@
+  * - `Attached` / `Detached`: session-lifetime signal — drives the pane icon
+  *   binding only. NOT working state: SessionStart fires on agent boot when
+  *   the agent is still idle waiting for input.
++ * - `BackgroundRunning`: (BA) the main turn ENDED but a cloud/background session
++ *   is still running (non-empty `background_tasks` in the Stop hook payload).
++ *   Drives the pulsing BLUE shell-running dot on a separate render axis — the
++ *   agent source is cleared to idle so the blue shows instead of green.
+  */
+ export type AgentLifecycleEventType =
+ 	| "Start"
+ 	| "Stop"
+ 	| "PermissionRequest"
+ 	| "Attached"
+-	| "Detached";
++	| "Detached"
++	| "BackgroundRunning";
+ 
+ export function mapEventType(
+ 	eventType: string | undefined,
+@@ -39,6 +44,10 @@ export function mapEventType(
+ 	) {
+ 		return "Detached";
+ 	}
++	// (BA) Cloud/background-session-still-running signal from the notify hook.
++	if (eventType === "BackgroundRunning") {
++		return "BackgroundRunning";
++	}
+ 	if (
+ 		eventType === "Start" ||
+ 		eventType === "UserPromptSubmit" ||
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index cab6a15..951bf5a 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -414,9 +414,19 @@ def _clear_dir(d):
+         pass
+ 
+ 
+-def _decide_event_type(event, tool, terminal_id, sub_agent_id):
++def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
+     # Returns the host-service eventType or None (None => silent no-op).
+     #
++    # (BA) CLOUD/BACKGROUND-SESSION blue dot: when the main turn ends (Stop) or
++    # the last local subagent finishes (SubagentStop) but a cloud/background
++    # session is still running (has_background, from the Stop payload's
++    # background_tasks[]), emit "BackgroundRunning" instead of "Stop". The
++    # renderer clears the agent dot to idle and shows the pulsing BLUE
++    # shell-running-style dot until the next turn/Stop re-derives it (green when
++    # background_tasks is empty). Local subagents (run_dir markers) keep taking
++    # precedence -> YELLOW; cloud sessions that fire no SubagentStart fall
++    # through to this blue. Safe direction: blue lingers, never a false green.
++    #
+     # Background-subagent YELLOW-HOLD state machine (no timers, no polling):
+     # while any subagent is running for this terminal the main agent's Stop is
+     # SUPPRESSED so the dot stays working/yellow, and the terminal greens only
+@@ -442,6 +452,15 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
+             _remove(run_dir / sub_agent_id)
+         if _running_count(run_dir) == 0 and sentinel.exists():
+             _remove(sentinel)
++            # has_background here is read from THIS SubagentStop payload, which
++            # carries background_tasks[] scoped to the PARENT session (Claude Code
++            # docs >= 2.1.145) — i.e. what is still running now that this subagent
++            # is done. So a remaining cloud session -> blue, nothing left -> green;
++            # both accurate. (Absent field on an older/odd version -> green, which
++            # only mis-greens in the narrow case where Stop carried the field but
++            # SubagentStop did not — same version added both, so not in practice.)
++            if has_background:
++                return "BackgroundRunning"  # local subagents done; cloud/bg still running -> blue
+             return "Stop"  # main already stopped + last subagent done -> green
+         return None  # other subagents running, or main still working
+     if event == "UserPromptSubmit":
+@@ -452,6 +471,8 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id):
+             _touch(sentinel)  # defer the green; subagents still running
+             return None  # stay yellow
+         _remove(sentinel)
++        if has_background:
++            return "BackgroundRunning"  # turn ended; cloud/bg session still running -> blue
+         return "Stop"
+     if event in ("SessionEnd", "StopFailure"):
+         _clear_dir(run_dir)
+@@ -482,6 +503,14 @@ def main():
+     # name so a marker write can never fail on an unexpected path character.
+     sub_agent_id = (payload.get("agent_id") or payload.get("agentId") or "").strip()
+     sub_agent_id = "".join(c for c in sub_agent_id if c.isalnum() or c in "-_")
++    # (BA) Cloud/background-session signal. The Stop (and SubagentStop) hook
++    # payload carries background_tasks[] (Claude Code >= 2.1.145); a NON-EMPTY
++    # array means a cloud/background session is still running after the turn
++    # ended. Absent on older versions -> falsy -> behaves exactly as before.
++    # session_crons (scheduled wakeups) are intentionally NOT counted (pending,
++    # not running).
++    bg_tasks = payload.get("background_tasks") or payload.get("backgroundTasks")
++    has_background = bool(bg_tasks)
+ 
+     url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
+     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
+@@ -497,7 +526,9 @@ def main():
+ 
+     # Also performs the SubagentStart/Stop marker side-effects, so the
+     # yellow-hold state stays consistent even when url is momentarily absent.
+-    event_type = _decide_event_type(event, tool, terminal_id, sub_agent_id)
++    event_type = _decide_event_type(
++        event, tool, terminal_id, sub_agent_id, has_background
++    )
+ 
+     if not url:
+         _log({

@@ -805,6 +805,36 @@ jobs:
           }
           if (-not ((Get-Content -Raw $st).Contains($stMarker))) { Write-Error "(AW) red-over-yellow verify failed"; exit 1 }
 
+          # (BA) cloud-session blue dot — statusTransitions branch (INLINE,
+          #      post-AW, because statusTransitions.ts is touched by the (AW)
+          #      inline .Replace, not a [git] patch). When the notify hook emits
+          #      "BackgroundRunning" (the local turn ended but a Claude cloud/
+          #      background session is still running — see the (BA) git patch
+          #      below), clear the agent source to idle so the SEPARATE
+          #      background-running BLUE axis shows instead of green. Inserted
+          #      before the same Start anchor (AW) uses (AW already put its
+          #      SubagentActive branch there; order among the pre-Start branches
+          #      is immaterial — distinct eventTypes). Idempotent + exact-count
+          #      anchor guard, mirroring (AW).
+          $bst = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/statusTransitions.ts'
+          if (-not (Test-Path $bst)) { Write-Error "(BA) missing $bst"; exit 1 }
+          $bstC = Get-Content -Raw $bst
+          $bstAnchor = 'if (payload.eventType === "Start") {'
+          $bstMarker = 'if (payload.eventType === "BackgroundRunning") {'
+          $bstAdd = "if (payload.eventType === `"BackgroundRunning`") {`r`n`t`treturn { clearSources: [terminalSource], setStatus: null };`r`n`t}`r`n`r`n`t"
+          if ($bstC.Contains($bstMarker)) {
+            Write-Host "(BA) statusTransitions BackgroundRunning branch already present — skip"
+          } elseif (-not $bstC.Contains($bstAnchor)) {
+            Write-Error "(BA) statusTransitions Start anchor not found in $bst; upstream changed -- re-anchor (BA)"; exit 1
+          } else {
+            $bstAnchorCount = ([regex]::Matches($bstC, [regex]::Escape($bstAnchor))).Count
+            if ($bstAnchorCount -ne 1) { Write-Error "(BA) expected exactly 1 Start-case anchor in $bst, found $bstAnchorCount -- re-anchor (BA)"; exit 1 }
+            $bstC = $bstC.Replace($bstAnchor, $bstAdd + $bstAnchor)
+            Set-Content -NoNewline -Path $bst -Value $bstC
+            Write-Host "(BA) statusTransitions: BackgroundRunning clears agent source to idle (cloud-session blue shows)"
+          }
+          if (-not ((Get-Content -Raw $bst).Contains($bstMarker))) { Write-Error "(BA) statusTransitions verify failed"; exit 1 }
+
           # (N) Agent JSONL watcher (main process). Upstream's
           #     agent-wrappers-claude-codex-opencode.ts registers a bash-only
           #     hook command in ~/.claude/settings.json
@@ -1921,6 +1951,78 @@ jobs:
             Write-Host "(AY) shell-running-dots applied (OSC 133 C/D -> blue shell-running dot; separate store axis, agent>blue precedence, gated to open tabs; pwsh/bash/zsh/fish)"
           }
 
+          # (BA) cloud-session blue dot — when the local Claude turn ENDS but a
+          #      cloud/background session (e.g. /ultrareview) is still running
+          #      (non-empty background_tasks[] in the Stop hook payload; Claude
+          #      Code >= 2.1.145, absent on older -> behaves as today), show the
+          #      SAME blue dot (tooltip "Cloud session running") instead of green,
+          #      clearing to green when it finishes. SEPARATE store axis
+          #      (backgroundRunningTerminals) like (AY); driven by the notify
+          #      hook's NEW "BackgroundRunning" eventType (superset-notify.py reads
+          #      background_tasks; pane-map-hook.ts). Coexists with (AU) yellow-
+          #      hold — local subagents (run_dir markers) keep taking precedence
+          #      -> yellow; cloud sessions that fire no SubagentStart fall through
+          #      to blue. Precedence render-time: agent > shell-running >
+          #      background-running > idle. MUST apply AFTER (AS)+(AU)+(AT)+(AY)
+          #      (pane-map-hook + store/lifecycle/StatusIndicator bases). The
+          #      statusTransitions "BackgroundRunning" branch is the (BA) INLINE
+          #      fixup above (post-AW). map-event-type.ts is pristine. Pure
+          #      event-driven, no timers. Authored against the reconstructed
+          #      post-stack tree.
+          $cs = '../patches/cloud-session-dot.patch'
+          $csStore = 'apps/desktop/src/renderer/stores/v2-notifications/store.ts'
+          $csHook = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $cs)) { Write-Error "(BA) missing $cs in patches repo"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'backgroundRunningTerminals' $csStore) {
+            Write-Host "(BA) cloud-session-dot already present — skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'shellRunningTerminals' $csStore)) { Write-Error "(BA) (AY) markers absent — (BA) MUST apply after (AY); fix ordering"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch '_decide_event_type' $csHook)) { Write-Error "(BA) (AS/AU) markers absent — (BA) MUST apply after (AU); fix ordering"; exit 1 }
+            $csErr = "$env:RUNNER_TEMP/ba-apply-check.txt"
+            git apply --check $cs 2>$csErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(BA) cloud-session-dot.patch does not apply cleanly (post AS/AU/AT/AY). git apply --check output:"
+              if (Test-Path $csErr) { Get-Content $csErr | ForEach-Object { Write-Host "    (BA-check) $_" } }
+              Write-Error "(BA) cloud-session-dot.patch failed to apply — store.ts/lifecycleEvents/StatusIndicator/map-event-type/pane-map-hook shape changed. Regenerate against the POST-(AT)+(AU)+(AY) tree."
+              exit 1
+            }
+            git apply $cs
+            if ($LASTEXITCODE -ne 0) { Write-Error "(BA) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'backgroundRunningTerminals' $csStore)) { Write-Error "(BA) backgroundRunningTerminals store axis missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'BackgroundRunning' 'packages/host-service/src/events/map-event-type.ts')) { Write-Error "(BA) map-event-type BackgroundRunning missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'has_background' $csHook)) { Write-Error "(BA) notify-hook background_tasks logic missing after apply"; exit 1 }
+            Write-Host "(BA) cloud-session-dot applied (background_tasks -> BackgroundRunning -> blue; separate axis, agent>shell-running>background-running; coexists with AU yellow-hold)"
+          }
+
+          # (AZ) Single-click terminal hyperlink -> copy to clipboard. A plain
+          #      (no-modifier) left click on a URL — which the configurable click
+          #      policy maps to "do nothing" (action === null) by default — now
+          #      copies the URL and flashes "Copied!" in the existing near-cursor
+          #      hint bubble (uncapped, unlike the educational unbound-link hint),
+          #      instead of just hinting. Ctrl/Cmd+click still opens in-app
+          #      (the action !== null path is unchanged). Pristine renderer files
+          #      (TerminalPane / useLinkClickHint / LinkHoverHint) — no ordering
+          #      dependency on other patches.
+          $lz = '../patches/terminal-link-single-click-copy.patch'
+          $lzHint = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useLinkClickHint/useLinkClickHint.ts'
+          if (-not (Test-Path $lz)) { Write-Error "(AZ) missing $lz in patches repo"; exit 1 }
+          if ((Test-Path $lzHint) -and (Select-String -Quiet -SimpleMatch 'showCopied' $lzHint)) {
+            Write-Host "(AZ) terminal-link-single-click-copy already present — skip"
+          } else {
+            $lzErr = "$env:RUNNER_TEMP/az-apply-check.txt"
+            git apply --check $lz 2>$lzErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(AZ) terminal-link-single-click-copy.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $lzErr) { Get-Content $lzErr | ForEach-Object { Write-Host "    (AZ-check) $_" } }
+              Write-Error "(AZ) terminal-link-single-click-copy.patch failed to apply — TerminalPane/useLinkClickHint/LinkHoverHint changed upstream. Regenerate against the new upstream."
+              exit 1
+            }
+            git apply $lz
+            if ($LASTEXITCODE -ne 0) { Write-Error "(AZ) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'showCopied' $lzHint)) { Write-Error "(AZ) showCopied missing after apply"; exit 1 }
+            Write-Host "(AZ) terminal-link-single-click-copy applied (plain click copies URL + 'Copied!' flash; Ctrl/Cmd+click still opens)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -1930,7 +2032,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + F). (AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

@@ -1,0 +1,150 @@
+diff --git a/apps/desktop/src/renderer/lib/clickPolicy/components/LinkHoverHint/LinkHoverHint.tsx b/apps/desktop/src/renderer/lib/clickPolicy/components/LinkHoverHint/LinkHoverHint.tsx
+index 433b327..e30baf0 100644
+--- a/apps/desktop/src/renderer/lib/clickPolicy/components/LinkHoverHint/LinkHoverHint.tsx
++++ b/apps/desktop/src/renderer/lib/clickPolicy/components/LinkHoverHint/LinkHoverHint.tsx
+@@ -15,8 +15,12 @@ interface LinkHoverHintProps {
+ 	/** What would clicking right now do, given current modifiers. Null to hide. */
+ 	hoverLabel: string | null;
+ 	hoverPosition: Position | null;
+-	/** Transient "click did nothing — here's the bind" hint. Hidden when hover is showing. */
+-	clickHint: Position | null;
++	/**
++	 * Transient flash hint, hidden when hover is showing. Without `label` it's
++	 * the "click did nothing — here's the bind" nudge (UNBOUND_HINT); with a
++	 * `label` it shows that text instead (e.g. the (AZ) "Copied!" confirmation).
++	 */
++	clickHint: (Position & { label?: string }) | null;
+ }
+ 
+ /**
+@@ -62,7 +66,7 @@ export function LinkHoverHint({
+ 							top: clickHint.clientY + TOOLTIP_OFFSET_PX,
+ 						}}
+ 					>
+-						{UNBOUND_HINT}
++						{clickHint.label ?? UNBOUND_HINT}
+ 					</motion.div>
+ 				)}
+ 			</AnimatePresence>
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
+index b0b5dbe..bbdb8a2 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
+@@ -61,7 +61,7 @@ export function TerminalPane({
+ 		onHover: onLinkHover,
+ 		onLeave: onLinkLeave,
+ 	} = useLinkHoverState();
+-	const { hint, showHint } = useLinkClickHint();
++	const { hint, showHint, showCopied } = useLinkClickHint();
+ 	const openInExternalEditor = useOpenInExternalEditor(workspaceId);
+ 	const paneData = ctx.pane.data as TerminalPaneData;
+ 	const { terminalId } = paneData;
+@@ -271,7 +271,33 @@ export function TerminalPane({
+ 				onUrlClick: (event, url) => {
+ 					const action = urlPolicy.getAction(event);
+ 					if (action === null) {
+-						showHint(event.clientX, event.clientY);
++						// (AZ) A PLAIN single click (no modifiers) on a URL bound to no
++						// open action copies it to the clipboard and flashes "Copied!"
++						// at the click point. ANY modifier (shift — also null by default;
++						// or alt/AltGr, which the click policy doesn't model as a tier so
++						// it would otherwise fall through as "plain") keeps the original
++						// no-op + unbound-link hint, so only a literal no-modifier single
++						// click copies. Ctrl/Cmd+click opens in-app (the action !== null
++						// path below, unchanged).
++						if (
++							event.metaKey ||
++							event.ctrlKey ||
++							event.shiftKey ||
++							event.altKey
++						) {
++							showHint(event.clientX, event.clientY);
++							return;
++						}
++						event.preventDefault();
++						// Main-process clipboard (always available in Electron; avoids the
++						// renderer Async-Clipboard permission surface) and confirm ONLY on
++						// success — never a false "Copied!".
++						electronTrpcClient.external.copyText
++							.mutate(url)
++							.then(() => showCopied(event.clientX, event.clientY))
++							.catch((error) => {
++								console.error("[v2 Terminal] Failed to copy URL:", url, error);
++							});
+ 						return;
+ 					}
+ 					event.preventDefault();
+@@ -303,6 +329,7 @@ export function TerminalPane({
+ 		onLinkHover,
+ 		onLinkLeave,
+ 		showHint,
++		showCopied,
+ 		filePolicy,
+ 		urlPolicy,
+ 	]);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useLinkClickHint/useLinkClickHint.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useLinkClickHint/useLinkClickHint.ts
+index 4c6d528..49bfa3b 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useLinkClickHint/useLinkClickHint.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useLinkClickHint/useLinkClickHint.ts
+@@ -3,9 +3,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
+ export interface LinkClickHint {
+ 	clientX: number;
+ 	clientY: number;
++	/**
++	 * Optional message. When set it overrides the default "unbound link" hint
++	 * and is NOT subject to the per-session cap — used for the (AZ) single-click
++	 * "Copied!" confirmation, which must show on every copy.
++	 */
++	label?: string;
+ }
+ 
+ const HINT_DURATION_MS = 2000;
++const COPIED_DURATION_MS = 1100;
+ const MAX_HINTS_PER_SESSION = 2;
+ 
+ let hintsRemaining = MAX_HINTS_PER_SESSION;
+@@ -14,22 +21,38 @@ export function useLinkClickHint() {
+ 	const [hint, setHint] = useState<LinkClickHint | null>(null);
+ 	const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+-	const showHint = useCallback((clientX: number, clientY: number) => {
+-		if (hintsRemaining <= 0) return;
+-		hintsRemaining -= 1;
++	const flash = useCallback((next: LinkClickHint, durationMs: number) => {
+ 		if (timeoutRef.current) clearTimeout(timeoutRef.current);
+-		setHint({ clientX, clientY });
++		setHint(next);
+ 		timeoutRef.current = setTimeout(() => {
+ 			setHint(null);
+ 			timeoutRef.current = null;
+-		}, HINT_DURATION_MS);
++		}, durationMs);
+ 	}, []);
+ 
++	const showHint = useCallback(
++		(clientX: number, clientY: number) => {
++			if (hintsRemaining <= 0) return;
++			hintsRemaining -= 1;
++			flash({ clientX, clientY }, HINT_DURATION_MS);
++		},
++		[flash],
++	);
++
++	// (AZ) Confirm a single-click URL copy. Uncapped (every copy confirms) and
++	// carries its own label so the shared hint bubble reads "Copied!".
++	const showCopied = useCallback(
++		(clientX: number, clientY: number) => {
++			flash({ clientX, clientY, label: "Copied!" }, COPIED_DURATION_MS);
++		},
++		[flash],
++	);
++
+ 	useEffect(() => {
+ 		return () => {
+ 			if (timeoutRef.current) clearTimeout(timeoutRef.current);
+ 		};
+ 	}, []);
+ 
+-	return { hint, showHint };
++	return { hint, showHint, showCopied };
+ }
