@@ -2075,14 +2075,17 @@ jobs:
           }
 
           # (BB) sidebar active-first project sort + pinning. The top-level project
-          #      lane is tier-sorted: pinned (manual drag order) > active (the
-          #      open-chats badge count > 0, most-recent-agent-activity first) >
-          #      idle. Pin via the project context menu (+ a pin icon on the row);
-          #      recency persisted on v2SidebarProjects.lastAgentActivityAt (the
-          #      in-memory notifications store resets per launch, so it is healed +
-          #      persisted); the visible re-sort is gated to when the sidebar is
-          #      IDLE (not dragging / hovering / context-menu-open) so rows never
-          #      move under the cursor. MUST apply AFTER (AL) thread-snooze-archive
+          #      lane is tier-sorted: pinned > active (open-chats badge > 0) > idle.
+          #      Within EVERY tier the order is the STABLE manual drag (tabOrder)
+          #      order -- NO recency churn (the old lastAgentActivityAt re-sort was
+          #      REMOVED per owner: rows kept moving by recent access). The ONLY
+          #      automatic movement is a bucket transition -> jump to the TOP of the
+          #      bucket just entered (a watcher gated on all 4 bucket-determining
+          #      live queries being isReady). Pin via the project context menu (+ a
+          #      pin icon on the row); drag is WITHIN-bucket only; the visible
+          #      re-sort is gated to when the sidebar is IDLE (not dragging /
+          #      hovering / context-menu-open) so rows never move under the cursor.
+          #      MUST apply AFTER (AL) thread-snooze-archive
           #      (shares useDashboardSidebarData/State, dashboardSidebarLocal
           #      schema, ProjectSection, types) -- authored against the post-(AL)
           #      [the full post-stack] tree.
@@ -2106,10 +2109,10 @@ jobs:
             }
             git apply $bb
             if ($LASTEXITCODE -ne 0) { Write-Error "(BB) git apply failed after a clean --check"; exit 1 }
-            if (-not (Select-String -Quiet -SimpleMatch 'lastAgentActivityAt' $bbSchema)) { Write-Error "(BB) lastAgentActivityAt schema field missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'isPinned' $bbSchema)) { Write-Error "(BB) isPinned schema field missing after apply"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch 'toggleProjectPinned' $bbState)) { Write-Error "(BB) toggleProjectPinned action missing after apply"; exit 1 }
-            if (-not (Select-String -Quiet -SimpleMatch 'projectTier' $bbData)) { Write-Error "(BB) projectTier sort missing after apply"; exit 1 }
-            Write-Host "(BB) sidebar-active-first-sort-and-pin applied (pinned > active > idle tiers; right-click Pin + pin icon; recency persisted; idle-gated re-sort)"
+            if (-not (Select-String -Quiet -SimpleMatch 'getProjectBucket' $bbData)) { Write-Error "(BB) getProjectBucket tier sort missing after apply"; exit 1 }
+            Write-Host "(BB) sidebar-active-first-sort-and-pin applied (pinned > active > idle tiers; stable within-bucket order; bucket-entry-to-top; right-click Pin + pin icon; within-bucket drag; idle-gated re-sort)"
           }
 
           # (BE) cloud-session blue-dot persistence fix. The (BA) background-running
