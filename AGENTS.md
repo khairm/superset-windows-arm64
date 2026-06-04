@@ -322,27 +322,38 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   `action===null`). Pristine files — no ordering dependency.
 - **sidebar active-first project sort + pinning (BB)**[git
   `sidebar-active-first-sort-and-pin.patch`, after AL] — the top-level project
-  lane is tier-sorted **pinned > active > idle**: pinned projects on top in
-  manual drag order (right-click → Pin/Unpin, pin icon on the row), then projects
-  with **open chats > 0** (the right-side badge = `getProjectChildrenWorkspaces
-  (children).length`, the SAME expr the badge renders so they can't disagree),
-  then idle (badge 0), each tier **most-recent-agent-activity first**. Recency =
-  agent status `occurredAt` (the v2-notifications store), folded per-project to a
-  max and PERSISTED on a new `v2SidebarProjects.lastAgentActivityAt` (the store is
-  in-memory + resets per launch, so a writer effect persists it; write-on-increase
-  only → converges, no loop — confirmed by 2 codex xhigh passes + code-review).
-  New `isPinned` + `lastAgentActivityAt` fields are MANUALLY healed in
-  `useDashboardSidebarData` (the collection has no `withReadHeal`). The visible
-  re-sort is **idle-gated** in `DashboardSidebar.tsx`: `projectOrder` commits from
-  the tier-sorted `groups` ONLY when not dragging/hovering/context-menu-open, so
-  rows never move under the cursor; membership (new/removed project) is reflected
-  at render by `orderedGroups` (append/drop), and pin/recency reorders apply on the
-  next idle commit. Comparator reuses each project's index in `sidebarProjects`
-  (tabOrder ASC) for pinned manual order + tiebreak — no new order field. TRAP
-  (caught by codex xhigh, FIX-FIRST→fixed): do NOT "structural-bypass" commit the
-  full order while busy (it flushes queued recency reorders under the cursor +
-  mutates SortableContext mid-drag); context-menu-open MUST be in the busy signal
-  (the portalled menu fires the list's onPointerLeave). ([[project_sidebar_active_first_sort]])
+  lane is tier-sorted **pinned > active > idle**: pinned on top (right-click →
+  Pin/Unpin, pin icon on the row), then projects with **open chats > 0** (the
+  right-side badge = `getProjectChildrenWorkspaces(children).length`, the SAME expr
+  the badge renders so they can't disagree), then idle (badge 0). **Within EVERY
+  tier the order is STABLE manual `tabOrder` (drag order) — NO recency re-sort**
+  (the original most-recent-agent-activity churn was REMOVED 2026-06-04 per owner:
+  "items keep moving depending on what's accessed most recently — confusing"; the
+  `lastAgentActivityAt` field + its writer effect are GONE). The ONLY automatic
+  movement is a **bucket transition → jump to the TOP of the bucket just entered**
+  (chat opens/closes flips active↔idle; pin/unpin flips pinned). A
+  `previousBucketsRef` watcher in `useDashboardSidebarData` derives each project's
+  bucket from `groups` and, on a real change, sets `tabOrder = (min tabOrder among
+  the new bucket's NON-entrant members) − 1` (tier dominates the comparator, so a
+  smaller number = top of that tier; next drag renormalises to 1..n). CRITICAL
+  (codex xhigh BLOCKER ×2): the watcher is **ARMED only once all FOUR
+  bucket-determining live queries are `isReady`** (`sidebarProjects` +
+  `sidebarWorkspaces` + `localMainWorkspaces` + `sidebarSections`) — else
+  cache-first staggered hydration (AGENTS rule 9) makes a real active project read
+  inactive then "transition" to top on launch (sections matters: open chats inside
+  a not-yet-hydrated section are dropped from the count). First hydrated snapshot
+  + any brand-new project = RECORDED, never moved. Simultaneous same-bucket
+  entrants are batched (base-min computed ONCE before any write, assigned as a
+  block) so the loop never reads its own fresh writes. `isPinned` MANUALLY healed
+  in the data hook (collection has no `withReadHeal`). Visible re-sort is
+  **idle-gated** in `DashboardSidebar.tsx`: `projectOrder` commits from `groups`
+  only when not dragging/hovering/menu-open. **Drag is WITHIN-bucket only**
+  (`handleDragEnd` rejects cross-bucket drops) and persists only when the visible
+  `orderedGroupIds` EQUALS the canonical `groups` order (codex xhigh HIGH: if a
+  queued top-of-bucket move diverged the two, dragging would clobber the move /
+  persist against a base the user can't see — so bail and let canonical flush, user
+  re-drags). 3 codex xhigh passes (BLOCKER hydration ×2, HIGH drag-clobber ×2 →
+  all fixed). ([[project_sidebar_active_first_sort]])
 - **terminal file-path link copy / open-in-OS (BC)**[git
   `terminal-filepath-link-open-copy.patch`, after AZ] — companion to (AZ) for the
   FILE link handler (`TerminalPane.tsx onFileLinkClick`): a PLAIN (no-modifier)

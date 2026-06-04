@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
-index 0a67f7f..32c3856 100644
+index 0a67f7f..0084c56 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
 +++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx
 @@ -51,6 +51,7 @@ interface SortableProjectWrapperProps {
@@ -98,32 +98,52 @@ index 0a67f7f..32c3856 100644
  	const workspaceShortcutLabels = useDashboardSidebarShortcuts(orderedGroups);
  
  	const activeV2Project = useMemo(() => {
-@@ -168,17 +215,20 @@ export function DashboardSidebar({
+@@ -167,18 +214,34 @@ export function DashboardSidebar({
+ 
  	const handleDragEnd = useCallback(
  		({ active, over }: DragEndEvent) => {
- 			if (over && active.id !== over.id) {
+-			if (over && active.id !== over.id) {
 -				const oldIndex = projectOrder.indexOf(String(active.id));
 -				const newIndex = projectOrder.indexOf(String(over.id));
-+				// Base the move on the RENDERED order (orderedGroupIds = frozen order
-+				// plus any ids appended while busy), not the raw frozen projectOrder,
-+				// so a project that appeared while hovering is still draggable.
-+				const oldIndex = orderedGroupIds.indexOf(String(active.id));
-+				const newIndex = orderedGroupIds.indexOf(String(over.id));
- 				if (oldIndex !== -1 && newIndex !== -1) {
+-				if (oldIndex !== -1 && newIndex !== -1) {
 -					const reordered = arrayMove(projectOrder, oldIndex, newIndex);
-+					const reordered = arrayMove(orderedGroupIds, oldIndex, newIndex);
- 					setProjectOrder(reordered);
- 					reorderProjects(reordered);
- 				}
- 			}
+-					setProjectOrder(reordered);
+-					reorderProjects(reordered);
+-				}
+-			}
  			setActiveProject(null);
++			if (!over || active.id === over.id) return;
++			const activeId = String(active.id);
++			const overId = String(over.id);
++			// Drag-and-drop is WITHIN a bucket only (pinned / active / inactive). The
++			// tier is auto-derived (pin flag + open-chat count, carried as
++			// `project.bucket`), so a cross-bucket drop has no meaning — ignore it and
++			// let the row snap back on the next render.
++			const bucketOf = (id: string) =>
++				groups.find((project) => project.id === id)?.bucket ?? null;
++			const activeBucket = bucketOf(activeId);
++			if (activeBucket === null || activeBucket !== bucketOf(overId)) return;
++			// Reorder against the VISIBLE order the user is actually looking at
++			// (`orderedGroupIds` = the rendered order, frozen-while-busy plus any
++			// appended new project), so the drop always matches their intent and a
++			// freshly-appeared project never blocks dragging. If a bucket-entry move
++			// from the watcher was queued but not yet visible (frozen while hovering),
++			// persisting the visible order renumbers it away — but that move was never
++			// shown, so the committed result still matches exactly what the user saw,
++			// and the watcher already recorded the new bucket so it won't re-fire.
++			const oldIndex = orderedGroupIds.indexOf(activeId);
++			const newIndex = orderedGroupIds.indexOf(overId);
++			if (oldIndex === -1 || newIndex === -1) return;
++			const reordered = arrayMove(orderedGroupIds, oldIndex, newIndex);
++			setProjectOrder(reordered);
++			reorderProjects(reordered);
  		},
 -		[projectOrder, reorderProjects],
-+		[orderedGroupIds, reorderProjects],
++		[groups, orderedGroupIds, reorderProjects],
  	);
  
  	return (
-@@ -188,7 +238,12 @@ export function DashboardSidebar({
+@@ -188,7 +251,12 @@ export function DashboardSidebar({
  					<div className="flex h-full flex-col border-r border-border bg-muted/45 dark:bg-muted/35">
  						<DashboardSidebarHeader isCollapsed={isCollapsed} />
  
@@ -137,7 +157,7 @@ index 0a67f7f..32c3856 100644
  							<DndContext
  								sensors={sensors}
  								collisionDetection={closestCenter}
-@@ -203,7 +258,7 @@ export function DashboardSidebar({
+@@ -203,7 +271,7 @@ export function DashboardSidebar({
  								onDragCancel={() => setActiveProject(null)}
  							>
  								<SortableContext
@@ -146,7 +166,7 @@ index 0a67f7f..32c3856 100644
  									strategy={verticalListSortingStrategy}
  								>
  									{orderedGroups.map((project) => (
-@@ -215,6 +270,7 @@ export function DashboardSidebar({
+@@ -215,6 +283,7 @@ export function DashboardSidebar({
  											workspaceShortcutLabels={workspaceShortcutLabels}
  											onWorkspaceHover={refreshWorkspacePullRequest}
  											onToggleCollapse={toggleProjectCollapsed}
@@ -321,92 +341,84 @@ index 6a3339d..ddd5c25 100644
  					<div className="ml-1 flex size-6 shrink-0 items-center justify-center">
  						<Tooltip delayDuration={500}>
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
-index bc5f30d..d67dbc1 100644
+index bc5f30d..0374f9a 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
 +++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts
-@@ -12,6 +12,7 @@ import {
- 	getWorkspaceSidebarBucket,
- } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
- import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-+import { useV2NotificationStore } from "renderer/stores/v2-notifications";
- import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
- import type {
- 	DashboardSidebarProject,
-@@ -19,6 +20,7 @@ import type {
+@@ -19,6 +19,10 @@ import type {
  	DashboardSidebarSection,
  	DashboardSidebarWorkspace,
  } from "../../types";
-+import { getProjectChildrenWorkspaces } from "../../utils/projectChildren";
++import {
++	getProjectBucket,
++	type ProjectBucket,
++} from "../../utils/projectChildren";
  import {
  	derivePullRequestQueryTargets,
  	getDashboardSidebarPullRequestQueryKey,
-@@ -184,6 +186,8 @@ export function useDashboardSidebarData() {
+@@ -155,8 +159,9 @@ export function useDashboardSidebarData() {
+ 		[hosts],
+ 	);
+ 
+-	const { data: rawSidebarProjects = [] } = useLiveQuery(
+-		(q) =>
++	const { data: rawSidebarProjects = [], isReady: sidebarProjectsReady } =
++		useLiveQuery(
++			(q) =>
+ 			q
+ 				.from({ sidebarProjects: collections.v2SidebarProjects })
+ 				.innerJoin(
+@@ -184,6 +189,7 @@ export function useDashboardSidebarData() {
  						showArchived: sidebarProjects.showArchived,
  						snoozedCollapsed: sidebarProjects.snoozedCollapsed,
  						archivedCollapsed: sidebarProjects.archivedCollapsed,
 +						isPinned: sidebarProjects.isPinned,
-+						lastAgentActivityAt: sidebarProjects.lastAgentActivityAt,
  				})),
  		[collections],
  	);
-@@ -200,6 +204,10 @@ export function useDashboardSidebarData() {
+@@ -200,12 +206,16 @@ export function useDashboardSidebarData() {
  				showArchived: project.showArchived ?? false,
  				snoozedCollapsed: project.snoozedCollapsed ?? false,
  				archivedCollapsed: project.archivedCollapsed ?? false,
 +				// (BB) Same heal — v2SidebarProjects has no withReadHeal, so rows
-+				// persisted before these fields existed read back undefined.
++				// persisted before this field existed read back undefined.
 +				isPinned: project.isPinned ?? false,
-+				lastAgentActivityAt: project.lastAgentActivityAt ?? null,
  			})),
  		[rawSidebarProjects],
  	);
-@@ -461,6 +469,45 @@ export function useDashboardSidebarData() {
- 		workspaceTransactionsById,
- 	]);
  
-+	// (BB active-first sort) Persist each project's most-recent agent-activity
-+	// time (epoch ms) so the active/idle tiers can be ordered most-recent-first
-+	// immediately at launch — the v2-notifications store is in-memory and resets
-+	// every launch, so the sort signal must be persisted to survive a restart.
-+	// Fold the per-source `occurredAt` to a per-project max and write to
-+	// v2SidebarProjects ONLY when it strictly increases: a quiet sidebar does no
-+	// writes, and after a write the recomputed max equals the stored value so the
-+	// effect converges (its deps don't change from its own write).
-+	const notificationSources = useV2NotificationStore((state) => state.sources);
-+	const projectIdByWorkspaceId = useMemo(() => {
-+		const map = new Map<string, string>();
-+		for (const workspace of rawSidebarWorkspaces) {
-+			map.set(workspace.id, workspace.projectId);
-+		}
-+		for (const workspace of rawLocalMainWorkspaces) {
-+			map.set(workspace.id, workspace.projectId);
-+		}
-+		return map;
-+	}, [rawSidebarWorkspaces, rawLocalMainWorkspaces]);
-+	useEffect(() => {
-+		const maxByProject = new Map<string, number>();
-+		for (const entry of Object.values(notificationSources)) {
-+			const projectId = projectIdByWorkspaceId.get(entry.workspaceId);
-+			if (!projectId) continue;
-+			const current = maxByProject.get(projectId) ?? 0;
-+			if (entry.occurredAt > current) {
-+				maxByProject.set(projectId, entry.occurredAt);
-+			}
-+		}
-+		for (const [projectId, occurredAt] of maxByProject) {
-+			const row = collections.v2SidebarProjects.get(projectId);
-+			if (!row) continue;
-+			if ((row.lastAgentActivityAt ?? 0) >= occurredAt) continue;
-+			collections.v2SidebarProjects.update(projectId, (draft) => {
-+				draft.lastAgentActivityAt = occurredAt;
-+			});
-+		}
-+	}, [notificationSources, projectIdByWorkspaceId, collections]);
-+
- 	const visibleSidebarWorkspaces = useMemo(() => {
- 		const sidebarProjectIds = new Set(
- 			sidebarProjects.map((project) => project.id),
-@@ -716,7 +763,7 @@ export function useDashboardSidebarData() {
+-	const { data: sidebarSections = [] } = useLiveQuery(
+-		(q) =>
++	const { data: sidebarSections = [], isReady: sidebarSectionsReady } =
++		useLiveQuery(
++			(q) =>
+ 			q
+ 				.from({ sidebarSections: collections.v2SidebarSections })
+ 				.orderBy(({ sidebarSections }) => sidebarSections.tabOrder, "asc")
+@@ -221,8 +231,9 @@ export function useDashboardSidebarData() {
+ 		[collections],
+ 	);
+ 
+-	const { data: rawSidebarWorkspaces = [] } = useLiveQuery(
+-		(q) =>
++	const { data: rawSidebarWorkspaces = [], isReady: sidebarWorkspacesReady } =
++		useLiveQuery(
++			(q) =>
+ 			q
+ 				.from({ sidebarWorkspaces: collections.v2WorkspaceLocalState })
+ 				.innerJoin(
+@@ -413,8 +424,9 @@ export function useDashboardSidebarData() {
+ 		[rawSidebarWorkspaces],
+ 	);
+ 
+-	const { data: rawLocalMainWorkspaces = [] } = useLiveQuery(
+-		(q) =>
++	const { data: rawLocalMainWorkspaces = [], isReady: localMainWorkspacesReady } =
++		useLiveQuery(
++			(q) =>
+ 			q
+ 				.from({ workspaces: collections.v2Workspaces })
+ 				.where(({ workspaces }) => eq(workspaces.type, "main"))
+@@ -716,7 +728,7 @@ export function useDashboardSidebarData() {
  			);
  		}
  
@@ -415,57 +427,207 @@ index bc5f30d..d67dbc1 100644
  			const resolvedProject = projectsById.get(project.id);
  			if (!resolvedProject) return [];
  			const {
-@@ -771,6 +818,36 @@ export function useDashboardSidebarData() {
+@@ -761,6 +773,11 @@ export function useDashboardSidebarData() {
+ 				}
+ 			}
+ 			sidebarProject.children = children;
++			// (BB active-first sort) Derive the tier ONCE here, where `children` is
++			// already assembled, and carry it on the project so the comparator, the
++			// transition watcher, and the drag handler all read one value instead of
++			// re-deriving it three ways.
++			sidebarProject.bucket = getProjectBucket(sidebarProject);
+ 			sidebarProject.snoozedWorkspaces.sort(
+ 				(left, right) =>
+ 					(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
+@@ -771,6 +788,33 @@ export function useDashboardSidebarData() {
  			);
  			return [sidebarProject];
  		});
 +
-+		// (BB active-first sort) Tier the top-level project lane:
-+		//   0 = pinned (manual drag order among themselves),
-+		//   1 = active (open-chats badge > 0), 2 = idle (badge === 0).
-+		// Active/idle are ordered most-recent-agent-activity first, ties broken by
-+		// manual order. `orderIndex` is each project's position in `sidebarProjects`
-+		// (already tabOrder ASC), i.e. the manual drag order — so pinned ordering
-+		// and the tiebreak reuse tabOrder without selecting it. Active/idle uses the
-+		// SAME count the badge shows (getProjectChildrenWorkspaces(children).length)
-+		// so the tier never disagrees with the displayed number.
++		// (BB active-first sort) Sort the top-level project lane by tier
++		// (pinned > active > idle), then — within EVERY tier — by the STABLE manual
++		// order: `orderIndex` is each project's position in `sidebarProjects`
++		// (already tabOrder ASC), i.e. the drag order. There is deliberately NO
++		// recency/most-recent-active re-sort; rows never shuffle on their own while
++		// sitting in a tier. The only automatic movement is a tier change, handled
++		// by the transition watcher below, which rewrites tabOrder so the project
++		// lands at the TOP of the tier it just entered. `project.bucket` is the tier
++		// derived once above (same count the badge shows), so the tier never
++		// disagrees with the displayed number.
++		const TIER_RANK: Record<ProjectBucket, number> = {
++			pinned: 0,
++			active: 1,
++			inactive: 2,
++		};
 +		const orderIndex = new Map(
 +			sidebarProjects.map((project, index) => [project.id, index] as const),
 +		);
-+		const projectTier = (project: DashboardSidebarProject): number => {
-+			if (project.isPinned) return 0;
-+			return getProjectChildrenWorkspaces(project.children).length > 0 ? 1 : 2;
-+		};
 +		builtProjects.sort((left, right) => {
-+			const leftTier = projectTier(left);
-+			const rightTier = projectTier(right);
-+			if (leftTier !== rightTier) return leftTier - rightTier;
++			const tierDelta = TIER_RANK[left.bucket] - TIER_RANK[right.bucket];
++			if (tierDelta !== 0) return tierDelta;
 +			const leftIndex = orderIndex.get(left.id) ?? 0;
 +			const rightIndex = orderIndex.get(right.id) ?? 0;
-+			if (leftTier === 0) return leftIndex - rightIndex;
-+			const leftActivity = left.lastAgentActivityAt ?? 0;
-+			const rightActivity = right.lastAgentActivityAt ?? 0;
-+			if (rightActivity !== leftActivity) return rightActivity - leftActivity;
 +			return leftIndex - rightIndex;
 +		});
 +		return builtProjects;
  	}, [
  		machineId,
  		nowMs,
+@@ -784,6 +828,102 @@ export function useDashboardSidebarData() {
+ 	]);
+ 	const groups = useStableDashboardSidebarProjects(computedGroups);
+ 
++	// (BB active-first sort) Bucket-transition watcher. A project's bucket is
++	// pinned / active (open chats > 0) / inactive (0). Within a bucket the order
++	// is STABLE (tabOrder) and never re-sorts on its own. The ONLY automatic
++	// movement is ENTERING a bucket, where the project must jump to that bucket's
++	// TOP. The active<->inactive flip can't be caught at its source (chats
++	// open/close all over the app) and pin/unpin also changes the bucket, so we
++	// watch the derived bucket per project and, on a change, set its tabOrder
++	// below every current member of the bucket it just entered. Tier dominates the
++	// comparator, so a smaller tabOrder = top of that tier regardless of the other
++	// tiers' numbers; the next drag renormalises tabOrder to 1..n. The FIRST run
++	// (and any brand-new project) is only RECORDED — never reshuffled — so the
++	// user's existing order is preserved on launch. Writing tabOrder reorders but
++	// not the bucket, so the effect converges (no further write on the re-run).
++	const projectBuckets = useMemo(
++		() => new Map<string, ProjectBucket>(groups.map((p) => [p.id, p.bucket])),
++		[groups],
++	);
++	// The bucket of a project depends on its pinned flag AND its open-chat count,
++	// which is assembled from several live queries that hydrate progressively
++	// (cache-first — AGENTS.md rule 9). Until ALL of them are ready, an
++	// already-active project can momentarily read as `inactive` (its workspaces
++	// haven't arrived yet); arming the watcher on that partial snapshot would make
++	// the later hydration look like a real `inactive -> active` transition and
++	// wrongly yank it to the top. So we only ARM (record the first snapshot) once
++	// the bucket-determining queries are ready — then every later change is a real
++	// pin/unpin or chat open/close. `sidebarSections` is included because open
++	// workspaces inside a not-yet-hydrated section are dropped from `children`
++	// (the workspace->section reparent misses), which would under-count and
++	// falsely read an active project as inactive until sections arrive.
++	const bucketsHydrated =
++		sidebarProjectsReady &&
++		sidebarWorkspacesReady &&
++		localMainWorkspacesReady &&
++		sidebarSectionsReady;
++	const previousBucketsRef = useRef<Map<string, ProjectBucket> | null>(null);
++	useEffect(() => {
++		if (!bucketsHydrated) return;
++		const previous = previousBucketsRef.current;
++		if (previous === null) {
++			// First fully-hydrated snapshot: record only, never reshuffle.
++			previousBucketsRef.current = new Map(projectBuckets);
++			return;
++		}
++		// Collect the real transitions first (a brand-new project — before ===
++		// undefined — is recorded, not moved).
++		const entrantsByBucket = new Map<ProjectBucket, string[]>();
++		for (const [projectId, bucket] of projectBuckets) {
++			const before = previous.get(projectId);
++			if (before === undefined || before === bucket) continue;
++			const list = entrantsByBucket.get(bucket);
++			if (list) list.push(projectId);
++			else entrantsByBucket.set(bucket, [projectId]);
++		}
++		if (entrantsByBucket.size > 0) {
++			const isEntrant = new Set<string>();
++			for (const ids of entrantsByBucket.values()) {
++				for (const id of ids) isEntrant.add(id);
++			}
++			// Base "top" per bucket = min tabOrder among the bucket's NON-entrant
++			// members (computed ONCE, before any write, so simultaneous entrants
++			// don't read each other's freshly-written values). Tier dominates the
++			// comparator, so a tabOrder below this base lands the project at the top
++			// of its NEW tier regardless of the other tiers' numbers; the next drag
++			// renormalises tabOrder to 1..n.
++			const baseMinByBucket = new Map<ProjectBucket, number>();
++			for (const [otherId, otherBucket] of projectBuckets) {
++				if (isEntrant.has(otherId)) continue;
++				const tabOrder =
++					collections.v2SidebarProjects.get(otherId)?.tabOrder ?? 0;
++				const current = baseMinByBucket.get(otherBucket);
++				if (current === undefined || tabOrder < current) {
++					baseMinByBucket.set(otherBucket, tabOrder);
++				}
++			}
++			for (const [bucket, ids] of entrantsByBucket) {
++				const base = baseMinByBucket.get(bucket);
++				ids.forEach((projectId, index) => {
++					const row = collections.v2SidebarProjects.get(projectId);
++					if (!row) return;
++					// Assign as a block below `base`, preserving the entrants' relative
++					// order (first stays topmost). Empty target bucket (base undefined):
++					// the entrants are the only members — keep their current order.
++					const nextTabOrder =
++						base !== undefined
++							? base - (ids.length - index)
++							: (row.tabOrder ?? 0);
++					if (nextTabOrder === row.tabOrder) return;
++					collections.v2SidebarProjects.update(projectId, (draft) => {
++						draft.tabOrder = nextTabOrder;
++					});
++				});
++			}
++		}
++		previousBucketsRef.current = new Map(projectBuckets);
++	}, [projectBuckets, bucketsHydrated, collections]);
++
+ 	return {
+ 		groups,
+ 		refreshWorkspacePullRequest,
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
-index 7e00685..bbef620 100644
+index 7e00685..fdf0e6a 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
 +++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/types.ts
-@@ -99,4 +99,9 @@ export interface DashboardSidebarProject {
+@@ -99,4 +99,12 @@ export interface DashboardSidebarProject {
  	showArchived: boolean;
  	snoozedCollapsed: boolean;
  	archivedCollapsed: boolean;
-+	// (BB active-first sort) Pinned projects sort to the very top (manual order
-+	// among themselves); lastAgentActivityAt (epoch ms, max across the project's
-+	// workspaces) orders the active/idle tiers most-recent-first.
++	// (BB active-first sort) Pinned projects sort to the very top; within each
++	// tier the order is the stable manual (tabOrder) drag order. No recency sort.
 +	isPinned: boolean;
-+	lastAgentActivityAt: number | null;
++	// Derived tier, computed once in useDashboardSidebarData (where `children` is
++	// already assembled) and reused by the sort comparator, the bucket-transition
++	// watcher, and the drag handler — see getProjectBucket. Union kept inline to
++	// avoid a types <-> utils import cycle.
++	bucket: "pinned" | "active" | "inactive";
  }
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/index.ts
+index 7eb7e07..5fcc4e1 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/index.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/index.ts
+@@ -1,4 +1,6 @@
+ export {
++	getProjectBucket,
+ 	getProjectChildrenSections,
+ 	getProjectChildrenWorkspaces,
++	type ProjectBucket,
+ } from "./projectChildren";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/projectChildren.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/projectChildren.ts
+index 08c1467..075cf26 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/projectChildren.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/projectChildren/projectChildren.ts
+@@ -21,3 +21,19 @@ export function getProjectChildrenWorkspaces(
+ 		child.type === "workspace" ? [child.workspace] : child.section.workspaces,
+ 	);
+ }
++
++/** (BB active-first sort) The single source of truth for a project's sidebar
++ * tier: pinned > active (has open chats) > inactive (none). Used by the sort
++ * comparator, the bucket-transition watcher, and the drag handler so the rule
++ * can't drift across them. */
++export type ProjectBucket = "pinned" | "active" | "inactive";
++
++export function getProjectBucket(project: {
++	isPinned: boolean;
++	children: DashboardSidebarProjectChild[];
++}): ProjectBucket {
++	if (project.isPinned) return "pinned";
++	return getProjectChildrenWorkspaces(project.children).length > 0
++		? "active"
++		: "inactive";
++}
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts b/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts
 index 4288061..bdcffa0 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts
@@ -500,22 +662,21 @@ index 4288061..bdcffa0 100644
  		toggleSectionCollapsed,
  		unarchiveWorkspace,
 diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
-index eac11ce..207fd32 100644
+index eac11ce..b4c670e 100644
 --- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
 +++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
-@@ -21,6 +21,15 @@ export const dashboardSidebarProjectSchema = z.object({
+@@ -21,6 +21,14 @@ export const dashboardSidebarProjectSchema = z.object({
  	showArchived: z.boolean().default(false),
  	snoozedCollapsed: z.boolean().default(false),
  	archivedCollapsed: z.boolean().default(false),
 +	// (BB active-first sort) Pin a project to the top of the sidebar (above the
-+	// active/idle tiers), and the last time any agent activity occurred in the
-+	// project (epoch ms, max across its workspaces) used to order the
-+	// active/idle tiers most-recent-first. Persisted so the order survives a
-+	// restart. Local-only, like every other sidebar preference. NOTE: this
-+	// collection has no withReadHeal, so the data hook must heal both fields
-+	// (rows persisted before they existed read back undefined).
++	// active/idle tiers). Within each tier the order is the stable manual
++	// (tabOrder) drag order — there is no recency/most-recent-active re-sort.
++	// Persisted so the order survives a restart. Local-only, like every other
++	// sidebar preference. NOTE: this collection has no withReadHeal, so the data
++	// hook must heal this field (rows persisted before it existed read back
++	// undefined).
 +	isPinned: z.boolean().default(false),
-+	lastAgentActivityAt: z.number().nullable().default(null),
  });
  
  const paneWorkspaceStateSchema = z.custom<WorkspaceState<unknown>>();
