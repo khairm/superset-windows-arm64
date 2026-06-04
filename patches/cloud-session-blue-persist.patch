@@ -1,0 +1,30 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+index 49229fb..a49b642 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts
+@@ -202,7 +202,24 @@ function updatePaneStatus(
+ 			workspaceId,
+ 			payload.occurredAt,
+ 		);
+-	} else {
++	} else if (
++		payload.eventType === "Stop" ||
++		payload.eventType === "Detached" ||
++		payload.eventType === "Attached"
++	) {
++		// (BE) Clear the blue ONLY when the background session is positively over
++		// or the agent session reset. A plain "Stop" means the notify hook saw an
++		// EMPTY background_tasks[] at turn-end (the bg task finished); Detached =
++		// SessionEnd, Attached = session (re)start. Crucially, do NOT clear on
++		// "Start" (a new turn or a mid-turn PostToolUse) or "PermissionRequest":
++		// the background task may still be running, and clearing the blue on those
++		// transient events wiped it before the turn-end green could clear to reveal
++		// it — the "green went, no blue replacing it" bug. While the agent is busy
++		// the blue is harmlessly masked (agent > blue); it surfaces the moment the
++		// agent goes idle (green cleared on focus). Teardown (interrupt / pty exit /
++		// pane close / workspace clear) still clears it via clearV2TerminalRunStatus
++		// / clearWorkspaceStatuses; the next Stop re-derives it from live
++		// background_tasks, so a stale blue self-corrects on the next turn-end.
+ 		store.clearTerminalBackgroundRunning(payload.terminalId);
+ 	}
+ }

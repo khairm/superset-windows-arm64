@@ -369,6 +369,25 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   navigates to it (`/v2-workspace/$workspaceId`) instead of opening the create
   modal. Git projects unchanged. Pristine file — order-independent.
   ([[project_nongit_multirepo_workspace_feature]])
+- **cloud-session blue persistence (BE)**[git `cloud-session-blue-persist.patch`,
+  after BA] — the (BA) background-running blue dot NEVER surfaced. Root cause
+  (proven from the live `agent-notify-hook.log`: `Stop`→`BackgroundRunning` POSTed
+  fine, HTTP 200): `lifecycleEvents.updatePaneStatus` set the blue axis on
+  `BackgroundRunning` but CLEARED it on EVERY other event (`else
+  clearTerminalBackgroundRunning`), so the next `Start`/`PostToolUse` (or any
+  transient event) after the turn-end wiped the blue before the turn-end review
+  GREEN could clear (on focus, via `clearSourceAttention` which removes the review
+  entry) to reveal it — the "green went, no blue replacing it" report. Fix: clear
+  the blue axis ONLY on `Stop` (notify hook saw EMPTY `background_tasks[]` ⇒ bg
+  over) / `Detached` (SessionEnd) / `Attached` (session reset); NEVER on
+  `Start`/`PermissionRequest`. While the agent is busy the blue is harmlessly
+  masked (strict `red>yellow>green>blue` preserved — blue is a separate axis,
+  lowest, merged render-time only); it surfaces the instant the agent goes idle.
+  Teardown (interrupt / pty exit / pane close / workspace clear) still clears it
+  via `clearV2TerminalRunStatus`/`clearWorkspaceStatuses`; a stale blue (bg ends
+  during pure idle with no later `Stop`) self-corrects on the next turn-end — the
+  accepted no-timer tradeoff. `lifecycleEvents.ts` ONLY (one branch). Verified by
+  codex xhigh (SHIP). ([[project_dots_open_tabs_and_subagent_hold]])
 
 ## Traps (do NOT repeat)
 

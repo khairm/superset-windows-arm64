@@ -2112,6 +2112,41 @@ jobs:
             Write-Host "(BB) sidebar-active-first-sort-and-pin applied (pinned > active > idle tiers; right-click Pin + pin icon; recency persisted; idle-gated re-sort)"
           }
 
+          # (BE) cloud-session blue-dot persistence fix. The (BA) background-running
+          #      blue never surfaced: lifecycleEvents.updatePaneStatus set the blue
+          #      axis on "BackgroundRunning" but CLEARED it on EVERY other event, so
+          #      the next Start/PostToolUse after a turn-end wiped it before the
+          #      turn-end green could clear (on focus) to reveal it ("green went, no
+          #      blue replacing it"). Fix: clear the blue ONLY on Stop/Detached/
+          #      Attached (bg positively over / session reset), never on transient
+          #      Start/PermissionRequest — while the agent is busy the blue is
+          #      harmlessly masked (agent > blue) and it surfaces the instant the
+          #      agent goes idle. Strict precedence red>yellow>green>blue preserved
+          #      (blue is a separate axis, lowest). MUST apply AFTER (BA)
+          #      cloud-session-dot (shares lifecycleEvents.ts; authored against
+          #      post-BA). Verified by codex xhigh (SHIP). lifecycleEvents.ts ONLY.
+          $be = '../patches/cloud-session-blue-persist.patch'
+          $beFile = 'apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts'
+          if (-not (Test-Path $be)) { Write-Error "(BE) missing $be in patches repo"; exit 1 }
+          if (-not (Test-Path $beFile)) { Write-Error "(BE) $beFile missing in this upstream -- re-anchor (BE)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch 'payload.eventType === "Detached"' $beFile) {
+            Write-Host "(BE) cloud-session-blue-persist already present -- skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'setTerminalBackgroundRunning' $beFile)) { Write-Error "(BE) (BA) marker 'setTerminalBackgroundRunning' absent in lifecycleEvents.ts -- (BE) MUST apply after (BA) cloud-session-dot; fix ordering"; exit 1 }
+            $beErr = "$env:RUNNER_TEMP/be-apply-check.txt"
+            git apply --check $be 2>$beErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(BE) cloud-session-blue-persist.patch does not apply cleanly (post BA). git apply --check output:"
+              if (Test-Path $beErr) { Get-Content $beErr | ForEach-Object { Write-Host "    (BE-check) $_" } }
+              Write-Error "(BE) cloud-session-blue-persist.patch failed to apply -- lifecycleEvents.ts (post-BA) changed. Regenerate against the post-(BA) tree."
+              exit 1
+            }
+            git apply $be
+            if ($LASTEXITCODE -ne 0) { Write-Error "(BE) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'payload.eventType === "Detached"' $beFile)) { Write-Error "(BE) Stop/Detached/Attached clear-gate missing after apply"; exit 1 }
+            Write-Host "(BE) cloud-session-blue-persist applied (background-running blue surfaces when the agent goes idle; cleared only on Stop/Detached/Attached)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -2121,7 +2156,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + F). (BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + BE + F). (BE = cloud-session blue persists so it surfaces when the agent goes idle [BA follow-up]; BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
