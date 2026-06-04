@@ -320,6 +320,55 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   "Copied!" (codex REJECT→fix). Gated to PLAIN clicks: shift-click (also null by
   default) keeps the original no-op + hint (codex caught the over-broad
   `action===null`). Pristine files — no ordering dependency.
+- **sidebar active-first project sort + pinning (BB)**[git
+  `sidebar-active-first-sort-and-pin.patch`, after AL] — the top-level project
+  lane is tier-sorted **pinned > active > idle**: pinned projects on top in
+  manual drag order (right-click → Pin/Unpin, pin icon on the row), then projects
+  with **open chats > 0** (the right-side badge = `getProjectChildrenWorkspaces
+  (children).length`, the SAME expr the badge renders so they can't disagree),
+  then idle (badge 0), each tier **most-recent-agent-activity first**. Recency =
+  agent status `occurredAt` (the v2-notifications store), folded per-project to a
+  max and PERSISTED on a new `v2SidebarProjects.lastAgentActivityAt` (the store is
+  in-memory + resets per launch, so a writer effect persists it; write-on-increase
+  only → converges, no loop — confirmed by 2 codex xhigh passes + code-review).
+  New `isPinned` + `lastAgentActivityAt` fields are MANUALLY healed in
+  `useDashboardSidebarData` (the collection has no `withReadHeal`). The visible
+  re-sort is **idle-gated** in `DashboardSidebar.tsx`: `projectOrder` commits from
+  the tier-sorted `groups` ONLY when not dragging/hovering/context-menu-open, so
+  rows never move under the cursor; membership (new/removed project) is reflected
+  at render by `orderedGroups` (append/drop), and pin/recency reorders apply on the
+  next idle commit. Comparator reuses each project's index in `sidebarProjects`
+  (tabOrder ASC) for pinned manual order + tiebreak — no new order field. TRAP
+  (caught by codex xhigh, FIX-FIRST→fixed): do NOT "structural-bypass" commit the
+  full order while busy (it flushes queued recency reorders under the cursor +
+  mutates SortableContext mid-drag); context-menu-open MUST be in the busy signal
+  (the portalled menu fires the list's onPointerLeave). ([[project_sidebar_active_first_sort]])
+- **terminal file-path link copy / open-in-OS (BC)**[git
+  `terminal-filepath-link-open-copy.patch`, after AZ] — companion to (AZ) for the
+  FILE link handler (`TerminalPane.tsx onFileLinkClick`): a PLAIN (no-modifier)
+  click copies `link.resolvedPath` (clean, suffix-free) + flashes "Copied!"
+  (reuses AZ's uncapped `showCopied`); a **Ctrl/Cmd (no-shift)** click on a LOCAL
+  workspace opens the file in its OS default app via a NEW
+  `external.openInDefaultApp` (`shell.openPath` — `.html` → default BROWSER,
+  everything else → its default app; one primitive, NO `file://` via `openUrl`
+  which the scheme allowlist rejects). Gated to (a) local workspaces — `shell.
+  openPath` runs in the local main process, so a REMOTE path keeps upstream open
+  behavior — `isLocalWorkspace` also accepts `local-starting`; and (b) the EXACT
+  Ctrl/Cmd gesture, so a user's other configured tiers (shift / Ctrl+Shift / a
+  custom plain mapping) still honor their action (open-in-editor with line/col)
+  rather than being hijacked (codex xhigh HIGH→fixed). MUST apply after (AZ)
+  (shares TerminalPane.tsx). ([[project_dots_open_tabs_and_subagent_hold]])
+- **non-git project "+" opens main (BD)**[git `nongit-plus-opens-main.patch`] —
+  the "+" (new workspace) on a NON-GIT project hit the (AF) guard ("Cannot create
+  a branch/worktree in a non-git workspace") — a dead end. `handleNewWorkspace`
+  resolves the project's main workspace across ALL buckets
+  (`getProjectChildrenWorkspaces(children)` flattens sections, + snoozed +
+  archived — codex/reviewer caught the section-nested/snoozed miss) and, when it
+  is non-git (`useIsGitRepo`, which defaults true while loading so it only diverts
+  for a CONFIRMED non-git project; empty id → enabled:false → stays git → modal),
+  navigates to it (`/v2-workspace/$workspaceId`) instead of opening the create
+  modal. Git projects unchanged. Pristine file — order-independent.
+  ([[project_nongit_multirepo_workspace_feature]])
 
 ## Traps (do NOT repeat)
 

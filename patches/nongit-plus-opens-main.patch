@@ -1,0 +1,65 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts
+index 9cd46da..dda3fc6 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts
+@@ -1,12 +1,14 @@
+ import { alert } from "@superset/ui/atoms/Alert";
+ import { toast } from "@superset/ui/sonner";
+ import { useNavigate } from "@tanstack/react-router";
+-import { useState } from "react";
++import { useMemo, useState } from "react";
++import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
+ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+ import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+ import { useOpenNewWorkspaceModal } from "renderer/stores/new-workspace-modal";
+ import type { DashboardSidebarProject } from "../../../../types";
++import { getProjectChildrenWorkspaces } from "../../../../utils/projectChildren";
+ 
+ interface UseDashboardSidebarProjectSectionActionsOptions {
+ 	project: DashboardSidebarProject;
+@@ -31,6 +33,26 @@ export function useDashboardSidebarProjectSectionActions({
+ 	const [isRenaming, setIsRenaming] = useState(false);
+ 	const [renameValue, setRenameValue] = useState(project.name);
+ 
++	// (BD non-git "+") The project's main workspace id, used to detect a non-git
++	// project and to open it directly. Resolve across ALL buckets the main could
++	// live in — top-level children, section-nested workspaces (flattened by
++	// getProjectChildrenWorkspaces), and snoozed/archived — so a main moved into a
++	// section or snoozed/archived is still found and the non-git "+" never
++	// dead-ends on the create modal.
++	const mainWorkspaceId = useMemo(() => {
++		const candidates = [
++			...getProjectChildrenWorkspaces(project.children),
++			...project.snoozedWorkspaces,
++			...project.archivedWorkspaces,
++		];
++		return candidates.find((workspace) => workspace.type === "main")?.id ?? "";
++	}, [project.children, project.snoozedWorkspaces, project.archivedWorkspaces]);
++	// useIsGitRepo defaults to `true` while the git.isRepo query loads and is
++	// `false` only once we positively know the worktree is non-git, so the "+"
++	// only diverts for a confirmed non-git project (empty id => enabled:false =>
++	// stays git => normal modal).
++	const isMainNonGit = !useIsGitRepo(mainWorkspaceId);
++
+ 	const startRename = () => {
+ 		setRenameValue(project.name);
+ 		setIsRenaming(true);
+@@ -76,6 +98,17 @@ export function useDashboardSidebarProjectSectionActions({
+ 	};
+ 
+ 	const handleNewWorkspace = () => {
++		// (BD non-git "+") A non-git project can't host branch/worktree
++		// workspaces (the host-service create path rejects it), so the "+" would
++		// otherwise dead-end on "Cannot create a branch/worktree in a non-git
++		// workspace." Repurpose it to open the project's existing main workspace.
++		if (isMainNonGit && mainWorkspaceId) {
++			navigate({
++				to: "/v2-workspace/$workspaceId",
++				params: { workspaceId: mainWorkspaceId },
++			});
++			return;
++		}
+ 		openModal(project.id);
+ 	};
+ 

@@ -1,0 +1,138 @@
+diff --git a/apps/desktop/src/lib/trpc/routers/external/index.ts b/apps/desktop/src/lib/trpc/routers/external/index.ts
+index 3d19718..7834382 100644
+--- a/apps/desktop/src/lib/trpc/routers/external/index.ts
++++ b/apps/desktop/src/lib/trpc/routers/external/index.ts
+@@ -195,6 +195,36 @@ export const createExternalRouter = () => {
+ 			clipboard.writeText(input);
+ 		}),
+ 
++		// (BC terminal file links) Open an absolute file path in its OS-registered
++		// default handler: a .html file opens in the default BROWSER, every other
++		// file in its default app. One primitive covers both Ctrl/Cmd+click cases.
++		// shell.openPath returns a non-empty error string (it never throws) — surface
++		// it loudly rather than swallowing. Callers gate this to LOCAL-device
++		// workspaces; a remote workspace's path is on the remote host and must not be
++		// opened against the local machine.
++		openInDefaultApp: publicProcedure
++			.input(z.string())
++			.mutation(async ({ input }) => {
++				if (!nodePath.isAbsolute(input)) {
++					throw new TRPCError({
++						code: "BAD_REQUEST",
++						message: `openInDefaultApp requires an absolute path (got ${JSON.stringify(input)}).`,
++					});
++				}
++				const openError = await shell.openPath(input);
++				if (openError) {
++					console.error(
++						"[external/openInDefaultApp] Failed to open path:",
++						input,
++						openError,
++					);
++					throw new TRPCError({
++						code: "INTERNAL_SERVER_ERROR",
++						message: openError,
++					});
++				}
++			}),
++
+ 		resolvePath: publicProcedure
+ 			.input(
+ 				z.object({
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
+index e1aab04..bc772eb 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/TerminalPane.tsx
+@@ -23,6 +23,7 @@ import {
+ 	type ConnectionState,
+ 	terminalRuntimeRegistry,
+ } from "renderer/lib/terminal/terminal-runtime-registry";
++import { useWorkspaceHostTarget } from "renderer/hooks/host-service/useWorkspaceHostUrl";
+ import { electronTrpcClient } from "renderer/lib/trpc-client";
+ import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
+ import type {
+@@ -63,6 +64,16 @@ export function TerminalPane({
+ 	} = useLinkHoverState();
+ 	const { hint, showHint, showCopied } = useLinkClickHint();
+ 	const openInExternalEditor = useOpenInExternalEditor(workspaceId);
++	// (BC terminal file links) Only LOCAL-device workspaces may open a file in
++	// the local machine's OS default app; a remote workspace's resolved path
++	// lives on the remote host, so it keeps the upstream open behavior.
++	const hostTarget = useWorkspaceHostTarget(workspaceId);
++	// Local if this device owns the workspace — including the brief
++	// "local-starting" window before the host URL is ready (shell.openPath runs
++	// in the local main process and needs no host URL).
++	const isLocalWorkspace =
++		(hostTarget.status === "ready" && hostTarget.kind === "local") ||
++		hostTarget.status === "local-starting";
+ 	const paneData = ctx.pane.data as TerminalPaneData;
+ 	const { terminalId } = paneData;
+ 	const terminalInstanceId = ctx.pane.id;
+@@ -261,10 +272,58 @@ export function TerminalPane({
+ 
+ 					const action = filePolicy.getAction(event);
+ 					if (action === null) {
+-						showHint(event.clientX, event.clientY);
++						// (BC) A PLAIN single click (no modifiers) on a file link copies
++						// its path and flashes "Copied!" at the click point (mirrors the
++						// AZ URL behavior). ANY modifier (shift/alt are also null in the
++						// default file policy) keeps the original unbound-link hint. Copy
++						// `resolvedPath` (the clean absolute path) — never `link.text`,
++						// which may carry a :line:col suffix.
++						if (
++							event.metaKey ||
++							event.ctrlKey ||
++							event.shiftKey ||
++							event.altKey
++						) {
++							showHint(event.clientX, event.clientY);
++							return;
++						}
++						event.preventDefault();
++						electronTrpcClient.external.copyText
++							.mutate(link.resolvedPath)
++							.then(() => showCopied(event.clientX, event.clientY))
++							.catch((error) => {
++								console.error(
++									"[v2 Terminal] Failed to copy path:",
++									link.resolvedPath,
++									error,
++								);
++							});
+ 						return;
+ 					}
+ 					event.preventDefault();
++					// (BC) The Ctrl/Cmd (no-shift) gesture opens the file in the OS
++					// default app — .html in the default browser, everything else in its
++					// default app (shell.openPath honors the OS file-association registry,
++					// so one primitive covers both). Gated to (a) LOCAL workspaces —
++					// shell.openPath runs on this machine, so a remote path must keep the
++					// upstream open behavior — and (b) the exact Ctrl/Cmd gesture, so any
++					// OTHER configured tier (shift / Ctrl+Shift / a custom plain mapping)
++					// still honors its action (e.g. open-in-editor with line/col), rather
++					// than being hijacked to the OS opener.
++					const isOsOpenGesture =
++						(event.metaKey || event.ctrlKey) && !event.shiftKey;
++					if (isLocalWorkspace && isOsOpenGesture) {
++						electronTrpcClient.external.openInDefaultApp
++							.mutate(link.resolvedPath)
++							.catch((error) => {
++								console.error(
++									"[v2 Terminal] Failed to open in default app:",
++									link.resolvedPath,
++									error,
++								);
++							});
++						return;
++					}
+ 					if (action === "external") {
+ 						openInExternalEditor(link.resolvedPath, {
+ 							line: link.row,
+@@ -340,6 +399,7 @@ export function TerminalPane({
+ 		showCopied,
+ 		filePolicy,
+ 		urlPolicy,
++		isLocalWorkspace,
+ 	]);
+ 
+ 	useTerminalInterruptClear({
