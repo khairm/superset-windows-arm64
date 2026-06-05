@@ -1,0 +1,153 @@
+diff --git a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+index 3c88951..566b8f6 100644
+--- a/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
++++ b/apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts
+@@ -414,7 +414,98 @@ def _clear_dir(d):
+         pass
+ 
+ 
+-def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
++def _pid_alive(pid):
++    # Best-effort process-liveness, used to reject a STALE codex job file (a
++    # worker hard-killed before it could write its terminal status leaves a
++    # stale running record that the companion's cwd-scoped SessionEnd cleanup may
++    # never prune — without this it would pin a false blue for the rest of the
++    # Claude session). On ANY uncertainty return True (the SAFE direction: keep
++    # showing blue rather than risk a false green). Never raises.
++    try:
++        pid = int(pid)
++    except (TypeError, ValueError):
++        return True  # no / non-int pid -> cannot disprove -> assume active
++    if pid <= 0:
++        return True
++    try:
++        if os.name == "nt":
++            import ctypes
++            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
++            STILL_ACTIVE = 259
++            kernel32 = ctypes.windll.kernel32
++            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
++            if not handle:
++                return False  # no such process (own-user worker -> not access-denied)
++            try:
++                code = ctypes.c_ulong()
++                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
++                    return code.value == STILL_ACTIVE
++                return True
++            finally:
++                kernel32.CloseHandle(handle)
++        try:
++            os.kill(pid, 0)
++            return True
++        except ProcessLookupError:
++            return False
++        except PermissionError:
++            return True  # exists, owned by someone else
++    except Exception:
++        return True
++    return True
++
++
++def _codex_job_active(session_id):
++    # (codex-companion parity) The codex plugin dispatches review/task work to a
++    # DETACHED worker process that is invisible to Claude Code's Stop-payload
++    # background_tasks[], so (BA) alone never surfaces it (terminal greens to idle
++    # while codex still runs). The companion records each job as a JSON file with a
++    # status and the Claude session_id (its CODEX_COMPANION_SESSION_ID is the
++    # SessionStart session_id — the SAME id this hook receives). So an ACTIVE codex
++    # job for THIS session is exactly the (BA) background-session case -> blue.
++    # We do NOT inherit the codex plugin's CLAUDE_PLUGIN_DATA (it is per-plugin),
++    # so glob the known on-disk job stores instead. "Active" defers to the plugin's
++    # own definition (queued|running) AND requires the job's worker pid to still be
++    # alive (_pid_alive) — a hard-killed worker leaves a stale running file that
++    # the companion's cwd-scoped SessionEnd cleanup may never prune, which would
++    # otherwise pin a false blue for the rest of the Claude session; the pid gate
++    # rejects it. A transient mid-write JSON read failure is skipped (-> a one-event
++    # missed blue that self-corrects on the next turn-end: the SAFE direction).
++    # Bounded: evaluated only at a real turn/subagent end (see _decide_event_type),
++    # short-circuits on first match. Never raises.
++    if not session_id:
++        return False
++    try:
++        home = pathlib.Path.home()
++        roots = [(home / ".claude" / "plugins" / "data", "codex*/state/*/jobs/*.json")]
++        try:
++            import tempfile
++            roots.append((pathlib.Path(tempfile.gettempdir()) / "codex-companion", "*/jobs/*.json"))
++        except Exception:
++            pass
++        active = ("queued", "running")
++        for root, pattern in roots:
++            try:
++                for jf in root.glob(pattern):
++                    try:
++                        with open(jf, "r", encoding="utf-8") as h:
++                            rec = json.load(h)
++                    except Exception:
++                        continue
++                    if not isinstance(rec, dict):
++                        continue
++                    if rec.get("sessionId") != session_id:
++                        continue
++                    if (rec.get("status") or "") in active and _pid_alive(rec.get("pid")):
++                        return True
++            except Exception:
++                continue
++        return False
++    except Exception:
++        return False
++
++
++def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background, session_id):
+     # Returns the host-service eventType or None (None => silent no-op).
+     #
+     # (BA) CLOUD/BACKGROUND-SESSION blue dot: when the main turn ends (Stop) or
+@@ -463,8 +554,8 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
+             # both accurate. (Absent field on an older/odd version -> green, which
+             # only mis-greens in the narrow case where Stop carried the field but
+             # SubagentStop did not — same version added both, so not in practice.)
+-            if has_background:
+-                return "BackgroundRunning"  # local subagents done; cloud/bg still running -> blue
++            if has_background or _codex_job_active(session_id):
++                return "BackgroundRunning"  # local subagents done; cloud/bg/codex still running -> blue
+             return "Stop"  # main already stopped + last subagent done -> green
+         return None  # other subagents running, or main still working
+     if event == "UserPromptSubmit":
+@@ -475,10 +566,25 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
+             _touch(sentinel)  # defer the green; subagents still running
+             return None  # stay yellow
+         _remove(sentinel)
+-        if has_background:
+-            return "BackgroundRunning"  # turn ended; cloud/bg session still running -> blue
++        if has_background or _codex_job_active(session_id):
++            return "BackgroundRunning"  # turn ended; cloud/bg/codex session still running -> blue
++        return "Stop"
++    if event == "StopFailure":
++        # (AX) A Claude API/rate-limit abort kills the shared-API Claude subagent
++        # tree (clear its markers + green), BUT a codex-companion worker is a
++        # SEPARATE process on its OWN API — the Claude failure does not stop it.
++        # So if a codex job for this session is still active, keep the BF blue
++        # rather than false-greening it. (has_background is NOT consulted here:
++        # Claude background_tasks share the dead Claude API, so they're gone too.)
++        _clear_dir(run_dir)
++        _remove(sentinel)
++        if _codex_job_active(session_id):
++            return "BackgroundRunning"
+         return "Stop"
+-    if event in ("SessionEnd", "StopFailure"):
++    if event == "SessionEnd":
++        # Session is ending — the dot context goes away (BE clears blue on the
++        # Detached/SessionEnd path), so a still-running codex job does not hold
++        # blue here; just clear state and green.
+         _clear_dir(run_dir)
+         _remove(sentinel)
+         return "Stop"
+@@ -531,7 +637,7 @@ def main():
+     # Also performs the SubagentStart/Stop marker side-effects, so the
+     # yellow-hold state stays consistent even when url is momentarily absent.
+     event_type = _decide_event_type(
+-        event, tool, terminal_id, sub_agent_id, has_background
++        event, tool, terminal_id, sub_agent_id, has_background, session_id
+     )
+ 
+     if not url:

@@ -2150,6 +2150,43 @@ jobs:
             Write-Host "(BE) cloud-session-blue-persist applied (background-running blue surfaces when the agent goes idle; cleared only on Stop/Detached/Attached)"
           }
 
+          # (BF) codex-companion dot parity. codex-rescue forwards review/task work
+          #      to a DETACHED codex-companion worker that is invisible to Claude
+          #      Code's Stop-payload background_tasks[], so (BA)/(BE) never surface
+          #      it and the terminal greens to idle while codex still runs. This
+          #      extends superset-notify.py (NOTIFY_SCRIPT in pane-map-hook.ts):
+          #      at a real turn/subagent end it also treats an ACTIVE codex job
+          #      (queued|running) for THIS Claude session as a background session
+          #      -> the SAME (BA) blue. Bridge: the codex job JSON carries the
+          #      Claude session_id (== CODEX_COMPANION_SESSION_ID) this hook
+          #      receives; the job store is globbed on disk (~/.claude/plugins/
+          #      data/codex*/state/*/jobs/*.json + tmp/codex-companion) because the
+          #      hook does NOT inherit the codex plugin's CLAUDE_PLUGIN_DATA.
+          #      Evaluated ONLY at the BackgroundRunning return points (not the
+          #      PostToolUse hot path). MUST apply AFTER (AS/BA) which add the
+          #      NOTIFY_SCRIPT BackgroundRunning logic to pane-map-hook.ts.
+          $bf = '../patches/codex-companion-dot-parity.patch'
+          $bfFile = 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts'
+          if (-not (Test-Path $bf)) { Write-Error "(BF) missing $bf in patches repo"; exit 1 }
+          if (-not (Test-Path $bfFile)) { Write-Error "(BF) $bfFile missing in this upstream -- re-anchor (BF)"; exit 1 }
+          if (Select-String -Quiet -SimpleMatch '_codex_job_active' $bfFile) {
+            Write-Host "(BF) codex-companion-dot-parity already present -- skip"
+          } else {
+            if (-not (Select-String -Quiet -SimpleMatch 'BackgroundRunning' $bfFile)) { Write-Error "(BF) (BA) marker 'BackgroundRunning' absent in pane-map-hook.ts -- (BF) MUST apply after (AS/BA) notify-hook patches; fix ordering"; exit 1 }
+            $bfErr = "$env:RUNNER_TEMP/bf-apply-check.txt"
+            git apply --check $bf 2>$bfErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(BF) codex-companion-dot-parity.patch does not apply cleanly (post AS/BA). git apply --check output:"
+              if (Test-Path $bfErr) { Get-Content $bfErr | ForEach-Object { Write-Host "    (BF-check) $_" } }
+              Write-Error "(BF) codex-companion-dot-parity.patch failed to apply -- NOTIFY_SCRIPT in pane-map-hook.ts changed. Regenerate against the post-(BA) tree."
+              exit 1
+            }
+            git apply $bf
+            if ($LASTEXITCODE -ne 0) { Write-Error "(BF) git apply failed after a clean --check"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch '_codex_job_active' $bfFile)) { Write-Error "(BF) _codex_job_active helper missing after apply"; exit 1 }
+            Write-Host "(BF) codex-companion-dot-parity applied (active codex-companion job for this session -> BA blue, surfaces when the agent goes idle)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
@@ -2159,7 +2196,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + BE + F). (BE = cloud-session blue persists so it surfaces when the agent goes idle [BA follow-up]; BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + BE + BF + F). (BF = codex-companion dot parity [an active codex-companion job for this session surfaces as the BA blue when the agent goes idle]; BE = cloud-session blue persists so it surfaces when the agent goes idle [BA follow-up]; BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either

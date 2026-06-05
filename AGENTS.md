@@ -401,6 +401,46 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   during pure idle with no later `Stop`) self-corrects on the next turn-end — the
   accepted no-timer tradeoff. `lifecycleEvents.ts` ONLY (one branch). Verified by
   codex xhigh (SHIP). ([[project_dots_open_tabs_and_subagent_hold]])
+- **codex-companion dot parity (BF)**[git `codex-companion-dot-parity.patch`,
+  after AS/BA] — `codex:codex-rescue` (and any `codex-companion review/task
+  --background`) FORWARDS its work to a **detached** codex-companion worker
+  process. That worker is NOT a Claude `run_in_background` shell, so it never
+  appears in the Stop-payload `background_tasks[]` that (BA)/(BE) read → the
+  forwarder subagent's `SubagentStart/Stop` bracket closes immediately → main
+  `Stop` fires with no live marker → the terminal greened to **idle while codex
+  was still running** (no dot at all — found live from `agent-notify-hook.log` +
+  `codex-companion.mjs`). Fix extends `superset-notify.py` (the NOTIFY_SCRIPT in
+  `pane-map-hook.ts`): a new `_codex_job_active(session_id)` helper, evaluated
+  ONLY at the two `BackgroundRunning` return points in `_decide_event_type` (real
+  turn-end / last-subagent-end — NOT the PostToolUse hot path), treats an
+  **active** (`queued|running`) codex job for THIS Claude session as the (BA)
+  background case → the SAME blue. **Bridge:** the companion writes each job as a
+  JSON file carrying `sessionId` = `CODEX_COMPANION_SESSION_ID`, which the codex
+  SessionStart hook sets to the Claude `session_id` this notify hook also
+  receives — so job→session→terminal maps with no new id. The hook does NOT
+  inherit the codex plugin's per-plugin `CLAUDE_PLUGIN_DATA`, so the store is
+  globbed on disk: `~/.claude/plugins/data/codex*/state/*/jobs/*.json` +
+  `<tmp>/codex-companion/*/jobs/*.json`. NO timers; "active" = the plugin's OWN
+  `isActiveJobStatus` (queued|running) AND the job's worker **pid is still alive**
+  (`_pid_alive`, cross-platform: Win32 `OpenProcess`+`GetExitCodeProcess`, POSIX
+  `os.kill(pid,0)`; uncertain → alive = SAFE direction). The pid gate exists
+  because a hard-killed worker leaves a stale `running` file the companion's
+  cwd-scoped SessionEnd cleanup may never prune — without it the blue would pin
+  for the rest of the Claude session (3-reviewer HIGH ×2). On `StopFailure` (Claude
+  API/rate-limit abort) the blue is KEPT if a codex job is still active — codex is
+  a SEPARATE process on its OWN API, so the Claude failure doesn't stop it (unlike
+  (AX)'s shared-API subagent tree; reviewer HIGH); `SessionEnd` still greens (the
+  dot context is gone, BE clears blue on Detached). Clear is hook-event-driven
+  (next `Stop`/`UserPromptSubmit` re-evaluates) — the accepted (BE) no-timer lag;
+  an instant fs.watch on the jobs dir (host-service) is the deferred Option-2
+  upgrade if that lag is noticeable on-device. Helper wrapped so it NEVER raises
+  (the hook must never abort the agent). TRAP (hit + fixed): backticks in the
+  added Python comments broke the esbuild JS template — keep the embedded Python
+  backtick-free. `pane-map-hook.ts` (NOTIFY_SCRIPT) ONLY; py_compile + esbuild
+  verified; 3 codex xhigh lenses (correctness / integration / efficiency-safety),
+  all findings dispositioned. Codex STILL uses the JSONL state machine for its OWN
+  terminal dots ([[project_codex_dots_plan]]); this is specifically the
+  forward-to-companion blind spot. ([[project_dots_open_tabs_and_subagent_hold]])
 
 ## Traps (do NOT repeat)
 
