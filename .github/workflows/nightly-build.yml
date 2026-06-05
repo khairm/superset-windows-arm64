@@ -1918,10 +1918,16 @@ jobs:
             if (-not (Select-String -Quiet -SimpleMatch 'useV2WorkspaceOpenTerminalIds' $srStore)) { Write-Error "(AY) (AT) markers absent — (AY) MUST apply after (AT); fix ordering"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch 'agent-subagent-running' 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts')) { Write-Error "(AY) (AU) markers absent — (AY) MUST apply after (AU); fix ordering"; exit 1 }
             $srErr = "$env:RUNNER_TEMP/ay-apply-check.txt"
-            git apply --check $sr 2>$srErr
+            git apply --check --verbose $sr 2>$srErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AY) shell-running-dots.patch does not apply cleanly (post AT/AU). git apply --check output:"
               if (Test-Path $srErr) { Get-Content $srErr | ForEach-Object { Write-Host "    (AY-check) $_" } }
+              # Diagnostic (AN-import trap class): the non-deterministic AI
+              # PATCHES.md step can perturb terminal.ts's import region that AY's
+              # first hunk anchors on. Dump the import block at AY-time so a
+              # failure is self-revealing (re-anchor, never retry-and-hope).
+              Write-Host "(AY-diag) terminal.ts lines 1-16 at AY-apply time:"
+              Get-Content $srTerm -TotalCount 16 | ForEach-Object { Write-Host "    (AY-diag) $_" }
               Write-Error "(AY) shell-running-dots.patch failed to apply — store.ts/sidebar/shell-launch/terminal shape changed (P/W/AR/AT/AU or upstream drift). Regenerate it against the POST-(AT)+(AU) tree (reconstruct: pristine 1.12.1 + the [git] stack through AT/AU, then git diff)."
               exit 1
             }
