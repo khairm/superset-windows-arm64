@@ -348,12 +348,14 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   in the data hook (collection has no `withReadHeal`). Visible re-sort is
   **idle-gated** in `DashboardSidebar.tsx`: `projectOrder` commits from `groups`
   only when not dragging/hovering/menu-open. **Drag is WITHIN-bucket only**
-  (`handleDragEnd` rejects cross-bucket drops) and persists only when the visible
-  `orderedGroupIds` EQUALS the canonical `groups` order (codex xhigh HIGH: if a
-  queued top-of-bucket move diverged the two, dragging would clobber the move /
-  persist against a base the user can't see — so bail and let canonical flush, user
-  re-drags). 3 codex xhigh passes (BLOCKER hydration ×2, HIGH drag-clobber ×2 →
-  all fixed). ([[project_sidebar_active_first_sort]])
+  (`handleDragEnd` rejects cross-bucket drops) and reorders against the VISIBLE
+  `orderedGroupIds` — what the user sees — then persists (an earlier
+  divergence-guard draft that bailed when visible≠canonical was REMOVED by
+  `/code-review high`: it silently swallowed legit drags whenever a chat
+  opened/closed or a new project appended mid-hover, and the original clobber
+  concern is imperceptible). Reviewed by 3 codex xhigh passes (BLOCKER hydration
+  ×2, HIGH drag-clobber) + a 4-agent /simplify (single `getProjectBucket` helper +
+  first-class `bucket` field) + /code-review high. ([[project_sidebar_active_first_sort]])
 - **terminal file-path link copy / open-in-OS (BC)**[git
   `terminal-filepath-link-open-copy.patch`, after AZ] — companion to (AZ) for the
   FILE link handler (`TerminalPane.tsx onFileLinkClick`): a PLAIN (no-modifier)
