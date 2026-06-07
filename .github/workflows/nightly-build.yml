@@ -266,9 +266,16 @@ jobs:
           # release does not re-drift the same way. Per-patch post-apply MARKER
           # checks below are untouched and remain the correctness gate.
           function Get-CloneState {
-            # Fingerprint the upstream clone's working tree (tracked content via
-            # `git diff` + untracked/staged via porcelain). cwd is the clone.
-            return ((git diff) + "`n--untracked--`n" + (git status --porcelain)) | Out-String
+            # Fingerprint the upstream clone's working tree. cwd is the clone.
+            # Tracked content via `git diff` (+ staged via `git diff --cached`),
+            # AND untracked files BY CONTENT (git hash-object) not just path — a
+            # prior patch can create untracked files (e.g. scanner .ts) and the AI
+            # editing one of those would not show in `git diff`/porcelain path list
+            # (codex review HIGH). So hash every untracked file's content too.
+            $tracked = (git diff | Out-String) + "`n--cached--`n" + (git diff --cached | Out-String)
+            $others = @(git ls-files --others --exclude-standard)
+            $otherHashes = ($others | ForEach-Object { "$_ " + (git hash-object -- $_) }) -join "`n"
+            return $tracked + "`n--untracked--`n" + $otherHashes
           }
           function Reanchor-IfNeeded($patch) {
             git apply --check $patch 2>$null
@@ -2594,15 +2601,26 @@ jobs:
         # race a human push). Skipped for manual betas (rebuild of a shipped tag).
         # Gated to ref==main so a workflow_dispatch from a non-main branch can NEVER
         # push that branch's commit stack onto main via HEAD:main (codex review HIGH).
-        if: needs.check.outputs.is_beta != 'true' && github.ref == 'refs/heads/main'
+        # Runs on ALL refs for non-beta (not just main): if a re-anchor happened
+        # we must persist-or-abort BEFORE the release regardless of ref, else a
+        # non-main new-tag dispatch could publish a tag whose source-of-truth
+        # patches were never saved (codex review BLOCKER).
+        if: needs.check.outputs.is_beta != 'true'
         shell: bash
         run: |
           if git diff --quiet -- patches; then
             echo "No patch re-anchoring this build — nothing to commit; proceeding to release."
             exit 0
           fi
-          echo "Re-anchored patches detected; persisting to main BEFORE release:"
+          echo "Re-anchored patches detected — they MUST be persisted before publishing:"
           git status --porcelain -- patches
+          # Only main may receive the push (never push another branch's stack to
+          # main via HEAD:main — codex review HIGH). A re-anchor on a non-main run
+          # therefore cannot be persisted -> refuse to publish (codex BLOCKER).
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::A patch re-anchor occurred on a non-main run (${{ github.ref }}); refusing to publish a release whose patches can't be persisted to main. Re-run on main."
+            exit 1
+          fi
           git config user.name  "superset-arm64-bot"
           git config user.email "actions@users.noreply.github.com"
           # -u: stage only MODIFICATIONS to tracked patch files (re-anchor only
@@ -2613,8 +2631,10 @@ jobs:
           pushed=0
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then pushed=1; break; fi
-            echo "push attempt $attempt failed; rebasing onto origin/main and retrying"
-            git fetch origin main && git rebase origin/main || { echo "::error::rebase conflict persisting re-anchored patches"; git rebase --abort 2>/dev/null || true; break; }
+            # Rebase onto the JUST-FETCHED main (FETCH_HEAD), not a possibly-stale
+            # remote-tracking origin/main (codex review MED).
+            echo "push attempt $attempt failed; rebasing onto freshly-fetched main and retrying"
+            git fetch origin main && git rebase FETCH_HEAD || { echo "::error::rebase conflict persisting re-anchored patches"; git rebase --abort 2>/dev/null || true; break; }
           done
           if [ "$pushed" -ne 1 ]; then
             echo "::error::Could not persist re-anchored patches to main — REFUSING to publish a release whose source-of-truth patches were not saved."
