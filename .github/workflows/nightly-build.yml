@@ -240,11 +240,53 @@ jobs:
       - name: ARM64 arch fixup (deterministic, fail-fast)
         working-directory: superset
         shell: pwsh
+        env:
+          # Auth for the in-step AI re-anchor fallback (Reanchor-IfNeeded). Same
+          # token/flags as the "Apply Windows patches" step.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
         run: |
           # These three fixups are arch-critical and MUST be correct, so they are applied
           # deterministically here rather than relying on the non-deterministic AI patch step.
           # Each is validated locally on real Windows ARM64 hardware.
           $ErrorActionPreference = 'Stop'
+
+          # --- AI re-anchor fallback for [git] patches (new-upstream drift) -----
+          # When upstream ships a new release, line-context [git] patches drift and
+          # `git apply` hard-fails. Rather than abort the whole build, this helper
+          # is called right BEFORE each `git apply --check`: if the patch already
+          # applies it is a NO-OP (deterministic path unchanged); if it has
+          # drifted, Claude re-anchors the patch file IN PLACE against the CURRENT
+          # working tree (which already has every prior [git] patch AND inline
+          # fixup applied — so the stacked context is exactly right), then we
+          # re-verify `git apply --check`. Still failing -> hard-abort (no
+          # retry-and-hope). The rewritten patch files are committed back to the
+          # patches repo by a later step so the repo stays current and the next
+          # release does not re-drift the same way. Per-patch post-apply MARKER
+          # checks below are untouched and remain the correctness gate.
+          function Reanchor-IfNeeded($patch) {
+            git apply --check $patch 2>$null
+            if ($LASTEXITCODE -eq 0) { return }   # applies clean -> deterministic path
+            $abs = (Resolve-Path $patch).Path
+            $name = Split-Path $patch -Leaf
+            Write-Host "::group::(reanchor) $name drifted on this upstream — AI re-anchor"
+            # Single-line prompt (no pwsh here-string: its column-0 terminator
+            # would break the YAML block scalar). No backticks in the text either.
+            $prompt = "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Edit files directly and immediately. You are inside a fresh clone of superset-sh/superset that already has earlier patches applied. The git patch file at " + $abs + " no longer applies here (git apply --check fails because upstream moved the surrounding code). REWRITE that patch file IN PLACE so git apply applies it cleanly to THIS working tree: (1) read the patch at " + $abs + " for its intent and target files/hunks; (2) read the CURRENT target files in this clone to find where each hunk context now lives; (3) overwrite " + $abs + " with a corrected unified diff (same a/ and b/ paths, LF line endings, valid hunk headers) that applies cleanly with git apply and preserves the patch intent AND any post-apply marker strings the build verifies. Only edit " + $abs + " (re-read target files as needed). Do not touch any other patch."
+            $attempt = 1
+            while ($attempt -le 3) {
+              claude --dangerously-skip-permissions --effort medium -p $prompt
+              git apply --check $patch 2>$null
+              if ($LASTEXITCODE -eq 0) { Write-Host "(reanchor) $name now applies (attempt $attempt)"; Write-Host "::endgroup::"; return }
+              Write-Host "(reanchor) $name still fails after attempt $attempt"
+              $attempt++
+            }
+            Write-Host "::endgroup::"
+            Write-Error "(reanchor) AI could not re-anchor $name against this upstream; hard-abort (re-anchor manually)."
+            exit 1
+          }
+          # ---------------------------------------------------------------------
 
           # (A) Route bare microsoft/node-pty (no win32-arm64 prebuilt; needs node-gyp) to the
           #     drop-in @lydell/node-pty fork which ships a win32-arm64 prebuilt. The desktop
@@ -539,6 +581,7 @@ jobs:
             Write-Host "(AE) non-git-workspaces already present — skip"
           } else {
             $aeErr = "$env:RUNNER_TEMP/ae-apply-check.txt"
+            Reanchor-IfNeeded $ng
             git apply --check $ng 2>$aeErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AE) nongit-workspaces.patch does not apply cleanly. git apply --check output:"
@@ -612,6 +655,7 @@ jobs:
           if (Select-String -Quiet -SimpleMatch 'isIgnoredGitDirChange' $gw) {
             Write-Host "(L) git-storm fix already present — skip"
           } else {
+            Reanchor-IfNeeded $gp
             git apply --check $gp 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(L) git-storm-fix.patch does not apply cleanly — git-watcher.ts/git.ts changed upstream; aborting rather than shipping the ~25 git/sec storm. Regenerate patches/git-storm-fix.patch against the new upstream."
@@ -849,6 +893,7 @@ jobs:
           if (Select-String -Quiet -SimpleMatch 'startAgentJsonlWatcher' $mw) {
             Write-Host "(N) agent-jsonl-watcher fix already present — skip"
           } else {
+            Reanchor-IfNeeded $jw
             git apply --check $jw 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(N) agent-jsonl-watcher.patch does not apply cleanly — one of main.ts / shared/notification-types.ts / resolve-notification-target.ts changed upstream; aborting rather than shipping with the green-badge indicator broken. Regenerate patches/agent-jsonl-watcher.patch against the new upstream."
@@ -937,6 +982,7 @@ jobs:
           if (Select-String -Quiet -SimpleMatch 'selectV2WorkspaceTerminalStatuses' $vstore) {
             Write-Host "(P) v2-per-terminal-dots already present — skip"
           } else {
+            Reanchor-IfNeeded $vd
             git apply --check $vd 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(P) v2-per-terminal-dots.patch does not apply cleanly — DashboardSidebar or v2-notifications store changed upstream; aborting rather than shipping with v2 per-terminal indicator broken. Regenerate patches/v2-per-terminal-dots.patch."
@@ -1015,6 +1061,7 @@ jobs:
           if (-not ($clickFn -match 'clearWorkspaceAttention\(workspaceId\)')) {
             Write-Host "(Q) handleClick bulk-clear already removed — skip"
           } else {
+            Reanchor-IfNeeded $vr
             git apply --check $vr 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(Q) v2-per-tab-read.patch does not apply cleanly — useDashboardSidebarWorkspaceItemActions changed upstream; aborting rather than shipping with per-tab read broken. Regenerate patches/v2-per-tab-read.patch."
@@ -1043,6 +1090,7 @@ jobs:
           if (Select-String -Quiet -SimpleMatch 'resolved shell "${resolvedDefaultShell}" not on PATH' $envts) {
             Write-Host "(R) windows-shell-fallback already present — skip"
           } else {
+            Reanchor-IfNeeded $sf
             git apply --check $sf 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(R) windows-shell-fallback.patch does not apply cleanly — env.ts shape changed upstream; aborting rather than shipping with preset spawn broken when pwsh is missing. Regenerate patches/windows-shell-fallback.patch."
@@ -1074,6 +1122,7 @@ jobs:
           if (Select-String -Quiet -SimpleMatch 'lastResolvedWorkspaceRef' $bpFile) {
             Write-Host "(Z) v2-workspace blank-pane fix already present — skip"
           } else {
+            Reanchor-IfNeeded $bp
             git apply --check $bp 2>$null
             if ($LASTEXITCODE -ne 0) {
               Write-Error "(Z) v2-workspace-blank-fix.patch does not apply cleanly — v2-workspace/layout.tsx changed upstream; aborting rather than shipping with the workspace-content blank-pane bug unfixed. Regenerate patches/v2-workspace-blank-fix.patch against the new upstream."
@@ -1276,6 +1325,7 @@ jobs:
             # from the build log. main.ts is the likely culprit: it carries AI
             # Patch 19 + inline (H) + (T) that this patch's context may not match.
             $wErr = "$env:RUNNER_TEMP/w-apply-check.txt"
+            Reanchor-IfNeeded $nl
             git apply --check $nl 2>$wErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(W) notification-logging.patch does not apply cleanly (post N+V). git apply --check output:"
@@ -1309,6 +1359,7 @@ jobs:
             Write-Host "(AH) workspace-delete-decouple already present — skip"
           } else {
             $wdErr = "$env:RUNNER_TEMP/ah-apply-check.txt"
+            Reanchor-IfNeeded $wd
             git apply --check $wd 2>$wdErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AH) workspace-delete-decouple.patch does not apply cleanly. git apply --check output:"
@@ -1344,6 +1395,7 @@ jobs:
             Write-Host "(AK) watcher-poll-fallback already present — skip"
           } else {
             $wpErr = "$env:RUNNER_TEMP/ak-apply-check.txt"
+            Reanchor-IfNeeded $wp
             git apply --check $wp 2>$wpErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AK) watcher-poll-fallback.patch does not apply cleanly (post N+W). git apply --check output:"
@@ -1373,6 +1425,7 @@ jobs:
             Write-Host "(AJ) watcher-ask-answer already present — skip"
           } else {
             $waErr = "$env:RUNNER_TEMP/aj-apply-check.txt"
+            Reanchor-IfNeeded $wa
             git apply --check $wa 2>$waErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AJ) watcher-ask-answer.patch does not apply cleanly (post N+W). git apply --check output:"
@@ -1408,6 +1461,7 @@ jobs:
             Write-Host "(AL) thread-snooze-archive already present — skip"
           } else {
             $tsaErr = "$env:RUNNER_TEMP/al-apply-check.txt"
+            Reanchor-IfNeeded $tsa
             git apply --check $tsa 2>$tsaErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AL) thread-snooze-archive.patch does not apply cleanly. git apply --check output:"
@@ -1548,6 +1602,7 @@ jobs:
             Write-Host "(Y) force-foreground already present — skip"
           } else {
             $yErr = "$env:RUNNER_TEMP/y-apply-check.txt"
+            Reanchor-IfNeeded $ff
             git apply --check $ff 2>$yErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(Y) windows-force-foreground.patch does not apply cleanly. git apply --check output:"
@@ -1583,6 +1638,7 @@ jobs:
             Write-Host "(AO) windows-agent-hook-bash-wrap already present -- skip"
           } else {
             $aoErr = "$env:RUNNER_TEMP/ao-apply-check.txt"
+            Reanchor-IfNeeded $ag
             git apply --check $ag 2>$aoErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AO) windows-agent-hook-bash-wrap.patch does not apply cleanly. git apply --check output:"
@@ -1647,6 +1703,7 @@ jobs:
             Write-Host "(AN) startup-stall-fix already present -- skip"
           } else {
             $anErr = "$env:RUNNER_TEMP/an-apply-check.txt"
+            Reanchor-IfNeeded $sf2
             git apply --check $sf2 2>$anErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AN) startup-stall-fix.patch does not apply cleanly. git apply --check output:"
@@ -1686,6 +1743,7 @@ jobs:
             Write-Host "(AP) watcher-dot-accuracy already present — skip"
           } else {
             $wptErr = "$env:RUNNER_TEMP/ap-apply-check.txt"
+            Reanchor-IfNeeded $wpt
             git apply --check $wpt 2>$wptErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AP) watcher-pending-tools.patch does not apply cleanly (post AN). git apply --check output:"
@@ -1715,6 +1773,7 @@ jobs:
             Write-Host "(AQ) ask-marker-hook already present — skip"
           } else {
             $amhErr = "$env:RUNNER_TEMP/aq-apply-check.txt"
+            Reanchor-IfNeeded $amh
             git apply --check $amh 2>$amhErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AQ) ask-marker-hook.patch does not apply cleanly. git apply --check output:"
@@ -1744,6 +1803,7 @@ jobs:
             Write-Host "(AR) render-dot-logging already present — skip"
           } else {
             $rdlErr = "$env:RUNNER_TEMP/ar-apply-check.txt"
+            Reanchor-IfNeeded $rdl
             git apply --check $rdl 2>$rdlErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AR) render-dot-logging.patch does not apply cleanly. git apply --check output:"
@@ -1783,6 +1843,7 @@ jobs:
             if (-not (Select-String -Quiet -SimpleMatch 'pendingToolUseIds' $wnhWatch)) { Write-Error "(AS) (AP) markers absent — (AS) MUST apply after (AP); fix ordering"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch 'mergeAskHook' $wnhPane)) { Write-Error "(AS) (AQ) markers absent — (AS) MUST apply after (AQ); fix ordering"; exit 1 }
             $wnhErr = "$env:RUNNER_TEMP/as-apply-check.txt"
+            Reanchor-IfNeeded $wnh
             git apply --check $wnh 2>$wnhErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AS) windows-notify-hook.patch does not apply cleanly (post AP/AQ/AR). git apply --check output:"
@@ -1828,6 +1889,7 @@ jobs:
             if (-not (Select-String -Quiet -SimpleMatch 'selectV2WorkspaceTerminalStatuses' $dotStore)) { Write-Error "(AT) (P) markers absent — (AT) MUST apply after (P); fix ordering"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch '__supersetDotRenderLog' $dotStore)) { Write-Error "(AT) (AR) markers absent — (AT) MUST apply after (AR); fix ordering"; exit 1 }
             $dotErr = "$env:RUNNER_TEMP/at-apply-check.txt"
+            Reanchor-IfNeeded $dot
             git apply --check $dot 2>$dotErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AT) v2-dots-open-tabs.patch does not apply cleanly (post P/W/AR). git apply --check output:"
@@ -1868,6 +1930,7 @@ jobs:
           } else {
             if (-not (Select-String -Quiet -SimpleMatch 'mergeNotifyHook' $syhPane)) { Write-Error "(AU) (AS) markers absent — (AU) MUST apply after (AS); fix ordering"; exit 1 }
             $syhErr = "$env:RUNNER_TEMP/au-apply-check.txt"
+            Reanchor-IfNeeded $syh
             git apply --check $syh 2>$syhErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AU) v2-subagent-yellow-hold.patch does not apply cleanly (post AS). git apply --check output:"
@@ -1918,6 +1981,7 @@ jobs:
             if (-not (Select-String -Quiet -SimpleMatch 'useV2WorkspaceOpenTerminalIds' $srStore)) { Write-Error "(AY) (AT) markers absent — (AY) MUST apply after (AT); fix ordering"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch 'agent-subagent-running' 'apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts')) { Write-Error "(AY) (AU) markers absent — (AY) MUST apply after (AU); fix ordering"; exit 1 }
             $srErr = "$env:RUNNER_TEMP/ay-apply-check.txt"
+            Reanchor-IfNeeded $sr
             git apply --check --verbose $sr 2>$srErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AY) shell-running-dots.patch does not apply cleanly (post AT/AU). git apply --check output:"
@@ -1973,6 +2037,7 @@ jobs:
             if (-not (Select-String -Quiet -SimpleMatch 'shellRunningTerminals' $csStore)) { Write-Error "(BA) (AY) markers absent — (BA) MUST apply after (AY); fix ordering"; exit 1 }
             if (-not (Select-String -Quiet -SimpleMatch '_decide_event_type' $csHook)) { Write-Error "(BA) (AS/AU) markers absent — (BA) MUST apply after (AU); fix ordering"; exit 1 }
             $csErr = "$env:RUNNER_TEMP/ba-apply-check.txt"
+            Reanchor-IfNeeded $cs
             git apply --check $cs 2>$csErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BA) cloud-session-dot.patch does not apply cleanly (post AS/AU/AT/AY). git apply --check output:"
@@ -2004,6 +2069,7 @@ jobs:
             Write-Host "(AZ) terminal-link-single-click-copy already present — skip"
           } else {
             $lzErr = "$env:RUNNER_TEMP/az-apply-check.txt"
+            Reanchor-IfNeeded $lz
             git apply --check $lz 2>$lzErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(AZ) terminal-link-single-click-copy.patch does not apply cleanly. git apply --check output:"
@@ -2034,6 +2100,7 @@ jobs:
             Write-Host "(BD) nongit-plus-opens-main already present -- skip"
           } else {
             $bdErr = "$env:RUNNER_TEMP/bd-apply-check.txt"
+            Reanchor-IfNeeded $bd
             git apply --check $bd 2>$bdErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BD) nongit-plus-opens-main.patch does not apply cleanly. git apply --check output:"
@@ -2066,6 +2133,7 @@ jobs:
           } else {
             if (-not (Select-String -Quiet -SimpleMatch 'showCopied' $bcTp)) { Write-Error "(BC) (AZ) marker 'showCopied' absent in TerminalPane -- (BC) MUST apply after (AZ); fix ordering"; exit 1 }
             $bcErr = "$env:RUNNER_TEMP/bc-apply-check.txt"
+            Reanchor-IfNeeded $bc
             git apply --check $bc 2>$bcErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BC) terminal-filepath-link-open-copy.patch does not apply cleanly (post AZ). git apply --check output:"
@@ -2106,6 +2174,7 @@ jobs:
           } else {
             if (-not (Select-String -Quiet -SimpleMatch 'unsnoozeAllInProject' $bbState)) { Write-Error "(BB) (AL) marker 'unsnoozeAllInProject' absent -- (BB) MUST apply after (AL) thread-snooze-archive; fix ordering"; exit 1 }
             $bbErr = "$env:RUNNER_TEMP/bb-apply-check.txt"
+            Reanchor-IfNeeded $bb
             git apply --check $bb 2>$bbErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BB) sidebar-active-first-sort-and-pin.patch does not apply cleanly (post AL). git apply --check output:"
@@ -2143,6 +2212,7 @@ jobs:
           } else {
             if (-not (Select-String -Quiet -SimpleMatch 'setTerminalBackgroundRunning' $beFile)) { Write-Error "(BE) (BA) marker 'setTerminalBackgroundRunning' absent in lifecycleEvents.ts -- (BE) MUST apply after (BA) cloud-session-dot; fix ordering"; exit 1 }
             $beErr = "$env:RUNNER_TEMP/be-apply-check.txt"
+            Reanchor-IfNeeded $be
             git apply --check $be 2>$beErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BE) cloud-session-blue-persist.patch does not apply cleanly (post BA). git apply --check output:"
@@ -2180,6 +2250,7 @@ jobs:
           } else {
             if (-not (Select-String -Quiet -SimpleMatch 'BackgroundRunning' $bfFile)) { Write-Error "(BF) (BA) marker 'BackgroundRunning' absent in pane-map-hook.ts -- (BF) MUST apply after (AS/BA) notify-hook patches; fix ordering"; exit 1 }
             $bfErr = "$env:RUNNER_TEMP/bf-apply-check.txt"
+            Reanchor-IfNeeded $bf
             git apply --check $bf 2>$bfErr
             if ($LASTEXITCODE -ne 0) {
               Write-Host "(BF) codex-companion-dot-parity.patch does not apply cleanly (post AS/BA). git apply --check output:"
@@ -2498,3 +2569,30 @@ jobs:
           - \`superset-patched-source.tar.gz\` — modified source code (for reviewing the AI-applied changes against the upstream tag)
 
           Not the official superset-sh distribution."
+
+      - name: Commit re-anchored patches back to main
+        # If the AI re-anchor fallback (Reanchor-IfNeeded) rewrote any patch to
+        # fit a new upstream, persist those rewrites to the patches repo so the
+        # repo stays current and the NEXT release does not re-drift the same way.
+        # Runs only after a successful real release (skipped for manual betas,
+        # which rebuild an already-shipped tag). Best-effort: the release is
+        # already published, so a push failure (e.g. main advanced mid-build)
+        # only means the next build re-does the AI fix — never fails the build.
+        if: needs.check.outputs.is_beta != 'true'
+        shell: bash
+        run: |
+          if git diff --quiet -- patches; then
+            echo "No patch re-anchoring this build — nothing to commit."
+            exit 0
+          fi
+          echo "Re-anchored patches detected; committing back to main:"
+          git status --porcelain -- patches
+          git config user.name  "superset-arm64-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add patches
+          git commit -m "chore(patches): AI re-anchor for upstream ${{ needs.check.outputs.upstream_version }} [skip ci]" -m "Automated re-anchor of drifted [git] patches by the build's Reanchor-IfNeeded fallback so they apply cleanly against ${{ needs.check.outputs.upstream_version }}."
+          if git push origin HEAD:main; then
+            echo "Pushed re-anchored patches to main."
+          else
+            echo "::warning::Could not push re-anchored patches (main may have advanced). The release shipped; next build will re-anchor again."
+          fi

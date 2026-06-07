@@ -22,9 +22,31 @@ Per-patch rationale lives in the `nightly-build.yml` step comments, the patch fi
 
 ## Pipeline (`.github/workflows/nightly-build.yml`)
 
-detect upstream release → clone → **Claude applies `PATCHES.md`** (AI) → ARM64 arch +
-fixup step ([inline] fixups + `git apply patches/*.patch`, all hard-abort + post-apply
-verify) → self-healing `bun install` → `electron-builder --win --arm64` → publish.
+**Build-once + assess-on-new-upstream model.** The scheduled job is detect-only:
+if upstream's Latest tag is one we've already released, it does NOTHING (no
+build, no red). When upstream ships a NEW tag it triggers a full run and
+publishes a full release for it (the "already released this tag → skip" guard IS
+the build-once pin). Manual `workflow_dispatch` still rebuilds an already-shipped
+tag as a `<tag>-beta`.
+
+detect NEW upstream release → clone → **Claude applies `PATCHES.md`** (AI) → ARM64
+arch + fixup step ([inline] fixups + `git apply patches/*.patch`) where **each
+`git apply --check` is preceded by `Reanchor-IfNeeded`**: if a `[git]` patch
+already applies it's a NO-OP (deterministic path unchanged); if it has DRIFTED on
+the new upstream, Claude (`CLAUDE_CODE_OAUTH_TOKEN`, same as the PATCHES.md step)
+re-anchors that patch file IN PLACE against the current stacked tree (every prior
+patch + inline fixup already applied = correct context), then re-verifies — still
+failing → hard-abort. All per-patch post-apply MARKER checks stay as the
+correctness gate (the build runs NO tsc/tests, only esbuild + markers) → self-
+healing `bun install` → `electron-builder --win --arm64` → publish full release →
+**commit re-anchored patches back to main** (`Commit re-anchored patches back to
+main` step, non-beta only, best-effort `push origin HEAD:main`) so the repo stays
+current and the next release doesn't re-drift the same way. Owner-chosen
+tradeoff: an auto-fixed build ships a FULL release unattended (gated only by
+esbuild + markers — a subtly-wrong AI re-anchor could ship). Inline regex fixups
+(A–E, M2, AV, AW, W.1, …) are NOT covered by `Reanchor-IfNeeded` (only `git
+apply` sites are) — if one of THOSE anchors drifts the build still hard-aborts
+for a manual re-anchor.
 
 ## Patch set
 
