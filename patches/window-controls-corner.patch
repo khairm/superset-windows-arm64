@@ -1,0 +1,110 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
+index f5bf4cf..c11b455 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
+@@ -14,7 +14,6 @@ import { RightSidebarToggle } from "./components/RightSidebarToggle";
+ import { SearchBarTrigger } from "./components/SearchBarTrigger";
+ import { V2WorkspaceOpenInButton } from "./components/V2WorkspaceOpenInButton";
+ import { V2WorkspaceTitle } from "./components/V2WorkspaceTitle";
+-import { WindowControls } from "./components/WindowControls";
+ 
+ export function TopBar() {
+ 	const matchRoute = useMatchRoute();
+@@ -104,7 +103,11 @@ export function TopBar() {
+ 				) : null}
+ 				{!isV2CloudEnabled && <OrganizationDropdown />}
+ 				{isV2WorkspaceRoute && <RightSidebarToggle />}
+-				{!isMac && <WindowControls />}
++				{/* (BG) WindowControls moved OUT of the TopBar to a fixed window
++				    top-right corner mount (see _dashboard/layout.tsx). In v2 the
++				    TopBar is only the main column's width — the right sidebar sits
++				    beside it — so rendering controls here put them mid-window, not
++				    the true corner. */}
+ 			</div>
+ 		</div>
+ 	);
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
+index 0634c24..1c31316 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
+@@ -29,6 +29,7 @@ import {
+ import { AddRepositoryModals } from "./components/AddRepositoryModals";
+ import { CrossVersionMismatchState } from "./components/CrossVersionMismatchState";
+ import { TopBar } from "./components/TopBar";
++import { WindowControls } from "./components/TopBar/components/WindowControls";
+ 
+ export const Route = createFileRoute("/_authenticated/_dashboard")({
+ 	component: DashboardLayout,
+@@ -51,6 +52,10 @@ type DeleteTarget =
+ function DashboardLayout() {
+ 	const navigate = useNavigate();
+ 	const openNewWorkspaceModal = useOpenNewWorkspaceModal();
++	// (BG) Platform gate for the fixed corner window controls. Default to Mac
++	// while loading so we never briefly cover the macOS traffic lights.
++	const { data: bgPlatform } = electronTrpc.window.getPlatform.useQuery();
++	const bgIsMac = bgPlatform === undefined || bgPlatform === "darwin";
+ 	const isV2CloudEnabled = useIsV2CloudEnabled();
+ 	const collections = useCollections();
+ 	const { removeWorkspaceFromSidebar } = useDashboardSidebarState();
+@@ -189,6 +194,18 @@ function DashboardLayout() {
+ 
+ 	return (
+ 		<div className="flex h-full w-full overflow-hidden">
++			{/* (BG) Themed window controls floated at the ABSOLUTE window top-right
++			    corner (above the right sidebar slot). Replaces the native
++			    titleBarOverlay (dropped in the (H) fixup) and the in-TopBar render
++			    (which sat mid-window in v2 because the TopBar is only the main
++			    column's width). Mac keeps its native traffic lights, so this is
++			    Windows/Linux only. no-drag so the buttons are clickable over the
++			    draggable title strip. */}
++			{!bgIsMac && (
++				<div className="no-drag fixed right-1 top-0 z-50 flex h-12 items-center">
++					<WindowControls />
++				</div>
++			)}
+ 			<CommandPaletteHost />
+ 			{sidebarOutsideColumn && sidebarPanel}
+ 			<div className="flex flex-1 flex-col min-w-0 min-h-0">
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/SidebarHeader/SidebarHeader.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/SidebarHeader/SidebarHeader.tsx
+index ac4d4fd..e49f2e6 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/SidebarHeader/SidebarHeader.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/SidebarHeader/SidebarHeader.tsx
+@@ -1,5 +1,6 @@
+ import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
+ import { cn } from "@superset/ui/utils";
++import { electronTrpc } from "renderer/lib/electron-trpc";
+ import { getSidebarHeaderTabButtonClassName } from "renderer/screens/main/components/WorkspaceView/RightSidebar/headerTabStyles";
+ import type { SidebarTabDefinition } from "../../types";
+ 
+@@ -17,6 +18,12 @@ export function SidebarHeader({
+ 	compact,
+ }: SidebarHeaderProps) {
+ 	const actions = tabs.find((t) => t.id === activeTab)?.actions;
++	// (BG) On Windows/Linux the themed window controls float at the window's
++	// absolute top-right corner (see _dashboard/layout.tsx) — this header is the
++	// rightmost element under them, so reserve corner width on its right edge so
++	// the tab actions (e.g. the refresh icon) never sit beneath the controls.
++	const { data: bgPlatform } = electronTrpc.window.getPlatform.useQuery();
++	const bgReserveCorner = bgPlatform !== undefined && bgPlatform !== "darwin";
+ 
+ 	return (
+ 		<div className="flex h-10 shrink-0 items-stretch border-b border-border">
+@@ -76,10 +83,17 @@ export function SidebarHeader({
+ 			</div>
+ 			<div className="flex-1" />
+ 			{actions && (
+-				<div className="flex shrink-0 items-center h-10 pr-2 gap-0.5">
++				<div
++					className={cn(
++						"flex shrink-0 items-center h-10 gap-0.5",
++						bgReserveCorner ? "pr-[116px]" : "pr-2",
++					)}
++				>
+ 					{actions}
+ 				</div>
+ 			)}
++			{/* (BG) Keep the corner clear even when the active tab has no actions. */}
++			{!actions && bgReserveCorner && <div className="shrink-0 w-[116px]" />}
+ 		</div>
+ 	);
+ }
