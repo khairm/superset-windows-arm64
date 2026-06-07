@@ -68,10 +68,12 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   electron-builder win arm64 (E); stage `materialize-native-closure.sh` (F); NSIS
   oneClick (G); bundle tokenizers-win32-arm64 (I); pty-daemon `ELECTRON_RUN_AS_NODE`
   (J); renderer CORS `superset-app://` (K).
-- **Windows UX / behaviour**: frameless window, NO native overlay (H)[inline,
-  win32→`frame:false`+`titleBarStyle:hidden`; the native `titleBarOverlay` was
-  RETIRED 2026-06-07 — it duplicated upstream's own themed WindowControls and its
-  `#1f1f1f` box never matched the bar; window controls now come from (BG)]; git-storm
+- **Windows UX / behaviour**: titleBarOverlay window controls (H)[inline,
+  win32→`titleBarStyle:hidden`+native `titleBarOverlay`; colour theme-matched to
+  the app `--background` (dark `#151110`/light `#fff` via `nativeTheme`) — the old
+  fixed `#1f1f1f` read as a mismatched grey box; the native overlay is the SOLE
+  control set, the duplicate upstream WindowControls is hidden on Windows by (BG)];
+  git-storm
   fix (L)[git]; skip quit-confirm (M)[inline] + before-quit Windows gate (M2)[inline,
   after M — deep-review #2: the AI Patch 19 before-quit step anchored on a
   `const shouldConfirm` that doesn't exist in 1.12.1, so the dialog still fired on
@@ -477,25 +479,24 @@ Mechanism in brackets. Tags match `Write-Host "(X)..."` in the workflow.
   all findings dispositioned. Codex STILL uses the JSONL state machine for its OWN
   terminal dots ([[project_codex_dots_plan]]); this is specifically the
   forward-to-companion blind spot. ([[project_dots_open_tabs_and_subagent_hold]])
-- **window-controls de-dup + corner reposition (BG)**[git
-  `window-controls-corner.patch`, after the (H) inline change] — Windows showed
-  TWO sets of min/max/close: upstream's own themed `WindowControls` (rendered for
-  every `!isMac` platform in `TopBar.tsx`) AND our native `titleBarOverlay` from
-  (H) — whose hardcoded `#1f1f1f` box never matched the themed bar. (H)'s premise
-  ("Windows otherwise has no visible window controls") went stale once upstream
-  added cross-platform `WindowControls`. Worse, upstream's set sat MID-window in
-  v2: the `TopBar` is only the **main column's** width (the right sidebar lives in
-  a sibling `#workspace-right-sidebar-slot`), so its right-edge controls were not
-  the true window corner. Fix: (H) now makes win32 frameless with NO overlay; (BG)
-  (a) removes `{!isMac && <WindowControls/>}` from `TopBar.tsx`, (b) floats
-  `WindowControls` at the ABSOLUTE window top-right via a `fixed right-1 top-0
-  z-50 no-drag` mount in `_dashboard/layout.tsx` (platform-gated, Mac keeps its
-  traffic lights), (c) reserves `pr-[116px]` corner width in the right panel's
-  `SidebarHeader` so the Review/refresh actions never sit under the controls.
-  3 renderer files, order-free (no other patch touches them). NEEDS an on-device
-  VISUAL pass: exact corner alignment / z-index / drag behaviour / the 116px
-  clearance are pixel-level and unverifiable by esbuild — authored blind (build
-  was quota-blocked), expect a small tweak on first build.
+- **window-controls de-dup (BG)**[git `window-controls-dedup.patch`, after (H)] —
+  Windows showed TWO min/max/close sets: upstream's own themed `WindowControls`
+  (`TopBar.tsx` renders them for every `!isMac` platform) AND the native (H)
+  `titleBarOverlay`. (H)'s premise ("Windows has no visible controls") went stale
+  once upstream added cross-platform `WindowControls`. **Keeper = the native
+  overlay**: it sits at the true OS corner, works on EVERY route, and has
+  Snap-Layouts. The themed set sat MID-window in v2 (the `TopBar` is only the
+  **main column's** width; the right sidebar is a sibling
+  `#workspace-right-sidebar-slot`) — a 2-codex review (BLOCKER ×2) showed moving
+  it to the corner needs a fragile GLOBAL mount + per-route corner reservation
+  (and would leave sign-in/settings/standalone with NO controls), so that
+  approach (`window-controls-corner.patch`) was ABANDONED. (BG) is the simple
+  one-file fix: gate upstream's set to Linux only (`!isMac && !isWindows &&
+  <WindowControls/>`) so the native overlay is the SOLE set on Windows; the (H)
+  fixup fixes the overlay COLOUR (theme-matched, not `#1f1f1f`). `TopBar.tsx`
+  only, order-free. The remaining cosmetic — exact overlay colour match across
+  themes — is window-creation-time (`nativeTheme`, like `backgroundColor`), good
+  for dark; revisit if light theme reads off.
 
 ## Traps (do NOT repeat)
 

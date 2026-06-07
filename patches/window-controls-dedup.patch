@@ -1,0 +1,24 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
+index f5bf4cf..1f44d1f 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx
+@@ -36,6 +36,10 @@ export function TopBar() {
+ 	const isSidebarCollapsed = useWorkspaceSidebarStore((s) => s.isCollapsed());
+ 	// Default to Mac layout while loading to avoid overlap with traffic lights
+ 	const isMac = platform === undefined || platform === "darwin";
++	// (BG) On Windows the native titleBarOverlay (patch H) provides the window
++	// controls at the true OS corner, so upstream's own WindowControls would be a
++	// DUPLICATE (and sit mid-window in v2). Render upstream's set only on Linux.
++	const isWindows = platform === "win32";
+ 	// In v2 the expanded sidebar lives outside the TopBar column, so the TopBar
+ 	// starts to the right of it and the sidebar header hosts the traffic-light
+ 	// pad + SidebarToggle. When the sidebar is closed or collapsed (too narrow
+@@ -104,7 +108,7 @@ export function TopBar() {
+ 				) : null}
+ 				{!isV2CloudEnabled && <OrganizationDropdown />}
+ 				{isV2WorkspaceRoute && <RightSidebarToggle />}
+-				{!isMac && <WindowControls />}
++				{!isMac && !isWindows && <WindowControls />}
+ 			</div>
+ 		</div>
+ 	);

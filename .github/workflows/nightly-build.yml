@@ -483,14 +483,17 @@ jobs:
           Write-Host "(G) electron-builder.ts NSIS -> oneClick: true (single one-click binary)"
 
           # (H) Windows titlebar: upstream is frameless + macOS-centric
-          #     (frame:false, trafficLightPosition) so the native title bar is
-          #     hidden. On win32 make the window FRAMELESS (frame:false +
-          #     titleBarStyle:hidden) and NO native titleBarOverlay — upstream's
-          #     own themed WindowControls are floated at the absolute window
-          #     top-right corner by the (BG) patch (window-controls-corner.patch).
-          #     The retired titleBarOverlay produced a DUPLICATE control set (its
-          #     #1f1f1f box never matched the themed bar) on top of upstream's
-          #     own WindowControls (which render for every !isMac platform).
+          #     (frame:false, trafficLightPosition) so Windows has no visible
+          #     window controls. On win32 use titleBarStyle:hidden + a native
+          #     titleBarOverlay (visible min/max/close at the true OS corner, with
+          #     Windows Snap-Layouts on hover; works on EVERY route automatically,
+          #     unlike a per-route React mount). The overlay COLOUR is theme-matched
+          #     to the app background token (dark --background #151110, the warm
+          #     near-black the bar actually uses) instead of the old neutral
+          #     #1f1f1f, which read as a mismatched grey box. (BG) hides upstream's
+          #     own WindowControls on Windows so this native set is the ONLY one.
+          #     NOTE: frame:false suppresses the Windows overlay, so the win32
+          #     branch must NOT set frame:false.
           $mw = 'apps/desktop/src/main/windows/main.ts'
           if (-not (Test-Path $mw)) { Write-Error "Missing $mw"; exit 1 }
           $c = Get-Content -Raw $mw
@@ -498,12 +501,12 @@ jobs:
             Write-Error "(H) expected frameless/trafficLight window block not found in $mw; upstream window config changed — aborting."
             exit 1
           }
-          $repl = '...(process.platform === "win32" ? { frame: false as const, titleBarStyle: "hidden" as const } : { frame: false, titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 16 } }),'
+          $repl = '...(process.platform === "win32" ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: nativeTheme.shouldUseDarkColors ? "#151110" : "#ffffff", symbolColor: nativeTheme.shouldUseDarkColors ? "#e6e6e6" : "#1a1a1a", height: 36 } } : { frame: false, titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 16 } }),'
           $c = $c -replace 'frame: false,\s*titleBarStyle: "hidden",\s*trafficLightPosition: \{ x: 16, y: 16 \},', $repl
           Set-Content -Path $mw -Value $c -NoNewline
-          if ((Get-Content -Raw $mw) -notmatch 'win32" \? \{ frame: false as const, titleBarStyle: "hidden" as const \}') { Write-Error "(H) win32 frameless window block missing after patch (no native overlay expected)"; exit 1 }
-          if ((Get-Content -Raw $mw) -match 'titleBarOverlay') { Write-Error "(H) titleBarOverlay still present — the duplicate native control set was NOT removed"; exit 1 }
-          Write-Host "(H) main.ts -> Windows frameless, NO native overlay (themed WindowControls float at corner via BG)"
+          if ((Get-Content -Raw $mw) -notmatch 'titleBarOverlay') { Write-Error "(H) titleBarOverlay patch failed"; exit 1 }
+          if ((Get-Content -Raw $mw) -notmatch '#151110') { Write-Error "(H) theme-matched overlay colour (#151110) missing after patch"; exit 1 }
+          Write-Host "(H) main.ts -> Windows titleBarOverlay (native controls, theme-matched colour; duplicate hidden by BG)"
 
           # (AM) startup-timing: log cold-start ms (process start -> renderer
           #      did-finish-load) via electron-log (log.info) so it reaches
@@ -2298,38 +2301,36 @@ jobs:
             Write-Host "(BF) codex-companion-dot-parity applied (active codex-companion job for this session -> BA blue, surfaces when the agent goes idle)"
           }
 
-          # (BG) window-controls de-dup + corner reposition. The retired (H)
-          #      titleBarOverlay produced a DUPLICATE native control set on top of
-          #      upstream's own themed WindowControls (rendered for every !isMac
-          #      platform), and upstream's set sat MID-window in v2 (the TopBar is
-          #      only the main column's width — the right sidebar sits beside it).
-          #      (H) above now makes win32 frameless with NO overlay; this patch
-          #      (a) removes the in-TopBar WindowControls render, (b) floats it at
-          #      the ABSOLUTE window top-right corner via a fixed mount in the
-          #      dashboard layout, (c) reserves corner width in the right panel's
-          #      SidebarHeader so the refresh/actions never sit under the controls.
-          #      Touches TopBar.tsx + _dashboard/layout.tsx + WorkspaceSidebar
-          #      SidebarHeader.tsx (no other patch touches these -> order-free).
-          $bg = '../patches/window-controls-corner.patch'
-          $bgFile = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx'
+          # (BG) window-controls de-dup. Windows showed TWO min/max/close sets:
+          #      upstream's own themed WindowControls (TopBar renders them for every
+          #      !isMac platform) AND the native (H) titleBarOverlay. The native
+          #      overlay is the keeper — it sits at the true OS corner, works on
+          #      EVERY route, and has Snap-Layouts (the themed set sat mid-window in
+          #      v2 and would need a fragile global mount + per-route corner
+          #      reservation — see the abandoned window-controls-corner approach,
+          #      codex-rejected). This patch gates upstream's set to Linux only
+          #      (`!isMac && !isWindows`) so the native overlay is the sole set on
+          #      Windows. One file (TopBar.tsx), order-free.
+          $bg = '../patches/window-controls-dedup.patch'
+          $bgFile = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/TopBar/TopBar.tsx'
           if (-not (Test-Path $bg)) { Write-Error "(BG) missing $bg in patches repo"; exit 1 }
           if (-not (Test-Path $bgFile)) { Write-Error "(BG) $bgFile missing in this upstream -- re-anchor (BG)"; exit 1 }
-          if (Select-String -Quiet -SimpleMatch 'bgIsMac' $bgFile) {
-            Write-Host "(BG) window-controls-corner already present -- skip"
+          if (Select-String -Quiet -SimpleMatch '!isMac && !isWindows && <WindowControls' $bgFile) {
+            Write-Host "(BG) window-controls-dedup already present -- skip"
           } else {
             $bgErr = "$env:RUNNER_TEMP/bg-apply-check.txt"
             Reanchor-IfNeeded $bg
             git apply --check $bg 2>$bgErr
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "(BG) window-controls-corner.patch does not apply cleanly. git apply --check output:"
+              Write-Host "(BG) window-controls-dedup.patch does not apply cleanly. git apply --check output:"
               if (Test-Path $bgErr) { Get-Content $bgErr | ForEach-Object { Write-Host "    (BG-check) $_" } }
-              Write-Error "(BG) window-controls-corner.patch failed to apply -- TopBar/layout/SidebarHeader changed upstream. Regenerate against the post-stack tree."
+              Write-Error "(BG) window-controls-dedup.patch failed to apply -- TopBar.tsx WindowControls render changed upstream. Regenerate against the new upstream."
               exit 1
             }
             git apply $bg
             if ($LASTEXITCODE -ne 0) { Write-Error "(BG) git apply failed after a clean --check"; exit 1 }
-            if (-not (Select-String -Quiet -SimpleMatch 'bgIsMac' $bgFile)) { Write-Error "(BG) corner WindowControls mount missing after apply"; exit 1 }
-            Write-Host "(BG) window-controls-corner applied (single themed control set, floated at the window top-right corner)"
+            if (-not (Select-String -Quiet -SimpleMatch '!isMac && !isWindows && <WindowControls' $bgFile)) { Write-Error "(BG) Windows duplicate-controls gate missing after apply"; exit 1 }
+            Write-Host "(BG) window-controls-dedup applied (Windows shows only the native titleBarOverlay set; upstream's WindowControls gated to Linux)"
           }
 
           # (F) Stage the deterministic Bun-store native-payload repair script
@@ -2341,7 +2342,7 @@ jobs:
           Copy-Item $mat 'scripts/materialize-native-closure.sh' -Force
           Write-Host "(F) staged scripts/materialize-native-closure.sh"
 
-          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + BE + BF + BG + F). (BG = window-controls de-dup + corner reposition [retired the duplicate native titleBarOverlay; upstream's themed min/max/close now float at the absolute window top-right corner]; BF = codex-companion dot parity [an active codex-companion job for this session surfaces as the BA blue when the agent goes idle]; BE = cloud-session blue persists so it surfaces when the agent goes idle [BA follow-up]; BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
+          Write-Host "ARM64 arch fixup verified (A + B + C + D + E + G + H + I + J + K + AE + AF + L + M + M2 + AV + AW + N + P + AG + Q + R + S + T + W + W.1 + AA + AB + AC + AD + Y + Z + AO + AN + AP + AQ + AR + AS + AT + AU + AY + BA + AZ + BD + BC + BB + BE + BF + BG + F). (BG = window-controls de-dup [Windows keeps the native titleBarOverlay (theme-matched colour via H) as the SOLE set; upstream's duplicate WindowControls gated to Linux]; BF = codex-companion dot parity [an active codex-companion job for this session surfaces as the BA blue when the agent goes idle]; BE = cloud-session blue persists so it surfaces when the agent goes idle [BA follow-up]; BD = non-git project '+' opens the existing main workspace; BC = terminal file-path link plain-click copies + Ctrl/Cmd+click opens in the OS default app/browser; BB = sidebar active-first project sort + pinning; AE/AF/AG = non-git workspaces; M2 = before-quit Windows gate, AV = webgl render recovery [replaces retired AI Patch 20], AW = red-over-yellow dot precedence [subagent keep-alive yields to a pending AskUserQuestion]; AY = shell-running blue dot [OSC 133 C/D]; BA = cloud-session blue dot [background_tasks -> BackgroundRunning, same blue, coexists with AU yellow-hold]; AZ = single-click terminal hyperlink copies to clipboard [Ctrl/Cmd+click still opens]; O retired -> v2-only via AD; U, V, X disabled — see comments above; V/X were the Wispr Flow regression, AC is the Wispr Flow paste fix.)"
 
           # Reaching here means EVERY patch/fixup applied — ALL guards now
           # hard-abort (Write-Error + exit 1) on any failure, so a build either
