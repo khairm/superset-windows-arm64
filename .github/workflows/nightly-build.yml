@@ -265,20 +265,43 @@ jobs:
           # patches repo by a later step so the repo stays current and the next
           # release does not re-drift the same way. Per-patch post-apply MARKER
           # checks below are untouched and remain the correctness gate.
+          function Get-CloneState {
+            # Fingerprint the upstream clone's working tree (tracked content via
+            # `git diff` + untracked/staged via porcelain). cwd is the clone.
+            return ((git diff) + "`n--untracked--`n" + (git status --porcelain)) | Out-String
+          }
           function Reanchor-IfNeeded($patch) {
             git apply --check $patch 2>$null
             if ($LASTEXITCODE -eq 0) { return }   # applies clean -> deterministic path
             $abs = (Resolve-Path $patch).Path
             $name = Split-Path $patch -Leaf
+            # Snapshot the clone BEFORE the AI runs. At re-anchor time the patch is
+            # NOT yet applied (the real `git apply` happens after), so the AI must
+            # touch ONLY the patch file (a separate repo) and leave the clone source
+            # untouched. If it instead edits the clone to fake a passing --check, the
+            # build would proceed on a contaminated tree that the committed patch
+            # can't reproduce — so we detect that and hard-abort (codex review).
+            $cloneBefore = Get-CloneState
             Write-Host "::group::(reanchor) $name drifted on this upstream — AI re-anchor"
             # Single-line prompt (no pwsh here-string: its column-0 terminator
             # would break the YAML block scalar). No backticks in the text either.
-            $prompt = "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Edit files directly and immediately. You are inside a fresh clone of superset-sh/superset that already has earlier patches applied. The git patch file at " + $abs + " no longer applies here (git apply --check fails because upstream moved the surrounding code). REWRITE that patch file IN PLACE so git apply applies it cleanly to THIS working tree: (1) read the patch at " + $abs + " for its intent and target files/hunks; (2) read the CURRENT target files in this clone to find where each hunk context now lives; (3) overwrite " + $abs + " with a corrected unified diff (same a/ and b/ paths, LF line endings, valid hunk headers) that applies cleanly with git apply and preserves the patch intent AND any post-apply marker strings the build verifies. Only edit " + $abs + " (re-read target files as needed). Do not touch any other patch."
+            $prompt = "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Edit files directly and immediately. You are inside a fresh clone of superset-sh/superset that already has earlier patches applied. The git patch file at " + $abs + " no longer applies here (git apply --check fails because upstream moved the surrounding code). REWRITE that patch file IN PLACE so git apply applies it cleanly to THIS working tree: (1) read the patch at " + $abs + " for its intent and target files/hunks; (2) read the CURRENT target files in this clone to find where each hunk context now lives; (3) overwrite " + $abs + " with a corrected unified diff (same a/ and b/ paths, LF line endings, valid hunk headers) that applies cleanly with git apply and preserves the patch intent AND any post-apply marker strings the build verifies. CRITICAL: edit ONLY the patch file " + $abs + " — do NOT modify any source file in this clone, and do NOT touch any other patch. Re-read target files as needed (read-only)."
             $attempt = 1
             while ($attempt -le 3) {
               claude --dangerously-skip-permissions --effort medium -p $prompt
+              # Force LF on the rewritten patch: .gitattributes does NOT normalize
+              # an in-place working-tree rewrite before this immediate check, and a
+              # CRLF patch fails `git apply` on the Windows runner (codex review).
+              if (Test-Path $abs) { [IO.File]::WriteAllText($abs, ([IO.File]::ReadAllText($abs) -replace "`r`n", "`n")) }
               git apply --check $patch 2>$null
-              if ($LASTEXITCODE -eq 0) { Write-Host "(reanchor) $name now applies (attempt $attempt)"; Write-Host "::endgroup::"; return }
+              if ($LASTEXITCODE -eq 0) {
+                if ((Get-CloneState) -ne $cloneBefore) {
+                  Write-Host "::endgroup::"
+                  Write-Error "(reanchor) $name: the AI modified the upstream clone (not just the patch file) — refusing a contaminated tree that the committed patch can't reproduce. Re-anchor manually."
+                  exit 1
+                }
+                Write-Host "(reanchor) $name now applies (attempt $attempt)"; Write-Host "::endgroup::"; return
+              }
               Write-Host "(reanchor) $name still fails after attempt $attempt"
               $attempt++
             }
@@ -2523,6 +2546,44 @@ jobs:
         shell: bash
         run: tar -czf superset-patched-source.tar.gz --exclude='node_modules' --exclude='.bun' --exclude='dist' --exclude='release' superset/
 
+      - name: Commit re-anchored patches back to main (before release)
+        # Persist any AI re-anchor BEFORE publishing, and make it FATAL for a real
+        # release: if Reanchor-IfNeeded rewrote a patch to fit a new upstream we
+        # must NOT publish that tag's release without saving the source-of-truth
+        # patch — otherwise the tag ships, is never rebuilt, and the fix is lost
+        # forever while the repo patches stay drifted (codex review HIGH #2).
+        # Robust push: rebase onto the latest main and retry (the ~40min build can
+        # race a human push). Skipped for manual betas (rebuild of a shipped tag).
+        # Gated to ref==main so a workflow_dispatch from a non-main branch can NEVER
+        # push that branch's commit stack onto main via HEAD:main (codex review HIGH).
+        if: needs.check.outputs.is_beta != 'true' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          if git diff --quiet -- patches; then
+            echo "No patch re-anchoring this build — nothing to commit; proceeding to release."
+            exit 0
+          fi
+          echo "Re-anchored patches detected; persisting to main BEFORE release:"
+          git status --porcelain -- patches
+          git config user.name  "superset-arm64-bot"
+          git config user.email "actions@users.noreply.github.com"
+          # -u: stage only MODIFICATIONS to tracked patch files (re-anchor only
+          # overwrites existing patches, never creates new) — never sweep in a
+          # stray untracked file under patches/ (codex review MED).
+          git add -u -- patches
+          git commit -m "chore(patches): AI re-anchor for upstream ${{ needs.check.outputs.upstream_version }} [skip ci]" -m "Automated re-anchor of drifted [git] patches by the build's Reanchor-IfNeeded fallback so they apply cleanly against ${{ needs.check.outputs.upstream_version }}."
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then pushed=1; break; fi
+            echo "push attempt $attempt failed; rebasing onto origin/main and retrying"
+            git fetch origin main && git rebase origin/main || { echo "::error::rebase conflict persisting re-anchored patches"; git rebase --abort 2>/dev/null || true; break; }
+          done
+          if [ "$pushed" -ne 1 ]; then
+            echo "::error::Could not persist re-anchored patches to main — REFUSING to publish a release whose source-of-truth patches were not saved."
+            exit 1
+          fi
+          echo "Re-anchored patches persisted to main; safe to release."
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2569,30 +2630,3 @@ jobs:
           - \`superset-patched-source.tar.gz\` — modified source code (for reviewing the AI-applied changes against the upstream tag)
 
           Not the official superset-sh distribution."
-
-      - name: Commit re-anchored patches back to main
-        # If the AI re-anchor fallback (Reanchor-IfNeeded) rewrote any patch to
-        # fit a new upstream, persist those rewrites to the patches repo so the
-        # repo stays current and the NEXT release does not re-drift the same way.
-        # Runs only after a successful real release (skipped for manual betas,
-        # which rebuild an already-shipped tag). Best-effort: the release is
-        # already published, so a push failure (e.g. main advanced mid-build)
-        # only means the next build re-does the AI fix — never fails the build.
-        if: needs.check.outputs.is_beta != 'true'
-        shell: bash
-        run: |
-          if git diff --quiet -- patches; then
-            echo "No patch re-anchoring this build — nothing to commit."
-            exit 0
-          fi
-          echo "Re-anchored patches detected; committing back to main:"
-          git status --porcelain -- patches
-          git config user.name  "superset-arm64-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add patches
-          git commit -m "chore(patches): AI re-anchor for upstream ${{ needs.check.outputs.upstream_version }} [skip ci]" -m "Automated re-anchor of drifted [git] patches by the build's Reanchor-IfNeeded fallback so they apply cleanly against ${{ needs.check.outputs.upstream_version }}."
-          if git push origin HEAD:main; then
-            echo "Pushed re-anchored patches to main."
-          else
-            echo "::warning::Could not push re-anchored patches (main may have advanced). The release shipped; next build will re-anchor again."
-          fi

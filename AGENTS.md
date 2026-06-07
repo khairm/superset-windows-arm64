@@ -38,15 +38,26 @@ re-anchors that patch file IN PLACE against the current stacked tree (every prio
 patch + inline fixup already applied = correct context), then re-verifies — still
 failing → hard-abort. All per-patch post-apply MARKER checks stay as the
 correctness gate (the build runs NO tsc/tests, only esbuild + markers) → self-
-healing `bun install` → `electron-builder --win --arm64` → publish full release →
-**commit re-anchored patches back to main** (`Commit re-anchored patches back to
-main` step, non-beta only, best-effort `push origin HEAD:main`) so the repo stays
-current and the next release doesn't re-drift the same way. Owner-chosen
-tradeoff: an auto-fixed build ships a FULL release unattended (gated only by
-esbuild + markers — a subtly-wrong AI re-anchor could ship). Inline regex fixups
-(A–E, M2, AV, AW, W.1, …) are NOT covered by `Reanchor-IfNeeded` (only `git
-apply` sites are) — if one of THOSE anchors drifts the build still hard-aborts
-for a manual re-anchor.
+healing `bun install` → `electron-builder --win --arm64` → **commit re-anchored
+patches back to main BEFORE the release** (`Commit re-anchored patches back to
+main (before release)` step: non-beta AND `github.ref==refs/heads/main` only;
+fetch/rebase/retry push; **FATAL** if it can't persist — we never publish a tag
+whose source-of-truth patches weren't saved, else the fix is lost forever since
+the tag is never rebuilt) → publish full release. Re-anchor hardening (3-codex
+review): `Reanchor-IfNeeded` snapshots the clone (`Get-CloneState`) and aborts if
+the AI touched clone SOURCE instead of only the patch file (contaminated/
+non-reproducible tree); the rewritten patch is force-normalized to LF after each
+AI call (`.gitattributes` doesn't normalize an in-place rewrite before the
+immediate `git apply --check`); `git add -u -- patches` stages only tracked patch
+modifications. Owner-chosen tradeoff (flagged twice, confirmed): an auto-fixed
+build ships a FULL release unattended, gated only by esbuild + per-patch marker
+checks — a semantically-wrong-but-compiling AI re-anchor could ship (no
+behavioral/e2e gate). Inline regex fixups (A–E, M2, AV, AW, W.1, …) are NOT
+covered by `Reanchor-IfNeeded` (only `git apply` sites are) — if one of THOSE
+anchors drifts the build still hard-aborts for a manual re-anchor. The AI
+re-anchor needs Claude quota: if `CLAUDE_CODE_OAUTH_TOKEN`'s account is at its
+weekly limit, re-anchor produces no fix and the build hard-aborts (seen
+2026-06-07 on 1.12.3 — `You've hit your weekly limit`).
 
 ## Patch set
 
