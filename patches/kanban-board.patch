@@ -1,0 +1,3832 @@
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx
+index 4f07e7a..e4b9af0 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx
+@@ -11,6 +11,7 @@ import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+ import { HiMiniPlus, HiOutlineClipboardDocumentList } from "react-icons/hi2";
+ import {
+ 	LuClock,
++	LuColumns3,
+ 	LuFolderInput,
+ 	LuFolderPlus,
+ 	LuLayers,
+@@ -73,6 +74,7 @@ export function DashboardSidebarHeader({
+ 	const isWorkspacesListOpen = !!matchRoute({ to: "/v2-workspaces" });
+ 	const isTasksOpen = !!matchRoute({ to: "/tasks", fuzzy: true });
+ 	const isAutomationsOpen = !!matchRoute({ to: "/automations", fuzzy: true });
++	const isKanbanOpen = !!matchRoute({ to: "/kanban", fuzzy: true });
+ 
+ 	const {
+ 		tab: lastTab,
+@@ -90,6 +92,12 @@ export function DashboardSidebarHeader({
+ 		navigate({ to: "/automations" });
+ 	};
+ 
++	// (KANBAN) Ungated — this is the fork's local-only board, not the paywalled
++	// upstream cloud Tasks feature.
++	const handleKanbanClick = () => {
++		navigate({ to: "/kanban" });
++	};
++
+ 	const handleTasksClick = () => {
+ 		gateFeature(GATED_FEATURES.TASKS, () => {
+ 			navigate({
+@@ -164,6 +172,24 @@ export function DashboardSidebarHeader({
+ 					<TooltipContent side="right">Tasks & PRs</TooltipContent>
+ 				</Tooltip>
+ 
++				<Tooltip delayDuration={300}>
++					<TooltipTrigger asChild>
++						<button
++							type="button"
++							onClick={handleKanbanClick}
++							className={cn(
++								"flex size-8 items-center justify-center rounded-md transition-colors",
++								isKanbanOpen
++									? "bg-accent text-foreground"
++									: "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
++							)}
++						>
++							<LuColumns3 className="size-4" />
++						</button>
++					</TooltipTrigger>
++					<TooltipContent side="right">Kanban</TooltipContent>
++				</Tooltip>
++
+ 				<Tooltip delayDuration={300}>
+ 					<TooltipTrigger asChild>
+ 						<button
+@@ -269,6 +295,20 @@ export function DashboardSidebarHeader({
+ 				<span className="flex-1 text-left">Tasks & PRs</span>
+ 			</button>
+ 
++			<button
++				type="button"
++				onClick={handleKanbanClick}
++				className={cn(
++					"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors",
++					isKanbanOpen
++						? "bg-accent text-foreground"
++						: "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
++				)}
++			>
++				<LuColumns3 className="size-4 shrink-0" />
++				<span className="flex-1 text-left">Kanban</span>
++			</button>
++
+ 			<div className="flex items-center gap-0">
+ 				<button
+ 					type="button"
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/KanbanReconciler.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/KanbanReconciler.tsx
+new file mode 100644
+index 0000000..2dbbd5b
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/KanbanReconciler.tsx
+@@ -0,0 +1,14 @@
++import { useKanbanData } from "../../kanban/hooks/useKanbanData";
++
++/**
++ * (KANBAN) Runs the board's ready-gated reconcile (materialise a card per
++ * branch, seed Queue + a starter column, drop deleted-branch cards, auto-
++ * unsnooze queued cards) at the DASHBOARD level — not only when the /kanban
++ * route is mounted. This guarantees a branch's bound card row exists even when
++ * the user opens a workspace directly, so the right-panel "Card" tab is never
++ * stuck on the empty state. Renders nothing.
++ */
++export function KanbanReconciler() {
++	useKanbanData();
++	return null;
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/index.ts
+new file mode 100644
+index 0000000..e7ca051
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/KanbanReconciler/index.ts
+@@ -0,0 +1 @@
++export { KanbanReconciler } from "./KanbanReconciler";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/KanbanBoard.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/KanbanBoard.tsx
+new file mode 100644
+index 0000000..e20033c
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/KanbanBoard.tsx
+@@ -0,0 +1,223 @@
++import {
++	DndContext,
++	type DragEndEvent,
++	DragOverlay,
++	type DragStartEvent,
++	MouseSensor,
++	TouchSensor,
++	useSensor,
++	useSensors,
++} from "@dnd-kit/core";
++import { arrayMove } from "@dnd-kit/sortable";
++import { useNavigate } from "@tanstack/react-router";
++import { useCallback, useMemo, useState } from "react";
++import { LuPlus } from "react-icons/lu";
++import type { KanbanCardRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import { useKanbanActions } from "../../hooks/useKanbanActions";
++import { useKanbanData } from "../../hooks/useKanbanData";
++import type { KanbanCardView } from "../../types";
++import { KanbanCard } from "../KanbanCard";
++import { KanbanColumn } from "../KanbanColumn";
++import { PromoteCardDialog } from "../PromoteCardDialog";
++import { QueuedCardModal } from "../QueuedCardModal";
++
++interface PromoteState {
++	queuedCardId: string;
++	targetColumnId: string;
++}
++
++export function KanbanBoard() {
++	const { isReady, columns, now } = useKanbanData();
++	const actions = useKanbanActions();
++	const navigate = useNavigate();
++
++	const [activeCard, setActiveCard] = useState<KanbanCardView | null>(null);
++	const [modalCardId, setModalCardId] = useState<string | null>(null);
++	const [promoteState, setPromoteState] = useState<PromoteState | null>(null);
++
++	// MouseSensor (distance 8) + TouchSensor only. No KeyboardSensor — the card's
++	// Enter/Space activation handler would shadow dnd-kit's keyboard drag start,
++	// so keyboard DnD is intentionally not wired (cards stay keyboard-activatable).
++	const sensors = useSensors(
++		useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
++		useSensor(TouchSensor, {
++			activationConstraint: { delay: 200, tolerance: 5 },
++		}),
++	);
++
++	const customColumnIds = useMemo(
++		() =>
++			columns.filter((c) => !c.column.isQueue).map((c) => c.column.id),
++		[columns],
++	);
++
++	const findCardView = useCallback(
++		(cardId: string): KanbanCardView | null => {
++			for (const col of columns) {
++				const hit =
++					col.active.find((v) => v.card.id === cardId) ??
++					col.snoozed.find((v) => v.card.id === cardId) ??
++					col.archived.find((v) => v.card.id === cardId);
++				if (hit) return hit;
++			}
++			return null;
++		},
++		[columns],
++	);
++
++	const onActivate = useCallback(
++		(view: KanbanCardView) => {
++			if (view.workspace) {
++				navigate({ to: "/kanban", search: { cardId: view.workspace.id } });
++			} else {
++				setModalCardId(view.card.id);
++			}
++		},
++		[navigate],
++	);
++
++	const handleDragStart = useCallback(
++		(event: DragStartEvent) => {
++			setActiveCard(findCardView(event.active.id as string));
++		},
++		[findCardView],
++	);
++
++	const handleDragEnd = useCallback(
++		(event: DragEndEvent) => {
++			setActiveCard(null);
++			const { active, over } = event;
++			if (!over) return;
++			const activeCardRow = active.data.current?.card as
++				| KanbanCardRow
++				| undefined;
++			if (!activeCardRow) return;
++
++			const overData = over.data.current;
++			let targetColumnId: string | undefined;
++			if (overData?.type === "column") {
++				targetColumnId = overData.columnId as string;
++			} else if (overData?.type === "card") {
++				targetColumnId = (overData.card as KanbanCardRow).columnId;
++			}
++			if (!targetColumnId) return;
++
++			const kind = actions.canDropCard(activeCardRow, targetColumnId);
++			if (kind === "reject") return;
++			if (kind === "promote") {
++				setPromoteState({ queuedCardId: activeCardRow.id, targetColumnId });
++				return;
++			}
++
++			const targetCol = columns.find((c) => c.column.id === targetColumnId);
++			if (!targetCol) return;
++			const activeId = activeCardRow.id;
++			const overCardId =
++				overData?.type === "card"
++					? (overData.card as KanbanCardRow).id
++					: undefined;
++
++			// A deadline-sorted column shows cards by date, not by tabOrder — so we
++			// must NOT renumber from the displayed order (it would clobber the
++			// preserved manual order). Just move the card in; manual order untouched.
++			if (targetCol.column.sortMode === "deadline") {
++				if (activeCardRow.columnId !== targetColumnId) {
++					actions.moveCardToColumn(activeId, targetColumnId);
++				}
++				return;
++			}
++
++			const currentIds = targetCol.active.map((v) => v.card.id);
++			if (activeCardRow.columnId === targetColumnId) {
++				if (activeId === overCardId) return; // dropped on itself
++				const oldIndex = currentIds.indexOf(activeId);
++				if (oldIndex === -1) return;
++				const newIndex = overCardId
++					? currentIds.indexOf(overCardId)
++					: currentIds.length - 1;
++				if (newIndex === -1) return;
++				actions.applyCardOrder(
++					targetColumnId,
++					arrayMove(currentIds, oldIndex, newIndex),
++				);
++			} else {
++				const targetIds = currentIds.filter((id) => id !== activeId);
++				let insertIndex = targetIds.length;
++				if (overCardId) {
++					const idx = targetIds.indexOf(overCardId);
++					if (idx !== -1) insertIndex = idx;
++				}
++				targetIds.splice(insertIndex, 0, activeId);
++				actions.applyCardOrder(targetColumnId, targetIds);
++			}
++		},
++		[actions, columns],
++	);
++
++	const handleAddQueuedCard = useCallback(() => {
++		const id = actions.createQueuedCard();
++		setModalCardId(id);
++	}, [actions]);
++
++	if (!isReady && columns.length === 0) {
++		return (
++			<div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
++				Loading board…
++			</div>
++		);
++	}
++
++	return (
++		<DndContext
++			sensors={sensors}
++			onDragStart={handleDragStart}
++			onDragEnd={handleDragEnd}
++			onDragCancel={() => setActiveCard(null)}
++		>
++			<div className="flex min-h-0 min-w-0 flex-1 gap-2 overflow-x-auto overflow-y-hidden px-4 py-3">
++				{columns.map((col) => (
++					<KanbanColumn
++						key={col.column.id}
++						view={col}
++						actions={actions}
++						now={now}
++						onActivate={onActivate}
++						onAddQueuedCard={handleAddQueuedCard}
++						customColumnIds={customColumnIds}
++					/>
++				))}
++				<button
++					type="button"
++					onClick={() => actions.addColumn()}
++					className="flex h-9 w-[160px] shrink-0 items-center gap-1.5 rounded-md border border-dashed border-border px-3 text-sm text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
++				>
++					<LuPlus className="size-4" /> Add column
++				</button>
++			</div>
++
++			<DragOverlay dropAnimation={null}>
++				{activeCard ? (
++					<div className="w-[268px]">
++						<KanbanCard
++							view={activeCard}
++							actions={actions}
++							now={now}
++							onActivate={() => {}}
++							overlay
++						/>
++					</div>
++				) : null}
++			</DragOverlay>
++
++			<QueuedCardModal
++				cardId={modalCardId}
++				onClose={() => setModalCardId(null)}
++			/>
++			<PromoteCardDialog
++				state={promoteState}
++				actions={actions}
++				onClose={() => setPromoteState(null)}
++			/>
++		</DndContext>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/index.ts
+new file mode 100644
+index 0000000..3beed71
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanBoard/index.ts
+@@ -0,0 +1 @@
++export { KanbanBoard } from "./KanbanBoard";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/KanbanCard.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/KanbanCard.tsx
+new file mode 100644
+index 0000000..3c7fa17
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/KanbanCard.tsx
+@@ -0,0 +1,303 @@
++import { useSortable } from "@dnd-kit/sortable";
++import { CSS } from "@dnd-kit/utilities";
++import {
++	DropdownMenu,
++	DropdownMenuContent,
++	DropdownMenuItem,
++	DropdownMenuSeparator,
++	DropdownMenuSub,
++	DropdownMenuSubContent,
++	DropdownMenuSubTrigger,
++	DropdownMenuTrigger,
++} from "@superset/ui/dropdown-menu";
++import { Input } from "@superset/ui/input";
++import { cn } from "@superset/ui/utils";
++import { useState } from "react";
++import { LuEllipsis } from "react-icons/lu";
++import {
++	computeSnoozeUntil,
++	SNOOZE_PRESET_OPTIONS,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
++import {
++	getStatusTooltip,
++	StatusIndicator,
++} from "renderer/screens/main/components/StatusIndicator";
++import { useV2WorkspaceDisplayStatus } from "renderer/stores/v2-notifications";
++import type { KanbanCardView } from "../../types";
++import {
++	deadlineToInputValue,
++	formatDeadline,
++	getDeadlineUrgency,
++	inputValueToDeadline,
++} from "../../utils/deadlineUrgency";
++import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
++
++interface KanbanCardProps {
++	view: KanbanCardView;
++	actions: UseKanbanActionsResult;
++	now: number;
++	onActivate: (view: KanbanCardView) => void;
++	/** Render-only ghost in the DragOverlay (no sortable wiring, no menus). */
++	overlay?: boolean;
++	/** Disable drag (Snoozed / Archived cards, which live outside the sortable). */
++	disableDrag?: boolean;
++}
++
++export function KanbanCard({
++	view,
++	actions,
++	now,
++	onActivate,
++	overlay,
++	disableDrag,
++}: KanbanCardProps) {
++	const { card, workspace, projectName } = view;
++	// A repo's main workspace can't be snoozed/archived (the sidebar gates those
++	// off main; an archived main would bucket to "hidden" and vanish from the
++	// board with no restore path).
++	const isMain = workspace?.type === "main";
++	const status = useV2WorkspaceDisplayStatus(workspace?.id ?? "");
++	const [editing, setEditing] = useState<"title" | "deadline" | null>(null);
++	const [titleDraft, setTitleDraft] = useState(card.title);
++	const [deleteOpen, setDeleteOpen] = useState(false);
++
++	const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
++		useSortable({
++			id: card.id,
++			data: { type: "card", card },
++			disabled: overlay || disableDrag,
++		});
++
++	const style = {
++		transform: CSS.Transform.toString(transform),
++		transition,
++	};
++
++	const urgency = getDeadlineUrgency(card.deadline, now);
++	const subtitle =
++		workspace && projectName
++			? `${projectName} / ${workspace.branch}`
++			: workspace
++				? workspace.branch
++				: null;
++
++	const commitTitle = () => {
++		actions.updateCard(card.id, { title: titleDraft });
++		setEditing(null);
++	};
++
++	const stop = (e: React.SyntheticEvent) => e.stopPropagation();
++
++	return (
++		<>
++			{/* biome-ignore lint/a11y/useSemanticElements: dnd-kit requires a div */}
++			<div
++				ref={setNodeRef}
++				style={style}
++				{...attributes}
++				{...listeners}
++				role="button"
++				tabIndex={0}
++				className={cn(
++					"group relative rounded-md border border-border/60 bg-card px-3 py-2.5 transition-colors hover:bg-accent/30",
++					!overlay && !disableDrag && "cursor-grab active:cursor-grabbing",
++					isDragging && "opacity-40",
++					overlay && "cursor-grabbing border-border shadow-xl",
++				)}
++				onClick={() => {
++					if (editing) return;
++					onActivate(view);
++				}}
++				onKeyDown={(e) => {
++					if (editing) return;
++					if (e.key === "Enter" || e.key === " ") {
++						e.preventDefault();
++						onActivate(view);
++					}
++				}}
++			>
++				<div className="flex items-start gap-2">
++					{status ? (
++						<span
++							title={getStatusTooltip(status)}
++							className="mt-1 shrink-0"
++							onPointerDown={stop}
++						>
++							<StatusIndicator status={status} />
++						</span>
++					) : null}
++					<div className="min-w-0 flex-1">
++						{editing === "title" ? (
++							<Input
++								// biome-ignore lint/a11y/noAutofocus: inline edit
++								autoFocus
++								value={titleDraft}
++								onChange={(e) => setTitleDraft(e.target.value)}
++								onBlur={commitTitle}
++								onKeyDown={(e) => {
++									if (e.key === "Enter") commitTitle();
++									if (e.key === "Escape") {
++										setTitleDraft(card.title);
++										setEditing(null);
++									}
++								}}
++								onClick={stop}
++								onPointerDown={stop}
++								className="h-6 px-1 py-0 text-sm"
++							/>
++						) : (
++							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
++							<p
++								className="line-clamp-2 text-sm leading-snug font-medium"
++								onClick={stop}
++								onDoubleClick={(e) => {
++									stop(e);
++									setTitleDraft(card.title);
++									setEditing("title");
++								}}
++							>
++								{card.title || "Untitled"}
++							</p>
++						)}
++						{subtitle ? (
++							<span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
++								{subtitle}
++							</span>
++						) : null}
++						{editing === "deadline" ? (
++							<Input
++								// biome-ignore lint/a11y/noAutofocus: inline edit
++								autoFocus
++								type="date"
++								value={deadlineToInputValue(card.deadline)}
++								onChange={(e) =>
++									actions.updateCard(card.id, {
++										deadline: inputValueToDeadline(e.target.value),
++									})
++								}
++								onBlur={() => setEditing(null)}
++								onClick={stop}
++								onPointerDown={stop}
++								className="mt-1 h-6 px-1 py-0 text-xs"
++							/>
++						) : card.deadline != null ? (
++							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
++							<span
++								onClick={stop}
++								onDoubleClick={(e) => {
++									stop(e);
++									setEditing("deadline");
++								}}
++								className={cn(
++									"mt-1 block text-[11px]",
++									urgency === "overdue" && "font-medium text-red-500",
++									urgency === "due-today" && "font-medium text-yellow-500",
++									urgency === "upcoming" && "text-muted-foreground",
++								)}
++							>
++								{urgency === "overdue"
++									? `Overdue · ${formatDeadline(card.deadline)}`
++									: urgency === "due-today"
++										? "Due today"
++										: `Due ${formatDeadline(card.deadline)}`}
++							</span>
++						) : null}
++					</div>
++
++					{!overlay && !isMain ? (
++						<DropdownMenu>
++							<DropdownMenuTrigger asChild>
++								<button
++									type="button"
++									aria-label="Card actions"
++									onClick={stop}
++									onPointerDown={stop}
++									className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
++								>
++									<LuEllipsis className="size-3.5" />
++								</button>
++							</DropdownMenuTrigger>
++							<DropdownMenuContent
++								align="end"
++								onClick={stop}
++								onCloseAutoFocus={(e) => e.preventDefault()}
++							>
++								{!isMain ? (
++									<>
++										{view.bucket === "snoozed" ? (
++											<DropdownMenuItem
++												onSelect={() => actions.unsnoozeCard(card)}
++											>
++												Unsnooze
++											</DropdownMenuItem>
++										) : (
++											<DropdownMenuSub>
++												<DropdownMenuSubTrigger>Snooze</DropdownMenuSubTrigger>
++												<DropdownMenuSubContent>
++													{SNOOZE_PRESET_OPTIONS.map((opt) => (
++														<DropdownMenuItem
++															key={opt.id}
++															onSelect={() =>
++																actions.snoozeCard(
++																	card,
++																	opt.duration.kind === "next-launch"
++																		? "next-launch"
++																		: computeSnoozeUntil(opt.duration),
++																)
++															}
++														>
++															{opt.label}
++														</DropdownMenuItem>
++													))}
++												</DropdownMenuSubContent>
++											</DropdownMenuSub>
++										)}
++										{view.bucket === "archived" ? (
++											<DropdownMenuItem
++												onSelect={() => actions.unarchiveCard(card)}
++											>
++												Unarchive
++											</DropdownMenuItem>
++										) : (
++											<DropdownMenuItem
++												onSelect={() => actions.archiveCard(card)}
++											>
++												Archive
++											</DropdownMenuItem>
++										)}
++										<DropdownMenuSeparator />
++									</>
++								) : null}
++								{workspace ? (
++									<DropdownMenuItem
++										variant="destructive"
++										onSelect={() => setDeleteOpen(true)}
++									>
++										Delete branch…
++									</DropdownMenuItem>
++								) : (
++									<DropdownMenuItem
++										variant="destructive"
++										onSelect={() => actions.deleteQueuedCard(card.id)}
++									>
++										Delete task
++									</DropdownMenuItem>
++								)}
++							</DropdownMenuContent>
++						</DropdownMenu>
++					) : null}
++				</div>
++			</div>
++
++			{workspace && !isMain ? (
++				<DashboardSidebarDeleteDialog
++					workspaceId={workspace.id}
++					workspaceName={workspace.name}
++					open={deleteOpen}
++					onOpenChange={setDeleteOpen}
++				/>
++			) : null}
++		</>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/index.ts
+new file mode 100644
+index 0000000..88058a0
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCard/index.ts
+@@ -0,0 +1 @@
++export { KanbanCard } from "./KanbanCard";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/KanbanCardDetailsForm.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/KanbanCardDetailsForm.tsx
+new file mode 100644
+index 0000000..c61a3f1
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/KanbanCardDetailsForm.tsx
+@@ -0,0 +1,141 @@
++import { Input } from "@superset/ui/input";
++import { Label } from "@superset/ui/label";
++import { Textarea } from "@superset/ui/textarea";
++import { eq } from "@tanstack/db";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useEffect, useRef, useState } from "react";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import {
++	deadlineToInputValue,
++	inputValueToDeadline,
++} from "../../utils/deadlineUrgency";
++
++interface KanbanCardDetailsFormProps {
++	cardId: string;
++	/** Optionally render the repo/branch context line (bound cards). */
++	subtitle?: string | null;
++	autoFocusTitle?: boolean;
++}
++
++/**
++ * Editor for a card's task details (title / description / deadline). Shared by
++ * the Queued-card modal (unbound cards) and the right-panel Card tab (bound
++ * cards). Writes directly to the local Kanban cards collection. Title/description
++ * commit on blur; the date commits immediately.
++ */
++export function KanbanCardDetailsForm({
++	cardId,
++	subtitle,
++	autoFocusTitle,
++}: KanbanCardDetailsFormProps) {
++	const collections = useCollections();
++	const { data: [card] = [] } = useLiveQuery(
++		(q) =>
++			q
++				.from({ c: collections.v2KanbanCards })
++				.where(({ c }) => eq(c.id, cardId)),
++		[collections, cardId],
++	);
++
++	const [title, setTitle] = useState("");
++	const [description, setDescription] = useState("");
++	const titleFocused = useRef(false);
++	const descFocused = useRef(false);
++	// Resync from the row when switching cards, when it first loads, OR when an
++	// external edit changes the value — but never while the field is focused, so
++	// in-progress typing is never clobbered.
++	useEffect(() => {
++		if (!titleFocused.current) setTitle(card?.title ?? "");
++	}, [cardId, card?.id, card?.title]);
++	useEffect(() => {
++		if (!descFocused.current) setDescription(card?.description ?? "");
++	}, [cardId, card?.id, card?.description]);
++
++	if (!card) {
++		return (
++			<div className="select-text p-4 text-sm text-muted-foreground">
++				This branch isn't on the board yet.
++			</div>
++		);
++	}
++
++	const commit = (patch: {
++		title?: string;
++		description?: string | null;
++		deadline?: number | null;
++	}) => {
++		if (!collections.v2KanbanCards.get(cardId)) return;
++		collections.v2KanbanCards.update(cardId, (draft) => {
++			if (patch.title !== undefined) draft.title = patch.title;
++			if (patch.description !== undefined) draft.description = patch.description;
++			if (patch.deadline !== undefined) draft.deadline = patch.deadline;
++		});
++	};
++
++	return (
++		<div className="flex flex-col gap-4 p-3">
++			<div className="flex flex-col gap-1.5">
++				<Label htmlFor="kanban-card-title" className="text-xs">
++					Title
++				</Label>
++				<Input
++					id="kanban-card-title"
++					value={title}
++					// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
++					autoFocus={autoFocusTitle}
++					onChange={(e) => setTitle(e.target.value)}
++					onFocus={() => {
++						titleFocused.current = true;
++					}}
++					onBlur={() => {
++						titleFocused.current = false;
++						commit({ title });
++					}}
++					placeholder="Task title"
++				/>
++				{subtitle ? (
++					<span className="truncate font-mono text-[11px] text-muted-foreground">
++						{subtitle}
++					</span>
++				) : null}
++			</div>
++
++			<div className="flex flex-col gap-1.5">
++				<Label htmlFor="kanban-card-description" className="text-xs">
++					Description
++				</Label>
++				<Textarea
++					id="kanban-card-description"
++					value={description}
++					onChange={(e) => setDescription(e.target.value)}
++					onFocus={() => {
++						descFocused.current = true;
++					}}
++					onBlur={() => {
++						descFocused.current = false;
++						commit({ description: description.trim() ? description : null });
++					}}
++					placeholder="Optional description"
++					rows={5}
++				/>
++			</div>
++
++			<div className="flex flex-col gap-1.5">
++				<Label htmlFor="kanban-card-deadline" className="text-xs">
++					Deadline
++				</Label>
++				<Input
++					id="kanban-card-deadline"
++					type="date"
++					value={deadlineToInputValue(card.deadline)}
++					onChange={(e) =>
++						commit({ deadline: inputValueToDeadline(e.target.value) })
++					}
++				/>
++				<span className="text-[11px] text-muted-foreground">
++					Turns yellow on the due day, red after it passes.
++				</span>
++			</div>
++		</div>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/index.ts
+new file mode 100644
+index 0000000..9c9dd87
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm/index.ts
+@@ -0,0 +1 @@
++export { KanbanCardDetailsForm } from "./KanbanCardDetailsForm";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/KanbanCollapseSplit.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/KanbanCollapseSplit.tsx
+new file mode 100644
+index 0000000..7db033c
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/KanbanCollapseSplit.tsx
+@@ -0,0 +1,76 @@
++import { eq } from "@tanstack/db";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useNavigate } from "@tanstack/react-router";
++import { useEffect, useState } from "react";
++import { LuChevronLeft } from "react-icons/lu";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import { V2WorkspaceMount } from "renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount";
++import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
++import { KanbanBoard } from "../KanbanBoard";
++
++interface KanbanCollapseSplitProps {
++	workspaceId: string;
++}
++
++/**
++ * When a bound card is clicked, the board collapses to a narrow left rail and
++ * the branch's normal workspace centre opens on the right. The rail is the same
++ * <KanbanBoard/> (so you can keep triaging / switch cards); the right side is
++ * the shared <V2WorkspaceMount/> keyed by workspaceId so it remounts per card.
++ */
++export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
++	const navigate = useNavigate();
++	const collections = useCollections();
++	const [width, setWidth] = useState(360);
++	const [resizing, setResizing] = useState(false);
++
++	// If the selected branch is deleted while open, exit the split back to the
++	// board instead of leaving a "workspace not found" pane mounted.
++	const { data: workspaces = [], isReady } = useLiveQuery(
++		(q) =>
++			q
++				.from({ w: collections.v2Workspaces })
++				.where(({ w }) => eq(w.id, workspaceId)),
++		[collections, workspaceId],
++	);
++	useEffect(() => {
++		if (isReady && workspaces.length === 0) {
++			navigate({ to: "/kanban", search: { cardId: undefined }, replace: true });
++		}
++	}, [isReady, workspaces.length, navigate]);
++
++	return (
++		<div className="flex h-full min-h-0 w-full min-w-0">
++			<ResizablePanel
++				width={width}
++				onWidthChange={setWidth}
++				isResizing={resizing}
++				onResizingChange={setResizing}
++				minWidth={260}
++				maxWidth={560}
++				handleSide="right"
++				onDoubleClickHandle={() => setWidth(360)}
++			>
++				<div className="flex h-full min-h-0 flex-col border-r border-border">
++					<div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
++						<button
++							type="button"
++							onClick={() =>
++								navigate({ to: "/kanban", search: { cardId: undefined } })
++							}
++							className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
++						>
++							<LuChevronLeft className="size-3.5" /> Board
++						</button>
++					</div>
++					<div className="min-h-0 flex-1 overflow-hidden">
++						<KanbanBoard />
++					</div>
++				</div>
++			</ResizablePanel>
++			<div className="flex min-w-0 flex-1 flex-col">
++				<V2WorkspaceMount key={workspaceId} workspaceId={workspaceId} />
++			</div>
++		</div>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/index.ts
+new file mode 100644
+index 0000000..0acd3e3
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/index.ts
+@@ -0,0 +1 @@
++export { KanbanCollapseSplit } from "./KanbanCollapseSplit";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/KanbanColumn.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/KanbanColumn.tsx
+new file mode 100644
+index 0000000..cc9e016
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/KanbanColumn.tsx
+@@ -0,0 +1,268 @@
++import { useDroppable } from "@dnd-kit/core";
++import {
++	SortableContext,
++	verticalListSortingStrategy,
++} from "@dnd-kit/sortable";
++import {
++	DropdownMenu,
++	DropdownMenuContent,
++	DropdownMenuItem,
++	DropdownMenuSeparator,
++	DropdownMenuTrigger,
++} from "@superset/ui/dropdown-menu";
++import { Input } from "@superset/ui/input";
++import { toast } from "@superset/ui/sonner";
++import { cn } from "@superset/ui/utils";
++import { useState } from "react";
++import {
++	LuArrowDownWideNarrow,
++	LuArrowLeft,
++	LuArrowRight,
++	LuEllipsis,
++	LuListOrdered,
++	LuPlus,
++} from "react-icons/lu";
++import type { KanbanCardView, KanbanColumnView } from "../../types";
++import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
++import { KanbanCard } from "../KanbanCard";
++import { KanbanStateSection } from "../KanbanStateSection";
++
++interface KanbanColumnProps {
++	view: KanbanColumnView;
++	actions: UseKanbanActionsResult;
++	now: number;
++	onActivate: (view: KanbanCardView) => void;
++	onAddQueuedCard: () => void;
++	/** Ordered custom (non-Queue) column ids, for move-left/right + delete. */
++	customColumnIds: string[];
++}
++
++export function KanbanColumn({
++	view,
++	actions,
++	now,
++	onActivate,
++	onAddQueuedCard,
++	customColumnIds,
++}: KanbanColumnProps) {
++	const { column, active, snoozed, archived } = view;
++	const { setNodeRef, isOver } = useDroppable({
++		id: `kanban-col-${column.id}`,
++		data: { type: "column", columnId: column.id },
++	});
++	const [renaming, setRenaming] = useState(false);
++	const [nameDraft, setNameDraft] = useState(column.name);
++
++	const isQueue = column.isQueue;
++	const index = customColumnIds.indexOf(column.id);
++	const canMoveLeft = !isQueue && index > 0;
++	const canMoveRight = !isQueue && index >= 0 && index < customColumnIds.length - 1;
++
++	const move = (dir: -1 | 1) => {
++		const next = [...customColumnIds];
++		const j = index + dir;
++		if (j < 0 || j >= next.length) return;
++		[next[index], next[j]] = [next[j], next[index]];
++		actions.reorderColumns(next);
++	};
++
++	const commitRename = () => {
++		const name = nameDraft.trim();
++		if (name) actions.renameColumn(column.id, name);
++		setRenaming(false);
++	};
++
++	const handleDelete = () => {
++		const result = actions.deleteColumn(column.id);
++		if (!result.ok) toast.error(result.reason ?? "Cannot delete this column.");
++	};
++
++	const activeIds = active.map((v) => v.card.id);
++
++	return (
++		<div className="flex w-[280px] min-w-[280px] shrink-0 flex-col">
++			<div className="mb-1 flex items-center gap-1.5 px-1 py-1">
++				{renaming ? (
++					<Input
++						// biome-ignore lint/a11y/noAutofocus: inline rename
++						autoFocus
++						value={nameDraft}
++						onChange={(e) => setNameDraft(e.target.value)}
++						onBlur={commitRename}
++						onKeyDown={(e) => {
++							if (e.key === "Enter") commitRename();
++							if (e.key === "Escape") {
++								setNameDraft(column.name);
++								setRenaming(false);
++							}
++						}}
++						className="h-6 flex-1 px-1 py-0 text-sm"
++					/>
++				) : (
++					// biome-ignore lint/a11y/noStaticElementInteractions: inline rename affordance
++					<span
++						className="flex-1 truncate text-sm font-medium"
++						onDoubleClick={() => {
++							setNameDraft(column.name);
++							setRenaming(true);
++						}}
++					>
++						{column.name || (isQueue ? "Queued" : "Column")}
++					</span>
++				)}
++				<span className="text-xs tabular-nums text-muted-foreground">
++					{active.length}
++				</span>
++				{isQueue ? (
++					<button
++						type="button"
++						aria-label="Add task"
++						onClick={onAddQueuedCard}
++						className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
++					>
++						<LuPlus className="size-4" />
++					</button>
++				) : null}
++				<button
++					type="button"
++					aria-label="Toggle sort"
++					title={
++						column.sortMode === "deadline"
++							? "Sorted by deadline (click for manual)"
++							: "Manual order (click to sort by deadline)"
++					}
++					onClick={() =>
++						actions.setColumnSortMode(
++							column.id,
++							column.sortMode === "deadline" ? "manual" : "deadline",
++						)
++					}
++					className={cn(
++						"rounded p-0.5 hover:bg-accent",
++						column.sortMode === "deadline"
++							? "text-foreground"
++							: "text-muted-foreground",
++					)}
++				>
++					{column.sortMode === "deadline" ? (
++						<LuArrowDownWideNarrow className="size-4" />
++					) : (
++						<LuListOrdered className="size-4" />
++					)}
++				</button>
++				<DropdownMenu>
++					<DropdownMenuTrigger asChild>
++						<button
++							type="button"
++							aria-label="Column actions"
++							className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
++						>
++							<LuEllipsis className="size-4" />
++						</button>
++					</DropdownMenuTrigger>
++					<DropdownMenuContent
++						align="end"
++						onCloseAutoFocus={(e) => e.preventDefault()}
++					>
++						<DropdownMenuItem
++							onSelect={() => {
++								setNameDraft(column.name);
++								setRenaming(true);
++							}}
++						>
++							Rename
++						</DropdownMenuItem>
++						{!isQueue ? (
++							<>
++								<DropdownMenuItem
++									disabled={!canMoveLeft}
++									onSelect={() => move(-1)}
++								>
++									<LuArrowLeft className="size-4" /> Move left
++								</DropdownMenuItem>
++								<DropdownMenuItem
++									disabled={!canMoveRight}
++									onSelect={() => move(1)}
++								>
++									<LuArrowRight className="size-4" /> Move right
++								</DropdownMenuItem>
++								<DropdownMenuSeparator />
++								<DropdownMenuItem variant="destructive" onSelect={handleDelete}>
++									Delete column
++								</DropdownMenuItem>
++							</>
++						) : null}
++					</DropdownMenuContent>
++				</DropdownMenu>
++			</div>
++
++			<div
++				ref={setNodeRef}
++				className={cn(
++					"flex min-h-[60px] flex-1 flex-col gap-1 overflow-y-auto rounded-md p-0.5 transition-colors",
++					isOver && "bg-accent/20 ring-1 ring-accent/40",
++				)}
++			>
++				<SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
++					{active.map((cardView) => (
++						<KanbanCard
++							key={cardView.card.id}
++							view={cardView}
++							actions={actions}
++							now={now}
++							onActivate={onActivate}
++						/>
++					))}
++				</SortableContext>
++
++				{active.length === 0 ? (
++					<div className="px-1 py-2 text-[11px] text-muted-foreground">
++						{isQueue ? "No queued tasks" : "Drop a card here"}
++					</div>
++				) : null}
++
++				{/* Snoozed / Archived sections always render their (n) header so the
++				    user can reveal/collapse them per the spec. */}
++				<KanbanStateSection
++					title="Snoozed"
++					count={snoozed.length}
++					collapsed={column.snoozedCollapsed}
++					onCollapsedChange={(c) =>
++						actions.setColumnSectionFlag(column.id, "snoozedCollapsed", c)
++					}
++				>
++					{snoozed.map((cardView) => (
++						<KanbanCard
++							key={cardView.card.id}
++							view={cardView}
++							actions={actions}
++							now={now}
++							onActivate={onActivate}
++							disableDrag
++						/>
++					))}
++				</KanbanStateSection>
++
++				<KanbanStateSection
++					title="Archived"
++					count={archived.length}
++					collapsed={column.archivedCollapsed}
++					onCollapsedChange={(c) =>
++						actions.setColumnSectionFlag(column.id, "archivedCollapsed", c)
++					}
++				>
++					{archived.map((cardView) => (
++						<KanbanCard
++							key={cardView.card.id}
++							view={cardView}
++							actions={actions}
++							now={now}
++							onActivate={onActivate}
++							disableDrag
++						/>
++					))}
++				</KanbanStateSection>
++			</div>
++		</div>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/index.ts
+new file mode 100644
+index 0000000..703ef88
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanColumn/index.ts
+@@ -0,0 +1 @@
++export { KanbanColumn } from "./KanbanColumn";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/KanbanStateSection.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/KanbanStateSection.tsx
+new file mode 100644
+index 0000000..0935257
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/KanbanStateSection.tsx
+@@ -0,0 +1,45 @@
++import {
++	Collapsible,
++	CollapsibleContent,
++	CollapsibleTrigger,
++} from "@superset/ui/collapsible";
++import { LuChevronRight } from "react-icons/lu";
++import type { ReactNode } from "react";
++
++interface KanbanStateSectionProps {
++	title: string;
++	count: number;
++	collapsed: boolean;
++	onCollapsedChange: (collapsed: boolean) => void;
++	children: ReactNode;
++}
++
++/**
++ * A column's collapsible Snoozed / Archived section. Mirrors the sidebar's
++ * DashboardSidebarStateSection (chevron + title + "(n)" count). Rendered only
++ * when the section has content.
++ */
++export function KanbanStateSection({
++	title,
++	count,
++	collapsed,
++	onCollapsedChange,
++	children,
++}: KanbanStateSectionProps) {
++	return (
++		<Collapsible
++			open={!collapsed}
++			onOpenChange={(open) => onCollapsedChange(!open)}
++			className="mt-1"
++		>
++			<CollapsibleTrigger className="group flex w-full items-center gap-1 rounded px-1 py-1 text-[11px] font-medium text-muted-foreground hover:bg-accent/30">
++				<LuChevronRight className="size-3 transition-transform group-data-[state=open]:rotate-90" />
++				<span>{title}</span>
++				<span className="tabular-nums">({count})</span>
++			</CollapsibleTrigger>
++			<CollapsibleContent className="flex flex-col gap-1 pt-1">
++				{children}
++			</CollapsibleContent>
++		</Collapsible>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/index.ts
+new file mode 100644
+index 0000000..c0bb841
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/index.ts
+@@ -0,0 +1 @@
++export { KanbanStateSection } from "./KanbanStateSection";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/PromoteCardDialog.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/PromoteCardDialog.tsx
+new file mode 100644
+index 0000000..6aae563
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/PromoteCardDialog.tsx
+@@ -0,0 +1,226 @@
++import { Button } from "@superset/ui/button";
++import {
++	Dialog,
++	DialogContent,
++	DialogDescription,
++	DialogFooter,
++	DialogHeader,
++	DialogTitle,
++} from "@superset/ui/dialog";
++import { Input } from "@superset/ui/input";
++import { Label } from "@superset/ui/label";
++import {
++	Select,
++	SelectContent,
++	SelectItem,
++	SelectTrigger,
++	SelectValue,
++} from "@superset/ui/select";
++import { toast } from "@superset/ui/sonner";
++import { eq } from "@tanstack/db";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useEffect, useMemo, useState } from "react";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
++import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
++import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
++import { useProjectGitState } from "../../hooks/useProjectGitState";
++
++interface PromoteState {
++	queuedCardId: string;
++	targetColumnId: string;
++}
++
++interface PromoteCardDialogProps {
++	state: PromoteState | null;
++	actions: UseKanbanActionsResult;
++	onClose: () => void;
++}
++
++function slugifyBranch(title: string): string {
++	return title
++		.trim()
++		.toLowerCase()
++		.replace(/[^a-z0-9]+/g, "-")
++		.replace(/^-+|-+$/g, "")
++		.slice(0, 40);
++}
++
++/**
++ * Drag a Queued card out of column 1 → bind it to a branch. Git repos create a
++ * new branch (name + branch). A non-git / multi-repo project has only its main
++ * workspace (already a card), so selecting one MERGES the task into that main
++ * card instead of creating a branch.
++ */
++export function PromoteCardDialog({
++	state,
++	actions,
++	onClose,
++}: PromoteCardDialogProps) {
++	const collections = useCollections();
++	const { submit } = useWorkspaceCreates();
++	const { machineId } = useLocalHostService();
++	const [projectId, setProjectId] = useState("");
++	const [branch, setBranch] = useState("");
++	const [submitting, setSubmitting] = useState(false);
++
++	const { data: projects = [] } = useLiveQuery(
++		(q) => q.from({ p: collections.v2Projects }),
++		[collections],
++	);
++	const { data: [queuedCard] = [] } = useLiveQuery(
++		(q) =>
++			q
++				.from({ c: collections.v2KanbanCards })
++				.where(({ c }) => eq(c.id, state?.queuedCardId ?? "")),
++		[collections, state?.queuedCardId],
++	);
++
++	const { mainWorkspaceId, isResolved, isGitRepo } = useProjectGitState(
++		projectId,
++		machineId,
++	);
++	// Only treat as non-git once git-ness is RESOLVED — useIsGitRepo/this hook
++	// default to git while loading, so a fast submit must be blocked (see Confirm
++	// disabled on !isResolved) to avoid wrongly branch-creating a non-git folder.
++	const isNonGit = isResolved && !isGitRepo;
++
++	// Reset the chosen repo when the dialog (re)opens for a card.
++	useEffect(() => {
++		if (state) setProjectId("");
++	}, [state?.queuedCardId]);
++	// Seed the branch name from the queued card's title — re-run when the queued
++	// row actually loads (its id flips from undefined), so the prefill isn't lost.
++	useEffect(() => {
++		if (state) setBranch(slugifyBranch(queuedCard?.title ?? ""));
++	}, [state?.queuedCardId, queuedCard?.id]);
++
++	const sortedProjects = useMemo(
++		() => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
++		[projects],
++	);
++
++	const handleConfirm = async () => {
++		if (!state || !projectId || !isResolved || submitting) return;
++		setSubmitting(true);
++		try {
++			if (isNonGit && mainWorkspaceId) {
++				// Non-git repo: its single main workspace is already a card — merge.
++				actions.completePromote(
++					state.queuedCardId,
++					mainWorkspaceId,
++					state.targetColumnId,
++				);
++				onClose();
++				return;
++			}
++			// v2 create: the host-service path (NOT the v1 workspaces.create) — board
++			// cards are v2 workspaces. submit() optimistically inserts the v2 row;
++			// `completed` resolves with the real workspace id.
++			const snapshotId = crypto.randomUUID();
++			const { completed } = submit({
++				hostId: machineId,
++				snapshot: {
++					id: snapshotId,
++					projectId,
++					name: queuedCard?.title?.trim() || branch.trim() || "New workspace",
++					branch: branch.trim() || undefined,
++					agents: [],
++				},
++			});
++			const outcome = await completed;
++			if (!outcome.ok) {
++				toast.error(`Couldn't create the branch: ${outcome.error}`);
++				return;
++			}
++			actions.completePromote(
++				state.queuedCardId,
++				outcome.workspaceId,
++				state.targetColumnId,
++			);
++			onClose();
++		} catch (err) {
++			toast.error(
++				`Couldn't create the branch: ${
++					err instanceof Error ? err.message : "unknown error"
++				}`,
++			);
++		} finally {
++			setSubmitting(false);
++		}
++	};
++
++	return (
++		<Dialog
++			open={state != null}
++			onOpenChange={(open) => {
++				if (!open && !submitting) onClose();
++			}}
++		>
++			<DialogContent className="max-w-md">
++				<DialogHeader>
++					<DialogTitle>Move to a branch</DialogTitle>
++					<DialogDescription>
++						This task needs a branch once it leaves Queued. Pick a repo to
++						create one (or attach to a non-git folder's workspace).
++					</DialogDescription>
++				</DialogHeader>
++
++				<div className="flex flex-col gap-4 py-1">
++					<div className="flex flex-col gap-1.5">
++						<Label className="text-xs">Repo</Label>
++						<Select value={projectId} onValueChange={setProjectId}>
++							<SelectTrigger>
++								<SelectValue placeholder="Select a repo" />
++							</SelectTrigger>
++							<SelectContent>
++								{sortedProjects.map((p) => (
++									<SelectItem key={p.id} value={p.id}>
++										{p.name}
++									</SelectItem>
++								))}
++							</SelectContent>
++						</Select>
++					</div>
++
++					{isNonGit ? (
++						<p className="select-text text-xs text-muted-foreground">
++							This is a non-git folder — the task will attach to its existing
++							workspace (no branch is created).
++						</p>
++					) : (
++						<div className="flex flex-col gap-1.5">
++							<Label htmlFor="kanban-promote-branch" className="text-xs">
++								Branch name
++							</Label>
++							<Input
++								id="kanban-promote-branch"
++								value={branch}
++								onChange={(e) => setBranch(e.target.value)}
++								placeholder="my-feature"
++							/>
++						</div>
++					)}
++				</div>
++
++				<DialogFooter>
++					<Button variant="ghost" onClick={onClose} disabled={submitting}>
++						Cancel
++					</Button>
++					<Button
++						onClick={handleConfirm}
++						disabled={!projectId || !isResolved || submitting}
++					>
++						{submitting
++							? "Creating…"
++							: !isResolved
++								? "Checking…"
++								: isNonGit
++									? "Attach"
++									: "Create branch"}
++					</Button>
++				</DialogFooter>
++			</DialogContent>
++		</Dialog>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/index.ts
+new file mode 100644
+index 0000000..520ad1c
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/PromoteCardDialog/index.ts
+@@ -0,0 +1 @@
++export { PromoteCardDialog } from "./PromoteCardDialog";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/QueuedCardModal.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/QueuedCardModal.tsx
+new file mode 100644
+index 0000000..220e71a
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/QueuedCardModal.tsx
+@@ -0,0 +1,36 @@
++import {
++	Dialog,
++	DialogContent,
++	DialogHeader,
++	DialogTitle,
++} from "@superset/ui/dialog";
++import { KanbanCardDetailsForm } from "../KanbanCardDetailsForm";
++
++interface QueuedCardModalProps {
++	cardId: string | null;
++	onClose: () => void;
++}
++
++/**
++ * Single-click editor for a Queued (unbound) card — title / description /
++ * deadline. Opens when a Queued card is clicked or a new task is added.
++ */
++export function QueuedCardModal({ cardId, onClose }: QueuedCardModalProps) {
++	return (
++		<Dialog
++			open={cardId != null}
++			onOpenChange={(open) => {
++				if (!open) onClose();
++			}}
++		>
++			<DialogContent className="max-w-md">
++				<DialogHeader>
++					<DialogTitle>Task</DialogTitle>
++				</DialogHeader>
++				{cardId != null ? (
++					<KanbanCardDetailsForm cardId={cardId} autoFocusTitle />
++				) : null}
++			</DialogContent>
++		</Dialog>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/index.ts
+new file mode 100644
+index 0000000..86e438b
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/QueuedCardModal/index.ts
+@@ -0,0 +1 @@
++export { QueuedCardModal } from "./QueuedCardModal";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/index.ts
+new file mode 100644
+index 0000000..743a31d
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/index.ts
+@@ -0,0 +1 @@
++export * from "./useKanbanActions";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts
+new file mode 100644
+index 0000000..e18324a
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts
+@@ -0,0 +1,434 @@
++import { useCallback, useMemo } from "react";
++import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import {
++	APP_LAUNCH_ID,
++	getNextTabOrder,
++	type KanbanCardRow,
++	KANBAN_QUEUE_COLUMN_ID,
++	kanbanBoundCardId,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
++
++export type CardDropKind = "ok" | "promote" | "reject";
++
++export interface DeleteColumnResult {
++	ok: boolean;
++	reason?: string;
++}
++
++export interface UseKanbanActionsResult {
++	createQueuedCard: (title?: string) => string;
++	updateCard: (
++		cardId: string,
++		patch: {
++			title?: string;
++			description?: string | null;
++			deadline?: number | null;
++		},
++	) => void;
++	deleteQueuedCard: (cardId: string) => void;
++	canDropCard: (card: KanbanCardRow, toColumnId: string) => CardDropKind;
++	applyCardOrder: (columnId: string, orderedCardIds: string[]) => void;
++	moveCardToColumn: (cardId: string, toColumnId: string) => void;
++	completePromote: (
++		queuedCardId: string,
++		workspaceId: string,
++		toColumnId: string,
++	) => void;
++	addColumn: (name?: string) => string;
++	renameColumn: (columnId: string, name: string) => void;
++	deleteColumn: (columnId: string) => DeleteColumnResult;
++	reorderColumns: (orderedCustomIds: string[]) => void;
++	setColumnSortMode: (columnId: string, mode: "manual" | "deadline") => void;
++	setColumnSectionFlag: (
++		columnId: string,
++		field:
++			| "showSnoozed"
++			| "showArchived"
++			| "snoozedCollapsed"
++			| "archivedCollapsed",
++		value: boolean,
++	) => void;
++	snoozeCard: (card: KanbanCardRow, until: number | "next-launch") => void;
++	unsnoozeCard: (card: KanbanCardRow) => void;
++	archiveCard: (card: KanbanCardRow) => void;
++	unarchiveCard: (card: KanbanCardRow) => void;
++}
++
++/**
++ * All Kanban mutators. Bound-card snooze/archive delegate to the EXISTING
++ * sidebar state (one source of truth keyed by workspaceId); unbound (Queued)
++ * cards carry their own fields. Deleting a bound card's branch is handled by the
++ * shared DeleteWorkspaceDialog (the board's reconcile then drops the card).
++ */
++export function useKanbanActions(): UseKanbanActionsResult {
++	const collections = useCollections();
++	const {
++		archiveWorkspace,
++		snoozeWorkspace,
++		unsnoozeWorkspace,
++		unarchiveWorkspaces,
++		ensureWorkspaceInSidebar,
++	} = useDashboardSidebarState();
++
++	const columnCards = useCallback(
++		(columnId: string) =>
++			Array.from(collections.v2KanbanCards.state.values()).filter(
++				(c) => c.columnId === columnId,
++			),
++		[collections],
++	);
++
++	const customColumnsOrdered = useCallback(
++		() =>
++			Array.from(collections.v2KanbanColumns.state.values())
++				.filter((c) => !c.isQueue && c.id !== KANBAN_QUEUE_COLUMN_ID)
++				.sort((a, b) => a.tabOrder - b.tabOrder),
++		[collections],
++	);
++
++	const ensureBoundRow = useCallback(
++		(workspaceId: string) => {
++			if (collections.v2WorkspaceLocalState.get(workspaceId)) return;
++			const ws = collections.v2Workspaces.get(workspaceId);
++			if (ws) ensureWorkspaceInSidebar(workspaceId, ws.projectId);
++		},
++		[collections, ensureWorkspaceInSidebar],
++	);
++
++	const createQueuedCard = useCallback(
++		(title?: string) => {
++			const id = crypto.randomUUID();
++			const tabOrder = getNextTabOrder(columnCards(KANBAN_QUEUE_COLUMN_ID));
++			collections.v2KanbanCards.insert({
++				id,
++				columnId: KANBAN_QUEUE_COLUMN_ID,
++				tabOrder,
++				title: title ?? "",
++				description: null,
++				deadline: null,
++				workspaceId: null,
++				snoozeUntil: null,
++				snoozeLaunchId: null,
++				archivedAt: null,
++				createdAt: Date.now(),
++			});
++			return id;
++		},
++		[collections, columnCards],
++	);
++
++	const updateCard = useCallback<UseKanbanActionsResult["updateCard"]>(
++		(cardId, patch) => {
++			if (!collections.v2KanbanCards.get(cardId)) return;
++			collections.v2KanbanCards.update(cardId, (draft) => {
++				if (patch.title !== undefined) draft.title = patch.title;
++				if (patch.description !== undefined)
++					draft.description = patch.description;
++				if (patch.deadline !== undefined) draft.deadline = patch.deadline;
++			});
++		},
++		[collections],
++	);
++
++	const deleteQueuedCard = useCallback(
++		(cardId: string) => {
++			const card = collections.v2KanbanCards.get(cardId);
++			if (!card || card.workspaceId) return; // unbound only
++			collections.v2KanbanCards.delete(cardId);
++		},
++		[collections],
++	);
++
++	const canDropCard = useCallback<UseKanbanActionsResult["canDropCard"]>(
++		(card, toColumnId) => {
++			const toQueue = toColumnId === KANBAN_QUEUE_COLUMN_ID;
++			if (card.workspaceId) {
++				// A bound (branch) card can never enter the unbound-only Queue.
++				return toQueue ? "reject" : "ok";
++			}
++			// An unbound (Queued) card leaving the Queue must bind to a branch.
++			return toQueue ? "ok" : "promote";
++		},
++		[],
++	);
++
++	const applyCardOrder = useCallback(
++		(columnId: string, orderedCardIds: string[]) => {
++			orderedCardIds.forEach((cardId, index) => {
++				if (!collections.v2KanbanCards.get(cardId)) return;
++				collections.v2KanbanCards.update(cardId, (draft) => {
++					draft.columnId = columnId;
++					draft.tabOrder = index + 1;
++				});
++			});
++		},
++		[collections],
++	);
++
++	const moveCardToColumn = useCallback(
++		(cardId: string, toColumnId: string) => {
++			if (!collections.v2KanbanCards.get(cardId)) return;
++			const tabOrder = getNextTabOrder(columnCards(toColumnId));
++			collections.v2KanbanCards.update(cardId, (draft) => {
++				draft.columnId = toColumnId;
++				draft.tabOrder = tabOrder;
++			});
++		},
++		[collections, columnCards],
++	);
++
++	const completePromote = useCallback(
++		(queuedCardId: string, workspaceId: string, toColumnId: string) => {
++			const queued = collections.v2KanbanCards.get(queuedCardId);
++			// Fail fast: only promote an existing UNBOUND card into a real non-Queue
++			// column (guards against stale dialogs). NOTE: we do NOT require the
++			// v2Workspaces row to exist yet — the caller awaited a confirmed create
++			// outcome, but the optimistic/synced row may lag a tick; the bound card
++			// is keyed by workspaceId and reconcile aligns it.
++			if (!queued || queued.workspaceId) return;
++			const targetColumn = collections.v2KanbanColumns.get(toColumnId);
++			if (!targetColumn || targetColumn.isQueue) return;
++			const tabOrder = getNextTabOrder(columnCards(toColumnId));
++			const boundId = kanbanBoundCardId(workspaceId);
++			const existing = collections.v2KanbanCards.get(boundId);
++			if (existing) {
++				// Merge the Queued task metadata into the branch's existing card
++				// (non-git main, or a git branch-name collision). One card per branch.
++				collections.v2KanbanCards.update(boundId, (draft) => {
++					draft.columnId = toColumnId;
++					draft.tabOrder = tabOrder;
++					if (queued?.title) draft.title = queued.title;
++					if (queued?.description != null)
++						draft.description = queued.description;
++					if (queued?.deadline != null) draft.deadline = queued.deadline;
++				});
++			} else {
++				collections.v2KanbanCards.insert({
++					id: boundId,
++					columnId: toColumnId,
++					tabOrder,
++					title: queued?.title || "",
++					description: queued?.description ?? null,
++					deadline: queued?.deadline ?? null,
++					workspaceId,
++					snoozeUntil: null,
++					snoozeLaunchId: null,
++					archivedAt: null,
++					createdAt: Date.now(),
++				});
++			}
++			if (queued) collections.v2KanbanCards.delete(queuedCardId);
++		},
++		[collections, columnCards],
++	);
++
++	const addColumn = useCallback(
++		(name?: string) => {
++			const id = crypto.randomUUID();
++			const tabOrder = getNextTabOrder(customColumnsOrdered());
++			collections.v2KanbanColumns.insert({
++				id,
++				name: name ?? "New column",
++				tabOrder,
++				isQueue: false,
++				sortMode: "manual",
++				showSnoozed: false,
++				showArchived: false,
++				snoozedCollapsed: false,
++				archivedCollapsed: false,
++				createdAt: Date.now(),
++			});
++			return id;
++		},
++		[collections, customColumnsOrdered],
++	);
++
++	const renameColumn = useCallback(
++		(columnId: string, name: string) => {
++			if (!collections.v2KanbanColumns.get(columnId)) return;
++			collections.v2KanbanColumns.update(columnId, (draft) => {
++				draft.name = name;
++			});
++		},
++		[collections],
++	);
++
++	const deleteColumn = useCallback(
++		(columnId: string): DeleteColumnResult => {
++			const ordered = customColumnsOrdered().map((c) => c.id);
++			const { allowed, targetColumnId } = getColumnDeleteTarget(
++				ordered,
++				columnId,
++			);
++			if (!allowed || !targetColumnId) {
++				return {
++					ok: false,
++					reason: "Cannot delete the last custom column.",
++				};
++			}
++			// Move this column's cards to the target column (append, renumber).
++			const moving = columnCards(columnId).sort(
++				(a, b) => a.tabOrder - b.tabOrder,
++			);
++			let order = getNextTabOrder(columnCards(targetColumnId));
++			for (const card of moving) {
++				collections.v2KanbanCards.update(card.id, (draft) => {
++					draft.columnId = targetColumnId;
++					draft.tabOrder = order;
++				});
++				order += 1;
++			}
++			collections.v2KanbanColumns.delete(columnId);
++			return { ok: true };
++		},
++		[collections, columnCards, customColumnsOrdered],
++	);
++
++	const reorderColumns = useCallback(
++		(orderedCustomIds: string[]) => {
++			orderedCustomIds.forEach((columnId, index) => {
++				if (!collections.v2KanbanColumns.get(columnId)) return;
++				collections.v2KanbanColumns.update(columnId, (draft) => {
++					draft.tabOrder = index + 1;
++				});
++			});
++		},
++		[collections],
++	);
++
++	const setColumnSortMode = useCallback(
++		(columnId: string, mode: "manual" | "deadline") => {
++			if (!collections.v2KanbanColumns.get(columnId)) return;
++			collections.v2KanbanColumns.update(columnId, (draft) => {
++				draft.sortMode = mode;
++			});
++		},
++		[collections],
++	);
++
++	const setColumnSectionFlag = useCallback<
++		UseKanbanActionsResult["setColumnSectionFlag"]
++	>(
++		(columnId, field, value) => {
++			if (!collections.v2KanbanColumns.get(columnId)) return;
++			collections.v2KanbanColumns.update(columnId, (draft) => {
++				draft[field] = value;
++			});
++		},
++		[collections],
++	);
++
++	const snoozeCard = useCallback(
++		(card: KanbanCardRow, until: number | "next-launch") => {
++			if (card.workspaceId) {
++				ensureBoundRow(card.workspaceId);
++				snoozeWorkspace(card.workspaceId, until);
++				return;
++			}
++			if (!collections.v2KanbanCards.get(card.id)) return;
++			collections.v2KanbanCards.update(card.id, (draft) => {
++				if (until === "next-launch") {
++					// Same "until next launch" sentinel as the sidebar: store this
++					// launch's id; on the next launch APP_LAUNCH_ID differs and the
++					// card is no longer snoozed (cleared by useKanbanData's ticker).
++					draft.snoozeUntil = null;
++					draft.snoozeLaunchId = APP_LAUNCH_ID;
++				} else {
++					draft.snoozeUntil = until;
++					draft.snoozeLaunchId = null;
++				}
++				draft.archivedAt = null;
++			});
++		},
++		[collections, snoozeWorkspace, ensureBoundRow],
++	);
++
++	const unsnoozeCard = useCallback(
++		(card: KanbanCardRow) => {
++			if (card.workspaceId) {
++				unsnoozeWorkspace(card.workspaceId);
++				return;
++			}
++			if (!collections.v2KanbanCards.get(card.id)) return;
++			collections.v2KanbanCards.update(card.id, (draft) => {
++				draft.snoozeUntil = null;
++				draft.snoozeLaunchId = null;
++			});
++		},
++		[collections, unsnoozeWorkspace],
++	);
++
++	const archiveCard = useCallback(
++		(card: KanbanCardRow) => {
++			if (card.workspaceId) {
++				ensureBoundRow(card.workspaceId);
++				archiveWorkspace(card.workspaceId);
++				return;
++			}
++			if (!collections.v2KanbanCards.get(card.id)) return;
++			collections.v2KanbanCards.update(card.id, (draft) => {
++				draft.archivedAt = Date.now();
++				draft.snoozeUntil = null;
++				draft.snoozeLaunchId = null;
++			});
++		},
++		[collections, archiveWorkspace, ensureBoundRow],
++	);
++
++	const unarchiveCard = useCallback(
++		(card: KanbanCardRow) => {
++			if (card.workspaceId) {
++				unarchiveWorkspaces([card.workspaceId]);
++				return;
++			}
++			if (!collections.v2KanbanCards.get(card.id)) return;
++			collections.v2KanbanCards.update(card.id, (draft) => {
++				draft.archivedAt = null;
++			});
++		},
++		[collections, unarchiveWorkspaces],
++	);
++
++	return useMemo(
++		() => ({
++			createQueuedCard,
++			updateCard,
++			deleteQueuedCard,
++			canDropCard,
++			applyCardOrder,
++			moveCardToColumn,
++			completePromote,
++			addColumn,
++			renameColumn,
++			deleteColumn,
++			reorderColumns,
++			setColumnSortMode,
++			setColumnSectionFlag,
++			snoozeCard,
++			unsnoozeCard,
++			archiveCard,
++			unarchiveCard,
++		}),
++		[
++			createQueuedCard,
++			updateCard,
++			deleteQueuedCard,
++			canDropCard,
++			applyCardOrder,
++			moveCardToColumn,
++			completePromote,
++			addColumn,
++			renameColumn,
++			deleteColumn,
++			reorderColumns,
++			setColumnSortMode,
++			setColumnSectionFlag,
++			snoozeCard,
++			unsnoozeCard,
++			archiveCard,
++			unarchiveCard,
++		],
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/index.ts
+new file mode 100644
+index 0000000..34d4c0a
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/index.ts
+@@ -0,0 +1 @@
++export * from "./useKanbanData";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts
+new file mode 100644
+index 0000000..fda7722
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts
+@@ -0,0 +1,310 @@
++import type {
++	SelectV2Project,
++	SelectV2Workspace,
++} from "@superset/db/schema";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useEffect, useMemo, useState } from "react";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import {
++	APP_LAUNCH_ID,
++	getWorkspaceSidebarBucket,
++	isWorkspaceSnoozed,
++	type KanbanCardRow,
++	type KanbanColumnRow,
++	KANBAN_QUEUE_COLUMN_ID,
++	KANBAN_QUEUE_TAB_ORDER,
++	kanbanBoundCardId,
++	type WorkspaceLocalStateRow,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++import type {
++	KanbanCardBucket,
++	KanbanCardView,
++	KanbanColumnView,
++} from "../../types";
++import { deriveCardTitle } from "../../utils/deriveCardTitle";
++
++const TICK_INTERVAL_MS = 60_000;
++const STARTER_COLUMN_NAME = "In Progress";
++
++function sortCards(cards: KanbanCardView[], sortMode: string): KanbanCardView[] {
++	const next = [...cards];
++	if (sortMode === "deadline") {
++		// Display-only: soonest deadline first, no-deadline last; manual tabOrder
++		// breaks ties (and is preserved untouched underneath).
++		next.sort((a, b) => {
++			const da = a.card.deadline;
++			const db = b.card.deadline;
++			if (da == null && db == null) return a.card.tabOrder - b.card.tabOrder;
++			if (da == null) return 1;
++			if (db == null) return -1;
++			return da - db || a.card.tabOrder - b.card.tabOrder;
++		});
++	} else {
++		next.sort((a, b) => a.card.tabOrder - b.card.tabOrder);
++	}
++	return next;
++}
++
++/** Bucket for an UNBOUND (Queued) card, from its own snooze/archive fields. */
++function queuedCardBucket(card: KanbanCardRow, now: number): KanbanCardBucket {
++	if (card.archivedAt != null) return "archived";
++	if (isWorkspaceSnoozed(card, now)) return "snoozed";
++	return "active";
++}
++
++export interface UseKanbanDataResult {
++	isReady: boolean;
++	columns: KanbanColumnView[];
++	now: number;
++}
++
++/**
++ * The board's read model + reconcile. Live-queries the local Kanban collections
++ * joined against branches (v2Workspaces) and projects, materialises one card per
++ * branch and drops cards for deleted branches (ready-gated, per AGENTS rule 9),
++ * and classifies every card into active / snoozed / archived. Also owns a gated
++ * 60s tick that auto-unsnoozes expired Queued cards (bound cards are handled by
++ * the sidebar's own ticker).
++ */
++export function useKanbanData(): UseKanbanDataResult {
++	const collections = useCollections();
++
++	const { data: columnRows = [], isReady: columnsReady } = useLiveQuery(
++		(q) => q.from({ c: collections.v2KanbanColumns }),
++		[collections],
++	);
++	const { data: cardRows = [], isReady: cardsReady } = useLiveQuery(
++		(q) => q.from({ c: collections.v2KanbanCards }),
++		[collections],
++	);
++	const { data: workspaceRows = [], isReady: workspacesReady } = useLiveQuery(
++		(q) => q.from({ w: collections.v2Workspaces }),
++		[collections],
++	);
++	const { data: projectRows = [] } = useLiveQuery(
++		(q) => q.from({ p: collections.v2Projects }),
++		[collections],
++	);
++	const { data: localStateRows = [], isReady: localStateReady } = useLiveQuery(
++		(q) => q.from({ s: collections.v2WorkspaceLocalState }),
++		[collections],
++	);
++
++	const isReady =
++		columnsReady && cardsReady && workspacesReady && localStateReady;
++
++	const [now, setNow] = useState(() => Date.now());
++
++	// Gated tick: only run while something time-sensitive is pending (a snoozed
++	// card, or any deadline that could flip yellow→red across a day boundary).
++	const hasTimeSensitive = useMemo(() => {
++		// Only deadlines + TIMED snoozes need the wall-clock tick. An "until next
++		// launch" snooze (snoozeLaunchId) can't expire during this launch, so it
++		// must NOT keep the 60s ticker alive forever.
++		return (cardRows as KanbanCardRow[]).some(
++			(c) => c.deadline != null || c.snoozeUntil != null,
++		);
++	}, [cardRows]);
++	useEffect(() => {
++		if (!hasTimeSensitive) return;
++		const id = setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS);
++		return () => clearInterval(id);
++	}, [hasTimeSensitive]);
++
++	const workspaceById = useMemo(() => {
++		const map = new Map<string, SelectV2Workspace>();
++		for (const w of workspaceRows as SelectV2Workspace[]) map.set(w.id, w);
++		return map;
++	}, [workspaceRows]);
++
++	const projectNameById = useMemo(() => {
++		const map = new Map<string, string>();
++		for (const p of projectRows as SelectV2Project[]) map.set(p.id, p.name);
++		return map;
++	}, [projectRows]);
++
++	const localStateByWorkspace = useMemo(() => {
++		const map = new Map<string, WorkspaceLocalStateRow>();
++		for (const s of localStateRows as WorkspaceLocalStateRow[]) {
++			map.set(s.workspaceId, s);
++		}
++		return map;
++	}, [localStateRows]);
++
++	// --- Reconcile (ready-gated; idempotent via get-before-write) -------------
++	useEffect(() => {
++		if (!isReady) return;
++
++		// 1. Seed the fixed Queued column.
++		if (!collections.v2KanbanColumns.get(KANBAN_QUEUE_COLUMN_ID)) {
++			collections.v2KanbanColumns.insert({
++				id: KANBAN_QUEUE_COLUMN_ID,
++				name: "Queued",
++				tabOrder: KANBAN_QUEUE_TAB_ORDER,
++				isQueue: true,
++				sortMode: "manual",
++				showSnoozed: false,
++				showArchived: false,
++				snoozedCollapsed: false,
++				archivedCollapsed: false,
++				createdAt: Date.now(),
++			});
++		}
++
++		// 2. Ensure ≥1 custom column (the landing column for new branches).
++		const currentColumns = Array.from(
++			collections.v2KanbanColumns.state.values(),
++		);
++		const customColumns = currentColumns
++			.filter((c) => !c.isQueue && c.id !== KANBAN_QUEUE_COLUMN_ID)
++			.sort((a, b) => a.tabOrder - b.tabOrder);
++		let landingColumnId: string;
++		if (customColumns.length === 0) {
++			landingColumnId = crypto.randomUUID();
++			collections.v2KanbanColumns.insert({
++				id: landingColumnId,
++				name: STARTER_COLUMN_NAME,
++				tabOrder: 1,
++				isQueue: false,
++				sortMode: "manual",
++				showSnoozed: false,
++				showArchived: false,
++				snoozedCollapsed: false,
++				archivedCollapsed: false,
++				createdAt: Date.now(),
++			});
++		} else {
++			landingColumnId = customColumns[0].id;
++		}
++
++		// 3. Materialise a card for every non-hidden branch lacking one.
++		const existingCards = Array.from(collections.v2KanbanCards.state.values());
++		// Defensive dup-guard: a branch is "covered" if ANY card already points at
++		// it (not just the deterministic id), so we never create a second card.
++		const coveredWorkspaceIds = new Set(
++			existingCards
++				.map((c) => c.workspaceId)
++				.filter((id): id is string => id != null),
++		);
++		let nextOrder =
++			existingCards
++				.filter((c) => c.columnId === landingColumnId)
++				.reduce((max, c) => Math.max(max, c.tabOrder), 0) + 1;
++		for (const branch of workspaceRows as SelectV2Workspace[]) {
++			const local = localStateByWorkspace.get(branch.id);
++			const bucket = getWorkspaceSidebarBucket(
++				local?.sidebarState ?? {},
++				Date.now(),
++				branch.type,
++			);
++			// A removed-from-sidebar (hidden, non-archived) branch is not
++			// representable on the board either.
++			if (bucket === "hidden") continue;
++			const cardId = kanbanBoundCardId(branch.id);
++			if (collections.v2KanbanCards.get(cardId)) continue;
++			if (coveredWorkspaceIds.has(branch.id)) continue;
++			collections.v2KanbanCards.insert({
++				id: cardId,
++				columnId: landingColumnId,
++				tabOrder: nextOrder++,
++				title: deriveCardTitle(branch),
++				description: null,
++				deadline: null,
++				workspaceId: branch.id,
++				snoozeUntil: null,
++				snoozeLaunchId: null,
++				archivedAt: null,
++				createdAt: Date.now(),
++			});
++		}
++
++		// 4. Drop bound cards whose branch is gone (branch deleted → card gone).
++		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
++			if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
++				collections.v2KanbanCards.delete(card.id);
++			}
++		}
++	}, [
++		isReady,
++		collections,
++		workspaceRows,
++		workspaceById,
++		localStateByWorkspace,
++		columnRows,
++		cardRows,
++	]);
++
++	// --- Auto-unsnooze expired QUEUED cards (mirrors the sidebar ticker) -------
++	useEffect(() => {
++		if (!isReady) return;
++		for (const card of cardRows as KanbanCardRow[]) {
++			if (card.workspaceId) continue; // bound cards: sidebar ticker handles it
++			const expiredTimed =
++				typeof card.snoozeUntil === "number" && card.snoozeUntil <= now;
++			const staleLaunch =
++				card.snoozeLaunchId != null && card.snoozeLaunchId !== APP_LAUNCH_ID;
++			if (expiredTimed || staleLaunch) {
++				if (!collections.v2KanbanCards.get(card.id)) continue;
++				collections.v2KanbanCards.update(card.id, (draft) => {
++					draft.snoozeUntil = null;
++					draft.snoozeLaunchId = null;
++				});
++			}
++		}
++	}, [isReady, now, cardRows, collections]);
++
++	// --- Build the rendered column views --------------------------------------
++	const columns = useMemo<KanbanColumnView[]>(() => {
++		const orderedColumns = [...(columnRows as KanbanColumnRow[])].sort(
++			(a, b) => a.tabOrder - b.tabOrder,
++		);
++		return orderedColumns.map((column) => {
++			const active: KanbanCardView[] = [];
++			const snoozed: KanbanCardView[] = [];
++			const archived: KanbanCardView[] = [];
++			for (const card of cardRows as KanbanCardRow[]) {
++				if (card.columnId !== column.id) continue;
++
++				let workspace: SelectV2Workspace | null = null;
++				let projectName: string | null = null;
++				let bucket: KanbanCardBucket;
++
++				if (card.workspaceId) {
++					workspace = workspaceById.get(card.workspaceId) ?? null;
++					if (!workspace) continue; // pending cleanup — don't render a ghost
++					projectName = projectNameById.get(workspace.projectId) ?? null;
++					const local = localStateByWorkspace.get(workspace.id);
++					const wsBucket = getWorkspaceSidebarBucket(
++						local?.sidebarState ?? {},
++						now,
++						workspace.type,
++					);
++					if (wsBucket === "hidden") continue;
++					bucket = wsBucket;
++				} else {
++					bucket = queuedCardBucket(card, now);
++				}
++
++				const view: KanbanCardView = { card, workspace, projectName, bucket };
++				if (bucket === "archived") archived.push(view);
++				else if (bucket === "snoozed") snoozed.push(view);
++				else active.push(view);
++			}
++			return {
++				column,
++				active: sortCards(active, column.sortMode),
++				snoozed: sortCards(snoozed, column.sortMode),
++				archived: sortCards(archived, column.sortMode),
++			};
++		});
++	}, [
++		columnRows,
++		cardRows,
++		workspaceById,
++		projectNameById,
++		localStateByWorkspace,
++		now,
++	]);
++
++	return { isReady, columns, now };
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/index.ts
+new file mode 100644
+index 0000000..19f5ce4
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/index.ts
+@@ -0,0 +1 @@
++export * from "./useProjectGitState";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/useProjectGitState.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/useProjectGitState.ts
+new file mode 100644
+index 0000000..0b60c2b
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectGitState/useProjectGitState.ts
+@@ -0,0 +1,50 @@
++import { useQuery } from "@tanstack/react-query";
++import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
++import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
++import { useProjectMainWorkspaceId } from "../useProjectMainWorkspaceId";
++
++export interface ProjectGitState {
++	mainWorkspaceId: string | null;
++	/** True once the git.isRepo query has resolved (so isGitRepo is trustworthy). */
++	isResolved: boolean;
++	/** Defaults true until resolved (matches useIsGitRepo ergonomics). */
++	isGitRepo: boolean;
++}
++
++/**
++ * Resolved git-ness for a PROJECT (via its main workspace). The promote dialog
++ * must NOT decide create-vs-merge until this is resolved — `useIsGitRepo`
++ * defaults `true` while loading, which would wrongly route a non-git folder
++ * through branch-create. Shares the `["is-git-repo", …]` query cache with the
++ * sidebar's useIsGitRepo (same key) so it's usually instant.
++ */
++export function useProjectGitState(
++	projectId: string | null | undefined,
++	hostId?: string | null,
++): ProjectGitState {
++	const mainWorkspaceId = useProjectMainWorkspaceId(projectId || null, hostId);
++	const hostUrl = useWorkspaceHostUrl(mainWorkspaceId ?? "");
++	const enabled = Boolean(mainWorkspaceId) && Boolean(hostUrl);
++
++	const { data, isSuccess } = useQuery({
++		queryKey: ["is-git-repo", hostUrl, mainWorkspaceId],
++		enabled,
++		queryFn: () => {
++			if (!hostUrl || !mainWorkspaceId) return null;
++			return getHostServiceClientByUrl(hostUrl).git.isRepo.query({
++				workspaceId: mainWorkspaceId,
++			});
++		},
++		refetchOnWindowFocus: false,
++		staleTime: Number.POSITIVE_INFINITY,
++	});
++
++	return {
++		mainWorkspaceId,
++		// Resolved ONLY on success — a failed probe must NOT count as resolved
++		// (that would fall back to isGitRepo:true and re-enable branch-create for
++		// an unknown/non-git project). On error, Confirm stays disabled.
++		isResolved: enabled && isSuccess,
++		isGitRepo: data?.isGitRepo ?? true,
++	};
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/index.ts
+new file mode 100644
+index 0000000..d2aae3c
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/index.ts
+@@ -0,0 +1 @@
++export * from "./useProjectMainWorkspaceId";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/useProjectMainWorkspaceId.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/useProjectMainWorkspaceId.ts
+new file mode 100644
+index 0000000..4cae152
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useProjectMainWorkspaceId/useProjectMainWorkspaceId.ts
+@@ -0,0 +1,32 @@
++import { eq } from "@tanstack/db";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++
++/**
++ * Resolve a project's MAIN workspace id (`type === "main"`) — the entry point a
++ * non-git / multi-repo repo exposes (it has no branches/worktrees). Used by the
++ * promote flow to decide git-ness and to merge a Queued card into a non-git
++ * repo's existing main card.
++ *
++ * v2 permits one main workspace PER HOST, so when a hostId is given (the local
++ * machine, for promote) the match is scoped to that host — otherwise the first
++ * main across hosts is returned.
++ */
++export function useProjectMainWorkspaceId(
++	projectId: string | null | undefined,
++	hostId?: string | null,
++): string | null {
++	const collections = useCollections();
++	const { data } = useLiveQuery(
++		(q) =>
++			q
++				.from({ w: collections.v2Workspaces })
++				.where(({ w }) => eq(w.projectId, projectId ?? "")),
++		[collections, projectId],
++	);
++	if (!projectId) return null;
++	const main = (data ?? []).find(
++		(w) => w.type === "main" && (hostId ? w.hostId === hostId : true),
++	);
++	return main?.id ?? null;
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/page.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/page.tsx
+new file mode 100644
+index 0000000..58af085
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/page.tsx
+@@ -0,0 +1,32 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { KanbanBoard } from "./components/KanbanBoard";
++import { KanbanCollapseSplit } from "./components/KanbanCollapseSplit";
++
++interface KanbanSearch {
++	/** workspaceId of the bound card whose workspace is open in the split. */
++	cardId?: string;
++}
++
++export const Route = createFileRoute("/_authenticated/_dashboard/kanban/")({
++	component: KanbanPage,
++	validateSearch: (raw: Record<string, unknown>): KanbanSearch => ({
++		cardId:
++			typeof raw.cardId === "string" && raw.cardId.length > 0
++				? raw.cardId
++				: undefined,
++	}),
++});
++
++// (KANBAN) The fork's local-only board. A bound card click sets ?cardId=<wsId>,
++// which collapses the board to a left rail and opens that branch's centre.
++function KanbanPage() {
++	const { cardId } = Route.useSearch();
++	if (cardId) {
++		return <KanbanCollapseSplit workspaceId={cardId} />;
++	}
++	return (
++		<div className="flex h-full min-h-0 w-full min-w-0 flex-col">
++			<KanbanBoard />
++		</div>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/types.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/types.ts
+new file mode 100644
+index 0000000..5e6a84d
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/types.ts
+@@ -0,0 +1,28 @@
++import type { SelectV2Workspace } from "@superset/db/schema";
++import type {
++	KanbanCardRow,
++	KanbanColumnRow,
++} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++
++/** Which section of a column a card renders in. */
++export type KanbanCardBucket = "active" | "snoozed" | "archived";
++
++/**
++ * A card plus its resolved branch context. For a Queued (unbound) card,
++ * `workspace`/`projectName` are null. The bucket is derived from the branch's
++ * sidebar state for bound cards, or the card's own snooze/archive for unbound.
++ */
++export interface KanbanCardView {
++	card: KanbanCardRow;
++	workspace: SelectV2Workspace | null;
++	projectName: string | null;
++	bucket: KanbanCardBucket;
++}
++
++/** A column plus its cards split into the three rendered buckets (each sorted). */
++export interface KanbanColumnView {
++	column: KanbanColumnRow;
++	active: KanbanCardView[];
++	snoozed: KanbanCardView[];
++	archived: KanbanCardView[];
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/computeColumnDeleteTargets.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/computeColumnDeleteTargets.ts
+new file mode 100644
+index 0000000..0d59dd7
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/computeColumnDeleteTargets.ts
+@@ -0,0 +1,26 @@
++/**
++ * Where a deleted custom column's cards go. Cards move to the nearest custom
++ * column to the LEFT; if the deleted column is the leftmost custom column, they
++ * move to the next custom column on the RIGHT. Cards can never be pushed into
++ * the Queued column (it is unbound-only), and the board always keeps at least
++ * one custom column, so deleting the only custom column is blocked.
++ *
++ * @param orderedCustomColumnIds custom (non-Queue) column ids, left→right.
++ */
++export function getColumnDeleteTarget(
++	orderedCustomColumnIds: readonly string[],
++	columnId: string,
++): { allowed: boolean; targetColumnId: string | null } {
++	const idx = orderedCustomColumnIds.indexOf(columnId);
++	if (idx === -1) return { allowed: false, targetColumnId: null };
++	// Last remaining custom column — block (new branches need a landing column).
++	if (orderedCustomColumnIds.length <= 1) {
++		return { allowed: false, targetColumnId: null };
++	}
++	const left = idx > 0 ? orderedCustomColumnIds[idx - 1] : null;
++	const right =
++		idx < orderedCustomColumnIds.length - 1
++			? orderedCustomColumnIds[idx + 1]
++			: null;
++	return { allowed: true, targetColumnId: left ?? right };
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/index.ts
+new file mode 100644
+index 0000000..9e106aa
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/computeColumnDeleteTargets/index.ts
+@@ -0,0 +1 @@
++export * from "./computeColumnDeleteTargets";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/deadlineUrgency.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/deadlineUrgency.ts
+new file mode 100644
+index 0000000..cc50371
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/deadlineUrgency.ts
+@@ -0,0 +1,59 @@
++/**
++ * Date-only deadline urgency. The deadline is stored as a local-midnight
++ * epoch-ms; urgency compares calendar days (local), never time-of-day:
++ *   - upcoming  : due day is in the future            → neutral
++ *   - due-today : due day is today                    → yellow
++ *   - overdue   : due day already passed              → red
++ * No notifications — purely visual (per the feature spec).
++ */
++export type DeadlineUrgency = "none" | "upcoming" | "due-today" | "overdue";
++
++function startOfLocalDay(ms: number): number {
++	const d = new Date(ms);
++	d.setHours(0, 0, 0, 0);
++	return d.getTime();
++}
++
++export function getDeadlineUrgency(
++	deadline: number | null | undefined,
++	now: number = Date.now(),
++): DeadlineUrgency {
++	if (deadline == null) return "none";
++	const due = startOfLocalDay(deadline);
++	const today = startOfLocalDay(now);
++	if (due < today) return "overdue";
++	if (due === today) return "due-today";
++	return "upcoming";
++}
++
++/** Human label for the card face, e.g. "13 Jun". */
++export function formatDeadline(deadline: number | null | undefined): string {
++	if (deadline == null) return "";
++	return new Date(deadline).toLocaleDateString(undefined, {
++		day: "numeric",
++		month: "short",
++	});
++}
++
++/** `<input type="date">` value (YYYY-MM-DD, local) for a stored deadline. */
++export function deadlineToInputValue(
++	deadline: number | null | undefined,
++): string {
++	if (deadline == null) return "";
++	const d = new Date(deadline);
++	const yyyy = d.getFullYear();
++	const mm = String(d.getMonth() + 1).padStart(2, "0");
++	const dd = String(d.getDate()).padStart(2, "0");
++	return `${yyyy}-${mm}-${dd}`;
++}
++
++/** Parse a date-input value (YYYY-MM-DD) to a local-midnight epoch-ms (or null). */
++export function inputValueToDeadline(value: string): number | null {
++	if (!value) return null;
++	const [yyyy, mm, dd] = value.split("-").map((p) => Number.parseInt(p, 10));
++	if (!yyyy || !mm || !dd) return null;
++	const d = new Date(yyyy, mm - 1, dd);
++	d.setHours(0, 0, 0, 0);
++	const ms = d.getTime();
++	return Number.isNaN(ms) ? null : ms;
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/index.ts
+new file mode 100644
+index 0000000..fd84520
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deadlineUrgency/index.ts
+@@ -0,0 +1 @@
++export * from "./deadlineUrgency";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/deriveCardTitle.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/deriveCardTitle.ts
+new file mode 100644
+index 0000000..e8dcca7
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/deriveCardTitle.ts
+@@ -0,0 +1,12 @@
++import type { SelectV2Workspace } from "@superset/db/schema";
++
++/**
++ * Default title for an auto-mirrored branch card = the branch's display name
++ * (falling back to its git branch). Users can override via inline edit / the
++ * Card tab without touching the underlying branch name.
++ */
++export function deriveCardTitle(
++	workspace: Pick<SelectV2Workspace, "name" | "branch">,
++): string {
++	return workspace.name?.trim() || workspace.branch?.trim() || "Untitled";
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/index.ts
+new file mode 100644
+index 0000000..9a52884
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/deriveCardTitle/index.ts
+@@ -0,0 +1 @@
++export * from "./deriveCardTitle";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
+index 0634c24..34a038d 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx
+@@ -13,6 +13,7 @@ import { useHotkey } from "renderer/hotkeys";
+ import { electronTrpc } from "renderer/lib/electron-trpc";
+ import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
+ import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
++import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
+ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+ import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+@@ -190,6 +191,7 @@ function DashboardLayout() {
+ 	return (
+ 		<div className="flex h-full w-full overflow-hidden">
+ 			<CommandPaletteHost />
++			<KanbanReconciler />
+ 			{sidebarOutsideColumn && sidebarPanel}
+ 			<div className="flex flex-1 flex-col min-w-0 min-h-0">
+ 				<TopBar />
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/V2WorkspaceView.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/V2WorkspaceView.tsx
+new file mode 100644
+index 0000000..60cac98
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/V2WorkspaceView.tsx
+@@ -0,0 +1,357 @@
++import { Workspace } from "@superset/panes";
++import { workspaceTrpc } from "@superset/workspace-client";
++import { useCallback, useEffect, useState } from "react";
++import { createPortal } from "react-dom";
++import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
++import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
++import { useHotkey } from "renderer/hotkeys";
++import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
++import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
++import { getV2NotificationSourcesForTab } from "renderer/stores/v2-notifications";
++import { useWorkspace } from "../../../providers/WorkspaceProvider";
++import { useBrowserShellInteractionPassthrough } from "../../hooks/useBrowserShellInteractionPassthrough";
++import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
++import { useConsumeAutomationRunLink } from "../../hooks/useConsumeAutomationRunLink";
++import { useConsumeOpenUrlRequest } from "../../hooks/useConsumeOpenUrlRequest";
++import { useDefaultContextMenuActions } from "../../hooks/useDefaultContextMenuActions";
++import { useDefaultPaneActions } from "../../hooks/useDefaultPaneActions";
++import { useDirtyTabCloseGuard } from "../../hooks/useDirtyTabCloseGuard";
++import { usePaneRegistry } from "../../hooks/usePaneRegistry";
++import { renderBrowserTabIcon } from "../../hooks/usePaneRegistry/components/BrowserPane";
++import { useV2PresetExecution } from "../../hooks/useV2PresetExecution";
++import { useV2TerminalLauncher } from "../../hooks/useV2TerminalLauncher";
++import { useV2WorkspacePaneLayout } from "../../hooks/useV2WorkspacePaneLayout";
++import { useV2WorkspaceRun } from "../../hooks/useV2WorkspaceRun";
++import { useWorkspaceFileNavigation } from "../../hooks/useWorkspaceFileNavigation";
++import { useWorkspaceHotkeys } from "../../hooks/useWorkspaceHotkeys";
++import { useWorkspacePaneOpeners } from "../../hooks/useWorkspacePaneOpeners";
++import { WorkspaceGitStatusProvider } from "../../providers/WorkspaceGitStatusProvider";
++import { FileDocumentStoreProvider } from "../../state/fileDocumentStore";
++import type { PaneViewerData } from "../../types";
++import type { V2WorkspaceUrlOpenTarget } from "../../utils/openUrlInV2Workspace";
++import { AddTabMenu } from "../AddTabMenu";
++import { BackgroundTerminalsButton } from "../BackgroundTerminalsButton";
++import { V2NotificationStatusIndicator } from "../V2NotificationStatusIndicator";
++import { V2PresetsBar } from "../V2PresetsBar";
++import { V2WorkspaceRunButton } from "../V2WorkspaceRunButton";
++import { WorkspaceEmptyState } from "../WorkspaceEmptyState";
++import { WorkspaceMissingWorktreeState } from "../WorkspaceMissingWorktreeState";
++import { WorkspaceSidebar } from "../WorkspaceSidebar";
++
++/**
++ * Optional URL/deep-link search params. Passed by the v2-workspace route from
++ * `Route.useSearch()`; all `undefined` when mounted outside the route (e.g. the
++ * Kanban collapse-split via V2WorkspaceMount), which the consumers no-op on.
++ */
++export interface WorkspaceSearch {
++	terminalId?: string;
++	chatSessionId?: string;
++	focusRequestId?: string;
++	openUrl?: string;
++	openUrlTarget?: V2WorkspaceUrlOpenTarget;
++	openUrlRequestId?: string;
++}
++
++/**
++ * The full workspace centre — terminals / changes / files — for whichever
++ * workspace is in the surrounding WorkspaceProvider. Extracted from the route
++ * page so the Kanban collapse-split can mount the exact same view. Includes the
++ * missing-worktree guard (previously in the outer route component).
++ */
++export function V2WorkspaceView(search: WorkspaceSearch) {
++	const { workspace } = useWorkspace();
++	const workspaceStatusQuery = workspaceTrpc.workspace.get.useQuery(
++		{ id: workspace.id },
++		{
++			refetchOnWindowFocus: true,
++			retry: false,
++		},
++	);
++
++	// Guard BEFORE mounting the content (so its hooks don't initialize a pane
++	// layout against a dead worktree) — matches the original route structure.
++	if (workspaceStatusQuery.data?.worktreeExists === false) {
++		return (
++			<WorkspaceMissingWorktreeState
++				workspaceId={workspace.id}
++				workspaceName={workspace.name}
++				branch={workspace.branch}
++				worktreePath={workspaceStatusQuery.data?.worktreePath}
++				onRefresh={() => {
++					void workspaceStatusQuery.refetch();
++				}}
++				isRefreshing={workspaceStatusQuery.isFetching}
++			/>
++		);
++	}
++
++	return <V2WorkspaceCenter {...search} />;
++}
++
++function V2WorkspaceCenter({
++	terminalId,
++	chatSessionId,
++	focusRequestId,
++	openUrl,
++	openUrlTarget,
++	openUrlRequestId,
++}: WorkspaceSearch) {
++	const { workspace } = useWorkspace();
++	const workspaceId = workspace.id;
++
++	const {
++		preferences: v2UserPreferences,
++		setRightSidebarOpen,
++		setRightSidebarTab,
++		setRightSidebarWidth,
++		setShowPresetsBar,
++	} = useV2UserPreferences();
++	const showPresetsBar = v2UserPreferences.showPresetsBar;
++	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
++	const { store } = useV2WorkspacePaneLayout();
++	useClearActivePaneAttention({ store });
++	const launcher = useV2TerminalLauncher();
++	const {
++		matchedPresets,
++		newTabPresets,
++		executePreset,
++		resolvePresetCommands,
++	} = useV2PresetExecution({
++		store,
++		launcher,
++	});
++	const workspaceRun = useV2WorkspaceRun({
++		store,
++		launcher,
++		matchedPresets,
++		resolvePresetCommands,
++	});
++	useConsumeAutomationRunLink({
++		store,
++		workspaceId,
++		terminalId,
++		chatSessionId,
++		focusRequestId,
++	});
++	useConsumeOpenUrlRequest({
++		store,
++		url: openUrl,
++		target: openUrlTarget,
++		requestId: openUrlRequestId,
++	});
++
++	const {
++		openFilePane,
++		openFilePaneFromTreeClick,
++		revealPath,
++		selectedFilePath,
++		pendingReveal,
++		recentFiles,
++		openFilePaths,
++	} = useWorkspaceFileNavigation({
++		store,
++		setRightSidebarOpen,
++		setRightSidebarTab,
++	});
++
++	const paneRegistry = usePaneRegistry({
++		onOpenFile: openFilePane,
++		onRevealPath: revealPath,
++		launcher,
++		store,
++	});
++	const defaultContextMenuActions = useDefaultContextMenuActions({
++		paneRegistry,
++		launcher,
++	});
++	const {
++		openDiffPane,
++		addTerminalTab,
++		addChatTab,
++		addBrowserTab,
++		openCommentPane,
++	} = useWorkspacePaneOpeners({
++		store,
++		launcher,
++		newTabPresets,
++		executePreset,
++	});
++
++	const quickOpenOpen = useQuickOpenStore(
++		(s) => s.open && s.target?.workspaceId === workspaceId,
++	);
++	const closeQuickOpen = useQuickOpenStore((s) => s.close);
++	const openQuickOpenFor = useQuickOpenStore((s) => s.openFor);
++	const handleQuickOpen = useCallback(
++		() => openQuickOpenFor({ workspaceId }),
++		[openQuickOpenFor, workspaceId],
++	);
++	const handleQuickOpenChange = useCallback(
++		(next: boolean) => {
++			if (!next) closeQuickOpen();
++		},
++		[closeQuickOpen],
++	);
++	const handleQuickOpenSelectFile = useCallback(
++		(filePath: string, openInNewTab?: boolean) => {
++			setRightSidebarOpen(true);
++			setRightSidebarTab("files");
++			openFilePane(filePath, openInNewTab);
++		},
++		[openFilePane, setRightSidebarOpen, setRightSidebarTab],
++	);
++	const defaultPaneActions = useDefaultPaneActions({ launcher });
++	const onBeforeCloseTab = useDirtyTabCloseGuard();
++
++	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
++	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
++	const { onSidebarResizeDragging, onWorkspaceInteractionStateChange } =
++		useBrowserShellInteractionPassthrough({ sidebarOpen });
++	const handleSidebarResizingChange = useCallback(
++		(resizing: boolean) => {
++			setIsSidebarResizing(resizing);
++			onSidebarResizeDragging(resizing);
++		},
++		[onSidebarResizeDragging],
++	);
++
++	const [sidebarSlotEl, setSidebarSlotEl] = useState<HTMLElement | null>(() =>
++		typeof document !== "undefined"
++			? document.getElementById("workspace-right-sidebar-slot")
++			: null,
++	);
++	useEffect(() => {
++		if (sidebarSlotEl) return;
++		setSidebarSlotEl(document.getElementById("workspace-right-sidebar-slot"));
++	}, [sidebarSlotEl]);
++
++	useWorkspaceHotkeys({
++		store,
++		matchedPresets,
++		executePreset,
++		addTerminalTab,
++		paneRegistry,
++		launcher,
++	});
++	useHotkey("QUICK_OPEN", handleQuickOpen);
++	useHotkey("RUN_WORKSPACE_COMMAND", () => {
++		void workspaceRun.toggleWorkspaceRun();
++	});
++
++	const workspaceRunButton = (
++		<V2WorkspaceRunButton
++			projectId={workspace.projectId}
++			definition={workspaceRun.definition}
++			isRunning={workspaceRun.isRunning}
++			isPending={workspaceRun.isPending}
++			canForceStop={workspaceRun.canForceStop}
++			onToggle={workspaceRun.toggleWorkspaceRun}
++			onForceStop={workspaceRun.forceStopWorkspaceRun}
++		/>
++	);
++
++	return (
++		<FileDocumentStoreProvider>
++			<WorkspaceGitStatusProvider
++				workspaceId={workspaceId}
++				store={store}
++				sidebarOpen={sidebarOpen}
++			>
++				<div className="flex min-h-0 min-w-0 flex-1">
++					<div
++						className="flex min-h-0 min-w-[320px] flex-1 flex-col overflow-hidden"
++						data-workspace-id={workspaceId}
++					>
++						<Workspace<PaneViewerData>
++							key={workspaceId}
++							registry={paneRegistry}
++							paneActions={defaultPaneActions}
++							contextMenuActions={defaultContextMenuActions}
++							renderTabIcon={renderBrowserTabIcon}
++							renderTabAccessory={(tab) => (
++								<V2NotificationStatusIndicator
++									sources={getV2NotificationSourcesForTab(tab)}
++								/>
++							)}
++							renderBelowTabBar={() =>
++								showPresetsBar ? (
++									<V2PresetsBar
++										matchedPresets={matchedPresets}
++										executePreset={executePreset}
++										showPresetsBar={showPresetsBar}
++										onToggleShowPresetsBar={setShowPresetsBar}
++										trailing={workspaceRunButton}
++									/>
++								) : (
++									<div className="flex h-8 min-w-0 shrink-0 items-center border-b border-border bg-background px-2">
++										{workspaceRunButton}
++									</div>
++								)
++							}
++							renderAddTabMenu={() => (
++								<AddTabMenu
++									onAddTerminal={addTerminalTab}
++									onAddChat={addChatTab}
++									onAddBrowser={addBrowserTab}
++									showPresetsBar={showPresetsBar}
++									onToggleShowPresetsBar={setShowPresetsBar}
++								/>
++							)}
++							renderTabBarTrailing={() => (
++								<BackgroundTerminalsButton
++									workspaceId={workspaceId}
++									store={store}
++								/>
++							)}
++							renderEmptyState={() => (
++								<WorkspaceEmptyState
++									onOpenBrowser={addBrowserTab}
++									onOpenChat={addChatTab}
++									onOpenQuickOpen={handleQuickOpen}
++									onOpenTerminal={addTerminalTab}
++								/>
++							)}
++							onBeforeCloseTab={onBeforeCloseTab}
++							onInteractionStateChange={onWorkspaceInteractionStateChange}
++							store={store}
++						/>
++					</div>
++				</div>
++				{sidebarOpen &&
++					sidebarSlotEl &&
++					createPortal(
++						<ResizablePanel
++							width={sidebarWidth}
++							onWidthChange={setRightSidebarWidth}
++							isResizing={isSidebarResizing}
++							onResizingChange={handleSidebarResizingChange}
++							minWidth={240}
++							maxWidth={640}
++							handleSide="left"
++							onDoubleClickHandle={() => setRightSidebarWidth(340)}
++						>
++							<WorkspaceSidebar
++								workspaceId={workspaceId}
++								onSelectFile={openFilePaneFromTreeClick}
++								onSelectDiffFile={openDiffPane}
++								onOpenComment={openCommentPane}
++								onSearch={handleQuickOpen}
++								selectedFilePath={selectedFilePath}
++								pendingReveal={pendingReveal}
++							/>
++						</ResizablePanel>,
++						sidebarSlotEl,
++					)}
++			</WorkspaceGitStatusProvider>
++			<CommandPalette
++				workspaceId={workspaceId}
++				open={quickOpenOpen}
++				onOpenChange={handleQuickOpenChange}
++				onSelectFile={handleQuickOpenSelectFile}
++				variant="v2"
++				recentlyViewedFiles={recentFiles}
++				openFilePaths={openFilePaths}
++			/>
++		</FileDocumentStoreProvider>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/index.ts
+new file mode 100644
+index 0000000..5e53acb
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/index.ts
+@@ -0,0 +1 @@
++export { V2WorkspaceView, type WorkspaceSearch } from "./V2WorkspaceView";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
+index 8e3ae55..3626cfb 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/WorkspaceSidebar.tsx
+@@ -4,12 +4,13 @@ import { eq } from "@tanstack/db";
+ import { useLiveQuery } from "@tanstack/react-db";
+ import { Search } from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+-import { LuFile, LuGitCompareArrows } from "react-icons/lu";
++import { LuClipboardList, LuFile, LuGitCompareArrows } from "react-icons/lu";
+ import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+ import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
+ import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+ import { useSettings } from "renderer/stores/settings";
+ import type { CommentPaneData, DiffFocusSide } from "../../types";
++import { CardTab } from "./components/CardTab";
+ import { FilesTab } from "./components/FilesTab";
+ import { PRActionHeader } from "./components/PRActionHeader";
+ import { SidebarHeader } from "./components/SidebarHeader";
+@@ -24,9 +25,14 @@ import type { SidebarTabDefinition } from "./types";
+ // always renders so users can see PR state and merge once a PR exists.
+ const CREATE_PR_BUTTON_ENABLED = false;
+ 
+-type SidebarTabId = "changes" | "files" | "review";
++type SidebarTabId = "changes" | "files" | "review" | "card";
+ 
+-const VALID_TAB_IDS: readonly SidebarTabId[] = ["changes", "files", "review"];
++const VALID_TAB_IDS: readonly SidebarTabId[] = [
++	"changes",
++	"files",
++	"review",
++	"card",
++];
+ 
+ function isSidebarTabId(tab: string): tab is SidebarTabId {
+ 	return (VALID_TAB_IDS as readonly string[]).includes(tab);
+@@ -176,12 +182,21 @@ export function WorkspaceSidebar({
+ 		),
+ 	};
+ 
++	// (KANBAN) The "Card" tab edits this branch's board task details. Always
++	// available (every branch mirrors to a card), even for non-git folders.
++	const cardTab: SidebarTabDefinition = {
++		id: "card",
++		label: "Card",
++		icon: LuClipboardList,
++		content: <CardTab workspaceId={workspaceId} />,
++	};
++
+ 	// (NON-GIT WORKSPACE) Drop the Changes + Review tabs (and the PR header
+ 	// below) for a non-git folder — keep only Files. Terminal + agents live
+-	// outside this sidebar and are unaffected.
++	// outside this sidebar and are unaffected. The Card tab stays in both.
+ 	const tabs: SidebarTabDefinition[] = isGitRepo
+-		? [filesTab, changesTab, reviewTab]
+-		: [filesTab];
++		? [filesTab, changesTab, reviewTab, cardTab]
++		: [filesTab, cardTab];
+ 	// The persisted activeTab may be a git tab ("changes"/"review") that no
+ 	// longer exists for a non-git folder; fall back to Files so content renders.
+ 	const activeTabDef = tabs.find((t) => t.id === activeTab) ?? filesTab;
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/CardTab.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/CardTab.tsx
+new file mode 100644
+index 0000000..a863dd4
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/CardTab.tsx
+@@ -0,0 +1,21 @@
++import { KanbanCardDetailsForm } from "renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCardDetailsForm";
++import { kanbanBoundCardId } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
++
++interface CardTabProps {
++	workspaceId: string;
++}
++
++/**
++ * (KANBAN) Right-panel "Card" tab — edits the Kanban task details (title /
++ * description / deadline) for THIS branch's card. Always available; the default
++ * active tab stays "changes". Every branch mirrors to a card, so the row
++ * normally exists; the form shows a gentle empty state until reconcile creates
++ * it.
++ */
++export function CardTab({ workspaceId }: CardTabProps) {
++	return (
++		<div className="flex h-full min-h-0 flex-col overflow-y-auto">
++			<KanbanCardDetailsForm cardId={kanbanBoundCardId(workspaceId)} />
++		</div>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/index.ts
+new file mode 100644
+index 0000000..678a3d7
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/components/CardTab/index.ts
+@@ -0,0 +1 @@
++export { CardTab } from "./CardTab";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/page.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/page.tsx
+index 42364f1..881a1a4 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/page.tsx
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/page.tsx
+@@ -1,53 +1,10 @@
+-import { Workspace } from "@superset/panes";
+-import { workspaceTrpc } from "@superset/workspace-client";
+ import { createFileRoute } from "@tanstack/react-router";
+-import { useCallback, useEffect, useState } from "react";
+-import { createPortal } from "react-dom";
+-import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
+-import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
+-import { useHotkey } from "renderer/hotkeys";
+-import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
+-import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
+-import { getV2NotificationSourcesForTab } from "renderer/stores/v2-notifications";
+-import { useWorkspace } from "../providers/WorkspaceProvider";
+-import { AddTabMenu } from "./components/AddTabMenu";
+-import { BackgroundTerminalsButton } from "./components/BackgroundTerminalsButton";
+-import { V2NotificationStatusIndicator } from "./components/V2NotificationStatusIndicator";
+-import { V2PresetsBar } from "./components/V2PresetsBar";
+-import { V2WorkspaceRunButton } from "./components/V2WorkspaceRunButton";
+-import { WorkspaceEmptyState } from "./components/WorkspaceEmptyState";
+-import { WorkspaceMissingWorktreeState } from "./components/WorkspaceMissingWorktreeState";
+-import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+-import { useBrowserShellInteractionPassthrough } from "./hooks/useBrowserShellInteractionPassthrough";
+-import { useClearActivePaneAttention } from "./hooks/useClearActivePaneAttention";
+-import { useConsumeAutomationRunLink } from "./hooks/useConsumeAutomationRunLink";
+-import { useConsumeOpenUrlRequest } from "./hooks/useConsumeOpenUrlRequest";
+-import { useDefaultContextMenuActions } from "./hooks/useDefaultContextMenuActions";
+-import { useDefaultPaneActions } from "./hooks/useDefaultPaneActions";
+-import { useDirtyTabCloseGuard } from "./hooks/useDirtyTabCloseGuard";
+-import { usePaneRegistry } from "./hooks/usePaneRegistry";
+-import { renderBrowserTabIcon } from "./hooks/usePaneRegistry/components/BrowserPane";
+-import { useV2PresetExecution } from "./hooks/useV2PresetExecution";
+-import { useV2TerminalLauncher } from "./hooks/useV2TerminalLauncher";
+-import { useV2WorkspacePaneLayout } from "./hooks/useV2WorkspacePaneLayout";
+-import { useV2WorkspaceRun } from "./hooks/useV2WorkspaceRun";
+-import { useWorkspaceFileNavigation } from "./hooks/useWorkspaceFileNavigation";
+-import { useWorkspaceHotkeys } from "./hooks/useWorkspaceHotkeys";
+-import { useWorkspacePaneOpeners } from "./hooks/useWorkspacePaneOpeners";
+-import { WorkspaceGitStatusProvider } from "./providers/WorkspaceGitStatusProvider";
+-import { FileDocumentStoreProvider } from "./state/fileDocumentStore";
+-import type { PaneViewerData } from "./types";
++import {
++	V2WorkspaceView,
++	type WorkspaceSearch,
++} from "./components/V2WorkspaceView";
+ import type { V2WorkspaceUrlOpenTarget } from "./utils/openUrlInV2Workspace";
+ 
+-interface WorkspaceSearch {
+-	terminalId?: string;
+-	chatSessionId?: string;
+-	focusRequestId?: string;
+-	openUrl?: string;
+-	openUrlTarget?: V2WorkspaceUrlOpenTarget;
+-	openUrlRequestId?: string;
+-}
+-
+ function parseOpenUrlTarget(
+ 	value: unknown,
+ ): V2WorkspaceUrlOpenTarget | undefined {
+@@ -73,310 +30,10 @@ export const Route = createFileRoute(
+ 	}),
+ });
+ 
++// The workspace centre lives in <V2WorkspaceView/> so the Kanban collapse-split
++// (via V2WorkspaceMount) can mount the exact same view. This route is now a thin
++// shim that feeds it the parsed URL search params.
+ function V2WorkspacePage() {
+-	const { workspace } = useWorkspace();
+-	const workspaceStatusQuery = workspaceTrpc.workspace.get.useQuery(
+-		{ id: workspace.id },
+-		{
+-			refetchOnWindowFocus: true,
+-			retry: false,
+-		},
+-	);
+-
+-	if (workspaceStatusQuery.data?.worktreeExists === false) {
+-		return (
+-			<WorkspaceMissingWorktreeState
+-				workspaceId={workspace.id}
+-				workspaceName={workspace.name}
+-				branch={workspace.branch}
+-				worktreePath={workspaceStatusQuery.data?.worktreePath}
+-				onRefresh={() => {
+-					void workspaceStatusQuery.refetch();
+-				}}
+-				isRefreshing={workspaceStatusQuery.isFetching}
+-			/>
+-		);
+-	}
+-
+-	return <V2WorkspaceContent />;
+-}
+-
+-function V2WorkspaceContent() {
+-	const {
+-		terminalId,
+-		chatSessionId,
+-		focusRequestId,
+-		openUrl,
+-		openUrlTarget,
+-		openUrlRequestId,
+-	} = Route.useSearch();
+-	const { workspace } = useWorkspace();
+-	const workspaceId = workspace.id;
+-
+-	const {
+-		preferences: v2UserPreferences,
+-		setRightSidebarOpen,
+-		setRightSidebarTab,
+-		setRightSidebarWidth,
+-		setShowPresetsBar,
+-	} = useV2UserPreferences();
+-	const showPresetsBar = v2UserPreferences.showPresetsBar;
+-	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
+-	const { store } = useV2WorkspacePaneLayout();
+-	useClearActivePaneAttention({ store });
+-	const launcher = useV2TerminalLauncher();
+-	const {
+-		matchedPresets,
+-		newTabPresets,
+-		executePreset,
+-		resolvePresetCommands,
+-	} = useV2PresetExecution({
+-		store,
+-		launcher,
+-	});
+-	const workspaceRun = useV2WorkspaceRun({
+-		store,
+-		launcher,
+-		matchedPresets,
+-		resolvePresetCommands,
+-	});
+-	useConsumeAutomationRunLink({
+-		store,
+-		workspaceId,
+-		terminalId,
+-		chatSessionId,
+-		focusRequestId,
+-	});
+-	useConsumeOpenUrlRequest({
+-		store,
+-		url: openUrl,
+-		target: openUrlTarget,
+-		requestId: openUrlRequestId,
+-	});
+-
+-	const {
+-		openFilePane,
+-		openFilePaneFromTreeClick,
+-		revealPath,
+-		selectedFilePath,
+-		pendingReveal,
+-		recentFiles,
+-		openFilePaths,
+-	} = useWorkspaceFileNavigation({
+-		store,
+-		setRightSidebarOpen,
+-		setRightSidebarTab,
+-	});
+-
+-	const paneRegistry = usePaneRegistry({
+-		onOpenFile: openFilePane,
+-		onRevealPath: revealPath,
+-		launcher,
+-		store,
+-	});
+-	const defaultContextMenuActions = useDefaultContextMenuActions({
+-		paneRegistry,
+-		launcher,
+-	});
+-	const {
+-		openDiffPane,
+-		addTerminalTab,
+-		addChatTab,
+-		addBrowserTab,
+-		openCommentPane,
+-	} = useWorkspacePaneOpeners({
+-		store,
+-		launcher,
+-		newTabPresets,
+-		executePreset,
+-	});
+-
+-	const quickOpenOpen = useQuickOpenStore(
+-		(s) => s.open && s.target?.workspaceId === workspaceId,
+-	);
+-	const closeQuickOpen = useQuickOpenStore((s) => s.close);
+-	const openQuickOpenFor = useQuickOpenStore((s) => s.openFor);
+-	const handleQuickOpen = useCallback(
+-		() => openQuickOpenFor({ workspaceId }),
+-		[openQuickOpenFor, workspaceId],
+-	);
+-	const handleQuickOpenChange = useCallback(
+-		(next: boolean) => {
+-			if (!next) closeQuickOpen();
+-		},
+-		[closeQuickOpen],
+-	);
+-	// Picking a file from Quick Open should surface the sidebar/Files tab so
+-	// the reveal (expand + highlight + scroll) is actually visible. Tree
+-	// clicks and other openFilePane callers already have the sidebar open.
+-	const handleQuickOpenSelectFile = useCallback(
+-		(filePath: string, openInNewTab?: boolean) => {
+-			setRightSidebarOpen(true);
+-			setRightSidebarTab("files");
+-			openFilePane(filePath, openInNewTab);
+-		},
+-		[openFilePane, setRightSidebarOpen, setRightSidebarTab],
+-	);
+-	const defaultPaneActions = useDefaultPaneActions({ launcher });
+-	const onBeforeCloseTab = useDirtyTabCloseGuard();
+-
+-	// Fallback for rows persisted before the rightSidebarWidth field existed —
+-	// the live collection skips zod defaults, so an older row reads undefined
+-	// here and would render the ResizablePanel without a width (full-bleed).
+-	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
+-	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
+-	const { onSidebarResizeDragging, onWorkspaceInteractionStateChange } =
+-		useBrowserShellInteractionPassthrough({ sidebarOpen });
+-	const handleSidebarResizingChange = useCallback(
+-		(resizing: boolean) => {
+-			setIsSidebarResizing(resizing);
+-			onSidebarResizeDragging(resizing);
+-		},
+-		[onSidebarResizeDragging],
+-	);
+-
+-	// The sidebar slot lives at the dashboard layout level (next to TopBar) so
+-	// the sidebar runs full-height. The slot is mounted by the parent layout
+-	// before this child renders, so look it up synchronously during state init —
+-	// otherwise users with rightSidebarOpen=true persisted see a 1-frame flash
+-	// while the post-mount effect fills the ref.
+-	const [sidebarSlotEl, setSidebarSlotEl] = useState<HTMLElement | null>(() =>
+-		typeof document !== "undefined"
+-			? document.getElementById("workspace-right-sidebar-slot")
+-			: null,
+-	);
+-	useEffect(() => {
+-		if (sidebarSlotEl) return;
+-		setSidebarSlotEl(document.getElementById("workspace-right-sidebar-slot"));
+-	}, [sidebarSlotEl]);
+-
+-	useWorkspaceHotkeys({
+-		store,
+-		matchedPresets,
+-		executePreset,
+-		addTerminalTab,
+-		paneRegistry,
+-		launcher,
+-	});
+-	useHotkey("QUICK_OPEN", handleQuickOpen);
+-	useHotkey("RUN_WORKSPACE_COMMAND", () => {
+-		void workspaceRun.toggleWorkspaceRun();
+-	});
+-
+-	const workspaceRunButton = (
+-		<V2WorkspaceRunButton
+-			projectId={workspace.projectId}
+-			definition={workspaceRun.definition}
+-			isRunning={workspaceRun.isRunning}
+-			isPending={workspaceRun.isPending}
+-			canForceStop={workspaceRun.canForceStop}
+-			onToggle={workspaceRun.toggleWorkspaceRun}
+-			onForceStop={workspaceRun.forceStopWorkspaceRun}
+-		/>
+-	);
+-
+-	return (
+-		<FileDocumentStoreProvider>
+-			<WorkspaceGitStatusProvider
+-				workspaceId={workspaceId}
+-				store={store}
+-				sidebarOpen={sidebarOpen}
+-			>
+-				<div className="flex min-h-0 min-w-0 flex-1">
+-					<div
+-						className="flex min-h-0 min-w-[320px] flex-1 flex-col overflow-hidden"
+-						data-workspace-id={workspaceId}
+-					>
+-						<Workspace<PaneViewerData>
+-							key={workspaceId}
+-							registry={paneRegistry}
+-							paneActions={defaultPaneActions}
+-							contextMenuActions={defaultContextMenuActions}
+-							renderTabIcon={renderBrowserTabIcon}
+-							renderTabAccessory={(tab) => (
+-								<V2NotificationStatusIndicator
+-									sources={getV2NotificationSourcesForTab(tab)}
+-								/>
+-							)}
+-							renderBelowTabBar={() =>
+-								showPresetsBar ? (
+-									<V2PresetsBar
+-										matchedPresets={matchedPresets}
+-										executePreset={executePreset}
+-										showPresetsBar={showPresetsBar}
+-										onToggleShowPresetsBar={setShowPresetsBar}
+-										trailing={workspaceRunButton}
+-									/>
+-								) : (
+-									<div className="flex h-8 min-w-0 shrink-0 items-center border-b border-border bg-background px-2">
+-										{workspaceRunButton}
+-									</div>
+-								)
+-							}
+-							renderAddTabMenu={() => (
+-								<AddTabMenu
+-									onAddTerminal={addTerminalTab}
+-									onAddChat={addChatTab}
+-									onAddBrowser={addBrowserTab}
+-									showPresetsBar={showPresetsBar}
+-									onToggleShowPresetsBar={setShowPresetsBar}
+-								/>
+-							)}
+-							renderTabBarTrailing={() => (
+-								<BackgroundTerminalsButton
+-									workspaceId={workspaceId}
+-									store={store}
+-								/>
+-							)}
+-							renderEmptyState={() => (
+-								<WorkspaceEmptyState
+-									onOpenBrowser={addBrowserTab}
+-									onOpenChat={addChatTab}
+-									onOpenQuickOpen={handleQuickOpen}
+-									onOpenTerminal={addTerminalTab}
+-								/>
+-							)}
+-							onBeforeCloseTab={onBeforeCloseTab}
+-							onInteractionStateChange={onWorkspaceInteractionStateChange}
+-							store={store}
+-						/>
+-					</div>
+-				</div>
+-				{sidebarOpen &&
+-					sidebarSlotEl &&
+-					createPortal(
+-						<ResizablePanel
+-							width={sidebarWidth}
+-							onWidthChange={setRightSidebarWidth}
+-							isResizing={isSidebarResizing}
+-							onResizingChange={handleSidebarResizingChange}
+-							minWidth={240}
+-							maxWidth={640}
+-							handleSide="left"
+-							onDoubleClickHandle={() => setRightSidebarWidth(340)}
+-						>
+-							<WorkspaceSidebar
+-								workspaceId={workspaceId}
+-								onSelectFile={openFilePaneFromTreeClick}
+-								onSelectDiffFile={openDiffPane}
+-								onOpenComment={openCommentPane}
+-								onSearch={handleQuickOpen}
+-								selectedFilePath={selectedFilePath}
+-								pendingReveal={pendingReveal}
+-							/>
+-						</ResizablePanel>,
+-						sidebarSlotEl,
+-					)}
+-			</WorkspaceGitStatusProvider>
+-			<CommandPalette
+-				workspaceId={workspaceId}
+-				open={quickOpenOpen}
+-				onOpenChange={handleQuickOpenChange}
+-				onSelectFile={handleQuickOpenSelectFile}
+-				variant="v2"
+-				recentlyViewedFiles={recentFiles}
+-				openFilePaths={openFilePaths}
+-			/>
+-		</FileDocumentStoreProvider>
+-	);
++	const search = Route.useSearch();
++	return <V2WorkspaceView {...search} />;
+ }
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx
+new file mode 100644
+index 0000000..bd9a40f
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx
+@@ -0,0 +1,111 @@
++import { eq } from "@tanstack/db";
++import { useLiveQuery } from "@tanstack/react-db";
++import { useEffect, useRef } from "react";
++import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
++import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
++import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
++import { V2WorkspaceView } from "../../$workspaceId/components/V2WorkspaceView";
++import { useRemoteHostStatus } from "../../hooks/useRemoteHostStatus";
++import { WorkspaceProvider } from "../../providers/WorkspaceProvider";
++import { WorkspaceCreateErrorState } from "../WorkspaceCreateErrorState";
++import { WorkspaceCreatingState } from "../WorkspaceCreatingState";
++import { WorkspaceHostIncompatibleState } from "../WorkspaceHostIncompatibleState";
++import { WorkspaceNotFoundState } from "../WorkspaceNotFoundState";
++
++interface V2WorkspaceMountProps {
++	workspaceId: string;
++}
++
++/**
++ * Mounts the full workspace centre for an arbitrary workspaceId OUTSIDE the
++ * /v2-workspace route — used by the Kanban collapse-split. Mirrors the route
++ * layout's resolution + guards (not-found / create-pending / host-incompatible)
++ * and provides the WorkspaceProvider, then renders the shared <V2WorkspaceView/>.
++ *
++ * Only one of these is mounted at a time (the split renders exactly one, keyed
++ * by workspaceId), so the global #workspace-right-sidebar-slot portal that
++ * V2WorkspaceView claims always has a single owner.
++ */
++export function V2WorkspaceMount({ workspaceId }: V2WorkspaceMountProps) {
++	const collections = useCollections();
++	const { ensureWorkspaceInSidebar } = useDashboardSidebarState();
++	const pendingTransaction = useWorkspaceTransactionsStore(
++		(state) => state.byWorkspaceId[workspaceId] ?? null,
++	);
++	const clearWorkspaceTransaction = useWorkspaceTransactionsStore(
++		(state) => state.clear,
++	);
++	const isCreatePending = pendingTransaction?.type === "insert";
++
++	const { data: workspaces, isReady } = useLiveQuery(
++		(q) =>
++			q
++				.from({ v2Workspaces: collections.v2Workspaces })
++				.where(({ v2Workspaces }) => eq(v2Workspaces.id, workspaceId)),
++		[collections, workspaceId],
++	);
++	const { data: failedEntries } = useLiveQuery(
++		(q) =>
++			q
++				.from({ failed: collections.failedWorkspaceCreates })
++				.where(({ failed }) => eq(failed.id, workspaceId)),
++		[collections, workspaceId],
++	);
++	const workspace = workspaces?.[0] ?? null;
++	const failedEntry = failedEntries?.[0] ?? null;
++
++	useEffect(() => {
++		if (workspace?.$synced === true && pendingTransaction?.type === "insert") {
++			clearWorkspaceTransaction(workspace.id);
++		}
++	}, [clearWorkspaceTransaction, pendingTransaction, workspace]);
++
++	const lastEnsuredWorkspaceIdRef = useRef<string | null>(null);
++	useEffect(() => {
++		if (!workspace || lastEnsuredWorkspaceIdRef.current === workspace.id) return;
++		lastEnsuredWorkspaceIdRef.current = workspace.id;
++		ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
++	}, [ensureWorkspaceInSidebar, workspace]);
++
++	const hostStatus = useRemoteHostStatus(workspace);
++
++	if (!workspaces || (!workspace && !isReady)) {
++		return <div className="flex h-full w-full" />;
++	}
++
++	if (!workspace) {
++		if (failedEntry) {
++			return <WorkspaceCreateErrorState entry={failedEntry} />;
++		}
++		return <WorkspaceNotFoundState workspaceId={workspaceId} />;
++	}
++
++	if (isCreatePending) {
++		return (
++			<WorkspaceCreatingState
++				name={workspace.name}
++				branch={workspace.branch}
++				startedAt={new Date(workspace.createdAt).getTime()}
++			/>
++		);
++	}
++
++	if (hostStatus.status === "incompatible") {
++		return (
++			<WorkspaceHostIncompatibleState
++				hostName={hostStatus.hostName}
++				hostVersion={hostStatus.hostVersion}
++				minVersion={hostStatus.minVersion}
++			/>
++		);
++	}
++	if (hostStatus.status === "loading") {
++		return <div className="flex h-full w-full" />;
++	}
++
++	return (
++		<WorkspaceProvider workspace={workspace}>
++			<V2WorkspaceView />
++		</WorkspaceProvider>
++	);
++}
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/index.ts b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/index.ts
+new file mode 100644
+index 0000000..13418c9
+--- /dev/null
++++ b/apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/index.ts
+@@ -0,0 +1 @@
++export { V2WorkspaceMount } from "./V2WorkspaceMount";
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/collections.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/collections.ts
+index 81f3e4e..aa9870c 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/collections.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/collections.ts
+@@ -63,8 +63,14 @@ import {
+ 	dashboardSidebarSectionSchema,
+ 	type FailedWorkspaceCreateRow,
+ 	failedWorkspaceCreateSchema,
++	healKanbanCard,
++	healKanbanColumn,
+ 	healV2UserPreferences,
+ 	healWorkspaceLocalState,
++	type KanbanCardRow,
++	type KanbanColumnRow,
++	kanbanCardSchema,
++	kanbanColumnSchema,
+ 	type V2TerminalPresetRow,
+ 	type V2UserPreferencesRow,
+ 	v2TerminalPresetSchema,
+@@ -207,6 +213,21 @@ export interface OrgCollections {
+ 		typeof failedWorkspaceCreateSchema,
+ 		z.input<typeof failedWorkspaceCreateSchema>
+ 	>;
++	// (KANBAN) Local-only board collections.
++	v2KanbanColumns: Collection<
++		KanbanColumnRow,
++		string,
++		LocalStorageCollectionUtils,
++		typeof kanbanColumnSchema,
++		z.input<typeof kanbanColumnSchema>
++	>;
++	v2KanbanCards: Collection<
++		KanbanCardRow,
++		string,
++		LocalStorageCollectionUtils,
++		typeof kanbanCardSchema,
++		z.input<typeof kanbanCardSchema>
++	>;
+ }
+ 
+ // Per-org collections cache
+@@ -879,6 +900,40 @@ function createOrgCollections(organizationId: string): OrgCollections {
+ 		}),
+ 	);
+ 
++	// (KANBAN) Local-only board: columns + cards. Read-healed so rows persisted
++	// before a field existed normalize on read (localStorage skips zod defaults).
++	const v2KanbanColumns = createIndexedCollection(
++		localStorageCollectionOptions(
++			withReadHeal(
++				{
++					id: `v2_kanban_columns-${organizationId}`,
++					storageKey: `v2-kanban-columns-${organizationId}`,
++					schema: kanbanColumnSchema,
++					getKey: (item: KanbanColumnRow) => item.id,
++				},
++				healKanbanColumn,
++			),
++		),
++	);
++	v2KanbanColumns.createIndex((column) => column.tabOrder, basicIndexConfig);
++
++	const v2KanbanCards = createIndexedCollection(
++		localStorageCollectionOptions(
++			withReadHeal(
++				{
++					id: `v2_kanban_cards-${organizationId}`,
++					storageKey: `v2-kanban-cards-${organizationId}`,
++					schema: kanbanCardSchema,
++					getKey: (item: KanbanCardRow) => item.id,
++				},
++				healKanbanCard,
++			),
++		),
++	);
++	v2KanbanCards.createIndex((card) => card.columnId, basicIndexConfig);
++	v2KanbanCards.createIndex((card) => card.tabOrder, basicIndexConfig);
++	v2KanbanCards.createIndex((card) => card.workspaceId, basicIndexConfig);
++
+ 	return {
+ 		tasks,
+ 		taskStatuses,
+@@ -909,6 +964,8 @@ function createOrgCollections(organizationId: string): OrgCollections {
+ 		v2TerminalPresets,
+ 		v2UserPreferences,
+ 		failedWorkspaceCreates,
++		v2KanbanColumns,
++		v2KanbanCards,
+ 	};
+ }
+ 
+diff --git a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
+index b4c670e..df82c52 100644
+--- a/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
++++ b/apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts
+@@ -77,7 +77,10 @@ export const workspaceLocalStateSchema = z.object({
+ 		sectionId: z.string().uuid().nullable().default(null),
+ 		changesFilter: changesFilterSchema.default({ kind: "all" }),
+ 		changesViewMode: z.enum(["folders", "tree"]).default("folders"),
+-		activeTab: z.enum(["changes", "files", "review"]).default("changes"),
++		// "card" (KANBAN) is the right-panel Task/Card tab added alongside
++		// Files/Changes/Review. Additive enum widening — older rows still read
++		// "changes". Default stays "changes" (the Card tab never auto-selects).
++		activeTab: z.enum(["changes", "files", "review", "card"]).default("changes"),
+ 		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
+ 		// from the active lane and surfaced under the project's Archived section.
+ 		// `archivedAt` orders that section (most-recently-archived first); legacy
+@@ -367,3 +370,123 @@ export const failedWorkspaceCreateSchema = z.object({
+ export type FailedWorkspaceCreateRow = z.infer<
+ 	typeof failedWorkspaceCreateSchema
+ >;
++
++// ---------------------------------------------------------------------------
++// (KANBAN) Local-only board: columns + cards.
++//
++// A single device-local Kanban that mirrors every branch (workspace) as a card
++// plus user-created "Queued" task cards. Local-only like every other v2 sidebar
++// UI-state collection — no server/Electric/Drizzle, created on first use, healed
++// on read. See feature_plan_kanban-board.html.
++//
++// Snooze/archive: for a BOUND card (workspaceId set) the visibility comes from
++// the branch's sidebarState (one source of truth) — the card's own snooze/
++// archive fields are used ONLY for unbound (Queued) cards.
++// ---------------------------------------------------------------------------
++
++export const kanbanColumnSchema = z.object({
++	id: z.string(),
++	name: z.string().default(""),
++	tabOrder: z.number().int().default(0),
++	// Exactly one column is the fixed first "Queued" column (unbound tasks only).
++	// Healed/seeded with a deterministic id (see kanbanQueueColumnId).
++	isQueue: z.boolean().default(false),
++	// Display-only sort. NEVER rewrites card tabOrder — flipping back to "manual"
++	// restores the manual drag order untouched.
++	sortMode: z.enum(["manual", "deadline"]).default("manual"),
++	// Per-column Snoozed / Archived section reveal + collapse (mirrors the
++	// project-level section flags on dashboardSidebarProjectSchema).
++	showSnoozed: z.boolean().default(false),
++	showArchived: z.boolean().default(false),
++	snoozedCollapsed: z.boolean().default(false),
++	archivedCollapsed: z.boolean().default(false),
++	createdAt: z.number().default(0),
++});
++
++export type KanbanColumnRow = z.infer<typeof kanbanColumnSchema>;
++
++export const kanbanCardSchema = z.object({
++	// BOUND cards use a deterministic id `workspace:<workspaceId>` so reconcile /
++	// promote / merge can never create two cards for one branch. Queued
++	// (unbound) cards use a uuid.
++	id: z.string(),
++	columnId: z.string(),
++	tabOrder: z.number().int().default(0),
++	title: z.string().default(""),
++	description: z.string().nullable().default(null),
++	// Date-only deadline stored as local-midnight epoch-ms (null = none).
++	deadline: z.number().nullable().default(null),
++	// null = Queued / unbound; set = bound to a branch (workspace).
++	workspaceId: z.string().nullable().default(null),
++	// Used ONLY when unbound. Bound cards derive snooze/archive from the branch's
++	// sidebarState — these stay null for them.
++	snoozeUntil: z.number().nullable().default(null),
++	snoozeLaunchId: z.string().nullable().default(null),
++	archivedAt: z.number().nullable().default(null),
++	createdAt: z.number().default(0),
++});
++
++export type KanbanCardRow = z.infer<typeof kanbanCardSchema>;
++
++// Deterministic ids — the invariants ("exactly one queue", "one card per
++// branch") are enforced by id, not just Zod defaults (localStorage reads skip
++// defaults; see withReadHeal).
++export const KANBAN_BOUND_CARD_PREFIX = "workspace:";
++
++export function kanbanBoundCardId(workspaceId: string): string {
++	return `${KANBAN_BOUND_CARD_PREFIX}${workspaceId}`;
++}
++
++/** The fixed first "Queued" column id. Constant (not per-org) because the
++ * collection's storageKey is already org-scoped, so this is unique within each
++ * org's board. Seeded/healed to exactly one. */
++export const KANBAN_QUEUE_COLUMN_ID = "queue";
++
++/** tabOrder reserved for the Queued column — always sorts first. */
++export const KANBAN_QUEUE_TAB_ORDER = -1_000_000;
++
++const KANBAN_COLUMN_DEFAULTS = {
++	name: "",
++	tabOrder: 0,
++	isQueue: false,
++	sortMode: "manual",
++	showSnoozed: false,
++	showArchived: false,
++	snoozedCollapsed: false,
++	archivedCollapsed: false,
++	createdAt: 0,
++} as const;
++
++const KANBAN_CARD_DEFAULTS = {
++	tabOrder: 0,
++	title: "",
++	description: null,
++	deadline: null,
++	workspaceId: null,
++	snoozeUntil: null,
++	snoozeLaunchId: null,
++	archivedAt: null,
++	createdAt: 0,
++} as const;
++
++/** Heal a stored Kanban column row — merges defaults so rows persisted before a
++ * field existed read back normalized (identity field `id` passes through). */
++export function healKanbanColumn(raw: unknown): KanbanColumnRow {
++	const r = (
++		raw && typeof raw === "object" ? raw : {}
++	) as Partial<KanbanColumnRow>;
++	const merged = { ...KANBAN_COLUMN_DEFAULTS, ...r } as KanbanColumnRow;
++	// Derive the queue flag from the deterministic id (don't trust the stored
++	// flag): guarantees exactly one queue and stops a stale row hydrating as the
++	// wrong kind. The Queue column also always sorts first.
++	merged.isQueue = merged.id === KANBAN_QUEUE_COLUMN_ID;
++	if (merged.isQueue) merged.tabOrder = KANBAN_QUEUE_TAB_ORDER;
++	return merged;
++}
++
++/** Heal a stored Kanban card row — merges defaults (identity fields `id` /
++ * `columnId` pass through from the stored row). */
++export function healKanbanCard(raw: unknown): KanbanCardRow {
++	const r = (raw && typeof raw === "object" ? raw : {}) as Partial<KanbanCardRow>;
++	return { ...KANBAN_CARD_DEFAULTS, ...r } as KanbanCardRow;
++}

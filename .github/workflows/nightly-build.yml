@@ -2333,6 +2333,37 @@ jobs:
             Write-Host "(BG) window-controls-dedup applied (Windows shows only the native titleBarOverlay set; upstream's WindowControls gated to Linux)"
           }
 
+          # (KB) Kanban board — a local-only board that mirrors every branch as a
+          #      card plus a Queued column for not-yet-started tasks. Applies LAST
+          #      because it co-edits collections.ts / dashboardSidebarLocal schema /
+          #      WorkspaceSidebar.tsx / DashboardSidebarHeader.tsx / the v2-workspace
+          #      $workspaceId page, so it must land after the dots, snooze/archive,
+          #      non-git and sidebar-sort patches that also touch those files. Pure
+          #      renderer; no host-service/server changes. The build's own
+          #      compile:app (esbuild bundle) is the import-resolution gate.
+          $kb = '../patches/kanban-board.patch'
+          $kbRoute = 'apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/page.tsx'
+          $kbColl = 'apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/collections.ts'
+          if (-not (Test-Path $kb)) { Write-Error "(KB) missing $kb in patches repo"; exit 1 }
+          if (Test-Path $kbRoute) {
+            Write-Host "(KB) kanban board already present -- skip"
+          } else {
+            $kbErr = "$env:RUNNER_TEMP/kb-apply-check.txt"
+            Reanchor-IfNeeded $kb
+            git apply --check $kb 2>$kbErr
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "(KB) kanban-board.patch does not apply cleanly. git apply --check output:"
+              if (Test-Path $kbErr) { Get-Content $kbErr | ForEach-Object { Write-Host "    (KB-check) $_" } }
+              Write-Error "(KB) kanban-board.patch failed to apply -- a co-edited file (collections/schema/WorkspaceSidebar/DashboardSidebarHeader/v2-workspace page) changed upstream. Regenerate against the new upstream."
+              exit 1
+            }
+            git apply $kb
+            if ($LASTEXITCODE -ne 0) { Write-Error "(KB) git apply failed after a clean --check"; exit 1 }
+            if (-not (Test-Path $kbRoute)) { Write-Error "(KB) kanban route missing after apply"; exit 1 }
+            if (-not (Select-String -Quiet -SimpleMatch 'v2KanbanCards' $kbColl)) { Write-Error "(KB) v2KanbanCards collection missing after apply"; exit 1 }
+            Write-Host "(KB) kanban-board applied (Queued tasks + branch cards, promote-to-branch, collapse-to-workspace split, right-panel Card tab, status dots, per-column snoozed/archived)"
+          }
+
           # (F) Stage the deterministic Bun-store native-payload repair script
           #     (root-cause fix for electron-builder's Bun collector on win-arm64)
           #     from this patches repo into the upstream clone.
