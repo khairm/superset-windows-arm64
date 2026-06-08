@@ -1,0 +1,1 @@
+export { KanbanCardDetailsForm } from "./KanbanCardDetailsForm";

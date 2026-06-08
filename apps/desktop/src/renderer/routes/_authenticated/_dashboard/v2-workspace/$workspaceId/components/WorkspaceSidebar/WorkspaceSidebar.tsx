@@ -4,12 +4,13 @@ import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { LuFile, LuGitCompareArrows } from "react-icons/lu";
+import { LuClipboardList, LuFile, LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useSettings } from "renderer/stores/settings";
 import type { CommentPaneData, DiffFocusSide } from "../../types";
+import { CardTab } from "./components/CardTab";
 import { FilesTab } from "./components/FilesTab";
 import { PRActionHeader } from "./components/PRActionHeader";
 import { SidebarHeader } from "./components/SidebarHeader";
@@ -24,9 +25,14 @@ import type { SidebarTabDefinition } from "./types";
 // always renders so users can see PR state and merge once a PR exists.
 const CREATE_PR_BUTTON_ENABLED = false;
 
-type SidebarTabId = "changes" | "files" | "review";
+type SidebarTabId = "changes" | "files" | "review" | "card";
 
-const VALID_TAB_IDS: readonly SidebarTabId[] = ["changes", "files", "review"];
+const VALID_TAB_IDS: readonly SidebarTabId[] = [
+	"changes",
+	"files",
+	"review",
+	"card",
+];
 
 function isSidebarTabId(tab: string): tab is SidebarTabId {
 	return (VALID_TAB_IDS as readonly string[]).includes(tab);
@@ -176,12 +182,21 @@ export function WorkspaceSidebar({
 		),
 	};
 
+	// (KANBAN) The "Card" tab edits this branch's board task details. Always
+	// available (every branch mirrors to a card), even for non-git folders.
+	const cardTab: SidebarTabDefinition = {
+		id: "card",
+		label: "Card",
+		icon: LuClipboardList,
+		content: <CardTab workspaceId={workspaceId} />,
+	};
+
 	// (NON-GIT WORKSPACE) Drop the Changes + Review tabs (and the PR header
 	// below) for a non-git folder — keep only Files. Terminal + agents live
-	// outside this sidebar and are unaffected.
+	// outside this sidebar and are unaffected. The Card tab stays in both.
 	const tabs: SidebarTabDefinition[] = isGitRepo
-		? [filesTab, changesTab, reviewTab]
-		: [filesTab];
+		? [filesTab, changesTab, reviewTab, cardTab]
+		: [filesTab, cardTab];
 	// The persisted activeTab may be a git tab ("changes"/"review") that no
 	// longer exists for a non-git folder; fall back to Files so content renders.
 	const activeTabDef = tabs.find((t) => t.id === activeTab) ?? filesTab;

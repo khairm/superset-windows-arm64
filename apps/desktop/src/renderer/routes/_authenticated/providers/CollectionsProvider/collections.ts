@@ -63,8 +63,14 @@ import {
 	dashboardSidebarSectionSchema,
 	type FailedWorkspaceCreateRow,
 	failedWorkspaceCreateSchema,
+	healKanbanCard,
+	healKanbanColumn,
 	healV2UserPreferences,
 	healWorkspaceLocalState,
+	type KanbanCardRow,
+	type KanbanColumnRow,
+	kanbanCardSchema,
+	kanbanColumnSchema,
 	type V2TerminalPresetRow,
 	type V2UserPreferencesRow,
 	v2TerminalPresetSchema,
@@ -206,6 +212,21 @@ export interface OrgCollections {
 		LocalStorageCollectionUtils,
 		typeof failedWorkspaceCreateSchema,
 		z.input<typeof failedWorkspaceCreateSchema>
+	>;
+	// (KANBAN) Local-only board collections.
+	v2KanbanColumns: Collection<
+		KanbanColumnRow,
+		string,
+		LocalStorageCollectionUtils,
+		typeof kanbanColumnSchema,
+		z.input<typeof kanbanColumnSchema>
+	>;
+	v2KanbanCards: Collection<
+		KanbanCardRow,
+		string,
+		LocalStorageCollectionUtils,
+		typeof kanbanCardSchema,
+		z.input<typeof kanbanCardSchema>
 	>;
 }
 
@@ -879,6 +900,40 @@ function createOrgCollections(organizationId: string): OrgCollections {
 		}),
 	);
 
+	// (KANBAN) Local-only board: columns + cards. Read-healed so rows persisted
+	// before a field existed normalize on read (localStorage skips zod defaults).
+	const v2KanbanColumns = createIndexedCollection(
+		localStorageCollectionOptions(
+			withReadHeal(
+				{
+					id: `v2_kanban_columns-${organizationId}`,
+					storageKey: `v2-kanban-columns-${organizationId}`,
+					schema: kanbanColumnSchema,
+					getKey: (item: KanbanColumnRow) => item.id,
+				},
+				healKanbanColumn,
+			),
+		),
+	);
+	v2KanbanColumns.createIndex((column) => column.tabOrder, basicIndexConfig);
+
+	const v2KanbanCards = createIndexedCollection(
+		localStorageCollectionOptions(
+			withReadHeal(
+				{
+					id: `v2_kanban_cards-${organizationId}`,
+					storageKey: `v2-kanban-cards-${organizationId}`,
+					schema: kanbanCardSchema,
+					getKey: (item: KanbanCardRow) => item.id,
+				},
+				healKanbanCard,
+			),
+		),
+	);
+	v2KanbanCards.createIndex((card) => card.columnId, basicIndexConfig);
+	v2KanbanCards.createIndex((card) => card.tabOrder, basicIndexConfig);
+	v2KanbanCards.createIndex((card) => card.workspaceId, basicIndexConfig);
+
 	return {
 		tasks,
 		taskStatuses,
@@ -909,6 +964,8 @@ function createOrgCollections(organizationId: string): OrgCollections {
 		v2TerminalPresets,
 		v2UserPreferences,
 		failedWorkspaceCreates,
+		v2KanbanColumns,
+		v2KanbanCards,
 	};
 }
 

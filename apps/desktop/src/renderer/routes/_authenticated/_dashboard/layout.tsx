@@ -13,6 +13,7 @@ import { useHotkey } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
 import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
+import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -190,6 +191,7 @@ function DashboardLayout() {
 	return (
 		<div className="flex h-full w-full overflow-hidden">
 			<CommandPaletteHost />
+			<KanbanReconciler />
 			{sidebarOutsideColumn && sidebarPanel}
 			<div className="flex flex-1 flex-col min-w-0 min-h-0">
 				<TopBar />

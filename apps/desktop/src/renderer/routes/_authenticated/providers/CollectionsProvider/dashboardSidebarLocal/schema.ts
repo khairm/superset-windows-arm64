@@ -69,7 +69,10 @@ export const workspaceLocalStateSchema = z.object({
 		sectionId: z.string().uuid().nullable().default(null),
 		changesFilter: changesFilterSchema.default({ kind: "all" }),
 		changesViewMode: z.enum(["folders", "tree"]).default("folders"),
-		activeTab: z.enum(["changes", "files", "review"]).default("changes"),
+		// "card" (KANBAN) is the right-panel Task/Card tab added alongside
+		// Files/Changes/Review. Additive enum widening — older rows still read
+		// "changes". Default stays "changes" (the Card tab never auto-selects).
+		activeTab: z.enum(["changes", "files", "review", "card"]).default("changes"),
 		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
 		// from the active lane and surfaced under the project's Archived section.
 		// `archivedAt` orders that section (most-recently-archived first); legacy
@@ -359,3 +362,123 @@ export const failedWorkspaceCreateSchema = z.object({
 export type FailedWorkspaceCreateRow = z.infer<
 	typeof failedWorkspaceCreateSchema
 >;
+
+// ---------------------------------------------------------------------------
+// (KANBAN) Local-only board: columns + cards.
+//
+// A single device-local Kanban that mirrors every branch (workspace) as a card
+// plus user-created "Queued" task cards. Local-only like every other v2 sidebar
+// UI-state collection — no server/Electric/Drizzle, created on first use, healed
+// on read. See feature_plan_kanban-board.html.
+//
+// Snooze/archive: for a BOUND card (workspaceId set) the visibility comes from
+// the branch's sidebarState (one source of truth) — the card's own snooze/
+// archive fields are used ONLY for unbound (Queued) cards.
+// ---------------------------------------------------------------------------
+
+export const kanbanColumnSchema = z.object({
+	id: z.string(),
+	name: z.string().default(""),
+	tabOrder: z.number().int().default(0),
+	// Exactly one column is the fixed first "Queued" column (unbound tasks only).
+	// Healed/seeded with a deterministic id (see kanbanQueueColumnId).
+	isQueue: z.boolean().default(false),
+	// Display-only sort. NEVER rewrites card tabOrder — flipping back to "manual"
+	// restores the manual drag order untouched.
+	sortMode: z.enum(["manual", "deadline"]).default("manual"),
+	// Per-column Snoozed / Archived section reveal + collapse (mirrors the
+	// project-level section flags on dashboardSidebarProjectSchema).
+	showSnoozed: z.boolean().default(false),
+	showArchived: z.boolean().default(false),
+	snoozedCollapsed: z.boolean().default(false),
+	archivedCollapsed: z.boolean().default(false),
+	createdAt: z.number().default(0),
+});
+
+export type KanbanColumnRow = z.infer<typeof kanbanColumnSchema>;
+
+export const kanbanCardSchema = z.object({
+	// BOUND cards use a deterministic id `workspace:<workspaceId>` so reconcile /
+	// promote / merge can never create two cards for one branch. Queued
+	// (unbound) cards use a uuid.
+	id: z.string(),
+	columnId: z.string(),
+	tabOrder: z.number().int().default(0),
+	title: z.string().default(""),
+	description: z.string().nullable().default(null),
+	// Date-only deadline stored as local-midnight epoch-ms (null = none).
+	deadline: z.number().nullable().default(null),
+	// null = Queued / unbound; set = bound to a branch (workspace).
+	workspaceId: z.string().nullable().default(null),
+	// Used ONLY when unbound. Bound cards derive snooze/archive from the branch's
+	// sidebarState — these stay null for them.
+	snoozeUntil: z.number().nullable().default(null),
+	snoozeLaunchId: z.string().nullable().default(null),
+	archivedAt: z.number().nullable().default(null),
+	createdAt: z.number().default(0),
+});
+
+export type KanbanCardRow = z.infer<typeof kanbanCardSchema>;
+
+// Deterministic ids — the invariants ("exactly one queue", "one card per
+// branch") are enforced by id, not just Zod defaults (localStorage reads skip
+// defaults; see withReadHeal).
+export const KANBAN_BOUND_CARD_PREFIX = "workspace:";
+
+export function kanbanBoundCardId(workspaceId: string): string {
+	return `${KANBAN_BOUND_CARD_PREFIX}${workspaceId}`;
+}
+
+/** The fixed first "Queued" column id. Constant (not per-org) because the
+ * collection's storageKey is already org-scoped, so this is unique within each
+ * org's board. Seeded/healed to exactly one. */
+export const KANBAN_QUEUE_COLUMN_ID = "queue";
+
+/** tabOrder reserved for the Queued column — always sorts first. */
+export const KANBAN_QUEUE_TAB_ORDER = -1_000_000;
+
+const KANBAN_COLUMN_DEFAULTS = {
+	name: "",
+	tabOrder: 0,
+	isQueue: false,
+	sortMode: "manual",
+	showSnoozed: false,
+	showArchived: false,
+	snoozedCollapsed: false,
+	archivedCollapsed: false,
+	createdAt: 0,
+} as const;
+
+const KANBAN_CARD_DEFAULTS = {
+	tabOrder: 0,
+	title: "",
+	description: null,
+	deadline: null,
+	workspaceId: null,
+	snoozeUntil: null,
+	snoozeLaunchId: null,
+	archivedAt: null,
+	createdAt: 0,
+} as const;
+
+/** Heal a stored Kanban column row — merges defaults so rows persisted before a
+ * field existed read back normalized (identity field `id` passes through). */
+export function healKanbanColumn(raw: unknown): KanbanColumnRow {
+	const r = (
+		raw && typeof raw === "object" ? raw : {}
+	) as Partial<KanbanColumnRow>;
+	const merged = { ...KANBAN_COLUMN_DEFAULTS, ...r } as KanbanColumnRow;
+	// Derive the queue flag from the deterministic id (don't trust the stored
+	// flag): guarantees exactly one queue and stops a stale row hydrating as the
+	// wrong kind. The Queue column also always sorts first.
+	merged.isQueue = merged.id === KANBAN_QUEUE_COLUMN_ID;
+	if (merged.isQueue) merged.tabOrder = KANBAN_QUEUE_TAB_ORDER;
+	return merged;
+}
+
+/** Heal a stored Kanban card row — merges defaults (identity fields `id` /
+ * `columnId` pass through from the stored row). */
+export function healKanbanCard(raw: unknown): KanbanCardRow {
+	const r = (raw && typeof raw === "object" ? raw : {}) as Partial<KanbanCardRow>;
+	return { ...KANBAN_CARD_DEFAULTS, ...r } as KanbanCardRow;
+}

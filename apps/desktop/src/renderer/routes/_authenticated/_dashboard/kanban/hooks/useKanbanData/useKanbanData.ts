@@ -1,0 +1,310 @@
+import type {
+	SelectV2Project,
+	SelectV2Workspace,
+} from "@superset/db/schema";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useEffect, useMemo, useState } from "react";
+import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import {
+	APP_LAUNCH_ID,
+	getWorkspaceSidebarBucket,
+	isWorkspaceSnoozed,
+	type KanbanCardRow,
+	type KanbanColumnRow,
+	KANBAN_QUEUE_COLUMN_ID,
+	KANBAN_QUEUE_TAB_ORDER,
+	kanbanBoundCardId,
+	type WorkspaceLocalStateRow,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import type {
+	KanbanCardBucket,
+	KanbanCardView,
+	KanbanColumnView,
+} from "../../types";
+import { deriveCardTitle } from "../../utils/deriveCardTitle";
+
+const TICK_INTERVAL_MS = 60_000;
+const STARTER_COLUMN_NAME = "In Progress";
+
+function sortCards(cards: KanbanCardView[], sortMode: string): KanbanCardView[] {
+	const next = [...cards];
+	if (sortMode === "deadline") {
+		// Display-only: soonest deadline first, no-deadline last; manual tabOrder
+		// breaks ties (and is preserved untouched underneath).
+		next.sort((a, b) => {
+			const da = a.card.deadline;
+			const db = b.card.deadline;
+			if (da == null && db == null) return a.card.tabOrder - b.card.tabOrder;
+			if (da == null) return 1;
+			if (db == null) return -1;
+			return da - db || a.card.tabOrder - b.card.tabOrder;
+		});
+	} else {
+		next.sort((a, b) => a.card.tabOrder - b.card.tabOrder);
+	}
+	return next;
+}
+
+/** Bucket for an UNBOUND (Queued) card, from its own snooze/archive fields. */
+function queuedCardBucket(card: KanbanCardRow, now: number): KanbanCardBucket {
+	if (card.archivedAt != null) return "archived";
+	if (isWorkspaceSnoozed(card, now)) return "snoozed";
+	return "active";
+}
+
+export interface UseKanbanDataResult {
+	isReady: boolean;
+	columns: KanbanColumnView[];
+	now: number;
+}
+
+/**
+ * The board's read model + reconcile. Live-queries the local Kanban collections
+ * joined against branches (v2Workspaces) and projects, materialises one card per
+ * branch and drops cards for deleted branches (ready-gated, per AGENTS rule 9),
+ * and classifies every card into active / snoozed / archived. Also owns a gated
+ * 60s tick that auto-unsnoozes expired Queued cards (bound cards are handled by
+ * the sidebar's own ticker).
+ */
+export function useKanbanData(): UseKanbanDataResult {
+	const collections = useCollections();
+
+	const { data: columnRows = [], isReady: columnsReady } = useLiveQuery(
+		(q) => q.from({ c: collections.v2KanbanColumns }),
+		[collections],
+	);
+	const { data: cardRows = [], isReady: cardsReady } = useLiveQuery(
+		(q) => q.from({ c: collections.v2KanbanCards }),
+		[collections],
+	);
+	const { data: workspaceRows = [], isReady: workspacesReady } = useLiveQuery(
+		(q) => q.from({ w: collections.v2Workspaces }),
+		[collections],
+	);
+	const { data: projectRows = [] } = useLiveQuery(
+		(q) => q.from({ p: collections.v2Projects }),
+		[collections],
+	);
+	const { data: localStateRows = [], isReady: localStateReady } = useLiveQuery(
+		(q) => q.from({ s: collections.v2WorkspaceLocalState }),
+		[collections],
+	);
+
+	const isReady =
+		columnsReady && cardsReady && workspacesReady && localStateReady;
+
+	const [now, setNow] = useState(() => Date.now());
+
+	// Gated tick: only run while something time-sensitive is pending (a snoozed
+	// card, or any deadline that could flip yellow→red across a day boundary).
+	const hasTimeSensitive = useMemo(() => {
+		// Only deadlines + TIMED snoozes need the wall-clock tick. An "until next
+		// launch" snooze (snoozeLaunchId) can't expire during this launch, so it
+		// must NOT keep the 60s ticker alive forever.
+		return (cardRows as KanbanCardRow[]).some(
+			(c) => c.deadline != null || c.snoozeUntil != null,
+		);
+	}, [cardRows]);
+	useEffect(() => {
+		if (!hasTimeSensitive) return;
+		const id = setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS);
+		return () => clearInterval(id);
+	}, [hasTimeSensitive]);
+
+	const workspaceById = useMemo(() => {
+		const map = new Map<string, SelectV2Workspace>();
+		for (const w of workspaceRows as SelectV2Workspace[]) map.set(w.id, w);
+		return map;
+	}, [workspaceRows]);
+
+	const projectNameById = useMemo(() => {
+		const map = new Map<string, string>();
+		for (const p of projectRows as SelectV2Project[]) map.set(p.id, p.name);
+		return map;
+	}, [projectRows]);
+
+	const localStateByWorkspace = useMemo(() => {
+		const map = new Map<string, WorkspaceLocalStateRow>();
+		for (const s of localStateRows as WorkspaceLocalStateRow[]) {
+			map.set(s.workspaceId, s);
+		}
+		return map;
+	}, [localStateRows]);
+
+	// --- Reconcile (ready-gated; idempotent via get-before-write) -------------
+	useEffect(() => {
+		if (!isReady) return;
+
+		// 1. Seed the fixed Queued column.
+		if (!collections.v2KanbanColumns.get(KANBAN_QUEUE_COLUMN_ID)) {
+			collections.v2KanbanColumns.insert({
+				id: KANBAN_QUEUE_COLUMN_ID,
+				name: "Queued",
+				tabOrder: KANBAN_QUEUE_TAB_ORDER,
+				isQueue: true,
+				sortMode: "manual",
+				showSnoozed: false,
+				showArchived: false,
+				snoozedCollapsed: false,
+				archivedCollapsed: false,
+				createdAt: Date.now(),
+			});
+		}
+
+		// 2. Ensure ≥1 custom column (the landing column for new branches).
+		const currentColumns = Array.from(
+			collections.v2KanbanColumns.state.values(),
+		);
+		const customColumns = currentColumns
+			.filter((c) => !c.isQueue && c.id !== KANBAN_QUEUE_COLUMN_ID)
+			.sort((a, b) => a.tabOrder - b.tabOrder);
+		let landingColumnId: string;
+		if (customColumns.length === 0) {
+			landingColumnId = crypto.randomUUID();
+			collections.v2KanbanColumns.insert({
+				id: landingColumnId,
+				name: STARTER_COLUMN_NAME,
+				tabOrder: 1,
+				isQueue: false,
+				sortMode: "manual",
+				showSnoozed: false,
+				showArchived: false,
+				snoozedCollapsed: false,
+				archivedCollapsed: false,
+				createdAt: Date.now(),
+			});
+		} else {
+			landingColumnId = customColumns[0].id;
+		}
+
+		// 3. Materialise a card for every non-hidden branch lacking one.
+		const existingCards = Array.from(collections.v2KanbanCards.state.values());
+		// Defensive dup-guard: a branch is "covered" if ANY card already points at
+		// it (not just the deterministic id), so we never create a second card.
+		const coveredWorkspaceIds = new Set(
+			existingCards
+				.map((c) => c.workspaceId)
+				.filter((id): id is string => id != null),
+		);
+		let nextOrder =
+			existingCards
+				.filter((c) => c.columnId === landingColumnId)
+				.reduce((max, c) => Math.max(max, c.tabOrder), 0) + 1;
+		for (const branch of workspaceRows as SelectV2Workspace[]) {
+			const local = localStateByWorkspace.get(branch.id);
+			const bucket = getWorkspaceSidebarBucket(
+				local?.sidebarState ?? {},
+				Date.now(),
+				branch.type,
+			);
+			// A removed-from-sidebar (hidden, non-archived) branch is not
+			// representable on the board either.
+			if (bucket === "hidden") continue;
+			const cardId = kanbanBoundCardId(branch.id);
+			if (collections.v2KanbanCards.get(cardId)) continue;
+			if (coveredWorkspaceIds.has(branch.id)) continue;
+			collections.v2KanbanCards.insert({
+				id: cardId,
+				columnId: landingColumnId,
+				tabOrder: nextOrder++,
+				title: deriveCardTitle(branch),
+				description: null,
+				deadline: null,
+				workspaceId: branch.id,
+				snoozeUntil: null,
+				snoozeLaunchId: null,
+				archivedAt: null,
+				createdAt: Date.now(),
+			});
+		}
+
+		// 4. Drop bound cards whose branch is gone (branch deleted → card gone).
+		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
+			if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
+				collections.v2KanbanCards.delete(card.id);
+			}
+		}
+	}, [
+		isReady,
+		collections,
+		workspaceRows,
+		workspaceById,
+		localStateByWorkspace,
+		columnRows,
+		cardRows,
+	]);
+
+	// --- Auto-unsnooze expired QUEUED cards (mirrors the sidebar ticker) -------
+	useEffect(() => {
+		if (!isReady) return;
+		for (const card of cardRows as KanbanCardRow[]) {
+			if (card.workspaceId) continue; // bound cards: sidebar ticker handles it
+			const expiredTimed =
+				typeof card.snoozeUntil === "number" && card.snoozeUntil <= now;
+			const staleLaunch =
+				card.snoozeLaunchId != null && card.snoozeLaunchId !== APP_LAUNCH_ID;
+			if (expiredTimed || staleLaunch) {
+				if (!collections.v2KanbanCards.get(card.id)) continue;
+				collections.v2KanbanCards.update(card.id, (draft) => {
+					draft.snoozeUntil = null;
+					draft.snoozeLaunchId = null;
+				});
+			}
+		}
+	}, [isReady, now, cardRows, collections]);
+
+	// --- Build the rendered column views --------------------------------------
+	const columns = useMemo<KanbanColumnView[]>(() => {
+		const orderedColumns = [...(columnRows as KanbanColumnRow[])].sort(
+			(a, b) => a.tabOrder - b.tabOrder,
+		);
+		return orderedColumns.map((column) => {
+			const active: KanbanCardView[] = [];
+			const snoozed: KanbanCardView[] = [];
+			const archived: KanbanCardView[] = [];
+			for (const card of cardRows as KanbanCardRow[]) {
+				if (card.columnId !== column.id) continue;
+
+				let workspace: SelectV2Workspace | null = null;
+				let projectName: string | null = null;
+				let bucket: KanbanCardBucket;
+
+				if (card.workspaceId) {
+					workspace = workspaceById.get(card.workspaceId) ?? null;
+					if (!workspace) continue; // pending cleanup — don't render a ghost
+					projectName = projectNameById.get(workspace.projectId) ?? null;
+					const local = localStateByWorkspace.get(workspace.id);
+					const wsBucket = getWorkspaceSidebarBucket(
+						local?.sidebarState ?? {},
+						now,
+						workspace.type,
+					);
+					if (wsBucket === "hidden") continue;
+					bucket = wsBucket;
+				} else {
+					bucket = queuedCardBucket(card, now);
+				}
+
+				const view: KanbanCardView = { card, workspace, projectName, bucket };
+				if (bucket === "archived") archived.push(view);
+				else if (bucket === "snoozed") snoozed.push(view);
+				else active.push(view);
+			}
+			return {
+				column,
+				active: sortCards(active, column.sortMode),
+				snoozed: sortCards(snoozed, column.sortMode),
+				archived: sortCards(archived, column.sortMode),
+			};
+		});
+	}, [
+		columnRows,
+		cardRows,
+		workspaceById,
+		projectNameById,
+		localStateByWorkspace,
+		now,
+	]);
+
+	return { isReady, columns, now };
+}

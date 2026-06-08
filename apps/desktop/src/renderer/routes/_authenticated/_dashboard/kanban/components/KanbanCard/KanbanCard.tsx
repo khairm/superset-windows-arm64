@@ -1,0 +1,303 @@
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
+	DropdownMenuTrigger,
+} from "@superset/ui/dropdown-menu";
+import { Input } from "@superset/ui/input";
+import { cn } from "@superset/ui/utils";
+import { useState } from "react";
+import { LuEllipsis } from "react-icons/lu";
+import {
+	computeSnoozeUntil,
+	SNOOZE_PRESET_OPTIONS,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
+import {
+	getStatusTooltip,
+	StatusIndicator,
+} from "renderer/screens/main/components/StatusIndicator";
+import { useV2WorkspaceDisplayStatus } from "renderer/stores/v2-notifications";
+import type { KanbanCardView } from "../../types";
+import {
+	deadlineToInputValue,
+	formatDeadline,
+	getDeadlineUrgency,
+	inputValueToDeadline,
+} from "../../utils/deadlineUrgency";
+import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
+
+interface KanbanCardProps {
+	view: KanbanCardView;
+	actions: UseKanbanActionsResult;
+	now: number;
+	onActivate: (view: KanbanCardView) => void;
+	/** Render-only ghost in the DragOverlay (no sortable wiring, no menus). */
+	overlay?: boolean;
+	/** Disable drag (Snoozed / Archived cards, which live outside the sortable). */
+	disableDrag?: boolean;
+}
+
+export function KanbanCard({
+	view,
+	actions,
+	now,
+	onActivate,
+	overlay,
+	disableDrag,
+}: KanbanCardProps) {
+	const { card, workspace, projectName } = view;
+	// A repo's main workspace can't be snoozed/archived (the sidebar gates those
+	// off main; an archived main would bucket to "hidden" and vanish from the
+	// board with no restore path).
+	const isMain = workspace?.type === "main";
+	const status = useV2WorkspaceDisplayStatus(workspace?.id ?? "");
+	const [editing, setEditing] = useState<"title" | "deadline" | null>(null);
+	const [titleDraft, setTitleDraft] = useState(card.title);
+	const [deleteOpen, setDeleteOpen] = useState(false);
+
+	const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+		useSortable({
+			id: card.id,
+			data: { type: "card", card },
+			disabled: overlay || disableDrag,
+		});
+
+	const style = {
+		transform: CSS.Transform.toString(transform),
+		transition,
+	};
+
+	const urgency = getDeadlineUrgency(card.deadline, now);
+	const subtitle =
+		workspace && projectName
+			? `${projectName} / ${workspace.branch}`
+			: workspace
+				? workspace.branch
+				: null;
+
+	const commitTitle = () => {
+		actions.updateCard(card.id, { title: titleDraft });
+		setEditing(null);
+	};
+
+	const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+
+	return (
+		<>
+			{/* biome-ignore lint/a11y/useSemanticElements: dnd-kit requires a div */}
+			<div
+				ref={setNodeRef}
+				style={style}
+				{...attributes}
+				{...listeners}
+				role="button"
+				tabIndex={0}
+				className={cn(
+					"group relative rounded-md border border-border/60 bg-card px-3 py-2.5 transition-colors hover:bg-accent/30",
+					!overlay && !disableDrag && "cursor-grab active:cursor-grabbing",
+					isDragging && "opacity-40",
+					overlay && "cursor-grabbing border-border shadow-xl",
+				)}
+				onClick={() => {
+					if (editing) return;
+					onActivate(view);
+				}}
+				onKeyDown={(e) => {
+					if (editing) return;
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						onActivate(view);
+					}
+				}}
+			>
+				<div className="flex items-start gap-2">
+					{status ? (
+						<span
+							title={getStatusTooltip(status)}
+							className="mt-1 shrink-0"
+							onPointerDown={stop}
+						>
+							<StatusIndicator status={status} />
+						</span>
+					) : null}
+					<div className="min-w-0 flex-1">
+						{editing === "title" ? (
+							<Input
+								// biome-ignore lint/a11y/noAutofocus: inline edit
+								autoFocus
+								value={titleDraft}
+								onChange={(e) => setTitleDraft(e.target.value)}
+								onBlur={commitTitle}
+								onKeyDown={(e) => {
+									if (e.key === "Enter") commitTitle();
+									if (e.key === "Escape") {
+										setTitleDraft(card.title);
+										setEditing(null);
+									}
+								}}
+								onClick={stop}
+								onPointerDown={stop}
+								className="h-6 px-1 py-0 text-sm"
+							/>
+						) : (
+							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
+							<p
+								className="line-clamp-2 text-sm leading-snug font-medium"
+								onClick={stop}
+								onDoubleClick={(e) => {
+									stop(e);
+									setTitleDraft(card.title);
+									setEditing("title");
+								}}
+							>
+								{card.title || "Untitled"}
+							</p>
+						)}
+						{subtitle ? (
+							<span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+								{subtitle}
+							</span>
+						) : null}
+						{editing === "deadline" ? (
+							<Input
+								// biome-ignore lint/a11y/noAutofocus: inline edit
+								autoFocus
+								type="date"
+								value={deadlineToInputValue(card.deadline)}
+								onChange={(e) =>
+									actions.updateCard(card.id, {
+										deadline: inputValueToDeadline(e.target.value),
+									})
+								}
+								onBlur={() => setEditing(null)}
+								onClick={stop}
+								onPointerDown={stop}
+								className="mt-1 h-6 px-1 py-0 text-xs"
+							/>
+						) : card.deadline != null ? (
+							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
+							<span
+								onClick={stop}
+								onDoubleClick={(e) => {
+									stop(e);
+									setEditing("deadline");
+								}}
+								className={cn(
+									"mt-1 block text-[11px]",
+									urgency === "overdue" && "font-medium text-red-500",
+									urgency === "due-today" && "font-medium text-yellow-500",
+									urgency === "upcoming" && "text-muted-foreground",
+								)}
+							>
+								{urgency === "overdue"
+									? `Overdue · ${formatDeadline(card.deadline)}`
+									: urgency === "due-today"
+										? "Due today"
+										: `Due ${formatDeadline(card.deadline)}`}
+							</span>
+						) : null}
+					</div>
+
+					{!overlay && !isMain ? (
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<button
+									type="button"
+									aria-label="Card actions"
+									onClick={stop}
+									onPointerDown={stop}
+									className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+								>
+									<LuEllipsis className="size-3.5" />
+								</button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent
+								align="end"
+								onClick={stop}
+								onCloseAutoFocus={(e) => e.preventDefault()}
+							>
+								{!isMain ? (
+									<>
+										{view.bucket === "snoozed" ? (
+											<DropdownMenuItem
+												onSelect={() => actions.unsnoozeCard(card)}
+											>
+												Unsnooze
+											</DropdownMenuItem>
+										) : (
+											<DropdownMenuSub>
+												<DropdownMenuSubTrigger>Snooze</DropdownMenuSubTrigger>
+												<DropdownMenuSubContent>
+													{SNOOZE_PRESET_OPTIONS.map((opt) => (
+														<DropdownMenuItem
+															key={opt.id}
+															onSelect={() =>
+																actions.snoozeCard(
+																	card,
+																	opt.duration.kind === "next-launch"
+																		? "next-launch"
+																		: computeSnoozeUntil(opt.duration),
+																)
+															}
+														>
+															{opt.label}
+														</DropdownMenuItem>
+													))}
+												</DropdownMenuSubContent>
+											</DropdownMenuSub>
+										)}
+										{view.bucket === "archived" ? (
+											<DropdownMenuItem
+												onSelect={() => actions.unarchiveCard(card)}
+											>
+												Unarchive
+											</DropdownMenuItem>
+										) : (
+											<DropdownMenuItem
+												onSelect={() => actions.archiveCard(card)}
+											>
+												Archive
+											</DropdownMenuItem>
+										)}
+										<DropdownMenuSeparator />
+									</>
+								) : null}
+								{workspace ? (
+									<DropdownMenuItem
+										variant="destructive"
+										onSelect={() => setDeleteOpen(true)}
+									>
+										Delete branch…
+									</DropdownMenuItem>
+								) : (
+									<DropdownMenuItem
+										variant="destructive"
+										onSelect={() => actions.deleteQueuedCard(card.id)}
+									>
+										Delete task
+									</DropdownMenuItem>
+								)}
+							</DropdownMenuContent>
+						</DropdownMenu>
+					) : null}
+				</div>
+			</div>
+
+			{workspace && !isMain ? (
+				<DashboardSidebarDeleteDialog
+					workspaceId={workspace.id}
+					workspaceName={workspace.name}
+					open={deleteOpen}
+					onOpenChange={setDeleteOpen}
+				/>
+			) : null}
+		</>
+	);
+}
