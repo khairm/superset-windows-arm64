@@ -129,7 +129,7 @@ jobs:
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
           # Match the arch-fixup step: give the patch-application AI the higher
           # output ceiling so a large edit burst never truncates mid-file.
-          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000'
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000'
         shell: bash
         run: |
           # Retry up to 3 times on transient API/socket failures. The
@@ -253,10 +253,13 @@ jobs:
           # default 32000-token output cap truncated large patches (e.g.
           # nongit-workspaces.patch ~59KB ≈ 18K tok of diff + effort-medium
           # thinking) -> "response exceeded the 32000 output token maximum" ->
-          # 3 failed attempts -> hard-abort. Raise to the model's higher ceiling
-          # so a full-patch rewrite fits. Our biggest patch (kanban-board ~138KB
-          # ≈ 42K tok) still fits under 64K with room for thinking.
-          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000'
+          # 3 failed attempts -> hard-abort. Raise to the model's extended-output
+          # ceiling so a full-patch rewrite fits with wide margin. Our biggest
+          # patch (kanban-board ~138KB ≈ 42K tok) fits comfortably under 128K
+          # even with heavy thinking. (Assumes the runner's claude model supports
+          # 128K output — current Sonnet 4.x does via the extended-output beta;
+          # if a run ever errors on max_tokens, this is the knob to lower.)
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000'
         run: |
           # These three fixups are arch-critical and MUST be correct, so they are applied
           # deterministically here rather than relying on the non-deterministic AI patch step.
