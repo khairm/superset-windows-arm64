@@ -33,6 +33,13 @@ jobs:
   build:
     runs-on: windows-11-arm
     steps:
+      # Superset has paths deeper than Windows' 260-char MAX_PATH; without this
+      # actions/checkout dies with "Filename too long". --system so the
+      # checkout action's own git invocation picks it up.
+      - name: Configure git long paths (Windows MAX_PATH)
+        shell: bash
+        run: git config --system core.longpaths true || git config --global core.longpaths true
+
       - name: Checkout fork source
         uses: actions/checkout@v5
         with:
