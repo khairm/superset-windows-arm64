@@ -36,13 +36,25 @@ export interface AgentLifecyclePayload {
 	occurredAt: number;
 }
 
-export interface TerminalLifecyclePayload {
-	eventType: "exit";
-	terminalId: string;
-	exitCode: number;
-	signal: number;
-	occurredAt: number;
-}
+export type TerminalLifecyclePayload =
+	| {
+			eventType: "exit";
+			terminalId: string;
+			exitCode: number;
+			signal: number;
+			occurredAt: number;
+	  }
+	| {
+			eventType: "command-start";
+			terminalId: string;
+			occurredAt: number;
+	  }
+	| {
+			eventType: "command-end";
+			terminalId: string;
+			exitCode: number | null;
+			occurredAt: number;
+	  };
 
 type PortChangedMessage = Extract<ServerMessage, { type: "port:changed" }>;
 
@@ -153,15 +165,33 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 				},
 			);
 		} else if (message.type === "terminal:lifecycle") {
+			// Re-narrow the discriminated union per eventType so each payload
+			// carries only its own fields (exit -> exitCode+signal; command-end ->
+			// exitCode:number|null; command-start -> neither).
+			const payload: TerminalLifecyclePayload =
+				message.eventType === "exit"
+					? {
+							eventType: "exit",
+							terminalId: message.terminalId,
+							exitCode: message.exitCode,
+							signal: message.signal,
+							occurredAt: message.occurredAt,
+						}
+					: message.eventType === "command-end"
+						? {
+								eventType: "command-end",
+								terminalId: message.terminalId,
+								exitCode: message.exitCode,
+								occurredAt: message.occurredAt,
+							}
+						: {
+								eventType: "command-start",
+								terminalId: message.terminalId,
+								occurredAt: message.occurredAt,
+							};
 			(entry.callback as EventListener<"terminal:lifecycle">)(
 				message.workspaceId,
-				{
-					eventType: message.eventType,
-					terminalId: message.terminalId,
-					exitCode: message.exitCode,
-					signal: message.signal,
-					occurredAt: message.occurredAt,
-				},
+				payload,
 			);
 		} else if (message.type === "port:changed") {
 			(entry.callback as EventListener<"port:changed">)(message.workspaceId, {

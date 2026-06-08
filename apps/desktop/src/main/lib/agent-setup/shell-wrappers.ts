@@ -22,7 +22,10 @@ const DEFAULT_PATHS: ShellWrapperPaths = {
 const modeDiagnosticsLogged = new Set<string>();
 
 function getShellName(shell: string): string {
-	return shell.split("/").pop() || shell;
+	// (AY) Normalize across separators and a Windows `.exe` suffix so a
+	// `C:\...\pwsh.exe` path matches the "pwsh" branch.
+	const base = shell.split(/[\\/]/).pop() || shell;
+	return base.replace(/\.exe$/i, "");
 }
 
 /**
@@ -43,6 +46,13 @@ const SUPERSET_ENV_RESTORE = `eval "$_superset_saved_env" 2>/dev/null || true`;
 
 function quoteShellLiteral(value: string): string {
 	return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+// (AY) PowerShell single-quoted literal: a `'` inside is escaped by doubling it
+// (`''`). A Windows username/path CAN legitimately contain an apostrophe
+// (e.g. C:\Users\O'Brien\...), so escape rather than assume it's absent.
+function quotePwshSingleQuoted(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
 }
 
 function logModeDiagnostics(shellName: string): void {
@@ -225,11 +235,21 @@ rehash 2>/dev/null || true
 # superset of markers; daemons that only get restarted on protocol bumps
 # still match against their own scanner.
 # Protocol ref: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
+# (AY) Emit OSC 133;D;<exit> (command end) before A so the host-service C/D
+# scanner can clear the shell-running blue dot. \$? must be captured FIRST.
 __superset_prompt_mark() {
-  printf "\\033]777;superset-shell-ready\\007\\033]133;A\\007"
+  local ec=$?
+  printf "\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007" "$ec"
 }
-# Keep our hook LAST so it fires after direnv and other precmd hooks complete.
+# (AY) Command start (OSC 133;C) via zsh's preexec hook, which fires right
+# before each entered command line runs.
+_superset_cmd_start() {
+  printf "\\033]133;C\\007"
+}
+typeset -ga preexec_functions 2>/dev/null || true
+# Keep our hooks LAST so they fire after direnv and other hooks complete.
 precmd_functions=(\${precmd_functions[@]} __superset_prompt_mark)
+preexec_functions=(\${preexec_functions[@]} _superset_cmd_start)
 export ZDOTDIR="$_superset_home"
 `;
 	const wroteZlogin = writeFileIfChanged(zloginPath, zloginScript, 0o644);
@@ -274,10 +294,31 @@ hash -r 2>/dev/null || true
 # Minimal prompt (path/env shown in toolbar) - emerald to match app theme
 export PS1=$'\\[\\e[1;38;2;52;211;153m\\]❯\\[\\e[0m\\] '
 # Shell readiness markers — see zsh wrapper for rationale on emitting both.
+# (AY) Also emit OSC 133;D;<exit> (command end) before A so the host-service
+# C/D scanner can clear the shell-running blue dot. \$? must be captured FIRST,
+# before any other command runs, so it reflects the user's last command. Reset
+# the command-start latch so the NEXT entered command re-arms a single C.
 # Protocol ref: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
 __superset_prompt_mark() {
-  printf "\\033]777;superset-shell-ready\\007\\033]133;A\\007"
+  local ec=$?
+  _superset_cmd_started=
+  printf "\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007" "$ec"
 }
+# (AY) Command start (OSC 133;C) via the DEBUG trap (fires before each simple
+# command). The DEBUG trap fires many times per command line and also for our
+# own prompt machinery, so: (1) skip our helpers / PROMPT_COMMAND via
+# \$BASH_COMMAND, and (2) latch _superset_cmd_started so C is emitted at most
+# once per entered line; __superset_prompt_mark clears the latch at the next
+# prompt. \$BASH_COMMAND names the about-to-run command.
+__superset_cmd_start() {
+  case "\${BASH_COMMAND:-}" in
+    __superset_*|_superset_*|*PROMPT_COMMAND*) return ;;
+  esac
+  if [ -n "\${_superset_cmd_started:-}" ]; then return; fi
+  _superset_cmd_started=1
+  printf "\\033]133;C\\007"
+}
+trap '__superset_cmd_start' DEBUG
 # Hook via PROMPT_COMMAND. Supports both scalar and array forms (Bash 5.1+).
 if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
   PROMPT_COMMAND=("\${PROMPT_COMMAND[@]}" "__superset_prompt_mark")
@@ -292,6 +333,104 @@ fi
 `;
 	const changed = writeFileIfChanged(rcfilePath, script, 0o644);
 	console.log(`[agent-setup] ${changed ? "Updated" : "Verified"} bash wrapper`);
+}
+
+/**
+ * (AY) PowerShell integration profile content.
+ *
+ * Written verbatim to BIN_DIR/superset-pwsh-integration.ps1 by
+ * {@link createPwshWrapper} and dot-sourced by the pwsh launch args
+ * (shell-launch.ts buildPwshInitCommand). It emits OSC 133 markers so the
+ * host-service C/D scanner can drive the shell-running blue dot AND the
+ * existing shell-ready (133;A) detection.
+ *
+ * CRITICAL: this is built from an array of SINGLE-QUOTED JS strings joined by
+ * "\n" — NEVER a template literal (backticks). pwsh's `$LASTEXITCODE` and
+ * `$(...)`/`${}` syntax would either break a JS template literal at esbuild
+ * time or be wrongly interpolated; single-quoted JS strings pass them through
+ * byte-for-byte. Keep every line single-quoted and free of backticks.
+ *
+ * - Wrap (don't replace) the user's prompt: save $function:prompt, then a new
+ *   global:prompt emits 133;D;<exit> + 133;A and appends the original prompt's
+ *   output. $LASTEXITCODE is captured FIRST (a null on a fresh session -> 0).
+ * - Command start (133;C) is emitted from a PSReadLine key handler on the
+ *   Enter chords, just before AcceptLine submits the line. The handler FIRST
+ *   asks PSReadLine for the buffer's parse state (GetBufferState) and emits C
+ *   ONLY when the buffer is a complete, executable statement — i.e. there are
+ *   no `IncompleteInput` parse errors. On incomplete multi-line input (an open
+ *   brace, pipe, quote, etc.) Enter just continues the line, so we emit NOTHING
+ *   and let PSReadLine insert the newline — no false-blue mid-edit. Wrapped in
+ *   try/catch so Windows PowerShell 5.1 without PSReadLine still loads the
+ *   profile (it just won't show blue — D+A still fire, safe degrade).
+ */
+const PWSH_INTEGRATION_SCRIPT = [
+	"# Superset PowerShell integration (OSC 133 shell-running markers).",
+	"# Auto-generated by Superset; dot-sourced into interactive pwsh sessions.",
+	"$global:__supersetOriginalPrompt = $function:prompt",
+	"function global:prompt {",
+	"  $ec = $LASTEXITCODE",
+	"  if ($null -eq $ec) { $ec = 0 }",
+	"  $m = \"$([char]0x1b)]133;D;$ec$([char]0x07)$([char]0x1b)]133;A$([char]0x07)\"",
+	"  $u = ''",
+	"  if ($global:__supersetOriginalPrompt) {",
+	"    $u = & $global:__supersetOriginalPrompt",
+	"  }",
+	"  # Restore $LASTEXITCODE for any user prompt logic that reads it.",
+	"  $global:LASTEXITCODE = $ec",
+	"  return \"$m$u\"",
+	"}",
+	"if (Get-Module -ListAvailable PSReadLine) {",
+	"  Import-Module PSReadLine -ErrorAction SilentlyContinue",
+	"  # Returns $true only when the current buffer parses as a COMPLETE statement",
+	"  # (Enter will actually run it). Any IncompleteInput parse error means Enter",
+	"  # continues a multi-line edit, so we must NOT emit 133;C yet.",
+	"  function global:__SupersetBufferIsComplete {",
+	"    $tokens = $null",
+	"    $perrors = $null",
+	"    $ast = $null",
+	"    $cursor = 0",
+	"    try {",
+	"      [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$ast, [ref]$tokens, [ref]$perrors, [ref]$cursor)",
+	"    } catch {",
+	"      # If we cannot inspect the buffer, assume complete (fail toward emitting",
+	"      # C so a real command still lights up; worst case a rare false-blue).",
+	"      return $true",
+	"    }",
+	"    if ($null -eq $perrors) { return $true }",
+	"    foreach ($e in $perrors) {",
+	"      if ($e.IncompleteInput) { return $false }",
+	"    }",
+	"    return $true",
+	"  }",
+	"  $supersetCmdStart = {",
+	"    if (__SupersetBufferIsComplete) {",
+	"      [Console]::Write(\"$([char]0x1b)]133;C$([char]0x07)\")",
+	"    }",
+	"    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()",
+	"  }",
+	"  foreach ($chord in 'Enter','Ctrl+m','Ctrl+j') {",
+	"    try {",
+	"      Set-PSReadLineKeyHandler -Chord $chord -ScriptBlock $supersetCmdStart",
+	"    } catch {}",
+	"  }",
+	"}",
+	"",
+].join("\n");
+
+/**
+ * (AY) Write the PowerShell integration profile into BIN_DIR. pwsh launch args
+ * dot-source it. No-op rewrite when unchanged (writeFileIfChanged). Mode 0o644
+ * mirrors the other wrappers (ignored on Windows but harmless).
+ */
+export function createPwshWrapper(
+	paths: ShellWrapperPaths = DEFAULT_PATHS,
+): void {
+	logModeDiagnostics("pwsh");
+	const ps1Path = path.join(paths.BIN_DIR, "superset-pwsh-integration.ps1");
+	const changed = writeFileIfChanged(ps1Path, PWSH_INTEGRATION_SCRIPT, 0o644);
+	console.log(
+		`[agent-setup] ${changed ? "Updated" : "Verified"} pwsh wrapper`,
+	);
 }
 
 export function getShellEnv(
@@ -330,10 +469,29 @@ export function getShellArgs(
 				`set -l _superset_bin "${escapedBinDir}"`,
 				`contains -- "$_superset_bin" $PATH`,
 				`or set -gx PATH "$_superset_bin" $PATH`,
+				// (AY) Command start: fish_preexec -> OSC 133;C (blue dot).
+				`function _superset_cmd_start --on-event fish_preexec`,
+				`printf '\\033]133;C\\007'`,
+				`end`,
+				// (AY) Command end + prompt: capture $status FIRST, emit
+				// 133;D;<exit> then the existing 777 + 133;A markers.
 				`function _superset_prompt_mark --on-event fish_prompt`,
-				`printf '\\033]777;superset-shell-ready\\007\\033]133;A\\007'`,
+				`set -l _superset_ec $status`,
+				`printf '\\033]133;D;%s\\007\\033]777;superset-shell-ready\\007\\033]133;A\\007' $_superset_ec`,
 				`end`,
 			].join("; "),
+		];
+	}
+	if (shellName === "pwsh" || shellName === "powershell") {
+		// (AY) Dot-source the integration profile (written by createPwshWrapper)
+		// into the interactive session for OSC 133 C/D/A markers. -NoExit keeps
+		// it interactive; Bypass survives a restrictive machine policy.
+		return [
+			"-NoExit",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-Command",
+			`. ${quotePwshSingleQuoted(path.join(paths.BIN_DIR, "superset-pwsh-integration.ps1"))}`,
 		];
 	}
 	if (["zsh", "sh", "ksh"].includes(shellName)) {
@@ -359,6 +517,13 @@ export function getCommandShellArgs(
 ): string[] {
 	const shellName = getShellName(shell);
 	logModeDiagnostics(shellName);
+	// (AY) pwsh/powershell take POSIX prelude/`-c` syntax poorly; run the
+	// command directly with -Command. No prompt markers here — this is a
+	// one-shot non-interactive invocation, not an interactive session, so the
+	// shell-running dot does not apply.
+	if (shellName === "pwsh" || shellName === "powershell") {
+		return ["-NoProfile", "-Command", command];
+	}
 	const zshRc = path.join(paths.ZSH_DIR, ".zshrc");
 	const bashRcfile = path.join(paths.BASH_DIR, "rcfile");
 	const commandWithManagedPrelude = `${buildManagedCommandPrelude(shellName, paths.BIN_DIR)}\n${command}`;

@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { workspaces } from "../../../../db/schema";
+import { isGitRepo } from "../../../../runtime/git/non-git";
 import { resolveDefaultBranchName } from "../../../../runtime/git/refs";
 import { protectedProcedure } from "../../../index";
 import { searchBranchesInputSchema } from "../schemas";
@@ -29,6 +30,16 @@ export const searchBranches = protectedProcedure
 
 		const localProject = findLocalProject(ctx, input.projectId);
 		if (!localProject) {
+			return {
+				defaultBranch: null as string | null,
+				items: [] as BranchRow[],
+				nextCursor: null as string | null,
+			};
+		}
+
+		// (NON-GIT WORKSPACE) A non-git project has no branches to search —
+		// return the same empty page as a missing project before touching git.
+		if (!(await isGitRepo(localProject.repoPath))) {
 			return {
 				defaultBranch: null as string | null,
 				items: [] as BranchRow[],

@@ -307,7 +307,7 @@ function getPlatformLibsqlCandidates(): string[] {
 	}
 
 	if (targetPlatform === "win32") {
-		return ["@libsql/win32-x64-msvc"];
+		return [targetArch === "arm64" ? "@libsql/win32-arm64-msvc" : "@libsql/win32-x64-msvc"];
 	}
 
 	return [];
@@ -333,7 +333,7 @@ function getPlatformAstGrepCandidates(): string[] {
 	}
 
 	if (targetPlatform === "win32") {
-		return ["@ast-grep/napi-win32-x64-msvc"];
+		return [targetArch === "arm64" ? "@ast-grep/napi-win32-arm64-msvc" : "@ast-grep/napi-win32-x64-msvc"];
 	}
 
 	return [];

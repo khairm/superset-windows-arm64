@@ -14,6 +14,7 @@ import {
 	type ResolvedRepo,
 	resolveLocalRepo,
 	tryRevParseGitRoot,
+	resolveNonGitFolder,
 } from "./utils/resolve-repo";
 
 function slugifyProjectName(name: string): string {
@@ -115,6 +116,9 @@ async function persistFromResolved(
 		resolved: ResolvedRepo;
 		cleanupRepoPathOnFailure: boolean;
 		repoCloneUrlForCloud?: string;
+		/** (NON-GIT WORKSPACE) Create the main workspace without reading a git
+		 *  branch (uses the inert NON_GIT_BRANCH marker). */
+		nonGit?: boolean;
 	},
 ): Promise<CreateResult> {
 	const projectId = randomUUID();
@@ -136,6 +140,7 @@ async function persistFromResolved(
 			ctx,
 			projectId,
 			args.resolved.repoPath,
+			{ nonGit: args.nonGit },
 		);
 
 		return {
@@ -225,6 +230,27 @@ export async function createFromImportLocal(
 		// User pointed us at an existing folder; never rm it.
 		cleanupRepoPathOnFailure: false,
 		repoCloneUrlForCloud: resolved.parsed?.url,
+	});
+}
+
+/**
+ * (NON-GIT WORKSPACE) Import a plain folder that is NOT a git repository.
+ * Skips the `git rev-parse` that `createFromImportLocal` performs, persists a
+ * project + a single non-git main workspace (inert branch marker), and never
+ * removes the user's folder on failure. The created project has no remote and
+ * all git UI/operations stay disabled (see the server-side git guards).
+ */
+export async function createFromNonGitFolder(
+	ctx: HostServiceContext,
+	args: { name: string; repoPath: string },
+): Promise<CreateResult> {
+	const resolved = resolveNonGitFolder(args.repoPath);
+	return persistFromResolved(ctx, {
+		name: args.name,
+		resolved,
+		// User pointed us at an existing folder; never rm it.
+		cleanupRepoPathOnFailure: false,
+		nonGit: true,
 	});
 }
 

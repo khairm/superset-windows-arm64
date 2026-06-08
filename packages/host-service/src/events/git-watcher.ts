@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { type FSWatcher, watch } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
 import type { HostDb } from "../db/index.ts";
@@ -10,6 +11,39 @@ const execFileAsync = promisify(execFile);
 
 const RESCAN_INTERVAL_MS = 30_000;
 const DEBOUNCE_MS = 300;
+
+/**
+ * `.git/` paths whose changes never alter `git status` / branch state but
+ * churn constantly: transient `*.lock` files, the fsmonitor daemon's own
+ * bookkeeping under `fsmonitor--daemon/`, raw object writes (always paired
+ * with a ref/index update the watcher still sees), and reflogs.
+ *
+ * Filtering these out of the recursive `.git/` watch is essential on Windows:
+ * `git status` pokes fsmonitor cookie files inside `.git/`, so an unfiltered
+ * recursive watch turns every status read into a fresh `git:changed` event —
+ * a self-sustaining spawn storm. `fs.watch` reports OS-native separators, so
+ * the filename is normalized to `/` before matching.
+ */
+function isIgnoredGitDirChange(filename: string): boolean {
+	// Windows file systems are case-insensitive; git's own metadata is
+	// lowercase but lowercasing is defensive. `fs.watch` yields OS-native
+	// separators, so normalize to `/` first.
+	const path = filename.replace(/\\/g, "/").toLowerCase();
+	if (path.endsWith(".lock")) return true;
+	if (path === "objects" || path.startsWith("objects/")) return true;
+	if (path === "logs" || path.startsWith("logs/")) return true;
+	// The fsmonitor daemon's cookie dir churns on every `git status`. Match it
+	// at the top level OR nested: linked worktrees and submodules resolve
+	// `.git` elsewhere and can nest gitdirs under `modules/`/`worktrees/`.
+	if (
+		path === "fsmonitor--daemon" ||
+		path.startsWith("fsmonitor--daemon/") ||
+		path.includes("/fsmonitor--daemon/")
+	) {
+		return true;
+	}
+	return false;
+}
 
 export interface GitChangedEvent {
 	workspaceId: string;
@@ -33,8 +67,14 @@ interface PendingBatch {
 interface WatchedWorkspace {
 	workspaceId: string;
 	worktreePath: string;
-	gitDir: string;
-	watcher: FSWatcher;
+	/**
+	 * Resolved `.git` directory, or `null` for a non-git folder workspace
+	 * (NON-GIT WORKSPACE) — those still get a worktree-root fs watch but have
+	 * no `.git/` metadata to watch.
+	 */
+	gitDir: string | null;
+	/** `.git/` metadata watcher; `null` for a non-git folder workspace. */
+	watcher: FSWatcher | null;
 	disposeWorktreeWatch: () => void;
 }
 
@@ -105,7 +145,7 @@ export class GitWatcher {
 		this.debounceTimers.clear();
 		this.pendingBatches.clear();
 		for (const entry of this.watched.values()) {
-			entry.watcher.close();
+			entry.watcher?.close();
 			entry.disposeWorktreeWatch();
 		}
 		this.watched.clear();
@@ -183,7 +223,7 @@ export class GitWatcher {
 		// Remove watchers for workspaces that no longer exist
 		for (const [id, entry] of this.watched) {
 			if (!currentIds.has(id)) {
-				entry.watcher.close();
+				entry.watcher?.close();
 				entry.disposeWorktreeWatch();
 				this.watched.delete(id);
 			}
@@ -202,21 +242,26 @@ export class GitWatcher {
 	): Promise<void> {
 		if (this.closed) return;
 
-		let gitDir: string;
+		// Resolve the `.git` directory. Failure here means the folder is not a
+		// git repo (NON-GIT WORKSPACE) or the path is gone — that must NOT skip
+		// the worktree-root fs watch below; only the `.git/`-specific watch is
+		// git-dependent. So we keep going with `gitDir = null`.
+		let gitDir: string | null = null;
 		try {
 			const { stdout } = await execFileAsync(
 				"git",
 				["rev-parse", "--git-dir"],
 				{ cwd: worktreePath },
 			);
-			gitDir = stdout.trim();
-			// If relative, resolve against worktree path
-			if (!gitDir.startsWith("/")) {
-				gitDir = `${worktreePath}/${gitDir}`;
-			}
+			const raw = stdout.trim();
+			// `git` returns the git-dir relative to the worktree; resolve it.
+			// Use `isAbsolute`/`join` so a Windows drive path (C:\...) isn't
+			// mistaken for relative by a POSIX `startsWith("/")` check.
+			gitDir = isAbsolute(raw) ? raw : join(worktreePath, raw);
 		} catch {
-			// Not a git repo or path doesn't exist — skip
-			return;
+			// Not a git repo or path doesn't exist — no `.git/` watch, but the
+			// worktree-root watch (file tree / change detection) still runs.
+			gitDir = null;
 		}
 
 		if (this.closed || this.watched.has(workspaceId)) return;
@@ -224,19 +269,50 @@ export class GitWatcher {
 		// Start the worktree watch first so we have a dispose handle to capture
 		// in the .git watcher's error handler closure. This avoids a race where
 		// the error handler could fire before `this.watched.set(...)` runs.
+		// This watch is git-independent and always runs (incl. non-git folders).
 		const disposeWorktreeWatch = this.startWorktreeWatch(
 			workspaceId,
 			worktreePath,
 		);
 
+		// NON-GIT WORKSPACE: no `.git/` dir to watch, but the worktree-root watch
+		// above (file tree / change detection) is already live. Register with a
+		// null `.git/` watcher and stop — the only git-dependent step is below.
+		if (gitDir === null) {
+			this.watched.set(workspaceId, {
+				workspaceId,
+				worktreePath,
+				gitDir: null,
+				watcher: null,
+				disposeWorktreeWatch,
+			});
+			return;
+		}
+
 		let watcher: FSWatcher;
 		try {
-			watcher = watch(gitDir, { recursive: true }, () => {
+			watcher = watch(gitDir, { recursive: true }, (_event, filename) => {
+				// Drop git's own internal churn (lock files, fsmonitor cookies,
+				// object/reflog writes) so a `git status` triggered by this
+				// watcher can't re-trigger it — see isIgnoredGitDirChange.
+				// `filename` is null on some platforms/events; when unknown,
+				// fall through and treat the change as meaningful rather than
+				// risk dropping a real event.
+				if (filename && isIgnoredGitDirChange(filename.toString())) {
+					return;
+				}
 				this.markGitDirDirty(workspaceId);
 			});
 		} catch {
-			// fs.watch failed (e.g. directory doesn't exist)
-			disposeWorktreeWatch();
+			// fs.watch failed (e.g. directory doesn't exist). The worktree watch
+			// is still valid, so keep that entry rather than dropping both.
+			this.watched.set(workspaceId, {
+				workspaceId,
+				worktreePath,
+				gitDir,
+				watcher: null,
+				disposeWorktreeWatch,
+			});
 			return;
 		}
 

@@ -4,9 +4,11 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { pullRequests, workspaces } from "../../../db/schema";
+import { isGitRepo } from "../../../runtime/git/non-git";
 import { protectedProcedure, queryProcedure, router } from "../../index";
 import { resolveGithubRepo } from "../workspace-creation/shared/project-helpers";
 import type {
+	ChangedFile,
 	CheckConclusionState,
 	CheckRun,
 	CheckStatusState,
@@ -23,7 +25,7 @@ import {
 	getDefaultBranchName,
 	resolveBaseComparison,
 } from "./utils/git-helpers";
-import { getGitStatusSnapshot } from "./utils/git-status";
+import { emptyGitStatusSnapshot, getGitStatusSnapshot } from "./utils/git-status";
 import { gitStatusRefreshLimiter } from "./utils/git-status-refresh-limiter";
 import {
 	type GraphQLThreadsResult,
@@ -54,11 +56,35 @@ function assertSafeRelativePath(filePath: string): void {
 	}
 }
 
+/**
+ * (NON-GIT WORKSPACE) Shared guard for git mutations: throw a uniform
+ * BAD_REQUEST when the workspace folder is not a git repository, so the inert
+ * NON_GIT_BRANCH marker can never reach a git command.
+ */
+async function assertGitRepo(worktreePath: string): Promise<void> {
+	if (!(await isGitRepo(worktreePath))) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "This workspace is not a git repository.",
+		});
+	}
+}
+
 export const gitRouter = router({
+	isRepo: queryProcedure
+		.input(z.object({ workspaceId: z.string() }))
+		.query(async ({ ctx, input }) => {
+			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			return { isGitRepo: await isGitRepo(worktreePath) };
+		}),
+
 	listBranches: queryProcedure
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				return { branches: [] as { name: string; isHead: boolean }[] };
+			}
 			const git = await ctx.git(worktreePath);
 
 			// `%(HEAD)` emits "*" for the checked-out branch, " " otherwise.
@@ -109,6 +135,9 @@ export const gitRouter = router({
 				priority: input.priority,
 				run: async () => {
 					const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+					if (!(await isGitRepo(worktreePath))) {
+						return emptyGitStatusSnapshot();
+					}
 					const git = await ctx.git(worktreePath);
 					return getGitStatusSnapshot({
 						git,
@@ -129,6 +158,9 @@ export const gitRouter = router({
 		)
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				return { commits: [] as Commit[] };
+			}
 			const git = await ctx.git(worktreePath);
 
 			const base = await resolveBaseComparison(git, input.baseBranch);
@@ -168,6 +200,9 @@ export const gitRouter = router({
 		)
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				return { files: [] as ChangedFile[] };
+			}
 			const git = await ctx.git(worktreePath);
 
 			const from = input.fromHash ? input.fromHash : `${input.commitHash}^`;
@@ -180,6 +215,9 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				return { baseBranch: null as string | null };
+			}
 			const git = await ctx.git(worktreePath);
 			const currentBranch = (
 				await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
@@ -204,6 +242,7 @@ export const gitRouter = router({
 		)
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			const currentBranch = (
 				await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
@@ -240,6 +279,7 @@ export const gitRouter = router({
 		)
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 
 			// Check if branch has been pushed to remote
@@ -275,6 +315,7 @@ export const gitRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			assertSafeRelativePath(input.filePath);
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			const status = await git.status();
 			const isUntracked = status.not_added.includes(input.filePath);
@@ -290,6 +331,7 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			await git.raw(["checkout", "--", "."]);
 			await git.raw(["clean", "-fd"]);
@@ -300,6 +342,7 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			const status = await git.status();
 
@@ -352,6 +395,7 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			await git.raw(["add", "-A"]);
 			return { success: true };
@@ -361,6 +405,7 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.mutation(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			await assertGitRepo(worktreePath);
 			const git = await ctx.git(worktreePath);
 			await git.raw(["reset", "HEAD"]);
 			return { success: true };
@@ -380,6 +425,13 @@ export const gitRouter = router({
 		)
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				const emptyName = input.path.split("/").pop() ?? input.path;
+				return {
+					oldFile: { name: emptyName, contents: "" },
+					newFile: { name: emptyName, contents: "" },
+				};
+			}
 			const git = await ctx.git(worktreePath);
 
 			let originalContent = "";
@@ -450,6 +502,19 @@ export const gitRouter = router({
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input }) => {
 			const worktreePath = resolveWorktreePath(ctx, input.workspaceId);
+			if (!(await isGitRepo(worktreePath))) {
+				return {
+					hasRepo: false,
+					hasUpstream: false,
+					pushCount: 0,
+					pullCount: 0,
+					isDefaultBranch: false,
+					isDetached: false,
+					hasUncommitted: false,
+					currentBranch: null as string | null,
+					defaultBranch: null as string | null,
+				};
+			}
 			const git = await ctx.git(worktreePath);
 
 			const currentBranch = (

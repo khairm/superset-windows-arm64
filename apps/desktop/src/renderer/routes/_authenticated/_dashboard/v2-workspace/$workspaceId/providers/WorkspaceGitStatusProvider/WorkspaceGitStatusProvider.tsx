@@ -1,6 +1,7 @@
 import type { WorkspaceStore } from "@superset/panes";
 import { createContext, useContext, useSyncExternalStore } from "react";
 import { useGitStatus } from "renderer/hooks/host-service/useGitStatus";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import type { StoreApi } from "zustand/vanilla";
 import type { PaneViewerData } from "../../types";
 
@@ -24,7 +25,15 @@ export function WorkspaceGitStatusProvider({
 	workspaceId,
 }: WorkspaceGitStatusProviderProps) {
 	const hasDiffPane = useHasDiffPane(store);
-	const gitStatus = useGitStatus(workspaceId, sidebarOpen || hasDiffPane);
+	// (NON-GIT WORKSPACE) Don't poll git status for a non-git folder — the
+	// marker branch must never reach a git command. `useIsGitRepo` stays true
+	// until the query positively resolves non-git, so a real repo never
+	// flicker-skips on mount.
+	const isGitRepo = useIsGitRepo(workspaceId);
+	const gitStatus = useGitStatus(
+		workspaceId,
+		isGitRepo && (sidebarOpen || hasDiffPane),
+	);
 
 	return (
 		<WorkspaceGitStatusContext.Provider value={gitStatus}>

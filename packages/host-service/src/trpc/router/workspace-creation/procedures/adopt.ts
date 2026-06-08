@@ -1,5 +1,6 @@
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import { TRPCError } from "@trpc/server";
+import { isGitRepo } from "../../../../runtime/git/non-git";
 import { protectedProcedure } from "../../../index";
 import { ensureMainWorkspace } from "../../project/utils/ensure-main-workspace";
 import { adoptInputSchema } from "../schemas";
@@ -22,6 +23,17 @@ export const adopt = protectedProcedure
 	.input(adoptInputSchema)
 	.mutation(async ({ ctx, input }) => {
 		const localProject = requireLocalProject(ctx, input.projectId);
+
+		// (NON-GIT WORKSPACE) Adoption pulls an existing git worktree into a
+		// workspace row. A non-git project folder has no worktrees to adopt —
+		// fail loud before touching git.
+		if (!(await isGitRepo(localProject.repoPath))) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "Cannot adopt a worktree in a non-git workspace.",
+			});
+		}
+
 		await ensureMainWorkspace(ctx, input.projectId, localProject.repoPath);
 
 		let branch = input.branch.trim();

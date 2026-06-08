@@ -98,10 +98,19 @@ function copyModuleIfSymlink(
 		console.log(`    Real path: ${realPath}`);
 
 		// Remove the symlink
-		rmSync(modulePath);
+		// Windows uses junctions (directory-like) instead of symlinks;
+		// rmSync needs { recursive: true } to remove them.
+		if (process.platform === "win32") {
+		  rmSync(modulePath, { recursive: true, force: true });
+		} else {
+		  rmSync(modulePath);
+		}
 
-		// Copy the actual files
-		cpSync(realPath, modulePath, { recursive: true });
+		// Copy the actual files. dereference: true follows nested symlinks
+		// (e.g., node_modules/node-addon-api junctions on Windows) and copies
+		// their contents instead of the link itself, which avoids EPERM on
+		// copyfile when the destination cannot create the same junction.
+		cpSync(realPath, modulePath, { recursive: true, dereference: true });
 
 		console.log(`    Copied to: ${modulePath}`);
 	} else {
@@ -514,6 +523,17 @@ function copyDuckdbPlatformPackages(nodeModulesDir: string): void {
 	);
 }
 
+// Platform-specific optional native packages that must be materialized from Bun's store.
+// @lydell/node-pty uses optionalDependencies for platform binaries, but Bun keeps them
+// in .bun/ and they aren't resolvable from the desktop workspace without explicit copying.
+const OPTIONAL_PLATFORM_MODULES = [
+  ...(process.platform === "win32" ? ["@lydell/node-pty-win32-arm64"] : []),
+  ...(process.platform === "darwin" && process.arch === "arm64" ? ["@lydell/node-pty-darwin-arm64"] : []),
+  ...(process.platform === "darwin" && process.arch === "x64" ? ["@lydell/node-pty-darwin-x64"] : []),
+  ...(process.platform === "linux" && process.arch === "x64" ? ["@lydell/node-pty-linux-x64"] : []),
+  ...(process.platform === "linux" && process.arch === "arm64" ? ["@lydell/node-pty-linux-arm64"] : []),
+] as const;
+
 function prepareNativeModules() {
 	console.log("Preparing external runtime modules for electron-builder...");
 	console.log(
@@ -533,6 +553,42 @@ function prepareNativeModules() {
 	copyParcelWatcherPlatformPackages(nodeModulesDir);
 	copyLibsqlDependencies(nodeModulesDir);
 	copyDuckdbPlatformPackages(nodeModulesDir);
+
+	if (OPTIONAL_PLATFORM_MODULES.length > 0) {
+		console.log("\nPreparing platform-specific optional modules...");
+		const bunStoreDir = getBunStoreDir(nodeModulesDir);
+		for (const moduleName of OPTIONAL_PLATFORM_MODULES) {
+			const destPath = join(nodeModulesDir, moduleName);
+			if (existsSync(destPath)) {
+				console.log(`  ${moduleName}: already exists`);
+				continue;
+			}
+			// Search Bun store for the package
+			const bunPrefix = moduleName.startsWith("@")
+				? moduleName.replace("/", "+")
+				: moduleName;
+			const bunStoreEntries = existsSync(bunStoreDir)
+				? readdirSync(bunStoreDir).filter((e) => e.startsWith(`${bunPrefix}@`))
+				: [];
+			if (bunStoreEntries.length === 0) {
+				console.warn(`  ${moduleName}: not found in Bun store (skipping)`);
+				continue;
+			}
+			const sourcePath = join(
+				bunStoreDir,
+				bunStoreEntries.sort().reverse()[0],
+				"node_modules",
+				moduleName,
+			);
+			if (!existsSync(sourcePath)) {
+				console.warn(`  ${moduleName}: Bun store path missing (${sourcePath})`);
+				continue;
+			}
+			console.log(`  ${moduleName}: copying from Bun store`);
+			mkdirSync(dirname(destPath), { recursive: true });
+			cpSync(sourcePath, destPath, { recursive: true });
+		}
+	}
 
 	console.log("\nDone!");
 }

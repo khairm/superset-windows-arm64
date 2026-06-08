@@ -46,6 +46,14 @@ export function resolveV2AgentStatusTransition({
 			: { clearSources: [], setStatus: null };
 	}
 
+	if (payload.eventType === "SubagentActive") {
+		const subagentEntry = statuses[terminalSourceKey];
+		if (subagentEntry?.workspaceId === workspaceId && subagentEntry.status === "permission") {
+			return { clearSources: [], setStatus: null };
+		}
+		return { clearSources: [], setStatus: { source: terminalSource, status: "working" } };
+	}
+
 	if (payload.eventType === "Start") {
 		return {
 			clearSources: [],

@@ -44,6 +44,17 @@ export interface DashboardSidebarWorkspace {
 	updatedAt: Date;
 	taskId: string | null;
 	pendingTransaction: WorkspaceTransactionSnapshot | null;
+	// Snooze / archive state — populated for items rendered inside the
+	// Snoozed / Archived sections (used for sort + the "time left" badge).
+	snoozeUntil?: number | null;
+	snoozeLaunchId?: string | null;
+	archivedAt?: number | null;
+	/** Precomputed "time left" label for a snoozed row (e.g. "3d"), derived in
+	 * the data hook from the live tick so the badge actually counts down. */
+	snoozeRemainingLabel?: string;
+	/** Set briefly on an active row that just auto-returned from snooze, to
+	 * drive a subtle one-shot "just returned" highlight. */
+	justReturned?: boolean;
 }
 
 export interface DashboardSidebarSection {
@@ -79,4 +90,13 @@ export interface DashboardSidebarProject {
 	updatedAt: Date;
 	isCollapsed: boolean;
 	children: DashboardSidebarProjectChild[];
+	// Snoozed / archived threads live outside `children` (so they don't count
+	// toward the active badge or the DnD lane) and render in their own
+	// reveal-able sections below the active list.
+	snoozedWorkspaces: DashboardSidebarWorkspace[];
+	archivedWorkspaces: DashboardSidebarWorkspace[];
+	showSnoozed: boolean;
+	showArchived: boolean;
+	snoozedCollapsed: boolean;
+	archivedCollapsed: boolean;
 }

@@ -315,12 +315,9 @@ async function runDestroy(
 			git = await ctx.git(project.repoPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			if (!worktreeRemoved) {
-				throw new TRPCError({
-					code: "INTERNAL_SERVER_ERROR",
-					message: `Failed to open project repo at ${project.repoPath}: ${message}`,
-				});
-			}
+			// (AH) Decouple: never abort the delete because the repo couldn't
+			// be opened. Warn and continue so the cloud + local-row delete
+			// below run on the FIRST attempt; the worktree dir is left on disk.
 			warnings.push(
 				`Failed to open project repo at ${project.repoPath}: ${message}`,
 			);
@@ -347,10 +344,21 @@ async function runDestroy(
 				stillRegistered = await isRegisteredWorktree(git, local.worktreePath);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				throw new TRPCError({
-					code: "INTERNAL_SERVER_ERROR",
-					message: `Failed to verify worktree removal at ${local.worktreePath}: ${message}`,
-				});
+				if (!existsSync(local.worktreePath)) {
+					worktreeRemoved = true;
+				} else {
+					// (AH) Decouple: a locked worktree (held by an editor/terminal)
+					// must NOT abort the delete. Warn, prune git's stale worktree
+					// metadata, and continue — the cloud + local-row delete below
+					// run first-try; the folder is left on disk for the user to
+					// remove once the lock is released.
+					warnings.push(
+						`Failed to remove worktree at ${local.worktreePath}: ${message}. It may be locked by another process (editor/terminal); the workspace was deleted and the folder left on disk.`,
+					);
+					try {
+						await git.raw(["worktree", "prune"]);
+					} catch {}
+				}
 			}
 			if (stillRegistered) {
 				// git still tracks a live worktree here — removal genuinely

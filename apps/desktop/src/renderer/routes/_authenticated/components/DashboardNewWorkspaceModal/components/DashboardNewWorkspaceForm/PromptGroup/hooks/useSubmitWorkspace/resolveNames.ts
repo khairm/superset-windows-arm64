@@ -1,4 +1,7 @@
-import { sanitizeUserBranchName } from "@superset/shared/workspace-launch";
+import {
+	deriveWorkspaceBranchFromPrompt,
+	sanitizeUserBranchName,
+} from "@superset/shared/workspace-launch";
 import type { DashboardNewWorkspaceDraft } from "../../../../../DashboardNewWorkspaceDraftContext";
 
 interface ResolvedNames {
@@ -17,7 +20,9 @@ export function resolveNames(draft: DashboardNewWorkspaceDraft): ResolvedNames {
 	const branchName =
 		draft.branchNameEdited && draft.branchName.trim()
 			? sanitizeUserBranchName(draft.branchName.trim())
-			: null;
+			: draft.workspaceNameEdited && draft.workspaceName.trim()
+				? deriveWorkspaceBranchFromPrompt(draft.workspaceName.trim())
+				: null;
 
 	const workspaceName =
 		draft.workspaceNameEdited && draft.workspaceName.trim()

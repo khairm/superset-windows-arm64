@@ -15,6 +15,7 @@ import {
 const currentYear = new Date().getFullYear();
 const author = pkg.author?.name ?? pkg.author;
 const productName = pkg.productName;
+const disableWinSigning = process.env.SUPERSET_DISABLE_WIN_SIGNING === "1";
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
@@ -58,6 +59,11 @@ const config: Configuration = {
 
 	// Extra resources placed outside asar archive (accessible via process.resourcesPath)
 	extraResources: [
+			{
+				from: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
+				to: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
+				filter: ["**/*"],
+			},
 		// Database migrations - must be outside asar for drizzle-orm to read
 		{
 			from: "dist/resources/migrations",
@@ -74,15 +80,21 @@ const config: Configuration = {
 			to: "resources/bin",
 			filter: ["**/*"],
 		},
+		{
+			from: join(pkg.resources, "build/icons"),
+			to: "build/icons",
+			filter: ["**/*"],
+		},
 	],
 
 	files: [
-		"dist/**/*",
-		"package.json",
+		{
+			filter: ["dist/**/*", "!dist/resources/migrations/**", "package.json"],
+		},
 		{
 			from: pkg.resources,
 			to: "resources",
-			filter: ["**/*"],
+			filter: ["**/*", "!build/**"],
 		},
 		// Runtime modules that stay external to the main bundle.
 		// bun creates symlinks for direct deps in workspace node_modules.
@@ -93,7 +105,7 @@ const config: Configuration = {
 	],
 
 	// Rebuild native modules for Electron's Node.js version
-	npmRebuild: true,
+	npmRebuild: process.platform !== "win32",
 
 	// macOS DMG installer
 	dmg: {
@@ -155,16 +167,29 @@ const config: Configuration = {
 		target: [
 			{
 				target: "nsis",
-				arch: ["x64"],
+				arch: ["arm64"],
 			},
 		],
 		artifactName: `${productName}-${pkg.version}-\${arch}.\${ext}`,
+		asarUnpack: ["**/node_modules/@lydell/node-pty-win32-arm64/**/*"],
+		files: [
+			{
+				from: "node_modules/@lydell/node-pty-win32-arm64",
+				to: "node_modules/@lydell/node-pty-win32-arm64",
+				filter: ["**/*"],
+			},
+		],
 	},
 
 	// NSIS installer (Windows)
 	nsis: {
-		oneClick: false,
-		allowToChangeInstallationDirectory: true,
+		oneClick: true,
+		allowToChangeInstallationDirectory: false,
+		createDesktopShortcut: true,
+		createStartMenuShortcut: true,
+		shortcutName: productName,
+		installerIcon: join(pkg.resources, "build/icons/icon.ico"),
+		uninstallerIcon: join(pkg.resources, "build/icons/icon.ico"),
 	},
 };
 

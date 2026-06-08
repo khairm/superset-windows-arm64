@@ -1,5 +1,5 @@
 import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
-import { getVisibleSidebarWorkspaces } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import { getWorkspaceSidebarBucket } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 
 type TopLevelItem =
 	| { kind: "workspace"; tabOrder: number; workspaceId: string }
@@ -18,7 +18,11 @@ export function getFlattenedV2WorkspaceIds(
 	const allWorkspaces = Array.from(
 		collections.v2WorkspaceLocalState.state.values(),
 	);
-	const visibleWorkspaces = getVisibleSidebarWorkspaces(allWorkspaces);
+	// Only ACTIVE threads belong in the removal/navigation order — snoozed,
+	// archived, and hidden rows must never be navigated into.
+	const visibleWorkspaces = allWorkspaces.filter(
+		(workspace) => getWorkspaceSidebarBucket(workspace) === "active",
+	);
 
 	const result: string[] = [];
 

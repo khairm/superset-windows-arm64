@@ -74,6 +74,30 @@ export function normalizeDefaultShell(
 
 export function getDefaultShell(): string {
 	const resolvedDefaultShell = normalizeDefaultShell(defaultShell);
+	// On Windows the `default-shell` npm package returns whatever is
+	// configured as the system default — commonly pwsh.exe (PowerShell 7)
+	// — but does NOT verify the binary is actually installed. If
+	// PowerShell 7 was uninstalled or never installed, spawning a
+	// terminal preset throws "File not found" and the user sees toasts
+	// like "Failed to run preset open <uuid>: spawn failed (shell=pwsh.exe
+	// cwd=...)". Validate the resolved shell exists on PATH; if not,
+	// drop to FALLBACK_SHELL (cmd.exe) so basic terminal use survives.
+	if (resolvedDefaultShell && os.platform() === "win32") {
+		const exts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+		const dirs = (process.env.PATH ?? "").split(";").filter(Boolean);
+		const looksAbsolute = /^[a-zA-Z]:[\\\/]/.test(resolvedDefaultShell);
+		const has = looksAbsolute
+			? fs.existsSync(resolvedDefaultShell)
+			: dirs.some((d) => {
+				const base = `${d}\\${resolvedDefaultShell}`;
+				if (fs.existsSync(base)) return true;
+				return exts.some((ext) => fs.existsSync(`${base}${ext}`));
+			});
+		if (!has) {
+			console.warn(`[getDefaultShell] resolved shell "${resolvedDefaultShell}" not on PATH; falling back to ${FALLBACK_SHELL}`);
+			return FALLBACK_SHELL;
+		}
+	}
 	if (resolvedDefaultShell) {
 		return resolvedDefaultShell;
 	}
@@ -291,11 +315,15 @@ const ALLOWED_ENV_VARS = new Set([
 	"LOCALAPPDATA",
 	"PROGRAMFILES",
 	"PROGRAMFILES(X86)",
+	"PROGRAMDATA",
+	"SYSTEMDRIVE",
 	"SYSTEMROOT",
 	"WINDIR",
 	"TEMP",
 	"TMP",
 	"PATHEXT", // Required for command resolution on Windows
+	"NUMBER_OF_PROCESSORS", // Used by MSBuild for parallel builds
+	"PROCESSOR_ARCHITECTURE", // Used by native toolchains (x86/AMD64/ARM64)
 
 	// SSL/TLS configuration (custom certs, not secrets)
 	"SSL_CERT_FILE",

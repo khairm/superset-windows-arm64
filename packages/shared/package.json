@@ -124,6 +124,10 @@
 			"types": "./src/shell-ready-scanner.ts",
 			"default": "./src/shell-ready-scanner.ts"
 		},
+		"./shell-osc133-cd-scanner": {
+			"types": "./src/shell-osc133-cd-scanner.ts",
+			"default": "./src/shell-osc133-cd-scanner.ts"
+		},
 		"./terminal-title-scanner": {
 			"types": "./src/terminal-title-scanner.ts",
 			"default": "./src/terminal-title-scanner.ts"

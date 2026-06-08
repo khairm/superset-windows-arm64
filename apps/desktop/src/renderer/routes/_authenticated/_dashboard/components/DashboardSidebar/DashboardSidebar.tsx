@@ -152,6 +152,14 @@ export function DashboardSidebar({
 					}
 				}
 			}
+			// View-in-place: the open thread may be snoozed or archived (still shown
+			// in the main pane) — keep its project resolved so the footer persists.
+			for (const ws of project.snoozedWorkspaces) {
+				if (ws.id === activeV2WorkspaceId) return project;
+			}
+			for (const ws of project.archivedWorkspaces) {
+				if (ws.id === activeV2WorkspaceId) return project;
+			}
 		}
 		return null;
 	}, [groups, activeV2WorkspaceId]);

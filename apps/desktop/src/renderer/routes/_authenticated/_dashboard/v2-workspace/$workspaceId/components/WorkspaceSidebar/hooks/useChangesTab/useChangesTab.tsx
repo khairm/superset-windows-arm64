@@ -5,6 +5,7 @@ import { cn } from "@superset/ui/utils";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useChangeset } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
 import { useSidebarDiffRef } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useSidebarDiffRef";
@@ -35,6 +36,12 @@ export function useChangesTab({
 	onOpenFile,
 }: UseChangesTabParams): SidebarTabDefinition {
 	const status = useWorkspaceGitStatus();
+	// (NON-GIT WORKSPACE) Don't fire any git query/mutation for a non-git
+	// folder — the marker branch must never reach a git command. Stays true
+	// until the query positively resolves non-git so a real repo never
+	// flicker-skips on mount. The Changes tab itself isn't rendered for a
+	// non-git folder (see WorkspaceSidebar), but this hook still runs.
+	const isGitRepo = useIsGitRepo(workspaceId);
 	const collections = useCollections();
 	const utils = workspaceTrpc.useUtils();
 	const localState = collections.v2WorkspaceLocalState.get(workspaceId);
@@ -46,7 +53,7 @@ export function useChangesTab({
 
 	const baseBranchQuery = workspaceTrpc.git.getBaseBranch.useQuery(
 		{ workspaceId },
-		{ staleTime: Number.POSITIVE_INFINITY },
+		{ enabled: isGitRepo, staleTime: Number.POSITIVE_INFINITY },
 	);
 	const baseBranch = baseBranchQuery.data?.baseBranch ?? null;
 
@@ -101,25 +108,27 @@ export function useChangesTab({
 
 	const setBaseBranch = useCallback(
 		(branchName: string) => {
+			if (!isGitRepo) return;
 			setBaseBranchMutation.mutate({ workspaceId, baseBranch: branchName });
 		},
-		[setBaseBranchMutation, workspaceId],
+		[isGitRepo, setBaseBranchMutation, workspaceId],
 	);
 
 	const commits = workspaceTrpc.git.listCommits.useQuery(
 		{ workspaceId, baseBranch: baseBranch ?? undefined },
-		{ refetchOnWindowFocus: true },
+		{ enabled: isGitRepo, refetchOnWindowFocus: true },
 	);
 
 	const branches = workspaceTrpc.git.listBranches.useQuery(
 		{ workspaceId },
-		{ refetchInterval: 30_000, refetchOnWindowFocus: true },
+		{ enabled: isGitRepo, refetchInterval: 30_000, refetchOnWindowFocus: true },
 	);
 
 	const renameBranchMutation = workspaceTrpc.git.renameBranch.useMutation();
 
 	const handleRenameBranch = useCallback(
 		(newName: string) => {
+			if (!isGitRepo) return;
 			const currentName = status.data?.currentBranch.name;
 			if (!currentName) return;
 			toast.promise(
@@ -136,7 +145,12 @@ export function useChangesTab({
 				},
 			);
 		},
-		[workspaceId, status.data?.currentBranch.name, renameBranchMutation],
+		[
+			isGitRepo,
+			workspaceId,
+			status.data?.currentBranch.name,
+			renameBranchMutation,
+		],
 	);
 
 	const canRenameBranch = !status.data?.currentBranch.upstream;

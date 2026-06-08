@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { env } from "shared/env.shared";
 import {
+	buildAgentHookCommand,
 	buildWrapperScript,
 	createWrapper,
 	isSupersetManagedHookCommand,
@@ -90,13 +91,16 @@ export function getGeminiSettingsJsonContent(hookScriptPath: string): string {
 		"AfterTool",
 	];
 
+	// On Windows a bare `.sh` path is ShellExecuted by Gemini CLI and opens in the
+	// user's default `.sh` editor instead of running; wrap it in Git bash. Null
+	// (Windows + no Git bash) → write no managed entry, and reconcile drops any
+	// stale raw-.sh entry written by an earlier install.
+	const command = buildAgentHookCommand(hookScriptPath);
 	for (const eventName of eventNames) {
 		const current = existing.hooks[eventName];
-		const desiredEntries: GeminiHookDefinition[] = [
-			{
-				hooks: [{ type: "command", command: hookScriptPath }],
-			},
-		];
+		const desiredEntries: GeminiHookDefinition[] = command
+			? [{ hooks: [{ type: "command", command }] }]
+			: [];
 		const { entries } = reconcileManagedEntries({
 			current,
 			desired: desiredEntries,

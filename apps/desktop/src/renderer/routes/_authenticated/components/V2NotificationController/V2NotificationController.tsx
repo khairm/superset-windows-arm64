@@ -16,6 +16,23 @@ import {
 } from "./components/HostNotificationSubscriber";
 import { handleV2AgentLifecycleStatusEvent } from "./lib/lifecycleEvents";
 
+// Diagnostic logging for the agent-status-dots pipeline. Emitted via
+// console.info with an "[agent-dots]" prefix so the main process's
+// production console-message forwarder persists them to electron-log
+// (main.log). Flip to false to silence. Logging-only — never alters
+// behaviour. See patches/notification-logging.patch.
+const NLOG = true;
+function ndots(record: Record<string, unknown>): void {
+	if (!NLOG) return;
+	try {
+		console.info(
+			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
+		);
+	} catch {
+		// never let logging crash the renderer
+	}
+}
+
 interface WorkspaceHostRow {
 	workspaceId: string;
 	organizationId: string;
@@ -120,9 +137,46 @@ export function V2NotificationController() {
 		(event: ElectronNotificationEvent) => {
 			if (event.type !== NOTIFICATION_EVENTS.AGENT_LIFECYCLE) return;
 			const data = event.data;
-			if (!data?.workspaceId || !data.terminalId) return;
+			// eventId is logging-only; the watcher emits it on its dbg
+			// records and may attach it to the payload in future. Read
+			// defensively without depending on the shared type.
+			const eventId = (data as { eventId?: string } | undefined)?.eventId;
+			ndots({
+				event: "electron_agent_lifecycle_received",
+				eventId,
+				eventType: data?.eventType,
+				sessionId: data?.sessionId,
+				cwd: data?.cwd,
+				terminalId: data?.terminalId,
+				workspaceId: data?.workspaceId,
+				hasWorkspace: !!(
+					data?.workspaceId && workspaceStatesById.has(data.workspaceId)
+				),
+				workspaceStatesCount: workspaceStatesById.size,
+			});
+			if (!data?.workspaceId || !data.terminalId) {
+				ndots({
+					event: "electron_agent_lifecycle_drop",
+					reason: !data?.workspaceId ? "missing-workspaceId" : "missing-terminalId",
+					eventId,
+					sessionId: data?.sessionId,
+					terminalId: data?.terminalId,
+					workspaceId: data?.workspaceId,
+				});
+				return;
+			}
 			const workspace = workspaceStatesById.get(data.workspaceId);
-			if (!workspace) return;
+			if (!workspace) {
+				ndots({
+					event: "electron_agent_lifecycle_drop",
+					reason: "workspace-not-loaded",
+					eventId,
+					sessionId: data.sessionId,
+					terminalId: data.terminalId,
+					workspaceId: data.workspaceId,
+				});
+				return;
+			}
 
 			// Adopted shells keep their launch-time host-service hook URL. When
 			// that URL is stale, the Electron fallback still has terminal context.

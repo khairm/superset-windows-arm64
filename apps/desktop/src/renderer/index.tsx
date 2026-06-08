@@ -1,5 +1,15 @@
 import { initSentry } from "./lib/sentry";
 
+// (AN) boot diagnostic: first renderer body statement. Prefixed [agent-dots]
+// so the (W.1) main-process console forwarder relays it to main.log in prod
+// — the decisive "did the renderer JS actually start" signal vs a
+// main-process / navigation stall before any renderer code runs.
+console.log(
+	"[agent-dots] [boot-renderer] entry eval start +" +
+		(typeof performance !== "undefined" ? Math.round(performance.now()) : 0) +
+		"ms",
+);
+
 initSentry();
 
 import { createRouter, RouterProvider } from "@tanstack/react-router";

@@ -9,6 +9,11 @@ import {
 	scanForShellReady,
 } from "@superset/shared/shell-ready-scanner";
 import {
+	createOsc133CdScanState,
+	type Osc133CdScanState,
+	scanForOsc133Cd,
+} from "@superset/shared/shell-osc133-cd-scanner";
+import {
 	createTerminalTitleScanState,
 	scanForTerminalTitle,
 	type TerminalTitleScanState,
@@ -39,6 +44,8 @@ import {
 	createModeTracker,
 	type ModeTracker,
 } from "./terminal-mode-tracker.ts";
+
+const TERMINAL_COMMAND_EOL = process.platform === "win32" ? "\r" : "\n";
 
 /**
  * Thin adapter exposing approximately the IPty surface that the rest of
@@ -234,6 +241,16 @@ interface TerminalSession {
 	shellReadyTimeoutId: ReturnType<typeof setTimeout> | null;
 	scanState: ShellReadyScanState;
 	initialCommandQueued: boolean;
+
+	// (AY) OSC 133 C/D command-running detection — drives the shell-running blue
+	// dot. `cdScanState` is null for shells we don't instrument (sh/ksh, adopted
+	// sessions). `commandRunning` tracks whether we've seen a `133;C` without a
+	// matching `133;D` yet, so a stray `133;A` (prompt redraw) can synthesize a
+	// command-end self-heal. A host-service restart adopts with a fresh state +
+	// commandRunning=false: it misses an in-flight command's blue dot but
+	// recovers on the next D/A (safe direction — never a stuck blue).
+	cdScanState: Osc133CdScanState | null;
+	commandRunning: boolean;
 
 	/**
 	 * Side-channel UTF-8 decoder. portManager.checkOutputForHint takes a
@@ -586,9 +603,9 @@ function queueInitialCommand(
 ): void {
 	if (session.initialCommandQueued || session.exited) return;
 	session.initialCommandQueued = true;
-	const cmd = initialCommand.endsWith("\n")
+	const cmd = initialCommand.endsWith("\n") || initialCommand.endsWith("\r")
 		? initialCommand
-		: `${initialCommand}\n`;
+		: `${initialCommand}${TERMINAL_COMMAND_EOL}`;
 	// Don't gate on OSC 133;A: PTY stdin buffers until the shell reads it,
 	// and gating turned broken/missing markers into a guaranteed stall.
 	session.pty.write(cmd);
@@ -917,7 +934,7 @@ export async function createTerminalSessionInternal({
 	// Use the preserved shell snapshot — never live process.env
 	const baseEnv = getTerminalBaseEnv();
 	const supersetHomeDir = process.env.SUPERSET_HOME_DIR || "";
-	const shell = resolveLaunchShell(baseEnv);
+	const shell = await resolveLaunchShell(baseEnv);
 	const shellArgs = getShellLaunchArgs({ shell, supersetHomeDir });
 	const ptyEnv = buildV2TerminalEnv({
 		baseEnv,
@@ -1018,9 +1035,20 @@ export async function createTerminalSessionInternal({
 	// Determine shell readiness support. Adopted sessions are already past
 	// shell startup, so treat them as immediately ready — the OSC 133;A
 	// marker has already flown by and we don't want to gate writes on it.
-	const shellName = shell.split("/").pop() || shell;
+	// Normalize the basename across separators and a Windows `.exe` suffix so
+	// `C:\...\pwsh.exe` / `/usr/bin/zsh` both resolve to a plain shell name.
+	const shellName = (shell.split(/[\\/]/).pop() || shell).replace(
+		/\.exe$/i,
+		"",
+	);
 	const shellSupportsReady =
 		!isAdopted && SHELLS_WITH_READY_MARKER.has(shellName);
+	// (AY) Instrument the OSC 133 C/D command scanner for the same marker-
+	// emitting shells (zsh/bash/fish/pwsh/powershell) — sh/ksh are excluded
+	// because their wrappers emit no markers. Adopted sessions get a fresh
+	// scanner too (commandRunning starts false): they miss an in-flight
+	// command's blue dot but self-heal on the next D/A.
+	const cdScannerSupported = SHELLS_WITH_READY_MARKER.has(shellName);
 
 	let shellReadyResolve: (() => void) | null = null;
 	const shellReadyPromise = shellSupportsReady
@@ -1055,6 +1083,8 @@ export async function createTerminalSessionInternal({
 		shellReadyPromise,
 		shellReadyTimeoutId: null,
 		scanState: createScanState(),
+		cdScanState: cdScannerSupported ? createOsc133CdScanState() : null,
+		commandRunning: false,
 		// Adopted sessions have already run their initialCommand in the prior
 		// host-service lifetime — flag it as queued so we don't double-fire it.
 		initialCommandQueued: isAdopted,
@@ -1094,6 +1124,60 @@ export async function createTerminalSessionInternal({
 					bytes = result.output;
 					if (result.matched) {
 						resolveShellReady(session, "ready");
+					}
+				}
+				// (AY) CHAIN the C/D scanner on the OUTPUT of the shell-ready pass —
+				// never behind an else-if. The wrappers emit `D;<exit>` (command end)
+				// and then `A` (prompt start) together at the FIRST prompt; the A-scanner
+				// (while pending) consumes only that first `A`, so the leading `D` (and
+				// any `C`) would otherwise leak as a visible `]133;D;0` artifact at the
+				// top of every new terminal. Running the C/D scanner on the already-A-
+				// stripped bytes strips that D (a `command-end` with commandRunning=false
+				// is a harmless no-op) plus all later C/D and subsequent A. The first `A`
+				// is removed by the A-scanner before the C/D scanner sees it, so no A is
+				// double-stripped — each `A` is handled by exactly one scanner.
+				if (session.cdScanState) {
+					const cdResult = scanForOsc133Cd(session.cdScanState, bytes);
+					bytes = cdResult.output;
+					for (const ev of cdResult.events) {
+						if (ev.kind === "command-start") {
+							session.commandRunning = true;
+							eventBus?.broadcastTerminalLifecycle({
+								workspaceId,
+								terminalId,
+								eventType: "command-start",
+								occurredAt: Date.now(),
+							});
+						} else if (ev.kind === "command-end") {
+							// Only broadcast a real end-of-command transition. A `D` with
+							// no preceding `C` — notably the first prompt's `D;<exit>` that
+							// fires before any command (now stripped here thanks to the
+							// chained scanner) — is a no-op: strip the marker, emit nothing.
+							if (session.commandRunning) {
+								session.commandRunning = false;
+								eventBus?.broadcastTerminalLifecycle({
+									workspaceId,
+									terminalId,
+									eventType: "command-end",
+									exitCode: ev.exitCode,
+									occurredAt: Date.now(),
+								});
+							}
+						} else if (ev.kind === "prompt-redraw") {
+							// A prompt redraw while a command was running means we
+							// missed (or never got) its `133;D`. Synthesize a
+							// command-end with unknown exit so the blue dot self-heals.
+							if (session.commandRunning) {
+								session.commandRunning = false;
+								eventBus?.broadcastTerminalLifecycle({
+									workspaceId,
+									terminalId,
+									eventType: "command-end",
+									exitCode: null,
+									occurredAt: Date.now(),
+								});
+							}
+						}
 					}
 				}
 				if (bytes.byteLength === 0) return;

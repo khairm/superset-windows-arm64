@@ -70,6 +70,8 @@ export interface DaemonUpdateStatus {
 	autoUpdateFailure: DaemonAutoUpdateFailure | null;
 }
 
+const IS_WINDOWS = process.platform === "win32";
+
 const SOCKET_READY_TIMEOUT_MS = 5_000;
 const VERSION_PROBE_TIMEOUT_MS = 1_500;
 const HANDOFF_PREDECESSOR_EXIT_TIMEOUT_MS = 3_000;
@@ -111,6 +113,7 @@ export function ptyDaemonSocketPath(organizationId: string): string {
 		.update(organizationId)
 		.digest("hex")
 		.slice(0, 12);
+	if (IS_WINDOWS) return `\\\\.\\pipe\\superset-ptyd-${shortId}`;
 	return path.join(os.tmpdir(), `superset-ptyd-${shortId}.sock`);
 }
 
@@ -257,6 +260,14 @@ export class DaemonSupervisor {
 	): Promise<
 		{ ok: true; successorPid: number } | { ok: false; reason: string }
 	> {
+		if (IS_WINDOWS) {
+			return {
+				ok: false,
+				reason:
+					"fd-handoff daemon update is not supported on Windows; use restart instead",
+			};
+		}
+
 		const instance = this.instances.get(organizationId);
 		if (!instance) {
 			return { ok: false, reason: "no daemon running for this org" };
@@ -931,6 +942,7 @@ export class DaemonSupervisor {
 			// this and surfaces it in the hello-ack so adoption probes can
 			// detect drift against EXPECTED_DAEMON_VERSION.
 			SUPERSET_PTY_DAEMON_VERSION: EXPECTED_DAEMON_VERSION,
+			ELECTRON_RUN_AS_NODE: "1",
 		};
 
 		console.log(
@@ -1130,7 +1142,7 @@ async function waitForSocket(
 ): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (fs.existsSync(socketPath)) {
+		if (IS_WINDOWS || fs.existsSync(socketPath)) {
 			if (await isSocketConnectable(socketPath, 200)) return true;
 		}
 		await new Promise((r) => setTimeout(r, 50));

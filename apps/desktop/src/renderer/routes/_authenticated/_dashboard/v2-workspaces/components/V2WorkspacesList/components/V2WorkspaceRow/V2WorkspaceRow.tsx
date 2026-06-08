@@ -53,6 +53,7 @@ export function V2WorkspaceRow({
 		ensureWorkspaceInSidebar,
 		removeWorkspaceFromSidebar,
 		hideWorkspaceInSidebar,
+		unarchiveWorkspace,
 	} = useDashboardSidebarState();
 	const isMainWorkspace = workspace.type === "main";
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -76,8 +77,15 @@ export function V2WorkspaceRow({
 	const handleAddToSidebar = useCallback(
 		(event: React.MouseEvent) => {
 			event.stopPropagation();
-			const add = () =>
-				ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
+			const add = () => {
+				// An archived thread is already in the sidebar's data — restore it
+				// instead of re-inserting (ensureWorkspaceInSidebar no-ops on it).
+				if (workspace.isArchived) {
+					unarchiveWorkspace(workspace.id);
+				} else {
+					ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
+				}
+			};
 			if (workspace.hostType === "local-device") {
 				add();
 				return;
@@ -86,9 +94,11 @@ export function V2WorkspaceRow({
 		},
 		[
 			ensureWorkspaceInSidebar,
+			unarchiveWorkspace,
 			gateFeature,
 			workspace.hostType,
 			workspace.id,
+			workspace.isArchived,
 			workspace.projectId,
 		],
 	);

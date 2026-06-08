@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { env } from "shared/env.shared";
 import {
+	buildAgentHookCommand,
 	buildWrapperScript,
 	createWrapper,
 	isSupersetManagedHookCommand,
@@ -74,24 +75,26 @@ export function getCursorHooksJsonContent(hookScriptPath: string): string {
 		existing.hooks = {};
 	}
 
-	const ourHooks: Record<string, CursorHookEntry> = {
-		sessionStart: { command: `${hookScriptPath} SessionStart` },
-		sessionEnd: { command: `${hookScriptPath} SessionEnd` },
-		beforeSubmitPrompt: { command: `${hookScriptPath} Start` },
-		stop: { command: `${hookScriptPath} Stop` },
-		beforeShellExecution: {
-			command: `${hookScriptPath} PermissionRequest`,
-		},
-		beforeMCPExecution: {
-			command: `${hookScriptPath} PermissionRequest`,
-		},
+	// Cursor runs each hook `command` as a shell command; on Windows a bare `.sh`
+	// path is ShellExecuted and opens in the user's default `.sh` editor instead
+	// of running, so wrap it in Git bash (see buildAgentHookCommand). The value is
+	// the lifecycle label the cursor-hook.sh script reads as $1.
+	const hookArgByEvent: Record<string, string> = {
+		sessionStart: "SessionStart",
+		sessionEnd: "SessionEnd",
+		beforeSubmitPrompt: "Start",
+		stop: "Stop",
+		beforeShellExecution: "PermissionRequest",
+		beforeMCPExecution: "PermissionRequest",
 	};
 
-	for (const [eventName, ourEntry] of Object.entries(ourHooks)) {
+	for (const [eventName, hookArg] of Object.entries(hookArgByEvent)) {
+		const command = buildAgentHookCommand(hookScriptPath, hookArg);
 		const current = existing.hooks[eventName];
 		const { entries } = reconcileManagedEntries({
 			current,
-			desired: [ourEntry],
+			// Null (Windows + no Git bash) → remove our managed entry entirely.
+			desired: command ? [{ command }] : [],
 			isManaged: (entry: CursorHookEntry) =>
 				entry.command?.includes(hookScriptPath) ||
 				isSupersetManagedHookCommand(entry.command, CURSOR_HOOK_SCRIPT_NAME),

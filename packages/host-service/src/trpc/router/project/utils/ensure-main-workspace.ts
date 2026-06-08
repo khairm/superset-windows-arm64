@@ -1,6 +1,8 @@
+import { basename } from "node:path";
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import { TRPCError } from "@trpc/server";
 import { workspaces } from "../../../../db/schema";
+import { NON_GIT_BRANCH } from "../../../../runtime/git/non-git";
 import type { HostServiceContext } from "../../../../types";
 
 export type EnsureMainWorkspaceContext = Pick<
@@ -36,9 +38,10 @@ export async function ensureMainWorkspace(
 	ctx: EnsureMainWorkspaceContext,
 	projectId: string,
 	repoPath: string,
+	opts?: { nonGit?: boolean },
 ): Promise<{ id: string } | null> {
 	try {
-		return await ensureMainWorkspaceStrict(ctx, projectId, repoPath);
+		return await ensureMainWorkspaceStrict(ctx, projectId, repoPath, opts);
 	} catch (err) {
 		console.warn(
 			`[ensureMainWorkspace] failed for ${projectId} at ${repoPath}; will retry via startup sweep`,
@@ -58,15 +61,28 @@ export async function ensureMainWorkspaceStrict(
 	ctx: EnsureMainWorkspaceContext,
 	projectId: string,
 	repoPath: string,
+	opts?: { nonGit?: boolean },
 ): Promise<{ id: string }> {
-	const git = await ctx.git(repoPath);
-	const branch = await getCurrentBranchName(git);
-	if (!branch) {
-		throw new TRPCError({
-			code: "PRECONDITION_FAILED",
-			message:
-				"Repository is in detached-HEAD state. Check out a branch (e.g. `git checkout main`) before creating the project on this device.",
-		});
+	// (NON-GIT WORKSPACE) A non-git folder has no git HEAD to read. Store the
+	// inert NON_GIT_BRANCH marker (gated everywhere git runs) and use the folder
+	// name as the workspace name. Git projects keep deriving the real branch.
+	let branch: string;
+	let name: string;
+	if (opts?.nonGit) {
+		branch = NON_GIT_BRANCH;
+		name = basename(repoPath) || NON_GIT_BRANCH;
+	} else {
+		const git = await ctx.git(repoPath);
+		const currentBranch = await getCurrentBranchName(git);
+		if (!currentBranch) {
+			throw new TRPCError({
+				code: "PRECONDITION_FAILED",
+				message:
+					"Repository is in detached-HEAD state. Check out a branch (e.g. `git checkout main`) before creating the project on this device.",
+			});
+		}
+		branch = currentBranch;
+		name = currentBranch;
 	}
 
 	const host = await ctx.api.host.ensure.mutate({
@@ -78,7 +94,7 @@ export async function ensureMainWorkspaceStrict(
 	const cloudRow = await ctx.api.v2Workspace.create.mutate({
 		organizationId: ctx.organizationId,
 		projectId,
-		name: branch,
+		name,
 		branch,
 		hostId: host.machineId,
 		type: "main",

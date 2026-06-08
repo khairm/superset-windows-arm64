@@ -31,7 +31,13 @@ interface LaunchCommandInPaneOptions {
 }
 
 export function normalizeTerminalCommand(command: string): string {
-	return command.endsWith("\n") ? command : `${command}\n`;
+	// Windows ConPTY expects \r (carriage return) to execute a command,
+	// while Unix terminals use \n (newline). Use \r for cross-platform compat
+	// as most Unix terminal emulators also accept \r.
+	const eol = "\r";
+	return command.endsWith("\n") || command.endsWith("\r")
+		? command
+		: `${command}${eol}`;
 }
 
 interface WriteCommandInPaneOptions {

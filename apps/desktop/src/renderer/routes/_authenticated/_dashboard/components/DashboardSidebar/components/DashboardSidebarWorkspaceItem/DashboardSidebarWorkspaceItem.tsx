@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
 import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
-import { useV2WorkspaceNotificationStatus } from "renderer/stores/v2-notifications";
+import {
+	useV2WorkspaceDisplayStatus,
+	useV2WorkspaceTerminalStatuses,
+} from "renderer/stores/v2-notifications";
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
 import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
@@ -18,6 +22,7 @@ interface DashboardSidebarWorkspaceItemProps {
 	shortcutLabel?: string;
 	isCollapsed?: boolean;
 	isInSection?: boolean;
+	sectionState?: "snoozed" | "archived";
 }
 
 export function DashboardSidebarWorkspaceItem({
@@ -26,6 +31,7 @@ export function DashboardSidebarWorkspaceItem({
 	shortcutLabel,
 	isCollapsed = false,
 	isInSection = false,
+	sectionState,
 }: DashboardSidebarWorkspaceItemProps) {
 	const {
 		id,
@@ -39,8 +45,15 @@ export function DashboardSidebarWorkspaceItem({
 		pullRequest,
 	} = workspace;
 	const isMainWorkspace = workspace.type === "main";
-	const diffStats = useDiffStats(id);
-	const workspaceStatus = useV2WorkspaceNotificationStatus(id);
+	// Snoozed/archived rows live in a collapsible section — don't fire their
+	// per-row git status RPC + subscription (A6: avoid a reveal-time RPC storm).
+	const diffStats = useDiffStats(id, !sectionState);
+	// (AY) Display status merges the agent rollup with the shell-running blue
+	// fallback (agent wins). Drives the workspace-icon dot.
+	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
+	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
+	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
+	const terminalStatuses = useV2WorkspaceTerminalStatuses(id);
 	const {
 		cancelRename,
 		handleClick,
@@ -48,9 +61,13 @@ export function DashboardSidebarWorkspaceItem({
 		handleCopyBranchName,
 		handleCreateSection,
 		handleDeleted,
+		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleSnooze,
 		handleToggleUnread,
+		handleUnarchive,
+		handleUnsnooze,
 		isActive,
 		isDeleteDialogOpen,
 		isUnread,
@@ -138,6 +155,7 @@ export function DashboardSidebarWorkspaceItem({
 					onClick={handleClick}
 					isCreatePending={isPending}
 					pullRequestState={pullRequest?.state ?? null}
+					isNonGit={isNonGit}
 					aria-label={isPending ? `Creating workspace: ${name}` : undefined}
 				/>
 			</div>
@@ -154,6 +172,7 @@ export function DashboardSidebarWorkspaceItem({
 							isInSection={isInSection}
 							isUnread={isUnread}
 							isLocalWorkspace={hostType === "local-device"}
+							isNonGit={isNonGit}
 							isPinned={isMainWorkspace && hostType === "local-device"}
 							onCreateSection={handleCreateSection}
 							showDeleteHotkey={isActive}
@@ -163,12 +182,16 @@ export function DashboardSidebarWorkspaceItem({
 							onOpenInFinder={handleOpenInFinder}
 							onCopyPath={handleCopyPath}
 							onCopyBranchName={handleCopyBranchName}
-							onRemoveFromSidebar={handleRemoveFromSidebar}
 							onRename={startRename}
 							onDelete={
 								isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
 							}
 							onToggleUnread={handleToggleUnread}
+							sectionState={sectionState}
+							onSnooze={handleSnooze}
+							onUnsnooze={handleUnsnooze}
+							onArchive={handleArchive}
+							onUnarchive={handleUnarchive}
 						>
 							{content}
 						</DashboardSidebarWorkspaceContextMenu>
@@ -214,11 +237,17 @@ export function DashboardSidebarWorkspaceItem({
 				shortcutLabel={shortcutLabel}
 				diffStats={isPending ? null : diffStats}
 				workspaceStatus={workspaceStatus}
+				terminalStatuses={terminalStatuses}
 				isInSection={isInSection}
+				isNonGit={isNonGit}
 				onClick={handleClick}
 				onDoubleClick={isPending ? undefined : startRename}
 				onRemoveFromSidebarClick={handleRemoveFromSidebar}
 				onCloseWorkspaceClick={() => setIsDeleteDialogOpen(true)}
+				sectionState={sectionState}
+				onRestoreClick={
+					sectionState === "snoozed" ? handleUnsnooze : handleUnarchive
+				}
 				onRenameValueChange={setRenameValue}
 				onSubmitRename={submitRename}
 				onCancelRename={cancelRename}
@@ -241,17 +270,22 @@ export function DashboardSidebarWorkspaceItem({
 							moveWorkspaceToSection(id, projectId, targetSectionId)
 						}
 						isLocalWorkspace={hostType === "local-device"}
+						isNonGit={isNonGit}
 						isPinned={isMainWorkspace && hostType === "local-device"}
 						onOpenInFinder={handleOpenInFinder}
 						showDeleteHotkey={isActive}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
-						onRemoveFromSidebar={handleRemoveFromSidebar}
 						onRename={startRename}
 						onDelete={
 							isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
 						}
 						onToggleUnread={handleToggleUnread}
+						sectionState={sectionState}
+						onSnooze={handleSnooze}
+						onUnsnooze={handleUnsnooze}
+						onArchive={handleArchive}
+						onUnarchive={handleUnarchive}
 					>
 						{expandedContent}
 					</DashboardSidebarWorkspaceContextMenu>

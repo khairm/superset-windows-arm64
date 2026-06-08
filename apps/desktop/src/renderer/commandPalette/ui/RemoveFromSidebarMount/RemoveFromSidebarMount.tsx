@@ -14,7 +14,7 @@ import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-fro
 export function RemoveFromSidebarMount() {
 	const target = useRemoveFromSidebarIntent((s) => s.target);
 	const clear = useRemoveFromSidebarIntent((s) => s.clear);
-	const { hideWorkspaceInSidebar, removeWorkspaceFromSidebar } =
+	const { archiveWorkspace, hideWorkspaceInSidebar } =
 		useDashboardSidebarState();
 	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
 
@@ -28,14 +28,17 @@ export function RemoveFromSidebarMount() {
 		if (target.isMain) {
 			hideWorkspaceInSidebar(target.workspaceId, target.projectId);
 		} else {
-			removeWorkspaceFromSidebar(target.workspaceId);
+			// Non-main threads ARCHIVE (recoverable, session + worktree intact)
+			// instead of a hard remove — "Remove from Sidebar" is the Archive
+			// action now, so the thread reappears under the project's Archived section.
+			archiveWorkspace(target.workspaceId);
 		}
 		clear();
 	}, [
 		target,
 		navigateAwayFromWorkspace,
 		hideWorkspaceInSidebar,
-		removeWorkspaceFromSidebar,
+		archiveWorkspace,
 		clear,
 	]);
 

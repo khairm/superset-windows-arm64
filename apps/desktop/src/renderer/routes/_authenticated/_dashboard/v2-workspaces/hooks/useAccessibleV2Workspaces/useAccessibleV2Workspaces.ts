@@ -12,7 +12,10 @@ import {
 	type V2WorkspacesProjectFilter,
 } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/stores/v2WorkspacesFilterStore";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
-import { isSidebarWorkspaceVisible } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import {
+	getWorkspaceSidebarBucket,
+	isSidebarWorkspaceVisible,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { MOCK_ORG_ID } from "shared/constants";
 
@@ -63,6 +66,9 @@ export interface AccessibleV2Workspace {
 	hostIsOnline: boolean;
 	hostType: V2WorkspaceHostType;
 	isInSidebar: boolean;
+	/** Archived (lives in the project's Archived section). Its sidebar "+" action
+	 * must unarchive rather than re-add (ensureWorkspaceInSidebar no-ops on it). */
+	isArchived: boolean;
 	pr: V2WorkspacePrSummary | null;
 }
 
@@ -292,6 +298,10 @@ export function useAccessibleV2Workspaces(
 						sidebarProjectId: sidebarProject?.projectId ?? null,
 						sidebarWorkspaceId: sidebarState?.workspaceId ?? null,
 						sidebarIsHidden: sidebarState?.sidebarState.isHidden ?? false,
+						sidebarArchivedAt: sidebarState?.sidebarState.archivedAt ?? null,
+						sidebarSnoozeUntil: sidebarState?.sidebarState.snoozeUntil ?? null,
+						sidebarSnoozeLaunchId:
+							sidebarState?.sidebarState.snoozeLaunchId ?? null,
 					}),
 				),
 		[activeOrganizationId, collections, currentUserId],
@@ -375,6 +385,18 @@ export function useAccessibleV2Workspaces(
 			const isInSidebar =
 				isSidebarWorkspaceVisible({ isHidden: row.sidebarIsHidden }) &&
 				(row.sidebarWorkspaceId != null || isAutoVisibleMain);
+			const isArchived =
+				row.sidebarWorkspaceId != null &&
+				getWorkspaceSidebarBucket(
+					{
+						isHidden: row.sidebarIsHidden,
+						archivedAt: row.sidebarArchivedAt,
+						snoozeUntil: row.sidebarSnoozeUntil,
+						snoozeLaunchId: row.sidebarSnoozeLaunchId,
+					},
+					Date.now(),
+					row.type,
+				) === "archived";
 			const pr = row.projectRepoId
 				? (prsByRepoBranch.get(`${row.projectRepoId}::${row.branch}`) ?? null)
 				: null;
@@ -399,6 +421,7 @@ export function useAccessibleV2Workspaces(
 				hostIsOnline: row.hostIsOnline,
 				hostType,
 				isInSidebar,
+				isArchived,
 				pr,
 			});
 		}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isGitRepo } from "../../../../runtime/git/non-git";
 import { protectedProcedure } from "../../../index";
 import { requireLocalProject } from "../shared/local-project";
 import { listGitWorktrees } from "../shared/worktree-list";
@@ -14,6 +15,13 @@ export const listProjectWorktrees = protectedProcedure
 	.input(z.object({ projectId: z.string() }))
 	.query(async ({ ctx, input }) => {
 		const localProject = requireLocalProject(ctx, input.projectId);
+
+		// (NON-GIT WORKSPACE) A non-git project has no git worktrees to list —
+		// return an empty set before touching git.
+		if (!(await isGitRepo(localProject.repoPath))) {
+			return { worktrees: [] as { branch: string; path: string }[] };
+		}
+
 		const git = await ctx.git(localProject.repoPath);
 		const records = await listGitWorktrees(git);
 		const worktrees: { branch: string; path: string }[] = [];

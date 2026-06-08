@@ -1,13 +1,15 @@
+import { appendFileSync, renameSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { workspaces, worktrees } from "@superset/local-db";
+import { settings, workspaces, worktrees } from "@superset/local-db";
 import { eq } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
-import { app, Notification, nativeTheme } from "electron";
+import { app, dialog, Notification, nativeTheme } from "electron";
 import log from "electron-log/main";
 import { createWindow } from "lib/electron-app/factories/windows/create";
 import { createAppRouter } from "lib/trpc/routers";
 import { localDb } from "main/lib/local-db";
-import { NOTIFICATION_EVENTS, PLATFORM } from "shared/constants";
+import { DEFAULT_CONFIRM_ON_QUIT, NOTIFICATION_EVENTS, PLATFORM } from "shared/constants";
 import {
 	env,
 	getWorkspaceName as getEnvWorkspaceName,
@@ -15,6 +17,10 @@ import {
 import type { AgentLifecycleEvent } from "shared/notification-types";
 import { createIPCHandler } from "trpc-electron/main";
 import { productName } from "~/package.json";
+import {
+	startAgentJsonlWatcher,
+	stopAgentJsonlWatcher,
+} from "../lib/agent-jsonl-watcher";
 import { appState } from "../lib/app-state";
 import { browserManager } from "../lib/browser/browser-manager";
 import { createApplicationMenu } from "../lib/menu";
@@ -89,6 +95,7 @@ app.on("child-process-gone", (_event, details) => {
 });
 
 export async function MainWindow() {
+	log.info("[boot] MainWindow() entered +" + Math.round(process.uptime() * 1000) + "ms");
 	const savedWindowState = loadWindowState();
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 	let persistedZoomLevel = savedWindowState?.zoomLevel;
@@ -115,9 +122,7 @@ export async function MainWindow() {
 		resizable: true,
 		alwaysOnTop: false,
 		autoHideMenuBar: true,
-		frame: false,
-		titleBarStyle: "hidden",
-		trafficLightPosition: { x: 16, y: 16 },
+		...(process.platform === "win32" ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#1f1f1f", symbolColor: "#e6e6e6", height: 36 } } : { frame: false, titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 16 } }),
 		webPreferences: {
 			preload: join(__dirname, "../preload/index.js"),
 			webviewTag: true,
@@ -170,6 +175,104 @@ export async function MainWindow() {
 		});
 	}
 
+	// Forward renderer warning/error messages to main process stdout for Windows debugging.
+	if (PLATFORM.IS_WINDOWS) {
+		window.webContents.on(
+			"console-message",
+			(_event, level, message, line, sourceId) => {
+				if (level < 2) return;
+				const levelStr =
+					["verbose", "info", "warning", "error"][level] ?? "unknown";
+				const source = sourceId ? ` (${sourceId}:${line})` : "";
+				const formatted = `[renderer:${levelStr}] ${message}${source}`;
+				if (level === 3) console.error(formatted);
+				else console.warn(formatted);
+			},
+		);
+	}
+
+	// (AB) Silence electron-log's console transport so [agent-dots] lines do
+	// NOT leak into any attached parent console / pipe / external Claude Code TUI.
+	// Main.log file transport continues normally. Without this, [agent-dots] lines
+	// emitted via log.info(message) below were corrupting external pwsh Claude
+	// sessions' TUI rendering for this cwd's Claude sessions. Codex-confirmed
+	// root cause 2026-05-26 via electron-log docs.
+	log.transports.console.level = false;
+
+	// (W.1) Production diagnostic: persist renderer "[agent-dots]" console lines to
+	// electron-log (main.log) so the agent-status-dots pipeline + the v2-workspace
+	// blank-pane diagnostics survive a shipped build (no devtools session).
+	// Logging only -- never alters behaviour. Inserted deterministically by (W.1)
+	// because main.ts is AI-edited and a line-anchored hunk drifts.
+	window.webContents.on(
+		"console-message",
+		(_event, _level, message) => {
+			try {
+				if (typeof message === "string" && message.startsWith("[agent-dots]")) {
+					log.info(message);
+				} else if (
+					typeof message === "string" &&
+					message.startsWith("[render-dot]")
+				) {
+					// (render-dot) Persist renderer dot-render snapshots to a
+					// SEPARATE log so the actually-rendered colour can be matched
+					// against the watcher emit log by source key + workspaceId.
+					// Append-only with a simple ~2 MB rotation; never throws.
+					try {
+						const p = join(homedir(), ".superset", "agent-dot-render.log");
+						try {
+							if (statSync(p).size > 2 * 1024 * 1024) {
+								renameSync(p, `${p}.prev`);
+							}
+						} catch {
+							// no existing file to rotate
+						}
+						appendFileSync(p, `${new Date().toISOString()} ${message}\n`, "utf8");
+					} catch {
+						// never let render-dot logging crash the main process
+					}
+				}
+			} catch {
+				// never let logging crash the main process
+			}
+		},
+	);
+
+	// [WISPR-DIAG] Enable Electron's accessibility support so xterm's
+	// screenReaderMode:true (which adds aria-* to the hidden <textarea>) is
+	// actually visible to Windows UI Automation. Wispr Flow's voice input uses
+	// UIA (IUIAutomationValuePattern/TextPattern); without UIA exposure, ARIA on
+	// the textarea is invisible to it and injection silently no-ops — keyboard
+	// + Ctrl+V still work because they route through xterm's keydown listener
+	// and paste handler, not UIA. Electron only fully materializes its
+	// accessibility tree on Windows when this flag is set OR when a registered
+	// screen reader is detected (Wispr Flow does NOT register as a screen reader).
+	//
+	// NOTE: logs via electron-log `log.info` (NOT console.log). This snippet runs
+	// in the MAIN process; the (W.1) forwarder only relays RENDERER console
+	// messages to main.log, so a main-process console.log would never surface.
+	// `log` is in scope here — (W.1)/(AB) use it at this same anchor.
+	try {
+		const { app } = require("electron") as typeof import("electron");
+		log.info("[agent-dots] [wispr-diag] electron-accessibility-before " + JSON.stringify({
+			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
+			accessibilitySupportEnabled: (app as any).accessibilitySupportEnabled,
+			electronVersion: process.versions.electron,
+			chromeVersion: process.versions.chrome,
+			platform: process.platform,
+			arch: process.arch,
+		}));
+		if (typeof (app as any).setAccessibilitySupportEnabled === "function") {
+			(app as any).setAccessibilitySupportEnabled(true);
+			log.info("[agent-dots] [wispr-diag] setAccessibilitySupportEnabled(true) called");
+		}
+		log.info("[agent-dots] [wispr-diag] electron-accessibility-after " + JSON.stringify({
+			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
+		}));
+	} catch (_e) {
+		try { log.info("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
+	}
+
 	if (ipcHandler) {
 		ipcHandler.attachWindow(window);
 	} else {
@@ -188,6 +291,14 @@ export async function MainWindow() {
 			);
 		},
 	);
+
+	// Windows: forward agent state from Claude's JSONL session transcripts
+	// to notificationsEmitter, sidestepping the bash-only hook chain that
+	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
+	// and the fork's project memory `superset-windows-hook-chain-broken`.
+	log.info("[boot] startAgentJsonlWatcher (seed scan deferred) +" + Math.round(process.uptime() * 1000) + "ms");
+	startAgentJsonlWatcher({ notificationsEmitter });
+	log.info("[boot] startAgentJsonlWatcher returned +" + Math.round(process.uptime() * 1000) + "ms");
 
 	const notificationManager = new NotificationManager({
 		isSupported: () => Notification.isSupported(),
@@ -303,8 +414,87 @@ export async function MainWindow() {
 		}, 0);
 	});
 
+		// (T) hidden-window watchdog — failsafe for "all Superset.exe processes alive
+	// but no window" on Windows ARM64. The main window is created `show: false`
+	// and only revealed by the did-finish-load / did-fail-load handlers; we've
+	// seen launches where NEITHER fires (renderer crash mid-load with no reload,
+	// or a load/visibility race under the superset-app:// protocol), leaving the
+	// window permanently hidden. Applied as an INLINE fixup that ADDS independent
+	// webContents listeners (EventEmitter allows many) rather than modifying the
+	// AI-edited handler bodies — that modification is what made the old git-apply
+	// (T) drift and hard-abort. Depends only on `window` + `log` (both in scope
+	// here, used by W.1/AA.1/AB) and a stable anchor, so it can't drift.
+	const SHOW_WATCHDOG_MS = 12_000;
+	let __twFirstLoadDone = false;
+	let __twReloadAttempts = 0;
+	const __twShowWatchdog = setTimeout(() => {
+		if (window.isDestroyed() || window.isVisible()) return;
+		log.error(
+			"[main-window] show-watchdog fired: window still hidden after timeout — forcing show",
+			{
+				timeoutMs: SHOW_WATCHDOG_MS,
+				url: window.webContents.getURL(),
+				isLoading: window.webContents.isLoading(),
+				isCrashed: window.webContents.isCrashed(),
+			},
+		);
+		try {
+			window.show();
+			window.focus();
+		} catch (_e) {
+			/* window may have been destroyed between the guard and show() */
+		}
+	}, SHOW_WATCHDOG_MS);
+	__twShowWatchdog.unref?.();
 	window.webContents.on("did-finish-load", () => {
+		__twFirstLoadDone = true;
+		clearTimeout(__twShowWatchdog);
+		log.info("[main-window] did-finish-load (watchdog cleared)");
+	});
+	window.webContents.on(
+		"did-fail-load",
+		(_event, errorCode, errorDescription, validatedURL) => {
+			log.error("[main-window] did-fail-load", {
+				errorCode,
+				errorDescription,
+				url: validatedURL,
+			});
+			clearTimeout(__twShowWatchdog);
+			if (!__twFirstLoadDone && !window.isDestroyed() && !window.isVisible()) {
+				try {
+					window.show();
+				} catch (_e) {
+					/* ignore */
+				}
+			}
+		},
+	);
+	window.webContents.on("render-process-gone", (_event, details) => {
+		log.error("[main-window] render-process-gone", details);
+		// Reload once if the renderer dies before the first successful load —
+		// otherwise the show trigger never fires; the watchdog is the backstop.
+		if (
+			!__twFirstLoadDone &&
+			!window.isDestroyed() &&
+			details.reason !== "clean-exit" &&
+			__twReloadAttempts < 1
+		) {
+			__twReloadAttempts += 1;
+			log.warn("[main-window] reloading renderer after early crash", {
+				attempt: __twReloadAttempts,
+				reason: details.reason,
+			});
+			try {
+				window.webContents.reload();
+			} catch (_e) {
+				/* ignore */
+			}
+		}
+	});
+
+window.webContents.on("did-finish-load", () => {
 		console.log("[main-window] Renderer loaded successfully");
+		log.info("[startup] cold start: " + Math.round(process.uptime() * 1000) + "ms (process start -> did-finish-load)");
 
 		if (persistedZoomLevel !== undefined) {
 			window.webContents.setZoomLevel(persistedZoomLevel);
@@ -343,7 +533,11 @@ export async function MainWindow() {
 		console.error(`  Error:`, error);
 	});
 
-	window.on("close", () => {
+	window.on("close", (event) => {
+		// Windows: show quit confirmation BEFORE the window closes.
+		// The before-quit handler fires too late on Windows (window is already gone).
+		
+
 		// Save window state first, before any cleanup
 		const isMaximized = window.isMaximized();
 		const bounds = isMaximized ? window.getNormalBounds() : window.getBounds();
@@ -361,6 +555,7 @@ export async function MainWindow() {
 		browserManager.unregisterAll();
 		server.close();
 		notificationManager.dispose();
+		stopAgentJsonlWatcher();
 		notificationsEmitter.removeAllListeners();
 		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
 		ipcHandler?.detachWindow(window);

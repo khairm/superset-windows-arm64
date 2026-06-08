@@ -12,6 +12,20 @@ import { WorkspaceNotFoundState } from "./components/WorkspaceNotFoundState";
 import { useRemoteHostStatus } from "./hooks/useRemoteHostStatus";
 import { WorkspaceProvider } from "./providers/WorkspaceProvider";
 
+// Diagnostic logging for the intermittent v2-workspace blank-pane bug.
+// Emitted as "[agent-dots] ..." so the main-process console-message
+// forwarder persists it to electron-log (main.log) in a shipped build.
+// Logging-only — never alters behaviour. See patches/v2-workspace-blank-fix.patch.
+function blankDbg(record: Record<string, unknown>): void {
+	try {
+		console.info(
+			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), event: "v2_workspace_layout", ...record })}`,
+		);
+	} catch {
+		// never let logging crash the renderer
+	}
+}
+
 export const Route = createFileRoute("/_authenticated/_dashboard/v2-workspace")(
 	{
 		component: V2WorkspaceLayout,
@@ -66,13 +80,64 @@ function V2WorkspaceLayout() {
 		ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
 	}, [ensureWorkspaceInSidebar, workspace]);
 
-	const hostStatus = useRemoteHostStatus(workspace);
+	// Cache-first hold (apps/desktop AGENTS.md rule 9): a transient Electric
+	// re-sync can momentarily make the live query return undefined/empty with
+	// isReady=false, which previously blanked an already-rendered workspace
+	// (empty <div/>) until a manual reload. Keep the last resolved workspace
+	// for the current id and reuse it through the transient so panes don't
+	// blank. Ref write during render is a pure idempotent cache update.
+	const lastResolvedWorkspaceRef = useRef<NonNullable<typeof workspace> | null>(
+		null,
+	);
+	if (workspace && workspaceId) {
+		lastResolvedWorkspaceRef.current = workspace;
+	}
+	const isTransient = !workspaces || !isReady;
+	const heldWorkspace: typeof workspace =
+		workspace ??
+		(isTransient &&
+		workspaceId &&
+		lastResolvedWorkspaceRef.current?.id === workspaceId
+			? lastResolvedWorkspaceRef.current
+			: null);
 
-	if (!workspaceId || !workspaces || (!workspace && !isReady)) {
+	const hostStatus = useRemoteHostStatus(heldWorkspace);
+
+	// Diagnostic: log the blank-relevant render decision once per transition
+	// (not per render). Confirms which branch fires and whether the
+	// cache-first hold engaged.
+	const renderBranch = !workspaceId
+		? "no-workspace-id"
+		: !heldWorkspace && (!workspaces || (!workspace && !isReady))
+			? "blank-data-not-ready"
+			: !heldWorkspace
+				? "not-found"
+				: !workspace
+					? "held-through-transient"
+					: "ready";
+	const lastLoggedBranchRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (lastLoggedBranchRef.current === renderBranch) return;
+		lastLoggedBranchRef.current = renderBranch;
+		blankDbg({
+			branch: renderBranch,
+			workspaceId,
+			hasWorkspacesData: !!workspaces,
+			workspacesLength: workspaces?.length ?? null,
+			hasWorkspace: !!workspace,
+			hasHeld: !!heldWorkspace,
+			isReady,
+		});
+	}, [renderBranch, workspaceId, workspaces, workspace, heldWorkspace, isReady]);
+
+	if (
+		!workspaceId ||
+		(!heldWorkspace && (!workspaces || (!workspace && !isReady)))
+	) {
 		return <div className="flex h-full w-full" />;
 	}
 
-	if (!workspace) {
+	if (!heldWorkspace) {
 		if (failedEntry) {
 			return <WorkspaceCreateErrorState entry={failedEntry} />;
 		}
@@ -82,9 +147,9 @@ function V2WorkspaceLayout() {
 	if (isCreatePending) {
 		return (
 			<WorkspaceCreatingState
-				name={workspace.name}
-				branch={workspace.branch}
-				startedAt={new Date(workspace.createdAt).getTime()}
+				name={heldWorkspace.name}
+				branch={heldWorkspace.branch}
+				startedAt={new Date(heldWorkspace.createdAt).getTime()}
 			/>
 		);
 	}
@@ -103,7 +168,7 @@ function V2WorkspaceLayout() {
 	}
 
 	return (
-		<WorkspaceProvider workspace={workspace}>
+		<WorkspaceProvider workspace={heldWorkspace}>
 			<Outlet />
 		</WorkspaceProvider>
 	);

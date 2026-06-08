@@ -1,5 +1,6 @@
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useMemo } from "react";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import {
 	type PullRequest as FlowPullRequest,
 	getPRFlowState,
@@ -12,10 +13,16 @@ interface UsePRFlowStateResult {
 }
 
 export function usePRFlowState(workspaceId: string): UsePRFlowStateResult {
+	// (NON-GIT WORKSPACE) No PR / branch-sync state for a non-git folder — skip
+	// both queries. Stays true until the query positively resolves non-git so a
+	// real repo never flicker-skips on mount. The PR header that consumes this
+	// flow state isn't rendered for a non-git folder (see WorkspaceSidebar), but
+	// this hook still runs.
+	const isGitRepo = useIsGitRepo(workspaceId);
 	const prQuery = workspaceTrpc.git.getPullRequest.useQuery(
 		{ workspaceId },
 		{
-			enabled: !!workspaceId,
+			enabled: isGitRepo && !!workspaceId,
 			refetchInterval: 10_000,
 			refetchOnWindowFocus: true,
 			staleTime: 10_000,
@@ -25,7 +32,7 @@ export function usePRFlowState(workspaceId: string): UsePRFlowStateResult {
 	const syncQuery = workspaceTrpc.git.getBranchSyncStatus.useQuery(
 		{ workspaceId },
 		{
-			enabled: !!workspaceId,
+			enabled: isGitRepo && !!workspaceId,
 			refetchInterval: 10_000,
 			refetchOnWindowFocus: true,
 			staleTime: 5_000,

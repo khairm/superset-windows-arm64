@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import nodePath from "node:path";
 import type { ExternalApp } from "@superset/local-db";
 
@@ -82,6 +83,257 @@ const LINUX_CLI_CANDIDATES: Partial<Record<ExternalApp, string[]>> = {
 	pycharm: ["pycharm", "pycharm-professional", "pycharm-community"],
 };
 
+// ─── Windows App Resolution ──────────────────────────────────────────────────
+
+interface WindowsAppConfig {
+	/** CLI shim name (searched on PATH and in per-user bin dirs) */
+	cli?: string;
+	/** Direct CLI script paths relative to install dir roots (e.g. bin\code.cmd) */
+	cliScripts?: string[];
+	/** GUI executable name */
+	exe?: string;
+	/** Install directory name(s) under Program Files / LOCALAPPDATA\Programs */
+	installDirs?: string[];
+	/** JetBrains product subdirectory name(s) under Program Files\JetBrains\ */
+	jetbrainsDir?: string[];
+	/** JetBrains exe name(s) inside the bin\ subdir */
+	jetbrainsExe?: string[];
+	/** Extra args to append after the target path */
+	extraArgs?: string[];
+}
+
+const WINDOWS_APP_CONFIG: Partial<Record<ExternalApp, WindowsAppConfig>> = {
+	vscode: {
+		cli: "code",
+		cliScripts: ["bin\\code.cmd"],
+		exe: "Code.exe",
+		installDirs: ["Microsoft VS Code"],
+	},
+	"vscode-insiders": {
+		cli: "code-insiders",
+		cliScripts: ["bin\\code-insiders.cmd"],
+		exe: "Code - Insiders.exe",
+		installDirs: ["Microsoft VS Code Insiders"],
+	},
+	cursor: {
+		cli: "cursor",
+		cliScripts: ["resources\\app\\bin\\cursor.cmd"],
+		exe: "Cursor.exe",
+		installDirs: ["Cursor"],
+	},
+	windsurf: {
+		cli: "windsurf",
+		exe: "Windsurf.exe",
+		installDirs: ["Windsurf"],
+	},
+	zed: {
+		cli: "zed",
+		exe: "zed.exe",
+		installDirs: ["Zed Industries\\Zed"],
+	},
+	ghostty: {
+		cli: "ghostty",
+		exe: "ghostty.exe",
+		installDirs: ["Ghostty"],
+	},
+	sublime: {
+		cli: "subl",
+		exe: "subl.exe",
+		installDirs: ["Sublime Text"],
+	},
+	warp: {
+		cli: "warp-terminal",
+		exe: "Warp.exe",
+		installDirs: ["Warp"],
+	},
+	terminal: {
+		cli: "wt",
+		exe: "wt.exe",
+		installDirs: [],
+		extraArgs: ["-d"],
+	},
+	intellij: {
+		jetbrainsDir: ["IntelliJ IDEA", "IntelliJ IDEA Ultimate", "IntelliJ IDEA Community Edition"],
+		jetbrainsExe: ["idea64.exe", "idea.exe"],
+	},
+	webstorm: {
+		jetbrainsDir: ["WebStorm"],
+		jetbrainsExe: ["webstorm64.exe", "webstorm.exe"],
+	},
+	pycharm: {
+		jetbrainsDir: ["PyCharm", "PyCharm Professional Edition", "PyCharm Community Edition"],
+		jetbrainsExe: ["pycharm64.exe", "pycharm.exe"],
+	},
+	phpstorm: {
+		jetbrainsDir: ["PhpStorm"],
+		jetbrainsExe: ["phpstorm64.exe", "phpstorm.exe"],
+	},
+	rubymine: {
+		jetbrainsDir: ["RubyMine"],
+		jetbrainsExe: ["rubymine64.exe", "rubymine.exe"],
+	},
+	goland: {
+		jetbrainsDir: ["GoLand"],
+		jetbrainsExe: ["goland64.exe", "goland.exe"],
+	},
+	clion: {
+		jetbrainsDir: ["CLion"],
+		jetbrainsExe: ["clion64.exe", "clion.exe"],
+	},
+	rider: {
+		jetbrainsDir: ["Rider"],
+		jetbrainsExe: ["rider64.exe", "rider.exe"],
+	},
+	datagrip: {
+		jetbrainsDir: ["DataGrip"],
+		jetbrainsExe: ["datagrip64.exe", "datagrip.exe"],
+	},
+	rustrover: {
+		jetbrainsDir: ["RustRover"],
+		jetbrainsExe: ["rustrover64.exe", "rustrover.exe"],
+	},
+	"android-studio": {
+		jetbrainsDir: ["Android Studio"],
+		jetbrainsExe: ["studio64.exe", "studio.exe"],
+	},
+	fleet: {
+		cli: "fleet",
+		exe: "Fleet.exe",
+		installDirs: ["JetBrains\\Fleet"],
+	},
+	// macOS-only
+	finder: {},
+	xcode: {},
+	iterm: {},
+	appcode: {},
+	antigravity: {},
+};
+
+function getWindowsProgramRoots(): string[] {
+	const roots: string[] = [];
+	const pf = process.env.ProgramFiles;
+	const pfx86 = process.env["ProgramFiles(x86)"];
+	const localAppData = process.env.LOCALAPPDATA;
+	if (pf) roots.push(pf);
+	if (pfx86) roots.push(pfx86);
+	if (localAppData) {
+		roots.push(nodePath.join(localAppData, "Programs")); // User installs (VS Code, Cursor, etc.)
+		roots.push(localAppData);
+	}
+	return roots;
+}
+
+function resolveTerminalTarget(app: ExternalApp, targetPath: string): string {
+	if (app === "terminal") {
+		// For Windows Terminal, -d takes a directory, not a file
+		try {
+			const s = statSync(targetPath);
+			if (!s.isDirectory()) return nodePath.dirname(targetPath);
+		} catch {
+			return nodePath.dirname(targetPath);
+		}
+	}
+	return targetPath;
+}
+
+function findJetBrainsExe(dirs: string[], exeNames: string[]): string | null {
+	const pf = process.env.ProgramFiles;
+	const localToolbox = process.env.LOCALAPPDATA
+		? nodePath.join(process.env.LOCALAPPDATA, "JetBrains", "Toolbox", "apps")
+		: null;
+
+	const searchRoots: string[] = [];
+	if (pf) searchRoots.push(nodePath.join(pf, "JetBrains"));
+	if (localToolbox) searchRoots.push(localToolbox);
+
+	for (const root of searchRoots) {
+		if (!existsSync(root)) continue;
+		for (const dir of dirs) {
+			for (const exeName of exeNames) {
+				// Direct install path: Program Files\JetBrains\<dir>\bin\<exe>
+				const candidate = nodePath.join(root, dir, "bin", exeName);
+				if (existsSync(candidate)) return candidate;
+				// Toolbox nested versions: <toolbox>\<dir>\ch-*\<dir>*\bin\<exe>
+				try {
+					const toolboxAppDir = nodePath.join(root, dir);
+					if (!existsSync(toolboxAppDir)) continue;
+					const channels = readdirSync(toolboxAppDir).filter((e) =>
+						e.startsWith("ch-"),
+					);
+					for (const ch of channels) {
+						const versions = readdirSync(
+							nodePath.join(toolboxAppDir, ch),
+						).sort().reverse();
+						for (const ver of versions) {
+							const exe = nodePath.join(toolboxAppDir, ch, ver, "bin", exeName);
+							if (existsSync(exe)) return exe;
+						}
+					}
+				} catch {
+					// ignore enumeration errors
+				}
+			}
+		}
+	}
+	return null;
+}
+
+export function getWindowsAppCommand(
+	app: ExternalApp,
+	targetPath: string,
+): { command: string; args: string[]; waitForExit?: boolean }[] | null {
+	const config = WINDOWS_APP_CONFIG[app];
+	if (!config) return null;
+	if (Object.keys(config).length === 0) return null; // macOS-only
+
+	const target = resolveTerminalTarget(app, targetPath);
+	const extraArgs = config.extraArgs ?? [];
+	const results: { command: string; args: string[]; waitForExit?: boolean }[] = [];
+
+	const roots = getWindowsProgramRoots();
+
+	// 1. Direct CLI script paths (e.g. %LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd)
+	if (config.cliScripts && config.installDirs) {
+		for (const installDir of config.installDirs) {
+			for (const root of roots) {
+				for (const script of config.cliScripts) {
+					const candidate = nodePath.join(root, installDir, script);
+					if (existsSync(candidate)) {
+						results.push({ command: candidate, args: [...extraArgs, target], waitForExit: false });
+					}
+				}
+			}
+		}
+	}
+
+	// 2. GUI exe paths
+	if (config.exe && config.installDirs) {
+		for (const installDir of config.installDirs) {
+			for (const root of roots) {
+				const candidate = nodePath.join(root, installDir, config.exe);
+				if (existsSync(candidate)) {
+					results.push({ command: candidate, args: [...extraArgs, target], waitForExit: false });
+				}
+			}
+		}
+	}
+
+	// 3. JetBrains resolution
+	if (config.jetbrainsDir && config.jetbrainsExe) {
+		const exe = findJetBrainsExe(config.jetbrainsDir, config.jetbrainsExe);
+		if (exe) {
+			results.push({ command: exe, args: [...extraArgs, target], waitForExit: false });
+		}
+	}
+
+	// 4. CLI fallback (just command name, rely on PATH)
+	if (config.cli) {
+		results.push({ command: config.cli, args: [...extraArgs, target] });
+	}
+
+	return results.length > 0 ? results : null;
+}
+
 /**
  * Get candidate commands to open a path in the specified app.
  * Returns an array of commands to try in order — for multi-edition apps (IntelliJ, PyCharm),
@@ -94,7 +346,11 @@ export function getAppCommand(
 	app: ExternalApp,
 	targetPath: string,
 	platform: NodeJS.Platform = process.platform,
-): { command: string; args: string[] }[] | null {
+): { command: string; args: string[]; waitForExit?: boolean }[] | null {
+	if (platform === "win32") {
+		return getWindowsAppCommand(app, targetPath);
+	}
+
 	if (platform === "darwin") {
 		const bundleIds = BUNDLE_ID_CANDIDATES[app];
 		if (bundleIds) {
@@ -320,14 +576,41 @@ export function resolvePath(filePath: string, cwd?: string): string {
 
 /**
  * Spawns a process and waits for it to complete.
+ * When waitForExit is false, resolves immediately after spawn (for GUI apps).
  * @throws Error if the process exits with non-zero code or fails to spawn
  */
-export function spawnAsync(command: string, args: string[]): Promise<void> {
+export function spawnAsync(
+	command: string,
+	args: string[],
+	options: { waitForExit?: boolean } = {},
+): Promise<void> {
+	const { waitForExit = true } = options;
+	// On Windows, .cmd/.bat files must be launched via cmd.exe or shell: true
+	const isWindowsScript =
+		process.platform === "win32" &&
+		(command.toLowerCase().endsWith(".cmd") ||
+			command.toLowerCase().endsWith(".bat"));
+
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, {
-			stdio: ["ignore", "ignore", "pipe"],
-			detached: false,
-		});
+		const child = isWindowsScript
+			? spawn("cmd.exe", ["/c", command, ...args], {
+					stdio: ["ignore", "ignore", "pipe"],
+					detached: false,
+					windowsHide: true,
+				})
+			: spawn(command, args, {
+					stdio: ["ignore", "ignore", "pipe"],
+					detached: false,
+					windowsHide: true,
+					shell: process.platform === "win32" && !existsSync(command),
+				});
+
+		if (!waitForExit) {
+			child.unref();
+			child.on("error", () => {}); // suppress unhandled error
+			resolve();
+			return;
+		}
 
 		let stderr = "";
 		child.stderr?.on("data", (data) => {

@@ -1,6 +1,6 @@
 import { cn } from "@superset/ui/utils";
 import { type ComponentPropsWithoutRef, forwardRef } from "react";
-import type { ActivePaneStatus } from "shared/tabs-types";
+import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
 import type {
 	DashboardSidebarWorkspaceHostType,
 	DashboardSidebarWorkspacePullRequest,
@@ -14,9 +14,10 @@ interface DashboardSidebarCollapsedWorkspaceButtonProps
 	workspaceType: DashboardSidebarWorkspaceType;
 	hostIsOnline: boolean | null;
 	isActive: boolean;
-	workspaceStatus?: ActivePaneStatus | null;
+	workspaceStatus?: DisplayStatus | null;
 	isCreatePending: boolean;
 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
+	isNonGit?: boolean;
 }
 
 export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
@@ -32,6 +33,7 @@ export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
 			workspaceStatus = null,
 			isCreatePending,
 			pullRequestState = null,
+			isNonGit = false,
 			className,
 			...props
 		},
@@ -58,6 +60,7 @@ export const DashboardSidebarCollapsedWorkspaceButton = forwardRef<
 					workspaceStatus={workspaceStatus}
 					isCreatePending={isCreatePending}
 					pullRequestState={pullRequestState}
+					isNonGit={isNonGit}
 				/>
 			</button>
 		);

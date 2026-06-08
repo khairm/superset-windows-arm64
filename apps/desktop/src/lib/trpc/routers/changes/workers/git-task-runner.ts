@@ -21,6 +21,14 @@ function getWorkerScriptPath(): string {
 		// Lazy require avoids test/runtime issues where electron is unavailable.
 		const { app } = require("electron") as typeof import("electron");
 		const appPath = app?.getAppPath?.() ?? process.cwd();
+		// When running `electron dist/main/index.js` directly, appPath is already
+		// the dist/main directory. Check for the script there first to avoid
+		// double-nesting (dist/main/dist/main/git-task-worker.js).
+		const { existsSync } = require("node:fs") as typeof import("node:fs");
+		const direct = join(appPath, "git-task-worker.js");
+		if (existsSync(direct)) {
+			return direct;
+		}
 		return join(appPath, "dist", "main", "git-task-worker.js");
 	} catch {
 		return join(process.cwd(), "dist", "main", "git-task-worker.js");

@@ -9,6 +9,7 @@ import { useQueries } from "@tanstack/react-query";
 import { getQueryKey } from "@trpc/react-query";
 import type { inferRouterInputs } from "@trpc/server";
 import { useMemo } from "react";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import type { ChangesetFile } from "../../../../../useChangeset";
 import type { DiffAnnotationMetadata } from "../useDiffAnnotations";
 
@@ -46,6 +47,11 @@ export function useDiffCodeViewItems({
 	extraAnnotationsByItemId,
 }: UseDiffCodeViewItemsOptions): UseDiffCodeViewItemsResult {
 	const { trpcClient } = useWorkspaceClient();
+	// (NON-GIT WORKSPACE) Never run git.getDiff for a non-git folder — the
+	// marker branch must never reach a git command. Stays true until the query
+	// positively resolves non-git so a real repo never flicker-skips on mount.
+	// A non-git folder has no changeset files anyway, so this is defense-in-depth.
+	const isGitRepo = useIsGitRepo(workspaceId);
 
 	const diffRequests = useMemo(
 		() =>
@@ -60,6 +66,7 @@ export function useDiffCodeViewItems({
 		queries: diffRequests.map(({ input }) => ({
 			queryKey: getQueryKey(workspaceTrpc.git.getDiff, input, "query"),
 			queryFn: () => trpcClient.git.getDiff.query(input),
+			enabled: isGitRepo,
 			staleTime: Number.POSITIVE_INFINITY,
 		})),
 	});

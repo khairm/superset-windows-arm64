@@ -4,15 +4,23 @@ const SAFE_SHELL_TOKEN = /^[A-Za-z0-9_@%+=:,./~-]+$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function quoteShellToken(value: string): string {
+	if (value === "&&") return "&&";
 	if (value === "") return "''";
 	if (SAFE_SHELL_TOKEN.test(value)) return value;
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function parseTokens(input: string): string[] {
-	return parse(input).filter(
-		(token): token is string => typeof token === "string",
-	);
+	return parse(input).flatMap((token): string[] => {
+		if (typeof token === "string") return [token];
+		if (
+			typeof token === "object" &&
+			token !== null &&
+			(token as { op?: string }).op === "&&"
+		)
+			return ["&&"];
+		return [];
+	});
 }
 
 function splitLeadingEnvAssignments(tokens: string[]): {

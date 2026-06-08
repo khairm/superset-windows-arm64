@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { projects, workspaces } from "../../../db/schema";
+import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import { protectedProcedure, router } from "../../index";
 import { normalizeWorktreeBaseDir } from "../workspace-creation/shared/worktree-paths";
@@ -15,6 +16,7 @@ import {
 	createFromClone,
 	createFromEmpty,
 	createFromImportLocal,
+	createFromNonGitFolder,
 	createFromTemplate,
 } from "./handlers";
 import { ensureMainWorkspace } from "./utils/ensure-main-workspace";
@@ -27,6 +29,7 @@ import {
 	resolveMatchingSlug,
 	tryRevParseGitRoot,
 	validateDirectoryPath,
+	resolveNonGitFolder,
 } from "./utils/resolve-repo";
 
 export const projectRouter = router({
@@ -164,22 +167,32 @@ export const projectRouter = router({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
-			// Detect "folder isn't a git repo yet" without throwing, so the import
-			// UI can offer to `git init` it (create importLocal + initIfNeeded)
-			// instead of dead-ending on a BAD_REQUEST. Additive optional field —
-			// repo paths never carry needsGitInit, so existing callers are
-			// unaffected.
-			const root = await tryRevParseGitRoot(input.repoPath);
-			if (root === null) {
-				validateDirectoryPath(input.repoPath, "Path"); // 400 on missing / not-a-dir
+			// (NON-GIT WORKSPACE) A non-git folder can't be rev-parsed. Look up an
+			// existing local non-git project by its resolved path and return it
+			// (or no candidates) WITHOUT throwing, so the folder-import flow can
+			// route a create through kind:"nonGitFolder" (see probePath).
+			if (!(await isGitRepo(input.repoPath))) {
+				const folder = resolveNonGitFolder(input.repoPath).repoPath;
+				const localProject = ctx.db.query.projects
+					.findFirst({ where: eq(projects.repoPath, folder) })
+					.sync();
 				return {
-					candidates: [],
+					candidates: localProject
+						? [
+								{
+									id: localProject.id,
+									name: localProject.repoName ?? basename(folder),
+									repoCloneUrl: localProject.repoUrl ?? null,
+									source: "local-path" as const,
+									matchesExpected: false,
+									staleLocalLink: false,
+								},
+							]
+						: [],
 					cloudErrors: [] as { url: string; message: string }[],
-					needsGitInit: true as const,
 				};
 			}
-
-			const resolved = await resolveLocalRepo(root);
+			const resolved = await resolveLocalRepo(input.repoPath);
 			const gitRoot = resolved.repoPath;
 
 			const expectedParsed =
@@ -391,6 +404,18 @@ export const projectRouter = router({
 			return { candidates, cloudErrors };
 		}),
 
+	/**
+	 * (NON-GIT WORKSPACE) Probe whether a folder is a git working tree so the
+	 * renderer can choose the create kind: a git repo -> kind:"importLocal";
+	 * anything else -> kind:"nonGitFolder". Filesystem/git is the source of
+	 * truth — never a persisted flag.
+	 */
+	probePath: protectedProcedure
+		.input(z.object({ repoPath: z.string().min(1) }))
+		.query(async ({ input }) => {
+			return { isGitRepo: await isGitRepo(input.repoPath) };
+		}),
+
 	create: protectedProcedure
 		.input(
 			z.object({
@@ -412,6 +437,10 @@ export const projectRouter = router({
 						// importing. The UI sets this only after confirming intent
 						// with the user (see findByPath's needsGitInit).
 						initIfNeeded: z.boolean().optional().default(false),
+					}),
+					z.object({
+						kind: z.literal("nonGitFolder"),
+						repoPath: z.string().min(1),
 					}),
 					z.object({
 						kind: z.literal("template"),
@@ -450,6 +479,11 @@ export const projectRouter = router({
 						name: input.name,
 						repoPath: input.mode.repoPath,
 						initIfNeeded: input.mode.initIfNeeded,
+					});
+				case "nonGitFolder":
+					return createFromNonGitFolder(ctx, {
+						name: input.name,
+						repoPath: input.mode.repoPath,
 					});
 			}
 		}),

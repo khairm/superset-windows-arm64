@@ -7,6 +7,7 @@ import { projects, pullRequests, workspaces } from "../../db/schema";
 import type { GitWatcher } from "../../events/git-watcher";
 import type { ExecGh } from "../../trpc/router/workspace-creation/utils/exec-gh";
 import type { GitFactory } from "../git";
+import { isGitRepo } from "../git/non-git";
 import {
 	fetchPullRequestByHead,
 	fetchPullRequestByHeadFromGh,
@@ -514,6 +515,10 @@ export class PullRequestRuntimeManager {
 	private async syncWorkspaceRow(
 		workspace: typeof workspaces.$inferSelect,
 	): Promise<string | null> {
+		// (NON-GIT WORKSPACE) A non-git workspace has no branch/HEAD/upstream
+		// to read and no PR to sync. Skip before touching git so the inert
+		// branch marker never reaches a git command.
+		if (!(await isGitRepo(workspace.worktreePath))) return null;
 		try {
 			const git = await this.git(workspace.worktreePath);
 			const branch = await getCurrentBranchName(git);
@@ -616,11 +621,25 @@ export class PullRequestRuntimeManager {
 		const repo = await this.getProjectRepository(projectId);
 		if (!repo) return;
 
-		const projectWorkspaces = this.db
+		const allProjectWorkspaces = this.db
 			.select()
 			.from(workspaces)
 			.where(eq(workspaces.projectId, projectId))
 			.all();
+		if (allProjectWorkspaces.length === 0) return;
+
+		// (NON-GIT WORKSPACE) Drop non-git workspaces before any PR work — they
+		// have no upstream/branch to query and must not have their (always null)
+		// pullRequestId touched by the propagation loop below. Filesystem/git is
+		// the truth; isGitRepo's short-TTL cache keeps these checks cheap.
+		const gitFlags = await Promise.all(
+			allProjectWorkspaces.map((workspace) =>
+				isGitRepo(workspace.worktreePath),
+			),
+		);
+		const projectWorkspaces = allProjectWorkspaces.filter(
+			(_workspace, index) => gitFlags[index],
+		);
 		if (projectWorkspaces.length === 0) return;
 
 		const wantedRefs = new Map<string, GitHubPullRequestHeadRef>();

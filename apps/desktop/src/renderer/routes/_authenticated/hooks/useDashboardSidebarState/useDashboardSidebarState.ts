@@ -9,11 +9,20 @@ import {
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
 import {
+	APP_LAUNCH_ID,
 	getNextTabOrder,
 	getPrependTabOrder,
+	getWorkspaceSidebarBucket,
 	isSidebarWorkspaceVisible,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
+
+/** The four per-project reveal/collapse booleans on the sidebar project row. */
+export type ProjectSectionFlag =
+	| "showSnoozed"
+	| "showArchived"
+	| "snoozedCollapsed"
+	| "archivedCollapsed";
 
 type ProjectTopLevelItem = {
 	type: "workspace" | "section";
@@ -132,14 +141,26 @@ function ensureSidebarProjectRecord(
 function ensureSidebarWorkspaceRecord(
 	collections: Pick<
 		AppCollections,
-		"v2SidebarSections" | "v2WorkspaceLocalState"
+		"v2SidebarSections" | "v2WorkspaceLocalState" | "v2Workspaces"
 	>,
 	workspaceId: string,
 	projectId: string,
 ): void {
 	const existing = collections.v2WorkspaceLocalState.get(workspaceId);
-	if (existing && isSidebarWorkspaceVisible(existing)) {
-		return;
+	// Already placed — don't resurrect into active. An active row, a snoozed row,
+	// or an archived row (archivedAt set, OR a removed non-main thread surfaced
+	// under Archived) all stay put on re-open (view-in-place). Only a "hidden"
+	// row (a removed MAIN workspace: isHidden, no archive) is pulled back into the
+	// active lane when explicitly opened. Classified via the shared
+	// getWorkspaceSidebarBucket so the rule matches exactly what the sidebar renders.
+	if (existing) {
+		const workspaceType =
+			collections.v2Workspaces.get(workspaceId)?.type ?? null;
+		if (
+			getWorkspaceSidebarBucket(existing, Date.now(), workspaceType) !== "hidden"
+		) {
+			return;
+		}
 	}
 
 	const topLevelItems = getProjectTopLevelItems(collections, projectId);
@@ -508,7 +529,114 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
+	// --- Snooze / Archive ---------------------------------------------------
+	// All visual-only: they only flip local sidebar flags. Unlike
+	// hideWorkspaceInSidebar (which tears down pane runtimes + clears the
+	// layout), these intentionally leave the worktree and any running session
+	// untouched so a restored thread comes back exactly as it was.
+
+	const archiveWorkspace = useCallback(
+		(workspaceId: string) => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.isHidden = true;
+				draft.sidebarState.archivedAt = Date.now();
+				draft.sidebarState.snoozeUntil = null;
+				draft.sidebarState.snoozeLaunchId = null;
+			});
+		},
+		[collections],
+	);
+
+	const snoozeWorkspace = useCallback(
+		(workspaceId: string, until: number | "next-launch") => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				if (until === "next-launch") {
+					draft.sidebarState.snoozeUntil = null;
+					draft.sidebarState.snoozeLaunchId = APP_LAUNCH_ID;
+				} else {
+					draft.sidebarState.snoozeUntil = until;
+					draft.sidebarState.snoozeLaunchId = null;
+				}
+				draft.sidebarState.isHidden = false;
+				draft.sidebarState.archivedAt = null;
+			});
+		},
+		[collections],
+	);
+
+	const unsnoozeWorkspace = useCallback(
+		(workspaceId: string) => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.snoozeUntil = null;
+				draft.sidebarState.snoozeLaunchId = null;
+			});
+		},
+		[collections],
+	);
+
+	const unsnoozeAllInProject = useCallback(
+		(projectId: string) => {
+			for (const workspace of collections.v2WorkspaceLocalState.state.values()) {
+				if (workspace.sidebarState.projectId !== projectId) continue;
+				if (
+					workspace.sidebarState.snoozeUntil == null &&
+					workspace.sidebarState.snoozeLaunchId == null
+				) {
+					continue;
+				}
+				unsnoozeWorkspace(workspace.workspaceId);
+			}
+		},
+		[collections, unsnoozeWorkspace],
+	);
+
+	// Restore exactly the rows the caller passes (the ids rendered in the
+	// project's Archived section). Id-based rather than re-deriving from isHidden
+	// so a removed main/pinned workspace — which is hidden but NOT archived, and
+	// therefore never shown in the section — is never accidentally un-hidden.
+	const unarchiveWorkspaces = useCallback(
+		(workspaceIds: readonly string[]) => {
+			for (const workspaceId of workspaceIds) {
+				if (!collections.v2WorkspaceLocalState.get(workspaceId)) continue;
+				collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+					draft.sidebarState.isHidden = false;
+					draft.sidebarState.archivedAt = null;
+				});
+			}
+		},
+		[collections],
+	);
+
+	// Single-id convenience wrapper around unarchiveWorkspaces.
+	const unarchiveWorkspace = useCallback(
+		(workspaceId: string) => unarchiveWorkspaces([workspaceId]),
+		[unarchiveWorkspaces],
+	);
+
+	const setProjectSectionFlag = useCallback(
+		(projectId: string, flag: ProjectSectionFlag, value: boolean) => {
+			ensureSidebarProjectRecord(collections, projectId);
+			collections.v2SidebarProjects.update(projectId, (draft) => {
+				draft[flag] = value;
+			});
+		},
+		[collections],
+	);
+
+	const toggleProjectSectionFlag = useCallback(
+		(projectId: string, flag: ProjectSectionFlag) => {
+			const current =
+				collections.v2SidebarProjects.get(projectId)?.[flag] ?? false;
+			setProjectSectionFlag(projectId, flag, !current);
+		},
+		[collections, setProjectSectionFlag],
+	);
+
 	return {
+		archiveWorkspace,
 		createSection,
 		deleteSection,
 		ensureProjectInSidebar,
@@ -522,8 +650,15 @@ export function useDashboardSidebarState() {
 		reorderProjects,
 		reorderWorkspaces,
 		renameSection,
+		setProjectSectionFlag,
 		setSectionColor,
+		snoozeWorkspace,
 		toggleProjectCollapsed,
+		toggleProjectSectionFlag,
 		toggleSectionCollapsed,
+		unarchiveWorkspace,
+		unarchiveWorkspaces,
+		unsnoozeAllInProject,
+		unsnoozeWorkspace,
 	};
 }

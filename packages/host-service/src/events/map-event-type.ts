@@ -7,13 +7,20 @@
  * - `Attached` / `Detached`: session-lifetime signal — drives the pane icon
  *   binding only. NOT working state: SessionStart fires on agent boot when
  *   the agent is still idle waiting for input.
+ * - `BackgroundRunning`: (BA) the main turn ENDED but a cloud/background session
+ *   is still running (non-empty `background_tasks` in the Stop hook payload).
+ *   Drives the pulsing BLUE dot on a SEPARATE render axis. The agent dot itself
+ *   is handled exactly like a normal turn-end (review-or-clear) — so the blue
+ *   NEVER masks a fresh review green (precedence: red > yellow > green > blue);
+ *   the blue shows only once that review clears to idle.
  */
 export type AgentLifecycleEventType =
 	| "Start"
 	| "Stop"
 	| "PermissionRequest"
 	| "Attached"
-	| "Detached";
+	| "Detached"
+	| "BackgroundRunning";
 
 export function mapEventType(
 	eventType: string | undefined,
@@ -38,6 +45,10 @@ export function mapEventType(
 		eventType === "session_end"
 	) {
 		return "Detached";
+	}
+	// (BA) Cloud/background-session-still-running signal from the notify hook.
+	if (eventType === "BackgroundRunning") {
+		return "BackgroundRunning";
 	}
 	if (
 		eventType === "Start" ||

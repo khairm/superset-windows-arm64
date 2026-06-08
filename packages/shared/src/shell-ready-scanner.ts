@@ -16,7 +16,17 @@ const OSC_133_A_BYTES = Uint8Array.from(
 const BEL_BYTE = 0x07;
 
 /** Shells whose wrapper files inject OSC 133 markers. */
-export const SHELLS_WITH_READY_MARKER = new Set(["zsh", "bash", "fish"]);
+export const SHELLS_WITH_READY_MARKER = new Set([
+	"zsh",
+	"bash",
+	"fish",
+	// pwsh/powershell emit `133;A` (and the C/D command markers) via the
+	// superset-pwsh-integration.ps1 prompt function. Listing them here engages
+	// the A-scan so the C/D command-running scanner (which only activates once
+	// shell-ready is no longer "pending") can take over stripping.
+	"powershell",
+	"pwsh",
+]);
 
 /**
  * Mutable state for the byte-by-byte scanner.

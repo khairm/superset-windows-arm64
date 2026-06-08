@@ -95,6 +95,7 @@ export function resolveHostAgentConfig(
 }
 
 function quoteSingleShell(value: string): string {
+	if (value === "&&") return "&&";
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 

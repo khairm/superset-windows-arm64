@@ -1,9 +1,34 @@
-import type { Pane, Tab } from "@superset/panes";
+import type { Pane, Tab, WorkspaceState } from "@superset/panes";
+import { eq } from "@tanstack/db";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useMemo } from "react";
+import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+// (AY) DisplayStatus (ActivePaneStatus | "shell-running") is owned by the
+// StatusIndicator that renders it; the store consumes it as the render type for
+// the merged agent+shell-running dots. Single source of truth — no re-declare.
+import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
 import {
 	type ActivePaneStatus,
 	getHighestPriorityStatus,
 } from "shared/tabs-types";
 import { create } from "zustand";
+
+// Diagnostic logging for the agent-status-dots pipeline. console.info with
+// an "[agent-dots]" prefix so the main process forwarder persists it to
+// electron-log (main.log). Logging-only; flip NLOG to silence. NOTE: only
+// the mutators are instrumented — selectors (selectStatusForSourceKeys) are
+// hot and intentionally left untouched. See patches/notification-logging.patch.
+const NLOG = true;
+function ndots(record: Record<string, unknown>): void {
+	if (!NLOG) return;
+	try {
+		console.info(
+			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
+		);
+	} catch {
+		// never let logging crash the renderer
+	}
+}
 
 export type V2NotificationPaneLike = Pick<Pane<unknown>, "kind" | "data">;
 export type V2NotificationTabLike = Pick<Tab<unknown>, "panes">;
@@ -27,8 +52,39 @@ export interface V2NotificationStatusEntry {
 	occurredAt: number;
 }
 
+/**
+ * (AY) A foreground command currently running in a terminal (OSC 133 C with no
+ * matching D yet), keyed by terminalId. Separate axis from `sources`: it never
+ * participates in agent-status aggregation; it only drives the blue dot when no
+ * agent status outranks it. Cleared on command-end / exit / prompt-redraw-end.
+ */
+export interface V2ShellRunningEntry {
+	workspaceId: string;
+	occurredAt: number;
+}
+
 export interface V2NotificationState {
 	sources: Record<string, V2NotificationStatusEntry>;
+	// (AY) Separate shell-running axis (see V2ShellRunningEntry). Keyed by
+	// terminalId. Never merged into `sources`.
+	shellRunningTerminals: Record<string, V2ShellRunningEntry>;
+	setTerminalShellRunning: (
+		terminalId: string,
+		workspaceId: string,
+		occurredAt?: number,
+	) => void;
+	clearTerminalShellRunning: (terminalId: string) => void;
+	// (BA) Separate cloud/background-session axis: the agent's turn ended but a
+	// Claude cloud/background task is still running. Same render colour as
+	// shell-running (blue), distinct tooltip. Driven by the notify hook's
+	// BackgroundRunning event; never merged into `sources`.
+	backgroundRunningTerminals: Record<string, V2ShellRunningEntry>;
+	setTerminalBackgroundRunning: (
+		terminalId: string,
+		workspaceId: string,
+		occurredAt?: number,
+	) => void;
+	clearTerminalBackgroundRunning: (terminalId: string) => void;
 	setSourceStatus: (
 		source: V2NotificationSource,
 		workspaceId: string,
@@ -66,8 +122,67 @@ export interface V2NotificationState {
 
 export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 	sources: {},
+	shellRunningTerminals: {},
+	setTerminalShellRunning: (
+		terminalId,
+		workspaceId,
+		occurredAt = Date.now(),
+	) => {
+		set((state) => {
+			const prev = state.shellRunningTerminals[terminalId];
+			if (prev && prev.workspaceId === workspaceId) return state;
+			return {
+				shellRunningTerminals: {
+					...state.shellRunningTerminals,
+					[terminalId]: { workspaceId, occurredAt },
+				},
+			};
+		});
+	},
+	clearTerminalShellRunning: (terminalId) => {
+		set((state) => {
+			if (!state.shellRunningTerminals[terminalId]) return state;
+			const { [terminalId]: _removed, ...shellRunningTerminals } =
+				state.shellRunningTerminals;
+			return { shellRunningTerminals };
+		});
+	},
+	backgroundRunningTerminals: {},
+	setTerminalBackgroundRunning: (
+		terminalId,
+		workspaceId,
+		occurredAt = Date.now(),
+	) => {
+		set((state) => {
+			const prev = state.backgroundRunningTerminals[terminalId];
+			if (prev && prev.workspaceId === workspaceId) return state;
+			return {
+				backgroundRunningTerminals: {
+					...state.backgroundRunningTerminals,
+					[terminalId]: { workspaceId, occurredAt },
+				},
+			};
+		});
+	},
+	clearTerminalBackgroundRunning: (terminalId) => {
+		set((state) => {
+			if (!state.backgroundRunningTerminals[terminalId]) return state;
+			const { [terminalId]: _removed, ...backgroundRunningTerminals } =
+				state.backgroundRunningTerminals;
+			return { backgroundRunningTerminals };
+		});
+	},
 	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
 		const sourceKey = getV2NotificationSourceKey(source);
+		ndots({
+			event: "store_mutation",
+			mutation: "setSourceStatus",
+			sourceKey,
+			workspaceId,
+			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
+			to: status,
+			occurredAt,
+		});
 		set((state) => ({
 			sources: {
 				...state.sources,
@@ -112,6 +227,15 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 	},
 	clearSourceStatus: (source, workspaceId) => {
 		const sourceKey = getV2NotificationSourceKey(source);
+		ndots({
+			event: "store_mutation",
+			mutation: "clearSourceStatus",
+			sourceKey,
+			workspaceId: workspaceId ?? null,
+			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
+			to: null,
+			occurredAt: Date.now(),
+		});
 		set((state) => {
 			const entry = state.sources[sourceKey];
 			if (!entry || (workspaceId && entry.workspaceId !== workspaceId)) {
@@ -167,10 +291,51 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 				}
 				sources[sourceKey] = source;
 			}
-			return changed ? { sources } : state;
+			// (BA) Also drop background-running entries for this workspace — the
+			// blue axis has no OSC self-clear, so a workspace teardown must purge
+			// it too or a stale entry survives (hidden by the open-tab gate, but
+			// still leaked).
+			const backgroundRunningTerminals: Record<string, V2ShellRunningEntry> =
+				{};
+			let bgChanged = false;
+			for (const [tid, entry] of Object.entries(
+				state.backgroundRunningTerminals,
+			)) {
+				if (entry.workspaceId === workspaceId) {
+					bgChanged = true;
+					continue;
+				}
+				backgroundRunningTerminals[tid] = entry;
+			}
+			if (!changed && !bgChanged) return state;
+			const next: Partial<V2NotificationState> = {};
+			if (changed) next.sources = sources;
+			if (bgChanged) next.backgroundRunningTerminals = backgroundRunningTerminals;
+			return next;
 		});
 	},
 	clearWorkspaceAttention: (workspaceId) => {
+		{
+			// Log each source this call will clear (workspace match +
+			// status "review"). One line per source so each carries its
+			// own sourceKey. Read-only snapshot — no logic change.
+			const now = Date.now();
+			for (const [sourceKey, source] of Object.entries(
+				useV2NotificationStore.getState().sources,
+			)) {
+				if (source.workspaceId === workspaceId && source.status === "review") {
+					ndots({
+						event: "store_mutation",
+						mutation: "clearWorkspaceAttention",
+						sourceKey,
+						workspaceId,
+						from: source.status,
+						to: null,
+						occurredAt: now,
+					});
+				}
+			}
+		}
 		set((state) => {
 			const sources: Record<string, V2NotificationStatusEntry> = {};
 			let changed = false;
@@ -242,25 +407,277 @@ export function clearV2TerminalRunStatus(
 	terminalId: string,
 	workspaceId: string,
 ): void {
-	useV2NotificationStore
-		.getState()
-		.clearSourceStatus(
-			getV2TerminalNotificationSource(terminalId),
-			workspaceId,
-		);
+	const store = useV2NotificationStore.getState();
+	store.clearSourceStatus(
+		getV2TerminalNotificationSource(terminalId),
+		workspaceId,
+	);
+	// (BA) The cloud/background-running blue axis has NO OSC self-clear (unlike
+	// shell-running, which clears on the 133;D command-end). Both interrupt
+	// (Ctrl+C/Esc, useTerminalInterruptClear) and pane close (usePaneRegistry
+	// onAfterClose) route through here, so clear it too — otherwise a stale blue
+	// dot lingers on a live/closed terminal until some later agent event.
+	store.clearTerminalBackgroundRunning(terminalId);
 }
 
-export function selectV2WorkspaceNotificationStatus(workspaceId: string) {
+/**
+ * Terminal IDs that currently belong to an OPEN pane in the workspace's
+ * persisted v2 pane layout (`v2WorkspaceLocalState.paneLayout`) — the SAME
+ * cross-workspace source of truth the v2 workspace page hydrates from (and
+ * that `V2NotificationController` reads). Used to GATE the workspace-level
+ * status / unread / per-terminal-dot selectors below so a CLOSED (or
+ * never-opened) terminal's lingering notification entry is never represented
+ * — by construction, "any tab closed is never representable."
+ *
+ * This is the safe form of the reverted (AI) orphan prune: the signal is the
+ * renderer's open-tabs layout, NOT JSONL session presence (which wrongly
+ * killed live-but-quiet dots). Render-time filter only — the store is never
+ * mutated, so there is no reconcile race.
+ *
+ * The returned Set's identity changes only when the id set itself changes (it
+ * is derived from a sorted, comma-joined key) so consumers don't re-fire on
+ * every store tick. Cache-first (AGENTS.md rule 9): empty until the row
+ * hydrates, so dots resolve once the layout is known rather than flashing
+ * stale entries. NOTE: each of the three consumer hooks below subscribes
+ * independently (≤3 identical live queries per workspace row); kept this way
+ * to keep the patch to store.ts only — hoisting into DashboardSidebarWorkspaceItem
+ * would touch a heavily-patched (P+AG+AL) file for a cheap local-collection query.
+ */
+function useV2WorkspaceOpenTerminalIds(
+	workspaceId: string,
+): ReadonlySet<string> {
+	const collections = useCollections();
+	const { data: rows = [] } = useLiveQuery(
+		(q) =>
+			q
+				.from({ local: collections.v2WorkspaceLocalState })
+				.where(({ local }) => eq(local.workspaceId, workspaceId))
+				.select(({ local }) => ({ paneLayout: local.paneLayout })),
+		[collections, workspaceId],
+	);
+	const paneLayout = rows[0]?.paneLayout as
+		| WorkspaceState<unknown>
+		| null
+		| undefined;
+	const key = useMemo(() => {
+		if (!paneLayout) return "";
+		const ids = new Set<string>();
+		for (const tab of paneLayout.tabs ?? []) {
+			for (const pane of Object.values(tab.panes ?? {})) {
+				const terminalId = getTerminalIdForPane(pane);
+				if (terminalId) ids.add(terminalId);
+			}
+		}
+		return [...ids].sort().join(",");
+	}, [paneLayout]);
+	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
+}
+
+/**
+ * A terminal source whose terminal is NOT in the workspace's open-pane set —
+ * a closed/never-opened terminal whose lingering entry must not be
+ * represented. Chat/manual sources are never closed-terminals. When
+ * `openTerminalIds` is undefined the gate is disabled (ungated, back-compat).
+ */
+function isClosedTerminalSource(
+	entry: V2NotificationStatusEntry,
+	openTerminalIds: ReadonlySet<string> | undefined,
+): boolean {
+	return (
+		entry.source.type === "terminal" &&
+		!!openTerminalIds &&
+		!openTerminalIds.has(entry.source.id)
+	);
+}
+
+/**
+ * Highest-priority status across a workspace's sources. Terminal sources are
+ * gated to `openTerminalIds` (when provided) so closed terminals don't tint
+ * the workspace icon; chat/manual sources are always considered.
+ */
+export function selectV2WorkspaceNotificationStatus(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
 	return (state: V2NotificationState) => {
 		function* statuses() {
 			for (const source of Object.values(state.sources)) {
-				if (source.workspaceId === workspaceId) {
-					yield source.status;
-				}
+				if (source.workspaceId !== workspaceId) continue;
+				if (isClosedTerminalSource(source, openTerminalIds)) continue;
+				yield source.status;
 			}
 		}
 		return getHighestPriorityStatus(statuses());
 	};
+}
+
+/**
+ * Per-terminal AGENT statuses for a workspace, encoded as a comma-joined
+ * `terminalId=status` string for stable referential equality in the Zustand
+ * selector (returning an array/object would re-fire the subscription on every
+ * store change because [...] !== [...]). Callers decode the string back to
+ * pairs. Only terminal sources are included — chat sources excluded — with
+ * non-idle status; idle/missing entries are filtered. The terminalId is now
+ * carried (was status-only) so (AY) can merge the shell-running fallback by id.
+ */
+export function selectV2WorkspaceTerminalStatuses(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
+	return (state: V2NotificationState): string => {
+		const parts: string[] = [];
+		for (const entry of Object.values(state.sources)) {
+			if (entry.workspaceId !== workspaceId) continue;
+			if (entry.source.type !== "terminal") continue;
+			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
+			parts.push(`${entry.source.id}=${entry.status}`);
+		}
+		// Sort for a deterministic key (store iteration order is insertion order;
+		// sorting keeps the referential-equality key stable across re-emits).
+		parts.sort();
+		return parts.join(",");
+	};
+}
+
+/**
+ * (AY) Per-terminal shell-running terminal ids for a workspace, gated to OPEN
+ * terminals and encoded as a sorted comma-joined string for referential
+ * stability. Drives the per-terminal blue dot fallback + the workspace rollup.
+ */
+export function selectV2WorkspaceShellRunningKey(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
+	return (state: V2NotificationState): string => {
+		const ids: string[] = [];
+		for (const [terminalId, entry] of Object.entries(
+			state.shellRunningTerminals,
+		)) {
+			if (entry.workspaceId !== workspaceId) continue;
+			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
+			ids.push(terminalId);
+		}
+		ids.sort();
+		return ids.join(",");
+	};
+}
+
+/**
+ * (AY) Set of terminalIds with a foreground command running, gated to OPEN
+ * terminals. Referentially stable — identity changes only when the id set does.
+ */
+export function useV2WorkspaceShellRunningTerminalIds(
+	workspaceId: string,
+): ReadonlySet<string> {
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const selector = useMemo(
+		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	const key = useV2NotificationStore(selector);
+	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
+}
+
+/**
+ * (BA) Per-terminal cloud/background-running terminal ids for a workspace, gated
+ * to OPEN terminals and encoded as a sorted comma-joined string for referential
+ * stability. Mirrors the shell-running selector on the separate background axis.
+ */
+export function selectV2WorkspaceBackgroundRunningKey(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
+	return (state: V2NotificationState): string => {
+		const ids: string[] = [];
+		for (const [terminalId, entry] of Object.entries(
+			state.backgroundRunningTerminals,
+		)) {
+			if (entry.workspaceId !== workspaceId) continue;
+			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
+			ids.push(terminalId);
+		}
+		ids.sort();
+		return ids.join(",");
+	};
+}
+
+/**
+ * (BA) Set of terminalIds with a cloud/background session running, gated to OPEN
+ * terminals. Referentially stable — identity changes only when the id set does.
+ */
+export function useV2WorkspaceBackgroundRunningTerminalIds(
+	workspaceId: string,
+): ReadonlySet<string> {
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const selector = useMemo(
+		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	const key = useV2NotificationStore(selector);
+	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
+}
+
+/**
+ * (AY) Per-terminal DISPLAY statuses: the agent status per terminal, then the
+ * shell-running blue fallback for OPEN terminals that have NO agent status,
+ * then (BA) the cloud/background-running blue fallback for the remainder.
+ * Agent status always wins (permission/working/review > shell-running >
+ * background-running). All inputs are referentially-stable keyed strings, so
+ * this only recomputes when one of the sets actually changes.
+ */
+export function useV2WorkspaceTerminalStatuses(
+	workspaceId: string,
+): Array<{ terminalId: string; status: DisplayStatus }> {
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const agentSelector = useMemo(
+		() => selectV2WorkspaceTerminalStatuses(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	const shellSelector = useMemo(
+		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	const backgroundSelector = useMemo(
+		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	const agentKey = useV2NotificationStore(agentSelector);
+	const shellKey = useV2NotificationStore(shellSelector);
+	const backgroundKey = useV2NotificationStore(backgroundSelector);
+	return useMemo(() => {
+		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
+		const agentIds = new Set<string>();
+		if (agentKey) {
+			for (const pair of agentKey.split(",")) {
+				const eq = pair.indexOf("=");
+				if (eq < 0) continue;
+				const terminalId = pair.slice(0, eq);
+				const status = pair.slice(eq + 1) as ActivePaneStatus;
+				agentIds.add(terminalId);
+				result.push({ terminalId, status });
+			}
+		}
+		const shellIds = new Set<string>();
+		if (shellKey) {
+			for (const terminalId of shellKey.split(",")) {
+				if (!terminalId || agentIds.has(terminalId)) continue;
+				shellIds.add(terminalId);
+				result.push({ terminalId, status: "shell-running" });
+			}
+		}
+		if (backgroundKey) {
+			for (const terminalId of backgroundKey.split(",")) {
+				if (
+					!terminalId ||
+					agentIds.has(terminalId) ||
+					shellIds.has(terminalId)
+				)
+					continue;
+				result.push({ terminalId, status: "background-running" });
+			}
+		}
+		return result;
+	}, [agentKey, shellKey, backgroundKey]);
 }
 
 export function selectV2TabNotificationStatus(
@@ -313,24 +730,56 @@ export function selectV2SourcesNotificationStatus(
 }
 
 export function useV2WorkspaceNotificationStatus(workspaceId: string) {
-	return useV2NotificationStore(
-		selectV2WorkspaceNotificationStatus(workspaceId),
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const selector = useMemo(
+		() => selectV2WorkspaceNotificationStatus(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
 	);
+	return useV2NotificationStore(selector);
 }
 
-export function selectV2WorkspaceIsUnread(workspaceId: string) {
+/**
+ * (AY/BA) The single status the WORKSPACE ICON should render: the agent rollup
+ * status if any (permission/working/review), else "shell-running" (blue) when
+ * any OPEN terminal has a foreground command running, else (BA)
+ * "background-running" (the same blue) when any OPEN terminal has a
+ * cloud/background session running, else null. Agent status always wins — the
+ * precedence merge happens HERE (and per-terminal in
+ * useV2WorkspaceTerminalStatuses), never in the `sources` aggregation.
+ */
+export function useV2WorkspaceDisplayStatus(
+	workspaceId: string,
+): DisplayStatus | null {
+	const agentStatus = useV2WorkspaceNotificationStatus(workspaceId);
+	const shellRunningIds = useV2WorkspaceShellRunningTerminalIds(workspaceId);
+	const backgroundRunningIds =
+		useV2WorkspaceBackgroundRunningTerminalIds(workspaceId);
+	if (agentStatus) return agentStatus;
+	if (shellRunningIds.size > 0) return "shell-running";
+	return backgroundRunningIds.size > 0 ? "background-running" : null;
+}
+
+export function selectV2WorkspaceIsUnread(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
 	return (state: V2NotificationState) => {
 		for (const entry of Object.values(state.sources)) {
-			if (entry.workspaceId === workspaceId && entry.status === "review") {
-				return true;
-			}
+			if (entry.workspaceId !== workspaceId) continue;
+			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
+			if (entry.status === "review") return true;
 		}
 		return false;
 	};
 }
 
 export function useV2WorkspaceIsUnread(workspaceId: string) {
-	return useV2NotificationStore(selectV2WorkspaceIsUnread(workspaceId));
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const selector = useMemo(
+		() => selectV2WorkspaceIsUnread(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	return useV2NotificationStore(selector);
 }
 
 export function useV2TabNotificationStatus(
@@ -410,4 +859,35 @@ function getChatIdForPane(
 	if (!pane.data || typeof pane.data !== "object") return null;
 	const sessionId = (pane.data as { sessionId?: unknown }).sessionId;
 	return typeof sessionId === "string" && sessionId ? sessionId : null;
+}
+
+// (render-dot diagnostic) Snapshot every dot's ACTUALLY-rendered status once
+// per second into a SEPARATE log so it can be matched against the watcher's
+// emit log (~/.superset/agent-watcher-debug.log) by source key + workspaceId.
+// The store is the single source the StatusIndicator dots render from, so this
+// faithfully captures what the user sees. Renderer-only, started once per
+// window. Forwarded via console.info with a "[render-dot]" prefix that the
+// main process (main.ts) routes to ~/.superset/agent-dot-render.log. Never
+// throws; logs nothing when no sources exist (idle window).
+{
+	const w = globalThis as { __supersetDotRenderLog?: boolean };
+	if (typeof window !== "undefined" && !w.__supersetDotRenderLog) {
+		w.__supersetDotRenderLog = true;
+		setInterval(() => {
+			try {
+				const dots = Object.entries(
+					useV2NotificationStore.getState().sources,
+				).map(([key, entry]) => ({
+					key,
+					workspaceId: entry.workspaceId,
+					status: entry.status,
+				}));
+				if (dots.length > 0) {
+					console.info(`[render-dot] ${JSON.stringify({ dots })}`);
+				}
+			} catch {
+				// never let diagnostics break the renderer
+			}
+		}, 1000);
+	}
 }

@@ -3,6 +3,7 @@ import { workspaceTrpc } from "@superset/workspace-client";
 import type { inferRouterOutputs } from "@trpc/server";
 import { useMemo } from "react";
 import { LuMessageSquare } from "react-icons/lu";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import type { CommentPaneData, DiffFocusSide } from "../../../../types";
 import {
 	coerceCheckStatus,
@@ -31,10 +32,15 @@ export function useReviewTab({
 	onOpenComment,
 	onOpenInDiff,
 }: UseReviewTabParams): SidebarTabDefinition {
+	// (NON-GIT WORKSPACE) A non-git folder has no PR — skip the PR + threads
+	// queries entirely. Stays true until the query positively resolves non-git
+	// so a real repo never flicker-skips on mount. The Review tab itself isn't
+	// rendered for a non-git folder (see WorkspaceSidebar), but this hook runs.
+	const isGitRepo = useIsGitRepo(workspaceId);
 	const prQuery = workspaceTrpc.git.getPullRequest.useQuery(
 		{ workspaceId },
 		{
-			enabled: !!workspaceId,
+			enabled: isGitRepo && !!workspaceId,
 			refetchInterval: 10_000,
 			refetchOnWindowFocus: true,
 			staleTime: 10_000,
@@ -45,7 +51,7 @@ export function useReviewTab({
 	const threadsQuery = workspaceTrpc.git.getPullRequestThreads.useQuery(
 		{ workspaceId },
 		{
-			enabled: !!workspaceId && hasPR,
+			enabled: isGitRepo && !!workspaceId && hasPR,
 			refetchInterval: 30_000,
 			refetchOnWindowFocus: true,
 		},

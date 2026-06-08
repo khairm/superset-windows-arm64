@@ -9,6 +9,13 @@ export interface NotificationIds {
 	workspaceId?: string;
 	sessionId?: string;
 	terminalId?: string;
+	/**
+	 * Working directory of the agent process. Used by the Windows
+	 * JSONL-watcher fallback when no other identity is available — the
+	 * renderer resolves it against the live tabs store via
+	 * `resolveNotificationTarget`. See `patches/agent-jsonl-watcher.patch`.
+	 */
+	cwd?: string;
 }
 
 export interface AgentLifecycleEvent extends NotificationIds {

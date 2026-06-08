@@ -7,11 +7,15 @@ import {
 	useRef,
 } from "react";
 import { HiMiniMinus, HiMiniXMark } from "react-icons/hi2";
+import { LuUndo2 } from "react-icons/lu";
 import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { HotkeyLabel } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { RenameInput } from "renderer/screens/main/components/WorkspaceSidebar/RenameInput";
-import type { ActivePaneStatus } from "shared/tabs-types";
+import {
+	type DisplayStatus,
+	StatusIndicator,
+} from "renderer/screens/main/components/StatusIndicator";
 import type {
 	DashboardSidebarWorkspace,
 	DashboardSidebarWorkspacePullRequest,
@@ -37,8 +41,17 @@ interface DashboardSidebarExpandedWorkspaceRowProps
 	renameValue: string;
 	shortcutLabel?: string;
 	diffStats: DiffStats | null;
-	workspaceStatus?: ActivePaneStatus | null;
+	workspaceStatus?: DisplayStatus | null;
+	/**
+	 * One display status per active terminal in the workspace (agent status, or
+	 * the shell-running blue fallback). Rendered as a row of dots inline with
+	 * the workspace name, keyed by terminalId. Pass an empty array to hide.
+	 */
+	terminalStatuses?: Array<{ terminalId: string; status: DisplayStatus }>;
 	isInSection?: boolean;
+	isNonGit?: boolean;
+	sectionState?: "snoozed" | "archived";
+	onRestoreClick?: () => void;
 	onClick?: () => void;
 	onDoubleClick?: () => void;
 	onCloseWorkspaceClick: () => void;
@@ -61,7 +74,11 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 			shortcutLabel,
 			diffStats,
 			workspaceStatus = null,
+			terminalStatuses = [],
 			isInSection = false,
+			isNonGit = false,
+			sectionState,
+			onRestoreClick,
 			onClick,
 			onDoubleClick,
 			onCloseWorkspaceClick,
@@ -84,6 +101,9 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 			pendingTransaction,
 		} = workspace;
 		const isPending = pendingTransaction?.type === "insert";
+		// Precomputed in the data hook from the live tick (so it counts down).
+		const snoozeRemaining =
+			sectionState === "snoozed" ? (workspace.snoozeRemainingLabel ?? "") : "";
 		const showsStandaloneActiveStripe = accentColor == null;
 		const localRef = useRef<HTMLDivElement>(null);
 		const openUrl = electronTrpc.external.openUrl.useMutation();
@@ -135,6 +155,13 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 					"group",
 					"py-2",
 					isActive && "bg-muted",
+					// Subtle one-shot highlight when a snoozed thread auto-returns;
+					// the flag self-clears after a few seconds and the ring fades out.
+					// GREEN (snooze itself is amber) so "returned" reads differently.
+					"transition-shadow duration-1000",
+					workspace.justReturned && "ring-1 ring-inset ring-green-500/50",
+					// Archived rows are visually dimmed vs active/snoozed.
+					sectionState === "archived" && "opacity-60",
 					className,
 				)}
 				{...props}
@@ -172,6 +199,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 									workspaceStatus={workspaceStatus}
 									isCreatePending={isPending}
 									pullRequestState={pullRequest.state}
+									isNonGit={isNonGit}
 								/>
 							</button>
 						) : (
@@ -185,6 +213,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 									workspaceStatus={workspaceStatus}
 									isCreatePending={isPending}
 									pullRequestState={null}
+									isNonGit={isNonGit}
 								/>
 							</div>
 						)}
@@ -240,14 +269,28 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 							)}
 						/>
 					) : (
-						<span
-							className={cn(
-								"truncate text-[13px] leading-tight transition-colors",
-								isActive ? "text-foreground" : "text-foreground/80",
+						<div className="flex min-w-0 items-center gap-1.5">
+							<span
+								className={cn(
+									"truncate text-[13px] leading-tight transition-colors",
+									isActive ? "text-foreground" : "text-foreground/80",
+								)}
+							>
+								{name || branch}
+							</span>
+							{snoozeRemaining && (
+								<span className="ml-auto shrink-0 text-[10px] tabular-nums text-amber-500/80">
+									{snoozeRemaining}
+								</span>
 							)}
-						>
-							{name || branch}
-						</span>
+							{terminalStatuses.length > 0 && (
+								<div className="flex shrink-0 items-center gap-1">
+									{terminalStatuses.map(({ terminalId, status }) => (
+										<StatusIndicator key={terminalId} status={status} />
+									))}
+								</div>
+							)}
+						</div>
 					)}
 
 					<div className="col-start-2 row-start-1 grid h-5 shrink-0 items-center justify-items-end [&>*]:col-start-1 [&>*]:row-start-1">
@@ -272,7 +315,41 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 										{shortcutLabel}
 									</span>
 								)}
-								{isMainWorkspace ? (
+								{sectionState ? (
+									<Tooltip delayDuration={300}>
+										<TooltipTrigger asChild>
+											<button
+												type="button"
+												onClick={(event) => {
+													event.stopPropagation();
+													onRestoreClick?.();
+												}}
+												onKeyDown={(event) => {
+													if (
+														event.key === "Enter" ||
+														event.key === " " ||
+														event.key === "Spacebar"
+													) {
+														event.stopPropagation();
+													}
+												}}
+												className="flex items-center justify-center text-muted-foreground hover:text-foreground"
+												aria-label={
+													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
+												}
+											>
+												<LuUndo2 className="size-3.5" />
+											</button>
+										</TooltipTrigger>
+										<TooltipContent side="top" sideOffset={4}>
+											<HotkeyLabel
+												label={
+													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
+												}
+											/>
+										</TooltipContent>
+									</Tooltip>
+								) : isMainWorkspace ? (
 									<Tooltip delayDuration={300}>
 										<TooltipTrigger asChild>
 											<button

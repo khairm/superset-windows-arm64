@@ -8,6 +8,10 @@ import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+import {
+	computeSnoozeUntil,
+	type SnoozeDuration,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
 import {
@@ -42,8 +46,15 @@ export function useDashboardSidebarWorkspaceItemActions({
 	);
 	const setManualUnread = useV2NotificationStore((s) => s.setManualUnread);
 	const isUnread = useV2WorkspaceIsUnread(workspaceId);
-	const { createSection, moveWorkspaceToSection, removeWorkspaceFromSidebar } =
-		useDashboardSidebarState();
+	const {
+		archiveWorkspace,
+		createSection,
+		moveWorkspaceToSection,
+		removeWorkspaceFromSidebar,
+		snoozeWorkspace,
+		unarchiveWorkspace,
+		unsnoozeWorkspace,
+	} = useDashboardSidebarState();
 
 	const [isRenaming, setIsRenaming] = useState(false);
 	const [renameValue, setRenameValue] = useState(workspaceName);
@@ -57,7 +68,11 @@ export function useDashboardSidebarWorkspaceItemActions({
 
 	const handleClick = () => {
 		if (isRenaming) return;
-		clearWorkspaceAttention(workspaceId);
+		// Per-tab mark-as-read: workspace click navigates only. The
+		// downstream useClearActivePaneAttention hook clears just the
+		// active terminal's source on focus, so unfocused terminals keep
+		// their unread dot until the user actually visits them — matching
+		// the per-terminal-dots indicator we render in the sidebar row.
 		navigate({
 			to: "/v2-workspace/$workspaceId",
 			params: { workspaceId },
@@ -92,6 +107,22 @@ export function useDashboardSidebarWorkspaceItemActions({
 			projectId,
 			isMain: isMainWorkspace,
 		});
+	};
+
+	const handleSnooze = (duration: SnoozeDuration) => {
+		snoozeWorkspace(workspaceId, computeSnoozeUntil(duration));
+	};
+
+	const handleUnsnooze = () => {
+		unsnoozeWorkspace(workspaceId);
+	};
+
+	const handleArchive = () => {
+		archiveWorkspace(workspaceId);
+	};
+
+	const handleUnarchive = () => {
+		unarchiveWorkspace(workspaceId);
 	};
 
 	const handleCreateSection = () => {
@@ -172,9 +203,13 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleCopyBranchName,
 		handleCreateSection,
 		handleDeleted,
+		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleSnooze,
 		handleToggleUnread,
+		handleUnarchive,
+		handleUnsnooze,
 		isActive,
 		isDeleteDialogOpen,
 		isRenaming,

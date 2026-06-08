@@ -13,6 +13,14 @@ export const dashboardSidebarProjectSchema = z.object({
 	isCollapsed: z.boolean().default(false),
 	tabOrder: z.number().int().default(0),
 	defaultOpenInApp: z.string().nullable().default(null),
+	// Per-project reveal state for the Snoozed / Archived sections. Each
+	// section is hidden until the user explicitly reveals it (right-click the
+	// project), and once revealed can be collapsed independently. Remembered
+	// across restarts (local-only, like every other sidebar preference).
+	showSnoozed: z.boolean().default(false),
+	showArchived: z.boolean().default(false),
+	snoozedCollapsed: z.boolean().default(false),
+	archivedCollapsed: z.boolean().default(false),
 });
 
 const paneWorkspaceStateSchema = z.custom<WorkspaceState<unknown>>();
@@ -62,7 +70,17 @@ export const workspaceLocalStateSchema = z.object({
 		changesFilter: changesFilterSchema.default({ kind: "all" }),
 		changesViewMode: z.enum(["folders", "tree"]).default("folders"),
 		activeTab: z.enum(["changes", "files", "review"]).default("changes"),
+		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
+		// from the active lane and surfaced under the project's Archived section.
+		// `archivedAt` orders that section (most-recently-archived first); legacy
+		// hidden rows have no timestamp and sort last. `snooze*` is the timed-hide
+		// state (mutually exclusive with archived): a thread is snoozed while
+		// `snoozeUntil` is in the future, or `snoozeLaunchId` matches the current
+		// app launch ("until next launch"). All local-only, visual-only.
 		isHidden: z.boolean().default(false),
+		archivedAt: z.number().nullable().default(null),
+		snoozeUntil: z.number().nullable().default(null),
+		snoozeLaunchId: z.string().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -90,6 +108,9 @@ const SIDEBAR_STATE_DEFAULTS = {
 	changesViewMode: "folders",
 	activeTab: "changes",
 	isHidden: false,
+	archivedAt: null,
+	snoozeUntil: null,
+	snoozeLaunchId: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {

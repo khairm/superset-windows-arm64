@@ -12,6 +12,7 @@ import {
 } from "./paths";
 import {
 	createBashWrapper,
+	createPwshWrapper,
 	createZshWrapper,
 	getCommandShellArgs,
 	getShellArgs,
@@ -31,6 +32,9 @@ export function setupAgentHooks(): void {
 
 	createZshWrapper();
 	createBashWrapper();
+	// (AY) PowerShell integration profile (OSC 133 C/D/A markers for the
+	// shell-running blue dot). Written on every launch like the others.
+	createPwshWrapper();
 
 	console.log("[agent-setup] Agent hooks initialized");
 }

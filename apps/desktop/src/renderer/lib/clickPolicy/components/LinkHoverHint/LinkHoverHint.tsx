@@ -15,8 +15,12 @@ interface LinkHoverHintProps {
 	/** What would clicking right now do, given current modifiers. Null to hide. */
 	hoverLabel: string | null;
 	hoverPosition: Position | null;
-	/** Transient "click did nothing — here's the bind" hint. Hidden when hover is showing. */
-	clickHint: Position | null;
+	/**
+	 * Transient flash hint, hidden when hover is showing. Without `label` it's
+	 * the "click did nothing — here's the bind" nudge (UNBOUND_HINT); with a
+	 * `label` it shows that text instead (e.g. the (AZ) "Copied!" confirmation).
+	 */
+	clickHint: (Position & { label?: string }) | null;
 }
 
 /**
@@ -62,7 +66,7 @@ export function LinkHoverHint({
 							top: clickHint.clientY + TOOLTIP_OFFSET_PX,
 						}}
 					>
-						{UNBOUND_HINT}
+						{clickHint.label ?? UNBOUND_HINT}
 					</motion.div>
 				)}
 			</AnimatePresence>

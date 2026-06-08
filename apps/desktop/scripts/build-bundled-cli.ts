@@ -23,6 +23,7 @@ const BUN_TARGETS: Partial<
 	},
 	win32: {
 		x64: "bun-windows-x64",
+		arm64: "bun-windows-arm64",
 	},
 };
 

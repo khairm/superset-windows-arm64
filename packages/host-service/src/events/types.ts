@@ -34,15 +34,39 @@ export interface AgentLifecycleMessage {
 	occurredAt: number;
 }
 
-export interface TerminalLifecycleMessage {
-	type: "terminal:lifecycle";
-	workspaceId: string;
-	terminalId: string;
-	eventType: "exit";
-	exitCode: number;
-	signal: number;
-	occurredAt: number;
-}
+/**
+ * Terminal process / command lifecycle, fanned out to renderer clients.
+ *
+ * - "exit": the PTY process ended (existing behaviour).
+ * - "command-start" / "command-end": a foreground command began / finished in
+ *   the shell, detected from OSC 133 C/D markers (shell-running blue dot). These
+ *   are NOT agent statuses — they drive a separate render-only axis.
+ */
+export type TerminalLifecycleMessage =
+	| {
+			type: "terminal:lifecycle";
+			workspaceId: string;
+			terminalId: string;
+			eventType: "exit";
+			exitCode: number;
+			signal: number;
+			occurredAt: number;
+	  }
+	| {
+			type: "terminal:lifecycle";
+			workspaceId: string;
+			terminalId: string;
+			eventType: "command-start";
+			occurredAt: number;
+	  }
+	| {
+			type: "terminal:lifecycle";
+			workspaceId: string;
+			terminalId: string;
+			eventType: "command-end";
+			exitCode: number | null;
+			occurredAt: number;
+	  };
 
 export interface PortChangedMessage {
 	type: "port:changed";

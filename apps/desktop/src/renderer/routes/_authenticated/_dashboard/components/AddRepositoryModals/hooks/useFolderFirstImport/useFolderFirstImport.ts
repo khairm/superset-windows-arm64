@@ -106,9 +106,17 @@ export function useFolderFirstImport(options?: {
 					mainWorkspaceId: setupResult.mainWorkspaceId,
 				};
 			} else {
+				// (NON-GIT WORKSPACE) Filesystem/git is the source of truth: probe the
+				// picked folder and route a non-git folder through kind:"nonGitFolder"
+				// so it becomes a plain workspace instead of erroring on importLocal.
+				const { isGitRepo } = await client.project.probePath.query({
+					repoPath,
+				});
 				result = await client.project.create.mutate({
 					name: getBaseName(repoPath),
-					mode: { kind: "importLocal", repoPath },
+					mode: isGitRepo
+						? { kind: "importLocal", repoPath }
+						: { kind: "nonGitFolder", repoPath },
 				});
 			}
 			finalizeSetup(activeHostUrl, result);

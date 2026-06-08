@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { workspaces } from "../../../db/schema";
+import { isGitRepo } from "../../../runtime/git/non-git";
 import {
 	asRemoteRef,
 	type ResolvedRef,
@@ -25,6 +26,7 @@ import {
 import { startCommandTerminal } from "../workspace-creation/shared/command-terminal";
 import { enablePushAutoSetupRemote } from "../workspace-creation/shared/git-config";
 import { requireLocalProject } from "../workspace-creation/shared/local-project";
+import { copyProjectSupersetConfigToWorktree } from "../workspace-creation/shared/project-superset-config";
 import { startSetupTerminalIfPresent } from "../workspace-creation/shared/setup-terminal";
 import type { GitClient } from "../workspace-creation/shared/types";
 import { safeResolveWorktreePath } from "../workspace-creation/shared/worktree-paths";
@@ -533,6 +535,17 @@ export const workspacesRouter = router({
 		.mutation(async ({ ctx, input }) => {
 			const localProject = requireLocalProject(ctx, input.projectId);
 
+			// (NON-GIT WORKSPACE) `create` is a git worktree factory — every path
+			// below forks a branch / adds a worktree. Reject a non-git project
+			// before any git work runs so the inert NON_GIT_BRANCH marker can
+			// never reach a git command.
+			if (!(await isGitRepo(localProject.repoPath))) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Cannot create a branch/worktree in a non-git workspace.",
+				});
+			}
+
 			// Kick off host.ensure immediately so the cloud round-trip
 			// overlaps with the git work below. Suppressing unhandled
 			// rejection here — the await in registerCloudAndLocal turns
@@ -577,7 +590,7 @@ export const workspacesRouter = router({
 				);
 
 			let resolvedBranch: string;
-			let worktreePath: string;
+			let worktreePath = "";
 			let alreadyExists = false;
 			let workspaceRow: CloudWorkspace;
 
@@ -1041,6 +1054,9 @@ export const workspacesRouter = router({
 			const terminalsResult: Array<{ terminalId: string; label?: string }> = [];
 
 			if (!alreadyExists) {
+				// V1 parity: copy main-repo `.superset` into worktree if it doesn't have one.
+				copyProjectSupersetConfigToWorktree(localProject.repoPath, worktreePath);
+
 				const { terminal, warning } = await startSetupTerminalIfPresent({
 					ctx,
 					workspaceId: workspaceRow.id,

@@ -20,6 +20,22 @@ import {
 } from "./resolveV2NotificationTarget";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
 
+// Diagnostic logging for the agent-status-dots pipeline. Emitted via
+// console.info("[agent-dots] ...") so the main process forwarder persists
+// it to electron-log (main.log). Logging-only; flip NLOG to silence. See
+// patches/notification-logging.patch.
+const NLOG = true;
+function ndots(record: Record<string, unknown>): void {
+	if (!NLOG) return;
+	try {
+		console.info(
+			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
+		);
+	} catch {
+		// never let logging crash the renderer
+	}
+}
+
 /**
  * Updates pane status indicators (working/review/permission/idle) and plays
  * the completion chime client-side, so the playback path works when
@@ -60,7 +76,10 @@ export function handleV2AgentLifecycleEvent({
 	if (
 		payload.eventType === "Start" ||
 		payload.eventType === "Attached" ||
-		payload.eventType === "Detached"
+		payload.eventType === "Detached" ||
+		// (BA) cloud/background-running is a quiet blue-dot signal, not a
+		// "your agent finished" moment — no chime, no native notification.
+		payload.eventType === "BackgroundRunning"
 	) {
 		return;
 	}
@@ -106,7 +125,25 @@ export function handleV2TerminalLifecycleEvent({
 	workspaceId: string;
 	payload: TerminalLifecyclePayload;
 }): void {
-	if (payload.eventType !== "exit") return;
+	const store = useV2NotificationStore.getState();
+	// (AY) Command lifecycle drives the shell-running blue dot on a SEPARATE
+	// axis — no sound, no native notification, no agent-status mutation.
+	if (payload.eventType === "command-start") {
+		store.setTerminalShellRunning(
+			payload.terminalId,
+			workspaceId,
+			payload.occurredAt,
+		);
+		return;
+	}
+	if (payload.eventType === "command-end") {
+		store.clearTerminalShellRunning(payload.terminalId);
+		return;
+	}
+	// exit: clear the agent source AND any lingering shell-running / (BA)
+	// background-running entry (the cloud-blue axis has no OSC self-clear).
+	store.clearTerminalShellRunning(payload.terminalId);
+	store.clearTerminalBackgroundRunning(payload.terminalId);
 	clearSources(workspaceId, [
 		getV2TerminalNotificationSource(payload.terminalId),
 	]);
@@ -131,6 +168,15 @@ function updatePaneStatus(
 		targetVisible,
 	});
 
+	ndots({
+		event: "status_transition_computed",
+		workspaceId,
+		terminalId: target.terminalId,
+		target,
+		clearSources: transition.clearSources,
+		setStatus: transition.setStatus,
+	});
+
 	clearSources(workspaceId, transition.clearSources);
 	if (transition.setStatus) {
 		store.setSourceStatus(
@@ -139,6 +185,25 @@ function updatePaneStatus(
 			transition.setStatus.status,
 			payload.occurredAt,
 		);
+	}
+
+	// (BA) Cloud/background-running blue axis. The notify hook emits
+	// "BackgroundRunning" when the turn ended but a Claude cloud/background
+	// session is still running. Its agent-status transition (above) is the SAME
+	// as a normal turn-end (review-or-clear) — there is no special idle branch —
+	// so a fresh review green still wins (precedence red > yellow > green >
+	// blue); this blue shows only once that green clears to idle (immediate for
+	// the focused tab). Any OTHER agent event re-derives state, so clear the
+	// axis — the next Stop re-sets it from the live background_tasks. NEVER
+	// touches the OSC shell-running axis.
+	if (payload.eventType === "BackgroundRunning") {
+		store.setTerminalBackgroundRunning(
+			payload.terminalId,
+			workspaceId,
+			payload.occurredAt,
+		);
+	} else {
+		store.clearTerminalBackgroundRunning(payload.terminalId);
 	}
 }
 

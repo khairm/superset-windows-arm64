@@ -11,8 +11,24 @@ interface ResolvedTarget extends NotificationIds {
 }
 
 /**
+ * Normalize a cwd for comparison: lowercase + forward slashes.
+ * Windows paths can vary in case ("C:\Users\..." vs "c:\users\...") and
+ * separator style depending on how the cwd was captured.
+ */
+function normalizeCwd(cwd: string): string {
+	return cwd.replace(/\\/g, "/").toLowerCase();
+}
+
+/**
  * Resolves notification target IDs by looking up missing values from state.
- * Priority: valid paneId > sessionId > pane's tab > event tabId > tab's workspace
+ * Priority: valid paneId > sessionId > cwd (terminal panes) > pane's tab
+ * > event tabId > tab's workspace
+ *
+ * cwd lookup is the fallback path used by the Windows JSONL-watcher
+ * (`patches/agent-jsonl-watcher.patch`) — Claude's session transcripts
+ * give us cwd but no Superset pane identity, so we match against the live
+ * renderer Zustand state here rather than the (debounced/stale)
+ * main-process appState.
  */
 export function resolveNotificationTarget(
 	ids: NotificationIds | undefined,
@@ -20,17 +36,39 @@ export function resolveNotificationTarget(
 ): ResolvedTarget | null {
 	if (!ids) return null;
 
-	const { paneId, sessionId, tabId, workspaceId } = ids;
+	const { paneId, sessionId, tabId, workspaceId, cwd } = ids;
 
 	const paneIdFromSession = sessionId
 		? Object.entries(state.panes).find(
 				([_paneId, pane]) => pane.chat?.sessionId === sessionId,
 			)?.[0]
 		: undefined;
+	const paneIdFromCwd = cwd
+		? (() => {
+				// Only resolve via cwd when EXACTLY one terminal pane
+				// matches — with multiple matches we'd misroute the
+				// indicator to whichever pane came first. Wait for a
+				// precise mapping (the Python pane-map hook writes one)
+				// instead of guessing.
+				const target = normalizeCwd(cwd);
+				let match: string | undefined;
+				for (const [id, p] of Object.entries(state.panes)) {
+					if (p.type !== "terminal") continue;
+					if (!p.cwd) continue;
+					if (normalizeCwd(p.cwd) !== target) continue;
+					if (match !== undefined) return undefined; // ambiguous
+					match = id;
+				}
+				return match;
+			})()
+		: undefined;
 	const resolvedPaneId =
 		(paneId && state.panes[paneId] ? paneId : undefined) ??
 		(paneIdFromSession && state.panes[paneIdFromSession]
 			? paneIdFromSession
+			: undefined) ??
+		(paneIdFromCwd && state.panes[paneIdFromCwd]
+			? paneIdFromCwd
 			: undefined);
 	const pane = resolvedPaneId ? state.panes[resolvedPaneId] : undefined;
 

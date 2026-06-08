@@ -57,6 +57,8 @@ export function loadAddons(terminal: XTerm): LoadAddonsResult {
 				terminal.refresh(0, terminal.rows - 1);
 			});
 			terminal.loadAddon(webglAddon);
+			webglAddon.clearTextureAtlas?.();
+			terminal.refresh(0, terminal.rows - 1);
 		} catch {
 			suggestedRendererType = "dom";
 			webglAddon = null;

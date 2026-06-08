@@ -61,7 +61,7 @@ export function TerminalPane({
 		onHover: onLinkHover,
 		onLeave: onLinkLeave,
 	} = useLinkHoverState();
-	const { hint, showHint } = useLinkClickHint();
+	const { hint, showHint, showCopied } = useLinkClickHint();
 	const openInExternalEditor = useOpenInExternalEditor(workspaceId);
 	const paneData = ctx.pane.data as TerminalPaneData;
 	const { terminalId } = paneData;
@@ -279,7 +279,33 @@ export function TerminalPane({
 				onUrlClick: (event, url) => {
 					const action = urlPolicy.getAction(event);
 					if (action === null) {
-						showHint(event.clientX, event.clientY);
+						// (AZ) A PLAIN single click (no modifiers) on a URL bound to no
+						// open action copies it to the clipboard and flashes "Copied!"
+						// at the click point. ANY modifier (shift — also null by default;
+						// or alt/AltGr, which the click policy doesn't model as a tier so
+						// it would otherwise fall through as "plain") keeps the original
+						// no-op + unbound-link hint, so only a literal no-modifier single
+						// click copies. Ctrl/Cmd+click opens in-app (the action !== null
+						// path below, unchanged).
+						if (
+							event.metaKey ||
+							event.ctrlKey ||
+							event.shiftKey ||
+							event.altKey
+						) {
+							showHint(event.clientX, event.clientY);
+							return;
+						}
+						event.preventDefault();
+						// Main-process clipboard (always available in Electron; avoids the
+						// renderer Async-Clipboard permission surface) and confirm ONLY on
+						// success — never a false "Copied!".
+						electronTrpcClient.external.copyText
+							.mutate(url)
+							.then(() => showCopied(event.clientX, event.clientY))
+							.catch((error) => {
+								console.error("[v2 Terminal] Failed to copy URL:", url, error);
+							});
 						return;
 					}
 					event.preventDefault();
@@ -311,6 +337,7 @@ export function TerminalPane({
 		onLinkHover,
 		onLinkLeave,
 		showHint,
+		showCopied,
 		filePolicy,
 		urlPolicy,
 	]);

@@ -4,6 +4,20 @@ import type { ActivePaneStatus } from "shared/tabs-types";
 // Re-export for consumers
 export type { ActivePaneStatus } from "shared/tabs-types";
 
+/**
+ * (AY) Render-only status union: the agent statuses plus "shell-running" (a
+ * pulsing BLUE dot meaning a foreground command is running) and (BA)
+ * "background-running" (the SAME blue, meaning the agent's turn ended but a
+ * cloud/background session is still running). NOT PaneStatuses — they live on
+ * separate axes in the v2-notifications store and are merged in with agent
+ * status taking precedence. Widening the prop to this is non-breaking: every
+ * ActivePaneStatus is still a DisplayStatus.
+ */
+export type DisplayStatus =
+	| ActivePaneStatus
+	| "shell-running"
+	| "background-running";
+
 /** Lookup object for status indicator styling - avoids if/else chains */
 const STATUS_CONFIG = {
 	permission: {
@@ -24,13 +38,28 @@ const STATUS_CONFIG = {
 		pulse: false,
 		tooltip: "Ready for review",
 	},
+	// (AY) shell-running: a foreground command is running in the terminal.
+	"shell-running": {
+		pingColor: "bg-blue-400",
+		dotColor: "bg-blue-500",
+		pulse: true,
+		tooltip: "Command running",
+	},
+	// (BA) background-running: the turn ended but a cloud/background session is
+	// still running. Same blue as shell-running; distinct tooltip.
+	"background-running": {
+		pingColor: "bg-blue-400",
+		dotColor: "bg-blue-500",
+		pulse: true,
+		tooltip: "Cloud session running",
+	},
 } as const satisfies Record<
-	ActivePaneStatus,
+	DisplayStatus,
 	{ pingColor: string; dotColor: string; pulse: boolean; tooltip: string }
 >;
 
 interface StatusIndicatorProps {
-	status: ActivePaneStatus;
+	status: DisplayStatus;
 	className?: string;
 }
 
@@ -64,6 +93,6 @@ export function StatusIndicator({ status, className }: StatusIndicatorProps) {
 }
 
 /** Get tooltip text for a status - for consumers that wrap with Tooltip */
-export function getStatusTooltip(status: ActivePaneStatus): string {
+export function getStatusTooltip(status: DisplayStatus): string {
 	return STATUS_CONFIG[status].tooltip;
 }

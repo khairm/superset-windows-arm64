@@ -180,6 +180,21 @@ export async function initLocalRepoInPlace(
 }
 
 /**
+ * (NON-GIT WORKSPACE) Resolve a plain, non-git folder as a project root.
+ * Validates only that the path is an existing directory — deliberately does
+ * NOT run `git rev-parse` (cf. resolveLocalRepo), so a folder that is not a
+ * git repo is accepted. The result carries no remote/parsed metadata, exactly
+ * like a local-only repo. Callers must have already established the folder is
+ * NOT a git repo (see isGitRepo); the project's git operations stay disabled
+ * via the server-side git guards.
+ */
+export function resolveNonGitFolder(repoPath: string): ResolvedRepo {
+	const resolved = resolvePath(repoPath);
+	validateDirectoryPath(resolved, "Path");
+	return { repoPath: resolved, remoteName: null, parsed: null };
+}
+
+/**
  * Validates that a path is a git working tree and returns the canonical git
  * root plus the GitHub remote whose `owner/name` matches `expectedSlug`.
  * Throws if no matching remote exists.

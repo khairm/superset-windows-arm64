@@ -1,4 +1,7 @@
 import path from "node:path";
+import log from "electron-log/main";
+import { installWindowsChildProcessPatch } from "./lib/windows-child-process-patch";
+installWindowsChildProcessPatch();
 import { pathToFileURL } from "node:url";
 import { settings } from "@superset/local-db";
 import {
@@ -115,7 +118,21 @@ export function focusMainWindow(): void {
 			mainWindow.restore();
 		}
 		mainWindow.show();
-		mainWindow.focus();
+		// Windows holds a foreground lock: show()/focus() alone leave the window
+		// buried in z-order when another app owns the foreground, so relaunching
+		// Superset (which routes here via the second-instance handler) looks like
+		// it did nothing. A brief always-on-top pin is exempt from the lock and
+		// forces the window to the top; release it on the next tick so it isn't
+		// left permanently pinned above other apps. No-op cost on macOS/Linux.
+		if (process.platform === "win32") {
+			mainWindow.setAlwaysOnTop(true);
+			mainWindow.focus();
+			setTimeout(() => {
+				if (!mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+			}, 250);
+		} else {
+			mainWindow.focus();
+		}
 	} else {
 		// Triggers window creation via makeAppSetup's activate handler
 		app.emit("activate");
@@ -201,7 +218,7 @@ app.on("before-quit", async (event) => {
 	if (isQuitting) return;
 
 	const isDev = process.env.NODE_ENV === "development";
-	if (!skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {
+	if (!PLATFORM.IS_WINDOWS && !skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {
 		event.preventDefault();
 
 		try {
@@ -321,6 +338,15 @@ protocol.registerSchemesAsPrivileged([
 			supportFetchAPI: true,
 		},
 	},
+	{
+		scheme: "superset-app",
+		privileges: {
+			standard: true,
+			secure: true,
+			supportFetchAPI: true,
+			corsEnabled: true,
+		},
+	},
 ]);
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -338,7 +364,34 @@ if (!gotTheLock) {
 	});
 
 	(async () => {
+		// (AN) Boot phase timing + blocked-event-loop guard. We log each
+		// startup milestone so an intermittent stall lands in one labeled
+		// phase instead of a silent gap, and the lag monitor fires loud if
+		// the main event loop is ever blocked (e.g. a synchronous fs walk) —
+		// the failure mode behind the multi-minute blank-window cold start.
+		const bootMs = () => Math.round(process.uptime() * 1000);
+		let __anLagLast = Date.now();
+		const __anLagTimer = setInterval(() => {
+			const now = Date.now();
+			const drift = now - __anLagLast - 1000;
+			if (drift > 1500) {
+				log.error("[boot] event-loop BLOCKED for ~" + drift + "ms +" + bootMs() + "ms");
+			}
+			__anLagLast = now;
+		}, 1000);
+		__anLagTimer.unref?.();
+		log.info("[boot] awaiting app.whenReady +" + bootMs() + "ms");
 		await app.whenReady();
+		log.info("[boot] app.whenReady resolved +" + bootMs() + "ms");
+		try {
+			session
+				.fromPartition("persist:superset")
+				.resolveProxy("https://api.superset.sh")
+				.then((p) => log.info("[boot] resolveProxy=" + p + " +" + bootMs() + "ms"))
+				.catch(() => {});
+		} catch (_e) {
+			/* never let the probe break startup */
+		}
 		registerWithMacOSNotificationCenter();
 		requestAppleEventsAccess();
 		requestLocalNetworkAccess();
@@ -357,6 +410,44 @@ if (!gotTheLock) {
 		session
 			.fromPartition("persist:superset")
 			.protocol.handle("superset-icon", iconProtocolHandler);
+
+		// Register custom protocol for serving renderer files.
+		// Dynamic imports (code-split chunks) fail on file:// protocol in Electron on Windows.
+		const rendererDir = path.join(__dirname, "../renderer");
+		const appProtocolHandler = (request: Request) => {
+			let urlPath = new URL(request.url).pathname;
+			if (urlPath.startsWith("/")) urlPath = urlPath.slice(1);
+			const filePath = path.join(rendererDir, urlPath);
+			return net.fetch(pathToFileURL(filePath).toString());
+		};
+		protocol.handle("superset-app", appProtocolHandler);
+		session
+			.fromPartition("persist:superset")
+			.protocol.handle("superset-app", appProtocolHandler);
+
+		// On Windows, the custom superset-app:// protocol origin is not recognized by
+		// the API server's CORS policy. Bypass CORS for API requests by modifying headers.
+		if (PLATFORM.IS_WINDOWS) {
+			const appSession = session.fromPartition("persist:superset");
+			appSession.webRequest.onBeforeSendHeaders(
+				{ urls: ["https://api.superset.sh/*", "https://*.posthog.com/*", "https://*.sentry.io/*", "https://app.outlit.ai/*"] },
+				(details, callback) => {
+					if (details.requestHeaders.Origin === "superset-app://app") {
+						delete details.requestHeaders.Origin;
+					}
+					callback({ requestHeaders: details.requestHeaders });
+				},
+			);
+			appSession.webRequest.onHeadersReceived(
+				{ urls: ["https://api.superset.sh/*"] },
+				(details, callback) => {
+					const headers = details.responseHeaders ?? {};
+					headers["access-control-allow-origin"] = ["superset-app://app"];
+					headers["access-control-allow-credentials"] = ["true"];
+					callback({ responseHeaders: headers });
+				},
+			);
+		}
 
 		// Serve system fonts (e.g. SF Mono on macOS) via custom protocol
 		// so the renderer can use @font-face with font-src 'self' CSP
@@ -391,19 +482,27 @@ if (!gotTheLock) {
 		ensureProjectIconsDir();
 		setWorkspaceDockIcon();
 		initSentry();
+		log.info("[boot] step initAppState start +" + bootMs() + "ms");
 		await initAppState();
+		log.info("[boot] step initAppState done +" + bootMs() + "ms");
 		initTanstackDbPersistence();
 
 		try {
+			log.info("[boot] step startNetworkLogger start +" + bootMs() + "ms");
 			await startNetworkLogger();
+			log.info("[boot] step startNetworkLogger done +" + bootMs() + "ms");
 		} catch (error) {
 			console.error("[main] Failed to start network logger:", error);
 		}
 
+		log.info("[boot] step loadWebviewBrowserExtension start +" + bootMs() + "ms");
 		await loadWebviewBrowserExtension();
+		log.info("[boot] step loadWebviewBrowserExtension done +" + bootMs() + "ms");
 
 		// Must happen before renderer restore runs
+		log.info("[boot] step reconcileDaemonSessions start +" + bootMs() + "ms");
 		await reconcileDaemonSessions();
+		log.info("[boot] step reconcileDaemonSessions done +" + bootMs() + "ms");
 		prewarmTerminalRuntime();
 
 		try {
@@ -425,7 +524,9 @@ if (!gotTheLock) {
 			});
 		}
 
+		log.info("[boot] step makeAppSetup (MainWindow) start +" + bootMs() + "ms");
 		await makeAppSetup(() => MainWindow());
+		log.info("[boot] step makeAppSetup done +" + bootMs() + "ms");
 		setupAutoUpdater();
 		initTray();
 

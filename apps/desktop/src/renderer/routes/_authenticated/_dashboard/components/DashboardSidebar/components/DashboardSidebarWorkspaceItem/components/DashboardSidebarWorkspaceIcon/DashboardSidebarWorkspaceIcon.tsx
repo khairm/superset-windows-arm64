@@ -1,6 +1,7 @@
 import { cn } from "@superset/ui/utils";
 import { CgLaptop } from "react-icons/cg";
 import {
+	LuFolder,
 	LuGitMerge,
 	LuGitPullRequest,
 	LuGitPullRequestClosed,
@@ -9,8 +10,10 @@ import {
 import { RxDot } from "react-icons/rx";
 import { TbCloud, TbCloudOff } from "react-icons/tb";
 import { AsciiSpinner } from "renderer/screens/main/components/AsciiSpinner";
-import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
-import type { ActivePaneStatus } from "shared/tabs-types";
+import {
+	type DisplayStatus,
+	StatusIndicator,
+} from "renderer/screens/main/components/StatusIndicator";
 import type {
 	DashboardSidebarWorkspaceHostType,
 	DashboardSidebarWorkspacePullRequest,
@@ -23,9 +26,12 @@ interface DashboardSidebarWorkspaceIconProps {
 	hostIsOnline: boolean | null;
 	isActive: boolean;
 	variant: "collapsed" | "expanded";
-	workspaceStatus?: ActivePaneStatus | null;
+	workspaceStatus?: DisplayStatus | null;
 	isCreatePending: boolean;
 	pullRequestState?: DashboardSidebarWorkspacePullRequest["state"] | null;
+	// (NON-GIT WORKSPACE) folder isn't a git repo — resolved by useIsGitRepo in
+	// the parent item and threaded down so this leaf stays hook-free.
+	isNonGit?: boolean;
 }
 
 const OVERLAY_POSITION = {
@@ -56,9 +62,14 @@ export function DashboardSidebarWorkspaceIcon({
 	workspaceStatus = null,
 	isCreatePending,
 	pullRequestState = null,
+	isNonGit = false,
 }: DashboardSidebarWorkspaceIconProps) {
 	const overlayPosition = OVERLAY_POSITION[variant];
 	const iconColor = isActive ? "text-foreground" : "text-muted-foreground";
+	// The overlay slot is shared: a real status badge wins; the non-git glyph
+	// only fills it when there's no status to show.
+	const overlayStatus =
+		workspaceStatus && workspaceStatus !== "working" ? workspaceStatus : null;
 	const isRemoteDeviceOffline =
 		hostType === "remote-device" && hostIsOnline === false;
 
@@ -107,10 +118,22 @@ export function DashboardSidebarWorkspaceIcon({
 			) : (
 				renderPrimaryIcon()
 			)}
-			{workspaceStatus && workspaceStatus !== "working" && (
+			{overlayStatus ? (
 				<span className={cn("absolute", overlayPosition)}>
-					<StatusIndicator status={workspaceStatus} />
+					<StatusIndicator status={overlayStatus} />
 				</span>
+			) : (
+				isNonGit && (
+					<span
+						className={cn("absolute", overlayPosition)}
+						title="Not a git repository"
+					>
+						<LuFolder
+							className="size-2.5 text-muted-foreground/70"
+							strokeWidth={2}
+						/>
+					</span>
+				)
 			)}
 		</>
 	);

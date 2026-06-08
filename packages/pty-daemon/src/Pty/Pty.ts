@@ -11,6 +11,7 @@ import {
 import type { SessionMeta } from "../protocol/index.ts";
 
 const KILL_ESCALATION_TIMEOUT_MS = 1000;
+const SUPPORTS_FD_HANDOFF = process.platform !== "win32";
 
 export type PtyOnData = (data: Buffer) => void;
 export type PtyOnExit = (info: {
@@ -202,7 +203,7 @@ export function spawn({ meta }: SpawnOptions): Pty {
 	}
 	const adapter = new NodePtyAdapter(term, meta);
 	// Validate the private-fd dependency at spawn time, not handoff time.
-	adapter.getMasterFd();
+	if (SUPPORTS_FD_HANDOFF) adapter.getMasterFd();
 	return adapter;
 }
 

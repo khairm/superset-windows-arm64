@@ -5,12 +5,14 @@ import type {
 import { cn } from "@superset/ui/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo } from "react";
+import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import type { DashboardSidebarProject } from "../../types";
 import { getProjectChildrenWorkspaces } from "../../utils/projectChildren";
 import { DashboardSidebarCollapsedProjectContent } from "./components/DashboardSidebarCollapsedProjectContent";
 import { DashboardSidebarExpandedProjectContent } from "./components/DashboardSidebarExpandedProjectContent";
 import { DashboardSidebarProjectContextMenu } from "./components/DashboardSidebarProjectContextMenu";
 import { DashboardSidebarProjectRow } from "./components/DashboardSidebarProjectRow";
+import { DashboardSidebarStateSection } from "./components/DashboardSidebarStateSection";
 import { useDashboardSidebarProjectSectionActions } from "./hooks/useDashboardSidebarProjectSectionActions";
 
 interface DashboardSidebarProjectSectionProps {
@@ -58,7 +60,40 @@ export function DashboardSidebarProjectSection({
 		project,
 	});
 
+	const {
+		toggleProjectSectionFlag,
+		setProjectSectionFlag,
+		unsnoozeAllInProject,
+		unarchiveWorkspaces,
+	} = useDashboardSidebarState();
+
 	const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
+
+	// Snoozed + Archived render through the same DashboardSidebarStateSection;
+	// one config entry per variant keeps the two reveal blocks in sync.
+	const stateSections = [
+		{
+			variant: "snoozed" as const,
+			show: project.showSnoozed,
+			workspaces: project.snoozedWorkspaces,
+			collapsed: project.snoozedCollapsed,
+			collapsedFlag: "snoozedCollapsed" as const,
+			showFlag: "showSnoozed" as const,
+			onRestoreAll: () => unsnoozeAllInProject(project.id),
+		},
+		{
+			variant: "archived" as const,
+			show: project.showArchived,
+			workspaces: project.archivedWorkspaces,
+			collapsed: project.archivedCollapsed,
+			collapsedFlag: "archivedCollapsed" as const,
+			showFlag: "showArchived" as const,
+			onRestoreAll: () =>
+				unarchiveWorkspaces(
+					project.archivedWorkspaces.map((workspace) => workspace.id),
+				),
+		},
+	];
 
 	if (isSidebarCollapsed) {
 		return (
@@ -93,6 +128,14 @@ export function DashboardSidebarProjectSection({
 				onOpenSettings={handleOpenSettings}
 				onRemoveFromSidebar={confirmRemoveFromSidebar}
 				onRename={startRename}
+					showSnoozed={project.showSnoozed}
+					showArchived={project.showArchived}
+					onToggleSnoozed={() =>
+						toggleProjectSectionFlag(project.id, "showSnoozed")
+					}
+					onToggleArchived={() =>
+						toggleProjectSectionFlag(project.id, "showArchived")
+					}
 			>
 				<DashboardSidebarProjectRow
 					projectName={project.name}
@@ -131,6 +174,25 @@ export function DashboardSidebarProjectSection({
 							onRenameSection={renameSection}
 							onToggleSectionCollapse={toggleSectionCollapsed}
 						/>
+					{!project.isCollapsed &&
+							stateSections
+								.filter((section) => section.show)
+								.map((section) => (
+									<DashboardSidebarStateSection
+										key={section.variant}
+										variant={section.variant}
+										workspaces={section.workspaces}
+										collapsed={section.collapsed}
+										onToggleCollapsed={() =>
+											toggleProjectSectionFlag(project.id, section.collapsedFlag)
+										}
+										onHide={() =>
+											setProjectSectionFlag(project.id, section.showFlag, false)
+										}
+										onRestoreAll={section.onRestoreAll}
+										onWorkspaceHover={onWorkspaceHover}
+									/>
+								))}
 					</motion.div>
 				)}
 			</AnimatePresence>

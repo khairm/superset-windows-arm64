@@ -89,7 +89,7 @@ async function openPathInApp(
 		let lastError: Error | undefined;
 		for (const cmd of candidates) {
 			try {
-				await spawnAsync(cmd.command, cmd.args);
+				await spawnAsync(cmd.command, cmd.args, { waitForExit: cmd.waitForExit });
 				return;
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));

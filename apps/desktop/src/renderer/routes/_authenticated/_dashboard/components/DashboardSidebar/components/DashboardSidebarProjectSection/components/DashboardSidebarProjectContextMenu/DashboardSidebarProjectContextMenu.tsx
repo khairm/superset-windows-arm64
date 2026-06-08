@@ -6,6 +6,8 @@ import {
 	ContextMenuTrigger,
 } from "@superset/ui/context-menu";
 import {
+	LuArchive,
+	LuClock,
 	LuFolderOpen,
 	LuFolderPlus,
 	LuPencil,
@@ -14,20 +16,30 @@ import {
 } from "react-icons/lu";
 
 interface DashboardSidebarProjectContextMenuProps {
+	/** Snooze/Archive reveal toggles. Omitted in the collapsed sidebar — it
+	 * renders no sections — so the menu items are hidden there too. */
+	showSnoozed?: boolean;
+	showArchived?: boolean;
 	onCreateSection: () => void;
 	onOpenInFinder: () => void;
 	onOpenSettings: () => void;
 	onRemoveFromSidebar: () => void;
 	onRename: () => void;
+	onToggleSnoozed?: () => void;
+	onToggleArchived?: () => void;
 	children: React.ReactNode;
 }
 
 export function DashboardSidebarProjectContextMenu({
+	showSnoozed,
+	showArchived,
 	onCreateSection,
 	onOpenInFinder,
 	onOpenSettings,
 	onRemoveFromSidebar,
 	onRename,
+	onToggleSnoozed,
+	onToggleArchived,
 	children,
 }: DashboardSidebarProjectContextMenuProps) {
 	return (
@@ -51,6 +63,19 @@ export function DashboardSidebarProjectContextMenu({
 					<LuFolderPlus className="size-4 mr-2" />
 					New group
 				</ContextMenuItem>
+				{onToggleSnoozed && onToggleArchived && (
+					<>
+						<ContextMenuSeparator />
+						<ContextMenuItem onSelect={onToggleSnoozed}>
+							<LuClock className="size-4 mr-2" />
+							{showSnoozed ? "Hide snoozed" : "Show snoozed"}
+						</ContextMenuItem>
+						<ContextMenuItem onSelect={onToggleArchived}>
+							<LuArchive className="size-4 mr-2" />
+							{showArchived ? "Hide archived" : "Show archived"}
+						</ContextMenuItem>
+					</>
+				)}
 				<ContextMenuSeparator />
 				<ContextMenuItem
 					onSelect={onRemoveFromSidebar}

@@ -5,6 +5,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LuFile, LuGitCompareArrows } from "react-icons/lu";
+import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useSettings } from "renderer/stores/settings";
@@ -89,6 +90,11 @@ export function WorkspaceSidebar({
 	workspaceId,
 }: WorkspaceSidebarProps) {
 	const gitStatus = useWorkspaceGitStatus();
+	// (NON-GIT WORKSPACE) A non-git folder has no Changes/Review/PR — only the
+	// Files tab (plus terminal + agents, which live outside this sidebar). Stays
+	// true until the query positively resolves non-git so a real repo never
+	// flicker-drops its git tabs on mount.
+	const isGitRepo = useIsGitRepo(workspaceId);
 	const collections = useCollections();
 	const { data: [localState] = [] } = useLiveQuery(
 		(query) =>
@@ -170,24 +176,33 @@ export function WorkspaceSidebar({
 		),
 	};
 
-	const tabs: SidebarTabDefinition[] = [filesTab, changesTab, reviewTab];
-	const activeTabDef = tabs.find((t) => t.id === activeTab);
+	// (NON-GIT WORKSPACE) Drop the Changes + Review tabs (and the PR header
+	// below) for a non-git folder — keep only Files. Terminal + agents live
+	// outside this sidebar and are unaffected.
+	const tabs: SidebarTabDefinition[] = isGitRepo
+		? [filesTab, changesTab, reviewTab]
+		: [filesTab];
+	// The persisted activeTab may be a git tab ("changes"/"review") that no
+	// longer exists for a non-git folder; fall back to Files so content renders.
+	const activeTabDef = tabs.find((t) => t.id === activeTab) ?? filesTab;
 
 	return (
 		<div
 			ref={containerRef}
 			className="isolate flex h-full w-full min-h-0 flex-col overflow-hidden bg-background"
 		>
-			<PRActionHeader
-				workspaceId={workspaceId}
-				state={flowState}
-				dispatch={dispatch}
-				onRetry={onRetry}
-				createPREnabled={CREATE_PR_BUTTON_ENABLED}
-			/>
+			{isGitRepo && (
+				<PRActionHeader
+					workspaceId={workspaceId}
+					state={flowState}
+					dispatch={dispatch}
+					onRetry={onRetry}
+					createPREnabled={CREATE_PR_BUTTON_ENABLED}
+				/>
+			)}
 			<SidebarHeader
 				tabs={tabs}
-				activeTab={activeTab}
+				activeTab={activeTabDef.id}
 				onTabChange={setActiveTab}
 				compact={compact}
 			/>

@@ -19,6 +19,31 @@ export interface GitStatusSnapshot {
 	ignoredPaths: string[];
 }
 
+/**
+ * (NON-GIT WORKSPACE) The empty snapshot for a non-git workspace. Single
+ * source of truth for the "no git" shape so it can't drift from
+ * GitStatusSnapshot / Branch when a field is added.
+ */
+export function emptyGitStatusSnapshot(): GitStatusSnapshot {
+	const emptyBranch: Branch = {
+		name: "",
+		isHead: false,
+		upstream: null,
+		aheadCount: 0,
+		behindCount: 0,
+		lastCommitHash: "",
+		lastCommitDate: "",
+	};
+	return {
+		currentBranch: emptyBranch,
+		defaultBranch: emptyBranch,
+		againstBase: [],
+		staged: [],
+		unstaged: [],
+		ignoredPaths: [],
+	};
+}
+
 export async function getGitStatusSnapshot({
 	git,
 	worktreePath,

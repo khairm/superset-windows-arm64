@@ -1,7 +1,7 @@
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
@@ -9,6 +9,9 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import {
 	getVisibleSidebarWorkspaces,
 	isAutoIncludedLocalMainWorkspace,
+	APP_LAUNCH_ID,
+	formatSnoozeRemaining,
+	getWorkspaceSidebarBucket,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
@@ -130,7 +133,8 @@ export function useDashboardSidebarData() {
 	const collections = useCollections();
 	const { machineId, activeHostUrl } = useLocalHostService();
 	const relayUrl = useRelayUrl();
-	const { toggleProjectCollapsed } = useDashboardSidebarState();
+	const { toggleProjectCollapsed, unsnoozeWorkspace } =
+		useDashboardSidebarState();
 	const queryClient = useQueryClient();
 	const workspaceTransactionsById = useWorkspaceTransactionsStore(
 		(state) => state.byWorkspaceId,
@@ -178,6 +182,10 @@ export function useDashboardSidebarData() {
 					createdAt: projects.createdAt,
 					updatedAt: projects.updatedAt,
 					isCollapsed: sidebarProjects.isCollapsed,
+						showSnoozed: sidebarProjects.showSnoozed,
+						showArchived: sidebarProjects.showArchived,
+						snoozedCollapsed: sidebarProjects.snoozedCollapsed,
+						archivedCollapsed: sidebarProjects.archivedCollapsed,
 				})),
 		[collections],
 	);
@@ -188,6 +196,12 @@ export function useDashboardSidebarData() {
 				...project,
 				githubOwner: project.githubOwner ?? null,
 				githubRepoName: project.githubRepoName ?? null,
+				// Heal legacy project rows persisted before the reveal flags existed
+				// (they read back undefined despite the boolean type).
+				showSnoozed: project.showSnoozed ?? false,
+				showArchived: project.showArchived ?? false,
+				snoozedCollapsed: project.snoozedCollapsed ?? false,
+				archivedCollapsed: project.archivedCollapsed ?? false,
 			})),
 		[rawSidebarProjects],
 	);
@@ -236,6 +250,9 @@ export function useDashboardSidebarData() {
 					tabOrder: sidebarWorkspaces.sidebarState.tabOrder,
 					sectionId: sidebarWorkspaces.sidebarState.sectionId,
 					isHidden: sidebarWorkspaces.sidebarState.isHidden,
+						snoozeUntil: sidebarWorkspaces.sidebarState.snoozeUntil,
+						snoozeLaunchId: sidebarWorkspaces.sidebarState.snoozeLaunchId,
+						archivedAt: sidebarWorkspaces.sidebarState.archivedAt,
 				})),
 		[collections],
 	);
@@ -249,10 +266,149 @@ export function useDashboardSidebarData() {
 		[hostsByMachineId, rawSidebarWorkspaces, workspaceTransactionsById],
 	);
 
-	const sidebarWorkspaces = useMemo(
-		() => getVisibleSidebarWorkspaces(rawSidebarWorkspacesWithHostStatus),
-		[rawSidebarWorkspacesWithHostStatus],
+	// Re-evaluate snooze expiry on a coarse timer so a snoozed thread pops back
+	// into the active lane shortly after its deadline. The ticker only runs while
+	// at least one row carries a snooze, so an idle sidebar isn't churning.
+	const [nowMs, setNowMs] = useState(() => Date.now());
+	// Gate the ticker on a TIMED snooze only. An "until next launch" snooze has no
+	// wall-clock deadline (it clears on relaunch via APP_LAUNCH_ID), so counting it
+	// here would keep the interval running forever doing nothing.
+	const hasPendingSnooze = useMemo(
+		() => rawSidebarWorkspaces.some((workspace) => workspace.snoozeUntil != null),
+		[rawSidebarWorkspaces],
 	);
+	useEffect(() => {
+		if (!hasPendingSnooze) return;
+		const interval = setInterval(() => setNowMs(Date.now()), 60_000);
+		return () => clearInterval(interval);
+	}, [hasPendingSnooze]);
+
+	// Ids whose snooze expired by TIMER (not via manual "Unsnooze now") — only
+	// these flash the just-returned highlight when they re-enter the active lane.
+	const autoReturnedIdsRef = useRef<Set<string>>(new Set());
+
+	// Lazily clear snooze fields once they expire (a past deadline, or an
+	// "until next launch" snooze from a previous launch) so stale markers don't
+	// accumulate and a returned thread carries no leftover snooze state.
+	useEffect(() => {
+		const expiredIds: string[] = [];
+		for (const workspace of rawSidebarWorkspaces) {
+			const staleLaunch =
+				workspace.snoozeLaunchId != null &&
+				workspace.snoozeLaunchId !== APP_LAUNCH_ID;
+			const expiredTimer =
+				typeof workspace.snoozeUntil === "number" &&
+				workspace.snoozeUntil <= nowMs;
+			if (staleLaunch || expiredTimer) {
+				expiredIds.push(workspace.id);
+				// Timer expiry is an auto-return (flashes); a stale-launch return on
+				// relaunch is not, to avoid a burst of highlights at startup.
+				if (expiredTimer) autoReturnedIdsRef.current.add(workspace.id);
+			}
+		}
+		if (expiredIds.length === 0) return;
+		for (const id of expiredIds) unsnoozeWorkspace(id);
+	}, [nowMs, rawSidebarWorkspaces, unsnoozeWorkspace]);
+
+	const {
+		sidebarWorkspaces,
+		snoozedSidebarWorkspaces,
+		archivedSidebarWorkspaces,
+	} = useMemo(() => {
+		type SidebarWorkspaceRow =
+			(typeof rawSidebarWorkspacesWithHostStatus)[number];
+		const active: SidebarWorkspaceRow[] = [];
+		const snoozed: SidebarWorkspaceRow[] = [];
+		const archived: SidebarWorkspaceRow[] = [];
+		for (const workspace of rawSidebarWorkspacesWithHostStatus) {
+			// Single source of truth: getWorkspaceSidebarBucket reads the row's
+			// type, so a removed non-main thread surfaces under Archived while a
+			// removed main workspace stays hidden — matching ensureSidebarWorkspaceRecord.
+			switch (getWorkspaceSidebarBucket(workspace, nowMs)) {
+				case "archived":
+					archived.push(workspace);
+					break;
+				case "snoozed":
+					snoozed.push(workspace);
+					break;
+				case "hidden":
+					// Removed main/pinned workspace (isHidden, not archived): excluded
+					// from the active lane entirely — not shown anywhere, not resurrected.
+					break;
+				default:
+					active.push(workspace);
+			}
+		}
+		return {
+			sidebarWorkspaces: active,
+			snoozedSidebarWorkspaces: snoozed,
+			archivedSidebarWorkspaces: archived,
+		};
+	}, [rawSidebarWorkspacesWithHostStatus, nowMs]);
+
+	// Flash a subtle one-shot highlight on threads that just AUTO-returned from
+	// snooze (timer expiry flipped them snoozed -> active). Manual "Unsnooze now"
+	// is excluded — only ids the expiry ticker marked in autoReturnedIdsRef flash.
+	// Removal timers are owned by a ref-keyed map (not the effect's cleanup) so an
+	// unrelated re-render can't cancel a fade and strand the highlight.
+	const previousSnoozedIdsRef = useRef<Set<string>>(new Set());
+	const [justReturnedIds, setJustReturnedIds] = useState<ReadonlySet<string>>(
+		() => new Set(),
+	);
+	const justReturnedTimersRef = useRef<
+		Map<string, ReturnType<typeof setTimeout>>
+	>(new Map());
+	useEffect(() => {
+		const currentSnoozed = new Set(
+			snoozedSidebarWorkspaces.map((workspace) => workspace.id),
+		);
+		const activeIds = new Set(
+			sidebarWorkspaces.map((workspace) => workspace.id),
+		);
+		const returned: string[] = [];
+		for (const id of previousSnoozedIdsRef.current) {
+			if (
+				!currentSnoozed.has(id) &&
+				activeIds.has(id) &&
+				autoReturnedIdsRef.current.has(id)
+			) {
+				returned.push(id);
+				autoReturnedIdsRef.current.delete(id);
+			}
+		}
+		previousSnoozedIdsRef.current = currentSnoozed;
+		if (returned.length === 0) return;
+		setJustReturnedIds((previous) => {
+			const next = new Set(previous);
+			for (const id of returned) next.add(id);
+			return next;
+		});
+		const timers = justReturnedTimersRef.current;
+		for (const id of returned) {
+			const existing = timers.get(id);
+			if (existing) clearTimeout(existing);
+			timers.set(
+				id,
+				setTimeout(() => {
+					timers.delete(id);
+					setJustReturnedIds((previous) => {
+						if (!previous.has(id)) return previous;
+						const next = new Set(previous);
+						next.delete(id);
+						return next;
+					});
+				}, 3_000),
+			);
+		}
+	}, [snoozedSidebarWorkspaces, sidebarWorkspaces]);
+	// Clear any pending highlight timers only on unmount.
+	useEffect(() => {
+		const timers = justReturnedTimersRef.current;
+		return () => {
+			for (const timeout of timers.values()) clearTimeout(timeout);
+			timers.clear();
+		};
+	}, []);
 
 	const localStateWorkspaceIds = useMemo(
 		() => new Set(rawSidebarWorkspaces.map((workspace) => workspace.id)),
@@ -368,13 +524,30 @@ export function useDashboardSidebarData() {
 		return rows;
 	}, [pullRequestQueries]);
 
+	// Keep the latest hover-target inputs in a ref so refreshWorkspacePullRequest
+	// keeps a STABLE identity. Its inputs derive from the nowMs partition, so
+	// without this it would change every 60s tick and churn the onWorkspaceHover
+	// prop on every memoised row.
+	const pullRequestRefreshInputsRef = useRef({
+		visibleSidebarWorkspaces,
+		pullRequestQueryTargets,
+	});
+	pullRequestRefreshInputsRef.current = {
+		visibleSidebarWorkspaces,
+		pullRequestQueryTargets,
+	};
+
 	const refreshWorkspacePullRequest = useCallback(
 		async (workspaceId: string) => {
-			const workspace = visibleSidebarWorkspaces.find(
+			const {
+				visibleSidebarWorkspaces: latestWorkspaces,
+				pullRequestQueryTargets: latestTargets,
+			} = pullRequestRefreshInputsRef.current;
+			const workspace = latestWorkspaces.find(
 				(candidate) => candidate.id === workspaceId,
 			);
 			if (!workspace) return;
-			const target = pullRequestQueryTargets.find(
+			const target = latestTargets.find(
 				(candidate) => candidate.machineId === workspace.hostId,
 			);
 			if (!target) return;
@@ -387,7 +560,7 @@ export function useDashboardSidebarData() {
 				queryKey: getDashboardSidebarPullRequestQueryKey(target),
 			});
 		},
-		[pullRequestQueryTargets, queryClient, visibleSidebarWorkspaces],
+		[queryClient],
 	);
 
 	const pullRequestsByWorkspaceId =
@@ -409,6 +582,8 @@ export function useDashboardSidebarData() {
 			projectsById.set(project.id, {
 				...project,
 				children: [],
+				snoozedWorkspaces: [],
+				archivedWorkspaces: [],
 				sectionMap: new Map(),
 				childEntries: [],
 			});
@@ -465,6 +640,7 @@ export function useDashboardSidebarData() {
 				updatedAt: workspace.updatedAt,
 				taskId: workspace.taskId,
 				pendingTransaction: workspace.pendingTransaction,
+				justReturned: justReturnedIds.has(workspace.id),
 			};
 
 			if (workspace.sectionId) {
@@ -485,6 +661,62 @@ export function useDashboardSidebarData() {
 					workspace: sidebarWorkspace,
 				},
 			});
+		}
+
+		const buildInactiveWorkspace = (
+			workspace: (typeof snoozedSidebarWorkspaces)[number],
+			project: DashboardSidebarProject,
+		): DashboardSidebarWorkspace => {
+			const hostType: DashboardSidebarWorkspace["hostType"] =
+				workspace.hostId === machineId ? "local-device" : "remote-device";
+			return {
+				id: workspace.id,
+				projectId: workspace.projectId,
+				hostId: workspace.hostId,
+				hostType,
+				type: workspace.type,
+				hostIsOnline:
+					hostType === "remote-device" ? workspace.hostIsOnline : null,
+				accentColor: null,
+				name: workspace.name,
+				branch: workspace.branch,
+				pullRequest: null,
+				repoUrl:
+					project.githubOwner && project.githubRepoName
+						? `https://github.com/${project.githubOwner}/${project.githubRepoName}`
+						: null,
+				branchExistsOnRemote:
+					project.githubOwner !== null && project.githubRepoName !== null,
+				previewUrl: null,
+				needsRebase: null,
+				behindCount: null,
+				createdAt: workspace.createdAt,
+				updatedAt: workspace.updatedAt,
+				taskId: workspace.taskId,
+				pendingTransaction: workspace.pendingTransaction,
+				snoozeUntil: workspace.snoozeUntil ?? null,
+				snoozeLaunchId: workspace.snoozeLaunchId ?? null,
+				archivedAt: workspace.archivedAt ?? null,
+				snoozeRemainingLabel: formatSnoozeRemaining(
+					workspace.snoozeUntil,
+					workspace.snoozeLaunchId,
+					nowMs,
+				),
+			};
+		};
+
+		for (const workspace of snoozedSidebarWorkspaces) {
+			const project = projectsById.get(workspace.projectId);
+			if (!project) continue;
+			project.snoozedWorkspaces.push(buildInactiveWorkspace(workspace, project));
+		}
+
+		for (const workspace of archivedSidebarWorkspaces) {
+			const project = projectsById.get(workspace.projectId);
+			if (!project) continue;
+			project.archivedWorkspaces.push(
+				buildInactiveWorkspace(workspace, project),
+			);
 		}
 
 		return sidebarProjects.flatMap((project) => {
@@ -532,14 +764,26 @@ export function useDashboardSidebarData() {
 				}
 			}
 			sidebarProject.children = children;
+			sidebarProject.snoozedWorkspaces.sort(
+				(left, right) =>
+					(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
+					(right.snoozeUntil ?? Number.MAX_SAFE_INTEGER),
+			);
+			sidebarProject.archivedWorkspaces.sort(
+				(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
+			);
 			return [sidebarProject];
 		});
 	}, [
 		machineId,
+		nowMs,
+		justReturnedIds,
 		pullRequestsByWorkspaceId,
 		sidebarProjects,
 		sidebarSections,
 		visibleSidebarWorkspaces,
+		snoozedSidebarWorkspaces,
+		archivedSidebarWorkspaces,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
 

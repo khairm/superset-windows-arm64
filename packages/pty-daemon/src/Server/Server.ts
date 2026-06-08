@@ -43,6 +43,8 @@ export interface ServerOptions {
 	spawnPty?: HandlerCtx["spawnPty"];
 }
 
+const IS_WINDOWS = process.platform === "win32";
+
 const DEFAULT_OUTBOUND_BUFFER_CAP_BYTES = 8 * 1024 * 1024;
 
 interface ConnState extends Conn {
@@ -64,13 +66,15 @@ export class Server {
 	}
 
 	async listen(): Promise<void> {
-		const dir = path.dirname(this.opts.socketPath);
-		fs.mkdirSync(dir, { recursive: true });
-		// Stale-socket cleanup: remove any prior socket file at this path.
-		try {
-			fs.unlinkSync(this.opts.socketPath);
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		if (!IS_WINDOWS) {
+			const dir = path.dirname(this.opts.socketPath);
+			fs.mkdirSync(dir, { recursive: true });
+			// Stale-socket cleanup: remove any prior socket file at this path.
+			try {
+				fs.unlinkSync(this.opts.socketPath);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			}
 		}
 		await new Promise<void>((resolve, reject) => {
 			this.server.once("error", reject);
@@ -79,8 +83,10 @@ export class Server {
 				resolve();
 			});
 		});
-		// Owner-only access. The socket file IS the auth boundary.
-		fs.chmodSync(this.opts.socketPath, 0o600);
+		if (!IS_WINDOWS) {
+			// Owner-only access. The socket file IS the auth boundary.
+			fs.chmodSync(this.opts.socketPath, 0o600);
+		}
 	}
 
 	/**
@@ -144,6 +150,14 @@ export class Server {
 	async prepareUpgrade(): Promise<
 		{ ok: true; successorPid: number } | { ok: false; reason: string }
 	> {
+		if (IS_WINDOWS) {
+			return {
+				ok: false,
+				reason:
+					"fd-handoff daemon upgrade is not supported on Windows; use restart instead",
+			};
+		}
+
 		const liveSessions = [...this.store.all()].filter((s) => !s.exited);
 		const fdIndexBySessionId = new Map<string, number>();
 
@@ -302,10 +316,12 @@ export class Server {
 			}
 		}
 		await new Promise<void>((resolve) => this.server.close(() => resolve()));
-		try {
-			fs.unlinkSync(this.opts.socketPath);
-		} catch {
-			// ignore
+		if (!IS_WINDOWS) {
+			try {
+				fs.unlinkSync(this.opts.socketPath);
+			} catch {
+				// ignore
+			}
 		}
 	}
 

@@ -100,6 +100,7 @@ export function WorkspaceListItem({
 		(s) => s.clearWorkspaceAttentionStatus,
 	);
 	const resetWorkspaceStatus = useTabsStore((s) => s.resetWorkspaceStatus);
+	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
 	const utils = electronTrpc.useUtils();
 	const isSelected = useWorkspaceSelectionStore((s) => s.selectedIds.has(id));
 	const selectionStore = useWorkspaceSelectionStore;
@@ -407,7 +408,7 @@ export function WorkspaceListItem({
 									{shortcutIndex !== undefined &&
 										shortcutIndex < MAX_KEYBOARD_SHORTCUT_INDEX && (
 											<span className="text-[10px] text-muted-foreground font-mono tabular-nums shrink-0">
-												⌘{shortcutIndex + 1}
+												{platform === "darwin" ? "⌘" : "Ctrl+Shift+"}{shortcutIndex + 1}
 											</span>
 										)}
 									{!isBranchWorkspace && (
