@@ -127,6 +127,9 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+          # Match the arch-fixup step: give the patch-application AI the higher
+          # output ceiling so a large edit burst never truncates mid-file.
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000'
         shell: bash
         run: |
           # Retry up to 3 times on transient API/socket failures. The
@@ -246,6 +249,14 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+          # Re-anchoring rewrites a whole drifted .patch in ONE response. The
+          # default 32000-token output cap truncated large patches (e.g.
+          # nongit-workspaces.patch ~59KB ≈ 18K tok of diff + effort-medium
+          # thinking) -> "response exceeded the 32000 output token maximum" ->
+          # 3 failed attempts -> hard-abort. Raise to the model's higher ceiling
+          # so a full-patch rewrite fits. Our biggest patch (kanban-board ~138KB
+          # ≈ 42K tok) still fits under 64K with room for thinking.
+          CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000'
         run: |
           # These three fixups are arch-critical and MUST be correct, so they are applied
           # deterministically here rather than relying on the non-deterministic AI patch step.
@@ -292,7 +303,7 @@ jobs:
             Write-Host "::group::(reanchor) $name drifted on this upstream — AI re-anchor"
             # Single-line prompt (no pwsh here-string: its column-0 terminator
             # would break the YAML block scalar). No backticks in the text either.
-            $prompt = "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Edit files directly and immediately. You are inside a fresh clone of superset-sh/superset that already has earlier patches applied. The git patch file at " + $abs + " no longer applies here (git apply --check fails because upstream moved the surrounding code). REWRITE that patch file IN PLACE so git apply applies it cleanly to THIS working tree: (1) read the patch at " + $abs + " for its intent and target files/hunks; (2) read the CURRENT target files in this clone to find where each hunk context now lives; (3) overwrite " + $abs + " with a corrected unified diff (same a/ and b/ paths, LF line endings, valid hunk headers) that applies cleanly with git apply and preserves the patch intent AND any post-apply marker strings the build verifies. CRITICAL: edit ONLY the patch file " + $abs + " — do NOT modify any source file in this clone, and do NOT touch any other patch. Re-read target files as needed (read-only)."
+            $prompt = "IMPORTANT: Do NOT enter plan mode. Do NOT use EnterPlanMode. Edit files directly and immediately. You are inside a fresh clone of superset-sh/superset that already has earlier patches applied. The git patch file at " + $abs + " no longer applies here (git apply --check fails because upstream moved the surrounding code). REWRITE that patch file IN PLACE so git apply applies it cleanly to THIS working tree: (1) read the patch at " + $abs + " for its intent and target files/hunks; (2) read the CURRENT target files in this clone to find where each hunk context now lives; (3) overwrite " + $abs + " with a corrected unified diff (same a/ and b/ paths, LF line endings, valid hunk headers) that applies cleanly with git apply and preserves the patch intent AND any post-apply marker strings the build verifies. CRITICAL: edit ONLY the patch file " + $abs + " — do NOT modify any source file in this clone, and do NOT touch any other patch. Re-read target files as needed (read-only). OUTPUT BUDGET: do NOT print, explain, summarize, or narrate. Write the corrected patch to the file and stop. When the patch is large, rewrite it with as few tool calls as possible and emit no prose, so the rewrite fits the output limit."
             $attempt = 1
             while ($attempt -le 3) {
               claude --dangerously-skip-permissions --effort medium -p $prompt
