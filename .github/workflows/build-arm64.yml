@@ -1,0 +1,284 @@
+name: Build Windows ARM64 (vendored fork)
+
+# Deterministic, NO-AI build of the vendored fork source at repo root.
+# Unlike the legacy pipeline there is NO upstream clone, NO patch apply, NO AI
+# re-anchor and NO arch-fixup: every Windows/ARM64 change already lives in the
+# committed source (the fork tree). This workflow only: install -> build ->
+# materialize the win-arm64 native closure -> package the NSIS installer ->
+# verify the packaged natives are ARM64 -> (optionally) publish a release.
+#
+# It is the build half of the architecture: the baseline is frozen in this repo;
+# nightly-merge.yml carries upstream deltas in and calls a build like this to
+# prove the result before publishing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release (tag = desktop-v<version>[-beta])'
+        type: choice
+        options: ['none', 'beta', 'release']
+        default: 'none'
+  # Reusable so nightly-merge.yml can invoke the exact same build.
+  workflow_call:
+    inputs:
+      publish:
+        type: string
+        default: 'none'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-11-arm
+    steps:
+      - name: Checkout fork source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Read app version
+        id: ver
+        shell: bash
+        run: |
+          V=$(node -p "require('./apps/desktop/package.json').version")
+          [ -n "$V" ] || { echo "::error::could not read apps/desktop/package.json version"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "App version: $V"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun (native Windows ARM64)
+        uses: oven-sh/setup-bun@v2
+        with:
+          # 1.3.14 = last stable Zig release; first native win-arm64 shipped in 1.3.10.
+          bun-version: '1.3.14'
+
+      - name: Verify Bun is native ARM64 (fail fast, fall back to official zip)
+        shell: pwsh
+        run: |
+          function Get-PEMachine($p){ $fs=[IO.File]::OpenRead($p); $br=New-Object IO.BinaryReader($fs); $fs.Position=0x3C; $pe=$br.ReadInt32(); $fs.Position=$pe+4; $m=$br.ReadUInt16(); $br.Close(); return $m }
+          $bun = (Get-Command bun).Source
+          $m = Get-PEMachine $bun
+          $ver = (& bun --version).Trim()
+          Write-Host "bun: $bun  version=$ver  PEmachine=0x$('{0:X}' -f $m)"
+          if ($m -ne 0xAA64) {
+            Write-Host "::warning::setup-bun did not provide native ARM64 bun (machine 0x$('{0:X}' -f $m)); downloading official bun-windows-aarch64"
+            $zip = Join-Path $env:RUNNER_TEMP 'bun-arm64.zip'
+            Invoke-WebRequest -Uri 'https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-aarch64.zip' -OutFile $zip
+            $dest = Join-Path $env:RUNNER_TEMP 'bun-arm64'
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+            $found = Get-ChildItem -Recurse -Filter bun.exe $dest | Select-Object -First 1
+            if (-not $found) { Write-Error 'bun.exe not found in official ARM64 zip'; exit 1 }
+            $m2 = Get-PEMachine $found.FullName
+            if ($m2 -ne 0xAA64) { Write-Error "Official zip bun.exe is not ARM64 (0x$('{0:X}' -f $m2))"; exit 1 }
+            Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
+            Write-Host "Prepended native ARM64 bun ($($found.DirectoryName)) to PATH"
+          }
+
+      - name: Install dependencies (frozen lockfile)
+        shell: bash
+        env:
+          # Skip the flaky @electron/rebuild postinstall (install:deps). On
+          # win-arm64 it can't build native trustedDeps; the deterministic
+          # Bun-store payload repair (materialize-native-closure) handles them.
+          SUPERSET_POSTINSTALL_RUNNING: '1'
+        run: |
+          set -euo pipefail
+          # The committed bun.lock is the source of truth and is consistent with
+          # our pinned package.json (node-pty @lydell alias, mastra pins), so a
+          # FROZEN install uses the locked versions and never re-resolves — which
+          # also sidesteps bunfig's minimumReleaseAge gate (locked versions are
+          # not age-checked). If this fails the lock drifted from package.json:
+          # regenerate it (bun install --lockfile-only) and recommit.
+          bun install --frozen-lockfile
+
+      - name: Generate file icons
+        working-directory: apps/desktop
+        shell: bash
+        run: bun run generate:icons
+
+      - name: Build app (electron-vite / esbuild)
+        working-directory: apps/desktop
+        shell: bash
+        run: bun run compile:app
+
+      - name: Verify screenReaderMode stayed false in both renderer bundles
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets_dir="dist/renderer/assets"
+          [ -d "$assets_dir" ] || { echo "::error::renderer assets dir not found at $assets_dir"; exit 1; }
+          v1_chunk=$(ls -1 "$assets_dir"/config-*.js 2>/dev/null | head -1 || true)
+          v2_chunk=$(ls -1 "$assets_dir"/terminal-runtime-*.js 2>/dev/null | head -1 || true)
+          [ -n "$v1_chunk" ] || { echo "::error::v1 config-*.js chunk not found in $assets_dir"; exit 1; }
+          [ -n "$v2_chunk" ] || { echo "::error::v2 terminal-runtime-*.js chunk not found in $assets_dir"; exit 1; }
+          if grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v1_chunk"; then
+            echo "::error::screenReaderMode TRUTHY in v1 chunk (Wispr Flow regression)"; exit 1
+          fi
+          if grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v2_chunk"; then
+            echo "::error::screenReaderMode TRUTHY in v2 chunk (Wispr Flow regression)"; exit 1
+          fi
+          echo "screenReaderMode verified false in both renderer bundles."
+
+      - name: Fetch @libsql + @anush008/tokenizers win32-arm64 + materialize native closure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LV=$(ls -d node_modules/.bun/libsql@* 2>/dev/null | sed 's#.*/libsql@##' | sort -V | tail -1)
+          [ -n "$LV" ] || { echo "::error::could not determine resolved libsql version"; exit 1; }
+          echo "Resolved libsql: $LV"
+          rm -rf libsql-dl libsql-arm64
+          if ! gh release download "$LV" --repo khairm/libsql-windows-arm64 \
+                 -p 'libsql-win32-arm64-msvc.tar.gz' -p 'libsql-win32-arm64-msvc.tar.gz.sha256' -D libsql-dl; then
+            echo "::error::No @libsql/win32-arm64-msvc Release for libsql $LV in khairm/libsql-windows-arm64."
+            echo "::error::Trigger that repo's nightly (workflow_dispatch -f libsql_version=$LV) then re-run."
+            exit 1
+          fi
+          ( cd libsql-dl && sha256sum -c libsql-win32-arm64-msvc.tar.gz.sha256 )
+          mkdir -p libsql-arm64
+          tar -xzf libsql-dl/libsql-win32-arm64-msvc.tar.gz -C libsql-arm64
+          [ -f libsql-arm64/index.node ] || { echo "::error::libsql artifact missing index.node"; exit 1; }
+
+          TV=$(ls -d node_modules/.bun/@anush008+tokenizers@* 2>/dev/null | sed 's#.*/@anush008+tokenizers@##' | sort -V | tail -1)
+          [ -n "$TV" ] || { echo "::error::could not determine resolved @anush008/tokenizers version"; exit 1; }
+          echo "Resolved @anush008/tokenizers: $TV"
+          rm -rf tok-dl tokenizers-arm64
+          if ! gh release download "$TV" --repo khairm/tokenizers-windows-arm64 \
+                 -p 'tokenizers-win32-arm64-msvc.tar.gz' -p 'tokenizers-win32-arm64-msvc.tar.gz.sha256' -D tok-dl; then
+            echo "::error::No @anush008/tokenizers-win32-arm64-msvc Release for tokenizers $TV in khairm/tokenizers-windows-arm64."
+            echo "::error::Trigger that repo's nightly (workflow_dispatch -f tokenizers_version=$TV) then re-run."
+            exit 1
+          fi
+          ( cd tok-dl && sha256sum -c tokenizers-win32-arm64-msvc.tar.gz.sha256 )
+          mkdir -p tokenizers-arm64
+          tar -xzf tok-dl/tokenizers-win32-arm64-msvc.tar.gz -C tokenizers-arm64
+          [ -f tokenizers-arm64/tokenizers.win32-arm64-msvc.node ] || { echo "::error::tokenizers artifact missing .node"; exit 1; }
+
+          # Electron NODE_MODULE_VERSION (V8 ABI). better-sqlite3 is V8-ABI-bound;
+          # a wrong ABI fetches a prebuilt that crashes Electron. Derive
+          # authoritatively via node-abi against the resolved electron, fall back
+          # to a pinned map, HARD-FAIL on an unknown major (never silently guess).
+          EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
+          EV=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | sort -V | tail -1)
+          [ -n "$EM" ] || { echo "::error::could not determine resolved electron version"; exit 1; }
+          ABI=$(node -e "try{process.stdout.write(String(require('node-abi').getAbi('$EV','electron')))}catch(e){}" 2>/dev/null || true)
+          if printf '%s' "$ABI" | grep -Eq '^[0-9]+$'; then
+            echo "ABI from node-abi getAbi('$EV','electron') = $ABI"
+          else
+            case "$EM" in
+              36) ABI=135;; 37) ABI=136;; 38) ABI=139;; 39) ABI=140;; 40) ABI=143;; 41) ABI=145;; 42) ABI=146;;
+              *) echo "::error::Unknown Electron major $EM and node-abi unavailable — add its NODE_MODULE_VERSION to the ABI map"; exit 1;;
+            esac
+            echo "ABI from pinned map (node-abi unavailable) = $ABI"
+          fi
+          echo "electron version=$EV major=$EM -> ABI=$ABI"
+          export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64" TOKENIZERS_ARM64_DIR="$PWD/tokenizers-arm64"
+          bash scripts/materialize-native-closure.sh
+          echo "ELECTRON_ABI=$ABI" >> "$GITHUB_ENV"
+          echo "LIBSQL_ARM64_DIR=$PWD/libsql-arm64" >> "$GITHUB_ENV"
+          echo "TOKENIZERS_ARM64_DIR=$PWD/tokenizers-arm64" >> "$GITHUB_ENV"
+
+      - name: Prepare native modules (ARM64 target)
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          TARGET_ARCH: arm64
+          TARGET_PLATFORM: win32
+        run: bun run copy:native-modules
+
+      - name: Validate native runtime (ARM64 fail-fast gate)
+        shell: bash
+        env:
+          TARGET_ARCH: arm64
+          TARGET_PLATFORM: win32
+        run: |
+          set -euo pipefail
+          bash scripts/materialize-native-closure.sh
+          cd apps/desktop
+          bun run validate:native-runtime
+
+      - name: Build Windows ARM64 installer
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # native-keymap etc. use V8 APIs Electron 40 deprecated; MSVC C4996
+          # under warnings-as-errors fails node-gyp. /wd4996 disables just that
+          # warning for all native rebuilds (deterministic; runtime is fine).
+          CL: '/wd4996'
+        run: |
+          set -euo pipefail
+          npx electron-builder --win --arm64 --publish never --config electron-builder.ts
+          echo "--- release dir ---"
+          ls -la release || true
+
+      - name: Verify packaged native closure (ARM64 fail-fast gate)
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="release/win-arm64-unpacked"
+          [ -d "$APP" ] || { echo "::error::$APP not found"; exit 1; }
+          pearch() { od -An -tx1 -j"$(( $(od -An -tu4 -j60 -N4 "$1"|tr -d ' ')+4 ))" -N2 "$1" | tr -d ' '; }
+          fail=0
+          m="$(pearch "$APP/Superset.exe")"
+          [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
+          TOK="$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node"
+          if [ -f "$TOK" ] && [ "$(pearch "$TOK")" = 64aa ]; then
+            echo "OK  @anush008/tokenizers-win32-arm64-msvc packaged (ARM64)"
+          else
+            echo "::error::@anush008/tokenizers-win32-arm64-msvc missing/!ARM64 at $TOK"; fail=1
+          fi
+          while IFS= read -r f; do
+            case "$f" in
+              *darwin*|*linux*|*musl*|*win32-ia32*|*win32-x64*|*win32_x64*|*win32_ia32*) continue ;;
+            esac
+            a="$(pearch "$f" 2>/dev/null || echo '')"
+            if echo "$f" | grep -Eqi 'win32.?arm64|win32_arm64'; then
+              [ "$a" = 64aa ] || { echo "::error::win32-arm64 native not ARM64: $f (0x$a)"; fail=1; }
+            fi
+          done < <(find "$APP/resources" -name '*.node' 2>/dev/null)
+          [ "$fail" = 0 ] || { echo "::error::packaged native closure verification FAILED"; exit 1; }
+          echo "Packaged native closure verified (ARM64)."
+
+      - name: Resolve installer asset
+        id: asset
+        if: inputs.publish != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          A=$(ls apps/desktop/release/*arm64*.exe 2>/dev/null | head -1 || true)
+          [ -n "$A" ] || A=$(ls apps/desktop/release/*.exe 2>/dev/null | grep -v blockmap | head -1 || true)
+          [ -n "$A" ] || { echo "::error::no .exe produced in apps/desktop/release/"; ls -la apps/desktop/release || true; exit 1; }
+          echo "path=$A" >> "$GITHUB_OUTPUT"
+          echo "Installer: $A"
+
+      - name: Publish GitHub Release
+        if: inputs.publish != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          ASSET="${{ steps.asset.outputs.path }}"
+          if [ "${{ inputs.publish }}" = "beta" ]; then
+            TAG="desktop-v${V}-beta"; PRE="--prerelease"; SUFFIX=" [Beta]"
+            gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+            git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
+          else
+            TAG="desktop-v${V}"; PRE=""; SUFFIX=""
+          fi
+          gh release create "$TAG" "$ASSET" \
+            --repo "${{ github.repository }}" \
+            --title "Superset $V (Windows ARM64)${SUFFIX}" \
+            $PRE \
+            --notes "Native **Windows ARM64** build of the vendored superset-sh/superset fork (version $V). Built deterministically from committed source (no AI in the build). Installer is **unsigned**. Not the official superset-sh distribution."
