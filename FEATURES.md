@@ -49,4 +49,5 @@ KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer
+togglePinProject	apps/desktop/src/renderer
 ```

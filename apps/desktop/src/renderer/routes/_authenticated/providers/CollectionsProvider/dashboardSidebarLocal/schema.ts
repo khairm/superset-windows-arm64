@@ -11,6 +11,11 @@ export const dashboardSidebarProjectSchema = z.object({
 	projectId: z.string().uuid(),
 	createdAt: persistedDateSchema,
 	isCollapsed: z.boolean().default(false),
+	// (ACTIVE-FIRST) Manual right-click pin. Pinned projects form the top sort
+	// tier (pinned > active > idle); within the tier they keep their manual drag
+	// order. Local-only like every other sidebar preference; legacy rows lack the
+	// key and read back undefined, so the data hook heals it to false.
+	isPinned: z.boolean().default(false),
 	tabOrder: z.number().int().default(0),
 	defaultOpenInApp: z.string().nullable().default(null),
 	// Per-project reveal state for the Snoozed / Archived sections. Each

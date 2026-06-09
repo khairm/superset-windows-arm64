@@ -89,6 +89,9 @@ export interface DashboardSidebarProject {
 	createdAt: Date;
 	updatedAt: Date;
 	isCollapsed: boolean;
+	// (ACTIVE-FIRST) Manually pinned (right-click). Pinned projects sort into the
+	// top tier, above active (badge > 0) and idle (badge 0) projects.
+	isPinned: boolean;
 	children: DashboardSidebarProjectChild[];
 	// Snoozed / archived threads live outside `children` (so they don't count
 	// toward the active badge or the DnD lane) and render in their own

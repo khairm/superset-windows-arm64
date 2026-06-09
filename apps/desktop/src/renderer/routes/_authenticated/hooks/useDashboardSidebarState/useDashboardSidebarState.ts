@@ -237,6 +237,18 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
+	// (ACTIVE-FIRST) Toggle a project's manual pin. Pinned projects form the top
+	// sort tier in the sidebar (pinned > active > idle). Local-only.
+	const togglePinProject = useCallback(
+		(projectId: string) => {
+			ensureSidebarProjectRecord(collections, projectId);
+			collections.v2SidebarProjects.update(projectId, (draft) => {
+				draft.isPinned = !draft.isPinned;
+			});
+		},
+		[collections],
+	);
+
 	const reorderProjects = useCallback(
 		(projectIds: string[]) => {
 			projectIds.forEach((projectId, index) => {
@@ -653,6 +665,7 @@ export function useDashboardSidebarState() {
 		setProjectSectionFlag,
 		setSectionColor,
 		snoozeWorkspace,
+		togglePinProject,
 		toggleProjectCollapsed,
 		toggleProjectSectionFlag,
 		toggleSectionCollapsed,

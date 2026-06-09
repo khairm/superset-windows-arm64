@@ -21,7 +21,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
 import { useHotkeyDisplay } from "renderer/hotkeys";
@@ -38,9 +38,22 @@ import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
 import { DashboardSidebarHoverProvider } from "./providers/DashboardSidebarHoverProvider";
 import type { DashboardSidebarProject } from "./types";
+import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
 
 interface DashboardSidebarProps {
 	isCollapsed?: boolean;
+}
+
+// (ACTIVE-FIRST) Sort tier for a repo (project) row: pinned (manual) > active
+// (has >=1 non-snoozed/archived workspace, i.e. the project badge count > 0) >
+// idle (badge 0). Lower rank sorts higher. The badge is
+// getProjectChildrenWorkspaces(children).length (snoozed/archived live in
+// separate arrays), so this matches exactly what the user sees per project row.
+const PROJECT_TIER_RANKS = 3;
+
+function getProjectTierRank(project: DashboardSidebarProject): number {
+	if (project.isPinned) return 0;
+	return getProjectChildrenWorkspaces(project.children).length > 0 ? 1 : 2;
 }
 
 interface SortableProjectWrapperProps {
@@ -127,8 +140,9 @@ export function DashboardSidebar({
 		setProjectOrder(groups.map((p) => p.id));
 	}, [groups]);
 
-	// (ACTIVE-FIRST) The project whose workspace is currently open. It floats to
-	// the top of the sidebar, above the manual drag order of everything else.
+	// The project whose workspace is currently open. Used only by the footer /
+	// view-in-place card below (resolved to `activeV2Project`) — it does NOT
+	// affect sort order (opening/viewing is unrelated to the sidebar sort).
 	const activeProjectId = useMemo(() => {
 		if (!activeV2WorkspaceId) return null;
 		for (const project of groups) {
@@ -146,7 +160,7 @@ export function DashboardSidebar({
 				}
 			}
 			// The open thread may be snoozed/archived (still shown in the main
-			// pane) — resolve its project so it still floats to the top.
+			// pane) — resolve its project for the footer card regardless.
 			for (const ws of project.snoozedWorkspaces) {
 				if (ws.id === activeV2WorkspaceId) return project.id;
 			}
@@ -162,22 +176,27 @@ export function DashboardSidebar({
 		const ordered = projectOrder
 			.map((id) => byId.get(id))
 			.filter((g): g is DashboardSidebarProject => g != null);
-		// (ACTIVE-FIRST) Pin the currently-open project to the top, above the
-		// manual drag order of everything else.
-		if (!activeProjectId) return ordered;
-		const idx = ordered.findIndex((g) => g.id === activeProjectId);
-		if (idx <= 0) return ordered;
-		const next = [...ordered];
-		const [active] = next.splice(idx, 1);
-		next.unshift(active);
-		return next;
-	}, [groups, projectOrder, activeProjectId]);
+
+		// (ACTIVE-FIRST) Stable 3-tier partition of the manual drag order:
+		// pinned > active (badge > 0: has >=1 non-snoozed/archived workspace) >
+		// idle (badge 0). The manual order is preserved WITHIN each tier; a project
+		// that just changed tier was already moved to the bottom of its new tier in
+		// `projectOrder` by the transition effect below, so it lands last here.
+		// Opening/viewing a project does NOT affect the order.
+		const tiers: DashboardSidebarProject[][] = Array.from(
+			{ length: PROJECT_TIER_RANKS },
+			() => [],
+		);
+		for (const group of ordered) {
+			tiers[getProjectTierRank(group)].push(group);
+		}
+		return tiers.flat();
+	}, [groups, projectOrder]);
 
 	// dnd-kit's SortableContext + handleDragEnd MUST use the SAME order the DOM
-	// renders (the floated `orderedGroups`). Driving the context from the raw
-	// projectOrder while rendering the floated order mis-maps drag indices and
-	// lands drops in the wrong slot. Dragging while a project is floated to the
-	// top simply re-pins it on the next render (the active project is pinned).
+	// renders (the tiered `orderedGroups`), so drag indices map to the right slot.
+	// A within-tier drag reorders and persists; a cross-tier drag re-tiers on the
+	// next render (a row can't be dragged out of its pinned/active/idle group).
 	const orderedIds = useMemo(
 		() => orderedGroups.map((g) => g.id),
 		[orderedGroups],
@@ -195,41 +214,56 @@ export function DashboardSidebar({
 		[groups, activeProjectId],
 	);
 
+	// (ACTIVE-FIRST) When a project changes tier — pinned/unpinned, or it gained
+	// or lost its last active workspace — move it to the BOTTOM of its new tier.
+	// Done by moving its id to the end of the manual order; the stable partition
+	// above then renders it last within its tier. Persisted so it sticks, and it
+	// converges: reordering within a tier never changes a tier, so the next run
+	// sees no transition. First render seeds prevTierRef WITHOUT moving anything
+	// (every id is "new", not a transition), so a saved order isn't reshuffled.
+	const prevTierRef = useRef<Map<string, number>>(new Map());
+	useEffect(() => {
+		const currentTiers = new Map(
+			groups.map((g) => [g.id, getProjectTierRank(g)] as const),
+		);
+		const previous = prevTierRef.current;
+		const transitioned = groups
+			.filter(
+				(g) =>
+					previous.has(g.id) && previous.get(g.id) !== currentTiers.get(g.id),
+			)
+			.map((g) => g.id);
+		prevTierRef.current = currentTiers;
+		if (transitioned.length === 0) return;
+		const moved = new Set(transitioned);
+		const baseOrder = groups.map((g) => g.id);
+		const nextOrder = [
+			...baseOrder.filter((id) => !moved.has(id)),
+			...transitioned,
+		];
+		if (nextOrder.every((id, index) => id === baseOrder[index])) return;
+		setProjectOrder(nextOrder);
+		reorderProjects(nextOrder);
+	}, [groups, reorderProjects]);
+
 	const handleDragEnd = useCallback(
 		({ active, over }: DragEndEvent) => {
 			setActiveProject(null);
 			if (!over || active.id === over.id) return;
 			const activeId = String(active.id);
 			const overId = String(over.id);
-			// The pinned active project floats to the top for display only —
-			// dragging it is a no-op (it re-pins on the next render).
-			if (activeProjectId && activeId === activeProjectId) return;
-			// Reorder in the rendered (floated) order so indices match what the
-			// user dragged.
+			// Reorder in the rendered (tiered) order so indices match the drag.
 			const oldIndex = orderedIds.indexOf(activeId);
 			const newIndex = orderedIds.indexOf(overId);
 			if (oldIndex === -1 || newIndex === -1) return;
-			const reorderedDisplayed = arrayMove(orderedIds, oldIndex, newIndex);
-			// Translate back to a PURE manual order before persisting: the active
-			// project is floated only for display, so restore it to its prior
-			// manual position instead of persisting its floated top index —
-			// otherwise dragging any other project drifts the active one to the
-			// manual top (Codex review).
-			let manualOrder = reorderedDisplayed;
-			const priorActiveIndex = activeProjectId
-				? projectOrder.indexOf(activeProjectId)
-				: -1;
-			if (priorActiveIndex !== -1) {
-				const withoutActive = reorderedDisplayed.filter(
-					(id) => id !== activeProjectId,
-				);
-				withoutActive.splice(priorActiveIndex, 0, activeProjectId);
-				manualOrder = withoutActive;
-			}
-			setProjectOrder(manualOrder);
-			reorderProjects(manualOrder);
+			// Persist the dragged order. The 3-tier partition re-applies on render:
+			// a within-tier drag sticks; a cross-tier drop re-tiers (the row snaps
+			// back into its own pinned/active/idle group).
+			const newOrder = arrayMove(orderedIds, oldIndex, newIndex);
+			setProjectOrder(newOrder);
+			reorderProjects(newOrder);
 		},
-		[orderedIds, projectOrder, activeProjectId, reorderProjects],
+		[orderedIds, reorderProjects],
 	);
 
 	return (

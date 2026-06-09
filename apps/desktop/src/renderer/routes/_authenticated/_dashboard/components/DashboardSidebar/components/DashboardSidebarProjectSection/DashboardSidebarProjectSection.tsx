@@ -61,6 +61,7 @@ export function DashboardSidebarProjectSection({
 	});
 
 	const {
+		togglePinProject,
 		toggleProjectSectionFlag,
 		setProjectSectionFlag,
 		unsnoozeAllInProject,
@@ -98,6 +99,8 @@ export function DashboardSidebarProjectSection({
 	if (isSidebarCollapsed) {
 		return (
 			<DashboardSidebarProjectContextMenu
+				isPinned={project.isPinned}
+				onTogglePin={() => togglePinProject(project.id)}
 				onCreateSection={handleNewSection}
 				onOpenInFinder={handleOpenInFinder}
 				onOpenSettings={handleOpenSettings}
@@ -123,6 +126,8 @@ export function DashboardSidebarProjectSection({
 	return (
 		<div className={cn("border-b border-border last:border-b-0")}>
 			<DashboardSidebarProjectContextMenu
+				isPinned={project.isPinned}
+				onTogglePin={() => togglePinProject(project.id)}
 				onCreateSection={handleNewSection}
 				onOpenInFinder={handleOpenInFinder}
 				onOpenSettings={handleOpenSettings}

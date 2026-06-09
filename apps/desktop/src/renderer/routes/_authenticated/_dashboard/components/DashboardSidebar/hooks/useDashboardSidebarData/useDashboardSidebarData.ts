@@ -182,6 +182,7 @@ export function useDashboardSidebarData() {
 					createdAt: projects.createdAt,
 					updatedAt: projects.updatedAt,
 					isCollapsed: sidebarProjects.isCollapsed,
+						isPinned: sidebarProjects.isPinned,
 						showSnoozed: sidebarProjects.showSnoozed,
 						showArchived: sidebarProjects.showArchived,
 						snoozedCollapsed: sidebarProjects.snoozedCollapsed,
@@ -198,6 +199,7 @@ export function useDashboardSidebarData() {
 				githubRepoName: project.githubRepoName ?? null,
 				// Heal legacy project rows persisted before the reveal flags existed
 				// (they read back undefined despite the boolean type).
+				isPinned: project.isPinned ?? false,
 				showSnoozed: project.showSnoozed ?? false,
 				showArchived: project.showArchived ?? false,
 				snoozedCollapsed: project.snoozedCollapsed ?? false,

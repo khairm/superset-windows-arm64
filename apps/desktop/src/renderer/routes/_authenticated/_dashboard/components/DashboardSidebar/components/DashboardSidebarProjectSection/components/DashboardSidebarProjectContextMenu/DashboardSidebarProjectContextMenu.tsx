@@ -11,6 +11,8 @@ import {
 	LuFolderOpen,
 	LuFolderPlus,
 	LuPencil,
+	LuPin,
+	LuPinOff,
 	LuSettings,
 	LuX,
 } from "react-icons/lu";
@@ -20,6 +22,10 @@ interface DashboardSidebarProjectContextMenuProps {
 	 * renders no sections — so the menu items are hidden there too. */
 	showSnoozed?: boolean;
 	showArchived?: boolean;
+	// (ACTIVE-FIRST) Manual pin state + toggle. Pinned projects sort into the top
+	// sidebar tier (pinned > active > idle).
+	isPinned?: boolean;
+	onTogglePin?: () => void;
 	onCreateSection: () => void;
 	onOpenInFinder: () => void;
 	onOpenSettings: () => void;
@@ -33,6 +39,8 @@ interface DashboardSidebarProjectContextMenuProps {
 export function DashboardSidebarProjectContextMenu({
 	showSnoozed,
 	showArchived,
+	isPinned,
+	onTogglePin,
 	onCreateSection,
 	onOpenInFinder,
 	onOpenSettings,
@@ -46,6 +54,16 @@ export function DashboardSidebarProjectContextMenu({
 		<ContextMenu>
 			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
 			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
+				{onTogglePin && (
+					<ContextMenuItem onSelect={onTogglePin}>
+						{isPinned ? (
+							<LuPinOff className="size-4 mr-2" />
+						) : (
+							<LuPin className="size-4 mr-2" />
+						)}
+						{isPinned ? "Unpin" : "Pin to top"}
+					</ContextMenuItem>
+				)}
 				<ContextMenuItem onSelect={onRename}>
 					<LuPencil className="size-4 mr-2" />
 					Rename
