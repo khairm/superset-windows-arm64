@@ -148,7 +148,11 @@ export const createWindowRouter = (getWindow: () => BrowserWindow | null) => {
 				}
 				const safeOrg = input.organizationId.replace(/[^a-zA-Z0-9_-]/g, "_");
 				const dir = join(homedir(), ".superset", "backups", "kanban");
-				const today = new Date().toISOString().slice(0, 10);
+				// LOCAL date, not toISOString (UTC) — otherwise the day rolls over
+				// at UTC midnight and late-evening edits land in "yesterday's"
+				// already-written file (a no-op), skipping them entirely.
+				const now = new Date();
+				const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 				const filePath = join(dir, `${safeOrg}-${today}.json`);
 				try {
 					await fs.mkdir(dir, { recursive: true });
