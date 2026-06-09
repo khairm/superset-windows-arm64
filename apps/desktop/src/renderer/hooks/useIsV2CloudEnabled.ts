@@ -3,7 +3,7 @@ import { authClient } from "renderer/lib/auth-client";
 
 /**
  * True for accounts created on/after V2_ONLY_USER_CUTOFF — these users
- * never see the v1↔v2 switch.
+ * default to v2.
  */
 export function useIsV2OnlyUser(): boolean {
 	const { data: session } = authClient.useSession();

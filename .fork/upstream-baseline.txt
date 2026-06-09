@@ -1,1 +1,1 @@
-desktop-v1.12.4
+desktop-v1.12.5

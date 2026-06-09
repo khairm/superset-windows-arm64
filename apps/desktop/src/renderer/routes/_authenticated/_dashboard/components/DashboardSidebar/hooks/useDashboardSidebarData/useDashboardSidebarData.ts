@@ -575,6 +575,10 @@ export function useDashboardSidebarData() {
 					tabOrder: number;
 					child: DashboardSidebarProjectChild;
 				}>;
+				orphanedWorkspaces: Array<{
+					tabOrder: number;
+					workspace: DashboardSidebarWorkspace;
+				}>;
 			}
 		>();
 
@@ -586,6 +590,7 @@ export function useDashboardSidebarData() {
 				archivedWorkspaces: [],
 				sectionMap: new Map(),
 				childEntries: [],
+				orphanedWorkspaces: [],
 			});
 		}
 
@@ -650,7 +655,14 @@ export function useDashboardSidebarData() {
 						...sidebarWorkspace,
 						accentColor: section.color,
 					});
+					continue;
 				}
+				// Section was deleted out from under this workspace — surface it at
+				// top level instead of silently dropping it.
+				project.orphanedWorkspaces.push({
+					tabOrder: workspace.tabOrder,
+					workspace: sidebarWorkspace,
+				});
 				continue;
 			}
 
@@ -725,6 +737,7 @@ export function useDashboardSidebarData() {
 			const {
 				childEntries,
 				sectionMap: _sectionMap,
+				orphanedWorkspaces,
 				...sidebarProject
 			} = resolvedProject;
 
@@ -763,6 +776,36 @@ export function useDashboardSidebarData() {
 					children.push(child);
 				}
 			}
+
+			// Workspaces whose section was deleted (orphaned) render above the
+			// first section so they stay visible instead of vanishing.
+			if (orphanedWorkspaces.length > 0) {
+				const isLocalMainWorkspace = (workspace: DashboardSidebarWorkspace) =>
+					workspace.type === "main" && workspace.hostType === "local-device";
+				const firstSectionIndex = children.findIndex(
+					(child) => child.type === "section",
+				);
+				const insertIndex =
+					firstSectionIndex === -1 ? children.length : firstSectionIndex;
+				children.splice(
+					insertIndex,
+					0,
+					...orphanedWorkspaces
+						.sort((left, right) => {
+							const leftLocalMain = isLocalMainWorkspace(left.workspace);
+							const rightLocalMain = isLocalMainWorkspace(right.workspace);
+							if (leftLocalMain !== rightLocalMain) {
+								return leftLocalMain ? -1 : 1;
+							}
+							return left.tabOrder - right.tabOrder;
+						})
+						.map(({ workspace }) => ({
+							type: "workspace" as const,
+							workspace,
+						})),
+				);
+			}
+
 			sidebarProject.children = children;
 			sidebarProject.snoozedWorkspaces.sort(
 				(left, right) =>
