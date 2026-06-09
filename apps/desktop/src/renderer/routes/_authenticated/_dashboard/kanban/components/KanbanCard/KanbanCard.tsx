@@ -59,7 +59,10 @@ export function KanbanCard({
 	const isMain = workspace?.type === "main";
 	const status = useV2WorkspaceDisplayStatus(workspace?.id ?? "");
 	const [editing, setEditing] = useState<"title" | "deadline" | null>(null);
-	const [titleDraft, setTitleDraft] = useState(card.title);
+	// Seed from the resolved (live) title, not the stored card.title — inline edit
+	// is only enabled for unbound cards (where they're equal), but this keeps the
+	// draft on the live value if that gate ever changes.
+	const [titleDraft, setTitleDraft] = useState(view.title);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -138,7 +141,7 @@ export function KanbanCard({
 								onKeyDown={(e) => {
 									if (e.key === "Enter") commitTitle();
 									if (e.key === "Escape") {
-										setTitleDraft(card.title);
+										setTitleDraft(view.title);
 										setEditing(null);
 									}
 								}}
@@ -159,7 +162,7 @@ export function KanbanCard({
 										? undefined
 										: (e) => {
 												stop(e);
-												setTitleDraft(card.title);
+												setTitleDraft(view.title);
 												setEditing("title");
 											}
 								}

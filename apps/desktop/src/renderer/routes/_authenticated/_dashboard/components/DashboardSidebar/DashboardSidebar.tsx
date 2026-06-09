@@ -256,14 +256,26 @@ export function DashboardSidebar({
 			const oldIndex = orderedIds.indexOf(activeId);
 			const newIndex = orderedIds.indexOf(overId);
 			if (oldIndex === -1 || newIndex === -1) return;
-			// Persist the dragged order. The 3-tier partition re-applies on render:
-			// a within-tier drag sticks; a cross-tier drop re-tiers (the row snaps
-			// back into its own pinned/active/idle group).
+			// A row can't be dragged OUT of its tier: ignore a drop whose target is
+			// in a different pinned/active/idle tier (otherwise the re-partition would
+			// silently shuffle the row's within-tier position). Only same-tier
+			// reorders persist.
+			const activeGroup = orderedGroups[oldIndex];
+			const overGroup = orderedGroups[newIndex];
+			if (
+				activeGroup &&
+				overGroup &&
+				getProjectTierRank(activeGroup) !== getProjectTierRank(overGroup)
+			) {
+				return;
+			}
+			// Persist the dragged order. The 3-tier partition re-applies on render so
+			// the same-tier reorder sticks.
 			const newOrder = arrayMove(orderedIds, oldIndex, newIndex);
 			setProjectOrder(newOrder);
 			reorderProjects(newOrder);
 		},
-		[orderedIds, reorderProjects],
+		[orderedGroups, orderedIds, reorderProjects],
 	);
 
 	return (
