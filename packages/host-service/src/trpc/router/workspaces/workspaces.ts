@@ -1,10 +1,14 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { generateFriendlyBranchName } from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { workspaces } from "../../../db/schema";
+import {
+	type MultiRepoConfig,
+	readMultiRepoConfig,
+} from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import {
 	asRemoteRef,
@@ -17,7 +21,10 @@ import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { type AgentRunResult, runAgentInWorkspace } from "../agents";
 import { ensureMainWorkspace } from "../project/utils/ensure-main-workspace";
+import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
+import { normalizeWorktreePath } from "../workspace-creation/shared/worktree-list";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
+import { createMultiRepoWorkspaceFlow } from "../workspace-creation/multi-repo-create";
 import { adoptExistingWorktree } from "../workspace-creation/shared/adopt-existing-worktree";
 import {
 	getWorktreeBranchAtPath,
@@ -50,7 +57,7 @@ import { derivePrLocalBranchName } from "../workspace-creation/utils/pr-branch-n
 import { resolveStartPoint } from "../workspace-creation/utils/resolve-start-point";
 import { deduplicateBranchName } from "../workspace-creation/utils/sanitize-branch";
 
-const agentLaunchSchema = z
+export const agentLaunchSchema = z
 	.object({
 		agent: z.string().min(1),
 		prompt: z.string(),
@@ -62,7 +69,7 @@ const agentLaunchSchema = z
 		{ message: "Agent launch requires a prompt or attachments" },
 	);
 
-const createInputSchema = z
+export const createInputSchema = z
 	.object({
 		projectId: z.string(),
 		// Both `name` and `branch` are optional. When omitted with a
@@ -92,7 +99,7 @@ const createInputSchema = z
 
 const workspaceCreateLocks = new Map<string, Promise<void>>();
 
-async function acquireWorkspaceCreateLock(key: string): Promise<() => void> {
+export async function acquireWorkspaceCreateLock(key: string): Promise<() => void> {
 	const previous = workspaceCreateLocks.get(key) ?? Promise.resolve();
 	let releaseCurrent!: () => void;
 	const current = new Promise<void>((resolve) => {
@@ -113,22 +120,22 @@ async function acquireWorkspaceCreateLock(key: string): Promise<() => void> {
 	};
 }
 
-type AgentLaunchResult =
+export type AgentLaunchResult =
 	| ({ ok: true } & AgentRunResult)
 	| { ok: false; error: string };
 
-type CloudWorkspace = NonNullable<
+export type CloudWorkspace = NonNullable<
 	Awaited<
 		ReturnType<HostServiceContext["api"]["v2Workspace"]["getFromHost"]["query"]>
 	>
 >;
 
-function extractCreateTxid(row: CloudWorkspace): number | null {
+export function extractCreateTxid(row: CloudWorkspace): number | null {
 	const txid = (row as { txid?: unknown }).txid;
 	return typeof txid === "number" ? txid : null;
 }
 
-async function findExistingWorkspaceByBranch(
+export async function findExistingWorkspaceByBranch(
 	ctx: HostServiceContext,
 	projectId: string,
 	branch: string,
@@ -211,7 +218,7 @@ async function fetchPrMetadata(args: {
 	};
 }
 
-async function getLocalBranchHead(
+export async function getLocalBranchHead(
 	git: GitClient,
 	branchName: string,
 ): Promise<string | null> {
@@ -242,7 +249,7 @@ interface BranchSourcePlan {
  * is resolved (auto-gen + AI naming path), so it can run in parallel
  * with the LLM call.
  */
-async function resolveNewBranchStartPoint(
+export async function resolveNewBranchStartPoint(
 	git: GitClient,
 	baseBranch: string | undefined,
 ): Promise<ResolvedRef> {
@@ -331,7 +338,7 @@ function isBranchInUseByWorktreeError(err: unknown): boolean {
 	);
 }
 
-async function addBranchWorktree(args: {
+export async function addBranchWorktree(args: {
 	git: GitClient;
 	plan: BranchSourcePlan;
 	worktreePath: string;
@@ -385,7 +392,7 @@ async function addBranchWorktree(args: {
 	]);
 }
 
-async function recordBaseBranchConfig(args: {
+export async function recordBaseBranchConfig(args: {
 	git: GitClient;
 	worktreePath: string;
 	branch: string;
@@ -417,7 +424,7 @@ async function recordBaseBranchConfig(args: {
  * idempotency short-circuit returns early). Worst case is one wasted
  * cloud call, no observable side effect.
  */
-async function startHostEnsure(
+export async function startHostEnsure(
 	ctx: HostServiceContext,
 ): Promise<{ machineId: string }> {
 	const { getHostId, getHostName } = await import("@superset/shared/host-info");
@@ -428,7 +435,7 @@ async function startHostEnsure(
 	});
 }
 
-async function registerCloudAndLocal(args: {
+export async function registerCloudAndLocal(args: {
 	ctx: HostServiceContext;
 	id: string | undefined;
 	projectId: string;
@@ -504,7 +511,7 @@ async function registerCloudAndLocal(args: {
 	return cloudRow;
 }
 
-async function dispatchSugarAgents(
+export async function dispatchSugarAgents(
 	ctx: HostServiceContext,
 	workspaceId: string,
 	launches: z.infer<typeof agentLaunchSchema>[],
@@ -535,6 +542,22 @@ export const workspacesRouter = router({
 		.input(createInputSchema)
 		.mutation(async ({ ctx, input }) => {
 			const localProject = requireLocalProject(ctx, input.projectId);
+
+			// (MULTI-REPO WORKSPACE) Fan the SAME branch name out as a worktree in
+			// EVERY member repo, gathered under one container folder that opens as
+			// a plain (non-git) workspace. Must run BEFORE the non-git guard and
+			// before ensureMainWorkspace — the project's anchor repoPath is
+			// intentionally not a git repo, and a multi-repo project never has a
+			// main workspace.
+			const multiRepoConfig = readMultiRepoConfig(localProject.repoPath);
+			if (multiRepoConfig) {
+				return createMultiRepoWorkspaceFlow({
+					ctx,
+					input,
+					localProject,
+					config: multiRepoConfig,
+				});
+			}
 
 			// (NON-GIT WORKSPACE) `create` is a git worktree factory — every path
 			// below forks a branch / adds a worktree. Reject a non-git project

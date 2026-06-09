@@ -32,6 +32,7 @@ import {
 } from "renderer/routes/_authenticated/_dashboard/tasks/stores/tasks-filter-state";
 import { STROKE_WIDTH_THICK } from "renderer/screens/main/components/WorkspaceSidebar/constants";
 import {
+	useOpenMultiFolderModal,
 	useOpenNewProjectModal,
 	useOpenTemplateGalleryModal,
 } from "renderer/stores/add-repository-modal";
@@ -47,6 +48,7 @@ export function DashboardSidebarHeader({
 	const openModal = useOpenNewWorkspaceModal();
 	const openNewProject = useOpenNewProjectModal();
 	const openTemplateGallery = useOpenTemplateGalleryModal();
+	const openMultiFolder = useOpenMultiFolderModal();
 	const navigate = useNavigate();
 	const folderImport = useFolderFirstImport({
 		onError: (message) => {
@@ -237,6 +239,11 @@ export function DashboardSidebarHeader({
 							<LuFolderInput className="size-4" />
 							Open from folder
 						</DropdownMenuItem>
+						{/* (MULTI-REPO WORKSPACE) group N git repos under one row */}
+						<DropdownMenuItem onSelect={() => openMultiFolder()}>
+							<LuFolderInput className="size-4" />
+							Open from multi-folder
+						</DropdownMenuItem>
 						<DropdownMenuItem onSelect={() => openTemplateGallery()}>
 							<LuLayoutTemplate className="size-4" />
 							Start from a template
@@ -366,6 +373,11 @@ export function DashboardSidebarHeader({
 						<DropdownMenuItem onSelect={handleImportFolder}>
 							<LuFolderInput className="size-4" />
 							Open from folder
+						</DropdownMenuItem>
+						{/* (MULTI-REPO WORKSPACE) group N git repos under one row */}
+						<DropdownMenuItem onSelect={() => openMultiFolder()}>
+							<LuFolderInput className="size-4" />
+							Open from multi-folder
 						</DropdownMenuItem>
 						<DropdownMenuItem onSelect={() => openTemplateGallery()}>
 							<LuLayoutTemplate className="size-4" />

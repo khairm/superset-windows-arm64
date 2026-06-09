@@ -68,6 +68,18 @@ See `FEATURES.md` for the marker manifest. In brief:
   watcher fallback; only open tabs are represented.
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
+- **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary
+  git repos (picker validates each; unique basenames) under one project row (no
+  master row; member list in `superset-multi-repo.json` inside a
+  `~/.superset/multi-repo/<projectId>` anchor — no cloud/DB schema change). Its
+  "+" takes an optional branch name (AI/friendly auto-generated when blank,
+  deduped across the union of member branches) and fans it out: `git worktree add -b <branch>`
+  (from each repo's default branch) into `<worktrees>/<projectId>/<branch>/<repoName>`
+  per member — all-or-nothing with rollback; the container opens as a plain
+  workspace. A branch existing in EVERY member is adopted (resume); partial
+  presence fails loud. Delete mirrors single-repo per member (worktree remove,
+  optional branch -D) then removes the container; the kanban promote dialog
+  resolves multi-repo projects as branch-create targets.
 - **Thread snooze / archive** — per-thread timed Snooze (auto-returns) + sticky
   Archive under revealable Snoozed / Archived sidebar sections.
 - **Sidebar** — projects tier-sorted pinned > active > idle, stable manual drag order
@@ -86,7 +98,9 @@ See `FEATURES.md` for the marker manifest. In brief:
   Files/Changes/Review. User-created columns (add/rename/reorder/delete; deleting
   moves cards left), each with collapsible Snoozed/Archived. Snooze/archive/delete of
   a branch card == the sidebar (one source of truth); main workspaces can't be
-  snoozed/archived/deleted. Local-only, ungated.
+  snoozed/archived/deleted. Local-only, ungated. APPEND-ONLY daily backup:
+  write-once JSON snapshot per org per day under `~/.superset/backups/kanban/`
+  (skips empty boards; no code path can delete or overwrite a snapshot).
 
 ## Fork key files
 

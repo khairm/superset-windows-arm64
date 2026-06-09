@@ -1,10 +1,27 @@
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { getImageMimeType } from "shared/file-types";
 import { z } from "zod";
 import { publicProcedure, router } from "..";
+
+async function pickDirectories(
+	window: BrowserWindow | null,
+	opts: { title: string; defaultPath?: string; multi: boolean },
+): Promise<string[]> {
+	if (!window) return [];
+	const result = await dialog.showOpenDialog(window, {
+		properties: opts.multi
+			? ["openDirectory", "createDirectory", "multiSelections"]
+			: ["openDirectory", "createDirectory"],
+		title: opts.title,
+		defaultPath: opts.defaultPath ?? undefined,
+	});
+	if (result.canceled) return [];
+	return result.filePaths;
+}
 
 export const createWindowRouter = (getWindow: () => BrowserWindow | null) => {
 	return router({
@@ -78,22 +95,80 @@ export const createWindowRouter = (getWindow: () => BrowserWindow | null) => {
 					.optional(),
 			)
 			.mutation(async ({ input }) => {
-				const window = getWindow();
-				if (!window) {
-					return { canceled: true, path: null };
-				}
-
-				const result = await dialog.showOpenDialog(window, {
-					properties: ["openDirectory", "createDirectory"],
+				const paths = await pickDirectories(getWindow(), {
 					title: input?.title ?? "Select Directory",
-					defaultPath: input?.defaultPath ?? undefined,
+					defaultPath: input?.defaultPath,
+					multi: false,
 				});
+				if (paths.length === 0) return { canceled: true, path: null };
+				return { canceled: false, path: paths[0] };
+			}),
 
-				if (result.canceled || result.filePaths.length === 0) {
-					return { canceled: true, path: null };
+		// (MULTI-REPO WORKSPACE) Multi-select folder picker for "Open from
+		// multi-folder" — same dialog as selectDirectory plus multiSelections.
+		selectDirectories: publicProcedure
+			.input(
+				z
+					.object({
+						title: z.string().optional(),
+						defaultPath: z.string().optional(),
+					})
+					.optional(),
+			)
+			.mutation(async ({ input }) => {
+				const paths = await pickDirectories(getWindow(), {
+					title: input?.title ?? "Select Directories",
+					defaultPath: input?.defaultPath,
+					multi: true,
+				});
+				if (paths.length === 0) return { canceled: true, paths: [] as string[] };
+				return { canceled: false, paths };
+			}),
+
+		// (KANBAN BACKUP) Append-only daily snapshot of the kanban board.
+		// HARD SAFETY CONTRACT: this code path can only CREATE files — it
+		// never overwrites, deletes, prunes, or rotates. One file per org per
+		// day; if today's file already exists the call is a no-op. Snapshots
+		// live OUTSIDE the Electron profile so profile/leveldb corruption or
+		// a reinstall cannot touch them. Written via temp+rename so a crash
+		// mid-write can never leave a truncated snapshot under the real name.
+		writeKanbanBackup: publicProcedure
+			.input(
+				z.object({
+					organizationId: z.string().min(1),
+					payload: z.string().min(2),
+					cardCount: z.number().int().nonnegative(),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				// Nothing worth snapshotting — and never let an accidentally
+				// emptied board produce the day's snapshot.
+				if (input.cardCount === 0) {
+					return { written: false as const, reason: "empty-board" as const };
 				}
-
-				return { canceled: false, path: result.filePaths[0] };
+				const safeOrg = input.organizationId.replace(/[^a-zA-Z0-9_-]/g, "_");
+				const dir = join(homedir(), ".superset", "backups", "kanban");
+				const today = new Date().toISOString().slice(0, 10);
+				const filePath = join(dir, `${safeOrg}-${today}.json`);
+				try {
+					await fs.mkdir(dir, { recursive: true });
+					// Write-once per day: if today's snapshot exists, NOTHING runs —
+					// rename would replace it on Windows, so the guard comes first.
+					const exists = await fs
+						.access(filePath)
+						.then(() => true)
+						.catch(() => false);
+					if (exists) {
+						return { written: false as const, reason: "already-exists" as const };
+					}
+					const tempPath = `${filePath}.tmp-${process.pid}`;
+					await fs.writeFile(tempPath, input.payload, "utf8");
+					await fs.rename(tempPath, filePath);
+					return { written: true as const, path: filePath };
+				} catch (err) {
+					console.warn("[kanban-backup] snapshot failed", err);
+					return { written: false as const, reason: "error" as const };
+				}
 			}),
 
 		selectImageFile: publicProcedure.mutation(async () => {

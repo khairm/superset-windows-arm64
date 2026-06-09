@@ -8,7 +8,9 @@ export interface NewProjectResult {
 type ActiveModal =
 	| { kind: "none" }
 	| { kind: "new-project" }
-	| { kind: "template-gallery" };
+	| { kind: "template-gallery" }
+	// (MULTI-REPO WORKSPACE) "Open from multi-folder" — group N git repos.
+	| { kind: "multi-folder" };
 
 interface AddRepositoryModalState {
 	active: ActiveModal;
@@ -21,6 +23,7 @@ interface AddRepositoryModalState {
 	 */
 	openNewProject: () => Promise<NewProjectResult | null>;
 	openTemplateGallery: () => Promise<NewProjectResult | null>;
+	openMultiFolder: () => Promise<NewProjectResult | null>;
 	resolveNewProject: (result: NewProjectResult | null) => void;
 	close: () => void;
 }
@@ -48,6 +51,13 @@ export const useAddRepositoryModalStore = create<AddRepositoryModalState>()(
 					set({ active: { kind: "template-gallery" } });
 				});
 			},
+			openMultiFolder: () => {
+				pendingResolve?.(null);
+				return new Promise<NewProjectResult | null>((resolve) => {
+					pendingResolve = resolve;
+					set({ active: { kind: "multi-folder" } });
+				});
+			},
 			resolveNewProject: (result) => {
 				const resolve = pendingResolve;
 				pendingResolve = null;
@@ -71,6 +81,8 @@ export const useOpenNewProjectModal = () =>
 	useAddRepositoryModalStore((state) => state.openNewProject);
 export const useOpenTemplateGalleryModal = () =>
 	useAddRepositoryModalStore((state) => state.openTemplateGallery);
+export const useOpenMultiFolderModal = () =>
+	useAddRepositoryModalStore((state) => state.openMultiFolder);
 export const useResolveNewProjectModal = () =>
 	useAddRepositoryModalStore((state) => state.resolveNewProject);
 export const useCloseAddRepositoryModal = () =>

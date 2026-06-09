@@ -4,6 +4,13 @@ import { and, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { terminalSessions, workspaces } from "../../../db/schema";
 import { invalidateLabelCache } from "../../../ports/static-ports";
+import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
+import {
+	deleteMultiRepoBranches,
+	destroyMultiRepoWorktrees,
+	inspectMultiRepoWorkspace,
+	preflightMultiRepoDirtyCheck,
+} from "./multi-repo-cleanup";
 import { runTeardown, type TeardownResult } from "../../../runtime/teardown";
 import { disposeSessionsByWorkspaceId } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
@@ -85,7 +92,7 @@ export const workspaceCleanupRouter = router({
 				};
 			}
 
-			const { local } = main;
+			const { local, project } = main;
 			if (!local) {
 				return {
 					canDelete: true,
@@ -93,6 +100,21 @@ export const workspaceCleanupRouter = router({
 					hasChanges: false,
 					hasUnpushedCommits: false,
 				};
+			}
+
+			// (MULTI-REPO WORKSPACE) The container is non-git, so the single-path
+			// probe below would report "clean" for a workspace whose MEMBER
+			// worktrees are dirty — and the delete dialog's silent force-retry
+			// would then drop those changes without ever warning. Aggregate the
+			// members' state instead (fork module).
+			const multiRepo = project ? readMultiRepoConfig(project.repoPath) : null;
+			if (multiRepo) {
+				const aggregated = await inspectMultiRepoWorkspace(
+					ctx,
+					multiRepo,
+					local.worktreePath,
+				);
+				return { canDelete: true, reason: null, ...aggregated };
 			}
 
 			try {
@@ -206,23 +228,34 @@ async function runDestroy(
 	}
 	const { local, project } = main;
 
+	// (MULTI-REPO WORKSPACE) A multi-repo branch workspace's worktreePath is a
+	// CONTAINER folder holding one worktree per member repo; the project's
+	// anchor repoPath is not a git repo. Every git-touching phase below fans
+	// out across the members via the fork module — "what delete does now,
+	// applied to all".
+	const multiRepo = project ? readMultiRepoConfig(project.repoPath) : null;
+
 	// ─── Step 0: Preflight ─────────────────────────────────────────
 	// Block only on dirty worktree (the common "I forgot to commit"
 	// case). Missing/broken local state is handled by the cleanup phase.
 	if (!input.force && local && project) {
-		try {
-			const git = await ctx.git(local.worktreePath);
-			const status = await git.status();
-			if (!status.isClean()) {
-				throw new TRPCError({
-					code: "CONFLICT",
-					message: "Worktree has uncommitted changes",
-				});
+		if (multiRepo) {
+			await preflightMultiRepoDirtyCheck(ctx, multiRepo, local.worktreePath);
+		} else {
+			try {
+				const git = await ctx.git(local.worktreePath);
+				const status = await git.status();
+				if (!status.isClean()) {
+					throw new TRPCError({
+						code: "CONFLICT",
+						message: "Worktree has uncommitted changes",
+					});
+				}
+			} catch (err) {
+				if (err instanceof TRPCError) throw err;
+				// Can't read status (missing worktree dir, etc.) — not a
+				// conflict. Continue; step 3b will skip idempotently.
 			}
-		} catch (err) {
-			if (err instanceof TRPCError) throw err;
-			// Can't read status (missing worktree dir, etc.) — not a
-			// conflict. Continue; step 3b will skip idempotently.
 		}
 	}
 
@@ -301,6 +334,10 @@ async function runDestroy(
 	let worktreeRemoved = false;
 	let branchDeleted = false;
 	let git: Awaited<ReturnType<typeof ctx.git>> | null = null;
+	let multiRepoMemberGits: Array<{
+		repoPath: string;
+		git: NonNullable<typeof git>;
+	}> = [];
 	if (local && !project) {
 		worktreeRemoved = !existsSync(local.worktreePath);
 		if (!worktreeRemoved) {
@@ -309,7 +346,19 @@ async function runDestroy(
 			);
 		}
 	}
-	if (local && project) {
+	if (local && project && multiRepo) {
+		// Fork module: member worktree fan-out + container removal (verified
+		// against each member git's registry; locked members leave the
+		// container on disk).
+		multiRepoMemberGits = await destroyMultiRepoWorktrees(
+			ctx,
+			multiRepo,
+			local.worktreePath,
+			warnings,
+		);
+		worktreeRemoved = true;
+	}
+	if (local && project && !multiRepo) {
 		worktreeRemoved = !existsSync(local.worktreePath);
 		try {
 			git = await ctx.git(project.repoPath);
@@ -379,6 +428,16 @@ async function runDestroy(
 	// ─── Step 4: Optional branch delete ────────────────────────────
 	// Keep this after the cloud commit point. If cloud delete fails, the
 	// workspace stays visible/retryable and the branch pointer remains intact.
+	// (MULTI-REPO WORKSPACE) the shared branch name is deleted in EVERY member
+	// (fork module; honest result — partial member coverage never reports true).
+	if (multiRepo && local?.branch && input.deleteBranch) {
+		branchDeleted = await deleteMultiRepoBranches(
+			multiRepoMemberGits,
+			multiRepo.memberRepoPaths.length,
+			local.branch,
+			warnings,
+		);
+	}
 	if (git && local?.branch && input.deleteBranch) {
 		try {
 			// An absent ref (renamed, pruned, or never materialized) already

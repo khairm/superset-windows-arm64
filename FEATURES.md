@@ -21,10 +21,12 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Agent status dots (Claude + Codex) | per-terminal dot + workspace rollup; host-service POST + JSONL watcher | `pane-map-hook`, `StatusIndicator` |
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
+| Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
 | Thread snooze / archive | per-thread timed Snooze + sticky Archive in the sidebar | `getWorkspaceSidebarBucket`, `APP_LAUNCH_ID`, `DashboardSidebarStateSection` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens | `useLinkClickHint` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
+| Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
 
 ## Machine-readable markers (the nightly gate reads this block)
 
@@ -40,12 +42,16 @@ pane-map-hook	apps/desktop/src/main
 scanForOsc133Cd	packages
 StatusIndicator	apps/desktop/src/renderer
 resolveNonGitFolder	packages/host-service
+readMultiRepoConfig	packages/host-service
+createMultiRepoWorkspaceFlow	packages/host-service
+MultiFolderProjectModal	apps/desktop/src/renderer
 getWorkspaceSidebarBucket	apps/desktop/src/renderer
 APP_LAUNCH_ID	apps/desktop/src/renderer
 DashboardSidebarStateSection	apps/desktop/src/renderer
 useLinkClickHint	apps/desktop/src/renderer
 v2KanbanCards	apps/desktop/src/renderer
 KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
+writeKanbanBackup	apps/desktop/src
 agent-wrappers	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer

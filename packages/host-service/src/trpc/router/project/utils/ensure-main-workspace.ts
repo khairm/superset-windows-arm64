@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import { TRPCError } from "@trpc/server";
 import { workspaces } from "../../../../db/schema";
+import { readMultiRepoConfig } from "../../../../runtime/git/multi-repo";
 import { NON_GIT_BRANCH } from "../../../../runtime/git/non-git";
 import type { HostServiceContext } from "../../../../types";
 
@@ -41,6 +42,16 @@ export async function ensureMainWorkspace(
 	opts?: { nonGit?: boolean },
 ): Promise<{ id: string } | null> {
 	try {
+		// (MULTI-REPO WORKSPACE) Multi-repo projects NEVER have a main
+		// workspace — their anchor repoPath is a config dir, not a workspace.
+		// Guarded at this chokepoint so the boot sweep, project.setup, adopt,
+		// and the single-repo create path can't re-mint one. A corrupt anchor
+		// config (readMultiRepoConfig throws) is equally not a candidate.
+		try {
+			if (readMultiRepoConfig(repoPath)) return null;
+		} catch {
+			return null;
+		}
 		return await ensureMainWorkspaceStrict(ctx, projectId, repoPath, opts);
 	} catch (err) {
 		console.warn(

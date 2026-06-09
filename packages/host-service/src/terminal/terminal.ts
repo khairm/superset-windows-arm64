@@ -405,6 +405,9 @@ onDaemonDisconnect((err) => {
 	);
 	for (const session of sessions.values()) {
 		for (const socket of session.sockets) {
+			// Drop ownership BEFORE close so onClose doesn't re-dispose this
+			// session via cleanupDetachedSession after we tear it down here.
+			socketOwners.delete(socket);
 			try {
 				socket.close(1011, "pty-daemon disconnected");
 			} catch {
@@ -814,6 +817,21 @@ export async function disposeSessionAndWait(
 	terminalId: string,
 	db: HostDb,
 ): Promise<DisposeSessionResult> {
+	// Interlock with an in-flight attach: if resolveAttachSessionOnce is mid-
+	// create for this terminalId, a kill racing it would tear down the daemon
+	// PTY and DB row only for the create to resume, respawn, and sessions.set —
+	// silently resurrecting a terminal the user just killed. Await the in-flight
+	// resolution so dispose runs AFTER it and tears down whatever it produced.
+	// No deadlock: nothing inside the attach resolution calls dispose.
+	const inFlightAttach = attachResolutions.get(terminalId);
+	if (inFlightAttach) {
+		try {
+			await inFlightAttach;
+		} catch {
+			// a failed attach left nothing extra to dispose
+		}
+	}
+
 	const session = sessions.get(terminalId);
 	let closePromise: Promise<DaemonCloseResult> | null = null;
 
@@ -823,6 +841,9 @@ export async function disposeSessionAndWait(
 			session.shellReadyTimeoutId = null;
 		}
 		for (const socket of session.sockets) {
+			// Drop ownership BEFORE close so the socket's onClose doesn't route
+			// to cleanupDetachedSession and double-dispose what we tear down here.
+			socketOwners.delete(socket);
 			socket.close(1000, "Session disposed");
 		}
 		session.sockets.clear();
@@ -1207,6 +1228,7 @@ export async function createTerminalSessionInternal({
 		portHintDecoder: new StringDecoder("utf8"),
 		modeTracker: createModeTracker(cols, rows),
 	};
+	const overwrittenSession = sessions.get(terminalId);
 	sessions.set(terminalId, session);
 	portManager.upsertSession(terminalId, workspaceId, pty.pid);
 
@@ -1218,7 +1240,32 @@ export async function createTerminalSessionInternal({
 		}, SHELL_READY_TIMEOUT_MS);
 	}
 
-	session.unsubscribeDaemon = daemon.subscribe(
+	// daemon.subscribe throws on a second replay-subscribe for an id another
+	// (unserialized) creator just subscribed — e.g. POST /terminal/sessions
+	// racing a WS respawn. Without rollback the throw would strand THIS
+	// half-built session (unsubscribeDaemon still null) in the map: attaches
+	// would bind sockets to it and the pane would be permanently output-dead.
+	// Restore the overwritten winner (or clear the entry) and rethrow. The
+	// daemon PTY is intentionally NOT killed — the racing winner shares it.
+	try {
+		session.unsubscribeDaemon = subscribeSessionToDaemon();
+	} catch (error) {
+		if (session.shellReadyTimeoutId) {
+			clearTimeout(session.shellReadyTimeoutId);
+			session.shellReadyTimeoutId = null;
+		}
+		if (sessions.get(terminalId) === session) {
+			if (overwrittenSession && overwrittenSession !== session) {
+				sessions.set(terminalId, overwrittenSession);
+			} else {
+				sessions.delete(terminalId);
+			}
+		}
+		throw error;
+	}
+
+	function subscribeSessionToDaemon() {
+		return daemon.subscribe(
 		terminalId,
 		{ replay: replayOnAdoption },
 		{
@@ -1346,7 +1393,8 @@ export async function createTerminalSessionInternal({
 				});
 			},
 		},
-	);
+		);
+	}
 
 	if (initialCommand) {
 		queueInitialCommand(session, initialCommand);
@@ -1515,7 +1563,11 @@ export function registerWorkspaceTerminalRoute({
 					if (mismatchError) return { error: mismatchError };
 				}
 
-				const session = await resolveAttachSessionOnce({
+				// The workspace mismatch was already validated against
+				// record.originWorkspaceId above, and every session this resolves
+				// (existing, adopted, or respawned) carries that same workspaceId —
+				// no re-check needed here.
+				return resolveAttachSessionOnce({
 					terminalId,
 					workspaceId: record.originWorkspaceId,
 					themeType: parseThemeType(c.req.query("themeType")),
@@ -1523,16 +1575,6 @@ export function registerWorkspaceTerminalRoute({
 					eventBus,
 					replayOnAdoption: c.req.query("replay") !== "0",
 				});
-				if ("error" in session) return session;
-				if (requestedWorkspaceId) {
-					const mismatchError = getTerminalWorkspaceMismatchError({
-						terminalId,
-						ownerWorkspaceId: session.workspaceId,
-						requestedWorkspaceId,
-					});
-					if (mismatchError) return { error: mismatchError };
-				}
-				return session;
 			};
 
 			return {
@@ -1588,6 +1630,11 @@ export function registerWorkspaceTerminalRoute({
 					// reaches the live PTY and it receives broadcast output. The `attached`
 					// handshake was already delivered, so we do not re-send it here.
 					if (!session.sockets.has(ws)) {
+						// Never re-admit a socket that is no longer OPEN: back-pressure
+						// eviction (broadcastBytes) and prune both delete-and-close a
+						// socket on purpose; healing it would replay a final keystroke
+						// from a torn-down socket and defeat the send-buffer cap.
+						if (ws.readyState !== SOCKET_OPEN) return;
 						const priorOwner = socketOwners.get(ws);
 						if (!priorOwner || priorOwner.terminalId !== terminalId) {
 							return;

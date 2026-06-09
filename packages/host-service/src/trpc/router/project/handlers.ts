@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { projects } from "../../../db/schema";
+import {
+	MULTI_REPO_ANCHORS_DIR,
+	type MultiRepoConfig,
+	multiRepoConfigPath,
+} from "../../../runtime/git/multi-repo";
 import type { HostServiceContext } from "../../../types";
 import { ensureMainWorkspaceStrict } from "./utils/ensure-main-workspace";
 import { persistLocalProject } from "./utils/persist-project";
@@ -49,7 +55,9 @@ function dirNameForEmpty(name: string): string {
 interface CreateResult {
 	projectId: string;
 	repoPath: string;
-	mainWorkspaceId: string;
+	/** null for multi-repo projects — they have NO main workspace by design;
+	 *  the renderer's finalize step already branches on null (project-only). */
+	mainWorkspaceId: string | null;
 }
 
 // Cloud v2Project.create catches v2_projects_org_slug_unique and re-throws
@@ -119,9 +127,15 @@ async function persistFromResolved(
 		/** (NON-GIT WORKSPACE) Create the main workspace without reading a git
 		 *  branch (uses the inert NON_GIT_BRANCH marker). */
 		nonGit?: boolean;
+		/** (MULTI-REPO WORKSPACE) Caller pre-allocated the project id (the
+		 *  anchor directory is named after it, so it must exist first). */
+		projectId?: string;
+		/** (MULTI-REPO WORKSPACE) Multi-repo projects have NO main workspace —
+		 *  only branch workspaces minted by the "+" fan-out. */
+		skipMainWorkspace?: boolean;
 	},
 ): Promise<CreateResult> {
-	const projectId = randomUUID();
+	const projectId = args.projectId ?? randomUUID();
 	let localProjectInserted = false;
 	let cloudProjectCreated = false;
 
@@ -136,17 +150,19 @@ async function persistFromResolved(
 		});
 		cloudProjectCreated = true;
 
-		const mainWorkspace = await ensureMainWorkspaceStrict(
-			ctx,
-			projectId,
-			args.resolved.repoPath,
-			{ nonGit: args.nonGit },
-		);
+		const mainWorkspace = args.skipMainWorkspace
+			? null
+			: await ensureMainWorkspaceStrict(
+					ctx,
+					projectId,
+					args.resolved.repoPath,
+					{ nonGit: args.nonGit },
+				);
 
 		return {
 			projectId,
 			repoPath: args.resolved.repoPath,
-			mainWorkspaceId: mainWorkspace.id,
+			mainWorkspaceId: mainWorkspace?.id ?? null,
 		};
 	} catch (err) {
 		if (cloudProjectCreated) {
@@ -251,6 +267,97 @@ export async function createFromNonGitFolder(
 		// User pointed us at an existing folder; never rm it.
 		cleanupRepoPathOnFailure: false,
 		nonGit: true,
+	});
+}
+
+/**
+ * (MULTI-REPO WORKSPACE) Create a project grouping N existing git repos.
+ *
+ * Every member path must resolve to a git work tree (fail loud otherwise);
+ * duplicate roots and duplicate basenames are rejected up front — basenames
+ * become the per-repo subfolder names inside every branch workspace's
+ * container, so they must be unambiguous. The project's repoPath is a small
+ * fork-owned ANCHOR directory holding the member-list config; it is not a git
+ * repo, so all existing non-git guards apply. NO main workspace is created —
+ * the project only ever has branch workspaces minted by the "+" fan-out.
+ */
+export async function createFromMultiRepo(
+	ctx: HostServiceContext,
+	args: { name: string; memberRepoPaths: string[] },
+): Promise<CreateResult> {
+	const roots: string[] = [];
+	for (const memberPath of args.memberRepoPaths) {
+		const root = await tryRevParseGitRoot(memberPath);
+		if (!root) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: `Not a git repository: ${memberPath}. Every member of a multi-repo workspace must be a git repo.`,
+			});
+		}
+		if (roots.includes(root)) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: `Repository selected twice: ${root}`,
+			});
+		}
+		roots.push(root);
+	}
+	if (roots.length < 2) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "A multi-repo workspace needs at least two git repositories.",
+		});
+	}
+	const seenBasenames = new Map<string, string>();
+	for (const root of roots) {
+		const base = basename(root);
+		// Case-insensitive key: Windows paths are case-insensitive, so "Repo"
+		// and "repo" would collide as container subfolders.
+		const clash = seenBasenames.get(base.toLowerCase());
+		if (clash) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: `Two repositories share the folder name "${base}" (${clash} and ${root}). Rename one — member folder names become the per-repo subfolders of each workspace.`,
+			});
+		}
+		seenBasenames.set(base.toLowerCase(), root);
+	}
+
+	const projectId = randomUUID();
+	const anchorPath = join(MULTI_REPO_ANCHORS_DIR, projectId);
+	try {
+		mkdirSync(anchorPath, { recursive: true });
+		const config: MultiRepoConfig = {
+			version: 1,
+			name: args.name,
+			memberRepoPaths: roots,
+		};
+		writeFileSync(
+			multiRepoConfigPath(anchorPath),
+			JSON.stringify(config, null, 2),
+		);
+	} catch (err) {
+		try {
+			rmSync(anchorPath, { recursive: true, force: true });
+		} catch {
+			// best-effort
+		}
+		throw new TRPCError({
+			code: "INTERNAL_SERVER_ERROR",
+			message: `Could not create multi-repo anchor at ${anchorPath}: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		});
+	}
+
+	const resolved = resolveNonGitFolder(anchorPath);
+	return persistFromResolved(ctx, {
+		name: args.name,
+		resolved,
+		// The anchor dir is ours — remove it if the saga unwinds.
+		cleanupRepoPathOnFailure: true,
+		projectId,
+		skipMainWorkspace: true,
 	});
 }
 

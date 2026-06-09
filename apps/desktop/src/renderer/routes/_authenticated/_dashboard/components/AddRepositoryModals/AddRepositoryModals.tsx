@@ -6,6 +6,7 @@ import {
 	useResolveNewProjectModal,
 } from "renderer/stores/add-repository-modal";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
+import { MultiFolderProjectModal } from "./components/MultiFolderProjectModal";
 import { NewProjectModal } from "./components/NewProjectModal";
 
 export function AddRepositoryModals() {
@@ -33,6 +34,17 @@ export function AddRepositoryModals() {
 				}}
 				onCreated={(result) => {
 					toast.success("Project created.");
+					resolveNewProject({ projectId: result.projectId });
+				}}
+				onError={(message) => toast.error(`Create failed: ${message}`)}
+			/>
+			<MultiFolderProjectModal
+				open={active.kind === "multi-folder"}
+				onOpenChange={(open) => {
+					if (!open) close();
+				}}
+				onSuccess={(result) => {
+					toast.success("Multi-repo workspace created.");
 					resolveNewProject({ projectId: result.projectId });
 				}}
 				onError={(message) => toast.error(`Create failed: ${message}`)}

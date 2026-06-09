@@ -1,4 +1,5 @@
 import { useKanbanData } from "../../kanban/hooks/useKanbanData";
+import { useKanbanBackup } from "./useKanbanBackup";
 
 /**
  * (KANBAN) Runs the board's ready-gated reconcile (materialise a card per
@@ -10,5 +11,7 @@ import { useKanbanData } from "../../kanban/hooks/useKanbanData";
  */
 export function KanbanReconciler() {
 	useKanbanData();
+	// (KANBAN BACKUP) append-only daily snapshot; see useKanbanBackup.
+	useKanbanBackup();
 	return null;
 }

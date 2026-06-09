@@ -8,14 +8,17 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { projects, workspaces } from "../../../db/schema";
+import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import { protectedProcedure, router } from "../../index";
+import { removeMultiRepoProjectArtifacts } from "../workspace-cleanup/multi-repo-cleanup";
 import { normalizeWorktreeBaseDir } from "../workspace-creation/shared/worktree-paths";
 import {
 	createFromClone,
 	createFromEmpty,
 	createFromImportLocal,
+	createFromMultiRepo,
 	createFromNonGitFolder,
 	createFromTemplate,
 } from "./handlers";
@@ -413,7 +416,11 @@ export const projectRouter = router({
 	probePath: protectedProcedure
 		.input(z.object({ repoPath: z.string().min(1) }))
 		.query(async ({ input }) => {
-			return { isGitRepo: await isGitRepo(input.repoPath) };
+			// gitRoot: isGitRepo is true anywhere INSIDE a work tree; callers that
+			// register repos (multi-folder picker) need the canonical ROOT so a
+			// picked subfolder doesn't masquerade as a repo of its own.
+			const gitRoot = await tryRevParseGitRoot(input.repoPath);
+			return { isGitRepo: gitRoot !== null, gitRoot };
 		}),
 
 	create: protectedProcedure
@@ -441,6 +448,12 @@ export const projectRouter = router({
 					z.object({
 						kind: z.literal("nonGitFolder"),
 						repoPath: z.string().min(1),
+					}),
+					// (MULTI-REPO WORKSPACE) Group N existing git repos under one
+					// project; "+" fans the same branch name out across all of them.
+					z.object({
+						kind: z.literal("multiRepo"),
+						memberRepoPaths: z.array(z.string().min(1)).min(2),
 					}),
 					z.object({
 						kind: z.literal("template"),
@@ -485,7 +498,34 @@ export const projectRouter = router({
 						name: input.name,
 						repoPath: input.mode.repoPath,
 					});
+				case "multiRepo":
+					return createFromMultiRepo(ctx, {
+						name: input.name,
+						memberRepoPaths: input.mode.memberRepoPaths,
+					});
 			}
+		}),
+
+	/**
+	 * (MULTI-REPO WORKSPACE) Member list for a multi-repo project, or
+	 * isMultiRepo:false for every other project. Consumed by the kanban
+	 * promote dialog's git-state resolution (a multi-repo project has no main
+	 * workspace, so the main-workspace-based probe can never resolve it).
+	 */
+	getMultiRepoInfo: protectedProcedure
+		.input(z.object({ projectId: z.string().uuid() }))
+		.query(async ({ ctx, input }) => {
+			const project = ctx.db.query.projects
+				.findFirst({ where: eq(projects.id, input.projectId) })
+				.sync();
+			// Not set up on this host yet -> simply not a local multi-repo project.
+			if (!project) return { isMultiRepo: false as const };
+			const config = readMultiRepoConfig(project.repoPath);
+			if (!config) return { isMultiRepo: false as const };
+			return {
+				isMultiRepo: true as const,
+				memberRepoPaths: config.memberRepoPaths,
+			};
 		}),
 
 	setup: protectedProcedure
@@ -684,17 +724,41 @@ export const projectRouter = router({
 				.where(eq(workspaces.projectId, input.projectId))
 				.all();
 
-			for (const ws of localWorkspaces) {
-				if (ws.worktreePath === localProject.repoPath) continue;
-				try {
-					const git = await ctx.git(localProject.repoPath);
-					await git.raw(["worktree", "remove", ws.worktreePath]);
-				} catch (err) {
-					console.warn("[project.remove] failed to remove worktree", {
-						projectId: input.projectId,
-						worktreePath: ws.worktreePath,
-						err,
-					});
+			// (MULTI-REPO WORKSPACE) The project repoPath is a non-git anchor;
+			// each workspace's worktreePath is a container of per-member
+			// worktrees. The fork module fans the removal out per member
+			// (best-effort, like the single-repo loop below), drops each
+			// container, and removes the fork-owned anchor dir itself after
+			// the rows are gone. Member repos are never touched.
+			let multiRepoConfig: ReturnType<typeof readMultiRepoConfig> = null;
+			try {
+				multiRepoConfig = readMultiRepoConfig(localProject.repoPath);
+			} catch (err) {
+				console.warn("[project.remove] unreadable multi-repo config", {
+					projectId: input.projectId,
+					err,
+				});
+			}
+			if (multiRepoConfig) {
+				await removeMultiRepoProjectArtifacts(
+					ctx,
+					multiRepoConfig,
+					localProject.repoPath,
+					localWorkspaces.map((ws) => ws.worktreePath),
+				);
+			} else {
+				for (const ws of localWorkspaces) {
+					if (ws.worktreePath === localProject.repoPath) continue;
+					try {
+						const git = await ctx.git(localProject.repoPath);
+						await git.raw(["worktree", "remove", ws.worktreePath]);
+					} catch (err) {
+						console.warn("[project.remove] failed to remove worktree", {
+							projectId: input.projectId,
+							worktreePath: ws.worktreePath,
+							err,
+						});
+					}
 				}
 			}
 

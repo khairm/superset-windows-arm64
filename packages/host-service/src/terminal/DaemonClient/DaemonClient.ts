@@ -199,24 +199,26 @@ export class DaemonClient {
 	): () => void {
 		let entry = this.callbacks.get(id);
 		const wasFirst = !entry;
-		if (!entry) {
-			entry = { output: new Set(), exit: new Set() };
-			this.callbacks.set(id, entry);
-		}
-		entry.output.add(cb.onOutput);
-		entry.exit.add(cb.onExit);
 		// Only the first subscribe per session id sends the wire `subscribe`.
 		// Subsequent local callbacks just register into the existing entry.
 		// The daemon's ring buffer is delivered once, on the first subscribe
 		// — so `replay: true` only makes sense on a fresh subscription.
 		// Loud-fail the surprising case where a later subscriber asks for
 		// replay; the caller needs to replay from a server-side cache
-		// instead (see terminal.ts replayBuffer).
+		// instead (see terminal.ts replayBuffer). Checked BEFORE registering
+		// callbacks — throwing after would leak them into the entry with no
+		// unsubscribe handle for the caller's catch to use.
 		if (!wasFirst && opts.replay) {
 			throw new Error(
 				`subscribe(${id}): replay is not available on a second subscribe; the daemon's buffer was already consumed.`,
 			);
 		}
+		if (!entry) {
+			entry = { output: new Set(), exit: new Set() };
+			this.callbacks.set(id, entry);
+		}
+		entry.output.add(cb.onOutput);
+		entry.exit.add(cb.onExit);
 		if (wasFirst) {
 			this.send({
 				type: "subscribe",
