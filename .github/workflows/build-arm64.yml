@@ -17,7 +17,7 @@ on:
       publish:
         description: 'Publish the desktop-v<version> Release (rebuilt in place; one version, no beta)'
         type: boolean
-        default: false
+        default: true
   # Reusable so nightly-merge.yml can invoke the exact same build.
   workflow_call:
     inputs:
