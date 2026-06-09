@@ -202,7 +202,69 @@ export function DashboardSidebar({
 		[orderedGroups],
 	);
 
-	const workspaceShortcutLabels = useDashboardSidebarShortcuts(orderedGroups);
+	// (HOVER-FREEZE) Don't reshuffle rows while the pointer is over the project
+	// list — tier transitions (active/idle flips, pins) re-sort the sidebar, and
+	// rows jumping under the cursor mid-interaction is jarring. While the
+	// pointer is inside (plus a short grace after it leaves, and for the whole
+	// of a drag) the rendered ORDER is pinned to the snapshot taken on entry;
+	// row CONTENT (dots, badges, children) stays live. The real order keeps
+	// updating/persisting underneath and applies the moment the freeze lifts.
+	const [isPointerOverList, setIsPointerOverList] = useState(false);
+	const frozenOrderRef = useRef<string[]>([]);
+	const unfreezeTimerRef = useRef<number | null>(null);
+	const handleListPointerEnter = useCallback(() => {
+		if (unfreezeTimerRef.current != null) {
+			// Re-entered within the grace window: stay on the existing snapshot.
+			window.clearTimeout(unfreezeTimerRef.current);
+			unfreezeTimerRef.current = null;
+			return;
+		}
+		if (!isPointerOverList) {
+			frozenOrderRef.current = orderedIds;
+			setIsPointerOverList(true);
+		}
+	}, [isPointerOverList, orderedIds]);
+	const handleListPointerLeave = useCallback(() => {
+		if (unfreezeTimerRef.current != null) {
+			window.clearTimeout(unfreezeTimerRef.current);
+		}
+		// Grace period: portals (context menus, hover cards) steal the pointer
+		// from the list element without the cursor visually leaving the sidebar.
+		unfreezeTimerRef.current = window.setTimeout(() => {
+			unfreezeTimerRef.current = null;
+			setIsPointerOverList(false);
+		}, 800);
+	}, []);
+	useEffect(
+		() => () => {
+			if (unfreezeTimerRef.current != null) {
+				window.clearTimeout(unfreezeTimerRef.current);
+			}
+		},
+		[],
+	);
+
+	// Freeze also spans an active drag (the pointer can wander off the list).
+	const orderFrozen = isPointerOverList || activeProject != null;
+	const displayGroups = useMemo(() => {
+		if (!orderFrozen) return orderedGroups;
+		const byId = new Map(orderedGroups.map((g) => [g.id, g]));
+		const kept = frozenOrderRef.current
+			.map((id) => byId.get(id))
+			.filter((g): g is DashboardSidebarProject => g != null);
+		if (kept.length === orderedGroups.length) return kept;
+		// Projects that appeared while frozen append at the end — visible
+		// without reshuffling the rows already under the pointer.
+		const keptIds = new Set(kept.map((g) => g.id));
+		return [...kept, ...orderedGroups.filter((g) => !keptIds.has(g.id))];
+	}, [orderFrozen, orderedGroups]);
+	// dnd-kit indices must match the RENDERED (possibly frozen) order.
+	const displayIds = useMemo(
+		() => displayGroups.map((g) => g.id),
+		[displayGroups],
+	);
+
+	const workspaceShortcutLabels = useDashboardSidebarShortcuts(displayGroups);
 
 	// Resolve the full project object for the active workspace from the id above
 	// (used by the footer / view-in-place logic).
@@ -252,16 +314,17 @@ export function DashboardSidebar({
 			if (!over || active.id === over.id) return;
 			const activeId = String(active.id);
 			const overId = String(over.id);
-			// Reorder in the rendered (tiered) order so indices match the drag.
-			const oldIndex = orderedIds.indexOf(activeId);
-			const newIndex = orderedIds.indexOf(overId);
+			// Reorder in the RENDERED (possibly hover-frozen) order so indices
+			// match the drag.
+			const oldIndex = displayIds.indexOf(activeId);
+			const newIndex = displayIds.indexOf(overId);
 			if (oldIndex === -1 || newIndex === -1) return;
 			// A row can't be dragged OUT of its tier: ignore a drop whose target is
 			// in a different pinned/active/idle tier (otherwise the re-partition would
 			// silently shuffle the row's within-tier position). Only same-tier
 			// reorders persist.
-			const activeGroup = orderedGroups[oldIndex];
-			const overGroup = orderedGroups[newIndex];
+			const activeGroup = displayGroups[oldIndex];
+			const overGroup = displayGroups[newIndex];
 			if (
 				activeGroup &&
 				overGroup &&
@@ -271,11 +334,14 @@ export function DashboardSidebar({
 			}
 			// Persist the dragged order. The 3-tier partition re-applies on render so
 			// the same-tier reorder sticks.
-			const newOrder = arrayMove(orderedIds, oldIndex, newIndex);
+			const newOrder = arrayMove(displayIds, oldIndex, newIndex);
+			// The user just placed this order — it IS the frozen view now (no
+			// snap-back while the pointer is still over the list).
+			frozenOrderRef.current = newOrder;
 			setProjectOrder(newOrder);
 			reorderProjects(newOrder);
 		},
-		[orderedGroups, orderedIds, reorderProjects],
+		[displayGroups, displayIds, reorderProjects],
 	);
 
 	return (
@@ -285,7 +351,11 @@ export function DashboardSidebar({
 					<div className="flex h-full flex-col border-r border-border bg-muted/45 dark:bg-muted/35">
 						<DashboardSidebarHeader isCollapsed={isCollapsed} />
 
-						<div className="flex-1 overflow-y-auto hide-scrollbar">
+						<div
+							className="flex-1 overflow-y-auto hide-scrollbar"
+							onPointerEnter={handleListPointerEnter}
+							onPointerLeave={handleListPointerLeave}
+						>
 							<DndContext
 								sensors={sensors}
 								collisionDetection={closestCenter}
@@ -300,10 +370,10 @@ export function DashboardSidebar({
 								onDragCancel={() => setActiveProject(null)}
 							>
 								<SortableContext
-									items={orderedIds}
+									items={displayIds}
 									strategy={verticalListSortingStrategy}
 								>
-									{orderedGroups.map((project) => (
+									{displayGroups.map((project) => (
 										<SortableProjectWrapper
 											key={project.id}
 											project={project}

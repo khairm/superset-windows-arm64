@@ -23,6 +23,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
 | Thread snooze / archive | per-thread timed Snooze + sticky Archive in the sidebar | `getWorkspaceSidebarBucket`, `APP_LAUNCH_ID`, `DashboardSidebarStateSection` |
+| Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens | `useLinkClickHint` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
@@ -55,5 +56,6 @@ writeKanbanBackup	apps/desktop/src
 agent-wrappers	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer
+(HOVER-FREEZE)	apps/desktop/src/renderer
 togglePinProject	apps/desktop/src/renderer
 ```

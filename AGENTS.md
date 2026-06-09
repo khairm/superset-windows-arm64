@@ -83,7 +83,8 @@ See `FEATURES.md` for the marker manifest. In brief:
 - **Thread snooze / archive** — per-thread timed Snooze (auto-returns) + sticky
   Archive under revealable Snoozed / Archived sidebar sections.
 - **Sidebar** — projects tier-sorted pinned > active > idle, stable manual drag order
-  within each tier; right-click Pin/Unpin.
+  within each tier; right-click Pin/Unpin. Rendered order freezes while the pointer
+  is over the list (and during drags); the live order applies on leave.
 - **Terminal links** — plain click copies a URL/path; Ctrl/Cmd+click opens (`.html`
   → browser).
 - **Agent-hook bash-wrap** — Gemini/Cursor `.sh` hooks run via Git-for-Windows bash
