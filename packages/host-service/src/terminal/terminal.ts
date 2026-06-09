@@ -1467,7 +1467,30 @@ export function registerWorkspaceTerminalRoute({
 					}
 
 					const session = sessions.get(terminalId ?? "");
-					if (!session || !session.sockets.has(ws)) return;
+					if (!session) return;
+					// (FORK FIX — terminal-input-orphan-heal) A socket whose client
+					// message arrives here but that is NOT in the live session's socket
+					// set lost an attach race: two concurrent connects for this
+					// terminalId each resolved/created a session and the later one
+					// replaced the entry in `sessions`, orphaning this socket on the
+					// now-dangling object. Its input/resize were being SILENTLY DROPPED
+					// (the renderer already received `attached` + the replay buffer from
+					// the dangling session, so the pane LOOKS connected — keystrokes just
+					// vanish). Re-register the socket on the live session so its input
+					// reaches the live PTY and it receives broadcast output. The `attached`
+					// handshake was already delivered, so we do not re-send it here.
+					if (!session.sockets.has(ws)) {
+						console.log(
+							"[terminal] input-orphan-heal: re-attaching orphaned socket " +
+								JSON.stringify({
+									terminalId,
+									sessionsSize: sessions.size,
+									liveSocketCount: session.sockets.size,
+									msgType: (message as { type?: string }).type ?? null,
+								}),
+						);
+						session.sockets.add(ws);
+					}
 
 					if (message.type === "dispose") {
 						disposeSession(terminalId ?? "", db);
