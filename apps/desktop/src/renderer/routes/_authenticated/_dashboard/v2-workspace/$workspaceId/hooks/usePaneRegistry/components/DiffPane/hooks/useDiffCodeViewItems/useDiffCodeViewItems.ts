@@ -10,6 +10,7 @@ import { getQueryKey } from "@trpc/react-query";
 import type { inferRouterInputs } from "@trpc/server";
 import { useMemo } from "react";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+import { MAX_RENDERABLE_CHANGED_LINES } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import type { ChangesetFile } from "../../../../../useChangeset";
 import type { DiffAnnotationMetadata } from "../useDiffAnnotations";
 
@@ -37,6 +38,10 @@ interface UseDiffCodeViewItemsResult {
 	pathToItemId: Map<string, string>;
 	hasPendingDiff: boolean;
 	hasDiffError: boolean;
+	/** (DIFF CAP) True when the changeset exceeds the renderable line budget; the
+	 *  per-file diffs are NOT fetched and the DiffPane shows a placeholder. */
+	isTooLarge: boolean;
+	totalChangedLines: number;
 }
 
 export function useDiffCodeViewItems({
@@ -53,13 +58,24 @@ export function useDiffCodeViewItems({
 	// A non-git folder has no changeset files anyway, so this is defense-in-depth.
 	const isGitRepo = useIsGitRepo(workspaceId);
 
+	const totalChangedLines = useMemo(
+		() => files.reduce((sum, file) => sum + file.additions + file.deletions, 0),
+		[files],
+	);
+	const isTooLarge = totalChangedLines > MAX_RENDERABLE_CHANGED_LINES;
+
 	const diffRequests = useMemo(
 		() =>
-			files.map((file) => ({
-				file,
-				input: createGetDiffInput(workspaceId, file),
-			})),
-		[files, workspaceId],
+			// (DIFF CAP) Skip every per-file getDiff when the changeset is too big to
+			// render — fetching + parsing all of it OOMs the renderer (the vendored
+			// fork repo hit 3.6M lines). The DiffPane renders a placeholder instead.
+			isTooLarge
+				? []
+				: files.map((file) => ({
+						file,
+						input: createGetDiffInput(workspaceId, file),
+					})),
+		[files, workspaceId, isTooLarge],
 	);
 
 	const diffQueries = useQueries({
@@ -154,6 +170,8 @@ export function useDiffCodeViewItems({
 		pathToItemId,
 		hasPendingDiff: diffQueries.some((query) => query.isPending),
 		hasDiffError: diffQueries.some((query) => query.isError),
+		isTooLarge,
+		totalChangedLines,
 	};
 }
 

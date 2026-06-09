@@ -5,7 +5,9 @@ import type {
 } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
 import type { RendererContext } from "@superset/panes";
+import { workspaceTrpc } from "@superset/workspace-client";
 import { useCallback, useMemo, useRef } from "react";
+import { DiffTooLargePlaceholder } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import type { DiffPaneData, PaneViewerData } from "../../../../types";
 import { type ChangesetFile, useChangeset } from "../../../useChangeset";
 import { useOpenInExternalEditor } from "../../../useOpenInExternalEditor";
@@ -52,6 +54,9 @@ export function DiffPane({
 	const { files, isLoading } = useChangeset({ workspaceId, ref });
 	const { viewedSet, setViewed } = useViewedFiles(workspaceId);
 	const openInExternalEditor = useOpenInExternalEditor(workspaceId);
+	const worktreePath = workspaceTrpc.workspace.get.useQuery({
+		id: workspaceId,
+	}).data?.worktreePath;
 	const threadAnnotationsByPath = useDiffAnnotationsByPath({ workspaceId });
 
 	const collapsedSet = useMemo(
@@ -99,14 +104,21 @@ export function DiffPane({
 		onCreateNewAgentSession,
 	});
 
-	const { items, fileByItemId, pathToItemId, hasPendingDiff, hasDiffError } =
-		useDiffCodeViewItems({
-			workspaceId,
-			files,
-			collapsedSet,
-			annotationsByPath: threadAnnotationsByPath,
-			extraAnnotationsByItemId: composerAnnotationsByItemId,
-		});
+	const {
+		items,
+		fileByItemId,
+		pathToItemId,
+		hasPendingDiff,
+		hasDiffError,
+		isTooLarge,
+		totalChangedLines,
+	} = useDiffCodeViewItems({
+		workspaceId,
+		files,
+		collapsedSet,
+		annotationsByPath: threadAnnotationsByPath,
+		extraAnnotationsByItemId: composerAnnotationsByItemId,
+	});
 	fileByItemIdRef.current = fileByItemId;
 
 	const { targetItemId } = useDiffCodeViewScroll({
@@ -229,6 +241,20 @@ export function DiffPane({
 			<div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
 				{isLoading ? "Loading…" : "No changes"}
 			</div>
+		);
+	}
+
+	// (DIFF CAP) Oversized changeset: useDiffCodeViewItems fetched nothing — show
+	// the placeholder instead of an empty pane (and never render millions of rows).
+	if (isTooLarge) {
+		return (
+			<DiffTooLargePlaceholder
+				changedLines={totalChangedLines}
+				fileCount={files.length}
+				onOpenInEditor={
+					worktreePath ? () => openInExternalEditor(worktreePath) : undefined
+				}
+			/>
 		);
 	}
 

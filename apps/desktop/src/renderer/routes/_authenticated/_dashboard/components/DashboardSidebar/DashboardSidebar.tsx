@@ -127,16 +127,9 @@ export function DashboardSidebar({
 		setProjectOrder(groups.map((p) => p.id));
 	}, [groups]);
 
-	const orderedGroups = useMemo(() => {
-		const byId = new Map(groups.map((g) => [g.id, g]));
-		return projectOrder
-			.map((id) => byId.get(id))
-			.filter((g): g is DashboardSidebarProject => g != null);
-	}, [groups, projectOrder]);
-
-	const workspaceShortcutLabels = useDashboardSidebarShortcuts(orderedGroups);
-
-	const activeV2Project = useMemo(() => {
+	// (ACTIVE-FIRST) The project whose workspace is currently open. It floats to
+	// the top of the sidebar, above the manual drag order of everything else.
+	const activeProjectId = useMemo(() => {
 		if (!activeV2WorkspaceId) return null;
 		for (const project of groups) {
 			for (const child of project.children) {
@@ -144,40 +137,99 @@ export function DashboardSidebar({
 					child.type === "workspace" &&
 					child.workspace.id === activeV2WorkspaceId
 				) {
-					return project;
+					return project.id;
 				}
 				if (child.type === "section") {
 					for (const ws of child.section.workspaces) {
-						if (ws.id === activeV2WorkspaceId) return project;
+						if (ws.id === activeV2WorkspaceId) return project.id;
 					}
 				}
 			}
-			// View-in-place: the open thread may be snoozed or archived (still shown
-			// in the main pane) — keep its project resolved so the footer persists.
+			// The open thread may be snoozed/archived (still shown in the main
+			// pane) — resolve its project so it still floats to the top.
 			for (const ws of project.snoozedWorkspaces) {
-				if (ws.id === activeV2WorkspaceId) return project;
+				if (ws.id === activeV2WorkspaceId) return project.id;
 			}
 			for (const ws of project.archivedWorkspaces) {
-				if (ws.id === activeV2WorkspaceId) return project;
+				if (ws.id === activeV2WorkspaceId) return project.id;
 			}
 		}
 		return null;
 	}, [groups, activeV2WorkspaceId]);
 
+	const orderedGroups = useMemo(() => {
+		const byId = new Map(groups.map((g) => [g.id, g]));
+		const ordered = projectOrder
+			.map((id) => byId.get(id))
+			.filter((g): g is DashboardSidebarProject => g != null);
+		// (ACTIVE-FIRST) Pin the currently-open project to the top, above the
+		// manual drag order of everything else.
+		if (!activeProjectId) return ordered;
+		const idx = ordered.findIndex((g) => g.id === activeProjectId);
+		if (idx <= 0) return ordered;
+		const next = [...ordered];
+		const [active] = next.splice(idx, 1);
+		next.unshift(active);
+		return next;
+	}, [groups, projectOrder, activeProjectId]);
+
+	// dnd-kit's SortableContext + handleDragEnd MUST use the SAME order the DOM
+	// renders (the floated `orderedGroups`). Driving the context from the raw
+	// projectOrder while rendering the floated order mis-maps drag indices and
+	// lands drops in the wrong slot. Dragging while a project is floated to the
+	// top simply re-pins it on the next render (the active project is pinned).
+	const orderedIds = useMemo(
+		() => orderedGroups.map((g) => g.id),
+		[orderedGroups],
+	);
+
+	const workspaceShortcutLabels = useDashboardSidebarShortcuts(orderedGroups);
+
+	// Resolve the full project object for the active workspace from the id above
+	// (used by the footer / view-in-place logic).
+	const activeV2Project = useMemo(
+		() =>
+			activeProjectId
+				? (groups.find((g) => g.id === activeProjectId) ?? null)
+				: null,
+		[groups, activeProjectId],
+	);
+
 	const handleDragEnd = useCallback(
 		({ active, over }: DragEndEvent) => {
-			if (over && active.id !== over.id) {
-				const oldIndex = projectOrder.indexOf(String(active.id));
-				const newIndex = projectOrder.indexOf(String(over.id));
-				if (oldIndex !== -1 && newIndex !== -1) {
-					const reordered = arrayMove(projectOrder, oldIndex, newIndex);
-					setProjectOrder(reordered);
-					reorderProjects(reordered);
-				}
-			}
 			setActiveProject(null);
+			if (!over || active.id === over.id) return;
+			const activeId = String(active.id);
+			const overId = String(over.id);
+			// The pinned active project floats to the top for display only —
+			// dragging it is a no-op (it re-pins on the next render).
+			if (activeProjectId && activeId === activeProjectId) return;
+			// Reorder in the rendered (floated) order so indices match what the
+			// user dragged.
+			const oldIndex = orderedIds.indexOf(activeId);
+			const newIndex = orderedIds.indexOf(overId);
+			if (oldIndex === -1 || newIndex === -1) return;
+			const reorderedDisplayed = arrayMove(orderedIds, oldIndex, newIndex);
+			// Translate back to a PURE manual order before persisting: the active
+			// project is floated only for display, so restore it to its prior
+			// manual position instead of persisting its floated top index —
+			// otherwise dragging any other project drifts the active one to the
+			// manual top (Codex review).
+			let manualOrder = reorderedDisplayed;
+			const priorActiveIndex = activeProjectId
+				? projectOrder.indexOf(activeProjectId)
+				: -1;
+			if (priorActiveIndex !== -1) {
+				const withoutActive = reorderedDisplayed.filter(
+					(id) => id !== activeProjectId,
+				);
+				withoutActive.splice(priorActiveIndex, 0, activeProjectId);
+				manualOrder = withoutActive;
+			}
+			setProjectOrder(manualOrder);
+			reorderProjects(manualOrder);
 		},
-		[projectOrder, reorderProjects],
+		[orderedIds, projectOrder, activeProjectId, reorderProjects],
 	);
 
 	return (
@@ -202,7 +254,7 @@ export function DashboardSidebar({
 								onDragCancel={() => setActiveProject(null)}
 							>
 								<SortableContext
-									items={projectOrder}
+									items={orderedIds}
 									strategy={verticalListSortingStrategy}
 								>
 									{orderedGroups.map((project) => (

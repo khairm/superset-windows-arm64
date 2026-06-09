@@ -17,6 +17,10 @@ import type {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { toAbsoluteWorkspacePath } from "shared/absolute-paths";
 import type { SidebarTabDefinition } from "../../types";
+import {
+	DiffTooLargePlaceholder,
+	MAX_RENDERABLE_CHANGED_LINES,
+} from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import { ChangesTabContent } from "./components/ChangesTabContent";
 
 export type { ChangesFilter, ChangesViewMode };
@@ -158,6 +162,11 @@ export function useChangesTab({
 	const totalChanges = files.length;
 	const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
 	const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+	// (DIFF CAP) Decide on the cheap numstat total — before ChangesTabContent
+	// mounts and fetches/parses any per-file diff — so an oversized changeset
+	// never reaches the renderer's diff path.
+	const totalChangedLines = totalAdditions + totalDeletions;
+	const isDiffTooLarge = totalChangedLines > MAX_RENDERABLE_CHANGED_LINES;
 
 	const [isRefreshing, setIsRefreshing] = useState(false);
 	const handleRefresh = useCallback(async () => {
@@ -200,7 +209,15 @@ export function useChangesTab({
 		</Tooltip>
 	);
 
-	const content = (
+	const content = isDiffTooLarge ? (
+		<DiffTooLargePlaceholder
+			changedLines={totalChangedLines}
+			fileCount={totalChanges}
+			onOpenInEditor={
+				worktreePath ? () => openInExternalEditor(worktreePath) : undefined
+			}
+		/>
+	) : (
 		<ChangesTabContent
 			workspaceId={workspaceId}
 			status={status}
