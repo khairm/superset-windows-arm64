@@ -1,6 +1,6 @@
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
@@ -14,6 +14,8 @@ import { WorkspaceNotFoundState } from "../WorkspaceNotFoundState";
 
 interface V2WorkspaceMountProps {
 	workspaceId: string;
+	/** (KANBAN) Forwarded to the tab bar's trailing slot (e.g. Board button). */
+	tabBarTrailingExtra?: ReactNode;
 }
 
 /**
@@ -26,7 +28,10 @@ interface V2WorkspaceMountProps {
  * by workspaceId), so the global #workspace-right-sidebar-slot portal that
  * V2WorkspaceView claims always has a single owner.
  */
-export function V2WorkspaceMount({ workspaceId }: V2WorkspaceMountProps) {
+export function V2WorkspaceMount({
+	workspaceId,
+	tabBarTrailingExtra,
+}: V2WorkspaceMountProps) {
 	const collections = useCollections();
 	const { ensureWorkspaceInSidebar } = useDashboardSidebarState();
 	const pendingTransaction = useWorkspaceTransactionsStore(
@@ -105,7 +110,7 @@ export function V2WorkspaceMount({ workspaceId }: V2WorkspaceMountProps) {
 
 	return (
 		<WorkspaceProvider workspace={workspace}>
-			<V2WorkspaceView />
+			<V2WorkspaceView tabBarTrailingExtra={tabBarTrailingExtra} />
 		</WorkspaceProvider>
 	);
 }

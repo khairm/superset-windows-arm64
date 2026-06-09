@@ -1,6 +1,6 @@
 import { Workspace } from "@superset/panes";
 import { workspaceTrpc } from "@superset/workspace-client";
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
@@ -52,13 +52,22 @@ export interface WorkspaceSearch {
 	openUrlRequestId?: string;
 }
 
+interface V2WorkspaceViewProps extends WorkspaceSearch {
+	/**
+	 * (KANBAN) Extra control rendered at the trailing end of the tab bar —
+	 * the collapse-split injects its "back to Board" button here. Not a URL
+	 * search param.
+	 */
+	tabBarTrailingExtra?: ReactNode;
+}
+
 /**
  * The full workspace centre — terminals / changes / files — for whichever
  * workspace is in the surrounding WorkspaceProvider. Extracted from the route
  * page so the Kanban collapse-split can mount the exact same view. Includes the
  * missing-worktree guard (previously in the outer route component).
  */
-export function V2WorkspaceView(search: WorkspaceSearch) {
+export function V2WorkspaceView(search: V2WorkspaceViewProps) {
 	const { workspace } = useWorkspace();
 	const workspaceStatusQuery = workspaceTrpc.workspace.get.useQuery(
 		{ id: workspace.id },
@@ -95,7 +104,8 @@ function V2WorkspaceCenter({
 	openUrl,
 	openUrlTarget,
 	openUrlRequestId,
-}: WorkspaceSearch) {
+	tabBarTrailingExtra,
+}: V2WorkspaceViewProps) {
 	const { workspace } = useWorkspace();
 	const workspaceId = workspace.id;
 
@@ -298,10 +308,13 @@ function V2WorkspaceCenter({
 								/>
 							)}
 							renderTabBarTrailing={() => (
-								<BackgroundTerminalsButton
-									workspaceId={workspaceId}
-									store={store}
-								/>
+								<>
+									<BackgroundTerminalsButton
+										workspaceId={workspaceId}
+										store={store}
+									/>
+									{tabBarTrailingExtra}
+								</>
 							)}
 							renderEmptyState={() => (
 								<WorkspaceEmptyState

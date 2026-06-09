@@ -1,5 +1,9 @@
 import { toast } from "@superset/ui/sonner";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import {
+	useMatchRoute,
+	useNavigate,
+	useRouterState,
+} from "@tanstack/react-router";
 import { useState } from "react";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -60,11 +64,21 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const [renameValue, setRenameValue] = useState(workspaceName);
 	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
-	const isActive = !!matchRoute({
-		to: "/v2-workspace/$workspaceId",
-		params: { workspaceId },
-		fuzzy: true,
+	// (KANBAN) When the kanban view is showing, sidebar selection opens the
+	// workspace INSIDE the collapse-split (board rail stays) instead of
+	// navigating away from the board.
+	const onKanban = !!matchRoute({ to: "/kanban", fuzzy: true });
+	const kanbanOpenWorkspaceId = useRouterState({
+		select: (s) => (s.location.search as { cardId?: string }).cardId,
 	});
+
+	const isActive =
+		!!matchRoute({
+			to: "/v2-workspace/$workspaceId",
+			params: { workspaceId },
+			fuzzy: true,
+		}) ||
+		(onKanban && kanbanOpenWorkspaceId === workspaceId);
 
 	const handleClick = () => {
 		if (isRenaming) return;
@@ -73,6 +87,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 		// active terminal's source on focus, so unfocused terminals keep
 		// their unread dot until the user actually visits them — matching
 		// the per-terminal-dots indicator we render in the sidebar row.
+		if (onKanban) {
+			navigate({ to: "/kanban", search: { cardId: workspaceId } });
+			return;
+		}
 		navigate({
 			to: "/v2-workspace/$workspaceId",
 			params: { workspaceId },
