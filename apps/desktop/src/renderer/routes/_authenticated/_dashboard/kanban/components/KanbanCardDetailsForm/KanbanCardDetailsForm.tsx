@@ -1,3 +1,4 @@
+import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
 import { Label } from "@superset/ui/label";
 import { Textarea } from "@superset/ui/textarea";
@@ -16,18 +17,24 @@ interface KanbanCardDetailsFormProps {
 	/** Optionally render the repo/branch context line (bound cards). */
 	subtitle?: string | null;
 	autoFocusTitle?: boolean;
+	/**
+	 * Modal context: renders a Save button and lets Enter save + close.
+	 * Every keystroke is already persisted — this is the explicit dismissal.
+	 */
+	onRequestClose?: () => void;
 }
 
 /**
  * Editor for a card's task details (title / description / deadline). Shared by
  * the Queued-card modal (unbound cards) and the right-panel Card tab (bound
- * cards). Writes directly to the local Kanban cards collection. Title/description
- * commit on blur; the date commits immediately.
+ * cards). Writes through to the local Kanban cards collection on every
+ * keystroke — closing the modal mid-edit can never lose input.
  */
 export function KanbanCardDetailsForm({
 	cardId,
 	subtitle,
 	autoFocusTitle,
+	onRequestClose,
 }: KanbanCardDetailsFormProps) {
 	const collections = useCollections();
 	const { data: [card] = [] } = useLiveQuery(
@@ -111,13 +118,18 @@ export function KanbanCardDetailsForm({
 						value={title}
 						// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
 						autoFocus={autoFocusTitle}
-						onChange={(e) => setTitle(e.target.value)}
+						onChange={(e) => {
+							setTitle(e.target.value);
+							commit({ title: e.target.value });
+						}}
 						onFocus={() => {
 							titleFocused.current = true;
 						}}
 						onBlur={() => {
 							titleFocused.current = false;
-							commit({ title });
+						}}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") onRequestClose?.();
 						}}
 						placeholder="Task title"
 					/>
@@ -136,13 +148,22 @@ export function KanbanCardDetailsForm({
 				<Textarea
 					id="kanban-card-description"
 					value={description}
-					onChange={(e) => setDescription(e.target.value)}
+					onChange={(e) => {
+						setDescription(e.target.value);
+						commit({
+							description: e.target.value.trim() ? e.target.value : null,
+						});
+					}}
 					onFocus={() => {
 						descFocused.current = true;
 					}}
 					onBlur={() => {
 						descFocused.current = false;
-						commit({ description: description.trim() ? description : null });
+					}}
+					onKeyDown={(e) => {
+						// Plain Enter inserts a newline; Ctrl/Cmd+Enter saves + closes.
+						if (e.key === "Enter" && (e.ctrlKey || e.metaKey))
+							onRequestClose?.();
 					}}
 					placeholder="Optional description"
 					rows={5}
@@ -160,11 +181,22 @@ export function KanbanCardDetailsForm({
 					onChange={(e) =>
 						commit({ deadline: inputValueToDeadline(e.target.value) })
 					}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") onRequestClose?.();
+					}}
 				/>
 				<span className="text-[11px] text-muted-foreground">
 					Turns yellow on the due day, red after it passes.
 				</span>
 			</div>
+
+			{onRequestClose ? (
+				<div className="flex justify-end">
+					<Button type="button" onClick={onRequestClose}>
+						Save
+					</Button>
+				</div>
+			) : null}
 		</div>
 	);
 }

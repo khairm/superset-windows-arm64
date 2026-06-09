@@ -28,7 +28,11 @@ export function QueuedCardModal({ cardId, onClose }: QueuedCardModalProps) {
 					<DialogTitle>Task</DialogTitle>
 				</DialogHeader>
 				{cardId != null ? (
-					<KanbanCardDetailsForm cardId={cardId} autoFocusTitle />
+					<KanbanCardDetailsForm
+						cardId={cardId}
+						autoFocusTitle
+						onRequestClose={onClose}
+					/>
 				) : null}
 			</DialogContent>
 		</Dialog>
