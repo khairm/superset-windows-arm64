@@ -24,7 +24,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
 | Thread snooze / archive | per-thread timed Snooze + sticky Archive in the sidebar | `getWorkspaceSidebarBucket`, `APP_LAUNCH_ID`, `DashboardSidebarStateSection` |
 | Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
-| Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens | `useLinkClickHint` |
+| Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
@@ -50,6 +50,7 @@ getWorkspaceSidebarBucket	apps/desktop/src/renderer
 APP_LAUNCH_ID	apps/desktop/src/renderer
 DashboardSidebarStateSection	apps/desktop/src/renderer
 useLinkClickHint	apps/desktop/src/renderer
+openHtmlInBrowser	apps/desktop/src
 v2KanbanCards	apps/desktop/src/renderer
 KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
 writeKanbanBackup	apps/desktop/src

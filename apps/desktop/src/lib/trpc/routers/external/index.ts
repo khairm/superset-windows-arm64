@@ -106,6 +106,39 @@ async function openPathInApp(
 	await shell.openPath(filePath);
 }
 
+// (HTML-TO-BROWSER) Candidate Chrome launch commands per platform. Only
+// existence-verified executables are returned on Windows so a failed candidate
+// can fall through to the OS-default handler instead of silently no-opping.
+function getChromeCandidates(
+	filePath: string,
+): { command: string; args: string[]; waitForExit?: boolean }[] {
+	if (process.platform === "win32") {
+		const roots = [
+			process.env.ProgramFiles,
+			process.env["ProgramFiles(x86)"],
+			process.env.LOCALAPPDATA,
+		].filter((root): root is string => Boolean(root));
+		return roots
+			.map((root) =>
+				nodePath.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+			)
+			.filter((exe) => fs.existsSync(exe))
+			.map((exe) => ({
+				command: exe,
+				args: [filePath],
+				waitForExit: false,
+			}));
+	}
+	if (process.platform === "darwin") {
+		return [{ command: "open", args: ["-a", "Google Chrome", filePath] }];
+	}
+	return [
+		{ command: "google-chrome", args: [filePath] },
+		{ command: "google-chrome-stable", args: [filePath] },
+		{ command: "chromium", args: [filePath] },
+	];
+}
+
 /**
  * External operations router.
  * Handles opening URLs and files in external applications.
@@ -274,6 +307,44 @@ export const createExternalRouter = () => {
 					}
 
 					await openPathInApp(filePath, app);
+				}),
+			),
+
+		// (HTML-TO-BROWSER) Open a local .html/.htm file in Chrome — terminal
+		// links to generated reports are for VIEWING, not editing. Falls back
+		// to the OS default handler when Chrome isn't installed.
+		openHtmlInBrowser: publicProcedure
+			.input(
+				z.object({
+					path: z.string(),
+					/** Same contract as openFileInEditor: required for relative paths. */
+					worktreePath: z.string().optional(),
+				}),
+			)
+			.mutation(({ input }) =>
+				withResolveGuard(async () => {
+					const filePath = resolvePath(input.path, input.worktreePath);
+					if (!/\.html?$/i.test(filePath)) {
+						throw new TRPCError({
+							code: "BAD_REQUEST",
+							message: "openHtmlInBrowser only accepts .html/.htm paths",
+						});
+					}
+					for (const cmd of getChromeCandidates(filePath)) {
+						try {
+							await spawnAsync(cmd.command, cmd.args, {
+								waitForExit: cmd.waitForExit,
+							});
+							return { opened: "chrome" as const };
+						} catch {
+							// try the next candidate
+						}
+					}
+					console.warn(
+						"[external/openHtmlInBrowser] Chrome not found, using OS default",
+					);
+					await shell.openPath(filePath);
+					return { opened: "os-default" as const };
 				}),
 			),
 	});

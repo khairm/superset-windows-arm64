@@ -86,7 +86,7 @@ See `FEATURES.md` for the marker manifest. In brief:
   within each tier; right-click Pin/Unpin. Rendered order freezes while the pointer
   is over the list (and during drags); the live order applies on leave.
 - **Terminal links** — plain click copies a URL/path; Ctrl/Cmd+click opens (`.html`
-  → browser).
+  → Chrome, OS-default handler fallback).
 - **Agent-hook bash-wrap** — Gemini/Cursor `.sh` hooks run via Git-for-Windows bash
   instead of opening in an editor.
 - **Kanban board (Tasks & PRs → Kanban)** — a device-local board mirroring every

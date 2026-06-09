@@ -265,6 +265,22 @@ export function TerminalPane({
 						return;
 					}
 					event.preventDefault();
+					// (HTML-TO-BROWSER) A linked *.html path opens in Chrome (OS
+					// default handler as fallback) regardless of the open tier —
+					// terminal links to generated reports are for viewing, not
+					// editing. Other surfaces (Changes/Files) keep editor behavior.
+					if (/\.html?$/i.test(link.resolvedPath)) {
+						electronTrpcClient.external.openHtmlInBrowser
+							.mutate({ path: link.resolvedPath })
+							.catch((error) => {
+								console.error(
+									"[v2 Terminal] Failed to open HTML in browser:",
+									link.resolvedPath,
+									error,
+								);
+							});
+						return;
+					}
 					if (action === "external") {
 						openInExternalEditor(link.resolvedPath, {
 							line: link.row,
