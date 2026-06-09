@@ -520,6 +520,22 @@ def main():
     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
     agent_id = (os.environ.get("SUPERSET_AGENT_ID") or "claude").strip()
 
+    # (BA diagnostic) When background_tasks is non-empty, dump its shape so we can
+    # tell an actively-working teammate/subagent (should be YELLOW) apart from a
+    # passive background shell/cloud session (BLUE). Truncated; never raises.
+    if has_background:
+        try:
+            _log({
+                "event": event,
+                "terminalId": terminal_id,
+                "sessionId": session_id,
+                "action": "bg-tasks-debug",
+                "bgCount": len(bg_tasks) if isinstance(bg_tasks, list) else -1,
+                "bgTasks": json.dumps(bg_tasks)[:1500],
+            })
+        except Exception:
+            pass
+
     if not terminal_id:
         _log({
             "event": event, "tool": tool, "mappedEventType": None,
