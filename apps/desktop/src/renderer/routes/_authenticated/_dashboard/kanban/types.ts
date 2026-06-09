@@ -17,6 +17,13 @@ export interface KanbanCardView {
 	workspace: SelectV2Workspace | null;
 	projectName: string | null;
 	bucket: KanbanCardBucket;
+	/**
+	 * Resolved DISPLAY title. For a BOUND card it is derived live from the branch
+	 * (same source as the sidebar — impossible to diverge); the card's stored
+	 * `title` is used ONLY for unbound (Queued) cards. Mirrors how bucket/snooze
+	 * are resolved for bound vs unbound cards.
+	 */
+	title: string;
 }
 
 /** A column plus its cards split into the three rendered buckets (each sorted). */

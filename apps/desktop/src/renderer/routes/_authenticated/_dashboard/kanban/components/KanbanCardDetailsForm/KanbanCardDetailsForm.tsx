@@ -9,6 +9,7 @@ import {
 	deadlineToInputValue,
 	inputValueToDeadline,
 } from "../../utils/deadlineUrgency";
+import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
 interface KanbanCardDetailsFormProps {
 	cardId: string;
@@ -36,6 +37,19 @@ export function KanbanCardDetailsForm({
 				.where(({ c }) => eq(c.id, cardId)),
 		[collections, cardId],
 	);
+
+	// A BOUND card's title is the branch name (derived live, same source as the
+	// sidebar — can't diverge), so it's read-only here. Only UNBOUND (Queued)
+	// cards have an editable title stored on the card.
+	const { data: [boundWorkspace] = [] } = useLiveQuery(
+		(q) =>
+			q
+				.from({ w: collections.v2Workspaces })
+				.where(({ w }) => eq(w.id, card?.workspaceId ?? "")),
+		[collections, card?.workspaceId],
+	);
+	const isBound = card?.workspaceId != null;
+	const boundTitle = boundWorkspace ? deriveCardTitle(boundWorkspace) : "";
 
 	const [title, setTitle] = useState("");
 	const [description, setDescription] = useState("");
@@ -78,21 +92,36 @@ export function KanbanCardDetailsForm({
 				<Label htmlFor="kanban-card-title" className="text-xs">
 					Title
 				</Label>
-				<Input
-					id="kanban-card-title"
-					value={title}
-					// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
-					autoFocus={autoFocusTitle}
-					onChange={(e) => setTitle(e.target.value)}
-					onFocus={() => {
-						titleFocused.current = true;
-					}}
-					onBlur={() => {
-						titleFocused.current = false;
-						commit({ title });
-					}}
-					placeholder="Task title"
-				/>
+				{isBound ? (
+					<>
+						<Input
+							id="kanban-card-title"
+							value={boundTitle}
+							readOnly
+							disabled
+							className="opacity-100"
+						/>
+						<span className="text-[11px] text-muted-foreground">
+							Follows the branch name — rename the branch to change it.
+						</span>
+					</>
+				) : (
+					<Input
+						id="kanban-card-title"
+						value={title}
+						// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
+						autoFocus={autoFocusTitle}
+						onChange={(e) => setTitle(e.target.value)}
+						onFocus={() => {
+							titleFocused.current = true;
+						}}
+						onBlur={() => {
+							titleFocused.current = false;
+							commit({ title });
+						}}
+						placeholder="Task title"
+					/>
+				)}
 				{subtitle ? (
 					<span className="truncate font-mono text-[11px] text-muted-foreground">
 						{subtitle}

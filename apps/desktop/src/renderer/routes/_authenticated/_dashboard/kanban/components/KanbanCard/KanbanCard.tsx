@@ -151,13 +151,20 @@ export function KanbanCard({
 							<p
 								className="line-clamp-2 text-sm leading-snug font-medium"
 								onClick={stop}
-								onDoubleClick={(e) => {
-									stop(e);
-									setTitleDraft(card.title);
-									setEditing("title");
-								}}
+								// Only UNBOUND (Queued) cards have an editable title. A bound
+								// card's title IS the branch name (view.title, derived live) —
+								// rename the branch to change it, so it can't diverge.
+								onDoubleClick={
+									workspace
+										? undefined
+										: (e) => {
+												stop(e);
+												setTitleDraft(card.title);
+												setEditing("title");
+											}
+								}
 							>
-								{card.title || "Untitled"}
+								{view.title || "Untitled"}
 							</p>
 						)}
 						{subtitle ? (

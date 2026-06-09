@@ -285,7 +285,17 @@ export function useKanbanData(): UseKanbanDataResult {
 					bucket = queuedCardBucket(card, now);
 				}
 
-				const view: KanbanCardView = { card, workspace, projectName, bucket };
+				// Bound cards take their title LIVE from the branch (same object the
+				// sidebar reads — can't diverge); the stored card.title is only the
+				// source for unbound (Queued) cards.
+				const title = workspace ? deriveCardTitle(workspace) : card.title;
+				const view: KanbanCardView = {
+					card,
+					workspace,
+					projectName,
+					bucket,
+					title,
+				};
 				if (bucket === "archived") archived.push(view);
 				else if (bucket === "snoozed") snoozed.push(view);
 				else active.push(view);
