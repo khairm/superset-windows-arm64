@@ -25,6 +25,10 @@ on:
       publish:
         type: string
         default: 'none'
+      ref:
+        description: 'Git ref to build (default: the triggering ref)'
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -43,6 +47,7 @@ jobs:
       - name: Checkout fork source
         uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 1
 
       - name: Read app version

@@ -1,0 +1,172 @@
+name: Nightly upstream merge
+
+# The ongoing half of the architecture. Nightly: if upstream superset published a
+# newer desktop-v* tag than .fork/upstream-baseline.txt, merge that tag into the
+# fork. git's 3-way merge handles the non-conflicting majority deterministically;
+# Opus (--effort high) resolves ONLY the conflicted files, preserving every
+# feature. Then the FEATURES.md marker gate runs, then the deterministic ARM64
+# build. On a clean merge + green build the build publishes a full Release and we
+# fast-forward the baseline. Any failure (unresolvable conflict, lost marker,
+# build failure) hard-aborts and leaves the baseline untouched -> recovery loop.
+#
+# AI cost scales with the UPSTREAM delta per release, NOT with how large the fork
+# grows. The build itself stays 100% AI-free.
+#
+# NOTE: schedule only fires from the DEFAULT branch, so this is dormant until the
+# fork-baseline branch is promoted to main.
+
+on:
+  schedule:
+    - cron: '0 5 * * *' # 05:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: 'Merge a specific upstream desktop-v* tag (blank = latest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.do.outputs.should_build }}
+      newtag: ${{ steps.do.outputs.newtag }}
+      version: ${{ steps.do.outputs.version }}
+      candidate: ${{ steps.do.outputs.candidate }}
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+      # Conflict resolution can touch large files; give Opus headroom.
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000'
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Merge upstream + resolve + gate
+        id: do
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "superset-arm64-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          # --- detect the upstream tag to merge --------------------------------
+          git remote add upstream https://github.com/superset-sh/superset.git 2>/dev/null || true
+          git fetch --no-recurse-submodules upstream 'refs/tags/desktop-v*:refs/tags/desktop-v*'
+          FORCE='${{ github.event.inputs.force_tag }}'
+          if [ -n "$FORCE" ]; then
+            NEWTAG="$FORCE"
+          else
+            LATEST=$(git tag -l 'desktop-v*' | sed -n 's/^desktop-v\([0-9][0-9.]*\)$/\1/p' | sort -V | tail -1)
+            NEWTAG="desktop-v${LATEST}"
+          fi
+          BASE=$(tr -d '[:space:]' < .fork/upstream-baseline.txt)
+          echo "baseline=$BASE  latest_upstream=$NEWTAG"
+          if [ "$NEWTAG" = "$BASE" ]; then
+            echo "Already at $BASE — nothing to merge."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$NEWTAG^{commit}" >/dev/null; then
+            echo "::error::upstream tag $NEWTAG not found"; exit 1
+          fi
+
+          # --- candidate branch + merge ---------------------------------------
+          CAND="nightly/${NEWTAG}"
+          git switch -c "$CAND"
+          echo "Merging $NEWTAG into the fork (no auto-commit)…"
+          set +e
+          git merge --no-commit --no-ff "refs/tags/$NEWTAG^{commit}"
+          set -e
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          if [ -n "$CONFLICTS" ]; then
+            echo "::group::conflicts to resolve"; echo "$CONFLICTS"; echo "::endgroup::"
+            npm install -g @anthropic-ai/claude-code
+            PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository mid-merge: upstream superset tag ${NEWTAG} is being merged into our Windows-ARM64 fork. ONLY the files listed by 'git diff --name-only --diff-filter=U' are conflicted. Resolve EVERY conflicted file: combine upstream's change with our fork's feature so BOTH intents survive and our feature keeps working; where upstream deliberately removed or refactored something we had only lightly touched, follow upstream. Do NOT edit any non-conflicted file. Do NOT weaken or remove any feature marker tracked in FEATURES.md. After resolving each file run 'git add <file>'. Do NOT commit. Do NOT run any other git command. When every conflict is resolved and staged, stop. Output nothing."
+            attempt=1
+            while [ $attempt -le 3 ]; do
+              echo "::group::claude resolve attempt $attempt"
+              claude --dangerously-skip-permissions --model opus --effort high -p "$PROMPT" || true
+              echo "::endgroup::"
+              if [ -z "$(git diff --name-only --diff-filter=U || true)" ]; then break; fi
+              attempt=$((attempt+1))
+            done
+            REMAIN=$(git diff --name-only --diff-filter=U || true)
+            if [ -n "$REMAIN" ]; then
+              echo "::error::Opus could not resolve all conflicts for $NEWTAG — recovery: fix locally and re-baseline. Remaining:"; echo "$REMAIN"
+              exit 1
+            fi
+          else
+            echo "Clean merge — no conflicts."
+          fi
+
+          # --- feature-marker gate (FEATURES.md) ------------------------------
+          echo "::group::feature-marker gate"
+          MISSING=0
+          # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
+          awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md | while IFS=$'\t' read -r tok root; do
+            [ -n "$tok" ] || continue
+            if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
+              echo "  OK   $tok ($root)"
+            else
+              echo "::error::feature marker MISSING after merge: '$tok' under $root"
+              echo missing >> "$RUNNER_TEMP/marker-missing"
+            fi
+          done
+          echo "::endgroup::"
+          if [ -f "$RUNNER_TEMP/marker-missing" ]; then
+            echo "::error::A feature was dropped by the $NEWTAG merge — rejecting. Recovery: fix locally and re-baseline."
+            exit 1
+          fi
+
+          # --- record new baseline + commit the merge -------------------------
+          printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
+          git add -A
+          git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present."
+          git push origin "$CAND"
+
+          VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "newtag=$NEWTAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "candidate=$CAND" >> "$GITHUB_OUTPUT"
+          echo "Merged $NEWTAG -> candidate $CAND (version $VERSION). Building next."
+
+  build:
+    needs: merge
+    if: needs.merge.outputs.should_build == 'true'
+    uses: ./.github/workflows/build-arm64.yml
+    with:
+      ref: ${{ needs.merge.outputs.candidate }}
+      publish: release
+
+  advance:
+    needs: [merge, build]
+    if: needs.merge.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Fast-forward main to the verified candidate + clean up
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND='${{ needs.merge.outputs.candidate }}'
+          git fetch origin "$CAND"
+          # The candidate is main + the merge commit, so this is a fast-forward.
+          git push origin FETCH_HEAD:refs/heads/main
+          git push origin --delete "$CAND"
+          echo "Baseline advanced to ${{ needs.merge.outputs.newtag }}; Release published by the build job."
