@@ -5,6 +5,11 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 
 const BACKUP_DEBOUNCE_MS = 10_000;
+// Change-driven writes alone can skip a whole calendar day: the day's file is
+// only created by the first write attempt AFTER midnight, so a day where the
+// board never changes would get no snapshot. A low-frequency retry guarantees
+// every day (with a non-empty board) gets one; the writer no-ops once it exists.
+const BACKUP_RETRY_MS = 30 * 60_000;
 
 /**
  * (KANBAN BACKUP) Append-only daily snapshot of the board to
@@ -42,7 +47,7 @@ export function useKanbanBackup(): void {
 	useEffect(() => {
 		if (!organizationId) return;
 		if (!cards || cards.length === 0) return;
-		const timer = setTimeout(() => {
+		const write = () => {
 			mutateRef.current({
 				organizationId,
 				cardCount: cards.length,
@@ -60,7 +65,12 @@ export function useKanbanBackup(): void {
 					2,
 				),
 			});
-		}, BACKUP_DEBOUNCE_MS);
-		return () => clearTimeout(timer);
+		};
+		const timer = setTimeout(write, BACKUP_DEBOUNCE_MS);
+		const retry = setInterval(write, BACKUP_RETRY_MS);
+		return () => {
+			clearTimeout(timer);
+			clearInterval(retry);
+		};
 	}, [organizationId, cards, columns]);
 }
