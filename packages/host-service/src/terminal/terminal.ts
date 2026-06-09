@@ -271,6 +271,122 @@ interface TerminalSession {
 
 /** PTY lifetime is independent of socket lifetime — sockets detach/reattach freely. */
 const sessions = new Map<string, TerminalSession>();
+const attachResolutions = new Map<
+	string,
+	Promise<TerminalSession | { error: string }>
+>();
+const socketOwners = new WeakMap<TerminalSocket, TerminalSession>();
+
+function cleanupDetachedSession(session: TerminalSession, reason: string): void {
+	if (sessions.get(session.terminalId) === session) return;
+	if (session.sockets.size > 0) return;
+
+	if (session.shellReadyTimeoutId) {
+		clearTimeout(session.shellReadyTimeoutId);
+		session.shellReadyTimeoutId = null;
+	}
+	if (session.unsubscribeDaemon) {
+		try {
+			session.unsubscribeDaemon();
+		} catch (error) {
+			console.error("[terminal] failed to cleanup detached daemon subscription", {
+				terminalId: session.terminalId,
+				reason,
+				error,
+			});
+		}
+		session.unsubscribeDaemon = null;
+	}
+	try {
+		session.modeTracker.dispose();
+	} catch (error) {
+		console.error("[terminal] failed to cleanup detached mode tracker", {
+			terminalId: session.terminalId,
+			reason,
+			error,
+		});
+	}
+
+	console.log("[terminal] cleaned detached session", {
+		terminalId: session.terminalId,
+		reason,
+	});
+}
+
+async function resolveAttachSessionOnce({
+	terminalId,
+	workspaceId,
+	themeType,
+	db,
+	eventBus,
+	replayOnAdoption,
+}: {
+	terminalId: string;
+	workspaceId: string;
+	themeType?: "dark" | "light";
+	db: HostDb;
+	eventBus?: EventBus;
+	replayOnAdoption: boolean;
+}): Promise<TerminalSession | { error: string }> {
+	const existing = sessions.get(terminalId);
+	if (existing) return existing;
+
+	const inFlight = attachResolutions.get(terminalId);
+	if (inFlight) return inFlight;
+
+	const resolution = (async (): Promise<TerminalSession | { error: string }> => {
+		const current = sessions.get(terminalId);
+		if (current) return current;
+
+		const adopted = await createTerminalSessionInternal({
+			terminalId,
+			workspaceId,
+			themeType,
+			db,
+			eventBus,
+			adoptOnly: true,
+			// Renderer passes `?replay=0` on reconnect; see replayOnAdoption.
+			replayOnAdoption,
+		});
+		if (!("error" in adopted)) {
+			const live = sessions.get(terminalId);
+			if (live && live !== adopted) {
+				cleanupDetachedSession(adopted, "attach-resolution-overwritten");
+				return live;
+			}
+			return adopted;
+		}
+
+		// Active row but daemon no longer owns the PTY (laptop sleep,
+		// daemon restart, machine reboot). Respawn rather than dead-end
+		// the pane — the renderer's xterm scrollback stays painted above.
+		console.log(`[terminal] respawning lost session ${terminalId}`);
+		const created = await createTerminalSessionInternal({
+			terminalId,
+			workspaceId,
+			themeType,
+			db,
+			eventBus,
+		});
+		if (!("error" in created)) {
+			const live = sessions.get(terminalId);
+			if (live && live !== created) {
+				cleanupDetachedSession(created, "attach-resolution-overwritten");
+				return live;
+			}
+		}
+		return created;
+	})();
+
+	attachResolutions.set(terminalId, resolution);
+	try {
+		return await resolution;
+	} finally {
+		if (attachResolutions.get(terminalId) === resolution) {
+			attachResolutions.delete(terminalId);
+		}
+	}
+}
 
 // When the daemon disconnects, close every WS socket so the renderer's
 // existing exponential-backoff reconnect kicks in. On reconnect, host-service
@@ -1336,6 +1452,7 @@ export function registerWorkspaceTerminalRoute({
 			): boolean => {
 				if (session.sockets.has(ws)) return false;
 				session.sockets.add(ws);
+				socketOwners.set(ws, session);
 				sendMessage(ws, { type: "attached", terminalId });
 
 				db.update(terminalSessions)
@@ -1398,33 +1515,24 @@ export function registerWorkspaceTerminalRoute({
 					if (mismatchError) return { error: mismatchError };
 				}
 
-				const themeType = parseThemeType(c.req.query("themeType"));
-
-				// Prefer adoption: if the daemon still owns the PTY across a
-				// host-service restart, we keep the live shell + ring buffer.
-				const adopted = await createTerminalSessionInternal({
+				const session = await resolveAttachSessionOnce({
 					terminalId,
 					workspaceId: record.originWorkspaceId,
-					themeType,
+					themeType: parseThemeType(c.req.query("themeType")),
 					db,
 					eventBus,
-					adoptOnly: true,
-					// Renderer passes `?replay=0` on reconnect; see replayOnAdoption.
 					replayOnAdoption: c.req.query("replay") !== "0",
 				});
-				if (!("error" in adopted)) return adopted;
-
-				// Active row but daemon no longer owns the PTY (laptop sleep,
-				// daemon restart, machine reboot). Respawn rather than dead-end
-				// the pane — the renderer's xterm scrollback stays painted above.
-				console.log(`[terminal] respawning lost session ${terminalId}`);
-				return createTerminalSessionInternal({
-					terminalId,
-					workspaceId: record.originWorkspaceId,
-					themeType,
-					db,
-					eventBus,
-				});
+				if ("error" in session) return session;
+				if (requestedWorkspaceId) {
+					const mismatchError = getTerminalWorkspaceMismatchError({
+						terminalId,
+						ownerWorkspaceId: session.workspaceId,
+						requestedWorkspaceId,
+					});
+					if (mismatchError) return { error: mismatchError };
+				}
+				return session;
 			};
 
 			return {
@@ -1480,6 +1588,10 @@ export function registerWorkspaceTerminalRoute({
 					// reaches the live PTY and it receives broadcast output. The `attached`
 					// handshake was already delivered, so we do not re-send it here.
 					if (!session.sockets.has(ws)) {
+						const priorOwner = socketOwners.get(ws);
+						if (!priorOwner || priorOwner.terminalId !== terminalId) {
+							return;
+						}
 						console.log(
 							"[terminal] input-orphan-heal: re-attaching orphaned socket " +
 								JSON.stringify({
@@ -1489,7 +1601,10 @@ export function registerWorkspaceTerminalRoute({
 									msgType: (message as { type?: string }).type ?? null,
 								}),
 						);
+						priorOwner.sockets.delete(ws);
 						session.sockets.add(ws);
+						socketOwners.set(ws, session);
+						cleanupDetachedSession(priorOwner, "input-orphan-heal");
 					}
 
 					if (message.type === "dispose") {
@@ -1523,13 +1638,27 @@ export function registerWorkspaceTerminalRoute({
 				},
 
 				onClose: (_event, ws) => {
-					const session = sessions.get(terminalId ?? "");
-					session?.sockets.delete(ws);
+					const owner = socketOwners.get(ws);
+					if (owner) {
+						owner.sockets.delete(ws);
+						socketOwners.delete(ws);
+						cleanupDetachedSession(owner, "socket-close");
+					} else {
+						const session = sessions.get(terminalId ?? "");
+						session?.sockets.delete(ws);
+					}
 				},
 
 				onError: (_event, ws) => {
-					const session = sessions.get(terminalId ?? "");
-					session?.sockets.delete(ws);
+					const owner = socketOwners.get(ws);
+					if (owner) {
+						owner.sockets.delete(ws);
+						socketOwners.delete(ws);
+						cleanupDetachedSession(owner, "socket-error");
+					} else {
+						const session = sessions.get(terminalId ?? "");
+						session?.sockets.delete(ws);
+					}
 				},
 			};
 		}),
