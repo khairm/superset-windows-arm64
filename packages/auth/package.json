@@ -43,7 +43,7 @@
 		"dotenv": "17.3.1",
 		"drizzle-orm": "0.45.2",
 		"resend": "4.8.0",
-		"stripe": "20.4.1",
+		"stripe": "22.2.0",
 		"zod": "4.3.6"
 	},
 	"devDependencies": {
