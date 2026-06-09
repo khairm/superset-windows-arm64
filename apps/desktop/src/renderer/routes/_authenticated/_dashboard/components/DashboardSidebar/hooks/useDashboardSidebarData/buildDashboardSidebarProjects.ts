@@ -20,6 +20,11 @@ export interface SidebarProjectInput {
 	createdAt: Date;
 	updatedAt: Date;
 	isCollapsed: boolean;
+	// (ACTIVE-FIRST) Carried through to the built project so the sidebar's
+	// pinned/active/idle tier sort can read it. This builder is the extracted/
+	// tested form; the live path is the inline computedGroups in
+	// useDashboardSidebarData — keep both in sync so a future switch preserves it.
+	isPinned: boolean;
 }
 
 export interface SidebarSectionInput {

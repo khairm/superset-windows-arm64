@@ -23,6 +23,7 @@ function makeProject(
 		createdAt: DATE,
 		updatedAt: DATE,
 		isCollapsed: false,
+		isPinned: false,
 		...overrides,
 	};
 }
