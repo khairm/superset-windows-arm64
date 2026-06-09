@@ -58,18 +58,32 @@ export function KanbanCardDetailsForm({
 	const isBound = card?.workspaceId != null;
 	const boundTitle = boundWorkspace ? deriveCardTitle(boundWorkspace) : "";
 
-	const [title, setTitle] = useState("");
-	const [description, setDescription] = useState("");
-	const titleFocused = useRef(false);
-	const descFocused = useRef(false);
-	// Resync from the row when switching cards, when it first loads, OR when an
-	// external edit changes the value — but never while the field is focused, so
-	// in-progress typing is never clobbered.
+	// Seed synchronously — the row is already in the local collection when the
+	// editor opens. An effect-only seed loses to autoFocus (focus fires before
+	// the first effect), which is how the modal used to open blank and then
+	// write that blank back over the card.
+	const seedCard = collections.v2KanbanCards.get(cardId);
+	const [title, setTitle] = useState(seedCard?.title ?? "");
+	const [description, setDescription] = useState(seedCard?.description ?? "");
+	// Dirty = typed since the last row sync — the only state a resync must not
+	// clobber. Cleared on blur, on card switch, and by every accepted resync.
+	const titleDirty = useRef(false);
+	const descDirty = useRef(false);
+	const titleCardId = useRef(cardId);
+	const descCardId = useRef(cardId);
 	useEffect(() => {
-		if (!titleFocused.current) setTitle(card?.title ?? "");
+		const switched = titleCardId.current !== cardId;
+		titleCardId.current = cardId;
+		if (!switched && titleDirty.current) return;
+		titleDirty.current = false;
+		setTitle(card?.title ?? "");
 	}, [cardId, card?.id, card?.title]);
 	useEffect(() => {
-		if (!descFocused.current) setDescription(card?.description ?? "");
+		const switched = descCardId.current !== cardId;
+		descCardId.current = cardId;
+		if (!switched && descDirty.current) return;
+		descDirty.current = false;
+		setDescription(card?.description ?? "");
 	}, [cardId, card?.id, card?.description]);
 
 	if (!card) {
@@ -119,14 +133,12 @@ export function KanbanCardDetailsForm({
 						// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
 						autoFocus={autoFocusTitle}
 						onChange={(e) => {
+							titleDirty.current = true;
 							setTitle(e.target.value);
 							commit({ title: e.target.value });
 						}}
-						onFocus={() => {
-							titleFocused.current = true;
-						}}
 						onBlur={() => {
-							titleFocused.current = false;
+							titleDirty.current = false;
 						}}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") onRequestClose?.();
@@ -149,16 +161,14 @@ export function KanbanCardDetailsForm({
 					id="kanban-card-description"
 					value={description}
 					onChange={(e) => {
+						descDirty.current = true;
 						setDescription(e.target.value);
 						commit({
 							description: e.target.value.trim() ? e.target.value : null,
 						});
 					}}
-					onFocus={() => {
-						descFocused.current = true;
-					}}
 					onBlur={() => {
-						descFocused.current = false;
+						descDirty.current = false;
 					}}
 					onKeyDown={(e) => {
 						// Plain Enter inserts a newline; Ctrl/Cmd+Enter saves + closes.
