@@ -26,7 +26,8 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
   scales with the **upstream delta per release**, NOT with how large the fork grows.
 - **Gates.** After the merge: every marker in `FEATURES.md` must still be present
   (else a feature was dropped → reject), then the deterministic build must go green.
-  On a clean merge + green build the nightly **auto-publishes a Release** and
+  On a clean merge + green build the nightly **auto-publishes the single
+  `desktop-v<version>` Release** (rebuilt in place — see One-version below) and
   advances the baseline. Any failure (unresolvable conflict, lost marker, build
   failure) **hard-aborts** and leaves the baseline untouched → recovery.
 - **Recovery.** When a nightly merge can't be done cleanly, fix it locally with the
@@ -43,6 +44,10 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
 - **AI only in the nightly merge.** The build is AI-free. The nightly conflict
   resolver needs `CLAUDE_CODE_OAUTH_TOKEN`; if rate-limited it aborts rather than ship
   a half-merged fork.
+- **One version, ever.** Exactly one GitHub Release per upstream version, tagged
+  `desktop-v<version>`, **rebuilt in place** (delete + recreate so the tag always
+  points at the latest build). NO `-beta`, NO prerelease, NO separate release/beta
+  split — there is just *the* `desktop-v<version>` build.
 
 ## Fork features (high-level + UX, for a full rebuild)
 

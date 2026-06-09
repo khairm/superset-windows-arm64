@@ -149,7 +149,7 @@ jobs:
     uses: ./.github/workflows/build-arm64.yml
     with:
       ref: ${{ needs.merge.outputs.candidate }}
-      publish: release
+      publish: true
 
   advance:
     needs: [merge, build]

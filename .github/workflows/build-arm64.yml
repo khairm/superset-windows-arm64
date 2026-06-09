@@ -15,16 +15,15 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish a GitHub Release (tag = desktop-v<version>[-beta])'
-        type: choice
-        options: ['none', 'beta', 'release']
-        default: 'none'
+        description: 'Publish the desktop-v<version> Release (rebuilt in place; one version, no beta)'
+        type: boolean
+        default: false
   # Reusable so nightly-merge.yml can invoke the exact same build.
   workflow_call:
     inputs:
       publish:
-        type: string
-        default: 'none'
+        type: boolean
+        default: false
       ref:
         description: 'Git ref to build (default: the triggering ref)'
         type: string
@@ -263,7 +262,7 @@ jobs:
 
       - name: Resolve installer asset
         id: asset
-        if: inputs.publish != 'none'
+        if: inputs.publish
         shell: bash
         run: |
           set -euo pipefail
@@ -274,7 +273,7 @@ jobs:
           echo "Installer: $A"
 
       - name: Publish GitHub Release
-        if: inputs.publish != 'none'
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -282,15 +281,13 @@ jobs:
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
           ASSET="${{ steps.asset.outputs.path }}"
-          if [ "${{ inputs.publish }}" = "beta" ]; then
-            TAG="desktop-v${V}-beta"; PRE="--prerelease"; SUFFIX=" [Beta]"
-            gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-            git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
-          else
-            TAG="desktop-v${V}"; PRE=""; SUFFIX=""
-          fi
+          # ONE version per upstream release: desktop-v<version>, rebuilt in
+          # place. Delete + recreate so the tag always points at the latest
+          # build of that version. No beta / prerelease split.
+          TAG="desktop-v${V}"
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
           gh release create "$TAG" "$ASSET" \
             --repo "${{ github.repository }}" \
-            --title "Superset $V (Windows ARM64)${SUFFIX}" \
-            $PRE \
+            --title "Superset $V (Windows ARM64)" \
             --notes "Native **Windows ARM64** build of the vendored superset-sh/superset fork (version $V). Built deterministically from committed source (no AI in the build). Installer is **unsigned**. Not the official superset-sh distribution."
