@@ -618,12 +618,12 @@ export function useV2WorkspaceBackgroundRunningTerminalIds(
 }
 
 /**
- * (AY) Per-terminal DISPLAY statuses: the agent status per terminal, then the
- * shell-running blue fallback for OPEN terminals that have NO agent status,
- * then (BA) the cloud/background-running blue fallback for the remainder.
- * Agent status always wins (permission/working/review > shell-running >
- * background-running). All inputs are referentially-stable keyed strings, so
- * this only recomputes when one of the sets actually changes.
+ * (AY) Per-terminal DISPLAY statuses, merged with precedence
+ * **red > yellow > blue > green** per terminal: permission/working (agent) win;
+ * else a running shell / background session (blue); else review (green). So a
+ * terminal that finished its turn but still has a command running shows blue,
+ * not green. All inputs are referentially-stable keyed strings, so this only
+ * recomputes when one of the sets actually changes.
  */
 export function useV2WorkspaceTerminalStatuses(
 	workspaceId: string,
@@ -645,35 +645,38 @@ export function useV2WorkspaceTerminalStatuses(
 	const shellKey = useV2NotificationStore(shellSelector);
 	const backgroundKey = useV2NotificationStore(backgroundSelector);
 	return useMemo(() => {
-		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
-		const agentIds = new Set<string>();
+		const agentById = new Map<string, ActivePaneStatus>();
 		if (agentKey) {
 			for (const pair of agentKey.split(",")) {
 				const eq = pair.indexOf("=");
 				if (eq < 0) continue;
-				const terminalId = pair.slice(0, eq);
-				const status = pair.slice(eq + 1) as ActivePaneStatus;
-				agentIds.add(terminalId);
-				result.push({ terminalId, status });
+				agentById.set(
+					pair.slice(0, eq),
+					pair.slice(eq + 1) as ActivePaneStatus,
+				);
 			}
 		}
-		const shellIds = new Set<string>();
-		if (shellKey) {
-			for (const terminalId of shellKey.split(",")) {
-				if (!terminalId || agentIds.has(terminalId)) continue;
-				shellIds.add(terminalId);
+		const shellIds = new Set(shellKey ? shellKey.split(",").filter(Boolean) : []);
+		const backgroundIds = new Set(
+			backgroundKey ? backgroundKey.split(",").filter(Boolean) : [],
+		);
+		const terminalIds = new Set<string>([
+			...agentById.keys(),
+			...shellIds,
+			...backgroundIds,
+		]);
+		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
+		for (const terminalId of terminalIds) {
+			const agent = agentById.get(terminalId);
+			// red / yellow outrank blue; blue outranks green (review).
+			if (agent === "permission" || agent === "working") {
+				result.push({ terminalId, status: agent });
+			} else if (shellIds.has(terminalId)) {
 				result.push({ terminalId, status: "shell-running" });
-			}
-		}
-		if (backgroundKey) {
-			for (const terminalId of backgroundKey.split(",")) {
-				if (
-					!terminalId ||
-					agentIds.has(terminalId) ||
-					shellIds.has(terminalId)
-				)
-					continue;
+			} else if (backgroundIds.has(terminalId)) {
 				result.push({ terminalId, status: "background-running" });
+			} else if (agent) {
+				result.push({ terminalId, status: agent });
 			}
 		}
 		return result;
@@ -739,13 +742,13 @@ export function useV2WorkspaceNotificationStatus(workspaceId: string) {
 }
 
 /**
- * (AY/BA) The single status the WORKSPACE ICON should render: the agent rollup
- * status if any (permission/working/review), else "shell-running" (blue) when
- * any OPEN terminal has a foreground command running, else (BA)
- * "background-running" (the same blue) when any OPEN terminal has a
- * cloud/background session running, else null. Agent status always wins — the
- * precedence merge happens HERE (and per-terminal in
- * useV2WorkspaceTerminalStatuses), never in the `sources` aggregation.
+ * (AY/BA) The single status the WORKSPACE ICON should render. Precedence
+ * **red > yellow > blue > green**: permission (red) and working (yellow) — the
+ * agent actively needing/doing work — outrank blue; a running shell / background
+ * session (blue) outranks review (green) so a workspace that FINISHED its turn
+ * but still has a command running shows BLUE, not green; review (green) shows
+ * only when nothing is running. The precedence merge happens HERE (and
+ * per-terminal in useV2WorkspaceTerminalStatuses), never in `sources`.
  */
 export function useV2WorkspaceDisplayStatus(
 	workspaceId: string,
@@ -754,9 +757,15 @@ export function useV2WorkspaceDisplayStatus(
 	const shellRunningIds = useV2WorkspaceShellRunningTerminalIds(workspaceId);
 	const backgroundRunningIds =
 		useV2WorkspaceBackgroundRunningTerminalIds(workspaceId);
-	if (agentStatus) return agentStatus;
+	// red / yellow outrank blue
+	if (agentStatus === "permission" || agentStatus === "working") {
+		return agentStatus;
+	}
+	// blue outranks green (review)
 	if (shellRunningIds.size > 0) return "shell-running";
-	return backgroundRunningIds.size > 0 ? "background-running" : null;
+	if (backgroundRunningIds.size > 0) return "background-running";
+	// green (review) or nothing
+	return agentStatus;
 }
 
 export function selectV2WorkspaceIsUnread(
@@ -875,15 +884,29 @@ function getChatIdForPane(
 		w.__supersetDotRenderLog = true;
 		setInterval(() => {
 			try {
-				const dots = Object.entries(
-					useV2NotificationStore.getState().sources,
-				).map(([key, entry]) => ({
+				const state = useV2NotificationStore.getState();
+				const dots = Object.entries(state.sources).map(([key, entry]) => ({
 					key,
 					workspaceId: entry.workspaceId,
 					status: entry.status,
 				}));
-				if (dots.length > 0) {
-					console.info(`[render-dot] ${JSON.stringify({ dots })}`);
+				// (BA diagnostic) Also snapshot the SEPARATE blue axes — the agent
+				// `sources` snapshot above never showed these, so a never-set vs
+				// set-but-masked blue dot was indistinguishable from logs alone.
+				const bg = Object.entries(state.backgroundRunningTerminals).map(
+					([terminalId, entry]) => ({
+						terminalId,
+						workspaceId: entry.workspaceId,
+					}),
+				);
+				const shell = Object.entries(state.shellRunningTerminals).map(
+					([terminalId, entry]) => ({
+						terminalId,
+						workspaceId: entry.workspaceId,
+					}),
+				);
+				if (dots.length > 0 || bg.length > 0 || shell.length > 0) {
+					console.info(`[render-dot] ${JSON.stringify({ dots, bg, shell })}`);
 				}
 			} catch {
 				// never let diagnostics break the renderer

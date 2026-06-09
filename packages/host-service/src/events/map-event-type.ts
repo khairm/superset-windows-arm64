@@ -10,9 +10,9 @@
  * - `BackgroundRunning`: (BA) the main turn ENDED but a cloud/background session
  *   is still running (non-empty `background_tasks` in the Stop hook payload).
  *   Drives the pulsing BLUE dot on a SEPARATE render axis. The agent dot itself
- *   is handled exactly like a normal turn-end (review-or-clear) — so the blue
- *   NEVER masks a fresh review green (precedence: red > yellow > green > blue);
- *   the blue shows only once that review clears to idle.
+ *   is handled exactly like a normal turn-end (review-or-clear); the renderer's
+ *   precedence is red > yellow > blue > green, so this blue outranks a fresh
+ *   review green and shows as soon as the turn ends with a task still running.
  */
 export type AgentLifecycleEventType =
 	| "Start"

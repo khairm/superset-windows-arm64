@@ -170,6 +170,11 @@ function updatePaneStatus(
 
 	ndots({
 		event: "status_transition_computed",
+		// (BA diagnostic) carry the raw eventType — without it Stop and
+		// BackgroundRunning produce an identical transition log, hiding whether
+		// BackgroundRunning ever reaches the renderer at all.
+		eventType: payload.eventType,
+		targetVisible,
 		workspaceId,
 		terminalId: target.terminalId,
 		target,
@@ -190,19 +195,35 @@ function updatePaneStatus(
 	// (BA) Cloud/background-running blue axis. The notify hook emits
 	// "BackgroundRunning" when the turn ended but a Claude cloud/background
 	// session is still running. Its agent-status transition (above) is the SAME
-	// as a normal turn-end (review-or-clear) — there is no special idle branch —
-	// so a fresh review green still wins (precedence red > yellow > green >
-	// blue); this blue shows only once that green clears to idle (immediate for
-	// the focused tab). Any OTHER agent event re-derives state, so clear the
-	// axis — the next Stop re-sets it from the live background_tasks. NEVER
-	// touches the OSC shell-running axis.
+	// as a normal turn-end (review-or-clear). With precedence red > yellow > blue
+	// > green (see useV2WorkspaceDisplayStatus), this blue now outranks a fresh
+	// review green, so it shows as soon as the turn ends with a task running —
+	// no longer dependent on the green first clearing to idle. Any OTHER agent
+	// event re-derives state, so clear the axis — the next Stop re-sets it from
+	// the live background_tasks. NEVER touches the OSC shell-running axis.
 	if (payload.eventType === "BackgroundRunning") {
+		ndots({
+			event: "bg_axis_set",
+			workspaceId,
+			terminalId: payload.terminalId,
+		});
 		store.setTerminalBackgroundRunning(
 			payload.terminalId,
 			workspaceId,
 			payload.occurredAt,
 		);
 	} else {
+		// (BA diagnostic) log when a NON-BackgroundRunning event wipes a live blue
+		// entry — names the culprit event (e.g. SubagentActive / Start) that
+		// clears the blue dot out from under a still-running background task.
+		if (store.backgroundRunningTerminals[payload.terminalId]) {
+			ndots({
+				event: "bg_axis_cleared",
+				workspaceId,
+				terminalId: payload.terminalId,
+				byEvent: payload.eventType,
+			});
+		}
 		store.clearTerminalBackgroundRunning(payload.terminalId);
 	}
 }
