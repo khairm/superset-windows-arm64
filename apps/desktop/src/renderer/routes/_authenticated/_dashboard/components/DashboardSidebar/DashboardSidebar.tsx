@@ -180,8 +180,8 @@ export function DashboardSidebar({
 		// (ACTIVE-FIRST) Stable 3-tier partition of the manual drag order:
 		// pinned > active (badge > 0: has >=1 non-snoozed/archived workspace) >
 		// idle (badge 0). The manual order is preserved WITHIN each tier; a project
-		// that just changed tier was already moved to the bottom of its new tier in
-		// `projectOrder` by the transition effect below, so it lands last here.
+		// that just changed tier was already moved to the top of its new tier in
+		// `projectOrder` by the transition effect below, so it lands first here.
 		// Opening/viewing a project does NOT affect the order.
 		const tiers: DashboardSidebarProject[][] = Array.from(
 			{ length: PROJECT_TIER_RANKS },
@@ -215,9 +215,9 @@ export function DashboardSidebar({
 	);
 
 	// (ACTIVE-FIRST) When a project changes tier — pinned/unpinned, or it gained
-	// or lost its last active workspace — move it to the BOTTOM of its new tier.
-	// Done by moving its id to the end of the manual order; the stable partition
-	// above then renders it last within its tier. Persisted so it sticks, and it
+	// or lost its last active workspace — move it to the TOP of its new tier.
+	// Done by moving its id to the FRONT of the manual order; the stable partition
+	// above then renders it first within its tier. Persisted so it sticks, and it
 	// converges: reordering within a tier never changes a tier, so the next run
 	// sees no transition. First render seeds prevTierRef WITHOUT moving anything
 	// (every id is "new", not a transition), so a saved order isn't reshuffled.
@@ -238,8 +238,8 @@ export function DashboardSidebar({
 		const moved = new Set(transitioned);
 		const baseOrder = groups.map((g) => g.id);
 		const nextOrder = [
-			...baseOrder.filter((id) => !moved.has(id)),
 			...transitioned,
+			...baseOrder.filter((id) => !moved.has(id)),
 		];
 		if (nextOrder.every((id, index) => id === baseOrder[index])) return;
 		setProjectOrder(nextOrder);
