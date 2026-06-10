@@ -989,7 +989,6 @@ describe("agent-wrappers claude settings.json", () => {
 
 		const managedEvents = [
 			"UserPromptSubmit",
-			"Stop",
 			"PostToolUse",
 			"PostToolUseFailure",
 			"PermissionRequest",
@@ -1004,6 +1003,11 @@ describe("agent-wrappers claude settings.json", () => {
 				),
 			).toBe(true);
 		}
+
+		// (CLAUDE-STOP-UNHOOKED) Stop is owned by superset-notify.py — notify.sh
+		// must never be registered there (its raw Stop wiped the BackgroundRunning
+		// blue and the subagent yellow-hold).
+		expect(parsed.hooks.Stop).toBeUndefined();
 
 		expect(parsed.hooks.PostToolUse.some((def) => def.matcher === "*")).toBe(
 			true,
@@ -1129,11 +1133,7 @@ describe("agent-wrappers claude settings.json", () => {
 		};
 
 		// Stale hooks removed, current hooks present
-		for (const eventName of [
-			"UserPromptSubmit",
-			"Stop",
-			"PostToolUse",
-		] as const) {
+		for (const eventName of ["UserPromptSubmit", "PostToolUse"] as const) {
 			const hooks = parsed.hooks[eventName];
 			expect(Array.isArray(hooks)).toBe(true);
 			expect(
@@ -1147,6 +1147,10 @@ describe("agent-wrappers claude settings.json", () => {
 				),
 			).toBe(false);
 		}
+
+		// (CLAUDE-STOP-UNHOOKED) The stale managed Stop registration is stripped
+		// and NOT re-added — Stop belongs to superset-notify.py exclusively.
+		expect(parsed.hooks.Stop).toBeUndefined();
 
 		// Custom hook preserved
 		expect(

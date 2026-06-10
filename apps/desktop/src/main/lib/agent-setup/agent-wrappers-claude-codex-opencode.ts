@@ -174,12 +174,38 @@ export function getClaudeGlobalSettingsJsonContent(
 		existing.hooks = {};
 	}
 
+	// Strip ALL Superset-managed notify.sh entries first — including events we
+	// no longer register (Stop, below) — so an installed settings.json
+	// self-heals on the next app boot.
+	for (const [eventName, current] of Object.entries(existing.hooks)) {
+		if (!Array.isArray(current)) continue;
+		const filtered = current.flatMap((def: ClaudeHookDefinition) => {
+			const cleaned = removeManagedHooksFromDefinition(def, (command) =>
+				isManagedClaudeHookCommand(command, notifyScriptPath),
+			);
+			return cleaned ? [cleaned] : [];
+		});
+		if (filtered.length === 0) {
+			delete existing.hooks[eventName];
+			continue;
+		}
+		existing.hooks[eventName] = filtered;
+	}
+
+	// (CLAUDE-STOP-UNHOOKED) Fork: notify.sh is NOT registered on Claude's Stop.
+	// The fork's superset-notify.py (installed by the agent-jsonl-watcher hook
+	// setup) owns Claude turn-end semantics: it SUPPRESSES Stop during the
+	// subagent yellow-hold and rewrites Stop to BackgroundRunning when the
+	// payload's background_tasks[] is non-empty (the blue dot). notify.sh's raw
+	// Stop passthrough landed ~1s later and wiped both states — the renderer
+	// treats any non-BackgroundRunning agent event as "no background work left".
+	// Every other passthrough below agrees with the python hook's mapping (or
+	// covers binding events it doesn't send: Attached/Detached), so they stay.
 	const managedEvents: Array<{
 		eventName:
 			| "SessionStart"
 			| "SessionEnd"
 			| "UserPromptSubmit"
-			| "Stop"
 			| "PostToolUse"
 			| "PostToolUseFailure"
 			| "PermissionRequest";
@@ -195,10 +221,6 @@ export function getClaudeGlobalSettingsJsonContent(
 		},
 		{
 			eventName: "UserPromptSubmit",
-			definition: { hooks: [{ type: "command", command: managedHookCommand }] },
-		},
-		{
-			eventName: "Stop",
 			definition: { hooks: [{ type: "command", command: managedHookCommand }] },
 		},
 		{
@@ -227,14 +249,8 @@ export function getClaudeGlobalSettingsJsonContent(
 	for (const { eventName, definition } of managedEvents) {
 		const current = existing.hooks[eventName];
 		if (Array.isArray(current)) {
-			const filtered = current.flatMap((def: ClaudeHookDefinition) => {
-				const cleaned = removeManagedHooksFromDefinition(def, (command) =>
-					isManagedClaudeHookCommand(command, notifyScriptPath),
-				);
-				return cleaned ? [cleaned] : [];
-			});
-			filtered.push(definition);
-			existing.hooks[eventName] = filtered;
+			current.push(definition);
+			existing.hooks[eventName] = current;
 		} else {
 			existing.hooks[eventName] = [definition];
 		}

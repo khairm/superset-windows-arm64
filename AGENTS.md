@@ -65,7 +65,10 @@ See `FEATURES.md` for the marker manifest. In brief:
   rollup: red = needs input, yellow = working (held while subagents run), green =
   ready for review, blue = a foreground shell command or a cloud/background session.
   Precedence red > yellow > green > blue. Host-service lifecycle POSTs + a JSONL
-  watcher fallback; only open tabs are represented.
+  watcher fallback; only open tabs are represented. superset-notify.py exclusively
+  owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
+  (its raw passthrough raced ~1s behind and wiped BackgroundRunning blue + the
+  subagent yellow-hold).
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
 - **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary

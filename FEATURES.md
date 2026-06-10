@@ -19,6 +19,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Window controls | native `titleBarOverlay` is the sole min/max/close set on Windows | `titleBarOverlay` |
 | Windows behaviour fixes | child-process patch, cmd.exe fallback, force-foreground, watchdog, WebGL recovery, fast startup | `windows-child-process` |
 | Agent status dots (Claude + Codex) | per-terminal dot + workspace rollup; host-service POST + JSONL watcher | `pane-map-hook`, `StatusIndicator` |
+| Claude Stop unhooked from notify.sh | upstream's raw Stop passthrough must never race superset-notify.py (it wiped the blue dot + yellow-hold) | `CLAUDE-STOP-UNHOOKED` |
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
@@ -40,6 +41,7 @@ bun-windows-arm64	apps/desktop/scripts
 titleBarOverlay	apps/desktop/src/main
 windows-child-process	apps/desktop/src/main
 pane-map-hook	apps/desktop/src/main
+CLAUDE-STOP-UNHOOKED	apps/desktop/src/main
 scanForOsc133Cd	packages
 StatusIndicator	apps/desktop/src/renderer
 resolveNonGitFolder	packages/host-service
