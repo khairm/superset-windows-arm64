@@ -215,6 +215,14 @@ function updatePaneStatus(
 			workspaceId,
 			payload.occurredAt,
 		);
+	} else if (payload.eventType === "Attached") {
+		// (BLUE-SPECTATOR) Attached is the JSONL watcher (re)binding to the
+		// transcript — an idle signal whose status transition is a no-op (see
+		// statusTransitions.ts). It fires ~1s after a compaction rewrites the
+		// JSONL, so letting it fall into the catch-all clear below wiped the
+		// blue restored at compact-end out from under a still-running
+		// background shell (live repro 2026-06-11). It asserts nothing about
+		// turn state, so it must spectate the blue axis too.
 	} else {
 		// (BA diagnostic) log when a NON-BackgroundRunning event wipes a live blue
 		// entry — names the culprit event (e.g. SubagentActive / Start) that
