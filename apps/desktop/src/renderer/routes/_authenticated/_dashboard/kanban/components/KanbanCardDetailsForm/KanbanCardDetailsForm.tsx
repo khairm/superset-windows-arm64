@@ -4,12 +4,11 @@ import { Label } from "@superset/ui/label";
 import { Textarea } from "@superset/ui/textarea";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
+import { CalendarIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
-import {
-	deadlineToInputValue,
-	inputValueToDeadline,
-} from "../../utils/deadlineUrgency";
+import { DeadlinePickerPopover } from "../DeadlinePickerPopover";
+import { formatDeadlineLong } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
 const COMMIT_DEBOUNCE_MS = 250;
@@ -67,6 +66,7 @@ export function KanbanCardDetailsForm({
 	const seedCard = collections.v2KanbanCards.get(cardId);
 	const [title, setTitle] = useState(seedCard?.title ?? "");
 	const [description, setDescription] = useState(seedCard?.description ?? "");
+	const [deadlineOpen, setDeadlineOpen] = useState(false);
 	// Dirty = typed since the last row sync — the only state a resync must not
 	// clobber. Cleared on blur, on card switch, and by every accepted resync.
 	const titleDirty = useRef(false);
@@ -261,15 +261,27 @@ export function KanbanCardDetailsForm({
 				<Label htmlFor="kanban-card-deadline" className="text-xs">
 					Deadline
 				</Label>
-				<Input
-					id="kanban-card-deadline"
-					type="date"
-					value={deadlineToInputValue(card.deadline)}
-					onChange={(e) =>
-						commit({ deadline: inputValueToDeadline(e.target.value) })
-					}
-					onKeyDown={closeOnEnter}
-				/>
+				<DeadlinePickerPopover
+					value={card.deadline}
+					onChange={(deadline) => commit({ deadline })}
+					open={deadlineOpen}
+					onOpenChange={setDeadlineOpen}
+				>
+					<Button
+						id="kanban-card-deadline"
+						type="button"
+						variant="outline"
+						className="justify-start gap-2 font-normal"
+						onClick={() => setDeadlineOpen((o) => !o)}
+					>
+						<CalendarIcon className="size-4 text-muted-foreground" />
+						{card.deadline != null ? (
+							formatDeadlineLong(card.deadline)
+						) : (
+							<span className="text-muted-foreground">Pick a date</span>
+						)}
+					</Button>
+				</DeadlinePickerPopover>
 				<span className="text-[11px] text-muted-foreground">
 					Turns yellow on the due day, red after it passes.
 				</span>

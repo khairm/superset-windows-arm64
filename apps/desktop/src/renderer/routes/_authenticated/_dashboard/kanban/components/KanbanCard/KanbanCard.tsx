@@ -26,11 +26,10 @@ import {
 import { useV2WorkspaceDisplayStatus } from "renderer/stores/v2-notifications";
 import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
 import type { KanbanCardView } from "../../types";
+import { DeadlinePickerPopover } from "../DeadlinePickerPopover";
 import {
-	deadlineToInputValue,
 	formatDeadline,
 	getDeadlineUrgency,
-	inputValueToDeadline,
 } from "../../utils/deadlineUrgency";
 
 interface KanbanCardProps {
@@ -209,44 +208,41 @@ export function KanbanCard({
 									{subtitle}
 								</span>
 							) : null}
-							{editing === "deadline" ? (
-								<Input
-									autoFocus
-									type="date"
-									value={deadlineToInputValue(card.deadline)}
-									onChange={(e) =>
-										actions.updateCard(card.id, {
-											deadline: inputValueToDeadline(e.target.value),
-										})
+							{card.deadline != null ? (
+								// Double-click opens the shared calendar popover (the old
+								// inline <input type="date"> typed "2" into year 1902).
+								<DeadlinePickerPopover
+									value={card.deadline}
+									onChange={(deadline) =>
+										actions.updateCard(card.id, { deadline })
 									}
-									onBlur={() => setEditing(null)}
-									onClick={stop}
-									onPointerDown={stop}
-									onContextMenu={stop}
-									className="mt-1 h-6 px-1 py-0 text-xs"
-								/>
-							) : card.deadline != null ? (
-								// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
-								// biome-ignore lint/a11y/noStaticElementInteractions: double-click inline-edit affordance on a non-focusable label
-								<span
-									onClick={stop}
-									onDoubleClick={(e) => {
-										stop(e);
-										setEditing("deadline");
-									}}
-									className={cn(
-										"mt-1 block text-[11px]",
-										urgency === "overdue" && "font-medium text-red-500",
-										urgency === "due-today" && "font-medium text-yellow-500",
-										urgency === "upcoming" && "text-muted-foreground",
-									)}
+									open={editing === "deadline"}
+									onOpenChange={(open) =>
+										setEditing(open ? "deadline" : null)
+									}
 								>
-									{urgency === "overdue"
-										? `Overdue · ${formatDeadline(card.deadline)}`
-										: urgency === "due-today"
-											? "Due today"
-											: `Due ${formatDeadline(card.deadline)}`}
-								</span>
+									{/* biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root) */}
+									{/* biome-ignore lint/a11y/noStaticElementInteractions: double-click inline-edit affordance on a non-focusable label */}
+									<span
+										onClick={stop}
+										onDoubleClick={(e) => {
+											stop(e);
+											setEditing("deadline");
+										}}
+										className={cn(
+											"mt-1 block text-[11px]",
+											urgency === "overdue" && "font-medium text-red-500",
+											urgency === "due-today" && "font-medium text-yellow-500",
+											urgency === "upcoming" && "text-muted-foreground",
+										)}
+									>
+										{urgency === "overdue"
+											? `Overdue · ${formatDeadline(card.deadline)}`
+											: urgency === "due-today"
+												? "Due today"
+												: `Due ${formatDeadline(card.deadline)}`}
+									</span>
+								</DeadlinePickerPopover>
 							) : null}
 						</div>
 					</div>

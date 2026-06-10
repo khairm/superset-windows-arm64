@@ -35,25 +35,22 @@ export function formatDeadline(deadline: number | null | undefined): string {
 	});
 }
 
-/** `<input type="date">` value (YYYY-MM-DD, local) for a stored deadline. */
-export function deadlineToInputValue(
+/** Full label for the picker trigger, e.g. "Tue 13 Jun 2026". */
+export function formatDeadlineLong(
 	deadline: number | null | undefined,
 ): string {
 	if (deadline == null) return "";
-	const d = new Date(deadline);
-	const yyyy = d.getFullYear();
-	const mm = String(d.getMonth() + 1).padStart(2, "0");
-	const dd = String(d.getDate()).padStart(2, "0");
-	return `${yyyy}-${mm}-${dd}`;
+	return new Date(deadline).toLocaleDateString(undefined, {
+		weekday: "short",
+		day: "numeric",
+		month: "short",
+		year: "numeric",
+	});
 }
 
-/** Parse a date-input value (YYYY-MM-DD) to a local-midnight epoch-ms (or null). */
-export function inputValueToDeadline(value: string): number | null {
-	if (!value) return null;
-	const [yyyy, mm, dd] = value.split("-").map((p) => Number.parseInt(p, 10));
-	if (!yyyy || !mm || !dd) return null;
-	const d = new Date(yyyy, mm - 1, dd);
+/** Local-midnight epoch-ms for a calendar-picked date (the stored shape). */
+export function dateToDeadline(date: Date): number {
+	const d = new Date(date);
 	d.setHours(0, 0, 0, 0);
-	const ms = d.getTime();
-	return Number.isNaN(ms) ? null : ms;
+	return d.getTime();
 }
