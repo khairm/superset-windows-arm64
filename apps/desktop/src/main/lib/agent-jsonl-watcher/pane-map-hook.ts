@@ -319,7 +319,11 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  (subagent/teammate/workflow) -> Start (yellow,
                                  agents are working); shell-only ->
                                  BackgroundRunning (blue)
-  SessionEnd|StopFailure      -> Stop             (review  / green; clears state)
+  SessionEnd                  -> Stop             (review / green; clears state)
+  StopFailure                 -> Stop + clears state, UNLESS a codex-companion
+                                 job for this session is still alive -> Start
+                                 (BF: codex runs on its OWN API; a Claude
+                                 rate-limit abort does not stop it)
   Notification                -> PermissionRequest (permission / red)
   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
   PostToolUse(any tool)       -> Start             (working — clears red after
@@ -475,6 +479,96 @@ def _clear_dir(d):
         pass
 
 
+def _pid_alive(pid):
+    # (BF) Best-effort process-liveness, used to reject a STALE codex job file
+    # (a worker hard-killed before it could write its terminal status leaves a
+    # stale running record that the companion's cwd-scoped SessionEnd cleanup
+    # may never prune — without this it would pin a false dot for the rest of
+    # the Claude session). On ANY uncertainty return True (the SAFE direction:
+    # keep showing activity rather than risk a false green). Never raises.
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return True  # no / non-int pid -> cannot disprove -> assume active
+    if pid <= 0:
+        return True
+    try:
+        if os.name == "nt":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False  # no such process (own-user worker -> not access-denied)
+            try:
+                code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # exists, owned by someone else
+    except Exception:
+        return True
+    return True
+
+
+def _codex_job_active(session_id):
+    # (BF codex-companion parity) The codex plugin dispatches review/task work
+    # to a DETACHED worker process that is invisible to Claude Code's
+    # Stop-payload background_tasks[], so neither (BA) nor (TEAM-YELLOW) alone
+    # surfaces it (terminal greens to idle while codex still runs). The
+    # companion records each job as a JSON file with a status and the Claude
+    # session_id (its CODEX_COMPANION_SESSION_ID is the SessionStart session_id
+    # — the SAME id this hook receives). So an ACTIVE codex job for THIS
+    # session is delegated agent work -> the dot stays on, like a teammate.
+    # We do NOT inherit the codex plugin's CLAUDE_PLUGIN_DATA (it is
+    # per-plugin), so glob the known on-disk job stores instead. "Active"
+    # defers to the plugin's own definition (queued|running) AND requires the
+    # job's worker pid to still be alive (_pid_alive). A transient mid-write
+    # JSON read failure is skipped (-> a one-event missed hold that
+    # self-corrects on the next turn-end: the SAFE direction). Bounded:
+    # evaluated only at a real turn/subagent end (see _decide_event_type),
+    # short-circuits on first match. Never raises.
+    if not session_id:
+        return False
+    try:
+        home = pathlib.Path.home()
+        roots = [(home / ".claude" / "plugins" / "data", "codex*/state/*/jobs/*.json")]
+        try:
+            import tempfile
+            roots.append((pathlib.Path(tempfile.gettempdir()) / "codex-companion", "*/jobs/*.json"))
+        except Exception:
+            pass
+        active = ("queued", "running")
+        for root, pattern in roots:
+            try:
+                for jf in root.glob(pattern):
+                    try:
+                        with open(jf, "r", encoding="utf-8") as h:
+                            rec = json.load(h)
+                    except Exception:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    if rec.get("sessionId") != session_id:
+                        continue
+                    if (rec.get("status") or "") in active and _pid_alive(rec.get("pid")):
+                        return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
 def _split_background(bg_tasks):
     # (TEAM-YELLOW) Classify the Stop/SubagentStop payload's background_tasks[].
     # Entries are TYPED (captured live 2026-06-10): "shell" = a backgrounded
@@ -506,6 +600,7 @@ def _decide_event_type(
     has_agent_background,
     trigger,
     source,
+    session_id,
 ):
     # Returns the host-service eventType or None (None => silent no-op).
     #
@@ -596,8 +691,8 @@ def _decide_event_type(
             # older/odd version -> green, which only mis-greens in the narrow
             # case where Stop carried the field but SubagentStop did not — same
             # version added both, so not in practice.)
-            if has_agent_background:
-                return "Start"  # detached teammates/workflows still working -> yellow
+            if has_agent_background or _codex_job_active(session_id):
+                return "Start"  # detached teammates/workflows/codex still working -> yellow
             if has_background:
                 return "BackgroundRunning"  # only background shells left -> blue
             return "Stop"  # main already stopped + last subagent done -> green
@@ -612,12 +707,26 @@ def _decide_event_type(
             _touch(sentinel)  # defer the green; subagents still running
             return None  # stay yellow
         _remove(sentinel)
-        if has_agent_background:
-            return "Start"  # teammates/workflows still working -> yellow, not blue
+        if has_agent_background or _codex_job_active(session_id):
+            return "Start"  # teammates/workflows/codex still working -> yellow, not blue
         if has_background:
             return "BackgroundRunning"  # turn ended; only background shells left -> blue
         return "Stop"
-    if event in ("SessionEnd", "StopFailure"):
+    if event == "StopFailure":
+        # (AX)/(BF) A Claude API/rate-limit abort kills the shared-API Claude
+        # subagent tree (clear its markers + green), BUT a codex-companion
+        # worker is a SEPARATE process on its OWN API — the Claude failure does
+        # not stop it, so keep showing it as working. (has_background is NOT
+        # consulted here: Claude background_tasks share the dead Claude API.)
+        _clear_dir(run_dir)
+        _remove(sentinel)
+        _remove(compact_marker)
+        if _codex_job_active(session_id):
+            return "Start"
+        return "Stop"
+    if event == "SessionEnd":
+        # Session is ending — the dot context goes away, so a still-running
+        # codex job does not hold the dot here; just clear state and green.
         _clear_dir(run_dir)
         _remove(sentinel)
         _remove(compact_marker)
@@ -705,6 +814,7 @@ def main():
         has_agent_background,
         trigger,
         source,
+        session_id,
     )
 
     if not url:

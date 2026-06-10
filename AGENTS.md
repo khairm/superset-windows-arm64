@@ -64,9 +64,11 @@ See `FEATURES.md` for the marker manifest. In brief:
 - **Agent status dots (Claude + Codex)** — a coloured dot per terminal + a workspace
   rollup: red = needs input, yellow = working (held while subagents run; also while
   Claude compacts context — PreCompact/SessionStart(source=compact) bracket it — and
-  while agent-type background_tasks (teammates/forks/workflows) outlive the turn),
-  green = ready for review, blue = a foreground shell command or a shell-only
-  background remainder / cloud session.
+  while agent-type background_tasks (teammates/forks/workflows) outlive the turn,
+  and while a pid-alive codex-companion job for the session runs — held even
+  through a Claude StopFailure, since codex is on its own API), green = ready
+  for review, blue = a foreground shell command or a shell-only background
+  remainder / cloud session.
   Precedence red > yellow > green > blue. Host-service lifecycle POSTs + a JSONL
   watcher fallback; only open tabs are represented. superset-notify.py exclusively
   owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
