@@ -64,8 +64,18 @@ export function PromoteCardDialog({
 	const [branch, setBranch] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 
+	// Only projects PRESENT IN THE SIDEBAR (v2SidebarProjects ⋈ v2Projects — the
+	// exact source the left bar renders from). A project removed from the
+	// sidebar must not resurface as a promote target.
 	const { data: projects = [] } = useLiveQuery(
-		(q) => q.from({ p: collections.v2Projects }),
+		(q) =>
+			q
+				.from({ sp: collections.v2SidebarProjects })
+				.innerJoin(
+					{ p: collections.v2Projects },
+					({ sp, p }) => eq(sp.projectId, p.id),
+				)
+				.select(({ p }) => ({ id: p.id, name: p.name })),
 		[collections],
 	);
 	const { data: [queuedCard] = [] } = useLiveQuery(
@@ -85,69 +95,76 @@ export function PromoteCardDialog({
 	// disabled on !isResolved) to avoid wrongly branch-creating a non-git folder.
 	const isNonGit = isResolved && !isGitRepo;
 
-	// Reset the chosen repo when the dialog (re)opens for a card.
+	// Reset the chosen repo (and the spent submit guard) when the dialog
+	// (re)opens for a card.
+	const openQueuedCardId = state?.queuedCardId ?? null;
 	useEffect(() => {
-		if (state) setProjectId("");
-	}, [state?.queuedCardId]);
-	// Seed the branch name from the queued card's title — re-run when the queued
-	// row actually loads (its id flips from undefined), so the prefill isn't lost.
+		if (openQueuedCardId) {
+			setProjectId("");
+			setSubmitting(false);
+		}
+	}, [openQueuedCardId]);
+	// Seed the branch name from the queued card's title — keyed to the loaded
+	// row's title so the prefill isn't lost when the row arrives a tick late
+	// (the title can't change while the modal dialog is open).
+	const queuedTitle = queuedCard?.title ?? "";
 	useEffect(() => {
-		if (state) setBranch(slugifyBranch(queuedCard?.title ?? ""));
-	}, [state?.queuedCardId, queuedCard?.id]);
+		if (openQueuedCardId) setBranch(slugifyBranch(queuedTitle));
+	}, [openQueuedCardId, queuedTitle]);
 
 	const sortedProjects = useMemo(
 		() => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
 		[projects],
 	);
 
-	const handleConfirm = async () => {
+	const handleConfirm = () => {
 		if (!state || !projectId || !isResolved || submitting) return;
-		setSubmitting(true);
-		try {
-			if (isNonGit && mainWorkspaceId) {
-				// Non-git repo: its single main workspace is already a card — merge.
-				actions.completePromote(
-					state.queuedCardId,
-					mainWorkspaceId,
-					state.targetColumnId,
-				);
-				onClose();
-				return;
-			}
-			// v2 create: the host-service path (NOT the v1 workspaces.create) — board
-			// cards are v2 workspaces. submit() optimistically inserts the v2 row;
-			// `completed` resolves with the real workspace id.
-			const snapshotId = crypto.randomUUID();
-			const { completed } = submit({
-				hostId: machineId,
-				snapshot: {
-					id: snapshotId,
-					projectId,
-					name: queuedCard?.title?.trim() || branch.trim() || "New workspace",
-					branch: branch.trim() || undefined,
-					agents: [],
-				},
-			});
-			const outcome = await completed;
-			if (!outcome.ok) {
-				toast.error(`Couldn't create the branch: ${outcome.error}`);
-				return;
-			}
+		if (isNonGit && mainWorkspaceId) {
+			// Non-git repo: its single main workspace is already a card — merge.
 			actions.completePromote(
 				state.queuedCardId,
-				outcome.workspaceId,
+				mainWorkspaceId,
 				state.targetColumnId,
 			);
 			onClose();
-		} catch (err) {
-			toast.error(
-				`Couldn't create the branch: ${
-					err instanceof Error ? err.message : "unknown error"
-				}`,
-			);
-		} finally {
-			setSubmitting(false);
+			return;
 		}
+		// v2 create: the host-service path (NOT the v1 workspaces.create) — board
+		// cards are v2 workspaces. Submit, bind the card to the OPTIMISTIC
+		// workspace id, and close — exactly like the sidebar flow, which never
+		// blocks on `completed` (it resolves only after the sync round-trip;
+		// awaiting it here left the dialog stuck on "Creating…", the queued card
+		// in place, and the mirror's auto-created card beside it).
+		setSubmitting(true);
+		const snapshot = collections.v2KanbanCards.get(state.queuedCardId);
+		const { workspaceId, completed } = submit({
+			hostId: machineId,
+			snapshot: {
+				id: crypto.randomUUID(),
+				projectId,
+				name: queuedCard?.title?.trim() || branch.trim() || "New workspace",
+				branch: branch.trim() || undefined,
+				agents: [],
+			},
+		});
+		actions.completePromote(
+			state.queuedCardId,
+			workspaceId,
+			state.targetColumnId,
+		);
+		onClose();
+		// Background continuation: fail loud + restore the queued card, or re-key
+		// the bound card when the host persisted a different workspace id.
+		void completed.then((outcome) => {
+			if (!outcome.ok) {
+				toast.error(`Couldn't create the branch: ${outcome.error}`);
+				if (snapshot) actions.restoreQueuedCard(snapshot, workspaceId);
+				return;
+			}
+			if (outcome.workspaceId !== workspaceId) {
+				actions.rebindPromotedCard(workspaceId, outcome.workspaceId);
+			}
+		});
 	};
 
 	return (

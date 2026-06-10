@@ -36,6 +36,11 @@ export interface UseKanbanActionsResult {
 		workspaceId: string,
 		toColumnId: string,
 	) => void;
+	restoreQueuedCard: (
+		snapshot: KanbanCardRow,
+		optimisticWorkspaceId: string,
+	) => void;
+	rebindPromotedCard: (fromWorkspaceId: string, toWorkspaceId: string) => void;
 	addColumn: (name?: string) => string;
 	renameColumn: (columnId: string, name: string) => void;
 	deleteColumn: (columnId: string) => DeleteColumnResult;
@@ -224,6 +229,61 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[collections, columnCards],
 	);
 
+	// (PROMOTE-OPTIMISTIC) The promote dialog binds the card to the OPTIMISTIC
+	// workspace id and closes as soon as the create is submitted (the sidebar
+	// flow never blocks on persistence either — `completed` resolves only after
+	// the sync round-trip). These two actions are its background continuations.
+
+	const restoreQueuedCard = useCallback(
+		(snapshot: KanbanCardRow, optimisticWorkspaceId: string) => {
+			// The create FAILED: the optimistic workspace row rolled back (reconcile
+			// drops the bound card) — put the task back in Queued so it's never lost.
+			const boundId = kanbanBoundCardId(optimisticWorkspaceId);
+			if (collections.v2KanbanCards.get(boundId)) {
+				collections.v2KanbanCards.delete(boundId);
+			}
+			if (collections.v2KanbanCards.get(snapshot.id)) return;
+			collections.v2KanbanCards.insert({
+				...snapshot,
+				columnId: KANBAN_QUEUE_COLUMN_ID,
+				tabOrder: getNextTabOrder(columnCards(KANBAN_QUEUE_COLUMN_ID)),
+				workspaceId: null,
+			});
+		},
+		[collections, columnCards],
+	);
+
+	const rebindPromotedCard = useCallback(
+		(fromWorkspaceId: string, toWorkspaceId: string) => {
+			// The host persisted the create under a DIFFERENT id than the optimistic
+			// one — bound card ids derive from the workspace id, so move the card.
+			if (fromWorkspaceId === toWorkspaceId) return;
+			const fromId = kanbanBoundCardId(fromWorkspaceId);
+			const from = collections.v2KanbanCards.get(fromId);
+			if (!from) return;
+			collections.v2KanbanCards.delete(fromId);
+			const toId = kanbanBoundCardId(toWorkspaceId);
+			const existing = collections.v2KanbanCards.get(toId);
+			if (existing) {
+				// The mirror already auto-created the real card — merge, one per branch.
+				collections.v2KanbanCards.update(toId, (draft) => {
+					draft.columnId = from.columnId;
+					draft.tabOrder = from.tabOrder;
+					if (from.title) draft.title = from.title;
+					if (from.description != null) draft.description = from.description;
+					if (from.deadline != null) draft.deadline = from.deadline;
+				});
+				return;
+			}
+			collections.v2KanbanCards.insert({
+				...from,
+				id: toId,
+				workspaceId: toWorkspaceId,
+			});
+		},
+		[collections],
+	);
+
 	const addColumn = useCallback(
 		(name?: string) => {
 			const id = crypto.randomUUID();
@@ -400,6 +460,8 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			applyCardOrder,
 			moveCardToColumn,
 			completePromote,
+			restoreQueuedCard,
+			rebindPromotedCard,
 			addColumn,
 			renameColumn,
 			deleteColumn,
@@ -419,6 +481,8 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			applyCardOrder,
 			moveCardToColumn,
 			completePromote,
+			restoreQueuedCard,
+			rebindPromotedCard,
 			addColumn,
 			renameColumn,
 			deleteColumn,
