@@ -134,8 +134,18 @@ export function KanbanCard({
 						if (!workspace) return;
 						onActivate(view);
 					}}
+					onContextMenu={(e) => {
+						// No action menu mid-inline-edit (the menu's auto-focus would
+						// blur-commit the draft) or mid-drag (touch long-press can
+						// fire both sensors). preventDefault stops the Radix trigger
+						// (it composes our handler first and checks defaultPrevented).
+						if (editing || isDragging) e.preventDefault();
+					}}
 					onKeyDown={(e) => {
 						if (editing) return;
+						// Same contract as click: activation opens BOUND cards only —
+						// a queued card's editor is right-click → Edit card.
+						if (!workspace) return;
 						if (e.key === "Enter" || e.key === " ") {
 							e.preventDefault();
 							onActivate(view);
@@ -168,6 +178,9 @@ export function KanbanCard({
 									}}
 									onClick={stop}
 									onPointerDown={stop}
+									// Right-click inside the edit field gets the NATIVE input
+									// menu (paste etc.), never the card actions menu.
+									onContextMenu={stop}
 									className="h-6 px-1 py-0 text-sm"
 								/>
 							) : (
@@ -209,6 +222,7 @@ export function KanbanCard({
 									onBlur={() => setEditing(null)}
 									onClick={stop}
 									onPointerDown={stop}
+									onContextMenu={stop}
 									className="mt-1 h-6 px-1 py-0 text-xs"
 								/>
 							) : card.deadline != null ? (

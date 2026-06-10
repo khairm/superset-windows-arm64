@@ -125,7 +125,11 @@ export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 					style={{ height: topHeight }}
 				>
 					{boardHeader}
-					<div className="min-h-0 flex-1 overflow-hidden">
+					{/* MUST be a flex COLUMN: KanbanBoard's column row is `flex-1
+					    min-h-0` (DndContext renders no DOM wrapper), so without a
+					    flex parent the columns get auto height — cards overflow the
+					    strip clipped and unreachable instead of scrolling. */}
+					<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 						<KanbanBoard />
 					</div>
 					<VerticalResizeHandle
@@ -159,7 +163,11 @@ export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 			>
 				<div className="flex h-full min-h-0 flex-col border-r border-border">
 					{boardHeader}
-					<div className="min-h-0 flex-1 overflow-hidden">
+					{/* MUST be a flex COLUMN: KanbanBoard's column row is `flex-1
+					    min-h-0` (DndContext renders no DOM wrapper), so without a
+					    flex parent the columns get auto height — cards overflow the
+					    strip clipped and unreachable instead of scrolling. */}
+					<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
 						<KanbanBoard />
 					</div>
 				</div>
