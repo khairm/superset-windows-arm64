@@ -316,14 +316,14 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  stay yellow; greens on the last SubagentStop).
                                  With background_tasks[] still running, the
                                  entry TYPES decide: any agent-type entry
-                                 (subagent/teammate/workflow) -> Start (yellow,
-                                 agents are working); shell-only ->
-                                 BackgroundRunning (blue)
+                                 (subagent/teammate/workflow) -> SubagentActive
+                                 (yellow; red-respecting in the renderer);
+                                 shell-only -> BackgroundRunning (blue)
   SessionEnd                  -> Stop             (review / green; clears state)
   StopFailure                 -> Stop + clears state, UNLESS a codex-companion
-                                 job for this session is still alive -> Start
-                                 (BF: codex runs on its OWN API; a Claude
-                                 rate-limit abort does not stop it)
+                                 job for this session is still alive ->
+                                 SubagentActive (BF: codex runs on its OWN API;
+                                 a Claude rate-limit abort does not stop it)
   Notification                -> PermissionRequest (permission / red)
   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
   PostToolUse(any tool)       -> Start             (working — clears red after
@@ -410,6 +410,21 @@ def _compact_marker_path(terminal_id):
         / ".superset"
         / "agent-subagent-running"
         / (terminal_id + ".compacting")
+    )
+
+
+def _agentbg_marker_path(terminal_id):
+    # (TEAM-YELLOW) records "the latest Stop/SubagentStop snapshot saw
+    # agent-type background work still running". Consumed by the manual-compact
+    # finish path, whose SessionStart payload carries NO background_tasks of
+    # its own — without it, /compact ending while teammates/workflows run
+    # would false-green. Refreshed from every turn-end payload; a stale marker
+    # errs yellow (safe) and clears at the next bg-free turn end.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".agentbg")
     )
 
 
@@ -551,17 +566,45 @@ def _codex_job_active(session_id):
         for root, pattern in roots:
             try:
                 for jf in root.glob(pattern):
-                    try:
-                        with open(jf, "r", encoding="utf-8") as h:
-                            rec = json.load(h)
-                    except Exception:
-                        continue
+                    # (R1 review) retry once on a parse failure: the worker
+                    # rewrites the job JSON in place, so a read can land
+                    # mid-write; skipping outright at the exact Stop moment
+                    # would false-GREEN a still-running job.
+                    rec = None
+                    for _ in range(2):
+                        try:
+                            with open(jf, "r", encoding="utf-8") as h:
+                                rec = json.load(h)
+                            break
+                        except Exception:
+                            rec = None
                     if not isinstance(rec, dict):
                         continue
                     if rec.get("sessionId") != session_id:
                         continue
-                    if (rec.get("status") or "") in active and _pid_alive(rec.get("pid")):
-                        return True
+                    if (rec.get("status") or "") not in active:
+                        continue
+                    pid = rec.get("pid")
+                    try:
+                        int(pid)
+                        has_pid = True
+                    except (TypeError, ValueError):
+                        has_pid = False
+                    if has_pid:
+                        if _pid_alive(pid):
+                            return True
+                        continue
+                    # (R1 review) pid-less active record: a job written as
+                    # queued whose worker never spawned would otherwise hold
+                    # yellow for the REST of the session. Age-gate it — fresh
+                    # (<10 min) counts as active (spawn in progress), older is
+                    # stale and skipped.
+                    try:
+                        import time
+                        if time.time() - jf.stat().st_mtime < 600:
+                            return True
+                    except Exception:
+                        return True  # cannot disprove -> active (safe)
             except Exception:
                 continue
         return False
@@ -577,18 +620,40 @@ def _split_background(bg_tasks):
     # blue (user report: create-team work showed blue). An unknown or missing
     # type counts as agent work — the safe direction (yellow, never a false
     # green/blue). Returns (has_any, has_agent_work).
+    # (R1 review) entries whose status says they FINISHED are skipped entirely
+    # (neither yellow nor blue) — a status DENYLIST, not an allowlist, so an
+    # unknown running-ish status keeps the safe yellow rather than false-green.
     if not bg_tasks:
         return (False, False)
+    if isinstance(bg_tasks, dict):
+        bg_tasks = [bg_tasks]  # tolerate a single-entry object payload
     if not isinstance(bg_tasks, list):
         return (True, True)
+    finished = (
+        "completed", "complete", "done", "finished", "failed", "error",
+        "errored", "cancelled", "canceled", "stopped", "killed", "exited",
+        "terminated",
+    )
+    has_any = False
     has_agent = False
     for task in bg_tasks:
-        task_type = ""
         if isinstance(task, dict):
+            status = str(task.get("status") or "").lower()
+            if (
+                status in finished
+                or task.get("is_running") is False
+                or task.get("isRunning") is False
+            ):
+                continue
             task_type = str(task.get("type") or "")
+        elif isinstance(task, str):
+            task_type = task  # a bare string entry names its type
+        else:
+            task_type = ""  # unknown shape -> agent work (safe direction)
+        has_any = True
         if task_type != "shell":
             has_agent = True
-    return (True, has_agent)
+    return (has_any, has_agent)
 
 
 def _decide_event_type(
@@ -642,6 +707,16 @@ def _decide_event_type(
     run_dir = _subagent_dir(terminal_id)
     sentinel = _sentinel_path(terminal_id)
     compact_marker = _compact_marker_path(terminal_id)
+    agentbg_marker = _agentbg_marker_path(terminal_id)
+
+    # (TEAM-YELLOW) keep the agent-background snapshot marker fresh from every
+    # turn-end payload — including Stops the run_dir yellow-hold suppresses —
+    # so payload-less events (SessionStart after /compact) can consult it.
+    if event in ("Stop", "SubagentStop"):
+        if has_agent_background:
+            _touch(agentbg_marker)
+        else:
+            _remove(agentbg_marker)
 
     # (COMPACT-YELLOW) Context compaction IS the agent working: it is a
     # summarization LLM call that can take minutes, during which NO other hook
@@ -671,6 +746,11 @@ def _decide_event_type(
                 _touch(sentinel)  # background subagents still running -> stay yellow
                 return None
             _remove(sentinel)
+            # (R1 review) this payload carries no background_tasks — consult the
+            # persisted turn-end snapshot + codex so a manual compact ending
+            # while teammates/workflows/codex run cannot false-green.
+            if agentbg_marker.exists() or _codex_job_active(session_id):
+                return "SubagentActive"  # red-respecting working hold
             return "Stop"  # manual compact finished -> review/green (or idle)
         return "Start"  # auto-compact mid-turn: keep working/yellow
 
@@ -692,7 +772,10 @@ def _decide_event_type(
             # case where Stop carried the field but SubagentStop did not — same
             # version added both, so not in practice.)
             if has_agent_background or _codex_job_active(session_id):
-                return "Start"  # detached teammates/workflows/codex still working -> yellow
+                # SubagentActive (NOT Start): the renderer asserts working only
+                # when the source is not already red — a Start here would stomp
+                # a teammate-raised permission/question (red trumps yellow).
+                return "SubagentActive"  # teammates/workflows/codex still working -> yellow
             if has_background:
                 return "BackgroundRunning"  # only background shells left -> blue
             return "Stop"  # main already stopped + last subagent done -> green
@@ -708,7 +791,9 @@ def _decide_event_type(
             return None  # stay yellow
         _remove(sentinel)
         if has_agent_background or _codex_job_active(session_id):
-            return "Start"  # teammates/workflows/codex still working -> yellow, not blue
+            # SubagentActive (NOT Start) — red-respecting working assert; see
+            # the SubagentStop branch comment.
+            return "SubagentActive"  # teammates/workflows/codex still working -> yellow, not blue
         if has_background:
             return "BackgroundRunning"  # turn ended; only background shells left -> blue
         return "Stop"
@@ -721,8 +806,9 @@ def _decide_event_type(
         _clear_dir(run_dir)
         _remove(sentinel)
         _remove(compact_marker)
+        _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
         if _codex_job_active(session_id):
-            return "Start"
+            return "SubagentActive"  # codex on its own API survives the abort
         return "Stop"
     if event == "SessionEnd":
         # Session is ending — the dot context goes away, so a still-running
@@ -730,6 +816,7 @@ def _decide_event_type(
         _clear_dir(run_dir)
         _remove(sentinel)
         _remove(compact_marker)
+        _remove(agentbg_marker)
         return "Stop"
     if event == "Notification":
         return "PermissionRequest"

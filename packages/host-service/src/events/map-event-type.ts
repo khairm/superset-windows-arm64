@@ -13,6 +13,11 @@
  *   is handled exactly like a normal turn-end (review-or-clear); the renderer's
  *   precedence is red > yellow > blue > green, so this blue outranks a fresh
  *   review green and shows as soon as the turn ends with a task still running.
+ * - `SubagentActive`: (TEAM-YELLOW) the turn ended but agent-type background
+ *   work (teammates/forks/workflows/codex-companion) is still running. The
+ *   renderer asserts working/yellow UNLESS the source is already red — a plain
+ *   `Start` here would stomp a pending permission/question from a teammate
+ *   (red must trump yellow). Quiet: no chime, no native notification.
  */
 export type AgentLifecycleEventType =
 	| "Start"
@@ -20,7 +25,8 @@ export type AgentLifecycleEventType =
 	| "PermissionRequest"
 	| "Attached"
 	| "Detached"
-	| "BackgroundRunning";
+	| "BackgroundRunning"
+	| "SubagentActive";
 
 export function mapEventType(
 	eventType: string | undefined,
@@ -49,6 +55,11 @@ export function mapEventType(
 	// (BA) Cloud/background-session-still-running signal from the notify hook.
 	if (eventType === "BackgroundRunning") {
 		return "BackgroundRunning";
+	}
+	// (TEAM-YELLOW) Turn-end working-hold from the notify hook: agent-type
+	// background work still running. Red-respecting in the renderer.
+	if (eventType === "SubagentActive") {
+		return "SubagentActive";
 	}
 	if (
 		eventType === "Start" ||

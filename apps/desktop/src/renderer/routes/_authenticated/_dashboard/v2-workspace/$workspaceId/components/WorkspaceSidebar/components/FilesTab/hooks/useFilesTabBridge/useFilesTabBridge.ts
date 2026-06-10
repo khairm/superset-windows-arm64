@@ -175,6 +175,12 @@ export function useFilesTabBridge({
 			if (versionRef.current !== startVersion) return;
 			knownPathsRef.current.clear();
 			for (const path of freshPaths) knownPathsRef.current.add(path);
+			// resetPaths emits a RESET mutation, not per-path removes, so the
+			// onMutation("remove") cleanup never sees a dropped placeholder. A
+			// stale pendingCreates entry would later hijack the rename of a real
+			// same-named folder into the create branch (createDirectory instead
+			// of movePath — the original silently left behind on disk).
+			pendingCreatesRef.current.clear();
 			model.resetPaths(Array.from(freshPaths));
 		} finally {
 			setIsRefreshing(false);

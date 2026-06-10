@@ -129,6 +129,23 @@ export function useFilesTabActions({
 	const startCreating = useCallback(
 		async (mode: "file" | "folder", parentAbs?: string): Promise<void> => {
 			if (!rootPath) return;
+			// Pierre's startRenaming swaps the rename target WITHOUT removing a
+			// previous removeIfCanceled placeholder, so starting a second create
+			// (or committing a placeholder under its unchanged default name —
+			// Pierre fires no rename event for that) would orphan the first as a
+			// ghost row whose stale pendingCreates entry could later hijack the
+			// rename of a real same-named path into the create branch. Remove
+			// any uncommitted placeholders first; model.remove fires the
+			// "remove" mutation that cleans the bridge bookkeeping.
+			for (const stalePath of Array.from(bridge.pendingCreates.keys())) {
+				try {
+					model.remove(stalePath, { recursive: true });
+				} catch {
+					// not in the model — drop the bookkeeping directly
+					bridge.pendingCreates.delete(stalePath);
+					bridge.knownPaths.delete(stalePath);
+				}
+			}
 			const parentAbsPath =
 				parentAbs ??
 				deriveCreationParent(selectedFilePath, bridge.knownPaths, rootPath);

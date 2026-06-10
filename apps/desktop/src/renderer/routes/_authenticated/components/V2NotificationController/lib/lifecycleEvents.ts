@@ -79,7 +79,10 @@ export function handleV2AgentLifecycleEvent({
 		payload.eventType === "Detached" ||
 		// (BA) cloud/background-running is a quiet blue-dot signal, not a
 		// "your agent finished" moment — no chime, no native notification.
-		payload.eventType === "BackgroundRunning"
+		payload.eventType === "BackgroundRunning" ||
+		// (TEAM-YELLOW) turn-end working-hold (agent-type background work still
+		// running) — the turn is NOT finished, so it must stay silent too.
+		payload.eventType === "SubagentActive"
 	) {
 		return;
 	}
