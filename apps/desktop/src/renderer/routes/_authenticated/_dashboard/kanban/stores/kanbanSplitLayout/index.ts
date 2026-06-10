@@ -1,0 +1,10 @@
+export {
+	KANBAN_SPLIT_DEFAULT_HEIGHT,
+	KANBAN_SPLIT_DEFAULT_WIDTH,
+	KANBAN_SPLIT_MAX_HEIGHT,
+	KANBAN_SPLIT_MAX_WIDTH,
+	KANBAN_SPLIT_MIN_HEIGHT,
+	KANBAN_SPLIT_MIN_WIDTH,
+	type KanbanSplitOrientation,
+	useKanbanSplitLayout,
+} from "./kanbanSplitLayout";

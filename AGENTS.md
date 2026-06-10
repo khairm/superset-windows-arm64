@@ -98,11 +98,15 @@ See `FEATURES.md` for the marker manifest. In brief:
 - **Kanban board (Tasks & PRs → Kanban)** — a device-local board mirroring every
   branch as a card + a fixed Queued column for tasks with no branch yet. Card shows
   title, `repo / branch`, a date deadline (yellow on the due day, red after), and the
-  live status dot. Double-click title/deadline to edit; a Queued card single-click
-  opens a modal. Drag a Queued card out to promote it (create a branch or attach to a
-  non-git main card). Click a branch card to collapse the board to a left rail and
-  open that branch's workspace; its task details get a Card tab beside
-  Files/Changes/Review. User-created columns (add/rename/reorder/delete; deleting
+  live status dot. Double-click title/deadline to edit; ALL card actions (Edit card
+  for Queued, Snooze, Archive, Delete) live in the card's right-click menu — no
+  3-dots button, and a plain click never opens the Queued editor modal. Drag a
+  Queued card out to promote it (create a branch or attach to a non-git main card).
+  Click a branch card to collapse the board and open that branch's workspace — the
+  board sits as a resizable TOP strip (default) or a LEFT rail (header toggle;
+  device-local preference incl. strip height / rail width), and the open card
+  mirrors the sidebar's active-row highlight (same ?cardId source). Task details
+  get a Card tab beside Files/Changes/Review. User-created columns (add/rename/reorder/delete; deleting
   moves cards left), each with collapsible Snoozed/Archived. Snooze/archive/delete of
   a branch card == the sidebar (one source of truth); main workspaces can't be
   snoozed/archived/deleted. Local-only, ungated. APPEND-ONLY daily backup:
