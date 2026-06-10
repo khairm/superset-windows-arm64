@@ -68,7 +68,8 @@ See `FEATURES.md` for the marker manifest. In brief:
   and while a pid-alive codex-companion job for the session runs — held even
   through a Claude StopFailure, since codex is on its own API), green = ready
   for review, blue = a foreground shell command or a shell-only background
-  remainder / cloud session.
+  remainder / cloud session (a manual /compact restores this blue from a
+  turn-end snapshot marker instead of false-greening).
   Precedence red > yellow > green > blue. Host-service lifecycle POSTs + a JSONL
   watcher fallback; only open tabs are represented. superset-notify.py exclusively
   owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop

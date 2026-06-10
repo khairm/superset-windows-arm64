@@ -337,7 +337,10 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  hook fires; manual /compact does not even fire
                                  UserPromptSubmit, verified live)
   SessionStart(source=compact)-> Stop after a MANUAL compact (same decision as
-                                 Stop, so the subagent yellow-hold is respected);
+                                 Stop, so the subagent yellow-hold is respected
+                                 and the persisted turn-end snapshot markers
+                                 restore yellow for agent-type background work
+                                 or BLUE for a still-running background shell);
                                  re-asserts Start after an AUTO compact (the turn
                                  is still live); no-op when we never marked a
                                  compact as running
@@ -425,6 +428,22 @@ def _agentbg_marker_path(terminal_id):
         / ".superset"
         / "agent-subagent-running"
         / (terminal_id + ".agentbg")
+    )
+
+
+def _shellbg_marker_path(terminal_id):
+    # Sibling of .agentbg for the BLUE direction: records "the latest
+    # Stop/SubagentStop snapshot saw ONLY shell-type background work still
+    # running". Consumed by the same manual-compact finish path so /compact
+    # ending while a background shell runs restores the BackgroundRunning
+    # blue instead of false-greening (verified live 2026-06-11). A stale
+    # marker errs blue-lingers — the same accepted (BA)/(BE) tradeoff — and
+    # clears at the next turn end.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".shellbg")
     )
 
 
@@ -708,15 +727,22 @@ def _decide_event_type(
     sentinel = _sentinel_path(terminal_id)
     compact_marker = _compact_marker_path(terminal_id)
     agentbg_marker = _agentbg_marker_path(terminal_id)
+    shellbg_marker = _shellbg_marker_path(terminal_id)
 
-    # (TEAM-YELLOW) keep the agent-background snapshot marker fresh from every
+    # (TEAM-YELLOW) keep the background snapshot markers fresh from every
     # turn-end payload — including Stops the run_dir yellow-hold suppresses —
-    # so payload-less events (SessionStart after /compact) can consult it.
+    # so payload-less events (SessionStart after /compact) can consult them.
+    # .agentbg mirrors the SubagentActive direction, .shellbg the
+    # BackgroundRunning one; at most one is set at a time.
     if event in ("Stop", "SubagentStop"):
         if has_agent_background:
             _touch(agentbg_marker)
         else:
             _remove(agentbg_marker)
+        if has_background and not has_agent_background:
+            _touch(shellbg_marker)
+        else:
+            _remove(shellbg_marker)
 
     # (COMPACT-YELLOW) Context compaction IS the agent working: it is a
     # summarization LLM call that can take minutes, during which NO other hook
@@ -751,6 +777,8 @@ def _decide_event_type(
             # while teammates/workflows/codex run cannot false-green.
             if agentbg_marker.exists() or _codex_job_active(session_id):
                 return "SubagentActive"  # red-respecting working hold
+            if shellbg_marker.exists():
+                return "BackgroundRunning"  # background shell still running -> blue
             return "Stop"  # manual compact finished -> review/green (or idle)
         return "Start"  # auto-compact mid-turn: keep working/yellow
 
@@ -807,6 +835,7 @@ def _decide_event_type(
         _remove(sentinel)
         _remove(compact_marker)
         _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
+        _remove(shellbg_marker)  # snapshot is stale; StopFailure stays no-blue
         if _codex_job_active(session_id):
             return "SubagentActive"  # codex on its own API survives the abort
         return "Stop"
@@ -817,6 +846,7 @@ def _decide_event_type(
         _remove(sentinel)
         _remove(compact_marker)
         _remove(agentbg_marker)
+        _remove(shellbg_marker)
         return "Stop"
     if event == "Notification":
         return "PermissionRequest"
