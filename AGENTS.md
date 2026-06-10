@@ -68,7 +68,10 @@ See `FEATURES.md` for the marker manifest. In brief:
   watcher fallback; only open tabs are represented. superset-notify.py exclusively
   owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
   (its raw passthrough raced ~1s behind and wiped BackgroundRunning blue + the
-  subagent yellow-hold).
+  subagent yellow-hold). Every dot surface (tab, pane header, sidebar row,
+  workspace rollup, kanban card) derives from ONE per-source primitive in the
+  v2-notifications store; the rollup is the fold of the per-source dots, so
+  surfaces cannot drift.
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
 - **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary

@@ -179,7 +179,8 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 			mutation: "setSourceStatus",
 			sourceKey,
 			workspaceId,
-			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
+			from:
+				useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
 			to: status,
 			occurredAt,
 		});
@@ -232,7 +233,8 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 			mutation: "clearSourceStatus",
 			sourceKey,
 			workspaceId: workspaceId ?? null,
-			from: useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
+			from:
+				useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
 			to: null,
 			occurredAt: Date.now(),
 		});
@@ -310,7 +312,8 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 			if (!changed && !bgChanged) return state;
 			const next: Partial<V2NotificationState> = {};
 			if (changed) next.sources = sources;
-			if (bgChanged) next.backgroundRunningTerminals = backgroundRunningTerminals;
+			if (bgChanged)
+				next.backgroundRunningTerminals = backgroundRunningTerminals;
 			return next;
 		});
 	},
@@ -490,6 +493,70 @@ function isClosedTerminalSource(
 	);
 }
 
+// ---------------------------------------------------------------------------
+// (AY/BA) THE single display-status derivation. Every dot surface — tab dot,
+// terminal pane-header dot, sidebar per-terminal row, sidebar workspace
+// rollup, kanban card — derives from these two functions, so two surfaces can
+// never disagree: the workspace rollup IS the fold of the per-source dots.
+// Precedence red > yellow > blue > green, applied per source and at the fold.
+// ---------------------------------------------------------------------------
+
+const DISPLAY_STATUS_PRIORITY: readonly DisplayStatus[] = [
+	"permission",
+	"working",
+	"shell-running",
+	"background-running",
+	"review",
+];
+
+function getHighestPriorityDisplayStatus(
+	statuses: Iterable<DisplayStatus | null>,
+): DisplayStatus | null {
+	let best: DisplayStatus | null = null;
+	let bestRank = DISPLAY_STATUS_PRIORITY.length;
+	for (const status of statuses) {
+		if (!status) continue;
+		const rank = DISPLAY_STATUS_PRIORITY.indexOf(status);
+		if (rank !== -1 && rank < bestRank) {
+			best = status;
+			bestRank = rank;
+			if (rank === 0) break;
+		}
+	}
+	return best;
+}
+
+const TERMINAL_SOURCE_PREFIX = "terminal:";
+
+/**
+ * What ONE source's dot shows: agent permission/working (red/yellow) win;
+ * else a terminal's shell-running / background-running blue; else the agent's
+ * review (green); else nothing. Blue axes exist only for terminal sources.
+ */
+function getSourceDisplayStatus(
+	state: V2NotificationState,
+	workspaceId: string,
+	sourceKey: V2NotificationSourceKey,
+): DisplayStatus | null {
+	const entry = state.sources[sourceKey];
+	const agentStatus = entry?.workspaceId === workspaceId ? entry.status : null;
+	if (agentStatus === "permission" || agentStatus === "working") {
+		return agentStatus;
+	}
+	if (sourceKey.startsWith(TERMINAL_SOURCE_PREFIX)) {
+		const terminalId = sourceKey.slice(TERMINAL_SOURCE_PREFIX.length);
+		if (state.shellRunningTerminals[terminalId]?.workspaceId === workspaceId) {
+			return "shell-running";
+		}
+		if (
+			state.backgroundRunningTerminals[terminalId]?.workspaceId === workspaceId
+		) {
+			return "background-running";
+		}
+	}
+	return agentStatus;
+}
+
 /**
  * Highest-priority status across a workspace's sources. Terminal sources are
  * gated to `openTerminalIds` (when provided) so closed terminals don't tint
@@ -618,69 +685,70 @@ export function useV2WorkspaceBackgroundRunningTerminalIds(
 }
 
 /**
- * (AY) Per-terminal DISPLAY statuses, merged with precedence
- * **red > yellow > blue > green** per terminal: permission/working (agent) win;
- * else a running shell / background session (blue); else review (green). So a
- * terminal that finished its turn but still has a command running shows blue,
- * not green. All inputs are referentially-stable keyed strings, so this only
- * recomputes when one of the sets actually changes.
+ * (AY) Per-terminal DISPLAY statuses for a workspace, derived per terminal
+ * from the SAME shared primitive as the tab dots and the workspace rollup.
+ * Encoded inside the selector as a sorted `terminalId=status` string for
+ * referential stability (the subscription only re-fires when a dot actually
+ * changes), then decoded for the consumer.
  */
+export function selectV2WorkspaceTerminalDisplayKey(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
+	return (state: V2NotificationState): string => {
+		const terminalIds = new Set<string>();
+		for (const entry of Object.values(state.sources)) {
+			if (entry.workspaceId !== workspaceId) continue;
+			if (entry.source.type !== "terminal") continue;
+			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
+			terminalIds.add(entry.source.id);
+		}
+		for (const map of [
+			state.shellRunningTerminals,
+			state.backgroundRunningTerminals,
+		]) {
+			for (const [terminalId, entry] of Object.entries(map)) {
+				if (entry.workspaceId !== workspaceId) continue;
+				if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
+				terminalIds.add(terminalId);
+			}
+		}
+		const parts: string[] = [];
+		for (const terminalId of terminalIds) {
+			const status = getSourceDisplayStatus(
+				state,
+				workspaceId,
+				`${TERMINAL_SOURCE_PREFIX}${terminalId}`,
+			);
+			if (status) parts.push(`${terminalId}=${status}`);
+		}
+		parts.sort();
+		return parts.join(",");
+	};
+}
+
 export function useV2WorkspaceTerminalStatuses(
 	workspaceId: string,
 ): Array<{ terminalId: string; status: DisplayStatus }> {
 	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
-	const agentSelector = useMemo(
-		() => selectV2WorkspaceTerminalStatuses(workspaceId, openTerminalIds),
+	const selector = useMemo(
+		() => selectV2WorkspaceTerminalDisplayKey(workspaceId, openTerminalIds),
 		[workspaceId, openTerminalIds],
 	);
-	const shellSelector = useMemo(
-		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
-	);
-	const backgroundSelector = useMemo(
-		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
-	);
-	const agentKey = useV2NotificationStore(agentSelector);
-	const shellKey = useV2NotificationStore(shellSelector);
-	const backgroundKey = useV2NotificationStore(backgroundSelector);
+	const key = useV2NotificationStore(selector);
 	return useMemo(() => {
-		const agentById = new Map<string, ActivePaneStatus>();
-		if (agentKey) {
-			for (const pair of agentKey.split(",")) {
-				const eq = pair.indexOf("=");
-				if (eq < 0) continue;
-				agentById.set(
-					pair.slice(0, eq),
-					pair.slice(eq + 1) as ActivePaneStatus,
-				);
-			}
-		}
-		const shellIds = new Set(shellKey ? shellKey.split(",").filter(Boolean) : []);
-		const backgroundIds = new Set(
-			backgroundKey ? backgroundKey.split(",").filter(Boolean) : [],
-		);
-		const terminalIds = new Set<string>([
-			...agentById.keys(),
-			...shellIds,
-			...backgroundIds,
-		]);
 		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
-		for (const terminalId of terminalIds) {
-			const agent = agentById.get(terminalId);
-			// red / yellow outrank blue; blue outranks green (review).
-			if (agent === "permission" || agent === "working") {
-				result.push({ terminalId, status: agent });
-			} else if (shellIds.has(terminalId)) {
-				result.push({ terminalId, status: "shell-running" });
-			} else if (backgroundIds.has(terminalId)) {
-				result.push({ terminalId, status: "background-running" });
-			} else if (agent) {
-				result.push({ terminalId, status: agent });
-			}
+		if (!key) return result;
+		for (const pair of key.split(",")) {
+			const eq = pair.indexOf("=");
+			if (eq < 0) continue;
+			result.push({
+				terminalId: pair.slice(0, eq),
+				status: pair.slice(eq + 1) as DisplayStatus,
+			});
 		}
 		return result;
-	}, [agentKey, shellKey, backgroundKey]);
+	}, [key]);
 }
 
 export function selectV2TabNotificationStatus(
@@ -732,6 +800,34 @@ export function selectV2SourcesNotificationStatus(
 		selectStatusForSourceKeys(state, workspaceId, sourceKeys);
 }
 
+/**
+ * (AY/BA) Display status for an explicit source set — the TAB dot and the
+ * terminal pane-header dot. A straight fold of the per-source primitive, so
+ * it can never disagree with the workspace rollup (the same fold over all
+ * open sources).
+ */
+export function selectV2SourcesDisplayStatus(
+	workspaceId: string,
+	sources: Iterable<V2NotificationSourceInput>,
+) {
+	const sourceKeys = [...new Set([...sources].map(getV2NotificationSourceKey))];
+	return (state: V2NotificationState): DisplayStatus | null =>
+		getHighestPriorityDisplayStatus(
+			sourceKeys.map((sourceKey) =>
+				getSourceDisplayStatus(state, workspaceId, sourceKey),
+			),
+		);
+}
+
+export function useV2SourcesDisplayStatus(
+	workspaceId: string,
+	sources: Iterable<V2NotificationSourceInput>,
+): DisplayStatus | null {
+	return useV2NotificationStore(
+		selectV2SourcesDisplayStatus(workspaceId, sources),
+	);
+}
+
 export function useV2WorkspaceNotificationStatus(workspaceId: string) {
 	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
 	const selector = useMemo(
@@ -742,30 +838,45 @@ export function useV2WorkspaceNotificationStatus(workspaceId: string) {
 }
 
 /**
- * (AY/BA) The single status the WORKSPACE ICON should render. Precedence
- * **red > yellow > blue > green**: permission (red) and working (yellow) — the
- * agent actively needing/doing work — outrank blue; a running shell / background
- * session (blue) outranks review (green) so a workspace that FINISHED its turn
- * but still has a command running shows BLUE, not green; review (green) shows
- * only when nothing is running. The precedence merge happens HERE (and
- * per-terminal in useV2WorkspaceTerminalStatuses), never in `sources`.
+ * (AY/BA) The single status the WORKSPACE ICON should render: the SAME
+ * per-source fold the tab dots render, accumulated over every open source —
+ * the sidebar literally represents the dots in the tabs, so they can never
+ * drift. Terminal sources are gated to OPEN terminals; chat/manual sources
+ * always count. Precedence red > yellow > blue > green lives in the shared
+ * primitive, never here and never in `sources`.
  */
+export function selectV2WorkspaceDisplayStatus(
+	workspaceId: string,
+	openTerminalIds?: ReadonlySet<string>,
+) {
+	return (state: V2NotificationState): DisplayStatus | null => {
+		function* statuses() {
+			for (const [sourceKey, entry] of Object.entries(state.sources)) {
+				if (entry.workspaceId !== workspaceId) continue;
+				if (isClosedTerminalSource(entry, openTerminalIds)) continue;
+				yield getSourceDisplayStatus(state, workspaceId, sourceKey);
+			}
+			// Open terminals whose ONLY state is a blue axis (plain shell, no
+			// agent source entry) still get their dot represented.
+			for (const terminalId of openTerminalIds ?? []) {
+				const sourceKey = `${TERMINAL_SOURCE_PREFIX}${terminalId}`;
+				if (state.sources[sourceKey]) continue; // folded above
+				yield getSourceDisplayStatus(state, workspaceId, sourceKey);
+			}
+		}
+		return getHighestPriorityDisplayStatus(statuses());
+	};
+}
+
 export function useV2WorkspaceDisplayStatus(
 	workspaceId: string,
 ): DisplayStatus | null {
-	const agentStatus = useV2WorkspaceNotificationStatus(workspaceId);
-	const shellRunningIds = useV2WorkspaceShellRunningTerminalIds(workspaceId);
-	const backgroundRunningIds =
-		useV2WorkspaceBackgroundRunningTerminalIds(workspaceId);
-	// red / yellow outrank blue
-	if (agentStatus === "permission" || agentStatus === "working") {
-		return agentStatus;
-	}
-	// blue outranks green (review)
-	if (shellRunningIds.size > 0) return "shell-running";
-	if (backgroundRunningIds.size > 0) return "background-running";
-	// green (review) or nothing
-	return agentStatus;
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const selector = useMemo(
+		() => selectV2WorkspaceDisplayStatus(workspaceId, openTerminalIds),
+		[workspaceId, openTerminalIds],
+	);
+	return useV2NotificationStore(selector);
 }
 
 export function selectV2WorkspaceIsUnread(

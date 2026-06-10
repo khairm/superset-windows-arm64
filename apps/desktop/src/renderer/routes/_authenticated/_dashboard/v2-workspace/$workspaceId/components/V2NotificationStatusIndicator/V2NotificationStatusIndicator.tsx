@@ -1,7 +1,10 @@
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
-import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
 import {
-	useV2SourcesNotificationStatus,
+	getStatusTooltip,
+	StatusIndicator,
+} from "renderer/screens/main/components/StatusIndicator";
+import {
+	useV2SourcesDisplayStatus,
 	type V2NotificationSourceInput,
 } from "renderer/stores/v2-notifications";
 
@@ -15,7 +18,14 @@ export function V2NotificationStatusIndicator({
 	className,
 }: V2NotificationStatusIndicatorProps) {
 	const { workspace } = useWorkspace();
-	const status = useV2SourcesNotificationStatus(workspace.id, sources);
+	// (AY/BA) Display status, not raw agent status — the tab / pane-header dot
+	// must also show the shell-running / background-running blue the workspace
+	// rollup shows (same precedence merge).
+	const status = useV2SourcesDisplayStatus(workspace.id, sources);
 	if (!status) return null;
-	return <StatusIndicator status={status} className={className} />;
+	return (
+		<span title={getStatusTooltip(status)}>
+			<StatusIndicator status={status} className={className} />
+		</span>
+	);
 }
