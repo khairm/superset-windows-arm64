@@ -117,13 +117,38 @@ export function KanbanBoard() {
 					? (overData.card as KanbanCardRow).id
 					: undefined;
 
-			// A deadline-sorted column shows cards by date, not by tabOrder — so we
-			// must NOT renumber from the displayed order (it would clobber the
-			// preserved manual order). Just move the card in; manual order untouched.
+			// (DEADLINE-TIE-ORDER) A deadline-sorted column shows cards date-grouped.
+			// Cross-column drops just move the card in (its deadline decides where it
+			// lands; never ordered there → bottom of its group). An intra-column drop
+			// reorders WITHIN the dragged card's tie group only (same due day, or the
+			// no-deadline tail) and persists to deadlineTabOrder — the manual tabOrder
+			// is never renumbered from deadline mode (it would clobber the preserved
+			// manual order). Dropping onto a card in a DIFFERENT group is a no-op:
+			// the date decides cross-group placement, not the drag.
 			if (targetCol.column.sortMode === "deadline") {
 				if (activeCardRow.columnId !== targetColumnId) {
 					actions.moveCardToColumn(activeId, targetColumnId);
+					return;
 				}
+				if (!overCardId || overCardId === activeId) return;
+				const activeView = targetCol.active.find(
+					(v) => v.card.id === activeId,
+				);
+				const overView = targetCol.active.find(
+					(v) => v.card.id === overCardId,
+				);
+				if (!activeView || !overView) return;
+				const groupDeadline = activeView.card.deadline ?? null;
+				if ((overView.card.deadline ?? null) !== groupDeadline) return;
+				const groupIds = targetCol.active
+					.filter((v) => (v.card.deadline ?? null) === groupDeadline)
+					.map((v) => v.card.id);
+				const oldIndex = groupIds.indexOf(activeId);
+				const newIndex = groupIds.indexOf(overCardId);
+				if (oldIndex === -1 || newIndex === -1) return;
+				actions.applyDeadlineTieOrder(
+					arrayMove(groupIds, oldIndex, newIndex),
+				);
 				return;
 			}
 

@@ -98,7 +98,12 @@ export function KanbanCardDetailsForm({
 			if (patch.title !== undefined) draft.title = patch.title;
 			if (patch.description !== undefined)
 				draft.description = patch.description;
-			if (patch.deadline !== undefined) draft.deadline = patch.deadline;
+			if (patch.deadline !== undefined && patch.deadline !== draft.deadline) {
+				draft.deadline = patch.deadline;
+				// (DEADLINE-TIE-ORDER) a changed deadline moves the card to a
+				// different tie group — it arrives there as a NEW item (bottom).
+				draft.deadlineTabOrder = null;
+			}
 		});
 	};
 

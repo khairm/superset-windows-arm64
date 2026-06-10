@@ -30,6 +30,7 @@ export interface UseKanbanActionsResult {
 	deleteQueuedCard: (cardId: string) => void;
 	canDropCard: (card: KanbanCardRow, toColumnId: string) => CardDropKind;
 	applyCardOrder: (columnId: string, orderedCardIds: string[]) => void;
+	applyDeadlineTieOrder: (orderedCardIds: string[]) => void;
 	moveCardToColumn: (cardId: string, toColumnId: string) => void;
 	completePromote: (
 		queuedCardId: string,
@@ -113,6 +114,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				title: title ?? "",
 				description: null,
 				deadline: null,
+				deadlineTabOrder: null,
 				workspaceId: null,
 				snoozeUntil: null,
 				snoozeLaunchId: null,
@@ -131,7 +133,12 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				if (patch.title !== undefined) draft.title = patch.title;
 				if (patch.description !== undefined)
 					draft.description = patch.description;
-				if (patch.deadline !== undefined) draft.deadline = patch.deadline;
+				if (patch.deadline !== undefined && patch.deadline !== draft.deadline) {
+					draft.deadline = patch.deadline;
+					// (DEADLINE-TIE-ORDER) a changed deadline moves the card to a
+					// different tie group — it arrives there as a NEW item (bottom).
+					draft.deadlineTabOrder = null;
+				}
 			});
 		},
 		[collections],
@@ -172,6 +179,21 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[collections],
 	);
 
+	const applyDeadlineTieOrder = useCallback(
+		(orderedCardIds: string[]) => {
+			// (DEADLINE-TIE-ORDER) Persist a drag done in deadline sort mode:
+			// numbers the dragged card's whole tie group as displayed. NEVER
+			// touches tabOrder — the manual order survives mode round-trips.
+			orderedCardIds.forEach((cardId, index) => {
+				if (!collections.v2KanbanCards.get(cardId)) return;
+				collections.v2KanbanCards.update(cardId, (draft) => {
+					draft.deadlineTabOrder = index + 1;
+				});
+			});
+		},
+		[collections],
+	);
+
 	const moveCardToColumn = useCallback(
 		(cardId: string, toColumnId: string) => {
 			if (!collections.v2KanbanCards.get(cardId)) return;
@@ -179,6 +201,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			collections.v2KanbanCards.update(cardId, (draft) => {
 				draft.columnId = toColumnId;
 				draft.tabOrder = tabOrder;
+				// (DEADLINE-TIE-ORDER) new column = new tie groups; arrive as a
+				// NEW item (below the explicitly ordered cards of its group).
+				draft.deadlineTabOrder = null;
 			});
 		},
 		[collections, columnCards],
@@ -217,6 +242,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 					title: queued?.title || "",
 					description: queued?.description ?? null,
 					deadline: queued?.deadline ?? null,
+					deadlineTabOrder: null,
 					workspaceId,
 					snoozeUntil: null,
 					snoozeLaunchId: null,
@@ -247,6 +273,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				...snapshot,
 				columnId: KANBAN_QUEUE_COLUMN_ID,
 				tabOrder: getNextTabOrder(columnCards(KANBAN_QUEUE_COLUMN_ID)),
+				deadlineTabOrder: null,
 				workspaceId: null,
 			});
 		},
@@ -458,6 +485,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			deleteQueuedCard,
 			canDropCard,
 			applyCardOrder,
+			applyDeadlineTieOrder,
 			moveCardToColumn,
 			completePromote,
 			restoreQueuedCard,
@@ -479,6 +507,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			deleteQueuedCard,
 			canDropCard,
 			applyCardOrder,
+			applyDeadlineTieOrder,
 			moveCardToColumn,
 			completePromote,
 			restoreQueuedCard,

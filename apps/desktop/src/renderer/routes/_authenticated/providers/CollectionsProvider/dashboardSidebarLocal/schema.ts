@@ -413,6 +413,13 @@ export const kanbanCardSchema = z.object({
 	description: z.string().nullable().default(null),
 	// Date-only deadline stored as local-midnight epoch-ms (null = none).
 	deadline: z.number().nullable().default(null),
+	// (DEADLINE-TIE-ORDER) Manual order WITHIN a deadline tie group (same due
+	// day, or the no-deadline tail) while the column is deadline-sorted. Kept
+	// separate from tabOrder so deadline-mode drags never scramble the manual
+	// order (and vice versa). null = never ordered there → renders BELOW the
+	// explicitly ordered cards of its group; reset to null whenever the card's
+	// deadline changes or it moves column (it "arrives" as a new item).
+	deadlineTabOrder: z.number().int().nullable().default(null),
 	// null = Queued / unbound; set = bound to a branch (workspace).
 	workspaceId: z.string().nullable().default(null),
 	// Used ONLY when unbound. Bound cards derive snooze/archive from the branch's
@@ -459,6 +466,7 @@ const KANBAN_CARD_DEFAULTS = {
 	title: "",
 	description: null,
 	deadline: null,
+	deadlineTabOrder: null,
 	workspaceId: null,
 	snoozeUntil: null,
 	snoozeLaunchId: null,

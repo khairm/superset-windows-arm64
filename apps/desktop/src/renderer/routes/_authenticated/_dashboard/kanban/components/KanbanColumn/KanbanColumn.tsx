@@ -84,7 +84,6 @@ export function KanbanColumn({
 			<div className="mb-1 flex items-center gap-1.5 px-1 py-1">
 				{renaming ? (
 					<Input
-						// biome-ignore lint/a11y/noAutofocus: inline rename
 						autoFocus
 						value={nameDraft}
 						onChange={(e) => setNameDraft(e.target.value)}

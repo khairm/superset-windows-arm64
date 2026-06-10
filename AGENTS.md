@@ -110,7 +110,11 @@ See `FEATURES.md` for the marker manifest. In brief:
   device-local preference incl. strip height / rail width), and the open card
   mirrors the sidebar's active-row highlight (same ?cardId source). Task details
   get a Card tab beside Files/Changes/Review. User-created columns (add/rename/reorder/delete; deleting
-  moves cards left), each with collapsible Snoozed/Archived. Snooze/archive/delete of
+  moves cards left), each with collapsible Snoozed/Archived and a manual/deadline
+  sort toggle — deadline mode remembers its OWN drag order within tie groups
+  (same due day / no-deadline tail; separate field from the manual tabOrder, so
+  neither mode scrambles the other; new/changed/moved cards land BELOW the
+  explicitly ordered ones in their group). Snooze/archive/delete of
   a branch card == the sidebar (one source of truth); main workspaces can't be
   snoozed/archived/deleted. Local-only, ungated. APPEND-ONLY daily backup:
   write-once JSON snapshot per org per day under `~/.superset/backups/kanban/`

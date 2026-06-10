@@ -27,18 +27,35 @@ import { deriveCardTitle } from "../../utils/deriveCardTitle";
 const TICK_INTERVAL_MS = 60_000;
 const STARTER_COLUMN_NAME = "In Progress";
 
+// (DEADLINE-TIE-ORDER) Within a deadline tie group (same due day, or the
+// no-deadline tail): cards the user explicitly drag-ordered in deadline mode
+// (deadlineTabOrder set) come first in that order; never-ordered cards (new
+// arrivals, changed deadlines, column moves) follow underneath in manual
+// tabOrder. The manual order itself is never touched from deadline mode.
+function deadlineTieBreak(a: KanbanCardView, b: KanbanCardView): number {
+	const oa = a.card.deadlineTabOrder;
+	const ob = b.card.deadlineTabOrder;
+	if (oa != null && ob != null) {
+		return oa - ob || a.card.tabOrder - b.card.tabOrder;
+	}
+	if (oa != null) return -1;
+	if (ob != null) return 1;
+	return a.card.tabOrder - b.card.tabOrder;
+}
+
 function sortCards(cards: KanbanCardView[], sortMode: string): KanbanCardView[] {
 	const next = [...cards];
 	if (sortMode === "deadline") {
-		// Display-only: soonest deadline first, no-deadline last; manual tabOrder
-		// breaks ties (and is preserved untouched underneath).
+		// Display-only: soonest deadline first, no-deadline last; within a tie
+		// group the deadline-mode drag order wins (see deadlineTieBreak) and the
+		// manual tabOrder is preserved untouched underneath.
 		next.sort((a, b) => {
 			const da = a.card.deadline;
 			const db = b.card.deadline;
-			if (da == null && db == null) return a.card.tabOrder - b.card.tabOrder;
+			if (da == null && db == null) return deadlineTieBreak(a, b);
 			if (da == null) return 1;
 			if (db == null) return -1;
-			return da - db || a.card.tabOrder - b.card.tabOrder;
+			return da - db || deadlineTieBreak(a, b);
 		});
 	} else {
 		next.sort((a, b) => a.card.tabOrder - b.card.tabOrder);
