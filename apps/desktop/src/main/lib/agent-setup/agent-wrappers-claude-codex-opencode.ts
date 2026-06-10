@@ -248,12 +248,10 @@ export function getClaudeGlobalSettingsJsonContent(
 
 	for (const { eventName, definition } of managedEvents) {
 		const current = existing.hooks[eventName];
-		if (Array.isArray(current)) {
-			current.push(definition);
-			existing.hooks[eventName] = current;
-		} else {
-			existing.hooks[eventName] = [definition];
-		}
+		existing.hooks[eventName] = [
+			...(Array.isArray(current) ? current : []),
+			definition,
+		];
 	}
 
 	return JSON.stringify(existing, null, 2);

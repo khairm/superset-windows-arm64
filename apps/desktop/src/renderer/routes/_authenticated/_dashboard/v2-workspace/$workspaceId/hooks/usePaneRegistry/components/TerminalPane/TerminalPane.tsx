@@ -24,6 +24,7 @@ import {
 	terminalRuntimeRegistry,
 } from "renderer/lib/terminal/terminal-runtime-registry";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
+import { useIsLocalWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useIsLocalWorkspace";
 import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
 import type {
 	PaneViewerData,
@@ -63,6 +64,7 @@ export function TerminalPane({
 	} = useLinkHoverState();
 	const { hint, showHint, showCopied } = useLinkClickHint();
 	const openInExternalEditor = useOpenInExternalEditor(workspaceId);
+	const isLocalWorkspace = useIsLocalWorkspace(workspaceId);
 	const paneData = ctx.pane.data as TerminalPaneData;
 	const { terminalId } = paneData;
 	const terminalInstanceId = ctx.pane.id;
@@ -269,7 +271,13 @@ export function TerminalPane({
 					// default handler as fallback) regardless of the open tier —
 					// terminal links to generated reports are for viewing, not
 					// editing. Other surfaces (Changes/Files) keep editor behavior.
-					if (/\.html?$/i.test(link.resolvedPath)) {
+					// LOCAL workspaces only: the path was resolved by the
+					// workspace's host service, and a remote host's path doesn't
+					// exist on this machine — remote links keep the in-app tiers.
+					if (
+						isLocalWorkspace === true &&
+						/\.html?$/i.test(link.resolvedPath)
+					) {
 						electronTrpcClient.external.openHtmlInBrowser
 							.mutate({ path: link.resolvedPath })
 							.catch((error) => {
@@ -356,6 +364,7 @@ export function TerminalPane({
 		showCopied,
 		filePolicy,
 		urlPolicy,
+		isLocalWorkspace,
 	]);
 
 	useTerminalInterruptClear({

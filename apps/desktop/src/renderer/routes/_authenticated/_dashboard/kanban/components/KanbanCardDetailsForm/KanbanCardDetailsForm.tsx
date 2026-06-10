@@ -4,13 +4,15 @@ import { Label } from "@superset/ui/label";
 import { Textarea } from "@superset/ui/textarea";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	deadlineToInputValue,
 	inputValueToDeadline,
 } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
+
+const COMMIT_DEBOUNCE_MS = 250;
 
 interface KanbanCardDetailsFormProps {
 	cardId: string;
@@ -77,22 +79,14 @@ export function KanbanCardDetailsForm({
 		if (!switched && titleDirty.current) return;
 		titleDirty.current = false;
 		setTitle(card?.title ?? "");
-	}, [cardId, card?.id, card?.title]);
+	}, [cardId, card?.title]);
 	useEffect(() => {
 		const switched = descCardId.current !== cardId;
 		descCardId.current = cardId;
 		if (!switched && descDirty.current) return;
 		descDirty.current = false;
 		setDescription(card?.description ?? "");
-	}, [cardId, card?.id, card?.description]);
-
-	if (!card) {
-		return (
-			<div className="select-text p-4 text-sm text-muted-foreground">
-				This branch isn't on the board yet.
-			</div>
-		);
-	}
+	}, [cardId, card?.description]);
 
 	const commit = (patch: {
 		title?: string;
@@ -102,10 +96,88 @@ export function KanbanCardDetailsForm({
 		if (!collections.v2KanbanCards.get(cardId)) return;
 		collections.v2KanbanCards.update(cardId, (draft) => {
 			if (patch.title !== undefined) draft.title = patch.title;
-			if (patch.description !== undefined) draft.description = patch.description;
+			if (patch.description !== undefined)
+				draft.description = patch.description;
 			if (patch.deadline !== undefined) draft.deadline = patch.deadline;
 		});
 	};
+
+	// (DEBOUNCED WRITE-THROUGH) A raw per-keystroke commit re-serializes the
+	// WHOLE per-org cards collection to localStorage (the @tanstack/db driver
+	// writes the full blob per update), so typing on a large board pays
+	// multi-ms per key. Text edits queue for ~250ms and flush on blur, Enter,
+	// Save, card switch, and unmount — closing mid-edit still can never lose
+	// input. The flush targets the cardId CAPTURED at queue time, so a card
+	// switch can never commit one card's text into another.
+	const commitTimerRef = useRef<number | null>(null);
+	const pendingRef = useRef<{
+		cardId: string;
+		patch: { title?: string; description?: string | null };
+	} | null>(null);
+	const flushPendingCommit = useCallback(() => {
+		if (commitTimerRef.current != null) {
+			window.clearTimeout(commitTimerRef.current);
+			commitTimerRef.current = null;
+		}
+		const pending = pendingRef.current;
+		pendingRef.current = null;
+		if (!pending || !collections.v2KanbanCards.get(pending.cardId)) return;
+		collections.v2KanbanCards.update(pending.cardId, (draft) => {
+			if (pending.patch.title !== undefined) draft.title = pending.patch.title;
+			if (pending.patch.description !== undefined) {
+				draft.description = pending.patch.description;
+			}
+		});
+	}, [collections]);
+	const queueCommit = useCallback(
+		(patch: { title?: string; description?: string | null }) => {
+			if (pendingRef.current && pendingRef.current.cardId !== cardId) {
+				// Pending edits belong to a different card — flush them first.
+				flushPendingCommit();
+			}
+			pendingRef.current = {
+				cardId,
+				patch: { ...pendingRef.current?.patch, ...patch },
+			};
+			if (commitTimerRef.current != null) {
+				window.clearTimeout(commitTimerRef.current);
+			}
+			commitTimerRef.current = window.setTimeout(
+				flushPendingCommit,
+				COMMIT_DEBOUNCE_MS,
+			);
+		},
+		[cardId, flushPendingCommit],
+	);
+	// Card switch flushes the previous card's pending edits; unmount (every
+	// modal close path: X, Escape, overlay click) flushes too.
+	const prevCardIdRef = useRef(cardId);
+	useEffect(() => {
+		if (prevCardIdRef.current === cardId) return;
+		prevCardIdRef.current = cardId;
+		flushPendingCommit();
+	}, [cardId, flushPendingCommit]);
+	useEffect(() => () => flushPendingCommit(), [flushPendingCommit]);
+
+	const requestClose = useCallback(() => {
+		flushPendingCommit();
+		onRequestClose?.();
+	}, [flushPendingCommit, onRequestClose]);
+	const closeOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.key !== "Enter") return;
+		// An IME composition commit also dispatches Enter (keyCode 229) —
+		// typing CJK must never dismiss the editor mid-word.
+		if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+		requestClose();
+	};
+
+	if (!card) {
+		return (
+			<div className="select-text p-4 text-sm text-muted-foreground">
+				This branch isn't on the board yet.
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex flex-col gap-4 p-3">
@@ -130,19 +202,17 @@ export function KanbanCardDetailsForm({
 					<Input
 						id="kanban-card-title"
 						value={title}
-						// biome-ignore lint/a11y/noAutofocus: modal/tab opens for editing
 						autoFocus={autoFocusTitle}
 						onChange={(e) => {
 							titleDirty.current = true;
 							setTitle(e.target.value);
-							commit({ title: e.target.value });
+							queueCommit({ title: e.target.value });
 						}}
 						onBlur={() => {
+							flushPendingCommit();
 							titleDirty.current = false;
 						}}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") onRequestClose?.();
-						}}
+						onKeyDown={closeOnEnter}
 						placeholder="Task title"
 					/>
 				)}
@@ -163,17 +233,24 @@ export function KanbanCardDetailsForm({
 					onChange={(e) => {
 						descDirty.current = true;
 						setDescription(e.target.value);
-						commit({
+						queueCommit({
 							description: e.target.value.trim() ? e.target.value : null,
 						});
 					}}
 					onBlur={() => {
+						flushPendingCommit();
 						descDirty.current = false;
 					}}
 					onKeyDown={(e) => {
-						// Plain Enter inserts a newline; Ctrl/Cmd+Enter saves + closes.
-						if (e.key === "Enter" && (e.ctrlKey || e.metaKey))
-							onRequestClose?.();
+						// Plain Enter inserts a newline; Ctrl/Cmd+Enter saves + closes
+						// (never during an IME composition).
+						if (
+							e.key === "Enter" &&
+							(e.ctrlKey || e.metaKey) &&
+							!e.nativeEvent.isComposing
+						) {
+							requestClose();
+						}
 					}}
 					placeholder="Optional description"
 					rows={5}
@@ -191,9 +268,7 @@ export function KanbanCardDetailsForm({
 					onChange={(e) =>
 						commit({ deadline: inputValueToDeadline(e.target.value) })
 					}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") onRequestClose?.();
-					}}
+					onKeyDown={closeOnEnter}
 				/>
 				<span className="text-[11px] text-muted-foreground">
 					Turns yellow on the due day, red after it passes.
@@ -202,7 +277,7 @@ export function KanbanCardDetailsForm({
 
 			{onRequestClose ? (
 				<div className="flex justify-end">
-					<Button type="button" onClick={onRequestClose}>
+					<Button type="button" onClick={requestClose}>
 						Save
 					</Button>
 				</div>

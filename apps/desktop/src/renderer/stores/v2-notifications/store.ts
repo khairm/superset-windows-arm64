@@ -526,7 +526,10 @@ function getHighestPriorityDisplayStatus(
 	return best;
 }
 
-const TERMINAL_SOURCE_PREFIX = "terminal:";
+// Typed tie to the canonical key format (`${source.type}:${source.id}` in
+// getV2NotificationSourceKey) — a drift in the source-type name fails to
+// compile instead of silently breaking the blue-axis decode.
+const TERMINAL_SOURCE_PREFIX = `${"terminal" satisfies V2NotificationSourceType}:`;
 
 /**
  * What ONE source's dot shows: agent permission/working (red/yellow) win;
@@ -579,112 +582,6 @@ export function selectV2WorkspaceNotificationStatus(
 }
 
 /**
- * Per-terminal AGENT statuses for a workspace, encoded as a comma-joined
- * `terminalId=status` string for stable referential equality in the Zustand
- * selector (returning an array/object would re-fire the subscription on every
- * store change because [...] !== [...]). Callers decode the string back to
- * pairs. Only terminal sources are included — chat sources excluded — with
- * non-idle status; idle/missing entries are filtered. The terminalId is now
- * carried (was status-only) so (AY) can merge the shell-running fallback by id.
- */
-export function selectV2WorkspaceTerminalStatuses(
-	workspaceId: string,
-	openTerminalIds?: ReadonlySet<string>,
-) {
-	return (state: V2NotificationState): string => {
-		const parts: string[] = [];
-		for (const entry of Object.values(state.sources)) {
-			if (entry.workspaceId !== workspaceId) continue;
-			if (entry.source.type !== "terminal") continue;
-			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
-			parts.push(`${entry.source.id}=${entry.status}`);
-		}
-		// Sort for a deterministic key (store iteration order is insertion order;
-		// sorting keeps the referential-equality key stable across re-emits).
-		parts.sort();
-		return parts.join(",");
-	};
-}
-
-/**
- * (AY) Per-terminal shell-running terminal ids for a workspace, gated to OPEN
- * terminals and encoded as a sorted comma-joined string for referential
- * stability. Drives the per-terminal blue dot fallback + the workspace rollup.
- */
-export function selectV2WorkspaceShellRunningKey(
-	workspaceId: string,
-	openTerminalIds?: ReadonlySet<string>,
-) {
-	return (state: V2NotificationState): string => {
-		const ids: string[] = [];
-		for (const [terminalId, entry] of Object.entries(
-			state.shellRunningTerminals,
-		)) {
-			if (entry.workspaceId !== workspaceId) continue;
-			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
-			ids.push(terminalId);
-		}
-		ids.sort();
-		return ids.join(",");
-	};
-}
-
-/**
- * (AY) Set of terminalIds with a foreground command running, gated to OPEN
- * terminals. Referentially stable — identity changes only when the id set does.
- */
-export function useV2WorkspaceShellRunningTerminalIds(
-	workspaceId: string,
-): ReadonlySet<string> {
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
-	const selector = useMemo(
-		() => selectV2WorkspaceShellRunningKey(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
-	);
-	const key = useV2NotificationStore(selector);
-	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
-}
-
-/**
- * (BA) Per-terminal cloud/background-running terminal ids for a workspace, gated
- * to OPEN terminals and encoded as a sorted comma-joined string for referential
- * stability. Mirrors the shell-running selector on the separate background axis.
- */
-export function selectV2WorkspaceBackgroundRunningKey(
-	workspaceId: string,
-	openTerminalIds?: ReadonlySet<string>,
-) {
-	return (state: V2NotificationState): string => {
-		const ids: string[] = [];
-		for (const [terminalId, entry] of Object.entries(
-			state.backgroundRunningTerminals,
-		)) {
-			if (entry.workspaceId !== workspaceId) continue;
-			if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
-			ids.push(terminalId);
-		}
-		ids.sort();
-		return ids.join(",");
-	};
-}
-
-/**
- * (BA) Set of terminalIds with a cloud/background session running, gated to OPEN
- * terminals. Referentially stable — identity changes only when the id set does.
- */
-export function useV2WorkspaceBackgroundRunningTerminalIds(
-	workspaceId: string,
-): ReadonlySet<string> {
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
-	const selector = useMemo(
-		() => selectV2WorkspaceBackgroundRunningKey(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
-	);
-	const key = useV2NotificationStore(selector);
-	return useMemo(() => new Set(key ? key.split(",") : []), [key]);
-}
-
-/**
  * (AY) Per-terminal DISPLAY statuses for a workspace, derived per terminal
  * from the SAME shared primitive as the tab dots and the workspace rollup.
  * Encoded inside the selector as a sorted `terminalId=status` string for
@@ -693,7 +590,10 @@ export function useV2WorkspaceBackgroundRunningTerminalIds(
  */
 export function selectV2WorkspaceTerminalDisplayKey(
 	workspaceId: string,
-	openTerminalIds?: ReadonlySet<string>,
+	// REQUIRED: every display-status surface gates on open terminals. (An
+	// optional param had inverted "ungated" semantics between the sources loop
+	// and the blue maps — most-permissive vs most-restrictive.)
+	openTerminalIds: ReadonlySet<string>,
 ) {
 	return (state: V2NotificationState): string => {
 		const terminalIds = new Set<string>();
@@ -828,15 +728,6 @@ export function useV2SourcesDisplayStatus(
 	);
 }
 
-export function useV2WorkspaceNotificationStatus(workspaceId: string) {
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
-	const selector = useMemo(
-		() => selectV2WorkspaceNotificationStatus(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
-	);
-	return useV2NotificationStore(selector);
-}
-
 /**
  * (AY/BA) The single status the WORKSPACE ICON should render: the SAME
  * per-source fold the tab dots render, accumulated over every open source —
@@ -847,7 +738,8 @@ export function useV2WorkspaceNotificationStatus(workspaceId: string) {
  */
 export function selectV2WorkspaceDisplayStatus(
 	workspaceId: string,
-	openTerminalIds?: ReadonlySet<string>,
+	// REQUIRED — see selectV2WorkspaceTerminalDisplayKey.
+	openTerminalIds: ReadonlySet<string>,
 ) {
 	return (state: V2NotificationState): DisplayStatus | null => {
 		function* statuses() {
@@ -858,7 +750,7 @@ export function selectV2WorkspaceDisplayStatus(
 			}
 			// Open terminals whose ONLY state is a blue axis (plain shell, no
 			// agent source entry) still get their dot represented.
-			for (const terminalId of openTerminalIds ?? []) {
+			for (const terminalId of openTerminalIds) {
 				const sourceKey = `${TERMINAL_SOURCE_PREFIX}${terminalId}`;
 				if (state.sources[sourceKey]) continue; // folded above
 				yield getSourceDisplayStatus(state, workspaceId, sourceKey);
@@ -935,15 +827,6 @@ export function useV2ChatNotificationStatus(
 ) {
 	return useV2NotificationStore(
 		selectV2ChatNotificationStatus(workspaceId, chatId),
-	);
-}
-
-export function useV2SourcesNotificationStatus(
-	workspaceId: string,
-	sources: Iterable<V2NotificationSourceInput>,
-) {
-	return useV2NotificationStore(
-		selectV2SourcesNotificationStatus(workspaceId, sources),
 	);
 }
 

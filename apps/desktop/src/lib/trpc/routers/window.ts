@@ -121,7 +121,8 @@ export const createWindowRouter = (getWindow: () => BrowserWindow | null) => {
 					defaultPath: input?.defaultPath,
 					multi: true,
 				});
-				if (paths.length === 0) return { canceled: true, paths: [] as string[] };
+				if (paths.length === 0)
+					return { canceled: true, paths: [] as string[] };
 				return { canceled: false, paths };
 			}),
 
@@ -156,18 +157,38 @@ export const createWindowRouter = (getWindow: () => BrowserWindow | null) => {
 				const filePath = join(dir, `${safeOrg}-${today}.json`);
 				try {
 					await fs.mkdir(dir, { recursive: true });
-					// Write-once per day: if today's snapshot exists, NOTHING runs —
-					// rename would replace it on Windows, so the guard comes first.
+					// Cheap fast-path: today's snapshot already exists.
 					const exists = await fs
 						.access(filePath)
 						.then(() => true)
 						.catch(() => false);
 					if (exists) {
-						return { written: false as const, reason: "already-exists" as const };
+						return {
+							written: false as const,
+							reason: "already-exists" as const,
+						};
 					}
+					// Write-once must be ATOMIC: rename() REPLACES an existing file on
+					// Windows, so a check-then-rename race between two writers (second
+					// window / debounce + retry overlap) could overwrite the day's
+					// snapshot. link() fails with EEXIST instead — the temp file gets
+					// a second name only if no snapshot exists yet, and the loser's
+					// attempt becomes a no-op.
 					const tempPath = `${filePath}.tmp-${process.pid}`;
 					await fs.writeFile(tempPath, input.payload, "utf8");
-					await fs.rename(tempPath, filePath);
+					try {
+						await fs.link(tempPath, filePath);
+					} catch (linkErr) {
+						if ((linkErr as NodeJS.ErrnoException).code === "EEXIST") {
+							return {
+								written: false as const,
+								reason: "already-exists" as const,
+							};
+						}
+						throw linkErr;
+					} finally {
+						await fs.unlink(tempPath).catch(() => {});
+					}
 					return { written: true as const, path: filePath };
 				} catch (err) {
 					console.warn("[kanban-backup] snapshot failed", err);

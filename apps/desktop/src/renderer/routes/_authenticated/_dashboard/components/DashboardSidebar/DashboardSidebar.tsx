@@ -205,44 +205,57 @@ export function DashboardSidebar({
 	// (HOVER-FREEZE) Don't reshuffle rows while the pointer is over the project
 	// list — tier transitions (active/idle flips, pins) re-sort the sidebar, and
 	// rows jumping under the cursor mid-interaction is jarring. While the
-	// pointer is inside (plus a short grace after it leaves, and for the whole
-	// of a drag) the rendered ORDER is pinned to the snapshot taken on entry;
-	// row CONTENT (dots, badges, children) stays live. The real order keeps
-	// updating/persisting underneath and applies the moment the freeze lifts.
+	// pointer is physically inside the list (and for the whole of a drag) the
+	// rendered ORDER is pinned to the snapshot taken on entry; row CONTENT
+	// (dots, badges, children) stays live. The real order keeps updating and
+	// persisting underneath and applies the moment the freeze lifts.
+	//
+	// The inside/outside signal is GEOMETRY-based (a window-level pointermove
+	// against the list's bounding rect), NOT pointerenter/leave hit-testing:
+	// Radix menus set body{pointer-events:none} and the dnd-kit DragOverlay
+	// steals the hit-test, both of which fire pointerleave while the cursor is
+	// still visually over the list — which would lift the freeze mid-menu and
+	// mid-drag, the exact interactions it exists to protect.
 	const [isPointerOverList, setIsPointerOverList] = useState(false);
+	const isPointerOverListRef = useRef(false);
+	const listRef = useRef<HTMLDivElement | null>(null);
 	const frozenOrderRef = useRef<string[]>([]);
-	const unfreezeTimerRef = useRef<number | null>(null);
-	const handleListPointerEnter = useCallback(() => {
-		if (unfreezeTimerRef.current != null) {
-			// Re-entered within the grace window: stay on the existing snapshot.
-			window.clearTimeout(unfreezeTimerRef.current);
-			unfreezeTimerRef.current = null;
-			return;
-		}
-		if (!isPointerOverList) {
-			frozenOrderRef.current = orderedIds;
-			setIsPointerOverList(true);
-		}
-	}, [isPointerOverList, orderedIds]);
-	const handleListPointerLeave = useCallback(() => {
-		if (unfreezeTimerRef.current != null) {
-			window.clearTimeout(unfreezeTimerRef.current);
-		}
-		// Grace period: portals (context menus, hover cards) steal the pointer
-		// from the list element without the cursor visually leaving the sidebar.
-		unfreezeTimerRef.current = window.setTimeout(() => {
-			unfreezeTimerRef.current = null;
-			setIsPointerOverList(false);
-		}, 800);
+	const orderedIdsRef = useRef<string[]>(orderedIds);
+	orderedIdsRef.current = orderedIds;
+	useEffect(() => {
+		let raf = 0;
+		let lastX = 0;
+		let lastY = 0;
+		const evaluate = () => {
+			raf = 0;
+			const el = listRef.current;
+			if (!el) return;
+			const rect = el.getBoundingClientRect();
+			const inside =
+				rect.width > 0 &&
+				rect.height > 0 &&
+				lastX >= rect.left &&
+				lastX <= rect.right &&
+				lastY >= rect.top &&
+				lastY <= rect.bottom;
+			if (inside === isPointerOverListRef.current) return;
+			isPointerOverListRef.current = inside;
+			// Snapshot via refs (not closure state) — immune to the stale-closure
+			// race a render-captured handler had between a state flip and commit.
+			if (inside) frozenOrderRef.current = orderedIdsRef.current;
+			setIsPointerOverList(inside);
+		};
+		const onPointerMove = (event: PointerEvent) => {
+			lastX = event.clientX;
+			lastY = event.clientY;
+			if (!raf) raf = window.requestAnimationFrame(evaluate);
+		};
+		window.addEventListener("pointermove", onPointerMove, { passive: true });
+		return () => {
+			window.removeEventListener("pointermove", onPointerMove);
+			if (raf) window.cancelAnimationFrame(raf);
+		};
 	}, []);
-	useEffect(
-		() => () => {
-			if (unfreezeTimerRef.current != null) {
-				window.clearTimeout(unfreezeTimerRef.current);
-			}
-		},
-		[],
-	);
 
 	// Freeze also spans an active drag (the pointer can wander off the list).
 	const orderFrozen = isPointerOverList || activeProject != null;
@@ -332,16 +345,23 @@ export function DashboardSidebar({
 			) {
 				return;
 			}
-			// Persist the dragged order. The 3-tier partition re-applies on render so
-			// the same-tier reorder sticks.
-			const newOrder = arrayMove(displayIds, oldIndex, newIndex);
-			// The user just placed this order — it IS the frozen view now (no
-			// snap-back while the pointer is still over the list).
-			frozenOrderRef.current = newOrder;
-			setProjectOrder(newOrder);
-			reorderProjects(newOrder);
+			// Visual: the user's drop becomes the frozen view (no snap-back while
+			// the pointer is still over the list).
+			frozenOrderRef.current = arrayMove(displayIds, oldIndex, newIndex);
+			// Persisted: apply the SINGLE move (activeId next to overId) to the
+			// LIVE order — order changes that landed underneath during the freeze
+			// (e.g. a tier-transition move-to-top) survive instead of being
+			// wholesale overwritten by the stale frozen arrangement. The 3-tier
+			// partition re-applies on render so the same-tier reorder sticks.
+			const liveOrder = orderedIds.filter((id) => id !== activeId);
+			const overLiveIndex = liveOrder.indexOf(overId);
+			if (overLiveIndex === -1) return;
+			const insertAt = newIndex > oldIndex ? overLiveIndex + 1 : overLiveIndex;
+			liveOrder.splice(insertAt, 0, activeId);
+			setProjectOrder(liveOrder);
+			reorderProjects(liveOrder);
 		},
-		[displayGroups, displayIds, reorderProjects],
+		[displayGroups, displayIds, orderedIds, reorderProjects],
 	);
 
 	return (
@@ -352,9 +372,8 @@ export function DashboardSidebar({
 						<DashboardSidebarHeader isCollapsed={isCollapsed} />
 
 						<div
+							ref={listRef}
 							className="flex-1 overflow-y-auto hide-scrollbar"
-							onPointerEnter={handleListPointerEnter}
-							onPointerLeave={handleListPointerLeave}
 						>
 							<DndContext
 								sensors={sensors}
@@ -363,6 +382,13 @@ export function DashboardSidebar({
 									droppable: { strategy: MeasuringStrategy.Always },
 								}}
 								onDragStart={({ active }) => {
+									// A drag freezes the order via activeProject. If the
+									// pointer-geometry freeze isn't already active (keyboard
+									// drag), snapshot NOW so the freeze can't render a stale
+									// order from an earlier hover.
+									if (!isPointerOverListRef.current) {
+										frozenOrderRef.current = orderedIdsRef.current;
+									}
 									const project = groups.find((p) => p.id === active.id);
 									setActiveProject(project ?? null);
 								}}

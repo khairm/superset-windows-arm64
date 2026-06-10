@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import nodePath from "node:path";
 import {
@@ -89,7 +90,9 @@ async function openPathInApp(
 		let lastError: Error | undefined;
 		for (const cmd of candidates) {
 			try {
-				await spawnAsync(cmd.command, cmd.args, { waitForExit: cmd.waitForExit });
+				await spawnAsync(cmd.command, cmd.args, {
+					waitForExit: cmd.waitForExit,
+				});
 				return;
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error));
@@ -106,12 +109,10 @@ async function openPathInApp(
 	await shell.openPath(filePath);
 }
 
-// (HTML-TO-BROWSER) Candidate Chrome launch commands per platform. Only
-// existence-verified executables are returned on Windows so a failed candidate
-// can fall through to the OS-default handler instead of silently no-opping.
+// (HTML-TO-BROWSER) Candidate Chrome launch commands per platform.
 function getChromeCandidates(
 	filePath: string,
-): { command: string; args: string[]; waitForExit?: boolean }[] {
+): { command: string; args: string[] }[] {
 	if (process.platform === "win32") {
 		const roots = [
 			process.env.ProgramFiles,
@@ -123,11 +124,7 @@ function getChromeCandidates(
 				nodePath.join(root, "Google", "Chrome", "Application", "chrome.exe"),
 			)
 			.filter((exe) => fs.existsSync(exe))
-			.map((exe) => ({
-				command: exe,
-				args: [filePath],
-				waitForExit: false,
-			}));
+			.map((exe) => ({ command: exe, args: [filePath] }));
 	}
 	if (process.platform === "darwin") {
 		return [{ command: "open", args: ["-a", "Google Chrome", filePath] }];
@@ -137,6 +134,29 @@ function getChromeCandidates(
 		{ command: "google-chrome-stable", args: [filePath] },
 		{ command: "chromium", args: [filePath] },
 	];
+}
+
+// (HTML-TO-BROWSER) Launch a GUI app detached, resolving on successful SPAWN
+// and rejecting on launch failure. spawnAsync can't express this: its
+// waitForExit:false suppresses launch errors entirely (a policy-blocked or
+// corrupt chrome.exe would report success and skip the fallback), while
+// waitForExit:true would await the BROWSER's exit — on Linux the first
+// `google-chrome` launch IS the long-lived browser process, so the call would
+// hang for the whole session and a later non-zero exit would spuriously
+// re-open the file via the next candidate.
+function launchDetached(command: string, args: string[]): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, args, {
+			stdio: "ignore",
+			detached: false,
+			windowsHide: true,
+		});
+		child.once("error", reject);
+		child.once("spawn", () => {
+			child.unref();
+			resolve();
+		});
+	});
 }
 
 /**
@@ -332,9 +352,13 @@ export const createExternalRouter = () => {
 					}
 					for (const cmd of getChromeCandidates(filePath)) {
 						try {
-							await spawnAsync(cmd.command, cmd.args, {
-								waitForExit: cmd.waitForExit,
-							});
+							if (cmd.command === "open") {
+								// macOS `open` exits immediately with non-zero when the app
+								// is missing — waiting for ITS exit is the correct probe.
+								await spawnAsync(cmd.command, cmd.args, { waitForExit: true });
+							} else {
+								await launchDetached(cmd.command, cmd.args);
+							}
 							return { opened: "chrome" as const };
 						} catch {
 							// try the next candidate
@@ -343,7 +367,16 @@ export const createExternalRouter = () => {
 					console.warn(
 						"[external/openHtmlInBrowser] Chrome not found, using OS default",
 					);
-					await shell.openPath(filePath);
+					// shell.openPath never rejects — it resolves with a non-empty
+					// error string on failure. Surface that as a real error (fail
+					// loud) so the renderer's catch logs it instead of silent success.
+					const openPathError = await shell.openPath(filePath);
+					if (openPathError) {
+						throw new TRPCError({
+							code: "INTERNAL_SERVER_ERROR",
+							message: `Failed to open ${filePath}: ${openPathError}`,
+						});
+					}
 					return { opened: "os-default" as const };
 				}),
 			),
