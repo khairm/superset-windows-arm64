@@ -54,3 +54,16 @@ export function dateToDeadline(date: Date): number {
 	d.setHours(0, 0, 0, 0);
 	return d.getTime();
 }
+
+/**
+ * (DEADLINE-TIE-ORDER) Tie-group identity for the deadline sort: cards group
+ * by local due DAY (or the no-deadline tail, null). Single source for BOTH the
+ * sort comparator and the board's drag handler — group membership must never
+ * diverge between them. Day-keyed (not raw ms) so a non-midnight legacy value
+ * still groups with the day it renders as.
+ */
+export function deadlineGroupKey(
+	deadline: number | null | undefined,
+): number | null {
+	return deadline == null ? null : startOfLocalDay(deadline);
+}

@@ -8,6 +8,7 @@ import { CalendarIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { DeadlinePickerPopover } from "../DeadlinePickerPopover";
+import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
 import { formatDeadlineLong } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
@@ -94,17 +95,9 @@ export function KanbanCardDetailsForm({
 		deadline?: number | null;
 	}) => {
 		if (!collections.v2KanbanCards.get(cardId)) return;
-		collections.v2KanbanCards.update(cardId, (draft) => {
-			if (patch.title !== undefined) draft.title = patch.title;
-			if (patch.description !== undefined)
-				draft.description = patch.description;
-			if (patch.deadline !== undefined && patch.deadline !== draft.deadline) {
-				draft.deadline = patch.deadline;
-				// (DEADLINE-TIE-ORDER) a changed deadline moves the card to a
-				// different tie group — it arrives there as a NEW item (bottom).
-				draft.deadlineTabOrder = null;
-			}
-		});
+		collections.v2KanbanCards.update(cardId, (draft) =>
+			applyKanbanCardPatch(draft, patch),
+		);
 	};
 
 	// (DEBOUNCED WRITE-THROUGH) A raw per-keystroke commit re-serializes the

@@ -22,6 +22,7 @@ import type {
 	KanbanCardView,
 	KanbanColumnView,
 } from "../../types";
+import { deadlineGroupKey } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
 const TICK_INTERVAL_MS = 60_000;
@@ -46,16 +47,17 @@ function deadlineTieBreak(a: KanbanCardView, b: KanbanCardView): number {
 function sortCards(cards: KanbanCardView[], sortMode: string): KanbanCardView[] {
 	const next = [...cards];
 	if (sortMode === "deadline") {
-		// Display-only: soonest deadline first, no-deadline last; within a tie
+		// Display-only: soonest due DAY first (deadlineGroupKey — the same group
+		// identity the board's drag handler uses), no-deadline last; within a tie
 		// group the deadline-mode drag order wins (see deadlineTieBreak) and the
 		// manual tabOrder is preserved untouched underneath.
 		next.sort((a, b) => {
-			const da = a.card.deadline;
-			const db = b.card.deadline;
-			if (da == null && db == null) return deadlineTieBreak(a, b);
-			if (da == null) return 1;
-			if (db == null) return -1;
-			return da - db || deadlineTieBreak(a, b);
+			const ka = deadlineGroupKey(a.card.deadline);
+			const kb = deadlineGroupKey(b.card.deadline);
+			if (ka == null && kb == null) return deadlineTieBreak(a, b);
+			if (ka == null) return 1;
+			if (kb == null) return -1;
+			return ka - kb || deadlineTieBreak(a, b);
 		});
 	} else {
 		next.sort((a, b) => a.card.tabOrder - b.card.tabOrder);
@@ -253,6 +255,7 @@ export function useKanbanData(): UseKanbanDataResult {
 				title: deriveCardTitle(branch),
 				description: null,
 				deadline: null,
+				deadlineTabOrder: null,
 				workspaceId: branch.id,
 				snoozeUntil: null,
 				snoozeLaunchId: null,

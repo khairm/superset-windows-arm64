@@ -8,6 +8,7 @@ import {
 	KANBAN_QUEUE_COLUMN_ID,
 	kanbanBoundCardId,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
 import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
 
 export type CardDropKind = "ok" | "promote" | "reject";
@@ -30,7 +31,10 @@ export interface UseKanbanActionsResult {
 	deleteQueuedCard: (cardId: string) => void;
 	canDropCard: (card: KanbanCardRow, toColumnId: string) => CardDropKind;
 	applyCardOrder: (columnId: string, orderedCardIds: string[]) => void;
-	applyDeadlineTieOrder: (orderedCardIds: string[]) => void;
+	applyDeadlineTieOrder: (
+		orderedCardIds: string[],
+		resetCardIds?: string[],
+	) => void;
 	moveCardToColumn: (cardId: string, toColumnId: string) => void;
 	completePromote: (
 		queuedCardId: string,
@@ -129,17 +133,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const updateCard = useCallback<UseKanbanActionsResult["updateCard"]>(
 		(cardId, patch) => {
 			if (!collections.v2KanbanCards.get(cardId)) return;
-			collections.v2KanbanCards.update(cardId, (draft) => {
-				if (patch.title !== undefined) draft.title = patch.title;
-				if (patch.description !== undefined)
-					draft.description = patch.description;
-				if (patch.deadline !== undefined && patch.deadline !== draft.deadline) {
-					draft.deadline = patch.deadline;
-					// (DEADLINE-TIE-ORDER) a changed deadline moves the card to a
-					// different tie group — it arrives there as a NEW item (bottom).
-					draft.deadlineTabOrder = null;
-				}
-			});
+			collections.v2KanbanCards.update(cardId, (draft) =>
+				applyKanbanCardPatch(draft, patch),
+			);
 		},
 		[collections],
 	);
@@ -168,9 +164,19 @@ export function useKanbanActions(): UseKanbanActionsResult {
 
 	const applyCardOrder = useCallback(
 		(columnId: string, orderedCardIds: string[]) => {
-			orderedCardIds.forEach((cardId, index) => {
-				if (!collections.v2KanbanCards.get(cardId)) return;
-				collections.v2KanbanCards.update(cardId, (draft) => {
+			// Batched update: one transaction = ONE localStorage flush for the whole
+			// column (the driver re-serializes the entire per-org blob per
+			// transaction, so per-card updates paid N flushes per drop).
+			const ids = orderedCardIds.filter((id) =>
+				collections.v2KanbanCards.get(id),
+			);
+			if (ids.length === 0) return;
+			collections.v2KanbanCards.update(ids, (drafts) => {
+				drafts.forEach((draft, index) => {
+					// (DEADLINE-TIE-ORDER) a card entering a DIFFERENT column arrives
+					// in that column's tie groups as a NEW item; same-column manual
+					// reorders never touch the deadline-mode order.
+					if (draft.columnId !== columnId) draft.deadlineTabOrder = null;
 					draft.columnId = columnId;
 					draft.tabOrder = index + 1;
 				});
@@ -180,14 +186,26 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	);
 
 	const applyDeadlineTieOrder = useCallback(
-		(orderedCardIds: string[]) => {
+		(orderedCardIds: string[], resetCardIds: string[] = []) => {
 			// (DEADLINE-TIE-ORDER) Persist a drag done in deadline sort mode:
-			// numbers the dragged card's whole tie group as displayed. NEVER
-			// touches tabOrder — the manual order survives mode round-trips.
-			orderedCardIds.forEach((cardId, index) => {
-				if (!collections.v2KanbanCards.get(cardId)) return;
-				collections.v2KanbanCards.update(cardId, (draft) => {
-					draft.deadlineTabOrder = index + 1;
+			// numbers the dragged card's whole displayed tie group, and RESETS the
+			// group's hidden (snoozed/archived) members to null — their placement
+			// context changed while hidden, so they return as new arrivals at the
+			// bottom instead of interleaving with a stale number. NEVER touches
+			// tabOrder — the manual order survives mode round-trips. One batched
+			// transaction = one localStorage flush.
+			const orderIds = orderedCardIds.filter((id) =>
+				collections.v2KanbanCards.get(id),
+			);
+			const resetIds = resetCardIds.filter(
+				(id) => !orderIds.includes(id) && collections.v2KanbanCards.get(id),
+			);
+			const ids = [...orderIds, ...resetIds];
+			if (ids.length === 0) return;
+			collections.v2KanbanCards.update(ids, (drafts) => {
+				drafts.forEach((draft, index) => {
+					draft.deadlineTabOrder =
+						index < orderIds.length ? index + 1 : null;
 				});
 			});
 		},
@@ -227,12 +245,18 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				// Merge the Queued task metadata into the branch's existing card
 				// (non-git main, or a git branch-name collision). One card per branch.
 				collections.v2KanbanCards.update(boundId, (draft) => {
+					// (DEADLINE-TIE-ORDER) merged into a different column or tie
+					// group → arrives as a NEW item; an in-place merge keeps its order.
+					const columnChanged = draft.columnId !== toColumnId;
+					const deadlineChanged =
+						queued?.deadline != null && queued.deadline !== draft.deadline;
 					draft.columnId = toColumnId;
 					draft.tabOrder = tabOrder;
 					if (queued?.title) draft.title = queued.title;
 					if (queued?.description != null)
 						draft.description = queued.description;
 					if (queued?.deadline != null) draft.deadline = queued.deadline;
+					if (columnChanged || deadlineChanged) draft.deadlineTabOrder = null;
 				});
 			} else {
 				collections.v2KanbanCards.insert({
@@ -296,6 +320,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				collections.v2KanbanCards.update(toId, (draft) => {
 					draft.columnId = from.columnId;
 					draft.tabOrder = from.tabOrder;
+					// Placement copies are unconditional (the optimistic card is the
+					// one the user arranged); null correctly means "never ordered".
+					draft.deadlineTabOrder = from.deadlineTabOrder;
 					if (from.title) draft.title = from.title;
 					if (from.description != null) draft.description = from.description;
 					if (from.deadline != null) draft.deadline = from.deadline;

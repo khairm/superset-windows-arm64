@@ -16,6 +16,7 @@ import type { KanbanCardRow } from "renderer/routes/_authenticated/providers/Col
 import { useKanbanActions } from "../../hooks/useKanbanActions";
 import { useKanbanData } from "../../hooks/useKanbanData";
 import type { KanbanCardView } from "../../types";
+import { deadlineGroupKey } from "../../utils/deadlineUrgency";
 import { KanbanCard } from "../KanbanCard";
 import { KanbanColumn } from "../KanbanColumn";
 import { PromoteCardDialog } from "../PromoteCardDialog";
@@ -112,10 +113,11 @@ export function KanbanBoard() {
 			const targetCol = columns.find((c) => c.column.id === targetColumnId);
 			if (!targetCol) return;
 			const activeId = activeCardRow.id;
-			const overCardId =
+			const overCardRow =
 				overData?.type === "card"
-					? (overData.card as KanbanCardRow).id
+					? (overData.card as KanbanCardRow)
 					: undefined;
+			const overCardId = overCardRow?.id;
 
 			// (DEADLINE-TIE-ORDER) A deadline-sorted column shows cards date-grouped.
 			// Cross-column drops just move the card in (its deadline decides where it
@@ -130,24 +132,26 @@ export function KanbanBoard() {
 					actions.moveCardToColumn(activeId, targetColumnId);
 					return;
 				}
-				if (!overCardId || overCardId === activeId) return;
-				const activeView = targetCol.active.find(
-					(v) => v.card.id === activeId,
-				);
-				const overView = targetCol.active.find(
-					(v) => v.card.id === overCardId,
-				);
-				if (!activeView || !overView) return;
-				const groupDeadline = activeView.card.deadline ?? null;
-				if ((overView.card.deadline ?? null) !== groupDeadline) return;
+				if (!overCardRow || overCardRow.id === activeId) return;
+				const groupKey = deadlineGroupKey(activeCardRow.deadline);
+				if (deadlineGroupKey(overCardRow.deadline) !== groupKey) return;
 				const groupIds = targetCol.active
-					.filter((v) => (v.card.deadline ?? null) === groupDeadline)
+					.filter((v) => deadlineGroupKey(v.card.deadline) === groupKey)
 					.map((v) => v.card.id);
 				const oldIndex = groupIds.indexOf(activeId);
-				const newIndex = groupIds.indexOf(overCardId);
+				const newIndex = groupIds.indexOf(overCardRow.id);
+				// Guard against the drag-data rows and the rendered active list
+				// disagreeing (e.g. a mid-drag store update) — arrayMove with a -1
+				// index would corrupt the order.
 				if (oldIndex === -1 || newIndex === -1) return;
+				// Hidden (snoozed/archived) group members get RESET: their context
+				// changed while hidden, so they return as new arrivals (bottom).
+				const resetIds = [...targetCol.snoozed, ...targetCol.archived]
+					.filter((v) => deadlineGroupKey(v.card.deadline) === groupKey)
+					.map((v) => v.card.id);
 				actions.applyDeadlineTieOrder(
 					arrayMove(groupIds, oldIndex, newIndex),
+					resetIds,
 				);
 				return;
 			}
