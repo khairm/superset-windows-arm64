@@ -167,7 +167,22 @@ export function useFilesTabActions({
 	const handleRename = useCallback(
 		async (event: FileTreeRenameEvent): Promise<void> => {
 			if (!rootPath) return;
-			const { sourcePath, destinationPath, isFolder } = event;
+			const { isFolder } = event;
+			// Pierre's rename commit emits HELPER paths — the trailing slash is
+			// stripped even for folders (toRenameHelperPath in FileTreeController)
+			// — while every key in our bookkeeping (knownPaths / pendingCreates)
+			// and in Pierre's own canonical store marks directories WITH a
+			// trailing slash. Normalize back to canonical keys first: without
+			// this a new FOLDER's pendingCreates lookup missed, the commit fell
+			// through to the genuine-rename branch below, and movePath
+			// fs.rename'd a placeholder that never existed on disk -> ENOENT
+			// (every Files-tab "New folder" commit failed; files were unaffected).
+			const sourcePath = isFolder
+				? `${stripTrailingSlash(event.sourcePath)}/`
+				: event.sourcePath;
+			const destinationPath = isFolder
+				? `${stripTrailingSlash(event.destinationPath)}/`
+				: event.destinationPath;
 			const pendingMode = bridge.pendingCreates.get(sourcePath);
 			// Snapshot before any await so post-mutation cleanup against a
 			// stale workspace (user switched mid-flight) bails out instead of
