@@ -323,6 +323,15 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  began; holds yellow through the main Stop)
   SubagentStop                -> Stop iff it was the LAST subagent AND main had
                                  already stopped, else no-op (see _decide_event_type)
+  PreCompact                  -> Start            (working — context compaction is
+                                 a minutes-long LLM call during which no other
+                                 hook fires; manual /compact does not even fire
+                                 UserPromptSubmit, verified live)
+  SessionStart(source=compact)-> Stop after a MANUAL compact (same decision as
+                                 Stop, so the subagent yellow-hold is respected);
+                                 re-asserts Start after an AUTO compact (the turn
+                                 is still live); no-op when we never marked a
+                                 compact as running
 
 Server maps Start->working, Stop->review, PermissionRequest->permission and
 returns {"result":{"data":{"json":{"success":true,...}}}}. Uses only stdlib
@@ -384,6 +393,53 @@ def _sentinel_path(terminal_id):
     )
 
 
+def _compact_marker_path(terminal_id):
+    # (COMPACT-YELLOW) records "a compaction is running" plus its trigger
+    # (manual|auto) so the finish path knows how to clear the dot.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".compacting")
+    )
+
+
+def _write_text(p, text):
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_text(p):
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _drop_pane_map_if_ours(session_id, terminal_id):
+    # (PANE-MAP-UNSTEAL) A session's pane mapping is last-writer-wins: resuming
+    # a conversation that is ALSO open in another tab steals its mapping, and
+    # after /branch (= SessionEnd here) the stolen entry keeps mirroring the
+    # ORIGINAL conversation's live subagent activity onto THIS terminal — a
+    # false "working" yellow with no work in the tab (seen live 2026-06-10).
+    # When a session ends in this terminal, drop its mapping iff it still
+    # points HERE; the next SessionStart rewrites the live mapping. A mapping
+    # pointing elsewhere is someone else's — never touch it.
+    safe_id = "".join(c for c in session_id if c.isalnum() or c in "-_")
+    if not safe_id or not terminal_id:
+        return
+    try:
+        p = pathlib.Path.home() / ".superset" / "session-pane-map" / (safe_id + ".json")
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("terminalId") == terminal_id:
+            p.unlink()
+    except Exception:
+        pass
+
+
 def _touch(p):
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -414,7 +470,9 @@ def _clear_dir(d):
         pass
 
 
-def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
+def _decide_event_type(
+    event, tool, terminal_id, sub_agent_id, has_background, trigger, source
+):
     # Returns the host-service eventType or None (None => silent no-op).
     #
     # (BA) CLOUD/BACKGROUND-SESSION blue dot: when the main turn ends (Stop) or
@@ -446,6 +504,38 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
     # a false green) and SessionEnd clears everything. Marker ops never raise.
     run_dir = _subagent_dir(terminal_id)
     sentinel = _sentinel_path(terminal_id)
+    compact_marker = _compact_marker_path(terminal_id)
+
+    # (COMPACT-YELLOW) Context compaction IS the agent working: it is a
+    # summarization LLM call that can take minutes, during which NO other hook
+    # fires — without this the dot sits green/idle the whole time (a manual
+    # /compact does not even fire UserPromptSubmit; verified live 2026-06-10,
+    # PreCompact at :36:53 -> SessionStart(source=compact) at :39:28).
+    # PreCompact (manual /compact AND auto-compact) marks the terminal as
+    # compacting and shows working/yellow. SessionStart with source=compact
+    # fires when compaction completes: after a MANUAL compact the session is
+    # idle again, so run the SAME decision as Stop (respects the subagent
+    # yellow-hold); after an AUTO compact the turn is still live, so re-assert
+    # working — the turn's real Stop greens it later. A leaked marker is the
+    # SAFE direction (yellow, never a false green) and is cleared by the next
+    # UserPromptSubmit / Stop / SessionEnd.
+    if event == "PreCompact":
+        _write_text(compact_marker, trigger or "auto")
+        return "Start"
+    if event == "SessionStart":
+        if source != "compact":
+            return None
+        was_trigger = _read_text(compact_marker)
+        if not was_trigger:
+            return None  # a compaction we never marked — leave the dot alone
+        _remove(compact_marker)
+        if was_trigger == "manual":
+            if _running_count(run_dir) > 0:
+                _touch(sentinel)  # background subagents still running -> stay yellow
+                return None
+            _remove(sentinel)
+            return "Stop"  # manual compact finished -> review/green (or idle)
+        return "Start"  # auto-compact mid-turn: keep working/yellow
 
     if event == "SubagentStart":
         if sub_agent_id:
@@ -469,8 +559,10 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers
+        _remove(compact_marker)  # any earlier compaction is over/irrelevant
         return "Start"
     if event == "Stop":
+        _remove(compact_marker)  # turn ended; a leaked compact marker is stale
         if _running_count(run_dir) > 0:
             _touch(sentinel)  # defer the green; subagents still running
             return None  # stay yellow
@@ -481,6 +573,7 @@ def _decide_event_type(event, tool, terminal_id, sub_agent_id, has_background):
     if event in ("SessionEnd", "StopFailure"):
         _clear_dir(run_dir)
         _remove(sentinel)
+        _remove(compact_marker)
         return "Stop"
     if event == "Notification":
         return "PermissionRequest"
@@ -515,6 +608,10 @@ def main():
     # not running).
     bg_tasks = payload.get("background_tasks") or payload.get("backgroundTasks")
     has_background = bool(bg_tasks)
+    # (COMPACT-YELLOW) PreCompact carries trigger ("manual"|"auto");
+    # SessionStart carries source ("startup"|"resume"|"clear"|"compact").
+    trigger = str(payload.get("trigger") or "").strip()
+    source = str(payload.get("source") or "").strip()
 
     url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
@@ -544,10 +641,15 @@ def main():
         })
         return
 
+    # (PANE-MAP-UNSTEAL) the ending session's pane mapping must not outlive it
+    # on this terminal (see _drop_pane_map_if_ours).
+    if event == "SessionEnd":
+        _drop_pane_map_if_ours(session_id, terminal_id)
+
     # Also performs the SubagentStart/Stop marker side-effects, so the
     # yellow-hold state stays consistent even when url is momentarily absent.
     event_type = _decide_event_type(
-        event, tool, terminal_id, sub_agent_id, has_background
+        event, tool, terminal_id, sub_agent_id, has_background, trigger, source
     )
 
     if not url:
@@ -799,6 +901,13 @@ function mergeNotifyHook(filePath: string): void {
 		{ event: "SubagentStart" },
 		{ event: "SubagentStop" },
 		{ event: "StopFailure" }, // rate-limit/API-error abort: Claude fires StopFailure (not Stop) -> green
+		// (COMPACT-YELLOW) Context compaction shows working/yellow. PreCompact
+		// (manual /compact AND auto-compact) flips the dot to working at
+		// compaction start; SessionStart with source=compact fires at completion
+		// (manual -> green via the same decision as Stop, auto -> stay yellow,
+		// the live turn's Stop greens it later). See _decide_event_type.
+		{ event: "PreCompact" },
+		{ event: "SessionStart", matcher: "compact" },
 	];
 	try {
 		let parsed: HooksRoot = {};

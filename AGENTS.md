@@ -62,7 +62,8 @@ See `FEATURES.md` for the marker manifest. In brief:
   accessibility + paste fix (UIA reachable WITHOUT xterm screenReaderMode); fast
   non-blocking startup (no main-thread fs).
 - **Agent status dots (Claude + Codex)** — a coloured dot per terminal + a workspace
-  rollup: red = needs input, yellow = working (held while subagents run), green =
+  rollup: red = needs input, yellow = working (held while subagents run; also while
+  Claude compacts context — PreCompact/SessionStart(source=compact) bracket it), green =
   ready for review, blue = a foreground shell command or a cloud/background session.
   Precedence red > yellow > green > blue. Host-service lifecycle POSTs + a JSONL
   watcher fallback; only open tabs are represented. superset-notify.py exclusively
