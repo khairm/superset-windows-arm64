@@ -1,3 +1,5 @@
+// (WS-NATIVE-OFF) Must be first — see the module comment.
+import "./ws-native-off";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";

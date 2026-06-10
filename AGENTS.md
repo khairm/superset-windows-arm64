@@ -132,6 +132,12 @@ See `FEATURES.md` for the marker manifest. In brief:
   renderer bundle.
 - **Don't blank the v2 workspace on `!isReady`** — TanStack/Electric live queries are
   cache-first: render existing rows; gate only the empty/loading branch on readiness.
+- **Never let `ws` load native bufferutil/utf-8-validate in the host-service** —
+  packaging rebuilds them nondeterministically; a broken bufferutil resolves to an
+  empty module (no throw → no JS fallback) and the first ≥32-byte client frame
+  wedges the socket's receiver: ALL terminal keyboard input dies while output keeps
+  flowing (build 41124b7d3 incident). `WS_NO_BUFFER_UTIL=1` + `WS_NO_UTF_8_VALIDATE=1`
+  are set in the coordinator child env AND first-import in serve.ts — keep both.
 
 ## Fork limitations (accepted)
 

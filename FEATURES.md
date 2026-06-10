@@ -20,6 +20,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Windows behaviour fixes | child-process patch, cmd.exe fallback, force-foreground, watchdog, WebGL recovery, fast startup | `windows-child-process` |
 | Agent status dots (Claude + Codex) | per-terminal dot + workspace rollup; host-service POST + JSONL watcher | `pane-map-hook`, `StatusIndicator` |
 | Claude Stop unhooked from notify.sh | upstream's raw Stop passthrough must never race superset-notify.py (it wiped the blue dot + yellow-hold) | `CLAUDE-STOP-UNHOOKED` |
+| ws native modules off | host-service `ws` must use pure-JS mask/unmask — a broken packaged bufferutil wedges WS receivers and kills ALL terminal keyboard input | `WS_NO_BUFFER_UTIL` |
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
@@ -42,6 +43,8 @@ titleBarOverlay	apps/desktop/src/main
 windows-child-process	apps/desktop/src/main
 pane-map-hook	apps/desktop/src/main
 CLAUDE-STOP-UNHOOKED	apps/desktop/src/main
+WS_NO_BUFFER_UTIL	apps/desktop/src/main
+WS_NO_BUFFER_UTIL	packages/host-service
 scanForOsc133Cd	packages
 StatusIndicator	apps/desktop/src/renderer
 resolveNonGitFolder	packages/host-service

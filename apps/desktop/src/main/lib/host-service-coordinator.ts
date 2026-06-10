@@ -449,6 +449,18 @@ export class HostServiceCoordinator extends EventEmitter {
 		const childEnv = await getProcessEnvWithShellPath({
 			...(process.env as Record<string, string>),
 			ELECTRON_RUN_AS_NODE: "1",
+			// (WS-NATIVE-OFF) Force `ws` onto its pure-JS mask/unmask + UTF-8
+			// validation paths. The optional native modules (bufferutil /
+			// utf-8-validate) are rebuilt nondeterministically by packaging; a
+			// build that ships a broken bufferutil makes the bundled require
+			// resolve to an EMPTY module (no throw, so ws's try/catch fallback
+			// never engages) and the first client frame ≥32 bytes — the initial
+			// resize — throws `bufferUtil.unmask is not a function`, wedging that
+			// socket's receiver: ALL terminal keyboard input dies while output
+			// (unmasked server frames) keeps flowing. JS fallback cost is
+			// negligible at terminal frame sizes. Incident: build 41124b7d3.
+			WS_NO_BUFFER_UTIL: "1",
+			WS_NO_UTF_8_VALIDATE: "1",
 			NODE_ENV: app.isPackaged
 				? "production"
 				: (process.env.NODE_ENV ?? "development"),
