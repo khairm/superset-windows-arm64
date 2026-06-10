@@ -12,18 +12,20 @@ import {
 } from "@superset/ui/dropdown-menu";
 import { Input } from "@superset/ui/input";
 import { cn } from "@superset/ui/utils";
+import { useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import { LuEllipsis } from "react-icons/lu";
+import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
 import {
 	computeSnoozeUntil,
 	SNOOZE_PRESET_OPTIONS,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
 import {
 	getStatusTooltip,
 	StatusIndicator,
 } from "renderer/screens/main/components/StatusIndicator";
 import { useV2WorkspaceDisplayStatus } from "renderer/stores/v2-notifications";
+import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
 import type { KanbanCardView } from "../../types";
 import {
 	deadlineToInputValue,
@@ -31,7 +33,6 @@ import {
 	getDeadlineUrgency,
 	inputValueToDeadline,
 } from "../../utils/deadlineUrgency";
-import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
 
 interface KanbanCardProps {
 	view: KanbanCardView;
@@ -65,17 +66,31 @@ export function KanbanCard({
 	const [titleDraft, setTitleDraft] = useState(view.title);
 	const [deleteOpen, setDeleteOpen] = useState(false);
 
-	const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-		useSortable({
-			id: card.id,
-			data: { type: "card", card },
-			disabled: overlay || disableDrag,
-		});
+	const {
+		attributes,
+		listeners,
+		setNodeRef,
+		transform,
+		transition,
+		isDragging,
+	} = useSortable({
+		id: card.id,
+		data: { type: "card", card },
+		disabled: overlay || disableDrag,
+	});
 
 	const style = {
 		transform: CSS.Transform.toString(transform),
 		transition,
 	};
+
+	// The card whose workspace is OPEN in the collapse-split mirrors the
+	// sidebar's active-row highlight, derived from the SAME route source
+	// (?cardId — the open workspaceId) so the two surfaces can never disagree.
+	const openWorkspaceId = useRouterState({
+		select: (s) => (s.location.search as { cardId?: string }).cardId,
+	});
+	const isOpen = workspace != null && workspace.id === openWorkspaceId;
 
 	const urgency = getDeadlineUrgency(card.deadline, now);
 	const subtitle =
@@ -107,6 +122,9 @@ export function KanbanCard({
 					!overlay && !disableDrag && "cursor-grab active:cursor-grabbing",
 					isDragging && "opacity-40",
 					overlay && "cursor-grabbing border-border shadow-xl",
+					// Same visual language as the sidebar's active row (bg-muted +
+					// foreground accent edge).
+					isOpen && "border-l-2 border-l-foreground/70 bg-muted",
 				)}
 				onClick={() => {
 					if (editing) return;
@@ -133,7 +151,6 @@ export function KanbanCard({
 					<div className="min-w-0 flex-1">
 						{editing === "title" ? (
 							<Input
-								// biome-ignore lint/a11y/noAutofocus: inline edit
 								autoFocus
 								value={titleDraft}
 								onChange={(e) => setTitleDraft(e.target.value)}
@@ -150,7 +167,7 @@ export function KanbanCard({
 								className="h-6 px-1 py-0 text-sm"
 							/>
 						) : (
-							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
+							// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
 							<p
 								className="line-clamp-2 text-sm leading-snug font-medium"
 								onClick={stop}
@@ -177,7 +194,6 @@ export function KanbanCard({
 						) : null}
 						{editing === "deadline" ? (
 							<Input
-								// biome-ignore lint/a11y/noAutofocus: inline edit
 								autoFocus
 								type="date"
 								value={deadlineToInputValue(card.deadline)}
@@ -192,7 +208,8 @@ export function KanbanCard({
 								className="mt-1 h-6 px-1 py-0 text-xs"
 							/>
 						) : card.deadline != null ? (
-							// biome-ignore lint/a11y/noStaticElementInteractions: inline edit affordance
+							// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
+							// biome-ignore lint/a11y/noStaticElementInteractions: double-click inline-edit affordance on a non-focusable label
 							<span
 								onClick={stop}
 								onDoubleClick={(e) => {
