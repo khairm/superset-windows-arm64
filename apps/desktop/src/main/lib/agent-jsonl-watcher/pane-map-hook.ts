@@ -313,7 +313,12 @@ unmapped event is a silent no-op, exactly like notify.sh):
   UserPromptSubmit            -> Start            (working / yellow)
   Stop                        -> Stop             (review/green) UNLESS a
                                  subagent is still running (then suppressed —
-                                 stay yellow; greens on the last SubagentStop)
+                                 stay yellow; greens on the last SubagentStop).
+                                 With background_tasks[] still running, the
+                                 entry TYPES decide: any agent-type entry
+                                 (subagent/teammate/workflow) -> Start (yellow,
+                                 agents are working); shell-only ->
+                                 BackgroundRunning (blue)
   SessionEnd|StopFailure      -> Stop             (review  / green; clears state)
   Notification                -> PermissionRequest (permission / red)
   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
@@ -470,8 +475,37 @@ def _clear_dir(d):
         pass
 
 
+def _split_background(bg_tasks):
+    # (TEAM-YELLOW) Classify the Stop/SubagentStop payload's background_tasks[].
+    # Entries are TYPED (captured live 2026-06-10): "shell" = a backgrounded
+    # command (passive -> blue), while "subagent" / "teammate" / "workflow" =
+    # agents actively working for the user -> the dot must stay YELLOW, not
+    # blue (user report: create-team work showed blue). An unknown or missing
+    # type counts as agent work — the safe direction (yellow, never a false
+    # green/blue). Returns (has_any, has_agent_work).
+    if not bg_tasks:
+        return (False, False)
+    if not isinstance(bg_tasks, list):
+        return (True, True)
+    has_agent = False
+    for task in bg_tasks:
+        task_type = ""
+        if isinstance(task, dict):
+            task_type = str(task.get("type") or "")
+        if task_type != "shell":
+            has_agent = True
+    return (True, has_agent)
+
+
 def _decide_event_type(
-    event, tool, terminal_id, sub_agent_id, has_background, trigger, source
+    event,
+    tool,
+    terminal_id,
+    sub_agent_id,
+    has_background,
+    has_agent_background,
+    trigger,
+    source,
 ):
     # Returns the host-service eventType or None (None => silent no-op).
     #
@@ -488,6 +522,14 @@ def _decide_event_type(
     # no SubagentStart fall through to this blue. Detection does not care whether
     # YOU or the agent launched the work. Safe direction: blue lingers, never a
     # false green.
+    #
+    # (TEAM-YELLOW) refinement: background_tasks[] entries are TYPED, so the
+    # blue is reserved for a SHELL-ONLY remainder. Any running agent-type entry
+    # (subagent fork, teammate, workflow) means agents are still actively
+    # working -> assert Start (yellow) instead of BackgroundRunning. Every
+    # later Stop re-evaluates the list, so the dot self-corrects to green (or
+    # blue, if only shells remain) once the agents finish and the lead's next
+    # turn ends.
     #
     # Background-subagent YELLOW-HOLD state machine (no timers, no polling):
     # while any subagent is running for this terminal the main agent's Stop is
@@ -549,12 +591,15 @@ def _decide_event_type(
             # has_background here is read from THIS SubagentStop payload, which
             # carries background_tasks[] scoped to the PARENT session (Claude Code
             # docs >= 2.1.145) — i.e. what is still running now that this subagent
-            # is done. So a remaining cloud session -> blue, nothing left -> green;
-            # both accurate. (Absent field on an older/odd version -> green, which
-            # only mis-greens in the narrow case where Stop carried the field but
-            # SubagentStop did not — same version added both, so not in practice.)
+            # is done. So remaining agent work -> yellow, a remaining shell ->
+            # blue, nothing left -> green; all accurate. (Absent field on an
+            # older/odd version -> green, which only mis-greens in the narrow
+            # case where Stop carried the field but SubagentStop did not — same
+            # version added both, so not in practice.)
+            if has_agent_background:
+                return "Start"  # detached teammates/workflows still working -> yellow
             if has_background:
-                return "BackgroundRunning"  # local subagents done; cloud/bg still running -> blue
+                return "BackgroundRunning"  # only background shells left -> blue
             return "Stop"  # main already stopped + last subagent done -> green
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
@@ -567,8 +612,10 @@ def _decide_event_type(
             _touch(sentinel)  # defer the green; subagents still running
             return None  # stay yellow
         _remove(sentinel)
+        if has_agent_background:
+            return "Start"  # teammates/workflows still working -> yellow, not blue
         if has_background:
-            return "BackgroundRunning"  # turn ended; cloud/bg session still running -> blue
+            return "BackgroundRunning"  # turn ended; only background shells left -> blue
         return "Stop"
     if event in ("SessionEnd", "StopFailure"):
         _clear_dir(run_dir)
@@ -602,12 +649,13 @@ def main():
     sub_agent_id = "".join(c for c in sub_agent_id if c.isalnum() or c in "-_")
     # (BA) Cloud/background-session signal. The Stop (and SubagentStop) hook
     # payload carries background_tasks[] (Claude Code >= 2.1.145); a NON-EMPTY
-    # array means a cloud/background session is still running after the turn
-    # ended. Absent on older versions -> falsy -> behaves exactly as before.
-    # session_crons (scheduled wakeups) are intentionally NOT counted (pending,
-    # not running).
+    # array means background work is still running after the turn ended.
+    # (TEAM-YELLOW) the typed entries split into agent work (yellow) vs
+    # shell-only (blue) — see _split_background. Absent on older versions ->
+    # both falsy -> behaves exactly as before. session_crons (scheduled
+    # wakeups) are intentionally NOT counted (pending, not running).
     bg_tasks = payload.get("background_tasks") or payload.get("backgroundTasks")
-    has_background = bool(bg_tasks)
+    has_background, has_agent_background = _split_background(bg_tasks)
     # (COMPACT-YELLOW) PreCompact carries trigger ("manual"|"auto");
     # SessionStart carries source ("startup"|"resume"|"clear"|"compact").
     trigger = str(payload.get("trigger") or "").strip()
@@ -649,7 +697,14 @@ def main():
     # Also performs the SubagentStart/Stop marker side-effects, so the
     # yellow-hold state stays consistent even when url is momentarily absent.
     event_type = _decide_event_type(
-        event, tool, terminal_id, sub_agent_id, has_background, trigger, source
+        event,
+        tool,
+        terminal_id,
+        sub_agent_id,
+        has_background,
+        has_agent_background,
+        trigger,
+        source,
     )
 
     if not url:

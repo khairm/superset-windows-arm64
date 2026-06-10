@@ -21,6 +21,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Agent status dots (Claude + Codex) | per-terminal dot + workspace rollup; host-service POST + JSONL watcher | `pane-map-hook`, `StatusIndicator` |
 | Claude Stop unhooked from notify.sh | upstream's raw Stop passthrough must never race superset-notify.py (it wiped the blue dot + yellow-hold) | `CLAUDE-STOP-UNHOOKED` |
 | Compaction shows working | Claude context compaction (manual /compact + auto) drives the yellow dot via PreCompact / SessionStart(source=compact) | `(COMPACT-YELLOW)` |
+| Team/workflow work shows working | background_tasks[] entry types split the post-turn dot: agent-type work (teammate/subagent/workflow) holds yellow; shell-only goes blue | `(TEAM-YELLOW)` |
 | ws native modules off | host-service `ws` must use pure-JS mask/unmask — a broken packaged bufferutil wedges WS receivers and kills ALL terminal keyboard input | `WS_NO_BUFFER_UTIL` |
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
@@ -45,6 +46,7 @@ windows-child-process	apps/desktop/src/main
 pane-map-hook	apps/desktop/src/main
 CLAUDE-STOP-UNHOOKED	apps/desktop/src/main
 (COMPACT-YELLOW)	apps/desktop/src/main
+(TEAM-YELLOW)	apps/desktop/src/main
 WS_NO_BUFFER_UTIL	apps/desktop/src/main
 WS_NO_BUFFER_UTIL	packages/host-service
 scanForOsc133Cd	packages
