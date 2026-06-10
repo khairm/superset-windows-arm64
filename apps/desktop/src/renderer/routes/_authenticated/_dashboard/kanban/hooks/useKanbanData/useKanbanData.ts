@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	APP_LAUNCH_ID,
+	type DashboardSidebarProjectRow,
 	getWorkspaceSidebarBucket,
 	isWorkspaceSnoozed,
 	type KanbanCardRow,
@@ -89,9 +90,18 @@ export function useKanbanData(): UseKanbanDataResult {
 		(q) => q.from({ s: collections.v2WorkspaceLocalState }),
 		[collections],
 	);
+	const { data: sidebarProjectRows = [], isReady: sidebarProjectsReady } =
+		useLiveQuery(
+			(q) => q.from({ sp: collections.v2SidebarProjects }),
+			[collections],
+		);
 
 	const isReady =
-		columnsReady && cardsReady && workspacesReady && localStateReady;
+		columnsReady &&
+		cardsReady &&
+		workspacesReady &&
+		localStateReady &&
+		sidebarProjectsReady;
 
 	const [now, setNow] = useState(() => Date.now());
 
@@ -131,7 +141,21 @@ export function useKanbanData(): UseKanbanDataResult {
 		return map;
 	}, [localStateRows]);
 
+	// Project-level sidebar membership. "Remove project from sidebar" deletes
+	// the v2SidebarProjects row AND the project's per-workspace local state, so
+	// the per-workspace bucket check alone can't see the removal (empty state
+	// buckets "active"). A project absent from the left bar must not surface on
+	// the board either.
+	const sidebarProjectIds = useMemo(() => {
+		const set = new Set<string>();
+		for (const sp of sidebarProjectRows as DashboardSidebarProjectRow[]) {
+			set.add(sp.projectId);
+		}
+		return set;
+	}, [sidebarProjectRows]);
+
 	// --- Reconcile (ready-gated; idempotent via get-before-write) -------------
+	// biome-ignore lint/correctness/useExhaustiveDependencies: columnRows/cardRows are deliberate re-run triggers — the reconcile reads the collections' state imperatively, so it must re-fire when rows change.
 	useEffect(() => {
 		if (!isReady) return;
 
@@ -191,6 +215,8 @@ export function useKanbanData(): UseKanbanDataResult {
 				.filter((c) => c.columnId === landingColumnId)
 				.reduce((max, c) => Math.max(max, c.tabOrder), 0) + 1;
 		for (const branch of workspaceRows as SelectV2Workspace[]) {
+			// Project removed from the sidebar → none of its branches get cards.
+			if (!sidebarProjectIds.has(branch.projectId)) continue;
 			const local = localStateByWorkspace.get(branch.id);
 			const bucket = getWorkspaceSidebarBucket(
 				local?.sidebarState ?? {},
@@ -230,6 +256,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		workspaceRows,
 		workspaceById,
 		localStateByWorkspace,
+		sidebarProjectIds,
 		columnRows,
 		cardRows,
 	]);
@@ -272,6 +299,9 @@ export function useKanbanData(): UseKanbanDataResult {
 				if (card.workspaceId) {
 					workspace = workspaceById.get(card.workspaceId) ?? null;
 					if (!workspace) continue; // pending cleanup — don't render a ghost
+					// HIDE (never delete) cards of projects removed from the sidebar —
+					// re-adding the project restores them with column/deadline intact.
+					if (!sidebarProjectIds.has(workspace.projectId)) continue;
 					projectName = projectNameById.get(workspace.projectId) ?? null;
 					const local = localStateByWorkspace.get(workspace.id);
 					const wsBucket = getWorkspaceSidebarBucket(
@@ -313,6 +343,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		workspaceById,
 		projectNameById,
 		localStateByWorkspace,
+		sidebarProjectIds,
 		now,
 	]);
 

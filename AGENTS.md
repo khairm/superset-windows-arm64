@@ -97,7 +97,9 @@ See `FEATURES.md` for the marker manifest. In brief:
 - **Agent-hook bash-wrap** — Gemini/Cursor `.sh` hooks run via Git-for-Windows bash
   instead of opening in an editor.
 - **Kanban board (Tasks & PRs → Kanban)** — a device-local board mirroring every
-  branch as a card + a fixed Queued column for tasks with no branch yet. Card shows
+  branch of a SIDEBAR-PRESENT project as a card (remove a project from the left
+  bar and its cards hide too — restored with metadata if re-added) + a fixed
+  Queued column for tasks with no branch yet. Card shows
   title, `repo / branch`, a date deadline (yellow on the due day, red after), and the
   live status dot. Double-click title/deadline to edit; ALL card actions (Edit card
   for Queued, Snooze, Archive, Delete) live in the card's right-click menu — no
