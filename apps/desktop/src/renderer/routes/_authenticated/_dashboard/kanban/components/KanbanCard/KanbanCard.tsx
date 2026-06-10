@@ -1,20 +1,19 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuSeparator,
-	DropdownMenuSub,
-	DropdownMenuSubContent,
-	DropdownMenuSubTrigger,
-	DropdownMenuTrigger,
-} from "@superset/ui/dropdown-menu";
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuSub,
+	ContextMenuSubContent,
+	ContextMenuSubTrigger,
+	ContextMenuTrigger,
+} from "@superset/ui/context-menu";
 import { Input } from "@superset/ui/input";
 import { cn } from "@superset/ui/utils";
 import { useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
-import { LuEllipsis } from "react-icons/lu";
 import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
 import {
 	computeSnoozeUntil,
@@ -108,214 +107,204 @@ export function KanbanCard({
 	const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
 	return (
-		<>
-			{/* biome-ignore lint/a11y/useSemanticElements: dnd-kit requires a div */}
-			<div
-				ref={setNodeRef}
-				style={style}
-				{...attributes}
-				{...listeners}
-				role="button"
-				tabIndex={0}
-				className={cn(
-					"group relative rounded-md border border-border/60 bg-card px-3 py-2.5 transition-colors hover:bg-accent/30",
-					!overlay && !disableDrag && "cursor-grab active:cursor-grabbing",
-					isDragging && "opacity-40",
-					overlay && "cursor-grabbing border-border shadow-xl",
-					// Same visual language as the sidebar's active row (bg-muted +
-					// foreground accent edge).
-					isOpen && "border-l-2 border-l-foreground/70 bg-muted",
-				)}
-				onClick={() => {
-					if (editing) return;
-					onActivate(view);
-				}}
-				onKeyDown={(e) => {
-					if (editing) return;
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				{/* biome-ignore lint/a11y/useSemanticElements: dnd-kit requires a div */}
+				<div
+					ref={setNodeRef}
+					style={style}
+					{...attributes}
+					{...listeners}
+					role="button"
+					tabIndex={0}
+					className={cn(
+						"group relative rounded-md border border-border/60 bg-card px-3 py-2.5 transition-colors hover:bg-accent/30",
+						!overlay && !disableDrag && "cursor-grab active:cursor-grabbing",
+						isDragging && "opacity-40",
+						overlay && "cursor-grabbing border-border shadow-xl",
+						// Same visual language as the sidebar's active row (bg-muted +
+						// foreground accent edge).
+						isOpen && "border-l-2 border-l-foreground/70 bg-muted",
+					)}
+					onClick={() => {
+						if (editing) return;
+						// Click opens BOUND cards (collapse-split). A queued card's
+						// editor opens via right-click → Edit card only — a click
+						// anywhere on the card must not pop the modal.
+						if (!workspace) return;
 						onActivate(view);
-					}
-				}}
-			>
-				<div className="flex items-start gap-2">
-					{status ? (
-						<span
-							title={getStatusTooltip(status)}
-							className="mt-1 shrink-0"
-							onPointerDown={stop}
-						>
-							<StatusIndicator status={status} />
-						</span>
-					) : null}
-					<div className="min-w-0 flex-1">
-						{editing === "title" ? (
-							<Input
-								autoFocus
-								value={titleDraft}
-								onChange={(e) => setTitleDraft(e.target.value)}
-								onBlur={commitTitle}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") commitTitle();
-									if (e.key === "Escape") {
-										setTitleDraft(view.title);
-										setEditing(null);
-									}
-								}}
-								onClick={stop}
-								onPointerDown={stop}
-								className="h-6 px-1 py-0 text-sm"
-							/>
-						) : (
-							// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
-							<p
-								className="line-clamp-2 text-sm leading-snug font-medium"
-								onClick={stop}
-								// Only UNBOUND (Queued) cards have an editable title. A bound
-								// card's title IS the branch name (view.title, derived live) —
-								// rename the branch to change it, so it can't diverge.
-								onDoubleClick={
-									workspace
-										? undefined
-										: (e) => {
-												stop(e);
-												setTitleDraft(view.title);
-												setEditing("title");
-											}
-								}
-							>
-								{view.title || "Untitled"}
-							</p>
-						)}
-						{subtitle ? (
-							<span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
-								{subtitle}
-							</span>
-						) : null}
-						{editing === "deadline" ? (
-							<Input
-								autoFocus
-								type="date"
-								value={deadlineToInputValue(card.deadline)}
-								onChange={(e) =>
-									actions.updateCard(card.id, {
-										deadline: inputValueToDeadline(e.target.value),
-									})
-								}
-								onBlur={() => setEditing(null)}
-								onClick={stop}
-								onPointerDown={stop}
-								className="mt-1 h-6 px-1 py-0 text-xs"
-							/>
-						) : card.deadline != null ? (
-							// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
-							// biome-ignore lint/a11y/noStaticElementInteractions: double-click inline-edit affordance on a non-focusable label
+					}}
+					onKeyDown={(e) => {
+						if (editing) return;
+						if (e.key === "Enter" || e.key === " ") {
+							e.preventDefault();
+							onActivate(view);
+						}
+					}}
+				>
+					<div className="flex items-start gap-2">
+						{status ? (
 							<span
-								onClick={stop}
-								onDoubleClick={(e) => {
-									stop(e);
-									setEditing("deadline");
-								}}
-								className={cn(
-									"mt-1 block text-[11px]",
-									urgency === "overdue" && "font-medium text-red-500",
-									urgency === "due-today" && "font-medium text-yellow-500",
-									urgency === "upcoming" && "text-muted-foreground",
-								)}
+								title={getStatusTooltip(status)}
+								className="mt-1 shrink-0"
+								onPointerDown={stop}
 							>
-								{urgency === "overdue"
-									? `Overdue · ${formatDeadline(card.deadline)}`
-									: urgency === "due-today"
-										? "Due today"
-										: `Due ${formatDeadline(card.deadline)}`}
+								<StatusIndicator status={status} />
 							</span>
 						) : null}
-					</div>
-
-					{!overlay && !isMain ? (
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<button
-									type="button"
-									aria-label="Card actions"
+						<div className="min-w-0 flex-1">
+							{editing === "title" ? (
+								<Input
+									autoFocus
+									value={titleDraft}
+									onChange={(e) => setTitleDraft(e.target.value)}
+									onBlur={commitTitle}
+									onKeyDown={(e) => {
+										if (e.key === "Enter") commitTitle();
+										if (e.key === "Escape") {
+											setTitleDraft(view.title);
+											setEditing(null);
+										}
+									}}
 									onClick={stop}
 									onPointerDown={stop}
-									className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
+									className="h-6 px-1 py-0 text-sm"
+								/>
+							) : (
+								// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
+								<p
+									className="line-clamp-2 text-sm leading-snug font-medium"
+									onClick={stop}
+									// Only UNBOUND (Queued) cards have an editable title. A bound
+									// card's title IS the branch name (view.title, derived live) —
+									// rename the branch to change it, so it can't diverge.
+									onDoubleClick={
+										workspace
+											? undefined
+											: (e) => {
+													stop(e);
+													setTitleDraft(view.title);
+													setEditing("title");
+												}
+									}
 								>
-									<LuEllipsis className="size-3.5" />
-								</button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent
-								align="end"
-								onClick={stop}
-								onCloseAutoFocus={(e) => e.preventDefault()}
-							>
-								{!isMain ? (
-									<>
-										{view.bucket === "snoozed" ? (
-											<DropdownMenuItem
-												onSelect={() => actions.unsnoozeCard(card)}
-											>
-												Unsnooze
-											</DropdownMenuItem>
-										) : (
-											<DropdownMenuSub>
-												<DropdownMenuSubTrigger>Snooze</DropdownMenuSubTrigger>
-												<DropdownMenuSubContent>
-													{SNOOZE_PRESET_OPTIONS.map((opt) => (
-														<DropdownMenuItem
-															key={opt.id}
-															onSelect={() =>
-																actions.snoozeCard(
-																	card,
-																	opt.duration.kind === "next-launch"
-																		? "next-launch"
-																		: computeSnoozeUntil(opt.duration),
-																)
-															}
-														>
-															{opt.label}
-														</DropdownMenuItem>
-													))}
-												</DropdownMenuSubContent>
-											</DropdownMenuSub>
-										)}
-										{view.bucket === "archived" ? (
-											<DropdownMenuItem
-												onSelect={() => actions.unarchiveCard(card)}
-											>
-												Unarchive
-											</DropdownMenuItem>
-										) : (
-											<DropdownMenuItem
-												onSelect={() => actions.archiveCard(card)}
-											>
-												Archive
-											</DropdownMenuItem>
-										)}
-										<DropdownMenuSeparator />
-									</>
-								) : null}
-								{workspace ? (
-									<DropdownMenuItem
-										variant="destructive"
-										onSelect={() => setDeleteOpen(true)}
-									>
-										Delete branch…
-									</DropdownMenuItem>
-								) : (
-									<DropdownMenuItem
-										variant="destructive"
-										onSelect={() => actions.deleteQueuedCard(card.id)}
-									>
-										Delete task
-									</DropdownMenuItem>
-								)}
-							</DropdownMenuContent>
-						</DropdownMenu>
-					) : null}
+									{view.title || "Untitled"}
+								</p>
+							)}
+							{subtitle ? (
+								<span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+									{subtitle}
+								</span>
+							) : null}
+							{editing === "deadline" ? (
+								<Input
+									autoFocus
+									type="date"
+									value={deadlineToInputValue(card.deadline)}
+									onChange={(e) =>
+										actions.updateCard(card.id, {
+											deadline: inputValueToDeadline(e.target.value),
+										})
+									}
+									onBlur={() => setEditing(null)}
+									onClick={stop}
+									onPointerDown={stop}
+									className="mt-1 h-6 px-1 py-0 text-xs"
+								/>
+							) : card.deadline != null ? (
+								// biome-ignore lint/a11y/useKeyWithClickEvents: click-only stopPropagation guard; the element is not focusable (keyboard activation lands on the card root)
+								// biome-ignore lint/a11y/noStaticElementInteractions: double-click inline-edit affordance on a non-focusable label
+								<span
+									onClick={stop}
+									onDoubleClick={(e) => {
+										stop(e);
+										setEditing("deadline");
+									}}
+									className={cn(
+										"mt-1 block text-[11px]",
+										urgency === "overdue" && "font-medium text-red-500",
+										urgency === "due-today" && "font-medium text-yellow-500",
+										urgency === "upcoming" && "text-muted-foreground",
+									)}
+								>
+									{urgency === "overdue"
+										? `Overdue · ${formatDeadline(card.deadline)}`
+										: urgency === "due-today"
+											? "Due today"
+											: `Due ${formatDeadline(card.deadline)}`}
+								</span>
+							) : null}
+						</div>
+					</div>
 				</div>
-			</div>
+			</ContextMenuTrigger>
+
+			{/* All card actions live in the right-click menu (no 3-dots button):
+			    Edit card (queued only), Snooze/Archive, Delete. Main workspaces
+			    have no actions; the drag-overlay ghost gets no menu. */}
+			{!overlay && (!isMain || !workspace) ? (
+				<ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+					{!workspace ? (
+						<>
+							<ContextMenuItem onSelect={() => onActivate(view)}>
+								Edit card…
+							</ContextMenuItem>
+							<ContextMenuSeparator />
+						</>
+					) : null}
+					{view.bucket === "snoozed" ? (
+						<ContextMenuItem onSelect={() => actions.unsnoozeCard(card)}>
+							Unsnooze
+						</ContextMenuItem>
+					) : (
+						<ContextMenuSub>
+							<ContextMenuSubTrigger>Snooze</ContextMenuSubTrigger>
+							<ContextMenuSubContent>
+								{SNOOZE_PRESET_OPTIONS.map((opt) => (
+									<ContextMenuItem
+										key={opt.id}
+										onSelect={() =>
+											actions.snoozeCard(
+												card,
+												opt.duration.kind === "next-launch"
+													? "next-launch"
+													: computeSnoozeUntil(opt.duration),
+											)
+										}
+									>
+										{opt.label}
+									</ContextMenuItem>
+								))}
+							</ContextMenuSubContent>
+						</ContextMenuSub>
+					)}
+					{view.bucket === "archived" ? (
+						<ContextMenuItem onSelect={() => actions.unarchiveCard(card)}>
+							Unarchive
+						</ContextMenuItem>
+					) : (
+						<ContextMenuItem onSelect={() => actions.archiveCard(card)}>
+							Archive
+						</ContextMenuItem>
+					)}
+					<ContextMenuSeparator />
+					{workspace ? (
+						<ContextMenuItem
+							variant="destructive"
+							onSelect={() => setDeleteOpen(true)}
+						>
+							Delete branch…
+						</ContextMenuItem>
+					) : (
+						<ContextMenuItem
+							variant="destructive"
+							onSelect={() => actions.deleteQueuedCard(card.id)}
+						>
+							Delete task
+						</ContextMenuItem>
+					)}
+				</ContextMenuContent>
+			) : null}
 
 			{workspace && !isMain ? (
 				<DashboardSidebarDeleteDialog
@@ -325,6 +314,6 @@ export function KanbanCard({
 					onOpenChange={setDeleteOpen}
 				/>
 			) : null}
-		</>
+		</ContextMenu>
 	);
 }
