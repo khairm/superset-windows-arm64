@@ -201,7 +201,24 @@ export function V2WorkspaceRow({
 				)}
 			>
 				<div className="flex items-center justify-center">
-					{workspace.isInSidebar ? (
+					{workspace.isCompleted ? (
+						// (KANBAN COMPLETED) no pin affordance: the thread is completed on
+						// the kanban board and deliberately has NO sidebar surface. Pinning
+						// here would half-uncomplete it (sidebar visible, card still in
+						// Completed) — restoring is board-only (drag the card out).
+						<Tooltip delayDuration={300}>
+							<TooltipTrigger asChild>
+								<LuCircleCheck
+									className="size-4 shrink-0 text-emerald-500/80"
+									aria-label="Completed"
+								/>
+							</TooltipTrigger>
+							<TooltipContent side="right">
+								Completed on the kanban board — drag its card out of Completed
+								to restore it to the sidebar
+							</TooltipContent>
+						</Tooltip>
+					) : workspace.isInSidebar ? (
 						<Tooltip delayDuration={300}>
 							<TooltipTrigger asChild>
 								<Button

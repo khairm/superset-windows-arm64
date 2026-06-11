@@ -11,6 +11,10 @@ interface DeadlinePickerPopoverProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	align?: "start" | "center" | "end";
+	/** Hide the Clear footer action (default true = clearable). A card's
+	 * completed date is edit-only — a Completed-column card with no date would
+	 * be an invalid state, so that usage passes false. */
+	clearable?: boolean;
 	/** Anchor element the popover positions against (never gets a click handler). */
 	children: React.ReactNode;
 }
@@ -36,6 +40,7 @@ export function DeadlinePickerPopover({
 	open,
 	onOpenChange,
 	align = "start",
+	clearable = true,
 	children,
 }: DeadlinePickerPopoverProps) {
 	const selected = value != null ? new Date(value) : undefined;
@@ -75,15 +80,17 @@ export function DeadlinePickerPopover({
 						>
 							Today
 						</Button>
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							className="text-muted-foreground"
-							onClick={() => commitAndClose(null)}
-						>
-							Clear
-						</Button>
+						{clearable ? (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								className="text-muted-foreground"
+								onClick={() => commitAndClose(null)}
+							>
+								Clear
+							</Button>
+						) : null}
 					</div>
 				</PopoverContent>
 			) : null}

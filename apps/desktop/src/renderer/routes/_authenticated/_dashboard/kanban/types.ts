@@ -11,6 +11,11 @@ export type KanbanCardBucket = "active" | "snoozed" | "archived";
  * A card plus its resolved branch context. For a Queued (unbound) card,
  * `workspace`/`projectName` are null. The bucket is derived from the branch's
  * sidebar state for bound cards, or the card's own snooze/archive for unbound.
+ *
+ * (KANBAN COMPLETED) A FROZEN record — a completed card whose branch was later
+ * deleted — is the one case where `card.workspaceId != null` while `workspace`
+ * is null: it renders from the stored title/completedContext snapshot and must
+ * NOT be presented as an editable queued card.
  */
 export interface KanbanCardView {
 	card: KanbanCardRow;
@@ -32,4 +37,8 @@ export interface KanbanColumnView {
 	active: KanbanCardView[];
 	snoozed: KanbanCardView[];
 	archived: KanbanCardView[];
+	/** (KANBAN COMPLETED) Cards the Completed column's date filter hid from
+	 * `active` — surfaced as a footer count so a freshly-dropped card "vanishing"
+	 * under a last-month filter is explainable. Always 0 for other columns. */
+	hiddenByFilter: number;
 }

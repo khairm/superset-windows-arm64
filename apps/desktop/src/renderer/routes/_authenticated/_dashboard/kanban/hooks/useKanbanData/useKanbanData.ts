@@ -1,7 +1,4 @@
-import type {
-	SelectV2Project,
-	SelectV2Workspace,
-} from "@superset/db/schema";
+import type { SelectV2Project, SelectV2Workspace } from "@superset/db/schema";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -10,10 +7,12 @@ import {
 	type DashboardSidebarProjectRow,
 	getWorkspaceSidebarBucket,
 	isWorkspaceSnoozed,
-	type KanbanCardRow,
-	type KanbanColumnRow,
+	KANBAN_COMPLETED_COLUMN_ID,
+	KANBAN_COMPLETED_TAB_ORDER,
 	KANBAN_QUEUE_COLUMN_ID,
 	KANBAN_QUEUE_TAB_ORDER,
+	type KanbanCardRow,
+	type KanbanColumnRow,
 	kanbanBoundCardId,
 	type WorkspaceLocalStateRow,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
@@ -22,6 +21,11 @@ import type {
 	KanbanCardView,
 	KanbanColumnView,
 } from "../../types";
+import {
+	buildCompletedContext,
+	getCompletedFilterRange,
+	isWithinCompletedRange,
+} from "../../utils/completedFilter";
 import { deadlineGroupKey } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
@@ -44,7 +48,21 @@ function deadlineTieBreak(a: KanbanCardView, b: KanbanCardView): number {
 	return a.card.tabOrder - b.card.tabOrder;
 }
 
-function sortCards(cards: KanbanCardView[], sortMode: string): KanbanCardView[] {
+// (KANBAN COMPLETED) The Completed column ignores sortMode entirely: most
+// recently completed first (ties by manual tabOrder). Intra-column drags are
+// no-ops there, so there is no manual order to preserve.
+function sortCompletedCards(cards: KanbanCardView[]): KanbanCardView[] {
+	return [...cards].sort(
+		(a, b) =>
+			(b.card.completedAt ?? 0) - (a.card.completedAt ?? 0) ||
+			a.card.tabOrder - b.card.tabOrder,
+	);
+}
+
+function sortCards(
+	cards: KanbanCardView[],
+	sortMode: string,
+): KanbanCardView[] {
 	const next = [...cards];
 	if (sortMode === "deadline") {
 		// Display-only: soonest due DAY first (deadlineGroupKey — the same group
@@ -185,7 +203,31 @@ export function useKanbanData(): UseKanbanDataResult {
 				name: "Queued",
 				tabOrder: KANBAN_QUEUE_TAB_ORDER,
 				isQueue: true,
+				isCompleted: false,
 				sortMode: "manual",
+				completedFilter: "all",
+				completedFilterFrom: null,
+				completedFilterTo: null,
+				showSnoozed: false,
+				showArchived: false,
+				snoozedCollapsed: false,
+				archivedCollapsed: false,
+				createdAt: Date.now(),
+			});
+		}
+
+		// 1b. Seed the fixed FINAL Completed column (KANBAN COMPLETED).
+		if (!collections.v2KanbanColumns.get(KANBAN_COMPLETED_COLUMN_ID)) {
+			collections.v2KanbanColumns.insert({
+				id: KANBAN_COMPLETED_COLUMN_ID,
+				name: "Completed",
+				tabOrder: KANBAN_COMPLETED_TAB_ORDER,
+				isQueue: false,
+				isCompleted: true,
+				sortMode: "manual",
+				completedFilter: "all",
+				completedFilterFrom: null,
+				completedFilterTo: null,
 				showSnoozed: false,
 				showArchived: false,
 				snoozedCollapsed: false,
@@ -195,11 +237,20 @@ export function useKanbanData(): UseKanbanDataResult {
 		}
 
 		// 2. Ensure ≥1 custom column (the landing column for new branches).
+		// Completed is excluded EXACTLY like the Queue: were it a landing
+		// candidate, a board with no custom columns would auto-complete every
+		// newly-materialised branch.
 		const currentColumns = Array.from(
 			collections.v2KanbanColumns.state.values(),
 		);
 		const customColumns = currentColumns
-			.filter((c) => !c.isQueue && c.id !== KANBAN_QUEUE_COLUMN_ID)
+			.filter(
+				(c) =>
+					!c.isQueue &&
+					c.id !== KANBAN_QUEUE_COLUMN_ID &&
+					!c.isCompleted &&
+					c.id !== KANBAN_COMPLETED_COLUMN_ID,
+			)
 			.sort((a, b) => a.tabOrder - b.tabOrder);
 		let landingColumnId: string;
 		if (customColumns.length === 0) {
@@ -209,7 +260,11 @@ export function useKanbanData(): UseKanbanDataResult {
 				name: STARTER_COLUMN_NAME,
 				tabOrder: 1,
 				isQueue: false,
+				isCompleted: false,
 				sortMode: "manual",
+				completedFilter: "all",
+				completedFilterFrom: null,
+				completedFilterTo: null,
 				showSnoozed: false,
 				showArchived: false,
 				snoozedCollapsed: false,
@@ -248,10 +303,16 @@ export function useKanbanData(): UseKanbanDataResult {
 			const cardId = kanbanBoundCardId(branch.id);
 			if (collections.v2KanbanCards.get(cardId)) continue;
 			if (coveredWorkspaceIds.has(branch.id)) continue;
+			// (KANBAN COMPLETED) a completed branch whose card was lost (e.g. a
+			// cleared cards blob) re-materialises INTO the Completed column with
+			// its sidebar stamp as the date — never into the landing column.
+			const isCompletedBranch = bucket === "completed";
 			collections.v2KanbanCards.insert({
 				id: cardId,
-				columnId: landingColumnId,
-				tabOrder: nextOrder++,
+				columnId: isCompletedBranch
+					? KANBAN_COMPLETED_COLUMN_ID
+					: landingColumnId,
+				tabOrder: isCompletedBranch ? 0 : nextOrder++,
 				title: deriveCardTitle(branch),
 				description: null,
 				deadline: null,
@@ -260,14 +321,117 @@ export function useKanbanData(): UseKanbanDataResult {
 				snoozeUntil: null,
 				snoozeLaunchId: null,
 				archivedAt: null,
+				completedAt: isCompletedBranch
+					? (local?.sidebarState.completedAt ?? Date.now())
+					: null,
+				completedContext: isCompletedBranch
+					? buildCompletedContext(
+							projectNameById.get(branch.projectId) ?? null,
+							branch.branch,
+						)
+					: null,
 				createdAt: Date.now(),
 			});
 		}
 
-		// 4. Drop bound cards whose branch is gone (branch deleted → card gone).
+		// 4. Drop bound cards whose branch is gone (branch deleted → card gone) —
+		// EXCEPT completed cards: those survive as FROZEN records (title +
+		// completedContext snapshot) so deleting a merged branch never erases the
+		// work from the user's completed-history reports. workspaceId stays set,
+		// so a transiently-missing workspace row re-binds with no duplicate.
 		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
 			if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
+				if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
 				collections.v2KanbanCards.delete(card.id);
+			}
+		}
+
+		// 5. Heal the two-writer pair (KANBAN COMPLETED). Card placement is the
+		// single intent signal — complete/uncomplete write the card transaction
+		// FIRST, so a crash between the two transactions always converges toward
+		// the card's column here:
+		//   (a) card in Completed but branch not completed → re-stamp the branch
+		//   (b) branch completed but card elsewhere → clear the branch
+		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
+			if (!card.workspaceId) continue;
+			const ws = workspaceById.get(card.workspaceId);
+			if (!ws) continue; // frozen record (or pending prune) — nothing to heal
+			// While a project is removed from the sidebar its local-state rows are
+			// deliberately deleted — don't resurrect them from here.
+			if (!sidebarProjectIds.has(ws.projectId)) continue;
+			const local = localStateByWorkspace.get(card.workspaceId);
+			const bucket = getWorkspaceSidebarBucket(
+				local?.sidebarState ?? {},
+				Date.now(),
+				ws.type,
+			);
+			const inCompleted = card.columnId === KANBAN_COMPLETED_COLUMN_ID;
+			if (
+				inCompleted &&
+				bucket !== "completed" &&
+				bucket !== "hidden" &&
+				ws.type !== "main"
+			) {
+				const completedAt = card.completedAt ?? Date.now();
+				if (local) {
+					if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
+						collections.v2WorkspaceLocalState.update(
+							card.workspaceId,
+							(draft) => {
+								draft.sidebarState.completedAt = completedAt;
+								draft.sidebarState.isHidden = true;
+								draft.sidebarState.archivedAt = null;
+								draft.sidebarState.snoozeUntil = null;
+								draft.sidebarState.snoozeLaunchId = null;
+							},
+						);
+					}
+				} else {
+					// No local-state row (e.g. the project was just re-added to the
+					// sidebar): the completion must be re-asserted via INSERT or the
+					// branch would resurface in the active lane while its card sits in
+					// Completed. Same minimal row hideWorkspaceInSidebar seeds.
+					collections.v2WorkspaceLocalState.insert({
+						workspaceId: card.workspaceId,
+						createdAt: new Date(),
+						sidebarState: {
+							projectId: ws.projectId,
+							tabOrder: 0,
+							sectionId: null,
+							isHidden: true,
+							completedAt,
+						},
+						paneLayout: { version: 1, tabs: [], activeTabId: null },
+					});
+				}
+				if (card.completedAt == null) {
+					// Backfill the report datum from the stamp we just asserted.
+					collections.v2KanbanCards.update(card.id, (draft) => {
+						draft.completedAt = completedAt;
+					});
+				}
+			} else if (
+				inCompleted &&
+				bucket === "completed" &&
+				card.completedAt == null
+			) {
+				// Card transaction landed without its date (crash mid-complete):
+				// backfill from the sidebar stamp.
+				const stamp = local?.sidebarState.completedAt ?? Date.now();
+				collections.v2KanbanCards.update(card.id, (draft) => {
+					draft.completedAt = stamp;
+				});
+			} else if (!inCompleted && bucket === "completed") {
+				if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
+					collections.v2WorkspaceLocalState.update(
+						card.workspaceId,
+						(draft) => {
+							draft.sidebarState.completedAt = null;
+							draft.sidebarState.isHidden = false;
+							draft.sidebarState.archivedAt = null;
+						},
+					);
+				}
 			}
 		}
 	}, [
@@ -277,6 +441,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		workspaceById,
 		localStateByWorkspace,
 		sidebarProjectIds,
+		projectNameById,
 		columnRows,
 		cardRows,
 	]);
@@ -318,19 +483,30 @@ export function useKanbanData(): UseKanbanDataResult {
 
 				if (card.workspaceId) {
 					workspace = workspaceById.get(card.workspaceId) ?? null;
-					if (!workspace) continue; // pending cleanup — don't render a ghost
-					// HIDE (never delete) cards of projects removed from the sidebar —
-					// re-adding the project restores them with column/deadline intact.
-					if (!sidebarProjectIds.has(workspace.projectId)) continue;
-					projectName = projectNameById.get(workspace.projectId) ?? null;
-					const local = localStateByWorkspace.get(workspace.id);
-					const wsBucket = getWorkspaceSidebarBucket(
-						local?.sidebarState ?? {},
-						now,
-						workspace.type,
-					);
-					if (wsBucket === "hidden") continue;
-					bucket = wsBucket;
+					if (!workspace) {
+						// (KANBAN COMPLETED) FROZEN record: a completed card whose branch
+						// was deleted renders from its title/completedContext snapshot —
+						// it's a history record, so no project gate either (there is no
+						// live projectId to check). Anywhere else a missing workspace is
+						// just pending cleanup — don't render a ghost.
+						if (card.columnId !== KANBAN_COMPLETED_COLUMN_ID) continue;
+						bucket = "active";
+					} else {
+						// HIDE (never delete) cards of projects removed from the sidebar —
+						// re-adding the project restores them with column/deadline intact.
+						if (!sidebarProjectIds.has(workspace.projectId)) continue;
+						projectName = projectNameById.get(workspace.projectId) ?? null;
+						const local = localStateByWorkspace.get(workspace.id);
+						const wsBucket = getWorkspaceSidebarBucket(
+							local?.sidebarState ?? {},
+							now,
+							workspace.type,
+						);
+						if (wsBucket === "hidden") continue;
+						// "completed" has no kanban section — completed cards render in
+						// the Completed column's main (active) list.
+						bucket = wsBucket === "completed" ? "active" : wsBucket;
+					}
 				} else {
 					bucket = queuedCardBucket(card, now);
 				}
@@ -350,11 +526,31 @@ export function useKanbanData(): UseKanbanDataResult {
 				else if (bucket === "snoozed") snoozed.push(view);
 				else active.push(view);
 			}
+			if (column.isCompleted) {
+				// (KANBAN COMPLETED) date-sorted (latest first) + the persisted
+				// completed-date filter; the filtered-out count surfaces as a footer
+				// so a fresh drop "vanishing" under a narrow filter is explainable.
+				const sorted = sortCompletedCards(active);
+				const range = getCompletedFilterRange(column, now);
+				const filtered = range
+					? sorted.filter((v) =>
+							isWithinCompletedRange(v.card.completedAt, range),
+						)
+					: sorted;
+				return {
+					column,
+					active: filtered,
+					snoozed: sortCards(snoozed, column.sortMode),
+					archived: sortCards(archived, column.sortMode),
+					hiddenByFilter: sorted.length - filtered.length,
+				};
+			}
 			return {
 				column,
 				active: sortCards(active, column.sortMode),
 				snoozed: sortCards(snoozed, column.sortMode),
 				archived: sortCards(archived, column.sortMode),
+				hiddenByFilter: 0,
 			};
 		});
 	}, [

@@ -4,12 +4,15 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import {
 	APP_LAUNCH_ID,
 	getNextTabOrder,
-	type KanbanCardRow,
+	KANBAN_COMPLETED_COLUMN_ID,
 	KANBAN_QUEUE_COLUMN_ID,
+	type KanbanCardRow,
 	kanbanBoundCardId,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
+import { buildCompletedContext } from "../../utils/completedFilter";
 import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
+import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
 export type CardDropKind = "ok" | "promote" | "reject";
 
@@ -29,7 +32,11 @@ export interface UseKanbanActionsResult {
 		},
 	) => void;
 	deleteQueuedCard: (cardId: string) => void;
-	canDropCard: (card: KanbanCardRow, toColumnId: string) => CardDropKind;
+	canDropCard: (
+		card: KanbanCardRow,
+		toColumnId: string,
+		workspaceType?: string | null,
+	) => CardDropKind;
 	applyCardOrder: (columnId: string, orderedCardIds: string[]) => void;
 	applyDeadlineTieOrder: (
 		orderedCardIds: string[],
@@ -64,6 +71,24 @@ export interface UseKanbanActionsResult {
 	unsnoozeCard: (card: KanbanCardRow) => void;
 	archiveCard: (card: KanbanCardRow) => void;
 	unarchiveCard: (card: KanbanCardRow) => void;
+	/** (KANBAN COMPLETED) Drop into the Completed column: stamps completedAt
+	 * (the report datum + sidebar-hide flag) and snapshots title/context. */
+	completeCard: (card: KanbanCardRow) => void;
+	/** Drag out of the Completed column: clears the stamps and moves the card
+	 * into `toColumnId` (the board's reorder pass then places it precisely). */
+	uncompleteCard: (card: KanbanCardRow, toColumnId: string) => void;
+	updateCompletedDate: (cardId: string, completedAt: number) => void;
+	/** Delete a Completed-column record with no live branch (unbound task or a
+	 * frozen record). Bound cards with a live branch delete via the branch
+	 * dialog — the record then survives frozen, by design. */
+	deleteCompletedCard: (cardId: string) => void;
+	setColumnCompletedFilter: (
+		columnId: string,
+		filter:
+			| { kind: "all" }
+			| { kind: "last-month" }
+			| { kind: "custom"; fromMs: number; toMs: number },
+	) => void;
 }
 
 /**
@@ -76,7 +101,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const collections = useCollections();
 	const {
 		archiveWorkspace,
+		completeWorkspace,
 		snoozeWorkspace,
+		uncompleteWorkspace,
 		unsnoozeWorkspace,
 		unarchiveWorkspaces,
 		ensureWorkspaceInSidebar,
@@ -93,7 +120,13 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const customColumnsOrdered = useCallback(
 		() =>
 			Array.from(collections.v2KanbanColumns.state.values())
-				.filter((c) => !c.isQueue && c.id !== KANBAN_QUEUE_COLUMN_ID)
+				.filter(
+					(c) =>
+						!c.isQueue &&
+						c.id !== KANBAN_QUEUE_COLUMN_ID &&
+						!c.isCompleted &&
+						c.id !== KANBAN_COMPLETED_COLUMN_ID,
+				)
 				.sort((a, b) => a.tabOrder - b.tabOrder),
 		[collections],
 	);
@@ -123,6 +156,8 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				snoozeUntil: null,
 				snoozeLaunchId: null,
 				archivedAt: null,
+				completedAt: null,
+				completedContext: null,
 				createdAt: Date.now(),
 			});
 			return id;
@@ -150,8 +185,16 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	);
 
 	const canDropCard = useCallback<UseKanbanActionsResult["canDropCard"]>(
-		(card, toColumnId) => {
+		(card, toColumnId, workspaceType) => {
 			const toQueue = toColumnId === KANBAN_QUEUE_COLUMN_ID;
+			// (KANBAN COMPLETED) ANY card can complete except a repo's main
+			// workspace (completing hides the sidebar row — a hidden main has no
+			// restore path since un-completion is dragging the card back out, and
+			// main rows must always be reachable). Unbound cards complete directly
+			// — completing a task is NOT a promote (no branch gets created).
+			if (toColumnId === KANBAN_COMPLETED_COLUMN_ID) {
+				return workspaceType === "main" ? "reject" : "ok";
+			}
 			if (card.workspaceId) {
 				// A bound (branch) card can never enter the unbound-only Queue.
 				return toQueue ? "reject" : "ok";
@@ -204,8 +247,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			if (ids.length === 0) return;
 			collections.v2KanbanCards.update(ids, (drafts) => {
 				drafts.forEach((draft, index) => {
-					draft.deadlineTabOrder =
-						index < orderIds.length ? index + 1 : null;
+					draft.deadlineTabOrder = index < orderIds.length ? index + 1 : null;
 				});
 			});
 		},
@@ -237,7 +279,12 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// is keyed by workspaceId and reconcile aligns it.
 			if (!queued || queued.workspaceId) return;
 			const targetColumn = collections.v2KanbanColumns.get(toColumnId);
-			if (!targetColumn || targetColumn.isQueue) return;
+			// Completed is no promote target either: a freshly-created branch must
+			// never be born completed (drops on Completed return "ok", not
+			// "promote", so this is unreachable via the board — belt and braces).
+			if (!targetColumn || targetColumn.isQueue || targetColumn.isCompleted) {
+				return;
+			}
 			const tabOrder = getNextTabOrder(columnCards(toColumnId));
 			const boundId = kanbanBoundCardId(workspaceId);
 			const existing = collections.v2KanbanCards.get(boundId);
@@ -271,6 +318,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 					snoozeUntil: null,
 					snoozeLaunchId: null,
 					archivedAt: null,
+					// Promoting a completed task REOPENS it — the new branch card
+					// deliberately carries no completedAt (same on the merge path
+					// above, which never copies completion fields).
+					completedAt: null,
+					completedContext: null,
 					createdAt: Date.now(),
 				});
 			}
@@ -293,10 +345,17 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				collections.v2KanbanCards.delete(boundId);
 			}
 			if (collections.v2KanbanCards.get(snapshot.id)) return;
+			// (KANBAN COMPLETED) a completed task whose reopen-promote failed goes
+			// back where it was — the Completed column, stamps intact (the spread
+			// carries completedAt/completedContext) — not into Queued.
+			const restoreColumnId =
+				snapshot.completedAt != null
+					? KANBAN_COMPLETED_COLUMN_ID
+					: KANBAN_QUEUE_COLUMN_ID;
 			collections.v2KanbanCards.insert({
 				...snapshot,
-				columnId: KANBAN_QUEUE_COLUMN_ID,
-				tabOrder: getNextTabOrder(columnCards(KANBAN_QUEUE_COLUMN_ID)),
+				columnId: restoreColumnId,
+				tabOrder: getNextTabOrder(columnCards(restoreColumnId)),
 				deadlineTabOrder: null,
 				workspaceId: null,
 			});
@@ -347,7 +406,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				name: name ?? "New column",
 				tabOrder,
 				isQueue: false,
+				isCompleted: false,
 				sortMode: "manual",
+				completedFilter: "all",
+				completedFilterFrom: null,
+				completedFilterTo: null,
 				showSnoozed: false,
 				showArchived: false,
 				snoozedCollapsed: false,
@@ -505,6 +568,122 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[collections, unarchiveWorkspaces],
 	);
 
+	// (KANBAN COMPLETED) Card transaction FIRST, sidebar second — each update is
+	// its own localStorage flush, and the reconcile's heal rules converge toward
+	// the CARD's column, so a crash between the two transactions self-repairs in
+	// the direction the user dragged.
+
+	const completeCard = useCallback(
+		(card: KanbanCardRow) => {
+			if (!collections.v2KanbanCards.get(card.id)) return;
+			const completedAt = Date.now();
+			if (card.workspaceId) {
+				const ws = collections.v2Workspaces.get(card.workspaceId);
+				// Main workspaces are never completable (canDropCard rejects the
+				// drop; this keeps any other caller honest).
+				if (ws?.type === "main") return;
+				const projectName = ws
+					? (collections.v2Projects.get(ws.projectId)?.name ?? null)
+					: null;
+				collections.v2KanbanCards.update(card.id, (draft) => {
+					draft.columnId = KANBAN_COMPLETED_COLUMN_ID;
+					draft.tabOrder = 0; // unused there — Completed is date-sorted
+					draft.deadlineTabOrder = null;
+					draft.completedAt = completedAt;
+					if (ws) {
+						// Snapshot title + context NOW so the record stays meaningful
+						// if the branch is later deleted (frozen record).
+						draft.title = deriveCardTitle(ws);
+						draft.completedContext = buildCompletedContext(
+							projectName,
+							ws.branch,
+						);
+					}
+				});
+				if (ws) {
+					ensureBoundRow(card.workspaceId);
+					completeWorkspace(card.workspaceId, completedAt);
+				}
+				return;
+			}
+			collections.v2KanbanCards.update(card.id, (draft) => {
+				draft.columnId = KANBAN_COMPLETED_COLUMN_ID;
+				draft.tabOrder = 0;
+				draft.deadlineTabOrder = null;
+				draft.completedAt = completedAt;
+				// Completing is terminal for the hide states — a completed task is
+				// neither snoozed nor archived.
+				draft.snoozeUntil = null;
+				draft.snoozeLaunchId = null;
+				draft.archivedAt = null;
+			});
+		},
+		[collections, completeWorkspace, ensureBoundRow],
+	);
+
+	const uncompleteCard = useCallback(
+		(card: KanbanCardRow, toColumnId: string) => {
+			if (!collections.v2KanbanCards.get(card.id)) return;
+			const tabOrder = getNextTabOrder(columnCards(toColumnId));
+			collections.v2KanbanCards.update(card.id, (draft) => {
+				draft.columnId = toColumnId;
+				draft.tabOrder = tabOrder;
+				draft.deadlineTabOrder = null;
+				draft.completedAt = null;
+				draft.completedContext = null;
+			});
+			if (card.workspaceId) uncompleteWorkspace(card.workspaceId);
+		},
+		[collections, columnCards, uncompleteWorkspace],
+	);
+
+	const updateCompletedDate = useCallback(
+		(cardId: string, completedAt: number) => {
+			if (!collections.v2KanbanCards.get(cardId)) return;
+			collections.v2KanbanCards.update(cardId, (draft) => {
+				draft.completedAt = completedAt;
+			});
+		},
+		[collections],
+	);
+
+	const deleteCompletedCard = useCallback(
+		(cardId: string) => {
+			const card = collections.v2KanbanCards.get(cardId);
+			if (!card || card.columnId !== KANBAN_COMPLETED_COLUMN_ID) return;
+			// A bound card with a LIVE branch deletes via the branch dialog (and
+			// then survives frozen) — this action is only for records with no
+			// branch left: unbound tasks and frozen records.
+			if (card.workspaceId && collections.v2Workspaces.get(card.workspaceId)) {
+				return;
+			}
+			collections.v2KanbanCards.delete(cardId);
+		},
+		[collections],
+	);
+
+	const setColumnCompletedFilter = useCallback<
+		UseKanbanActionsResult["setColumnCompletedFilter"]
+	>(
+		(columnId, filter) => {
+			const column = collections.v2KanbanColumns.get(columnId);
+			if (!column || !column.isCompleted) return;
+			collections.v2KanbanColumns.update(columnId, (draft) => {
+				draft.completedFilter = filter.kind;
+				if (filter.kind === "custom") {
+					// The range calendar always yields from <= to; normalise anyway so
+					// a stored range can never be inverted.
+					draft.completedFilterFrom = Math.min(filter.fromMs, filter.toMs);
+					draft.completedFilterTo = Math.max(filter.fromMs, filter.toMs);
+				} else {
+					draft.completedFilterFrom = null;
+					draft.completedFilterTo = null;
+				}
+			});
+		},
+		[collections],
+	);
+
 	return useMemo(
 		() => ({
 			createQueuedCard,
@@ -527,6 +706,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			unsnoozeCard,
 			archiveCard,
 			unarchiveCard,
+			completeCard,
+			uncompleteCard,
+			updateCompletedDate,
+			deleteCompletedCard,
+			setColumnCompletedFilter,
 		}),
 		[
 			createQueuedCard,
@@ -549,6 +733,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			unsnoozeCard,
 			archiveCard,
 			unarchiveCard,
+			completeCard,
+			uncompleteCard,
+			updateCompletedDate,
+			deleteCompletedCard,
+			setColumnCompletedFilter,
 		],
 	);
 }

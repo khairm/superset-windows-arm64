@@ -74,6 +74,7 @@ interface SidebarWorkspaceStateFields {
 	archivedAt?: number | null;
 	snoozeUntil?: number | null;
 	snoozeLaunchId?: string | null;
+	completedAt?: number | null;
 }
 
 type SidebarWorkspaceStateSource =
@@ -123,13 +124,22 @@ export type SidebarWorkspaceBucket =
 	| "active"
 	| "snoozed"
 	| "archived"
-	| "hidden";
+	| "hidden"
+	| "completed";
 
 export function getWorkspaceSidebarBucket(
 	workspace: SidebarWorkspaceStateSource,
 	nowMs: number = Date.now(),
 	workspaceType?: string | null,
 ): SidebarWorkspaceBucket {
+	// (KANBAN COMPLETED) checked FIRST: completeWorkspace also sets isHidden so
+	// raw-visibility consumers hide the row, but isHidden + non-main would
+	// classify "archived" below and surface the thread under the project's
+	// Archived section. Completed threads have NO sidebar surface at all — the
+	// kanban Completed column is the only place they exist.
+	if (readSidebarWorkspaceState(workspace).completedAt != null) {
+		return "completed";
+	}
 	// Main rows can be snoozed/archived on purpose (the UI offers it). A main with
 	// archivedAt set buckets "archived" below; a main hidden WITHOUT an archive
 	// timestamp stays merely "hidden" — isWorkspaceArchived's `&& type !== "main"`

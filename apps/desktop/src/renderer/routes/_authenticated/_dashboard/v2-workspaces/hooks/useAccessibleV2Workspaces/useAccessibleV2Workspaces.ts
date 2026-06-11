@@ -69,6 +69,10 @@ export interface AccessibleV2Workspace {
 	/** Archived (lives in the project's Archived section). Its sidebar "+" action
 	 * must unarchive rather than re-add (ensureWorkspaceInSidebar no-ops on it). */
 	isArchived: boolean;
+	/** (KANBAN COMPLETED) Completed on the kanban board — hidden from the sidebar
+	 * entirely. The "+" action must NOT unarchive/re-add it: un-completion is a
+	 * board-only action (drag the card out of the Completed column). */
+	isCompleted: boolean;
 	pr: V2WorkspacePrSummary | null;
 }
 
@@ -302,6 +306,7 @@ export function useAccessibleV2Workspaces(
 						sidebarSnoozeUntil: sidebarState?.sidebarState.snoozeUntil ?? null,
 						sidebarSnoozeLaunchId:
 							sidebarState?.sidebarState.snoozeLaunchId ?? null,
+						sidebarCompletedAt: sidebarState?.sidebarState.completedAt ?? null,
 					}),
 				),
 		[activeOrganizationId, collections, currentUserId],
@@ -385,18 +390,25 @@ export function useAccessibleV2Workspaces(
 			const isInSidebar =
 				isSidebarWorkspaceVisible({ isHidden: row.sidebarIsHidden }) &&
 				(row.sidebarWorkspaceId != null || isAutoVisibleMain);
-			const isArchived =
-				row.sidebarWorkspaceId != null &&
-				getWorkspaceSidebarBucket(
-					{
-						isHidden: row.sidebarIsHidden,
-						archivedAt: row.sidebarArchivedAt,
-						snoozeUntil: row.sidebarSnoozeUntil,
-						snoozeLaunchId: row.sidebarSnoozeLaunchId,
-					},
-					Date.now(),
-					row.type,
-				) === "archived";
+			// Completed rows are also isHidden — completedAt MUST be in the bucket
+			// inputs or they'd misclassify as "archived" (and the "+" action would
+			// silently half-uncomplete them via unarchiveWorkspace).
+			const bucket =
+				row.sidebarWorkspaceId != null
+					? getWorkspaceSidebarBucket(
+							{
+								isHidden: row.sidebarIsHidden,
+								archivedAt: row.sidebarArchivedAt,
+								snoozeUntil: row.sidebarSnoozeUntil,
+								snoozeLaunchId: row.sidebarSnoozeLaunchId,
+								completedAt: row.sidebarCompletedAt,
+							},
+							Date.now(),
+							row.type,
+						)
+					: null;
+			const isArchived = bucket === "archived";
+			const isCompleted = bucket === "completed";
 			const pr = row.projectRepoId
 				? (prsByRepoBranch.get(`${row.projectRepoId}::${row.branch}`) ?? null)
 				: null;
@@ -422,6 +434,7 @@ export function useAccessibleV2Workspaces(
 				hostType,
 				isInSidebar,
 				isArchived,
+				isCompleted,
 				pr,
 			});
 		}

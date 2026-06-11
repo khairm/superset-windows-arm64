@@ -124,7 +124,17 @@ See `FEATURES.md` for the marker manifest. In brief:
   neither mode scrambles the other; new/changed/moved cards land BELOW the
   explicitly ordered ones in their group). Snooze/archive/delete of
   a branch card == the sidebar (one source of truth); main workspaces can't be
-  snoozed/archived/deleted. Local-only, ungated. APPEND-ONLY daily backup:
+  snoozed/archived/deleted. A fixed FINAL **Completed** column: dropping a card
+  stamps an editable completed date ("last dropped"; double-click / right-click
+  to edit) and hides the thread from the sidebar ENTIRELY (no section — the
+  board is its only surface; sidebar bucket `completed` is checked before
+  `archived` since completing also sets isHidden); dragging the card out
+  un-completes (restores the row, clears the date). Per-column date filter
+  (all / last calendar month / custom range) for end-of-week/month/quarter
+  reports, with an "N hidden by filter" footer. Completed cards survive later
+  branch deletion as FROZEN records (title + repo/branch snapshot taken at
+  completion); main cards can't be completed; completing ≠ deleting (worktree
+  untouched). Local-only, ungated. APPEND-ONLY daily backup:
   write-once JSON snapshot per org per day under `~/.superset/backups/kanban/`
   (skips empty boards; no code path can delete or overwrite a snapshot).
 

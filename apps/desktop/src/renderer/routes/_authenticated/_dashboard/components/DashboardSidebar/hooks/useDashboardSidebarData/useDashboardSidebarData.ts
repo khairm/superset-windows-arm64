@@ -7,11 +7,10 @@ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
-	getVisibleSidebarWorkspaces,
-	isAutoIncludedLocalMainWorkspace,
 	APP_LAUNCH_ID,
 	formatSnoozeRemaining,
 	getWorkspaceSidebarBucket,
+	isAutoIncludedLocalMainWorkspace,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
@@ -182,11 +181,11 @@ export function useDashboardSidebarData() {
 					createdAt: projects.createdAt,
 					updatedAt: projects.updatedAt,
 					isCollapsed: sidebarProjects.isCollapsed,
-						isPinned: sidebarProjects.isPinned,
-						showSnoozed: sidebarProjects.showSnoozed,
-						showArchived: sidebarProjects.showArchived,
-						snoozedCollapsed: sidebarProjects.snoozedCollapsed,
-						archivedCollapsed: sidebarProjects.archivedCollapsed,
+					isPinned: sidebarProjects.isPinned,
+					showSnoozed: sidebarProjects.showSnoozed,
+					showArchived: sidebarProjects.showArchived,
+					snoozedCollapsed: sidebarProjects.snoozedCollapsed,
+					archivedCollapsed: sidebarProjects.archivedCollapsed,
 				})),
 		[collections],
 	);
@@ -252,9 +251,13 @@ export function useDashboardSidebarData() {
 					tabOrder: sidebarWorkspaces.sidebarState.tabOrder,
 					sectionId: sidebarWorkspaces.sidebarState.sectionId,
 					isHidden: sidebarWorkspaces.sidebarState.isHidden,
-						snoozeUntil: sidebarWorkspaces.sidebarState.snoozeUntil,
-						snoozeLaunchId: sidebarWorkspaces.sidebarState.snoozeLaunchId,
-						archivedAt: sidebarWorkspaces.sidebarState.archivedAt,
+					snoozeUntil: sidebarWorkspaces.sidebarState.snoozeUntil,
+					snoozeLaunchId: sidebarWorkspaces.sidebarState.snoozeLaunchId,
+					archivedAt: sidebarWorkspaces.sidebarState.archivedAt,
+					// (KANBAN COMPLETED) must be projected or the bucket classifier
+					// below can't see it — completed rows are also isHidden and would
+					// misclassify as "archived" (surfacing under the Archived section).
+					completedAt: sidebarWorkspaces.sidebarState.completedAt,
 				})),
 		[collections],
 	);
@@ -276,7 +279,8 @@ export function useDashboardSidebarData() {
 	// wall-clock deadline (it clears on relaunch via APP_LAUNCH_ID), so counting it
 	// here would keep the interval running forever doing nothing.
 	const hasPendingSnooze = useMemo(
-		() => rawSidebarWorkspaces.some((workspace) => workspace.snoozeUntil != null),
+		() =>
+			rawSidebarWorkspaces.some((workspace) => workspace.snoozeUntil != null),
 		[rawSidebarWorkspaces],
 	);
 	useEffect(() => {
@@ -336,6 +340,11 @@ export function useDashboardSidebarData() {
 				case "hidden":
 					// Removed main/pinned workspace (isHidden, not archived): excluded
 					// from the active lane entirely — not shown anywhere, not resurrected.
+					break;
+				case "completed":
+					// (KANBAN COMPLETED) no sidebar surface at all — the kanban board's
+					// Completed column is the thread's only surface. Falling through to
+					// default would resurrect it into the ACTIVE lane.
 					break;
 				default:
 					active.push(workspace);
@@ -722,7 +731,9 @@ export function useDashboardSidebarData() {
 		for (const workspace of snoozedSidebarWorkspaces) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
-			project.snoozedWorkspaces.push(buildInactiveWorkspace(workspace, project));
+			project.snoozedWorkspaces.push(
+				buildInactiveWorkspace(workspace, project),
+			);
 		}
 
 		for (const workspace of archivedSidebarWorkspaces) {

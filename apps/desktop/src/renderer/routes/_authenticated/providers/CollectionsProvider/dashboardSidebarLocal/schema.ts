@@ -77,7 +77,9 @@ export const workspaceLocalStateSchema = z.object({
 		// "card" (KANBAN) is the right-panel Task/Card tab added alongside
 		// Files/Changes/Review. Additive enum widening — older rows still read
 		// "changes". Default stays "changes" (the Card tab never auto-selects).
-		activeTab: z.enum(["changes", "files", "review", "card"]).default("changes"),
+		activeTab: z
+			.enum(["changes", "files", "review", "card"])
+			.default("changes"),
 		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
 		// from the active lane and surfaced under the project's Archived section.
 		// `archivedAt` orders that section (most-recently-archived first); legacy
@@ -89,6 +91,13 @@ export const workspaceLocalStateSchema = z.object({
 		archivedAt: z.number().nullable().default(null),
 		snoozeUntil: z.number().nullable().default(null),
 		snoozeLaunchId: z.string().nullable().default(null),
+		// (KANBAN COMPLETED) Set when the branch's kanban card sits in the fixed
+		// Completed column. Presence hides the thread row from the sidebar
+		// ENTIRELY (no section — the board is its only surface). completeWorkspace
+		// also sets isHidden so raw-visibility consumers (notifications, ports)
+		// treat it like an archived row; the bucket classifier checks completedAt
+		// FIRST so it never surfaces under Archived.
+		completedAt: z.number().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -119,6 +128,7 @@ const SIDEBAR_STATE_DEFAULTS = {
 	archivedAt: null,
 	snoozeUntil: null,
 	snoozeLaunchId: null,
+	completedAt: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
@@ -388,6 +398,16 @@ export const kanbanColumnSchema = z.object({
 	// Exactly one column is the fixed first "Queued" column (unbound tasks only).
 	// Healed/seeded with a deterministic id (see kanbanQueueColumnId).
 	isQueue: z.boolean().default(false),
+	// Exactly one column is the fixed FINAL "Completed" column. Cards dropped
+	// there are stamped done (see card.completedAt); the column can't be moved
+	// or deleted. Healed/seeded from KANBAN_COMPLETED_COLUMN_ID like the queue.
+	isCompleted: z.boolean().default(false),
+	// (KANBAN COMPLETED) Per-column completed-date filter — only meaningful on
+	// the Completed column. "last-month" = previous calendar month; "custom"
+	// uses the local-midnight from/to bounds (inclusive days).
+	completedFilter: z.enum(["all", "last-month", "custom"]).default("all"),
+	completedFilterFrom: z.number().nullable().default(null),
+	completedFilterTo: z.number().nullable().default(null),
 	// Display-only sort. NEVER rewrites card tabOrder — flipping back to "manual"
 	// restores the manual drag order untouched.
 	sortMode: z.enum(["manual", "deadline"]).default("manual"),
@@ -427,6 +447,16 @@ export const kanbanCardSchema = z.object({
 	snoozeUntil: z.number().nullable().default(null),
 	snoozeLaunchId: z.string().nullable().default(null),
 	archivedAt: z.number().nullable().default(null),
+	// (KANBAN COMPLETED) When the card was LAST dropped into the Completed
+	// column (epoch-ms; date-editable afterwards). The report datum for ALL
+	// cards — for bound cards the branch's sidebarState.completedAt is only the
+	// sidebar-visibility flag; this card field is what's displayed, filtered,
+	// sorted and (via the daily append-only backup) preserved.
+	completedAt: z.number().nullable().default(null),
+	// "project / branch" snapshot taken at completion — the subtitle a FROZEN
+	// record (completed card whose branch was later deleted) renders, since the
+	// live workspace row is gone.
+	completedContext: z.string().nullable().default(null),
 	createdAt: z.number().default(0),
 });
 
@@ -449,11 +479,22 @@ export const KANBAN_QUEUE_COLUMN_ID = "queue";
 /** tabOrder reserved for the Queued column — always sorts first. */
 export const KANBAN_QUEUE_TAB_ORDER = -1_000_000;
 
+/** The fixed FINAL "Completed" column id. Constant (not per-org) because the
+ * collection's storageKey is already org-scoped. Seeded/healed to exactly one. */
+export const KANBAN_COMPLETED_COLUMN_ID = "completed";
+
+/** tabOrder reserved for the Completed column — always sorts last. */
+export const KANBAN_COMPLETED_TAB_ORDER = 1_000_000;
+
 const KANBAN_COLUMN_DEFAULTS = {
 	name: "",
 	tabOrder: 0,
 	isQueue: false,
+	isCompleted: false,
 	sortMode: "manual",
+	completedFilter: "all",
+	completedFilterFrom: null,
+	completedFilterTo: null,
 	showSnoozed: false,
 	showArchived: false,
 	snoozedCollapsed: false,
@@ -471,6 +512,8 @@ const KANBAN_CARD_DEFAULTS = {
 	snoozeUntil: null,
 	snoozeLaunchId: null,
 	archivedAt: null,
+	completedAt: null,
+	completedContext: null,
 	createdAt: 0,
 } as const;
 
@@ -481,17 +524,21 @@ export function healKanbanColumn(raw: unknown): KanbanColumnRow {
 		raw && typeof raw === "object" ? raw : {}
 	) as Partial<KanbanColumnRow>;
 	const merged = { ...KANBAN_COLUMN_DEFAULTS, ...r } as KanbanColumnRow;
-	// Derive the queue flag from the deterministic id (don't trust the stored
-	// flag): guarantees exactly one queue and stops a stale row hydrating as the
-	// wrong kind. The Queue column also always sorts first.
+	// Derive the queue/completed flags from the deterministic ids (don't trust
+	// the stored flags): guarantees exactly one of each and stops a stale row
+	// hydrating as the wrong kind. Queue always sorts first, Completed last.
 	merged.isQueue = merged.id === KANBAN_QUEUE_COLUMN_ID;
 	if (merged.isQueue) merged.tabOrder = KANBAN_QUEUE_TAB_ORDER;
+	merged.isCompleted = merged.id === KANBAN_COMPLETED_COLUMN_ID;
+	if (merged.isCompleted) merged.tabOrder = KANBAN_COMPLETED_TAB_ORDER;
 	return merged;
 }
 
 /** Heal a stored Kanban card row — merges defaults (identity fields `id` /
  * `columnId` pass through from the stored row). */
 export function healKanbanCard(raw: unknown): KanbanCardRow {
-	const r = (raw && typeof raw === "object" ? raw : {}) as Partial<KanbanCardRow>;
+	const r = (
+		raw && typeof raw === "object" ? raw : {}
+	) as Partial<KanbanCardRow>;
 	return { ...KANBAN_CARD_DEFAULTS, ...r } as KanbanCardRow;
 }

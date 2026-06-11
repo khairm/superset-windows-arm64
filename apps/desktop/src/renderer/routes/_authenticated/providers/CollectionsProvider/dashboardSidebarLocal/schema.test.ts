@@ -1,8 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
 	DEFAULT_V2_USER_PREFERENCES,
+	healKanbanCard,
+	healKanbanColumn,
 	healV2UserPreferences,
 	healWorkspaceLocalState,
+	KANBAN_COMPLETED_COLUMN_ID,
+	KANBAN_COMPLETED_TAB_ORDER,
+	KANBAN_QUEUE_COLUMN_ID,
+	KANBAN_QUEUE_TAB_ORDER,
 } from "./schema";
 
 describe("healV2UserPreferences", () => {
@@ -158,5 +164,63 @@ describe("healWorkspaceLocalState", () => {
 		expect(() => healWorkspaceLocalState(undefined)).not.toThrow();
 		expect(() => healWorkspaceLocalState("garbage")).not.toThrow();
 		expect(() => healWorkspaceLocalState(42)).not.toThrow();
+	});
+
+	it("fills completedAt (KANBAN COMPLETED) on rows persisted before it existed", () => {
+		const healed = healWorkspaceLocalState(baseStored);
+		expect(healed.sidebarState.completedAt).toBeNull();
+		const completed = healWorkspaceLocalState({
+			...baseStored,
+			sidebarState: { ...baseStored.sidebarState, completedAt: 123 },
+		});
+		expect(completed.sidebarState.completedAt).toBe(123);
+	});
+});
+
+describe("healKanbanColumn (KANBAN COMPLETED)", () => {
+	it("derives the completed flag from the deterministic id and pins its tabOrder", () => {
+		const healed = healKanbanColumn({
+			id: KANBAN_COMPLETED_COLUMN_ID,
+			name: "Completed",
+			tabOrder: 2, // stale stored order must not stick
+			isCompleted: false, // stale stored flag must not stick either
+		});
+		expect(healed.isCompleted).toBe(true);
+		expect(healed.isQueue).toBe(false);
+		expect(healed.tabOrder).toBe(KANBAN_COMPLETED_TAB_ORDER);
+		expect(healed.completedFilter).toBe("all");
+		expect(healed.completedFilterFrom).toBeNull();
+		expect(healed.completedFilterTo).toBeNull();
+	});
+
+	it("never marks other columns completed (stored flag is untrusted)", () => {
+		const queue = healKanbanColumn({
+			id: KANBAN_QUEUE_COLUMN_ID,
+			isCompleted: true,
+		});
+		expect(queue.isCompleted).toBe(false);
+		expect(queue.isQueue).toBe(true);
+		expect(queue.tabOrder).toBe(KANBAN_QUEUE_TAB_ORDER);
+		const custom = healKanbanColumn({ id: "some-uuid", isCompleted: true });
+		expect(custom.isCompleted).toBe(false);
+	});
+});
+
+describe("healKanbanCard (KANBAN COMPLETED)", () => {
+	it("fills completion fields on cards persisted before they existed", () => {
+		const healed = healKanbanCard({ id: "x", columnId: "y" });
+		expect(healed.completedAt).toBeNull();
+		expect(healed.completedContext).toBeNull();
+	});
+
+	it("preserves stored completion fields", () => {
+		const healed = healKanbanCard({
+			id: "x",
+			columnId: KANBAN_COMPLETED_COLUMN_ID,
+			completedAt: 456,
+			completedContext: "repo / branch",
+		});
+		expect(healed.completedAt).toBe(456);
+		expect(healed.completedContext).toBe("repo / branch");
 	});
 });

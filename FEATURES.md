@@ -34,6 +34,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
+| Kanban Completed column | fixed FINAL column: dropping a card stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID` |
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
 
 ## Machine-readable markers (the nightly gate reads this block)
@@ -69,6 +70,7 @@ useLinkClickHint	apps/desktop/src/renderer
 openHtmlInBrowser	apps/desktop/src
 v2KanbanCards	apps/desktop/src/renderer
 KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
+KANBAN_COMPLETED_COLUMN_ID	apps/desktop/src/renderer
 writeKanbanBackup	apps/desktop/src
 agent-wrappers	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer

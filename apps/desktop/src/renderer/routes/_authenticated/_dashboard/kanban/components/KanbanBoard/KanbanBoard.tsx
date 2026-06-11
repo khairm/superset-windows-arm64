@@ -12,7 +12,10 @@ import { arrayMove } from "@dnd-kit/sortable";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
 import { LuPlus } from "react-icons/lu";
-import type { KanbanCardRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import {
+	KANBAN_COMPLETED_COLUMN_ID,
+	type KanbanCardRow,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useKanbanActions } from "../../hooks/useKanbanActions";
 import { useKanbanData } from "../../hooks/useKanbanData";
 import type { KanbanCardView } from "../../types";
@@ -46,9 +49,14 @@ export function KanbanBoard() {
 		}),
 	);
 
+	// Custom = reorderable/deletable. The fixed Completed column must be
+	// excluded like the Queue, or move-left/right would renumber its pinned
+	// tabOrder into the custom range.
 	const customColumnIds = useMemo(
 		() =>
-			columns.filter((c) => !c.column.isQueue).map((c) => c.column.id),
+			columns
+				.filter((c) => !c.column.isQueue && !c.column.isCompleted)
+				.map((c) => c.column.id),
 		[columns],
 	);
 
@@ -103,11 +111,33 @@ export function KanbanBoard() {
 			}
 			if (!targetColumnId) return;
 
-			const kind = actions.canDropCard(activeCardRow, targetColumnId);
+			const kind = actions.canDropCard(
+				activeCardRow,
+				targetColumnId,
+				findCardView(activeCardRow.id)?.workspace?.type ?? null,
+			);
 			if (kind === "reject") return;
 			if (kind === "promote") {
 				setPromoteState({ queuedCardId: activeCardRow.id, targetColumnId });
 				return;
+			}
+
+			// (KANBAN COMPLETED) handled before any sort-mode logic. Dropping INTO
+			// Completed stamps the card done (out-then-back-in re-stamps — "last
+			// dropped" semantics); intra-Completed drags are no-ops (date-sorted).
+			const fromCompleted =
+				activeCardRow.columnId === KANBAN_COMPLETED_COLUMN_ID;
+			if (targetColumnId === KANBAN_COMPLETED_COLUMN_ID) {
+				if (!fromCompleted) actions.completeCard(activeCardRow);
+				return;
+			}
+			if (fromCompleted) {
+				// Un-complete: clears the stamps + restores the sidebar row, and
+				// moves the card into the target column. The normal move/reorder
+				// pass below then places it at the precise drop index (the drag
+				// data's stale columnId still reads "completed", so the
+				// cross-column branches run).
+				actions.uncompleteCard(activeCardRow, targetColumnId);
 			}
 
 			const targetCol = columns.find((c) => c.column.id === targetColumnId);
@@ -180,7 +210,7 @@ export function KanbanBoard() {
 				actions.applyCardOrder(targetColumnId, targetIds);
 			}
 		},
-		[actions, columns],
+		[actions, columns, findCardView],
 	);
 
 	const handleAddQueuedCard = useCallback(() => {
@@ -204,17 +234,19 @@ export function KanbanBoard() {
 			onDragCancel={() => setActiveCard(null)}
 		>
 			<div className="flex min-h-0 min-w-0 flex-1 gap-2 overflow-x-auto overflow-y-hidden px-4 py-3">
-				{columns.map((col) => (
-					<KanbanColumn
-						key={col.column.id}
-						view={col}
-						actions={actions}
-						now={now}
-						onActivate={onActivate}
-						onAddQueuedCard={handleAddQueuedCard}
-						customColumnIds={customColumnIds}
-					/>
-				))}
+				{columns
+					.filter((col) => !col.column.isCompleted)
+					.map((col) => (
+						<KanbanColumn
+							key={col.column.id}
+							view={col}
+							actions={actions}
+							now={now}
+							onActivate={onActivate}
+							onAddQueuedCard={handleAddQueuedCard}
+							customColumnIds={customColumnIds}
+						/>
+					))}
 				<button
 					type="button"
 					onClick={() => actions.addColumn()}
@@ -222,6 +254,21 @@ export function KanbanBoard() {
 				>
 					<LuPlus className="size-4" /> Add column
 				</button>
+				{/* (KANBAN COMPLETED) the fixed FINAL column renders after the
+				    Add-column affordance so it is always the rightmost thing. */}
+				{columns
+					.filter((col) => col.column.isCompleted)
+					.map((col) => (
+						<KanbanColumn
+							key={col.column.id}
+							view={col}
+							actions={actions}
+							now={now}
+							onActivate={onActivate}
+							onAddQueuedCard={handleAddQueuedCard}
+							customColumnIds={customColumnIds}
+						/>
+					))}
 			</div>
 
 			<DragOverlay dropAnimation={null}>

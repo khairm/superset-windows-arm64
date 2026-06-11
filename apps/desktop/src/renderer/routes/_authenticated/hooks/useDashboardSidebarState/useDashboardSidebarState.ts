@@ -157,7 +157,8 @@ function ensureSidebarWorkspaceRecord(
 		const workspaceType =
 			collections.v2Workspaces.get(workspaceId)?.type ?? null;
 		if (
-			getWorkspaceSidebarBucket(existing, Date.now(), workspaceType) !== "hidden"
+			getWorkspaceSidebarBucket(existing, Date.now(), workspaceType) !==
+			"hidden"
 		) {
 			return;
 		}
@@ -628,6 +629,45 @@ export function useDashboardSidebarState() {
 		[unarchiveWorkspaces],
 	);
 
+	// --- Completed (KANBAN COMPLETED) -----------------------------------------
+	// Set/cleared exclusively by the kanban board's complete/uncomplete actions
+	// (drag into / out of the fixed Completed column) — the card's placement is
+	// the single intent signal, so no sidebar surface offers these directly.
+	// Like snooze/archive these are visual-only: worktree + sessions untouched.
+
+	const completeWorkspace = useCallback(
+		(workspaceId: string, completedAt: number) => {
+			// A repo's main workspace can never be completed (the board rejects the
+			// drop; this guard keeps any other caller honest).
+			if (collections.v2Workspaces.get(workspaceId)?.type === "main") return;
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.completedAt = completedAt;
+				// isHidden too, so raw-visibility consumers (notifications, ports,
+				// accessible-list "in sidebar") treat it like an archived row. The
+				// bucket classifier checks completedAt FIRST, so it never surfaces
+				// under Archived.
+				draft.sidebarState.isHidden = true;
+				draft.sidebarState.archivedAt = null;
+				draft.sidebarState.snoozeUntil = null;
+				draft.sidebarState.snoozeLaunchId = null;
+			});
+		},
+		[collections],
+	);
+
+	const uncompleteWorkspace = useCallback(
+		(workspaceId: string) => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.completedAt = null;
+				draft.sidebarState.isHidden = false;
+				draft.sidebarState.archivedAt = null;
+			});
+		},
+		[collections],
+	);
+
 	const setProjectSectionFlag = useCallback(
 		(projectId: string, flag: ProjectSectionFlag, value: boolean) => {
 			ensureSidebarProjectRecord(collections, projectId);
@@ -649,6 +689,7 @@ export function useDashboardSidebarState() {
 
 	return {
 		archiveWorkspace,
+		completeWorkspace,
 		createSection,
 		deleteSection,
 		ensureProjectInSidebar,
@@ -671,6 +712,7 @@ export function useDashboardSidebarState() {
 		toggleSectionCollapsed,
 		unarchiveWorkspace,
 		unarchiveWorkspaces,
+		uncompleteWorkspace,
 		unsnoozeAllInProject,
 		unsnoozeWorkspace,
 	};

@@ -22,8 +22,9 @@ import {
 	LuListOrdered,
 	LuPlus,
 } from "react-icons/lu";
-import type { KanbanCardView, KanbanColumnView } from "../../types";
 import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
+import type { KanbanCardView, KanbanColumnView } from "../../types";
+import { CompletedFilterControl } from "../CompletedFilterControl";
 import { KanbanCard } from "../KanbanCard";
 import { KanbanStateSection } from "../KanbanStateSection";
 
@@ -45,7 +46,7 @@ export function KanbanColumn({
 	onAddQueuedCard,
 	customColumnIds,
 }: KanbanColumnProps) {
-	const { column, active, snoozed, archived } = view;
+	const { column, active, snoozed, archived, hiddenByFilter } = view;
 	const { setNodeRef, isOver } = useDroppable({
 		id: `kanban-col-${column.id}`,
 		data: { type: "column", columnId: column.id },
@@ -54,9 +55,14 @@ export function KanbanColumn({
 	const [nameDraft, setNameDraft] = useState(column.name);
 
 	const isQueue = column.isQueue;
+	// (KANBAN COMPLETED) the fixed final column: no sort toggle (always newest-
+	// completed first), no move/delete, a completed-date filter instead, and no
+	// Snoozed/Archived sections (completing clears those states).
+	const isCompleted = column.isCompleted;
 	const index = customColumnIds.indexOf(column.id);
 	const canMoveLeft = !isQueue && index > 0;
-	const canMoveRight = !isQueue && index >= 0 && index < customColumnIds.length - 1;
+	const canMoveRight =
+		!isQueue && index >= 0 && index < customColumnIds.length - 1;
 
 	const move = (dir: -1 | 1) => {
 		const next = [...customColumnIds];
@@ -122,33 +128,37 @@ export function KanbanColumn({
 						<LuPlus className="size-4" />
 					</button>
 				) : null}
-				<button
-					type="button"
-					aria-label="Toggle sort"
-					title={
-						column.sortMode === "deadline"
-							? "Sorted by deadline (click for manual)"
-							: "Manual order (click to sort by deadline)"
-					}
-					onClick={() =>
-						actions.setColumnSortMode(
-							column.id,
-							column.sortMode === "deadline" ? "manual" : "deadline",
-						)
-					}
-					className={cn(
-						"rounded p-0.5 hover:bg-accent",
-						column.sortMode === "deadline"
-							? "text-foreground"
-							: "text-muted-foreground",
-					)}
-				>
-					{column.sortMode === "deadline" ? (
-						<LuArrowDownWideNarrow className="size-4" />
-					) : (
-						<LuListOrdered className="size-4" />
-					)}
-				</button>
+				{isCompleted ? (
+					<CompletedFilterControl column={column} actions={actions} />
+				) : (
+					<button
+						type="button"
+						aria-label="Toggle sort"
+						title={
+							column.sortMode === "deadline"
+								? "Sorted by deadline (click for manual)"
+								: "Manual order (click to sort by deadline)"
+						}
+						onClick={() =>
+							actions.setColumnSortMode(
+								column.id,
+								column.sortMode === "deadline" ? "manual" : "deadline",
+							)
+						}
+						className={cn(
+							"rounded p-0.5 hover:bg-accent",
+							column.sortMode === "deadline"
+								? "text-foreground"
+								: "text-muted-foreground",
+						)}
+					>
+						{column.sortMode === "deadline" ? (
+							<LuArrowDownWideNarrow className="size-4" />
+						) : (
+							<LuListOrdered className="size-4" />
+						)}
+					</button>
+				)}
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<button
@@ -171,7 +181,7 @@ export function KanbanColumn({
 						>
 							Rename
 						</DropdownMenuItem>
-						{!isQueue ? (
+						{!isQueue && !isCompleted ? (
 							<>
 								<DropdownMenuItem
 									disabled={!canMoveLeft}
@@ -202,7 +212,10 @@ export function KanbanColumn({
 					isOver && "bg-accent/20 ring-1 ring-accent/40",
 				)}
 			>
-				<SortableContext items={activeIds} strategy={verticalListSortingStrategy}>
+				<SortableContext
+					items={activeIds}
+					strategy={verticalListSortingStrategy}
+				>
 					{active.map((cardView) => (
 						<KanbanCard
 							key={cardView.card.id}
@@ -216,51 +229,69 @@ export function KanbanColumn({
 
 				{active.length === 0 ? (
 					<div className="px-1 py-2 text-[11px] text-muted-foreground">
-						{isQueue ? "No queued tasks" : "Drop a card here"}
+						{isQueue
+							? "No queued tasks"
+							: isCompleted
+								? "Drop a card to complete it"
+								: "Drop a card here"}
+					</div>
+				) : null}
+
+				{/* (KANBAN COMPLETED) the date filter can hide cards (incl. a card
+				    just dropped, whose fresh stamp falls outside a narrow range) —
+				    say so instead of letting it look like the card vanished. */}
+				{isCompleted && hiddenByFilter > 0 ? (
+					<div className="px-1 py-2 text-[11px] text-muted-foreground">
+						{hiddenByFilter} hidden by filter
 					</div>
 				) : null}
 
 				{/* Snoozed / Archived sections always render their (n) header so the
-				    user can reveal/collapse them per the spec. */}
-				<KanbanStateSection
-					title="Snoozed"
-					count={snoozed.length}
-					collapsed={column.snoozedCollapsed}
-					onCollapsedChange={(c) =>
-						actions.setColumnSectionFlag(column.id, "snoozedCollapsed", c)
-					}
-				>
-					{snoozed.map((cardView) => (
-						<KanbanCard
-							key={cardView.card.id}
-							view={cardView}
-							actions={actions}
-							now={now}
-							onActivate={onActivate}
-							disableDrag
-						/>
-					))}
-				</KanbanStateSection>
+				    user can reveal/collapse them per the spec. The Completed column
+				    has neither state (completing clears both). */}
+				{!isCompleted ? (
+					<>
+						<KanbanStateSection
+							title="Snoozed"
+							count={snoozed.length}
+							collapsed={column.snoozedCollapsed}
+							onCollapsedChange={(c) =>
+								actions.setColumnSectionFlag(column.id, "snoozedCollapsed", c)
+							}
+						>
+							{snoozed.map((cardView) => (
+								<KanbanCard
+									key={cardView.card.id}
+									view={cardView}
+									actions={actions}
+									now={now}
+									onActivate={onActivate}
+									disableDrag
+								/>
+							))}
+						</KanbanStateSection>
 
-				<KanbanStateSection
-					title="Archived"
-					count={archived.length}
-					collapsed={column.archivedCollapsed}
-					onCollapsedChange={(c) =>
-						actions.setColumnSectionFlag(column.id, "archivedCollapsed", c)
-					}
-				>
-					{archived.map((cardView) => (
-						<KanbanCard
-							key={cardView.card.id}
-							view={cardView}
-							actions={actions}
-							now={now}
-							onActivate={onActivate}
-							disableDrag
-						/>
-					))}
-				</KanbanStateSection>
+						<KanbanStateSection
+							title="Archived"
+							count={archived.length}
+							collapsed={column.archivedCollapsed}
+							onCollapsedChange={(c) =>
+								actions.setColumnSectionFlag(column.id, "archivedCollapsed", c)
+							}
+						>
+							{archived.map((cardView) => (
+								<KanbanCard
+									key={cardView.card.id}
+									view={cardView}
+									actions={actions}
+									now={now}
+									onActivate={onActivate}
+									disableDrag
+								/>
+							))}
+						</KanbanStateSection>
+					</>
+				) : null}
 			</div>
 		</div>
 	);
