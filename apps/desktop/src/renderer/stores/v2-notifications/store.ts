@@ -44,11 +44,47 @@ export type V2NotificationSourceInput =
 	| V2NotificationSource
 	| V2NotificationSourceKey;
 
+/**
+ * (DOT-AXES) The independent agent-status axes of ONE source. Each axis is a
+ * separate "this state is currently active" latch (value = when it was last
+ * asserted); events SET and CLEAR axes they have evidence about and never
+ * touch the others, and the rendered `status` is DERIVED as the
+ * highest-precedence active axis (permission > working > review — the same
+ * red > yellow > green the display fold uses, with the blue axes already
+ * living on their own maps below). A lower-ranking assert can therefore
+ * never stomp a higher-ranking active state by construction: SubagentActive
+ * raising `working` while `permission` is latched leaves the dot red until
+ * an event with actual answer-evidence (Start) clears the permission axis.
+ */
+export type V2AgentStatusAxis = ActivePaneStatus;
+
+export type V2AgentStatusAxes = Partial<Record<V2AgentStatusAxis, number>>;
+
+export interface V2AgentStatusAxisOps {
+	set: readonly V2AgentStatusAxis[];
+	clear: readonly V2AgentStatusAxis[];
+}
+
+const AGENT_AXIS_PRIORITY: readonly V2AgentStatusAxis[] = [
+	"permission",
+	"working",
+	"review",
+];
+
+function deriveAgentStatus(axes: V2AgentStatusAxes): ActivePaneStatus | null {
+	for (const axis of AGENT_AXIS_PRIORITY) {
+		if (axes[axis] !== undefined) return axis;
+	}
+	return null;
+}
+
 export interface V2NotificationStatusEntry {
 	sourceKey: V2NotificationSourceKey;
 	source: V2NotificationSource;
 	workspaceId: string;
+	/** Derived: the highest-precedence active axis (see V2AgentStatusAxes). */
 	status: ActivePaneStatus;
+	axes: V2AgentStatusAxes;
 	occurredAt: number;
 }
 
@@ -85,6 +121,18 @@ export interface V2NotificationState {
 		occurredAt?: number,
 	) => void;
 	clearTerminalBackgroundRunning: (terminalId: string) => void;
+	// (DOT-AXES) The axis-level mutator every status write funnels through:
+	// applies set/clear latches to ONE source's axes and re-derives `status`
+	// as the highest-precedence active axis. Removes the entry when no axis
+	// remains active. Never touches another workspace's entry except to
+	// replace it wholesale when this workspace asserts an axis (the terminal
+	// was re-homed).
+	applySourceAxes: (
+		source: V2NotificationSource,
+		workspaceId: string,
+		ops: V2AgentStatusAxisOps,
+		occurredAt?: number,
+	) => void;
 	setSourceStatus: (
 		source: V2NotificationSource,
 		workspaceId: string,
@@ -172,30 +220,65 @@ export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
 			return { backgroundRunningTerminals };
 		});
 	},
-	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
+	applySourceAxes: (source, workspaceId, ops, occurredAt = Date.now()) => {
 		const sourceKey = getV2NotificationSourceKey(source);
+		const prev = useV2NotificationStore.getState().sources[sourceKey];
+		// (DOT-AXES) A different workspace's entry is only replaced when this
+		// workspace actually asserts an axis (the terminal was re-homed);
+		// clear-only ops must not reach across workspaces.
+		const foreign = prev !== undefined && prev.workspaceId !== workspaceId;
+		if (foreign && ops.set.length === 0) return;
+		const axes: V2AgentStatusAxes = prev && !foreign ? { ...prev.axes } : {};
+		for (const axis of ops.clear) delete axes[axis];
+		for (const axis of ops.set) axes[axis] = occurredAt;
+		const status = deriveAgentStatus(axes);
 		ndots({
 			event: "store_mutation",
-			mutation: "setSourceStatus",
+			mutation: "applySourceAxes",
 			sourceKey,
 			workspaceId,
-			from:
-				useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
+			setAxes: ops.set,
+			clearAxes: ops.clear,
+			from: prev?.status ?? null,
 			to: status,
 			occurredAt,
 		});
-		set((state) => ({
-			sources: {
-				...state.sources,
-				[sourceKey]: {
-					sourceKey,
-					source,
-					workspaceId,
-					status,
-					occurredAt,
+		set((state) => {
+			if (status === null) {
+				if (!state.sources[sourceKey]) return state;
+				const { [sourceKey]: _removed, ...sources } = state.sources;
+				return { sources };
+			}
+			return {
+				sources: {
+					...state.sources,
+					[sourceKey]: {
+						sourceKey,
+						source,
+						workspaceId,
+						status,
+						axes,
+						occurredAt,
+					},
 				},
-			},
-		}));
+			};
+		});
+	},
+	// Back-compat single-status setter for sequential writers (chat sources,
+	// manual unread). Translated to axis ops with the status's evidence
+	// semantics: "working" means a turn is running (a pending red was answered,
+	// a stale green is void); "review" means the turn ended (red/working over);
+	// "permission" asserts red on top of whatever else is latched.
+	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
+		const ops: V2AgentStatusAxisOps =
+			status === "permission"
+				? { set: ["permission"], clear: [] }
+				: status === "working"
+					? { set: ["working"], clear: ["permission", "review"] }
+					: { set: ["review"], clear: ["permission", "working"] };
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(source, workspaceId, ops, occurredAt);
 	},
 	setTerminalStatus: (terminalId, workspaceId, status, occurredAt) => {
 		useV2NotificationStore
@@ -529,7 +612,8 @@ function getHighestPriorityDisplayStatus(
 // Typed tie to the canonical key format (`${source.type}:${source.id}` in
 // getV2NotificationSourceKey) — a drift in the source-type name fails to
 // compile instead of silently breaking the blue-axis decode.
-const TERMINAL_SOURCE_PREFIX = `${"terminal" satisfies V2NotificationSourceType}:`;
+const TERMINAL_SOURCE_PREFIX =
+	`${"terminal" satisfies V2NotificationSourceType}:` as const;
 
 /**
  * What ONE source's dot shows: agent permission/working (red/yellow) win;
@@ -746,12 +830,18 @@ export function selectV2WorkspaceDisplayStatus(
 			for (const [sourceKey, entry] of Object.entries(state.sources)) {
 				if (entry.workspaceId !== workspaceId) continue;
 				if (isClosedTerminalSource(entry, openTerminalIds)) continue;
-				yield getSourceDisplayStatus(state, workspaceId, sourceKey);
+				// Object.entries widens the key to string; the store only ever
+				// writes canonical source keys.
+				yield getSourceDisplayStatus(
+					state,
+					workspaceId,
+					sourceKey as V2NotificationSourceKey,
+				);
 			}
 			// Open terminals whose ONLY state is a blue axis (plain shell, no
 			// agent source entry) still get their dot represented.
 			for (const terminalId of openTerminalIds) {
-				const sourceKey = `${TERMINAL_SOURCE_PREFIX}${terminalId}`;
+				const sourceKey: V2NotificationSourceKey = `${TERMINAL_SOURCE_PREFIX}${terminalId}`;
 				if (state.sources[sourceKey]) continue; // folded above
 				yield getSourceDisplayStatus(state, workspaceId, sourceKey);
 			}

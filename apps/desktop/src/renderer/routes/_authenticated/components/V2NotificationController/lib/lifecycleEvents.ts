@@ -182,15 +182,17 @@ function updatePaneStatus(
 		terminalId: target.terminalId,
 		target,
 		clearSources: transition.clearSources,
-		setStatus: transition.setStatus,
+		axes: transition.axes,
 	});
 
 	clearSources(workspaceId, transition.clearSources);
-	if (transition.setStatus) {
-		store.setSourceStatus(
-			transition.setStatus.source,
+	if (transition.axes) {
+		// (DOT-AXES) axis-level apply: the store latches/unlatches the named
+		// axes and re-derives the rendered status as the highest active one.
+		store.applySourceAxes(
+			transition.axes.source,
 			workspaceId,
-			transition.setStatus.status,
+			{ set: transition.axes.set, clear: transition.axes.clear },
 			payload.occurredAt,
 		);
 	}

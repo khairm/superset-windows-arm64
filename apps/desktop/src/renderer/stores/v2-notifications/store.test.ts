@@ -128,4 +128,135 @@ describe("v2 notification store", () => {
 		expect(state.sources["chat:session-1"]?.status).toBe("permission");
 		expect(state.sources["terminal:terminal-3"]?.status).toBe("review");
 	});
+
+	describe("(DOT-AXES) layered status axes", () => {
+		const source = { type: "terminal", id: "terminal-1" } as const;
+
+		it("a working assert never stomps a latched permission; answer-evidence clears it", () => {
+			const store = useV2NotificationStore.getState();
+			// AskUserQuestion pending -> red.
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			// Background agents' tool completions (SubagentActive) assert
+			// working while the question is still pending: dot must stay red.
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["working"], clear: [] },
+				101,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"]
+					?.status,
+			).toBe("permission");
+			// The question is answered (main-loop Start): red clears, the
+			// already-latched working axis shows through.
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["working"], clear: ["permission", "review"] },
+				102,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"]
+					?.status,
+			).toBe("working");
+		});
+
+		it("removes the entry when the last axis clears", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: [], clear: ["permission", "working", "review"] },
+				101,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"],
+			).toBeUndefined();
+		});
+
+		it("a clear-only op never reaches across workspaces", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				source,
+				"workspace-2",
+				{ set: [], clear: ["permission", "working"] },
+				101,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"]
+					?.status,
+			).toBe("permission");
+		});
+
+		it("an assert from another workspace replaces the entry wholesale", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				source,
+				"workspace-2",
+				{ set: ["working"], clear: [] },
+				101,
+			);
+			const entry =
+				useV2NotificationStore.getState().sources["terminal:terminal-1"];
+			expect(entry?.workspaceId).toBe("workspace-2");
+			expect(entry?.status).toBe("working");
+		});
+
+		it("review survives a Detached-style transient clear", () => {
+			const store = useV2NotificationStore.getState();
+			// Turn ended unseen (review latched), then background agents kept
+			// the working axis up.
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["review"], clear: ["permission", "working"] },
+				100,
+			);
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: ["working"], clear: [] },
+				101,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"]
+					?.status,
+			).toBe("working");
+			// The agent detaches: transient axes die, the unseen green remains.
+			store.applySourceAxes(
+				source,
+				"workspace-1",
+				{ set: [], clear: ["permission", "working"] },
+				102,
+			);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"]
+					?.status,
+			).toBe("review");
+		});
+	});
 });

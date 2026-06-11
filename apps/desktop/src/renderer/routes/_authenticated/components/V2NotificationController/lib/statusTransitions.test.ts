@@ -16,7 +16,7 @@ function payload(
 }
 
 describe("resolveV2AgentStatusTransition", () => {
-	it("marks start as working on the terminal source", () => {
+	it("marks start as working and clears permission/review on the terminal source", () => {
 		expect(
 			resolveV2AgentStatusTransition({
 				workspaceId: WORKSPACE_ID,
@@ -29,9 +29,60 @@ describe("resolveV2AgentStatusTransition", () => {
 			}),
 		).toEqual({
 			clearSources: [],
-			setStatus: {
+			axes: {
 				source: { type: "terminal", id: "terminal-1" },
-				status: "working",
+				set: ["working"],
+				clear: ["permission", "review"],
+			},
+		});
+	});
+
+	it("(DOT-AXES) SubagentActive asserts working WITHOUT clearing a pending permission", () => {
+		// The bug this guards: background agents' tool completions stream in
+		// while the main loop is blocked on AskUserQuestion — they must raise
+		// the working axis only, so the fold keeps showing red.
+		expect(
+			resolveV2AgentStatusTransition({
+				workspaceId: WORKSPACE_ID,
+				payload: payload({
+					eventType: "SubagentActive",
+					terminalId: "terminal-1",
+				}),
+				statuses: {
+					"terminal:terminal-1": {
+						workspaceId: WORKSPACE_ID,
+						status: "permission",
+					},
+				},
+				targetVisible: false,
+			}),
+		).toEqual({
+			clearSources: [],
+			axes: {
+				source: { type: "terminal", id: "terminal-1" },
+				set: ["working"],
+				clear: [],
+			},
+		});
+	});
+
+	it("marks a permission request without touching the other axes", () => {
+		expect(
+			resolveV2AgentStatusTransition({
+				workspaceId: WORKSPACE_ID,
+				payload: payload({
+					eventType: "PermissionRequest",
+					terminalId: "terminal-1",
+				}),
+				statuses: {},
+				targetVisible: false,
+			}),
+		).toEqual({
+			clearSources: [],
+			axes: {
+				source: { type: "terminal", id: "terminal-1" },
+				set: ["permission"],
+				clear: [],
 			},
 		});
 	});
@@ -54,7 +105,7 @@ describe("resolveV2AgentStatusTransition", () => {
 			}),
 		).toEqual({
 			clearSources: [{ type: "terminal", id: "terminal-1" }],
-			setStatus: null,
+			axes: null,
 		});
 	});
 
@@ -68,11 +119,11 @@ describe("resolveV2AgentStatusTransition", () => {
 			}),
 		).toEqual({
 			clearSources: [{ type: "terminal", id: "terminal-1" }],
-			setStatus: null,
+			axes: null,
 		});
 	});
 
-	it("marks background stop as review", () => {
+	it("marks background stop as review and ends permission/working", () => {
 		expect(
 			resolveV2AgentStatusTransition({
 				workspaceId: WORKSPACE_ID,
@@ -82,9 +133,10 @@ describe("resolveV2AgentStatusTransition", () => {
 			}),
 		).toEqual({
 			clearSources: [],
-			setStatus: {
+			axes: {
 				source: { type: "terminal", id: "terminal-1" },
-				status: "review",
+				set: ["review"],
+				clear: ["permission", "working"],
 			},
 		});
 	});
@@ -97,31 +149,10 @@ describe("resolveV2AgentStatusTransition", () => {
 				statuses: {},
 				targetVisible: false,
 			}),
-		).toEqual({ clearSources: [], setStatus: null });
+		).toEqual({ clearSources: [], axes: null });
 	});
 
-	it("clears transient pane status on session Detached", () => {
-		for (const status of ["working", "permission"] as const) {
-			expect(
-				resolveV2AgentStatusTransition({
-					workspaceId: WORKSPACE_ID,
-					payload: payload({ eventType: "Detached", terminalId: "terminal-1" }),
-					statuses: {
-						"terminal:terminal-1": {
-							workspaceId: WORKSPACE_ID,
-							status,
-						},
-					},
-					targetVisible: false,
-				}),
-			).toEqual({
-				clearSources: [{ type: "terminal", id: "terminal-1" }],
-				setStatus: null,
-			});
-		}
-	});
-
-	it("does not clear review pane status on session Detached", () => {
+	it("clears the transient axes on session Detached, sparing review", () => {
 		expect(
 			resolveV2AgentStatusTransition({
 				workspaceId: WORKSPACE_ID,
@@ -129,12 +160,19 @@ describe("resolveV2AgentStatusTransition", () => {
 				statuses: {
 					"terminal:terminal-1": {
 						workspaceId: WORKSPACE_ID,
-						status: "review",
+						status: "working",
 					},
 				},
 				targetVisible: false,
 			}),
-		).toEqual({ clearSources: [], setStatus: null });
+		).toEqual({
+			clearSources: [],
+			axes: {
+				source: { type: "terminal", id: "terminal-1" },
+				set: [],
+				clear: ["permission", "working"],
+			},
+		});
 	});
 
 	it("ignores permission state from a different workspace", () => {
@@ -152,9 +190,10 @@ describe("resolveV2AgentStatusTransition", () => {
 			}),
 		).toEqual({
 			clearSources: [],
-			setStatus: {
+			axes: {
 				source: { type: "terminal", id: "terminal-1" },
-				status: "review",
+				set: ["review"],
+				clear: ["permission", "working"],
 			},
 		});
 	});

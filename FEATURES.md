@@ -36,6 +36,8 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
 | Kanban Completed column | fixed FINAL column: dropping a card stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID` |
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
+| Subagent tool events never stomp the red | a PostToolUse whose payload carries `agent_id` (ran inside a subagent) maps to the red-respecting SubagentActive — background agents' tool completions must not clear a pending AskUserQuestion/permission red; only a main-loop completion does. SubagentStart likewise | `(SUBTOOL-RED)` |
+| Layered dot axes | a source's dot status is DERIVED as the highest-precedence active axis (permission > working > review, + the separate blue axes) — events latch/unlatch axes they have evidence about, so a lower assert can never overwrite a higher active state | `applySourceAxes` |
 
 ## Machine-readable markers (the nightly gate reads this block)
 
@@ -72,6 +74,8 @@ v2KanbanCards	apps/desktop/src/renderer
 KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
 KANBAN_COMPLETED_COLUMN_ID	apps/desktop/src/renderer
 writeKanbanBackup	apps/desktop/src
+(SUBTOOL-RED)	apps/desktop/src/main
+applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer

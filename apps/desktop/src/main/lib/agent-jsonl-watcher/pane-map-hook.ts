@@ -47,8 +47,10 @@ const ASK_MARKER_SCRIPT_FILENAME = "superset-ask-marker.py";
 // timing heuristics) — reviving what the dead bash `~/.superset/hooks/notify.sh`
 // did. Registered (Claude settings.json only) on UserPromptSubmit / Stop /
 // SessionEnd / Notification(permission_prompt) and on PreToolUse scoped to
-// AskUserQuestion plus an unscoped PostToolUse (any tool completion re-asserts
-// working, clearing red after a permission approval or an answered question).
+// AskUserQuestion plus an unscoped PostToolUse (a MAIN-LOOP tool completion
+// re-asserts working, clearing red after a permission approval or an answered
+// question; a tool that ran inside a subagent — payload carries agent_id —
+// asserts the red-respecting SubagentActive instead, see (SUBTOOL-RED)).
 // The server maps Start→working, Stop→review, PermissionRequest→permission.
 // This hook now OWNS Claude working/review/permission (including the
 // AskUserQuestion red, so the separate ask-marker hook is no longer registered
@@ -326,10 +328,19 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  a Claude rate-limit abort does not stop it)
   Notification                -> PermissionRequest (permission / red)
   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
-  PostToolUse(any tool)       -> Start             (working — clears red after
-                                 a permission approval or an answered question)
-  SubagentStart               -> Start            (working — a delegated subagent
-                                 began; holds yellow through the main Stop)
+  PostToolUse(main loop)      -> Start             (working — clears red after
+                                 a permission approval or an answered question:
+                                 the main loop is sequential, so a completed
+                                 main-loop tool proves the red was handled)
+  PostToolUse(in a subagent)  -> SubagentActive    ((SUBTOOL-RED) payload carries
+                                 agent_id ONLY for tool calls inside a subagent;
+                                 background agents' completions stream in WHILE
+                                 an AskUserQuestion/permission red is pending and
+                                 must assert working WITHOUT clearing that red)
+  SubagentStart               -> SubagentActive   (working, red-respecting — a
+                                 workflow/teammate spawning an agent while a red
+                                 is pending must not stomp it; the subagent
+                                 marker still holds yellow through the main Stop)
   SubagentStop                -> Stop iff it was the LAST subagent AND main had
                                  already stopped, else no-op (see _decide_event_type)
   PreCompact                  -> Start            (working — context compaction is
@@ -785,7 +796,10 @@ def _decide_event_type(
     if event == "SubagentStart":
         if sub_agent_id:
             _touch(run_dir / sub_agent_id)
-        return "Start"
+        # SubagentActive (NOT Start): launching delegated work proves agents
+        # are busy, not that a pending question/permission was answered — a
+        # workflow/teammate spawning an agent mid-red must keep the red.
+        return "SubagentActive"
     if event == "SubagentStop":
         if sub_agent_id:
             _remove(run_dir / sub_agent_id)
@@ -853,7 +867,16 @@ def _decide_event_type(
     if event == "PreToolUse":
         return "PermissionRequest" if tool == "AskUserQuestion" else None
     if event == "PostToolUse":
-        return "Start"
+        # (SUBTOOL-RED) agent_id is present iff the tool ran INSIDE a subagent
+        # (Claude Code hooks doc: "use this to distinguish subagent hook calls
+        # from main-thread calls"; verified live 2026-06-12). Background
+        # agents' tool completions stream in while the MAIN loop is blocked on
+        # an AskUserQuestion/permission red — they prove agents are working,
+        # NOT that the red was answered, so they get the red-respecting
+        # assert. A main-loop PostToolUse (no agent_id) still maps to Start:
+        # the main loop is sequential, so a completed tool there means the
+        # pending question/permission was answered and red must clear.
+        return "SubagentActive" if sub_agent_id else "Start"
     return None
 
 
@@ -1055,10 +1078,7 @@ function writeScriptIfChanged(): boolean {
 		}
 		return true;
 	} catch (error) {
-		console.warn(
-			"[pane-map-hook] failed to write pane-map script:",
-			error,
-		);
+		console.warn("[pane-map-hook] failed to write pane-map script:", error);
 		return false;
 	}
 }
@@ -1087,10 +1107,7 @@ function writeNotifyScriptIfChanged(): boolean {
 		}
 		return true;
 	} catch (error) {
-		console.warn(
-			"[pane-map-hook] failed to write notify script:",
-			error,
-		);
+		console.warn("[pane-map-hook] failed to write notify script:", error);
 		return false;
 	}
 }

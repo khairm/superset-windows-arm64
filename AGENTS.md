@@ -70,14 +70,20 @@ See `FEATURES.md` for the marker manifest. In brief:
   for review, blue = a foreground shell command or a shell-only background
   remainder / cloud session (a manual /compact restores this blue from a
   turn-end snapshot marker instead of false-greening).
-  Precedence red > yellow > green > blue. Host-service lifecycle POSTs + a JSONL
+  Precedence red > yellow > blue > green. Host-service lifecycle POSTs + a JSONL
   watcher fallback; only open tabs are represented. superset-notify.py exclusively
   owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
   (its raw passthrough raced ~1s behind and wiped BackgroundRunning blue + the
   subagent yellow-hold). Every dot surface (tab, pane header, sidebar row,
   workspace rollup, kanban card) derives from ONE per-source primitive in the
   v2-notifications store; the rollup is the fold of the per-source dots, so
-  surfaces cannot drift.
+  surfaces cannot drift. The primitive itself is layered (DOT-AXES): a source's
+  status is DERIVED as the highest-precedence active axis (permission/working/
+  review, plus the separate shell/background blue axes) — events latch/unlatch
+  only the axes they have evidence about, so an assert can never stomp a
+  higher-ranking active state; a tool that ran inside a subagent (hook payload
+  carries agent_id, SUBTOOL-RED) asserts working WITHOUT clearing a pending
+  red, while a main-loop tool completion still clears it (the answer proof).
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
 - **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary
