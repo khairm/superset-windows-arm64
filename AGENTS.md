@@ -92,6 +92,9 @@ See `FEATURES.md` for the marker manifest. In brief:
   presence fails loud. Delete mirrors single-repo per member (worktree remove,
   optional branch -D) then removes the container; the kanban promote dialog
   resolves multi-repo projects as branch-create targets.
+- **Workspace branch label** — the open workspace page names its branch top-right
+  in the tab bar (click copies); the only branch surface a non-git multi-repo
+  container has. Shown for every workspace with a branch.
 - **Thread snooze / archive** — per-thread timed Snooze (auto-returns) + sticky
   Archive under revealable Snoozed / Archived sidebar sections.
 - **Sidebar** — projects tier-sorted pinned > active > idle, stable manual drag order

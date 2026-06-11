@@ -34,6 +34,7 @@ import { BackgroundTerminalsButton } from "../BackgroundTerminalsButton";
 import { V2NotificationStatusIndicator } from "../V2NotificationStatusIndicator";
 import { V2PresetsBar } from "../V2PresetsBar";
 import { V2WorkspaceRunButton } from "../V2WorkspaceRunButton";
+import { WorkspaceBranchLabel } from "../WorkspaceBranchLabel";
 import { WorkspaceEmptyState } from "../WorkspaceEmptyState";
 import { WorkspaceMissingWorktreeState } from "../WorkspaceMissingWorktreeState";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
@@ -309,6 +310,7 @@ function V2WorkspaceCenter({
 							)}
 							renderTabBarTrailing={() => (
 								<>
+									<WorkspaceBranchLabel branch={workspace.branch} />
 									<BackgroundTerminalsButton
 										workspaceId={workspaceId}
 										store={store}
