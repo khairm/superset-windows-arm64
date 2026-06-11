@@ -147,11 +147,19 @@ export function useKanbanData(): UseKanbanDataResult {
 	const hasTimeSensitive = useMemo(() => {
 		// Only deadlines + TIMED snoozes need the wall-clock tick. An "until next
 		// launch" snooze (snoozeLaunchId) can't expire during this launch, so it
-		// must NOT keep the 60s ticker alive forever.
-		return (cardRows as KanbanCardRow[]).some(
-			(c) => c.deadline != null || c.snoozeUntil != null,
+		// must NOT keep the 60s ticker alive forever. (KANBAN COMPLETED) an
+		// active "Last month" filter is also wall-clock-relative — its range
+		// flips at a month boundary, so it keeps the tick alive too ("custom"
+		// ranges are static and "all" filters nothing).
+		return (
+			(cardRows as KanbanCardRow[]).some(
+				(c) => c.deadline != null || c.snoozeUntil != null,
+			) ||
+			(columnRows as KanbanColumnRow[]).some(
+				(c) => c.isCompleted && c.completedFilter === "last-month",
+			)
 		);
-	}, [cardRows]);
+	}, [cardRows, columnRows]);
 	useEffect(() => {
 		if (!hasTimeSensitive) return;
 		const id = setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS);
@@ -373,19 +381,23 @@ export function useKanbanData(): UseKanbanDataResult {
 				ws.type !== "main"
 			) {
 				const completedAt = card.completedAt ?? Date.now();
-				if (local) {
-					if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
-						collections.v2WorkspaceLocalState.update(
-							card.workspaceId,
-							(draft) => {
-								draft.sidebarState.completedAt = completedAt;
-								draft.sidebarState.isHidden = true;
-								draft.sidebarState.archivedAt = null;
-								draft.sidebarState.snoozeUntil = null;
-								draft.sidebarState.snoozeLaunchId = null;
-							},
-						);
-					}
+				// Decide insert-vs-update from the LIVE collection state, not the
+				// render snapshot (`local`): useKanbanData runs in two instances
+				// (the dashboard-level KanbanReconciler AND the mounted board), and
+				// both can see a stale "no row" in the same commit cycle — the
+				// second insert would throw a duplicate-key error. The live
+				// get-before-write makes the second instance update instead.
+				if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
+					collections.v2WorkspaceLocalState.update(
+						card.workspaceId,
+						(draft) => {
+							draft.sidebarState.completedAt = completedAt;
+							draft.sidebarState.isHidden = true;
+							draft.sidebarState.archivedAt = null;
+							draft.sidebarState.snoozeUntil = null;
+							draft.sidebarState.snoozeLaunchId = null;
+						},
+					);
 				} else {
 					// No local-state row (e.g. the project was just re-added to the
 					// sidebar): the completion must be re-asserted via INSERT or the

@@ -122,6 +122,13 @@ export function KanbanBoard() {
 				return;
 			}
 
+			// Validate the target column still exists BEFORE any mutation — a
+			// drop landing after the column was removed must be a no-op, never a
+			// half-applied move (an uncomplete into a missing column would strand
+			// the card unrendered: it exists, so reconcile won't recreate it).
+			const targetCol = columns.find((c) => c.column.id === targetColumnId);
+			if (!targetCol) return;
+
 			// (KANBAN COMPLETED) handled before any sort-mode logic. Dropping INTO
 			// Completed stamps the card done (out-then-back-in re-stamps — "last
 			// dropped" semantics); intra-Completed drags are no-ops (date-sorted).
@@ -139,9 +146,6 @@ export function KanbanBoard() {
 				// cross-column branches run).
 				actions.uncompleteCard(activeCardRow, targetColumnId);
 			}
-
-			const targetCol = columns.find((c) => c.column.id === targetColumnId);
-			if (!targetCol) return;
 			const activeId = activeCardRow.id;
 			const overCardRow =
 				overData?.type === "card"
