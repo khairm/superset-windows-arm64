@@ -7,7 +7,7 @@ import {
 import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { useMatchRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { HiMiniPlus, HiOutlineClipboardDocumentList } from "react-icons/hi2";
 import {
 	LuClock,
@@ -42,6 +42,17 @@ interface DashboardSidebarHeaderProps {
 	isCollapsed?: boolean;
 }
 
+/**
+ * (KANBAN-TOGGLE) Where the sidebar Kanban button returns to when it closes
+ * the full-screen board. Session-only; module scope so it survives the
+ * sidebar's collapse/expand remounts. Null = never opened via the button
+ * this session → close falls back to the Workspaces list.
+ */
+let kanbanCloseTarget:
+	| { kind: "workspace"; workspaceId: string }
+	| { kind: "href"; href: string }
+	| null = null;
+
 export function DashboardSidebarHeader({
 	isCollapsed = false,
 }: DashboardSidebarHeaderProps) {
@@ -50,6 +61,7 @@ export function DashboardSidebarHeader({
 	const openTemplateGallery = useOpenTemplateGalleryModal();
 	const openMultiFolder = useOpenMultiFolderModal();
 	const navigate = useNavigate();
+	const router = useRouter();
 	const folderImport = useFolderFirstImport({
 		onError: (message) => {
 			toast.error(`Import failed: ${message}`);
@@ -101,8 +113,37 @@ export function DashboardSidebarHeader({
 
 	// (KANBAN) Ungated — this is the fork's local-only board, not the paywalled
 	// upstream cloud Tasks feature.
+	// (KANBAN-TOGGLE) The button is a toggle: anywhere → full-screen board;
+	// part-screen split → full-screen board (closing then reopens that
+	// workspace full size); full-screen board → close back to where you were.
 	const handleKanbanClick = () => {
-		navigate({ to: "/kanban" });
+		const location = router.state.location;
+		const onKanban = !!matchRoute({ to: "/kanban", fuzzy: true });
+		if (!onKanban) {
+			kanbanCloseTarget = { kind: "href", href: location.href };
+			navigate({ to: "/kanban" });
+			return;
+		}
+		const { cardId } = location.search as { cardId?: string };
+		if (cardId) {
+			kanbanCloseTarget = { kind: "workspace", workspaceId: cardId };
+			navigate({ to: "/kanban", search: { cardId: undefined } });
+			return;
+		}
+		const target = kanbanCloseTarget;
+		kanbanCloseTarget = null;
+		if (target?.kind === "workspace") {
+			navigate({
+				to: "/v2-workspace/$workspaceId",
+				params: { workspaceId: target.workspaceId },
+			});
+			return;
+		}
+		if (target?.kind === "href") {
+			router.history.push(target.href);
+			return;
+		}
+		navigate({ to: "/v2-workspaces" });
 	};
 
 	const handleTasksClick = () => {
