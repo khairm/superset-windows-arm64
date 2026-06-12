@@ -12,6 +12,7 @@ import {
 	getHighestPriorityStatus,
 } from "shared/tabs-types";
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 // Diagnostic logging for the agent-status-dots pipeline. console.info with
 // an "[agent-dots]" prefix so the main process forwarder persists it to
@@ -168,274 +169,312 @@ export interface V2NotificationState {
 	clearWorkspaceAttention: (workspaceId: string) => void;
 }
 
-export const useV2NotificationStore = create<V2NotificationState>()((set) => ({
-	sources: {},
-	shellRunningTerminals: {},
-	setTerminalShellRunning: (
-		terminalId,
-		workspaceId,
-		occurredAt = Date.now(),
-	) => {
-		set((state) => {
-			const prev = state.shellRunningTerminals[terminalId];
-			if (prev && prev.workspaceId === workspaceId) return state;
-			return {
-				shellRunningTerminals: {
-					...state.shellRunningTerminals,
-					[terminalId]: { workspaceId, occurredAt },
-				},
-			};
-		});
-	},
-	clearTerminalShellRunning: (terminalId) => {
-		set((state) => {
-			if (!state.shellRunningTerminals[terminalId]) return state;
-			const { [terminalId]: _removed, ...shellRunningTerminals } =
-				state.shellRunningTerminals;
-			return { shellRunningTerminals };
-		});
-	},
-	backgroundRunningTerminals: {},
-	setTerminalBackgroundRunning: (
-		terminalId,
-		workspaceId,
-		occurredAt = Date.now(),
-	) => {
-		set((state) => {
-			const prev = state.backgroundRunningTerminals[terminalId];
-			if (prev && prev.workspaceId === workspaceId) return state;
-			return {
-				backgroundRunningTerminals: {
-					...state.backgroundRunningTerminals,
-					[terminalId]: { workspaceId, occurredAt },
-				},
-			};
-		});
-	},
-	clearTerminalBackgroundRunning: (terminalId) => {
-		set((state) => {
-			if (!state.backgroundRunningTerminals[terminalId]) return state;
-			const { [terminalId]: _removed, ...backgroundRunningTerminals } =
-				state.backgroundRunningTerminals;
-			return { backgroundRunningTerminals };
-		});
-	},
-	applySourceAxes: (source, workspaceId, ops, occurredAt = Date.now()) => {
-		const sourceKey = getV2NotificationSourceKey(source);
-		const prev = useV2NotificationStore.getState().sources[sourceKey];
-		// (DOT-AXES) A different workspace's entry is only replaced when this
-		// workspace actually asserts an axis (the terminal was re-homed);
-		// clear-only ops must not reach across workspaces.
-		const foreign = prev !== undefined && prev.workspaceId !== workspaceId;
-		if (foreign && ops.set.length === 0) return;
-		const axes: V2AgentStatusAxes = prev && !foreign ? { ...prev.axes } : {};
-		for (const axis of ops.clear) delete axes[axis];
-		for (const axis of ops.set) axes[axis] = occurredAt;
-		const status = deriveAgentStatus(axes);
-		ndots({
-			event: "store_mutation",
-			mutation: "applySourceAxes",
-			sourceKey,
-			workspaceId,
-			setAxes: ops.set,
-			clearAxes: ops.clear,
-			from: prev?.status ?? null,
-			to: status,
-			occurredAt,
-		});
-		set((state) => {
-			if (status === null) {
-				if (!state.sources[sourceKey]) return state;
-				const { [sourceKey]: _removed, ...sources } = state.sources;
-				return { sources };
-			}
-			return {
-				sources: {
-					...state.sources,
-					[sourceKey]: {
-						sourceKey,
-						source,
+// (DOT-PERSIST) The dot state lives in renderer memory, so an in-place window
+// reload (Ctrl+R, error-boundary Reload, crash recovery) wiped EVERY dot.
+// Working/permission re-assert within seconds from live hook events, but the
+// (BA) background-running blue has NO self-heal: nothing re-emits
+// "BackgroundRunning" until that session's NEXT turn end, so a reload left a
+// running background task invisible for hours (live repro 2026-06-12 15:02).
+// sessionStorage is deliberate: it survives in-place reloads — the exact
+// failure — but clears on a real app restart, so dead terminals can't pin
+// stale dots across launches (and an app UPDATE can never rehydrate an old
+// schema). Only the three data maps persist; mutators come from the creator.
+export const useV2NotificationStore = create<V2NotificationState>()(
+	persist(
+		(set) => ({
+			sources: {},
+			shellRunningTerminals: {},
+			setTerminalShellRunning: (
+				terminalId,
+				workspaceId,
+				occurredAt = Date.now(),
+			) => {
+				set((state) => {
+					const prev = state.shellRunningTerminals[terminalId];
+					if (prev && prev.workspaceId === workspaceId) return state;
+					return {
+						shellRunningTerminals: {
+							...state.shellRunningTerminals,
+							[terminalId]: { workspaceId, occurredAt },
+						},
+					};
+				});
+			},
+			clearTerminalShellRunning: (terminalId) => {
+				set((state) => {
+					if (!state.shellRunningTerminals[terminalId]) return state;
+					const { [terminalId]: _removed, ...shellRunningTerminals } =
+						state.shellRunningTerminals;
+					return { shellRunningTerminals };
+				});
+			},
+			backgroundRunningTerminals: {},
+			setTerminalBackgroundRunning: (
+				terminalId,
+				workspaceId,
+				occurredAt = Date.now(),
+			) => {
+				set((state) => {
+					const prev = state.backgroundRunningTerminals[terminalId];
+					if (prev && prev.workspaceId === workspaceId) return state;
+					return {
+						backgroundRunningTerminals: {
+							...state.backgroundRunningTerminals,
+							[terminalId]: { workspaceId, occurredAt },
+						},
+					};
+				});
+			},
+			clearTerminalBackgroundRunning: (terminalId) => {
+				set((state) => {
+					if (!state.backgroundRunningTerminals[terminalId]) return state;
+					const { [terminalId]: _removed, ...backgroundRunningTerminals } =
+						state.backgroundRunningTerminals;
+					return { backgroundRunningTerminals };
+				});
+			},
+			applySourceAxes: (source, workspaceId, ops, occurredAt = Date.now()) => {
+				const sourceKey = getV2NotificationSourceKey(source);
+				const prev = useV2NotificationStore.getState().sources[sourceKey];
+				// (DOT-AXES) A different workspace's entry is only replaced when this
+				// workspace actually asserts an axis (the terminal was re-homed);
+				// clear-only ops must not reach across workspaces.
+				const foreign = prev !== undefined && prev.workspaceId !== workspaceId;
+				if (foreign && ops.set.length === 0) return;
+				const axes: V2AgentStatusAxes =
+					prev && !foreign ? { ...prev.axes } : {};
+				for (const axis of ops.clear) delete axes[axis];
+				for (const axis of ops.set) axes[axis] = occurredAt;
+				const status = deriveAgentStatus(axes);
+				ndots({
+					event: "store_mutation",
+					mutation: "applySourceAxes",
+					sourceKey,
+					workspaceId,
+					setAxes: ops.set,
+					clearAxes: ops.clear,
+					from: prev?.status ?? null,
+					to: status,
+					occurredAt,
+				});
+				set((state) => {
+					if (status === null) {
+						if (!state.sources[sourceKey]) return state;
+						const { [sourceKey]: _removed, ...sources } = state.sources;
+						return { sources };
+					}
+					return {
+						sources: {
+							...state.sources,
+							[sourceKey]: {
+								sourceKey,
+								source,
+								workspaceId,
+								status,
+								axes,
+								occurredAt,
+							},
+						},
+					};
+				});
+			},
+			// Back-compat single-status setter for sequential writers (chat sources,
+			// manual unread). Translated to axis ops with the status's evidence
+			// semantics: "working" means a turn is running (a pending red was answered,
+			// a stale green is void); "review" means the turn ended (red/working over);
+			// "permission" asserts red on top of whatever else is latched.
+			setSourceStatus: (
+				source,
+				workspaceId,
+				status,
+				occurredAt = Date.now(),
+			) => {
+				const ops: V2AgentStatusAxisOps =
+					status === "permission"
+						? { set: ["permission"], clear: [] }
+						: status === "working"
+							? { set: ["working"], clear: ["permission", "review"] }
+							: { set: ["review"], clear: ["permission", "working"] };
+				useV2NotificationStore
+					.getState()
+					.applySourceAxes(source, workspaceId, ops, occurredAt);
+			},
+			setTerminalStatus: (terminalId, workspaceId, status, occurredAt) => {
+				useV2NotificationStore
+					.getState()
+					.setSourceStatus(
+						getV2TerminalNotificationSource(terminalId),
 						workspaceId,
 						status,
-						axes,
 						occurredAt,
-					},
-				},
-			};
-		});
-	},
-	// Back-compat single-status setter for sequential writers (chat sources,
-	// manual unread). Translated to axis ops with the status's evidence
-	// semantics: "working" means a turn is running (a pending red was answered,
-	// a stale green is void); "review" means the turn ended (red/working over);
-	// "permission" asserts red on top of whatever else is latched.
-	setSourceStatus: (source, workspaceId, status, occurredAt = Date.now()) => {
-		const ops: V2AgentStatusAxisOps =
-			status === "permission"
-				? { set: ["permission"], clear: [] }
-				: status === "working"
-					? { set: ["working"], clear: ["permission", "review"] }
-					: { set: ["review"], clear: ["permission", "working"] };
-		useV2NotificationStore
-			.getState()
-			.applySourceAxes(source, workspaceId, ops, occurredAt);
-	},
-	setTerminalStatus: (terminalId, workspaceId, status, occurredAt) => {
-		useV2NotificationStore
-			.getState()
-			.setSourceStatus(
-				getV2TerminalNotificationSource(terminalId),
-				workspaceId,
-				status,
-				occurredAt,
-			);
-	},
-	setChatStatus: (chatId, workspaceId, status, occurredAt) => {
-		useV2NotificationStore
-			.getState()
-			.setSourceStatus(
-				getV2ChatNotificationSource(chatId),
-				workspaceId,
-				status,
-				occurredAt,
-			);
-	},
-	setManualUnread: (workspaceId) => {
-		useV2NotificationStore
-			.getState()
-			.setSourceStatus(
-				getV2ManualNotificationSource(workspaceId),
-				workspaceId,
-				"review",
-			);
-	},
-	clearSourceStatus: (source, workspaceId) => {
-		const sourceKey = getV2NotificationSourceKey(source);
-		ndots({
-			event: "store_mutation",
-			mutation: "clearSourceStatus",
-			sourceKey,
-			workspaceId: workspaceId ?? null,
-			from:
-				useV2NotificationStore.getState().sources[sourceKey]?.status ?? null,
-			to: null,
-			occurredAt: Date.now(),
-		});
-		set((state) => {
-			const entry = state.sources[sourceKey];
-			if (!entry || (workspaceId && entry.workspaceId !== workspaceId)) {
-				return state;
-			}
-			const { [sourceKey]: _removed, ...sources } = state.sources;
-			return { sources };
-		});
-	},
-	clearSourceStatuses: (sourceInputs, workspaceId) => {
-		set((state) => {
-			const sourceKeys = new Set(
-				[...sourceInputs].map(getV2NotificationSourceKey),
-			);
-			const sources: Record<string, V2NotificationStatusEntry> = {};
-			let changed = false;
-			for (const [sourceKey, source] of Object.entries(state.sources)) {
-				if (
-					sourceKeys.has(sourceKey as V2NotificationSourceKey) &&
-					(!workspaceId || source.workspaceId === workspaceId)
-				) {
-					changed = true;
-					continue;
-				}
-				sources[sourceKey] = source;
-			}
-			return changed ? { sources } : state;
-		});
-	},
-	clearSourceAttention: (source, workspaceId) => {
-		const sourceKey = getV2NotificationSourceKey(source);
-		set((state) => {
-			const entry = state.sources[sourceKey];
-			if (
-				!entry ||
-				entry.status !== "review" ||
-				(workspaceId && entry.workspaceId !== workspaceId)
-			) {
-				return state;
-			}
-			const { [sourceKey]: _removed, ...sources } = state.sources;
-			return { sources };
-		});
-	},
-	clearWorkspaceStatuses: (workspaceId) => {
-		set((state) => {
-			const sources: Record<string, V2NotificationStatusEntry> = {};
-			let changed = false;
-			for (const [sourceKey, source] of Object.entries(state.sources)) {
-				if (source.workspaceId === workspaceId) {
-					changed = true;
-					continue;
-				}
-				sources[sourceKey] = source;
-			}
-			// (BA) Also drop background-running entries for this workspace — the
-			// blue axis has no OSC self-clear, so a workspace teardown must purge
-			// it too or a stale entry survives (hidden by the open-tab gate, but
-			// still leaked).
-			const backgroundRunningTerminals: Record<string, V2ShellRunningEntry> =
-				{};
-			let bgChanged = false;
-			for (const [tid, entry] of Object.entries(
-				state.backgroundRunningTerminals,
-			)) {
-				if (entry.workspaceId === workspaceId) {
-					bgChanged = true;
-					continue;
-				}
-				backgroundRunningTerminals[tid] = entry;
-			}
-			if (!changed && !bgChanged) return state;
-			const next: Partial<V2NotificationState> = {};
-			if (changed) next.sources = sources;
-			if (bgChanged)
-				next.backgroundRunningTerminals = backgroundRunningTerminals;
-			return next;
-		});
-	},
-	clearWorkspaceAttention: (workspaceId) => {
-		{
-			// Log each source this call will clear (workspace match +
-			// status "review"). One line per source so each carries its
-			// own sourceKey. Read-only snapshot — no logic change.
-			const now = Date.now();
-			for (const [sourceKey, source] of Object.entries(
-				useV2NotificationStore.getState().sources,
-			)) {
-				if (source.workspaceId === workspaceId && source.status === "review") {
-					ndots({
-						event: "store_mutation",
-						mutation: "clearWorkspaceAttention",
-						sourceKey,
+					);
+			},
+			setChatStatus: (chatId, workspaceId, status, occurredAt) => {
+				useV2NotificationStore
+					.getState()
+					.setSourceStatus(
+						getV2ChatNotificationSource(chatId),
 						workspaceId,
-						from: source.status,
-						to: null,
-						occurredAt: now,
-					});
+						status,
+						occurredAt,
+					);
+			},
+			setManualUnread: (workspaceId) => {
+				useV2NotificationStore
+					.getState()
+					.setSourceStatus(
+						getV2ManualNotificationSource(workspaceId),
+						workspaceId,
+						"review",
+					);
+			},
+			clearSourceStatus: (source, workspaceId) => {
+				const sourceKey = getV2NotificationSourceKey(source);
+				ndots({
+					event: "store_mutation",
+					mutation: "clearSourceStatus",
+					sourceKey,
+					workspaceId: workspaceId ?? null,
+					from:
+						useV2NotificationStore.getState().sources[sourceKey]?.status ??
+						null,
+					to: null,
+					occurredAt: Date.now(),
+				});
+				set((state) => {
+					const entry = state.sources[sourceKey];
+					if (!entry || (workspaceId && entry.workspaceId !== workspaceId)) {
+						return state;
+					}
+					const { [sourceKey]: _removed, ...sources } = state.sources;
+					return { sources };
+				});
+			},
+			clearSourceStatuses: (sourceInputs, workspaceId) => {
+				set((state) => {
+					const sourceKeys = new Set(
+						[...sourceInputs].map(getV2NotificationSourceKey),
+					);
+					const sources: Record<string, V2NotificationStatusEntry> = {};
+					let changed = false;
+					for (const [sourceKey, source] of Object.entries(state.sources)) {
+						if (
+							sourceKeys.has(sourceKey as V2NotificationSourceKey) &&
+							(!workspaceId || source.workspaceId === workspaceId)
+						) {
+							changed = true;
+							continue;
+						}
+						sources[sourceKey] = source;
+					}
+					return changed ? { sources } : state;
+				});
+			},
+			clearSourceAttention: (source, workspaceId) => {
+				const sourceKey = getV2NotificationSourceKey(source);
+				set((state) => {
+					const entry = state.sources[sourceKey];
+					if (
+						!entry ||
+						entry.status !== "review" ||
+						(workspaceId && entry.workspaceId !== workspaceId)
+					) {
+						return state;
+					}
+					const { [sourceKey]: _removed, ...sources } = state.sources;
+					return { sources };
+				});
+			},
+			clearWorkspaceStatuses: (workspaceId) => {
+				set((state) => {
+					const sources: Record<string, V2NotificationStatusEntry> = {};
+					let changed = false;
+					for (const [sourceKey, source] of Object.entries(state.sources)) {
+						if (source.workspaceId === workspaceId) {
+							changed = true;
+							continue;
+						}
+						sources[sourceKey] = source;
+					}
+					// (BA) Also drop background-running entries for this workspace — the
+					// blue axis has no OSC self-clear, so a workspace teardown must purge
+					// it too or a stale entry survives (hidden by the open-tab gate, but
+					// still leaked).
+					const backgroundRunningTerminals: Record<
+						string,
+						V2ShellRunningEntry
+					> = {};
+					let bgChanged = false;
+					for (const [tid, entry] of Object.entries(
+						state.backgroundRunningTerminals,
+					)) {
+						if (entry.workspaceId === workspaceId) {
+							bgChanged = true;
+							continue;
+						}
+						backgroundRunningTerminals[tid] = entry;
+					}
+					if (!changed && !bgChanged) return state;
+					const next: Partial<V2NotificationState> = {};
+					if (changed) next.sources = sources;
+					if (bgChanged)
+						next.backgroundRunningTerminals = backgroundRunningTerminals;
+					return next;
+				});
+			},
+			clearWorkspaceAttention: (workspaceId) => {
+				{
+					// Log each source this call will clear (workspace match +
+					// status "review"). One line per source so each carries its
+					// own sourceKey. Read-only snapshot — no logic change.
+					const now = Date.now();
+					for (const [sourceKey, source] of Object.entries(
+						useV2NotificationStore.getState().sources,
+					)) {
+						if (
+							source.workspaceId === workspaceId &&
+							source.status === "review"
+						) {
+							ndots({
+								event: "store_mutation",
+								mutation: "clearWorkspaceAttention",
+								sourceKey,
+								workspaceId,
+								from: source.status,
+								to: null,
+								occurredAt: now,
+							});
+						}
+					}
 				}
-			}
-		}
-		set((state) => {
-			const sources: Record<string, V2NotificationStatusEntry> = {};
-			let changed = false;
-			for (const [sourceKey, source] of Object.entries(state.sources)) {
-				if (source.workspaceId === workspaceId && source.status === "review") {
-					changed = true;
-					continue;
-				}
-				sources[sourceKey] = source;
-			}
-			return changed ? { sources } : state;
-		});
-	},
-}));
+				set((state) => {
+					const sources: Record<string, V2NotificationStatusEntry> = {};
+					let changed = false;
+					for (const [sourceKey, source] of Object.entries(state.sources)) {
+						if (
+							source.workspaceId === workspaceId &&
+							source.status === "review"
+						) {
+							changed = true;
+							continue;
+						}
+						sources[sourceKey] = source;
+					}
+					return changed ? { sources } : state;
+				});
+			},
+		}),
+		{
+			name: "v2-notification-dots",
+			storage: createJSONStorage(() => window.sessionStorage),
+			partialize: (state) => ({
+				sources: state.sources,
+				shellRunningTerminals: state.shellRunningTerminals,
+				backgroundRunningTerminals: state.backgroundRunningTerminals,
+			}),
+		},
+	),
+);
 
 export function getV2NotificationSourceKey(
 	source: V2NotificationSourceInput,

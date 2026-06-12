@@ -88,6 +88,11 @@ See `FEATURES.md` for the marker manifest. In brief:
   arriving with a mismatched/missing agent_id strands its run-dir marker and
   would pin yellow forever; every Stop/SubagentStop now reaps markers not
   listed as still running in the payload's background_tasks[] (ground truth).
+  The store's data maps persist to sessionStorage (DOT-PERSIST): an in-place
+  renderer reload (Ctrl+R / error boundary) used to wipe every dot, and the
+  background blue has no re-emit until that session's next turn end;
+  sessionStorage still clears on a real app restart, so no stale dots across
+  launches.
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
 - **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary
