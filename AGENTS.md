@@ -84,6 +84,10 @@ See `FEATURES.md` for the marker manifest. In brief:
   higher-ranking active state; a tool that ran inside a subagent (hook payload
   carries agent_id, SUBTOOL-RED) asserts working WITHOUT clearing a pending
   red, while a main-loop tool completion still clears it (the answer proof).
+  Leaked yellow-hold markers self-heal (MARKER-RECONCILE): a SubagentStop
+  arriving with a mismatched/missing agent_id strands its run-dir marker and
+  would pin yellow forever; every Stop/SubagentStop now reaps markers not
+  listed as still running in the payload's background_tasks[] (ground truth).
 - **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
   plain workspace (no branch/worktree); the project "+" opens its main workspace.
 - **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary

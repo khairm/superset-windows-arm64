@@ -642,6 +642,27 @@ def _codex_job_active(session_id):
         return False
 
 
+# (MARKER-RECONCILE) statuses that mean a background_tasks[] entry is over.
+# Shared by _split_background and _running_bg_ids so the yellow/blue split and
+# the stale-marker reap can never disagree on what "running" means. A status
+# DENYLIST, not an allowlist: an unknown running-ish status stays "running"
+# (the safe yellow direction).
+_FINISHED_BG_STATUSES = (
+    "completed", "complete", "done", "finished", "failed", "error",
+    "errored", "cancelled", "canceled", "stopped", "killed", "exited",
+    "terminated",
+)
+
+
+def _bg_entry_finished(task):
+    status = str(task.get("status") or "").lower()
+    return (
+        status in _FINISHED_BG_STATUSES
+        or task.get("is_running") is False
+        or task.get("isRunning") is False
+    )
+
+
 def _split_background(bg_tasks):
     # (TEAM-YELLOW) Classify the Stop/SubagentStop payload's background_tasks[].
     # Entries are TYPED (captured live 2026-06-10): "shell" = a backgrounded
@@ -659,21 +680,11 @@ def _split_background(bg_tasks):
         bg_tasks = [bg_tasks]  # tolerate a single-entry object payload
     if not isinstance(bg_tasks, list):
         return (True, True)
-    finished = (
-        "completed", "complete", "done", "finished", "failed", "error",
-        "errored", "cancelled", "canceled", "stopped", "killed", "exited",
-        "terminated",
-    )
     has_any = False
     has_agent = False
     for task in bg_tasks:
         if isinstance(task, dict):
-            status = str(task.get("status") or "").lower()
-            if (
-                status in finished
-                or task.get("is_running") is False
-                or task.get("isRunning") is False
-            ):
+            if _bg_entry_finished(task):
                 continue
             task_type = str(task.get("type") or "")
         elif isinstance(task, str):
@@ -686,6 +697,59 @@ def _split_background(bg_tasks):
     return (has_any, has_agent)
 
 
+def _running_bg_ids(bg_tasks):
+    # (MARKER-RECONCILE) The ids of background_tasks[] entries still running,
+    # sanitized EXACTLY like the SubagentStart marker names (main() applies
+    # the same filter to agent_id) so set membership compares marker
+    # filenames. bgTasks entry ids and SubagentStart agent_ids share one id
+    # space — captured live 2026-06-12: an async Agent launch returned agentId
+    # a4d216da..., its SubagentStart carried the same id, and its entry in
+    # every later background_tasks[] used it as the entry id.
+    ids = set()
+    if isinstance(bg_tasks, dict):
+        bg_tasks = [bg_tasks]
+    if not isinstance(bg_tasks, list):
+        return ids
+    for task in bg_tasks:
+        if not isinstance(task, dict) or _bg_entry_finished(task):
+            continue
+        raw = "".join(c for c in str(task.get("id") or "") if c.isalnum() or c in "-_")
+        if raw:
+            ids.add(raw)
+    return ids
+
+
+def _reconcile_run_dir(run_dir, bg_ids, terminal_id):
+    # (MARKER-RECONCILE) Reap LEAKED yellow-hold markers. A SubagentStart whose
+    # SubagentStop arrives with a mismatched or missing agent_id (observed
+    # live 2026-06-12: a background fork + a workflow-internal agent) leaves
+    # its marker behind forever, suppressing every later Stop -> the dot pins
+    # yellow with nothing running. The Stop/SubagentStop payload's
+    # background_tasks[] is the harness's authoritative list of what is STILL
+    # running, so at a turn end any marker not listed there is provably stale
+    # -> delete it. Genuinely-running work always survives: an async subagent
+    # is listed under its own id (marker kept; the stopping agent even lists
+    # ITSELF as running in its own SubagentStop payload), and workflow- or
+    # teammate-internal agents are owned by their listed workflow/teammate
+    # entry, whose agent type keeps the dot yellow via (TEAM-YELLOW)
+    # regardless of markers. Never raises.
+    reaped = []
+    try:
+        for f in run_dir.iterdir():
+            if f.name in bg_ids:
+                continue
+            _remove(f)
+            reaped.append(f.name)
+    except Exception:
+        pass
+    if reaped:
+        _log({
+            "terminalId": terminal_id,
+            "action": "reconcile-reaped-markers",
+            "reaped": reaped,
+        })
+
+
 def _decide_event_type(
     event,
     tool,
@@ -693,6 +757,7 @@ def _decide_event_type(
     sub_agent_id,
     has_background,
     has_agent_background,
+    bg_ids,
     trigger,
     source,
     session_id,
@@ -746,6 +811,12 @@ def _decide_event_type(
     # .agentbg mirrors the SubagentActive direction, .shellbg the
     # BackgroundRunning one; at most one is set at a time.
     if event in ("Stop", "SubagentStop"):
+        # (MARKER-RECONCILE) when the payload carries the background_tasks
+        # list (bg_ids is not None), it is ground truth for what still runs —
+        # reap any leaked yellow-hold marker BEFORE the count checks below
+        # decide the dot, so a stale marker cannot pin yellow forever.
+        if bg_ids is not None:
+            _reconcile_run_dir(run_dir, bg_ids, terminal_id)
         if has_agent_background:
             _touch(agentbg_marker)
         else:
@@ -903,8 +974,17 @@ def main():
     # shell-only (blue) — see _split_background. Absent on older versions ->
     # both falsy -> behaves exactly as before. session_crons (scheduled
     # wakeups) are intentionally NOT counted (pending, not running).
-    bg_tasks = payload.get("background_tasks") or payload.get("backgroundTasks")
+    # None-check (not "or"): an EMPTY list is an authoritative "nothing is
+    # running" and must reach _running_bg_ids, where "or" would collapse it
+    # to the other key's None. _split_background treats [] and None the same.
+    bg_tasks = payload.get("background_tasks")
+    if bg_tasks is None:
+        bg_tasks = payload.get("backgroundTasks")
     has_background, has_agent_background = _split_background(bg_tasks)
+    # (MARKER-RECONCILE) only a payload that actually carries the list shape
+    # is authoritative; absent/odd-shaped -> None -> no reconciliation (an
+    # older Claude Code without background_tasks behaves exactly as before).
+    bg_ids = _running_bg_ids(bg_tasks) if isinstance(bg_tasks, (list, dict)) else None
     # (COMPACT-YELLOW) PreCompact carries trigger ("manual"|"auto");
     # SessionStart carries source ("startup"|"resume"|"clear"|"compact").
     trigger = str(payload.get("trigger") or "").strip()
@@ -952,6 +1032,7 @@ def main():
         sub_agent_id,
         has_background,
         has_agent_background,
+        bg_ids,
         trigger,
         source,
         session_id,
