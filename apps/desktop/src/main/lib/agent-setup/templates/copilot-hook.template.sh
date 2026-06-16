@@ -2,9 +2,25 @@
 {{MARKER}}
 # GitHub Copilot CLI lifecycle hook. JSON in via stdin; MUST print valid
 # JSON to stdout before exit so copilot doesn't block on the hook.
+#
+# (HOOK-FORK-DIET) Parsing + JSON escaping use bash builtins (read / [[ =~ ]] /
+# ${//}) instead of cat + grep|grep|tr and printf|sed pipelines, cutting the
+# per-call subprocess forks to a single curl. Prevents the x64-emulated msys2
+# fork() cascade on Windows ARM64; the POST payload is unchanged.
 
-INPUT=$(cat)
-HOOK_SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+IFS= read -r -d '' INPUT
+
+# Fork-free extraction of a JSON string field's value into JSON_FIELD.
+json_field() {
+  local re="\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  if [[ $2 =~ $re ]]; then
+    JSON_FIELD="${BASH_REMATCH[1]}"
+  else
+    JSON_FIELD=""
+  fi
+}
+
+json_field "session_id" "$INPUT"; HOOK_SESSION_ID="$JSON_FIELD"
 
 EVENT_TYPE="$1"
 
@@ -28,12 +44,20 @@ case "$V1_EVENT_TYPE" in
   SessionEnd)   V1_EVENT_TYPE="Stop" ;;
 esac
 
+# Fork-free JSON string escaping into JSON_ESCAPED (backslash then quote).
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  JSON_ESCAPED="$s"
 }
 
 if [ -n "$SUPERSET_HOST_AGENT_HOOK_URL" ] && [ -n "$SUPERSET_TERMINAL_ID" ]; then
-  PAYLOAD="{\"json\":{\"terminalId\":\"$(json_escape "$SUPERSET_TERMINAL_ID")\",\"eventType\":\"$(json_escape "$EVENT_TYPE")\",\"agent\":{\"agentId\":\"$(json_escape "$SUPERSET_AGENT_ID")\",\"sessionId\":\"$(json_escape "$HOOK_SESSION_ID")\"}}}"
+  json_escape "$SUPERSET_TERMINAL_ID"; E_TERMINAL_ID="$JSON_ESCAPED"
+  json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
+  json_escape "$SUPERSET_AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
+  json_escape "$HOOK_SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
+  PAYLOAD="{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
 
   STATUS_CODE=$(curl -sX POST "$SUPERSET_HOST_AGENT_HOOK_URL" \
     --connect-timeout 2 --max-time 5 \

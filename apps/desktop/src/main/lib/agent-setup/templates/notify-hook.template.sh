@@ -3,25 +3,44 @@
 # CLI agent lifecycle hook — POSTs an AgentIdentity payload to the v2
 # host-service endpoint, with a v1 Electron hook fallback while both
 # terminal stacks are supported.
+#
+# (HOOK-FORK-DIET) JSON parsing and escaping run entirely on bash builtins
+# (read / [[ =~ ]] / ${//}) instead of echo|grep|grep|tr and printf|sed
+# pipelines. That collapses ~30 subprocess forks per invocation to a single
+# fork (curl). On Windows ARM64 the Git-bash msys2 runtime is x64-emulated and
+# its fork() corrupts the shared section under high concurrent fork volume —
+# the `add_item ... errno 1` cascade that wedged every chat's hooks. The wire
+# payload is byte-for-byte identical to the previous pipeline version.
 
-# Codex passes JSON as argv; Claude/Mastra/Droid pipe via stdin.
+# Codex passes JSON as argv; Claude/Mastra/Droid pipe via stdin. `read -d ''`
+# slurps stdin without forking `cat`.
 if [ -n "$1" ]; then
   INPUT="$1"
 else
-  INPUT=$(cat)
+  IFS= read -r -d '' INPUT
 fi
 
-HOOK_SESSION_ID=$(echo "$INPUT" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
-RESOURCE_ID=$(echo "$INPUT" | grep -oE '"resourceId"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+# Fork-free extraction of a JSON string field's value into JSON_FIELD.
+json_field() {
+  local re="\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  if [[ $2 =~ $re ]]; then
+    JSON_FIELD="${BASH_REMATCH[1]}"
+  else
+    JSON_FIELD=""
+  fi
+}
+
+json_field "session_id" "$INPUT"; HOOK_SESSION_ID="$JSON_FIELD"
+json_field "resourceId" "$INPUT"; RESOURCE_ID="$JSON_FIELD"
 if [ -z "$RESOURCE_ID" ]; then
-  RESOURCE_ID=$(echo "$INPUT" | grep -oE '"resource_id"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+  json_field "resource_id" "$INPUT"; RESOURCE_ID="$JSON_FIELD"
 fi
 SESSION_ID=${RESOURCE_ID:-$HOOK_SESSION_ID}
 
 # Claude/Mastra/Droid use "hook_event_name"; Codex uses "type".
-EVENT_TYPE=$(echo "$INPUT" | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+json_field "hook_event_name" "$INPUT"; EVENT_TYPE="$JSON_FIELD"
 if [ -z "$EVENT_TYPE" ]; then
-  CODEX_TYPE=$(echo "$INPUT" | grep -oE '"type"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+  json_field "type" "$INPUT"; CODEX_TYPE="$JSON_FIELD"
   case "$CODEX_TYPE" in
     agent-turn-complete|task_complete) EVENT_TYPE="Stop" ;;
     task_started) EVENT_TYPE="Start" ;;
@@ -69,12 +88,20 @@ case "$V1_EVENT_TYPE" in
     ;;
 esac
 
+# Fork-free JSON string escaping into JSON_ESCAPED (backslash then quote).
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  JSON_ESCAPED="$s"
 }
 
 if [ -n "$SUPERSET_HOST_AGENT_HOOK_URL" ] && [ -n "$SUPERSET_TERMINAL_ID" ]; then
-  PAYLOAD="{\"json\":{\"terminalId\":\"$(json_escape "$SUPERSET_TERMINAL_ID")\",\"eventType\":\"$(json_escape "$EVENT_TYPE")\",\"agent\":{\"agentId\":\"$(json_escape "$SUPERSET_AGENT_ID")\",\"sessionId\":\"$(json_escape "$SESSION_ID")\"}}}"
+  json_escape "$SUPERSET_TERMINAL_ID"; E_TERMINAL_ID="$JSON_ESCAPED"
+  json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
+  json_escape "$SUPERSET_AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
+  json_escape "$SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
+  PAYLOAD="{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
 
   STATUS_CODE=$(curl -sX POST "$SUPERSET_HOST_AGENT_HOOK_URL" \
     --connect-timeout 2 --max-time 5 \

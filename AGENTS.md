@@ -182,6 +182,13 @@ See `FEATURES.md` for the marker manifest. In brief:
   wedges the socket's receiver: ALL terminal keyboard input dies while output keeps
   flowing (build 41124b7d3 incident). `WS_NO_BUFFER_UTIL=1` + `WS_NO_UTF_8_VALIDATE=1`
   are set in the coordinator child env AND first-import in serve.ts — keep both.
+- **Keep the agent hook `.sh` templates fork-lean** — the lifecycle hooks
+  (notify/cursor/copilot/gemini) parse + escape JSON with bash builtins only
+  (`read`, `[[ =~ ]]`, `${//}`). NEVER reintroduce `echo|grep|grep|tr` or
+  `printf|sed` pipelines: ~30 subprocess forks per hook crashed the x64-emulated
+  msys2 runtime on Windows ARM64 — the `add_item ... errno 1` fork cascade that
+  poisons msys's shared section and wedges EVERY chat's hooks (stale dots, hook
+  errors). Marker `(HOOK-FORK-DIET)`; payload is byte-identical to the pipelines.
 
 ## Fork limitations (accepted)
 

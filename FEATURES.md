@@ -41,6 +41,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Layered dot axes | a source's dot status is DERIVED as the highest-precedence active axis (permission > working > review, + the separate blue axes) — events latch/unlatch axes they have evidence about, so a lower assert can never overwrite a higher active state | `applySourceAxes` |
 | Leaked yellow-hold markers self-heal | a SubagentStop arriving with a mismatched/missing agent_id leaks its run-dir marker and pins the dot yellow with nothing running; at every Stop/SubagentStop the payload's background_tasks[] (ground truth) reaps any marker not listed as still running | `(MARKER-RECONCILE)` |
 | Dot state survives renderer reloads | the v2-notifications dot store persists to sessionStorage — an in-place window reload (Ctrl+R / error boundary / crash recovery) no longer wipes every dot; the background-running blue has no self-heal until the next turn end, so a reload used to hide a running background task for hours. Clears on real app restart (no stale dots across launches) | `(DOT-PERSIST)` |
+| Agent hook fork-diet | every agent lifecycle hook parses + escapes JSON with bash builtins (read, `[[ =~ ]]`, parameter expansion); the old grep/tr + sed pipelines forked ~30 subprocesses per call and crashed the x64-emulated msys2 runtime on Windows ARM64 (the add_item errno-1 fork cascade that wedged every chat's hooks). Wire payload unchanged | `(HOOK-FORK-DIET)` |
 
 ## Machine-readable markers (the nightly gate reads this block)
 
@@ -83,6 +84,7 @@ writeKanbanBackup	apps/desktop/src
 (DOT-PERSIST)	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
+(HOOK-FORK-DIET)	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer
 (HOVER-FREEZE)	apps/desktop/src/renderer
