@@ -22,7 +22,7 @@ fi
 
 # Fork-free extraction of a JSON string field's value into JSON_FIELD.
 json_field() {
-  local re="\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  local re="\"$1\"[[:blank:]]*:[[:blank:]]*\"([^\"]*)\""
   if [[ $2 =~ $re ]]; then
     JSON_FIELD="${BASH_REMATCH[1]}"
   else

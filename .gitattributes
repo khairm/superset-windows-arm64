@@ -1,0 +1,6 @@
+# Shell scripts must stay LF. The agent hook templates under
+# apps/desktop/src/main/lib/agent-setup/templates/*.sh are read VERBATIM and
+# written out as the runtime hook scripts (see notify-hook.ts); a CRLF here
+# would put a \r in the shebang/commands and break bash on Windows — defeating
+# the (HOOK-FORK-DIET) reliability work. core.autocrlf=true must not touch them.
+*.sh text eol=lf

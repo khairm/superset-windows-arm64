@@ -549,20 +549,29 @@ export function useDashboardSidebarState() {
 	// untouched so a restored thread comes back exactly as it was.
 
 	const archiveWorkspace = useCallback(
-		(workspaceId: string) => {
+		(workspaceId: string, projectId?: string) => {
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
 				// An auto-included main workspace (shown in the sidebar without an
 				// explicit local-state row) has nothing to update yet. Insert a row
 				// that is already archived so "Archive" / "Remove from Sidebar" takes
 				// effect — a master card can be archived but never hard-removed.
-				// projectId comes from the workspace record; bail if it isn't known.
-				const projectId = collections.v2Workspaces.get(workspaceId)?.projectId;
-				if (!projectId) return;
+				// Prefer the caller's projectId (the remove intent / row already
+				// carries it); fall back to the workspace record.
+				const resolvedProjectId =
+					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+				if (!resolvedProjectId) {
+					// Fail loud rather than silently dropping the archive — nothing else
+					// can recover an un-archived master card from here.
+					console.error(
+						`[archiveWorkspace] cannot archive ${workspaceId}: no local-state row and projectId unresolvable`,
+					);
+					return;
+				}
 				collections.v2WorkspaceLocalState.insert({
 					workspaceId,
 					createdAt: new Date(),
 					sidebarState: {
-						projectId,
+						projectId: resolvedProjectId,
 						tabOrder: 0,
 						sectionId: null,
 						isHidden: true,

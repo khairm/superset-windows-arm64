@@ -118,7 +118,7 @@ export function V2WorkspaceRow({
 				// (MASTER-ARCHIVE-ONLY) Master / non-git master cards ARCHIVE
 				// (recoverable under the project's Archived section) — they can
 				// never be hard-removed/hidden.
-				archiveWorkspace(workspace.id);
+				archiveWorkspace(workspace.id, workspace.projectId);
 			} else {
 				removeWorkspaceFromSidebar(workspace.id);
 			}
@@ -129,6 +129,7 @@ export function V2WorkspaceRow({
 			archiveWorkspace,
 			removeWorkspaceFromSidebar,
 			workspace.id,
+			workspace.projectId,
 		],
 	);
 

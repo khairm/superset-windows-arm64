@@ -389,6 +389,15 @@ export function KanbanCard({
 						</ContextMenuItem>
 					)}
 				</ContextMenuContent>
+			) : !overlay && isMain && workspace && view.bucket === "archived" ? (
+				// (MASTER-ARCHIVE-ONLY) A master card can be archived (from the
+				// sidebar) but otherwise has no board actions — offer just Unarchive
+				// so an archived master is recoverable from the board too.
+				<ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+					<ContextMenuItem onSelect={() => actions.unarchiveCard(card)}>
+						Unarchive
+					</ContextMenuItem>
+				</ContextMenuContent>
 			) : null}
 
 			{workspace && !isMain ? (

@@ -33,7 +33,7 @@ export function RemoveFromSidebarMount() {
 		// accidental remove felt like data loss. A main with archivedAt is a
 		// first-class "archived" row (getWorkspaceSidebarBucket buckets it under
 		// Archived), so master cards can no longer be removed — only archived.
-		archiveWorkspace(target.workspaceId);
+		archiveWorkspace(target.workspaceId, target.projectId);
 		clear();
 	}, [target, navigateAwayFromWorkspace, archiveWorkspace, clear]);
 
