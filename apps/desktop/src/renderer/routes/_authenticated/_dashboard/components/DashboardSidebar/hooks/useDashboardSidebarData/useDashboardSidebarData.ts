@@ -328,8 +328,9 @@ export function useDashboardSidebarData() {
 		const archived: SidebarWorkspaceRow[] = [];
 		for (const workspace of rawSidebarWorkspacesWithHostStatus) {
 			// Single source of truth: getWorkspaceSidebarBucket reads the row's
-			// type, so a removed non-main thread surfaces under Archived while a
-			// removed main workspace stays hidden — matching ensureSidebarWorkspaceRecord.
+			// type. A removed non-main thread surfaces under Archived; a master card
+			// removed now archives too (archivedAt), while a LEGACY hidden main
+			// (isHidden, no timestamp) stays hidden — matching ensureSidebarWorkspaceRecord.
 			switch (getWorkspaceSidebarBucket(workspace, nowMs)) {
 				case "archived":
 					archived.push(workspace);

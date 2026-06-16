@@ -54,9 +54,11 @@ export function isAutoIncludedLocalMainWorkspace(
 //
 // archived := sidebarState.archivedAt != null   (an explicit archive timestamp).
 //             archiveWorkspace also sets isHidden so the row leaves the active
-//             lane, but the ARCHIVED signal is archivedAt — NOT raw isHidden,
-//             which is still used by the main/pinned "Remove from Sidebar" +
-//             teardown path and must not surface as archived.
+//             lane, but the ARCHIVED signal is archivedAt — NOT raw isHidden.
+//             Raw isHidden WITHOUT a timestamp is still produced by whole-project
+//             teardown and by LEGACY hidden mains (pre MASTER-ARCHIVE-ONLY, when a
+//             master-card remove hid instead of archiving) — these must not
+//             surface as archived. A master-card remove now archives (archivedAt).
 // snoozed  := snooze timer still in the future, OR an "until next launch"
 //             snooze whose launch id matches THIS app launch.
 // active   := neither.

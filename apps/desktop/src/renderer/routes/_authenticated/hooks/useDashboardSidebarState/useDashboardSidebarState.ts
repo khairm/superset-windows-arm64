@@ -487,35 +487,6 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
-	const hideWorkspaceInSidebar = useCallback(
-		(workspaceId: string, projectId: string) => {
-			const workspace = collections.v2WorkspaceLocalState.get(workspaceId);
-			if (!workspace) {
-				collections.v2WorkspaceLocalState.insert({
-					workspaceId,
-					createdAt: new Date(),
-					sidebarState: {
-						projectId,
-						tabOrder: 0,
-						sectionId: null,
-						isHidden: true,
-					},
-					paneLayout: createEmptyPaneLayout(),
-				});
-				return;
-			}
-
-			cleanupWorkspacePaneRuntimes([workspace]);
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.projectId = projectId;
-				draft.sidebarState.sectionId = null;
-				draft.sidebarState.isHidden = true;
-				draft.paneLayout = createEmptyPaneLayout();
-			});
-		},
-		[collections],
-	);
-
 	const removeProjectFromSidebar = useCallback(
 		(projectId: string) => {
 			const workspaceRows = Array.from(
@@ -543,10 +514,9 @@ export function useDashboardSidebarState() {
 	);
 
 	// --- Snooze / Archive ---------------------------------------------------
-	// All visual-only: they only flip local sidebar flags. Unlike
-	// hideWorkspaceInSidebar (which tears down pane runtimes + clears the
-	// layout), these intentionally leave the worktree and any running session
-	// untouched so a restored thread comes back exactly as it was.
+	// All visual-only: they only flip local sidebar flags, intentionally leaving
+	// the worktree and any running session untouched so a restored thread comes
+	// back exactly as it was.
 
 	const archiveWorkspace = useCallback(
 		(workspaceId: string, projectId?: string) => {
@@ -724,7 +694,6 @@ export function useDashboardSidebarState() {
 		deleteSection,
 		ensureProjectInSidebar,
 		ensureWorkspaceInSidebar,
-		hideWorkspaceInSidebar,
 		moveWorkspaceToSection,
 		moveWorkspaceToSectionAtIndex,
 		removeProjectFromSidebar,
