@@ -550,7 +550,28 @@ export function useDashboardSidebarState() {
 
 	const archiveWorkspace = useCallback(
 		(workspaceId: string) => {
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
+				// An auto-included main workspace (shown in the sidebar without an
+				// explicit local-state row) has nothing to update yet. Insert a row
+				// that is already archived so "Archive" / "Remove from Sidebar" takes
+				// effect — a master card can be archived but never hard-removed.
+				// projectId comes from the workspace record; bail if it isn't known.
+				const projectId = collections.v2Workspaces.get(workspaceId)?.projectId;
+				if (!projectId) return;
+				collections.v2WorkspaceLocalState.insert({
+					workspaceId,
+					createdAt: new Date(),
+					sidebarState: {
+						projectId,
+						tabOrder: 0,
+						sectionId: null,
+						isHidden: true,
+						archivedAt: Date.now(),
+					},
+					paneLayout: createEmptyPaneLayout(),
+				});
+				return;
+			}
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				draft.sidebarState.isHidden = true;
 				draft.sidebarState.archivedAt = Date.now();

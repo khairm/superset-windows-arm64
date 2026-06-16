@@ -14,8 +14,7 @@ import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-fro
 export function RemoveFromSidebarMount() {
 	const target = useRemoveFromSidebarIntent((s) => s.target);
 	const clear = useRemoveFromSidebarIntent((s) => s.clear);
-	const { archiveWorkspace, hideWorkspaceInSidebar } =
-		useDashboardSidebarState();
+	const { archiveWorkspace } = useDashboardSidebarState();
 	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
 
 	useEffect(() => {
@@ -25,22 +24,18 @@ export function RemoveFromSidebarMount() {
 		// the collection writes are idempotent. clear() resets the intent so each
 		// request is handled exactly once.
 		navigateAwayFromWorkspace(target.workspaceId);
-		if (target.isMain) {
-			hideWorkspaceInSidebar(target.workspaceId, target.projectId);
-		} else {
-			// Non-main threads ARCHIVE (recoverable, session + worktree intact)
-			// instead of a hard remove — "Remove from Sidebar" is the Archive
-			// action now, so the thread reappears under the project's Archived section.
-			archiveWorkspace(target.workspaceId);
-		}
+		// (MASTER-ARCHIVE-ONLY)
+		// "Remove from Sidebar" ARCHIVES every thread (recoverable, session +
+		// worktree intact): it reappears under the project's Archived section.
+		// This now includes MASTER / non-git master cards (target.isMain) — they
+		// previously HID (hideWorkspaceInSidebar sets isHidden WITHOUT archivedAt →
+		// the "hidden" bucket → vanishes, resurrecting only on reopen), so an
+		// accidental remove felt like data loss. A main with archivedAt is a
+		// first-class "archived" row (getWorkspaceSidebarBucket buckets it under
+		// Archived), so master cards can no longer be removed — only archived.
+		archiveWorkspace(target.workspaceId);
 		clear();
-	}, [
-		target,
-		navigateAwayFromWorkspace,
-		hideWorkspaceInSidebar,
-		archiveWorkspace,
-		clear,
-	]);
+	}, [target, navigateAwayFromWorkspace, archiveWorkspace, clear]);
 
 	return null;
 }

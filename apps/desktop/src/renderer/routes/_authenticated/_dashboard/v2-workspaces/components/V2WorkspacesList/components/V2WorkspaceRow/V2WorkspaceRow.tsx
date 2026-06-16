@@ -52,7 +52,7 @@ export function V2WorkspaceRow({
 	const {
 		ensureWorkspaceInSidebar,
 		removeWorkspaceFromSidebar,
-		hideWorkspaceInSidebar,
+		archiveWorkspace,
 		unarchiveWorkspace,
 	} = useDashboardSidebarState();
 	const isMainWorkspace = workspace.type === "main";
@@ -115,7 +115,10 @@ export function V2WorkspaceRow({
 			// an extra render cycle of latency. The list view is never a workspace
 			// route, so there's no active workspace to navigate away from.
 			if (isMainWorkspace) {
-				hideWorkspaceInSidebar(workspace.id, workspace.projectId);
+				// (MASTER-ARCHIVE-ONLY) Master / non-git master cards ARCHIVE
+				// (recoverable under the project's Archived section) — they can
+				// never be hard-removed/hidden.
+				archiveWorkspace(workspace.id);
 			} else {
 				removeWorkspaceFromSidebar(workspace.id);
 			}
@@ -123,10 +126,9 @@ export function V2WorkspaceRow({
 		[
 			isCurrentRoute,
 			isMainWorkspace,
-			hideWorkspaceInSidebar,
+			archiveWorkspace,
 			removeWorkspaceFromSidebar,
 			workspace.id,
-			workspace.projectId,
 		],
 	);
 
