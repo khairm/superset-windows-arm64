@@ -43,6 +43,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Dot state survives renderer reloads | the v2-notifications dot store persists to sessionStorage — an in-place window reload (Ctrl+R / error boundary / crash recovery) no longer wipes every dot; the background-running blue has no self-heal until the next turn end, so a reload used to hide a running background task for hours. Clears on real app restart (no stale dots across launches) | `(DOT-PERSIST)` |
 | Agent hook fork-diet | every agent lifecycle hook parses + escapes JSON with bash builtins (read, `[[ =~ ]]`, parameter expansion); the old grep/tr + sed pipelines forked ~30 subprocesses per call and crashed the x64-emulated msys2 runtime on Windows ARM64 (the add_item errno-1 fork cascade that wedged every chat's hooks). Wire payload unchanged | `(HOOK-FORK-DIET)` |
 | Master cards archive-only | a repo's master / non-git master card (`type === "main"`) can never be hard-removed from the sidebar — "Remove from Sidebar" archives it (recoverable under the project's Archived section) instead of hiding it into oblivion. `archiveWorkspace` inserts an archived row for an auto-included main that has none yet | `(MASTER-ARCHIVE-ONLY)` |
+| Dot-decision log + codex pid-reuse cap | superset-notify.py writes an always-on bounded `~/.superset/logs/dot-decisions.log` line at each terminal turn-end decision (the POSTed eventType + WHY a hold won — codex job / background_tasks / subagent markers / GREEN / BLUE / RED), and `_codex_job_active` age-caps pid-bearing `running` codex job records at 6h so a recycled PID can't pin the dot yellow forever (a cap-skipped stale record is logged, so a premature-green is auditable) | `_decision_log` |
 
 ## Machine-readable markers (the nightly gate reads this block)
 
@@ -87,6 +88,7 @@ applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
 (HOOK-FORK-DIET)	apps/desktop/src/main
 (MASTER-ARCHIVE-ONLY)	apps/desktop/src/renderer
+_decision_log	apps/desktop/src/main
 MAX_RENDERABLE_CHANGED_LINES	apps/desktop/src/renderer
 (ACTIVE-FIRST)	apps/desktop/src/renderer
 (HOVER-FREEZE)	apps/desktop/src/renderer

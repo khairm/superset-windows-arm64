@@ -383,6 +383,43 @@ def _log(record):
         pass
 
 
+def _decision_log(terminal_id, session_id, event_type, reason):
+    # ALWAYS-ON (independent of SUPERSET_AGENT_WATCHER_DEBUG) one-line audit of a
+    # terminal turn-end dot decision, so a stuck dot can be diagnosed after the
+    # fact without reproducing it. Written ONLY at terminal decisions (Stop /
+    # SubagentStop / StopFailure / manual-compact finish) — NOT on every
+    # PostToolUse — so it stays cheap and bounded. Rotates at ~1MB (single
+    # .log.1 backup). Best-effort: ANY failure here is swallowed so the hook
+    # still POSTs even if logging breaks. Never raises.
+    try:
+        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        log_dir = pathlib.Path.home() / ".superset" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "dot-decisions.log"
+        try:
+            if log_path.stat().st_size > 1048576:
+                backup = log_dir / "dot-decisions.log.1"
+                try:
+                    if backup.exists():
+                        backup.unlink()
+                except Exception:
+                    pass
+                log_path.rename(backup)
+        except Exception:
+            pass
+        line = (
+            ts
+            + " terminal=" + str(terminal_id)
+            + " session=" + str(session_id)
+            + " eventType=" + str(event_type)
+            + " " + str(reason)
+        )
+        with open(log_path, "a", encoding="utf-8") as h:
+            h.write(line + "\\n")
+    except Exception:
+        pass
+
+
 def _read_payload():
     candidates = []
     try:
@@ -565,7 +602,20 @@ def _pid_alive(pid):
     return True
 
 
-def _codex_job_active(session_id):
+def _skip_suffix(skipped):
+    # (review #2) Render the codex cap-skip list for a GREEN/BLUE reason string
+    # so a stale/long codex record dropped by the 6h cap is visible in
+    # dot-decisions.log instead of reading as a bare "no active holds". An empty
+    # list adds nothing. Never raises.
+    try:
+        if not skipped:
+            return ""
+        return " (skipped stale codex job " + "; ".join(skipped) + ")"
+    except Exception:
+        return ""
+
+
+def _codex_job_active(session_id, detail_out=None, skipped_out=None):
     # (BF codex-companion parity) The codex plugin dispatches review/task work
     # to a DETACHED worker process that is invisible to Claude Code's
     # Stop-payload background_tasks[], so neither (BA) nor (TEAM-YELLOW) alone
@@ -582,6 +632,32 @@ def _codex_job_active(session_id):
     # self-corrects on the next turn-end: the SAFE direction). Bounded:
     # evaluated only at a real turn/subagent end (see _decide_event_type),
     # short-circuits on first match. Never raises.
+    # detail_out (optional list): when provided, the holding job's
+    # "<jobfile> pid=<pid> mtime_age=<s>s" is appended on a positive match, so
+    # the always-on decision log can name exactly what held the dot.
+    # skipped_out (optional list): when provided, a pid-ALIVE 'running' record
+    # DISCARDED by the 6h staleness cap appends its
+    # "<jobfile> pid=<pid> pid_alive=true mtime_age=<s>s cap=21600s" here. This
+    # is the EXACT shape of the original stuck-yellow incident (a reused-pid
+    # record aged past the cap) AND of a false-green of a genuinely long codex
+    # job (see the cap caveat below). Without it the GREEN reason reads "no
+    # active holds" and a reader cannot tell a stale/long codex record was
+    # silently dropped vs there genuinely being nothing running.
+    #
+    # CAP CAVEAT (review findings #1/#4): the 6h cap assumes the codex-companion
+    # worker touches its job JSON at least every <6h while alive. The producer
+    # (the external openai-codex plugin's tracked-jobs.mjs) only rewrites the
+    # JSON on phase/threadId/turnId CHANGE — there is NO periodic heartbeat — so
+    # a legitimate job that stays in one phase for >6h (a long shell/model/
+    # network wait) ages past the cap and is skipped here, dropping yellow to
+    # green while still running. The cap is therefore a pid-REUSE heuristic, not
+    # a liveness boundary; it deliberately self-corrects toward GREEN (the
+    # file's documented SAFE direction) rather than risk a permanent stuck
+    # yellow. The skipped_out logging above makes any such premature-green
+    # immediately auditable in dot-decisions.log. A non-decaying liveness signal
+    # (pid start-time/cmdline identity, or a companion-emitted heartbeat) would
+    # remove the trade-off but lives in the external plugin / needs cross-platform
+    # process introspection, so it is intentionally NOT done here.
     if not session_id:
         return False
     try:
@@ -621,8 +697,39 @@ def _codex_job_active(session_id):
                     except (TypeError, ValueError):
                         has_pid = False
                     if has_pid:
+                        # (pid-reuse guard) A 'running' record with a live pid is
+                        # NOT trusted on its own: pids are recycled by the OS, so a
+                        # long-dead worker's pid can read alive on an UNRELATED
+                        # process and pin yellow forever (live incident: a 15-day-old
+                        # 'running' record whose reused pid passed _pid_alive held the
+                        # dot working for hours while idle). Require the job JSON to
+                        # have been touched within 6h (the worker rewrites it as it
+                        # progresses); an older record is stale -> skip it.
                         if _pid_alive(pid):
-                            return True
+                            try:
+                                import time
+                                age = time.time() - jf.stat().st_mtime
+                                if age < 21600:
+                                    if detail_out is not None:
+                                        detail_out.append(
+                                            str(jf) + " pid=" + str(pid)
+                                            + " mtime_age=" + str(int(age)) + "s"
+                                        )
+                                    return True
+                                # pid alive but record aged past the cap: the
+                                # exact incident (reused-pid stale record) OR a
+                                # real >6h-in-one-phase job. Record the skip so
+                                # the GREEN reason can name it (review #2).
+                                if skipped_out is not None:
+                                    skipped_out.append(
+                                        str(jf) + " pid=" + str(pid)
+                                        + " pid_alive=true mtime_age=" + str(int(age))
+                                        + "s cap=21600s"
+                                    )
+                            except Exception:
+                                if detail_out is not None:
+                                    detail_out.append(str(jf) + " pid=" + str(pid) + " mtime_age=?")
+                                return True
                         continue
                     # (R1 review) pid-less active record: a job written as
                     # queued whose worker never spawned would otherwise hold
@@ -631,9 +738,16 @@ def _codex_job_active(session_id):
                     # stale and skipped.
                     try:
                         import time
-                        if time.time() - jf.stat().st_mtime < 600:
+                        age = time.time() - jf.stat().st_mtime
+                        if age < 600:
+                            if detail_out is not None:
+                                detail_out.append(
+                                    str(jf) + " pid=none mtime_age=" + str(int(age)) + "s"
+                                )
                             return True
                     except Exception:
+                        if detail_out is not None:
+                            detail_out.append(str(jf) + " pid=none mtime_age=?")
                         return True  # cannot disprove -> active (safe)
             except Exception:
                 continue
@@ -750,6 +864,51 @@ def _reconcile_run_dir(run_dir, bg_ids, terminal_id):
         })
 
 
+# (review #3) Upper bound (seconds) past which a yellow-hold marker with NO
+# live evidence is treated as leaked and reaped. 12h is far longer than any
+# real subagent/background turn yet finite, so a missing/garbled
+# background_tasks[] (which disables the precise MARKER-RECONCILE reap above)
+# can no longer pin yellow FOREVER — the dot self-heals to green/blue within
+# the bound. Markers are touched on SubagentStart, so a genuinely long-lived
+# async subagent keeps a fresh mtime and survives; only abandoned ones age out.
+_MARKER_STALE_SECONDS = 43200
+
+
+def _reap_stale_markers(run_dir, terminal_id):
+    # (review #3) Time-based safety net for the MARKER-RECONCILE reap: remove
+    # run-dir markers whose mtime is older than _MARKER_STALE_SECONDS. This is
+    # the ONLY reap that runs when the turn-end payload carries no usable
+    # background_tasks[] (bg_ids is None) — the exact case where a leaked
+    # SubagentStart marker would otherwise suppress every later Stop and pin the
+    # dot yellow indefinitely. Returns the count of markers STILL present after
+    # the reap (so the caller can log a "HOLD working: N markers" reason).
+    # Never raises.
+    reaped = []
+    remaining = 0
+    try:
+        import time
+        now = time.time()
+        for f in run_dir.iterdir():
+            try:
+                if now - f.stat().st_mtime > _MARKER_STALE_SECONDS:
+                    _remove(f)
+                    reaped.append(f.name)
+                else:
+                    remaining += 1
+            except Exception:
+                remaining += 1  # cannot stat -> assume live (safe yellow)
+    except Exception:
+        return _running_count(run_dir)
+    if reaped:
+        _log({
+            "terminalId": terminal_id,
+            "action": "reap-stale-markers",
+            "reaped": reaped,
+            "boundSeconds": _MARKER_STALE_SECONDS,
+        })
+    return remaining
+
+
 def _decide_event_type(
     event,
     tool,
@@ -761,8 +920,13 @@ def _decide_event_type(
     trigger,
     source,
     session_id,
+    reason_out=None,
 ):
     # Returns the host-service eventType or None (None => silent no-op).
+    # reason_out (optional list): at a TERMINAL turn-end decision (Stop /
+    # SubagentStop / StopFailure / manual-compact finish) a human-readable
+    # reason string is appended so the always-on dot-decision log can explain
+    # WHY the dot held yellow vs went green/blue/red. Never raises on this.
     #
     # (BA) CLOUD/BACKGROUND-SESSION blue dot: when the main turn ends (Stop) or
     # the last local subagent finishes (SubagentStop) but a cloud/background
@@ -804,6 +968,14 @@ def _decide_event_type(
     compact_marker = _compact_marker_path(terminal_id)
     agentbg_marker = _agentbg_marker_path(terminal_id)
     shellbg_marker = _shellbg_marker_path(terminal_id)
+
+    def _reason(text):
+        # Best-effort capture of the terminal-decision reason. Never raises.
+        try:
+            if reason_out is not None:
+                reason_out.append(text)
+        except Exception:
+            pass
 
     # (TEAM-YELLOW) keep the background snapshot markers fresh from every
     # turn-end payload — including Stops the run_dir yellow-hold suppresses —
@@ -850,17 +1022,27 @@ def _decide_event_type(
             return None  # a compaction we never marked — leave the dot alone
         _remove(compact_marker)
         if was_trigger == "manual":
-            if _running_count(run_dir) > 0:
+            live_markers = _reap_stale_markers(run_dir, terminal_id)  # (review #3) age-reap leaked markers
+            if live_markers > 0:
                 _touch(sentinel)  # background subagents still running -> stay yellow
+                _reason("HOLD working: " + str(live_markers) + " subagent markers in " + str(run_dir) + " (manual-compact finish)")
                 return None
             _remove(sentinel)
             # (R1 review) this payload carries no background_tasks — consult the
             # persisted turn-end snapshot + codex so a manual compact ending
             # while teammates/workflows/codex run cannot false-green.
-            if agentbg_marker.exists() or _codex_job_active(session_id):
+            cx = []
+            cx_skip = []
+            if agentbg_marker.exists() or _codex_job_active(session_id, cx, cx_skip):
+                if cx:
+                    _reason("HOLD working: codex job " + cx[0] + " (manual-compact finish)")
+                else:
+                    _reason("HOLD working: agentbg marker " + str(agentbg_marker) + " (manual-compact finish)")
                 return "SubagentActive"  # red-respecting working hold
             if shellbg_marker.exists():
+                _reason("BLUE: shell background remainder (shellbg marker, manual-compact finish)" + _skip_suffix(cx_skip))
                 return "BackgroundRunning"  # background shell still running -> blue
+            _reason("GREEN: no active holds (manual-compact finish)" + _skip_suffix(cx_skip))
             return "Stop"  # manual compact finished -> review/green (or idle)
         return "Start"  # auto-compact mid-turn: keep working/yellow
 
@@ -874,7 +1056,9 @@ def _decide_event_type(
     if event == "SubagentStop":
         if sub_agent_id:
             _remove(run_dir / sub_agent_id)
-        if _running_count(run_dir) == 0 and sentinel.exists():
+        # (review #3) reap age-stale markers so a leaked sibling marker cannot
+        # keep this count >0 forever and block the last-subagent green.
+        if _reap_stale_markers(run_dir, terminal_id) == 0 and sentinel.exists():
             _remove(sentinel)
             # has_background here is read from THIS SubagentStop payload, which
             # carries background_tasks[] scoped to the PARENT session (Claude Code
@@ -884,13 +1068,24 @@ def _decide_event_type(
             # older/odd version -> green, which only mis-greens in the narrow
             # case where Stop carried the field but SubagentStop did not — same
             # version added both, so not in practice.)
-            if has_agent_background or _codex_job_active(session_id):
+            cx = []
+            cx_skip = []
+            if has_agent_background or _codex_job_active(session_id, cx, cx_skip):
                 # SubagentActive (NOT Start): the renderer asserts working only
                 # when the source is not already red — a Start here would stomp
                 # a teammate-raised permission/question (red trumps yellow).
+                if has_agent_background:
+                    if bg_ids:
+                        _reason("HOLD working: background_tasks agents=" + str(sorted(bg_ids)) + " (SubagentStop)")
+                    else:
+                        _reason("HOLD working: background_tasks agent work (SubagentStop)")
+                else:
+                    _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (SubagentStop)")
                 return "SubagentActive"  # teammates/workflows/codex still working -> yellow
             if has_background:
+                _reason("BLUE: shell background remainder (SubagentStop)" + _skip_suffix(cx_skip))
                 return "BackgroundRunning"  # only background shells left -> blue
+            _reason("GREEN: no active holds (SubagentStop, last subagent done)" + _skip_suffix(cx_skip))
             return "Stop"  # main already stopped + last subagent done -> green
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
@@ -899,16 +1094,31 @@ def _decide_event_type(
         return "Start"
     if event == "Stop":
         _remove(compact_marker)  # turn ended; a leaked compact marker is stale
-        if _running_count(run_dir) > 0:
+        # (review #3) reap age-stale markers first so a missing/garbled
+        # background_tasks[] (no MARKER-RECONCILE) cannot pin yellow forever.
+        live_markers = _reap_stale_markers(run_dir, terminal_id)
+        if live_markers > 0:
             _touch(sentinel)  # defer the green; subagents still running
+            _reason("HOLD working: " + str(live_markers) + " subagent markers in " + str(run_dir) + " (Stop)")
             return None  # stay yellow
         _remove(sentinel)
-        if has_agent_background or _codex_job_active(session_id):
+        cx = []
+        cx_skip = []
+        if has_agent_background or _codex_job_active(session_id, cx, cx_skip):
             # SubagentActive (NOT Start) — red-respecting working assert; see
             # the SubagentStop branch comment.
+            if has_agent_background:
+                if bg_ids:
+                    _reason("HOLD working: background_tasks agents=" + str(sorted(bg_ids)) + " (Stop)")
+                else:
+                    _reason("HOLD working: background_tasks agent work (Stop)")
+            else:
+                _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (Stop)")
             return "SubagentActive"  # teammates/workflows/codex still working -> yellow, not blue
         if has_background:
+            _reason("BLUE: shell background remainder (Stop)" + _skip_suffix(cx_skip))
             return "BackgroundRunning"  # turn ended; only background shells left -> blue
+        _reason("GREEN: no active holds (Stop)" + _skip_suffix(cx_skip))
         return "Stop"
     if event == "StopFailure":
         # (AX)/(BF) A Claude API/rate-limit abort kills the shared-API Claude
@@ -921,8 +1131,12 @@ def _decide_event_type(
         _remove(compact_marker)
         _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
         _remove(shellbg_marker)  # snapshot is stale; StopFailure stays no-blue
-        if _codex_job_active(session_id):
+        cx = []
+        cx_skip = []
+        if _codex_job_active(session_id, cx, cx_skip):
+            _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (StopFailure)")
             return "SubagentActive"  # codex on its own API survives the abort
+        _reason("GREEN: no active holds (StopFailure)" + _skip_suffix(cx_skip))
         return "Stop"
     if event == "SessionEnd":
         # Session is ending — the dot context goes away, so a still-running
@@ -934,9 +1148,13 @@ def _decide_event_type(
         _remove(shellbg_marker)
         return "Stop"
     if event == "Notification":
+        _reason("RED: permission (Notification)")
         return "PermissionRequest"
     if event == "PreToolUse":
-        return "PermissionRequest" if tool == "AskUserQuestion" else None
+        if tool == "AskUserQuestion":
+            _reason("RED: permission (PreToolUse:AskUserQuestion)")
+            return "PermissionRequest"
+        return None
     if event == "PostToolUse":
         # (SUBTOOL-RED) agent_id is present iff the tool ran INSIDE a subagent
         # (Claude Code hooks doc: "use this to distinguish subagent hook calls
@@ -1025,6 +1243,7 @@ def main():
 
     # Also performs the SubagentStart/Stop marker side-effects, so the
     # yellow-hold state stays consistent even when url is momentarily absent.
+    reason_out = []
     event_type = _decide_event_type(
         event,
         tool,
@@ -1036,7 +1255,16 @@ def main():
         trigger,
         source,
         session_id,
+        reason_out,
     )
+
+    # (dot-decisions audit) Always-on, bounded log of WHY the dot resolved the
+    # way it did — but only when _decide_event_type recorded a terminal-decision
+    # reason (Stop / SubagentStop / StopFailure / manual-compact finish / a
+    # permission RED), so every PostToolUse does NOT write a line. Best-effort;
+    # never blocks or breaks the POST below.
+    if reason_out:
+        _decision_log(terminal_id, session_id, event_type, reason_out[0])
 
     if not url:
         _log({
