@@ -1256,6 +1256,20 @@ def _decide_event_type(
         if sub_agent_id:
             _touch(bgactive_marker)  # (BG-STALE) teammate/subagent forward activity
             return "SubagentActive"
+        # (ASYNC-TOOL-RED) the Workflow / Agent / Task tools SPAWN background agents
+        # and return (or stream progress) on the MAIN loop, so their PostToolUse
+        # carries NO agent_id yet fires WHILE the main loop is blocked on an
+        # AskUserQuestion/permission red (a background workflow/agent finishing
+        # mid-question). SUBTOOL-RED's "no agent_id => sequential main loop =>
+        # the question was answered" assumption breaks for these async tools, so
+        # mapping them to Start wrongly clears the pending red (live 2026-06-24: a
+        # "Workflow Completed" flipped a red AskUserQuestion to yellow within ms;
+        # the notify log showed 1700+ PostToolUse:Agent->Start, 245 Workflow). They
+        # prove agents are busy, not that the user answered -> red-respecting
+        # SubagentActive (keeps a pending red red; still asserts yellow otherwise).
+        if tool in ("Workflow", "Agent", "Task"):
+            _touch(bgactive_marker)  # (BG-STALE) background-agent forward activity
+            return "SubagentActive"
         return "Start"
     return None
 

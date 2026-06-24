@@ -38,6 +38,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
 | Kanban sidebar button toggles | sidebar Kanban press: anywhere → full-screen board; part-screen split → full-screen (closing then reopens that workspace full size); full-screen → close back to the remembered previous page (fallback Workspaces list) | `(KANBAN-TOGGLE)` |
 | Subagent tool events never stomp the red | a PostToolUse whose payload carries `agent_id` (ran inside a subagent) maps to the red-respecting SubagentActive — background agents' tool completions must not clear a pending AskUserQuestion/permission red; only a main-loop completion does. SubagentStart likewise | `(SUBTOOL-RED)` |
+| Async background-tool completions never stomp the red | the Workflow / Agent / Task tools spawn background agents and complete on the MAIN loop (no agent_id) WHILE the main loop is blocked on an AskUserQuestion/permission red — so their PostToolUse maps to SubagentActive, not Start, instead of wrongly clearing the pending red (the SUBTOOL-RED sequential-main-loop assumption breaks for async-spawning tools) | `(ASYNC-TOOL-RED)` |
 | Layered dot axes | a source's dot status is DERIVED as the highest-precedence active axis (permission > working > review, + the separate blue axes) — events latch/unlatch axes they have evidence about, so a lower assert can never overwrite a higher active state | `applySourceAxes` |
 | Leaked yellow-hold markers self-heal | a SubagentStop arriving with a mismatched/missing agent_id leaks its run-dir marker and pins the dot yellow with nothing running; at every Stop/SubagentStop the payload's background_tasks[] (ground truth) reaps any marker not listed as still running | `(MARKER-RECONCILE)` |
 | Dot state survives renderer reloads | the v2-notifications dot store persists to sessionStorage — an in-place window reload (Ctrl+R / error boundary / crash recovery) no longer wipes every dot; the background-running blue has no self-heal until the next turn end, so a reload used to hide a running background task for hours. Clears on real app restart (no stale dots across launches) | `(DOT-PERSIST)` |
@@ -84,6 +85,7 @@ KANBAN_COMPLETED_COLUMN_ID	apps/desktop/src/renderer
 writeKanbanBackup	apps/desktop/src
 (KANBAN-TOGGLE)	apps/desktop/src/renderer
 (SUBTOOL-RED)	apps/desktop/src/main
+(ASYNC-TOOL-RED)	apps/desktop/src/main
 (MARKER-RECONCILE)	apps/desktop/src/main
 (DOT-PERSIST)	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
