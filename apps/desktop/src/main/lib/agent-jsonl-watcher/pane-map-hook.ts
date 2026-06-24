@@ -495,6 +495,24 @@ def _shellbg_marker_path(terminal_id):
     )
 
 
+def _bgactive_marker_path(terminal_id):
+    # (BG-STALE) Last time REAL teammate/subagent activity was seen for this
+    # terminal (a SubagentStart or a subagent-scoped PostToolUse). Consulted at a
+    # turn-end agent-hold: an agent set Claude Code still reports "running" but
+    # that has produced no activity for _BG_STALE_SECONDS is idle/zombie and must
+    # stop pinning the lead's dot yellow (the harness never flips an idle
+    # long-lived teammate, or one that died without a clean SubagentStop, to a
+    # finished status). Refreshed ONLY on genuine forward activity (never on the
+    # hold itself, which would keep it perpetually fresh); the JSONL watcher
+    # re-asserts yellow within its poll if a reaped set turns out to still write.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".bgactive")
+    )
+
+
 def _write_text(p, text):
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -909,6 +927,35 @@ def _reap_stale_markers(run_dir, terminal_id):
     return remaining
 
 
+# (BG-STALE) Seconds of ZERO teammate/subagent activity after which a
+# background_tasks[] agent set that Claude Code still reports "running" is
+# treated as idle/zombie and stops pinning the lead's dot yellow. Claude Code
+# never flips an idle long-lived teammate (or one that died without a clean
+# SubagentStop) to a finished status, so without this the dot stays yellow until
+# the team is disbanded / the session ends (live incident 2026-06-24: 6
+# teammates "running" but silent 27 min). 15 min is long enough that a team
+# doing real work — which streams SubagentStart / subagent-scoped PostToolUse
+# events that refresh .bgactive — never ages out, while a stalled set recovers
+# quickly; the JSONL watcher re-asserts yellow within its poll if a reaped set
+# is in fact still writing, so the reap errs recoverable, not permanent.
+_BG_STALE_SECONDS = 900
+
+
+def _bg_hold_is_stale(terminal_id):
+    # True iff .bgactive exists and is older than _BG_STALE_SECONDS (the held
+    # agent set has shown no activity that long). A MISSING marker is NOT stale:
+    # the caller seeds it at the turn-end snapshot and holds yellow once, so a
+    # team that predates this code (no SubagentStart seen) still gets a single
+    # benefit-of-the-doubt turn before it can be reaped. Any error -> NOT stale
+    # (the safe yellow direction). Never raises.
+    p = _bgactive_marker_path(terminal_id)
+    try:
+        import time
+        return (time.time() - p.stat().st_mtime) > _BG_STALE_SECONDS
+    except Exception:
+        return False
+
+
 def _decide_event_type(
     event,
     tool,
@@ -968,6 +1015,7 @@ def _decide_event_type(
     compact_marker = _compact_marker_path(terminal_id)
     agentbg_marker = _agentbg_marker_path(terminal_id)
     shellbg_marker = _shellbg_marker_path(terminal_id)
+    bgactive_marker = _bgactive_marker_path(terminal_id)
 
     def _reason(text):
         # Best-effort capture of the terminal-decision reason. Never raises.
@@ -991,8 +1039,16 @@ def _decide_event_type(
             _reconcile_run_dir(run_dir, bg_ids, terminal_id)
         if has_agent_background:
             _touch(agentbg_marker)
+            # (BG-STALE) seed the activity timer the first time an agent set is
+            # seen at a turn end, so a set that predates this code (no
+            # SubagentStart observed) can still age out instead of holding
+            # yellow forever. A genuinely-active set refreshes it via its own
+            # SubagentStart / subagent-scoped PostToolUse before it can stale.
+            if not bgactive_marker.exists():
+                _touch(bgactive_marker)
         else:
             _remove(agentbg_marker)
+            _remove(bgactive_marker)  # (BG-STALE) no agent bg -> clear the timer
         if has_background and not has_agent_background:
             _touch(shellbg_marker)
         else:
@@ -1033,7 +1089,13 @@ def _decide_event_type(
             # while teammates/workflows/codex run cannot false-green.
             cx = []
             cx_skip = []
-            if agentbg_marker.exists() or _codex_job_active(session_id, cx, cx_skip):
+            # (BG-STALE) a stale agentbg snapshot (idle/zombie teammates) must not
+            # re-yellow a manual /compact finish either; reap it like the Stop path.
+            agent_hold = agentbg_marker.exists() and not _bg_hold_is_stale(terminal_id)
+            if not agent_hold and agentbg_marker.exists():
+                _remove(agentbg_marker)
+                _remove(bgactive_marker)
+            if agent_hold or _codex_job_active(session_id, cx, cx_skip):
                 if cx:
                     _reason("HOLD working: codex job " + cx[0] + " (manual-compact finish)")
                 else:
@@ -1049,6 +1111,7 @@ def _decide_event_type(
     if event == "SubagentStart":
         if sub_agent_id:
             _touch(run_dir / sub_agent_id)
+        _touch(bgactive_marker)  # (BG-STALE) genuine forward teammate activity
         # SubagentActive (NOT Start): launching delegated work proves agents
         # are busy, not that a pending question/permission was answered — a
         # workflow/teammate spawning an agent mid-red must keep the red.
@@ -1068,13 +1131,19 @@ def _decide_event_type(
             # older/odd version -> green, which only mis-greens in the narrow
             # case where Stop carried the field but SubagentStop did not — same
             # version added both, so not in practice.)
+            # (BG-STALE) same idle/zombie reap as the Stop branch.
+            stale_bg = has_agent_background and _bg_hold_is_stale(terminal_id)
+            agent_hold = has_agent_background and not stale_bg
+            if stale_bg:
+                _remove(agentbg_marker)
+                _remove(bgactive_marker)
             cx = []
             cx_skip = []
-            if has_agent_background or _codex_job_active(session_id, cx, cx_skip):
+            if agent_hold or _codex_job_active(session_id, cx, cx_skip):
                 # SubagentActive (NOT Start): the renderer asserts working only
                 # when the source is not already red — a Start here would stomp
                 # a teammate-raised permission/question (red trumps yellow).
-                if has_agent_background:
+                if agent_hold:
                     if bg_ids:
                         _reason("HOLD working: background_tasks agents=" + str(sorted(bg_ids)) + " (SubagentStop)")
                     else:
@@ -1083,9 +1152,13 @@ def _decide_event_type(
                     _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (SubagentStop)")
                 return "SubagentActive"  # teammates/workflows/codex still working -> yellow
             if has_background:
-                _reason("BLUE: shell background remainder (SubagentStop)" + _skip_suffix(cx_skip))
+                tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
+                _reason("BLUE: shell background remainder" + tag + " (SubagentStop)" + _skip_suffix(cx_skip))
                 return "BackgroundRunning"  # only background shells left -> blue
-            _reason("GREEN: no active holds (SubagentStop, last subagent done)" + _skip_suffix(cx_skip))
+            if stale_bg:
+                _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (SubagentStop)" + _skip_suffix(cx_skip))
+            else:
+                _reason("GREEN: no active holds (SubagentStop, last subagent done)" + _skip_suffix(cx_skip))
             return "Stop"  # main already stopped + last subagent done -> green
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
@@ -1102,12 +1175,21 @@ def _decide_event_type(
             _reason("HOLD working: " + str(live_markers) + " subagent markers in " + str(run_dir) + " (Stop)")
             return None  # stay yellow
         _remove(sentinel)
+        # (BG-STALE) an agent set the harness still reports running but that has
+        # produced no activity for _BG_STALE_SECONDS is idle/zombie -> drop the
+        # yellow hold (fall through to blue/green); the watcher re-asserts if it
+        # is genuinely still writing.
+        stale_bg = has_agent_background and _bg_hold_is_stale(terminal_id)
+        agent_hold = has_agent_background and not stale_bg
+        if stale_bg:
+            _remove(agentbg_marker)  # the snapshot above touched it on raw has_agent_background
+            _remove(bgactive_marker)  # reset; a fresh team re-seeds on next activity/turn
         cx = []
         cx_skip = []
-        if has_agent_background or _codex_job_active(session_id, cx, cx_skip):
+        if agent_hold or _codex_job_active(session_id, cx, cx_skip):
             # SubagentActive (NOT Start) — red-respecting working assert; see
             # the SubagentStop branch comment.
-            if has_agent_background:
+            if agent_hold:
                 if bg_ids:
                     _reason("HOLD working: background_tasks agents=" + str(sorted(bg_ids)) + " (Stop)")
                 else:
@@ -1116,9 +1198,13 @@ def _decide_event_type(
                 _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (Stop)")
             return "SubagentActive"  # teammates/workflows/codex still working -> yellow, not blue
         if has_background:
-            _reason("BLUE: shell background remainder (Stop)" + _skip_suffix(cx_skip))
+            tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
+            _reason("BLUE: shell background remainder" + tag + " (Stop)" + _skip_suffix(cx_skip))
             return "BackgroundRunning"  # turn ended; only background shells left -> blue
-        _reason("GREEN: no active holds (Stop)" + _skip_suffix(cx_skip))
+        if stale_bg:
+            _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (Stop)" + _skip_suffix(cx_skip))
+        else:
+            _reason("GREEN: no active holds (Stop)" + _skip_suffix(cx_skip))
         return "Stop"
     if event == "StopFailure":
         # (AX)/(BF) A Claude API/rate-limit abort kills the shared-API Claude
@@ -1131,6 +1217,7 @@ def _decide_event_type(
         _remove(compact_marker)
         _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
         _remove(shellbg_marker)  # snapshot is stale; StopFailure stays no-blue
+        _remove(bgactive_marker)  # (BG-STALE) Claude teammates died with the API
         cx = []
         cx_skip = []
         if _codex_job_active(session_id, cx, cx_skip):
@@ -1146,6 +1233,7 @@ def _decide_event_type(
         _remove(compact_marker)
         _remove(agentbg_marker)
         _remove(shellbg_marker)
+        _remove(bgactive_marker)  # (BG-STALE) session over -> clear the timer
         return "Stop"
     if event == "Notification":
         _reason("RED: permission (Notification)")
@@ -1165,7 +1253,10 @@ def _decide_event_type(
         # assert. A main-loop PostToolUse (no agent_id) still maps to Start:
         # the main loop is sequential, so a completed tool there means the
         # pending question/permission was answered and red must clear.
-        return "SubagentActive" if sub_agent_id else "Start"
+        if sub_agent_id:
+            _touch(bgactive_marker)  # (BG-STALE) teammate/subagent forward activity
+            return "SubagentActive"
+        return "Start"
     return None
 
 
