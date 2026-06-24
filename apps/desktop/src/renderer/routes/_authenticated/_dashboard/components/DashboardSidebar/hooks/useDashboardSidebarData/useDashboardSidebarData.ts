@@ -186,6 +186,9 @@ export function useDashboardSidebarData() {
 					showArchived: sidebarProjects.showArchived,
 					snoozedCollapsed: sidebarProjects.snoozedCollapsed,
 					archivedCollapsed: sidebarProjects.archivedCollapsed,
+					// (RECYCLE-BIN) reveal + collapse for the per-project Recycle Bin.
+					showDeleted: sidebarProjects.showDeleted,
+					deletedCollapsed: sidebarProjects.deletedCollapsed,
 				})),
 		[collections],
 	);
@@ -203,6 +206,9 @@ export function useDashboardSidebarData() {
 				showArchived: project.showArchived ?? false,
 				snoozedCollapsed: project.snoozedCollapsed ?? false,
 				archivedCollapsed: project.archivedCollapsed ?? false,
+				// (RECYCLE-BIN) heal rows persisted before the bin flags existed.
+				showDeleted: project.showDeleted ?? false,
+				deletedCollapsed: project.deletedCollapsed ?? false,
 			})),
 		[rawSidebarProjects],
 	);
@@ -258,6 +264,10 @@ export function useDashboardSidebarData() {
 					// below can't see it — completed rows are also isHidden and would
 					// misclassify as "archived" (surfacing under the Archived section).
 					completedAt: sidebarWorkspaces.sidebarState.completedAt,
+					// (RECYCLE-BIN) likewise projected so the classifier buckets it
+					// "deleted" (deletedAt is checked first) and the Recycle Bin section
+					// can sort by it / apply the retention window.
+					deletedAt: sidebarWorkspaces.sidebarState.deletedAt,
 				})),
 		[collections],
 	);
@@ -320,18 +330,25 @@ export function useDashboardSidebarData() {
 		sidebarWorkspaces,
 		snoozedSidebarWorkspaces,
 		archivedSidebarWorkspaces,
+		deletedSidebarWorkspaces,
 	} = useMemo(() => {
 		type SidebarWorkspaceRow =
 			(typeof rawSidebarWorkspacesWithHostStatus)[number];
 		const active: SidebarWorkspaceRow[] = [];
 		const snoozed: SidebarWorkspaceRow[] = [];
 		const archived: SidebarWorkspaceRow[] = [];
+		const deleted: SidebarWorkspaceRow[] = [];
 		for (const workspace of rawSidebarWorkspacesWithHostStatus) {
 			// Single source of truth: getWorkspaceSidebarBucket reads the row's
 			// type. A removed non-main thread surfaces under Archived; a master card
 			// removed now archives too (archivedAt), while a LEGACY hidden main
 			// (isHidden, no timestamp) stays hidden — matching ensureSidebarWorkspaceRecord.
 			switch (getWorkspaceSidebarBucket(workspace, nowMs)) {
+				case "deleted":
+					// (RECYCLE-BIN) soft-deleted: surfaces ONLY in the project's Recycle
+					// Bin, never in the active lane / Snoozed / Archived / Completed.
+					deleted.push(workspace);
+					break;
 				case "archived":
 					archived.push(workspace);
 					break;
@@ -355,6 +372,7 @@ export function useDashboardSidebarData() {
 			sidebarWorkspaces: active,
 			snoozedSidebarWorkspaces: snoozed,
 			archivedSidebarWorkspaces: archived,
+			deletedSidebarWorkspaces: deleted,
 		};
 	}, [rawSidebarWorkspacesWithHostStatus, nowMs]);
 
@@ -600,6 +618,10 @@ export function useDashboardSidebarData() {
 				children: [],
 				snoozedWorkspaces: [],
 				archivedWorkspaces: [],
+				// (RECYCLE-BIN) full, unfiltered bin contents; the section component
+				// applies the retention window and derives its header count from this
+				// array's length.
+				deletedWorkspaces: [],
 				sectionMap: new Map(),
 				childEntries: [],
 				orphanedWorkspaces: [],
@@ -721,6 +743,9 @@ export function useDashboardSidebarData() {
 				snoozeUntil: workspace.snoozeUntil ?? null,
 				snoozeLaunchId: workspace.snoozeLaunchId ?? null,
 				archivedAt: workspace.archivedAt ?? null,
+				// (RECYCLE-BIN) carried so the Recycle Bin section can sort by it and
+				// apply the retention "Show all" filter.
+				deletedAt: workspace.deletedAt ?? null,
 				snoozeRemainingLabel: formatSnoozeRemaining(
 					workspace.snoozeUntil,
 					workspace.snoozeLaunchId,
@@ -741,6 +766,14 @@ export function useDashboardSidebarData() {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 			project.archivedWorkspaces.push(
+				buildInactiveWorkspace(workspace, project),
+			);
+		}
+
+		for (const workspace of deletedSidebarWorkspaces) {
+			const project = projectsById.get(workspace.projectId);
+			if (!project) continue;
+			project.deletedWorkspaces.push(
 				buildInactiveWorkspace(workspace, project),
 			);
 		}
@@ -829,6 +862,10 @@ export function useDashboardSidebarData() {
 			sidebarProject.archivedWorkspaces.sort(
 				(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
 			);
+			// (RECYCLE-BIN) most-recently-deleted first.
+			sidebarProject.deletedWorkspaces.sort(
+				(left, right) => (right.deletedAt ?? 0) - (left.deletedAt ?? 0),
+			);
 			return [sidebarProject];
 		});
 	}, [
@@ -841,6 +878,7 @@ export function useDashboardSidebarData() {
 		visibleSidebarWorkspaces,
 		snoozedSidebarWorkspaces,
 		archivedSidebarWorkspaces,
+		deletedSidebarWorkspaces,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
 

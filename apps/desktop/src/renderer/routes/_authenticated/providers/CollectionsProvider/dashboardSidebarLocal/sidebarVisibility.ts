@@ -77,6 +77,9 @@ interface SidebarWorkspaceStateFields {
 	snoozeUntil?: number | null;
 	snoozeLaunchId?: string | null;
 	completedAt?: number | null;
+	// (RECYCLE-BIN) Soft-delete timestamp — presence makes the thread bucket
+	// "deleted" (highest precedence), surfacing it ONLY in the Recycle Bin.
+	deletedAt?: number | null;
 }
 
 type SidebarWorkspaceStateSource =
@@ -96,6 +99,16 @@ function readWorkspaceType(
 	workspace: SidebarWorkspaceStateSource,
 ): string | null | undefined {
 	return (workspace as { type?: string | null }).type;
+}
+
+/** (RECYCLE-BIN) A thread is soft-deleted while `deletedAt` is set. The Recycle
+ * Bin is the ONLY surface for it — the bucket classifier checks this FIRST so a
+ * deleted thread never reappears under Archived/Snoozed/Completed. Visual-only;
+ * the worktree and branch are untouched until a permanent destroy. */
+export function isWorkspaceDeleted(
+	workspace: SidebarWorkspaceStateSource,
+): boolean {
+	return readSidebarWorkspaceState(workspace).deletedAt != null;
 }
 
 export function isWorkspaceArchived(
@@ -127,14 +140,20 @@ export type SidebarWorkspaceBucket =
 	| "snoozed"
 	| "archived"
 	| "hidden"
-	| "completed";
+	| "completed"
+	| "deleted";
 
 export function getWorkspaceSidebarBucket(
 	workspace: SidebarWorkspaceStateSource,
 	nowMs: number = Date.now(),
 	workspaceType?: string | null,
 ): SidebarWorkspaceBucket {
-	// (KANBAN COMPLETED) checked FIRST: completeWorkspace also sets isHidden so
+	// (RECYCLE-BIN) checked FIRST of all: deleteWorkspace also sets isHidden (and
+	// clears every other state flag), but a soft-deleted thread must surface ONLY
+	// in the Recycle Bin — never under Completed/Archived/Snoozed/Hidden. Restore
+	// clears deletedAt to return it to active.
+	if (isWorkspaceDeleted(workspace)) return "deleted";
+	// (KANBAN COMPLETED) checked next: completeWorkspace also sets isHidden so
 	// raw-visibility consumers hide the row, but isHidden + non-main would
 	// classify "archived" below and surface the thread under the project's
 	// Archived section. Completed threads have NO sidebar surface at all — the
@@ -157,6 +176,20 @@ export function getWorkspaceSidebarBucket(
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+
+/** (RECYCLE-BIN) Retention is a DISPLAY filter only — nothing is ever
+ * auto-purged. Returns true when an item should be shown by default in the bin:
+ * a missing timestamp is always shown, otherwise it's within the last
+ * `retentionDays`. Older items are kept but collapsed behind the per-bin
+ * "Show all" toggle. */
+export function isWithinRecycleBinWindow(
+	deletedAt: number | null | undefined,
+	retentionDays: number,
+	nowMs: number = Date.now(),
+): boolean {
+	if (deletedAt == null) return true;
+	return nowMs - deletedAt <= retentionDays * DAY_MS;
+}
 
 export type SnoozeDuration =
 	| { kind: "next-launch" }

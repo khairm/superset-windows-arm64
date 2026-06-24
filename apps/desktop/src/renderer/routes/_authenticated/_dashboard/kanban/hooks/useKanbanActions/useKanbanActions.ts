@@ -31,7 +31,6 @@ export interface UseKanbanActionsResult {
 			deadline?: number | null;
 		},
 	) => void;
-	deleteQueuedCard: (cardId: string) => void;
 	canDropCard: (
 		card: KanbanCardRow,
 		toColumnId: string,
@@ -64,13 +63,27 @@ export interface UseKanbanActionsResult {
 			| "showSnoozed"
 			| "showArchived"
 			| "snoozedCollapsed"
-			| "archivedCollapsed",
+			| "archivedCollapsed"
+			| "showRecycleBin"
+			| "recycleBinCollapsed",
 		value: boolean,
 	) => void;
 	snoozeCard: (card: KanbanCardRow, until: number | "next-launch") => void;
 	unsnoozeCard: (card: KanbanCardRow) => void;
 	archiveCard: (card: KanbanCardRow) => void;
 	unarchiveCard: (card: KanbanCardRow) => void;
+	/** (RECYCLE-BIN) The default card "Delete" — SOFT, silent (no dialog/toast).
+	 * Bound cards delegate to deleteWorkspace (one source of truth on the branch's
+	 * sidebarState); an unbound (Queued) card stamps its own deletedAt. The
+	 * worktree/branch/sessions are untouched — exactly like Archive. */
+	deleteCard: (card: KanbanCardRow) => void;
+	/** (RECYCLE-BIN) Restore a soft-deleted card straight back to ACTIVE — bound
+	 * via restoreWorkspace, unbound by clearing its deletedAt. */
+	restoreCard: (card: KanbanCardRow) => void;
+	/** (RECYCLE-BIN) The unbound permanent destroy from inside the bin: hard-remove
+	 * the card row. A BOUND card's permanent destroy is the shared branch dialog
+	 * (the reconcile then drops the card) — wired in KanbanCard, not here. */
+	deletePermanentlyCard: (card: KanbanCardRow) => void;
 	/** (KANBAN COMPLETED) Drop into the Completed column: stamps completedAt
 	 * (the report datum + sidebar-hide flag) and snapshots title/context. */
 	completeCard: (card: KanbanCardRow) => void;
@@ -102,6 +115,8 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const {
 		archiveWorkspace,
 		completeWorkspace,
+		deleteWorkspace,
+		restoreWorkspace,
 		snoozeWorkspace,
 		uncompleteWorkspace,
 		unsnoozeWorkspace,
@@ -171,15 +186,6 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			collections.v2KanbanCards.update(cardId, (draft) =>
 				applyKanbanCardPatch(draft, patch),
 			);
-		},
-		[collections],
-	);
-
-	const deleteQueuedCard = useCallback(
-		(cardId: string) => {
-			const card = collections.v2KanbanCards.get(cardId);
-			if (!card || card.workspaceId) return; // unbound only
-			collections.v2KanbanCards.delete(cardId);
 		},
 		[collections],
 	);
@@ -568,6 +574,70 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[collections, unarchiveWorkspaces],
 	);
 
+	// (RECYCLE-BIN) Soft delete is the DEFAULT card "Delete" now — silent,
+	// reversible, visual-only (worktree/branch/sessions untouched). Bound cards
+	// delegate to the branch's sidebarState (one source of truth via
+	// deleteWorkspace); unbound (Queued) cards stamp their own deletedAt. The
+	// permanent git-destroy is relocated to "Delete permanently" inside the bin.
+
+	const deleteCard = useCallback(
+		(card: KanbanCardRow) => {
+			if (card.workspaceId) {
+				ensureBoundRow(card.workspaceId);
+				deleteWorkspace(card.workspaceId);
+				return;
+			}
+			if (!collections.v2KanbanCards.get(card.id)) return;
+			collections.v2KanbanCards.update(card.id, (draft) => {
+				draft.deletedAt = Date.now();
+				// Clear the other hide states so a re-delete after a restore lands
+				// cleanly in the bin with a fresh timestamp (mirrors deleteWorkspace).
+				draft.snoozeUntil = null;
+				draft.snoozeLaunchId = null;
+				draft.archivedAt = null;
+			});
+		},
+		[collections, deleteWorkspace, ensureBoundRow],
+	);
+
+	const restoreCard = useCallback(
+		(card: KanbanCardRow) => {
+			if (card.workspaceId) {
+				restoreWorkspace(card.workspaceId);
+				return;
+			}
+			if (!collections.v2KanbanCards.get(card.id)) return;
+			collections.v2KanbanCards.update(card.id, (draft) => {
+				// Full restore-to-active (mirrors restoreWorkspace): clear every hide
+				// state, not just deletedAt, so the card re-enters its column's active
+				// list regardless of what it was before deletion.
+				draft.deletedAt = null;
+				draft.archivedAt = null;
+				draft.snoozeUntil = null;
+				draft.snoozeLaunchId = null;
+				draft.completedAt = null;
+				draft.completedContext = null;
+			});
+		},
+		[collections, restoreWorkspace],
+	);
+
+	const deletePermanentlyCard = useCallback(
+		(card: KanbanCardRow) => {
+			// Unbound only — a BOUND card's permanent destroy is the shared branch
+			// dialog (the reconcile drops the card once the workspace row is gone).
+			if (card.workspaceId) return;
+			const current = collections.v2KanbanCards.get(card.id);
+			if (!current) return;
+			// Guard the bin boundary: only the in-bin permanent destroy can hard-remove
+			// a row. A non-deleted card reaching here (stale menu/race) must NOT be
+			// silently nuked — its soft-delete is the only path to the bin.
+			if (current.deletedAt == null) return;
+			collections.v2KanbanCards.delete(card.id);
+		},
+		[collections],
+	);
+
 	// (KANBAN COMPLETED) Card transaction FIRST, sidebar second — each update is
 	// its own localStorage flush, and the reconcile's heal rules converge toward
 	// the CARD's column, so a crash between the two transactions self-repairs in
@@ -688,7 +758,6 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		() => ({
 			createQueuedCard,
 			updateCard,
-			deleteQueuedCard,
 			canDropCard,
 			applyCardOrder,
 			applyDeadlineTieOrder,
@@ -706,6 +775,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			unsnoozeCard,
 			archiveCard,
 			unarchiveCard,
+			deleteCard,
+			restoreCard,
+			deletePermanentlyCard,
 			completeCard,
 			uncompleteCard,
 			updateCompletedDate,
@@ -715,7 +787,6 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[
 			createQueuedCard,
 			updateCard,
-			deleteQueuedCard,
 			canDropCard,
 			applyCardOrder,
 			applyDeadlineTieOrder,
@@ -733,6 +804,9 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			unsnoozeCard,
 			archiveCard,
 			unarchiveCard,
+			deleteCard,
+			restoreCard,
+			deletePermanentlyCard,
 			completeCard,
 			uncompleteCard,
 			updateCompletedDate,

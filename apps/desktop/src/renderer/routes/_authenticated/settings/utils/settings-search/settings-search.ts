@@ -28,6 +28,7 @@ export const SETTING_ITEM_ID = {
 	BEHAVIOR_FILE_OPEN_MODE: "behavior-file-open-mode",
 	BEHAVIOR_RESOURCE_MONITOR: "behavior-resource-monitor",
 	BEHAVIOR_OPEN_LINKS_IN_APP: "behavior-open-links-in-app",
+	BEHAVIOR_RECYCLE_BIN_RETENTION: "behavior-recycle-bin-retention",
 
 	GIT_BRANCH_PREFIX: "git-branch-prefix",
 	GIT_DELETE_LOCAL_BRANCH: "git-delete-local-branch",
@@ -136,6 +137,8 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.BEHAVIOR_FILE_OPEN_MODE]: "v1",
 	[SETTING_ITEM_ID.BEHAVIOR_RESOURCE_MONITOR]: "shared",
 	[SETTING_ITEM_ID.BEHAVIOR_OPEN_LINKS_IN_APP]: "v1",
+	// (RECYCLE-BIN) the bin lives in the v2 sidebar + kanban only.
+	[SETTING_ITEM_ID.BEHAVIOR_RECYCLE_BIN_RETENTION]: "v2",
 
 	// Branch prefix exists in both UIs — v1 `GitSettings`, v2 `V2GitSettings`.
 	[SETTING_ITEM_ID.GIT_BRANCH_PREFIX]: "shared",
@@ -585,6 +588,28 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"performance",
 			"process",
 			"terminal",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.BEHAVIOR_RECYCLE_BIN_RETENTION,
+		section: "behavior",
+		title: "Recycle bin retention",
+		description:
+			"Show items deleted in the last N days; older deleted items stay but collapse behind each bin's Show all toggle (nothing is auto-deleted)",
+		keywords: [
+			"recycle",
+			"bin",
+			"trash",
+			"deleted",
+			"delete",
+			"soft delete",
+			"restore",
+			"retention",
+			"days",
+			"window",
+			"filter",
+			"workspace",
+			"kanban",
 		],
 	},
 	{

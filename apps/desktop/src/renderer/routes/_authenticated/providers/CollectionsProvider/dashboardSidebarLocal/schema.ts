@@ -26,6 +26,10 @@ export const dashboardSidebarProjectSchema = z.object({
 	showArchived: z.boolean().default(false),
 	snoozedCollapsed: z.boolean().default(false),
 	archivedCollapsed: z.boolean().default(false),
+	// (RECYCLE-BIN) Per-project reveal + collapse for the Recycle Bin section
+	// (soft-deleted threads), mirroring the Snoozed / Archived flags above.
+	showDeleted: z.boolean().default(false),
+	deletedCollapsed: z.boolean().default(false),
 });
 
 const paneWorkspaceStateSchema = z.custom<WorkspaceState<unknown>>();
@@ -98,6 +102,15 @@ export const workspaceLocalStateSchema = z.object({
 		// treat it like an archived row; the bucket classifier checks completedAt
 		// FIRST so it never surfaces under Archived.
 		completedAt: z.number().nullable().default(null),
+		// (RECYCLE-BIN) Soft-delete timestamp. Set by deleteWorkspace (the default
+		// "Delete" now moves a thread to the project's Recycle Bin instead of the
+		// hard git-destroy). Visual-only and fully lossless — the worktree, branch
+		// and running terminals are untouched, exactly like Archive. Presence makes
+		// the bucket classifier return "deleted" FIRST (before completed/archived),
+		// so a deleted thread shows ONLY in the bin. restoreWorkspace clears it back
+		// to active. The permanent git-destroy lives behind "Delete permanently"
+		// inside the bin.
+		deletedAt: z.number().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -129,6 +142,7 @@ const SIDEBAR_STATE_DEFAULTS = {
 	snoozeUntil: null,
 	snoozeLaunchId: null,
 	completedAt: null,
+	deletedAt: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
@@ -417,6 +431,10 @@ export const kanbanColumnSchema = z.object({
 	showArchived: z.boolean().default(false),
 	snoozedCollapsed: z.boolean().default(false),
 	archivedCollapsed: z.boolean().default(false),
+	// (RECYCLE-BIN) Per-column reveal + collapse for the Recycle Bin sub-section
+	// (soft-deleted cards), mirroring the Snoozed / Archived flags above.
+	showRecycleBin: z.boolean().default(false),
+	recycleBinCollapsed: z.boolean().default(false),
 	createdAt: z.number().default(0),
 });
 
@@ -457,6 +475,11 @@ export const kanbanCardSchema = z.object({
 	// record (completed card whose branch was later deleted) renders, since the
 	// live workspace row is gone.
 	completedContext: z.string().nullable().default(null),
+	// (RECYCLE-BIN) Soft-delete timestamp for an UNBOUND (Queued) card. Bound
+	// cards derive their bin state from the branch's sidebarState.deletedAt (one
+	// source of truth) — this stays null for them. Set by deleteCard, cleared by
+	// restoreCard; permanent removal still hard-deletes the row.
+	deletedAt: z.number().nullable().default(null),
 	createdAt: z.number().default(0),
 });
 
@@ -499,6 +522,8 @@ const KANBAN_COLUMN_DEFAULTS = {
 	showArchived: false,
 	snoozedCollapsed: false,
 	archivedCollapsed: false,
+	showRecycleBin: false,
+	recycleBinCollapsed: false,
 	createdAt: 0,
 } as const;
 
@@ -514,6 +539,7 @@ const KANBAN_CARD_DEFAULTS = {
 	archivedAt: null,
 	completedAt: null,
 	completedContext: null,
+	deletedAt: null,
 	createdAt: 0,
 } as const;
 

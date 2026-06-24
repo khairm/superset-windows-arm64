@@ -87,6 +87,19 @@ export function buildDashboardSidebarProjects({
 		projectsById.set(project.id, {
 			...project,
 			children: [],
+			// Snooze / archive / (RECYCLE-BIN) soft-delete buckets + their
+			// reveal/collapse flags default empty here; the live inline builder
+			// populates them. Kept in sync with DashboardSidebarProject so this
+			// helper still satisfies the type.
+			snoozedWorkspaces: [],
+			archivedWorkspaces: [],
+			deletedWorkspaces: [],
+			showSnoozed: false,
+			showArchived: false,
+			snoozedCollapsed: false,
+			archivedCollapsed: false,
+			showDeleted: false,
+			deletedCollapsed: false,
 			sectionMap: new Map(),
 			childEntries: [],
 			orphanedWorkspaces: [],

@@ -73,6 +73,10 @@ export interface AccessibleV2Workspace {
 	 * entirely. The "+" action must NOT unarchive/re-add it: un-completion is a
 	 * board-only action (drag the card out of the Completed column). */
 	isCompleted: boolean;
+	/** (RECYCLE-BIN) Soft-deleted to the per-project Recycle Bin. A binned thread
+	 * has its own sidebar/kanban surface only, so it is excluded from this list
+	 * entirely (see the deleted-row filter below). */
+	isDeleted: boolean;
 	pr: V2WorkspacePrSummary | null;
 }
 
@@ -307,6 +311,11 @@ export function useAccessibleV2Workspaces(
 						sidebarSnoozeLaunchId:
 							sidebarState?.sidebarState.snoozeLaunchId ?? null,
 						sidebarCompletedAt: sidebarState?.sidebarState.completedAt ?? null,
+						// (RECYCLE-BIN) projected so the bucket classifier sees the
+						// soft-delete (deletedAt is checked first) — without it a binned
+						// thread (isHidden, no archive timestamp) misclassifies "archived"
+						// and leaks into this list as a fake archived row.
+						sidebarDeletedAt: sidebarState?.sidebarState.deletedAt ?? null,
 					}),
 				),
 		[activeOrganizationId, collections, currentUserId],
@@ -402,6 +411,10 @@ export function useAccessibleV2Workspaces(
 								snoozeUntil: row.sidebarSnoozeUntil,
 								snoozeLaunchId: row.sidebarSnoozeLaunchId,
 								completedAt: row.sidebarCompletedAt,
+								// (RECYCLE-BIN) deletedAt MUST be threaded or a binned thread
+								// (isHidden, no archive stamp) buckets "archived" and leaks
+								// into this list mislabeled as archived.
+								deletedAt: row.sidebarDeletedAt,
 							},
 							Date.now(),
 							row.type,
@@ -409,6 +422,7 @@ export function useAccessibleV2Workspaces(
 					: null;
 			const isArchived = bucket === "archived";
 			const isCompleted = bucket === "completed";
+			const isDeleted = bucket === "deleted";
 			const pr = row.projectRepoId
 				? (prsByRepoBranch.get(`${row.projectRepoId}::${row.branch}`) ?? null)
 				: null;
@@ -435,11 +449,18 @@ export function useAccessibleV2Workspaces(
 				isInSidebar,
 				isArchived,
 				isCompleted,
+				isDeleted,
 				pr,
 			});
 		}
-		return Array.from(deduped.values()).sort(
-			(a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+		return (
+			Array.from(deduped.values())
+				// (RECYCLE-BIN) A soft-deleted thread lives ONLY in its project's
+				// Recycle Bin (sidebar + kanban) — it must never surface in this
+				// browser, and excluding it here keeps it out of every downstream
+				// derivation (counts, host/project options, pinned/others).
+				.filter((workspace) => !workspace.isDeleted)
+				.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
 		);
 	}, [rows, machineId, currentUserId, prsByRepoBranch]);
 

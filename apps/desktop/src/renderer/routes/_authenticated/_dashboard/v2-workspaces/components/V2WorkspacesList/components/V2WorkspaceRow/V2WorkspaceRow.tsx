@@ -20,7 +20,6 @@ import {
 } from "react-icons/lu";
 import { RiPushpinFill, RiPushpinLine } from "react-icons/ri";
 import { GATED_FEATURES, usePaywall } from "renderer/components/Paywall";
-import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { V2WorkspacePrHoverCardContent } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacePrHoverCardContent";
 import type {
@@ -53,10 +52,10 @@ export function V2WorkspaceRow({
 		ensureWorkspaceInSidebar,
 		removeWorkspaceFromSidebar,
 		archiveWorkspace,
+		deleteWorkspace,
 		unarchiveWorkspace,
 	} = useDashboardSidebarState();
 	const isMainWorkspace = workspace.type === "main";
-	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 	const { isDeleting } = useDeletingWorkspaces();
 	const deleting = isDeleting(workspace.id);
 
@@ -133,14 +132,18 @@ export function V2WorkspaceRow({
 		],
 	);
 
-	const handleDeleteClick = useCallback((event: React.MouseEvent) => {
-		event.stopPropagation();
-		setIsDeleteDialogOpen(true);
-	}, []);
-
-	const handleDeleted = useCallback(() => {
-		removeWorkspaceFromSidebar(workspace.id);
-	}, [removeWorkspaceFromSidebar, workspace.id]);
+	// (RECYCLE-BIN) The list-row trash is a SILENT soft-delete now — it moves the
+	// thread to its project's Recycle Bin (deletedAt + isHidden) instead of opening
+	// the destroy dialog. The real git destroy is reachable ONLY from in-bin
+	// "Delete permanently" / "Empty Recycle Bin". Mains never reach here (the button
+	// only renders for non-main rows; deleteWorkspace no-ops a main anyway).
+	const handleDeleteClick = useCallback(
+		(event: React.MouseEvent) => {
+			event.stopPropagation();
+			deleteWorkspace(workspace.id, workspace.projectId);
+		},
+		[deleteWorkspace, workspace.id, workspace.projectId],
+	);
 
 	const creatorLabel = workspace.isCreatedByCurrentUser
 		? "you"
@@ -329,19 +332,6 @@ export function V2WorkspaceRow({
 					) : null}
 				</div>
 			</div>
-			{/* Mount the dialog (and its per-workspace live-query subscription) only
-			    while it's open or a delete is in flight — not idle for every row.
-			    `|| deleting` keeps it mounted through the destroy so a
-			    teardown-failure can re-open it to offer force-delete. */}
-			{!isMainWorkspace && (isDeleteDialogOpen || deleting) ? (
-				<DashboardSidebarDeleteDialog
-					workspaceId={workspace.id}
-					workspaceName={workspace.name || workspace.branch}
-					open={isDeleteDialogOpen}
-					onOpenChange={setIsDeleteDialogOpen}
-					onDeleted={handleDeleted}
-				/>
-			) : null}
 		</li>
 	);
 }

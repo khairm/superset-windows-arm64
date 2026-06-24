@@ -12,7 +12,7 @@ import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useHotkey } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
-import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
+import { useNavigateAwayFromWorkspace } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useNavigateAwayFromWorkspace";
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
@@ -35,26 +35,24 @@ export const Route = createFileRoute("/_authenticated/_dashboard")({
 	component: DashboardLayout,
 });
 
-type DeleteTarget =
-	| {
-			version: "v1";
-			workspaceId: string;
-			workspaceName: string;
-			workspaceType: "worktree" | "branch";
-	  }
-	| {
-			version: "v2";
-			workspaceId: string;
-			workspaceName: string;
-			open: boolean;
-	  };
+// Only the legacy (non-v2-cloud) WorkspaceSidebar still opens a destroy dialog
+// here. The v2 sidebar's close-workspace is a SILENT soft-delete (Recycle Bin) —
+// the v2 destroy dialog is reachable ONLY from in-bin "Delete permanently" /
+// "Empty Recycle Bin", never from this layout.
+type DeleteTarget = {
+	version: "v1";
+	workspaceId: string;
+	workspaceName: string;
+	workspaceType: "worktree" | "branch";
+};
 
 function DashboardLayout() {
 	const navigate = useNavigate();
 	const openNewWorkspaceModal = useOpenNewWorkspaceModal();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const collections = useCollections();
-	const { removeWorkspaceFromSidebar } = useDashboardSidebarState();
+	const { deleteWorkspace } = useDashboardSidebarState();
+	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
 	useDevSeedV2Sidebar();
 	// Get current workspace from route to pre-select project in new workspace modal
 	const matchRoute = useMatchRoute();
@@ -138,12 +136,12 @@ function DashboardLayout() {
 				currentV2Workspace &&
 				currentV2Workspace.type !== "main"
 			) {
-				setDeleteTarget({
-					workspaceId: currentV2WorkspaceId,
-					workspaceName: currentV2Workspace.name || currentV2Workspace.branch,
-					version: "v2",
-					open: true,
-				});
+				// (RECYCLE-BIN) Close-workspace is now a SILENT soft-delete: move the
+				// thread to its project's Recycle Bin and navigate off the route. The
+				// real git destroy lives only behind in-bin "Delete permanently". Mains
+				// never reach here (deleteWorkspace would no-op them anyway).
+				deleteWorkspace(currentV2WorkspaceId, currentV2Workspace.projectId);
+				navigateAwayFromWorkspace(currentV2WorkspaceId);
 			}
 		},
 		{
@@ -212,22 +210,6 @@ function DashboardLayout() {
 					open={true}
 					onOpenChange={(open) => {
 						if (!open) setDeleteTarget(null);
-					}}
-				/>
-			)}
-			{deleteTarget?.version === "v2" && (
-				<DashboardSidebarDeleteDialog
-					workspaceId={deleteTarget.workspaceId}
-					workspaceName={deleteTarget.workspaceName}
-					open={deleteTarget.open}
-					onOpenChange={(open) => {
-						setDeleteTarget((target) =>
-							target?.version === "v2" ? { ...target, open } : target,
-						);
-					}}
-					onDeleted={() => {
-						removeWorkspaceFromSidebar(deleteTarget.workspaceId);
-						setDeleteTarget(null);
 					}}
 				/>
 			)}

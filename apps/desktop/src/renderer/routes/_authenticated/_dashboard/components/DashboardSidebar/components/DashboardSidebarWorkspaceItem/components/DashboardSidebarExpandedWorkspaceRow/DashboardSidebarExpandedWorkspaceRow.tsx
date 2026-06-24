@@ -7,15 +7,15 @@ import {
 	useRef,
 } from "react";
 import { HiMiniMinus, HiMiniXMark } from "react-icons/hi2";
-import { LuUndo2 } from "react-icons/lu";
+import { LuRotateCcw, LuUndo2 } from "react-icons/lu";
 import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { HotkeyLabel } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
-import { RenameInput } from "renderer/screens/main/components/WorkspaceSidebar/RenameInput";
 import {
 	type DisplayStatus,
 	StatusIndicator,
 } from "renderer/screens/main/components/StatusIndicator";
+import { RenameInput } from "renderer/screens/main/components/WorkspaceSidebar/RenameInput";
 import type {
 	DashboardSidebarWorkspace,
 	DashboardSidebarWorkspacePullRequest,
@@ -50,7 +50,7 @@ interface DashboardSidebarExpandedWorkspaceRowProps
 	terminalStatuses?: Array<{ terminalId: string; status: DisplayStatus }>;
 	isInSection?: boolean;
 	isNonGit?: boolean;
-	sectionState?: "snoozed" | "archived";
+	sectionState?: "snoozed" | "archived" | "deleted";
 	onRestoreClick?: () => void;
 	onClick?: () => void;
 	onDoubleClick?: () => void;
@@ -118,6 +118,14 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 		}, [isActive]);
 
 		const creationStatusText = isPending ? "Creating…" : null;
+		// (RECYCLE-BIN) The restore button's label/tooltip per section: snoozed →
+		// Unsnooze, archived → Unarchive, deleted (Recycle Bin) → Restore.
+		const restoreActionLabel =
+			sectionState === "snoozed"
+				? "Unsnooze"
+				: sectionState === "deleted"
+					? "Restore"
+					: "Unarchive";
 		const isMainWorkspace = workspace.type === "main";
 		const workspaceKindTitle = isMainWorkspace
 			? "Main workspace"
@@ -160,8 +168,9 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 					// GREEN (snooze itself is amber) so "returned" reads differently.
 					"transition-shadow duration-1000",
 					workspace.justReturned && "ring-1 ring-inset ring-green-500/50",
-					// Archived rows are visually dimmed vs active/snoozed.
-					sectionState === "archived" && "opacity-60",
+					// Archived + Recycle Bin rows are visually dimmed vs active/snoozed.
+					(sectionState === "archived" || sectionState === "deleted") &&
+						"opacity-60",
 					className,
 				)}
 				{...props}
@@ -334,19 +343,17 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 													}
 												}}
 												className="flex items-center justify-center text-muted-foreground hover:text-foreground"
-												aria-label={
-													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
-												}
+												aria-label={restoreActionLabel}
 											>
-												<LuUndo2 className="size-3.5" />
+												{sectionState === "deleted" ? (
+													<LuRotateCcw className="size-3.5" />
+												) : (
+													<LuUndo2 className="size-3.5" />
+												)}
 											</button>
 										</TooltipTrigger>
 										<TooltipContent side="top" sideOffset={4}>
-											<HotkeyLabel
-												label={
-													sectionState === "snoozed" ? "Unsnooze" : "Unarchive"
-												}
-											/>
+											<HotkeyLabel label={restoreActionLabel} />
 										</TooltipContent>
 									</Tooltip>
 								) : isMainWorkspace ? (

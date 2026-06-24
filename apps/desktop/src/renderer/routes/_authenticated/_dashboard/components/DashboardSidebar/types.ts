@@ -49,6 +49,9 @@ export interface DashboardSidebarWorkspace {
 	snoozeUntil?: number | null;
 	snoozeLaunchId?: string | null;
 	archivedAt?: number | null;
+	// (RECYCLE-BIN) Soft-delete timestamp — populated for items rendered inside
+	// the Recycle Bin section (used for sort + the retention "Show all" filter).
+	deletedAt?: number | null;
 	/** Precomputed "time left" label for a snoozed row (e.g. "3d"), derived in
 	 * the data hook from the live tick so the badge actually counts down. */
 	snoozeRemainingLabel?: string;
@@ -93,13 +96,22 @@ export interface DashboardSidebarProject {
 	// top tier, above active (badge > 0) and idle (badge 0) projects.
 	isPinned: boolean;
 	children: DashboardSidebarProjectChild[];
-	// Snoozed / archived threads live outside `children` (so they don't count
-	// toward the active badge or the DnD lane) and render in their own
+	// Snoozed / archived / soft-deleted threads live outside `children` (so they
+	// don't count toward the active badge or the DnD lane) and render in their own
 	// reveal-able sections below the active list.
 	snoozedWorkspaces: DashboardSidebarWorkspace[];
 	archivedWorkspaces: DashboardSidebarWorkspace[];
+	// (RECYCLE-BIN) Soft-deleted threads, sorted by deletedAt DESC. Intentionally
+	// the FULL, unfiltered bin — the retention window is applied ONLY in the section
+	// component for display (and its "Show all" toggle overrides it locally), and the
+	// header count is derived straight from this array's length. Do NOT filter it
+	// here: Restore-all / Empty-bin must act on older-than-retention items too.
+	deletedWorkspaces: DashboardSidebarWorkspace[];
 	showSnoozed: boolean;
 	showArchived: boolean;
 	snoozedCollapsed: boolean;
 	archivedCollapsed: boolean;
+	// (RECYCLE-BIN) reveal + collapse for the per-project Recycle Bin section.
+	showDeleted: boolean;
+	deletedCollapsed: boolean;
 }

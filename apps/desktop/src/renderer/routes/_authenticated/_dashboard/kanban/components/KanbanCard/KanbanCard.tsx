@@ -299,13 +299,42 @@ export function KanbanCard({
 			{/* All card actions live in the right-click menu (no 3-dots button):
 			    Edit card (queued only), Snooze/Archive, Delete. Main workspaces
 			    have no actions; the drag-overlay ghost gets no menu. */}
-			{!overlay && isCompletedCard ? (
+			{!overlay && view.bucket === "deleted" && (!isMain || !workspace) ? (
+				// (RECYCLE-BIN) Inside the bin — checked FIRST, BEFORE the Completed
+				// branch, so a soft-deleted card surfaces Restore + Delete-permanently
+				// regardless of which column it sits in (useKanbanData can bucket a
+				// Completed-column card as "deleted" too). Only Restore (back to active)
+				// and the relocated permanent destroy live here. A bound card's
+				// permanent destroy is the shared branch dialog (delete-branch checkbox
+				// + dirty/unpushed warnings); an unbound (Queued) card hard-removes its row.
+				<ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+					<ContextMenuItem onSelect={() => actions.restoreCard(card)}>
+						Restore
+					</ContextMenuItem>
+					<ContextMenuSeparator />
+					{workspace ? (
+						<ContextMenuItem
+							variant="destructive"
+							onSelect={() => setDeleteOpen(true)}
+						>
+							Delete permanently…
+						</ContextMenuItem>
+					) : (
+						<ContextMenuItem
+							variant="destructive"
+							onSelect={() => actions.deletePermanentlyCard(card)}
+						>
+							Delete permanently
+						</ContextMenuItem>
+					)}
+				</ContextMenuContent>
+			) : !overlay && isCompletedCard ? (
 				// (KANBAN COMPLETED) reduced menu: a done record is neither
 				// snoozable nor archivable, and its title is frozen. Un-completing
-				// is dragging the card out. Deleting a LIVE branch goes through the
-				// shared dialog (the record then survives frozen — removing it too
-				// is deliberately a second step); records with no branch left
-				// (unbound tasks / frozen records) delete directly.
+				// is dragging the card out. Deleting a LIVE branch is now the SOFT
+				// Delete (moves the card to this column's Recycle Bin — the permanent
+				// destroy lives behind in-bin "Delete permanently"); records with no
+				// branch left (unbound tasks / frozen records) delete directly.
 				<ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
 					<ContextMenuItem onSelect={() => setEditing("completed")}>
 						Edit completed date…
@@ -314,7 +343,7 @@ export function KanbanCard({
 					{workspace && !isMain ? (
 						<ContextMenuItem
 							variant="destructive"
-							onSelect={() => setDeleteOpen(true)}
+							onSelect={() => actions.deleteCard(card)}
 						>
 							Delete branch…
 						</ContextMenuItem>
@@ -373,21 +402,15 @@ export function KanbanCard({
 						</ContextMenuItem>
 					)}
 					<ContextMenuSeparator />
-					{workspace ? (
-						<ContextMenuItem
-							variant="destructive"
-							onSelect={() => setDeleteOpen(true)}
-						>
-							Delete branch…
-						</ContextMenuItem>
-					) : (
-						<ContextMenuItem
-							variant="destructive"
-							onSelect={() => actions.deleteQueuedCard(card.id)}
-						>
-							Delete task
-						</ContextMenuItem>
-					)}
+					{/* (RECYCLE-BIN) The default Delete is now SOFT + silent — it moves
+					    the card to this column's Recycle Bin (no dialog, no toast).
+					    Bound and unbound both delegate to deleteCard. */}
+					<ContextMenuItem
+						variant="destructive"
+						onSelect={() => actions.deleteCard(card)}
+					>
+						{workspace ? "Delete" : "Delete task"}
+					</ContextMenuItem>
 				</ContextMenuContent>
 			) : !overlay && isMain && workspace && view.bucket === "archived" ? (
 				// (MASTER-ARCHIVE-ONLY) A master card can be archived (from the

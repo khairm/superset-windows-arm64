@@ -22,7 +22,7 @@ interface DashboardSidebarWorkspaceItemProps {
 	shortcutLabel?: string;
 	isCollapsed?: boolean;
 	isInSection?: boolean;
-	sectionState?: "snoozed" | "archived";
+	sectionState?: "snoozed" | "archived" | "deleted";
 }
 
 export function DashboardSidebarWorkspaceItem({
@@ -60,10 +60,12 @@ export function DashboardSidebarWorkspaceItem({
 		handleCopyPath,
 		handleCopyBranchName,
 		handleCreateSection,
+		handleDelete,
 		handleDeleted,
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleRestore,
 		handleSnooze,
 		handleToggleUnread,
 		handleUnarchive,
@@ -175,7 +177,6 @@ export function DashboardSidebarWorkspaceItem({
 							isNonGit={isNonGit}
 							isPinned={isMainWorkspace && hostType === "local-device"}
 							onCreateSection={handleCreateSection}
-							showDeleteHotkey={isActive}
 							onMoveToSection={(targetSectionId) =>
 								moveWorkspaceToSection(id, projectId, targetSectionId)
 							}
@@ -184,7 +185,15 @@ export function DashboardSidebarWorkspaceItem({
 							onCopyBranchName={handleCopyBranchName}
 							onRename={startRename}
 							onDelete={
-								isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
+								isMainWorkspace || sectionState === "deleted"
+									? undefined
+									: handleDelete
+							}
+							onRestore={sectionState === "deleted" ? handleRestore : undefined}
+							onDeletePermanently={
+								sectionState === "deleted"
+									? () => setIsDeleteDialogOpen(true)
+									: undefined
 							}
 							onToggleUnread={handleToggleUnread}
 							sectionState={sectionState}
@@ -243,10 +252,22 @@ export function DashboardSidebarWorkspaceItem({
 				onClick={handleClick}
 				onDoubleClick={isPending ? undefined : startRename}
 				onRemoveFromSidebarClick={handleRemoveFromSidebar}
-				onCloseWorkspaceClick={() => setIsDeleteDialogOpen(true)}
+				onCloseWorkspaceClick={
+					// (RECYCLE-BIN) The expanded-row X is now a SILENT soft-delete for a
+					// normal (non-bin) non-main row — it moves the thread to the Recycle
+					// Bin instead of opening the destroy dialog. The dialog is reserved
+					// for in-bin "Delete permanently" (sectionState === "deleted").
+					sectionState === "deleted"
+						? () => setIsDeleteDialogOpen(true)
+						: handleDelete
+				}
 				sectionState={sectionState}
 				onRestoreClick={
-					sectionState === "snoozed" ? handleUnsnooze : handleUnarchive
+					sectionState === "snoozed"
+						? handleUnsnooze
+						: sectionState === "deleted"
+							? handleRestore
+							: handleUnarchive
 				}
 				onRenameValueChange={setRenameValue}
 				onSubmitRename={submitRename}
@@ -273,12 +294,19 @@ export function DashboardSidebarWorkspaceItem({
 						isNonGit={isNonGit}
 						isPinned={isMainWorkspace && hostType === "local-device"}
 						onOpenInFinder={handleOpenInFinder}
-						showDeleteHotkey={isActive}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
 						onRename={startRename}
 						onDelete={
-							isMainWorkspace ? undefined : () => setIsDeleteDialogOpen(true)
+							isMainWorkspace || sectionState === "deleted"
+								? undefined
+								: handleDelete
+						}
+						onRestore={sectionState === "deleted" ? handleRestore : undefined}
+						onDeletePermanently={
+							sectionState === "deleted"
+								? () => setIsDeleteDialogOpen(true)
+								: undefined
 						}
 						onToggleUnread={handleToggleUnread}
 						sectionState={sectionState}

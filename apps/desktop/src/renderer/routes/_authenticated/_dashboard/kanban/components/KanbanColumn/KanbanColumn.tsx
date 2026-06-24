@@ -13,7 +13,7 @@ import {
 import { Input } from "@superset/ui/input";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
 	LuArrowDownWideNarrow,
 	LuArrowLeft,
@@ -46,13 +46,32 @@ export function KanbanColumn({
 	onAddQueuedCard,
 	customColumnIds,
 }: KanbanColumnProps) {
-	const { column, active, snoozed, archived, hiddenByFilter } = view;
+	const {
+		column,
+		active,
+		snoozed,
+		archived,
+		recycleBin,
+		recycleBinHidden,
+		hiddenByFilter,
+	} = view;
 	const { setNodeRef, isOver } = useDroppable({
 		id: `kanban-col-${column.id}`,
 		data: { type: "column", columnId: column.id },
 	});
 	const [renaming, setRenaming] = useState(false);
 	const [nameDraft, setNameDraft] = useState(column.name);
+	// (RECYCLE-BIN) Local "Show all" override for this column's bin — reveals
+	// older-than-retention cards without touching the device-wide setting (mirrors
+	// the sidebar bin + Completed-column filter footers).
+	const [showAllBin, setShowAllBin] = useState(false);
+	// (RECYCLE-BIN) The full bin (recent + older-than-retention), used only when
+	// the per-bin "Show all" toggle is active; hoisted so the spread isn't redone
+	// every render.
+	const allBinCards = useMemo(
+		() => [...recycleBin, ...recycleBinHidden],
+		[recycleBin, recycleBinHidden],
+	);
 
 	const isQueue = column.isQueue;
 	// (KANBAN COMPLETED) the fixed final column: no sort toggle (always newest-
@@ -181,6 +200,22 @@ export function KanbanColumn({
 						>
 							Rename
 						</DropdownMenuItem>
+						{/* (RECYCLE-BIN) Reveal/hide this column's soft-delete section,
+						    mirroring the sidebar project's "Show Recycle Bin" toggle. The
+						    Completed column gets this too — useKanbanData can bucket a
+						    completed card as "deleted", and without the toggle + section it
+						    would be invisible and unrecoverable. */}
+						<DropdownMenuItem
+							onSelect={() =>
+								actions.setColumnSectionFlag(
+									column.id,
+									"showRecycleBin",
+									!column.showRecycleBin,
+								)
+							}
+						>
+							{column.showRecycleBin ? "Hide Recycle Bin" : "Show Recycle Bin"}
+						</DropdownMenuItem>
 						{!isQueue && !isCompleted ? (
 							<>
 								<DropdownMenuItem
@@ -248,7 +283,8 @@ export function KanbanColumn({
 
 				{/* Snoozed / Archived sections always render their (n) header so the
 				    user can reveal/collapse them per the spec. The Completed column
-				    has neither state (completing clears both). */}
+				    has neither state (completing clears both) — but it CAN still have
+				    soft-deleted cards, so the Recycle Bin below renders for it too. */}
 				{!isCompleted ? (
 					<>
 						<KanbanStateSection
@@ -291,6 +327,46 @@ export function KanbanColumn({
 							))}
 						</KanbanStateSection>
 					</>
+				) : null}
+
+				{/* (RECYCLE-BIN) Soft-deleted cards — revealed via the column menu
+				    ("Show Recycle Bin"), like the sidebar's per-project bin. Rendered
+				    for EVERY column, including Completed (useKanbanData can bucket a
+				    completed card as "deleted"; without this section it would be
+				    invisible/unrecoverable). The retention window hides older-than-N-days
+				    cards behind a per-bin "Show all" footer (the same window the sidebar
+				    bin applies). */}
+				{column.showRecycleBin ? (
+					<KanbanStateSection
+						title="Recycle Bin"
+						count={recycleBin.length + recycleBinHidden.length}
+						collapsed={column.recycleBinCollapsed}
+						onCollapsedChange={(c) =>
+							actions.setColumnSectionFlag(column.id, "recycleBinCollapsed", c)
+						}
+					>
+						{(showAllBin ? allBinCards : recycleBin).map((cardView) => (
+							<KanbanCard
+								key={cardView.card.id}
+								view={cardView}
+								actions={actions}
+								now={now}
+								onActivate={onActivate}
+								disableDrag
+							/>
+						))}
+						{recycleBinHidden.length > 0 ? (
+							<button
+								type="button"
+								onClick={() => setShowAllBin((previous) => !previous)}
+								className="flex w-full items-center rounded px-1 py-1 text-left text-[10px] text-muted-foreground hover:bg-accent/30"
+							>
+								{showAllBin
+									? "Show recent only"
+									: `${recycleBinHidden.length} hidden by filter — Show all`}
+							</button>
+						) : null}
+					</KanbanStateSection>
 				) : null}
 			</div>
 		</div>

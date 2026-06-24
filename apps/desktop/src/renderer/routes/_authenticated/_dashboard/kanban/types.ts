@@ -5,7 +5,7 @@ import type {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 
 /** Which section of a column a card renders in. */
-export type KanbanCardBucket = "active" | "snoozed" | "archived";
+export type KanbanCardBucket = "active" | "snoozed" | "archived" | "deleted";
 
 /**
  * A card plus its resolved branch context. For a Queued (unbound) card,
@@ -31,12 +31,21 @@ export interface KanbanCardView {
 	title: string;
 }
 
-/** A column plus its cards split into the three rendered buckets (each sorted). */
+/** A column plus its cards split into the rendered buckets (each sorted). */
 export interface KanbanColumnView {
 	column: KanbanColumnRow;
 	active: KanbanCardView[];
 	snoozed: KanbanCardView[];
 	archived: KanbanCardView[];
+	/** (RECYCLE-BIN) Soft-deleted cards in this column, sorted deletedAt DESC.
+	 * Only the items within the retention window are included here; older ones
+	 * are reachable via the section's "Show all" toggle (see `recycleBinHidden`).
+	 * The collapsible header count is `recycleBin.length + recycleBinHidden.length`. */
+	recycleBin: KanbanCardView[];
+	/** (RECYCLE-BIN) Soft-deleted cards older than the retention window, hidden
+	 * from `recycleBin` by default — surfaced as an "N hidden by filter" footer
+	 * + a "Show all" toggle (mirrors the sidebar bin + Completed column). */
+	recycleBinHidden: KanbanCardView[];
 	/** (KANBAN COMPLETED) Cards the Completed column's date filter hid from
 	 * `active` — surfaced as a footer count so a freshly-dropped card "vanishing"
 	 * under a last-month filter is explainable. Always 0 for other columns. */

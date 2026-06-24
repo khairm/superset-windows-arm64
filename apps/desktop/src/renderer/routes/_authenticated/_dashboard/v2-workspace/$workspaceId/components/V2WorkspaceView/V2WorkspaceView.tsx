@@ -84,8 +84,6 @@ export function V2WorkspaceView(search: V2WorkspaceViewProps) {
 		return (
 			<WorkspaceMissingWorktreeState
 				workspaceId={workspace.id}
-				workspaceName={workspace.name}
-				branch={workspace.branch}
 				worktreePath={workspaceStatusQuery.data?.worktreePath}
 				onRefresh={() => {
 					void workspaceStatusQuery.refetch();

@@ -9,6 +9,11 @@ import {
 } from "@superset/ui/select";
 import { Switch } from "@superset/ui/switch";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+// (RECYCLE-BIN) retention is the bin's display-only filter (renderer-only store).
+import {
+	RECYCLE_BIN_RETENTION_DEFAULT_OPTIONS,
+	useRecycleBinRetention,
+} from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
 import {
 	isItemVisible,
 	SETTING_ITEM_ID,
@@ -35,6 +40,18 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 	const showOpenLinksInApp = isItemVisible(
 		SETTING_ITEM_ID.BEHAVIOR_OPEN_LINKS_IN_APP,
 		visibleItems,
+	);
+	const showRecycleBinRetention = isItemVisible(
+		SETTING_ITEM_ID.BEHAVIOR_RECYCLE_BIN_RETENTION,
+		visibleItems,
+	);
+
+	// (RECYCLE-BIN) display-only filter window; renderer-local store, no tRPC.
+	const recycleBinRetentionDays = useRecycleBinRetention(
+		(s) => s.retentionDays,
+	);
+	const setRecycleBinRetentionDays = useRecycleBinRetention(
+		(s) => s.setRetentionDays,
 	);
 
 	const utils = electronTrpc.useUtils();
@@ -225,6 +242,41 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 							}
 							disabled={isOpenLinksInAppLoading || setOpenLinksInApp.isPending}
 						/>
+					</div>
+				)}
+
+				{showRecycleBinRetention && (
+					<div className="flex items-center justify-between">
+						<div className="space-y-0.5">
+							<Label
+								htmlFor="recycle-bin-retention"
+								className="text-sm font-medium"
+							>
+								Recycle bin retention
+							</Label>
+							<p className="text-xs text-muted-foreground">
+								Show items deleted in the last N days; older items stay but
+								collapse behind each bin's "Show all" toggle (nothing is ever
+								auto-deleted)
+							</p>
+						</div>
+						<Select
+							value={String(recycleBinRetentionDays)}
+							onValueChange={(value) =>
+								setRecycleBinRetentionDays(Number(value))
+							}
+						>
+							<SelectTrigger id="recycle-bin-retention" className="w-[180px]">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{RECYCLE_BIN_RETENTION_DEFAULT_OPTIONS.map((days) => (
+									<SelectItem key={days} value={String(days)}>
+										{days} days
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
 					</div>
 				)}
 			</div>

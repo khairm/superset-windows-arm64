@@ -14,14 +14,17 @@ import {
 	LuPin,
 	LuPinOff,
 	LuSettings,
+	LuTrash2,
 	LuX,
 } from "react-icons/lu";
 
 interface DashboardSidebarProjectContextMenuProps {
-	/** Snooze/Archive reveal toggles. Omitted in the collapsed sidebar — it
-	 * renders no sections — so the menu items are hidden there too. */
+	/** Snooze/Archive/Recycle Bin reveal toggles. Omitted in the collapsed
+	 * sidebar — it renders no sections — so the menu items are hidden there too. */
 	showSnoozed?: boolean;
 	showArchived?: boolean;
+	// (RECYCLE-BIN) reveal toggle for the per-project Recycle Bin section.
+	showDeleted?: boolean;
 	// (ACTIVE-FIRST) Manual pin state + toggle. Pinned projects sort into the top
 	// sidebar tier (pinned > active > idle).
 	isPinned?: boolean;
@@ -33,12 +36,15 @@ interface DashboardSidebarProjectContextMenuProps {
 	onRename: () => void;
 	onToggleSnoozed?: () => void;
 	onToggleArchived?: () => void;
+	// (RECYCLE-BIN) reveal toggle for the per-project Recycle Bin section.
+	onToggleDeleted?: () => void;
 	children: React.ReactNode;
 }
 
 export function DashboardSidebarProjectContextMenu({
 	showSnoozed,
 	showArchived,
+	showDeleted,
 	isPinned,
 	onTogglePin,
 	onCreateSection,
@@ -48,6 +54,7 @@ export function DashboardSidebarProjectContextMenu({
 	onRename,
 	onToggleSnoozed,
 	onToggleArchived,
+	onToggleDeleted,
 	children,
 }: DashboardSidebarProjectContextMenuProps) {
 	return (
@@ -92,6 +99,12 @@ export function DashboardSidebarProjectContextMenu({
 							<LuArchive className="size-4 mr-2" />
 							{showArchived ? "Hide archived" : "Show archived"}
 						</ContextMenuItem>
+						{onToggleDeleted && (
+							<ContextMenuItem onSelect={onToggleDeleted}>
+								<LuTrash2 className="size-4 mr-2" />
+								{showDeleted ? "Hide Recycle Bin" : "Show Recycle Bin"}
+							</ContextMenuItem>
+						)}
 					</>
 				)}
 				<ContextMenuSeparator />

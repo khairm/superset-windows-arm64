@@ -1,13 +1,11 @@
 import { Button } from "@superset/ui/button";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, FolderX, RefreshCw, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
+import { useNavigateAwayFromWorkspace } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useNavigateAwayFromWorkspace";
+import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 
 interface WorkspaceMissingWorktreeStateProps {
 	workspaceId: string;
-	workspaceName: string;
-	branch: string;
 	worktreePath?: string;
 	onRefresh: () => void;
 	isRefreshing?: boolean;
@@ -15,14 +13,22 @@ interface WorkspaceMissingWorktreeStateProps {
 
 export function WorkspaceMissingWorktreeState({
 	workspaceId,
-	workspaceName,
-	branch,
 	worktreePath,
 	onRefresh,
 	isRefreshing = false,
 }: WorkspaceMissingWorktreeStateProps) {
-	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-	const displayName = workspaceName || branch;
+	const { deleteWorkspace } = useDashboardSidebarState();
+	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
+
+	// (RECYCLE-BIN) Nothing gets destroyed here: move the thread to its project's
+	// Recycle Bin (soft-delete) and navigate off the dead-worktree route. The real
+	// git cleanup is reachable ONLY from in-bin "Delete permanently" / "Empty
+	// Recycle Bin". (projectId resolves from the workspace record inside
+	// deleteWorkspace; mains are no-op'd there too.)
+	const handleDelete = () => {
+		navigateAwayFromWorkspace(workspaceId);
+		deleteWorkspace(workspaceId);
+	};
 
 	return (
 		<div className="flex h-full w-full items-center justify-center p-6">
@@ -66,7 +72,7 @@ export function WorkspaceMissingWorktreeState({
 						size="sm"
 						variant="destructive"
 						className="h-7 gap-1.5 px-2.5 text-[13px]"
-						onClick={() => setDeleteDialogOpen(true)}
+						onClick={handleDelete}
 					>
 						<Trash2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
 						Delete workspace
@@ -101,13 +107,6 @@ export function WorkspaceMissingWorktreeState({
 						</Link>
 					</Button>
 				</div>
-
-				<DashboardSidebarDeleteDialog
-					workspaceId={workspaceId}
-					workspaceName={displayName}
-					open={deleteDialogOpen}
-					onOpenChange={setDeleteDialogOpen}
-				/>
 			</div>
 		</div>
 	);

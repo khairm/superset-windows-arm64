@@ -53,8 +53,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const {
 		archiveWorkspace,
 		createSection,
+		deleteWorkspace,
 		moveWorkspaceToSection,
 		removeWorkspaceFromSidebar,
+		restoreWorkspace,
 		snoozeWorkspace,
 		unarchiveWorkspace,
 		unsnoozeWorkspace,
@@ -143,6 +145,18 @@ export function useDashboardSidebarWorkspaceItemActions({
 		unarchiveWorkspace(workspaceId);
 	};
 
+	// (RECYCLE-BIN) The default-mode Delete is now a SILENT soft-delete — no
+	// dialog, no toast — moving the thread to the project's Recycle Bin. The real
+	// git destroy lives behind "Delete permanently" inside the bin (the existing
+	// destroy dialog, opened via setIsDeleteDialogOpen).
+	const handleDelete = () => {
+		deleteWorkspace(workspaceId, projectId);
+	};
+
+	const handleRestore = () => {
+		restoreWorkspace(workspaceId);
+	};
+
 	const handleCreateSection = () => {
 		const sectionId = createSection(projectId);
 		moveWorkspaceToSection(workspaceId, projectId, sectionId);
@@ -220,10 +234,12 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleCopyPath,
 		handleCopyBranchName,
 		handleCreateSection,
+		handleDelete,
 		handleDeleted,
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleRestore,
 		handleSnooze,
 		handleToggleUnread,
 		handleUnarchive,

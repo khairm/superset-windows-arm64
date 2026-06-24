@@ -178,9 +178,16 @@ export function KanbanBoard() {
 				// disagreeing (e.g. a mid-drag store update) — arrayMove with a -1
 				// index would corrupt the order.
 				if (oldIndex === -1 || newIndex === -1) return;
-				// Hidden (snoozed/archived) group members get RESET: their context
-				// changed while hidden, so they return as new arrivals (bottom).
-				const resetIds = [...targetCol.snoozed, ...targetCol.archived]
+				// Hidden group members get RESET: their context changed while hidden,
+				// so they return as new arrivals (bottom). Includes the Recycle Bin
+				// (recycleBin + the older recycleBinHidden) — a restored card must not
+				// keep a stale deadlineTabOrder from before it was soft-deleted.
+				const resetIds = [
+					...targetCol.snoozed,
+					...targetCol.archived,
+					...targetCol.recycleBin,
+					...targetCol.recycleBinHidden,
+				]
 					.filter((v) => deadlineGroupKey(v.card.deadline) === groupKey)
 					.map((v) => v.card.id);
 				actions.applyDeadlineTieOrder(

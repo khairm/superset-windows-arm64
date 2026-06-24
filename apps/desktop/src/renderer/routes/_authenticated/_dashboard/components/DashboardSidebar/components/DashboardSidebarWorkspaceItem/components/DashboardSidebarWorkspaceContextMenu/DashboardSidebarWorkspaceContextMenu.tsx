@@ -3,7 +3,6 @@ import {
 	ContextMenuContent,
 	ContextMenuItem,
 	ContextMenuSeparator,
-	ContextMenuShortcut,
 	ContextMenuSub,
 	ContextMenuSubContent,
 	ContextMenuSubTrigger,
@@ -25,10 +24,10 @@ import {
 	LuFolderPlus,
 	LuGitBranch,
 	LuPencil,
+	LuRotateCcw,
 	LuTrash2,
 	LuUndo2,
 } from "react-icons/lu";
-import { useHotkeyDisplay } from "renderer/hotkeys";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	SNOOZE_PRESET_OPTIONS,
@@ -37,7 +36,7 @@ import {
 import { useDashboardSidebarHover } from "../../../../providers/DashboardSidebarHoverProvider";
 
 /** Which reveal-able section a workspace row is rendered inside, if any. */
-export type WorkspaceSectionState = "snoozed" | "archived";
+export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
 
 interface DashboardSidebarWorkspaceContextMenuProps {
 	projectId: string;
@@ -46,9 +45,8 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	isNonGit?: boolean;
 	isPinned?: boolean;
 	isUnread: boolean;
-	showDeleteHotkey?: boolean;
-	/** Set when the row lives in the Snoozed / Archived section — swaps the
-	 * snooze/archive actions for the matching restore actions. */
+	/** Set when the row lives in the Snoozed / Archived / Recycle Bin section —
+	 * swaps the snooze/archive actions for the matching restore actions. */
 	sectionState?: WorkspaceSectionState;
 	onCreateSection: () => void;
 	onMoveToSection: (sectionId: string | null) => void;
@@ -56,7 +54,14 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onCopyPath: () => void;
 	onCopyBranchName: () => void;
 	onRename: () => void;
+	/** Default-mode Delete: a silent soft-delete to the Recycle Bin (RECYCLE-BIN).
+	 * Omitted (undefined) for mains, which are never deletable. */
 	onDelete?: () => void;
+	/** (RECYCLE-BIN) Restore an in-bin row straight back to active. */
+	onRestore?: () => void;
+	/** (RECYCLE-BIN) Open the destroy dialog to PERMANENTLY delete an in-bin row
+	 * (worktree + optional branch). The only path to the real git destroy. */
+	onDeletePermanently?: () => void;
 	onToggleUnread: () => void;
 	onSnooze: (duration: SnoozeDuration) => void;
 	onUnsnooze: () => void;
@@ -130,7 +135,6 @@ export function DashboardSidebarWorkspaceContextMenu({
 	isNonGit = false,
 	isPinned = false,
 	isUnread,
-	showDeleteHotkey = false,
 	sectionState,
 	onCreateSection,
 	onMoveToSection,
@@ -139,6 +143,8 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onCopyBranchName,
 	onRename,
 	onDelete,
+	onRestore,
+	onDeletePermanently,
 	onToggleUnread,
 	onSnooze,
 	onUnsnooze,
@@ -148,9 +154,6 @@ export function DashboardSidebarWorkspaceContextMenu({
 }: DashboardSidebarWorkspaceContextMenuProps) {
 	const collections = useCollections();
 	const { setContextMenuOpen } = useDashboardSidebarHover();
-	const deleteHotkeyText = useHotkeyDisplay("CLOSE_WORKSPACE").text;
-	const showDeleteShortcut =
-		showDeleteHotkey && deleteHotkeyText !== "Unassigned";
 	const isSectioned = sectionState !== undefined;
 	const { data: sections = [] } = useLiveQuery(
 		(q) =>
@@ -258,51 +261,78 @@ export function DashboardSidebarWorkspaceContextMenu({
 						)}
 					</>
 				)}
-				<ContextMenuSeparator />
-				{sectionState === "snoozed" ? (
+				{/* (RECYCLE-BIN) An in-bin row offers only Restore + Delete permanently —
+				snooze/archive are meaningless once a thread is soft-deleted. */}
+				{sectionState === "deleted" ? (
 					<>
-						<ContextMenuItem onSelect={onUnsnooze}>
-							<LuUndo2 className="size-4 mr-2" />
-							Unsnooze now
-						</ContextMenuItem>
-						<SnoozeSubmenu label="Re-snooze" onSnooze={onSnooze} />
-						<ContextMenuItem onSelect={onArchive}>
-							<LuArchive className="size-4 mr-2" />
-							Archive
-						</ContextMenuItem>
-					</>
-				) : sectionState === "archived" ? (
-					<>
-						<ContextMenuItem onSelect={onUnarchive}>
-							<LuArchiveRestore className="size-4 mr-2" />
-							Unarchive
-						</ContextMenuItem>
-						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
+						<ContextMenuSeparator />
+						{onRestore && (
+							<ContextMenuItem onSelect={onRestore}>
+								<LuRotateCcw className="size-4 mr-2" />
+								Restore
+							</ContextMenuItem>
+						)}
+						{onDeletePermanently && (
+							<ContextMenuItem
+								onSelect={onDeletePermanently}
+								className="text-destructive focus:text-destructive"
+							>
+								<LuTrash2 className="size-4 mr-2 text-destructive" />
+								Delete permanently
+							</ContextMenuItem>
+						)}
 					</>
 				) : (
 					<>
-						<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
-						<ContextMenuItem onSelect={onArchive}>
-							<LuArchive className="size-4 mr-2" />
-							Archive
-						</ContextMenuItem>
+						<ContextMenuSeparator />
+						{sectionState === "snoozed" ? (
+							<>
+								<ContextMenuItem onSelect={onUnsnooze}>
+									<LuUndo2 className="size-4 mr-2" />
+									Unsnooze now
+								</ContextMenuItem>
+								<SnoozeSubmenu label="Re-snooze" onSnooze={onSnooze} />
+								<ContextMenuItem onSelect={onArchive}>
+									<LuArchive className="size-4 mr-2" />
+									Archive
+								</ContextMenuItem>
+							</>
+						) : sectionState === "archived" ? (
+							<>
+								<ContextMenuItem onSelect={onUnarchive}>
+									<LuArchiveRestore className="size-4 mr-2" />
+									Unarchive
+								</ContextMenuItem>
+								<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
+							</>
+						) : (
+							<>
+								<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
+								<ContextMenuItem onSelect={onArchive}>
+									<LuArchive className="size-4 mr-2" />
+									Archive
+								</ContextMenuItem>
+							</>
+						)}
+						{onDelete ? (
+							<>
+								<ContextMenuSeparator />
+								<ContextMenuItem
+									onSelect={onDelete}
+									className="text-destructive focus:text-destructive"
+								>
+									<LuTrash2 className="size-4 mr-2 text-destructive" />
+									{/* (RECYCLE-BIN) No keyboard-shortcut hint here: this "Delete"
+									soft-deletes to the Recycle Bin, whereas the CLOSE_WORKSPACE
+									hotkey still opens the PERMANENT destroy dialog (see
+									_dashboard/layout.tsx) — advertising it beside a soft-delete
+									would point at a different, destructive action. */}
+									Delete
+								</ContextMenuItem>
+							</>
+						) : null}
 					</>
 				)}
-				{onDelete ? (
-					<>
-						<ContextMenuSeparator />
-						<ContextMenuItem
-							onSelect={onDelete}
-							className="text-destructive focus:text-destructive"
-						>
-							<LuTrash2 className="size-4 mr-2 text-destructive" />
-							Delete
-							{showDeleteShortcut && (
-								<ContextMenuShortcut>{deleteHotkeyText}</ContextMenuShortcut>
-							)}
-						</ContextMenuItem>
-					</>
-				) : null}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

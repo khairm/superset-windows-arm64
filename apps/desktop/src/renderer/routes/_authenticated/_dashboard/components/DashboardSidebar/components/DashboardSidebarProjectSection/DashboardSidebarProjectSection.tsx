@@ -45,6 +45,7 @@ export function DashboardSidebarProjectSection({
 		cancelRename,
 		confirmRemoveFromSidebar,
 		deleteSection,
+		emptyRecycleBin,
 		handleNewSection,
 		handleNewWorkspace,
 		handleOpenInFinder,
@@ -52,6 +53,7 @@ export function DashboardSidebarProjectSection({
 		isRenaming,
 		renameSection,
 		renameValue,
+		restoreAllDeleted,
 		setRenameValue,
 		startRename,
 		submitRename,
@@ -70,29 +72,54 @@ export function DashboardSidebarProjectSection({
 
 	const totalWorkspaceCount = flattenedCollapsedWorkspaces.length;
 
-	// Snoozed + Archived render through the same DashboardSidebarStateSection;
-	// one config entry per variant keeps the two reveal blocks in sync.
-	const stateSections = [
+	// Snoozed + Archived + Recycle Bin render through the same
+	// DashboardSidebarStateSection; one config entry per variant keeps the reveal
+	// blocks in sync. onEmptyBin is only set for the "deleted" variant.
+	const stateSections: Array<{
+		variant: "snoozed" | "archived" | "deleted";
+		show: boolean;
+		workspaces: typeof project.snoozedWorkspaces;
+		collapsed: boolean;
+		collapsedFlag:
+			| "snoozedCollapsed"
+			| "archivedCollapsed"
+			| "deletedCollapsed";
+		showFlag: "showSnoozed" | "showArchived" | "showDeleted";
+		onRestoreAll: () => void;
+		onEmptyBin?: () => void;
+	}> = [
 		{
-			variant: "snoozed" as const,
+			variant: "snoozed",
 			show: project.showSnoozed,
 			workspaces: project.snoozedWorkspaces,
 			collapsed: project.snoozedCollapsed,
-			collapsedFlag: "snoozedCollapsed" as const,
-			showFlag: "showSnoozed" as const,
+			collapsedFlag: "snoozedCollapsed",
+			showFlag: "showSnoozed",
 			onRestoreAll: () => unsnoozeAllInProject(project.id),
 		},
 		{
-			variant: "archived" as const,
+			variant: "archived",
 			show: project.showArchived,
 			workspaces: project.archivedWorkspaces,
 			collapsed: project.archivedCollapsed,
-			collapsedFlag: "archivedCollapsed" as const,
-			showFlag: "showArchived" as const,
+			collapsedFlag: "archivedCollapsed",
+			showFlag: "showArchived",
 			onRestoreAll: () =>
 				unarchiveWorkspaces(
 					project.archivedWorkspaces.map((workspace) => workspace.id),
 				),
+		},
+		// (RECYCLE-BIN) per-project soft-delete bin; restore-all + empty-bin live in
+		// the header context menu, the retention "Show all" filter lives in-section.
+		{
+			variant: "deleted",
+			show: project.showDeleted,
+			workspaces: project.deletedWorkspaces,
+			collapsed: project.deletedCollapsed,
+			collapsedFlag: "deletedCollapsed",
+			showFlag: "showDeleted",
+			onRestoreAll: restoreAllDeleted,
+			onEmptyBin: emptyRecycleBin,
 		},
 	];
 
@@ -133,14 +160,18 @@ export function DashboardSidebarProjectSection({
 				onOpenSettings={handleOpenSettings}
 				onRemoveFromSidebar={confirmRemoveFromSidebar}
 				onRename={startRename}
-					showSnoozed={project.showSnoozed}
-					showArchived={project.showArchived}
-					onToggleSnoozed={() =>
-						toggleProjectSectionFlag(project.id, "showSnoozed")
-					}
-					onToggleArchived={() =>
-						toggleProjectSectionFlag(project.id, "showArchived")
-					}
+				showSnoozed={project.showSnoozed}
+				showArchived={project.showArchived}
+				showDeleted={project.showDeleted}
+				onToggleSnoozed={() =>
+					toggleProjectSectionFlag(project.id, "showSnoozed")
+				}
+				onToggleArchived={() =>
+					toggleProjectSectionFlag(project.id, "showArchived")
+				}
+				onToggleDeleted={() =>
+					toggleProjectSectionFlag(project.id, "showDeleted")
+				}
 			>
 				<DashboardSidebarProjectRow
 					projectName={project.name}
@@ -179,7 +210,7 @@ export function DashboardSidebarProjectSection({
 							onRenameSection={renameSection}
 							onToggleSectionCollapse={toggleSectionCollapsed}
 						/>
-					{!project.isCollapsed &&
+						{!project.isCollapsed &&
 							stateSections
 								.filter((section) => section.show)
 								.map((section) => (
@@ -189,12 +220,16 @@ export function DashboardSidebarProjectSection({
 										workspaces={section.workspaces}
 										collapsed={section.collapsed}
 										onToggleCollapsed={() =>
-											toggleProjectSectionFlag(project.id, section.collapsedFlag)
+											toggleProjectSectionFlag(
+												project.id,
+												section.collapsedFlag,
+											)
 										}
 										onHide={() =>
 											setProjectSectionFlag(project.id, section.showFlag, false)
 										}
 										onRestoreAll={section.onRestoreAll}
+										onEmptyBin={section.onEmptyBin}
 										onWorkspaceHover={onWorkspaceHover}
 									/>
 								))}

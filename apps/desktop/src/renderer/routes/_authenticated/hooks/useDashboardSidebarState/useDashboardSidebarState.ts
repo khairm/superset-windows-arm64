@@ -17,12 +17,15 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
 
-/** The four per-project reveal/collapse booleans on the sidebar project row. */
+/** The per-project reveal/collapse booleans on the sidebar project row. */
 export type ProjectSectionFlag =
 	| "showSnoozed"
 	| "showArchived"
 	| "snoozedCollapsed"
-	| "archivedCollapsed";
+	| "archivedCollapsed"
+	// (RECYCLE-BIN) reveal + collapse for the per-project Recycle Bin section.
+	| "showDeleted"
+	| "deletedCollapsed";
 
 type ProjectTopLevelItem = {
 	type: "workspace" | "section";
@@ -629,6 +632,88 @@ export function useDashboardSidebarState() {
 		[unarchiveWorkspaces],
 	);
 
+	// --- Recycle Bin (RECYCLE-BIN) --------------------------------------------
+	// Soft delete: lossless and visual-only, exactly like archive — the worktree,
+	// branch, and any running session are untouched. deletedAt makes the thread
+	// bucket "deleted" (checked first in getWorkspaceSidebarBucket), so it leaves
+	// every other lane and surfaces ONLY in the project's Recycle Bin. The real
+	// git destroy is relocated to "Delete permanently" inside the bin.
+
+	const deleteWorkspace = useCallback(
+		(workspaceId: string, projectId?: string) => {
+			// A repo's main workspace can never be soft-deleted — mains stay
+			// archive-only (MASTER-ARCHIVE-ONLY). Mirror completeWorkspace's guard.
+			if (collections.v2Workspaces.get(workspaceId)?.type === "main") {
+				console.warn(
+					`[deleteWorkspace] refusing to delete main workspace ${workspaceId} — mains are archive-only`,
+				);
+				return;
+			}
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
+				// An auto-included workspace with no explicit local-state row yet:
+				// insert a row that is already soft-deleted (mirrors archiveWorkspace's
+				// insert path). Prefer the caller's projectId; fall back to the record.
+				const resolvedProjectId =
+					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+				if (!resolvedProjectId) {
+					// Fail loud rather than silently dropping the delete — nothing else
+					// can recover the row from here.
+					console.error(
+						`[deleteWorkspace] cannot delete ${workspaceId}: no local-state row and projectId unresolvable`,
+					);
+					return;
+				}
+				collections.v2WorkspaceLocalState.insert({
+					workspaceId,
+					createdAt: new Date(),
+					sidebarState: {
+						projectId: resolvedProjectId,
+						tabOrder: 0,
+						sectionId: null,
+						// isHidden too, so raw-visibility consumers (notifications, ports,
+						// accessible-list "in sidebar") treat it like an archived row. The
+						// bucket classifier checks deletedAt FIRST, so it never surfaces
+						// under Archived/Completed.
+						isHidden: true,
+						deletedAt: Date.now(),
+					},
+					paneLayout: createEmptyPaneLayout(),
+				});
+				return;
+			}
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.deletedAt = Date.now();
+				draft.sidebarState.isHidden = true;
+				// Clear every other state flag so a re-delete after a restore lands
+				// cleanly in the bin with a fresh timestamp.
+				draft.sidebarState.archivedAt = null;
+				draft.sidebarState.snoozeUntil = null;
+				draft.sidebarState.snoozeLaunchId = null;
+				draft.sidebarState.completedAt = null;
+			});
+		},
+		[collections],
+	);
+
+	// Restore a soft-deleted thread straight back to ACTIVE: clear deletedAt and
+	// every other state flag (archived/completed/snooze) plus isHidden so the row
+	// re-enters the active lane regardless of what it was before deletion. A later
+	// re-delete stamps a fresh deletedAt.
+	const restoreWorkspace = useCallback(
+		(workspaceId: string) => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				draft.sidebarState.deletedAt = null;
+				draft.sidebarState.isHidden = false;
+				draft.sidebarState.archivedAt = null;
+				draft.sidebarState.completedAt = null;
+				draft.sidebarState.snoozeUntil = null;
+				draft.sidebarState.snoozeLaunchId = null;
+			});
+		},
+		[collections],
+	);
+
 	// --- Completed (KANBAN COMPLETED) -----------------------------------------
 	// Set/cleared exclusively by the kanban board's complete/uncomplete actions
 	// (drag into / out of the fixed Completed column) — the card's placement is
@@ -692,6 +777,8 @@ export function useDashboardSidebarState() {
 		completeWorkspace,
 		createSection,
 		deleteSection,
+		deleteWorkspace,
+		restoreWorkspace,
 		ensureProjectInSidebar,
 		ensureWorkspaceInSidebar,
 		moveWorkspaceToSection,

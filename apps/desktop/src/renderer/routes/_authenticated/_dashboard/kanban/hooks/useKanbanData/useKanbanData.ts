@@ -1,11 +1,13 @@
 import type { SelectV2Project, SelectV2Workspace } from "@superset/db/schema";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
+import { useRecycleBinRetention } from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	APP_LAUNCH_ID,
 	type DashboardSidebarProjectRow,
 	getWorkspaceSidebarBucket,
+	isWithinRecycleBinWindow,
 	isWorkspaceSnoozed,
 	KANBAN_COMPLETED_COLUMN_ID,
 	KANBAN_COMPLETED_TAB_ORDER,
@@ -83,8 +85,11 @@ function sortCards(
 	return next;
 }
 
-/** Bucket for an UNBOUND (Queued) card, from its own snooze/archive fields. */
+/** Bucket for an UNBOUND (Queued) card, from its own delete/snooze/archive
+ * fields. (RECYCLE-BIN) deletedAt wins first — a soft-deleted card shows ONLY in
+ * the bin, mirroring getWorkspaceSidebarBucket's deleted-first precedence. */
 function queuedCardBucket(card: KanbanCardRow, now: number): KanbanCardBucket {
+	if (card.deletedAt != null) return "deleted";
 	if (card.archivedAt != null) return "archived";
 	if (isWorkspaceSnoozed(card, now)) return "snoozed";
 	return "active";
@@ -142,6 +147,11 @@ export function useKanbanData(): UseKanbanDataResult {
 
 	const [now, setNow] = useState(() => Date.now());
 
+	// (RECYCLE-BIN) The device-local retention window is a DISPLAY filter for the
+	// per-column bin: cards deleted within the last N days show by default; older
+	// ones collapse behind the section's "Show all" toggle. Nothing is purged.
+	const retentionDays = useRecycleBinRetention((s) => s.retentionDays);
+
 	// Gated tick: only run while something time-sensitive is pending (a snoozed
 	// card, or any deadline that could flip yellow→red across a day boundary).
 	const hasTimeSensitive = useMemo(() => {
@@ -153,13 +163,22 @@ export function useKanbanData(): UseKanbanDataResult {
 		// ranges are static and "all" filters nothing).
 		return (
 			(cardRows as KanbanCardRow[]).some(
-				(c) => c.deadline != null || c.snoozeUntil != null,
+				// (RECYCLE-BIN) a soft-deleted UNBOUND card's deletedAt is wall-clock-
+				// relative too: it crosses the retention boundary into recycleBinHidden
+				// without a tick. Keep the ticker alive while any bin item exists.
+				(c) =>
+					c.deadline != null || c.snoozeUntil != null || c.deletedAt != null,
+			) ||
+			// (RECYCLE-BIN) a soft-deleted BOUND card carries its deletedAt on the
+			// branch's local state, not the card — gate on that too.
+			(localStateRows as WorkspaceLocalStateRow[]).some(
+				(s) => s.sidebarState.deletedAt != null,
 			) ||
 			(columnRows as KanbanColumnRow[]).some(
 				(c) => c.isCompleted && c.completedFilter === "last-month",
 			)
 		);
-	}, [cardRows, columnRows]);
+	}, [cardRows, columnRows, localStateRows]);
 	useEffect(() => {
 		if (!hasTimeSensitive) return;
 		const id = setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS);
@@ -486,12 +505,20 @@ export function useKanbanData(): UseKanbanDataResult {
 			const active: KanbanCardView[] = [];
 			const snoozed: KanbanCardView[] = [];
 			const archived: KanbanCardView[] = [];
+			// (RECYCLE-BIN) Soft-deleted cards in this column (bound branch deleted, or
+			// an unbound card's deletedAt). Each carries its resolved deletedAt so the
+			// retention window can split them into shown-by-default vs older-collapsed.
+			const deleted: { view: KanbanCardView; deletedAt: number | null }[] = [];
 			for (const card of cardRows as KanbanCardRow[]) {
 				if (card.columnId !== column.id) continue;
 
 				let workspace: SelectV2Workspace | null = null;
 				let projectName: string | null = null;
 				let bucket: KanbanCardBucket;
+				// (RECYCLE-BIN) The deletedAt that feeds the retention window: a bound
+				// card reads the branch's sidebarState (one source of truth), an unbound
+				// card reads its own field. Only meaningful when bucket === "deleted".
+				let deletedAt: number | null = null;
 
 				if (card.workspaceId) {
 					workspace = workspaceById.get(card.workspaceId) ?? null;
@@ -518,9 +545,13 @@ export function useKanbanData(): UseKanbanDataResult {
 						// "completed" has no kanban section — completed cards render in
 						// the Completed column's main (active) list.
 						bucket = wsBucket === "completed" ? "active" : wsBucket;
+						if (bucket === "deleted") {
+							deletedAt = local?.sidebarState.deletedAt ?? null;
+						}
 					}
 				} else {
 					bucket = queuedCardBucket(card, now);
+					if (bucket === "deleted") deletedAt = card.deletedAt;
 				}
 
 				// Bound cards take their title LIVE from the branch (same object the
@@ -534,9 +565,25 @@ export function useKanbanData(): UseKanbanDataResult {
 					bucket,
 					title,
 				};
-				if (bucket === "archived") archived.push(view);
+				if (bucket === "deleted") deleted.push({ view, deletedAt });
+				else if (bucket === "archived") archived.push(view);
 				else if (bucket === "snoozed") snoozed.push(view);
 				else active.push(view);
+			}
+			// (RECYCLE-BIN) Sort the bin deletedAt DESC (most-recently deleted first),
+			// then split on the retention window: items within the last N days show by
+			// default; older ones surface only via the section's "Show all" footer.
+			const sortedDeleted = [...deleted].sort(
+				(a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0),
+			);
+			const recycleBin: KanbanCardView[] = [];
+			const recycleBinHidden: KanbanCardView[] = [];
+			for (const entry of sortedDeleted) {
+				if (isWithinRecycleBinWindow(entry.deletedAt, retentionDays, now)) {
+					recycleBin.push(entry.view);
+				} else {
+					recycleBinHidden.push(entry.view);
+				}
 			}
 			if (column.isCompleted) {
 				// (KANBAN COMPLETED) date-sorted (latest first) + the persisted
@@ -554,6 +601,8 @@ export function useKanbanData(): UseKanbanDataResult {
 					active: filtered,
 					snoozed: sortCards(snoozed, column.sortMode),
 					archived: sortCards(archived, column.sortMode),
+					recycleBin,
+					recycleBinHidden,
 					hiddenByFilter: sorted.length - filtered.length,
 				};
 			}
@@ -562,6 +611,8 @@ export function useKanbanData(): UseKanbanDataResult {
 				active: sortCards(active, column.sortMode),
 				snoozed: sortCards(snoozed, column.sortMode),
 				archived: sortCards(archived, column.sortMode),
+				recycleBin,
+				recycleBinHidden,
 				hiddenByFilter: 0,
 			};
 		});
@@ -572,6 +623,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		projectNameById,
 		localStateByWorkspace,
 		sidebarProjectIds,
+		retentionDays,
 		now,
 	]);
 
