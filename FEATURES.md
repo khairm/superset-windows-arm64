@@ -29,6 +29,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
 | Workspace branch label | the open workspace page names its branch top-right in the tab bar (click copies) — the only branch surface a non-git multi-repo container has | `WorkspaceBranchLabel` |
+| Workspace-create failure toast | every workspace/worktree create failure raises a toast with the actual reason (e.g. a GitHub/network timeout) from the one `recordFailure` chokepoint — so a transient failure no longer reads as a silent "stuck creating → reload" | `(CREATE-FAIL-TOAST)` |
 | Thread snooze / archive | per-thread timed Snooze + sticky Archive in the sidebar | `getWorkspaceSidebarBucket`, `APP_LAUNCH_ID`, `DashboardSidebarStateSection` |
 | Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
@@ -74,6 +75,7 @@ readMultiRepoConfig	packages/host-service
 createMultiRepoWorkspaceFlow	packages/host-service
 MultiFolderProjectModal	apps/desktop/src/renderer
 WorkspaceBranchLabel	apps/desktop/src/renderer
+(CREATE-FAIL-TOAST)	apps/desktop/src/renderer
 getWorkspaceSidebarBucket	apps/desktop/src/renderer
 APP_LAUNCH_ID	apps/desktop/src/renderer
 DashboardSidebarStateSection	apps/desktop/src/renderer

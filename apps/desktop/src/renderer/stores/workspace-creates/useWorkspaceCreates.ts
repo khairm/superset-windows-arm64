@@ -1,4 +1,5 @@
 import type { SelectV2Workspace } from "@superset/db/schema";
+import { toast } from "@superset/ui/sonner";
 import { useCallback } from "react";
 import { resolveHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
@@ -61,6 +62,12 @@ export function useWorkspaceCreates(): UseWorkspaceCreatesApi {
 					error,
 					failedAt: new Date(),
 				});
+				// (CREATE-FAIL-TOAST) Surface the REASON immediately. The full-screen
+				// WorkspaceCreateErrorState shows it too, but its muted mono block is
+				// easy to miss and a transient cause (e.g. a GitHub/network timeout)
+				// otherwise reads as a silent "stuck creating → reload" with no why.
+				// One chokepoint for every failure path (initial submit AND retry).
+				toast.error("Couldn't create workspace", { description: error });
 			};
 
 			const deleteWorkspaceLocalState = (id: string) => {
