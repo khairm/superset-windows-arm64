@@ -1277,7 +1277,7 @@ def main():
         _log({
             "event": event, "tool": tool, "mappedEventType": None,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
-            "action": "skip-unmapped",
+            "agentId": sub_agent_id, "action": "skip-unmapped",
         })
         return
 
@@ -1301,13 +1301,13 @@ def main():
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
-            "httpStatus": status, "action": "posted",
+            "agentId": sub_agent_id, "httpStatus": status, "action": "posted",
         })
     except Exception as exc:
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
-            "error": str(exc), "action": "post-error",
+            "agentId": sub_agent_id, "error": str(exc), "action": "post-error",
         })
     return
 

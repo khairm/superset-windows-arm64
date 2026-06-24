@@ -8,6 +8,7 @@ import { electronTrpcClient } from "renderer/lib/trpc-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
 import { useRingtoneStore } from "renderer/stores/ringtone";
 import {
+	getV2NotificationSourceKey,
 	getV2TerminalNotificationSource,
 	useV2NotificationStore,
 	type V2NotificationSourceInput,
@@ -170,6 +171,42 @@ function updatePaneStatus(
 		statuses: store.sources,
 		targetVisible,
 	});
+
+	// (RED-CLEAR diagnostic) Name the EXACT event that clears a still-active
+	// permission (AskUser/permission red) axis. A pending red must only clear on
+	// a genuine user answer (UserPromptSubmit -> Start). The open suspect: a
+	// background fork's PostToolUse (no agent_id) ALSO maps to Start and would
+	// prematurely flip a pending red -> yellow while the question is still open.
+	// `byEvent` + `sessionId` here cross-reference agent-notify-hook.log's new
+	// `agentId` field: a Start with agentId="" and a fork's sessionId clearing
+	// the terminal's red is the smoking gun. Logging-only; no behaviour change.
+	{
+		const sourceKey = getV2NotificationSourceKey(
+			getV2TerminalNotificationSource(target.terminalId),
+		);
+		const prevEntry = store.sources[sourceKey];
+		const wasRed = prevEntry?.axes.permission !== undefined;
+		if (wasRed) {
+			const clearsViaAxes =
+				transition.axes?.clear.includes("permission") ?? false;
+			const clearsViaRemove = transition.clearSources.some(
+				(source) => getV2NotificationSourceKey(source) === sourceKey,
+			);
+			if (clearsViaAxes || clearsViaRemove) {
+				ndots({
+					event: "red_cleared",
+					byEvent: payload.eventType,
+					via: clearsViaAxes ? "axis-clear" : "source-remove",
+					terminalId: target.terminalId,
+					workspaceId,
+					sessionId: (payload as { sessionId?: string }).sessionId ?? null,
+					targetVisible,
+					permissionSetAt: prevEntry?.axes.permission ?? null,
+					occurredAt: payload.occurredAt,
+				});
+			}
+		}
+	}
 
 	ndots({
 		event: "status_transition_computed",
