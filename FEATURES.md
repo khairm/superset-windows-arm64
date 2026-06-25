@@ -42,6 +42,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Async background-tool completions never stomp the red | the Workflow / Agent / Task tools spawn background agents and complete on the MAIN loop (no agent_id) WHILE the main loop is blocked on an AskUserQuestion/permission red — so their PostToolUse maps to SubagentActive, not Start, instead of wrongly clearing the pending red (the SUBTOOL-RED sequential-main-loop assumption breaks for async-spawning tools) | `(ASYNC-TOOL-RED)` |
 | Layered dot axes | a source's dot status is DERIVED as the highest-precedence active axis (permission > working > review, + the separate blue axes) — events latch/unlatch axes they have evidence about, so a lower assert can never overwrite a higher active state | `applySourceAxes` |
 | Leaked yellow-hold markers self-heal | a SubagentStop arriving with a mismatched/missing agent_id leaks its run-dir marker and pins the dot yellow with nothing running; at every Stop/SubagentStop the payload's background_tasks[] (ground truth) reaps any marker not listed as still running | `(MARKER-RECONCILE)` |
+| Dead-subagent marker reap by inactivity | a subagent that dies/hangs without a clean SubagentStop (e.g. caught in an API stream-idle-timeout) leaks a marker the harness still lists as "running" (so MARKER-RECONCILE keeps it); the marker is now touched on every PostToolUse it fires and reaped after 20 min of no activity, so the dot self-heals instead of pinning yellow until the 12h bound | `(MARKER-INACTIVE)` |
 | Dot state survives renderer reloads | the v2-notifications dot store persists to sessionStorage — an in-place window reload (Ctrl+R / error boundary / crash recovery) no longer wipes every dot; the background-running blue has no self-heal until the next turn end, so a reload used to hide a running background task for hours. Clears on real app restart (no stale dots across launches) | `(DOT-PERSIST)` |
 | Agent hook fork-diet | every agent lifecycle hook parses + escapes JSON with bash builtins (read, `[[ =~ ]]`, parameter expansion); the old grep/tr + sed pipelines forked ~30 subprocesses per call and crashed the x64-emulated msys2 runtime on Windows ARM64 (the add_item errno-1 fork cascade that wedged every chat's hooks). Wire payload unchanged | `(HOOK-FORK-DIET)` |
 | Master cards archive-only | a repo's master / non-git master card (`type === "main"`) can never be hard-removed from the sidebar — "Remove from Sidebar" archives it (recoverable under the project's Archived section) instead of hiding it into oblivion. `archiveWorkspace` inserts an archived row for an auto-included main that has none yet | `(MASTER-ARCHIVE-ONLY)` |
@@ -89,6 +90,7 @@ writeKanbanBackup	apps/desktop/src
 (SUBTOOL-RED)	apps/desktop/src/main
 (ASYNC-TOOL-RED)	apps/desktop/src/main
 (MARKER-RECONCILE)	apps/desktop/src/main
+(MARKER-INACTIVE)	apps/desktop/src/main
 (DOT-PERSIST)	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main

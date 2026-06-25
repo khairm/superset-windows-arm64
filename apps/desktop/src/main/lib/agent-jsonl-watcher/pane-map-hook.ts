@@ -882,14 +882,19 @@ def _reconcile_run_dir(run_dir, bg_ids, terminal_id):
         })
 
 
-# (review #3) Upper bound (seconds) past which a yellow-hold marker with NO
-# live evidence is treated as leaked and reaped. 12h is far longer than any
-# real subagent/background turn yet finite, so a missing/garbled
-# background_tasks[] (which disables the precise MARKER-RECONCILE reap above)
-# can no longer pin yellow FOREVER — the dot self-heals to green/blue within
-# the bound. Markers are touched on SubagentStart, so a genuinely long-lived
-# async subagent keeps a fresh mtime and survives; only abandoned ones age out.
-_MARKER_STALE_SECONDS = 43200
+# (MARKER-INACTIVE) Seconds of NO subagent activity past which a yellow-hold
+# marker is treated as leaked and reaped. The marker is touched on SubagentStart
+# AND on every PostToolUse the subagent fires (see the PostToolUse branch), so
+# its mtime now tracks the subagent's LAST activity, not just its start: an
+# actively-working subagent keeps it fresh and survives, while one that died or
+# hung without a clean SubagentStop (e.g. caught in an API stream-idle-timeout)
+# ages out within the bound. This is the ONLY reap that catches a marker the
+# harness still (wrongly) lists as running — MARKER-RECONCILE keeps those, and a
+# zombie background_tasks[] entry can otherwise pin yellow for hours. 20 min
+# tolerates a subagent on a single long tool that fires no intermediate
+# PostToolUse; past that it reaps (errs green — the file's documented safe
+# direction). Also still bounds the missing/garbled-background_tasks[] fallback.
+_MARKER_STALE_SECONDS = 1200
 
 
 def _reap_stale_markers(run_dir, terminal_id):
@@ -1255,6 +1260,16 @@ def _decide_event_type(
         # pending question/permission was answered and red must clear.
         if sub_agent_id:
             _touch(bgactive_marker)  # (BG-STALE) teammate/subagent forward activity
+            # (MARKER-INACTIVE) refresh THIS subagent's run-dir marker so its mtime
+            # tracks last activity. A subagent that dies/hangs without a clean
+            # SubagentStop (e.g. caught in an API stream-idle-timeout) otherwise
+            # leaks its marker and pins yellow until the 12h reap (MARKER-RECONCILE
+            # keeps it because the harness still lists the zombie in background_tasks).
+            # With a live mtime, _reap_stale_markers ages it out instead. Refresh an
+            # EXISTING marker only — SubagentStart owns creation.
+            marker = run_dir / sub_agent_id
+            if marker.exists():
+                _touch(marker)
             return "SubagentActive"
         # (ASYNC-TOOL-RED) the Workflow / Agent / Task tools SPAWN background agents
         # and return (or stream progress) on the MAIN loop, so their PostToolUse
