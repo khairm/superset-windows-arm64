@@ -342,6 +342,43 @@ function loadPaneMapping(sessionId: string): PaneMapping | undefined {
 	return result;
 }
 
+const SUBAGENT_RUNNING_DIR = path.join(
+	os.homedir(),
+	".superset",
+	"agent-subagent-running",
+);
+
+/**
+ * (API-ABORT-RELEASE) Reap the run-dir subagent markers for a terminal when the
+ * main Claude session's stream aborts. superset-notify.py creates one marker per
+ * SubagentStart under agent-subagent-running/<terminalId>/ and removes it only on
+ * SubagentStop; a stream-idle-timeout / API error ("API Error: Stream idle
+ * timeout - partial response received", an isApiErrorMessage assistant line) ends
+ * the turn and ORPHANS any in-flight subagent WITHOUT firing its SubagentStop, so
+ * the marker leaks and the POST hook re-asserts yellow from it indefinitely. No
+ * hook fires on the abort, so the POST hook can't self-heal — but the watcher
+ * reads the transcript, so it reaps the orphaned per-subagent markers here. The
+ * sibling sentinel files (<terminalId>.mainstopped/.agentbg/.bgactive…) live
+ * OUTSIDE this dir and are untouched; a genuinely-surviving async subagent stays
+ * held yellow via the next Stop payload's background_tasks[], so this never
+ * under-holds. Best-effort; never throws.
+ */
+function reapOrphanedSubagentMarkers(terminalId: string): number {
+	try {
+		const dir = path.join(SUBAGENT_RUNNING_DIR, terminalId);
+		let reaped = 0;
+		for (const name of fs.readdirSync(dir)) {
+			try {
+				fs.unlinkSync(path.join(dir, name));
+				reaped += 1;
+			} catch {}
+		}
+		return reaped;
+	} catch {
+		return 0;
+	}
+}
+
 function emit(
 	eventType: "Start" | "Stop" | "PermissionRequest" | "SubagentActive",
 	sessionId: string | null,
@@ -649,13 +686,33 @@ function processFile(
 		// Event-driven, no timer. (Use state.sessionId — the block-scoped
 		// `const { sessionId }` below is in the temporal dead zone here.)
 		for (const line of lines) {
+			if (!line) continue;
 			if (
-				line &&
 				line.includes('"type":"user"') &&
 				(line.includes("Request interrupted by user") ||
 					line.includes("Request cancelled by user"))
 			) {
 				dbg("claude-interrupt-release", { sessionId: state.sessionId, filePath });
+				emit("Stop", state.sessionId, cwd, mapping);
+				break;
+			}
+			// (API-ABORT-RELEASE) a stream-idle-timeout / API error on the MAIN
+			// session ("API Error: Stream idle timeout - partial response received",
+			// written as an isApiErrorMessage assistant line) ends the turn and
+			// orphans any in-flight subagent without firing its SubagentStop —
+			// leaking its run-dir marker so the POST hook re-asserts yellow forever.
+			// No hook fires on the abort, so only the watcher (which reads the
+			// transcript) can self-heal it: reap the orphaned markers + emit review.
+			if (line.includes('"isApiErrorMessage":true')) {
+				const reaped = mapping?.terminalId
+					? reapOrphanedSubagentMarkers(mapping.terminalId)
+					: 0;
+				dbg("claude-api-abort-release", {
+					sessionId: state.sessionId,
+					terminalId: mapping?.terminalId ?? null,
+					reapedMarkers: reaped,
+					filePath,
+				});
 				emit("Stop", state.sessionId, cwd, mapping);
 				break;
 			}

@@ -883,18 +883,19 @@ def _reconcile_run_dir(run_dir, bg_ids, terminal_id):
 
 
 # (MARKER-INACTIVE) Seconds of NO subagent activity past which a yellow-hold
-# marker is treated as leaked and reaped. The marker is touched on SubagentStart
-# AND on every PostToolUse the subagent fires (see the PostToolUse branch), so
-# its mtime now tracks the subagent's LAST activity, not just its start: an
-# actively-working subagent keeps it fresh and survives, while one that died or
-# hung without a clean SubagentStop (e.g. caught in an API stream-idle-timeout)
-# ages out within the bound. This is the ONLY reap that catches a marker the
-# harness still (wrongly) lists as running — MARKER-RECONCILE keeps those, and a
-# zombie background_tasks[] entry can otherwise pin yellow for hours. 20 min
-# tolerates a subagent on a single long tool that fires no intermediate
-# PostToolUse; past that it reaps (errs green — the file's documented safe
-# direction). Also still bounds the missing/garbled-background_tasks[] fallback.
-_MARKER_STALE_SECONDS = 1200
+# marker is treated as leaked and reaped — a conservative FAR backstop. The
+# marker is touched on SubagentStart AND on every PostToolUse the subagent fires
+# (see the PostToolUse branch), so its mtime tracks the subagent's LAST activity,
+# not just its start: an actively-working subagent (incl. one on a long tool that
+# streams progress) keeps it fresh and survives; only a truly abandoned one ages
+# out. The COMMON leak — an in-flight subagent orphaned by an API stream-idle-
+# timeout (no SubagentStop) — is caught fast + deterministically by the watcher's
+# (API-ABORT-RELEASE) reap on the transcript's isApiErrorMessage line, NOT by this
+# timer (a short timer here false-greened subagents on long tools — flaky). 12h
+# is kept only so a subagent that hangs with NO error signal AND that the harness
+# keeps (wrongly) listing in background_tasks[] (which defeats MARKER-RECONCILE)
+# can't pin yellow FOREVER; it errs green, the file's documented safe direction.
+_MARKER_STALE_SECONDS = 43200
 
 
 def _reap_stale_markers(run_dir, terminal_id):
