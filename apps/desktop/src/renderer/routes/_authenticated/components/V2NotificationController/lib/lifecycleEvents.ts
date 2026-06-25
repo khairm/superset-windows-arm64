@@ -199,7 +199,11 @@ function updatePaneStatus(
 					via: clearsViaAxes ? "axis-clear" : "source-remove",
 					terminalId: target.terminalId,
 					workspaceId,
-					sessionId: (payload as { sessionId?: string }).sessionId ?? null,
+					sessionId:
+						(payload as { agent?: { sessionId?: string }; sessionId?: string })
+							.agent?.sessionId ??
+						(payload as { sessionId?: string }).sessionId ??
+						null,
 					targetVisible,
 					permissionSetAt: prevEntry?.axes.permission ?? null,
 					occurredAt: payload.occurredAt,

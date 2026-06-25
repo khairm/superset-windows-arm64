@@ -357,15 +357,23 @@ const SUBAGENT_RUNNING_DIR = path.join(
  * the turn and ORPHANS any in-flight subagent WITHOUT firing its SubagentStop, so
  * the marker leaks and the POST hook re-asserts yellow from it indefinitely. No
  * hook fires on the abort, so the POST hook can't self-heal — but the watcher
- * reads the transcript, so it reaps the orphaned per-subagent markers here. The
- * sibling sentinel files (<terminalId>.mainstopped/.agentbg/.bgactive…) live
- * OUTSIDE this dir and are untouched; a genuinely-surviving async subagent stays
- * held yellow via the next Stop payload's background_tasks[], so this never
- * under-holds. Best-effort; never throws.
+ * reads the transcript, so it reaps the orphaned per-subagent markers here. A
+ * subagent that genuinely SURVIVES the abort is not under-held: mirrorSubagentToParent
+ * re-asserts SubagentActive (yellow) on its NEXT transcript write, so it errs
+ * green for one beat and self-heals back to yellow on the subagent's next
+ * activity. Best-effort; never throws. The terminalId comes from the pane-map
+ * JSON, so it's validated as a safe single path segment and the resolved dir is
+ * confirmed to be a DIRECT CHILD of SUBAGENT_RUNNING_DIR before anything is
+ * unlinked (path-injection guard). The sibling sentinel files
+ * (<terminalId>.mainstopped/.agentbg/.bgactive…) live OUTSIDE this dir and are
+ * cleared separately by the caller.
  */
 function reapOrphanedSubagentMarkers(terminalId: string): number {
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return 0;
+	const dir = path.join(SUBAGENT_RUNNING_DIR, terminalId);
+	if (path.dirname(path.resolve(dir)) !== path.resolve(SUBAGENT_RUNNING_DIR))
+		return 0;
 	try {
-		const dir = path.join(SUBAGENT_RUNNING_DIR, terminalId);
 		let reaped = 0;
 		for (const name of fs.readdirSync(dir)) {
 			try {
@@ -376,6 +384,29 @@ function reapOrphanedSubagentMarkers(terminalId: string): number {
 		return reaped;
 	} catch {
 		return 0;
+	}
+}
+
+/**
+ * (API-ABORT-RELEASE / FIX 7) A turn-killing API abort is StopFailure-equivalent:
+ * also clear the sibling sentinel files in SUBAGENT_RUNNING_DIR so a zombie
+ * background_tasks set can't immediately re-hold yellow via a fresh .bgactive.
+ * These siblings live OUTSIDE the <terminalId>/ dir, so reapOrphanedSubagentMarkers'
+ * child-of guard does not cover them — clean them explicitly. Best-effort; the
+ * terminalId is validated the same way as the reap guard. Never throws.
+ */
+function clearAbortSiblingSentinels(terminalId: string): void {
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
+	for (const suffix of [
+		".agentbg",
+		".bgactive",
+		".shellbg",
+		".mainstopped",
+		".compacting",
+	]) {
+		try {
+			fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, terminalId + suffix));
+		} catch {}
 	}
 }
 
@@ -609,10 +640,17 @@ function processFile(
 	// Truncation/rotation: reset offset and re-read from the start. Fall
 	// through (don't return early) so replacement content isn't skipped
 	// until the next append.
+	// (FIX 6) Record that this pass is a from-offset-0 re-read of the whole
+	// transcript: the Claude api-abort line is permanent, so re-reading from 0
+	// would re-fire the DESTRUCTIVE marker reap against LIVE markers from later
+	// turns. The Claude block skips ONLY the reap in that case (the benign emit
+	// Stop still runs).
+	let truncatedReset = false;
 	if (stat.size < state.offset) {
 		dbg("file-truncated", { filePath, sessionId: state.sessionId, oldOffset: state.offset, newSize: stat.size });
 		state.offset = 0;
 		state.leftover = "";
+		truncatedReset = true;
 	}
 	if (stat.size === state.offset) return;
 
@@ -680,11 +718,20 @@ function processFile(
 	if (parser.id === "claude") {
 		// Claude main-agent lifecycle is owned by the host-service POST hook
 		// (superset-notify.py). The ONLY thing the watcher still does for a Claude
-		// main line is clear a stuck RED on a user interrupt/ESC: Claude Code fires
+		// main line is clear a stuck RED on a user interrupt/ESC (Claude Code fires
 		// NO hook on interrupt, so the POST hook cannot release an AskUserQuestion
-		// red — we detect the transcript's interrupt marker and emit review.
+		// red) and self-heal an API-abort that orphaned in-flight subagent markers.
 		// Event-driven, no timer. (Use state.sessionId — the block-scoped
 		// `const { sessionId }` below is in the temporal dead zone here.)
+		//
+		// (FIX 6) Scan the WHOLE chunk once recording which signals appeared,
+		// rather than break-ing on the first: an interrupt line BEFORE an api-abort
+		// line in the same chunk must still trigger the abort reap. After the loop,
+		// the destructive reap fires once for an api-abort — but NOT on a post-
+		// truncation full re-read (truncatedReset), where the permanent api-error
+		// line would re-reap LIVE markers from later turns.
+		let sawInterrupt = false;
+		let sawApiAbort = false;
 		for (const line of lines) {
 			if (!line) continue;
 			if (
@@ -692,9 +739,7 @@ function processFile(
 				(line.includes("Request interrupted by user") ||
 					line.includes("Request cancelled by user"))
 			) {
-				dbg("claude-interrupt-release", { sessionId: state.sessionId, filePath });
-				emit("Stop", state.sessionId, cwd, mapping);
-				break;
+				sawInterrupt = true;
 			}
 			// (API-ABORT-RELEASE) a stream-idle-timeout / API error on the MAIN
 			// session ("API Error: Stream idle timeout - partial response received",
@@ -702,20 +747,47 @@ function processFile(
 			// orphans any in-flight subagent without firing its SubagentStop —
 			// leaking its run-dir marker so the POST hook re-asserts yellow forever.
 			// No hook fires on the abort, so only the watcher (which reads the
-			// transcript) can self-heal it: reap the orphaned markers + emit review.
-			if (line.includes('"isApiErrorMessage":true')) {
-				const reaped = mapping?.terminalId
-					? reapOrphanedSubagentMarkers(mapping.terminalId)
-					: 0;
-				dbg("claude-api-abort-release", {
+			// transcript) can self-heal it. (FIX 1) Require the turn-ENDING
+			// signature too — a bare isApiErrorMessage also matches TRANSIENT API
+			// errors (overloaded 529 etc.) that Claude AUTO-RETRIES within the same
+			// turn, which must NOT reap markers or green mid-turn.
+			if (
+				line.includes('"isApiErrorMessage":true') &&
+				(line.includes("Stream idle timeout") ||
+					line.includes("partial response received"))
+			) {
+				sawApiAbort = true;
+			}
+		}
+		if (sawApiAbort && !truncatedReset) {
+			// Destructive self-heal: reap the orphaned per-subagent markers + the
+			// sibling sentinels (FIX 7), then emit review. Skipped on a post-
+			// truncation re-read so we never reap live markers from later turns.
+			const terminalId = mapping?.terminalId;
+			const reaped = terminalId ? reapOrphanedSubagentMarkers(terminalId) : 0;
+			if (terminalId) clearAbortSiblingSentinels(terminalId);
+			dbg("claude-api-abort-release", {
+				sessionId: state.sessionId,
+				terminalId: terminalId ?? null,
+				reapedMarkers: reaped,
+				clearedSiblings: !!terminalId,
+				filePath,
+			});
+			emit("Stop", state.sessionId, cwd, mapping);
+		} else if (sawApiAbort || sawInterrupt) {
+			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
+			// only re-asserts review/green — no destructive marker reap).
+			dbg(
+				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
+				{
 					sessionId: state.sessionId,
 					terminalId: mapping?.terminalId ?? null,
-					reapedMarkers: reaped,
+					reapSkipped:
+						sawApiAbort && truncatedReset ? "truncation-reread" : null,
 					filePath,
-				});
-				emit("Stop", state.sessionId, cwd, mapping);
-				break;
-			}
+				},
+			);
+			emit("Stop", state.sessionId, cwd, mapping);
 		}
 		dbg("claude-gated", { sessionId: state.sessionId, filePath, lineCount: lines.length });
 		return;

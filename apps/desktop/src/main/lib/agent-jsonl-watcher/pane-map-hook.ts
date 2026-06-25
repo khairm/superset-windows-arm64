@@ -1100,7 +1100,12 @@ def _decide_event_type(
             agent_hold = agentbg_marker.exists() and not _bg_hold_is_stale(terminal_id)
             if not agent_hold and agentbg_marker.exists():
                 _remove(agentbg_marker)
-                _remove(bgactive_marker)
+                # (FIX 4 BG-STALE) leave the stale .bgactive mtime in place so the
+                # set stays stale and keeps greening — removing it would let the
+                # next turn-end snapshot re-seed it fresh and grant another 900s
+                # yellow grace, cycling. It un-stales only on real activity (_touch),
+                # and is still cleared by the no-agent-bg snapshot else, StopFailure
+                # and SessionEnd.
             if agent_hold or _codex_job_active(session_id, cx, cx_skip):
                 if cx:
                     _reason("HOLD working: codex job " + cx[0] + " (manual-compact finish)")
@@ -1142,7 +1147,11 @@ def _decide_event_type(
             agent_hold = has_agent_background and not stale_bg
             if stale_bg:
                 _remove(agentbg_marker)
-                _remove(bgactive_marker)
+                # (FIX 4) leave .bgactive's stale mtime so the set stays stale and
+                # keeps greening; removing it would let the next Stop re-seed it
+                # fresh and re-grant 900s of yellow grace, cycling. It un-stales
+                # only on real activity (_touch) and is cleared by the no-agent-bg
+                # snapshot else / StopFailure / SessionEnd.
             cx = []
             cx_skip = []
             if agent_hold or _codex_job_active(session_id, cx, cx_skip):
@@ -1157,7 +1166,11 @@ def _decide_event_type(
                 else:
                     _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (SubagentStop)")
                 return "SubagentActive"  # teammates/workflows/codex still working -> yellow
-            if has_background:
+            # (FIX 5) blue is the SHELL-ONLY remainder. After a stale_bg suppression
+            # has_agent_background is still true, so a bare has_background-only test
+            # would wrongly blue an agent-only zombie set; require shell-only so a
+            # stale agent-only set falls through to GREEN/Stop below.
+            if has_background and not has_agent_background:
                 tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
                 _reason("BLUE: shell background remainder" + tag + " (SubagentStop)" + _skip_suffix(cx_skip))
                 return "BackgroundRunning"  # only background shells left -> blue
@@ -1189,7 +1202,11 @@ def _decide_event_type(
         agent_hold = has_agent_background and not stale_bg
         if stale_bg:
             _remove(agentbg_marker)  # the snapshot above touched it on raw has_agent_background
-            _remove(bgactive_marker)  # reset; a fresh team re-seeds on next activity/turn
+            # (FIX 4) leave .bgactive's stale mtime so the set keeps greening; a
+            # _remove here would let the next Stop re-seed it fresh and re-grant
+            # 900s of yellow grace, cycling. It un-stales only on real activity
+            # (_touch); cleared by the no-agent-bg snapshot else / StopFailure /
+            # SessionEnd.
         cx = []
         cx_skip = []
         if agent_hold or _codex_job_active(session_id, cx, cx_skip):
@@ -1203,7 +1220,11 @@ def _decide_event_type(
             else:
                 _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (Stop)")
             return "SubagentActive"  # teammates/workflows/codex still working -> yellow, not blue
-        if has_background:
+        # (FIX 5) shell-only remainder -> blue. After a stale_bg suppression
+        # has_agent_background is still true; a bare has_background-only test would
+        # wrongly blue an agent-only zombie set, so require shell-only here and
+        # let a stale agent-only set fall through to GREEN/Stop.
+        if has_background and not has_agent_background:
             tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
             _reason("BLUE: shell background remainder" + tag + " (Stop)" + _skip_suffix(cx_skip))
             return "BackgroundRunning"  # turn ended; only background shells left -> blue
@@ -1250,6 +1271,19 @@ def _decide_event_type(
             return "PermissionRequest"
         return None
     if event == "PostToolUse":
+        # (FIX 3) An AskUserQuestion that COMPLETES always means the user
+        # answered, so it clears the pending red regardless of agent context —
+        # even when the question was raised + answered INSIDE a subagent. This
+        # MUST precede the sub_agent_id branch below: SubagentActive does not
+        # clear the permission axis, so returning it here would leave the
+        # terminal stuck RED after a subagent's question is answered. Refresh
+        # the subagent's run-dir marker (mirror the per-marker touch) so the
+        # yellow-hold mtime stays live, then Start to clear the red.
+        if tool == "AskUserQuestion":
+            marker = run_dir / sub_agent_id
+            if sub_agent_id and marker.exists():
+                _touch(marker)
+            return "Start"
         # (SUBTOOL-RED) agent_id is present iff the tool ran INSIDE a subagent
         # (Claude Code hooks doc: "use this to distinguish subagent hook calls
         # from main-thread calls"; verified live 2026-06-12). Background
