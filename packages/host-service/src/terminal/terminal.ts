@@ -560,6 +560,42 @@ export function writeInputToSession({
 	return { success: true };
 }
 
+// (AUTO-RESUME) Fire-time preflight write. Unlike writeInputToSession this also refuses
+// to type while a foreground command is in flight (OSC 133 commandRunning) — i.e. only
+// when the agent CLI is idle at its prompt — and appends the platform EOL so the prompt
+// is submitted. The agent-session-id binding check is done by the caller (router), which
+// has access to the TerminalAgentStore. Returns a structured skip reason rather than
+// throwing so the scheduler can decide retry-vs-give-up.
+export type WriteIfIdleResult =
+	| { sent: true }
+	| {
+			sent: false;
+			reason: "not_found" | "wrong_workspace" | "exited" | "busy";
+	  };
+
+export function writeInputIfIdleSession({
+	terminalId,
+	workspaceId,
+	data,
+}: {
+	terminalId: string;
+	workspaceId: string;
+	data: string;
+}): WriteIfIdleResult {
+	const session = sessions.get(terminalId);
+	if (!session) return { sent: false, reason: "not_found" };
+	if (session.workspaceId !== workspaceId) {
+		return { sent: false, reason: "wrong_workspace" };
+	}
+	if (session.exited) return { sent: false, reason: "exited" };
+	// commandRunning is only ever true for OSC-133-instrumented shells; an
+	// uninstrumented shell stays false, so we treat false as "idle or unknown".
+	if (session.commandRunning) return { sent: false, reason: "busy" };
+
+	session.pty.write(`${data}${TERMINAL_COMMAND_EOL}`);
+	return { sent: true };
+}
+
 function sendMessage(
 	socket: { send: (data: string) => void; readyState: number },
 	message: TerminalServerMessage,

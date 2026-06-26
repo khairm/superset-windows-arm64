@@ -121,6 +121,26 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 			},
 		});
 
+	// (AUTO-RESUME) global on/off for auto-resuming chats that died on an API failure.
+	const { data: autoResumeEnabled, isLoading: isAutoResumeLoading } =
+		electronTrpc.autoResume.getEnabled.useQuery();
+	const setAutoResume = electronTrpc.autoResume.setEnabled.useMutation({
+		onMutate: async ({ enabled }) => {
+			await utils.autoResume.getEnabled.cancel();
+			const previous = utils.autoResume.getEnabled.getData();
+			utils.autoResume.getEnabled.setData(undefined, enabled);
+			return { previous };
+		},
+		onError: (_err, _vars, context) => {
+			if (context?.previous !== undefined) {
+				utils.autoResume.getEnabled.setData(undefined, context.previous);
+			}
+		},
+		onSettled: () => {
+			utils.autoResume.getEnabled.invalidate();
+		},
+	});
+
 	const { data: openLinksInApp, isLoading: isOpenLinksInAppLoading } =
 		electronTrpc.settings.getOpenLinksInApp.useQuery();
 	const setOpenLinksInApp = electronTrpc.settings.setOpenLinksInApp.useMutation(
@@ -219,6 +239,27 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 						/>
 					</div>
 				)}
+
+				{/* (AUTO-RESUME) */}
+				<div className="flex items-center justify-between">
+					<div className="space-y-0.5">
+						<Label htmlFor="auto-resume" className="text-sm font-medium">
+							Auto-resume stuck chats
+						</Label>
+						<p className="text-xs text-muted-foreground">
+							When a chat dies on a rate-limit, server error, or half-finished
+							response, automatically send it "resume from exactly where
+							everything was left" — at the reset time for rate limits, or on a
+							backoff otherwise. Touching the terminal cancels it.
+						</p>
+					</div>
+					<Switch
+						id="auto-resume"
+						checked={autoResumeEnabled ?? false}
+						onCheckedChange={(enabled) => setAutoResume.mutate({ enabled })}
+						disabled={isAutoResumeLoading || setAutoResume.isPending}
+					/>
+				</div>
 
 				{showOpenLinksInApp && (
 					<div className="flex items-center justify-between">

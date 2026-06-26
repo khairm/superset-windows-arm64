@@ -33,7 +33,12 @@ export const NOTIFICATION_EVENTS = {
 	FOCUS_TAB: "focus-tab",
 	FOCUS_V2_NOTIFICATION_SOURCE: "focus-v2-notification-source",
 	TERMINAL_EXIT: "terminal-exit",
+	// (AUTO-RESUME) auto-resume armed/sent/cancelled/gaveUp + notify-only surfacing.
+	AUTO_RESUME_STATE: "auto-resume-state",
 } as const;
+
+// (AUTO-RESUME) Claude auto-send default ON; Codex auto-send default OFF (notify-only).
+export const DEFAULT_AUTO_RESUME_ENABLED = true;
 
 // Development/testing mock values (used when SKIP_ENV_VALIDATION is set)
 export const MOCK_ORG_ID = "mock-org-id";

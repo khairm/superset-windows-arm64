@@ -41,6 +41,8 @@ import {
 	saveWindowState,
 } from "../lib/window-state";
 import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
+import { findActiveOrganizationId } from "../lib/auto-resume/host-send/host-send";
+import { autoResumeManager } from "../lib/auto-resume/manager/manager";
 
 // Singleton IPC handler to prevent duplicate handlers on window reopen (macOS)
 let ipcHandler: ReturnType<typeof createIPCHandler> | null = null;
@@ -297,7 +299,15 @@ export async function MainWindow() {
 	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
 	// and the fork's project memory `superset-windows-hook-chain-broken`.
 	log.info("[boot] startAgentJsonlWatcher (seed scan deferred) +" + Math.round(process.uptime() * 1000) + "ms");
-	startAgentJsonlWatcher({ notificationsEmitter });
+	// (AUTO-RESUME) Detect+auto-resume Claude chats that died on an API failure.
+	autoResumeManager.start({
+		emitter: notificationsEmitter,
+		getOrganizationId: findActiveOrganizationId,
+	});
+	startAgentJsonlWatcher({
+		notificationsEmitter,
+		onClaudeApiError: (info) => autoResumeManager.onClaudeApiErrorSignal(info),
+	});
 	log.info("[boot] startAgentJsonlWatcher returned +" + Math.round(process.uptime() * 1000) + "ms");
 
 	const notificationManager = new NotificationManager({

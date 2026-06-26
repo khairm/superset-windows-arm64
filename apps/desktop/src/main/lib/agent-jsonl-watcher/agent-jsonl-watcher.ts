@@ -242,6 +242,18 @@ interface PaneMapping {
 
 interface WatcherDeps {
 	notificationsEmitter: EventEmitter;
+	// (AUTO-RESUME) Forwarded when a Claude main session appends an API-error record.
+	// The auto-resume manager debounces + re-reads the transcript tail to confirm the
+	// failure is genuinely turn-ending before classifying — so passing a possibly-
+	// transient mid-turn error here is safe.
+	onClaudeApiError?: (info: {
+		sessionId: string;
+		cwd: string;
+		paneId?: string;
+		terminalId?: string;
+		workspaceId?: string;
+		transcriptPath: string;
+	}) => void;
 }
 
 const fileStates = new Map<string, FileState>();
@@ -732,6 +744,7 @@ function processFile(
 		// line would re-reap LIVE markers from later turns.
 		let sawInterrupt = false;
 		let sawApiAbort = false;
+		let sawAnyApiError = false;
 		for (const line of lines) {
 			if (!line) continue;
 			if (
@@ -740,6 +753,11 @@ function processFile(
 					line.includes("Request cancelled by user"))
 			) {
 				sawInterrupt = true;
+			}
+			// (AUTO-RESUME) ANY api-error line (not just the half-stop signature) is a
+			// candidate for auto-resume; the manager confirms turn-finality itself.
+			if (line.includes('"isApiErrorMessage":true')) {
+				sawAnyApiError = true;
 			}
 			// (API-ABORT-RELEASE) a stream-idle-timeout / API error on the MAIN
 			// session ("API Error: Stream idle timeout - partial response received",
@@ -788,6 +806,19 @@ function processFile(
 				},
 			);
 			emit("Stop", state.sessionId, cwd, mapping);
+		}
+		// (AUTO-RESUME) Forward an api-error candidate (interrupts are NOT failures and
+		// are never forwarded). Skipped on a post-truncation full re-read so a permanent
+		// error line from an earlier turn can't re-arm a resume.
+		if (sawAnyApiError && !sawInterrupt && !truncatedReset && state.sessionId) {
+			deps?.onClaudeApiError?.({
+				sessionId: state.sessionId,
+				cwd,
+				paneId: mapping?.paneId,
+				terminalId: mapping?.terminalId,
+				workspaceId: mapping?.workspaceId,
+				transcriptPath: filePath,
+			});
 		}
 		dbg("claude-gated", { sessionId: state.sessionId, filePath, lineCount: lines.length });
 		return;

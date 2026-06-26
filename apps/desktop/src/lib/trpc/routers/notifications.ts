@@ -20,6 +20,19 @@ type TerminalExitNotification = NotificationIds & {
 	reason?: "killed" | "exited" | "error";
 };
 
+// (AUTO-RESUME) Badge/toast surfacing for the auto-resume subsystem. Dot consumers
+// discriminate on `type` and ignore this variant, so DOT-AXES is untouched.
+export type AutoResumeStatePayload = {
+	kind: string;
+	sessionId?: string;
+	terminalId?: string;
+	workspaceId?: string;
+	failureClass?: string;
+	resumeAtMs?: number;
+	sentCount?: number;
+	reason?: string;
+};
+
 type NotificationEvent =
 	| {
 			type: typeof NOTIFICATION_EVENTS.AGENT_LIFECYCLE;
@@ -33,6 +46,10 @@ type NotificationEvent =
 	| {
 			type: typeof NOTIFICATION_EVENTS.TERMINAL_EXIT;
 			data?: TerminalExitNotification;
+	  }
+	| {
+			type: typeof NOTIFICATION_EVENTS.AUTO_RESUME_STATE;
+			data?: AutoResumeStatePayload;
 	  };
 
 const v2NotificationSourceSchema = z.discriminatedUnion("type", [
@@ -144,6 +161,10 @@ export const createNotificationsRouter = (
 					emit.next({ type: NOTIFICATION_EVENTS.TERMINAL_EXIT, data });
 				};
 
+				const onAutoResumeState = (data: AutoResumeStatePayload) => {
+					emit.next({ type: NOTIFICATION_EVENTS.AUTO_RESUME_STATE, data });
+				};
+
 				notificationsEmitter.on(
 					NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
 					onLifecycle,
@@ -156,6 +177,10 @@ export const createNotificationsRouter = (
 				notificationsEmitter.on(
 					NOTIFICATION_EVENTS.TERMINAL_EXIT,
 					onTerminalExit,
+				);
+				notificationsEmitter.on(
+					NOTIFICATION_EVENTS.AUTO_RESUME_STATE,
+					onAutoResumeState,
 				);
 
 				return () => {
@@ -171,6 +196,10 @@ export const createNotificationsRouter = (
 					notificationsEmitter.off(
 						NOTIFICATION_EVENTS.TERMINAL_EXIT,
 						onTerminalExit,
+					);
+					notificationsEmitter.off(
+						NOTIFICATION_EVENTS.AUTO_RESUME_STATE,
+						onAutoResumeState,
 					);
 				};
 			});

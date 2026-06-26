@@ -2,6 +2,7 @@ import type { BrowserWindow } from "electron";
 import { router } from "..";
 import { createAnalyticsRouter } from "./analytics";
 import { createAuthRouter } from "./auth";
+import { createAutoResumeRouter } from "./auto-resume";
 import { createAutoUpdateRouter } from "./auto-update";
 import { createBrowserRouter } from "./browser/browser";
 import { createBrowserHistoryRouter } from "./browser-history";
@@ -38,6 +39,7 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		browser: createBrowserRouter(),
 		browserHistory: createBrowserHistoryRouter(),
 		auth: createAuthRouter(),
+		autoResume: createAutoResumeRouter(),
 		autoUpdate: createAutoUpdateRouter(),
 		cache: createCacheRouter(),
 		window: createWindowRouter(getWindow),

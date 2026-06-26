@@ -36,6 +36,7 @@ import { ScrollToBottomButton } from "renderer/screens/main/components/Workspace
 import { TerminalSearch } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/TerminalSearch";
 import { useTheme } from "renderer/stores/theme";
 import { resolveTerminalThemeType } from "renderer/stores/theme/utils";
+import { useAutoResumeActivity } from "./hooks/useAutoResumeActivity/useAutoResumeActivity";
 import { useLinkClickHint } from "./hooks/useLinkClickHint";
 import { type HoveredLink, useLinkHoverState } from "./hooks/useLinkHoverState";
 import { useTerminalAppearance } from "./hooks/useTerminalAppearance";
@@ -399,6 +400,9 @@ export function TerminalPane({
 		() => terminalRuntimeRegistry.getTerminal(terminalId, terminalInstanceId),
 		[terminalId, terminalInstanceId, connectionState],
 	);
+
+	// (AUTO-RESUME) cancel an armed auto-resume the moment the user touches this terminal.
+	useAutoResumeActivity({ terminalId, containerRef, terminal });
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: connectionState is intentionally included to trigger re-derive
 	const searchAddon = useMemo(

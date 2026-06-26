@@ -9,6 +9,7 @@ import {
 	disposeSessionAndWait,
 	listTerminalSessions,
 	parseThemeType,
+	writeInputIfIdleSession,
 	writeInputToSession,
 } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
@@ -151,6 +152,36 @@ export const terminalRouter = router({
 				});
 			}
 			return { success: true as const };
+		}),
+
+	// (AUTO-RESUME) Fire-time send used by the desktop auto-resume scheduler. Refuses
+	// to type unless the agent is idle at its prompt AND still the bound foreground
+	// agent (expectedAgentSessionId), so a scheduled "resume…" can never auto-confirm a
+	// menu, land mid-turn, or run as a shell command. Returns a structured skip reason.
+	writeInputIfIdle: protectedProcedure
+		.input(
+			z.object({
+				terminalId: z.string(),
+				workspaceId: z.string(),
+				expectedAgentSessionId: z.string().optional(),
+				data: z.string(),
+				failureId: z.string().optional(),
+			}),
+		)
+		.mutation(({ input, ctx }) => {
+			// Binding check: the agent CLI must still be the one we classified the
+			// failure for (not a re-spawned shell, /resume'd new session, or swap).
+			if (input.expectedAgentSessionId) {
+				const binding = ctx.terminalAgentStore.get(input.terminalId);
+				if (binding?.agentSessionId !== input.expectedAgentSessionId) {
+					return { sent: false as const, reason: "agent_mismatch" as const };
+				}
+			}
+			return writeInputIfIdleSession({
+				terminalId: input.terminalId,
+				workspaceId: input.workspaceId,
+				data: input.data,
+			});
 		}),
 
 	killSession: protectedProcedure
