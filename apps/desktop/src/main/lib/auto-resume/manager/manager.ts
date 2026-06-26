@@ -25,10 +25,17 @@ import {
 } from "../transcript-tail/transcript-tail";
 
 const TICK_MS = 30_000;
+const STARTUP_RECONCILE_MS = 20_000; // let the watcher/dot state settle before firing
 const MAX_CONCURRENT_SENDS = 2; // throttle the account-global rate-limit cohort
 // Quiescence: wait for the transcript to settle before treating an error as turn-ending
 // (Claude auto-retries transient 529s within the same turn).
 const FINALITY_DEBOUNCE_MS = 8_000;
+// If the user touches a terminal within this window of a failure, treat it as takeover
+// and never arm (covers the pre-arm window before an entry exists to cancel).
+const RECENT_INTERACTION_MS = 20_000;
+// Give up loudly after this many consecutive transport failures (auth/manifest breakage)
+// instead of spinning every tick for the whole 24h budget.
+const MAX_TRANSPORT_FAILURES = 8;
 
 /** Lightweight signal from the JSONL watcher: this session just wrote an API error. */
 export interface ApiErrorSignal {
@@ -68,14 +75,19 @@ export class AutoResumeManager {
 		string,
 		{ timer: NodeJS.Timeout; info: ApiErrorSignal }
 	>();
+	// terminalId -> last user-interaction time (pre-arm takeover suppression).
+	private recentInteraction = new Map<string, number>();
+	// failureId -> consecutive transport-failure count (capped, then give up loud).
+	private transportFailures = new Map<string, number>();
 
 	start(deps: ManagerDeps): void {
 		this.deps = deps;
 		this.registry.load();
 		this.timer = setInterval(() => void this.tick(), TICK_MS);
 		this.timer.unref?.();
-		// Reconcile overdue entries shortly after start (post-seed; non-blocking).
-		setTimeout(() => void this.tick(), 5_000).unref?.();
+		// Reconcile overdue entries after start (post-seed; non-blocking). Delayed so the
+		// watcher/dot state has settled before any fire.
+		setTimeout(() => void this.tick(), STARTUP_RECONCILE_MS).unref?.();
 	}
 
 	stop(): void {
@@ -164,6 +176,14 @@ export class AutoResumeManager {
 		}
 
 		const now = Date.now();
+
+		// Pre-arm takeover: if the user touched this terminal moments ago, they're handling
+		// it — don't arm (covers the window before any entry exists to cancel).
+		const lastTouch = this.recentInteraction.get(c.terminalId);
+		if (lastTouch !== undefined && now - lastTouch < RECENT_INTERACTION_MS) {
+			return;
+		}
+
 		let resumeAtMs = now + backoffDelayMs(0);
 		if (cls.mode === "schedule" && cls.reset) {
 			const r = resolveResetTime(
@@ -178,13 +198,33 @@ export class AutoResumeManager {
 		}
 
 		// Smart re-handle: a fresh failure for a session that already has an armed entry
-		// updates that entry instead of creating a duplicate.
+		// RE-ANCHORS that entry to the latest error (so the fire-time finality check uses
+		// the new offset) while preserving the escalation counters — never a duplicate.
 		const existing = this.registry.findBySession(c.sessionId);
 		if (existing) {
-			const updated =
-				cls.mode === "schedule" && cls.reset
-					? applyReschedule(existing, resumeAtMs, now)
-					: existing;
+			let updated: ResumeEntry = {
+				...existing,
+				transcriptPath: c.transcriptPath,
+				offset: c.offset,
+				paneId: c.paneId ?? existing.paneId,
+				terminalId: c.terminalId,
+				workspaceId: c.workspaceId,
+				failureClass: cls.class,
+				mode: cls.mode === "schedule" ? "schedule" : "backoff",
+			};
+			if (cls.mode === "schedule" && cls.reset) {
+				updated = applyReschedule(updated, resumeAtMs, now);
+			}
+			if (updated.state === "gaveUp") {
+				this.registry.setState(existing.failureId, "gaveUp");
+				this.emit({
+					kind: "gaveUp",
+					sessionId: c.sessionId,
+					terminalId: c.terminalId,
+					failureClass: cls.class,
+				});
+				return;
+			}
 			this.registry.upsert(updated);
 			this.emit({
 				kind: "rehandle",
@@ -199,6 +239,7 @@ export class AutoResumeManager {
 			failureId: makeFailureId(c.sessionId, c.transcriptPath, c.offset),
 			agent: "claude",
 			sessionId: c.sessionId,
+			orgId: this.deps?.getOrganizationId() ?? undefined,
 			paneId: c.paneId,
 			terminalId: c.terminalId,
 			workspaceId: c.workspaceId,
@@ -226,6 +267,14 @@ export class AutoResumeManager {
 
 	/** A user interaction with the terminal (or a manual write) = takeover; cancel. */
 	cancelForSession(sessionId: string): void {
+		const prev = this.pending.get(sessionId);
+		if (prev) {
+			clearTimeout(prev.timer);
+			if (prev.info.terminalId) {
+				this.recentInteraction.set(prev.info.terminalId, Date.now());
+			}
+			this.pending.delete(sessionId);
+		}
 		if (this.registry.cancelSession(sessionId) > 0) {
 			this.emit({ kind: "cancelled", sessionId });
 		}
@@ -233,6 +282,16 @@ export class AutoResumeManager {
 
 	/** Cancel by host-service terminal id (what the renderer pane knows). */
 	cancelForTerminal(terminalId: string): void {
+		// Record the interaction so a failure currently in the finality-debounce window
+		// (no entry yet) is not armed afterwards.
+		this.recentInteraction.set(terminalId, Date.now());
+		// Drop any pending (not-yet-armed) signal for this terminal.
+		for (const [key, p] of [...this.pending]) {
+			if (p.info.terminalId === terminalId) {
+				clearTimeout(p.timer);
+				this.pending.delete(key);
+			}
+		}
 		if (this.registry.cancelByTerminal(terminalId) > 0) {
 			this.emit({ kind: "cancelled", terminalId });
 		}
@@ -269,11 +328,11 @@ export class AutoResumeManager {
 		if (!this.deps) return;
 		if (!readConfig().enabled) return;
 		const now = Date.now();
-		let launched = 0;
 		for (const entry of this.registry.armed()) {
 			const decision = decideFire(entry, now);
 			if (decision.action === "giveUp") {
 				this.registry.setState(entry.failureId, "gaveUp");
+				this.transportFailures.delete(entry.failureId);
 				this.emit({
 					kind: "gaveUp",
 					sessionId: entry.sessionId,
@@ -284,8 +343,9 @@ export class AutoResumeManager {
 			}
 			if (decision.action !== "fire") continue;
 			if (this.inFlight.has(entry.failureId)) continue;
-			if (launched >= MAX_CONCURRENT_SENDS) continue;
-			launched++;
+			// Global concurrency cap — fire() adds to inFlight synchronously (before its
+			// first await), so inFlight.size already reflects this-tick launches.
+			if (this.inFlight.size >= MAX_CONCURRENT_SENDS) break;
 			void this.fire(entry);
 		}
 	}
@@ -301,6 +361,7 @@ export class AutoResumeManager {
 			);
 			if (!stillFailed) {
 				this.registry.setState(entry.failureId, "done");
+				this.transportFailures.delete(entry.failureId);
 				this.emit({
 					kind: "resolved",
 					sessionId: entry.sessionId,
@@ -308,9 +369,12 @@ export class AutoResumeManager {
 				});
 				return;
 			}
-			const orgId = this.deps?.getOrganizationId();
+			// Target the host that produced this transcript (pinned at arm time), not just
+			// "the first live host" — multi-org desktops run several.
+			const orgId = entry.orgId ?? this.deps?.getOrganizationId() ?? null;
 			if (!orgId || !entry.terminalId || !entry.workspaceId) {
-				this.registry.setState(entry.failureId, "gaveUp");
+				// Host not resolvable yet — transient, retry under the cap (never silent giveUp).
+				this.recordTransientFailure(entry, "no_host");
 				return;
 			}
 			const outcome = await sendResumeViaHost({
@@ -322,6 +386,7 @@ export class AutoResumeManager {
 				data: RESUME_MESSAGE,
 			});
 			if (outcome.sent) {
+				this.transportFailures.delete(entry.failureId);
 				const advanced = afterSend(entry, Date.now());
 				this.registry.upsert(advanced);
 				this.emit({
@@ -333,28 +398,50 @@ export class AutoResumeManager {
 				});
 				return;
 			}
-			// Not sent: decide retry vs give-up by reason.
-			if (
-				outcome.reason === "busy" ||
-				outcome.reason.startsWith("http_") ||
-				outcome.reason === "no_manifest" ||
-				outcome.reason === "fetch_error" ||
-				outcome.reason === "AbortError"
-			) {
-				// transient — leave armed, retry next tick (no count change)
+			// Only a definitive, terminal-specific rejection ends the chain; everything else
+			// (network/auth/manifest/busy) is transient and retried under the cap.
+			const TERMINAL_REASONS = new Set([
+				"not_found",
+				"wrong_workspace",
+				"exited",
+				"agent_mismatch",
+				"ambiguous",
+				"bad_response",
+			]);
+			if (TERMINAL_REASONS.has(outcome.reason)) {
+				this.registry.setState(entry.failureId, "done");
+				this.transportFailures.delete(entry.failureId);
+				this.emit({
+					kind: "skipped",
+					sessionId: entry.sessionId,
+					terminalId: entry.terminalId,
+					reason: outcome.reason,
+				});
 				return;
 			}
-			// not_found / wrong_workspace / exited / agent_mismatch / bad_response => unrecoverable
-			this.registry.setState(entry.failureId, "done");
-			this.emit({
-				kind: "skipped",
-				sessionId: entry.sessionId,
-				terminalId: entry.terminalId,
-				reason: outcome.reason,
-			});
+			this.recordTransientFailure(entry, outcome.reason);
 		} finally {
 			this.inFlight.delete(entry.failureId);
 		}
+	}
+
+	/** Count a transient transport failure; give up loudly after the cap so a permanent
+	 * auth/manifest breakage doesn't spin every tick for the whole 24h budget. */
+	private recordTransientFailure(entry: ResumeEntry, reason: string): void {
+		const n = (this.transportFailures.get(entry.failureId) ?? 0) + 1;
+		this.transportFailures.set(entry.failureId, n);
+		if (n >= MAX_TRANSPORT_FAILURES) {
+			this.transportFailures.delete(entry.failureId);
+			this.registry.setState(entry.failureId, "gaveUp");
+			this.emit({
+				kind: "gaveUp",
+				sessionId: entry.sessionId,
+				terminalId: entry.terminalId,
+				failureClass: entry.failureClass,
+				reason,
+			});
+		}
+		// else: leave armed, retry next tick.
 	}
 }
 

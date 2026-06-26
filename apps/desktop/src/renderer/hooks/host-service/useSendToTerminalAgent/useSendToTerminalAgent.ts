@@ -1,6 +1,7 @@
 import { toast } from "@superset/ui/sonner";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useCallback } from "react";
+import { electronTrpc } from "renderer/lib/electron-trpc";
 import { normalizeTerminalCommand } from "renderer/lib/terminal/launch-command";
 
 export type AgentPromptFileSide = "additions" | "deletions" | "mixed";
@@ -64,9 +65,14 @@ interface UseSendToTerminalAgentResult {
  */
 export function useSendToTerminalAgent(): UseSendToTerminalAgentResult {
 	const writeInput = workspaceTrpc.terminal.writeInput.useMutation();
+	// (AUTO-RESUME) A manual send into a terminal is a takeover — cancel any armed/pending
+	// auto-resume for it so we never inject "resume…" on top of the user's own message.
+	const notifyAutoResumeActivity =
+		electronTrpc.autoResume.notifyActivity.useMutation();
 
 	const send = useCallback(
 		async ({ workspaceId, terminalId, text }: SendToTerminalAgentInput) => {
+			notifyAutoResumeActivity.mutate({ terminalId });
 			try {
 				await writeInput.mutateAsync({
 					workspaceId,
@@ -80,7 +86,7 @@ export function useSendToTerminalAgent(): UseSendToTerminalAgentResult {
 				throw error;
 			}
 		},
-		[writeInput],
+		[writeInput, notifyAutoResumeActivity],
 	);
 
 	return { send, isPending: writeInput.isPending };

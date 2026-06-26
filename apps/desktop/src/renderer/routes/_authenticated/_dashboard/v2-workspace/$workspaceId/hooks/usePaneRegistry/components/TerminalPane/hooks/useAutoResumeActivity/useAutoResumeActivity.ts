@@ -7,7 +7,8 @@ import type { Terminal as XTerm } from "@xterm/xterm";
 import { type RefObject, useEffect, useRef } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 
-const DEBOUNCE_MS = 400;
+// Suppress repeat cancels for this long after a leading-edge fire (typing bursts).
+const COOLDOWN_MS = 1_000;
 const TRUSTED_DOM_EVENTS = [
 	"keydown",
 	"pointerdown",
@@ -27,13 +28,14 @@ export function useAutoResumeActivity(params: {
 	mutateRef.current = notifyActivity.mutate;
 
 	useEffect(() => {
-		let timer: ReturnType<typeof setTimeout> | null = null;
+		// Fire the cancel on the LEADING edge (so a fast workspace-switch/park can't drop
+		// it), then cool down to suppress repeats. No pending timer to lose on unmount.
+		let cooldownUntil = 0;
 		const onActivity = () => {
-			if (timer) return; // already scheduled within the debounce window
-			timer = setTimeout(() => {
-				timer = null;
-				mutateRef.current({ terminalId });
-			}, DEBOUNCE_MS);
+			const now = Date.now();
+			if (now < cooldownUntil) return;
+			cooldownUntil = now + COOLDOWN_MS;
+			mutateRef.current({ terminalId });
 		};
 
 		const disposers: Array<() => void> = [];
@@ -54,7 +56,6 @@ export function useAutoResumeActivity(params: {
 			disposers.push(() => onKey.dispose());
 		}
 		return () => {
-			if (timer) clearTimeout(timer);
 			for (const dispose of disposers) dispose();
 		};
 	}, [terminalId, containerRef, terminal]);

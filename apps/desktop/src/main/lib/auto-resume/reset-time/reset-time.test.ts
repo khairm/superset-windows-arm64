@@ -61,6 +61,11 @@ describe("zonedWallTimeToEpoch", () => {
 		const epoch = zonedWallTimeToEpoch(2026, 5, 17, 3, 30, LONDON);
 		expect(new Date(epoch).toISOString()).toBe("2026-06-17T02:30:00.000Z");
 	});
+	test("London fall-overlap 01:30 picks the EARLIER instant (00:30Z)", () => {
+		// 2026-10-25 02:00 BST -> 01:00 GMT; 01:30 occurs twice (00:30Z BST, 01:30Z GMT).
+		const epoch = zonedWallTimeToEpoch(2026, 9, 25, 1, 30, LONDON);
+		expect(new Date(epoch).toISOString()).toBe("2026-10-25T00:30:00.000Z");
+	});
 });
 
 describe("resolveResetTime", () => {

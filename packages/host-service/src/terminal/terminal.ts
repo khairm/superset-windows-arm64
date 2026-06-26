@@ -3,16 +3,16 @@ import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { NodeWebSocket } from "@hono/node-ws";
 import {
+	createOsc133CdScanState,
+	type Osc133CdScanState,
+	scanForOsc133Cd,
+} from "@superset/shared/shell-osc133-cd-scanner";
+import {
 	createScanState,
 	SHELLS_WITH_READY_MARKER,
 	type ShellReadyScanState,
 	scanForShellReady,
 } from "@superset/shared/shell-ready-scanner";
-import {
-	createOsc133CdScanState,
-	type Osc133CdScanState,
-	scanForOsc133Cd,
-} from "@superset/shared/shell-osc133-cd-scanner";
 import {
 	createTerminalTitleScanState,
 	scanForTerminalTitle,
@@ -277,7 +277,10 @@ const attachResolutions = new Map<
 >();
 const socketOwners = new WeakMap<TerminalSocket, TerminalSession>();
 
-function cleanupDetachedSession(session: TerminalSession, reason: string): void {
+function cleanupDetachedSession(
+	session: TerminalSession,
+	reason: string,
+): void {
 	if (sessions.get(session.terminalId) === session) return;
 	if (session.sockets.size > 0) return;
 
@@ -289,11 +292,14 @@ function cleanupDetachedSession(session: TerminalSession, reason: string): void 
 		try {
 			session.unsubscribeDaemon();
 		} catch (error) {
-			console.error("[terminal] failed to cleanup detached daemon subscription", {
-				terminalId: session.terminalId,
-				reason,
-				error,
-			});
+			console.error(
+				"[terminal] failed to cleanup detached daemon subscription",
+				{
+					terminalId: session.terminalId,
+					reason,
+					error,
+				},
+			);
 		}
 		session.unsubscribeDaemon = null;
 	}
@@ -334,7 +340,9 @@ async function resolveAttachSessionOnce({
 	const inFlight = attachResolutions.get(terminalId);
 	if (inFlight) return inFlight;
 
-	const resolution = (async (): Promise<TerminalSession | { error: string }> => {
+	const resolution = (async (): Promise<
+		TerminalSession | { error: string }
+	> => {
 		const current = sessions.get(terminalId);
 		if (current) return current;
 
@@ -560,17 +568,19 @@ export function writeInputToSession({
 	return { success: true };
 }
 
-// (AUTO-RESUME) Fire-time preflight write. Unlike writeInputToSession this also refuses
-// to type while a foreground command is in flight (OSC 133 commandRunning) — i.e. only
-// when the agent CLI is idle at its prompt — and appends the platform EOL so the prompt
-// is submitted. The agent-session-id binding check is done by the caller (router), which
-// has access to the TerminalAgentStore. Returns a structured skip reason rather than
-// throwing so the scheduler can decide retry-vs-give-up.
+// (AUTO-RESUME) Fire-time preflight write. Appends the platform EOL so the prompt is
+// submitted. NOTE: it deliberately does NOT gate on OSC-133 `commandRunning` — the agent
+// CLI (Claude) is itself the long-running foreground shell command, so commandRunning is
+// true for the entire agent session; gating on it would block every send. "Agent idle at
+// its prompt" is instead proven UPSTREAM by the desktop scheduler's transcript-finality
+// gate (the API-error is still the last meaningful record), and the agent-session-id
+// binding check is done by the caller (router) via the TerminalAgentStore. Returns a
+// structured skip reason rather than throwing so the scheduler can decide retry-vs-give-up.
 export type WriteIfIdleResult =
 	| { sent: true }
 	| {
 			sent: false;
-			reason: "not_found" | "wrong_workspace" | "exited" | "busy";
+			reason: "not_found" | "wrong_workspace" | "exited";
 	  };
 
 export function writeInputIfIdleSession({
@@ -588,9 +598,6 @@ export function writeInputIfIdleSession({
 		return { sent: false, reason: "wrong_workspace" };
 	}
 	if (session.exited) return { sent: false, reason: "exited" };
-	// commandRunning is only ever true for OSC-133-instrumented shells; an
-	// uninstrumented shell stays false, so we treat false as "idle or unknown".
-	if (session.commandRunning) return { sent: false, reason: "busy" };
 
 	session.pty.write(`${data}${TERMINAL_COMMAND_EOL}`);
 	return { sent: true };
@@ -758,9 +765,10 @@ function queueInitialCommand(
 ): void {
 	if (session.initialCommandQueued || session.exited) return;
 	session.initialCommandQueued = true;
-	const cmd = initialCommand.endsWith("\n") || initialCommand.endsWith("\r")
-		? initialCommand
-		: `${initialCommand}${TERMINAL_COMMAND_EOL}`;
+	const cmd =
+		initialCommand.endsWith("\n") || initialCommand.endsWith("\r")
+			? initialCommand
+			: `${initialCommand}${TERMINAL_COMMAND_EOL}`;
 	// Don't gate on OSC 133;A: PTY stdin buffers until the shell reads it,
 	// and gating turned broken/missing markers into a guaranteed stall.
 	session.pty.write(cmd);
@@ -1302,133 +1310,133 @@ export async function createTerminalSessionInternal({
 
 	function subscribeSessionToDaemon() {
 		return daemon.subscribe(
-		terminalId,
-		{ replay: replayOnAdoption },
-		{
-			onOutput(chunk) {
-				// Bytes flow daemon → host → xterm without UTF-8 decoding;
-				// per-chunk `.toString("utf8")` here would mangle codepoints
-				// straddling chunk boundaries. (See no-encoding-hops.test.ts.)
-				const titleUpdates = scanForTerminalTitle(
-					session.titleScanState,
-					chunk,
-				);
-				for (const title of titleUpdates.updates) {
-					setSessionTitle(session, title);
-				}
-
-				let bytes: Uint8Array = chunk;
-				if (session.shellReadyState === "pending") {
-					const result = scanForShellReady(session.scanState, chunk);
-					bytes = result.output;
-					if (result.matched) {
-						resolveShellReady(session, "ready");
+			terminalId,
+			{ replay: replayOnAdoption },
+			{
+				onOutput(chunk) {
+					// Bytes flow daemon → host → xterm without UTF-8 decoding;
+					// per-chunk `.toString("utf8")` here would mangle codepoints
+					// straddling chunk boundaries. (See no-encoding-hops.test.ts.)
+					const titleUpdates = scanForTerminalTitle(
+						session.titleScanState,
+						chunk,
+					);
+					for (const title of titleUpdates.updates) {
+						setSessionTitle(session, title);
 					}
-				}
-				// (AY) CHAIN the C/D scanner on the OUTPUT of the shell-ready pass —
-				// never behind an else-if. The wrappers emit `D;<exit>` (command end)
-				// and then `A` (prompt start) together at the FIRST prompt; the A-scanner
-				// (while pending) consumes only that first `A`, so the leading `D` (and
-				// any `C`) would otherwise leak as a visible `]133;D;0` artifact at the
-				// top of every new terminal. Running the C/D scanner on the already-A-
-				// stripped bytes strips that D (a `command-end` with commandRunning=false
-				// is a harmless no-op) plus all later C/D and subsequent A. The first `A`
-				// is removed by the A-scanner before the C/D scanner sees it, so no A is
-				// double-stripped — each `A` is handled by exactly one scanner.
-				if (session.cdScanState) {
-					const cdResult = scanForOsc133Cd(session.cdScanState, bytes);
-					bytes = cdResult.output;
-					for (const ev of cdResult.events) {
-						if (ev.kind === "command-start") {
-							session.commandRunning = true;
-							eventBus?.broadcastTerminalLifecycle({
-								workspaceId,
-								terminalId,
-								eventType: "command-start",
-								occurredAt: Date.now(),
-							});
-						} else if (ev.kind === "command-end") {
-							// Only broadcast a real end-of-command transition. A `D` with
-							// no preceding `C` — notably the first prompt's `D;<exit>` that
-							// fires before any command (now stripped here thanks to the
-							// chained scanner) — is a no-op: strip the marker, emit nothing.
-							if (session.commandRunning) {
-								session.commandRunning = false;
+
+					let bytes: Uint8Array = chunk;
+					if (session.shellReadyState === "pending") {
+						const result = scanForShellReady(session.scanState, chunk);
+						bytes = result.output;
+						if (result.matched) {
+							resolveShellReady(session, "ready");
+						}
+					}
+					// (AY) CHAIN the C/D scanner on the OUTPUT of the shell-ready pass —
+					// never behind an else-if. The wrappers emit `D;<exit>` (command end)
+					// and then `A` (prompt start) together at the FIRST prompt; the A-scanner
+					// (while pending) consumes only that first `A`, so the leading `D` (and
+					// any `C`) would otherwise leak as a visible `]133;D;0` artifact at the
+					// top of every new terminal. Running the C/D scanner on the already-A-
+					// stripped bytes strips that D (a `command-end` with commandRunning=false
+					// is a harmless no-op) plus all later C/D and subsequent A. The first `A`
+					// is removed by the A-scanner before the C/D scanner sees it, so no A is
+					// double-stripped — each `A` is handled by exactly one scanner.
+					if (session.cdScanState) {
+						const cdResult = scanForOsc133Cd(session.cdScanState, bytes);
+						bytes = cdResult.output;
+						for (const ev of cdResult.events) {
+							if (ev.kind === "command-start") {
+								session.commandRunning = true;
 								eventBus?.broadcastTerminalLifecycle({
 									workspaceId,
 									terminalId,
-									eventType: "command-end",
-									exitCode: ev.exitCode,
+									eventType: "command-start",
 									occurredAt: Date.now(),
 								});
-							}
-						} else if (ev.kind === "prompt-redraw") {
-							// A prompt redraw while a command was running means we
-							// missed (or never got) its `133;D`. Synthesize a
-							// command-end with unknown exit so the blue dot self-heals.
-							if (session.commandRunning) {
-								session.commandRunning = false;
-								eventBus?.broadcastTerminalLifecycle({
-									workspaceId,
-									terminalId,
-									eventType: "command-end",
-									exitCode: null,
-									occurredAt: Date.now(),
-								});
+							} else if (ev.kind === "command-end") {
+								// Only broadcast a real end-of-command transition. A `D` with
+								// no preceding `C` — notably the first prompt's `D;<exit>` that
+								// fires before any command (now stripped here thanks to the
+								// chained scanner) — is a no-op: strip the marker, emit nothing.
+								if (session.commandRunning) {
+									session.commandRunning = false;
+									eventBus?.broadcastTerminalLifecycle({
+										workspaceId,
+										terminalId,
+										eventType: "command-end",
+										exitCode: ev.exitCode,
+										occurredAt: Date.now(),
+									});
+								}
+							} else if (ev.kind === "prompt-redraw") {
+								// A prompt redraw while a command was running means we
+								// missed (or never got) its `133;D`. Synthesize a
+								// command-end with unknown exit so the blue dot self-heals.
+								if (session.commandRunning) {
+									session.commandRunning = false;
+									eventBus?.broadcastTerminalLifecycle({
+										workspaceId,
+										terminalId,
+										eventType: "command-end",
+										exitCode: null,
+										occurredAt: Date.now(),
+									});
+								}
 							}
 						}
 					}
-				}
-				if (bytes.byteLength === 0) return;
+					if (bytes.byteLength === 0) return;
 
-				// portManager.checkOutputForHint runs URL/port regexes on
-				// strings; the per-session StringDecoder buffers partial
-				// codepoints across chunks. This is a side branch — the
-				// transport above stays on bytes.
-				const hintText = session.portHintDecoder.write(
-					bytes instanceof Buffer
-						? bytes
-						: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-				);
-				if (hintText.length > 0) portManager.checkOutputForHint(hintText);
+					// portManager.checkOutputForHint runs URL/port regexes on
+					// strings; the per-session StringDecoder buffers partial
+					// codepoints across chunks. This is a side branch — the
+					// transport above stays on bytes.
+					const hintText = session.portHintDecoder.write(
+						bytes instanceof Buffer
+							? bytes
+							: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+					);
+					if (hintText.length > 0) portManager.checkOutputForHint(hintText);
 
-				// Feed the tracker on every byte — broadcast skips the FIFO,
-				// so this is the only path that catches startup mode escapes.
-				session.modeTracker.feed(bytes);
+					// Feed the tracker on every byte — broadcast skips the FIFO,
+					// so this is the only path that catches startup mode escapes.
+					session.modeTracker.feed(bytes);
 
-				if (broadcastBytes(session, bytes) === 0) {
-					bufferOutput(session, bytes);
-				}
+					if (broadcastBytes(session, bytes) === 0) {
+						bufferOutput(session, bytes);
+					}
+				},
+				onExit({ code, signal }) {
+					session.exited = true;
+					session.exitCode = code ?? 0;
+					session.exitSignal = signal ?? 0;
+					const occurredAt = Date.now();
+
+					portManager.unregisterSession(terminalId);
+
+					db.update(terminalSessions)
+						.set({ status: "exited", endedAt: occurredAt })
+						.where(eq(terminalSessions.id, terminalId))
+						.run();
+
+					broadcastMessage(session, {
+						type: "exit",
+						exitCode: session.exitCode,
+						signal: session.exitSignal,
+					});
+
+					eventBus?.broadcastTerminalLifecycle({
+						workspaceId,
+						terminalId,
+						eventType: "exit",
+						exitCode: session.exitCode,
+						signal: session.exitSignal,
+						occurredAt,
+					});
+				},
 			},
-			onExit({ code, signal }) {
-				session.exited = true;
-				session.exitCode = code ?? 0;
-				session.exitSignal = signal ?? 0;
-				const occurredAt = Date.now();
-
-				portManager.unregisterSession(terminalId);
-
-				db.update(terminalSessions)
-					.set({ status: "exited", endedAt: occurredAt })
-					.where(eq(terminalSessions.id, terminalId))
-					.run();
-
-				broadcastMessage(session, {
-					type: "exit",
-					exitCode: session.exitCode,
-					signal: session.exitSignal,
-				});
-
-				eventBus?.broadcastTerminalLifecycle({
-					workspaceId,
-					terminalId,
-					eventType: "exit",
-					exitCode: session.exitCode,
-					signal: session.exitSignal,
-					occurredAt,
-				});
-			},
-		},
 		);
 	}
 

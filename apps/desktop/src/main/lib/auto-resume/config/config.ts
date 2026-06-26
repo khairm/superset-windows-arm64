@@ -29,11 +29,10 @@ export function readConfig(): AutoResumeConfig {
 
 export function writeConfig(next: Partial<AutoResumeConfig>): AutoResumeConfig {
 	const merged = { ...readConfig(), ...next };
-	try {
-		fs.mkdirSync(AUTO_RESUME_DIR, { recursive: true, mode: 0o700 });
-		fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged), { mode: 0o600 });
-	} catch {
-		// best-effort
-	}
+	// Fail LOUD: if we can't persist, the toggle would silently lie (UI says off, the
+	// file still says on, the next scheduler tick reads on). Surface it to the caller so
+	// the tRPC mutation rejects and the optimistic UI reverts.
+	fs.mkdirSync(AUTO_RESUME_DIR, { recursive: true, mode: 0o700 });
+	fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged), { mode: 0o600 });
 	return merged;
 }

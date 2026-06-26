@@ -131,13 +131,23 @@ export function zonedWallTimeToEpoch(
 	tz: string,
 ): number {
 	const naiveUtc = Date.UTC(year, month, day, hour, minute, 0);
-	const offset1 = tzOffsetMs(naiveUtc, tz);
-	let epoch = naiveUtc - offset1;
-	const offset2 = tzOffsetMs(epoch, tz);
-	if (offset2 !== offset1) {
-		epoch = naiveUtc - offset2;
+	const HALF_DAY_MS = 12 * 60 * 60 * 1000;
+	// Enumerate the offsets in force around the wall time (before/at/after) so we catch
+	// BOTH instants of a fall-overlap, not just the one nearest `naiveUtc`.
+	const offsets = new Set([
+		tzOffsetMs(naiveUtc - HALF_DAY_MS, tz),
+		tzOffsetMs(naiveUtc, tz),
+		tzOffsetMs(naiveUtc + HALF_DAY_MS, tz),
+	]);
+	const candidates = [...offsets].map((off) => naiveUtc - off);
+	// A candidate is valid iff applying its OWN actual offset reproduces the wall time.
+	const valid = candidates.filter((c) => naiveUtc - tzOffsetMs(c, tz) === c);
+	if (valid.length > 0) {
+		// Fall-overlap (ambiguous): pick the EARLIER valid instant.
+		return Math.min(...valid);
 	}
-	return epoch;
+	// Spring-gap (nonexistent wall time): land on the next valid instant.
+	return Math.max(...candidates);
 }
 
 /** Calendar Y/M/D of an instant as seen in `tz`. */

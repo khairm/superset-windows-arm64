@@ -64,7 +64,11 @@ const SUPERSET_PANE_MAP_DIR = path.join(
 // every line classification, state transition, and emit (with mapping)
 // so the user can share the file when debugging "wrong-colour-dot"
 // issues. Auto-rotates when the file exceeds ~2 MB.
-const DEBUG_LOG_PATH = path.join(os.homedir(), ".superset", "agent-watcher-debug.log");
+const DEBUG_LOG_PATH = path.join(
+	os.homedir(),
+	".superset",
+	"agent-watcher-debug.log",
+);
 const DEBUG_MAX_BYTES = 2 * 1024 * 1024;
 const DEBUG_ENABLED = process.env.SUPERSET_AGENT_WATCHER_DEBUG !== "0";
 function dbg(kind: string, fields: Record<string, unknown>): void {
@@ -116,8 +120,7 @@ const POLL_DISCOVER_MS = 12000;
 const IDLE_TIMEOUT_MS = 45000;
 
 const CWD_REGEX = /"cwd":"((?:[^"\\]|\\.)+)"/;
-const UUID_RE =
-	/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 // ---------------------------------------------------------------------------
 // Per-agent parsers
@@ -326,9 +329,7 @@ function loadPaneMapping(sessionId: string): PaneMapping | undefined {
 				paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
 				tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
 				terminalId:
-					typeof parsed.terminalId === "string"
-						? parsed.terminalId
-						: undefined,
+					typeof parsed.terminalId === "string" ? parsed.terminalId : undefined,
 				workspaceId:
 					typeof parsed.workspaceId === "string"
 						? parsed.workspaceId
@@ -561,14 +562,18 @@ function scheduleIdleTimer(
 			// written the mapping file between schedule and fire. Using
 			// the closure's stale mapping would emit Stop with the wrong
 			// (or missing) paneId.
-			const freshMapping = sessionId
-				? loadPaneMapping(sessionId)
-				: mapping;
+			const freshMapping = sessionId ? loadPaneMapping(sessionId) : mapping;
 			current.lastStatus = "review";
 			current.lastEmittedHadMapping = !!(
 				freshMapping?.paneId || freshMapping?.terminalId
 			);
-			dbg("idle-timeout-fired", { sessionId, cwd, from: "working", to: "review", timeoutMs: IDLE_TIMEOUT_MS });
+			dbg("idle-timeout-fired", {
+				sessionId,
+				cwd,
+				from: "working",
+				to: "review",
+				timeoutMs: IDLE_TIMEOUT_MS,
+			});
 			emit("Stop", sessionId, cwd, freshMapping);
 		}
 	}, IDLE_TIMEOUT_MS);
@@ -591,7 +596,8 @@ function processFile(
 		};
 		fileStates.set(filePath, state);
 	}
-	if (isFirstSeen) dbg("file-first-seen", { filePath, sessionId: state.sessionId, seedOnly });
+	if (isFirstSeen)
+		dbg("file-first-seen", { filePath, sessionId: state.sessionId, seedOnly });
 
 	let stat: fs.Stats;
 	try {
@@ -644,7 +650,12 @@ function processFile(
 			// Header read is best-effort; the regular processing path will
 			// retry cwd discovery on the next append.
 		}
-		dbg("seed-skip", { filePath, sessionId: state.sessionId, size: stat.size, cwdFound: !!state.cwd });
+		dbg("seed-skip", {
+			filePath,
+			sessionId: state.sessionId,
+			size: stat.size,
+			cwdFound: !!state.cwd,
+		});
 		state.offset = stat.size;
 		return;
 	}
@@ -659,7 +670,12 @@ function processFile(
 	// Stop still runs).
 	let truncatedReset = false;
 	if (stat.size < state.offset) {
-		dbg("file-truncated", { filePath, sessionId: state.sessionId, oldOffset: state.offset, newSize: stat.size });
+		dbg("file-truncated", {
+			filePath,
+			sessionId: state.sessionId,
+			oldOffset: state.offset,
+			newSize: stat.size,
+		});
 		state.offset = 0;
 		state.leftover = "";
 		truncatedReset = true;
@@ -707,7 +723,11 @@ function processFile(
 			}
 		}
 		if (!state.cwd) {
-			dbg("cwd-unknown-skip", { filePath, sessionId: state.sessionId, lineCount: lines.length });
+			dbg("cwd-unknown-skip", {
+				filePath,
+				sessionId: state.sessionId,
+				lineCount: lines.length,
+			});
 			return;
 		}
 	}
@@ -716,7 +736,9 @@ function processFile(
 	state.offset = newOffset;
 	state.leftover = newLeftover;
 	const cwd = state.cwd;
-	const mapping = state.sessionId ? loadPaneMapping(state.sessionId) : undefined;
+	const mapping = state.sessionId
+		? loadPaneMapping(state.sessionId)
+		: undefined;
 	const { parser } = state;
 
 	// Claude dots are driven by the host-service POST hook (superset-notify.py);
@@ -807,10 +829,12 @@ function processFile(
 			);
 			emit("Stop", state.sessionId, cwd, mapping);
 		}
-		// (AUTO-RESUME) Forward an api-error candidate (interrupts are NOT failures and
-		// are never forwarded). Skipped on a post-truncation full re-read so a permanent
-		// error line from an earlier turn can't re-arm a resume.
-		if (sawAnyApiError && !sawInterrupt && !truncatedReset && state.sessionId) {
+		// (AUTO-RESUME) Forward an api-error candidate. We do NOT veto the whole chunk on a
+		// co-occurring interrupt — the manager re-reads the transcript tail and only arms
+		// when the error is still the last MEANINGFUL line (an interrupt AFTER the error
+		// makes that false; an interrupt BEFORE it is harmless). Skipped on a post-
+		// truncation full re-read so a permanent error line from an earlier turn can't re-arm.
+		if (sawAnyApiError && !truncatedReset && state.sessionId) {
 			deps?.onClaudeApiError?.({
 				sessionId: state.sessionId,
 				cwd,
@@ -820,7 +844,11 @@ function processFile(
 				transcriptPath: filePath,
 			});
 		}
-		dbg("claude-gated", { sessionId: state.sessionId, filePath, lineCount: lines.length });
+		dbg("claude-gated", {
+			sessionId: state.sessionId,
+			filePath,
+			lineCount: lines.length,
+		});
 		return;
 	}
 
@@ -832,12 +860,20 @@ function processFile(
 	for (const line of lines) {
 		if (!line) continue;
 		if (parser.isPermissionRequest(line)) {
-			dbg("line", { sessionId, kind: "permission", snippet: line.slice(0, 160) });
+			dbg("line", {
+				sessionId,
+				kind: "permission",
+				snippet: line.slice(0, 160),
+			});
 			const { state: s } = getState(sessionId, cwd);
 			cancelIdleTimer(s);
 			transitionTo("permission", sessionId, cwd, mapping);
 		} else if (parser.isExplicitStop(line)) {
-			dbg("line", { sessionId, kind: "explicit-stop", snippet: line.slice(0, 160) });
+			dbg("line", {
+				sessionId,
+				kind: "explicit-stop",
+				snippet: line.slice(0, 160),
+			});
 			const { state: s } = getState(sessionId, cwd);
 			cancelIdleTimer(s);
 			transitionTo("review", sessionId, cwd, mapping);
@@ -850,7 +886,15 @@ function processFile(
 			if (!sampleUnclassified) sampleUnclassified = line.slice(0, 160);
 		}
 	}
-	dbg("chunk", { sessionId, filePath, newBytes: newOffset - prevOffset, lineCount: lines.length, cwdKnown: !!cwd, unclassified, sampleUnclassified });
+	dbg("chunk", {
+		sessionId,
+		filePath,
+		newBytes: newOffset - prevOffset,
+		lineCount: lines.length,
+		cwdKnown: !!cwd,
+		unclassified,
+		sampleUnclassified,
+	});
 }
 
 // Pending per-file processing keyed by absolute path. Debounce window
@@ -1164,10 +1208,7 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
 					// on large session histories.
 					if (filename && typeof filename === "string") {
 						if (!filename.endsWith(".jsonl")) return;
-						schedulePerFileProcess(
-							path.join(source.logsDir, filename),
-							source,
-						);
+						schedulePerFileProcess(path.join(source.logsDir, filename), source);
 						return;
 					}
 					// Fallback when the platform didn't give us a filename:

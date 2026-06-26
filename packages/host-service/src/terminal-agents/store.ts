@@ -88,6 +88,19 @@ export class TerminalAgentStore extends EventEmitter {
 		return this.byTerminal.get(terminalId);
 	}
 
+	/**
+	 * (AUTO-RESUME) How many live terminals are bound to this agent session id. >1 means
+	 * the same conversation is open/resumed in multiple terminals, so an auto-resume can't
+	 * unambiguously pick the right target and must refuse.
+	 */
+	countByAgentSessionId(agentSessionId: string): number {
+		let n = 0;
+		for (const binding of this.byTerminal.values()) {
+			if (binding.agentSessionId === agentSessionId) n++;
+		}
+		return n;
+	}
+
 	listByWorkspace(
 		workspaceId: string,
 		filter?: ListFilter,

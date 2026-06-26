@@ -163,19 +163,28 @@ export const terminalRouter = router({
 			z.object({
 				terminalId: z.string(),
 				workspaceId: z.string(),
-				expectedAgentSessionId: z.string().optional(),
+				// MANDATORY: never write without proving the bound agent is still foreground.
+				expectedAgentSessionId: z.string().min(1),
 				data: z.string(),
 				failureId: z.string().optional(),
 			}),
 		)
 		.mutation(({ input, ctx }) => {
-			// Binding check: the agent CLI must still be the one we classified the
-			// failure for (not a re-spawned shell, /resume'd new session, or swap).
-			if (input.expectedAgentSessionId) {
-				const binding = ctx.terminalAgentStore.get(input.terminalId);
-				if (binding?.agentSessionId !== input.expectedAgentSessionId) {
-					return { sent: false as const, reason: "agent_mismatch" as const };
-				}
+			// Binding check (always): the agent CLI must still be the one we classified the
+			// failure for — not a re-spawned bare shell, a /resume'd new session, or a swap.
+			// A missing binding fails closed.
+			const binding = ctx.terminalAgentStore.get(input.terminalId);
+			if (binding?.agentSessionId !== input.expectedAgentSessionId) {
+				return { sent: false as const, reason: "agent_mismatch" as const };
+			}
+			// Ambiguity guard: if the same conversation is live in >1 terminal we can't be
+			// sure which is the intended target — refuse rather than type into the wrong one.
+			if (
+				ctx.terminalAgentStore.countByAgentSessionId(
+					input.expectedAgentSessionId,
+				) > 1
+			) {
+				return { sent: false as const, reason: "ambiguous" as const };
 			}
 			return writeInputIfIdleSession({
 				terminalId: input.terminalId,

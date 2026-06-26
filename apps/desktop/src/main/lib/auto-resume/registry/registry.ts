@@ -34,6 +34,7 @@ export interface ResumeEntry {
 	failureId: string;
 	agent: "claude" | "codex";
 	sessionId: string;
+	orgId?: string; // host-service org captured at arm time (fire targets this host)
 	paneId?: string;
 	terminalId?: string;
 	workspaceId?: string;
@@ -135,16 +136,40 @@ export function makeFailureId(
 	return `${sessionId}:${path.basename(transcriptPath)}:${offset}`;
 }
 
+const MAX_TOMBSTONES = 200;
+
 export class ResumeRegistry {
 	private entries = new Map<string, ResumeEntry>();
+	// Bounded cancel/give-up tombstones: a failureId here can never be re-armed, so a
+	// takeover survives a reload/restart even if the same error is somehow re-detected.
+	private tombstones: string[] = [];
+	private tombstoneSet = new Set<string>();
 
 	load(): void {
 		try {
 			const raw = fs.readFileSync(REGISTRY_PATH, "utf8");
-			const parsed = JSON.parse(raw) as ResumeEntry[];
-			this.entries = new Map(parsed.map((e) => [e.failureId, e]));
+			const parsed = JSON.parse(raw) as
+				| ResumeEntry[]
+				| { entries?: ResumeEntry[]; tombstones?: string[] };
+			const entries = Array.isArray(parsed) ? parsed : (parsed.entries ?? []);
+			const tombstones = Array.isArray(parsed) ? [] : (parsed.tombstones ?? []);
+			this.entries = new Map(entries.map((e) => [e.failureId, e]));
+			this.tombstones = tombstones.slice(-MAX_TOMBSTONES);
+			this.tombstoneSet = new Set(this.tombstones);
 		} catch {
 			this.entries = new Map();
+			this.tombstones = [];
+			this.tombstoneSet = new Set();
+		}
+	}
+
+	private tombstone(failureId: string): void {
+		if (this.tombstoneSet.has(failureId)) return;
+		this.tombstoneSet.add(failureId);
+		this.tombstones.push(failureId);
+		if (this.tombstones.length > MAX_TOMBSTONES) {
+			const dropped = this.tombstones.shift();
+			if (dropped) this.tombstoneSet.delete(dropped);
 		}
 	}
 
@@ -155,7 +180,11 @@ export class ResumeRegistry {
 			const keep = [...this.entries.values()].filter(
 				(e) => e.state === "armed" || e.state === "sent",
 			);
-			fs.writeFileSync(REGISTRY_PATH, JSON.stringify(keep), { mode: 0o600 });
+			fs.writeFileSync(
+				REGISTRY_PATH,
+				JSON.stringify({ entries: keep, tombstones: this.tombstones }),
+				{ mode: 0o600 },
+			);
 		} catch {
 			// best-effort; an unwritable registry only loses durability, not safety
 		}
@@ -186,9 +215,17 @@ export class ResumeRegistry {
 		this.persist();
 	}
 
-	/** Idempotent: arming an already-known failureId is a no-op (returns false). */
+	/**
+	 * Idempotent: arming an already-known OR tombstoned failureId is a no-op
+	 * (returns false). The tombstone check keeps a cancelled failure from re-arming.
+	 */
 	armIfNew(entry: ResumeEntry): boolean {
-		if (this.entries.has(entry.failureId)) return false;
+		if (
+			this.entries.has(entry.failureId) ||
+			this.tombstoneSet.has(entry.failureId)
+		) {
+			return false;
+		}
 		this.entries.set(entry.failureId, entry);
 		this.persist();
 		return true;
@@ -199,6 +236,7 @@ export class ResumeRegistry {
 		if (!e) return;
 		e.state = state;
 		if (state === "cancelled" || state === "gaveUp" || state === "done") {
+			if (state !== "done") this.tombstone(failureId);
 			this.entries.delete(failureId);
 		}
 		this.persist();
@@ -208,6 +246,7 @@ export class ResumeRegistry {
 		let n = 0;
 		for (const e of [...this.entries.values()]) {
 			if (e.sessionId === sessionId) {
+				this.tombstone(e.failureId);
 				this.entries.delete(e.failureId);
 				n++;
 			}
@@ -220,6 +259,7 @@ export class ResumeRegistry {
 		let n = 0;
 		for (const e of [...this.entries.values()]) {
 			if (e.terminalId === terminalId) {
+				this.tombstone(e.failureId);
 				this.entries.delete(e.failureId);
 				n++;
 			}
@@ -229,6 +269,7 @@ export class ResumeRegistry {
 	}
 
 	cancelAll(): void {
+		for (const id of this.entries.keys()) this.tombstone(id);
 		this.entries.clear();
 		this.persist();
 	}
