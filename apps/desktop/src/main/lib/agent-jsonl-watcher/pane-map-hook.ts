@@ -1320,6 +1320,23 @@ def _decide_event_type(
         if tool in ("Workflow", "Agent", "Task"):
             _touch(bgactive_marker)  # (BG-STALE) background-agent forward activity
             return "SubagentActive"
+        # (UNTAGGED-BG-RED) The "no agent_id => sequential main loop => the red was
+        # answered" assumption ALSO breaks for an ORDINARY tool (Read/Bash/Edit/neon/
+        # ...) when agent-type background work is running: teammate/fork tool
+        # completions stream in attributed to the PARENT session WITHOUT an agent_id,
+        # so they reach here and Start-clear a pending AskUserQuestion red (live
+        # 2026-06-26: 66 Read/57 Edit/56 Bash PostToolUse agentId="" -> Start flipped a
+        # pending red -> yellow while 4 teammates ran). A genuine answer ALWAYS arrives
+        # as UserPromptSubmit (clears red at turn start) or PostToolUse:AskUserQuestion
+        # (handled above), so refusing the generic red-clear while agents are active can
+        # never strand a real answer -> red-respecting working hold. When NO agent-type
+        # background work is running, an untagged tool genuinely IS the main loop, so the
+        # permission-approval red-clear is preserved (returns Start below).
+        agent_bg_active = has_agent_background or (
+            agentbg_marker.exists() and not _bg_hold_is_stale(terminal_id)
+        )
+        if agent_bg_active:
+            return "SubagentActive"
         return "Start"
     return None
 
