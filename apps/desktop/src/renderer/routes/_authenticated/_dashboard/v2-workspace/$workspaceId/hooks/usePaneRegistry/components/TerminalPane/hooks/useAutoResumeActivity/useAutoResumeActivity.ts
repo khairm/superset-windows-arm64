@@ -50,9 +50,10 @@ export function useAutoResumeActivity(params: {
 			}
 		}
 		if (terminal) {
-			const onData = terminal.onData(onActivity);
+			// onKey = real keypresses only. NOT terminal.onData — xterm emits onData for
+			// emulator-generated replies too (cursor-position/device-attribute responses to
+			// the agent's own TUI redraws), which would spuriously cancel auto-resume.
 			const onKey = terminal.onKey(onActivity);
-			disposers.push(() => onData.dispose());
 			disposers.push(() => onKey.dispose());
 		}
 		return () => {

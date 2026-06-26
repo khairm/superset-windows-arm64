@@ -29,7 +29,6 @@ const MONTHS: Record<string, number> = {
 	dec: 11,
 };
 
-const GRACE_MS = 60_000; // a reset within 60s of now counts as "now"
 const MAX_AHEAD_MS = 8 * 24 * 60 * 60 * 1000; // > 8 days ahead => stale parse
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -179,11 +178,14 @@ export function resolveResetTime(
 ): ResetResolution {
 	const parsed = parseResetText(text);
 	if (!parsed) return { kind: "unparsed" };
+	// Guard against an unparseable record timestamp (Date.parse -> NaN), which would feed
+	// an Invalid Date into Intl and throw. Fall back to "now" as the anchor.
+	const anchor = Number.isFinite(anchorMs) ? anchorMs : nowMs;
 
 	let epochMs: number;
 	if (parsed.month !== undefined && parsed.day !== undefined) {
 		// Weekly / dated form.
-		const year = parsed.year ?? tzYmd(anchorMs, tz).y;
+		const year = parsed.year ?? tzYmd(anchor, tz).y;
 		epochMs = zonedWallTimeToEpoch(
 			year,
 			parsed.month,
@@ -193,7 +195,7 @@ export function resolveResetTime(
 			tz,
 		);
 		// No explicit year and already before the anchor => next year.
-		if (parsed.year === undefined && epochMs < anchorMs) {
+		if (parsed.year === undefined && epochMs < anchor) {
 			epochMs = zonedWallTimeToEpoch(
 				year + 1,
 				parsed.month,
@@ -205,7 +207,7 @@ export function resolveResetTime(
 		}
 	} else {
 		// Session form: next occurrence of the wall time >= anchor.
-		const at = tzYmd(anchorMs, tz);
+		const at = tzYmd(anchor, tz);
 		epochMs = zonedWallTimeToEpoch(
 			at.y,
 			at.m,
@@ -214,8 +216,8 @@ export function resolveResetTime(
 			parsed.minute,
 			tz,
 		);
-		if (epochMs < anchorMs) {
-			const next = tzYmd(anchorMs + DAY_MS, tz);
+		if (epochMs < anchor) {
+			const next = tzYmd(anchor + DAY_MS, tz);
 			epochMs = zonedWallTimeToEpoch(
 				next.y,
 				next.m,
@@ -227,7 +229,10 @@ export function resolveResetTime(
 		}
 	}
 
-	if (epochMs <= nowMs + GRACE_MS) return { kind: "fire-now" };
+	if (!Number.isFinite(epochMs)) return { kind: "unparsed" };
+	// Only a reset that has ALREADY elapsed fires now. A reset still in the (near) future
+	// must wait for its instant (+ buffer) — typing before the limit clears just re-fails.
+	if (epochMs <= nowMs) return { kind: "fire-now" };
 	if (epochMs > nowMs + MAX_AHEAD_MS) return { kind: "stale", epochMs };
 	return { kind: "at", epochMs };
 }

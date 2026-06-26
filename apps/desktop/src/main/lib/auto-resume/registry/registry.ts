@@ -48,6 +48,7 @@ export interface ResumeEntry {
 	state: EntryState;
 	createdAt: number;
 	firstArmedAt: number;
+	firstSendAt?: number; // first actual send — the 24h retry budget runs from here
 	lastSendAt?: number;
 }
 
@@ -56,13 +57,23 @@ export function backoffDelayMs(sentCount: number): number {
 	return BACKOFF_BASE_MS * BACKOFF_FACTOR ** sentCount;
 }
 
-function jitter(failureId: string): number {
-	// Deterministic-but-spread offset derived from the id (no Math.random needed).
+/** Deterministic-but-spread per-failure jitter (no Math.random) to break the
+ * account-global "thundering herd" when every chat's reset lands at the same instant. */
+export function jitterFor(failureId: string): number {
 	let h = 0;
 	for (let i = 0; i < failureId.length; i++) {
 		h = (h * 31 + failureId.charCodeAt(i)) >>> 0;
 	}
 	return h % JITTER_MAX_MS;
+}
+
+/** The retry budget only runs once we've actually started sending — before the first
+ * send an entry may legitimately wait days for a weekly reset (capped at 8d upstream). */
+function retryBudgetExceeded(entry: ResumeEntry, nowMs: number): boolean {
+	return (
+		entry.firstSendAt !== undefined &&
+		nowMs - entry.firstSendAt > WALLCLOCK_BUDGET_MS
+	);
 }
 
 export type FireDecision =
@@ -74,8 +85,7 @@ export type FireDecision =
 export function decideFire(entry: ResumeEntry, nowMs: number): FireDecision {
 	if (entry.state !== "armed") return { action: "wait" };
 	if (entry.sentCount >= MAX_SENDS) return { action: "giveUp" };
-	if (nowMs - entry.firstArmedAt > WALLCLOCK_BUDGET_MS)
-		return { action: "giveUp" };
+	if (retryBudgetExceeded(entry, nowMs)) return { action: "giveUp" };
 	if (nowMs >= entry.resumeAtMs) return { action: "fire" };
 	return { action: "wait" };
 }
@@ -83,20 +93,17 @@ export function decideFire(entry: ResumeEntry, nowMs: number): FireDecision {
 /** Advance an entry after a successful send: schedule the next escalation step. */
 export function afterSend(entry: ResumeEntry, nowMs: number): ResumeEntry {
 	const sentCount = entry.sentCount + 1;
-	if (
-		sentCount >= MAX_SENDS ||
-		nowMs - entry.firstArmedAt > WALLCLOCK_BUDGET_MS
-	) {
-		return { ...entry, sentCount, state: "gaveUp", lastSendAt: nowMs };
+	const firstSendAt = entry.firstSendAt ?? nowMs;
+	const next = { ...entry, sentCount, firstSendAt, lastSendAt: nowMs };
+	if (sentCount >= MAX_SENDS || retryBudgetExceeded(next, nowMs)) {
+		return { ...next, state: "gaveUp" };
 	}
 	return {
-		...entry,
-		sentCount,
-		lastSendAt: nowMs,
+		...next,
 		state: "armed",
 		// Next attempt uses the next escalation gap; the fire-time transcript gate
 		// makes this a no-op once the agent actually resumed.
-		resumeAtMs: nowMs + backoffDelayMs(sentCount) + jitter(entry.failureId),
+		resumeAtMs: nowMs + backoffDelayMs(sentCount) + jitterFor(entry.failureId),
 	};
 }
 
@@ -114,7 +121,7 @@ export function applyReschedule(
 	if (
 		rescheduleCount > MAX_RESCHEDULES ||
 		entry.sentCount >= MAX_SENDS ||
-		nowMs - entry.firstArmedAt > WALLCLOCK_BUDGET_MS
+		retryBudgetExceeded(entry, nowMs)
 	) {
 		return { ...entry, rescheduleCount, state: "gaveUp" };
 	}
@@ -122,7 +129,7 @@ export function applyReschedule(
 		...entry,
 		rescheduleCount,
 		state: "armed",
-		resumeAtMs: newResumeAtMs + jitter(entry.failureId),
+		resumeAtMs: newResumeAtMs + jitterFor(entry.failureId),
 	};
 }
 

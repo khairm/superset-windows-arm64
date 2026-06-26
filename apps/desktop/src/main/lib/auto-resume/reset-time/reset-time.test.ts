@@ -111,4 +111,11 @@ describe("resolveResetTime", () => {
 		const r = resolveResetTime("whenever", LONDON, anchor, anchor);
 		expect(r.kind).toBe("unparsed");
 	});
+
+	test("NaN anchor (unparseable record timestamp) does not throw", () => {
+		const now = Date.UTC(2026, 5, 17, 1, 0, 0);
+		expect(() =>
+			resolveResetTime("3am", LONDON, Number.NaN, now),
+		).not.toThrow();
+	});
 });

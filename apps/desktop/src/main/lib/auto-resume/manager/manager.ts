@@ -13,6 +13,7 @@ import {
 	applyReschedule,
 	backoffDelayMs,
 	decideFire,
+	jitterFor,
 	makeFailureId,
 	RESET_BUFFER_MS,
 	type ResumeEntry,
@@ -184,6 +185,7 @@ export class AutoResumeManager {
 			return;
 		}
 
+		const failureId = makeFailureId(c.sessionId, c.transcriptPath, c.offset);
 		let resumeAtMs = now + backoffDelayMs(0);
 		if (cls.mode === "schedule" && cls.reset) {
 			const r = resolveResetTime(
@@ -192,8 +194,11 @@ export class AutoResumeManager {
 				c.recordTimestampMs,
 				now,
 			);
-			if (r.kind === "at") resumeAtMs = r.epochMs + RESET_BUFFER_MS;
-			else if (r.kind === "fire-now") resumeAtMs = now;
+			// Buffer past the reset + per-failure jitter so an account-wide cohort whose
+			// limits all clear at the same instant doesn't fire in lockstep (and re-trip it).
+			const jit = jitterFor(failureId);
+			if (r.kind === "at") resumeAtMs = r.epochMs + RESET_BUFFER_MS + jit;
+			else if (r.kind === "fire-now") resumeAtMs = now + RESET_BUFFER_MS + jit;
 			// stale / unparsed -> fall back to the backoff cadence (resumeAtMs above)
 		}
 
@@ -236,7 +241,7 @@ export class AutoResumeManager {
 		}
 
 		const entry: ResumeEntry = {
-			failureId: makeFailureId(c.sessionId, c.transcriptPath, c.offset),
+			failureId,
 			agent: "claude",
 			sessionId: c.sessionId,
 			orgId: this.deps?.getOrganizationId() ?? undefined,
@@ -369,6 +374,9 @@ export class AutoResumeManager {
 				});
 				return;
 			}
+			// The finality read above awaited; if the user took over in that window the
+			// entry was deleted/tombstoned — don't send into their live session.
+			if (!this.registry.get(entry.failureId)) return;
 			// Target the host that produced this transcript (pinned at arm time), not just
 			// "the first live host" — multi-org desktops run several.
 			const orgId = entry.orgId ?? this.deps?.getOrganizationId() ?? null;
@@ -387,6 +395,9 @@ export class AutoResumeManager {
 			});
 			if (outcome.sent) {
 				this.transportFailures.delete(entry.failureId);
+				// A takeover during the in-flight send deleted the entry — do NOT resurrect
+				// it via upsert (that would re-arm a cancelled resume).
+				if (!this.registry.get(entry.failureId)) return;
 				const advanced = afterSend(entry, Date.now());
 				this.registry.upsert(advanced);
 				this.emit({
@@ -398,15 +409,14 @@ export class AutoResumeManager {
 				});
 				return;
 			}
-			// Only a definitive, terminal-specific rejection ends the chain; everything else
-			// (network/auth/manifest/busy) is transient and retried under the cap.
+			// Only a definitive, terminal-specific rejection ends the chain. not_found /
+			// agent_mismatch / bad_response are transient (a wrong/just-starting host, or a
+			// binding that populates slightly late) and retry under the cap instead of
+			// permanently abandoning the resume.
 			const TERMINAL_REASONS = new Set([
-				"not_found",
 				"wrong_workspace",
 				"exited",
-				"agent_mismatch",
 				"ambiguous",
-				"bad_response",
 			]);
 			if (TERMINAL_REASONS.has(outcome.reason)) {
 				this.registry.setState(entry.failureId, "done");

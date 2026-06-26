@@ -53,10 +53,24 @@ describe("decideFire", () => {
 			action: "giveUp",
 		});
 	});
-	test("gives up past the 24h wall-clock budget", () => {
+	test("gives up past the 24h RETRY budget (runs from first send)", () => {
 		expect(
-			decideFire(entry({ firstArmedAt: 0 }), WALLCLOCK_BUDGET_MS + 1),
+			decideFire(
+				entry({ firstSendAt: 0, resumeAtMs: 0 }),
+				WALLCLOCK_BUDGET_MS + 1,
+			),
 		).toEqual({ action: "giveUp" });
+	});
+	test("does NOT give up while waiting for a far-future scheduled reset", () => {
+		// Weekly reset days out, no send yet (firstSendAt undefined): must keep waiting,
+		// not give up at the 24h mark. This is the headline weekly-limit case.
+		const threeDays = 3 * 24 * 60 * 60 * 1000;
+		expect(
+			decideFire(
+				entry({ firstArmedAt: 0, resumeAtMs: threeDays }),
+				WALLCLOCK_BUDGET_MS + 1,
+			),
+		).toEqual({ action: "wait" });
 	});
 	test("non-armed waits", () => {
 		expect(decideFire(entry({ state: "sent" }), 9e9)).toEqual({
@@ -70,6 +84,7 @@ describe("afterSend", () => {
 		const e = afterSend(entry({ sentCount: 0 }), 1_000_000);
 		expect(e.sentCount).toBe(1);
 		expect(e.state).toBe("armed");
+		expect(e.firstSendAt).toBe(1_000_000); // budget anchor set on first send
 		// next gap is backoffDelayMs(1)=180s plus deterministic jitter (<120s)
 		expect(e.resumeAtMs).toBeGreaterThanOrEqual(1_000_000 + 180_000);
 		expect(e.resumeAtMs).toBeLessThan(1_000_000 + 180_000 + 120_000);
