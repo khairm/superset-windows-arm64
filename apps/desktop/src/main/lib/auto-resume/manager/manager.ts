@@ -4,12 +4,14 @@
 // so a reload/restart can't resurrect a resume the user already took over.
 
 import type { EventEmitter } from "node:events";
+import type { AutoResumeStatePayload } from "lib/trpc/routers/notifications";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import { classifyClaudeFailure } from "../classifier/classifier";
 import { readConfig, writeConfig } from "../config/config";
 import { RESUME_MESSAGE, sendResumeViaHost } from "../host-send/host-send";
 import {
 	afterSend,
+	afterTransientFailure,
 	applyReschedule,
 	backoffDelayMs,
 	decideFire,
@@ -34,15 +36,11 @@ const FINALITY_DEBOUNCE_MS = 8_000;
 // If the user touches a terminal within this window of a failure, treat it as takeover
 // and never arm (covers the pre-arm window before an entry exists to cancel).
 const RECENT_INTERACTION_MS = 20_000;
-// Give up loudly after this many consecutive transport failures (auth/manifest breakage)
-// instead of spinning every tick for the whole 24h budget.
-const MAX_TRANSPORT_FAILURES = 8;
 
 /** Lightweight signal from the JSONL watcher: this session just wrote an API error. */
 export interface ApiErrorSignal {
 	sessionId: string;
 	cwd: string;
-	paneId?: string;
 	terminalId?: string;
 	workspaceId?: string;
 	transcriptPath: string;
@@ -51,7 +49,6 @@ export interface ApiErrorSignal {
 export interface FailureCandidate {
 	sessionId: string;
 	cwd: string;
-	paneId?: string;
 	terminalId?: string;
 	workspaceId?: string;
 	transcriptPath: string;
@@ -78,8 +75,6 @@ export class AutoResumeManager {
 	>();
 	// terminalId -> last user-interaction time (pre-arm takeover suppression).
 	private recentInteraction = new Map<string, number>();
-	// failureId -> consecutive transport-failure count (capped, then give up loud).
-	private transportFailures = new Map<string, number>();
 
 	start(deps: ManagerDeps): void {
 		this.deps = deps;
@@ -96,7 +91,7 @@ export class AutoResumeManager {
 		this.timer = null;
 	}
 
-	private emit(payload: Record<string, unknown>): void {
+	private emit(payload: AutoResumeStatePayload): void {
 		this.deps?.emitter.emit(NOTIFICATION_EVENTS.AUTO_RESUME_STATE, payload);
 	}
 
@@ -119,15 +114,11 @@ export class AutoResumeManager {
 	private async resolveSignal(info: ApiErrorSignal): Promise<void> {
 		const last = await readLastApiError(info.transcriptPath);
 		if (!last) return;
-		const stillFinal = await isStillLastMeaningfulFailure(
-			info.transcriptPath,
-			last.offset,
-		);
-		if (!stillFinal) return; // the turn moved on (retried / progressed)
+		// The same read already told us whether the turn moved on (retried / progressed).
+		if (last.hasMeaningfulProgressAfter) return;
 		this.onClaudeFailure({
 			sessionId: info.sessionId,
 			cwd: info.cwd,
-			paneId: info.paneId,
 			terminalId: info.terminalId,
 			workspaceId: info.workspaceId,
 			transcriptPath: info.transcriptPath,
@@ -146,17 +137,8 @@ export class AutoResumeManager {
 			apiErrorStatus: c.apiErrorStatus,
 			text: c.text,
 		});
-		if (!cls.resumable) {
-			this.emit({
-				kind: "notify",
-				sessionId: c.sessionId,
-				failureClass: cls.class,
-				terminalId: c.terminalId,
-			});
-			return;
-		}
-		const cfg = readConfig();
-		if (!cfg.enabled) {
+		// Non-resumable class, or auto-resume disabled: surface a notify only (no arm).
+		if (!cls.resumable || !readConfig().enabled) {
 			this.emit({
 				kind: "notify",
 				sessionId: c.sessionId,
@@ -211,11 +193,9 @@ export class AutoResumeManager {
 				...existing,
 				transcriptPath: c.transcriptPath,
 				offset: c.offset,
-				paneId: c.paneId ?? existing.paneId,
 				terminalId: c.terminalId,
 				workspaceId: c.workspaceId,
 				failureClass: cls.class,
-				mode: cls.mode === "schedule" ? "schedule" : "backoff",
 			};
 			if (cls.mode === "schedule" && cls.reset) {
 				updated = applyReschedule(updated, resumeAtMs, now);
@@ -242,22 +222,18 @@ export class AutoResumeManager {
 
 		const entry: ResumeEntry = {
 			failureId,
-			agent: "claude",
 			sessionId: c.sessionId,
 			orgId: this.deps?.getOrganizationId() ?? undefined,
-			paneId: c.paneId,
 			terminalId: c.terminalId,
 			workspaceId: c.workspaceId,
 			transcriptPath: c.transcriptPath,
 			offset: c.offset,
 			failureClass: cls.class,
-			mode: cls.mode === "schedule" ? "schedule" : "backoff",
 			resumeAtMs,
 			sentCount: 0,
 			rescheduleCount: 0,
+			transportFailureCount: 0,
 			state: "armed",
-			createdAt: now,
-			firstArmedAt: now,
 		};
 		if (this.registry.armIfNew(entry)) {
 			this.emit({
@@ -331,13 +307,14 @@ export class AutoResumeManager {
 
 	private async tick(): Promise<void> {
 		if (!this.deps) return;
+		const armed = this.registry.armed();
+		if (armed.length === 0) return; // nothing to do — skip the config read entirely
 		if (!readConfig().enabled) return;
 		const now = Date.now();
-		for (const entry of this.registry.armed()) {
+		for (const entry of armed) {
 			const decision = decideFire(entry, now);
 			if (decision.action === "giveUp") {
 				this.registry.setState(entry.failureId, "gaveUp");
-				this.transportFailures.delete(entry.failureId);
 				this.emit({
 					kind: "gaveUp",
 					sessionId: entry.sessionId,
@@ -366,7 +343,6 @@ export class AutoResumeManager {
 			);
 			if (!stillFailed) {
 				this.registry.setState(entry.failureId, "done");
-				this.transportFailures.delete(entry.failureId);
 				this.emit({
 					kind: "resolved",
 					sessionId: entry.sessionId,
@@ -390,11 +366,9 @@ export class AutoResumeManager {
 				workspaceId: entry.workspaceId,
 				terminalId: entry.terminalId,
 				expectedAgentSessionId: entry.sessionId,
-				failureId: entry.failureId,
 				data: RESUME_MESSAGE,
 			});
 			if (outcome.sent) {
-				this.transportFailures.delete(entry.failureId);
 				// A takeover during the in-flight send deleted the entry — do NOT resurrect
 				// it via upsert (that would re-arm a cancelled resume).
 				if (!this.registry.get(entry.failureId)) return;
@@ -420,7 +394,6 @@ export class AutoResumeManager {
 			]);
 			if (TERMINAL_REASONS.has(outcome.reason)) {
 				this.registry.setState(entry.failureId, "done");
-				this.transportFailures.delete(entry.failureId);
 				this.emit({
 					kind: "skipped",
 					sessionId: entry.sessionId,
@@ -435,13 +408,14 @@ export class AutoResumeManager {
 		}
 	}
 
-	/** Count a transient transport failure; give up loudly after the cap so a permanent
-	 * auth/manifest breakage doesn't spin every tick for the whole 24h budget. */
+	/** A transient transport failure (network / no-host / busy): bump the entry's durable
+	 * counter; the pure transition gives up loudly after the cap so a permanent
+	 * auth/manifest breakage can't spin for the whole 24h budget. */
 	private recordTransientFailure(entry: ResumeEntry, reason: string): void {
-		const n = (this.transportFailures.get(entry.failureId) ?? 0) + 1;
-		this.transportFailures.set(entry.failureId, n);
-		if (n >= MAX_TRANSPORT_FAILURES) {
-			this.transportFailures.delete(entry.failureId);
+		// The entry may have been cancelled during the await; don't resurrect it.
+		if (!this.registry.get(entry.failureId)) return;
+		const advanced = afterTransientFailure(entry);
+		if (advanced.state === "gaveUp") {
 			this.registry.setState(entry.failureId, "gaveUp");
 			this.emit({
 				kind: "gaveUp",
@@ -450,8 +424,9 @@ export class AutoResumeManager {
 				failureClass: entry.failureClass,
 				reason,
 			});
+			return;
 		}
-		// else: leave armed, retry next tick.
+		this.registry.upsert(advanced); // leave armed with the bumped counter, retry next tick
 	}
 }
 

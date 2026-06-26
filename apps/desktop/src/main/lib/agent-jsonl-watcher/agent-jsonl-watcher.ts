@@ -252,7 +252,6 @@ interface WatcherDeps {
 	onClaudeApiError?: (info: {
 		sessionId: string;
 		cwd: string;
-		paneId?: string;
 		terminalId?: string;
 		workspaceId?: string;
 		transcriptPath: string;
@@ -838,7 +837,6 @@ function processFile(
 			deps?.onClaudeApiError?.({
 				sessionId: state.sessionId,
 				cwd,
-				paneId: mapping?.paneId,
 				terminalId: mapping?.terminalId,
 				workspaceId: mapping?.workspaceId,
 				transcriptPath: filePath,

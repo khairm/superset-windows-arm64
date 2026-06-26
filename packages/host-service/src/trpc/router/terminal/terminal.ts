@@ -166,7 +166,6 @@ export const terminalRouter = router({
 				// MANDATORY: never write without proving the bound agent is still foreground.
 				expectedAgentSessionId: z.string().min(1),
 				data: z.string(),
-				failureId: z.string().optional(),
 			}),
 		)
 		.mutation(({ input, ctx }) => {

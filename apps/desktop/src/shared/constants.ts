@@ -37,9 +37,6 @@ export const NOTIFICATION_EVENTS = {
 	AUTO_RESUME_STATE: "auto-resume-state",
 } as const;
 
-// (AUTO-RESUME) Claude auto-send default ON; Codex auto-send default OFF (notify-only).
-export const DEFAULT_AUTO_RESUME_ENABLED = true;
-
 // Development/testing mock values (used when SKIP_ENV_VALIDATION is set)
 export const MOCK_ORG_ID = "mock-org-id";
 

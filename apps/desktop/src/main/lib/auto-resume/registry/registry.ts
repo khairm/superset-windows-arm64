@@ -27,29 +27,26 @@ export const WALLCLOCK_BUDGET_MS = 24 * 60 * 60 * 1000;
 // Per-terminal jitter to break the account-global "thundering herd" at reset+30s.
 export const JITTER_MAX_MS = 120_000;
 export const RESET_BUFFER_MS = 30_000;
+// Give up loudly after this many consecutive transient send failures.
+export const MAX_TRANSPORT_FAILURES = 8;
 
 export type EntryState = "armed" | "sent" | "cancelled" | "gaveUp" | "done";
 
 export interface ResumeEntry {
 	failureId: string;
-	agent: "claude" | "codex";
 	sessionId: string;
 	orgId?: string; // host-service org captured at arm time (fire targets this host)
-	paneId?: string;
 	terminalId?: string;
 	workspaceId?: string;
 	transcriptPath: string;
 	offset: number;
 	failureClass: FailureClass;
-	mode: "schedule" | "backoff";
 	resumeAtMs: number;
 	sentCount: number;
 	rescheduleCount: number;
+	transportFailureCount: number; // consecutive transient send failures (capped)
 	state: EntryState;
-	createdAt: number;
-	firstArmedAt: number;
 	firstSendAt?: number; // first actual send — the 24h retry budget runs from here
-	lastSendAt?: number;
 }
 
 /** Gap before send number `sentCount` (0-indexed): 60, 180, 540, 1620, 4860s. */
@@ -94,7 +91,7 @@ export function decideFire(entry: ResumeEntry, nowMs: number): FireDecision {
 export function afterSend(entry: ResumeEntry, nowMs: number): ResumeEntry {
 	const sentCount = entry.sentCount + 1;
 	const firstSendAt = entry.firstSendAt ?? nowMs;
-	const next = { ...entry, sentCount, firstSendAt, lastSendAt: nowMs };
+	const next = { ...entry, sentCount, firstSendAt, transportFailureCount: 0 };
 	if (sentCount >= MAX_SENDS || retryBudgetExceeded(next, nowMs)) {
 		return { ...next, state: "gaveUp" };
 	}
@@ -104,6 +101,19 @@ export function afterSend(entry: ResumeEntry, nowMs: number): ResumeEntry {
 		// Next attempt uses the next escalation gap; the fire-time transcript gate
 		// makes this a no-op once the agent actually resumed.
 		resumeAtMs: nowMs + backoffDelayMs(sentCount) + jitterFor(entry.failureId),
+	};
+}
+
+/** Advance after a transient send failure (network / no-host / busy). Gives up loudly
+ * after the cap so a permanent auth/manifest breakage can't spin for the whole budget.
+ * Durable (a field on the entry) so the count survives a restart. */
+export function afterTransientFailure(entry: ResumeEntry): ResumeEntry {
+	const transportFailureCount = entry.transportFailureCount + 1;
+	return {
+		...entry,
+		transportFailureCount,
+		state:
+			transportFailureCount >= MAX_TRANSPORT_FAILURES ? "gaveUp" : entry.state,
 	};
 }
 
@@ -151,6 +161,7 @@ export class ResumeRegistry {
 	// takeover survives a reload/restart even if the same error is somehow re-detected.
 	private tombstones: string[] = [];
 	private tombstoneSet = new Set<string>();
+	private dirEnsured = false;
 
 	load(): void {
 		try {
@@ -182,7 +193,10 @@ export class ResumeRegistry {
 
 	private persist(): void {
 		try {
-			fs.mkdirSync(AUTO_RESUME_DIR, { recursive: true, mode: 0o700 });
+			if (!this.dirEnsured) {
+				fs.mkdirSync(AUTO_RESUME_DIR, { recursive: true, mode: 0o700 });
+				this.dirEnsured = true;
+			}
 			// Drop terminal states so the file can't grow unbounded.
 			const keep = [...this.entries.values()].filter(
 				(e) => e.state === "armed" || e.state === "sent",

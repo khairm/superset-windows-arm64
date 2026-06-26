@@ -167,37 +167,8 @@ export function classifyClaudeFailure(
 	return nonResumable("other");
 }
 
-// --- Codex (NOTIFY-ONLY in v1) --------------------------------------------
-// The ONLY genuine standalone signal is the exact phrase inside an errored
-// <subagent_notification>. Requiring this literal phrase makes the 2,897 corpus
-// code-lines that merely contain "rate limit"/"usage limit" impossible to match.
-const CODEX_USAGE_LIMIT = /you'?ve hit your usage limit/i;
-const CODEX_RETRY_TIME = /try again (?:after|at)\s+([^."]+?)\s*\./i;
-
-export interface CodexClassification extends Classification {
-	class: "rate_limit_resume" | "other";
-}
-
-/**
- * Classify a Codex usage-limit notification. `text` must already be scoped by the caller
- * to a structured `response_item`/`message`/role==user record carrying a
- * `<subagent_notification>` with `status.errored` — NEVER a raw rollout-line scan.
- * tz is the machine-local IANA zone (Codex prose carries none).
- */
-export function classifyCodexUsageLimit(
-	text: string,
-	machineTz: string,
-): CodexClassification | null {
-	if (!text.includes("<subagent_notification>")) return null;
-	if (!CODEX_USAGE_LIMIT.test(text)) return null;
-	const m = CODEX_RETRY_TIME.exec(text);
-	if (m) {
-		return {
-			resumable: true,
-			class: "rate_limit_resume",
-			mode: "schedule",
-			reset: { timeText: m[1].trim(), tz: machineTz },
-		};
-	}
-	return { resumable: true, class: "other", mode: "backoff" };
-}
+// Codex is intentionally OUT OF SCOPE for v1: the on-disk corpus has no validated
+// standalone-terminal usage-limit signal (the only occurrences are <subagent_notification>
+// records inside multi-agent PARENT turns that run on to task_complete, and a naive scan
+// false-matches source code that merely mentions "rate limit"). See the design doc. When a
+// real Codex signal is captured, add a scoped, FP-guarded detector here.

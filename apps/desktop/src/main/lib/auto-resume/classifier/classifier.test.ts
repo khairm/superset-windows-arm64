@@ -1,10 +1,6 @@
 // (AUTO-RESUME) classifier tests — real corpus templates + Codex false-positive guard.
 import { describe, expect, test } from "bun:test";
-import {
-	classifyClaudeFailure,
-	classifyCodexUsageLimit,
-	extractClaudeReset,
-} from "./classifier";
+import { classifyClaudeFailure, extractClaudeReset } from "./classifier";
 
 describe("classifyClaudeFailure — resumable", () => {
 	test("rate_limit_resume (session)", () => {
@@ -132,42 +128,5 @@ describe("extractClaudeReset", () => {
 			timeText: "Jun 17, 1am",
 			tz: "Europe/London",
 		});
-	});
-});
-
-describe("classifyCodexUsageLimit — structural, FP-safe", () => {
-	const TZ = "Europe/London";
-	test("genuine errored notification with clock time", () => {
-		const text =
-			'<subagent_notification>\n{"status":{"errored":"You\'ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage or try again after 1:08 PM."}}';
-		const c = classifyCodexUsageLimit(text, TZ);
-		expect(c).toMatchObject({ resumable: true, class: "rate_limit_resume" });
-		expect(c?.reset?.timeText).toBe("1:08 PM");
-	});
-	test("genuine errored notification with dated time", () => {
-		const text =
-			'<subagent_notification>{"status":{"errored":"You\'ve hit your usage limit. Try again at May 31st, 2026 12:58 AM."}}';
-		const c = classifyCodexUsageLimit(text, TZ);
-		expect(c?.reset?.timeText).toBe("May 31st, 2026 12:58 AM");
-	});
-	test("does NOT match source code mentioning rate limit (the 2897-FP guard)", () => {
-		const codeLines = [
-			'log.warning(f"get_support_tickets_for_homes: pagination limit reached, user={user_email}")',
-			"# Rate-limit charging stays on the caller so BG retries",
-			'except ZendeskRateLimitError as e: log.error(f"Zendesk 429 retry_after={e.retry_after}s")',
-			"USER_RATE_LIMIT_PER_MIN = 60  # Per-user rate limit",
-			'rg -n "rate limit|usage limit|retry after" server_code',
-		];
-		for (const line of codeLines) {
-			expect(classifyCodexUsageLimit(line, TZ)).toBeNull();
-		}
-	});
-	test("requires the literal usage-limit phrase even inside a notification", () => {
-		expect(
-			classifyCodexUsageLimit(
-				'<subagent_notification>{"status":{"errored":"some other error"}}',
-				TZ,
-			),
-		).toBeNull();
 	});
 });

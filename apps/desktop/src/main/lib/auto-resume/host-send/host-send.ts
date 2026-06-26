@@ -3,28 +3,17 @@
 // (with preflight) happens there via terminal.writeInputIfIdle. We reach it over the same
 // local HTTP + PSK-bearer channel the coordinator already uses for health.check.
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { SUPERSET_HOME_DIR } from "../../app-environment";
-import { isProcessAlive, readManifest } from "../../host-service-manifest";
+import { getHostServiceCoordinator } from "../../host-service-coordinator";
+import { readManifest } from "../../host-service-manifest";
 
 export const RESUME_MESSAGE = "resume from exactly where everything was left";
 
 /**
- * Find the organizationId of a currently-running host-service by scanning its manifest
- * directory for a live pid. The desktop runs one active host-service at a time.
+ * Org of a currently-running host-service, from the in-process coordinator (the
+ * authoritative live-instance registry) rather than re-deriving from disk.
  */
 export function findActiveOrganizationId(): string | null {
-	try {
-		const hostRoot = path.join(SUPERSET_HOME_DIR, "host");
-		for (const orgId of fs.readdirSync(hostRoot)) {
-			const manifest = readManifest(orgId);
-			if (manifest && isProcessAlive(manifest.pid)) return orgId;
-		}
-	} catch {
-		// no host dir yet
-	}
-	return null;
+	return getHostServiceCoordinator().getActiveOrganizationIds()[0] ?? null;
 }
 
 export type SendOutcome = { sent: true } | { sent: false; reason: string };
@@ -34,7 +23,6 @@ interface SendArgs {
 	workspaceId: string;
 	terminalId: string;
 	expectedAgentSessionId?: string;
-	failureId: string;
 	data?: string;
 }
 
@@ -47,7 +35,6 @@ export async function sendResumeViaHost(args: SendArgs): Promise<SendOutcome> {
 		workspaceId: args.workspaceId,
 		expectedAgentSessionId: args.expectedAgentSessionId,
 		data: args.data ?? RESUME_MESSAGE,
-		failureId: args.failureId,
 	};
 
 	const controller = new AbortController();

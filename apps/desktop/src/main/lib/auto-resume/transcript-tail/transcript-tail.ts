@@ -28,6 +28,9 @@ export interface LastApiError {
 	apiErrorStatus: number | null;
 	text: string;
 	timestampMs: number;
+	// True if any meaningful (user/assistant) record follows the error in the tail — i.e.
+	// the turn already moved on, so this same single read also answers the finality gate.
+	hasMeaningfulProgressAfter: boolean;
 }
 
 interface ClaudeErrorRecord {
@@ -66,11 +69,13 @@ export async function readLastApiError(
 		handle = await fs.open(transcriptPath, "r");
 		const buf = Buffer.alloc(tailBytes);
 		await handle.read(buf, 0, tailBytes, start);
-		const text = buf.toString("utf8");
-		// Walk lines tracking byte offsets; remember the last error line.
+		const allLines = buf.toString("utf8").split("\n");
+		// Walk lines tracking byte offsets; remember the last error line + its index.
 		let best: LastApiError | null = null;
+		let bestIndex = -1;
 		let cursor = 0;
-		for (const line of text.split("\n")) {
+		for (let i = 0; i < allLines.length; i++) {
+			const line = allLines[i];
 			const lineStart = start + cursor;
 			cursor += Buffer.byteLength(line, "utf8") + 1; // +1 for the '\n'
 			if (!line.includes('"isApiErrorMessage":true')) continue;
@@ -83,9 +88,20 @@ export async function readLastApiError(
 					apiErrorStatus: obj.apiErrorStatus ?? null,
 					text: firstText(obj.message),
 					timestampMs: obj.timestamp ? Date.parse(obj.timestamp) : Date.now(),
+					hasMeaningfulProgressAfter: false,
 				};
+				bestIndex = i;
 			} catch {
 				// skip unparseable
+			}
+		}
+		// Same pass answers the finality gate: did anything meaningful follow the error?
+		if (best) {
+			for (let i = bestIndex + 1; i < allLines.length; i++) {
+				if (lineIsMeaningfulProgress(allLines[i].trim())) {
+					best.hasMeaningfulProgressAfter = true;
+					break;
+				}
 			}
 		}
 		return best;

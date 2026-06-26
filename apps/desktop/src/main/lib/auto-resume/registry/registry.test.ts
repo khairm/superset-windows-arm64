@@ -2,10 +2,12 @@
 import { describe, expect, test } from "bun:test";
 import {
 	afterSend,
+	afterTransientFailure,
 	applyReschedule,
 	backoffDelayMs,
 	decideFire,
 	MAX_SENDS,
+	MAX_TRANSPORT_FAILURES,
 	type ResumeEntry,
 	WALLCLOCK_BUDGET_MS,
 } from "./registry";
@@ -13,18 +15,15 @@ import {
 function entry(over: Partial<ResumeEntry> = {}): ResumeEntry {
 	return {
 		failureId: "s1:f.jsonl:100",
-		agent: "claude",
 		sessionId: "s1",
 		transcriptPath: "/x/f.jsonl",
 		offset: 100,
 		failureClass: "server_error",
-		mode: "backoff",
 		resumeAtMs: 1000,
 		sentCount: 0,
 		rescheduleCount: 0,
+		transportFailureCount: 0,
 		state: "armed",
-		createdAt: 0,
-		firstArmedAt: 0,
 		...over,
 	};
 }
@@ -66,10 +65,7 @@ describe("decideFire", () => {
 		// not give up at the 24h mark. This is the headline weekly-limit case.
 		const threeDays = 3 * 24 * 60 * 60 * 1000;
 		expect(
-			decideFire(
-				entry({ firstArmedAt: 0, resumeAtMs: threeDays }),
-				WALLCLOCK_BUDGET_MS + 1,
-			),
+			decideFire(entry({ resumeAtMs: threeDays }), WALLCLOCK_BUDGET_MS + 1),
 		).toEqual({ action: "wait" });
 	});
 	test("non-armed waits", () => {
@@ -104,6 +100,20 @@ describe("applyReschedule", () => {
 	});
 	test("gives up past the reschedule cap", () => {
 		const e = applyReschedule(entry({ rescheduleCount: 3 }), 5_000_000, 1000);
+		expect(e.state).toBe("gaveUp");
+	});
+});
+
+describe("afterTransientFailure", () => {
+	test("bumps the durable counter and stays armed below the cap", () => {
+		const e = afterTransientFailure(entry({ transportFailureCount: 0 }));
+		expect(e.transportFailureCount).toBe(1);
+		expect(e.state).toBe("armed");
+	});
+	test("gives up loudly at the cap (survives restart via the persisted field)", () => {
+		const e = afterTransientFailure(
+			entry({ transportFailureCount: MAX_TRANSPORT_FAILURES - 1 }),
+		);
 		expect(e.state).toBe("gaveUp");
 	});
 });

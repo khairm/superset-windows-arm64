@@ -1,6 +1,6 @@
-// (AUTO-RESUME) Global on/off toggle, persisted as a small JSON file (no DB migration).
-// Default ON for Claude auto-send; Codex auto-send defaults OFF (notify-only) because no
-// validated standalone Codex usage-limit signal exists yet.
+// (AUTO-RESUME) Global on/off toggle, persisted as a small JSON file (the local-db
+// settings table would need a schema migration; this avoids one for a single boolean).
+// Default ON. Claude-only in v1.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AUTO_RESUME_DIR } from "../registry/registry";
@@ -9,19 +9,15 @@ const CONFIG_PATH = path.join(AUTO_RESUME_DIR, "config.json");
 
 export interface AutoResumeConfig {
 	enabled: boolean;
-	codexAutoSend: boolean;
 }
 
-const DEFAULTS: AutoResumeConfig = { enabled: true, codexAutoSend: false };
+const DEFAULTS: AutoResumeConfig = { enabled: true };
 
 export function readConfig(): AutoResumeConfig {
 	try {
 		const raw = fs.readFileSync(CONFIG_PATH, "utf8");
 		const parsed = JSON.parse(raw) as Partial<AutoResumeConfig>;
-		return {
-			enabled: parsed.enabled ?? DEFAULTS.enabled,
-			codexAutoSend: parsed.codexAutoSend ?? DEFAULTS.codexAutoSend,
-		};
+		return { enabled: parsed.enabled ?? DEFAULTS.enabled };
 	} catch {
 		return { ...DEFAULTS };
 	}
