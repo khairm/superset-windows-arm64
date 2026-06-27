@@ -513,6 +513,24 @@ def _bgactive_marker_path(terminal_id):
     )
 
 
+def _askred_marker_path(terminal_id):
+    # (UNTAGGED-BG-RED) records "an AskUserQuestion red is pending for this
+    # terminal". An AskUserQuestion red's ONLY valid clear is its own answer
+    # (PostToolUse:AskUserQuestion) or a new prompt (UserPromptSubmit) — never a
+    # generic main-loop tool completion. While this marker exists, an untagged
+    # ordinary PostToolUse asserts working WITHOUT clearing the red, so a
+    # teammate/fork's parent-attributed (agent_id-less) tool cannot stomp a
+    # still-open question. Set at PreToolUse:AskUserQuestion (synchronous with the
+    # red, so no background_tasks/agentbg timing window); cleared by the answer, a
+    # new prompt, or any turn/session end.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".askred")
+    )
+
+
 def _write_text(p, text):
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -1022,6 +1040,7 @@ def _decide_event_type(
     agentbg_marker = _agentbg_marker_path(terminal_id)
     shellbg_marker = _shellbg_marker_path(terminal_id)
     bgactive_marker = _bgactive_marker_path(terminal_id)
+    askred_marker = _askred_marker_path(terminal_id)
 
     def _reason(text):
         # Best-effort capture of the terminal-decision reason. Never raises.
@@ -1183,9 +1202,11 @@ def _decide_event_type(
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers
         _remove(compact_marker)  # any earlier compaction is over/irrelevant
+        _remove(askred_marker)  # (UNTAGGED-BG-RED) new prompt -> any pending question is moot
         return "Start"
     if event == "Stop":
         _remove(compact_marker)  # turn ended; a leaked compact marker is stale
+        _remove(askred_marker)  # (UNTAGGED-BG-RED) turn ended -> no question can still be pending
         # (review #3) reap age-stale markers first so a missing/garbled
         # background_tasks[] (no MARKER-RECONCILE) cannot pin yellow forever.
         live_markers = _reap_stale_markers(run_dir, terminal_id)
@@ -1261,12 +1282,14 @@ def _decide_event_type(
         _remove(agentbg_marker)
         _remove(shellbg_marker)
         _remove(bgactive_marker)  # (BG-STALE) session over -> clear the timer
+        _remove(askred_marker)  # (UNTAGGED-BG-RED) session over -> drop any pending-question guard
         return "Stop"
     if event == "Notification":
         _reason("RED: permission (Notification)")
         return "PermissionRequest"
     if event == "PreToolUse":
         if tool == "AskUserQuestion":
+            _touch(askred_marker)  # (UNTAGGED-BG-RED) question open -> protect its red
             _reason("RED: permission (PreToolUse:AskUserQuestion)")
             return "PermissionRequest"
         return None
@@ -1280,6 +1303,7 @@ def _decide_event_type(
         # the subagent's run-dir marker (mirror the per-marker touch) so the
         # yellow-hold mtime stays live, then Start to clear the red.
         if tool == "AskUserQuestion":
+            _remove(askred_marker)  # (UNTAGGED-BG-RED) answered -> stop protecting the red
             marker = run_dir / sub_agent_id
             if sub_agent_id and marker.exists():
                 _touch(marker)
@@ -1320,22 +1344,22 @@ def _decide_event_type(
         if tool in ("Workflow", "Agent", "Task"):
             _touch(bgactive_marker)  # (BG-STALE) background-agent forward activity
             return "SubagentActive"
-        # (UNTAGGED-BG-RED) The "no agent_id => sequential main loop => the red was
-        # answered" assumption ALSO breaks for an ORDINARY tool (Read/Bash/Edit/neon/
-        # ...) when agent-type background work is running: teammate/fork tool
-        # completions stream in attributed to the PARENT session WITHOUT an agent_id,
-        # so they reach here and Start-clear a pending AskUserQuestion red (live
-        # 2026-06-26: 66 Read/57 Edit/56 Bash PostToolUse agentId="" -> Start flipped a
-        # pending red -> yellow while 4 teammates ran). A genuine answer ALWAYS arrives
-        # as UserPromptSubmit (clears red at turn start) or PostToolUse:AskUserQuestion
-        # (handled above), so refusing the generic red-clear while agents are active can
-        # never strand a real answer -> red-respecting working hold. When NO agent-type
-        # background work is running, an untagged tool genuinely IS the main loop, so the
-        # permission-approval red-clear is preserved (returns Start below).
-        agent_bg_active = has_agent_background or (
-            agentbg_marker.exists() and not _bg_hold_is_stale(terminal_id)
-        )
-        if agent_bg_active:
+        # (UNTAGGED-BG-RED) An AskUserQuestion red's ONLY valid clear is its own
+        # answer (PostToolUse:AskUserQuestion, handled above) or a new prompt
+        # (UserPromptSubmit) — NEVER a generic tool completion. Teammate/fork tool
+        # completions stream in attributed to the PARENT session WITHOUT an agent_id
+        # (live 2026-06-26: 66 Read/57 Edit/56 Bash PostToolUse agentId="" -> Start
+        # flipped a pending AskUserQuestion red -> yellow while 4 teammates ran), so
+        # they reach this fallback as untagged tools. The .askred marker is set
+        # SYNCHRONOUSLY at PreToolUse:AskUserQuestion (present from the instant the
+        # question appears — no background_tasks/agentbg timing window), so while it
+        # exists a question is still open: assert working WITHOUT clearing the red.
+        # A genuine answer clears .askred first (PostToolUse:AskUserQuestion /
+        # UserPromptSubmit), so this never strands a real answer. A tool-PERMISSION
+        # red (no .askred) is still cleared by its approved tool's main-loop
+        # completion below -> the permission-approval red-clear is preserved (no
+        # regression: this branch only withholds the clear for an OPEN question).
+        if askred_marker.exists():
             return "SubagentActive"
         return "Start"
     return None
