@@ -407,6 +407,19 @@ function reapOrphanedSubagentMarkers(terminalId: string): number {
  * child-of guard does not cover them — clean them explicitly. Best-effort; the
  * terminalId is validated the same way as the reap guard. Never throws.
  */
+function clearAskqDir(terminalId: string): void {
+	// (UNTAGGED-BG-RED) `.askq` is a DIRECTORY of per-owner AskUserQuestion markers;
+	// clear it recursively (a turn/session-ending abort kills every pending question
+	// on this terminal). Best-effort; terminalId validated like the reap guard.
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
+	try {
+		fs.rmSync(path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`), {
+			recursive: true,
+			force: true,
+		});
+	} catch {}
+}
+
 function clearAbortSiblingSentinels(terminalId: string): void {
 	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
 	for (const suffix of [
@@ -415,12 +428,12 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 		".shellbg",
 		".mainstopped",
 		".compacting",
-		".askred", // (UNTAGGED-BG-RED) clear the pending-question guard on an API abort too
 	]) {
 		try {
 			fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, terminalId + suffix));
 		} catch {}
 	}
+	clearAskqDir(terminalId); // (UNTAGGED-BG-RED) the per-owner question-guard dir too
 }
 
 function emit(
@@ -817,6 +830,12 @@ function processFile(
 		} else if (sawApiAbort || sawInterrupt) {
 			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
 			// only re-asserts review/green — no destructive marker reap).
+			// (UNTAGGED-BG-RED) a genuine interrupt/abort turn-end also clears the
+			// pending-question guards (no Stop hook fires on an interrupt to do it);
+			// skipped on a post-truncation re-read so a live later-turn question is
+			// never dropped.
+			if (!truncatedReset && mapping?.terminalId)
+				clearAskqDir(mapping.terminalId);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{

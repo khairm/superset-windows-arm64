@@ -513,22 +513,33 @@ def _bgactive_marker_path(terminal_id):
     )
 
 
-def _askred_marker_path(terminal_id):
-    # (UNTAGGED-BG-RED) records "an AskUserQuestion red is pending for this
-    # terminal". An AskUserQuestion red's ONLY valid clear is its own answer
-    # (PostToolUse:AskUserQuestion) or a new prompt (UserPromptSubmit) — never a
-    # generic main-loop tool completion. While this marker exists, an untagged
+def _askq_dir(terminal_id):
+    # (UNTAGGED-BG-RED) a DIRECTORY of per-owner "an AskUserQuestion is pending"
+    # markers for this terminal — one file per owner (the raising agent). An
+    # AskUserQuestion red's ONLY valid clear is its own answer
+    # (PostToolUse:AskUserQuestion) or that owner's turn boundary — NEVER a
+    # generic main-loop tool completion. While ANY marker exists an untagged
     # ordinary PostToolUse asserts working WITHOUT clearing the red, so a
     # teammate/fork's parent-attributed (agent_id-less) tool cannot stomp a
-    # still-open question. Set at PreToolUse:AskUserQuestion (synchronous with the
-    # red, so no background_tasks/agentbg timing window); cleared by the answer, a
-    # new prompt, or any turn/session end.
+    # still-open question. Keyed PER OWNER (not one terminal-wide flag) so two
+    # concurrent questions (e.g. main + a subagent) are independent: answering or
+    # ending one never drops the other's guard. Set at PreToolUse:AskUserQuestion
+    # (synchronous with the red, so no background_tasks/agentbg timing window); an
+    # owner's marker is cleared by its answer, its SubagentStop, or the main turn
+    # boundary; the whole dir is cleared on session end / API abort / fresh start.
     return (
         pathlib.Path.home()
         / ".superset"
         / "agent-subagent-running"
-        / (terminal_id + ".askred")
+        / (terminal_id + ".askq")
     )
+
+
+def _askq_owner(sub_agent_id):
+    # The raising agent's marker key: its sanitized agent_id, or "_main" for a
+    # main-loop question (agent_id is empty there). An agent BLOCKS on its own
+    # AskUserQuestion, so it can have at most one pending question -> one marker.
+    return sub_agent_id if sub_agent_id else "_main"
 
 
 def _write_text(p, text):
@@ -595,6 +606,17 @@ def _clear_dir(d):
             _remove(f)
     except Exception:
         pass
+
+
+def _askq_has_nonmain(askq_dir):
+    # (UNTAGGED-BG-RED) is a SUBAGENT/teammate AskUserQuestion still open? ("_main"
+    # is the main loop, cleared by its own turn boundary). True iff a non-"_main"
+    # owner marker exists -> a main Stop must stay red-respecting (SubagentActive),
+    # never green, or the renderer's turn-end would clear the teammate's permission.
+    try:
+        return any(f.name != "_main" for f in askq_dir.iterdir())
+    except Exception:
+        return False
 
 
 def _pid_alive(pid):
@@ -1040,7 +1062,7 @@ def _decide_event_type(
     agentbg_marker = _agentbg_marker_path(terminal_id)
     shellbg_marker = _shellbg_marker_path(terminal_id)
     bgactive_marker = _bgactive_marker_path(terminal_id)
-    askred_marker = _askred_marker_path(terminal_id)
+    askq_dir = _askq_dir(terminal_id)
 
     def _reason(text):
         # Best-effort capture of the terminal-decision reason. Never raises.
@@ -1097,6 +1119,7 @@ def _decide_event_type(
         return "Start"
     if event == "SessionStart":
         if source != "compact":
+            _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) fresh session / terminalId reuse -> drop stale question guards
             return None
         was_trigger = _read_text(compact_marker)
         if not was_trigger:
@@ -1149,6 +1172,7 @@ def _decide_event_type(
     if event == "SubagentStop":
         if sub_agent_id:
             _remove(run_dir / sub_agent_id)
+            _remove(askq_dir / sub_agent_id)  # (UNTAGGED-BG-RED) this subagent stopped -> its question (if any) is gone
         # (review #3) reap age-stale markers so a leaked sibling marker cannot
         # keep this count >0 forever and block the last-subagent green.
         if _reap_stale_markers(run_dir, terminal_id) == 0 and sentinel.exists():
@@ -1202,11 +1226,17 @@ def _decide_event_type(
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers
         _remove(compact_marker)  # any earlier compaction is over/irrelevant
-        _remove(askred_marker)  # (UNTAGGED-BG-RED) new prompt -> any pending question is moot
+        _remove(askq_dir / "_main")  # (UNTAGGED-BG-RED) new main prompt -> main question moot (subagent owners persist)
         return "Start"
     if event == "Stop":
         _remove(compact_marker)  # turn ended; a leaked compact marker is stale
-        _remove(askred_marker)  # (UNTAGGED-BG-RED) turn ended -> no question can still be pending
+        _remove(askq_dir / "_main")  # (UNTAGGED-BG-RED) main turn ended -> main question done (subagent owners persist)
+        if _askq_has_nonmain(askq_dir):
+            # (UNTAGGED-BG-RED) a detached teammate/subagent still has an open
+            # question -> stay red-respecting; a plain Stop would clear its
+            # permission red at the renderer (red > working keeps it via SubagentActive).
+            _reason("HOLD working: subagent/teammate AskUserQuestion still open (Stop)")
+            return "SubagentActive"
         # (review #3) reap age-stale markers first so a missing/garbled
         # background_tasks[] (no MARKER-RECONCILE) cannot pin yellow forever.
         live_markers = _reap_stale_markers(run_dir, terminal_id)
@@ -1266,7 +1296,7 @@ def _decide_event_type(
         _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
         _remove(shellbg_marker)  # snapshot is stale; StopFailure stays no-blue
         _remove(bgactive_marker)  # (BG-STALE) Claude teammates died with the API
-        _remove(askred_marker)  # (UNTAGGED-BG-RED) the abort killed the question's turn -> drop the guard
+        _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) the abort killed the Claude API -> all its questions are dead
         cx = []
         cx_skip = []
         if _codex_job_active(session_id, cx, cx_skip):
@@ -1283,14 +1313,14 @@ def _decide_event_type(
         _remove(agentbg_marker)
         _remove(shellbg_marker)
         _remove(bgactive_marker)  # (BG-STALE) session over -> clear the timer
-        _remove(askred_marker)  # (UNTAGGED-BG-RED) session over -> drop any pending-question guard
+        _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) session over -> drop all pending-question guards
         return "Stop"
     if event == "Notification":
         _reason("RED: permission (Notification)")
         return "PermissionRequest"
     if event == "PreToolUse":
         if tool == "AskUserQuestion":
-            _touch(askred_marker)  # (UNTAGGED-BG-RED) question open -> protect its red
+            _touch(askq_dir / _askq_owner(sub_agent_id))  # (UNTAGGED-BG-RED) this owner's question is open -> protect its red
             _reason("RED: permission (PreToolUse:AskUserQuestion)")
             return "PermissionRequest"
         return None
@@ -1304,7 +1334,7 @@ def _decide_event_type(
         # the subagent's run-dir marker (mirror the per-marker touch) so the
         # yellow-hold mtime stays live, then Start to clear the red.
         if tool == "AskUserQuestion":
-            _remove(askred_marker)  # (UNTAGGED-BG-RED) answered -> stop protecting the red
+            _remove(askq_dir / _askq_owner(sub_agent_id))  # (UNTAGGED-BG-RED) this owner answered -> stop protecting its red
             marker = run_dir / sub_agent_id
             if sub_agent_id and marker.exists():
                 _touch(marker)
@@ -1346,21 +1376,25 @@ def _decide_event_type(
             _touch(bgactive_marker)  # (BG-STALE) background-agent forward activity
             return "SubagentActive"
         # (UNTAGGED-BG-RED) An AskUserQuestion red's ONLY valid clear is its own
-        # answer (PostToolUse:AskUserQuestion, handled above) or a new prompt
-        # (UserPromptSubmit) — NEVER a generic tool completion. Teammate/fork tool
-        # completions stream in attributed to the PARENT session WITHOUT an agent_id
-        # (live 2026-06-26: 66 Read/57 Edit/56 Bash PostToolUse agentId="" -> Start
-        # flipped a pending AskUserQuestion red -> yellow while 4 teammates ran), so
-        # they reach this fallback as untagged tools. The .askred marker is set
-        # SYNCHRONOUSLY at PreToolUse:AskUserQuestion (present from the instant the
-        # question appears — no background_tasks/agentbg timing window), so while it
-        # exists a question is still open: assert working WITHOUT clearing the red.
-        # A genuine answer clears .askred first (PostToolUse:AskUserQuestion /
-        # UserPromptSubmit), so this never strands a real answer. A tool-PERMISSION
-        # red (no .askred) is still cleared by its approved tool's main-loop
-        # completion below -> the permission-approval red-clear is preserved (no
-        # regression: this branch only withholds the clear for an OPEN question).
-        if askred_marker.exists():
+        # answer (PostToolUse:AskUserQuestion, handled above) or its owner's turn
+        # boundary — NEVER a generic tool completion. Teammate/fork tool completions
+        # stream in attributed to the PARENT session WITHOUT an agent_id (live
+        # 2026-06-26: 66 Read/57 Edit/56 Bash PostToolUse agentId="" -> Start flipped
+        # a pending AskUserQuestion red -> yellow while 4 teammates ran), so they
+        # reach this fallback as untagged tools. The .askq dir holds a per-owner
+        # marker set SYNCHRONOUSLY at PreToolUse:AskUserQuestion (present from the
+        # instant the question appears — no background_tasks/agentbg timing window),
+        # so while ANY marker exists a question is still open: assert working WITHOUT
+        # clearing the red. The main loop is BLOCKED on that question, so this
+        # untagged tool is genuine teammate/fork forward activity -> refresh .bgactive
+        # too (mirror the other SubagentActive branches) so a long teammate whose
+        # only events are parent-attributed tools cannot be stale-reaped to a false
+        # green. A genuine answer clears its OWN owner marker first, so this never
+        # strands a real answer. A tool-PERMISSION red (no .askq marker) is still
+        # cleared by its approved tool's main-loop completion below -> the
+        # permission-approval red-clear is preserved (no regression).
+        if _running_count(askq_dir) > 0:
+            _touch(bgactive_marker)
             return "SubagentActive"
         return "Start"
     return None
