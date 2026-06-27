@@ -1266,6 +1266,7 @@ def _decide_event_type(
         _remove(agentbg_marker)  # Claude bg tasks died with the Claude API
         _remove(shellbg_marker)  # snapshot is stale; StopFailure stays no-blue
         _remove(bgactive_marker)  # (BG-STALE) Claude teammates died with the API
+        _remove(askred_marker)  # (UNTAGGED-BG-RED) the abort killed the question's turn -> drop the guard
         cx = []
         cx_skip = []
         if _codex_job_active(session_id, cx, cx_skip):

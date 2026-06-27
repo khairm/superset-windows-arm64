@@ -415,6 +415,7 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 		".shellbg",
 		".mainstopped",
 		".compacting",
+		".askred", // (UNTAGGED-BG-RED) clear the pending-question guard on an API abort too
 	]) {
 		try {
 			fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, terminalId + suffix));
