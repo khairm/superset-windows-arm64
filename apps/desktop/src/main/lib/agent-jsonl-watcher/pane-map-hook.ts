@@ -1062,7 +1062,12 @@ def _decide_event_type(
     # shows (red>working only applied while an owner existed), and the next genuine
     # turn-end greens. Without this, a cancelled subagent question or a main Stop
     # held by other subagents would leave the answered/gone question's red stuck.
-    if before > 0 and after == 0 and (result is None or result == "SubagentActive"):
+    if (
+        event != "SessionStart"  # a fresh-session cleanup empties the dir but resolves NO question -> never assert working
+        and before > 0
+        and after == 0
+        and (result is None or result == "SubagentActive")
+    ):
         return "Start"
     return result
 

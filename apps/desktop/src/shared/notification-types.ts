@@ -19,7 +19,19 @@ export interface NotificationIds {
 }
 
 export interface AgentLifecycleEvent extends NotificationIds {
-	eventType: "Start" | "Stop" | "PermissionRequest" | "PendingQuestion";
+	// Full lifecycle union carried on this channel. `SubagentActive` (the
+	// red-respecting working hold) is emitted directly by the JSONL watcher
+	// (UNTAGGED-BG-RED held interrupt) as well as by the host-service POST path;
+	// `BackgroundRunning` is the blue cloud/background signal. `PendingQuestion`
+	// is the legacy awaiting-input alias still recognized by the notification
+	// manager. The notification manager only chimes on `Stop`/permission.
+	eventType:
+		| "Start"
+		| "Stop"
+		| "PermissionRequest"
+		| "PendingQuestion"
+		| "SubagentActive"
+		| "BackgroundRunning";
 }
 
 export type V2NotificationSource =
