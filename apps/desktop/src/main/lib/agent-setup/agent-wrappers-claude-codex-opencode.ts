@@ -199,16 +199,26 @@ export function getClaudeGlobalSettingsJsonContent(
 	// payload's background_tasks[] is non-empty (the blue dot). notify.sh's raw
 	// Stop passthrough landed ~1s later and wiped both states — the renderer
 	// treats any non-BackgroundRunning agent event as "no background work left".
-	// Every other passthrough below agrees with the python hook's mapping (or
-	// covers binding events it doesn't send: Attached/Detached), so they stay.
+	//
+	// (CLAUDE-WORKING-UNHOOKED) Same fix, extended to the WORKING-cadence events:
+	// notify.sh is NOT registered on Claude's UserPromptSubmit / PostToolUse /
+	// PostToolUseFailure either. The host maps all three to "Start" (see
+	// map-event-type.ts), and notify.sh's RAW passthrough bypasses superset-
+	// notify.py's central red guard (the .askq downgrade that holds a pending
+	// AskUserQuestion red as SubagentActive instead of clearing it). In a
+	// forks/teammates run the forks' PostToolUse completions stream in every
+	// 1-5s; each raw notify.sh "Start" cleared the main loop's pending question
+	// red -> the dot dropped from RED to yellow while the user was still being
+	// asked (live 2026-06-27). superset-notify.py owns all of these for Claude
+	// (with agent_id discrimination + the red guard), so dropping the raw
+	// duplicates loses NOTHING. Only the binding / permission passthroughs stay:
+	// SessionStart->Attached (idle, never a red clear), the native
+	// PermissionRequest->red, and SessionEnd->Detached. None can RACE-clear a
+	// pending question mid-turn the way the working-cadence events did; SessionEnd
+	// DOES clear permission, but only because the agent session itself ended (the
+	// question dies with it) — not a false mid-turn clear.
 	const managedEvents: Array<{
-		eventName:
-			| "SessionStart"
-			| "SessionEnd"
-			| "UserPromptSubmit"
-			| "PostToolUse"
-			| "PostToolUseFailure"
-			| "PermissionRequest";
+		eventName: "SessionStart" | "SessionEnd" | "PermissionRequest";
 		definition: ClaudeHookDefinition;
 	}> = [
 		{
@@ -218,24 +228,6 @@ export function getClaudeGlobalSettingsJsonContent(
 		{
 			eventName: "SessionEnd",
 			definition: { hooks: [{ type: "command", command: managedHookCommand }] },
-		},
-		{
-			eventName: "UserPromptSubmit",
-			definition: { hooks: [{ type: "command", command: managedHookCommand }] },
-		},
-		{
-			eventName: "PostToolUse",
-			definition: {
-				matcher: "*",
-				hooks: [{ type: "command", command: managedHookCommand }],
-			},
-		},
-		{
-			eventName: "PostToolUseFailure",
-			definition: {
-				matcher: "*",
-				hooks: [{ type: "command", command: managedHookCommand }],
-			},
 		},
 		{
 			eventName: "PermissionRequest",

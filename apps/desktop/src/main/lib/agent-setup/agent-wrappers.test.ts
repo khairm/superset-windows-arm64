@@ -988,9 +988,8 @@ describe("agent-wrappers claude settings.json", () => {
 		};
 
 		const managedEvents = [
-			"UserPromptSubmit",
-			"PostToolUse",
-			"PostToolUseFailure",
+			"SessionStart",
+			"SessionEnd",
 			"PermissionRequest",
 		] as const;
 
@@ -1009,9 +1008,18 @@ describe("agent-wrappers claude settings.json", () => {
 		// blue and the subagent yellow-hold).
 		expect(parsed.hooks.Stop).toBeUndefined();
 
-		expect(parsed.hooks.PostToolUse.some((def) => def.matcher === "*")).toBe(
-			true,
-		);
+		// (CLAUDE-WORKING-UNHOOKED) The working-cadence events are owned by
+		// superset-notify.py too — notify.sh must NOT be registered on them. The
+		// host maps each to "Start", and notify.sh's raw passthrough bypasses the
+		// python hook's central red guard, clearing a pending AskUserQuestion red
+		// to yellow while forks stream PostToolUse completions.
+		expect(parsed.hooks.UserPromptSubmit).toBeUndefined();
+		expect(parsed.hooks.PostToolUse).toBeUndefined();
+		expect(parsed.hooks.PostToolUseFailure).toBeUndefined();
+
+		expect(
+			parsed.hooks.PermissionRequest.some((def) => def.matcher === "*"),
+		).toBe(true);
 	});
 
 	it("preserves user hooks and non-hook settings when merging", () => {
@@ -1060,9 +1068,21 @@ describe("agent-wrappers claude settings.json", () => {
 			),
 		).toBe(true);
 
-		// Adds managed hook
+		// (CLAUDE-WORKING-UNHOOKED) The managed hook is NO LONGER added to
+		// UserPromptSubmit — only the user's own hook survives there.
 		expect(
 			parsed.hooks.UserPromptSubmit.some(
+				(def: { hooks: Array<{ command: string }> }) =>
+					def.hooks.some(
+						(hook: { command: string }) =>
+							hook.command === managedClaudeHookCommand,
+					),
+			),
+		).toBe(false);
+
+		// Managed hook IS added to a kept event (PermissionRequest).
+		expect(
+			parsed.hooks.PermissionRequest.some(
 				(def: { hooks: Array<{ command: string }> }) =>
 					def.hooks.some(
 						(hook: { command: string }) =>
@@ -1106,6 +1126,12 @@ describe("agent-wrappers claude settings.json", () => {
 								hooks: [{ type: "command", command: staleHookPath }],
 							},
 						],
+						PostToolUseFailure: [
+							{
+								matcher: "*",
+								hooks: [{ type: "command", command: staleHookPath }],
+							},
+						],
 					},
 				},
 				null,
@@ -1132,21 +1158,23 @@ describe("agent-wrappers claude settings.json", () => {
 			>;
 		};
 
-		// Stale hooks removed, current hooks present
-		for (const eventName of ["UserPromptSubmit", "PostToolUse"] as const) {
-			const hooks = parsed.hooks[eventName];
-			expect(Array.isArray(hooks)).toBe(true);
-			expect(
-				hooks.some((def) =>
-					def.hooks.some((hook) => hook.command === managedClaudeHookCommand),
-				),
-			).toBe(true);
-			expect(
-				hooks.some((def) =>
-					def.hooks.some((hook) => hook.command.includes(staleHookPath)),
-				),
-			).toBe(false);
-		}
+		// (CLAUDE-WORKING-UNHOOKED) Stale managed notify.sh entries are stripped
+		// from the working-cadence events and NOT re-added (superset-notify.py owns
+		// them). PostToolUse / PostToolUseFailure held only the stale hook -> the
+		// now-empty events are dropped; UserPromptSubmit keeps its co-located user
+		// hook but no managed.
+		expect(parsed.hooks.PostToolUse).toBeUndefined();
+		expect(parsed.hooks.PostToolUseFailure).toBeUndefined();
+		expect(
+			parsed.hooks.UserPromptSubmit.some((def) =>
+				def.hooks.some((hook) => hook.command === managedClaudeHookCommand),
+			),
+		).toBe(false);
+		expect(
+			parsed.hooks.UserPromptSubmit.some((def) =>
+				def.hooks.some((hook) => hook.command.includes(staleHookPath)),
+			),
+		).toBe(false);
 
 		// (CLAUDE-STOP-UNHOOKED) The stale managed Stop registration is stripped
 		// and NOT re-added — Stop belongs to superset-notify.py exclusively.

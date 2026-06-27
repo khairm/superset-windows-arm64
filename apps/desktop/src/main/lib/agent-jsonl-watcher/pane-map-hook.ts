@@ -322,10 +322,14 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  (yellow; red-respecting in the renderer);
                                  shell-only -> BackgroundRunning (blue)
   SessionEnd                  -> Stop             (review / green; clears state)
-  StopFailure                 -> Stop + clears state, UNLESS a codex-companion
+  StopFailure(main loop)      -> Stop + clears state, UNLESS a codex-companion
                                  job for this session is still alive ->
                                  SubagentActive (BF: codex runs on its OWN API;
                                  a Claude rate-limit abort does not stop it)
+  StopFailure(in a subagent)  -> (STOPFAIL-SUBAGENT) self-scoped: drops only that
+                                 fork's markers, never the shared session state /
+                                 the main question guard; the central red guard
+                                 keeps a still-pending AskUserQuestion red
   Notification                -> PermissionRequest (permission / red)
   PreToolUse(AskUserQuestion) -> PermissionRequest (red)   else no-op
   PostToolUse(main loop)      -> Start             (working — clears red after
@@ -337,6 +341,9 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  background agents' completions stream in WHILE
                                  an AskUserQuestion/permission red is pending and
                                  must assert working WITHOUT clearing that red)
+  PostToolUseFailure          -> aliased to PostToolUse (a failed tool is the same
+                                 "tool finished" dot signal; CLAUDE-WORKING-UNHOOKED
+                                 — superset-notify.py owns it; notify.sh no longer does)
   SubagentStart               -> SubagentActive   (working, red-respecting — a
                                  workflow/teammate spawning an agent while a red
                                  is pending must not stomp it; the subagent
@@ -1142,6 +1149,20 @@ def _decide_event_type_inner(
         except Exception:
             pass
 
+    # (CLAUDE-WORKING-UNHOOKED) superset-notify.py now OWNS PostToolUseFailure for
+    # Claude (notify.sh no longer raw-posts it). A FAILED tool is, for the dot, the
+    # same "tool finished" signal as a success, so route it through the guarded
+    # PostToolUse branch (agent_id discrimination + the central .askq red guard):
+    # a failed main-loop tool asserts working / clears a HANDLED permission, a
+    # failed subagent tool stays SubagentActive, and a still-open AskUserQuestion
+    # red is NEVER stomped. Without this the event would fall through to None
+    # (no-op) and a generic tool-permission red could latch with no clear path.
+    # (STOPFAIL-SUBAGENT is handled INLINE in the StopFailure branch below — it
+    # must NOT route through the Stop/SubagentStop snapshot+reconcile machinery,
+    # which would trust the abort payload's possibly-incomplete background_tasks.)
+    if event == "PostToolUseFailure":
+        event = "PostToolUse"
+
     # (TEAM-YELLOW) keep the background snapshot markers fresh from every
     # turn-end payload — including Stops the run_dir yellow-hold suppresses —
     # so payload-less events (SessionStart after /compact) can consult them.
@@ -1352,7 +1373,41 @@ def _decide_event_type_inner(
             _reason("GREEN: no active holds (Stop)" + _skip_suffix(cx_skip))
         return "Stop"
     if event == "StopFailure":
-        # (AX)/(BF) A Claude API/rate-limit abort kills the shared-API Claude
+        # (STOPFAIL-SUBAGENT) A StopFailure carrying an agent_id is ONE subagent/
+        # fork aborting on a rate-limit/API error — NOT the whole Claude session
+        # dying. The full session abort below (clear run_dir + EVERY marker + the
+        # .askq question guard, then green) would stomp the MAIN loop's still-
+        # pending AskUserQuestion red (live 2026-06-27: a fork hit a limit, its
+        # StopFailure cleared askq + Stop while the user was still being asked).
+        # Handle it SELF-SCOPED: drop only THIS fork's run + question markers,
+        # never the shared state (sibling markers, the main question owner, the
+        # agent-bg snapshot), and — like the main-abort branch below — never trust
+        # the abort payload's background_tasks (it may be stale/incomplete). The
+        # remaining run-dir marker COUNT + the .mainstopped sentinel decide the
+        # hold; the central red guard re-holds any still-open question (incl _main).
+        if sub_agent_id:
+            _remove(run_dir / sub_agent_id)
+            _remove(askq_dir / sub_agent_id)
+            live = _reap_stale_markers(run_dir, terminal_id)
+            if live > 0 or not sentinel.exists():
+                # Other forks still running, OR the main loop has not stopped yet
+                # -> no red-clearing turn-end; leave the dot as-is. The central
+                # guard keeps a pending question red (and UPGRADEs to Start if this
+                # removed the LAST owner — the failed fork's own answered/dead red).
+                _reason(
+                    "HOLD: subagent StopFailure, "
+                    + str(live) + " markers, main_stopped=" + str(sentinel.exists())
+                )
+                return None
+            _remove(sentinel)
+            cx = []
+            cx_skip = []
+            if _codex_job_active(session_id, cx, cx_skip):
+                _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (StopFailure/subagent)")
+                return "SubagentActive"
+            _reason("GREEN: subagent StopFailure, last fork done + main stopped" + _skip_suffix(cx_skip))
+            return "Stop"  # central guard re-holds if a question owner (incl _main) remains
+        # (AX)/(BF) A MAIN Claude API/rate-limit abort kills the shared-API Claude
         # subagent tree (clear its markers + green), BUT a codex-companion
         # worker is a SEPARATE process on its OWN API — the Claude failure does
         # not stop it, so keep showing it as working. (has_background is NOT
@@ -1803,12 +1858,17 @@ function mergeNotifyHook(filePath: string): void {
 		{ event: "Notification", matcher: "permission_prompt" },
 		{ event: "PreToolUse", matcher: "AskUserQuestion" },
 		{ event: "PostToolUse" },
+		// (CLAUDE-WORKING-UNHOOKED) own PostToolUseFailure too — notify.sh no longer
+		// raw-posts it (its host mapping -> Start bypassed the central red guard).
+		// _decide_event_type rewrites it to PostToolUse so a failed tool is guarded
+		// identically to a successful one (never stomps a pending AskUserQuestion red).
+		{ event: "PostToolUseFailure" },
 		// Background-subagent yellow-hold: keep the parent terminal working
 		// (yellow) while delegated subagents run after the main turn's Stop,
 		// and green only once the last one finishes. See _decide_event_type.
 		{ event: "SubagentStart" },
 		{ event: "SubagentStop" },
-		{ event: "StopFailure" }, // rate-limit/API-error abort: Claude fires StopFailure (not Stop) -> green
+		{ event: "StopFailure" }, // rate-limit/API-error abort: main-loop -> green; subagent-scoped (agent_id) -> self-scoped (STOPFAIL-SUBAGENT)
 		// (COMPACT-YELLOW) Context compaction shows working/yellow. PreCompact
 		// (manual /compact AND auto-compact) flips the dot to working at
 		// compaction start; SessionStart with source=compact fires at completion
