@@ -420,6 +420,24 @@ function clearAskqDir(terminalId: string): void {
 	} catch {}
 }
 
+function askqHasOwner(terminalId: string, includeMain: boolean): boolean {
+	// (UNTAGGED-BG-RED) does a still-open AskUserQuestion owner marker exist? The
+	// watcher emits Stop DIRECTLY to the renderer on a main interrupt/abort, bypassing
+	// the Python central guard; if a live question remains, the renderer turn-end would
+	// clear its permission red, so the caller emits SubagentActive instead. `includeMain`
+	// false = only detached teammate/subagent owners (a genuine main interrupt aborts
+	// the main's own question); true = any owner (a post-truncation re-read touched
+	// nothing, so even `_main` must not be Stop-cleared).
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return false;
+	try {
+		return fs
+			.readdirSync(path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`))
+			.some((f) => includeMain || f !== "_main");
+	} catch {
+		return false;
+	}
+}
+
 function clearAskqMainMarker(terminalId: string): void {
 	// (UNTAGGED-BG-RED) remove ONLY the main-loop (`_main`) owner marker. Used on a
 	// watcher-detected MAIN interrupt: it aborts the main loop's own question, but a
@@ -850,6 +868,14 @@ function processFile(
 			// shared-API teammates and uses clearAbortSiblingSentinels -> clearAskqDir.)
 			if (!truncatedReset && mapping?.terminalId)
 				clearAskqMainMarker(mapping.terminalId);
+			// (UNTAGGED-BG-RED) this Stop goes STRAIGHT to the renderer, bypassing the
+			// Python central guard; the renderer turn-end clears the single permission
+			// axis. If a question is still live, emit the red-respecting SubagentActive
+			// so a detached teammate's red survives. Genuine main interrupt: `_main` was
+			// just cleared, so only a non-`_main` owner counts; truncation re-read: we
+			// touched nothing, so any owner (incl `_main`) must not be Stop-cleared.
+			const askqTid = mapping?.terminalId;
+			const heldRed = !!askqTid && askqHasOwner(askqTid, truncatedReset);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
@@ -860,7 +886,7 @@ function processFile(
 					filePath,
 				},
 			);
-			emit("Stop", state.sessionId, cwd, mapping);
+			emit(heldRed ? "SubagentActive" : "Stop", state.sessionId, cwd, mapping);
 		}
 		// (AUTO-RESUME) Forward an api-error candidate. We do NOT veto the whole chunk on a
 		// co-occurring interrupt — the manager re-reads the transcript tail and only arms

@@ -608,17 +608,6 @@ def _clear_dir(d):
         pass
 
 
-def _askq_has_nonmain(askq_dir):
-    # (UNTAGGED-BG-RED) is a SUBAGENT/teammate AskUserQuestion still open? ("_main"
-    # is the main loop, cleared by its own turn boundary). True iff a non-"_main"
-    # owner marker exists -> a main Stop must stay red-respecting (SubagentActive),
-    # never green, or the renderer's turn-end would clear the teammate's permission.
-    try:
-        return any(f.name != "_main" for f in askq_dir.iterdir())
-    except Exception:
-        return False
-
-
 def _reap_askq(askq_dir, bg_ids):
     # (UNTAGGED-BG-RED) drop non-"_main" owner markers whose owner is no longer in
     # the authoritative running set (background_tasks ids share the agent_id space).
@@ -1035,6 +1024,40 @@ def _decide_event_type(
     session_id,
     reason_out=None,
 ):
+    # (UNTAGGED-BG-RED) CENTRAL RED GUARD. The renderer has ONE permission axis per
+    # terminal, so a red-CLEARING result (Start, or a green/blue turn-end) must NEVER
+    # be emitted while a question owner is still live in the .askq dir — that would
+    # clear a co-pending question's red. EVERY decision funnels through here, so no
+    # individual branch (answer, UserPromptSubmit, Stop, SubagentStop, the compact
+    # paths, ...) can drop the red. When a held result is a turn-end
+    # (Stop/BackgroundRunning), mark .mainstopped so the eventual last SubagentStop
+    # still finalizes to green once the dir empties. (The inner branches already
+    # _remove the answered/own owner and _reap_askq dead owners first, so the count
+    # here is the set of GENUINELY still-open questions.)
+    result = _decide_event_type_inner(
+        event, tool, terminal_id, sub_agent_id, has_background,
+        has_agent_background, bg_ids, trigger, source, session_id, reason_out,
+    )
+    if result in ("Start", "Stop", "BackgroundRunning") and _running_count(_askq_dir(terminal_id)) > 0:
+        if result != "Start":
+            _touch(_sentinel_path(terminal_id))
+        return "SubagentActive"
+    return result
+
+
+def _decide_event_type_inner(
+    event,
+    tool,
+    terminal_id,
+    sub_agent_id,
+    has_background,
+    has_agent_background,
+    bg_ids,
+    trigger,
+    source,
+    session_id,
+    reason_out=None,
+):
     # Returns the host-service eventType or None (None => silent no-op).
     # reason_out (optional list): at a TERMINAL turn-end decision (Stop /
     # SubagentStop / StopFailure / manual-compact finish) a human-readable
@@ -1230,12 +1253,6 @@ def _decide_event_type(
                 else:
                     _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (SubagentStop)")
                 return "SubagentActive"  # teammates/workflows/codex still working -> yellow
-            if _askq_has_nonmain(askq_dir):
-                # (UNTAGGED-BG-RED) a teammate/subagent question is still open (and
-                # survived the bg_ids reap, so it is live) -> stay red-respecting
-                # rather than blue/green, which would clear its permission red.
-                _reason("HOLD working: subagent/teammate AskUserQuestion still open (SubagentStop)")
-                return "SubagentActive"
             # (FIX 5) blue is the SHELL-ONLY remainder. After a stale_bg suppression
             # has_agent_background is still true, so a bare has_background-only test
             # would wrongly blue an agent-only zombie set; require shell-only so a
@@ -1254,22 +1271,12 @@ def _decide_event_type(
         _remove(sentinel)  # main working again; keep live subagent markers
         _remove(compact_marker)  # any earlier compaction is over/irrelevant
         _remove(askq_dir / "_main")  # (UNTAGGED-BG-RED) new main prompt -> main question moot (subagent owners persist)
-        _reap_askq(askq_dir, bg_ids)  # drop dead subagent owners so they can't pin red
-        # (UNTAGGED-BG-RED) one permission axis per terminal -> keep a still-open
-        # subagent/teammate question's red; only the red-clearing Start when none remain.
-        if _running_count(askq_dir) > 0:
-            return "SubagentActive"
-        return "Start"
+        _reap_askq(askq_dir, bg_ids)  # drop dead subagent owners; central guard holds for any LIVE one
+        return "Start"  # central guard downgrades to SubagentActive if a subagent owner remains
     if event == "Stop":
         _remove(compact_marker)  # turn ended; a leaked compact marker is stale
         _remove(askq_dir / "_main")  # (UNTAGGED-BG-RED) main turn ended -> main question done (subagent owners persist)
-        _reap_askq(askq_dir, bg_ids)  # (UNTAGGED-BG-RED) drop dead subagent owners so a leak can't pin yellow forever
-        if _askq_has_nonmain(askq_dir):
-            # (UNTAGGED-BG-RED) a detached teammate/subagent still has an open
-            # question -> stay red-respecting; a plain Stop would clear its
-            # permission red at the renderer (red > working keeps it via SubagentActive).
-            _reason("HOLD working: subagent/teammate AskUserQuestion still open (Stop)")
-            return "SubagentActive"
+        _reap_askq(askq_dir, bg_ids)  # (UNTAGGED-BG-RED) drop dead subagent owners; the central guard then holds for any LIVE one
         # (review #3) reap age-stale markers first so a missing/garbled
         # background_tasks[] (no MARKER-RECONCILE) cannot pin yellow forever.
         live_markers = _reap_stale_markers(run_dir, terminal_id)
@@ -1371,12 +1378,8 @@ def _decide_event_type(
             marker = run_dir / sub_agent_id
             if sub_agent_id and marker.exists():
                 _touch(marker)
-            # (UNTAGGED-BG-RED) the renderer has ONE permission axis per terminal, so
-            # only the red-CLEARING Start when NO owner's question remains; otherwise
-            # a co-pending question (e.g. main still open while a subagent answers)
-            # keeps the red via the red-respecting SubagentActive.
-            if _running_count(askq_dir) > 0:
-                return "SubagentActive"
+            # Start clears the red; the central guard downgrades to SubagentActive if
+            # ANOTHER owner's question is still open (one permission axis per terminal).
             return "Start"
         # (SUBTOOL-RED) agent_id is present iff the tool ran INSIDE a subagent
         # (Claude Code hooks doc: "use this to distinguish subagent hook calls
@@ -1785,7 +1788,13 @@ function mergeNotifyHook(filePath: string): void {
 		// (manual -> green via the same decision as Stop, auto -> stay yellow,
 		// the live turn's Stop greens it later). See _decide_event_type.
 		{ event: "PreCompact" },
-		{ event: "SessionStart", matcher: "compact" },
+		// (UNTAGGED-BG-RED) Unscoped (NOT matcher:"compact"): _decide_event_type's
+		// SessionStart branch clears the per-owner .askq dir on a NON-compact
+		// SessionStart (startup/resume/clear) so a stale question guard from a
+		// crashed/reused session can't pin the dot; the compact source still runs
+		// the COMPACT-YELLOW finish logic. (Binding/Attached stays the passthrough's
+		// job — this hook returns None for non-compact, so it only does the cleanup.)
+		{ event: "SessionStart" },
 	];
 	try {
 		let parsed: HooksRoot = {};
