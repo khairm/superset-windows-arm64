@@ -55,7 +55,17 @@ export class NotificationManager {
 	}
 
 	handleAgentLifecycle(event: AgentLifecycleEvent): void {
-		if (event.eventType === "Start") return;
+		// Only a genuine turn-end (Stop) fires an "Agent Complete" chime/notification,
+		// and a permission/pending signal fires "Awaiting Response". Everything else —
+		// Start, the still-working SubagentActive hold (now emittable DIRECTLY by the
+		// JSONL watcher on a held interrupt, UNTAGGED-BG-RED), BackgroundRunning, and
+		// binding events — is NOT a completion and must not notify; otherwise a
+		// SubagentActive emitted while a question is still pending would fire a false
+		// "Agent Complete".
+		const isPermission =
+			event.eventType === "PermissionRequest" ||
+			event.eventType === "PendingQuestion";
+		if (event.eventType !== "Stop" && !isPermission) return;
 		if (!this.deps.isSupported()) return;
 
 		if (this.shouldSuppressForVisiblePane(event)) return;
