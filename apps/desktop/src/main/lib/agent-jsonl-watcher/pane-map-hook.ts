@@ -958,6 +958,7 @@ def _reap_stale_markers(run_dir, terminal_id):
     # Never raises.
     reaped = []
     remaining = 0
+    askq_dir = _askq_dir(terminal_id)
     try:
         import time
         now = time.time()
@@ -965,6 +966,12 @@ def _reap_stale_markers(run_dir, terminal_id):
             try:
                 if now - f.stat().st_mtime > _MARKER_STALE_SECONDS:
                     _remove(f)
+                    # (UNTAGGED-BG-RED) a subagent whose run-dir marker aged out is
+                    # dead; drop its matching askq question owner too. This is the
+                    # age-based backstop for when bg_ids is absent/malformed (then
+                    # _reap_askq no-ops). "_main" has no run-dir marker, so a main
+                    # loop's own question is NEVER age-reaped here.
+                    _remove(askq_dir / f.name)
                     reaped.append(f.name)
                 else:
                     remaining += 1
@@ -1213,6 +1220,11 @@ def _decide_event_type_inner(
         # workflow/teammate spawning an agent mid-red must keep the red.
         return "SubagentActive"
     if event == "SubagentStop":
+        # (UNTAGGED-BG-RED) did THIS subagent stop with its own question still open
+        # (cancelled/killed without answering)? Its permission red must clear even on
+        # the "other subagents still running / main still working" path below, which
+        # otherwise returns None and would leave that red latched at the renderer.
+        owner_had_question = bool(sub_agent_id) and (askq_dir / sub_agent_id).exists()
         if sub_agent_id:
             _remove(run_dir / sub_agent_id)
             _remove(askq_dir / sub_agent_id)  # (UNTAGGED-BG-RED) this subagent stopped -> its question (if any) is gone
@@ -1266,6 +1278,11 @@ def _decide_event_type_inner(
             else:
                 _reason("GREEN: no active holds (SubagentStop, last subagent done)" + _skip_suffix(cx_skip))
             return "Stop"  # main already stopped + last subagent done -> green
+        if owner_had_question:
+            # (UNTAGGED-BG-RED) this subagent's own question is gone -> clear its red.
+            # Start clears permission; the central guard downgrades to SubagentActive
+            # if ANOTHER owner's question is still open (one permission axis/terminal).
+            return "Start"
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers

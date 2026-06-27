@@ -438,6 +438,21 @@ function askqHasOwner(terminalId: string, includeMain: boolean): boolean {
 	}
 }
 
+function stampMainStopped(terminalId: string): void {
+	// (UNTAGGED-BG-RED) mark the main loop as stopped (the `.mainstopped` sentinel)
+	// when the watcher holds the dot red-respecting (SubagentActive) for a surviving
+	// teammate question on a main interrupt — so the eventual last SubagentStop can
+	// still finalize to green once that question is answered. Mirrors the Python
+	// central guard's stamp on a held turn-end.
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
+	try {
+		fs.writeFileSync(
+			path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.mainstopped`),
+			"",
+		);
+	} catch {}
+}
+
 function clearAskqMainMarker(terminalId: string): void {
 	// (UNTAGGED-BG-RED) remove ONLY the main-loop (`_main`) owner marker. Used on a
 	// watcher-detected MAIN interrupt: it aborts the main loop's own question, but a
@@ -876,6 +891,9 @@ function processFile(
 			// touched nothing, so any owner (incl `_main`) must not be Stop-cleared.
 			const askqTid = mapping?.terminalId;
 			const heldRed = !!askqTid && askqHasOwner(askqTid, truncatedReset);
+			// Held for a surviving teammate question on a genuine main interrupt ->
+			// stamp .mainstopped so the eventual last SubagentStop finalizes green.
+			if (heldRed && !truncatedReset && askqTid) stampMainStopped(askqTid);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
