@@ -420,6 +420,18 @@ function clearAskqDir(terminalId: string): void {
 	} catch {}
 }
 
+function clearAskqMainMarker(terminalId: string): void {
+	// (UNTAGGED-BG-RED) remove ONLY the main-loop (`_main`) owner marker. Used on a
+	// watcher-detected MAIN interrupt: it aborts the main loop's own question, but a
+	// detached teammate keeps running on its own and its question marker must survive
+	// (clearing the whole dir would drop a live teammate's red). A full API abort
+	// uses clearAskqDir instead — that kills the shared-API teammates too.
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
+	try {
+		fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`, "_main"));
+	} catch {}
+}
+
 function clearAbortSiblingSentinels(terminalId: string): void {
 	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
 	for (const suffix of [
@@ -830,12 +842,14 @@ function processFile(
 		} else if (sawApiAbort || sawInterrupt) {
 			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
 			// only re-asserts review/green — no destructive marker reap).
-			// (UNTAGGED-BG-RED) a genuine interrupt/abort turn-end also clears the
-			// pending-question guards (no Stop hook fires on an interrupt to do it);
-			// skipped on a post-truncation re-read so a live later-turn question is
-			// never dropped.
+			// (UNTAGGED-BG-RED) a genuine MAIN interrupt/abort turn-end clears the
+			// MAIN loop's own question guard (no Stop hook fires on an interrupt to do
+			// it) but NOT a detached teammate's — teammates survive a main interrupt,
+			// so clear only `_main`. Skipped on a post-truncation re-read so a live
+			// later-turn question is never dropped. (A full Claude API abort kills the
+			// shared-API teammates and uses clearAbortSiblingSentinels -> clearAskqDir.)
 			if (!truncatedReset && mapping?.terminalId)
-				clearAskqDir(mapping.terminalId);
+				clearAskqMainMarker(mapping.terminalId);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
