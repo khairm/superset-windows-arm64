@@ -407,6 +407,118 @@ function reapOrphanedSubagentMarkers(terminalId: string): number {
  * child-of guard does not cover them — clean them explicitly. Best-effort; the
  * terminalId is validated the same way as the reap guard. Never throws.
  */
+// (BF codex-companion parity) Mirror of the Python hook's _codex_job_active. The
+// codex plugin dispatches work to a DETACHED worker (separate process, its OWN
+// API) that is invisible to Claude's background_tasks[] and SURVIVES a Claude
+// stream-idle / API abort. Each job is a JSON file tagged with the Claude
+// session_id. When the watcher self-heals a Claude abort it must NOT green the dot
+// if such a job for this session is still active — emit SubagentActive (yellow)
+// instead. "Active" = status queued|running AND (a live worker pid with a <6h-fresh
+// record, OR a pid-less record younger than 10min = spawn in progress). Best-effort.
+function listGlobFiles(
+	base: string,
+	tests: Array<(name: string) => boolean>,
+): string[] {
+	let dirs = [base];
+	for (let i = 0; i < tests.length; i++) {
+		const isLast = i === tests.length - 1;
+		const test = tests[i];
+		const next: string[] = [];
+		for (const d of dirs) {
+			let entries: fs.Dirent[];
+			try {
+				entries = fs.readdirSync(d, { withFileTypes: true });
+			} catch {
+				continue;
+			}
+			for (const e of entries) {
+				if (!test(e.name)) continue;
+				if (isLast) {
+					if (e.isFile()) next.push(path.join(d, e.name));
+				} else if (e.isDirectory()) {
+					next.push(path.join(d, e.name));
+				}
+			}
+		}
+		dirs = next;
+	}
+	return dirs;
+}
+
+function codexJobActive(sessionId: string | null): boolean {
+	if (!sessionId) return false;
+	try {
+		const home = os.homedir();
+		const roots: Array<[string, Array<(n: string) => boolean>]> = [
+			[
+				path.join(home, ".claude", "plugins", "data"),
+				[
+					(n) => n.startsWith("codex"),
+					(n) => n === "state",
+					() => true,
+					(n) => n === "jobs",
+					(n) => n.endsWith(".json"),
+				],
+			],
+			[
+				path.join(os.tmpdir(), "codex-companion"),
+				[() => true, (n) => n === "jobs", (n) => n.endsWith(".json")],
+			],
+		];
+		const ACTIVE = new Set(["queued", "running"]);
+		const now = Date.now();
+		for (const [root, tests] of roots) {
+			for (const jf of listGlobFiles(root, tests)) {
+				let rec: Record<string, unknown> | null = null;
+				for (let i = 0; i < 2; i++) {
+					try {
+						rec = JSON.parse(fs.readFileSync(jf, "utf8")) as Record<
+							string,
+							unknown
+						>;
+						break;
+					} catch {
+						rec = null;
+					}
+				}
+				if (!rec || typeof rec !== "object") continue;
+				if (rec.sessionId !== sessionId) continue;
+				if (!ACTIVE.has(String(rec.status ?? ""))) continue;
+				const pidNum = Number(rec.pid);
+				const hasPid =
+					rec.pid !== null &&
+					rec.pid !== undefined &&
+					rec.pid !== "" &&
+					Number.isInteger(pidNum);
+				if (hasPid) {
+					let alive = false;
+					if (pidNum > 0) {
+						try {
+							process.kill(pidNum, 0); // signal 0 = liveness probe (cross-platform)
+							alive = true;
+						} catch (e) {
+							alive = (e as NodeJS.ErrnoException)?.code === "EPERM";
+						}
+					}
+					if (!alive) continue;
+					try {
+						if ((now - fs.statSync(jf).mtimeMs) / 1000 < 21600) return true;
+					} catch {
+						return true;
+					}
+					continue;
+				}
+				try {
+					if ((now - fs.statSync(jf).mtimeMs) / 1000 < 600) return true;
+				} catch {
+					return true;
+				}
+			}
+		}
+	} catch {}
+	return false;
+}
+
 function clearAskqDir(terminalId: string): void {
 	// (UNTAGGED-BG-RED) `.askq` is a DIRECTORY of per-owner AskUserQuestion markers;
 	// clear it recursively (a turn/session-ending abort kills every pending question
@@ -864,14 +976,23 @@ function processFile(
 			const terminalId = mapping?.terminalId;
 			const reaped = terminalId ? reapOrphanedSubagentMarkers(terminalId) : 0;
 			if (terminalId) clearAbortSiblingSentinels(terminalId);
+			// (BF) a codex companion runs on its OWN API and survives the Claude
+			// abort -> keep the dot working (yellow) instead of false-greening.
+			const codexActive = codexJobActive(state.sessionId);
 			dbg("claude-api-abort-release", {
 				sessionId: state.sessionId,
 				terminalId: terminalId ?? null,
 				reapedMarkers: reaped,
 				clearedSiblings: !!terminalId,
+				codexActive,
 				filePath,
 			});
-			emit("Stop", state.sessionId, cwd, mapping);
+			emit(
+				codexActive ? "SubagentActive" : "Stop",
+				state.sessionId,
+				cwd,
+				mapping,
+			);
 		} else if (sawApiAbort || sawInterrupt) {
 			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
 			// only re-asserts review/green — no destructive marker reap).
@@ -894,6 +1015,9 @@ function processFile(
 			// Held for a surviving teammate question on a genuine main interrupt ->
 			// stamp .mainstopped so the eventual last SubagentStop finalizes green.
 			if (heldRed && !truncatedReset && askqTid) stampMainStopped(askqTid);
+			// (BF) a codex companion survives a Claude interrupt/abort (own API) ->
+			// keep working (yellow) too, not only for a held question.
+			const hold = heldRed || codexJobActive(state.sessionId);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
@@ -901,10 +1025,12 @@ function processFile(
 					terminalId: mapping?.terminalId ?? null,
 					reapSkipped:
 						sawApiAbort && truncatedReset ? "truncation-reread" : null,
+					heldRed,
+					hold,
 					filePath,
 				},
 			);
-			emit(heldRed ? "SubagentActive" : "Stop", state.sessionId, cwd, mapping);
+			emit(hold ? "SubagentActive" : "Stop", state.sessionId, cwd, mapping);
 		}
 		// (AUTO-RESUME) Forward an api-error candidate. We do NOT veto the whole chunk on a
 		// co-occurring interrupt — the manager re-reads the transcript tail and only arms
