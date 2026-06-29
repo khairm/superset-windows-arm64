@@ -53,6 +53,14 @@ jobs:
         with:
           node-version: '22'
 
+      # (LOCK-REGEN) Lock regeneration below needs bun; pin the EXACT version
+      # the build uses so the lock we commit is byte-identical to what the
+      # frozen build install consumes.
+      - name: Setup Bun (match the build's pinned version)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
       - name: Merge upstream + resolve + gate
         id: do
         shell: bash
@@ -136,6 +144,51 @@ jobs:
             echo "::error::A feature was dropped by the $NEWTAG merge — rejecting. Recovery: fix locally and re-baseline."
             exit 1
           fi
+
+          # --- dependency-consistency gate + lock regen (LOCK-REGEN) ----------
+          # The build installs --frozen-lockfile and electron-builder's
+          # dependency traversal requires each workspace's DECLARED dep version
+          # to be the one actually installed. A merge introduces two kinds of
+          # drift that both kill the build ~25 min in (after a windows-arm64
+          # runner spins up), not here:
+          #   (1) a fork root `overrides` entry pins a package to a version
+          #       DIFFERENT from the merged workspace pin (this is exactly how a
+          #       stale {@mastra/core, mastracode} override broke every mastra
+          #       bump: override forced 0.18.0, chat declared 0.18.1 ->
+          #       electron-builder "production dependency not found 0.18.1"); and
+          #   (2) the merge bumps a package.json dep but bun.lock still pins the
+          #       old version (a stale frozen lock).
+          # Catch (1) loud here (pure manifest analysis, platform-independent);
+          # fix (2) by regenerating the lock with the build's exact bun version,
+          # which ALSO fails loud if the merged manifests don't resolve or a pin
+          # is age-blocked. Both run in this 2-min job, so the windows-arm64
+          # build never spins up on a broken tree. We deliberately do NOT run a
+          # full `--frozen-lockfile` install here: this is a linux runner, so a
+          # platform-specific install/native-build quirk would be a false abort,
+          # and after a successful --lockfile-only the lock is consistent with
+          # the manifests by construction (same bun version the build uses).
+          # Any failure below hard-aborts with the baseline untouched.
+          echo "::group::dependency-consistency gate"
+          node scripts/check-override-consistency.mjs
+          echo "::endgroup::"
+
+          echo "::group::regenerate bun.lock to match merged manifests"
+          export SUPERSET_POSTINSTALL_RUNNING=1
+          LOCKLOG="$RUNNER_TEMP/bun-lockfile.log"
+          set +e
+          bun install --lockfile-only > "$LOCKLOG" 2>&1
+          rc=$?
+          set -e
+          cat "$LOCKLOG"
+          if [ "$rc" -ne 0 ]; then
+            if grep -q "blocked by minimum-release-age" "$LOCKLOG"; then
+              echo "::error::Lock regen blocked by bunfig minimumReleaseAge — an upstream dep pin in $NEWTAG is <72h old. This is a timing race, not a breakage: the nightly will succeed once the version ages past the gate (re-run after it ages, or wait for tomorrow's schedule). Baseline left untouched."
+            else
+              echo "::error::bun install --lockfile-only failed (rc=$rc) after merging $NEWTAG — the merged manifests don't resolve. Recovery: fix locally and re-baseline."
+            fi
+            exit 1
+          fi
+          echo "::endgroup::"
 
           # --- record new baseline + commit the merge -------------------------
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt

@@ -36,7 +36,7 @@
 	"dependencies": {
 		"@ai-sdk/anthropic": "3.0.64",
 		"@ai-sdk/openai": "3.0.36",
-		"@mastra/core": "1.33.0",
+		"@mastra/core": "1.33.1",
 		"@mastra/mcp": "1.7.0",
 		"@mastra/memory": "1.18.0",
 		"@superset/trpc": "workspace:*",
@@ -45,7 +45,7 @@
 		"@trpc/server": "11.16.0",
 		"ai": "6.0.141",
 		"hono": "4.12.23",
-		"mastracode": "0.18.0",
+		"mastracode": "0.18.1",
 		"superjson": "2.2.6",
 		"zod": "4.3.6"
 	},
