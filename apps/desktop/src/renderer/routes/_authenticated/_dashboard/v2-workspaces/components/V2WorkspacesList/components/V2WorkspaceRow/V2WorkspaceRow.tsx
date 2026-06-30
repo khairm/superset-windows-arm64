@@ -50,7 +50,7 @@ export function V2WorkspaceRow({
 	const { gateFeature } = usePaywall();
 	const {
 		ensureWorkspaceInSidebar,
-		removeWorkspaceFromSidebar,
+		hideWorkspaceInSidebar,
 		archiveWorkspace,
 		deleteWorkspace,
 		unarchiveWorkspace,
@@ -119,14 +119,18 @@ export function V2WorkspaceRow({
 				// never be hard-removed/hidden.
 				archiveWorkspace(workspace.id, workspace.projectId);
 			} else {
-				removeWorkspaceFromSidebar(workspace.id);
+				// Always hide (keep the row with isHidden) rather than delete: the
+				// auto-add-local-workspaces hook treats a missing v2WorkspaceLocalState
+				// row as never-seen and would re-pin it. The tombstone row preserves the
+				// unpin intent.
+				hideWorkspaceInSidebar(workspace.id, workspace.projectId);
 			}
 		},
 		[
 			isCurrentRoute,
 			isMainWorkspace,
 			archiveWorkspace,
-			removeWorkspaceFromSidebar,
+			hideWorkspaceInSidebar,
 			workspace.id,
 			workspace.projectId,
 		],

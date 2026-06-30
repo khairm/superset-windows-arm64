@@ -57,11 +57,20 @@ import { derivePrLocalBranchName } from "../workspace-creation/utils/pr-branch-n
 import { resolveStartPoint } from "../workspace-creation/utils/resolve-start-point";
 import { deduplicateBranchName } from "../workspace-creation/utils/sanitize-branch";
 
+/**
+ * Returned by `create` when auto-naming was wanted but the LLM call came
+ * back empty: the workspace keeps a friendly-random fallback name (create
+ * does not fail) and the renderer shows this as a warning toast.
+ */
+const AUTO_NAME_FALLBACK_WARNING =
+	"Model naming was unavailable, so a fallback name was used.";
+
 export const agentLaunchSchema = z
 	.object({
 		agent: z.string().min(1),
 		prompt: z.string(),
 		attachmentIds: z.array(z.string().uuid()).optional(),
+		model: z.string().min(1).optional(),
 	})
 	.refine(
 		(value) =>
@@ -525,6 +534,7 @@ export async function dispatchSugarAgents(
 					agent: entry.agent,
 					prompt: entry.prompt,
 					attachmentIds: entry.attachmentIds,
+					model: entry.model,
 				});
 				return { ok: true as const, ...result };
 			} catch (err) {
@@ -597,6 +607,10 @@ export const workspacesRouter = router({
 						})
 					: null;
 			aiNamesPromise?.catch(() => {});
+
+			// Stays false on the PR / worktree-adopt paths, which never attempt
+			// naming — so those can't produce a fallback warning.
+			let autoNameFellBack = false;
 
 			await ensureMainWorkspace(ctx, input.projectId, localProject.repoPath);
 
@@ -878,6 +892,7 @@ export const workspacesRouter = router({
 						listBranchNames(ctx, localProject.repoPath),
 					]);
 					plan = planResult;
+					autoNameFellBack = wantAi && aiNames === null;
 					aiTitle = aiNames?.title ?? null;
 					// Namespace newly-created branches under the configured
 					// prefix. A typed branch that resolves to an existing ref is
@@ -908,6 +923,7 @@ export const workspacesRouter = router({
 						resolveNewBranchStartPoint(git, input.baseBranch),
 						listBranchNames(ctx, localProject.repoPath),
 					]);
+					autoNameFellBack = wantAi && aiNames === null;
 					aiTitle = aiNames?.title ?? null;
 					const prefix = await resolveProjectBranchPrefix({
 						ctx,
@@ -1124,6 +1140,10 @@ export const workspacesRouter = router({
 				terminals: terminalsResult,
 				agents: agentsResult,
 				alreadyExists,
+				autoNameWarning:
+					autoNameFellBack && !alreadyExists
+						? AUTO_NAME_FALLBACK_WARNING
+						: undefined,
 				txid: extractCreateTxid(workspaceRow),
 			};
 		}),

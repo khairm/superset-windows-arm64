@@ -605,6 +605,7 @@ export const projectRouter = router({
 					const resolved = await cloneRepoInto(
 						cloudProject.repoCloneUrl,
 						input.mode.parentDir,
+						ctx.credentials,
 					);
 					persistLocalProject(ctx, input.projectId, resolved);
 					const mainWorkspace = await ensureMainWorkspace(

@@ -206,7 +206,11 @@ export async function createFromClone(
 	ctx: HostServiceContext,
 	args: { name: string; parentDir: string; url: string },
 ): Promise<CreateResult> {
-	const resolved = await cloneRepoInto(args.url, args.parentDir);
+	const resolved = await cloneRepoInto(
+		args.url,
+		args.parentDir,
+		ctx.credentials,
+	);
 	return persistFromResolved(ctx, {
 		name: args.name,
 		resolved,
@@ -393,6 +397,7 @@ export async function createFromTemplate(
 		args.url,
 		args.parentDir,
 		dirNameForEmpty(args.name),
+		ctx.credentials,
 	);
 	return persistFromResolved(ctx, {
 		name: args.name,

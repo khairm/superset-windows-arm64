@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { buildAgentModelArgs } from "@superset/shared/agent-models";
 import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -115,8 +116,14 @@ function buildArgvCommand(argv: string[]): string {
 export function buildAgentCommandString(
 	config: ResolvedHostAgentConfig,
 	prompt: string,
+	modelArgs: string[] = [],
 ): string {
-	const baseArgv = [config.command, ...config.args, ...config.promptArgs];
+	const baseArgv = [
+		config.command,
+		...config.args,
+		...modelArgs,
+		...config.promptArgs,
+	];
 
 	if (config.promptTransport === "argv") {
 		return buildArgvCommand([...baseArgv, prompt]);
@@ -158,6 +165,7 @@ export interface AgentRunInput {
 	agent: string;
 	prompt: string;
 	attachmentIds?: string[];
+	model?: string;
 }
 
 export type AgentRunResult =
@@ -213,6 +221,7 @@ async function runChatAgent(
 				content: input.prompt,
 				...(files.length > 0 ? { files } : {}),
 			},
+			...(input.model ? { metadata: { model: input.model } } : {}),
 		})
 		.catch((error) => {
 			console.error(
@@ -249,7 +258,8 @@ async function runTerminalAgent(
 	}
 
 	const prompt = buildAttachmentBlock(input.prompt, resolvedAttachments);
-	const command = buildAgentCommandString(config, prompt);
+	const modelArgs = buildAgentModelArgs(config.presetId, input.model);
+	const command = buildAgentCommandString(config, prompt, modelArgs);
 	const fullCommand = `${envOverlayPrefix(config.env)}${command}`;
 
 	const terminalId = crypto.randomUUID();
@@ -293,6 +303,7 @@ export const agentsRouter = router({
 				agent: z.string().min(1),
 				prompt: z.string().min(1),
 				attachmentIds: z.array(z.string().uuid()).optional(),
+				model: z.string().min(1).optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => runAgentInWorkspace(ctx, input)),

@@ -2,6 +2,7 @@ import { toast } from "@superset/ui/sonner";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { authClient } from "renderer/lib/auth-client";
+import { showWorkspaceAutoNameWarningToast } from "renderer/lib/workspaces/showWorkspaceAutoNameWarningToast";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import type { NewWorkspacePromptContextApi } from "renderer/stores/new-workspace-prompt-context";
 import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
@@ -19,6 +20,7 @@ import { resolveNames } from "./resolveNames";
 export function useSubmitWorkspace(
 	projectId: string | null,
 	selectedAgent: WorkspaceCreateAgent,
+	selectedModel: string | null,
 	uploadAttachments: UseUploadAttachmentsApi,
 	promptContext: NewWorkspacePromptContextApi,
 ) {
@@ -88,6 +90,7 @@ export function useSubmitWorkspace(
 						agent: selectedAgent,
 						prompt: finalPrompt ?? "",
 						attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+						model: selectedModel ?? undefined,
 					},
 				]
 			: undefined;
@@ -138,6 +141,18 @@ export function useSubmitWorkspace(
 
 		void completed.then((outcome) => {
 			if (!outcome.ok) return;
+
+			if (outcome.autoNameWarning) {
+				showWorkspaceAutoNameWarningToast({
+					description: outcome.autoNameWarning,
+					onOpenModelAuthSettings: () => {
+						void navigate({ to: "/settings/models" });
+					},
+				});
+			}
+
+			// The server can resolve the optimistic workspace to a different
+			// canonical id; follow it only if we're still on the optimistic route.
 			if (outcome.workspaceId === workspaceId) return;
 			if (!isViewingOptimisticWorkspace()) return;
 			void navigate({
@@ -161,6 +176,7 @@ export function useSubmitWorkspace(
 		projectId,
 		promptContext,
 		selectedAgent,
+		selectedModel,
 		submit,
 		uploadAttachments,
 	]);

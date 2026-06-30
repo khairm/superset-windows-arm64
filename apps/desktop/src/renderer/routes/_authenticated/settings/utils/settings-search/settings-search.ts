@@ -174,7 +174,7 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 
 	[SETTING_ITEM_ID.PROJECT_NAME]: "shared",
 	[SETTING_ITEM_ID.PROJECT_PATH]: "shared",
-	[SETTING_ITEM_ID.PROJECT_SCRIPTS]: "v1",
+	[SETTING_ITEM_ID.PROJECT_SCRIPTS]: "shared",
 	[SETTING_ITEM_ID.PROJECT_BRANCH_PREFIX]: "v1",
 	[SETTING_ITEM_ID.PROJECT_WORKTREE_LOCATION]: "shared",
 	[SETTING_ITEM_ID.PROJECT_IMPORT_WORKTREES]: "v1",
@@ -742,10 +742,16 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 	{
 		id: SETTING_ITEM_ID.TERMINAL_SESSIONS,
 		section: "terminal",
-		title: "Active Sessions",
-		description: "View and manage active terminal sessions",
+		title: "Terminal Daemon",
+		description: "Manage the terminal daemon and active sessions",
 		keywords: [
 			"terminal",
+			"daemon",
+			"pty daemon",
+			"supervisor",
+			"restart daemon",
+			"update daemon",
+			"background",
 			"sessions",
 			"active",
 			"running",
