@@ -194,6 +194,18 @@ jobs:
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
           git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present."
+          # (CANDIDATE-IDEMPOTENT-PUSH) The candidate is a disposable CI branch:
+          # re-derived from main each run, consumed by `build`, deleted by
+          # `advance` ON SUCCESS only. A FAILED build never reaches `advance`, so
+          # it strands the candidate on the remote. The next night re-merges the
+          # SAME upstream version into a NEW commit (AI conflict resolution is
+          # non-deterministic AND main may have advanced), whose history diverges
+          # from the stale branch — a plain push is then rejected non-fast-forward
+          # and EVERY subsequent nightly deadlocks on that stale ref. Drop any
+          # stale remote copy first so the push is always clean. This is pure CI
+          # scratch (never a feature/history branch), so overwriting it is safe;
+          # we delete-then-push rather than --force a real branch.
+          git push origin --delete "$CAND" 2>/dev/null || true
           git push origin "$CAND"
 
           VERSION=$(node -p "require('./apps/desktop/package.json').version")
