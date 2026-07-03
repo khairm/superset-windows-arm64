@@ -50,6 +50,7 @@ interface WorkspaceSidebarProps {
 		openInNewTab?: boolean,
 		line?: number,
 		side?: DiffFocusSide,
+		changeKey?: string,
 	) => void;
 	onOpenComment?: (comment: CommentPaneData) => void;
 	onOpenChat?: OpenChatFn;
@@ -141,7 +142,10 @@ export function WorkspaceSidebar({
 	const changesTabDef = useChangesTab({
 		workspaceId,
 		selectedFilePath,
-		onSelectFile: onSelectDiffFile,
+		onSelectFile: onSelectDiffFile
+			? (path, openInNewTab, changeKey) =>
+					onSelectDiffFile(path, openInNewTab, undefined, undefined, changeKey)
+			: undefined,
 		onOpenFile: onSelectFile,
 	});
 	const changesTab: SidebarTabDefinition = {

@@ -14,6 +14,7 @@ import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
 import { DashboardSidebarWorkspaceContextMenu } from "./components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu";
+import { DashboardSidebarWorkspaceDetails } from "./components/DashboardSidebarWorkspaceDetails";
 import { useDashboardSidebarWorkspaceItemActions } from "./hooks/useDashboardSidebarWorkspaceItemActions";
 
 interface DashboardSidebarWorkspaceItemProps {
@@ -56,6 +57,7 @@ export function DashboardSidebarWorkspaceItem({
 	const terminalStatuses = useV2WorkspaceTerminalStatuses(id);
 	const {
 		cancelRename,
+		handleClearStatus,
 		handleClick,
 		handleCopyPath,
 		handleCopyBranchName,
@@ -173,6 +175,7 @@ export function DashboardSidebarWorkspaceItem({
 							projectId={projectId}
 							isInSection={isInSection}
 							isUnread={isUnread}
+							hasStatus={!!workspaceStatus}
 							isLocalWorkspace={hostType === "local-device"}
 							isNonGit={isNonGit}
 							isPinned={isMainWorkspace && hostType === "local-device"}
@@ -196,6 +199,7 @@ export function DashboardSidebarWorkspaceItem({
 									: undefined
 							}
 							onToggleUnread={handleToggleUnread}
+							onClearStatus={handleClearStatus}
 							sectionState={sectionState}
 							onSnooze={handleSnooze}
 							onUnsnooze={handleUnsnooze}
@@ -272,7 +276,14 @@ export function DashboardSidebarWorkspaceItem({
 				onRenameValueChange={setRenameValue}
 				onSubmitRename={submitRename}
 				onCancelRename={cancelRename}
-			/>
+			>
+				{!isPending && (
+					<DashboardSidebarWorkspaceDetails
+						workspaceId={id}
+						isInSection={isInSection}
+					/>
+				)}
+			</DashboardSidebarExpandedWorkspaceRow>
 		</div>
 	);
 
@@ -286,6 +297,7 @@ export function DashboardSidebarWorkspaceItem({
 						projectId={projectId}
 						isInSection={isInSection}
 						isUnread={isUnread}
+						hasStatus={!!workspaceStatus}
 						onCreateSection={handleCreateSection}
 						onMoveToSection={(targetSectionId) =>
 							moveWorkspaceToSection(id, projectId, targetSectionId)
@@ -309,6 +321,7 @@ export function DashboardSidebarWorkspaceItem({
 								: undefined
 						}
 						onToggleUnread={handleToggleUnread}
+						onClearStatus={handleClearStatus}
 						sectionState={sectionState}
 						onSnooze={handleSnooze}
 						onUnsnooze={handleUnsnooze}

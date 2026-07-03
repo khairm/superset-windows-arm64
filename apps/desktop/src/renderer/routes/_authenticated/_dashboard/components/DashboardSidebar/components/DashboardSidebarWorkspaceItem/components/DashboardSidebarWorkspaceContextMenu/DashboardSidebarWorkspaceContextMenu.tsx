@@ -16,6 +16,7 @@ import {
 	LuArchiveRestore,
 	LuArrowRightLeft,
 	LuArrowUp,
+	LuBellOff,
 	LuClock,
 	LuCopy,
 	LuEye,
@@ -48,6 +49,8 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	/** Set when the row lives in the Snoozed / Archived / Recycle Bin section —
 	 * swaps the snooze/archive actions for the matching restore actions. */
 	sectionState?: WorkspaceSectionState;
+	hasStatus: boolean;
+	showDeleteHotkey?: boolean;
 	onCreateSection: () => void;
 	onMoveToSection: (sectionId: string | null) => void;
 	onOpenInFinder: () => void;
@@ -67,6 +70,7 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onUnsnooze: () => void;
 	onArchive: () => void;
 	onUnarchive: () => void;
+	onClearStatus: () => void;
 	children: React.ReactNode;
 }
 
@@ -136,6 +140,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	isPinned = false,
 	isUnread,
 	sectionState,
+	hasStatus,
 	onCreateSection,
 	onMoveToSection,
 	onOpenInFinder,
@@ -150,6 +155,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onUnsnooze,
 	onArchive,
 	onUnarchive,
+	onClearStatus,
 	children,
 }: DashboardSidebarWorkspaceContextMenuProps) {
 	const collections = useCollections();
@@ -219,6 +225,12 @@ export function DashboardSidebarWorkspaceContextMenu({
 								</>
 							)}
 						</ContextMenuItem>
+						{hasStatus && (
+							<ContextMenuItem onSelect={onClearStatus}>
+								<LuBellOff className="size-4 mr-2" />
+								Clear Status
+							</ContextMenuItem>
+						)}
 					</>
 				)}
 				{!isPinned && !isSectioned && (

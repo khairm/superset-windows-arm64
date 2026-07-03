@@ -71,6 +71,7 @@ export const agentLaunchSchema = z
 		prompt: z.string(),
 		attachmentIds: z.array(z.string().uuid()).optional(),
 		model: z.string().min(1).optional(),
+		effort: z.string().min(1).optional(),
 	})
 	.refine(
 		(value) =>
@@ -535,6 +536,7 @@ export async function dispatchSugarAgents(
 					prompt: entry.prompt,
 					attachmentIds: entry.attachmentIds,
 					model: entry.model,
+					effort: entry.effort,
 				});
 				return { ok: true as const, ...result };
 			} catch (err) {
