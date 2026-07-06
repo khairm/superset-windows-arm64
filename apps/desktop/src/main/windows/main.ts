@@ -23,6 +23,7 @@ import {
 } from "../lib/agent-jsonl-watcher";
 import { appState } from "../lib/app-state";
 import { browserManager } from "../lib/browser/browser-manager";
+import { attachEditContextMenu } from "../lib/edit-context-menu";
 import { createApplicationMenu } from "../lib/menu";
 import { playNotificationSound } from "../lib/notification-sound";
 import { NotificationManager } from "../lib/notifications/notification-manager";
@@ -135,6 +136,8 @@ export async function MainWindow() {
 	});
 
 	createApplicationMenu();
+
+	attachEditContextMenu(window.webContents);
 
 	currentWindow = window;
 

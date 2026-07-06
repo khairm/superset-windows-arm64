@@ -241,6 +241,9 @@ export function DashboardSidebarWorkspaceItem({
 			ref={rowRef}
 			onMouseEnter={handleMouseEnter}
 			onMouseLeave={handleMouseLeave}
+			// Hover/focus scope for the details strip below the row: it swaps its
+			// summary cluster for the full badges while the item is hovered.
+			className="group/item"
 		>
 			<DashboardSidebarExpandedWorkspaceRow
 				workspace={workspace}
@@ -281,6 +284,7 @@ export function DashboardSidebarWorkspaceItem({
 					<DashboardSidebarWorkspaceDetails
 						workspaceId={id}
 						isInSection={isInSection}
+						onClick={handleClick}
 					/>
 				)}
 			</DashboardSidebarExpandedWorkspaceRow>

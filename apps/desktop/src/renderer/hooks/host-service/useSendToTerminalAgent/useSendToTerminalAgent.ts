@@ -1,3 +1,4 @@
+import { sanitizePromptForPty } from "@superset/shared/agent-prompt-launch";
 import { toast } from "@superset/ui/sonner";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useCallback } from "react";
@@ -74,10 +75,12 @@ export function useSendToTerminalAgent(): UseSendToTerminalAgentResult {
 		async ({ workspaceId, terminalId, text }: SendToTerminalAgentInput) => {
 			notifyAutoResumeActivity.mutate({ terminalId });
 			try {
+				// Sanitize here, not in terminal.writeInput — that channel also
+				// carries real keystrokes, which legitimately contain ESC sequences.
 				await writeInput.mutateAsync({
 					workspaceId,
 					terminalId,
-					data: normalizeTerminalCommand(text),
+					data: normalizeTerminalCommand(sanitizePromptForPty(text)),
 				});
 			} catch (error) {
 				const message =

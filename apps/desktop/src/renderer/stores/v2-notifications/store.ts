@@ -102,6 +102,23 @@ export interface V2ShellRunningEntry {
 
 export interface V2NotificationState {
 	sources: Record<string, V2NotificationStatusEntry>;
+	// (HOST-BINDING BRIDGE) Upstream 1.13.1 derives terminal agent status from
+	// host agent bindings via `renderer/hooks/host-service/useV2NotificationStatus`
+	// (dock badge, per-pane focus-clear, running-agents list). Those consumers
+	// read these two facts off the store, so they live here ALONGSIDE the fork's
+	// axis machinery — the fork dots keep using `sources`; these serve the
+	// binding-derived surfaces. `manualUnread` mirrors the fork manual source so
+	// the two unread reads never disagree.
+	manualUnread: Record<string, true>;
+	// terminalId → last agent event the user has seen (HOST clock). Compared to
+	// the host binding's lastEventAt to derive `review`.
+	terminalSeenAt: Record<string, number>;
+	clearManualUnread: (workspaceId: string) => void;
+	// Marks a terminal seen (monotonic, host clock) AND clears the fork review
+	// axis for that terminal, so the binding-model per-pane focus-clear also
+	// clears the store's green dot.
+	markTerminalSeen: (terminalId: string, at: number) => void;
+	pruneTerminalSeen: (terminalId: string) => void;
 	// (AY) Separate shell-running axis (see V2ShellRunningEntry). Keyed by
 	// terminalId. Never merged into `sources`.
 	shellRunningTerminals: Record<string, V2ShellRunningEntry>;
@@ -184,6 +201,58 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 		persist(
 			(set) => ({
 				sources: {},
+				manualUnread: {},
+				terminalSeenAt: {},
+				clearManualUnread: (workspaceId) => {
+					// Clear the binding-model record AND the fork manual source.
+					useV2NotificationStore
+						.getState()
+						.clearSourceStatus(
+							getV2ManualNotificationSource(workspaceId),
+							workspaceId,
+						);
+					set((state) => {
+						if (!(workspaceId in state.manualUnread)) return state;
+						const { [workspaceId]: _removed, ...manualUnread } =
+							state.manualUnread;
+						return { manualUnread };
+					});
+				},
+				markTerminalSeen: (terminalId, at) => {
+					set((state) => {
+						const prev = state.terminalSeenAt[terminalId];
+						// Monotonic: a late event must not roll the seen mark back.
+						const bumpSeen = prev === undefined || prev < at;
+						// Bridge to the fork store: clearing "seen" also clears the
+						// terminal's review (green) axis, matching clearSourceAttention.
+						const sourceKey = getV2NotificationSourceKey(
+							getV2TerminalNotificationSource(terminalId),
+						);
+						const entry = state.sources[sourceKey];
+						let sources = state.sources;
+						if (entry && entry.status === "review") {
+							const { [sourceKey]: _removed, ...rest } = state.sources;
+							sources = rest;
+						}
+						if (!bumpSeen && sources === state.sources) return state;
+						const next: Partial<V2NotificationState> = {};
+						if (bumpSeen)
+							next.terminalSeenAt = {
+								...state.terminalSeenAt,
+								[terminalId]: at,
+							};
+						if (sources !== state.sources) next.sources = sources;
+						return next;
+					});
+				},
+				pruneTerminalSeen: (terminalId) => {
+					set((state) => {
+						if (!(terminalId in state.terminalSeenAt)) return state;
+						const { [terminalId]: _removed, ...terminalSeenAt } =
+							state.terminalSeenAt;
+						return { terminalSeenAt };
+					});
+				},
 				shellRunningTerminals: {},
 				setTerminalShellRunning: (
 					terminalId,
@@ -321,6 +390,9 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						);
 				},
 				setManualUnread: (workspaceId) => {
+					set((state) => ({
+						manualUnread: { ...state.manualUnread, [workspaceId]: true },
+					}));
 					useV2NotificationStore
 						.getState()
 						.setSourceStatus(
@@ -415,11 +487,17 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 							}
 							backgroundRunningTerminals[tid] = entry;
 						}
-						if (!changed && !bgChanged) return state;
+						const hadManual = workspaceId in state.manualUnread;
+						if (!changed && !bgChanged && !hadManual) return state;
 						const next: Partial<V2NotificationState> = {};
 						if (changed) next.sources = sources;
 						if (bgChanged)
 							next.backgroundRunningTerminals = backgroundRunningTerminals;
+						if (hadManual) {
+							const { [workspaceId]: _removed, ...manualUnread } =
+								state.manualUnread;
+							next.manualUnread = manualUnread;
+						}
 						return next;
 					});
 				},
@@ -461,7 +539,16 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 							}
 							sources[sourceKey] = source;
 						}
-						return changed ? { sources } : state;
+						const hadManual = workspaceId in state.manualUnread;
+						if (!changed && !hadManual) return state;
+						const next: Partial<V2NotificationState> = {};
+						if (changed) next.sources = sources;
+						if (hadManual) {
+							const { [workspaceId]: _removed, ...manualUnread } =
+								state.manualUnread;
+							next.manualUnread = manualUnread;
+						}
+						return next;
 					});
 				},
 			}),
@@ -472,6 +559,8 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					sources: state.sources,
 					shellRunningTerminals: state.shellRunningTerminals,
 					backgroundRunningTerminals: state.backgroundRunningTerminals,
+					manualUnread: state.manualUnread,
+					terminalSeenAt: state.terminalSeenAt,
 				}),
 			},
 		),
@@ -674,12 +763,16 @@ function getSourceDisplayStatus(
 	}
 	if (sourceKey.startsWith(TERMINAL_SOURCE_PREFIX)) {
 		const terminalId = sourceKey.slice(TERMINAL_SOURCE_PREFIX.length);
-		if (state.shellRunningTerminals[terminalId]?.workspaceId === workspaceId) {
+		// The blue axes are keyed by terminalId. Upstream 1.13.1's terminal
+		// lifecycle event no longer carries a workspaceId to key the shell-running
+		// entry by, so the terminal→workspace scoping is enforced by the callers'
+		// open-terminal gate instead: every call site passes a terminal that
+		// belongs to `workspaceId` (a pane's own terminal, or an open terminal of
+		// this workspace). A present entry is therefore this workspace's blue dot.
+		if (state.shellRunningTerminals[terminalId]) {
 			return "shell-running";
 		}
-		if (
-			state.backgroundRunningTerminals[terminalId]?.workspaceId === workspaceId
-		) {
+		if (state.backgroundRunningTerminals[terminalId]) {
 			return "background-running";
 		}
 	}
@@ -733,9 +826,10 @@ export function selectV2WorkspaceTerminalDisplayKey(
 			state.shellRunningTerminals,
 			state.backgroundRunningTerminals,
 		]) {
-			for (const [terminalId, entry] of Object.entries(map)) {
-				if (entry.workspaceId !== workspaceId) continue;
-				if (openTerminalIds && !openTerminalIds.has(terminalId)) continue;
+			// Scope by the open-terminal gate (workspaceId is no longer keyed on
+			// the shell-running entry — see getSourceDisplayStatus).
+			for (const terminalId of Object.keys(map)) {
+				if (!openTerminalIds.has(terminalId)) continue;
 				terminalIds.add(terminalId);
 			}
 		}

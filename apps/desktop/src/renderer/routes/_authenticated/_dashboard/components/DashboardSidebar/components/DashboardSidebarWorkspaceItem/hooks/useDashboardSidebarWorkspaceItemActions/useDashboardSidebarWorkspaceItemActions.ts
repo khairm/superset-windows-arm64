@@ -5,6 +5,10 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { useState } from "react";
+import {
+	useMarkWorkspaceTerminalsSeen,
+	useV2WorkspaceIsUnread,
+} from "renderer/hooks/host-service/useV2NotificationStatus";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
@@ -18,10 +22,7 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
-import {
-	useV2NotificationStore,
-	useV2WorkspaceIsUnread,
-} from "renderer/stores/v2-notifications";
+import { useV2NotificationStore } from "renderer/stores/v2-notifications";
 
 interface UseDashboardSidebarWorkspaceItemActionsOptions {
 	workspaceId: string;
@@ -45,14 +46,14 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const { copyToClipboard } = useCopyToClipboard();
 	const { v2Workspaces: workspaceActions } = useOptimisticCollectionActions();
 	const { requestSectionRename } = useDashboardSidebarSectionRename();
-	const clearWorkspaceAttention = useV2NotificationStore(
-		(s) => s.clearWorkspaceAttention,
-	);
-	const clearWorkspaceStatuses = useV2NotificationStore(
-		(s) => s.clearWorkspaceStatuses,
-	);
 	const setManualUnread = useV2NotificationStore((s) => s.setManualUnread);
+	const clearManualUnread = useV2NotificationStore((s) => s.clearManualUnread);
+	const markWorkspaceTerminalsSeen = useMarkWorkspaceTerminalsSeen(workspaceId);
 	const isUnread = useV2WorkspaceIsUnread(workspaceId);
+	const clearWorkspaceAttention = () => {
+		clearManualUnread(workspaceId);
+		markWorkspaceTerminalsSeen();
+	};
 	const {
 		archiveWorkspace,
 		createSection,
@@ -210,14 +211,16 @@ export function useDashboardSidebarWorkspaceItemActions({
 
 	const handleToggleUnread = () => {
 		if (isUnread) {
-			clearWorkspaceAttention(workspaceId);
+			clearWorkspaceAttention();
 		} else {
 			setManualUnread(workspaceId);
 		}
 	};
 
+	// Working/permission dots are live host state now and can't be wiped;
+	// "clear status" clears everything attention-shaped (manual + reviews).
 	const handleClearStatus = () => {
-		clearWorkspaceStatuses(workspaceId);
+		clearWorkspaceAttention();
 	};
 
 	const handleCopyBranchName = async () => {

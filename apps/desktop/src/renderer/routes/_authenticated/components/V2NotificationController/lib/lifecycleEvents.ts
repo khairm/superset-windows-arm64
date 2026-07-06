@@ -100,7 +100,12 @@ export function handleV2AgentLifecycleEvent({
 	});
 }
 
-export function handleV2AgentLifecycleStatusEvent({
+// Seen-marking / status half of `handleV2AgentLifecycleEvent`, for event paths
+// that must not chime (the Electron fallback for adopted shells). Named to match
+// the V2NotificationController import; keeps the fork axis-store update (upstream
+// renamed this to a bindings-only "mark seen", but the fork dots derive from the
+// store, so this still drives the store status).
+export function markV2AgentLifecycleTargetSeen({
 	workspaceId,
 	payload,
 	paneLayout,
@@ -122,14 +127,31 @@ export function handleV2AgentLifecycleStatusEvent({
 	});
 }
 
+// Upstream 1.13.1's terminal lifecycle event no longer carries a workspaceId
+// (HostNotificationSubscriber now calls `{ payload }`), so resolve the owning
+// workspace from any existing store entry for the terminal. The blue-axis
+// display is gated by the open-terminal set (see store.ts), so an empty
+// workspaceId here is harmless.
+function resolveTerminalWorkspaceId(terminalId: string): string {
+	const store = useV2NotificationStore.getState();
+	const sourceKey = getV2NotificationSourceKey(
+		getV2TerminalNotificationSource(terminalId),
+	);
+	return (
+		store.sources[sourceKey]?.workspaceId ??
+		store.shellRunningTerminals[terminalId]?.workspaceId ??
+		store.backgroundRunningTerminals[terminalId]?.workspaceId ??
+		""
+	);
+}
+
 export function handleV2TerminalLifecycleEvent({
-	workspaceId,
 	payload,
 }: {
-	workspaceId: string;
 	payload: TerminalLifecyclePayload;
 }): void {
 	const store = useV2NotificationStore.getState();
+	const workspaceId = resolveTerminalWorkspaceId(payload.terminalId);
 	// (AY) Command lifecycle drives the shell-running blue dot on a SEPARATE
 	// axis — no sound, no native notification, no agent-status mutation.
 	if (payload.eventType === "command-start") {
@@ -145,9 +167,11 @@ export function handleV2TerminalLifecycleEvent({
 		return;
 	}
 	// exit: clear the agent source AND any lingering shell-running / (BA)
-	// background-running entry (the cloud-blue axis has no OSC self-clear).
+	// background-running entry (the cloud-blue axis has no OSC self-clear), and
+	// prune the host-binding seen record for the now-dead terminal.
 	store.clearTerminalShellRunning(payload.terminalId);
 	store.clearTerminalBackgroundRunning(payload.terminalId);
+	store.pruneTerminalSeen(payload.terminalId);
 	clearSources(workspaceId, [
 		getV2TerminalNotificationSource(payload.terminalId),
 	]);

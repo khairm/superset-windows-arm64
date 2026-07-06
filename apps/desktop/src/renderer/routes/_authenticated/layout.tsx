@@ -33,6 +33,7 @@ import { setPaneWorkspaceRunState } from "renderer/stores/tabs/workspace-run";
 import { useWorkspaceInitStore } from "renderer/stores/workspace-init";
 import { MOCK_ORG_ID, NOTIFICATION_EVENTS } from "shared/constants";
 import { AgentHooks } from "./components/AgentHooks";
+import { DockBadgeController } from "./components/DockBadgeController";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { AutoResumeController } from "./components/AutoResumeController/AutoResumeController";
 import { GlobalBrowserLifecycle } from "./components/GlobalBrowserLifecycle";
@@ -221,6 +222,7 @@ function AuthenticatedLayout() {
 							<FileMenuListener />
 							<V2NotificationController />
 							<AutoResumeController />
+							<DockBadgeController />
 							<DaemonAutoUpdateFailureDialog />
 							<Outlet />
 							<V1ImportModal />
