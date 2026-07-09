@@ -1,12 +1,10 @@
-import { eq } from "@tanstack/db";
-import { useLiveQuery } from "@tanstack/react-db";
 import {
 	createFileRoute,
 	Outlet,
 	useMatchRoute,
 	useNavigate,
 } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useHotkey } from "renderer/hotkeys";
@@ -16,7 +14,7 @@ import { useNavigateAwayFromWorkspace } from "renderer/routes/_authenticated/_da
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSidebar";
 import { DeleteWorkspaceDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
@@ -50,7 +48,7 @@ function DashboardLayout() {
 	const navigate = useNavigate();
 	const openNewWorkspaceModal = useOpenNewWorkspaceModal();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
-	const collections = useCollections();
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
 	const { deleteWorkspace } = useDashboardSidebarState();
 	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
 	useDevSeedV2Sidebar();
@@ -79,17 +77,15 @@ function DashboardLayout() {
 		{ enabled: !!currentWorkspaceId },
 	);
 
-	const { data: currentV2Workspaces = [] } = useLiveQuery(
-		(q) =>
-			q
-				.from({ workspaces: collections.v2Workspaces })
-				.where(({ workspaces }) =>
-					eq(workspaces.id, currentV2WorkspaceId ?? ""),
-				),
-		[collections, currentV2WorkspaceId],
+	const currentV2Workspace = useMemo(
+		() =>
+			currentV2WorkspaceId != null
+				? (hostWorkspaces.find(
+						(workspace) => workspace.id === currentV2WorkspaceId,
+					) ?? null)
+				: null,
+		[hostWorkspaces, currentV2WorkspaceId],
 	);
-	const currentV2Workspace =
-		currentV2WorkspaceId != null ? (currentV2Workspaces[0] ?? null) : null;
 
 	const {
 		isOpen: isWorkspaceSidebarOpen,
