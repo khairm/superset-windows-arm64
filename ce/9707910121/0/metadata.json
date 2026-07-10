@@ -1,0 +1,118 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "ce9707910121",
+  "session_id": "3168bd80-be8a-43d5-b3f8-b50996616bdb",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T17:04:40.4155403Z",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "save_step_count": 6,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/layout.tsx"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "8d6fba085e54",
+  "checkpoint_transcript_start": 244,
+  "transcript_lines_at_start": 244,
+  "token_usage": {
+    "input_tokens": 8357,
+    "cache_creation_tokens": 713074,
+    "cache_read_tokens": 11324265,
+    "output_tokens": 40482,
+    "api_call_count": 52
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01HMCEeqeS8nrd8cC3ksKfzx",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "8d6fba085e54",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 247,
+        "end": 248,
+        "entry_ids": [
+          "d941d34a-a437-4dde-a370-b1ca3f1a6c81"
+        ],
+        "tool_use_id": "toolu_01HMCEeqeS8nrd8cC3ksKfzx"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01HMCEeqeS8nrd8cC3ksKfzx"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T17:04:40.3481468Z",
+    "agent_lines": 15,
+    "agent_removed": 9,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 15,
+    "total_lines_changed": 24,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2623,
+      "agent_lines_removed": 2617
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1706,
+      "agent_lines_removed": 1700
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1706,
+      "agent_lines_removed": 1700
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1706,
+      "agent_lines_removed": 1700
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1706,
+      "agent_lines_removed": 1700
+    }
+  ]
+}
