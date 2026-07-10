@@ -39,8 +39,15 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
 - **Whole feature set or fail loud.** Every `FEATURES.md` marker survives a merge or
   the build aborts. Never ship a partial fork.
 - **v2-only, forever.** The v2 cloud/host-service stack is pinned on; never v1.
-- **No build-time type/test gate.** The build runs electron-vite/esbuild only —
-  type/format errors don't fail it. Validate + e2e locally before relying on a release.
+- **No build-time type/test gate — with ONE narrow exception.** The build runs
+  electron-vite/esbuild; type/format errors don't fail it (the tree carries
+  accepted type debt). The exception is `(REFERR-GATE)`
+  (`scripts/check-dangerous-diagnostics.mjs`, run by the build workflow, and
+  therefore by every nightly): cannot-find-name tsc diagnostics
+  (TS2304/2552-class) DO fail the build — bare identifiers that throw
+  ReferenceError at runtime, the exact damage a cleanly-merging upstream hunk
+  leaves in fork code the AI resolver never sees (v1.14.0 layout.tsx
+  incident). Validate + e2e locally before relying on a release.
 - **AI only in the nightly merge.** The build is AI-free. The nightly conflict
   resolver needs `CLAUDE_CODE_OAUTH_TOKEN`; if rate-limited it aborts rather than ship
   a half-merged fork.
@@ -205,10 +212,12 @@ See `FEATURES.md` for the marker manifest. In brief:
 ## Fork limitations (accepted)
 
 - Unsigned → SmartScreen warns.
-- No build-time type/test gate — validate + e2e locally.
+- No full build-time type/test gate (only the narrow `(REFERR-GATE)`
+  cannot-find-name check) — validate + e2e locally.
 - An auto-merged nightly can publish a Release unattended, gated only by the
-  feature-marker check + the esbuild build — a semantically-wrong-but-compiling merge
-  could ship. e2e-test before relying on a release.
+  feature-marker check + `(REFERR-GATE)` + the esbuild build — a
+  semantically-wrong-but-compiling merge can still ship. e2e-test before
+  relying on a release.
 
 [superset-sh/superset]: https://github.com/superset-sh/superset
 

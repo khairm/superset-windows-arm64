@@ -108,6 +108,16 @@ jobs:
           # regenerate it (bun install --lockfile-only) and recommit.
           bun install --frozen-lockfile
 
+      # (REFERR-GATE) Fail on cannot-find-name diagnostics ONLY (TS2304/2552/
+      # 2662/2663/18004) — bare identifiers esbuild bundles fine but that throw
+      # ReferenceError at runtime. This is exactly the class a clean-merging
+      # upstream hunk can leave in fork code (v1.14.0 layout.tsx incident: every
+      # v2 workspace view crashed). NOT a full type gate: the tree's known type
+      # debt has zero of these codes and stays allowed.
+      - name: ReferenceError-class typecheck gate
+        shell: bash
+        run: node scripts/check-dangerous-diagnostics.mjs
+
       - name: Generate file icons
         working-directory: apps/desktop
         shell: bash
