@@ -88,7 +88,9 @@ function V2WorkspaceLayout() {
 	if (workspace && workspaceId) {
 		lastResolvedWorkspaceRef.current = workspace;
 	}
-	const isTransient = !workspaces || !isReady;
+	// Host-served list is always an array (loading is signalled via isReady),
+	// so "data absent" from the old live-query shape maps onto !isReady alone.
+	const isTransient = !isReady;
 	const heldWorkspace: typeof workspace =
 		workspace ??
 		(isTransient &&
@@ -104,7 +106,7 @@ function V2WorkspaceLayout() {
 	// cache-first hold engaged.
 	const renderBranch = !workspaceId
 		? "no-workspace-id"
-		: !heldWorkspace && (!workspaces || (!workspace && !isReady))
+		: !heldWorkspace && !workspace && !isReady
 			? "blank-data-not-ready"
 			: !heldWorkspace
 				? "not-found"
@@ -118,18 +120,22 @@ function V2WorkspaceLayout() {
 		blankDbg({
 			branch: renderBranch,
 			workspaceId,
-			hasWorkspacesData: !!workspaces,
-			workspacesLength: workspaces?.length ?? null,
+			hasWorkspacesData: hostWorkspaces.length > 0,
+			workspacesLength: hostWorkspaces.length,
 			hasWorkspace: !!workspace,
 			hasHeld: !!heldWorkspace,
 			isReady,
 		});
-	}, [renderBranch, workspaceId, workspaces, workspace, heldWorkspace, isReady]);
+	}, [
+		renderBranch,
+		workspaceId,
+		hostWorkspaces,
+		workspace,
+		heldWorkspace,
+		isReady,
+	]);
 
-	if (
-		!workspaceId ||
-		(!heldWorkspace && (!workspaces || (!workspace && !isReady)))
-	) {
+	if (!workspaceId || (!heldWorkspace && !workspace && !isReady)) {
 		return <div className="flex h-full w-full" />;
 	}
 
