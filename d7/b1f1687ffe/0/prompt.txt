@@ -1,0 +1,5 @@
+[Image #1] Nothing is happening, but this window has been stuck yellow, and it keeps happening to other windows occasionally. Look into the logs and code and investigate why. There's no activity happening currently, so it shouldn't be yellow.
+
+---
+
+what do you mean no 5.6 on account - its the default for codex just launch without model specific it will be 5.6
