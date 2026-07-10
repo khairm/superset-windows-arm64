@@ -28,6 +28,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
 | Multi-repo branch workspaces | "Open from multi-folder" groups N git repos; "+" fans the same branch out as a worktree per repo under one container workspace | `readMultiRepoConfig`, `createMultiRepoWorkspaceFlow` |
+| Multi-repo member management | Project Settings "Repositories" section adds/removes member repos of a multi-repo project. Add is lazy (included in NEW branch workspaces only — cleanup already tolerates a missing member worktree); remove force-removes that repo's worktrees from every existing branch container (confirm dialog; repo + branches kept) BEFORE the config rewrite so no orphan worktrees/registrations strand. Min 2 members enforced | `addMultiRepoMember`, `MultiRepoMembersSection` |
 | Workspace branch label | the open workspace page names its branch top-right in the tab bar (click copies) — the only branch surface a non-git multi-repo container has | `WorkspaceBranchLabel` |
 | Workspace-create failure toast | every workspace/worktree create failure raises a toast with the actual reason (e.g. a GitHub/network timeout) from the one `recordFailure` chokepoint — so a transient failure no longer reads as a silent "stuck creating → reload" | `(CREATE-FAIL-TOAST)` |
 | Thread snooze / archive | per-thread timed Snooze + sticky Archive in the sidebar | `getWorkspaceSidebarBucket`, `APP_LAUNCH_ID`, `DashboardSidebarStateSection` |
@@ -82,6 +83,8 @@ resolveNonGitFolder	packages/host-service
 readMultiRepoConfig	packages/host-service
 createMultiRepoWorkspaceFlow	packages/host-service
 MultiFolderProjectModal	apps/desktop/src/renderer
+addMultiRepoMember	packages/host-service
+MultiRepoMembersSection	apps/desktop/src/renderer
 WorkspaceBranchLabel	apps/desktop/src/renderer
 (CREATE-FAIL-TOAST)	apps/desktop/src/renderer
 getWorkspaceSidebarBucket	apps/desktop/src/renderer

@@ -115,7 +115,10 @@ See `FEATURES.md` for the marker manifest. In brief:
   workspace. A branch existing in EVERY member is adopted (resume); partial
   presence fails loud. Delete mirrors single-repo per member (worktree remove,
   optional branch -D) then removes the container; the kanban promote dialog
-  resolves multi-repo projects as branch-create targets.
+  resolves multi-repo projects as branch-create targets. Members are editable
+  after creation from Project Settings → Repositories: add is lazy (new branch
+  workspaces only), remove force-removes that repo's worktrees from existing
+  branch containers (confirm dialog; repo + branches kept); min 2 members.
 - **Workspace branch label** — the open workspace page names its branch top-right
   in the tab bar (click copies); the only branch surface a non-git multi-repo
   container has. Shown for every workspace with a branch.

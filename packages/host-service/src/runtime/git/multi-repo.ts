@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { TRPCError } from "@trpc/server";
@@ -59,8 +59,8 @@ const ANCHOR_ROOT_LOWER = resolve(MULTI_REPO_ANCHORS_DIR).toLowerCase();
 function isMultiRepoAnchorPath(repoPath: string): boolean {
 	const resolved = resolve(repoPath).toLowerCase();
 	return (
-		resolved.startsWith(ANCHOR_ROOT_LOWER + "\\") ||
-		resolved.startsWith(ANCHOR_ROOT_LOWER + "/")
+		resolved.startsWith(`${ANCHOR_ROOT_LOWER}\\`) ||
+		resolved.startsWith(`${ANCHOR_ROOT_LOWER}/`)
 	);
 }
 
@@ -116,4 +116,28 @@ export function readMultiRepoConfig(repoPath: string): MultiRepoConfig | null {
 		});
 	}
 	return result.data;
+}
+
+/**
+ * (MULTI-REPO MEMBERS) Persist an updated member list. Guarded to anchor
+ * paths only — writing a member-list config into an ordinary repo would flip
+ * it into multi-repo semantics on the next read (see readMultiRepoConfig).
+ * Schema-validated before the write so a code bug can never persist a config
+ * the next read would throw on (which bricks the project until hand-repair).
+ */
+export function writeMultiRepoConfig(
+	anchorPath: string,
+	config: MultiRepoConfig,
+): void {
+	if (!isMultiRepoAnchorPath(anchorPath)) {
+		throw new TRPCError({
+			code: "INTERNAL_SERVER_ERROR",
+			message: `Refusing to write a multi-repo config outside the anchors dir: ${anchorPath}`,
+		});
+	}
+	const validated = multiRepoConfigSchema.parse(config);
+	writeFileSync(
+		multiRepoConfigPath(anchorPath),
+		JSON.stringify(validated, null, 2),
+	);
 }

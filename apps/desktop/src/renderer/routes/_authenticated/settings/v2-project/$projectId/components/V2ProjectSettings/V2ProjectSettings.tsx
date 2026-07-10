@@ -16,6 +16,7 @@ import { SettingsRow } from "../../../../components/SettingsRow";
 import { BranchPrefixSection } from "./components/BranchPrefixSection";
 import { DeleteProjectSection } from "./components/DeleteProjectSection";
 import { IconUploadField } from "./components/IconUploadField";
+import { MultiRepoMembersSection } from "./components/MultiRepoMembersSection";
 import { NameSection } from "./components/NameSection";
 import { ProjectLocationSection } from "./components/ProjectLocationSection";
 import { RepositorySection } from "./components/RepositorySection";
@@ -206,6 +207,14 @@ export function V2ProjectSettings({
 						</div>
 					)}
 				</section>
+
+				{/* (MULTI-REPO MEMBERS) Renders only for multi-repo projects. */}
+				{targetHostUrl && (
+					<MultiRepoMembersSection
+						projectId={projectId}
+						hostUrl={targetHostUrl}
+					/>
+				)}
 
 				<section>
 					<DeleteProjectSection

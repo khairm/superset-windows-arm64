@@ -23,6 +23,10 @@ import {
 	createFromNonGitFolder,
 	createFromTemplate,
 } from "./handlers";
+import {
+	addMultiRepoMember,
+	removeMultiRepoMember,
+} from "./multi-repo-members";
 import { ensureMainWorkspace } from "./utils/ensure-main-workspace";
 import { getGitHubRemotes } from "./utils/git-remote";
 import { persistLocalProject } from "./utils/persist-project";
@@ -31,9 +35,8 @@ import {
 	type ResolvedRepo,
 	resolveLocalRepo,
 	resolveMatchingSlug,
-	tryRevParseGitRoot,
-	validateDirectoryPath,
 	resolveNonGitFolder,
+	tryRevParseGitRoot,
 } from "./utils/resolve-repo";
 
 export const projectRouter = router({
@@ -528,6 +531,24 @@ export const projectRouter = router({
 				memberRepoPaths: config.memberRepoPaths,
 			};
 		}),
+
+	/**
+	 * (MULTI-REPO MEMBERS) Membership edits from Project Settings. Add is
+	 * lazy (new branch workspaces only); remove force-sweeps the member's
+	 * worktrees out of existing branch containers. Bodies live in the
+	 * fork-owned multi-repo-members module.
+	 */
+	addMultiRepoMember: protectedProcedure
+		.input(
+			z.object({ projectId: z.string().uuid(), repoPath: z.string().min(1) }),
+		)
+		.mutation(({ ctx, input }) => addMultiRepoMember(ctx, input)),
+
+	removeMultiRepoMember: protectedProcedure
+		.input(
+			z.object({ projectId: z.string().uuid(), repoPath: z.string().min(1) }),
+		)
+		.mutation(({ ctx, input }) => removeMultiRepoMember(ctx, input)),
 
 	setup: protectedProcedure
 		.input(
