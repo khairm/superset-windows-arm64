@@ -1,0 +1,95 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "cc05504dbb21",
+  "session_id": "1f36a7e3-c788-4bf1-b2f5-1f4ca422647c",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T15:43:36.3059129Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "AGENTS.md",
+    "FEATURES.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "3cb6c740a69e",
+  "token_usage": {
+    "input_tokens": 38425,
+    "cache_creation_tokens": 794696,
+    "cache_read_tokens": 18559949,
+    "output_tokens": 98537,
+    "api_call_count": 94
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01PBWtg9BoEi6GoT7aAZdP6P",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "3cb6c740a69e",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 421,
+        "end": 422,
+        "entry_ids": [
+          "b2045e8d-0035-474d-a3de-16df3a77bef7"
+        ],
+        "tool_use_id": "toolu_01PBWtg9BoEi6GoT7aAZdP6P"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01PBWtg9BoEi6GoT7aAZdP6P"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T15:43:36.1170673Z",
+    "agent_lines": 0,
+    "agent_removed": 1,
+    "human_added": 491,
+    "human_modified": 512,
+    "human_removed": 0,
+    "total_committed": 1003,
+    "total_lines_changed": 1009,
+    "agent_percentage": 0.09910802775024777,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 30,
+      "user_lines_removed": 24,
+      "agent_lines_added": 2593,
+      "agent_lines_removed": 2593,
+      "user_added_per_file": {
+        ".codex/config.toml": 30
+      },
+      "user_removed_per_file": {
+        ".codex/config.toml": 24
+      }
+    }
+  ]
+}
