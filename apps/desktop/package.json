@@ -105,7 +105,7 @@
 		"@tanstack/node-db-sqlite-persistence": "0.2.2",
 		"@tanstack/query-async-storage-persister": "5.101.1",
 		"@tanstack/react-db": "0.1.88",
-		"@tanstack/react-query": "5.101.1",
+		"@tanstack/react-query": "5.101.2",
 		"@tanstack/react-query-persist-client": "5.101.1",
 		"@tanstack/react-router": "1.170.16",
 		"@tanstack/react-table": "8.21.3",
