@@ -42,7 +42,27 @@ export default ({ config }: ConfigContext) => ({
 		favicon: "./assets/favicon.png",
 		bundler: "metro",
 	},
-	plugins: ["expo-router", "expo-localization"],
+	plugins: [
+		"expo-router",
+		"expo-localization",
+		[
+			"expo-image-picker",
+			{
+				photosPermission:
+					"Superset needs access to your photo library so you can attach images to chat messages.",
+				cameraPermission: false,
+				microphonePermission: false,
+			},
+		],
+		"expo-document-picker",
+		[
+			"expo-media-library",
+			{
+				photosPermission:
+					"Superset shows your recent photos so you can attach them to chats.",
+			},
+		],
+	],
 	extra: {
 		router: {},
 		eas: {

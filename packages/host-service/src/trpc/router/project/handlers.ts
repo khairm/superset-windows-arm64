@@ -52,7 +52,7 @@ function dirNameForEmpty(name: string): string {
 	return slug;
 }
 
-interface CreateResult {
+export interface CreateResult {
 	projectId: string;
 	repoPath: string;
 	/** null for multi-repo projects — they have NO main workspace by design;
