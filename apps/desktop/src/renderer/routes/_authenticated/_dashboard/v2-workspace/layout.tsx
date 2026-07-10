@@ -50,7 +50,7 @@ function V2WorkspaceLayout() {
 	// mid-create before agent/terminal panes are seeded.
 	const isCreatePending = pendingTransaction?.type === "insert";
 
-	const { workspaces: hostWorkspaces, isReady } = useHostWorkspaces();
+	const { workspaces: hostWorkspaces, isReady, cache } = useHostWorkspaces();
 	const workspace = useMemo(
 		() =>
 			workspaceId != null
@@ -89,15 +89,23 @@ function V2WorkspaceLayout() {
 		lastResolvedWorkspaceRef.current = workspace;
 	}
 	// Host-served list is always an array (loading is signalled via isReady),
-	// so "data absent" from the old live-query shape maps onto !isReady alone.
-	const isTransient = !isReady;
-	const heldWorkspace: typeof workspace =
-		workspace ??
-		(isTransient &&
-		workspaceId &&
-		lastResolvedWorkspaceRef.current?.id === workspaceId
+	// so "data absent" from the old live-query shape maps onto !isReady — PLUS
+	// one gap isReady cannot see: v2Hosts transiently dropping a host's row
+	// (Electric resync) removes that host's query target entirely, leaving
+	// isReady's every() vacuously true while the host's rows are missing from
+	// the merged list. resolveHostUrl(hostId) === null is precisely "no
+	// reachable target for this host right now", so hold through that too
+	// instead of flashing not-found on an open workspace.
+	const heldCandidate =
+		workspaceId && lastResolvedWorkspaceRef.current?.id === workspaceId
 			? lastResolvedWorkspaceRef.current
-			: null);
+			: null;
+	const isTransient =
+		!isReady ||
+		(heldCandidate !== null &&
+			cache.resolveHostUrl(heldCandidate.hostId) === null);
+	const heldWorkspace: typeof workspace =
+		workspace ?? (isTransient ? heldCandidate : null);
 
 	const hostStatus = useRemoteHostStatus(heldWorkspace);
 
