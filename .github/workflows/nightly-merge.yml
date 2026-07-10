@@ -4,10 +4,15 @@ name: Nightly upstream merge
 # newer desktop-v* tag than .fork/upstream-baseline.txt, merge that tag into the
 # fork. git's 3-way merge handles the non-conflicting majority deterministically;
 # Opus (--effort high) resolves ONLY the conflicted files, preserving every
-# feature. Then the FEATURES.md marker gate runs, then the deterministic ARM64
-# build. On a clean merge + green build the build publishes a full Release and we
+# feature. Then the FEATURES.md marker gate runs, then the dependency gates, then
+# (MERGE-SEMANTIC-GATE) an Opus review of the WHOLE merged delta — clean or
+# conflicted — against the fork feature manifest (a cleanly-merging upstream hunk
+# can semantically break a fork feature with zero conflicts; v1.14.2 dropped the
+# sidebar snooze/bin fields that way). Only then the deterministic ARM64 build.
+# On a clean merge + green build the build publishes a full Release and we
 # fast-forward the baseline. Any failure (unresolvable conflict, lost marker,
-# build failure) hard-aborts and leaves the baseline untouched -> recovery loop.
+# semantic breakage verdict, build failure) hard-aborts and leaves the baseline
+# untouched -> recovery loop.
 #
 # AI cost scales with the UPSTREAM delta per release, NOT with how large the fork
 # grows. The build itself stays 100% AI-free.
@@ -190,10 +195,56 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # --- (MERGE-SEMANTIC-GATE) AI review of the WHOLE merged delta -------
+          # The marker gate only proves feature TOKENS still exist, and the
+          # build's (REFERR-GATE) only catches cannot-find-name diagnostics. A
+          # cleanly-merging upstream hunk can still SEMANTICALLY break a fork
+          # feature with zero conflicts — v1.14.2 rebuilt the sidebar row
+          # projection in a non-conflicting hunk and silently dropped the fork's
+          # snooze/archive/completed/deleted fields: merged clean, compiled
+          # clean, broke Snooze + Recycle Bin + archived masters. EVERY merge —
+          # clean or conflicted — is therefore reviewed by Opus against
+          # FEATURES.md before it may commit/build/publish. Fail CLOSED: no
+          # parsable verdict (rate limit, malformed output) aborts rather than
+          # ships an unreviewed merge; a BREAKAGE verdict hard-aborts with the
+          # findings in the log (baseline untouched -> recovery loop).
+          echo "::group::semantic feature review (Opus)"
+          npm install -g @anthropic-ai/claude-code
+          REVIEW_FILE="$RUNNER_TEMP/merge-review.txt"
+          rm -f "$REVIEW_FILE"
+          # The reviewer must not modify the tree; snapshot the work-tree state
+          # and refuse to continue if the review run changed ANYTHING.
+          STATUS_BEFORE=$(git status --porcelain=v1 | sha256sum)
+          REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. Rules: do NOT edit ANY repository file; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
+          attempt=1
+          while [ $attempt -le 2 ]; do
+            echo "::group::claude review attempt $attempt"
+            claude --dangerously-skip-permissions --model opus --effort high -p "$REVIEW_PROMPT" || true
+            echo "::endgroup::"
+            if [ -s "$REVIEW_FILE" ] && head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then break; fi
+            attempt=$((attempt+1))
+          done
+          STATUS_AFTER=$(git status --porcelain=v1 | sha256sum)
+          if [ "$STATUS_BEFORE" != "$STATUS_AFTER" ]; then
+            echo "::error::(MERGE-SEMANTIC-GATE) the review run modified the work tree — refusing to trust or commit it. Baseline untouched."
+            exit 1
+          fi
+          if ! [ -s "$REVIEW_FILE" ] || ! head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then
+            echo "::error::(MERGE-SEMANTIC-GATE) no parsable review verdict for $NEWTAG — refusing to ship an UNREVIEWED merge (fail closed). Baseline untouched."
+            exit 1
+          fi
+          echo "--- review verdict ---"
+          cat "$REVIEW_FILE"
+          if head -1 "$REVIEW_FILE" | grep -q 'BREAKAGE'; then
+            echo "::error::(MERGE-SEMANTIC-GATE) Opus found fork-feature breakage in the $NEWTAG merge — rejecting. Findings above. Recovery: fix locally and re-baseline."
+            exit 1
+          fi
+          echo "::endgroup::"
+
           # --- record new baseline + commit the merge -------------------------
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
-          git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present."
+          git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present; merged delta passed the (MERGE-SEMANTIC-GATE) Opus feature review."
           # (CANDIDATE-IDEMPOTENT-PUSH) The candidate is a disposable CI branch:
           # re-derived from main each run, consumed by `build`, deleted by
           # `advance` ON SUCCESS only. A FAILED build never reaches `advance`, so

@@ -25,11 +25,16 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
   high`) resolves **only the conflicted files**, preserving every feature. AI cost
   scales with the **upstream delta per release**, NOT with how large the fork grows.
 - **Gates.** After the merge: every marker in `FEATURES.md` must still be present
-  (else a feature was dropped → reject), then the deterministic build must go green.
+  (else a feature was dropped → reject), the dependency gates run, then
+  `(MERGE-SEMANTIC-GATE)`: Opus reviews the WHOLE merged delta — clean or
+  conflicted — against `FEATURES.md` for semantic feature breakage (fail closed:
+  no verdict / a BREAKAGE verdict / a review that edited the tree all abort),
+  then the deterministic build must go green.
   On a clean merge + green build the nightly **auto-publishes the single
   `desktop-v<version>` Release** (rebuilt in place — see One-version below) and
-  advances the baseline. Any failure (unresolvable conflict, lost marker, build
-  failure) **hard-aborts** and leaves the baseline untouched → recovery.
+  advances the baseline. Any failure (unresolvable conflict, lost marker,
+  breakage verdict, build failure) **hard-aborts** and leaves the baseline
+  untouched → recovery.
 - **Recovery.** When a nightly merge can't be done cleanly, fix it locally with the
   maintainer, rebuild, re-freeze the baseline; the nightly then resumes merging only
   *new* upstream changes from that point.
@@ -48,9 +53,10 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
   ReferenceError at runtime, the exact damage a cleanly-merging upstream hunk
   leaves in fork code the AI resolver never sees (v1.14.0 layout.tsx
   incident). Validate + e2e locally before relying on a release.
-- **AI only in the nightly merge.** The build is AI-free. The nightly conflict
-  resolver needs `CLAUDE_CODE_OAUTH_TOKEN`; if rate-limited it aborts rather than ship
-  a half-merged fork.
+- **AI only in the nightly merge.** The build is AI-free. The nightly needs
+  `CLAUDE_CODE_OAUTH_TOKEN` for the conflict resolver AND the mandatory
+  `(MERGE-SEMANTIC-GATE)` review of every merge; if rate-limited it aborts rather
+  than ship a half-merged or unreviewed fork.
 - **One version, ever.** Exactly one GitHub Release per upstream version, tagged
   `desktop-v<version>`, **rebuilt in place** (delete + recreate so the tag always
   points at the latest build). NO `-beta`, NO prerelease, NO separate release/beta
@@ -214,10 +220,11 @@ See `FEATURES.md` for the marker manifest. In brief:
 - Unsigned → SmartScreen warns.
 - No full build-time type/test gate (only the narrow `(REFERR-GATE)`
   cannot-find-name check) — validate + e2e locally.
-- An auto-merged nightly can publish a Release unattended, gated only by the
-  feature-marker check + `(REFERR-GATE)` + the esbuild build — a
-  semantically-wrong-but-compiling merge can still ship. e2e-test before
-  relying on a release.
+- An auto-merged nightly can publish a Release unattended, gated by the
+  feature-marker check + `(MERGE-SEMANTIC-GATE)` (Opus reviews every merged
+  delta for fork-feature breakage) + `(REFERR-GATE)` + the esbuild build — the
+  AI review shrinks but does not eliminate the semantically-wrong-but-compiling
+  window. e2e-test before relying on a release.
 
 [superset-sh/superset]: https://github.com/superset-sh/superset
 

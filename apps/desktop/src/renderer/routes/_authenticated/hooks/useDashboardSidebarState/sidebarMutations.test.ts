@@ -149,7 +149,7 @@ describe("removeProjectFromSidebarState", () => {
 		expect(cleaned).toEqual(["ws-placed"]);
 	});
 
-	it("leaves the project's main workspace alone so re-adding the project restores it", () => {
+	it("tombstones the project's mains too so a passive route mount can't resurrect the removed project (REMOVE-STICKY)", () => {
 		const collections = makeCollections();
 		collections.v2WorkspaceLocalState.insert(
 			localStateRow("ws-main", "proj-1"),
@@ -173,13 +173,16 @@ describe("removeProjectFromSidebarState", () => {
 			noopCleanup,
 		);
 
-		// Main row untouched (not hidden); no tombstone created for a row-less main.
+		// Existing main row hidden; a row-less local main gets an inserted
+		// tombstone. An explicit re-open (Workspaces page / project setup) pulls
+		// a hidden main back to active via ensureSidebarWorkspaceRecord.
 		expect(
 			collections.v2WorkspaceLocalState.get("ws-main")?.sidebarState.isHidden,
-		).toBe(false);
+		).toBe(true);
 		expect(
-			collections.v2WorkspaceLocalState.get("ws-main-rowless"),
-		).toBeUndefined();
+			collections.v2WorkspaceLocalState.get("ws-main-rowless")?.sidebarState
+				.isHidden,
+		).toBe(true);
 		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
 	});
 

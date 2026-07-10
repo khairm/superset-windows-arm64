@@ -67,19 +67,23 @@ export function tombstoneSidebarWorkspaceRecord(
  * what hides it: membership is explicit and display gates on it
  * (`buildDashboardSidebarProjects` drops any workspace whose project is absent).
  *
- * Worktrees are tombstoned so "removed" stays removed. A worktree with no
- * local-state row would be re-placed by `usePlaceLocalWorktreesInSidebar`
- * (recreating the project), and a kept-but-visible row would flood back the
- * moment anything recreates the project row — e.g. a later automation-created
- * worktree. Hiding each one (existing rows, plus this device's row-less
- * worktrees the reconciler could re-pin) means a resurrected project shows only
- * the genuinely-new worktree, not these dismissed ones.
+ * EVERY workspace of the project is tombstoned so "removed" stays removed
+ * (REMOVE-STICKY). A worktree with no local-state row would be re-placed by
+ * `usePlaceLocalWorktreesInSidebar` (recreating the project), and a
+ * kept-but-visible row would flood back the moment anything recreates the
+ * project row — e.g. a later automation-created worktree. Hiding each one
+ * (existing rows, plus this device's row-less workspaces) means a resurrected
+ * project shows only the genuinely-new worktree, not these dismissed ones.
  *
- * `main` workspaces are intentionally left alone: they surface via the gated
- * auto-include path (never re-pinned, never create a project record), so
- * deleting the project row already hides them and re-adding the project brings
- * the main back. Removing a project discards `defaultOpenInApp` (stored on the
- * project row and nowhere else); it resets to default on re-add.
+ * `main` workspaces used to be left alone (visible row kept, hidden only by
+ * project-row absence) — but any passive `ensureWorkspaceInSidebar` (a route
+ * mount from session restore, the kanban split, a background navigation)
+ * re-inserted the project row and the whole project came back. Mains are now
+ * tombstoned too (`isHidden`, no archivedAt — the legacy "hidden" bucket, not
+ * Archived), passive mounts skip hidden rows, and an EXPLICIT open (Workspaces
+ * page, project setup/import) still pulls a hidden main back to active.
+ * Removing a project discards `defaultOpenInApp` (stored on the project row
+ * and nowhere else); it resets to default on re-add.
  */
 export function removeProjectFromSidebarState(
 	collections: Pick<
@@ -91,32 +95,19 @@ export function removeProjectFromSidebarState(
 	machineId: string,
 	cleanupPaneRuntimes: CleanupPaneRuntimes,
 ): void {
-	const mainWorkspaceIds = new Set(
-		workspaces
-			.filter((ws) => ws.projectId === projectId && ws.type === "main")
-			.map((ws) => ws.id),
-	);
-
-	const worktreeIds = new Set<string>();
+	const tombstoneIds = new Set<string>();
 	for (const row of collections.v2WorkspaceLocalState.state.values()) {
-		if (
-			row.sidebarState.projectId === projectId &&
-			!mainWorkspaceIds.has(row.workspaceId)
-		) {
-			worktreeIds.add(row.workspaceId);
+		if (row.sidebarState.projectId === projectId) {
+			tombstoneIds.add(row.workspaceId);
 		}
 	}
 	for (const ws of workspaces) {
-		if (
-			ws.projectId === projectId &&
-			ws.type === "worktree" &&
-			ws.hostId === machineId
-		) {
-			worktreeIds.add(ws.id);
+		if (ws.projectId === projectId && ws.hostId === machineId) {
+			tombstoneIds.add(ws.id);
 		}
 	}
 
-	for (const workspaceId of worktreeIds) {
+	for (const workspaceId of tombstoneIds) {
 		tombstoneSidebarWorkspaceRecord(
 			collections,
 			workspaceId,

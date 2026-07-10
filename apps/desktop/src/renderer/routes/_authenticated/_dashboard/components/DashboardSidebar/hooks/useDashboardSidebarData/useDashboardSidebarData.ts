@@ -281,6 +281,19 @@ export function useDashboardSidebarData() {
 						tabOrder: localState.tabOrder,
 						sectionId: localState.sectionId,
 						isHidden: localState.isHidden,
+						// (SIDEBAR-STATE-PROJECTION) Carry the fork's FULL sidebar-state
+						// fields through this projection. The bucket classifier and the
+						// Snoozed / Archived / Recycle Bin sections read them off this
+						// row — the v1.14.2 upstream merge rebuilt this mapping (host-
+						// owned workspaces) and silently dropped them, which broke
+						// snooze (rows never left the active lane), emptied the Recycle
+						// Bin, vanished archived masters, and resurfaced completed
+						// threads under Archived.
+						snoozeUntil: localState.snoozeUntil,
+						snoozeLaunchId: localState.snoozeLaunchId,
+						archivedAt: localState.archivedAt,
+						completedAt: localState.completedAt,
+						deletedAt: localState.deletedAt,
 					},
 				];
 			}),

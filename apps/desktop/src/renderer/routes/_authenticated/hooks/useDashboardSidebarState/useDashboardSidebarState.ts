@@ -231,6 +231,25 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
+	// (REMOVE-STICKY) Placement for PASSIVE workspace route mounts (session
+	// restore, the kanban collapse-split, background navigation). Unlike
+	// ensureWorkspaceInSidebar it must never undo an explicit "Remove project
+	// from sidebar": it does NOT re-insert the project's sidebar row (the full
+	// ensure did — a restored route silently resurrected a removed project on
+	// the next launch), and it never touches an existing local-state row (so a
+	// hidden/removed row stays put — only an EXPLICIT open pulls a hidden main
+	// back). A genuinely new (row-less) workspace still gets its local-state
+	// row, because pane-layout persistence updates that row in place and needs
+	// it to exist; the row alone renders nothing while the project row is
+	// absent.
+	const placeWorkspaceFromPassiveMount = useCallback(
+		(workspaceId: string, projectId: string) => {
+			if (collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			ensureSidebarWorkspaceRecord(collections, workspaceId, projectId);
+		},
+		[collections],
+	);
+
 	const toggleProjectCollapsed = useCallback(
 		(projectId: string) => {
 			const existing = collections.v2SidebarProjects.get(projectId);
@@ -565,8 +584,39 @@ export function useDashboardSidebarState() {
 	);
 
 	const snoozeWorkspace = useCallback(
-		(workspaceId: string, until: number | "next-launch") => {
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+		(
+			workspaceId: string,
+			until: number | "next-launch",
+			projectId?: string,
+		) => {
+			// (SNOOZE-MAIN) An auto-included local MAIN workspace has no local-state
+			// row, so the update below used to silently no-op — Snooze on a master
+			// row did nothing. Mirror archiveWorkspace: insert a pre-snoozed row.
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
+				const resolvedProjectId =
+					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+				if (!resolvedProjectId) {
+					console.error(
+						`[snoozeWorkspace] cannot snooze ${workspaceId}: no local-state row and projectId unresolvable`,
+					);
+					return;
+				}
+				collections.v2WorkspaceLocalState.insert({
+					workspaceId,
+					createdAt: new Date(),
+					sidebarState: {
+						projectId: resolvedProjectId,
+						tabOrder: 0,
+						sectionId: null,
+						isHidden: false,
+						...(until === "next-launch"
+							? { snoozeLaunchId: APP_LAUNCH_ID }
+							: { snoozeUntil: until }),
+					},
+					paneLayout: createEmptyPaneLayout(),
+				});
+				return;
+			}
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				if (until === "next-launch") {
 					draft.sidebarState.snoozeUntil = null;
@@ -642,8 +692,22 @@ export function useDashboardSidebarState() {
 	const deleteWorkspace = useCallback(
 		(workspaceId: string, projectId?: string) => {
 			// A repo's main workspace can never be soft-deleted — mains stay
-			// archive-only (MASTER-ARCHIVE-ONLY). Mirror completeWorkspace's guard.
-			if (collections.v2Workspaces.get(workspaceId)?.type === "main") {
+			// archive-only (MASTER-ARCHIVE-ONLY). Resolve the type from the
+			// host-owned workspace record FIRST (source of truth since v1.14's
+			// host-owned table); the cloud v2Workspaces cache is a fallback. An
+			// unresolvable type FAILS LOUD instead of proceeding — the old
+			// cache-only check failed OPEN on a cold cache and could soft-delete
+			// a master.
+			const workspaceType =
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+					?.type ?? collections.v2Workspaces.get(workspaceId)?.type;
+			if (workspaceType == null) {
+				console.error(
+					`[deleteWorkspace] refusing to delete ${workspaceId}: workspace type unresolvable (host + cloud cache miss) — mains are archive-only, so an unknown type must not be deleted`,
+				);
+				return;
+			}
+			if (workspaceType === "main") {
 				console.warn(
 					`[deleteWorkspace] refusing to delete main workspace ${workspaceId} — mains are archive-only`,
 				);
@@ -692,7 +756,7 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.completedAt = null;
 			});
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	// Restore a soft-deleted thread straight back to ACTIVE: clear deletedAt and
@@ -723,8 +787,19 @@ export function useDashboardSidebarState() {
 	const completeWorkspace = useCallback(
 		(workspaceId: string, completedAt: number) => {
 			// A repo's main workspace can never be completed (the board rejects the
-			// drop; this guard keeps any other caller honest).
-			if (collections.v2Workspaces.get(workspaceId)?.type === "main") return;
+			// drop; this guard keeps any other caller honest). Same fail-loud type
+			// resolution as deleteWorkspace (MASTER-ARCHIVE-ONLY): host record
+			// first, cloud cache fallback, unknown type refuses.
+			const workspaceType =
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+					?.type ?? collections.v2Workspaces.get(workspaceId)?.type;
+			if (workspaceType == null) {
+				console.error(
+					`[completeWorkspace] refusing to complete ${workspaceId}: workspace type unresolvable (host + cloud cache miss)`,
+				);
+				return;
+			}
+			if (workspaceType === "main") return;
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				draft.sidebarState.completedAt = completedAt;
@@ -738,7 +813,7 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.snoozeLaunchId = null;
 			});
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	const uncompleteWorkspace = useCallback(
@@ -781,6 +856,7 @@ export function useDashboardSidebarState() {
 		restoreWorkspace,
 		ensureProjectInSidebar,
 		ensureWorkspaceInSidebar,
+		placeWorkspaceFromPassiveMount,
 		hideWorkspaceInSidebar,
 		moveWorkspaceToSection,
 		moveWorkspaceToSectionAtIndex,

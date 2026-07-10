@@ -172,6 +172,11 @@ export function useDashboardSidebarProjectSectionActions({
 					onClick: async () => {
 						let failed = 0;
 						for (const workspace of items) {
+							// (MASTER-ARCHIVE-ONLY) A main can never legitimately be in the
+							// bin (deleteWorkspace refuses them), but if one ever leaks in,
+							// skip it rather than ask the host to destroy it — the host
+							// hard-rejects mains anyway and it would just count as failed.
+							if (workspace.type === "main") continue;
 							const hostUrl = resolveWorkspaceHostUrl(workspace.id);
 							if (!hostUrl) {
 								failed += 1;

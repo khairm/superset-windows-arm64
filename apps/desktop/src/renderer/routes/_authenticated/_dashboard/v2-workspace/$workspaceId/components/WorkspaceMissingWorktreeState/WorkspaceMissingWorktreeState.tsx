@@ -1,8 +1,15 @@
 import { Button } from "@superset/ui/button";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, FolderX, RefreshCw, Trash2 } from "lucide-react";
+import {
+	Archive,
+	ArrowRight,
+	FolderX,
+	RefreshCw,
+	Trash2,
+} from "lucide-react";
 import { useNavigateAwayFromWorkspace } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useNavigateAwayFromWorkspace";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 
 interface WorkspaceMissingWorktreeStateProps {
 	workspaceId: string;
@@ -17,17 +24,31 @@ export function WorkspaceMissingWorktreeState({
 	onRefresh,
 	isRefreshing = false,
 }: WorkspaceMissingWorktreeStateProps) {
-	const { deleteWorkspace } = useDashboardSidebarState();
+	const { deleteWorkspace, archiveWorkspace } = useDashboardSidebarState();
 	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
+	const hostWorkspace = hostWorkspaces.find(
+		(candidate) => candidate.id === workspaceId,
+	);
+	// (MASTER-ARCHIVE-ONLY) Mains are never deletable — this page used to show
+	// the Delete button for a main whose folder vanished, and the click silently
+	// no-op'd against deleteWorkspace's guard. Offer Archive instead. Unknown
+	// type fails safe to archive-only (archive is always recoverable).
+	const isArchiveOnly = hostWorkspace?.type !== "worktree";
 
 	// (RECYCLE-BIN) Nothing gets destroyed here: move the thread to its project's
 	// Recycle Bin (soft-delete) and navigate off the dead-worktree route. The real
 	// git cleanup is reachable ONLY from in-bin "Delete permanently" / "Empty
 	// Recycle Bin". (projectId resolves from the workspace record inside
-	// deleteWorkspace; mains are no-op'd there too.)
+	// deleteWorkspace; mains are refused there too.)
 	const handleDelete = () => {
 		navigateAwayFromWorkspace(workspaceId);
 		deleteWorkspace(workspaceId);
+	};
+
+	const handleArchive = () => {
+		navigateAwayFromWorkspace(workspaceId);
+		archiveWorkspace(workspaceId, hostWorkspace?.projectId);
 	};
 
 	return (
@@ -68,15 +89,31 @@ export function WorkspaceMissingWorktreeState({
 				) : null}
 
 				<div className="flex flex-wrap items-center gap-2">
-					<Button
-						size="sm"
-						variant="destructive"
-						className="h-7 gap-1.5 px-2.5 text-[13px]"
-						onClick={handleDelete}
-					>
-						<Trash2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
-						Delete workspace
-					</Button>
+					{isArchiveOnly ? (
+						<Button
+							size="sm"
+							variant="outline"
+							className="h-7 gap-1.5 px-2.5 text-[13px]"
+							onClick={handleArchive}
+						>
+							<Archive
+								className="size-3.5"
+								strokeWidth={2}
+								aria-hidden="true"
+							/>
+							Archive workspace
+						</Button>
+					) : (
+						<Button
+							size="sm"
+							variant="destructive"
+							className="h-7 gap-1.5 px-2.5 text-[13px]"
+							onClick={handleDelete}
+						>
+							<Trash2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
+							Delete workspace
+						</Button>
+					)}
 					<Button
 						size="sm"
 						variant="ghost"

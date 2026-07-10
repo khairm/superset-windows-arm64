@@ -134,7 +134,9 @@ export function useDashboardSidebarWorkspaceItemActions({
 	};
 
 	const handleSnooze = (duration: SnoozeDuration) => {
-		snoozeWorkspace(workspaceId, computeSnoozeUntil(duration));
+		// (SNOOZE-MAIN) projectId lets snoozeWorkspace insert a row for an
+		// auto-included main that has none yet.
+		snoozeWorkspace(workspaceId, computeSnoozeUntil(duration), projectId);
 	};
 
 	const handleUnsnooze = () => {

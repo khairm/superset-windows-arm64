@@ -33,7 +33,7 @@ export function V2WorkspaceMount({
 	tabBarTrailingExtra,
 }: V2WorkspaceMountProps) {
 	const collections = useCollections();
-	const { ensureWorkspaceInSidebar } = useDashboardSidebarState();
+	const { placeWorkspaceFromPassiveMount } = useDashboardSidebarState();
 	const pendingTransaction = useWorkspaceTransactionsStore(
 		(state) => state.byWorkspaceId[workspaceId] ?? null,
 	);
@@ -69,8 +69,9 @@ export function V2WorkspaceMount({
 	useEffect(() => {
 		if (!workspace || lastEnsuredWorkspaceIdRef.current === workspace.id) return;
 		lastEnsuredWorkspaceIdRef.current = workspace.id;
-		ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
-	}, [ensureWorkspaceInSidebar, workspace]);
+		// (REMOVE-STICKY) passive mount — must not resurrect a removed project.
+		placeWorkspaceFromPassiveMount(workspace.id, workspace.projectId);
+	}, [placeWorkspaceFromPassiveMount, workspace]);
 
 	const hostStatus = useRemoteHostStatus(workspace);
 

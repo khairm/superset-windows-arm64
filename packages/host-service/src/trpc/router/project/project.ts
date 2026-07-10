@@ -5,7 +5,7 @@ import {
 } from "@superset/shared/github-remote";
 import { BRANCH_PREFIX_MODES } from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { projects, workspaces } from "../../../db/schema";
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
@@ -38,6 +38,23 @@ import {
 	resolveNonGitFolder,
 	tryRevParseGitRoot,
 } from "./utils/resolve-repo";
+
+// (PATH-CI-DEDUPE) Windows and macOS filesystems are case-insensitive: the
+// same folder can come back under a different casing (a case-only rename, a
+// differently-cased drive letter). SQLite TEXT equality is BINARY, so a
+// case-variant path silently missed the existing `projects.repoPath` row and
+// the import flow minted a DUPLICATE project (the cloud slug conflict then
+// resolves by suffixing `-2` instead of reusing). Compare case-insensitively
+// on those platforms; keep exact matching on Linux where two paths differing
+// only by case can be genuinely distinct folders.
+const REPO_PATHS_CASE_INSENSITIVE =
+	process.platform === "win32" || process.platform === "darwin";
+
+function repoPathMatches(path: string) {
+	return REPO_PATHS_CASE_INSENSITIVE
+		? sql`lower(${projects.repoPath}) = lower(${path})`
+		: eq(projects.repoPath, path);
+}
 
 export const projectRouter = router({
 	list: protectedProcedure.query(({ ctx }) => {
@@ -181,7 +198,7 @@ export const projectRouter = router({
 			if (!(await isGitRepo(input.repoPath))) {
 				const folder = resolveNonGitFolder(input.repoPath).repoPath;
 				const localProject = ctx.db.query.projects
-					.findFirst({ where: eq(projects.repoPath, folder) })
+					.findFirst({ where: repoPathMatches(folder) })
 					.sync();
 				return {
 					candidates: localProject
@@ -229,7 +246,7 @@ export const projectRouter = router({
 			}
 
 			const localProject = ctx.db.query.projects
-				.findFirst({ where: eq(projects.repoPath, gitRoot) })
+				.findFirst({ where: repoPathMatches(gitRoot) })
 				.sync();
 
 			// Default behavior (folder-first import): local-DB hit wins,
@@ -666,7 +683,7 @@ export const projectRouter = router({
 					const localOwner = ctx.db
 						.select({ id: projects.id })
 						.from(projects)
-						.where(eq(projects.repoPath, resolved.repoPath))
+						.where(repoPathMatches(resolved.repoPath))
 						.get();
 					if (localOwner && localOwner.id !== input.projectId) {
 						throw new TRPCError({
