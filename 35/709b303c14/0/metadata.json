@@ -1,0 +1,65 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "35709b303c14",
+  "session_id": "c85fad40-3e80-4f57-817e-5aa26a2e4b08",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-10T19:04:01.7300766Z",
+  "branch": "muddled-cake",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceMissingWorktreeState/WorkspaceMissingWorktreeState.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/sidebarMutations.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/layout.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/sidebarMutations.test.ts",
+    "packages/host-service/src/trpc/router/project/project.ts",
+    ".github/workflows/nightly-merge.yml",
+    "FEATURES.md",
+    "AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "c6ed9c8f2081",
+  "token_usage": {
+    "input_tokens": 18919,
+    "cache_creation_tokens": 407714,
+    "cache_read_tokens": 18619410,
+    "output_tokens": 95221,
+    "api_call_count": 87
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-10T19:04:01.6879405Z",
+    "agent_lines": 296,
+    "agent_removed": 82,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 296,
+    "total_lines_changed": 378,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 792,
+      "user_lines_removed": 792,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/pty-daemon/src/main.ts": 219,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559
+      },
+      "user_removed_per_file": {
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/pty-daemon/src/main.ts": 219,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559
+      }
+    }
+  ]
+}

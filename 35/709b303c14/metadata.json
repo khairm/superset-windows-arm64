@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "35709b303c14",
+  "strategy": "manual-commit",
+  "branch": "muddled-cake",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md",
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/hooks/useDashboardSidebarProjectSectionActions/useDashboardSidebarProjectSectionActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceMissingWorktreeState/WorkspaceMissingWorktreeState.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/layout.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/sidebarMutations.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/sidebarMutations.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts",
+    "packages/host-service/src/trpc/router/project/project.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/35/709b303c14/0/metadata.json",
+      "transcript": "/35/709b303c14/0/full.jsonl",
+      "content_hash": "/35/709b303c14/0/content_hash.txt",
+      "prompt": "/35/709b303c14/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18919,
+    "cache_creation_tokens": 407714,
+    "cache_read_tokens": 18619410,
+    "output_tokens": 95221,
+    "api_call_count": 87
+  }
+}
