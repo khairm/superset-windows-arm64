@@ -88,6 +88,15 @@ See `FEATURES.md` for the marker manifest. In brief:
   arriving with a mismatched/missing agent_id strands its run-dir marker and
   would pin yellow forever; every Stop/SubagentStop now reaps markers not
   listed as still running in the payload's background_tasks[] (ground truth).
+  That payload is NOT ground truth for teammates though (TEAMMATE-IDLE):
+  Claude Code reports finished teammates as status "running" forever, so
+  superset-notify.py keeps an incremental per-terminal ledger of the lead
+  transcript's teammate lifecycle (spawn/wake/message = active,
+  idle_notification = idle) and drops teammate-type entries at a turn end
+  once every tracked teammate is provably idle — a lead whose swarm has
+  finished greens at its real final Stop instead of latching yellow until
+  the next prompt (the 15-min .bgactive idle reap stays behind it for
+  teammates that die without any transcript trace).
   The store's data maps persist to sessionStorage (DOT-PERSIST): an in-place
   renderer reload (Ctrl+R / error boundary) used to wipe every dot, and the
   background blue has no re-emit until that session's next turn end;

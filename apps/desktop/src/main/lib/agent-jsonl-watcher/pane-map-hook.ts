@@ -520,6 +520,21 @@ def _bgactive_marker_path(terminal_id):
     )
 
 
+def _teamstate_path(terminal_id):
+    # (TEAMMATE-IDLE) incremental parse cache for the lead transcript's
+    # teammate ledger: {"path": <transcript>, "offset": <bytes consumed>,
+    # "state": {name: "active"|"idle"}}. Keyed by transcript path, so a
+    # /resume (new transcript file) or terminalId reuse self-invalidates into
+    # a full reparse. Corruption tolerated: any read failure falls back to
+    # offset 0 — self-healing, never trusted blindly.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".teamstate.json")
+    )
+
+
 def _askq_dir(terminal_id):
     # (UNTAGGED-BG-RED) a DIRECTORY of per-owner "an AskUserQuestion is pending"
     # markers for this terminal — one file per owner (the raising agent). An
@@ -883,6 +898,212 @@ def _split_background(bg_tasks):
         if task_type != "shell":
             has_agent = True
     return (has_any, has_agent)
+
+
+# (TEAMMATE-IDLE) Claude Code NEVER flips an idle teammate's background_tasks[]
+# entry off "running" (captured live 2026-07-10: 33 teammate entries, all
+# status "running", for a session whose 44 teammates had ALL finished hours
+# earlier), so the payload alone cannot green a lead whose teammates are done —
+# once no further hook event arrived, the dot stayed yellow forever. The lead
+# TRANSCRIPT has the missing truth: every teammate that finishes delivers an
+# idle_notification teammate-message into it, and every (re)activation is
+# visible too (an Agent spawn tool_use, a SendMessage tool_use to it, a
+# non-idle teammate-message/agent-message from it). Track that ledger
+# incrementally and, at a turn end, DROP unfinished teammate-type entries when
+# every tracked teammate's last event is an idle_notification. POSITIVE proof
+# only: no transcript, no teammates seen, a parse error, or ANY teammate not
+# provably idle -> keep the entries (the safe yellow direction — exactly the
+# old behaviour, with the (BG-STALE) idle reap still behind it). A teammate
+# that dies WITHOUT ever reporting stays "active" in the ledger and keeps the
+# hold: from the logs that case is indistinguishable from a long think, so it
+# is deliberately left to (BG-STALE).
+
+
+def _team_scan_text(state, text):
+    # Update the name -> "active"|"idle" ledger from one transcript text blob.
+    # String scanning only (NO regex): this file is a TS template literal, and
+    # single backslashes in regex escapes would be silently swallowed.
+    i = 0
+    tag = '<teammate-message teammate_id="'
+    while True:
+        i = text.find(tag, i)
+        if i < 0:
+            break
+        j = i + len(tag)
+        k = text.find('"', j)
+        if k < 0:
+            break
+        name = text[j:k]
+        end = text.find("</teammate-message>", k)
+        body = text[k:end] if end > 0 else text[k:]
+        if name:
+            state[name] = "idle" if '"idle_notification"' in body else "active"
+        i = k
+    a = 0
+    tag2 = '<agent-message from="'
+    while True:
+        a = text.find(tag2, a)
+        if a < 0:
+            break
+        b = a + len(tag2)
+        c = text.find('"', b)
+        if c < 0:
+            break
+        if text[b:c]:
+            state[text[b:c]] = "active"
+        a = c
+
+
+def _team_scan_record(state, obj):
+    # One JSONL transcript record -> ledger updates. Spawning (Agent tool_use
+    # with a name) or waking (SendMessage tool_use) marks the target active;
+    # teammate-messages / agent-messages in delivered text decide idle vs
+    # active via _team_scan_text.
+    msg = obj.get("message") or {}
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content")
+    if isinstance(content, str):
+        _team_scan_text(state, content)
+        return
+    if not isinstance(content, list):
+        return
+    for c in content:
+        if not isinstance(c, dict):
+            continue
+        ctype = c.get("type")
+        if ctype == "text":
+            _team_scan_text(state, str(c.get("text") or ""))
+        elif ctype == "tool_use":
+            inp = c.get("input")
+            if not isinstance(inp, dict):
+                continue
+            if c.get("name") == "Agent":
+                n = str(inp.get("name") or "").strip()
+                if n:
+                    state[n] = "active"
+            elif c.get("name") == "SendMessage":
+                n = str(inp.get("to") or "").strip()
+                if n:
+                    state[n] = "active"
+
+
+def _team_is_fork_id(name):
+    # A raw agentId (observed shape: "a" + >=12 hex chars) is a FORK handle,
+    # not a teammate name. Forks fire real SubagentStart/Stop hooks and their
+    # bg entries are type "subagent" — both already handled — and they never
+    # send idle_notification, so counting one here would pin the ledger
+    # un-idle forever. Excluded from the all-idle predicate.
+    if len(name) < 13 or name[0] != "a":
+        return False
+    return all(ch in "0123456789abcdef" for ch in name[1:])
+
+
+def _teammates_all_idle(transcript_path, terminal_id):
+    # True only on POSITIVE transcript proof that every tracked teammate's
+    # last event is an idle_notification. Incremental: consumes only bytes
+    # appended since the cached offset (the first call pays one full read;
+    # transcripts are append-only, surviving /compact). Never raises; every
+    # failure path returns False (keep the hold).
+    if not transcript_path or not terminal_id:
+        return False
+    cache_file = _teamstate_path(terminal_id)
+    state = {}
+    offset = 0
+    try:
+        rec = json.loads(cache_file.read_text(encoding="utf-8"))
+        if (
+            isinstance(rec, dict)
+            and rec.get("path") == transcript_path
+            and isinstance(rec.get("state"), dict)
+        ):
+            offset = int(rec.get("offset") or 0)
+            for k, v in rec["state"].items():
+                state[str(k)] = str(v)
+    except Exception:
+        state = {}
+        offset = 0
+    try:
+        with open(transcript_path, "rb") as h:
+            h.seek(0, 2)
+            size = h.tell()
+            if offset < 0 or offset > size:
+                offset = 0
+                state = {}
+            h.seek(offset)
+            data = h.read()
+    except Exception:
+        return False
+    nl = data.rfind(b"\\n")
+    if nl >= 0:
+        for raw in data[:nl].split(b"\\n"):
+            if not raw.strip():
+                continue
+            try:
+                obj = json.loads(raw.decode("utf-8", "replace"))
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                _team_scan_record(state, obj)
+        offset = offset + nl + 1
+    try:
+        cache_file.write_text(
+            json.dumps({"path": transcript_path, "offset": offset, "state": state}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    tracked = {}
+    for name, st in state.items():
+        if name in ("team-lead", "main") or _team_is_fork_id(name):
+            continue
+        tracked[name] = st
+    if not tracked:
+        return False
+    for st in tracked.values():
+        if st != "idle":
+            return False
+    return True
+
+
+def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=None):
+    # (TEAMMATE-IDLE) Returns bg_tasks with unfinished teammate-type entries
+    # dropped when the transcript ledger proves all teammates idle; otherwise
+    # returns bg_tasks unchanged. Only ever REMOVES teammate entries — shell /
+    # subagent / workflow entries always pass through untouched. Never raises.
+    if not isinstance(bg_tasks, list) or not bg_tasks:
+        return bg_tasks
+    has_teammate = False
+    for t in bg_tasks:
+        if (
+            isinstance(t, dict)
+            and not _bg_entry_finished(t)
+            and str(t.get("type") or "") == "teammate"
+        ):
+            has_teammate = True
+            break
+    if not has_teammate:
+        return bg_tasks
+    try:
+        if not _teammates_all_idle(transcript_path, terminal_id):
+            return bg_tasks
+    except Exception:
+        return bg_tasks
+    out = []
+    dropped = 0
+    for t in bg_tasks:
+        if isinstance(t, dict) and str(t.get("type") or "") == "teammate":
+            dropped += 1
+            continue
+        out.append(t)
+    if note_out is not None:
+        try:
+            note_out.append(
+                " [teammate-idle: dropped " + str(dropped) + " idle teammate entries]"
+            )
+        except Exception:
+            pass
+    return out
 
 
 def _running_bg_ids(bg_tasks):
@@ -1435,6 +1656,7 @@ def _decide_event_type_inner(
         _remove(agentbg_marker)
         _remove(shellbg_marker)
         _remove(bgactive_marker)  # (BG-STALE) session over -> clear the timer
+        _remove(_teamstate_path(terminal_id))  # (TEAMMATE-IDLE) ledger cache is per-session state
         _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) session over -> drop all pending-question guards
         return "Stop"
     if event == "Notification":
@@ -1553,11 +1775,6 @@ def main():
     bg_tasks = payload.get("background_tasks")
     if bg_tasks is None:
         bg_tasks = payload.get("backgroundTasks")
-    has_background, has_agent_background = _split_background(bg_tasks)
-    # (MARKER-RECONCILE) only a payload that actually carries the list shape
-    # is authoritative; absent/odd-shaped -> None -> no reconciliation (an
-    # older Claude Code without background_tasks behaves exactly as before).
-    bg_ids = _running_bg_ids(bg_tasks) if isinstance(bg_tasks, (list, dict)) else None
     # (COMPACT-YELLOW) PreCompact carries trigger ("manual"|"auto");
     # SessionStart carries source ("startup"|"resume"|"clear"|"compact").
     trigger = str(payload.get("trigger") or "").strip()
@@ -1566,6 +1783,38 @@ def main():
     url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
     terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
     agent_id = (os.environ.get("SUPERSET_AGENT_ID") or "claude").strip()
+
+    # (TEAMMATE-IDLE) At the turn-end decision points, drop teammate-type
+    # entries the transcript proves idle BEFORE any consumer (the split, the
+    # agentbg/shellbg/bgactive snapshot, the hold decision) — the harness
+    # reports finished teammates as status "running" forever, so without this
+    # a lead whose teammates are all done held yellow until the next event
+    # (which, on an idle window, never came). bg_ids stays derived from the
+    # RAW list: it is a KEEP-set for marker reconciliation, and teammates
+    # never create run-dir markers, so extra ids are harmless while missing
+    # ids could reap a genuine fork marker.
+    transcript_path = str(
+        payload.get("transcript_path") or payload.get("transcriptPath") or ""
+    ).strip()
+    team_note = []
+    bg_tasks_eff = bg_tasks
+    if event in ("Stop", "SubagentStop"):
+        bg_tasks_eff = _without_idle_teammates(
+            bg_tasks, transcript_path, terminal_id, team_note
+        )
+    has_background, has_agent_background = _split_background(bg_tasks_eff)
+    # (MARKER-RECONCILE) only a payload that actually carries the list shape
+    # is authoritative; absent/odd-shaped -> None -> no reconciliation (an
+    # older Claude Code without background_tasks behaves exactly as before).
+    bg_ids = _running_bg_ids(bg_tasks) if isinstance(bg_tasks, (list, dict)) else None
+    if team_note:
+        _log({
+            "event": event,
+            "terminalId": terminal_id,
+            "sessionId": session_id,
+            "action": "teammate-idle-drop",
+            "note": team_note[0],
+        })
 
     # (BA diagnostic) When background_tasks is non-empty, dump its shape so we can
     # tell an actively-working teammate/subagent (should be YELLOW) apart from a
@@ -1619,7 +1868,12 @@ def main():
     # permission RED), so every PostToolUse does NOT write a line. Best-effort;
     # never blocks or breaks the POST below.
     if reason_out:
-        _decision_log(terminal_id, session_id, event_type, reason_out[0])
+        _decision_log(
+            terminal_id,
+            session_id,
+            event_type,
+            reason_out[0] + (team_note[0] if team_note else ""),
+        )
 
     if not url:
         _log({
