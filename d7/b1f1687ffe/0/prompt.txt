@@ -3,3 +3,11 @@
 ---
 
 what do you mean no 5.6 on account - its the default for codex just launch without model specific it will be 5.6
+
+---
+
+sweep is masking the underlying bad code - We should be able to catch all scenarios we have enough logs no?
+
+---
+
+.
