@@ -297,7 +297,20 @@ jobs:
           TAG="desktop-v${V}"
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
+          # (NIGHTLY-INTEGRITY) --target: without it gh creates the tag at the
+          # DEFAULT BRANCH tip — which during a nightly is main BEFORE advance
+          # runs, so every nightly-published tag pointed one commit behind the
+          # candidate the installer was actually built from. Tag the exact
+          # checked-out commit, then prove the remote tag landed on it.
+          BUILT_SHA=$(git rev-parse HEAD)
           gh release create "$TAG" "$ASSET" \
             --repo "${{ github.repository }}" \
+            --target "$BUILT_SHA" \
             --title "Superset $V (Windows ARM64)" \
             --notes "Native **Windows ARM64** build of the vendored superset-sh/superset fork (version $V). Built deterministically from committed source (no AI in the build). Installer is **unsigned**. Not the official superset-sh distribution."
+          REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$TAG" | cut -f1)
+          if [ "$REMOTE_TAG_SHA" != "$BUILT_SHA" ]; then
+            echo "::error::release tag $TAG points at ${REMOTE_TAG_SHA:-<missing>}, expected built commit $BUILT_SHA"
+            exit 1
+          fi
+          echo "Release $TAG published at $BUILT_SHA."

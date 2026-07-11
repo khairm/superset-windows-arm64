@@ -33,6 +33,14 @@ on:
 permissions:
   contents: write
 
+# (NIGHTLY-INTEGRITY) Never let two nightly instances interleave: an overlapping
+# schedule + manual dispatch can delete/replace the mutable candidate branch
+# between one run's merge, build checkout and advance. Queue, never cancel — a
+# running merge/build must finish or fail on its own.
+concurrency:
+  group: nightly-merge
+  cancel-in-progress: false
+
 jobs:
   merge:
     runs-on: ubuntu-latest
@@ -41,6 +49,7 @@ jobs:
       newtag: ${{ steps.do.outputs.newtag }}
       version: ${{ steps.do.outputs.version }}
       candidate: ${{ steps.do.outputs.candidate }}
+      sha: ${{ steps.do.outputs.sha }}
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DISABLE_NON_ESSENTIAL_MODEL_CALLS: '1'
@@ -109,6 +118,39 @@ jobs:
           set +e
           git merge --no-commit --no-ff "refs/upstream-tags/$NEWTAG^{commit}"
           set -e
+
+          # (NIGHTLY-INTEGRITY) `set +e` above accepts EVERY nonzero merge exit,
+          # not just "conflicts". A fatal merge failure (lock error, corrupt
+          # object, OOM) leaves NO MERGE_HEAD and possibly no conflicts either —
+          # without this check it would read as a clean merge and we'd commit a
+          # single-parent non-merge with a bumped baseline.
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::git merge of $NEWTAG failed fatally (no MERGE_HEAD) — aborting. Baseline untouched."
+            exit 1
+          fi
+
+          # (WORKFLOW-FORK-OWNED) Surface — never silently discard — upstream's
+          # workflow-tree delta before we drop it: upstream sometimes moves
+          # build-relevant logic INTO CI (a codegen step, a required env var).
+          # The delta goes to the job summary + log and is handed to the
+          # semantic review below so build-relevant CI changes get flagged.
+          WFDELTA_FILE="$RUNNER_TEMP/upstream-workflow-delta.diff"
+          : > "$WFDELTA_FILE"
+          if git rev-parse -q --verify "refs/upstream-tags/$BASE^{commit}" >/dev/null; then
+            git diff "refs/upstream-tags/$BASE" "refs/upstream-tags/$NEWTAG" -- .github/workflows > "$WFDELTA_FILE" || true
+          fi
+          if [ -s "$WFDELTA_FILE" ]; then
+            {
+              echo "## Upstream workflow-tree delta ($BASE → $NEWTAG) — DROPPED, .github/workflows is fork-owned"
+              echo '```'
+              git diff --name-status "refs/upstream-tags/$BASE" "refs/upstream-tags/$NEWTAG" -- .github/workflows
+              echo '```'
+              echo "Full patch in the job log (group: dropped upstream workflow delta). Port anything build-relevant by hand."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::group::dropped upstream workflow delta"
+            cat "$WFDELTA_FILE"
+            echo "::endgroup::"
+          fi
 
           # (WORKFLOW-FORK-OWNED) .github/workflows is FORK-OWNED: the fork
           # carries ZERO upstream workflow files (upstream CI targets upstream's
@@ -230,7 +272,7 @@ jobs:
           # The reviewer must not modify the tree; snapshot the work-tree state
           # and refuse to continue if the review run changed ANYTHING.
           STATUS_BEFORE=$(git status --porcelain=v1 | sha256sum)
-          REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. Rules: do NOT edit ANY repository file; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
+          REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. (5) If the file at ${WFDELTA_FILE} is non-empty, read it — it is upstream's CI/workflow delta we deliberately did NOT merge (.github/workflows is fork-owned). If it moves BUILD-RELEVANT logic into upstream CI (a codegen/generate step, a newly required env var, a packaging/signing step) that our fork's own build workflow would now silently miss, append one line per item after the verdict: 'CI-NOTE: <what upstream CI now does that the fork build may need>'. CI-NOTEs alone never change the verdict. Rules: do NOT edit ANY repository file; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
           attempt=1
           while [ $attempt -le 2 ]; do
             echo "::group::claude review attempt $attempt"
@@ -257,6 +299,17 @@ jobs:
           echo "::endgroup::"
 
           # --- record new baseline + commit the merge -------------------------
+          # (WORKFLOW-FORK-OWNED) postcondition: the tree about to be committed
+          # must contain ZERO workflow-dir changes — not from the merge, not
+          # from the AI resolver, not from the review run. The restore step
+          # above is the mechanism; this is the proof (a workflow delta would be
+          # rejected by the push anyway — fail here, loud, with the baseline
+          # untouched).
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all -- .github/workflows)" ]; then
+            echo "::error::(WORKFLOW-FORK-OWNED) .github/workflows differs from HEAD after resolve/review — refusing to commit:"
+            git status --porcelain=v1 --untracked-files=all -- .github/workflows
+            exit 1
+          fi
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
           git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present; merged delta passed the (MERGE-SEMANTIC-GATE) Opus feature review."
@@ -279,14 +332,20 @@ jobs:
           echo "newtag=$NEWTAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "candidate=$CAND" >> "$GITHUB_OUTPUT"
-          echo "Merged $NEWTAG -> candidate $CAND (version $VERSION). Building next."
+          # (NIGHTLY-INTEGRITY) build + advance consume this immutable SHA, not
+          # the mutable branch name — a replaced candidate can't be built or
+          # advanced unnoticed.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Merged $NEWTAG -> candidate $CAND @ $(git rev-parse HEAD) (version $VERSION). Building next."
 
   build:
     needs: merge
     if: needs.merge.outputs.should_build == 'true'
     uses: ./.github/workflows/build-arm64.yml
     with:
-      ref: ${{ needs.merge.outputs.candidate }}
+      # (NIGHTLY-INTEGRITY) build the exact merge commit, immune to candidate-
+      # branch mutation between jobs.
+      ref: ${{ needs.merge.outputs.sha }}
       publish: true
 
   advance:
@@ -303,8 +362,14 @@ jobs:
         run: |
           set -euo pipefail
           CAND='${{ needs.merge.outputs.candidate }}'
+          SHA='${{ needs.merge.outputs.sha }}'
           git fetch origin "$CAND"
+          # (NIGHTLY-INTEGRITY) advance ONLY the commit that was gated + built.
+          if [ "$(git rev-parse FETCH_HEAD)" != "$SHA" ]; then
+            echo "::error::candidate $CAND moved (expected $SHA, found $(git rev-parse FETCH_HEAD)) — another run interfered; refusing to advance main."
+            exit 1
+          fi
           # The candidate is main + the merge commit, so this is a fast-forward.
-          git push origin FETCH_HEAD:refs/heads/main
+          git push origin "$SHA:refs/heads/main"
           git push origin --delete "$CAND"
           echo "Baseline advanced to ${{ needs.merge.outputs.newtag }}; Release published by the build job."
