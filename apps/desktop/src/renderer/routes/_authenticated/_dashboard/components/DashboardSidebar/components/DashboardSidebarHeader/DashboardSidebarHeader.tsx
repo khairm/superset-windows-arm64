@@ -104,6 +104,7 @@ export function DashboardSidebarHeader({
 		search: lastSearch,
 		typeTab: lastTypeTab,
 		projectFilter: lastProjectFilter,
+		linearProjectFilter: lastLinearProjectFilter,
 	} = useTasksFilterStore();
 
 	const handleWorkspacesClick = () => {
@@ -159,6 +160,7 @@ export function DashboardSidebarHeader({
 					search: lastSearch,
 					typeTab: lastTypeTab,
 					projectFilter: lastProjectFilter,
+					linearProjectFilter: lastLinearProjectFilter,
 				}),
 			});
 		});
