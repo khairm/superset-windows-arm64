@@ -1,0 +1,9 @@
+khairm/superset-windows-arm64] ightly upstream merge workflow run    why did this fail? it should be set up so that every update upstream gets merged into our version and  reviewed to ensure none of the custom features break... you need to investigate the root cause of this and ensure nothing like this can happen again
+
+---
+
+get codex to help don't specify model. it's on 5.6 now
+
+---
+
+want its advice its intelligence
