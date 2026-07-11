@@ -109,6 +109,21 @@ jobs:
           set +e
           git merge --no-commit --no-ff "refs/upstream-tags/$NEWTAG^{commit}"
           set -e
+
+          # (WORKFLOW-FORK-OWNED) .github/workflows is FORK-OWNED: the fork
+          # carries ZERO upstream workflow files (upstream CI targets upstream's
+          # infra/secrets and is meaningless here), and the Actions GITHUB_TOKEN
+          # can NEVER push a .github/workflows/* change — GitHub rejects both
+          # the candidate push and the main fast-forward with "refusing to allow
+          # a GitHub App to create or update workflow … without `workflows`
+          # permission" (desktop-v1.14.3 deploy-relay.yml incident: the merge,
+          # gates and review all passed, then the push died). Restore our exact
+          # workflow set BEFORE conflict detection: upstream-ADDED files are
+          # dropped from index+worktree (--no-overlay), upstream edits to files
+          # we long deleted resolve as ours, and the AI resolver never sees a
+          # workflow path it could resurrect.
+          git checkout --no-overlay HEAD -- .github/workflows
+
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
           if [ -n "$CONFLICTS" ]; then
             echo "::group::conflicts to resolve"; echo "$CONFLICTS"; echo "::endgroup::"

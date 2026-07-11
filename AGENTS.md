@@ -214,6 +214,14 @@ See `FEATURES.md` for the marker manifest. In brief:
   msys2 runtime on Windows ARM64 — the `add_item ... errno 1` fork cascade that
   poisons msys's shared section and wedges EVERY chat's hooks (stale dots, hook
   errors). Marker `(HOOK-FORK-DIET)`; payload is byte-identical to the pipelines.
+- **CI can never push `.github/workflows/*` changes** — the Actions `GITHUB_TOKEN`
+  has no `workflows` scope (none exists for it), so ANY merged upstream workflow
+  file gets the candidate push AND the main fast-forward rejected AFTER every gate
+  has passed (desktop-v1.14.3 `deploy-relay.yml` incident). The workflow dir is
+  fork-owned: nightly-merge restores it mid-merge with
+  `git checkout --no-overlay HEAD -- .github/workflows`, marker
+  `(WORKFLOW-FORK-OWNED)`. Never remove that step; add an upstream workflow only
+  by deliberate local commit with a user token (which has `workflow` scope).
 
 ## Fork limitations (accepted)
 
