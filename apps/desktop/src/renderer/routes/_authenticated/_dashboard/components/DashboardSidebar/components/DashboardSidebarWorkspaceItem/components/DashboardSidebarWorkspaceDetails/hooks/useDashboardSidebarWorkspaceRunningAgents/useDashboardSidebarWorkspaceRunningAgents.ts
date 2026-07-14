@@ -60,8 +60,8 @@ export function useDashboardSidebarWorkspaceRunningAgents(
 	enabled = true,
 ): DashboardSidebarRunningAgent[] {
 	const bindings = useTerminalAgentBindings(workspaceId, { enabled });
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
-	const terminalStatuses = useV2WorkspaceTerminalStatuses(workspaceId);
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId, enabled);
+	const terminalStatuses = useV2WorkspaceTerminalStatuses(workspaceId, enabled);
 
 	return useMemo(() => {
 		const statusByTerminal = new Map<string, DisplayStatus>();

@@ -662,15 +662,20 @@ export function clearV2TerminalRunStatus(
  */
 export function useV2WorkspaceOpenTerminalIds(
 	workspaceId: string,
+	// (CHIP-DOT-UNIFY) `enabled: false` keeps the hook mounted (rules of hooks)
+	// but degrades it to a no-match live query + constant empty set, so a
+	// disabled consumer (e.g. the agent-chips experiment toggled off) costs
+	// nothing per store tick.
+	enabled = true,
 ): ReadonlySet<string> {
 	const collections = useCollections();
 	const { data: rows = [] } = useLiveQuery(
 		(q) =>
 			q
 				.from({ local: collections.v2WorkspaceLocalState })
-				.where(({ local }) => eq(local.workspaceId, workspaceId))
+				.where(({ local }) => eq(local.workspaceId, enabled ? workspaceId : ""))
 				.select(({ local }) => ({ paneLayout: local.paneLayout })),
-		[collections, workspaceId],
+		[collections, workspaceId, enabled],
 	);
 	const paneLayout = rows[0]?.paneLayout as
 		| WorkspaceState<unknown>
@@ -849,11 +854,17 @@ export function selectV2WorkspaceTerminalDisplayKey(
 
 export function useV2WorkspaceTerminalStatuses(
 	workspaceId: string,
+	// (CHIP-DOT-UNIFY) `enabled: false` swaps the selector for a constant so a
+	// disabled consumer doesn't rescan notification state on every store tick.
+	enabled = true,
 ): Array<{ terminalId: string; status: DisplayStatus }> {
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId);
+	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId, enabled);
 	const selector = useMemo(
-		() => selectV2WorkspaceTerminalDisplayKey(workspaceId, openTerminalIds),
-		[workspaceId, openTerminalIds],
+		() =>
+			enabled
+				? selectV2WorkspaceTerminalDisplayKey(workspaceId, openTerminalIds)
+				: () => "",
+		[workspaceId, openTerminalIds, enabled],
 	);
 	const key = useV2NotificationStore(selector);
 	return useMemo(() => {
