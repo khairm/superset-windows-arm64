@@ -1,0 +1,133 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "7aa055d85c32",
+  "session_id": "9f7a1e8e-a89e-439a-9850-74aabbab6199",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-14T23:43:54.1640548Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "bf296a87deb2",
+  "token_usage": {
+    "input_tokens": 13541,
+    "cache_creation_tokens": 327942,
+    "cache_read_tokens": 12548121,
+    "output_tokens": 57659,
+    "api_call_count": 83
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_011qWc1Ba5oHmgWKxNzL4WUo",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "bf296a87deb2",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 94,
+        "end": 95,
+        "entry_ids": [
+          "a56d378a-1e3e-4bc4-ab05-cc218d66b3ba"
+        ],
+        "tool_use_id": "toolu_011qWc1Ba5oHmgWKxNzL4WUo"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_011qWc1Ba5oHmgWKxNzL4WUo"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1676,
+      "user_lines_removed": 1676,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 219,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      },
+      "user_removed_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 219,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676
+    }
+  ]
+}
