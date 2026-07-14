@@ -164,6 +164,21 @@ jobs:
           # dropped from index+worktree (--no-overlay), upstream edits to files
           # we long deleted resolve as ours, and the AI resolver never sees a
           # workflow path it could resurrect.
+          #
+          # UNMERGED paths must be cleared FIRST: `git checkout <tree> -- <dir>`
+          # hard-errors ("path … is unmerged") on a modify/delete entry whose
+          # file is absent in HEAD — upstream modifying a workflow we deleted
+          # (desktop-v1.15.0 release-cli.yml incident: the nightly died right
+          # here, before the resolver, two nights running). Resolve each
+          # unmerged workflow path to OUR side: restore from HEAD when we carry
+          # it, git rm when we deleted it.
+          git diff --name-only --diff-filter=U -- .github/workflows | while IFS= read -r p; do
+            if git cat-file -e "HEAD:$p" 2>/dev/null; then
+              git checkout HEAD -- "$p"
+            else
+              git rm -q -f -- "$p"
+            fi
+          done
           git checkout --no-overlay HEAD -- .github/workflows
 
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
