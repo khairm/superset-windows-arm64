@@ -28,7 +28,7 @@ export const COMPANY = {
 	X_URL: "https://x.com/superset_sh",
 	LINKEDIN_URL: "https://www.linkedin.com/company/superset-sh",
 	YOUTUBE_URL: "https://www.youtube.com/@superset-sh",
-	MAIL_TO: "mailto:founders@superset.sh",
+	MAIL_TO: "mailto:support@superset.sh",
 	REPORT_ISSUE_URL: "https://github.com/superset-sh/superset/issues/new",
 	DISCORD_URL: "https://discord.gg/cZeD9WYcV7",
 	STATUS_URL: "https://status.superset.sh",
@@ -108,13 +108,18 @@ export const FEATURE_FLAGS = {
 	RELAY_URL_OVERRIDE: "relay-url-override",
 } as const;
 
-// Terminal identity presented to shell programs via TERM_PROGRAM. vscode, not
-// kitty: agent TUIs (claude-code especially) tune wheel-scroll compensation
-// and terminal quirks per TERM_PROGRAM, and the vscode assumptions match our
-// xterm.js terminals — notably that they send ~one throttled scroll event per
-// wheel notch, so TUIs apply their own scroll multiplier. Kitty *keyboard
-// protocol* support is advertised separately via the CSI-u capability probe.
-export const TERMINAL_TERM_PROGRAM = "vscode";
-// A plausible VS Code version: TUIs version-gate quirk handling against real
-// VS Code releases, so keep this roughly current when touching terminal code.
-export const TERMINAL_TERM_PROGRAM_VERSION = "1.128.0";
+// Terminal identity presented to shell programs via TERM_PROGRAM. kitty:
+// agent TUIs (claude-code especially) tune wheel-scroll compensation per
+// TERM_PROGRAM, and our terminals install the full-fidelity wheel handler
+// (@superset/shared/terminal-wheel-handler) that produces a native
+// kitty/iTerm-grade report stream. Under kitty-class identities TUIs trust
+// that stream as-is; a vscode identity would make claude-code amplify each
+// report (its compensation for xterm.js's damped stock stream) and
+// over-scroll ~3x. The identity and the wheel handler must ship together —
+// reverting one without the other reintroduces slow or runaway scrolling.
+// Kitty *keyboard protocol* support is advertised separately via the CSI-u
+// capability probe.
+export const TERMINAL_TERM_PROGRAM = "kitty";
+// A plausible kitty version: TUIs may version-gate quirk handling against
+// real kitty releases, so keep this roughly current when touching terminal code.
+export const TERMINAL_TERM_PROGRAM_VERSION = "0.42.0";

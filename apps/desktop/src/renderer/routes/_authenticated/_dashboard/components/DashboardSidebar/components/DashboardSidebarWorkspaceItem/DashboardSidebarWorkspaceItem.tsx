@@ -186,7 +186,8 @@ export function DashboardSidebarWorkspaceItem({
 							onOpenInFinder={handleOpenInFinder}
 							onCopyPath={handleCopyPath}
 							onCopyBranchName={handleCopyBranchName}
-							onRename={startRename}
+							onRemoveFromSidebar={handleRemoveFromSidebar}
+							onRename={isMainWorkspace ? undefined : startRename}
 							onDelete={
 								isMainWorkspace || sectionState === "deleted"
 									? undefined
@@ -257,7 +258,7 @@ export function DashboardSidebarWorkspaceItem({
 				isInSection={isInSection}
 				isNonGit={isNonGit}
 				onClick={handleClick}
-				onDoubleClick={isPending ? undefined : startRename}
+				onDoubleClick={isPending || isMainWorkspace ? undefined : startRename}
 				onRemoveFromSidebarClick={handleRemoveFromSidebar}
 				onCloseWorkspaceClick={
 					// (RECYCLE-BIN) The expanded-row X is now a SILENT soft-delete for a
@@ -312,7 +313,8 @@ export function DashboardSidebarWorkspaceItem({
 						onOpenInFinder={handleOpenInFinder}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
-						onRename={startRename}
+						onRemoveFromSidebar={handleRemoveFromSidebar}
+						onRename={isMainWorkspace ? undefined : startRename}
 						onDelete={
 							isMainWorkspace || sectionState === "deleted"
 								? undefined

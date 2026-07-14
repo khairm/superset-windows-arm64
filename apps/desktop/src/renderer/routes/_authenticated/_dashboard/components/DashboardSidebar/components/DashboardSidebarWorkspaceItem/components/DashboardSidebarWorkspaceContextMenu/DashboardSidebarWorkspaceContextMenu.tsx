@@ -28,6 +28,7 @@ import {
 	LuRotateCcw,
 	LuTrash2,
 	LuUndo2,
+	LuX,
 } from "react-icons/lu";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
@@ -56,7 +57,8 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onOpenInFinder: () => void;
 	onCopyPath: () => void;
 	onCopyBranchName: () => void;
-	onRename: () => void;
+	onRemoveFromSidebar: () => void;
+	onRename?: () => void;
 	/** Default-mode Delete: a silent soft-delete to the Recycle Bin (RECYCLE-BIN).
 	 * Omitted (undefined) for mains, which are never deletable. */
 	onDelete?: () => void;
@@ -146,6 +148,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onOpenInFinder,
 	onCopyPath,
 	onCopyBranchName,
+	onRemoveFromSidebar,
 	onRename,
 	onDelete,
 	onRestore,
@@ -181,13 +184,15 @@ export function DashboardSidebarWorkspaceContextMenu({
 		<ContextMenu onOpenChange={setContextMenuOpen}>
 			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
 			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
-				<ContextMenuItem onSelect={onRename}>
-					<LuPencil className="size-4 mr-2" />
-					Rename
-				</ContextMenuItem>
+				{onRename && (
+					<ContextMenuItem onSelect={onRename}>
+						<LuPencil className="size-4 mr-2" />
+						Rename
+					</ContextMenuItem>
+				)}
 				{isLocalWorkspace && (
 					<>
-						<ContextMenuSeparator />
+						{onRename && <ContextMenuSeparator />}
 						<ContextMenuItem onSelect={onOpenInFinder}>
 							<LuFolderOpen className="size-4 mr-2" />
 							Open in Finder
@@ -202,7 +207,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 				not a real ref, so copying it is meaningless. */}
 				{!isNonGit && (
 					<>
-						{!isLocalWorkspace && <ContextMenuSeparator />}
+						{!isLocalWorkspace && onRename && <ContextMenuSeparator />}
 						<ContextMenuItem onSelect={onCopyBranchName}>
 							<LuGitBranch className="size-4 mr-2" />
 							Copy Branch Name
@@ -326,6 +331,14 @@ export function DashboardSidebarWorkspaceContextMenu({
 								</ContextMenuItem>
 							</>
 						)}
+						<ContextMenuSeparator />
+						<ContextMenuItem
+							onSelect={onRemoveFromSidebar}
+							className="text-destructive focus:text-destructive"
+						>
+							<LuX className="size-4 mr-2 text-destructive" />
+							Remove from Sidebar
+						</ContextMenuItem>
 						{onDelete ? (
 							<>
 								<ContextMenuSeparator />

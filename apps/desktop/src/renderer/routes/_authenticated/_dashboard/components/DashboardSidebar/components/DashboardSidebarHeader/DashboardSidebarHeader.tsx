@@ -302,12 +302,12 @@ export function DashboardSidebarHeader({
 
 	return (
 		<div
-			className="flex flex-col gap-1 border-b border-border px-2 pt-2 pb-2"
+			className="flex flex-col gap-1 border-b border-border px-3 pt-2 pb-2"
 			// Pin the top inset so the traffic-light row stays a constant physical
 			// distance from the window top under page zoom (see the row below).
 			style={isMac ? { paddingTop: `${8 / zoomFactor}px` } : undefined}
 		>
-			{/* -mx-2 cancels the parent's px-2 so this row owns the 80px traffic-light
+			{/* -mx-3 cancels the parent's px-3 so this row owns the 80px traffic-light
 			    inset; inset and height are counter-scaled to a constant physical size
 			    so the fixed macOS traffic lights stay aligned under page zoom. On Mac
 			    the control clusters below use ZoomStable so the collapse/nav icons and
@@ -316,7 +316,7 @@ export function DashboardSidebarHeader({
 			    pinned row height it matches is Mac-only; elsewhere the row height (h-8)
 			    scales with zoom, so the controls should scale with it. */}
 			<div
-				className="drag -mx-2 flex h-8 items-center gap-1.5 pr-2"
+				className="drag -mx-3 flex h-8 items-center gap-1.5 pr-3"
 				style={
 					isMac
 						? {
@@ -392,7 +392,7 @@ export function DashboardSidebarHeader({
 				<span className="flex-1 text-left">Kanban</span>
 			</button>
 
-			<div className="flex items-center gap-0">
+			<div className="flex items-center gap-1">
 				<button
 					type="button"
 					onClick={() => openModal()}

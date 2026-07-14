@@ -2,7 +2,7 @@
 	"name": "@superset/desktop",
 	"productName": "Superset",
 	"description": "The last developer tool you'll ever need",
-	"version": "1.14.3",
+	"version": "1.15.0",
 	"main": "./dist/main/index.js",
 	"resources": "src/resources",
 	"repository": {
@@ -37,6 +37,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
+		"@agentclientprotocol/claude-agent-acp": "0.56.0",
 		"@ai-sdk/anthropic": "3.0.64",
 		"@ai-sdk/openai": "3.0.36",
 		"@ai-sdk/react": "3.0.143",
