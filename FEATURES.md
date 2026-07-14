@@ -119,6 +119,11 @@ writeKanbanBackup	apps/desktop/src
 (API-ABORT-RELEASE)	apps/desktop/src/main
 (DOT-PERSIST)	apps/desktop/src/renderer
 (CHIP-DOT-UNIFY)	apps/desktop/src/renderer
+(AUTO-RESUME)	apps/desktop/src/main
+autoResumeManager	apps/desktop/src/main
+writeInputIfIdleSession	packages/host-service/src
+useAutoResumeActivity	apps/desktop/src/renderer
+AutoResumeController	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
 (HOOK-FORK-DIET)	apps/desktop/src/main

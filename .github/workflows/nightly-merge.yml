@@ -61,6 +61,13 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # (NIGHTLY-INTEGRITY) Always merge from CURRENT main, not the event
+          # SHA: a queued run (concurrency holds one pending) otherwise checks
+          # out the commit main pointed at when it was TRIGGERED — pre-advance
+          # — re-merges an already-merged tag into a stale tree, replaces the
+          # freshly published release with a sibling merge, and its final
+          # main push dies non-fast-forward AFTER publishing.
+          ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -94,6 +101,12 @@ jobs:
           git fetch --no-recurse-submodules --force upstream \
             'refs/tags/desktop-v*:refs/upstream-tags/desktop-v*'
           FORCE='${{ github.event.inputs.force_tag }}'
+          # Validate the dispatch input at the boundary: it is interpolated
+          # into this script and later into ref names — reject anything that
+          # is not a plain desktop-v<semver-ish> tag.
+          if [ -n "$FORCE" ] && ! [[ "$FORCE" =~ ^desktop-v[0-9][0-9.]*$ ]]; then
+            echo "::error::force_tag '$FORCE' is not a desktop-v<version> tag"; exit 1
+          fi
           if [ -n "$FORCE" ]; then
             NEWTAG="$FORCE"
           else
@@ -207,7 +220,14 @@ jobs:
           echo "::group::feature-marker gate"
           MISSING=0
           # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
-          awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md | while IFS=$'\t' read -r tok root; do
+          # Guard the guard: an empty/renamed block would pass VACUOUSLY (zero
+          # markers checked == zero missing). Fail loud instead.
+          MARKER_LINES=$(awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md)
+          if ! printf '%s\n' "$MARKER_LINES" | grep -q '[^[:space:]]'; then
+            echo "::error::FEATURES.md markers block is missing or empty — the marker gate would pass vacuously. Refusing to trust this merge."
+            exit 1
+          fi
+          printf '%s\n' "$MARKER_LINES" | while IFS=$'\t' read -r tok root; do
             [ -n "$tok" ] || continue
             if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
               echo "  OK   $tok ($root)"
@@ -314,6 +334,18 @@ jobs:
           echo "::endgroup::"
 
           # --- record new baseline + commit the merge -------------------------
+          # (NIGHTLY-INTEGRITY) The release tag is derived SOLELY from
+          # apps/desktop/package.json by the build — if the merged version
+          # doesn't match the tag being merged, the build would delete and
+          # rebuild the WRONG release (e.g. a bad package.json conflict
+          # resolution keeping 1.14.3 while merging desktop-v1.15.0), then
+          # advance the baseline past a version that no longer has a correct
+          # release. Assert the invariant here instead.
+          VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "desktop-v${VERSION}" != "$NEWTAG" ]; then
+            echo "::error::merged apps/desktop/package.json version ($VERSION) does not match $NEWTAG — bad version resolution; refusing to commit. Baseline untouched."
+            exit 1
+          fi
           # (WORKFLOW-FORK-OWNED) postcondition: the tree about to be committed
           # must contain ZERO workflow-dir changes — not from the merge, not
           # from the AI resolver, not from the review run. The restore step
@@ -342,7 +374,6 @@ jobs:
           git push origin --delete "$CAND" 2>/dev/null || true
           git push origin "$CAND"
 
-          VERSION=$(node -p "require('./apps/desktop/package.json').version")
           echo "should_build=true" >> "$GITHUB_OUTPUT"
           echo "newtag=$NEWTAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
