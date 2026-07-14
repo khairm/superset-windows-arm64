@@ -660,7 +660,7 @@ export function clearV2TerminalRunStatus(
  * to keep the patch to store.ts only — hoisting into DashboardSidebarWorkspaceItem
  * would touch a heavily-patched (P+AG+AL) file for a cheap local-collection query.
  */
-function useV2WorkspaceOpenTerminalIds(
+export function useV2WorkspaceOpenTerminalIds(
 	workspaceId: string,
 ): ReadonlySet<string> {
 	const collections = useCollections();

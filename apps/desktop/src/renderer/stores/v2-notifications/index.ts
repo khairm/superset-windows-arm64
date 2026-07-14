@@ -24,6 +24,7 @@ export {
 	useV2TerminalNotificationStatus,
 	useV2WorkspaceDisplayStatus,
 	useV2WorkspaceIsUnread,
+	useV2WorkspaceOpenTerminalIds,
 	useV2WorkspaceTerminalStatuses,
 	type V2AgentStatusAxes,
 	type V2AgentStatusAxis,

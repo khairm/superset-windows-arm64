@@ -88,7 +88,10 @@ See `FEATURES.md` for the marker manifest. In brief:
   owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
   (its raw passthrough raced ~1s behind and wiped BackgroundRunning blue + the
   subagent yellow-hold). Every dot surface (tab, pane header, sidebar row,
-  workspace rollup, kanban card) derives from ONE per-source primitive in the
+  sidebar agent chips (CHIP-DOT-UNIFY: status from the shared primitive,
+  liveness from the open-pane gate — never `terminal_sessions.status`, which
+  stays `active` forever for closed-tab ptys), workspace rollup, kanban card)
+  derives from ONE per-source primitive in the
   v2-notifications store; the rollup is the fold of the per-source dots, so
   surfaces cannot drift. The primitive itself is layered (DOT-AXES): a source's
   status is DERIVED as the highest-precedence active axis (permission/working/
