@@ -176,6 +176,37 @@
         "label": "Skill: call-another-llm",
         "default_collapsed": true
       }
+    },
+    {
+      "id": "claude-skill-toolu_01VnQiPr9h27NU3CSc6EX3uo",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "aae3ba5854b0",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 884,
+        "end": 885,
+        "entry_ids": [
+          "3b3214f4-2a3e-4749-b03b-42a3b77d90a7"
+        ],
+        "tool_use_id": "toolu_01VnQiPr9h27NU3CSc6EX3uo"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01VnQiPr9h27NU3CSc6EX3uo"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
     }
   ],
   "session_metrics": {
