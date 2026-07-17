@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "cf01a7af51f2",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/WorkspaceSidebar/hooks/useChangesTab/useChangesTab.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cf/01a7af51f2/0/metadata.json",
+      "transcript": "/cf/01a7af51f2/0/full.jsonl",
+      "content_hash": "/cf/01a7af51f2/0/content_hash.txt",
+      "prompt": "/cf/01a7af51f2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 19388,
+    "cache_creation_tokens": 2221763,
+    "cache_read_tokens": 35202414,
+    "output_tokens": 106895,
+    "api_call_count": 174
+  }
+}
