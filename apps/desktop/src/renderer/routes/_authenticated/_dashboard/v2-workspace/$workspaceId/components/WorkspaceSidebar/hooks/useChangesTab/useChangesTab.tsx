@@ -252,6 +252,7 @@ export function useChangesTab({
 		id: "changes",
 		label: "Changes",
 		badge: totalChanges > 0 ? totalChanges : undefined,
+		actions,
 		content,
 	};
 }
