@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "71226468064a",
+  "strategy": "manual-commit",
+  "branch": "recover-v1.15.1",
+  "checkpoints_count": 7,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/71/226468064a/0/metadata.json",
+      "transcript": "/71/226468064a/0/full.jsonl",
+      "content_hash": "/71/226468064a/0/content_hash.txt",
+      "prompt": "/71/226468064a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 19340,
+    "cache_creation_tokens": 1858332,
+    "cache_read_tokens": 27281233,
+    "output_tokens": 89341,
+    "api_call_count": 148
+  }
+}
