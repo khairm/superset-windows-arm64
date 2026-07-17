@@ -89,3 +89,11 @@ run failed again last night - why can't we get this right?!
 <status>completed</status>
 <summary>Background command "Run Codex 5.6 sol high review of REFERR-REPAIR" completed (exit code 0)</summary>
 </task-notification>
+
+---
+
+Did another failed rebuild just happen?
+
+---
+
+Basically, however you fix this, fix it in a way that you can then emulate the overnight run.
