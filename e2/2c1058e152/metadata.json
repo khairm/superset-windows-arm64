@@ -3,7 +3,7 @@
   "checkpoint_id": "e22c1058e152",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     ".github/workflows/build-arm64.yml"
   ],
@@ -13,13 +13,19 @@
       "transcript": "/e2/2c1058e152/0/full.jsonl",
       "content_hash": "/e2/2c1058e152/0/content_hash.txt",
       "prompt": "/e2/2c1058e152/0/prompt.txt"
+    },
+    {
+      "metadata": "/e2/2c1058e152/1/metadata.json",
+      "transcript": "/e2/2c1058e152/1/full.jsonl",
+      "content_hash": "/e2/2c1058e152/1/content_hash.txt",
+      "prompt": "/e2/2c1058e152/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 25599,
-    "cache_creation_tokens": 595821,
-    "cache_read_tokens": 8904540,
-    "output_tokens": 59420,
-    "api_call_count": 65
+    "input_tokens": 45068,
+    "cache_creation_tokens": 3158210,
+    "cache_read_tokens": 59090033,
+    "output_tokens": 200390,
+    "api_call_count": 282
   }
 }
