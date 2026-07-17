@@ -29,6 +29,14 @@ on:
         description: 'Merge a specific upstream desktop-v* tag (blank = latest)'
         required: false
         default: ''
+      rehearse:
+        description: 'Dry-run: full merge + resolver + every gate, but NO candidate push, NO build, NO advance (emulates the overnight run safely)'
+        required: false
+        default: ''
+      rehearse_base:
+        description: 'Rehearse from this historical main SHA (requires rehearse=true + force_tag; replays a past nightly exactly)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -85,10 +93,38 @@ jobs:
       - name: Merge upstream + resolve + gate
         id: do
         shell: bash
+        # Dispatch inputs come in as ENV, never inline ${{ }} in the script:
+        # (a) GitHub caps any expression-bearing scalar at 21000 chars — an
+        # inline expression in this large script made the whole workflow
+        # unparseable (the 2026-07-17 push-validation failure: schedule would
+        # silently not fire); (b) env is the non-injectable way to consume
+        # user input in shell.
+        env:
+          FORCE_TAG: ${{ github.event.inputs.force_tag }}
+          REHEARSE: ${{ github.event.inputs.rehearse }}
+          REHEARSE_BASE: ${{ github.event.inputs.rehearse_base }}
         run: |
           set -euo pipefail
           git config user.name "superset-arm64-bot"
           git config user.email "actions@users.noreply.github.com"
+
+          # --- validate dispatch inputs at the boundary ------------------------
+          FORCE="${FORCE_TAG:-}"
+          REHEARSE="${REHEARSE:-}"
+          REHEARSE_BASE="${REHEARSE_BASE:-}"
+          if [ -n "$REHEARSE" ] && [ "$REHEARSE" != "true" ] && [ "$REHEARSE" != "false" ]; then
+            echo "::error::rehearse must be '', 'true' or 'false' (got '$REHEARSE')"; exit 1
+          fi
+          if [ -n "$REHEARSE_BASE" ]; then
+            if [ "$REHEARSE" != "true" ] || [ -z "$FORCE" ]; then
+              echo "::error::rehearse_base requires rehearse=true AND force_tag (replaying a past nightly needs both the base and the tag)"; exit 1
+            fi
+            if ! REHEARSE_SHA=$(git rev-parse -q --verify "$REHEARSE_BASE^{commit}"); then
+              echo "::error::rehearse_base '$REHEARSE_BASE' is not a commit in this repo"; exit 1
+            fi
+            echo "REHEARSAL: replaying from historical base $REHEARSE_SHA"
+            git checkout -q "$REHEARSE_SHA"
+          fi
 
           # --- detect the upstream tag to merge --------------------------------
           git remote add upstream https://github.com/superset-sh/superset.git 2>/dev/null || true
@@ -100,10 +136,9 @@ jobs:
           # keeps upstream's source tags cleanly separate from our release tags.
           git fetch --no-recurse-submodules --force upstream \
             'refs/tags/desktop-v*:refs/upstream-tags/desktop-v*'
-          FORCE='${{ github.event.inputs.force_tag }}'
-          # Validate the dispatch input at the boundary: it is interpolated
-          # into this script and later into ref names — reject anything that
-          # is not a plain desktop-v<semver-ish> tag.
+          # Validate the dispatch input at the boundary: it is used in ref
+          # names — reject anything that is not a plain desktop-v<semver-ish>
+          # tag.
           if [ -n "$FORCE" ] && ! [[ "$FORCE" =~ ^desktop-v[0-9][0-9.]*$ ]]; then
             echo "::error::force_tag '$FORCE' is not a desktop-v<version> tag"; exit 1
           fi
@@ -434,6 +469,22 @@ jobs:
           # stale remote copy first so the push is always clean. This is pure CI
           # scratch (never a feature/history branch), so overwriting it is safe;
           # we delete-then-push rather than --force a real branch.
+          # (REHEARSAL) Everything above — merge, resolver, repair, every
+          # gate, even the local merge commit — ran for real; stop before
+          # anything leaves this runner. This is the on-demand emulation of
+          # the overnight run: after ANY change to this workflow, dispatch
+          # rehearse=true (+ force_tag / rehearse_base to replay a past
+          # night) and get tonight's answer today, with zero side effects.
+          if [ "$REHEARSE" = "true" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## REHEARSAL PASSED — $NEWTAG"
+              echo "Merge + conflict resolution + REFERR-REPAIR + marker gate + dependency gates + semantic review all green."
+              echo "Merge commit (local only, discarded): $(git rev-parse HEAD)"
+              echo "No candidate pushed, no build, no advance, baseline untouched."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           git push origin --delete "$CAND" 2>/dev/null || true
           git push origin "$CAND"
 
