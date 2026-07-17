@@ -3,7 +3,7 @@
   "checkpoint_id": "e1b56fcfdb33",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     ".github/workflows/nightly-merge.yml"
   ],
@@ -13,13 +13,19 @@
       "transcript": "/e1/b56fcfdb33/0/full.jsonl",
       "content_hash": "/e1/b56fcfdb33/0/content_hash.txt",
       "prompt": "/e1/b56fcfdb33/0/prompt.txt"
+    },
+    {
+      "metadata": "/e1/b56fcfdb33/1/metadata.json",
+      "transcript": "/e1/b56fcfdb33/1/full.jsonl",
+      "content_hash": "/e1/b56fcfdb33/1/content_hash.txt",
+      "prompt": "/e1/b56fcfdb33/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 25599,
-    "cache_creation_tokens": 595821,
-    "cache_read_tokens": 8904540,
-    "output_tokens": 59420,
-    "api_call_count": 65
+    "input_tokens": 45006,
+    "cache_creation_tokens": 2828888,
+    "cache_read_tokens": 47493923,
+    "output_tokens": 174366,
+    "api_call_count": 249
   }
 }
