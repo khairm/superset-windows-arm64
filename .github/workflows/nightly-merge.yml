@@ -216,32 +216,6 @@ jobs:
             echo "Clean merge — no conflicts."
           fi
 
-          # --- feature-marker gate (FEATURES.md) ------------------------------
-          echo "::group::feature-marker gate"
-          MISSING=0
-          # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
-          # Guard the guard: an empty/renamed block would pass VACUOUSLY (zero
-          # markers checked == zero missing). Fail loud instead.
-          MARKER_LINES=$(awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md)
-          if ! printf '%s\n' "$MARKER_LINES" | grep -q '[^[:space:]]'; then
-            echo "::error::FEATURES.md markers block is missing or empty — the marker gate would pass vacuously. Refusing to trust this merge."
-            exit 1
-          fi
-          printf '%s\n' "$MARKER_LINES" | while IFS=$'\t' read -r tok root; do
-            [ -n "$tok" ] || continue
-            if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
-              echo "  OK   $tok ($root)"
-            else
-              echo "::error::feature marker MISSING after merge: '$tok' under $root"
-              echo missing >> "$RUNNER_TEMP/marker-missing"
-            fi
-          done
-          echo "::endgroup::"
-          if [ -f "$RUNNER_TEMP/marker-missing" ]; then
-            echo "::error::A feature was dropped by the $NEWTAG merge — rejecting. Recovery: fix locally and re-baseline."
-            exit 1
-          fi
-
           # --- dependency-consistency gate + lock regen (LOCK-REGEN) ----------
           # The build installs --frozen-lockfile and electron-builder's
           # dependency traversal requires each workspace's DECLARED dep version
@@ -310,11 +284,22 @@ jobs:
             cat "$REFERRLOG"
           }
           run_referr_gate
+          # The repair agent must only EDIT the work tree — record the commit
+          # state so an agent that disobeys "Do NOT commit" (advancing HEAD
+          # and vacating the merge) is caught, not silently laundered into a
+          # clean-looking tree.
+          HEAD_BEFORE_REPAIR=$(git rev-parse HEAD)
           attempt=1
           while [ "$REFERR_RC" -ne 0 ] && [ $attempt -le 2 ]; do
-            npm install -g @anthropic-ai/claude-code
             DIAGS=$(grep -F '(REFERR-GATE)' "$REFERRLOG" | head -40 || true)
-            REPAIR_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG}. The typecheck gate found cannot-find-name diagnostics — identifiers that would throw ReferenceError at runtime, almost always imports dropped during conflict resolution. Diagnostics: ${DIAGS} — Fix ONLY these diagnostics: add the missing import lines (match how the same symbols are imported elsewhere in this repo, e.g. @superset/ui/*) or restore the dropped local declaration. Do NOT change any other code, do NOT reorder or remove existing imports, do NOT touch any file not named in the diagnostics. After editing each file run 'git add <file>'. Do NOT commit. Output nothing."
+            if [ -z "$DIAGS" ]; then
+              # Gate failed WITHOUT naming diagnostics = the checker itself
+              # broke (install/tsc infra). AI repair has nothing to act on.
+              echo "::error::(REFERR-REPAIR) gate failed without diagnostics — checker infrastructure problem, not repairable. Log above. Baseline untouched."
+              exit 1
+            fi
+            npm install -g @anthropic-ai/claude-code
+            REPAIR_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG}. The typecheck gate found cannot-find-name diagnostics — identifiers that would throw ReferenceError at runtime, almost always imports dropped during conflict resolution. Diagnostics: ${DIAGS} — Fix ONLY these diagnostics, and ONLY by ADDING code: add the missing import lines (match how the same symbols are imported elsewhere in this repo, e.g. @superset/ui/*) or restore the dropped declaration. NEVER delete, comment out, or rewrite existing code, JSX, or use-sites to silence a diagnostic — removing the code that uses the identifier is feature loss and is forbidden. Do NOT touch any file not named in the diagnostics. After editing each file run 'git add <file>'. Do NOT commit. Output nothing."
             echo "::group::claude referr-repair attempt $attempt"
             claude --dangerously-skip-permissions --model opus --effort high -p "$REPAIR_PROMPT" || true
             echo "::endgroup::"
@@ -325,7 +310,45 @@ jobs:
             echo "::error::(REFERR-REPAIR) cannot-find-name diagnostics persist after repair attempts — aborting (the build would reject this tree). Recovery: fix locally and re-baseline. Baseline untouched."
             exit 1
           fi
+          if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_REPAIR" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::(REFERR-REPAIR) the repair run committed or destroyed the merge state — refusing to trust it. Baseline untouched."
+            exit 1
+          fi
+          # Stage any repair edits NOW: the semantic review below reads the
+          # STAGED diff ('git diff --cached'); an unstaged repair would be
+          # invisible to the review yet still swept into the final commit's
+          # 'git add -A' — reviewed tree and shipped tree must be identical.
+          git add -A
           echo "::endgroup::"
+
+          # --- feature-marker gate (FEATURES.md) ------------------------------
+          # Runs AFTER conflict resolution AND the REFERR repair loop, so it
+          # judges the FINAL tree — a repair that "fixed" a diagnostic by
+          # deleting fork code (forbidden, but prompts are not proofs) still
+          # has to get past the marker grep here.
+          echo "::group::feature-marker gate"
+          # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
+          # Guard the guard: an empty/renamed block would pass VACUOUSLY (zero
+          # markers checked == zero missing). Fail loud instead.
+          MARKER_LINES=$(awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md)
+          if ! printf '%s\n' "$MARKER_LINES" | grep -q '[^[:space:]]'; then
+            echo "::error::FEATURES.md markers block is missing or empty — the marker gate would pass vacuously. Refusing to trust this merge."
+            exit 1
+          fi
+          printf '%s\n' "$MARKER_LINES" | while IFS=$'\t' read -r tok root; do
+            [ -n "$tok" ] || continue
+            if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
+              echo "  OK   $tok ($root)"
+            else
+              echo "::error::feature marker MISSING after merge: '$tok' under $root"
+              echo missing >> "$RUNNER_TEMP/marker-missing"
+            fi
+          done
+          echo "::endgroup::"
+          if [ -f "$RUNNER_TEMP/marker-missing" ]; then
+            echo "::error::A feature was dropped by the $NEWTAG merge — rejecting. Recovery: fix locally and re-baseline."
+            exit 1
+          fi
 
           # --- (MERGE-SEMANTIC-GATE) AI review of the WHOLE merged delta -------
           # The marker gate only proves feature TOKENS still exist, and the

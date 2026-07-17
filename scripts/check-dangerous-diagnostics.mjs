@@ -65,7 +65,26 @@ for (const dir of PACKAGE_DIRS) {
 		continue;
 	}
 	const hits = output.split(/\r?\n/).filter((line) => DANGEROUS.test(line));
+	const total = output.split(/\r?\n/).filter((l) => /error TS\d+:/.test(l)).length;
 	const secs = ((Date.now() - started) / 1000).toFixed(0);
+	if (result.signal) {
+		// Killed (timeout/OOM): no output was produced to judge — never OK.
+		console.error(
+			`::error::(REFERR-GATE) tsc in ${dir} was killed by ${result.signal} — check did not complete.`,
+		);
+		failed = true;
+		continue;
+	}
+	if (result.status !== 0 && total === 0 && hits.length === 0) {
+		// Nonzero exit with ZERO parseable diagnostics = the compiler itself
+		// failed (bad config, crash, module resolution meltdown), not type
+		// debt. Treating that as OK would pass the gate without a valid check.
+		console.error(
+			`::error::(REFERR-GATE) tsc in ${dir} exited ${result.status} without producing any diagnostics — invalid check, not a pass. Output tail: ${output.trim().split(/\r?\n/).slice(-5).join(" | ")}`,
+		);
+		failed = true;
+		continue;
+	}
 	if (hits.length > 0) {
 		failed = true;
 		console.error(
@@ -76,9 +95,6 @@ for (const dir of PACKAGE_DIRS) {
 		}
 	} else {
 		// Non-dangerous diagnostics (the known debt) are allowed; only report count.
-		const total = output
-			.split(/\r?\n/)
-			.filter((l) => /error TS\d+:/.test(l)).length;
 		console.log(
 			`OK   ${dir} (${secs}s) — 0 dangerous (${total} total diagnostics, debt allowed)`,
 		);
