@@ -1,8 +1,6 @@
 import { existsSync } from "node:fs";
 import { TRPCError } from "@trpc/server";
-import { and, eq, ne } from "drizzle-orm";
 import { z } from "zod";
-import { terminalSessions } from "../../../db/schema";
 import { invalidateLabelCache } from "../../../ports/static-ports";
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import {
@@ -272,6 +270,8 @@ async function runDestroy(
 			db: ctx.db,
 			workspaceId: input.workspaceId,
 			worktreePath: local.worktreePath,
+			repoPath: project.repoPath,
+			projectId: local.projectId,
 		});
 		if (teardown.status === "failed") {
 			const cause: TeardownFailureCause = {
@@ -302,26 +302,6 @@ async function runDestroy(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		warnings.push(`Failed to dispose terminal sessions: ${message}`);
-	}
-
-	// Drop this workspace's terminal rows so its session index dies with it
-	// rather than lingering as `set null` orphans. Confirmed-dead rows only:
-	// a still-`active` row is a failed kill we keep reachable for the reaper.
-	try {
-		ctx.db
-			.delete(terminalSessions)
-			.where(
-				and(
-					eq(terminalSessions.originWorkspaceId, input.workspaceId),
-					ne(terminalSessions.status, "active"),
-				),
-			)
-			.run();
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		warnings.push(
-			`Failed to clear terminal session rows for ${input.workspaceId}: ${message}`,
-		);
 	}
 
 	// 2b. Worktree. Double-force unlocks the rare locked-worktree case and
