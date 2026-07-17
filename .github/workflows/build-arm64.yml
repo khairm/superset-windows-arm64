@@ -297,15 +297,21 @@ jobs:
           TAG="desktop-v${V}"
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
-          # (NIGHTLY-INTEGRITY) --target: without it gh creates the tag at the
-          # DEFAULT BRANCH tip — which during a nightly is main BEFORE advance
-          # runs, so every nightly-published tag pointed one commit behind the
-          # candidate the installer was actually built from. Tag the exact
-          # checked-out commit, then prove the remote tag landed on it.
+          # (NIGHTLY-INTEGRITY) Tag the exact checked-out commit, then prove
+          # the remote tag landed on it. The tag is pushed via GIT first and
+          # the release created on the EXISTING tag: `gh release create
+          # --target <sha>` uses the releases API, and GITHUB_TOKEN may only
+          # create a tag there when the sha is a CURRENT BRANCH HEAD — a push
+          # to main during a long build strips that status from the built
+          # commit and the create 403s ("Resource not accessible by
+          # integration", run 29566648149). A plain git tag push has no such
+          # restriction. (Without explicit tagging at all, gh would tag the
+          # default-branch tip — during a nightly that's main BEFORE advance,
+          # one commit behind the candidate the installer was built from.)
           BUILT_SHA=$(git rev-parse HEAD)
+          git push origin "$BUILT_SHA:refs/tags/$TAG"
           gh release create "$TAG" "$ASSET" \
             --repo "${{ github.repository }}" \
-            --target "$BUILT_SHA" \
             --title "Superset $V (Windows ARM64)" \
             --notes "Native **Windows ARM64** build of the vendored superset-sh/superset fork (version $V). Built deterministically from committed source (no AI in the build). Installer is **unsigned**. Not the official superset-sh distribution."
           REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$TAG" | cut -f1)
