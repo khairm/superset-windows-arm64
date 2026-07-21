@@ -36,7 +36,8 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Master rows snoozeable | `snoozeWorkspace` inserts a pre-snoozed local-state row for an auto-included main that has none yet (mirrors `archiveWorkspace`) — Snooze on a master row used to silently no-op | `(SNOOZE-MAIN)` |
 | Sticky project removal | "Remove project from sidebar" tombstones EVERY workspace of the project incl. mains, and passive workspace route mounts (session restore, kanban split) use `placeWorkspaceFromPassiveMount`, which never re-inserts the project's sidebar row and never resurrects an existing hidden row — a removed project can only come back via an EXPLICIT open (Workspaces page, project setup/import) | `(REMOVE-STICKY)` |
 | Case-insensitive repo-path dedupe | host-service `project.findByPath` / import-collision checks compare `projects.repoPath` case-insensitively on win32/darwin (case-insensitive filesystems) — a case-only folder rename used to miss the existing row and mint a duplicate project (cloud slug conflict suffixed `-2` instead of reusing) | `(PATH-CI-DEDUPE)` |
-| Merge semantic review gate | every nightly upstream merge — clean or conflicted — is reviewed by Opus against this manifest BEFORE it may commit/build/publish: a cleanly-merging upstream hunk that semantically breaks a fork feature (the v1.14.2 sidebar-projection incident) is caught here, not in production. Fail closed: no parsable verdict, a BREAKAGE verdict, or a review run that modified the tree all hard-abort with the baseline untouched | `(MERGE-SEMANTIC-GATE)` |
+| Merge semantic review gate | every nightly upstream merge — clean or conflicted — is reviewed by Opus against this manifest BEFORE it may commit/build/publish: a cleanly-merging upstream hunk that semantically breaks a fork feature (the v1.14.2 sidebar-projection incident) is caught here, not in production. Review is fresh after every adaptation and fails closed: no parsable verdict, a final BREAKAGE verdict, or a review run that modified the tree all hard-abort with the baseline untouched | `(MERGE-SEMANTIC-GATE)` |
+| Nightly proactive port + bounded adaptation | after conflict resolution, Opus compares the old/new upstream tag trees against fork-owned files and surgically ports cleanly-merging API refactors before the gates; semantic BREAKAGE findings then drive at most two repair rounds, each followed by ReferenceError + marker gates and a fresh review. This closes the desktop-v1.16.0 class where upstream removed collections/exports used only by fork files, so git produced no conflict for the resolver to see | `(MERGE-ADAPT)` |
 | Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
@@ -105,6 +106,7 @@ DashboardSidebarStateSection	apps/desktop/src/renderer
 (REMOVE-STICKY)	apps/desktop/src/renderer
 (PATH-CI-DEDUPE)	packages/host-service
 (MERGE-SEMANTIC-GATE)	.github
+(MERGE-ADAPT)	.github
 useLinkClickHint	apps/desktop/src/renderer
 openHtmlInBrowser	apps/desktop/src
 v2KanbanCards	apps/desktop/src/renderer

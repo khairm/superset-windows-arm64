@@ -21,15 +21,16 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
   baseline sits on.
 - **Nightly (minimal AI).** `.github/workflows/nightly-merge.yml` runs nightly: if
   upstream published a newer `desktop-v*` tag, it `git merge`s it in. Git resolves
-  the non-conflicting majority deterministically; an **Opus** model (`--effort
-  high`) resolves **only the conflicted files**, preserving every feature. AI cost
-  scales with the **upstream delta per release**, NOT with how large the fork grows.
-- **Gates.** After the merge: every marker in `FEATURES.md` must still be present
-  (else a feature was dropped → reject), the dependency gates run, then
-  `(MERGE-SEMANTIC-GATE)`: Opus reviews the WHOLE merged delta — clean or
-  conflicted — against `FEATURES.md` for semantic feature breakage (fail closed:
-  no verdict / a BREAKAGE verdict / a review that edited the tree all abort),
-  then the deterministic build must go green.
+  the non-conflicting majority deterministically; **Opus** (`--effort high`)
+  resolves conflicted files, then `(MERGE-ADAPT)` proactively ports fork-only
+  callers across cleanly-merging upstream API refactors. AI cost scales with the
+  **upstream delta per release**, NOT with how large the fork grows.
+- **Gates.** After the merge/port: every marker in `FEATURES.md` must still be
+  present (else a feature was dropped → reject), the dependency + ReferenceError
+  gates run, then `(MERGE-SEMANTIC-GATE)` reviews the WHOLE merged delta. A
+  BREAKAGE verdict drives a bounded `(MERGE-ADAPT)` repair followed by those gates
+  and a fresh review; no verdict, reviewer edits, lost markers, or breakage after
+  three reviews fail closed. Then the deterministic build must go green.
   On a clean merge + green build the nightly **auto-publishes the single
   `desktop-v<version>` Release** (rebuilt in place — see One-version below) and
   advances the baseline. Any failure (unresolvable conflict, lost marker,
@@ -54,9 +55,9 @@ truth; we track upstream by **merging its deltas**, not by re-applying changes.
   leaves in fork code the AI resolver never sees (v1.14.0 layout.tsx
   incident). Validate + e2e locally before relying on a release.
 - **AI only in the nightly merge.** The build is AI-free. The nightly needs
-  `CLAUDE_CODE_OAUTH_TOKEN` for the conflict resolver AND the mandatory
-  `(MERGE-SEMANTIC-GATE)` review of every merge; if rate-limited it aborts rather
-  than ship a half-merged or unreviewed fork.
+  `CLAUDE_CODE_OAUTH_TOKEN` for conflict resolution, the `(MERGE-ADAPT)` port/repair
+  passes, and the mandatory `(MERGE-SEMANTIC-GATE)` reviews; if rate-limited it
+  aborts rather than ship a half-merged, unported, or unreviewed fork.
 - **One version, ever.** Exactly one GitHub Release per upstream version, tagged
   `desktop-v<version>`, **rebuilt in place** (delete + recreate so the tag always
   points at the latest build). NO `-beta`, NO prerelease, NO separate release/beta
@@ -184,8 +185,8 @@ See `FEATURES.md` for the marker manifest. In brief:
 ## Fork key files
 
 - `.github/workflows/build-arm64.yml` — deterministic no-AI ARM64 build.
-- `.github/workflows/nightly-merge.yml` — nightly upstream merge (Opus resolves
-  conflicts) → marker gate → build → auto-publish → advance baseline; recovery on fail.
+- `.github/workflows/nightly-merge.yml` — nightly upstream merge → Opus conflict +
+  clean-refactor ports → bounded review/repair gates → build/publish/advance; recovery on fail.
 - `FEATURES.md` — feature marker manifest (the merge-preservation gate reads it).
 - `.fork/upstream-baseline.txt` — the upstream tag the baseline currently sits on.
 - `scripts/materialize-native-closure.sh` — win-arm64 native-payload repair

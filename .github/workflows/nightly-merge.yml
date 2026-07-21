@@ -3,16 +3,17 @@ name: Nightly upstream merge
 # The ongoing half of the architecture. Nightly: if upstream superset published a
 # newer desktop-v* tag than .fork/upstream-baseline.txt, merge that tag into the
 # fork. git's 3-way merge handles the non-conflicting majority deterministically;
-# Opus (--effort high) resolves ONLY the conflicted files, preserving every
-# feature. Then the FEATURES.md marker gate runs, then the dependency gates, then
-# (MERGE-SEMANTIC-GATE) an Opus review of the WHOLE merged delta — clean or
-# conflicted — against the fork feature manifest (a cleanly-merging upstream hunk
-# can semantically break a fork feature with zero conflicts; v1.14.2 dropped the
-# sidebar snooze/bin fields that way). Only then the deterministic ARM64 build.
+# Opus (--effort high) resolves ONLY the conflicted files, then (MERGE-ADAPT)
+# proactively ports fork-owned call sites across cleanly-merging upstream API
+# refactors. This closes the v1.16.0 failure class: upstream deleted/privatized
+# collections and workspace exports while fork-only callers merged with zero
+# conflicts. Then the marker/dependency/ReferenceError gates run, followed by a
+# bounded, fail-closed (MERGE-SEMANTIC-GATE) review -> adapt -> fresh-review loop
+# over the WHOLE merged delta. Only then does the deterministic ARM64 build run.
 # On a clean merge + green build the build publishes a full Release and we
-# fast-forward the baseline. Any failure (unresolvable conflict, lost marker,
-# semantic breakage verdict, build failure) hard-aborts and leaves the baseline
-# untouched -> recovery loop.
+# fast-forward the baseline. Any failure (unresolvable conflict, unported or
+# unrepaired breakage, lost marker, build failure) hard-aborts and leaves the
+# baseline untouched -> recovery loop.
 #
 # AI cost scales with the UPSTREAM delta per release, NOT with how large the fork
 # grows. The build itself stays 100% AI-free.
@@ -251,6 +252,40 @@ jobs:
             echo "Clean merge — no conflicts."
           fi
 
+          # --- (MERGE-ADAPT) proactive port pass ------------------------------
+          # Conflict-only resolution cannot see fork-only callers when upstream
+          # cleanly refactors the APIs they consume. desktop-v1.16.0 demonstrated
+          # the gap: upstream removed v2Projects and privatized/renamed workspace
+          # registration exports, while every fork call site merged cleanly. Give
+          # Opus the fork-delta file set plus both upstream trees so it can port
+          # those call sites before the deterministic gates and semantic review.
+          echo "::group::(MERGE-ADAPT) proactive port pass"
+          FORK_DELTA_FILE="$RUNNER_TEMP/fork-delta-files.txt"
+          git diff --name-only --cached "refs/upstream-tags/$NEWTAG" -- \
+            . \
+            ':(exclude).github/workflows/**' \
+            ':(exclude)bun.lock' \
+            ':(exclude)FEATURES.md' \
+            ':(exclude)AGENTS.md' \
+            ':(exclude).fork/**' > "$FORK_DELTA_FILE"
+          echo "Fork-owned / fork-modified files eligible for proactive porting:"
+          cat "$FORK_DELTA_FILE"
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g @anthropic-ai/claude-code
+          fi
+          HEAD_BEFORE_PORT=$(git rev-parse HEAD)
+          PORT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. The previous upstream baseline is ${BASE}. Both upstream trees are available at refs/upstream-tags/${BASE} and refs/upstream-tags/${NEWTAG}. Your job is to find fork-owned files listed in ${FORK_DELTA_FILE} that reference upstream APIs, symbols, modules, collections, or providers that CHANGED between those tags — renamed/deleted/moved exports, changed signatures, removed collections/providers — and PORT the fork code to upstream's new API and intent so every fork feature keeps working. Use read-only commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>', 'git show', and grep to understand the refactor. If upstream renamed or privatized an export the fork imports, rewire the fork call site to the new mechanism or deliberately re-export the required mechanism; if upstream deleted a collection the fork queries, migrate the fork query to upstream's replacement data source. HARD RULES: edit ONLY files listed in ${FORK_DELTA_FILE}; never edit .github/workflows/**; never delete a fork feature or weaken any FEATURES.md marker; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit; do NOT run git merge / checkout / restore; if nothing needs porting, change nothing and stop. Output nothing."
+          claude --dangerously-skip-permissions --model opus --effort high -p "$PORT_PROMPT" || true
+          if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_PORT" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "::error::(MERGE-ADAPT) the proactive port run committed or destroyed the merge state — refusing to trust it. Baseline untouched."
+            exit 1
+          fi
+          # The workflow tree is fork-owned even if the agent disobeys its scope.
+          # Restore it before staging; the final postcondition remains the proof.
+          git checkout --no-overlay HEAD -- .github/workflows
+          git add -A
+          echo "::endgroup::"
+
           # --- dependency-consistency gate + lock regen (LOCK-REGEN) ----------
           # The build installs --frozen-lockfile and electron-builder's
           # dependency traversal requires each workspace's DECLARED dep version
@@ -357,79 +392,146 @@ jobs:
           echo "::endgroup::"
 
           # --- feature-marker gate (FEATURES.md) ------------------------------
-          # Runs AFTER conflict resolution AND the REFERR repair loop, so it
-          # judges the FINAL tree — a repair that "fixed" a diagnostic by
-          # deleting fork code (forbidden, but prompts are not proofs) still
-          # has to get past the marker grep here.
-          echo "::group::feature-marker gate"
-          # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
-          # Guard the guard: an empty/renamed block would pass VACUOUSLY (zero
-          # markers checked == zero missing). Fail loud instead.
-          MARKER_LINES=$(awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md)
-          if ! printf '%s\n' "$MARKER_LINES" | grep -q '[^[:space:]]'; then
-            echo "::error::FEATURES.md markers block is missing or empty — the marker gate would pass vacuously. Refusing to trust this merge."
-            exit 1
-          fi
-          printf '%s\n' "$MARKER_LINES" | while IFS=$'\t' read -r tok root; do
-            [ -n "$tok" ] || continue
-            if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
-              echo "  OK   $tok ($root)"
-            else
-              echo "::error::feature marker MISSING after merge: '$tok' under $root"
-              echo missing >> "$RUNNER_TEMP/marker-missing"
+          # Run once after conflict/port/REFERR repair and again after EVERY
+          # semantic adaptation. A repair that deletes fork code is never an
+          # acceptable way to make a review or diagnostic go green.
+          run_marker_gate() {
+            echo "::group::feature-marker gate"
+            rm -f "$RUNNER_TEMP/marker-missing"
+            # read the fenced ```markers block: lines are "<token><TAB><glob-root>"
+            # Guard the guard: an empty/renamed block would pass VACUOUSLY (zero
+            # markers checked == zero missing). Fail loud instead.
+            MARKER_LINES=$(awk '/^```markers$/{f=1;next} /^```$/{f=0} f' FEATURES.md)
+            if ! printf '%s\n' "$MARKER_LINES" | grep -q '[^[:space:]]'; then
+              echo "::error::FEATURES.md markers block is missing or empty — the marker gate would pass vacuously. Refusing to trust this merge."
+              echo "::endgroup::"
+              return 1
             fi
-          done
-          echo "::endgroup::"
-          if [ -f "$RUNNER_TEMP/marker-missing" ]; then
-            echo "::error::A feature was dropped by the $NEWTAG merge — rejecting. Recovery: fix locally and re-baseline."
+            printf '%s\n' "$MARKER_LINES" | while IFS=$'\t' read -r tok root; do
+              [ -n "$tok" ] || continue
+              if grep -rqsF -- "$tok" "$root" 2>/dev/null; then
+                echo "  OK   $tok ($root)"
+              else
+                echo "::error::feature marker MISSING after merge: '$tok' under $root"
+                echo missing >> "$RUNNER_TEMP/marker-missing"
+              fi
+            done
+            echo "::endgroup::"
+            if [ -f "$RUNNER_TEMP/marker-missing" ]; then
+              echo "::error::A feature was dropped by the $NEWTAG merge/adaptation — rejecting. Recovery: fix locally and re-baseline."
+              return 1
+            fi
+          }
+          if ! run_marker_gate; then
             exit 1
           fi
 
-          # --- (MERGE-SEMANTIC-GATE) AI review of the WHOLE merged delta -------
+          # --- (MERGE-SEMANTIC-GATE) bounded review/adapt/re-verify loop -------
           # The marker gate only proves feature TOKENS still exist, and the
           # build's (REFERR-GATE) only catches cannot-find-name diagnostics. A
           # cleanly-merging upstream hunk can still SEMANTICALLY break a fork
-          # feature with zero conflicts — v1.14.2 rebuilt the sidebar row
-          # projection in a non-conflicting hunk and silently dropped the fork's
-          # snooze/archive/completed/deleted fields: merged clean, compiled
-          # clean, broke Snooze + Recycle Bin + archived masters. EVERY merge —
-          # clean or conflicted — is therefore reviewed by Opus against
-          # FEATURES.md before it may commit/build/publish. Fail CLOSED: no
-          # parsable verdict (rate limit, malformed output) aborts rather than
-          # ships an unreviewed merge; a BREAKAGE verdict hard-aborts with the
-          # findings in the log (baseline untouched -> recovery loop).
-          echo "::group::semantic feature review (Opus)"
+          # feature with zero conflicts — v1.14.2 dropped sidebar state fields,
+          # while v1.16.0 deleted/privatized APIs still used by fork-only files.
+          # (MERGE-ADAPT) first ports likely call sites proactively; this loop is
+          # the fresh-eyes backstop. Each BREAKAGE verdict may drive one surgical
+          # adaptation, followed by deterministic gates and a brand-new review.
+          # Three review rounds / two repairs is the hard bound. No verdict,
+          # reviewer mutation, deleted marker, or final BREAKAGE fails closed.
           npm install -g @anthropic-ai/claude-code
           REVIEW_FILE="$RUNNER_TEMP/merge-review.txt"
-          rm -f "$REVIEW_FILE"
-          # The reviewer must not modify the tree; snapshot the work-tree state
-          # and refuse to continue if the review run changed ANYTHING.
-          STATUS_BEFORE=$(git status --porcelain=v1 | sha256sum)
+          ADAPT_FINDINGS_FILE="$RUNNER_TEMP/merge-adapt-findings.txt"
+          ADAPT_DIAGS_FILE="$RUNNER_TEMP/merge-adapt-referr-diags.txt"
+          rm -f "$ADAPT_DIAGS_FILE"
           REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. (5) If the file at ${WFDELTA_FILE} is non-empty, read it — it is upstream's CI/workflow delta we deliberately did NOT merge (.github/workflows is fork-owned). If it moves BUILD-RELEVANT logic into upstream CI (a codegen/generate step, a newly required env var, a packaging/signing step) that our fork's own build workflow would now silently miss, append one line per item after the verdict: 'CI-NOTE: <what upstream CI now does that the fork build may need>'. CI-NOTEs alone never change the verdict. Rules: do NOT edit ANY repository file; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
-          attempt=1
-          while [ $attempt -le 2 ]; do
-            echo "::group::claude review attempt $attempt"
-            claude --dangerously-skip-permissions --model opus --effort high -p "$REVIEW_PROMPT" || true
+          MAX_REVIEW_ROUNDS=3
+          round=1
+          while [ $round -le $MAX_REVIEW_ROUNDS ]; do
+            echo "::group::semantic review round $round"
+            # Never let an earlier round's verdict satisfy this round.
+            rm -f "$REVIEW_FILE"
+            # The reviewer must not modify the tree; snapshot the work-tree state
+            # and refuse to continue if the review run changed ANYTHING.
+            STATUS_BEFORE=$(git status --porcelain=v1 | sha256sum)
+            attempt=1
+            while [ $attempt -le 2 ]; do
+              echo "::group::claude review attempt $attempt"
+              claude --dangerously-skip-permissions --model opus --effort high -p "$REVIEW_PROMPT" || true
+              echo "::endgroup::"
+              if [ -s "$REVIEW_FILE" ] && head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then break; fi
+              attempt=$((attempt+1))
+            done
+            STATUS_AFTER=$(git status --porcelain=v1 | sha256sum)
+            if [ "$STATUS_BEFORE" != "$STATUS_AFTER" ]; then
+              echo "::error::(MERGE-SEMANTIC-GATE) the review run modified the work tree — refusing to trust or commit it. Baseline untouched."
+              exit 1
+            fi
+            if ! [ -s "$REVIEW_FILE" ] || ! head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then
+              echo "::error::(MERGE-SEMANTIC-GATE) no parsable review verdict for $NEWTAG in round $round — refusing to ship an UNREVIEWED merge (fail closed). Baseline untouched."
+              exit 1
+            fi
+            echo "--- review verdict ---"
+            cat "$REVIEW_FILE"
+            if head -1 "$REVIEW_FILE" | grep -q '^VERDICT: OK$'; then
+              if [ -s "$ADAPT_DIAGS_FILE" ]; then
+                echo "::error::(MERGE-ADAPT) semantic review is OK but the prior adaptation left deterministic ReferenceError diagnostics — refusing to ship. Baseline untouched."
+                exit 1
+              fi
+              echo "::endgroup::"
+              break
+            fi
             echo "::endgroup::"
-            if [ -s "$REVIEW_FILE" ] && head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then break; fi
-            attempt=$((attempt+1))
+
+            if [ $round -eq $MAX_REVIEW_ROUNDS ]; then
+              echo "::error::(MERGE-SEMANTIC-GATE) Opus still found fork-feature breakage in the $NEWTAG merge after $MAX_REVIEW_ROUNDS reviews — rejecting. Findings above. Recovery: fix locally and re-baseline."
+              exit 1
+            fi
+
+            # Pass every finding (all verdict lines after line 1) to a separate
+            # repair agent. If the previous adaptation introduced cannot-find-
+            # name diagnostics, carry those exact diagnostics into this repair.
+            tail -n +2 "$REVIEW_FILE" > "$ADAPT_FINDINGS_FILE"
+            if [ -s "$ADAPT_DIAGS_FILE" ]; then
+              {
+                echo
+                echo "DETERMINISTIC REFERR-GATE DIAGNOSTICS FROM THE PRIOR ADAPTATION:"
+                cat "$ADAPT_DIAGS_FILE"
+              } >> "$ADAPT_FINDINGS_FILE"
+            fi
+            FINDINGS=$(cat "$ADAPT_FINDINGS_FILE")
+            echo "::group::(MERGE-ADAPT) repair round $round"
+            HEAD_BEFORE_ADAPT=$(git rev-parse HEAD)
+            ADAPT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. An independent semantic review found the fork-feature breakages below. Fix EACH finding by porting the fork code to upstream's new API and intent. You may use read-only git commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>' and 'git show' plus grep to understand the upstream refactor. FINDINGS: ${FINDINGS} HARD RULES: never delete, disable, comment out, or stub a fork feature to silence a finding; edit only files needed for these findings; never touch .github/workflows/**; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit. Output nothing."
+            claude --dangerously-skip-permissions --model opus --effort high -p "$ADAPT_PROMPT" || true
+            if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_ADAPT" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "::error::(MERGE-ADAPT) repair round $round committed or destroyed the merge state — refusing to trust it. Baseline untouched."
+              exit 1
+            fi
+            # Restore the fork-owned workflow tree before staging anything the
+            # repair agent touched; the pre-commit postcondition remains proof.
+            git checkout --no-overlay HEAD -- .github/workflows
+            git add -A
+            run_referr_gate
+            if ! run_marker_gate; then
+              echo "::error::(MERGE-ADAPT) repair round $round removed a fork feature marker — no further repair is acceptable. Baseline untouched."
+              exit 1
+            fi
+            rm -f "$ADAPT_DIAGS_FILE"
+            if [ "$REFERR_RC" -ne 0 ]; then
+              DIAGS=$(grep -F '(REFERR-GATE)' "$REFERRLOG" | head -40 || true)
+              if [ -z "$DIAGS" ]; then
+                echo "::error::(MERGE-ADAPT) repair made the ReferenceError checker fail without actionable diagnostics — aborting. Baseline untouched."
+                exit 1
+              fi
+              if [ $round -ge $((MAX_REVIEW_ROUNDS - 1)) ]; then
+                echo "::error::(MERGE-ADAPT) the final available repair introduced/preserved ReferenceError diagnostics — aborting. Baseline untouched."
+                exit 1
+              fi
+              printf '%s\n' "$DIAGS" > "$ADAPT_DIAGS_FILE"
+              echo "(MERGE-ADAPT) carrying ReferenceError diagnostics into the next repair round."
+            fi
+            echo "::endgroup::"
+            round=$((round+1))
           done
-          STATUS_AFTER=$(git status --porcelain=v1 | sha256sum)
-          if [ "$STATUS_BEFORE" != "$STATUS_AFTER" ]; then
-            echo "::error::(MERGE-SEMANTIC-GATE) the review run modified the work tree — refusing to trust or commit it. Baseline untouched."
-            exit 1
-          fi
-          if ! [ -s "$REVIEW_FILE" ] || ! head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then
-            echo "::error::(MERGE-SEMANTIC-GATE) no parsable review verdict for $NEWTAG — refusing to ship an UNREVIEWED merge (fail closed). Baseline untouched."
-            exit 1
-          fi
-          echo "--- review verdict ---"
-          cat "$REVIEW_FILE"
-          if head -1 "$REVIEW_FILE" | grep -q 'BREAKAGE'; then
-            echo "::error::(MERGE-SEMANTIC-GATE) Opus found fork-feature breakage in the $NEWTAG merge — rejecting. Findings above. Recovery: fix locally and re-baseline."
-            exit 1
-          fi
-          echo "::endgroup::"
 
           # --- record new baseline + commit the merge -------------------------
           # (NIGHTLY-INTEGRITY) The release tag is derived SOLELY from
@@ -457,7 +559,7 @@ jobs:
           fi
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
-          git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved by Opus where present; all FEATURES.md markers verified present; merged delta passed the (MERGE-SEMANTIC-GATE) Opus feature review."
+          git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved and clean refactors ported by Opus where needed; all FEATURES.md markers verified present; merged delta passed the bounded (MERGE-SEMANTIC-GATE)/(MERGE-ADAPT) review loop."
           # (CANDIDATE-IDEMPOTENT-PUSH) The candidate is a disposable CI branch:
           # re-derived from main each run, consumed by `build`, deleted by
           # `advance` ON SUCCESS only. A FAILED build never reaches `advance`, so
@@ -479,7 +581,7 @@ jobs:
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             {
               echo "## REHEARSAL PASSED — $NEWTAG"
-              echo "Merge + conflict resolution + REFERR-REPAIR + marker gate + dependency gates + semantic review all green."
+              echo "Merge + conflict resolution + proactive (MERGE-ADAPT) port + dependency/REFERR/marker gates + bounded semantic review/adapt loop all green."
               echo "Merge commit (local only, discarded): $(git rev-parse HEAD)"
               echo "No candidate pushed, no build, no advance, baseline untouched."
             } | tee -a "$GITHUB_STEP_SUMMARY"
