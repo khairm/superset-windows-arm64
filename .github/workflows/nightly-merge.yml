@@ -252,6 +252,19 @@ jobs:
             echo "Clean merge — no conflicts."
           fi
 
+          # (MERGE-ADAPT) Snapshot the legitimate post-resolution manifest diff:
+          # upstream carries AGENTS.md, while FEATURES.md is fork-owned. Any later
+          # change means an AI pass edited its own acceptance or persisted prompt
+          # criteria (CLAUDE.md includes AGENTS.md).
+          MANIFEST_BASELINE=$(git diff HEAD -- FEATURES.md AGENTS.md | sha256sum)
+          assert_manifest_untampered() {
+            MANIFEST_CURRENT=$(git diff HEAD -- FEATURES.md AGENTS.md | sha256sum)
+            if [ "$MANIFEST_CURRENT" != "$MANIFEST_BASELINE" ]; then
+              echo "::error::AI editing changed FEATURES.md or AGENTS.md — refusing to trust a self-modified feature manifest. Baseline untouched."
+              exit 1
+            fi
+          }
+
           # --- (MERGE-ADAPT) proactive port pass ------------------------------
           # Conflict-only resolution cannot see fork-only callers when upstream
           # cleanly refactors the APIs they consume. desktop-v1.16.0 demonstrated
@@ -280,10 +293,11 @@ jobs:
             echo "::error::(MERGE-ADAPT) the proactive port run committed or destroyed the merge state — refusing to trust it. Baseline untouched."
             exit 1
           fi
-          # The workflow tree is fork-owned even if the agent disobeys its scope.
-          # Restore it before staging; the final postcondition remains the proof.
-          git checkout --no-overlay HEAD -- .github/workflows
+          assert_manifest_untampered
+          # Stage first so a disobedient untracked workflow file enters the index;
+          # --no-overlay can then drop it with the rest of the fork-owned tree.
           git add -A
+          git checkout --no-overlay HEAD -- .github/workflows
           echo "::endgroup::"
 
           # --- dependency-consistency gate + lock regen (LOCK-REGEN) ----------
@@ -313,23 +327,28 @@ jobs:
           node scripts/check-override-consistency.mjs
           echo "::endgroup::"
 
-          echo "::group::regenerate bun.lock to match merged manifests"
-          export SUPERSET_POSTINSTALL_RUNNING=1
-          LOCKLOG="$RUNNER_TEMP/bun-lockfile.log"
-          set +e
-          bun install --lockfile-only > "$LOCKLOG" 2>&1
-          rc=$?
-          set -e
-          cat "$LOCKLOG"
-          if [ "$rc" -ne 0 ]; then
-            if grep -q "blocked by minimum-release-age" "$LOCKLOG"; then
-              echo "::error::Lock regen blocked by bunfig minimumReleaseAge — an upstream dep pin in $NEWTAG is <72h old. This is a timing race, not a breakage: the nightly will succeed once the version ages past the gate (re-run after it ages, or wait for tomorrow's schedule). Baseline left untouched."
-            else
-              echo "::error::bun install --lockfile-only failed (rc=$rc) after merging $NEWTAG — the merged manifests don't resolve. Recovery: fix locally and re-baseline."
+          run_lock_regen() {
+            echo "::group::regenerate bun.lock to match merged manifests"
+            export SUPERSET_POSTINSTALL_RUNNING=1
+            LOCKLOG="$RUNNER_TEMP/bun-lockfile.log"
+            set +e
+            bun install --lockfile-only > "$LOCKLOG" 2>&1
+            rc=$?
+            set -e
+            cat "$LOCKLOG"
+            if [ "$rc" -ne 0 ]; then
+              if grep -q "blocked by minimum-release-age" "$LOCKLOG"; then
+                echo "::error::Lock regen blocked by bunfig minimumReleaseAge — an upstream dep pin in $NEWTAG is <72h old. This is a timing race, not a breakage: the nightly will succeed once the version ages past the gate (re-run after it ages, or wait for tomorrow's schedule). Baseline left untouched."
+              else
+                echo "::error::bun install --lockfile-only failed (rc=$rc) after merging $NEWTAG — the merged manifests don't resolve. Recovery: fix locally and re-baseline."
+              fi
+              return 1
             fi
+            echo "::endgroup::"
+          }
+          if ! run_lock_regen; then
             exit 1
           fi
-          echo "::endgroup::"
 
           # --- (REFERR-REPAIR) run the build's ReferenceError gate HERE and let
           # Opus repair what it catches, so an import-dropping conflict
@@ -384,6 +403,7 @@ jobs:
             echo "::error::(REFERR-REPAIR) the repair run committed or destroyed the merge state — refusing to trust it. Baseline untouched."
             exit 1
           fi
+          assert_manifest_untampered
           # Stage any repair edits NOW: the semantic review below reads the
           # STAGED diff ('git diff --cached'); an unstaged repair would be
           # invisible to the review yet still swept into the final commit's
@@ -500,16 +520,24 @@ jobs:
             FINDINGS=$(cat "$ADAPT_FINDINGS_FILE")
             echo "::group::(MERGE-ADAPT) repair round $round"
             HEAD_BEFORE_ADAPT=$(git rev-parse HEAD)
+            PACKAGE_JSON_BEFORE_ADAPT=$(git diff HEAD -- package.json '**/package.json' | sha256sum)
             ADAPT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. An independent semantic review found the fork-feature breakages below. Fix EACH finding by porting the fork code to upstream's new API and intent. You may use read-only git commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>' and 'git show' plus grep to understand the upstream refactor. FINDINGS: ${FINDINGS} HARD RULES: never delete, disable, comment out, or stub a fork feature to silence a finding; edit only files needed for these findings; never touch .github/workflows/**; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit. Output nothing."
             claude --dangerously-skip-permissions --model opus --effort high -p "$ADAPT_PROMPT" || true
             if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_ADAPT" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
               echo "::error::(MERGE-ADAPT) repair round $round committed or destroyed the merge state — refusing to trust it. Baseline untouched."
               exit 1
             fi
-            # Restore the fork-owned workflow tree before staging anything the
-            # repair agent touched; the pre-commit postcondition remains proof.
-            git checkout --no-overlay HEAD -- .github/workflows
+            assert_manifest_untampered
+            # Stage first so --no-overlay also drops untracked workflow files.
             git add -A
+            git checkout --no-overlay HEAD -- .github/workflows
+            PACKAGE_JSON_AFTER_ADAPT=$(git diff HEAD -- package.json '**/package.json' | sha256sum)
+            if [ "$PACKAGE_JSON_BEFORE_ADAPT" != "$PACKAGE_JSON_AFTER_ADAPT" ]; then
+              if ! run_lock_regen; then
+                exit 1
+              fi
+              git add bun.lock
+            fi
             run_referr_gate
             if ! run_marker_gate; then
               echo "::error::(MERGE-ADAPT) repair round $round removed a fork feature marker — no further repair is acceptable. Baseline untouched."
@@ -557,6 +585,7 @@ jobs:
             git status --porcelain=v1 --untracked-files=all -- .github/workflows
             exit 1
           fi
+          assert_manifest_untampered
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
           git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved and clean refactors ported by Opus where needed; all FEATURES.md markers verified present; merged delta passed the bounded (MERGE-SEMANTIC-GATE)/(MERGE-ADAPT) review loop."
