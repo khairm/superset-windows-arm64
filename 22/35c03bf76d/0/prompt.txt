@@ -85,3 +85,19 @@ If this event is something the user would act on now, send a PushNotification. R
 <status>completed</status>
 <summary>Background command "Download installer to Downloads folder" completed (exit code 0)</summary>
 </task-notification>
+
+---
+
+strip back AGENTS.md and add this functionality make sure it reflects reality - it should focus on set up of the project (high level set up only) and the features that I've custom built in or overridden
+
+---
+
+Get a fork to do it
+
+---
+
+get a fork to do it
+
+---
+
+Theres a sidebar after updates you can see my [Image #3] theres 2 dots reflecting the 2 tabs. I like it the new way. I want dot only (like superset has) when theres only 1 tab. But as soon as >1 tab then I don't want those dots next to the name anymore I want the icon (currently anthropic icons) with the dots over them, and I dont want hover to expand I want always expanded and the names of them should be the tab names (reflecting actual tab names) AND they should be in same order as tabs are well. Make sense - use ask user tool to really understand this properly
