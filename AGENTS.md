@@ -8,235 +8,113 @@
 
 This repo is a **vendored fork** of [superset-sh/superset]: the full upstream
 source with our Windows ARM64 + feature changes committed on top, plus CI that
-builds a native **Windows ARM64** one-click installer. The fork is the source of
-truth; we track upstream by **merging its deltas**, not by re-applying changes.
+builds a native **Windows ARM64** one-click NSIS installer. The fork is the
+source of truth; we track upstream by **merging its deltas**, not by
+re-applying changes. `.fork/upstream-baseline.txt` records the upstream
+`desktop-v*` tag the baseline currently sits on.
 
-## Fork architecture
+## Setup / architecture (high level)
 
-- **Baseline (frozen).** The whole fork is committed source. Building it is
-  deterministic and **AI-free** — `.github/workflows/build-arm64.yml` does
-  install → compile → materialize the win-arm64 native closure → package the NSIS
-  installer → verify the packaged natives are ARM64. No upstream clone, no patch
-  apply, no arch-fixup. `.fork/upstream-baseline.txt` records the upstream tag the
-  baseline sits on.
-- **Nightly (minimal AI).** `.github/workflows/nightly-merge.yml` runs nightly: if
-  upstream published a newer `desktop-v*` tag, it `git merge`s it in. Git resolves
-  the non-conflicting majority deterministically; **Opus** (`--effort high`)
-  resolves conflicted files, then `(MERGE-ADAPT)` proactively ports fork-only
-  callers across cleanly-merging upstream API refactors. AI cost scales with the
-  **upstream delta per release**, NOT with how large the fork grows.
-- **Gates.** After the merge/port: every marker in `FEATURES.md` must still be
-  present (else a feature was dropped → reject), the dependency + ReferenceError
-  gates run, then `(MERGE-SEMANTIC-GATE)` reviews the WHOLE merged delta. A
-  BREAKAGE verdict drives a bounded `(MERGE-ADAPT)` repair followed by those gates
-  and a fresh review; no verdict, reviewer edits, lost markers, or breakage after
-  three reviews fail closed. Then the deterministic build must go green.
-  On a clean merge + green build the nightly **auto-publishes the single
-  `desktop-v<version>` Release** (rebuilt in place — see One-version below) and
-  advances the baseline. Any failure (unresolvable conflict, lost marker,
-  breakage verdict, build failure) **hard-aborts** and leaves the baseline
-  untouched → recovery.
-- **Recovery.** When a nightly merge can't be done cleanly, fix it locally with the
-  maintainer, rebuild, re-freeze the baseline; the nightly then resumes merging only
-  *new* upstream changes from that point.
-
-## Fork non-negotiables
-
-- **Whole feature set or fail loud.** Every `FEATURES.md` marker survives a merge or
-  the build aborts. Never ship a partial fork.
-- **v2-only, forever.** The v2 cloud/host-service stack is pinned on; never v1.
-- **No build-time type/test gate — with ONE narrow exception.** The build runs
-  electron-vite/esbuild; type/format errors don't fail it (the tree carries
-  accepted type debt). The exception is `(REFERR-GATE)`
-  (`scripts/check-dangerous-diagnostics.mjs`, run by the build workflow, and
-  therefore by every nightly): cannot-find-name tsc diagnostics
-  (TS2304/2552-class) DO fail the build — bare identifiers that throw
-  ReferenceError at runtime, the exact damage a cleanly-merging upstream hunk
-  leaves in fork code the AI resolver never sees (v1.14.0 layout.tsx
-  incident). Validate + e2e locally before relying on a release.
-- **AI only in the nightly merge.** The build is AI-free. The nightly needs
-  `CLAUDE_CODE_OAUTH_TOKEN` for conflict resolution, the `(MERGE-ADAPT)` port/repair
-  passes, and the mandatory `(MERGE-SEMANTIC-GATE)` reviews; if rate-limited it
-  aborts rather than ship a half-merged, unported, or unreviewed fork.
-- **One version, ever.** Exactly one GitHub Release per upstream version, tagged
-  `desktop-v<version>`, **rebuilt in place** (delete + recreate so the tag always
-  points at the latest build). NO `-beta`, NO prerelease, NO separate release/beta
-  split — there is just *the* `desktop-v<version>` build.
-
-## Fork features (high-level + UX, for a full rebuild)
-
-See `FEATURES.md` for the marker manifest. In brief:
-
-- **Native Windows ARM64 packaging** — one-click NSIS installer; ARM64 node-pty,
-  libsql, tokenizers; renderer CORS for `superset-app://`.
-- **Window controls** — native `titleBarOverlay` is the sole min/max/close set on
-  Windows, theme-matched; upstream's duplicate controls hidden on Windows.
-- **Windows behaviour fixes** — skip quit-confirmation; cmd.exe fallback;
-  force-foreground; hidden-window watchdog; WebGL first-paint recovery; Wispr Flow
-  accessibility + paste fix (UIA reachable WITHOUT xterm screenReaderMode); fast
-  non-blocking startup (no main-thread fs).
-- **Agent status dots (Claude + Codex)** — a coloured dot per terminal + a workspace
-  rollup: red = needs input, yellow = working (held while subagents run; also while
-  Claude compacts context — PreCompact/SessionStart(source=compact) bracket it — and
-  while agent-type background_tasks (teammates/forks/workflows) outlive the turn,
-  and while a pid-alive codex-companion job for the session runs — held even
-  through a Claude StopFailure, since codex is on its own API), green = ready
-  for review, blue = a foreground shell command or a shell-only background
-  remainder / cloud session (a manual /compact restores this blue from a
-  turn-end snapshot marker instead of false-greening).
-  Precedence red > yellow > blue > green. Host-service lifecycle POSTs + a JSONL
-  watcher fallback; only open tabs are represented. superset-notify.py exclusively
-  owns Claude's Stop — upstream's notify.sh is deliberately NOT registered on Stop
-  (its raw passthrough raced ~1s behind and wiped BackgroundRunning blue + the
-  subagent yellow-hold). Every dot surface (tab, pane header, sidebar row,
-  sidebar agent chips (CHIP-DOT-UNIFY: status from the shared primitive,
-  liveness from the open-pane gate — never `terminal_sessions.status`, which
-  stays `active` forever for closed-tab ptys), workspace rollup, kanban card)
-  derives from ONE per-source primitive in the
-  v2-notifications store; the rollup is the fold of the per-source dots, so
-  surfaces cannot drift. The primitive itself is layered (DOT-AXES): a source's
-  status is DERIVED as the highest-precedence active axis (permission/working/
-  review, plus the separate shell/background blue axes) — events latch/unlatch
-  only the axes they have evidence about, so an assert can never stomp a
-  higher-ranking active state; a tool that ran inside a subagent (hook payload
-  carries agent_id, SUBTOOL-RED) asserts working WITHOUT clearing a pending
-  red, while a main-loop tool completion still clears it (the answer proof).
-  Leaked yellow-hold markers self-heal (MARKER-RECONCILE): a SubagentStop
-  arriving with a mismatched/missing agent_id strands its run-dir marker and
-  would pin yellow forever; every Stop/SubagentStop now reaps markers not
-  listed as still running in the payload's background_tasks[] (ground truth).
-  That payload is NOT ground truth for teammates though (TEAMMATE-IDLE):
-  Claude Code reports finished teammates as status "running" forever, so
-  superset-notify.py keeps an incremental per-terminal ledger of the lead
-  transcript's teammate lifecycle (spawn/wake/message = active,
-  idle_notification = idle) and drops teammate-type entries at a turn end
-  once every tracked teammate is provably idle — a lead whose swarm has
-  finished greens at its real final Stop instead of latching yellow until
-  the next prompt (the 15-min .bgactive idle reap stays behind it for
-  teammates that die without any transcript trace).
-  The store's data maps persist to sessionStorage (DOT-PERSIST): an in-place
-  renderer reload (Ctrl+R / error boundary) used to wipe every dot, and the
-  background blue has no re-emit until that session's next turn end;
-  sessionStorage still clears on a real app restart, so no stale dots across
-  launches.
-- **Non-git / multi-repo workspaces** — open a non-git or multi-repo folder as a
-  plain workspace (no branch/worktree); the project "+" opens its main workspace.
-- **Multi-repo branch workspaces** — "Open from multi-folder" groups N arbitrary
-  git repos (picker validates each; unique basenames) under one project row (no
-  master row; member list in `superset-multi-repo.json` inside a
-  `~/.superset/multi-repo/<projectId>` anchor — no cloud/DB schema change). Its
-  "+" takes an optional branch name (AI/friendly auto-generated when blank,
-  deduped across the union of member branches) and fans it out: `git worktree add -b <branch>`
-  (from each repo's default branch) into `<worktrees>/<projectId>/<branch>/<repoName>`
-  per member — all-or-nothing with rollback; the container opens as a plain
-  workspace. A branch existing in EVERY member is adopted (resume); partial
-  presence fails loud. Delete mirrors single-repo per member (worktree remove,
-  optional branch -D) then removes the container; the kanban promote dialog
-  resolves multi-repo projects as branch-create targets. Members are editable
-  after creation from Project Settings → Repositories: add is lazy (new branch
-  workspaces only), remove force-removes that repo's worktrees from existing
-  branch containers (confirm dialog; repo + branches kept); min 2 members.
-- **Workspace branch label** — the open workspace page names its branch top-right
-  in the tab bar (click copies); the only branch surface a non-git multi-repo
-  container has. Shown for every workspace with a branch.
-- **Thread snooze / archive** — per-thread timed Snooze (auto-returns) + sticky
-  Archive under revealable Snoozed / Archived sidebar sections.
-- **Sidebar** — projects tier-sorted pinned > active > idle, stable manual drag order
-  within each tier; right-click Pin/Unpin. Rendered order freezes while the pointer
-  is over the list (and during drags); the live order applies on leave.
-- **Terminal links** — plain click copies a URL/path; Ctrl/Cmd+click opens (`.html`
-  → Chrome, OS-default handler fallback).
-- **Agent-hook bash-wrap** — Gemini/Cursor `.sh` hooks run via Git-for-Windows bash
-  instead of opening in an editor.
-- **Kanban board (Tasks & PRs → Kanban)** — a device-local board mirroring every
-  branch of a SIDEBAR-PRESENT project as a card (remove a project from the left
-  bar and its cards hide too — restored with metadata if re-added) + a fixed
-  Queued column for tasks with no branch yet. Card shows
-  title, `repo / branch`, a date deadline (yellow on the due day, red after), and the
-  live status dot. Double-click title/deadline to edit; ALL card actions (Edit card
-  for Queued, Snooze, Archive, Delete) live in the card's right-click menu — no
-  3-dots button, and a plain click never opens the Queued editor modal. Drag a
-  Queued card out to promote it (create a branch or attach to a non-git main card).
-  Click a branch card to collapse the board and open that branch's workspace — the
-  board sits as a resizable TOP strip (default) or a LEFT rail (header toggle;
-  device-local preference incl. strip height / rail width), and the open card
-  mirrors the sidebar's active-row highlight (same ?cardId source). Task details
-  get a Card tab beside Files/Changes/Review. User-created columns (add/rename/reorder/delete; deleting
-  moves cards left), each with collapsible Snoozed/Archived and a manual/deadline
-  sort toggle — deadline mode remembers its OWN drag order within tie groups
-  (same due day / no-deadline tail; separate field from the manual tabOrder, so
-  neither mode scrambles the other; new/changed/moved cards land BELOW the
-  explicitly ordered ones in their group). Snooze/archive/delete of
-  a branch card == the sidebar (one source of truth); main workspaces can't be
-  snoozed/archived/deleted. A fixed FINAL **Completed** column: dropping a card
-  stamps an editable completed date ("last dropped"; double-click / right-click
-  to edit) and hides the thread from the sidebar ENTIRELY (no section — the
-  board is its only surface; sidebar bucket `completed` is checked before
-  `archived` since completing also sets isHidden); dragging the card out
-  un-completes (restores the row, clears the date). Per-column date filter
-  (all / last calendar month / custom range) for end-of-week/month/quarter
-  reports, with an "N hidden by filter" footer. Completed cards survive later
-  branch deletion as FROZEN records (title + repo/branch snapshot taken at
-  completion); main cards can't be completed; completing ≠ deleting (worktree
-  untouched). Local-only, ungated. APPEND-ONLY daily backup:
-  write-once JSON snapshot per org per day under `~/.superset/backups/kanban/`
-  (skips empty boards; no code path can delete or overwrite a snapshot).
-
-## Fork key files
-
-- `.github/workflows/build-arm64.yml` — deterministic no-AI ARM64 build.
-- `.github/workflows/nightly-merge.yml` — nightly upstream merge → Opus conflict +
-  clean-refactor ports → bounded review/repair gates → build/publish/advance; recovery on fail.
-- `FEATURES.md` — feature marker manifest (the merge-preservation gate reads it).
-- `.fork/upstream-baseline.txt` — the upstream tag the baseline currently sits on.
-- `scripts/materialize-native-closure.sh` — win-arm64 native-payload repair
-  (libsql/tokenizers/node-pty), invoked by the build.
-- `scripts/resolve-release-age.mjs` — resolves a dep pinned newer than bunfig's
-  `minimumReleaseAge` to the latest aged-safe version.
-- Companion ARM64 native packages: `github.com/khairm/libsql-windows-arm64`,
+- **Build (AI-free, deterministic).** `.github/workflows/build-arm64.yml`:
+  install → compile → materialize the win-arm64 native closure
+  (`scripts/materialize-native-closure.sh`: libsql/tokenizers/node-pty) →
+  package the installer → verify packaged natives are ARM64.
+- **Nightly merge (the only AI).** `.github/workflows/nightly-merge.yml`: when
+  upstream publishes a newer `desktop-v*` tag, git merges it; Opus resolves
+  conflicted files, then a `(MERGE-ADAPT)` proactive port pass adapts fork-only
+  callers to cleanly-merging upstream API refactors. Deterministic gates follow
+  (FEATURES.md marker survival, dependency/lock consistency, `(REFERR-GATE)`
+  cannot-find-name check), then a bounded `(MERGE-SEMANTIC-GATE)` review →
+  adapt → fresh-review loop (max 3 reviews / 2 repairs). Green all the way =
+  build, publish the Release, advance the baseline; ANY failure hard-aborts
+  with the baseline untouched → fix locally with the maintainer and
+  re-baseline. A `rehearse=true` dispatch replays a night end-to-end with zero
+  side effects.
+- **Key files.** `FEATURES.md` (feature manifest + fenced `markers` block the
+  gates parse), `.fork/upstream-baseline.txt`,
+  `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
+  `scripts/check-override-consistency.mjs`, `scripts/resolve-release-age.mjs`,
+  companion native packages `github.com/khairm/libsql-windows-arm64` +
   `github.com/khairm/tokenizers-windows-arm64`.
 
-## Fork traps (do NOT repeat)
+## Non-negotiables
 
-- **Never do synchronous/blocking fs on the main thread at startup** — it starves the
-  renderer's `superset-app://` loader and the window stays blank for minutes.
-- **Never re-enable xterm `screenReaderMode`** — it was the Wispr Flow regression
-  (drops injected `insertText`). The build hard-fails if it's truthy in either
-  renderer bundle.
-- **Don't blank the v2 workspace on `!isReady`** — TanStack/Electric live queries are
-  cache-first: render existing rows; gate only the empty/loading branch on readiness.
-- **Never let `ws` load native bufferutil/utf-8-validate in the host-service** —
-  packaging rebuilds them nondeterministically; a broken bufferutil resolves to an
-  empty module (no throw → no JS fallback) and the first ≥32-byte client frame
-  wedges the socket's receiver: ALL terminal keyboard input dies while output keeps
-  flowing (build 41124b7d3 incident). `WS_NO_BUFFER_UTIL=1` + `WS_NO_UTF_8_VALIDATE=1`
-  are set in the coordinator child env AND first-import in serve.ts — keep both.
-- **Keep the agent hook `.sh` templates fork-lean** — the lifecycle hooks
-  (notify/cursor/copilot/gemini) parse + escape JSON with bash builtins only
-  (`read`, `[[ =~ ]]`, `${//}`). NEVER reintroduce `echo|grep|grep|tr` or
-  `printf|sed` pipelines: ~30 subprocess forks per hook crashed the x64-emulated
-  msys2 runtime on Windows ARM64 — the `add_item ... errno 1` fork cascade that
-  poisons msys's shared section and wedges EVERY chat's hooks (stale dots, hook
-  errors). Marker `(HOOK-FORK-DIET)`; payload is byte-identical to the pipelines.
-- **CI can never push `.github/workflows/*` changes** — the Actions `GITHUB_TOKEN`
-  has no `workflows` scope (none exists for it), so ANY merged upstream workflow
-  file gets the candidate push AND the main fast-forward rejected AFTER every gate
-  has passed (desktop-v1.14.3 `deploy-relay.yml` incident). The workflow dir is
-  fork-owned: nightly-merge restores it mid-merge with
-  `git checkout --no-overlay HEAD -- .github/workflows`, marker
-  `(WORKFLOW-FORK-OWNED)`. Never remove that step; add an upstream workflow only
-  by deliberate local commit with a user token (which has `workflow` scope).
+- **Whole feature set or fail loud** — every `FEATURES.md` marker survives a
+  merge or the run aborts; never ship a partial fork.
+- **v2-only, forever** — the v2 cloud/host-service stack is pinned on; never v1.
+- **One version, ever** — exactly one Release per upstream version, tagged
+  `desktop-v<version>`, rebuilt in place; no betas/prereleases.
+- **No build-time type/test gate except `(REFERR-GATE)`** — the tree carries
+  accepted type debt; only cannot-find-name diagnostics fail the build.
+  Validate + e2e locally before relying on a release.
+- **AI only in the nightly merge** (needs `CLAUDE_CODE_OAUTH_TOKEN`); the build
+  is AI-free. Rate-limited/unparsable AI output aborts rather than ships.
 
-## Fork limitations (accepted)
+## Custom features / overrides
 
-- Unsigned → SmartScreen warns.
-- No full build-time type/test gate (only the narrow `(REFERR-GATE)`
-  cannot-find-name check) — validate + e2e locally.
-- An auto-merged nightly can publish a Release unattended, gated by the
-  feature-marker check + `(MERGE-SEMANTIC-GATE)` (Opus reviews every merged
-  delta for fork-feature breakage) + `(REFERR-GATE)` + the esbuild build — the
-  AI review shrinks but does not eliminate the semantically-wrong-but-compiling
-  window. e2e-test before relying on a release.
+`FEATURES.md` is the authoritative manifest (descriptions + marker tokens).
+In brief:
+
+- **Native Windows ARM64 packaging** — one-click installer; ARM64 node-pty,
+  libsql, tokenizers; renderer CORS for `superset-app://`.
+- **Window controls** — native `titleBarOverlay` is the sole min/max/close on
+  Windows, theme-matched; upstream's duplicates hidden.
+- **Windows behaviour fixes** — skip quit-confirm; cmd.exe fallback;
+  force-foreground; hidden-window watchdog; WebGL first-paint recovery; Wispr
+  Flow accessibility/paste fix; fast non-blocking startup.
+- **Agent status dots (Claude + Codex)** — per-terminal + workspace-rollup dot:
+  red = needs input, yellow = working (incl. subagents/teammates/compaction/
+  codex-companion holds), green = ready for review, blue = shell/background/
+  cloud activity; precedence red > yellow > blue > green. All surfaces (tab,
+  pane header, sidebar row + agent chips, rollup, kanban card) derive from one
+  per-source primitive with independent latched axes; hook-driven via
+  `superset-notify.py` POSTs with self-healing markers and persistence across
+  renderer reloads.
+- **Auto-resume** — after an API failure, idle Claude terminals re-send
+  automatically (bounded retries/budget, default-on, away-detection).
+- **Recycle Bin** — every delete entry point soft-deletes (30-day display
+  window); permanent delete only from inside the bin.
+- **Non-git / multi-repo workspaces** — open any folder (non-git or multi-repo)
+  as a plain workspace.
+- **Multi-repo branch workspaces** — group N git repos under one project row;
+  its "+" fans a branch out as worktrees per member (all-or-nothing, adoption
+  on resume, editable membership, loud partial-state failures).
+- **Workspace branch label** — branch name top-right in the tab bar; click
+  copies.
+- **Thread snooze / archive** — timed Snooze (auto-returns) + sticky Archive in
+  revealable sidebar sections.
+- **Sidebar** — pinned > active > idle tier sort with stable manual drag order;
+  hover freezes re-sorting.
+- **Terminal links** — plain click copies a URL/path; Ctrl/Cmd+click opens.
+- **Agent-hook bash-wrap** — Gemini/Cursor `.sh` hooks run via Git-for-Windows
+  bash.
+- **Kanban board** — device-local board of every sidebar project's branches +
+  Queued and final Completed columns, custom columns, deadlines, per-column
+  date filters, promote-to-branch drag, frozen completed records, append-only
+  daily JSON backups under `~/.superset/backups/kanban/`.
+
+## Live footguns (do NOT repeat)
+
+- No synchronous/blocking fs on the main thread at startup — the renderer's
+  `superset-app://` loader starves and the window stays blank for minutes.
+- Never re-enable xterm `screenReaderMode` (Wispr Flow regression); the build
+  hard-fails if it is truthy in a renderer bundle.
+- Never let `ws` load native bufferutil/utf-8-validate in the host-service —
+  keep `WS_NO_BUFFER_UTIL=1` + `WS_NO_UTF_8_VALIDATE=1` in the coordinator
+  child env AND first-import in serve.ts.
+- Keep agent-hook `.sh` templates pipeline-free (bash builtins only) —
+  subprocess-fork cascades crash emulated msys2 on ARM64 (`(HOOK-FORK-DIET)`).
+- `.github/workflows` is fork-owned and CI's `GITHUB_TOKEN` can never push
+  workflow changes — nightly-merge restores the dir mid-merge
+  (`(WORKFLOW-FORK-OWNED)`); add upstream workflows only by deliberate local
+  commit with a user token.
+
+## Accepted limitations
+
+Unsigned installer (SmartScreen warns); no full type/test gate (type debt is
+accepted, `(REFERR-GATE)` only); an unattended nightly can publish a Release —
+the gate stack shrinks but does not eliminate the
+semantically-wrong-but-compiling window, so e2e-test before relying on one.
 
 [superset-sh/superset]: https://github.com/superset-sh/superset
 
