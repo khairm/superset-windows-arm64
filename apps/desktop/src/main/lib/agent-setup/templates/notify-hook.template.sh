@@ -12,8 +12,8 @@
 # the `add_item ... errno 1` cascade that wedged every chat's hooks. The wire
 # payload is byte-for-byte identical to the previous pipeline version.
 
-# Codex passes JSON as argv; Claude/Mastra/Droid pipe via stdin. `read -d ''`
-# slurps stdin without forking `cat`.
+# Codex passes JSON as argv; Claude/Mastra/Droid/Kimi pipe via stdin.
+# `read -d ''` slurps stdin without forking `cat`.
 if [ -n "$1" ]; then
   INPUT="$1"
 else
@@ -37,7 +37,7 @@ if [ -z "$RESOURCE_ID" ]; then
 fi
 SESSION_ID=${RESOURCE_ID:-$HOOK_SESSION_ID}
 
-# Claude/Mastra/Droid use "hook_event_name"; Codex uses "type".
+# Claude/Mastra/Droid/Kimi use "hook_event_name"; Codex uses "type".
 json_field "hook_event_name" "$INPUT"; EVENT_TYPE="$JSON_FIELD"
 if [ -z "$EVENT_TYPE" ]; then
   json_field "type" "$INPUT"; CODEX_TYPE="$JSON_FIELD"

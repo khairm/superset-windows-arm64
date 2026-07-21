@@ -1,6 +1,7 @@
-import type { SelectV2Project, SelectV2Workspace } from "@superset/db/schema";
+import type { SelectV2Workspace } from "@superset/db/schema";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
+import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRecycleBinRetention } from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
@@ -124,10 +125,10 @@ export function useKanbanData(): UseKanbanDataResult {
 		(q) => q.from({ w: collections.v2Workspaces }),
 		[collections],
 	);
-	const { data: projectRows = [] } = useLiveQuery(
-		(q) => q.from({ p: collections.v2Projects }),
-		[collections],
-	);
+	// Projects are fully local now — sourced from the host fan-out
+	// (useHostProjects), keyed by projectKey which equals a workspace's
+	// projectId. Upstream retired the `v2Projects` Electric collection.
+	const { projects: hostProjects } = useHostProjects();
 	const { data: localStateRows = [], isReady: localStateReady } = useLiveQuery(
 		(q) => q.from({ s: collections.v2WorkspaceLocalState }),
 		[collections],
@@ -193,9 +194,9 @@ export function useKanbanData(): UseKanbanDataResult {
 
 	const projectNameById = useMemo(() => {
 		const map = new Map<string, string>();
-		for (const p of projectRows as SelectV2Project[]) map.set(p.id, p.name);
+		for (const p of hostProjects) map.set(p.projectKey, p.name);
 		return map;
-	}, [projectRows]);
+	}, [hostProjects]);
 
 	const localStateByWorkspace = useMemo(() => {
 		const map = new Map<string, WorkspaceLocalStateRow>();

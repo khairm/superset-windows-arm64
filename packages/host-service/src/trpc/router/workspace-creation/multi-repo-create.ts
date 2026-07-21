@@ -20,9 +20,8 @@ import {
 	findExistingWorkspaceByBranch,
 	getLocalBranchHead,
 	recordBaseBranchConfig,
-	registerCloudAndLocal,
+	registerLocalWorkspace,
 	resolveNewBranchStartPoint,
-	startHostEnsure,
 } from "../workspaces/workspaces";
 import { startCommandTerminal } from "./shared/command-terminal";
 import { enablePushAutoSetupRemote } from "./shared/git-config";
@@ -197,9 +196,6 @@ async function runCreate(args: {
 }): Promise<CreateFlowResult> {
 	const { ctx, input, localProject, config, branch, aiTitle } = args;
 
-	const hostPromise = startHostEnsure(ctx);
-	hostPromise.catch(() => {});
-
 	// Idempotency: a workspace already registered for this branch is returned
 	// as-is (same contract as the single-repo path: no setup terminal, but
 	// agents AND a requested command terminal still run).
@@ -362,7 +358,7 @@ async function runCreate(args: {
 		});
 	}
 
-	const workspaceRow = await registerCloudAndLocal({
+	const workspaceRow = await registerLocalWorkspace({
 		ctx,
 		id: input.id,
 		projectId: input.projectId,
@@ -371,7 +367,6 @@ async function runCreate(args: {
 		worktreePath: containerPath,
 		taskId: input.taskId,
 		rollbackWorktree: rollbackAll,
-		hostPromise,
 	});
 
 	return finishCreate({ ctx, input, workspaceRow, alreadyExists: false });

@@ -15,6 +15,7 @@ import {
 } from "electron";
 import { makeAppSetup } from "lib/electron-app/factories/app/setup";
 import {
+	authEvents,
 	handleAuthCallback,
 	loadToken,
 	parseAuthDeepLink,
@@ -37,6 +38,10 @@ import { loadWebviewBrowserExtension } from "./lib/extensions";
 import { getHostServiceCoordinator } from "./lib/host-service-coordinator";
 import { localDb } from "./lib/local-db";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
+import {
+	startMemoryTelemetry,
+	stopMemoryTelemetry,
+} from "./lib/memory-telemetry";
 import {
 	initTanstackDbPersistence,
 	shutdownTanstackDbPersistence,
@@ -241,6 +246,7 @@ app.on("before-quit", async (event) => {
 
 	isQuitting = true;
 	try {
+		stopMemoryTelemetry();
 		getHostServiceCoordinator().stopAll();
 		if (isDev || forceFullCleanup) {
 			await teardownTerminalHost();
@@ -505,6 +511,24 @@ if (!gotTheLock) {
 		log.info("[boot] step reconcileDaemonSessions done +" + bootMs() + "ms");
 		prewarmTerminalRuntime();
 
+		// Host services for previously-hosted orgs start from main, so
+		// background reachability and port detection never wait on a renderer
+		// or cloud sync. Non-blocking: boot must not wait on spawns.
+		const startKnownHostServices = async () => {
+			try {
+				const { token } = await loadToken();
+				if (!token) return;
+				await getHostServiceCoordinator().startAllKnown({
+					authToken: token,
+					cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL,
+				});
+			} catch (error) {
+				console.error("[main] host-service boot reconcile failed:", error);
+			}
+		};
+		void startKnownHostServices();
+		authEvents.on("token-saved", () => void startKnownHostServices());
+
 		try {
 			setupAgentHooks();
 		} catch (error) {
@@ -528,6 +552,7 @@ if (!gotTheLock) {
 		await makeAppSetup(() => MainWindow());
 		log.info("[boot] step makeAppSetup done +" + bootMs() + "ms");
 		setupAutoUpdater();
+		startMemoryTelemetry();
 		initTray();
 
 		const coldStartUrl = findDeepLinkInArgv(process.argv);

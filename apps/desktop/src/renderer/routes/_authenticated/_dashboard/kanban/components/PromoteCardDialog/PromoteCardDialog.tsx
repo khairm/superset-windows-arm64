@@ -20,7 +20,9 @@ import { toast } from "@superset/ui/sonner";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
+import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import type { DashboardSidebarProjectRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
 import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
@@ -64,20 +66,30 @@ export function PromoteCardDialog({
 	const [branch, setBranch] = useState("");
 	const [submitting, setSubmitting] = useState(false);
 
-	// Only projects PRESENT IN THE SIDEBAR (v2SidebarProjects ⋈ v2Projects — the
-	// exact source the left bar renders from). A project removed from the
-	// sidebar must not resurface as a promote target.
-	const { data: projects = [] } = useLiveQuery(
-		(q) =>
-			q
-				.from({ sp: collections.v2SidebarProjects })
-				.innerJoin(
-					{ p: collections.v2Projects },
-					({ sp, p }) => eq(sp.projectId, p.id),
-				)
-				.select(({ p }) => ({ id: p.id, name: p.name })),
+	// Only projects PRESENT IN THE SIDEBAR (v2SidebarProjects ⋈ host projects —
+	// the exact source the left bar renders from). A project removed from the
+	// sidebar must not resurface as a promote target. Projects are fully local
+	// now: identity comes from the host fan-out (useHostProjects), keyed by
+	// projectKey which equals a sidebar row's projectId. Upstream retired the
+	// `v2Projects` Electric collection.
+	const { data: sidebarProjectRows = [] } = useLiveQuery(
+		(q) => q.from({ sp: collections.v2SidebarProjects }),
 		[collections],
 	);
+	const { projects: hostProjects } = useHostProjects();
+	const projects = useMemo(() => {
+		const nameByKey = new Map(hostProjects.map((p) => [p.projectKey, p.name]));
+		const seen = new Set<string>();
+		const result: { id: string; name: string }[] = [];
+		for (const sp of sidebarProjectRows as DashboardSidebarProjectRow[]) {
+			if (seen.has(sp.projectId)) continue;
+			const name = nameByKey.get(sp.projectId);
+			if (name == null) continue;
+			seen.add(sp.projectId);
+			result.push({ id: sp.projectId, name });
+		}
+		return result;
+	}, [sidebarProjectRows, hostProjects]);
 	const { data: [queuedCard] = [] } = useLiveQuery(
 		(q) =>
 			q

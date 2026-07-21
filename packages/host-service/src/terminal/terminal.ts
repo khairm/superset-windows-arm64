@@ -19,7 +19,7 @@ import {
 	scanForTerminalTitle,
 	type TerminalTitleScanState,
 } from "@superset/shared/terminal-title-scanner";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Hono } from "hono";
 import { isProcessAlive, readPtyDaemonManifest } from "../daemon/manifest.ts";
 import type { HostDb } from "../db/index.ts";
@@ -39,6 +39,7 @@ import {
 	getShellLaunchArgs,
 	getTerminalBaseEnv,
 	resolveLaunchShell,
+	waitForTerminalBaseEnv,
 } from "./env.ts";
 import { listTerminalResourceSessions } from "./resource-sessions.ts";
 import {
@@ -934,6 +935,19 @@ export async function disposeSessionAndWait(
 		}
 	}
 
+	// Durable intent-to-kill: if this attempt fails (daemon hiccup, host
+	// restart mid-kill), the reaper retries any stamped row — a one-shot
+	// renderer broadcast must not be the only chance to kill a session.
+	// First request time wins so retries don't look like fresh requests.
+	db.update(terminalSessions)
+		.set({ disposeRequestedAt: Date.now() })
+		.where(
+			and(
+				eq(terminalSessions.id, terminalId),
+				isNull(terminalSessions.disposeRequestedAt),
+			),
+		)
+		.run();
 	const session = sessions.get(terminalId);
 	let closePromise: Promise<DaemonCloseResult> | null = null;
 
@@ -1231,7 +1245,10 @@ export async function createTerminalSessionInternal({
 		DEFAULT_TERMINAL_ROWS,
 	);
 
-	// Use the preserved shell snapshot — never live process.env
+	// Use the preserved shell snapshot — never live process.env. Resolution
+	// runs in the background at startup so the server can listen immediately;
+	// wait for it here before the first PTY needs the snapshot.
+	await waitForTerminalBaseEnv();
 	const baseEnv = getTerminalBaseEnv();
 	const supersetHomeDir = process.env.SUPERSET_HOME_DIR || "";
 	const shell = await resolveLaunchShell(baseEnv);
@@ -1519,7 +1536,9 @@ export async function createTerminalSessionInternal({
 							? bytes
 							: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
 					);
-					if (hintText.length > 0) portManager.checkOutputForHint(hintText);
+					// Runs even when the decoder buffers a partial codepoint into ""
+					// — the chunk is still output and must refresh the idle clock.
+					portManager.checkOutputForHint(terminalId, hintText);
 
 					// Feed the tracker on every byte — broadcast skips the FIFO,
 					// so this is the only path that catches startup mode escapes.

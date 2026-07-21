@@ -25,6 +25,7 @@ import {
 	LuFolderPlus,
 	LuGitBranch,
 	LuPencil,
+	LuRadioTower,
 	LuRotateCcw,
 	LuTrash2,
 	LuUndo2,
@@ -36,11 +37,14 @@ import {
 	type SnoozeDuration,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useDashboardSidebarHover } from "../../../../providers/DashboardSidebarHoverProvider";
+import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
+import { useDashboardSidebarPortKill } from "../../../DashboardSidebarPortsList/hooks/useDashboardSidebarPortKill";
 
 /** Which reveal-able section a workspace row is rendered inside, if any. */
 export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
 
 interface DashboardSidebarWorkspaceContextMenuProps {
+	workspaceId: string;
 	projectId: string;
 	isInSection?: boolean;
 	isLocalWorkspace: boolean;
@@ -135,6 +139,7 @@ function SnoozeSubmenu({
 }
 
 export function DashboardSidebarWorkspaceContextMenu({
+	workspaceId,
 	projectId,
 	isInSection,
 	isLocalWorkspace,
@@ -164,6 +169,10 @@ export function DashboardSidebarWorkspaceContextMenu({
 	const collections = useCollections();
 	const { setContextMenuOpen } = useDashboardSidebarHover();
 	const isSectioned = sectionState !== undefined;
+	const portGroup = useDashboardSidebarWorkspacePorts(workspaceId);
+	const { isPending: isKillingPorts, killPorts } =
+		useDashboardSidebarPortKill();
+	const ports = portGroup?.ports ?? [];
 	const { data: sections = [] } = useLiveQuery(
 		(q) =>
 			q
@@ -179,6 +188,10 @@ export function DashboardSidebarWorkspaceContextMenu({
 				})),
 		[collections, projectId],
 	);
+	const handleCloseAllPorts = () => {
+		if (isKillingPorts) return;
+		void killPorts(ports);
+	};
 
 	return (
 		<ContextMenu onOpenChange={setContextMenuOpen}>
@@ -332,6 +345,16 @@ export function DashboardSidebarWorkspaceContextMenu({
 							</>
 						)}
 						<ContextMenuSeparator />
+						{ports.length > 0 && (
+							<ContextMenuItem
+								onSelect={handleCloseAllPorts}
+								disabled={isKillingPorts}
+								variant="destructive"
+							>
+								<LuRadioTower className="size-4 mr-2" />
+								Close all ports
+							</ContextMenuItem>
+						)}
 						<ContextMenuItem
 							onSelect={onRemoveFromSidebar}
 							className="text-destructive focus:text-destructive"

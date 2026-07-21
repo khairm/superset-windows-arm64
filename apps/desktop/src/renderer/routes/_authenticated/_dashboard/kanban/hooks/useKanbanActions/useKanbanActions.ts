@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
@@ -123,6 +124,16 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		unarchiveWorkspaces,
 		ensureWorkspaceInSidebar,
 	} = useDashboardSidebarState();
+
+	// Projects are fully local now — sourced from the host fan-out
+	// (useHostProjects), keyed by projectKey which equals a workspace's
+	// projectId. Upstream retired the `v2Projects` Electric collection.
+	const { projects: hostProjects } = useHostProjects();
+	const projectNameById = useMemo(() => {
+		const map = new Map<string, string>();
+		for (const p of hostProjects) map.set(p.projectKey, p.name);
+		return map;
+	}, [hostProjects]);
 
 	const columnCards = useCallback(
 		(columnId: string) =>
@@ -653,7 +664,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				// drop; this keeps any other caller honest).
 				if (ws?.type === "main") return;
 				const projectName = ws
-					? (collections.v2Projects.get(ws.projectId)?.name ?? null)
+					? (projectNameById.get(ws.projectId) ?? null)
 					: null;
 				collections.v2KanbanCards.update(card.id, (draft) => {
 					draft.columnId = KANBAN_COMPLETED_COLUMN_ID;
@@ -688,7 +699,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				draft.archivedAt = null;
 			});
 		},
-		[collections, completeWorkspace, ensureBoundRow],
+		[collections, completeWorkspace, ensureBoundRow, projectNameById],
 	);
 
 	const uncompleteCard = useCallback(

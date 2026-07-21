@@ -4,7 +4,6 @@ import { and, eq } from "drizzle-orm";
 import { workspaces } from "../../../../db/schema";
 import { readMultiRepoConfig } from "../../../../runtime/git/multi-repo";
 import { NON_GIT_BRANCH } from "../../../../runtime/git/non-git";
-import { pushWorkspaceCreateToCloud } from "../../../../runtime/workspace-cloud-sync";
 import type { HostServiceContext } from "../../../../types";
 import {
 	insertLocalWorkspace,
@@ -13,7 +12,7 @@ import {
 
 export type EnsureMainWorkspaceContext = Pick<
 	HostServiceContext,
-	"api" | "db" | "git" | "organizationId" | "clientMachineId" | "eventBus"
+	"db" | "git" | "eventBus"
 >;
 
 async function getCurrentBranchName(
@@ -69,10 +68,9 @@ export async function ensureMainWorkspace(
 
 /**
  * Strict variant: ensure a `type='main'` workspace row exists locally for
- * this project, or throw. Local-first — the row commits to host.db and the
- * cloud mirror is pushed best-effort (a cloud failure no longer fails the
- * caller; the reconciler retries). The one-main-per-project invariant is
- * enforced by the `workspaces_one_main_per_project` partial unique index.
+ * this project, or throw. Fully local — workspaces have no cloud mirror.
+ * The one-main-per-project invariant is enforced by the
+ * `workspaces_one_main_per_project` partial unique index.
  */
 export async function ensureMainWorkspaceStrict(
 	ctx: EnsureMainWorkspaceContext,
@@ -103,13 +101,6 @@ export async function ensureMainWorkspaceStrict(
 	}
 
 	const store = { db: ctx.db, eventBus: ctx.eventBus };
-	const syncCtx = {
-		api: ctx.api,
-		db: ctx.db,
-		eventBus: ctx.eventBus,
-		organizationId: ctx.organizationId,
-		clientMachineId: ctx.clientMachineId,
-	};
 
 	const existing = ctx.db.query.workspaces
 		.findFirst({
@@ -122,15 +113,12 @@ export async function ensureMainWorkspaceStrict(
 	if (existing) {
 		if (existing.branch !== branch || existing.worktreePath !== repoPath) {
 			// The repo's checked-out branch moved; follow it. A name that was
-			// just the branch follows too (parity with the cloud upsert).
-			const updated = updateLocalWorkspace(store, existing.id, {
+			// just the branch follows too.
+			updateLocalWorkspace(store, existing.id, {
 				branch,
 				worktreePath: repoPath,
 				...(existing.name === existing.branch ? { name: branch } : {}),
 			});
-			if (updated) void pushWorkspaceCreateToCloud(syncCtx, updated);
-		} else if (existing.cloudSyncedAt === null) {
-			void pushWorkspaceCreateToCloud(syncCtx, existing);
 		}
 		return { id: existing.id };
 	}
@@ -162,9 +150,5 @@ export async function ensureMainWorkspaceStrict(
 		throw err;
 	}
 
-	// Cloud may already hold a main for this (project, host) under another
-	// id (created by an older build); the push re-keys the local row onto
-	// the surviving cloud id in that case.
-	const cloudRow = await pushWorkspaceCreateToCloud(syncCtx, inserted);
-	return { id: cloudRow?.id ?? inserted.id };
+	return { id: inserted.id };
 }
