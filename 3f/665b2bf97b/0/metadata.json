@@ -1,0 +1,183 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "3f665b2bf97b",
+  "session_id": "cc93a2e8-3460-4ccb-967b-8843019f99fb",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-21T21:34:35.5674642Z",
+  "branch": "main",
+  "checkpoints_count": 9,
+  "save_step_count": 9,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/components/DashboardSidebarWorkspaceTabChip/DashboardSidebarWorkspaceTabChip.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/useDashboardSidebarWorkspaceTabChips.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/store.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "7554594976b5",
+  "checkpoint_transcript_start": 488,
+  "transcript_lines_at_start": 488,
+  "token_usage": {
+    "input_tokens": 118,
+    "cache_creation_tokens": 575849,
+    "cache_read_tokens": 11722450,
+    "output_tokens": 35049,
+    "api_call_count": 59
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-code-review-2026-07-21T21:08:22.9681056Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "69496fbfd792",
+      "timestamp": "2026-07-21T21:08:22.9681056Z",
+      "native": {
+        "command": "/code-review"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/code-review",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_015hgRwsDaEpweLLqdG75EvA",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "7554594976b5",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 493,
+        "end": 494,
+        "entry_ids": [
+          "ae8fa3ed-600b-4544-840f-8da821f28a61"
+        ],
+        "tool_use_id": "toolu_015hgRwsDaEpweLLqdG75EvA"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_015hgRwsDaEpweLLqdG75EvA"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 29
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-21T21:34:35.4453126Z",
+    "agent_lines": 52,
+    "agent_removed": 0,
+    "human_added": 209,
+    "human_modified": 84,
+    "human_removed": 0,
+    "total_committed": 345,
+    "total_lines_changed": 345,
+    "agent_percentage": 15.072463768115943,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 293,
+      "user_lines_removed": 84,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680,
+      "user_added_per_file": {
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/components/DashboardSidebarWorkspaceTabChip/DashboardSidebarWorkspaceTabChip.tsx": 6,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/useDashboardSidebarWorkspaceTabChips.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.test.ts": 77,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.ts": 23,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.test.ts": 33,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.ts": 134,
+        "apps/desktop/src/renderer/stores/v2-notifications/store.ts": 19
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/components/DashboardSidebarWorkspaceTabChip/DashboardSidebarWorkspaceTabChip.tsx": 8,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/index.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/useDashboardSidebarWorkspaceTabChips.ts": 27,
+        "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.ts": 48
+      }
+    }
+  ]
+}

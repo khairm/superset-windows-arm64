@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "3f665b2bf97b",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 9,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/components/DashboardSidebarWorkspaceTabChip/DashboardSidebarWorkspaceTabChip.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/useDashboardSidebarWorkspaceTabChips.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceDetails/hooks/useDashboardSidebarWorkspaceTabChips/utils/resolveDashboardSidebarTabTitle/resolveDashboardSidebarTabTitle.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/store.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3f/665b2bf97b/0/metadata.json",
+      "transcript": "/3f/665b2bf97b/0/full.jsonl",
+      "content_hash": "/3f/665b2bf97b/0/content_hash.txt",
+      "prompt": "/3f/665b2bf97b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 118,
+    "cache_creation_tokens": 575849,
+    "cache_read_tokens": 11722450,
+    "output_tokens": 35049,
+    "api_call_count": 59
+  }
+}
