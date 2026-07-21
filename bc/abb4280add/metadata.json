@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "bcabb4280add",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "files_touched": [
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bc/abb4280add/0/metadata.json",
+      "transcript": "/bc/abb4280add/0/full.jsonl",
+      "content_hash": "/bc/abb4280add/0/content_hash.txt",
+      "prompt": "/bc/abb4280add/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 19511,
+    "cache_creation_tokens": 4495779,
+    "cache_read_tokens": 56858705,
+    "output_tokens": 147912,
+    "api_call_count": 240
+  }
+}
