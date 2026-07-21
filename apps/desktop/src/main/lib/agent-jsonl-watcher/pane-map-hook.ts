@@ -522,11 +522,11 @@ def _bgactive_marker_path(terminal_id):
 
 def _teamstate_path(terminal_id):
     # (TEAMMATE-IDLE) incremental parse cache for the lead transcript's
-    # teammate ledger: {"path": <transcript>, "offset": <bytes consumed>,
-    # "state": {name: "active"|"idle"}}. Keyed by transcript path, so a
-    # /resume (new transcript file) or terminalId reuse self-invalidates into
-    # a full reparse. Corruption tolerated: any read failure falls back to
-    # offset 0 — self-healing, never trusted blindly.
+    # teammate ledger plus named-fork tool-use mapping. Versioned so a schema
+    # change forces a full reparse and heals entries written by older code.
+    # Keyed by transcript path, so a /resume (new transcript file) or terminalId
+    # reuse also self-invalidates. Corruption tolerated: any read failure falls
+    # back to offset 0 — self-healing, never trusted blindly.
     return (
         pathlib.Path.home()
         / ".superset"
@@ -873,18 +873,20 @@ def _split_background(bg_tasks):
     # agents actively working for the user -> the dot must stay YELLOW, not
     # blue (user report: create-team work showed blue). An unknown or missing
     # type counts as agent work — the safe direction (yellow, never a false
-    # green/blue). Returns (has_any, has_agent_work).
+    # green/blue). Returns (has_any, has_agent_work, has_shell_work); the shell
+    # bit lets a stale mixed agent+shell set retain its live blue remainder.
     # (R1 review) entries whose status says they FINISHED are skipped entirely
     # (neither yellow nor blue) — a status DENYLIST, not an allowlist, so an
     # unknown running-ish status keeps the safe yellow rather than false-green.
     if not bg_tasks:
-        return (False, False)
+        return (False, False, False)
     if isinstance(bg_tasks, dict):
         bg_tasks = [bg_tasks]  # tolerate a single-entry object payload
     if not isinstance(bg_tasks, list):
-        return (True, True)
+        return (True, True, False)
     has_any = False
     has_agent = False
+    has_shell = False
     for task in bg_tasks:
         if isinstance(task, dict):
             if _bg_entry_finished(task):
@@ -895,9 +897,11 @@ def _split_background(bg_tasks):
         else:
             task_type = ""  # unknown shape -> agent work (safe direction)
         has_any = True
-        if task_type != "shell":
+        if task_type == "shell":
+            has_shell = True
+        else:
             has_agent = True
-    return (has_any, has_agent)
+    return (has_any, has_agent, has_shell)
 
 
 # (TEAMMATE-IDLE) Claude Code NEVER flips an idle teammate's background_tasks[]
@@ -908,10 +912,14 @@ def _split_background(bg_tasks):
 # TRANSCRIPT has the missing truth: every teammate that finishes delivers an
 # idle_notification teammate-message into it, and every (re)activation is
 # visible too (an Agent spawn tool_use, a SendMessage tool_use to it, a
-# non-idle teammate-message/agent-message from it). Track that ledger
-# incrementally and, at a turn end, DROP unfinished teammate-type entries when
-# every tracked teammate's last event is an idle_notification. POSITIVE proof
-# only: no transcript, no teammates seen, a parse error, or ANY teammate not
+# non-idle teammate-message/agent-message from it). Named fork Agent spawns are
+# NOT teammates: their subagent_type is "fork", and they never emit teammate
+# idle_notification messages. Exclude them at spawn and map their tool-use-id
+# to the name so a deterministic completed task-notification can remove any
+# legacy/reintroduced entry. Track the teammate ledger incrementally and, at a
+# turn end, DROP unfinished teammate-type entries when every tracked teammate's
+# last event is an idle_notification. POSITIVE proof only: no transcript, no
+# teammates seen, a parse error, an unmatched completion, or ANY teammate not
 # provably idle -> keep the entries (the safe yellow direction — exactly the
 # old behaviour, with the (BG-STALE) idle reap still behind it). A teammate
 # that dies WITHOUT ever reporting stays "active" in the ledger and keeps the
@@ -954,17 +962,43 @@ def _team_scan_text(state, text):
         a = c
 
 
-def _team_scan_record(state, obj):
-    # One JSONL transcript record -> ledger updates. Spawning (Agent tool_use
-    # with a name) or waking (SendMessage tool_use) marks the target active;
-    # teammate-messages / agent-messages in delivered text decide idle vs
-    # active via _team_scan_text.
+def _team_scan_completion(state, fork_tools, text):
+    # Fork completion notices deterministically carry the spawning Agent
+    # tool-use-id. Only a completed notice with an exact mapped id may remove a
+    # name; malformed/unmatched text leaves the ledger untouched (safe yellow).
+    if not text.startswith("<task-notification>"):
+        return
+    if "<status>completed</status>" not in text:
+        return
+    tag = "<tool-use-id>"
+    i = text.find(tag)
+    if i < 0:
+        return
+    j = i + len(tag)
+    k = text.find("</tool-use-id>", j)
+    if k < 0:
+        return
+    tool_use_id = text[j:k].strip()
+    name = fork_tools.get(tool_use_id)
+    if name:
+        state.pop(name, None)
+
+
+def _team_scan_record(state, fork_tools, obj):
+    # One JSONL transcript record -> ledger updates. Spawning a non-fork Agent
+    # with a name or waking it via SendMessage marks it active. Named forks are
+    # excluded and indexed by Agent tool-use-id so a completed task-notification
+    # can untrack stale state. Teammate/agent message text decides idle vs active.
+    top_content = obj.get("content")
+    if isinstance(top_content, str):
+        _team_scan_completion(state, fork_tools, top_content)
     msg = obj.get("message") or {}
     if not isinstance(msg, dict):
         return
     content = msg.get("content")
     if isinstance(content, str):
         _team_scan_text(state, content)
+        _team_scan_completion(state, fork_tools, content)
         return
     if not isinstance(content, list):
         return
@@ -973,14 +1007,21 @@ def _team_scan_record(state, obj):
             continue
         ctype = c.get("type")
         if ctype == "text":
-            _team_scan_text(state, str(c.get("text") or ""))
+            text = str(c.get("text") or "")
+            _team_scan_text(state, text)
+            _team_scan_completion(state, fork_tools, text)
         elif ctype == "tool_use":
             inp = c.get("input")
             if not isinstance(inp, dict):
                 continue
             if c.get("name") == "Agent":
                 n = str(inp.get("name") or "").strip()
-                if n:
+                if n and str(inp.get("subagent_type") or "").strip() == "fork":
+                    tool_use_id = str(c.get("id") or "").strip()
+                    if tool_use_id:
+                        fork_tools[tool_use_id] = n
+                    state.pop(n, None)
+                elif n:
                     state[n] = "active"
             elif c.get("name") == "SendMessage":
                 n = str(inp.get("to") or "").strip()
@@ -1009,19 +1050,25 @@ def _teammates_all_idle(transcript_path, terminal_id):
         return False
     cache_file = _teamstate_path(terminal_id)
     state = {}
+    fork_tools = {}
     offset = 0
     try:
         rec = json.loads(cache_file.read_text(encoding="utf-8"))
         if (
             isinstance(rec, dict)
+            and rec.get("version") == 2
             and rec.get("path") == transcript_path
             and isinstance(rec.get("state"), dict)
+            and isinstance(rec.get("forkTools"), dict)
         ):
             offset = int(rec.get("offset") or 0)
             for k, v in rec["state"].items():
                 state[str(k)] = str(v)
+            for k, v in rec["forkTools"].items():
+                fork_tools[str(k)] = str(v)
     except Exception:
         state = {}
+        fork_tools = {}
         offset = 0
     try:
         with open(transcript_path, "rb") as h:
@@ -1030,6 +1077,7 @@ def _teammates_all_idle(transcript_path, terminal_id):
             if offset < 0 or offset > size:
                 offset = 0
                 state = {}
+                fork_tools = {}
             h.seek(offset)
             data = h.read()
     except Exception:
@@ -1044,11 +1092,17 @@ def _teammates_all_idle(transcript_path, terminal_id):
             except Exception:
                 continue
             if isinstance(obj, dict):
-                _team_scan_record(state, obj)
+                _team_scan_record(state, fork_tools, obj)
         offset = offset + nl + 1
     try:
         cache_file.write_text(
-            json.dumps({"path": transcript_path, "offset": offset, "state": state}),
+            json.dumps({
+                "version": 2,
+                "path": transcript_path,
+                "offset": offset,
+                "state": state,
+                "forkTools": fork_tools,
+            }),
             encoding="utf-8",
         )
     except Exception:
@@ -1253,6 +1307,7 @@ def _decide_event_type(
     sub_agent_id,
     has_background,
     has_agent_background,
+    has_shell_background,
     bg_ids,
     trigger,
     source,
@@ -1273,7 +1328,8 @@ def _decide_event_type(
     before = _running_count(askq_dir)
     result = _decide_event_type_inner(
         event, tool, terminal_id, sub_agent_id, has_background,
-        has_agent_background, bg_ids, trigger, source, session_id, reason_out,
+        has_agent_background, has_shell_background, bg_ids, trigger, source,
+        session_id, reason_out,
     )
     after = _running_count(askq_dir)
     # DOWNGRADE: never clear a red while a question owner is still live -> hold
@@ -1307,6 +1363,7 @@ def _decide_event_type_inner(
     sub_agent_id,
     has_background,
     has_agent_background,
+    has_shell_background,
     bg_ids,
     trigger,
     source,
@@ -1522,14 +1579,14 @@ def _decide_event_type_inner(
                 else:
                     _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (SubagentStop)")
                 return "SubagentActive"  # teammates/workflows/codex still working -> yellow
-            # (FIX 5) blue is the SHELL-ONLY remainder. After a stale_bg suppression
-            # has_agent_background is still true, so a bare has_background-only test
-            # would wrongly blue an agent-only zombie set; require shell-only so a
-            # stale agent-only set falls through to GREEN/Stop below.
-            if has_background and not has_agent_background:
+            # (FIX 5) blue is the live SHELL remainder after agent holds are
+            # resolved. A stale mixed agent+shell set must retain blue even though
+            # raw has_agent_background stays true; an agent-only zombie set has no
+            # shell bit and still falls through to GREEN/Stop below.
+            if has_shell_background and not agent_hold:
                 tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
-                _reason("BLUE: shell background remainder" + tag + " (SubagentStop)" + _skip_suffix(cx_skip))
-                return "BackgroundRunning"  # only background shells left -> blue
+                _reason("BLUE: live shell background remainder" + tag + " (SubagentStop)" + _skip_suffix(cx_skip))
+                return "BackgroundRunning"  # only live background shells remain -> blue
             if stale_bg:
                 _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (SubagentStop)" + _skip_suffix(cx_skip))
             else:
@@ -1580,14 +1637,14 @@ def _decide_event_type_inner(
             else:
                 _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (Stop)")
             return "SubagentActive"  # teammates/workflows/codex still working -> yellow, not blue
-        # (FIX 5) shell-only remainder -> blue. After a stale_bg suppression
-        # has_agent_background is still true; a bare has_background-only test would
-        # wrongly blue an agent-only zombie set, so require shell-only here and
-        # let a stale agent-only set fall through to GREEN/Stop.
-        if has_background and not has_agent_background:
+        # (FIX 5) blue is the live SHELL remainder after agent holds are
+        # resolved. A stale mixed agent+shell set must retain blue even though
+        # raw has_agent_background stays true; an agent-only zombie set has no
+        # shell bit and still falls through to GREEN/Stop below.
+        if has_shell_background and not agent_hold:
             tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
-            _reason("BLUE: shell background remainder" + tag + " (Stop)" + _skip_suffix(cx_skip))
-            return "BackgroundRunning"  # turn ended; only background shells left -> blue
+            _reason("BLUE: live shell background remainder" + tag + " (Stop)" + _skip_suffix(cx_skip))
+            return "BackgroundRunning"  # turn ended; only live background shells remain -> blue
         if stale_bg:
             _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (Stop)" + _skip_suffix(cx_skip))
         else:
@@ -1802,7 +1859,9 @@ def main():
         bg_tasks_eff = _without_idle_teammates(
             bg_tasks, transcript_path, terminal_id, team_note
         )
-    has_background, has_agent_background = _split_background(bg_tasks_eff)
+    has_background, has_agent_background, has_shell_background = _split_background(
+        bg_tasks_eff
+    )
     # (MARKER-RECONCILE) only a payload that actually carries the list shape
     # is authoritative; absent/odd-shaped -> None -> no reconciliation (an
     # older Claude Code without background_tasks behaves exactly as before).
@@ -1855,6 +1914,7 @@ def main():
         sub_agent_id,
         has_background,
         has_agent_background,
+        has_shell_background,
         bg_ids,
         trigger,
         source,
