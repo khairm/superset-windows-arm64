@@ -1,9 +1,12 @@
 {
   "cli_version": "0.7.7",
   "checkpoint_id": "f2c339762adb",
+  "session_id": "cc93a2e8-3460-4ccb-967b-8843019f99fb",
   "strategy": "manual-commit",
+  "created_at": "2026-07-21T19:52:08.6356601Z",
   "branch": "main",
-  "checkpoints_count": 18,
+  "checkpoints_count": 8,
+  "save_step_count": 9,
   "files_touched": [
     "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx",
     "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx",
@@ -28,25 +31,87 @@
     "apps/desktop/src/renderer/stores/v2-notifications/store.ts",
     "apps/desktop/src/renderer/stores/workspace-agents-row.ts"
   ],
-  "sessions": [
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "9429f65060e3",
+  "token_usage": {
+    "input_tokens": 144,
+    "cache_creation_tokens": 531621,
+    "cache_read_tokens": 9473269,
+    "output_tokens": 60935,
+    "api_call_count": 73
+  },
+  "session_metrics": {
+    "turn_count": 20
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-21T19:52:08.5436527Z",
+    "agent_lines": 424,
+    "agent_removed": 305,
+    "human_added": 0,
+    "human_modified": 43,
+    "human_removed": 51,
+    "total_committed": 467,
+    "total_lines_changed": 823,
+    "agent_percentage": 88.57837181044957,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
     {
-      "metadata": "/f2/c339762adb/0/metadata.json",
-      "transcript": "/f2/c339762adb/0/full.jsonl",
-      "content_hash": "/f2/c339762adb/0/content_hash.txt",
-      "prompt": "/f2/c339762adb/0/prompt.txt"
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
     },
     {
-      "metadata": "/f2/c339762adb/1/metadata.json",
-      "transcript": "/f2/c339762adb/1/full.jsonl",
-      "content_hash": "/f2/c339762adb/1/content_hash.txt",
-      "prompt": "/f2/c339762adb/1/prompt.txt"
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2198,
+      "agent_lines_removed": 1985
     }
-  ],
-  "token_usage": {
-    "input_tokens": 19655,
-    "cache_creation_tokens": 5027400,
-    "cache_read_tokens": 66331974,
-    "output_tokens": 208847,
-    "api_call_count": 313
-  }
+  ]
 }
