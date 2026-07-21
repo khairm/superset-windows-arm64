@@ -1,0 +1,1 @@
+export { DashboardSidebarWorkspaceTabChip } from "./DashboardSidebarWorkspaceTabChip";

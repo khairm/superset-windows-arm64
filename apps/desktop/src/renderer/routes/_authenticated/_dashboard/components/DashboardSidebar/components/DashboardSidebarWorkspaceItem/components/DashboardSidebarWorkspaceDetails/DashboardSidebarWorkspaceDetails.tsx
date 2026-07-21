@@ -1,6 +1,6 @@
 import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { cn } from "@superset/ui/utils";
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent } from "react";
 import { LuRadioTower, LuX } from "react-icons/lu";
 import { STROKE_WIDTH } from "renderer/screens/main/components/WorkspaceSidebar/constants";
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
@@ -8,9 +8,9 @@ import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-r
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { DashboardSidebarPortBadge } from "../../../DashboardSidebarPortsList/components/DashboardSidebarPortBadge";
 import { useDashboardSidebarPortKill } from "../../../DashboardSidebarPortsList/hooks/useDashboardSidebarPortKill";
-import { DashboardSidebarWorkspaceAgentBadge } from "./components/DashboardSidebarWorkspaceAgentBadge";
 import { DashboardSidebarWorkspaceDetailsAction } from "./components/DashboardSidebarWorkspaceDetailsAction";
-import { useDashboardSidebarWorkspaceRunningAgents } from "./hooks/useDashboardSidebarWorkspaceRunningAgents";
+import { DashboardSidebarWorkspaceTabChip } from "./components/DashboardSidebarWorkspaceTabChip";
+import { useDashboardSidebarWorkspaceTabChips } from "./hooks/useDashboardSidebarWorkspaceTabChips";
 
 interface DashboardSidebarWorkspaceDetailsProps {
 	workspaceId: string;
@@ -35,19 +35,6 @@ const UNFOLD_WRAPPER = cn(
 const MAX_STAGGERED_PORTS = 8;
 const STAGGER_STEP_MS = 25;
 
-/**
- * Single activity line rendered beneath a workspace row, left-aligned with
- * the workspace title. At rest it's a compact cluster: overlapping agent
- * circles plus a port-count pill. When the workspace item is hovered or
- * focused (`details-expanded`, defined in globals.css), the cluster morphs
- * open — agent circles grow into labeled pills and the count pill unfolds
- * into the individual port pills with a slight stagger — and retracts the
- * same way in reverse. Everything is one layer, so the motion is real
- * geometry, not a cross-fade.
- *
- * Agent chips appear only when more than one agent is running; a lone agent
- * is the norm for a workspace and showing it adds no signal.
- */
 export function DashboardSidebarWorkspaceDetails({
 	workspaceId,
 	isInSection = false,
@@ -60,101 +47,109 @@ export function DashboardSidebarWorkspaceDetails({
 
 	const portGroup = useDashboardSidebarWorkspacePorts(workspaceId);
 	const ports = inlineWorkspacePortsEnabled ? (portGroup?.ports ?? []) : [];
-	const runningAgents = useDashboardSidebarWorkspaceRunningAgents(
+	const tabChips = useDashboardSidebarWorkspaceTabChips(
 		workspaceId,
 		workspaceAgentsRowEnabled,
 	);
-	const hasMultipleAgents = runningAgents.length > 1;
-	const showAgentChips = workspaceAgentsRowEnabled && hasMultipleAgents;
-	const agents = showAgentChips ? runningAgents : [];
+	const showTabChips = workspaceAgentsRowEnabled && tabChips.length >= 2;
 
-	if (ports.length === 0 && agents.length === 0) {
+	if (ports.length === 0 && !showTabChips) {
 		return null;
 	}
 
+	const paddingClass = isInSection ? "pl-[58px]" : "pl-[50px]";
+	const handleStripClick = (event: MouseEvent<HTMLElement>) => {
+		if (!onClick) return;
+		const target = event.target as HTMLElement;
+		if (!event.currentTarget.contains(target)) return;
+		if (target.closest("button, a, [role='button'], [role='menuitem']")) return;
+		onClick();
+	};
+
 	return (
-		// Stop pointer/touch starts from bubbling to the sortable workspace item's
-		// drag listeners, so scrolling overflowing badges or pressing a badge
-		// control isn't captured as a workspace-reorder gesture.
-		<OverflowFadeContainer
-			observeChildren
-			className={cn(
-				// group/details scopes the menu-open half of `details-expanded`.
-				"group/details flex h-[22px] items-center overflow-x-auto hide-scrollbar pr-2",
-				isInSection ? "pl-[58px]" : "pl-[50px]",
-				onClick && "cursor-pointer",
+		<div>
+			{/* (TAB-CHIPS) Every open tab gets one always-expanded chip in pane-layout
+			    order. This wrapping row is separate from the port facepile animation so
+			    long tab titles never force ports into horizontal scrolling. */}
+			{showTabChips && (
+				// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: empty strip space mirrors the parent workspace row; chips remain native buttons
+				<div
+					className={cn(
+						"flex flex-wrap items-center gap-1 pr-2 pb-1",
+						paddingClass,
+						onClick && "cursor-pointer",
+					)}
+					onMouseDown={(event) => event.stopPropagation()}
+					onTouchStart={(event) => event.stopPropagation()}
+					onClick={handleStripClick}
+				>
+					{tabChips.map((tab) => (
+						<DashboardSidebarWorkspaceTabChip
+							key={tab.tabId}
+							workspaceId={workspaceId}
+							tab={tab}
+						/>
+					))}
+				</div>
 			)}
-			onMouseDown={(event) => event.stopPropagation()}
-			onTouchStart={(event) => event.stopPropagation()}
-			onClick={(event) => {
-				if (!onClick) return;
-				const target = event.target as HTMLElement;
-				// Radix dropdown selections render in a portal; React bubbling still
-				// reaches this handler but the target isn't inside the strip's DOM.
-				if (!event.currentTarget.contains(target)) return;
-				// Chips handle their own clicks (open agent, open port, menus);
-				// only clicks on the strip's empty area open the workspace.
-				if (target.closest("button, a, [role='button'], [role='menuitem']"))
-					return;
-				onClick();
-			}}
-		>
-			{agents.map((agent) => (
-				<DashboardSidebarWorkspaceAgentBadge
-					key={agent.sourceKey}
-					workspaceId={workspaceId}
-					agent={agent}
-				/>
-			))}
 
 			{ports.length > 0 && (
-				<span
+				<OverflowFadeContainer
+					observeChildren
 					className={cn(
-						"flex h-[18px] shrink-0 items-center gap-1 overflow-hidden rounded-full bg-muted/60",
-						"text-[9px] font-medium tabular-nums text-muted-foreground",
-						"max-w-14 px-1.5 opacity-100",
-						agents.length > 0 && "ml-2",
-						"transition-[max-width,margin,padding,opacity] duration-500 ease-out motion-reduce:transition-none",
-						"details-expanded:ml-0 details-expanded:max-w-0 details-expanded:px-0 details-expanded:opacity-0 details-expanded:duration-200",
+						"group/details flex h-[22px] items-center overflow-x-auto hide-scrollbar pr-2",
+						paddingClass,
+						onClick && "cursor-pointer",
 					)}
+					onMouseDown={(event) => event.stopPropagation()}
+					onTouchStart={(event) => event.stopPropagation()}
+					onClick={handleStripClick}
 				>
-					<LuRadioTower
-						className="size-2.5 shrink-0"
-						strokeWidth={STROKE_WIDTH}
-					/>
-					{ports.length}
-				</span>
-			)}
+					<span
+						className={cn(
+							"flex h-[18px] shrink-0 items-center gap-1 overflow-hidden rounded-full bg-muted/60",
+							"text-[9px] font-medium tabular-nums text-muted-foreground",
+							"max-w-14 px-1.5 opacity-100",
+							"transition-[max-width,margin,padding,opacity] duration-500 ease-out motion-reduce:transition-none",
+							"details-expanded:max-w-0 details-expanded:px-0 details-expanded:opacity-0 details-expanded:duration-200",
+						)}
+					>
+						<LuRadioTower
+							className="size-2.5 shrink-0"
+							strokeWidth={STROKE_WIDTH}
+						/>
+						{ports.length}
+					</span>
 
-			{ports.map((port, index) => (
-				<div
-					key={`${port.hostId}:${port.terminalId}:${port.port}`}
-					// The stagger delay only applies while expanding; retraction is
-					// uniform so the strip clears in one motion.
-					className={cn(
-						UNFOLD_WRAPPER,
-						"details-expanded:max-w-44 details-expanded:[transition-delay:var(--unfold-delay)]",
+					{ports.map((port, index) => (
+						<div
+							key={`${port.hostId}:${port.terminalId}:${port.port}`}
+							className={cn(
+								UNFOLD_WRAPPER,
+								"details-expanded:max-w-44 details-expanded:[transition-delay:var(--unfold-delay)]",
+							)}
+							style={
+								{
+									"--unfold-delay": `${Math.min(index, MAX_STAGGERED_PORTS) * STAGGER_STEP_MS}ms`,
+								} as CSSProperties
+							}
+						>
+							<DashboardSidebarPortBadge port={port} />
+						</div>
+					))}
+
+					{ports.length > 1 && (
+						<div className={cn(UNFOLD_WRAPPER, "details-expanded:max-w-8")}>
+							<DashboardSidebarWorkspaceDetailsAction
+								label="Close all ports"
+								icon={<LuX className="size-3" strokeWidth={STROKE_WIDTH} />}
+								busy={isKillingPorts}
+								onClick={() => void killPorts(ports)}
+							/>
+						</div>
 					)}
-					style={
-						{
-							"--unfold-delay": `${Math.min(index, MAX_STAGGERED_PORTS) * STAGGER_STEP_MS}ms`,
-						} as CSSProperties
-					}
-				>
-					<DashboardSidebarPortBadge port={port} />
-				</div>
-			))}
-
-			{ports.length > 1 && (
-				<div className={cn(UNFOLD_WRAPPER, "details-expanded:max-w-8")}>
-					<DashboardSidebarWorkspaceDetailsAction
-						label="Close all ports"
-						icon={<LuX className="size-3" strokeWidth={STROKE_WIDTH} />}
-						busy={isKillingPorts}
-						onClick={() => void killPorts(ports)}
-					/>
-				</div>
+				</OverflowFadeContainer>
 			)}
-		</OverflowFadeContainer>
+		</div>
 	);
 }

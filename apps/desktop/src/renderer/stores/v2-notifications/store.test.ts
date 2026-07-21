@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
+	getHighestPriorityDisplayStatus,
 	getV2NotificationSourcesForPane,
 	getV2NotificationSourcesForTab,
 	selectV2ChatNotificationStatus,
@@ -55,6 +56,22 @@ describe("v2 notification store", () => {
 			{ type: "terminal", id: "terminal-2" },
 			{ type: "chat", id: "session-1" },
 		]);
+	});
+
+	it("folds display statuses using the shared dot precedence", () => {
+		expect(
+			getHighestPriorityDisplayStatus([
+				"review",
+				"background-running",
+				"shell-running",
+				"working",
+				"permission",
+			]),
+		).toBe("permission");
+		expect(
+			getHighestPriorityDisplayStatus([null, "review", "shell-running"]),
+		).toBe("shell-running");
+		expect(getHighestPriorityDisplayStatus([null])).toBeNull();
 	});
 
 	it("derives workspace, tab, pane, terminal, and chat status from sources", () => {

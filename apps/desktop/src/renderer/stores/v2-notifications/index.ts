@@ -1,5 +1,6 @@
 export {
 	clearV2TerminalRunStatus,
+	getHighestPriorityDisplayStatus,
 	getV2ChatNotificationSource,
 	getV2ManualNotificationSource,
 	getV2NotificationSourceKey,
@@ -15,7 +16,6 @@ export {
 	selectV2WorkspaceDisplayStatus,
 	selectV2WorkspaceIsUnread,
 	selectV2WorkspaceNotificationStatus,
-	selectV2WorkspaceTerminalDisplayKey,
 	useV2ChatNotificationStatus,
 	useV2NotificationStore,
 	useV2PaneNotificationStatus,
@@ -25,7 +25,7 @@ export {
 	useV2WorkspaceDisplayStatus,
 	useV2WorkspaceIsUnread,
 	useV2WorkspaceOpenTerminalIds,
-	useV2WorkspaceTerminalStatuses,
+	useV2WorkspaceTabChips,
 	type V2AgentStatusAxes,
 	type V2AgentStatusAxis,
 	type V2AgentStatusAxisOps,
@@ -38,4 +38,6 @@ export {
 	type V2NotificationStatusEntry,
 	type V2NotificationTabLike,
 	type V2ShellRunningEntry,
+	type V2WorkspaceTabChipData,
+	type V2WorkspaceTabPaneDescriptor,
 } from "./store";

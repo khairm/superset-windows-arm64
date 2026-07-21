@@ -11,6 +11,8 @@ import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
 interface UseConsumeAutomationRunLinkArgs {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
 	workspaceId: string;
+	paneLayoutReady: boolean;
+	tabId: string | undefined;
 	terminalId: string | undefined;
 	chatSessionId: string | undefined;
 	focusRequestId: string | undefined;
@@ -25,6 +27,8 @@ interface UseConsumeAutomationRunLinkArgs {
 export function useConsumeAutomationRunLink({
 	store,
 	workspaceId,
+	paneLayoutReady,
+	tabId,
 	terminalId,
 	chatSessionId,
 	focusRequestId,
@@ -46,6 +50,22 @@ export function useConsumeAutomationRunLink({
 		[collections, chatSessionId],
 	);
 	const chatSession = chatSessionRows?.[0] ?? null;
+
+	useEffect(() => {
+		if (!tabId || !paneLayoutReady) return;
+		const key = getAutomationRunLinkConsumeKey({
+			type: "tab",
+			id: tabId,
+			focusRequestId,
+		});
+		if (consumedRef.current.has(key)) return;
+		const state = store.getState();
+		// (TAB-CHIPS) Non-domain tabs deep-link by stable tab id. Guard against a
+		// stale link rather than passing a missing id into the pane store.
+		if (!state.tabs.some((tab) => tab.id === tabId)) return;
+		consumedRef.current.add(key);
+		state.setActiveTab(tabId);
+	}, [store, tabId, focusRequestId, paneLayoutReady]);
 
 	useEffect(() => {
 		if (!terminalId) return;
@@ -114,7 +134,7 @@ export function getAutomationRunLinkConsumeKey({
 	id,
 	focusRequestId,
 }: {
-	type: "terminal" | "chat";
+	type: "terminal" | "chat" | "tab";
 	id: string;
 	focusRequestId: string | undefined;
 }): string {

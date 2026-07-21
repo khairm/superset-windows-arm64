@@ -34,6 +34,23 @@ function ndots(record: Record<string, unknown>): void {
 export type V2NotificationPaneLike = Pick<Pane<unknown>, "kind" | "data">;
 export type V2NotificationTabLike = Pick<Tab<unknown>, "panes">;
 
+export interface V2WorkspaceTabPaneDescriptor {
+	id: string;
+	kind: string;
+	titleOverride?: string;
+	terminalId?: string;
+	chatSessionId?: string;
+	filePath?: string;
+}
+
+export interface V2WorkspaceTabChipData {
+	tabId: string;
+	titleOverride?: string;
+	activePaneId: string | null;
+	panes: V2WorkspaceTabPaneDescriptor[];
+	status: DisplayStatus | null;
+}
+
 export type V2NotificationSource =
 	| { type: "terminal"; id: string }
 	| { type: "chat"; id: string }
@@ -303,13 +320,19 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						return { backgroundRunningTerminals };
 					});
 				},
-				applySourceAxes: (source, workspaceId, ops, occurredAt = Date.now()) => {
+				applySourceAxes: (
+					source,
+					workspaceId,
+					ops,
+					occurredAt = Date.now(),
+				) => {
 					const sourceKey = getV2NotificationSourceKey(source);
 					const prev = useV2NotificationStore.getState().sources[sourceKey];
 					// (DOT-AXES) A different workspace's entry is only replaced when this
 					// workspace actually asserts an axis (the terminal was re-homed);
 					// clear-only ops must not reach across workspaces.
-					const foreign = prev !== undefined && prev.workspaceId !== workspaceId;
+					const foreign =
+						prev !== undefined && prev.workspaceId !== workspaceId;
 					if (foreign && ops.set.length === 0) return;
 					const axes: V2AgentStatusAxes =
 						prev && !foreign ? { ...prev.axes } : {};
@@ -655,27 +678,24 @@ export function clearV2TerminalRunStatus(
  * is derived from a sorted, comma-joined key) so consumers don't re-fire on
  * every store tick. Cache-first (AGENTS.md rule 9): empty until the row
  * hydrates, so dots resolve once the layout is known rather than flashing
- * stale entries. NOTE: each of the three consumer hooks below subscribes
- * independently (≤3 identical live queries per workspace row); kept this way
- * to keep the patch to store.ts only — hoisting into DashboardSidebarWorkspaceItem
- * would touch a heavily-patched (P+AG+AL) file for a cheap local-collection query.
+ * stale entries. The workspace rollup and unread hooks subscribe independently
+ * to this cheap local-collection query.
+ *
+ * (CHIP-DOT-UNIFY) The surviving sidebar chip consumer is
+ * `useV2WorkspaceTabChips` below. It reads the same pane layout directly so
+ * chip liveness and workspace liveness cannot disagree.
  */
 export function useV2WorkspaceOpenTerminalIds(
 	workspaceId: string,
-	// (CHIP-DOT-UNIFY) `enabled: false` keeps the hook mounted (rules of hooks)
-	// but degrades it to a no-match live query + constant empty set, so a
-	// disabled consumer (e.g. the agent-chips experiment toggled off) costs
-	// nothing per store tick.
-	enabled = true,
 ): ReadonlySet<string> {
 	const collections = useCollections();
 	const { data: rows = [] } = useLiveQuery(
 		(q) =>
 			q
 				.from({ local: collections.v2WorkspaceLocalState })
-				.where(({ local }) => eq(local.workspaceId, enabled ? workspaceId : ""))
+				.where(({ local }) => eq(local.workspaceId, workspaceId))
 				.select(({ local }) => ({ paneLayout: local.paneLayout })),
-		[collections, workspaceId, enabled],
+		[collections, workspaceId],
 	);
 	const paneLayout = rows[0]?.paneLayout as
 		| WorkspaceState<unknown>
@@ -728,7 +748,7 @@ const DISPLAY_STATUS_PRIORITY: readonly DisplayStatus[] = [
 	"review",
 ];
 
-function getHighestPriorityDisplayStatus(
+export function getHighestPriorityDisplayStatus(
 	statuses: Iterable<DisplayStatus | null>,
 ): DisplayStatus | null {
 	let best: DisplayStatus | null = null;
@@ -806,80 +826,74 @@ export function selectV2WorkspaceNotificationStatus(
 }
 
 /**
- * (AY) Per-terminal DISPLAY statuses for a workspace, derived per terminal
- * from the SAME shared primitive as the tab dots and the workspace rollup.
- * Encoded inside the selector as a sorted `terminalId=status` string for
- * referential stability (the subscription only re-fires when a dot actually
- * changes), then decoded for the consumer.
+ * (TAB-CHIPS) Ordered tab models from the persisted pane layout. Each status is
+ * a fold of that tab's explicit pane sources through the shared display-status
+ * primitive, so closed panes are unrepresentable and plain shell blue remains
+ * visible without consulting terminal session liveness.
  */
-export function selectV2WorkspaceTerminalDisplayKey(
+export function useV2WorkspaceTabChips(
 	workspaceId: string,
-	// REQUIRED: every display-status surface gates on open terminals. (An
-	// optional param had inverted "ungated" semantics between the sources loop
-	// and the blue maps — most-permissive vs most-restrictive.)
-	openTerminalIds: ReadonlySet<string>,
-) {
-	return (state: V2NotificationState): string => {
-		const terminalIds = new Set<string>();
-		for (const entry of Object.values(state.sources)) {
-			if (entry.workspaceId !== workspaceId) continue;
-			if (entry.source.type !== "terminal") continue;
-			if (isClosedTerminalSource(entry, openTerminalIds)) continue;
-			terminalIds.add(entry.source.id);
-		}
-		for (const map of [
-			state.shellRunningTerminals,
-			state.backgroundRunningTerminals,
-		]) {
-			// Scope by the open-terminal gate (workspaceId is no longer keyed on
-			// the shell-running entry — see getSourceDisplayStatus).
-			for (const terminalId of Object.keys(map)) {
-				if (!openTerminalIds.has(terminalId)) continue;
-				terminalIds.add(terminalId);
-			}
-		}
-		const parts: string[] = [];
-		for (const terminalId of terminalIds) {
-			const status = getSourceDisplayStatus(
-				state,
-				workspaceId,
-				`${TERMINAL_SOURCE_PREFIX}${terminalId}`,
-			);
-			if (status) parts.push(`${terminalId}=${status}`);
-		}
-		parts.sort();
-		return parts.join(",");
-	};
-}
-
-export function useV2WorkspaceTerminalStatuses(
-	workspaceId: string,
-	// (CHIP-DOT-UNIFY) `enabled: false` swaps the selector for a constant so a
-	// disabled consumer doesn't rescan notification state on every store tick.
 	enabled = true,
-): Array<{ terminalId: string; status: DisplayStatus }> {
-	const openTerminalIds = useV2WorkspaceOpenTerminalIds(workspaceId, enabled);
+): V2WorkspaceTabChipData[] {
+	const collections = useCollections();
+	const { data: rows = [] } = useLiveQuery(
+		(q) =>
+			q
+				.from({ local: collections.v2WorkspaceLocalState })
+				.where(({ local }) => eq(local.workspaceId, enabled ? workspaceId : ""))
+				.select(({ local }) => ({ paneLayout: local.paneLayout })),
+		[collections, workspaceId, enabled],
+	);
+	const paneLayout = rows[0]?.paneLayout as
+		| WorkspaceState<unknown>
+		| null
+		| undefined;
+	const tabs = useMemo(() => {
+		if (!enabled || !paneLayout) return [];
+		return paneLayout.tabs.map((tab) => ({
+			tabId: tab.id,
+			titleOverride: tab.titleOverride,
+			activePaneId: tab.activePaneId,
+			panes: Object.values(tab.panes).map((pane) => ({
+				id: pane.id,
+				kind: pane.kind,
+				titleOverride: pane.titleOverride,
+				terminalId: getTerminalIdForPane(pane) ?? undefined,
+				chatSessionId: getChatIdForPane(pane) ?? undefined,
+				filePath: getFilePathForPane(pane) ?? undefined,
+			})),
+			sources: getV2NotificationSourcesForTab(tab),
+		}));
+	}, [enabled, paneLayout]);
 	const selector = useMemo(
 		() =>
 			enabled
-				? selectV2WorkspaceTerminalDisplayKey(workspaceId, openTerminalIds)
+				? (state: V2NotificationState) =>
+						tabs
+							.map(
+								(tab) =>
+									getHighestPriorityDisplayStatus(
+										tab.sources.map((source) =>
+											getSourceDisplayStatus(
+												state,
+												workspaceId,
+												getV2NotificationSourceKey(source),
+											),
+										),
+									) ?? "",
+							)
+							.join(",")
 				: () => "",
-		[workspaceId, openTerminalIds, enabled],
+		[enabled, tabs, workspaceId],
 	);
-	const key = useV2NotificationStore(selector);
+	const displayKey = useV2NotificationStore(selector);
 	return useMemo(() => {
-		const result: Array<{ terminalId: string; status: DisplayStatus }> = [];
-		if (!key) return result;
-		for (const pair of key.split(",")) {
-			const eq = pair.indexOf("=");
-			if (eq < 0) continue;
-			result.push({
-				terminalId: pair.slice(0, eq),
-				status: pair.slice(eq + 1) as DisplayStatus,
-			});
-		}
-		return result;
-	}, [key]);
+		const statuses = displayKey.split(",");
+		return tabs.map(({ sources: _sources, ...tab }, index) => ({
+			...tab,
+			status: (statuses[index] || null) as DisplayStatus | null,
+		}));
+	}, [displayKey, tabs]);
 }
 
 export function selectV2TabNotificationStatus(
@@ -969,7 +983,7 @@ export function useV2SourcesDisplayStatus(
  */
 export function selectV2WorkspaceDisplayStatus(
 	workspaceId: string,
-	// REQUIRED — see selectV2WorkspaceTerminalDisplayKey.
+	// REQUIRED: scopes terminal agent and blue-axis state to open panes.
 	openTerminalIds: ReadonlySet<string>,
 ) {
 	return (state: V2NotificationState): DisplayStatus | null => {
@@ -1099,6 +1113,15 @@ function getChatIdForPane(
 	if (!pane.data || typeof pane.data !== "object") return null;
 	const sessionId = (pane.data as { sessionId?: unknown }).sessionId;
 	return typeof sessionId === "string" && sessionId ? sessionId : null;
+}
+
+function getFilePathForPane(
+	pane: V2NotificationPaneLike | null | undefined,
+): string | null {
+	if (!pane || pane.kind !== "file") return null;
+	if (!pane.data || typeof pane.data !== "object") return null;
+	const filePath = (pane.data as { filePath?: unknown }).filePath;
+	return typeof filePath === "string" && filePath ? filePath : null;
 }
 
 // (render-dot diagnostic) Snapshot every dot's ACTUALLY-rendered status once

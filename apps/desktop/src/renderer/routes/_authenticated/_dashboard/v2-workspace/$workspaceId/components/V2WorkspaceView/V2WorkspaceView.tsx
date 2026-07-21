@@ -45,6 +45,7 @@ import { WorkspaceSidebar } from "../WorkspaceSidebar";
  * Kanban collapse-split via V2WorkspaceMount), which the consumers no-op on.
  */
 export interface WorkspaceSearch {
+	tabId?: string;
 	terminalId?: string;
 	chatSessionId?: string;
 	focusRequestId?: string;
@@ -97,6 +98,7 @@ export function V2WorkspaceView(search: V2WorkspaceViewProps) {
 }
 
 function V2WorkspaceCenter({
+	tabId,
 	terminalId,
 	chatSessionId,
 	focusRequestId,
@@ -117,7 +119,7 @@ function V2WorkspaceCenter({
 	} = useV2UserPreferences();
 	const showPresetsBar = v2UserPreferences.showPresetsBar;
 	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
-	const { store } = useV2WorkspacePaneLayout();
+	const { store, isLayoutReady } = useV2WorkspacePaneLayout();
 	useClearActivePaneAttention({ store });
 	const launcher = useV2TerminalLauncher();
 	const {
@@ -138,6 +140,8 @@ function V2WorkspaceCenter({
 	useConsumeAutomationRunLink({
 		store,
 		workspaceId,
+		paneLayoutReady: isLayoutReady,
+		tabId,
 		terminalId,
 		chatSessionId,
 		focusRequestId,

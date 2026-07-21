@@ -1,0 +1,1 @@
+export { resolveDashboardSidebarTabTitle } from "./resolveDashboardSidebarTabTitle";

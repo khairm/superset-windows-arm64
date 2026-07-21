@@ -21,6 +21,13 @@ describe("getAutomationRunLinkConsumeKey", () => {
 				focusRequestId: undefined,
 			}),
 		).toBe("chat:chat-1");
+		expect(
+			getAutomationRunLinkConsumeKey({
+				type: "tab",
+				id: "tab-1",
+				focusRequestId: undefined,
+			}),
+		).toBe("tab:tab-1");
 	});
 
 	it("treats each notification focus request as a fresh command", () => {

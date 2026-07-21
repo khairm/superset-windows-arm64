@@ -11,9 +11,9 @@ import { devtools, persist } from "zustand/middleware";
  *   1. This store + `useWorkspaceAgentsRowEnabled`.
  *   2. The toggle UI in `ExperimentalSettings` and its `settings-search` entry
  *      (`EXPERIMENTAL_WORKSPACE_AGENTS`).
- *   3. The flag branch in `DashboardSidebarWorkspaceDetails` (the `agents`
+ *   3. The flag branch in `DashboardSidebarWorkspaceDetails` (the tab-chip
  *      section) and the `enabled` it threads into
- *      `useDashboardSidebarWorkspaceRunningAgents`.
+ *      `useDashboardSidebarWorkspaceTabChips`.
  */
 interface WorkspaceAgentsRowState {
 	// When true, running agents render inline under each workspace item.

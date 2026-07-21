@@ -5,9 +5,11 @@ import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/h
 import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import {
+	getHighestPriorityDisplayStatus,
 	useV2WorkspaceDisplayStatus,
-	useV2WorkspaceTerminalStatuses,
+	useV2WorkspaceTabChips,
 } from "renderer/stores/v2-notifications";
+import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-row";
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
 import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
@@ -54,7 +56,16 @@ export function DashboardSidebarWorkspaceItem({
 	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
 	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
 	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
-	const terminalStatuses = useV2WorkspaceTerminalStatuses(id);
+	const tabChips = useV2WorkspaceTabChips(id);
+	const workspaceAgentsRowEnabled = useWorkspaceAgentsRowEnabled();
+	// (TAB-CHIPS) When the chip experiment is off, preserve the old single name
+	// dot by folding every open tab instead of hiding multi-tab status entirely.
+	const rowTabCount = workspaceAgentsRowEnabled
+		? tabChips.length
+		: Math.min(tabChips.length, 1);
+	const rowTabStatus = workspaceAgentsRowEnabled
+		? (tabChips[0]?.status ?? null)
+		: getHighestPriorityDisplayStatus(tabChips.map((tab) => tab.status));
 	const {
 		cancelRename,
 		handleClearStatus,
@@ -255,7 +266,8 @@ export function DashboardSidebarWorkspaceItem({
 				shortcutLabel={shortcutLabel}
 				diffStats={isPending ? null : diffStats}
 				workspaceStatus={workspaceStatus}
-				terminalStatuses={terminalStatuses}
+				tabCount={rowTabCount}
+				tabStatus={rowTabStatus}
 				isInSection={isInSection}
 				isNonGit={isNonGit}
 				onClick={handleClick}

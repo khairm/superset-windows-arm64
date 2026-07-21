@@ -43,12 +43,8 @@ interface DashboardSidebarExpandedWorkspaceRowProps
 	shortcutLabel?: string;
 	diffStats: DiffStats | null;
 	workspaceStatus?: DisplayStatus | null;
-	/**
-	 * One display status per active terminal in the workspace (agent status, or
-	 * the shell-running blue fallback). Rendered as a row of dots inline with
-	 * the workspace name, keyed by terminalId. Pass an empty array to hide.
-	 */
-	terminalStatuses?: Array<{ terminalId: string; status: DisplayStatus }>;
+	tabCount?: number;
+	tabStatus?: DisplayStatus | null;
 	isInSection?: boolean;
 	isNonGit?: boolean;
 	sectionState?: "snoozed" | "archived" | "deleted";
@@ -75,7 +71,8 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 			shortcutLabel,
 			diffStats,
 			workspaceStatus = null,
-			terminalStatuses = [],
+			tabCount = 0,
+			tabStatus = null,
 			isInSection = false,
 			isNonGit = false,
 			sectionState,
@@ -296,12 +293,10 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 										{snoozeRemaining}
 									</span>
 								)}
-								{terminalStatuses.length > 0 && (
-									<div className="flex shrink-0 items-center gap-1">
-										{terminalStatuses.map(({ terminalId, status }) => (
-											<StatusIndicator key={terminalId} status={status} />
-										))}
-									</div>
+								{/* (TAB-CHIPS) A zero/one-tab workspace keeps one folded
+								    inline dot; multi-tab workspaces move every dot to its chip. */}
+								{tabCount <= 1 && tabStatus && (
+									<StatusIndicator status={tabStatus} />
 								)}
 							</div>
 						)}

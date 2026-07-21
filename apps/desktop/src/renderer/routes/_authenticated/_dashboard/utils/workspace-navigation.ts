@@ -9,6 +9,7 @@ export interface WorkspaceSearchParams {
 }
 
 export interface V2WorkspaceSearchParams {
+	tabId?: string;
 	terminalId?: string;
 	chatSessionId?: string;
 	focusRequestId?: string;
