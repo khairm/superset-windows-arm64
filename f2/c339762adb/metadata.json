@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "f2c339762adb",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "apps/desktop/src/renderer/stores/v2-notifications/store.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f2/c339762adb/0/metadata.json",
+      "transcript": "/f2/c339762adb/0/full.jsonl",
+      "content_hash": "/f2/c339762adb/0/content_hash.txt",
+      "prompt": "/f2/c339762adb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 19511,
+    "cache_creation_tokens": 4495779,
+    "cache_read_tokens": 56858705,
+    "output_tokens": 147912,
+    "api_call_count": 240
+  }
+}
