@@ -25,14 +25,12 @@ export function DashboardSidebarWorkspaceTabChip({
 		: "No active status";
 
 	const handleClick = () => {
-		const focusRequestId = crypto.randomUUID();
-		const search =
-			tab.focusTarget.type === "terminal"
-				? { terminalId: tab.focusTarget.terminalId, focusRequestId }
-				: tab.focusTarget.type === "chat"
-					? { chatSessionId: tab.focusTarget.chatSessionId, focusRequestId }
-					: { tabId: tab.focusTarget.tabId, focusRequestId };
-		void navigateToV2Workspace(workspaceId, navigate, { search });
+		void navigateToV2Workspace(workspaceId, navigate, {
+			search: {
+				tabId: tab.tabId,
+				focusRequestId: crypto.randomUUID(),
+			},
+		});
 	};
 
 	return (

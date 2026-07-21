@@ -52,45 +52,28 @@ export function useConsumeAutomationRunLink({
 	const chatSession = chatSessionRows?.[0] ?? null;
 
 	useEffect(() => {
-		if (!tabId || !paneLayoutReady) return;
-		const key = getAutomationRunLinkConsumeKey({
-			type: "tab",
-			id: tabId,
+		if (!paneLayoutReady) return;
+		consumeTabAutomationRunLink({
+			store,
+			paneLayoutReady,
+			tabId,
 			focusRequestId,
+			consumedKeys: consumedRef.current,
 		});
-		if (consumedRef.current.has(key)) return;
-		const state = store.getState();
-		// (TAB-CHIPS) Non-domain tabs deep-link by stable tab id. Guard against a
-		// stale link rather than passing a missing id into the pane store.
-		if (!state.tabs.some((tab) => tab.id === tabId)) return;
-		consumedRef.current.add(key);
-		state.setActiveTab(tabId);
 	}, [store, tabId, focusRequestId, paneLayoutReady]);
 
 	useEffect(() => {
-		if (!terminalId) return;
-		if (!terminalSessionsQuery.isSuccess) return;
-		const key = getAutomationRunLinkConsumeKey({
-			type: "terminal",
-			id: terminalId,
+		if (!paneLayoutReady) return;
+		consumeTerminalAutomationRunLink({
+			store,
+			workspaceId,
+			paneLayoutReady,
+			terminalId,
 			focusRequestId,
+			terminalSessionsReady: terminalSessionsQuery.isSuccess,
+			terminalSessions: terminalSessionsQuery.data?.sessions,
+			consumedKeys: consumedRef.current,
 		});
-		if (consumedRef.current.has(key)) return;
-		consumedRef.current.add(key);
-		if (
-			!terminalSessionBelongsToWorkspace({
-				sessions: terminalSessionsQuery.data.sessions,
-				terminalId,
-				workspaceId,
-			})
-		) {
-			console.warn(
-				"[automation-run-link] Ignoring terminal link for another workspace",
-				{ terminalId, workspaceId },
-			);
-			return;
-		}
-		focusOrAddTerminalPane(store, terminalId);
 	}, [
 		store,
 		terminalId,
@@ -98,27 +81,21 @@ export function useConsumeAutomationRunLink({
 		terminalSessionsQuery.isSuccess,
 		terminalSessionsQuery.data,
 		workspaceId,
+		paneLayoutReady,
 	]);
 
 	useEffect(() => {
-		if (!chatSessionId) return;
-		if (!chatSessionsReady) return;
-		if (!chatSession) return;
-		const key = getAutomationRunLinkConsumeKey({
-			type: "chat",
-			id: chatSessionId,
+		if (!paneLayoutReady) return;
+		consumeChatAutomationRunLink({
+			store,
+			workspaceId,
+			paneLayoutReady,
+			chatSessionId,
 			focusRequestId,
+			chatSessionsReady,
+			chatSession,
+			consumedKeys: consumedRef.current,
 		});
-		if (consumedRef.current.has(key)) return;
-		consumedRef.current.add(key);
-		if (!chatSessionBelongsToWorkspace({ chatSession, workspaceId })) {
-			console.warn(
-				"[automation-run-link] Ignoring chat link for another workspace",
-				{ chatSessionId, workspaceId },
-			);
-			return;
-		}
-		focusOrAddChatPane(store, chatSessionId);
 	}, [
 		store,
 		chatSessionId,
@@ -126,7 +103,124 @@ export function useConsumeAutomationRunLink({
 		chatSession,
 		chatSessionsReady,
 		workspaceId,
+		paneLayoutReady,
 	]);
+}
+
+interface AutomationRunLinkBaseArgs {
+	store: StoreApi<WorkspaceStore<PaneViewerData>>;
+	paneLayoutReady: boolean;
+	focusRequestId: string | undefined;
+	consumedKeys: Set<string>;
+}
+
+export function consumeTabAutomationRunLink({
+	store,
+	paneLayoutReady,
+	tabId,
+	focusRequestId,
+	consumedKeys,
+}: AutomationRunLinkBaseArgs & { tabId: string | undefined }): boolean {
+	if (!paneLayoutReady || !tabId) return false;
+	const key = getAutomationRunLinkConsumeKey({
+		type: "tab",
+		id: tabId,
+		focusRequestId,
+	});
+	if (consumedKeys.has(key)) return false;
+	const state = store.getState();
+	// (TAB-CHIPS) A stale tab link is a no-op and remains retryable in case the
+	// persisted pane layout has not exposed that tab yet.
+	if (!state.tabs.some((tab) => tab.id === tabId)) return false;
+	consumedKeys.add(key);
+	state.setActiveTab(tabId);
+	return true;
+}
+
+export function consumeTerminalAutomationRunLink({
+	store,
+	workspaceId,
+	paneLayoutReady,
+	terminalId,
+	focusRequestId,
+	terminalSessionsReady,
+	terminalSessions,
+	consumedKeys,
+}: AutomationRunLinkBaseArgs & {
+	workspaceId: string;
+	terminalId: string | undefined;
+	terminalSessionsReady: boolean;
+	terminalSessions:
+		| Array<{ terminalId: string; workspaceId: string }>
+		| undefined;
+}): boolean {
+	if (!paneLayoutReady || !terminalId || !terminalSessionsReady) return false;
+	if (!terminalSessions) {
+		throw new Error("Terminal sessions query succeeded without data");
+	}
+	const key = getAutomationRunLinkConsumeKey({
+		type: "terminal",
+		id: terminalId,
+		focusRequestId,
+	});
+	if (consumedKeys.has(key)) return false;
+	consumedKeys.add(key);
+	if (
+		!terminalSessionBelongsToWorkspace({
+			sessions: terminalSessions,
+			terminalId,
+			workspaceId,
+		})
+	) {
+		console.warn(
+			"[automation-run-link] Ignoring terminal link for another workspace",
+			{ terminalId, workspaceId },
+		);
+		return true;
+	}
+	focusOrAddTerminalPane(store, terminalId);
+	return true;
+}
+
+export function consumeChatAutomationRunLink({
+	store,
+	workspaceId,
+	paneLayoutReady,
+	chatSessionId,
+	focusRequestId,
+	chatSessionsReady,
+	chatSession,
+	consumedKeys,
+}: AutomationRunLinkBaseArgs & {
+	workspaceId: string;
+	chatSessionId: string | undefined;
+	chatSessionsReady: boolean;
+	chatSession: { v2WorkspaceId: string | null } | null;
+}): boolean {
+	if (
+		!paneLayoutReady ||
+		!chatSessionId ||
+		!chatSessionsReady ||
+		!chatSession
+	) {
+		return false;
+	}
+	const key = getAutomationRunLinkConsumeKey({
+		type: "chat",
+		id: chatSessionId,
+		focusRequestId,
+	});
+	if (consumedKeys.has(key)) return false;
+	consumedKeys.add(key);
+	if (!chatSessionBelongsToWorkspace({ chatSession, workspaceId })) {
+		console.warn(
+			"[automation-run-link] Ignoring chat link for another workspace",
+			{ chatSessionId, workspaceId },
+		);
+		return true;
+	}
+	focusOrAddChatPane(store, chatSessionId);
+	return true;
 }
 
 export function getAutomationRunLinkConsumeKey({

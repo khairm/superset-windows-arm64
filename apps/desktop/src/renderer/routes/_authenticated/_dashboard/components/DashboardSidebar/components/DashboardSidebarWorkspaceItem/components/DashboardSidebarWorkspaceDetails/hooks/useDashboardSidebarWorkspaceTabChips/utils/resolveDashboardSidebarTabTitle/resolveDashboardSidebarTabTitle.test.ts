@@ -64,6 +64,81 @@ describe("resolveDashboardSidebarTabTitle", () => {
 		).toBe("feature.tsx");
 	});
 
+	it("uses persisted browser title, then a normalized URL host", () => {
+		expect(
+			resolveDashboardSidebarTabTitle(
+				{
+					activePaneId: "browser-pane",
+					panes: [
+						{
+							id: "browser-pane",
+							kind: "browser",
+							browserPageTitle: "Superset Docs",
+							browserUrl: "https://www.example.com/docs",
+						},
+					],
+				},
+				0,
+			),
+		).toBe("Superset Docs");
+		expect(
+			resolveDashboardSidebarTabTitle(
+				{
+					activePaneId: "browser-pane",
+					panes: [
+						{
+							id: "browser-pane",
+							kind: "browser",
+							browserUrl: "https://www.example.com:8443/docs",
+						},
+					],
+				},
+				0,
+			),
+		).toBe("example.com:8443");
+	});
+
+	it("falls back to Browser for malformed or missing URLs", () => {
+		for (const browserUrl of ["not a valid url", undefined]) {
+			expect(
+				resolveDashboardSidebarTabTitle(
+					{
+						activePaneId: "browser-pane",
+						panes: [{ id: "browser-pane", kind: "browser", browserUrl }],
+					},
+					0,
+				),
+			).toBe("Browser");
+		}
+	});
+
+	it("uses the persisted comment author login", () => {
+		expect(
+			resolveDashboardSidebarTabTitle(
+				{
+					activePaneId: "comment-pane",
+					panes: [
+						{
+							id: "comment-pane",
+							kind: "comment",
+							commentAuthorLogin: "octocat",
+						},
+					],
+				},
+				0,
+			),
+		).toBe("octocat");
+		expect(
+			resolveDashboardSidebarTabTitle(
+				{
+					activePaneId: "comment-pane",
+					panes: [{ id: "comment-pane", kind: "comment" }],
+				},
+				0,
+			),
+		).toBe("Comment");
+	});
+
 	it("falls back to the one-based tab index", () => {
 		expect(
 			resolveDashboardSidebarTabTitle({ activePaneId: null, panes: [] }, 2),

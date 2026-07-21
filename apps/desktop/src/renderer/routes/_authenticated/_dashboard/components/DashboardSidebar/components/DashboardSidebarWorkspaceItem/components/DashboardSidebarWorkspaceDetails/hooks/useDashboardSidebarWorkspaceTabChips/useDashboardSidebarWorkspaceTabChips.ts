@@ -2,39 +2,14 @@ import type { BuiltinAgentId } from "@superset/shared/agent-catalog";
 import { useMemo } from "react";
 import { useTerminalAgentBindings } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
-import {
-	useV2WorkspaceTabChips,
-	type V2WorkspaceTabPaneDescriptor,
-} from "renderer/stores/v2-notifications";
+import { useV2WorkspaceTabChips } from "renderer/stores/v2-notifications";
 import { resolveDashboardSidebarTabTitle } from "./utils/resolveDashboardSidebarTabTitle";
-
-export type DashboardSidebarTabFocusTarget =
-	| { type: "terminal"; terminalId: string }
-	| { type: "chat"; chatSessionId: string }
-	| { type: "tab"; tabId: string };
 
 export interface DashboardSidebarWorkspaceTabChip {
 	tabId: string;
 	title: string;
 	agentId: BuiltinAgentId | null;
 	status: DisplayStatus | null;
-	focusTarget: DashboardSidebarTabFocusTarget;
-}
-
-function getFocusTarget(
-	tabId: string,
-	activePaneId: string | null,
-	panes: V2WorkspaceTabPaneDescriptor[],
-): DashboardSidebarTabFocusTarget {
-	const pane =
-		panes.find((candidate) => candidate.id === activePaneId) ?? panes[0];
-	if (pane?.terminalId) {
-		return { type: "terminal", terminalId: pane.terminalId };
-	}
-	if (pane?.chatSessionId) {
-		return { type: "chat", chatSessionId: pane.chatSessionId };
-	}
-	return { type: "tab", tabId };
 }
 
 /**
@@ -71,7 +46,6 @@ export function useDashboardSidebarWorkspaceTabChips(
 					title: resolveDashboardSidebarTabTitle(tab, index),
 					agentId: firstBinding?.agentId ?? null,
 					status: tab.status,
-					focusTarget: getFocusTarget(tab.tabId, tab.activePaneId, tab.panes),
 				};
 			}),
 		[tabs, bindings],

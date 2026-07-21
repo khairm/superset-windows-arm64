@@ -41,6 +41,9 @@ export interface V2WorkspaceTabPaneDescriptor {
 	terminalId?: string;
 	chatSessionId?: string;
 	filePath?: string;
+	browserPageTitle?: string;
+	browserUrl?: string;
+	commentAuthorLogin?: string;
 }
 
 export interface V2WorkspaceTabChipData {
@@ -861,6 +864,11 @@ export function useV2WorkspaceTabChips(
 				terminalId: getTerminalIdForPane(pane) ?? undefined,
 				chatSessionId: getChatIdForPane(pane) ?? undefined,
 				filePath: getFilePathForPane(pane) ?? undefined,
+				browserPageTitle:
+					getPaneDataString(pane, "browser", "pageTitle") ?? undefined,
+				browserUrl: getPaneDataString(pane, "browser", "url") ?? undefined,
+				commentAuthorLogin:
+					getPaneDataString(pane, "comment", "authorLogin") ?? undefined,
 			})),
 			sources: getV2NotificationSourcesForTab(tab),
 		}));
@@ -1113,6 +1121,17 @@ function getChatIdForPane(
 	if (!pane.data || typeof pane.data !== "object") return null;
 	const sessionId = (pane.data as { sessionId?: unknown }).sessionId;
 	return typeof sessionId === "string" && sessionId ? sessionId : null;
+}
+
+function getPaneDataString(
+	pane: V2NotificationPaneLike | null | undefined,
+	kind: string,
+	field: string,
+): string | null {
+	if (!pane || pane.kind !== kind) return null;
+	if (!pane.data || typeof pane.data !== "object") return null;
+	const value = (pane.data as Record<string, unknown>)[field];
+	return typeof value === "string" && value ? value : null;
 }
 
 function getFilePathForPane(

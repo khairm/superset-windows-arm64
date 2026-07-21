@@ -21,6 +21,23 @@ function getTitlePane(
 	return tab.panes.find((pane) => pane.id === tab.activePaneId);
 }
 
+function getBrowserTitle(
+	pane: V2WorkspaceTabPaneDescriptor,
+): string | undefined {
+	if (pane.browserPageTitle) return pane.browserPageTitle;
+	if (!pane.browserUrl) return undefined;
+	try {
+		const parsed = new URL(
+			pane.browserUrl.includes("://")
+				? pane.browserUrl
+				: `https://${pane.browserUrl}`,
+		);
+		return parsed.host.replace(/^www\./i, "") || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function getPaneTitle(
 	pane: V2WorkspaceTabPaneDescriptor | undefined,
 ): string | undefined {
@@ -28,6 +45,12 @@ function getPaneTitle(
 	if (pane.titleOverride) return pane.titleOverride;
 	if (pane.kind === "file" && pane.filePath) {
 		return pane.filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? "File";
+	}
+	if (pane.kind === "browser") {
+		return getBrowserTitle(pane) ?? "Browser";
+	}
+	if (pane.kind === "comment" && pane.commentAuthorLogin) {
+		return pane.commentAuthorLogin;
 	}
 	return DEFAULT_PANE_TITLES[pane.kind];
 }
