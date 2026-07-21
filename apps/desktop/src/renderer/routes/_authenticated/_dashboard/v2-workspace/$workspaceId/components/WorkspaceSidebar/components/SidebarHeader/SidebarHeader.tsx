@@ -40,6 +40,7 @@ export function SidebarHeader({
 							getSidebarHeaderTabButtonClassName({
 								isActive,
 								compact,
+								inverted: true,
 							}),
 							"relative h-10",
 							!compact && "flex-1 justify-center",

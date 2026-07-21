@@ -1,8 +1,5 @@
-import { Button } from "@superset/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LuClipboardList, LuFile, LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
@@ -58,32 +55,6 @@ interface WorkspaceSidebarProps {
 	selectedFilePath?: string;
 	pendingReveal?: PendingReveal | null;
 	workspaceId: string;
-}
-
-function IconButton({
-	icon: Icon,
-	tooltip,
-	onClick,
-}: {
-	icon: React.ComponentType<{ className?: string }>;
-	tooltip: string;
-	onClick?: () => void;
-}) {
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<Button
-					variant="ghost"
-					size="icon"
-					className="size-6"
-					onClick={onClick}
-				>
-					<Icon className="size-3.5" />
-				</Button>
-			</TooltipTrigger>
-			<TooltipContent side="bottom">{tooltip}</TooltipContent>
-		</Tooltip>
-	);
 }
 
 export function WorkspaceSidebar({
@@ -174,7 +145,6 @@ export function WorkspaceSidebar({
 		id: "files",
 		label: "Files",
 		icon: LuFile,
-		actions: <IconButton icon={Search} tooltip="Search" onClick={onSearch} />,
 		content: (
 			<FilesTab
 				onSelectFile={onSelectFile}
@@ -182,6 +152,7 @@ export function WorkspaceSidebar({
 				pendingReveal={pendingReveal}
 				workspaceId={workspaceId}
 				gitStatus={gitStatus.data}
+				onSearch={onSearch}
 			/>
 		),
 	};

@@ -176,7 +176,6 @@ export function DashboardSidebarProjectSection({
 				<DashboardSidebarProjectRow
 					projectName={project.name}
 					iconUrl={project.iconUrl}
-					totalWorkspaceCount={totalWorkspaceCount}
 					isCollapsed={project.isCollapsed}
 					isRenaming={isRenaming}
 					renameValue={renameValue}

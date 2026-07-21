@@ -242,6 +242,7 @@ export function useChangesTab({
 			onOpenInEditor={handleOpenInEditor}
 			onFilterChange={setFilter}
 			onViewModeChange={setViewMode}
+			onRefresh={handleRefresh}
 			onBaseBranchChange={setBaseBranch}
 			onRenameBranch={handleRenameBranch}
 			canRenameBranch={canRenameBranch}
