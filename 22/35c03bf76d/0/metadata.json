@@ -1,0 +1,112 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "2235c03bf76d",
+  "session_id": "cc93a2e8-3460-4ccb-967b-8843019f99fb",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-21T19:12:59.033994Z",
+  "branch": "main",
+  "checkpoints_count": 7,
+  "save_step_count": 8,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "fb473756c552",
+  "token_usage": {
+    "input_tokens": 105,
+    "cache_creation_tokens": 383041,
+    "cache_read_tokens": 7248749,
+    "output_tokens": 41724,
+    "api_call_count": 53
+  },
+  "session_metrics": {
+    "turn_count": 12
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 1681,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/commands": 1,
+        ".claude/skills": 1,
+        ".codex/commands": 1,
+        ".codex/prompts": 1,
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 219,
+        "plugins/superset/skills/superset": 1,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 95,
+      "user_lines_removed": 217,
+      "agent_lines_added": 1676,
+      "agent_lines_removed": 1676,
+      "user_added_per_file": {
+        "AGENTS.md": 95
+      },
+      "user_removed_per_file": {
+        "AGENTS.md": 217
+      }
+    }
+  ]
+}
