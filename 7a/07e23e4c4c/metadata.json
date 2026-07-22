@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "7a07e23e4c4c",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanCollapseSplit/KanbanCollapseSplit.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount/V2WorkspaceMount.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/7a/07e23e4c4c/0/metadata.json",
+      "transcript": "/7a/07e23e4c4c/0/full.jsonl",
+      "content_hash": "/7a/07e23e4c4c/0/content_hash.txt",
+      "prompt": "/7a/07e23e4c4c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 52,
+    "cache_creation_tokens": 26899,
+    "cache_read_tokens": 7189841,
+    "output_tokens": 16214,
+    "api_call_count": 26
+  }
+}
