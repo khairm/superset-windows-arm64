@@ -85,7 +85,7 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 	const { activeHostUrl, machineId } = useLocalHostService();
 	const relayUrl = useRelayUrl();
 
-	const { data: hosts = [] } = useLiveQuery(
+	const { data: hosts = [], isReady: hostsReady } = useLiveQuery(
 		(q) =>
 			q.from({ hosts: collections.v2Hosts }).select(({ hosts }) => ({
 				organizationId: hosts.organizationId,
@@ -137,6 +137,16 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 		};
 	}, [targets, snapshots]);
 
+	// (KANBAN-HOST-SOURCE) Provenance for absence authority: a host earns its
+	// entry the moment its REAL `workspace.list` request resolves — recorded
+	// inside the queryFn, never derived from the query cache, which optimistic
+	// setQueryData writes (creates/renames) also populate and which therefore
+	// cannot prove the host ever answered. Session-scoped and monotonic, same
+	// lifetime as the kept-through-refetch-errors query data.
+	const [liveAnsweredHostIds, setLiveAnsweredHostIds] = useState<Set<string>>(
+		() => new Set(),
+	);
+
 	const queries = useQueries({
 		queries: targets.map((target) => ({
 			queryKey: getHostWorkspacesQueryKey(target),
@@ -159,6 +169,11 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 				const client = getHostServiceClientByUrl(target.hostUrl);
 				const rows =
 					(await client.workspace.list.query()) as HostWorkspaceRow[];
+				setLiveAnsweredHostIds((prev) =>
+					prev.has(target.machineId)
+						? prev
+						: new Set(prev).add(target.machineId),
+				);
 				saveHostWorkspacesSnapshot(
 					target.organizationId,
 					target.machineId,
@@ -247,34 +262,33 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 	);
 
 	// (KANBAN-HOST-SOURCE) Authority is about proving ABSENCE, and only a
-	// host's own LIVE list can do that. Query data (kept through refetch
-	// errors) was genuinely served by the host this session; snapshots are
-	// best-effort persistence (saves are swallowed, they can be stale or
-	// empty) — they may prove a row EXISTS, never that one doesn't. Global
-	// authority therefore requires live data from every known host; the
-	// per-host form below lets consumers that know a row's owning host judge
-	// its absence while unrelated hosts are offline.
+	// host's own real `workspace.list` answer can do that — hence
+	// liveAnsweredHostIds recorded inside the queryFn. Neither the query
+	// cache (polluted by optimistic setQueryData writes) nor snapshots
+	// (best-effort, possibly stale/empty) qualify: both may prove a row
+	// EXISTS, never that one doesn't. Global authority additionally requires
+	// the hosts collection to be hydrated — an unhydrated `[]` host list must
+	// not masquerade as "no other hosts exist". The per-host form lets
+	// consumers that know a row's owning host judge its absence while
+	// unrelated hosts are offline.
 	const isAuthoritative =
+		hostsReady &&
 		targets.length > 0 &&
-		targets.every((_, index) => queries[index]?.data !== undefined);
+		targets.every((target) => liveAnsweredHostIds.has(target.machineId));
 
 	const isAbsenceAuthoritative = useMemo(() => {
 		const known = new Set(targets.map((target) => target.machineId));
-		const live = new Set(
-			targets
-				.filter((_, index) => queries[index]?.data !== undefined)
-				.map((target) => target.machineId),
-		);
 		return (hostId: string | null | undefined): boolean => {
 			// Owner unknown (unbound/legacy) — only org-wide live coverage counts.
 			if (hostId == null) return isAuthoritative;
 			// The owning host row was removed from the org entirely: its
 			// workspaces are unreachable forever, treat their absence as final
-			// (this is also the self-heal for decommissioned-host rows).
-			if (!known.has(hostId)) return true;
-			return live.has(hostId);
+			// (self-heal for decommissioned hosts). Only a HYDRATED hosts
+			// collection can assert removal — a cold-start `[]` proves nothing.
+			if (!known.has(hostId)) return hostsReady;
+			return liveAnsweredHostIds.has(hostId);
 		};
-	}, [targets, queries, isAuthoritative]);
+	}, [targets, liveAnsweredHostIds, isAuthoritative, hostsReady]);
 
 	const cache = useMemo<HostWorkspacesCacheOps>(() => {
 		const targetFor = (hostId: string) =>
