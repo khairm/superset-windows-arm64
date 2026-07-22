@@ -950,6 +950,9 @@ def _team_scan_text(state, text):
     # " [hash]" suffix in its messages while the spawn recorded the base name;
     # mirror every suffixed update onto the base key so the base key tracks
     # the LATEST same-named instance instead of latching a stale idle.
+    # Accepted narrow risk (review 2026-07-22): same name + identical prompt
+    # head + the OLD instance silently working when the new one idles can
+    # false-green the old entry until its next message re-actives the base.
     i = 0
     tag = '<teammate-message teammate_id="'
     while True:
@@ -1059,6 +1062,16 @@ def _team_scan_record(state, fork_tools, prompts, obj):
                 elif n:
                     state[n] = "active"
                     prompts[n] = _team_norm(inp.get("prompt"))[:160]
+                    # A non-fork spawn RECLAIMS the name: purge any fork
+                    # tool-use mappings still pointing at it, else the
+                    # SendMessage fork-guard below would ignore wakes of this
+                    # real teammate forever (review finding 2026-07-22 — an
+                    # ignored wake leaves a stale "idle" that false-greens
+                    # its running entry). A stale fork completion then finds
+                    # no mapping and no-ops, which is safe.
+                    stale = [k for k, v in fork_tools.items() if v == n]
+                    for k in stale:
+                        fork_tools.pop(k, None)
             elif c.get("name") == "SendMessage":
                 n = str(inp.get("to") or "").strip()
                 if n and n not in fork_tools.values():
