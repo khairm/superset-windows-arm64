@@ -35,18 +35,25 @@ export function V2WorkspaceMount({
 }: V2WorkspaceMountProps) {
 	const collections = useCollections();
 	const { placeWorkspaceFromPassiveMount } = useDashboardSidebarState();
+	// The create transaction clears ITSELF when the tracked `completed` promise
+	// resolves (pane layout written) — see useWorkspaceCreates. Never clear it
+	// from here: the row appears in the host query cache optimistically (and via
+	// the mid-create workspace:changed broadcast) with source "host" long before
+	// the worktree/panes exist.
 	const pendingTransaction = useWorkspaceTransactionsStore(
 		(state) => state.byWorkspaceId[workspaceId] ?? null,
-	);
-	const clearWorkspaceTransaction = useWorkspaceTransactionsStore(
-		(state) => state.clear,
 	);
 	const isCreatePending = pendingTransaction?.type === "insert";
 
 	// (KANBAN HOST SOURCE) Mirrors the /v2-workspace route layout: the workspace
 	// resolves from the host-served lists (with a hold through transient host
 	// unreachability), not the dead Electric mirror.
-	const { workspaces: hostWorkspaces, isReady, cache } = useHostWorkspaces();
+	const {
+		workspaces: hostWorkspaces,
+		isReady,
+		isAuthoritative,
+		cache,
+	} = useHostWorkspaces();
 	const workspace = useMemo(
 		() =>
 			hostWorkspaces.find((candidate) => candidate.id === workspaceId) ?? null,
@@ -60,14 +67,6 @@ export function V2WorkspaceMount({
 		[collections, workspaceId],
 	);
 	const failedEntry = failedEntries?.[0] ?? null;
-
-	// A host answering (live or snapshot) is authoritative for the row, so the
-	// create transaction has converged once the row shows up host-served.
-	useEffect(() => {
-		if (workspace?.source === "host" && pendingTransaction?.type === "insert") {
-			clearWorkspaceTransaction(workspace.id);
-		}
-	}, [clearWorkspaceTransaction, pendingTransaction, workspace]);
 
 	const lastEnsuredWorkspaceIdRef = useRef<string | null>(null);
 	useEffect(() => {
@@ -106,6 +105,13 @@ export function V2WorkspaceMount({
 	if (!heldWorkspace) {
 		if (failedEntry) {
 			return <WorkspaceCreateErrorState entry={failedEntry} />;
+		}
+		// Not-found is a destructive verdict for an embedded mount (the split
+		// exits on it) — only render it when every host answered live and the
+		// row is genuinely gone. An errored/unreachable host merely means
+		// "unknown": hold blank until authority returns.
+		if (!isAuthoritative) {
+			return <div className="flex h-full w-full" />;
 		}
 		return <WorkspaceNotFoundState workspaceId={workspaceId} />;
 	}

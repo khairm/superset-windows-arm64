@@ -44,6 +44,17 @@ export interface UseHostWorkspacesResult {
 	 * empty states only — existing rows always render (cache-first rule).
 	 */
 	isReady: boolean;
+	/**
+	 * (KANBAN-HOST-SOURCE) True only while EVERY known host's live
+	 * `workspace.list` query is currently successful. This is the only state
+	 * in which a row's absence from `workspaces` proves the workspace no
+	 * longer exists — `isReady` also counts errored queries, offline hosts,
+	 * and stale snapshots, where absence merely means "unreachable".
+	 * Destructive reactions to a missing row (pruning device-local card
+	 * rows, deleting frozen records, kicking the user off a workspace
+	 * surface) must gate on this, never on `isReady`.
+	 */
+	isAuthoritative: boolean;
 	cache: HostWorkspacesCacheOps;
 }
 
@@ -227,6 +238,11 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 			snapshots.has(targets[index]?.machineId ?? ""),
 	);
 
+	// (KANBAN-HOST-SOURCE) A disabled query (offline host, hostUrl null) is
+	// never isSuccess, so any unreachable host makes the merge non-authoritative.
+	const isAuthoritative =
+		targets.length > 0 && queries.every((query) => query.isSuccess);
+
 	const cache = useMemo<HostWorkspacesCacheOps>(() => {
 		const targetFor = (hostId: string) =>
 			targets.find((target) => target.machineId === hostId);
@@ -266,5 +282,5 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 		};
 	}, [targets, queryClient]);
 
-	return { workspaces, isReady, cache };
+	return { workspaces, isReady, isAuthoritative, cache };
 }

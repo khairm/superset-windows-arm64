@@ -48,16 +48,17 @@ export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 
 	// If the selected branch is deleted while open, exit the split back to the
 	// board instead of leaving a "workspace not found" pane mounted.
-	// (KANBAN HOST SOURCE) Resolved against the host-served lists; only a READY
-	// merge with the row absent counts as deleted — a transiently-unanswered
-	// host must not bounce the user out of the split.
-	const { workspaces: hostWorkspaces, isReady } = useHostWorkspaces();
+	// (KANBAN HOST SOURCE) Only an AUTHORITATIVE merge (every host answered its
+	// live list) with the row absent counts as deleted — `isReady` also covers
+	// errored queries, offline hosts and stale snapshots, where absence merely
+	// means unreachable and must not bounce the user out of the split.
+	const { workspaces: hostWorkspaces, isAuthoritative } = useHostWorkspaces();
 	const workspaceExists = hostWorkspaces.some((w) => w.id === workspaceId);
 	useEffect(() => {
-		if (isReady && !workspaceExists) {
+		if (isAuthoritative && !workspaceExists) {
 			navigate({ to: "/kanban", search: { cardId: undefined }, replace: true });
 		}
-	}, [isReady, workspaceExists, navigate]);
+	}, [isAuthoritative, workspaceExists, navigate]);
 
 	const boardHeader = (
 		<div className="flex shrink-0 items-center justify-end gap-1.5 border-b border-border px-2 py-1.5">

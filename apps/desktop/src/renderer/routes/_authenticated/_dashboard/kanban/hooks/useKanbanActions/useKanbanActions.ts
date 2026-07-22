@@ -138,7 +138,8 @@ export function useKanbanActions(): UseKanbanActionsResult {
 
 	// (KANBAN HOST SOURCE) Workspace lookups go to the host-served lists, not
 	// the dead Electric mirror (see useKanbanData).
-	const { workspaces: hostWorkspaces } = useHostWorkspaces();
+	const { workspaces: hostWorkspaces, isAuthoritative: hostsAuthoritative } =
+		useHostWorkspaces();
 	const hostWorkspaceById = useMemo(() => {
 		const map = new Map<string, (typeof hostWorkspaces)[number]>();
 		for (const w of hostWorkspaces) map.set(w.id, w);
@@ -750,13 +751,19 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			if (!card || card.columnId !== KANBAN_COMPLETED_COLUMN_ID) return;
 			// A bound card with a LIVE branch deletes via the branch dialog (and
 			// then survives frozen) — this action is only for records with no
-			// branch left: unbound tasks and frozen records.
-			if (card.workspaceId && hostWorkspaceById.has(card.workspaceId)) {
+			// branch left: unbound tasks and frozen records. Absence from the host
+			// lists only proves the branch is gone while the merge is
+			// AUTHORITATIVE; during an outage a live branch would look frozen and
+			// its completed record would be destroyed with no undo.
+			if (
+				card.workspaceId &&
+				(!hostsAuthoritative || hostWorkspaceById.has(card.workspaceId))
+			) {
 				return;
 			}
 			collections.v2KanbanCards.delete(cardId);
 		},
-		[collections, hostWorkspaceById],
+		[collections, hostWorkspaceById, hostsAuthoritative],
 	);
 
 	const setColumnCompletedFilter = useCallback<

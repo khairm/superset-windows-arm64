@@ -131,8 +131,11 @@ export function useKanbanData(): UseKanbanDataResult {
 	// receiving new rows in upstream's offline-first migration (host-local
 	// creates never reach the cloud table), so reading it here made every
 	// post-migration branch invisible to the board.
-	const { workspaces: workspaceRows, isReady: workspacesReady } =
-		useHostWorkspaces();
+	const {
+		workspaces: workspaceRows,
+		isReady: workspacesReady,
+		isAuthoritative: workspacesAuthoritative,
+	} = useHostWorkspaces();
 	// Projects are fully local now — sourced from the host fan-out
 	// (useHostProjects), keyed by projectKey which equals a workspace's
 	// projectId. Upstream retired the `v2Projects` Electric collection.
@@ -379,29 +382,33 @@ export function useKanbanData(): UseKanbanDataResult {
 		// completedContext snapshot) so deleting a merged branch never erases the
 		// work from the user's completed-history reports. workspaceId stays set,
 		// so a transiently-missing workspace row re-binds with no duplicate.
-		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
-			if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
-				if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
-				// (KANBAN HOST SOURCE) Host-served lists — unlike the old Electric
-				// mirror — can transiently omit rows (unreachable remote host with no
-				// snapshot, an errored fetch counting as "ready"). Cards are
-				// device-local with no undo, so a workspace must stay missing for a
-				// sustained window before its card is dropped; reappearing clears the
-				// clock. An all-hosts-blank result is never a prune signal.
-				if (workspaceRows.length === 0) continue;
-				const firstMissingAt = pruneFirstMissingAtRef.current.get(
-					card.workspaceId,
-				);
-				const nowMs = Date.now();
-				if (firstMissingAt == null) {
-					pruneFirstMissingAtRef.current.set(card.workspaceId, nowMs);
-					continue;
+		// (KANBAN HOST SOURCE) Prune cards for destroyed branches. Absence only
+		// proves deletion while the merge is AUTHORITATIVE (every host's live
+		// list currently succeeding) — an errored/offline host serves nothing,
+		// and treating that as evidence would destroy device-local card rows
+		// (column/deadline/description, no undo) for live branches. While
+		// authority is lost the missing-clocks reset entirely, so the grace
+		// window below always measures a CONTINUOUS authoritative miss.
+		if (!workspacesAuthoritative) {
+			pruneFirstMissingAtRef.current.clear();
+		} else {
+			for (const card of Array.from(collections.v2KanbanCards.state.values())) {
+				if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
+					if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
+					const firstMissingAt = pruneFirstMissingAtRef.current.get(
+						card.workspaceId,
+					);
+					const nowMs = Date.now();
+					if (firstMissingAt == null) {
+						pruneFirstMissingAtRef.current.set(card.workspaceId, nowMs);
+						continue;
+					}
+					if (nowMs - firstMissingAt < PRUNE_MISSING_GRACE_MS) continue;
+					pruneFirstMissingAtRef.current.delete(card.workspaceId);
+					collections.v2KanbanCards.delete(card.id);
+				} else if (card.workspaceId) {
+					pruneFirstMissingAtRef.current.delete(card.workspaceId);
 				}
-				if (nowMs - firstMissingAt < PRUNE_MISSING_GRACE_MS) continue;
-				pruneFirstMissingAtRef.current.delete(card.workspaceId);
-				collections.v2KanbanCards.delete(card.id);
-			} else if (card.workspaceId) {
-				pruneFirstMissingAtRef.current.delete(card.workspaceId);
 			}
 		}
 
@@ -502,6 +509,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		collections,
 		workspaceRows,
 		workspaceById,
+		workspacesAuthoritative,
 		localStateByWorkspace,
 		sidebarProjectIds,
 		projectNameById,
