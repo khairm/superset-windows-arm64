@@ -45,14 +45,15 @@ export interface UseHostWorkspacesResult {
 	 */
 	isReady: boolean;
 	/**
-	 * (KANBAN-HOST-SOURCE) True only while EVERY known host's live
-	 * `workspace.list` query is currently successful. This is the only state
-	 * in which a row's absence from `workspaces` proves the workspace no
-	 * longer exists — `isReady` also counts errored queries, offline hosts,
-	 * and stale snapshots, where absence merely means "unreachable".
-	 * Destructive reactions to a missing row (pruning device-local card
-	 * rows, deleting frozen records, kicking the user off a workspace
-	 * surface) must gate on this, never on `isReady`.
+	 * (KANBAN-HOST-SOURCE) True only while EVERY known host has contributed
+	 * rows to the merge (live data or a last-seen snapshot). This is the only
+	 * state in which a row's absence from `workspaces` is evidence the
+	 * workspace no longer exists — `isReady` also counts errored queries and
+	 * offline snapshot-less hosts, where absence merely means "unreachable".
+	 * Staleness errs safe: a stale snapshot keeps rows visible, it never
+	 * fabricates an absence. Destructive reactions to a missing row (pruning
+	 * device-local card rows, deleting frozen records, kicking the user off a
+	 * workspace surface) must gate on this, never on `isReady`.
 	 */
 	isAuthoritative: boolean;
 	cache: HostWorkspacesCacheOps;
@@ -238,10 +239,22 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 			snapshots.has(targets[index]?.machineId ?? ""),
 	);
 
-	// (KANBAN-HOST-SOURCE) A disabled query (offline host, hostUrl null) is
-	// never isSuccess, so any unreachable host makes the merge non-authoritative.
+	// (KANBAN-HOST-SOURCE) Authoritative = every known host CONTRIBUTED rows to
+	// the merge — a currently-successful live query, previously-fetched live
+	// data (kept through a refetch error), or a last-seen snapshot. In that
+	// state a row absent from `workspaces` is absent from every host's
+	// last-known reality, so absence means deleted; staleness errs safe (a
+	// stale snapshot keeps rows, it never invents an absence). Only a host
+	// that has NEVER answered on this device (fresh install + unreachable, or
+	// a stale v2_hosts row for a machine this device never saw) withholds
+	// authority — deliberately, since that host's workspaces are invisible
+	// here and any of them would look falsely deleted.
 	const isAuthoritative =
-		targets.length > 0 && queries.every((query) => query.isSuccess);
+		targets.length > 0 &&
+		targets.every(
+			(target, index) =>
+				(queries[index]?.data ?? snapshots.get(target.machineId)) !== undefined,
+		);
 
 	const cache = useMemo<HostWorkspacesCacheOps>(() => {
 		const targetFor = (hostId: string) =>

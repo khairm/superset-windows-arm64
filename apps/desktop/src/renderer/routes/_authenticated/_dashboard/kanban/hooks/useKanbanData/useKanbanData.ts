@@ -160,8 +160,10 @@ export function useKanbanData(): UseKanbanDataResult {
 	const [now, setNow] = useState(() => Date.now());
 
 	// (KANBAN HOST SOURCE) Session-scoped first-seen-missing clock per
-	// workspaceId, backing the prune grace window above.
+	// workspaceId, backing the prune grace window above. `pruneTick` exists
+	// only to re-run the reconcile effect when a missing-clock deadline lands.
 	const pruneFirstMissingAtRef = useRef(new Map<string, number>());
+	const [pruneTick, setPruneTick] = useState(0);
 
 	// (RECYCLE-BIN) The device-local retention window is a DISPLAY filter for the
 	// per-column bin: cards deleted within the last N days show by default; older
@@ -504,6 +506,21 @@ export function useKanbanData(): UseKanbanDataResult {
 				}
 			}
 		}
+
+		// (KANBAN HOST SOURCE) Nothing re-renders on wall-clock alone —
+		// steady-state refetches structural-share into identical query data, so
+		// an armed missing-clock must schedule its own deadline re-run or a
+		// genuinely deleted branch's card would wait forever for an unrelated
+		// render before being pruned.
+		if (pruneFirstMissingAtRef.current.size > 0) {
+			const earliest = Math.min(...pruneFirstMissingAtRef.current.values());
+			const delay = Math.max(
+				1_000,
+				earliest + PRUNE_MISSING_GRACE_MS - Date.now(),
+			);
+			const timer = window.setTimeout(() => setPruneTick((t) => t + 1), delay);
+			return () => window.clearTimeout(timer);
+		}
 	}, [
 		isReady,
 		collections,
@@ -515,6 +532,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		projectNameById,
 		columnRows,
 		cardRows,
+		pruneTick,
 	]);
 
 	// --- Auto-unsnooze expired QUEUED cards (mirrors the sidebar ticker) -------
@@ -566,10 +584,28 @@ export function useKanbanData(): UseKanbanDataResult {
 						// (KANBAN COMPLETED) FROZEN record: a completed card whose branch
 						// was deleted renders from its title/completedContext snapshot —
 						// it's a history record, so no project gate either (there is no
-						// live projectId to check). Anywhere else a missing workspace is
-						// just pending cleanup — don't render a ghost.
-						if (card.columnId !== KANBAN_COMPLETED_COLUMN_ID) continue;
-						bucket = "active";
+						// live projectId to check).
+						// (KANBAN HOST SOURCE) Elsewhere: an AUTHORITATIVE miss is
+						// pending cleanup — don't render a ghost. A NON-authoritative
+						// miss is just an unreachable host: keep the card visible from
+						// its stored snapshot (title from seed, bucket from local
+						// sidebar state) instead of blanking the board for the outage.
+						if (card.columnId !== KANBAN_COMPLETED_COLUMN_ID) {
+							if (workspacesAuthoritative) continue;
+							const local = localStateByWorkspace.get(card.workspaceId);
+							const wsBucket = getWorkspaceSidebarBucket(
+								local?.sidebarState ?? {},
+								now,
+								null,
+							);
+							if (wsBucket === "hidden") continue;
+							bucket = wsBucket === "completed" ? "active" : wsBucket;
+							if (bucket === "deleted") {
+								deletedAt = local?.sidebarState.deletedAt ?? null;
+							}
+						} else {
+							bucket = "active";
+						}
 					} else {
 						// HIDE (never delete) cards of projects removed from the sidebar —
 						// re-adding the project restores them with column/deadline intact.
@@ -660,6 +696,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		columnRows,
 		cardRows,
 		workspaceById,
+		workspacesAuthoritative,
 		projectNameById,
 		localStateByWorkspace,
 		sidebarProjectIds,
