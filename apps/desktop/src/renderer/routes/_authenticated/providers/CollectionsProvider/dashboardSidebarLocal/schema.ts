@@ -559,6 +559,12 @@ export const kanbanCardSchema = z.object({
 	deadlineTabOrder: z.number().int().nullable().default(null),
 	// null = Queued / unbound; set = bound to a branch (workspace).
 	workspaceId: z.string().nullable().default(null),
+	// (KANBAN HOST SOURCE) The bound workspace's owning host, stamped at seed
+	// and backfilled by the reconcile whenever the workspace is visible. Lets
+	// destructive absence checks ask "did THIS host answer live?" instead of
+	// requiring org-wide authority. Null on unbound cards and legacy rows
+	// (which fall back to the global authority gate).
+	hostId: z.string().nullable().default(null),
 	// Used ONLY when unbound. Bound cards derive snooze/archive from the branch's
 	// sidebarState — these stay null for them.
 	snoozeUntil: z.number().nullable().default(null),

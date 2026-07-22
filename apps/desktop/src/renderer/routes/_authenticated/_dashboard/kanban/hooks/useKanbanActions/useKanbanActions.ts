@@ -138,7 +138,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 
 	// (KANBAN HOST SOURCE) Workspace lookups go to the host-served lists, not
 	// the dead Electric mirror (see useKanbanData).
-	const { workspaces: hostWorkspaces, isAuthoritative: hostsAuthoritative } =
+	const { workspaces: hostWorkspaces, isAbsenceAuthoritative } =
 		useHostWorkspaces();
 	const hostWorkspaceById = useMemo(() => {
 		const map = new Map<string, (typeof hostWorkspaces)[number]>();
@@ -190,6 +190,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				deadline: null,
 				deadlineTabOrder: null,
 				workspaceId: null,
+				hostId: null,
 				snoozeUntil: null,
 				snoozeLaunchId: null,
 				archivedAt: null,
@@ -343,6 +344,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 					deadline: queued?.deadline ?? null,
 					deadlineTabOrder: null,
 					workspaceId,
+					hostId: hostWorkspaceById.get(workspaceId)?.hostId ?? null,
 					snoozeUntil: null,
 					snoozeLaunchId: null,
 					archivedAt: null,
@@ -356,7 +358,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			}
 			if (queued) collections.v2KanbanCards.delete(queuedCardId);
 		},
-		[collections, columnCards],
+		[collections, columnCards, hostWorkspaceById],
 	);
 
 	// (PROMOTE-OPTIMISTIC) The promote dialog binds the card to the OPTIMISTIC
@@ -386,6 +388,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				tabOrder: getNextTabOrder(columnCards(restoreColumnId)),
 				deadlineTabOrder: null,
 				workspaceId: null,
+				hostId: null,
 			});
 		},
 		[collections, columnCards],
@@ -420,9 +423,10 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				...from,
 				id: toId,
 				workspaceId: toWorkspaceId,
+				hostId: hostWorkspaceById.get(toWorkspaceId)?.hostId ?? from.hostId,
 			});
 		},
-		[collections],
+		[collections, hostWorkspaceById],
 	);
 
 	const addColumn = useCallback(
@@ -751,19 +755,20 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			if (!card || card.columnId !== KANBAN_COMPLETED_COLUMN_ID) return;
 			// A bound card with a LIVE branch deletes via the branch dialog (and
 			// then survives frozen) — this action is only for records with no
-			// branch left: unbound tasks and frozen records. Absence from the host
-			// lists only proves the branch is gone while the merge is
-			// AUTHORITATIVE; during an outage a live branch would look frozen and
-			// its completed record would be destroyed with no undo.
+			// branch left: unbound tasks and frozen records. Absence only proves
+			// the branch is gone once its OWNING host answered live (or the host
+			// row was removed); during an outage a live branch would look frozen
+			// and its completed record would be destroyed with no undo.
 			if (
 				card.workspaceId &&
-				(!hostsAuthoritative || hostWorkspaceById.has(card.workspaceId))
+				(!isAbsenceAuthoritative(card.hostId) ||
+					hostWorkspaceById.has(card.workspaceId))
 			) {
 				return;
 			}
 			collections.v2KanbanCards.delete(cardId);
 		},
-		[collections, hostWorkspaceById, hostsAuthoritative],
+		[collections, hostWorkspaceById, isAbsenceAuthoritative],
 	);
 
 	const setColumnCompletedFilter = useCallback<

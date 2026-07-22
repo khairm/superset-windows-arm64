@@ -45,17 +45,24 @@ export interface UseHostWorkspacesResult {
 	 */
 	isReady: boolean;
 	/**
-	 * (KANBAN-HOST-SOURCE) True only while EVERY known host has contributed
-	 * rows to the merge (live data or a last-seen snapshot). This is the only
-	 * state in which a row's absence from `workspaces` is evidence the
-	 * workspace no longer exists — `isReady` also counts errored queries and
-	 * offline snapshot-less hosts, where absence merely means "unreachable".
-	 * Staleness errs safe: a stale snapshot keeps rows visible, it never
-	 * fabricates an absence. Destructive reactions to a missing row (pruning
-	 * device-local card rows, deleting frozen records, kicking the user off a
-	 * workspace surface) must gate on this, never on `isReady`.
+	 * (KANBAN-HOST-SOURCE) True only while EVERY known host's live
+	 * `workspace.list` has data this session (kept through refetch errors).
+	 * The only state in which a row's absence from `workspaces` proves
+	 * deletion when the row's owning host is unknown. Snapshots deliberately
+	 * do NOT count: they are best-effort and possibly stale/empty — they can
+	 * prove presence, never absence. Destructive reactions to a missing row
+	 * must gate on this (or on `isAbsenceAuthoritative` with a known owner),
+	 * never on `isReady`.
 	 */
 	isAuthoritative: boolean;
+	/**
+	 * (KANBAN-HOST-SOURCE) Per-owner absence authority: for a row known to
+	 * belong to `hostId`, absence is proven once THAT host's live list has
+	 * data (unrelated offline hosts don't block), or when the host row was
+	 * removed from the org entirely. Null/undefined owner falls back to the
+	 * global `isAuthoritative`.
+	 */
+	isAbsenceAuthoritative: (hostId: string | null | undefined) => boolean;
 	cache: HostWorkspacesCacheOps;
 }
 
@@ -239,22 +246,35 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 			snapshots.has(targets[index]?.machineId ?? ""),
 	);
 
-	// (KANBAN-HOST-SOURCE) Authoritative = every known host CONTRIBUTED rows to
-	// the merge — a currently-successful live query, previously-fetched live
-	// data (kept through a refetch error), or a last-seen snapshot. In that
-	// state a row absent from `workspaces` is absent from every host's
-	// last-known reality, so absence means deleted; staleness errs safe (a
-	// stale snapshot keeps rows, it never invents an absence). Only a host
-	// that has NEVER answered on this device (fresh install + unreachable, or
-	// a stale v2_hosts row for a machine this device never saw) withholds
-	// authority — deliberately, since that host's workspaces are invisible
-	// here and any of them would look falsely deleted.
+	// (KANBAN-HOST-SOURCE) Authority is about proving ABSENCE, and only a
+	// host's own LIVE list can do that. Query data (kept through refetch
+	// errors) was genuinely served by the host this session; snapshots are
+	// best-effort persistence (saves are swallowed, they can be stale or
+	// empty) — they may prove a row EXISTS, never that one doesn't. Global
+	// authority therefore requires live data from every known host; the
+	// per-host form below lets consumers that know a row's owning host judge
+	// its absence while unrelated hosts are offline.
 	const isAuthoritative =
 		targets.length > 0 &&
-		targets.every(
-			(target, index) =>
-				(queries[index]?.data ?? snapshots.get(target.machineId)) !== undefined,
+		targets.every((_, index) => queries[index]?.data !== undefined);
+
+	const isAbsenceAuthoritative = useMemo(() => {
+		const known = new Set(targets.map((target) => target.machineId));
+		const live = new Set(
+			targets
+				.filter((_, index) => queries[index]?.data !== undefined)
+				.map((target) => target.machineId),
 		);
+		return (hostId: string | null | undefined): boolean => {
+			// Owner unknown (unbound/legacy) — only org-wide live coverage counts.
+			if (hostId == null) return isAuthoritative;
+			// The owning host row was removed from the org entirely: its
+			// workspaces are unreachable forever, treat their absence as final
+			// (this is also the self-heal for decommissioned-host rows).
+			if (!known.has(hostId)) return true;
+			return live.has(hostId);
+		};
+	}, [targets, queries, isAuthoritative]);
 
 	const cache = useMemo<HostWorkspacesCacheOps>(() => {
 		const targetFor = (hostId: string) =>
@@ -295,5 +315,11 @@ export function useHostWorkspacesSource(): UseHostWorkspacesResult {
 		};
 	}, [targets, queryClient]);
 
-	return { workspaces, isReady, isAuthoritative, cache };
+	return {
+		workspaces,
+		isReady,
+		isAuthoritative,
+		isAbsenceAuthoritative,
+		cache,
+	};
 }

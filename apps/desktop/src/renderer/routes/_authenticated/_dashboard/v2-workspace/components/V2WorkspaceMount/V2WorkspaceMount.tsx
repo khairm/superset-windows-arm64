@@ -51,7 +51,7 @@ export function V2WorkspaceMount({
 	const {
 		workspaces: hostWorkspaces,
 		isReady,
-		isAuthoritative,
+		isAbsenceAuthoritative,
 		cache,
 	} = useHostWorkspaces();
 	const workspace = useMemo(
@@ -107,10 +107,11 @@ export function V2WorkspaceMount({
 			return <WorkspaceCreateErrorState entry={failedEntry} />;
 		}
 		// Not-found is a destructive verdict for an embedded mount (the split
-		// exits on it) — only render it when every host answered live and the
-		// row is genuinely gone. An errored/unreachable host merely means
-		// "unknown": hold blank until authority returns.
-		if (!isAuthoritative) {
+		// exits on it) — only render it once absence is authoritative for the
+		// row's OWNING host (known from the held candidate; global gate before
+		// it's known). An errored/unreachable host merely means "unknown":
+		// hold blank until authority returns.
+		if (!isAbsenceAuthoritative(heldCandidate?.hostId ?? null)) {
 			return <div className="flex h-full w-full" />;
 		}
 		return <WorkspaceNotFoundState workspaceId={workspaceId} />;

@@ -48,17 +48,29 @@ export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 
 	// If the selected branch is deleted while open, exit the split back to the
 	// board instead of leaving a "workspace not found" pane mounted.
-	// (KANBAN HOST SOURCE) Only an AUTHORITATIVE merge (every host answered its
-	// live list) with the row absent counts as deleted — `isReady` also covers
-	// errored queries, offline hosts and stale snapshots, where absence merely
-	// means unreachable and must not bounce the user out of the split.
-	const { workspaces: hostWorkspaces, isAuthoritative } = useHostWorkspaces();
-	const workspaceExists = hostWorkspaces.some((w) => w.id === workspaceId);
+	// (KANBAN HOST SOURCE) Absence only counts once it's AUTHORITATIVE for the
+	// branch's OWNING host (its live list answered without the row, or the host
+	// row was removed) — an errored/offline host merely means unreachable and
+	// must not bounce the user out of the split. The owner is remembered from
+	// the last render that saw the row; before it's known, the global gate
+	// (every host live) applies.
+	const { workspaces: hostWorkspaces, isAbsenceAuthoritative } =
+		useHostWorkspaces();
+	const workspace = hostWorkspaces.find((w) => w.id === workspaceId);
+	const lastSeenHostIdRef = useRef<{ id: string; hostId: string } | null>(null);
+	if (workspace) {
+		lastSeenHostIdRef.current = { id: workspace.id, hostId: workspace.hostId };
+	}
+	const ownerHostId =
+		lastSeenHostIdRef.current?.id === workspaceId
+			? lastSeenHostIdRef.current.hostId
+			: null;
+	const authoritativelyGone = !workspace && isAbsenceAuthoritative(ownerHostId);
 	useEffect(() => {
-		if (isAuthoritative && !workspaceExists) {
+		if (authoritativelyGone) {
 			navigate({ to: "/kanban", search: { cardId: undefined }, replace: true });
 		}
-	}, [isAuthoritative, workspaceExists, navigate]);
+	}, [authoritativelyGone, navigate]);
 
 	const boardHeader = (
 		<div className="flex shrink-0 items-center justify-end gap-1.5 border-b border-border px-2 py-1.5">

@@ -134,7 +134,7 @@ export function useKanbanData(): UseKanbanDataResult {
 	const {
 		workspaces: workspaceRows,
 		isReady: workspacesReady,
-		isAuthoritative: workspacesAuthoritative,
+		isAbsenceAuthoritative,
 	} = useHostWorkspaces();
 	// Projects are fully local now — sourced from the host fan-out
 	// (useHostProjects), keyed by projectKey which equals a workspace's
@@ -363,6 +363,7 @@ export function useKanbanData(): UseKanbanDataResult {
 				deadline: null,
 				deadlineTabOrder: null,
 				workspaceId: branch.id,
+				hostId: branch.hostId,
 				snoozeUntil: null,
 				snoozeLaunchId: null,
 				archivedAt: null,
@@ -391,26 +392,32 @@ export function useKanbanData(): UseKanbanDataResult {
 		// (column/deadline/description, no undo) for live branches. While
 		// authority is lost the missing-clocks reset entirely, so the grace
 		// window below always measures a CONTINUOUS authoritative miss.
-		if (!workspacesAuthoritative) {
-			pruneFirstMissingAtRef.current.clear();
-		} else {
-			for (const card of Array.from(collections.v2KanbanCards.state.values())) {
-				if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
-					if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
-					const firstMissingAt = pruneFirstMissingAtRef.current.get(
-						card.workspaceId,
-					);
-					const nowMs = Date.now();
-					if (firstMissingAt == null) {
-						pruneFirstMissingAtRef.current.set(card.workspaceId, nowMs);
-						continue;
-					}
-					if (nowMs - firstMissingAt < PRUNE_MISSING_GRACE_MS) continue;
+		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
+			if (!card.workspaceId) continue;
+			// Absence is judged per owning host (card.hostId, stamped at seed and
+			// backfilled below): the owner answering live proves deletion even
+			// while unrelated hosts are offline; snapshots never prove absence.
+			// While the owner is unjudgeable its clock resets, so the grace
+			// window always measures a CONTINUOUS authoritative miss.
+			if (!workspaceById.has(card.workspaceId)) {
+				if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
+				if (!isAbsenceAuthoritative(card.hostId)) {
 					pruneFirstMissingAtRef.current.delete(card.workspaceId);
-					collections.v2KanbanCards.delete(card.id);
-				} else if (card.workspaceId) {
-					pruneFirstMissingAtRef.current.delete(card.workspaceId);
+					continue;
 				}
+				const firstMissingAt = pruneFirstMissingAtRef.current.get(
+					card.workspaceId,
+				);
+				const nowMs = Date.now();
+				if (firstMissingAt == null) {
+					pruneFirstMissingAtRef.current.set(card.workspaceId, nowMs);
+					continue;
+				}
+				if (nowMs - firstMissingAt < PRUNE_MISSING_GRACE_MS) continue;
+				pruneFirstMissingAtRef.current.delete(card.workspaceId);
+				collections.v2KanbanCards.delete(card.id);
+			} else {
+				pruneFirstMissingAtRef.current.delete(card.workspaceId);
 			}
 		}
 
@@ -424,6 +431,13 @@ export function useKanbanData(): UseKanbanDataResult {
 			if (!card.workspaceId) continue;
 			const ws = workspaceById.get(card.workspaceId);
 			if (!ws) continue; // frozen record (or pending prune) — nothing to heal
+			// (KANBAN HOST SOURCE) Backfill/repair the owner stamp whenever the
+			// workspace is visible — legacy rows predate the hostId field.
+			if (card.hostId !== ws.hostId) {
+				collections.v2KanbanCards.update(card.id, (draft) => {
+					draft.hostId = ws.hostId;
+				});
+			}
 			// While a project is removed from the sidebar its local-state rows are
 			// deliberately deleted — don't resurrect them from here.
 			if (!sidebarProjectIds.has(ws.projectId)) continue;
@@ -526,7 +540,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		collections,
 		workspaceRows,
 		workspaceById,
-		workspacesAuthoritative,
+		isAbsenceAuthoritative,
 		localStateByWorkspace,
 		sidebarProjectIds,
 		projectNameById,
@@ -591,7 +605,7 @@ export function useKanbanData(): UseKanbanDataResult {
 						// its stored snapshot (title from seed, bucket from local
 						// sidebar state) instead of blanking the board for the outage.
 						if (card.columnId !== KANBAN_COMPLETED_COLUMN_ID) {
-							if (workspacesAuthoritative) continue;
+							if (isAbsenceAuthoritative(card.hostId)) continue;
 							const local = localStateByWorkspace.get(card.workspaceId);
 							const wsBucket = getWorkspaceSidebarBucket(
 								local?.sidebarState ?? {},
@@ -696,7 +710,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		columnRows,
 		cardRows,
 		workspaceById,
-		workspacesAuthoritative,
+		isAbsenceAuthoritative,
 		projectNameById,
 		localStateByWorkspace,
 		sidebarProjectIds,
