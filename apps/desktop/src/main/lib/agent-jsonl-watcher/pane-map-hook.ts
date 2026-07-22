@@ -912,25 +912,44 @@ def _split_background(bg_tasks):
 # TRANSCRIPT has the missing truth: every teammate that finishes delivers an
 # idle_notification teammate-message into it, and every (re)activation is
 # visible too (an Agent spawn tool_use, a SendMessage tool_use to it, a
-# non-idle teammate-message/agent-message from it). Named fork Agent spawns are
-# NOT teammates: their subagent_type is "fork", and they never emit teammate
-# idle_notification messages. Exclude them at spawn and map their tool-use-id
-# to the name so a deterministic completed task-notification can remove any
-# legacy/reintroduced entry. Track the teammate ledger incrementally and, at a
-# turn end, DROP unfinished teammate-type entries when every tracked teammate's
-# last event is an idle_notification. POSITIVE proof only: no transcript, no
-# teammates seen, a parse error, an unmatched completion, or ANY teammate not
-# provably idle -> keep the entries (the safe yellow direction — exactly the
-# old behaviour, with the (BG-STALE) idle reap still behind it). A teammate
-# that dies WITHOUT ever reporting stays "active" in the ledger and keeps the
-# hold: from the logs that case is indistinguishable from a long think, so it
-# is deliberately left to (BG-STALE).
+# non-idle teammate-message/agent-message from it).
+#
+# (TEAM-ENTRY-MATCH) The original all-idle predicate (drop teammate entries
+# only when EVERY tracked name is idle) proved unsatisfiable in real sessions
+# (captured live 2026-07-22: 55 permanently-"active" names — named non-fork
+# Agent spawns like sol/general-purpose review agents that finish via
+# task-notification and never idle-notify, forks re-marked active by a later
+# SendMessage, and "name [hash]" duplicate-suffix splits — held 25 finished
+# wrangler teammates yellow all day). The decision is now PER ENTRY: a
+# running teammate entry's payload "description" is the spawn prompt's head
+# (observed live: first 50 chars + "..."), so match it against the prompt
+# prefix recorded at each named Agent spawn; an entry may be dropped only
+# when it matches at least one recorded spawn AND every matching name's last
+# ledger event is an idle_notification. Unmatched, ambiguous-with-active, or
+# unparseable -> keep that entry (the safe yellow direction). Poisoned
+# "active" names can no longer block OTHER teammates' drops. A teammate that
+# dies WITHOUT ever reporting stays "active" and keeps its own hold: from
+# the logs that case is indistinguishable from a long think, so it is
+# deliberately left to (BG-STALE).
+
+
+def _team_norm(text):
+    # Collapse whitespace runs to single spaces so a spawn prompt and the
+    # payload description derived from it compare equal even if truncation
+    # or the harness normalized newlines. String ops only (NO regex: this
+    # file is a TS template literal and single backslashes in regex escapes
+    # would be silently swallowed).
+    return " ".join(str(text or "").split())
 
 
 def _team_scan_text(state, text):
     # Update the name -> "active"|"idle" ledger from one transcript text blob.
     # String scanning only (NO regex): this file is a TS template literal, and
     # single backslashes in regex escapes would be silently swallowed.
+    # (TEAM-ENTRY-MATCH) A duplicate teammate name is delivered with a
+    # " [hash]" suffix in its messages while the spawn recorded the base name;
+    # mirror every suffixed update onto the base key so the base key tracks
+    # the LATEST same-named instance instead of latching a stale idle.
     i = 0
     tag = '<teammate-message teammate_id="'
     while True:
@@ -945,7 +964,12 @@ def _team_scan_text(state, text):
         end = text.find("</teammate-message>", k)
         body = text[k:end] if end > 0 else text[k:]
         if name:
-            state[name] = "idle" if '"idle_notification"' in body else "active"
+            val = "idle" if '"idle_notification"' in body else "active"
+            state[name] = val
+            if " [" in name:
+                base = name.split(" [")[0].strip()
+                if base:
+                    state[base] = val
         i = k
     a = 0
     tag2 = '<agent-message from="'
@@ -957,8 +981,13 @@ def _team_scan_text(state, text):
         c = text.find('"', b)
         if c < 0:
             break
-        if text[b:c]:
-            state[text[b:c]] = "active"
+        sender = text[b:c]
+        if sender:
+            state[sender] = "active"
+            if " [" in sender:
+                base = sender.split(" [")[0].strip()
+                if base:
+                    state[base] = "active"
         a = c
 
 
@@ -984,11 +1013,16 @@ def _team_scan_completion(state, fork_tools, text):
         state.pop(name, None)
 
 
-def _team_scan_record(state, fork_tools, obj):
+def _team_scan_record(state, fork_tools, prompts, obj):
     # One JSONL transcript record -> ledger updates. Spawning a non-fork Agent
-    # with a name or waking it via SendMessage marks it active. Named forks are
-    # excluded and indexed by Agent tool-use-id so a completed task-notification
-    # can untrack stale state. Teammate/agent message text decides idle vs active.
+    # with a name or waking it via SendMessage marks it active; the spawn also
+    # records a normalized prompt prefix so (TEAM-ENTRY-MATCH) can map a
+    # background_tasks[] teammate entry's description back to this name. Named
+    # forks are excluded and indexed by Agent tool-use-id so a completed
+    # task-notification can untrack stale state; a SendMessage to a known fork
+    # name is IGNORED (forks never idle-notify — marking one active poisoned
+    # the ledger forever, live 2026-07-22). Teammate/agent message text
+    # decides idle vs active.
     top_content = obj.get("content")
     if isinstance(top_content, str):
         _team_scan_completion(state, fork_tools, top_content)
@@ -1021,54 +1055,52 @@ def _team_scan_record(state, fork_tools, obj):
                     if tool_use_id:
                         fork_tools[tool_use_id] = n
                     state.pop(n, None)
+                    prompts.pop(n, None)
                 elif n:
                     state[n] = "active"
+                    prompts[n] = _team_norm(inp.get("prompt"))[:160]
             elif c.get("name") == "SendMessage":
                 n = str(inp.get("to") or "").strip()
-                if n:
+                if n and n not in fork_tools.values():
                     state[n] = "active"
 
 
-def _team_is_fork_id(name):
-    # A raw agentId (observed shape: "a" + >=12 hex chars) is a FORK handle,
-    # not a teammate name. Forks fire real SubagentStart/Stop hooks and their
-    # bg entries are type "subagent" — both already handled — and they never
-    # send idle_notification, so counting one here would pin the ledger
-    # un-idle forever. Excluded from the all-idle predicate.
-    if len(name) < 13 or name[0] != "a":
-        return False
-    return all(ch in "0123456789abcdef" for ch in name[1:])
-
-
-def _teammates_all_idle(transcript_path, terminal_id):
-    # True only on POSITIVE transcript proof that every tracked teammate's
-    # last event is an idle_notification. Incremental: consumes only bytes
-    # appended since the cached offset (the first call pays one full read;
-    # transcripts are append-only, surviving /compact). Never raises; every
-    # failure path returns False (keep the hold).
+def _team_ledger(transcript_path, terminal_id):
+    # Incrementally parse the lead transcript into (state, prompts): name ->
+    # "active"|"idle" plus name -> normalized spawn-prompt prefix. Consumes
+    # only bytes appended since the cached offset (the first call pays one
+    # full read; transcripts are append-only, surviving /compact). Cache
+    # schema v3 (adds prompts) — an older cache fails the version check and
+    # forces one full rescan, self-healing already-poisoned ledgers. Never
+    # raises; every failure path returns None (keep every hold).
     if not transcript_path or not terminal_id:
-        return False
+        return None
     cache_file = _teamstate_path(terminal_id)
     state = {}
     fork_tools = {}
+    prompts = {}
     offset = 0
     try:
         rec = json.loads(cache_file.read_text(encoding="utf-8"))
         if (
             isinstance(rec, dict)
-            and rec.get("version") == 2
+            and rec.get("version") == 3
             and rec.get("path") == transcript_path
             and isinstance(rec.get("state"), dict)
             and isinstance(rec.get("forkTools"), dict)
+            and isinstance(rec.get("prompts"), dict)
         ):
             offset = int(rec.get("offset") or 0)
             for k, v in rec["state"].items():
                 state[str(k)] = str(v)
             for k, v in rec["forkTools"].items():
                 fork_tools[str(k)] = str(v)
+            for k, v in rec["prompts"].items():
+                prompts[str(k)] = str(v)
     except Exception:
         state = {}
         fork_tools = {}
+        prompts = {}
         offset = 0
     try:
         with open(transcript_path, "rb") as h:
@@ -1078,10 +1110,11 @@ def _teammates_all_idle(transcript_path, terminal_id):
                 offset = 0
                 state = {}
                 fork_tools = {}
+                prompts = {}
             h.seek(offset)
             data = h.read()
     except Exception:
-        return False
+        return None
     nl = data.rfind(b"\\n")
     if nl >= 0:
         for raw in data[:nl].split(b"\\n"):
@@ -1092,39 +1125,56 @@ def _teammates_all_idle(transcript_path, terminal_id):
             except Exception:
                 continue
             if isinstance(obj, dict):
-                _team_scan_record(state, fork_tools, obj)
+                _team_scan_record(state, fork_tools, prompts, obj)
         offset = offset + nl + 1
     try:
         cache_file.write_text(
             json.dumps({
-                "version": 2,
+                "version": 3,
                 "path": transcript_path,
                 "offset": offset,
                 "state": state,
                 "forkTools": fork_tools,
+                "prompts": prompts,
             }),
             encoding="utf-8",
         )
     except Exception:
         pass
-    tracked = {}
-    for name, st in state.items():
-        if name in ("team-lead", "main") or _team_is_fork_id(name):
-            continue
-        tracked[name] = st
-    if not tracked:
+    return (state, prompts)
+
+
+def _team_entry_droppable(entry, state, prompts):
+    # (TEAM-ENTRY-MATCH) True only on POSITIVE proof for THIS entry: its
+    # description (spawn-prompt head, "..."-truncated) matches at least one
+    # recorded spawn prompt AND every matching name's last ledger event is an
+    # idle_notification. Identical prompt prefixes across teammates simply
+    # widen the match set — then ALL of them must be idle. Too-short or
+    # unmatched descriptions never drop (the safe yellow direction).
+    desc = str(entry.get("description") or "")
+    if desc.endswith("..."):
+        desc = desc[: len(desc) - 3]
+    prefix = _team_norm(desc)
+    if len(prefix) < 12:
         return False
-    for st in tracked.values():
-        if st != "idle":
+    names = []
+    for name, p in prompts.items():
+        if p and p.startswith(prefix):
+            names.append(name)
+    if not names:
+        return False
+    for name in names:
+        if state.get(name) != "idle":
             return False
     return True
 
 
 def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=None):
-    # (TEAMMATE-IDLE) Returns bg_tasks with unfinished teammate-type entries
-    # dropped when the transcript ledger proves all teammates idle; otherwise
-    # returns bg_tasks unchanged. Only ever REMOVES teammate entries — shell /
-    # subagent / workflow entries always pass through untouched. Never raises.
+    # (TEAMMATE-IDLE)(TEAM-ENTRY-MATCH) Returns bg_tasks with each unfinished
+    # teammate-type entry dropped IFF the transcript ledger proves that
+    # specific teammate idle; anything unproven stays. Only ever REMOVES
+    # teammate entries — shell / subagent / workflow entries always pass
+    # through untouched. Never raises.
     if not isinstance(bg_tasks, list) or not bg_tasks:
         return bg_tasks
     has_teammate = False
@@ -1139,21 +1189,39 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
     if not has_teammate:
         return bg_tasks
     try:
-        if not _teammates_all_idle(transcript_path, terminal_id):
-            return bg_tasks
+        ledger = _team_ledger(transcript_path, terminal_id)
     except Exception:
         return bg_tasks
+    if ledger is None:
+        return bg_tasks
+    state, prompts = ledger
     out = []
     dropped = 0
+    kept = 0
     for t in bg_tasks:
-        if isinstance(t, dict) and str(t.get("type") or "") == "teammate":
-            dropped += 1
-            continue
+        if (
+            isinstance(t, dict)
+            and not _bg_entry_finished(t)
+            and str(t.get("type") or "") == "teammate"
+        ):
+            droppable = False
+            try:
+                droppable = _team_entry_droppable(t, state, prompts)
+            except Exception:
+                droppable = False
+            if droppable:
+                dropped += 1
+                continue
+            kept += 1
         out.append(t)
-    if note_out is not None:
+    if dropped and note_out is not None:
         try:
             note_out.append(
-                " [teammate-idle: dropped " + str(dropped) + " idle teammate entries]"
+                " [teammate-idle: dropped "
+                + str(dropped)
+                + " idle teammate entries, kept "
+                + str(kept)
+                + "]"
             )
         except Exception:
             pass
