@@ -143,10 +143,13 @@ function ensureSidebarProjectRecord(
 function ensureSidebarWorkspaceRecord(
 	collections: Pick<
 		AppCollections,
-		"v2SidebarSections" | "v2WorkspaceLocalState" | "v2Workspaces"
+		"v2SidebarSections" | "v2WorkspaceLocalState"
 	>,
 	workspaceId: string,
 	projectId: string,
+	// (KANBAN HOST SOURCE) resolved by the caller from the host-served lists;
+	// the Electric mirror lacks post-migration rows.
+	workspaceType: string | null,
 ): void {
 	const existing = collections.v2WorkspaceLocalState.get(workspaceId);
 	// Already placed — don't resurrect into active. An active row, a snoozed row,
@@ -156,8 +159,6 @@ function ensureSidebarWorkspaceRecord(
 	// active lane when explicitly opened. Classified via the shared
 	// getWorkspaceSidebarBucket so the rule matches exactly what the sidebar renders.
 	if (existing) {
-		const workspaceType =
-			collections.v2Workspaces.get(workspaceId)?.type ?? null;
 		if (
 			getWorkspaceSidebarBucket(existing, Date.now(), workspaceType) !==
 			"hidden"
@@ -226,9 +227,15 @@ export function useDashboardSidebarState() {
 	const ensureWorkspaceInSidebar = useCallback(
 		(workspaceId: string, projectId: string) => {
 			ensureSidebarProjectRecord(collections, projectId);
-			ensureSidebarWorkspaceRecord(collections, workspaceId, projectId);
+			ensureSidebarWorkspaceRecord(
+				collections,
+				workspaceId,
+				projectId,
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+					?.type ?? null,
+			);
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	// (REMOVE-STICKY) Placement for PASSIVE workspace route mounts (session
@@ -245,9 +252,15 @@ export function useDashboardSidebarState() {
 	const placeWorkspaceFromPassiveMount = useCallback(
 		(workspaceId: string, projectId: string) => {
 			if (collections.v2WorkspaceLocalState.get(workspaceId)) return;
-			ensureSidebarWorkspaceRecord(collections, workspaceId, projectId);
+			ensureSidebarWorkspaceRecord(
+				collections,
+				workspaceId,
+				projectId,
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+					?.type ?? null,
+			);
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	const toggleProjectCollapsed = useCallback(
@@ -550,7 +563,9 @@ export function useDashboardSidebarState() {
 				// Prefer the caller's projectId (the remove intent / row already
 				// carries it); fall back to the workspace record.
 				const resolvedProjectId =
-					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+					projectId ??
+					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+						?.projectId;
 				if (!resolvedProjectId) {
 					// Fail loud rather than silently dropping the archive — nothing else
 					// can recover an un-archived master card from here.
@@ -580,7 +595,7 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.snoozeLaunchId = null;
 			});
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	const snoozeWorkspace = useCallback(
@@ -594,7 +609,9 @@ export function useDashboardSidebarState() {
 			// row did nothing. Mirror archiveWorkspace: insert a pre-snoozed row.
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
 				const resolvedProjectId =
-					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+					projectId ??
+					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+						?.projectId;
 				if (!resolvedProjectId) {
 					console.error(
 						`[snoozeWorkspace] cannot snooze ${workspaceId}: no local-state row and projectId unresolvable`,
@@ -629,7 +646,7 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.archivedAt = null;
 			});
 		},
-		[collections],
+		[collections, hostWorkspaces],
 	);
 
 	const unsnoozeWorkspace = useCallback(
@@ -700,10 +717,10 @@ export function useDashboardSidebarState() {
 			// a master.
 			const workspaceType =
 				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-					?.type ?? collections.v2Workspaces.get(workspaceId)?.type;
+					?.type ?? null;
 			if (workspaceType == null) {
 				console.error(
-					`[deleteWorkspace] refusing to delete ${workspaceId}: workspace type unresolvable (host + cloud cache miss) — mains are archive-only, so an unknown type must not be deleted`,
+					`[deleteWorkspace] refusing to delete ${workspaceId}: workspace type unresolvable (host lists miss) — mains are archive-only, so an unknown type must not be deleted`,
 				);
 				return;
 			}
@@ -718,7 +735,9 @@ export function useDashboardSidebarState() {
 				// insert a row that is already soft-deleted (mirrors archiveWorkspace's
 				// insert path). Prefer the caller's projectId; fall back to the record.
 				const resolvedProjectId =
-					projectId ?? collections.v2Workspaces.get(workspaceId)?.projectId;
+					projectId ??
+					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
+						?.projectId;
 				if (!resolvedProjectId) {
 					// Fail loud rather than silently dropping the delete — nothing else
 					// can recover the row from here.
@@ -792,10 +811,10 @@ export function useDashboardSidebarState() {
 			// first, cloud cache fallback, unknown type refuses.
 			const workspaceType =
 				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-					?.type ?? collections.v2Workspaces.get(workspaceId)?.type;
+					?.type ?? null;
 			if (workspaceType == null) {
 				console.error(
-					`[completeWorkspace] refusing to complete ${workspaceId}: workspace type unresolvable (host + cloud cache miss)`,
+					`[completeWorkspace] refusing to complete ${workspaceId}: workspace type unresolvable (host lists miss)`,
 				);
 				return;
 			}

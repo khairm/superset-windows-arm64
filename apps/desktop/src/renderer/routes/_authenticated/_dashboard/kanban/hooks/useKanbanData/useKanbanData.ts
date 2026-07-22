@@ -1,6 +1,6 @@
 import type { SelectV2Workspace } from "@superset/db/schema";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRecycleBinRetention } from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -19,6 +19,7 @@ import {
 	kanbanBoundCardId,
 	type WorkspaceLocalStateRow,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import type {
 	KanbanCardBucket,
 	KanbanCardView,
@@ -34,6 +35,9 @@ import { deriveCardTitle } from "../../utils/deriveCardTitle";
 
 const TICK_INTERVAL_MS = 60_000;
 const STARTER_COLUMN_NAME = "In Progress";
+// (KANBAN HOST SOURCE) How long a bound card's workspace must be continuously
+// absent from the merged host lists before the card row is pruned.
+const PRUNE_MISSING_GRACE_MS = 10 * 60_000;
 
 // (DEADLINE-TIE-ORDER) Within a deadline tie group (same due day, or the
 // no-deadline tail): cards the user explicitly drag-ordered in deadline mode
@@ -121,10 +125,14 @@ export function useKanbanData(): UseKanbanDataResult {
 		(q) => q.from({ c: collections.v2KanbanCards }),
 		[collections],
 	);
-	const { data: workspaceRows = [], isReady: workspacesReady } = useLiveQuery(
-		(q) => q.from({ w: collections.v2Workspaces }),
-		[collections],
-	);
+	// (KANBAN HOST SOURCE) The workspace universe comes from the host-served
+	// lists (local host live + remote hosts live/snapshot), the same source the
+	// sidebar renders from. The Electric v2Workspaces collection stopped
+	// receiving new rows in upstream's offline-first migration (host-local
+	// creates never reach the cloud table), so reading it here made every
+	// post-migration branch invisible to the board.
+	const { workspaces: workspaceRows, isReady: workspacesReady } =
+		useHostWorkspaces();
 	// Projects are fully local now — sourced from the host fan-out
 	// (useHostProjects), keyed by projectKey which equals a workspace's
 	// projectId. Upstream retired the `v2Projects` Electric collection.
@@ -147,6 +155,10 @@ export function useKanbanData(): UseKanbanDataResult {
 		sidebarProjectsReady;
 
 	const [now, setNow] = useState(() => Date.now());
+
+	// (KANBAN HOST SOURCE) Session-scoped first-seen-missing clock per
+	// workspaceId, backing the prune grace window above.
+	const pruneFirstMissingAtRef = useRef(new Map<string, number>());
 
 	// (RECYCLE-BIN) The device-local retention window is a DISPLAY filter for the
 	// per-column bin: cards deleted within the last N days show by default; older
@@ -370,7 +382,26 @@ export function useKanbanData(): UseKanbanDataResult {
 		for (const card of Array.from(collections.v2KanbanCards.state.values())) {
 			if (card.workspaceId && !workspaceById.has(card.workspaceId)) {
 				if (card.columnId === KANBAN_COMPLETED_COLUMN_ID) continue;
+				// (KANBAN HOST SOURCE) Host-served lists — unlike the old Electric
+				// mirror — can transiently omit rows (unreachable remote host with no
+				// snapshot, an errored fetch counting as "ready"). Cards are
+				// device-local with no undo, so a workspace must stay missing for a
+				// sustained window before its card is dropped; reappearing clears the
+				// clock. An all-hosts-blank result is never a prune signal.
+				if (workspaceRows.length === 0) continue;
+				const firstMissingAt = pruneFirstMissingAtRef.current.get(
+					card.workspaceId,
+				);
+				const nowMs = Date.now();
+				if (firstMissingAt == null) {
+					pruneFirstMissingAtRef.current.set(card.workspaceId, nowMs);
+					continue;
+				}
+				if (nowMs - firstMissingAt < PRUNE_MISSING_GRACE_MS) continue;
+				pruneFirstMissingAtRef.current.delete(card.workspaceId);
 				collections.v2KanbanCards.delete(card.id);
+			} else if (card.workspaceId) {
+				pruneFirstMissingAtRef.current.delete(card.workspaceId);
 			}
 		}
 

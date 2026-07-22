@@ -10,6 +10,7 @@ import {
 	type KanbanCardRow,
 	kanbanBoundCardId,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
 import { buildCompletedContext } from "../../utils/completedFilter";
 import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
@@ -135,6 +136,15 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		return map;
 	}, [hostProjects]);
 
+	// (KANBAN HOST SOURCE) Workspace lookups go to the host-served lists, not
+	// the dead Electric mirror (see useKanbanData).
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
+	const hostWorkspaceById = useMemo(() => {
+		const map = new Map<string, (typeof hostWorkspaces)[number]>();
+		for (const w of hostWorkspaces) map.set(w.id, w);
+		return map;
+	}, [hostWorkspaces]);
+
 	const columnCards = useCallback(
 		(columnId: string) =>
 			Array.from(collections.v2KanbanCards.state.values()).filter(
@@ -160,10 +170,10 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const ensureBoundRow = useCallback(
 		(workspaceId: string) => {
 			if (collections.v2WorkspaceLocalState.get(workspaceId)) return;
-			const ws = collections.v2Workspaces.get(workspaceId);
+			const ws = hostWorkspaceById.get(workspaceId);
 			if (ws) ensureWorkspaceInSidebar(workspaceId, ws.projectId);
 		},
-		[collections, ensureWorkspaceInSidebar],
+		[collections, hostWorkspaceById, ensureWorkspaceInSidebar],
 	);
 
 	const createQueuedCard = useCallback(
@@ -659,7 +669,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			if (!collections.v2KanbanCards.get(card.id)) return;
 			const completedAt = Date.now();
 			if (card.workspaceId) {
-				const ws = collections.v2Workspaces.get(card.workspaceId);
+				const ws = hostWorkspaceById.get(card.workspaceId);
 				// Main workspaces are never completable (canDropCard rejects the
 				// drop; this keeps any other caller honest).
 				if (ws?.type === "main") return;
@@ -699,7 +709,13 @@ export function useKanbanActions(): UseKanbanActionsResult {
 				draft.archivedAt = null;
 			});
 		},
-		[collections, completeWorkspace, ensureBoundRow, projectNameById],
+		[
+			collections,
+			completeWorkspace,
+			ensureBoundRow,
+			projectNameById,
+			hostWorkspaceById,
+		],
 	);
 
 	const uncompleteCard = useCallback(
@@ -735,12 +751,12 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// A bound card with a LIVE branch deletes via the branch dialog (and
 			// then survives frozen) — this action is only for records with no
 			// branch left: unbound tasks and frozen records.
-			if (card.workspaceId && collections.v2Workspaces.get(card.workspaceId)) {
+			if (card.workspaceId && hostWorkspaceById.has(card.workspaceId)) {
 				return;
 			}
 			collections.v2KanbanCards.delete(cardId);
 		},
-		[collections],
+		[collections, hostWorkspaceById],
 	);
 
 	const setColumnCompletedFilter = useCallback<

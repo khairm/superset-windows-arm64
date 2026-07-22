@@ -1,8 +1,9 @@
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useMemo, useRef } from "react";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
 import { V2WorkspaceView } from "../../$workspaceId/components/V2WorkspaceView";
 import { useRemoteHostStatus } from "../../hooks/useRemoteHostStatus";
@@ -42,12 +43,14 @@ export function V2WorkspaceMount({
 	);
 	const isCreatePending = pendingTransaction?.type === "insert";
 
-	const { data: workspaces, isReady } = useLiveQuery(
-		(q) =>
-			q
-				.from({ v2Workspaces: collections.v2Workspaces })
-				.where(({ v2Workspaces }) => eq(v2Workspaces.id, workspaceId)),
-		[collections, workspaceId],
+	// (KANBAN HOST SOURCE) Mirrors the /v2-workspace route layout: the workspace
+	// resolves from the host-served lists (with a hold through transient host
+	// unreachability), not the dead Electric mirror.
+	const { workspaces: hostWorkspaces, isReady, cache } = useHostWorkspaces();
+	const workspace = useMemo(
+		() =>
+			hostWorkspaces.find((candidate) => candidate.id === workspaceId) ?? null,
+		[hostWorkspaces, workspaceId],
 	);
 	const { data: failedEntries } = useLiveQuery(
 		(q) =>
@@ -56,30 +59,51 @@ export function V2WorkspaceMount({
 				.where(({ failed }) => eq(failed.id, workspaceId)),
 		[collections, workspaceId],
 	);
-	const workspace = workspaces?.[0] ?? null;
 	const failedEntry = failedEntries?.[0] ?? null;
 
+	// A host answering (live or snapshot) is authoritative for the row, so the
+	// create transaction has converged once the row shows up host-served.
 	useEffect(() => {
-		if (workspace?.$synced === true && pendingTransaction?.type === "insert") {
+		if (workspace?.source === "host" && pendingTransaction?.type === "insert") {
 			clearWorkspaceTransaction(workspace.id);
 		}
 	}, [clearWorkspaceTransaction, pendingTransaction, workspace]);
 
 	const lastEnsuredWorkspaceIdRef = useRef<string | null>(null);
 	useEffect(() => {
-		if (!workspace || lastEnsuredWorkspaceIdRef.current === workspace.id) return;
+		if (!workspace || lastEnsuredWorkspaceIdRef.current === workspace.id)
+			return;
 		lastEnsuredWorkspaceIdRef.current = workspace.id;
 		// (REMOVE-STICKY) passive mount — must not resurrect a removed project.
 		placeWorkspaceFromPassiveMount(workspace.id, workspace.projectId);
 	}, [placeWorkspaceFromPassiveMount, workspace]);
 
-	const hostStatus = useRemoteHostStatus(workspace);
+	// Hold the last-resolved row through a transient miss (unready merge, or the
+	// owning host momentarily unreachable) — same rule as the route layout.
+	const lastResolvedWorkspaceRef = useRef<NonNullable<typeof workspace> | null>(
+		null,
+	);
+	if (workspace) {
+		lastResolvedWorkspaceRef.current = workspace;
+	}
+	const heldCandidate =
+		lastResolvedWorkspaceRef.current?.id === workspaceId
+			? lastResolvedWorkspaceRef.current
+			: null;
+	const isTransient =
+		!isReady ||
+		(heldCandidate !== null &&
+			cache.resolveHostUrl(heldCandidate.hostId) === null);
+	const heldWorkspace: typeof workspace =
+		workspace ?? (isTransient ? heldCandidate : null);
 
-	if (!workspaces || (!workspace && !isReady)) {
+	const hostStatus = useRemoteHostStatus(heldWorkspace);
+
+	if (!heldWorkspace && !workspace && !isReady) {
 		return <div className="flex h-full w-full" />;
 	}
 
-	if (!workspace) {
+	if (!heldWorkspace) {
 		if (failedEntry) {
 			return <WorkspaceCreateErrorState entry={failedEntry} />;
 		}
@@ -89,9 +113,9 @@ export function V2WorkspaceMount({
 	if (isCreatePending) {
 		return (
 			<WorkspaceCreatingState
-				name={workspace.name}
-				branch={workspace.branch}
-				startedAt={new Date(workspace.createdAt).getTime()}
+				name={heldWorkspace.name}
+				branch={heldWorkspace.branch}
+				startedAt={new Date(heldWorkspace.createdAt).getTime()}
 			/>
 		);
 	}
@@ -110,7 +134,7 @@ export function V2WorkspaceMount({
 	}
 
 	return (
-		<WorkspaceProvider workspace={workspace}>
+		<WorkspaceProvider workspace={heldWorkspace}>
 			<V2WorkspaceView tabBarTrailingExtra={tabBarTrailingExtra} />
 		</WorkspaceProvider>
 	);

@@ -11,7 +11,7 @@ import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences/useV2U
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useOpenNewWorkspaceModal } from "renderer/stores/new-workspace-modal";
 import type { DashboardSidebarProject } from "../../../../types";
@@ -52,7 +52,7 @@ export function useDashboardSidebarProjectSectionActions({
 	// the local host and rename the wrong replica.
 	const servingHostUrl = useHostUrl(servingHostId ?? undefined);
 	const { requestSectionRename } = useDashboardSidebarSectionRename();
-	const collections = useCollections();
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
 	const relayUrl = useRelayUrl();
 	// (RECYCLE-BIN) Honor the same delete-local-branch preference the per-item
 	// "Delete permanently" dialog uses (useDestroyDialogState reads this), so
@@ -148,7 +148,10 @@ export function useDashboardSidebarProjectSectionActions({
 	// skips that item rather than throwing mid-loop.
 	const resolveWorkspaceHostUrl = useCallback(
 		(workspaceId: string): string | null => {
-			const workspace = collections.v2Workspaces.get(workspaceId);
+			// (KANBAN HOST SOURCE) Resolved against the host-served lists — the
+			// Electric mirror lacks post-migration rows, which made every new
+			// branch permanently undeletable from the Recycle Bin.
+			const workspace = hostWorkspaces.find((w) => w.id === workspaceId);
 			if (!workspace) return null;
 			if (machineId && workspace.hostId === machineId) {
 				return activeHostUrl;
@@ -158,7 +161,7 @@ export function useDashboardSidebarProjectSectionActions({
 				workspace.hostId,
 			)}`;
 		},
-		[collections, machineId, activeHostUrl, relayUrl],
+		[hostWorkspaces, machineId, activeHostUrl, relayUrl],
 	);
 
 	// Bulk-restore every soft-deleted thread in this project's bin straight back

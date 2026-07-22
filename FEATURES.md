@@ -42,6 +42,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
+| Kanban host-served workspace source | every fork surface that needs the workspace universe (kanban seed/prune/render, bound-card actions, collapse-split, recycle-bin destroy URL, sidebar snooze/archive fallbacks, is-local gate) reads the host-served lists (`useHostWorkspaces`), NEVER the Electric `v2Workspaces` mirror — upstream's offline-first migration stopped writing new rows to the cloud table, so Electric reads silently miss every post-migration branch | `(KANBAN-HOST-SOURCE)` |
 | Kanban Completed column | fixed FINAL column: dropping a card stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID` |
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
 | Kanban sidebar button toggles | sidebar Kanban press: anywhere → full-screen board; part-screen split → full-screen (closing then reopens that workspace full size); full-screen → close back to the remembered previous page (fallback Workspaces list) | `(KANBAN-TOGGLE)` |
@@ -115,6 +116,7 @@ KANBAN_QUEUE_COLUMN_ID	apps/desktop/src/renderer
 KANBAN_COMPLETED_COLUMN_ID	apps/desktop/src/renderer
 writeKanbanBackup	apps/desktop/src
 (KANBAN-TOGGLE)	apps/desktop/src/renderer
+(KANBAN-HOST-SOURCE)	apps/desktop/src/renderer
 (SUBTOOL-RED)	apps/desktop/src/main
 (ASYNC-TOOL-RED)	apps/desktop/src/main
 (UNTAGGED-BG-RED)	apps/desktop/src/main

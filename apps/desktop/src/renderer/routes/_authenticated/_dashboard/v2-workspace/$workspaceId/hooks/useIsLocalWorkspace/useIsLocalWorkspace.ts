@@ -1,6 +1,4 @@
-import { eq } from "@tanstack/db";
-import { useLiveQuery } from "@tanstack/react-db";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 
 /**
@@ -8,19 +6,15 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
  * workspace row resolves. Local-only actions (spawning a browser/editor on a
  * filesystem path) must gate on `=== true` — a path resolved by a REMOTE
  * host service does not exist locally.
+ *
+ * (KANBAN HOST SOURCE) Resolved against the host-served workspace lists — the
+ * Electric mirror lacks post-migration rows, which left new local branches
+ * permanently stuck at `null`.
  */
 export function useIsLocalWorkspace(workspaceId: string): boolean | null {
-	const collections = useCollections();
+	const { workspaces } = useHostWorkspaces();
 	const { machineId } = useLocalHostService();
-	const { data: rows = [] } = useLiveQuery(
-		(q) =>
-			q
-				.from({ workspaces: collections.v2Workspaces })
-				.where(({ workspaces }) => eq(workspaces.id, workspaceId))
-				.select(({ workspaces }) => ({ hostId: workspaces.hostId })),
-		[collections, workspaceId],
-	);
-	const row = rows[0];
+	const row = workspaces.find((w) => w.id === workspaceId);
 	if (!row || !machineId) return null;
 	return row.hostId === machineId;
 }

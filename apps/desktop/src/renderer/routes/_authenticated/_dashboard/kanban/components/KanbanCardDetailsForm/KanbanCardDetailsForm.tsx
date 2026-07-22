@@ -7,10 +7,11 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { CalendarIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
-import { DeadlinePickerPopover } from "../DeadlinePickerPopover";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
 import { formatDeadlineLong } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
+import { DeadlinePickerPopover } from "../DeadlinePickerPopover";
 
 const COMMIT_DEBOUNCE_MS = 250;
 
@@ -50,13 +51,13 @@ export function KanbanCardDetailsForm({
 	// A BOUND card's title is the branch name (derived live, same source as the
 	// sidebar — can't diverge), so it's read-only here. Only UNBOUND (Queued)
 	// cards have an editable title stored on the card.
-	const { data: [boundWorkspace] = [] } = useLiveQuery(
-		(q) =>
-			q
-				.from({ w: collections.v2Workspaces })
-				.where(({ w }) => eq(w.id, card?.workspaceId ?? "")),
-		[collections, card?.workspaceId],
-	);
+	// (KANBAN HOST SOURCE) Bound-card context comes from the host-served
+	// workspace lists (see useKanbanData) — the Electric mirror lacks
+	// post-migration branches.
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
+	const boundWorkspace = card?.workspaceId
+		? (hostWorkspaces.find((w) => w.id === card.workspaceId) ?? null)
+		: null;
 	const isBound = card?.workspaceId != null;
 	const boundTitle = boundWorkspace ? deriveCardTitle(boundWorkspace) : "";
 

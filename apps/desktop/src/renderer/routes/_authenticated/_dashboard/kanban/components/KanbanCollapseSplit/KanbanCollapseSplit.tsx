@@ -1,6 +1,4 @@
 import { cn } from "@superset/ui/utils";
-import { eq } from "@tanstack/db";
-import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -10,7 +8,7 @@ import {
 	LuPanelTop,
 } from "react-icons/lu";
 import { V2WorkspaceMount } from "renderer/routes/_authenticated/_dashboard/v2-workspace/components/V2WorkspaceMount";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import {
 	KANBAN_SPLIT_DEFAULT_HEIGHT,
@@ -38,7 +36,6 @@ interface KanbanCollapseSplitProps {
  */
 export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 	const navigate = useNavigate();
-	const collections = useCollections();
 	const {
 		orientation,
 		topHeight,
@@ -51,18 +48,16 @@ export function KanbanCollapseSplit({ workspaceId }: KanbanCollapseSplitProps) {
 
 	// If the selected branch is deleted while open, exit the split back to the
 	// board instead of leaving a "workspace not found" pane mounted.
-	const { data: workspaces = [], isReady } = useLiveQuery(
-		(q) =>
-			q
-				.from({ w: collections.v2Workspaces })
-				.where(({ w }) => eq(w.id, workspaceId)),
-		[collections, workspaceId],
-	);
+	// (KANBAN HOST SOURCE) Resolved against the host-served lists; only a READY
+	// merge with the row absent counts as deleted — a transiently-unanswered
+	// host must not bounce the user out of the split.
+	const { workspaces: hostWorkspaces, isReady } = useHostWorkspaces();
+	const workspaceExists = hostWorkspaces.some((w) => w.id === workspaceId);
 	useEffect(() => {
-		if (isReady && workspaces.length === 0) {
+		if (isReady && !workspaceExists) {
 			navigate({ to: "/kanban", search: { cardId: undefined }, replace: true });
 		}
-	}, [isReady, workspaces.length, navigate]);
+	}, [isReady, workspaceExists, navigate]);
 
 	const boardHeader = (
 		<div className="flex shrink-0 items-center justify-end gap-1.5 border-b border-border px-2 py-1.5">
