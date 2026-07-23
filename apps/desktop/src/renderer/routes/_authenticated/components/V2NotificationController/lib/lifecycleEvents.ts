@@ -254,6 +254,14 @@ function updatePaneStatus(
 	});
 
 	clearSources(workspaceId, transition.clearSources);
+	// (AGENT-SHELL-BLUE) EVERY agent lifecycle payload that resolves to a
+	// terminal proves an agent runs there — including axes-null events like
+	// Attached/SessionStart, which are precisely the first (and while the agent
+	// idles at its initial prompt, the only) signal. The axis funnel also
+	// stamps this, but it never runs when transition.axes is null.
+	if (target.terminalId) {
+		store.markAgentTerminal(target.terminalId);
+	}
 	if (transition.axes) {
 		// (DOT-AXES) axis-level apply: the store latches/unlatches the named
 		// axes and re-derives the rendered status as the highest active one.

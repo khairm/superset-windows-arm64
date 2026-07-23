@@ -166,6 +166,7 @@ export interface V2NotificationState {
 	// terminal's foreground command for its whole session. Gates shell-blue to
 	// PLAIN shells only. Cleared when the terminal itself exits.
 	agentTerminals: Record<string, true>;
+	markAgentTerminal: (terminalId: string) => void;
 	pruneAgentTerminal: (terminalId: string) => void;
 	// (DOT-AXES) The axis-level mutator every status write funnels through:
 	// applies set/clear latches to ONE source's axes and re-derives `status`
@@ -332,6 +333,18 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					});
 				},
 				agentTerminals: {},
+				markAgentTerminal: (terminalId) => {
+					set((state) =>
+						state.agentTerminals[terminalId]
+							? state
+							: {
+									agentTerminals: {
+										...state.agentTerminals,
+										[terminalId]: true as const,
+									},
+								},
+					);
+				},
 				pruneAgentTerminal: (terminalId) => {
 					set((state) => {
 						if (!state.agentTerminals[terminalId]) return state;
