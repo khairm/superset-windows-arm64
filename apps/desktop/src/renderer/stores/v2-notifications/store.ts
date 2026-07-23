@@ -797,7 +797,13 @@ function getSourceDisplayStatus(
 		// open-terminal gate instead: every call site passes a terminal that
 		// belongs to `workspaceId` (a pane's own terminal, or an open terminal of
 		// this workspace). A present entry is therefore this workspace's blue dot.
-		if (state.shellRunningTerminals[terminalId]) {
+		// (AGENT-SHELL-BLUE) OSC-133 shell-running applies to PLAIN shells only:
+		// on an agent terminal the agent CLI itself is the long-running
+		// foreground command, so command-start latches for the whole session
+		// (see the AUTO-RESUME note in host-service terminal.ts) and would paint
+		// every idle agent tab blue over its green. Agent terminals take blue
+		// only from the background-tasks axis below.
+		if (agentStatus == null && state.shellRunningTerminals[terminalId]) {
 			return "shell-running";
 		}
 		if (state.backgroundRunningTerminals[terminalId]) {
