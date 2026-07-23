@@ -82,7 +82,7 @@
 		"@pierre/diffs": "1.2.12",
 		"@pierre/trees": "1.0.0-beta.5",
 		"@radix-ui/react-dialog": "1.1.15",
-		"@radix-ui/react-label": "2.1.8",
+		"@radix-ui/react-label": "2.1.9",
 		"@replit/codemirror-css-color-picker": "6.3.0",
 		"@sentry/electron": "7.10.0",
 		"@streamdown/mermaid": "1.0.2",
