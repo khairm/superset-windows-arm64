@@ -17,3 +17,11 @@
 ---
 
 .
+
+---
+
+.
+
+---
+
+[Image #2] - why do I have blue dots now? doesn't make sense theres nothing running in shell
