@@ -1,0 +1,27 @@
+[Image #1] I have these cards on the left-hand side in play, the three with the yellow dots. Why are they not showing in the Kanban?
+
+---
+
+<task-notification>
+<task-id>bd5ycddnw</task-id>
+<tool-use-id>toolu_01BP1qCYhP493kmU474HE1ND</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\f7713565-e464-48c1-a066-92a246fadb31\tasks\bd5ycddnw.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch publish build to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+[Image #2] - why do I have blue dots now? doesn't make sense theres nothing running in shell
