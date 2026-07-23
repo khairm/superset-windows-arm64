@@ -47,6 +47,7 @@ const router = createRouter({
 const unsubscribe = router.subscribe("onResolved", (event) => {
 	posthog.capture("$pageview", {
 		$current_url: event.toLocation.pathname,
+		$pathname: event.toLocation.pathname,
 	});
 });
 

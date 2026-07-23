@@ -1,4 +1,4 @@
-import type { BuiltinAgentId } from "@superset/shared/agent-catalog";
+import type { AgentIdentityId } from "@superset/shared/agent-catalog";
 import { useMemo } from "react";
 import { useTerminalAgentBindings } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import type { DisplayStatus } from "renderer/screens/main/components/StatusIndicator";
@@ -8,7 +8,7 @@ import { resolveDashboardSidebarTabTitle } from "./utils/resolveDashboardSidebar
 export interface DashboardSidebarWorkspaceTabChip {
 	tabId: string;
 	title: string;
-	agentId: BuiltinAgentId | null;
+	agentId: AgentIdentityId | null;
 	status: DisplayStatus | null;
 }
 

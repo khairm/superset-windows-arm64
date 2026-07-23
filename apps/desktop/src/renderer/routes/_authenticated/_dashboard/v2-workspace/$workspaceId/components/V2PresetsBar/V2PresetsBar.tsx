@@ -198,7 +198,7 @@ export function V2PresetsBar({
 			style={{ scrollbarWidth: "none" }}
 		>
 			<DropdownMenu>
-				<Tooltip>
+				<Tooltip delayDuration={1000}>
 					<TooltipTrigger asChild>
 						<DropdownMenuTrigger asChild>
 							<Button
@@ -210,7 +210,12 @@ export function V2PresetsBar({
 							</Button>
 						</DropdownMenuTrigger>
 					</TooltipTrigger>
-					<TooltipContent side="bottom" sideOffset={4}>
+					<TooltipContent
+						side="bottom"
+						sideOffset={4}
+						showArrow={false}
+						className="rounded-sm border border-border bg-background px-1.5 py-0.5 font-medium text-muted-foreground shadow-sm"
+					>
 						Manage Presets
 					</TooltipContent>
 				</Tooltip>
@@ -273,9 +278,6 @@ export function V2PresetsBar({
 					</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
-			{visiblePresets.length > 0 ? (
-				<div className="mx-1 h-3.5 w-px shrink-0 bg-border/60" />
-			) : null}
 			{visiblePresets.map(({ preset }, visibleIndex) => {
 				const hotkeyId = PRESET_HOTKEY_IDS[visibleIndex];
 				return (

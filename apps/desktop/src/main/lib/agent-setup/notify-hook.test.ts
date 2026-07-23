@@ -65,17 +65,24 @@ describe("getNotifyScriptContent", () => {
 });
 
 describe("per-agent hook scripts dispatch to v2", () => {
+	// (HOOK-FORK-DIET) fork-free escaping pre-computes E_AGENT_ID, so the payload
+	// shape is identical across hooks; the per-agent source var differs (below).
 	const expectedV2Payload =
 		'PAYLOAD="{\\"json\\":{\\"terminalId\\":\\"$E_TERMINAL_ID\\",\\"eventType\\":\\"$E_EVENT_TYPE\\",\\"agent\\":{\\"agentId\\":\\"$E_AGENT_ID\\",\\"sessionId\\":\\"$E_SESSION_ID\\"}}}"';
 
-	for (const template of [
-		"cursor-hook.template.sh",
-		"copilot-hook.template.sh",
-		"gemini-hook.template.sh",
-	]) {
+	for (const [template, agentIdVar] of [
+		["cursor-hook.template.sh", "AGENT_ID"],
+		["copilot-hook.template.sh", "SUPERSET_AGENT_ID"],
+		["gemini-hook.template.sh", "SUPERSET_AGENT_ID"],
+	] as const) {
 		it(`${template} posts v2 first and falls back to v1`, () => {
 			const script = readTemplate(template);
 			expect(script).toContain(expectedV2Payload);
+			// each hook escapes its agent-id source var into E_AGENT_ID: cursor
+			// resolves the CLI/Composer fallback (AGENT_ID), others use SUPERSET_AGENT_ID.
+			expect(script).toContain(
+				`json_escape "$${agentIdVar}"; E_AGENT_ID="$JSON_ESCAPED"`,
+			);
 			// per-agent hooks key sessionId off the parsed session_id field.
 			expect(script).toContain(
 				'json_escape "$HOOK_SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"',

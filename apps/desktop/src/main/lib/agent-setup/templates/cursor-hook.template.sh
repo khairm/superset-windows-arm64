@@ -50,10 +50,22 @@ json_escape() {
   JSON_ESCAPED="$s"
 }
 
+# This script only fires for Cursor sessions, so an unset SUPERSET_AGENT_ID
+# means Cursor ran outside a Superset wrapper: the cursor-agent CLI stamps
+# CURSOR_AGENT/CURSOR_CLI into its env; anything else is the IDE Composer.
+AGENT_ID="$SUPERSET_AGENT_ID"
+if [ -z "$AGENT_ID" ]; then
+  if [ -n "$CURSOR_AGENT" ] || [ -n "$CURSOR_CLI" ]; then
+    AGENT_ID="cursor-agent"
+  else
+    AGENT_ID="cursor-composer"
+  fi
+fi
+
 if [ -n "$SUPERSET_HOST_AGENT_HOOK_URL" ] && [ -n "$SUPERSET_TERMINAL_ID" ]; then
   json_escape "$SUPERSET_TERMINAL_ID"; E_TERMINAL_ID="$JSON_ESCAPED"
   json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
-  json_escape "$SUPERSET_AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
+  json_escape "$AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
   json_escape "$HOOK_SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
   PAYLOAD="{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
 

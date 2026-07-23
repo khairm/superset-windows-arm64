@@ -2,7 +2,7 @@
 	"name": "@superset/desktop",
 	"productName": "Superset",
 	"description": "The last developer tool you'll ever need",
-	"version": "1.16.1",
+	"version": "1.17.0",
 	"main": "./dist/main/index.js",
 	"resources": "src/resources",
 	"repository": {
@@ -73,7 +73,7 @@
 		"@electric-sql/client": "1.5.23",
 		"@headless-tree/core": "1.6.3",
 		"@headless-tree/react": "1.6.3",
-		"@hono/node-server": "1.19.13",
+		"@hono/node-server": "2.0.5",
 		"@hookform/resolvers": "5.2.2",
 		"@lezer/highlight": "1.2.3",
 		"@mastra/core": "1.33.1",
