@@ -159,6 +159,14 @@ export interface V2NotificationState {
 		occurredAt?: number,
 	) => void;
 	clearTerminalBackgroundRunning: (terminalId: string) => void;
+	// (AGENT-SHELL-BLUE) Durable "an agent has run in this terminal" registry.
+	// Stamped by every agent-axis write for a terminal source and kept even
+	// after the transient sources entry clears (mark-seen / turn-end), because
+	// the OSC-133 shell-running latch outlives both — the agent CLI is the
+	// terminal's foreground command for its whole session. Gates shell-blue to
+	// PLAIN shells only. Cleared when the terminal itself exits.
+	agentTerminals: Record<string, true>;
+	pruneAgentTerminal: (terminalId: string) => void;
 	// (DOT-AXES) The axis-level mutator every status write funnels through:
 	// applies set/clear latches to ONE source's axes and re-derives `status`
 	// as the highest-precedence active axis. Removes the entry when no axis
@@ -323,6 +331,15 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						return { backgroundRunningTerminals };
 					});
 				},
+				agentTerminals: {},
+				pruneAgentTerminal: (terminalId) => {
+					set((state) => {
+						if (!state.agentTerminals[terminalId]) return state;
+						const { [terminalId]: _removed, ...agentTerminals } =
+							state.agentTerminals;
+						return { agentTerminals };
+					});
+				},
 				applySourceAxes: (
 					source,
 					workspaceId,
@@ -354,12 +371,30 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						occurredAt,
 					});
 					set((state) => {
+						// (AGENT-SHELL-BLUE) Any agent-axis write for a terminal source —
+						// including a clear-to-null — proves an agent runs here.
+						const agentTerminals =
+							sourceKey.startsWith(TERMINAL_SOURCE_PREFIX) &&
+							!state.agentTerminals[
+								sourceKey.slice(TERMINAL_SOURCE_PREFIX.length)
+							]
+								? {
+										...state.agentTerminals,
+										[sourceKey.slice(TERMINAL_SOURCE_PREFIX.length)]:
+											true as const,
+									}
+								: state.agentTerminals;
 						if (status === null) {
-							if (!state.sources[sourceKey]) return state;
+							if (!state.sources[sourceKey]) {
+								return agentTerminals === state.agentTerminals
+									? state
+									: { agentTerminals };
+							}
 							const { [sourceKey]: _removed, ...sources } = state.sources;
-							return { sources };
+							return { sources, agentTerminals };
 						}
 						return {
+							agentTerminals,
 							sources: {
 								...state.sources,
 								[sourceKey]: {
@@ -587,6 +622,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					backgroundRunningTerminals: state.backgroundRunningTerminals,
 					manualUnread: state.manualUnread,
 					terminalSeenAt: state.terminalSeenAt,
+					agentTerminals: state.agentTerminals,
 				}),
 			},
 		),
@@ -801,9 +837,14 @@ function getSourceDisplayStatus(
 		// on an agent terminal the agent CLI itself is the long-running
 		// foreground command, so command-start latches for the whole session
 		// (see the AUTO-RESUME note in host-service terminal.ts) and would paint
-		// every idle agent tab blue over its green. Agent terminals take blue
-		// only from the background-tasks axis below.
-		if (agentStatus == null && state.shellRunningTerminals[terminalId]) {
+		// every idle agent tab blue over its green. The gate is the DURABLE
+		// agentTerminals registry, not the transient sources entry — mark-seen /
+		// turn-end clear that entry while the OSC latch persists. Agent
+		// terminals take blue only from the background-tasks axis below.
+		if (
+			!state.agentTerminals[terminalId] &&
+			state.shellRunningTerminals[terminalId]
+		) {
 			return "shell-running";
 		}
 		if (state.backgroundRunningTerminals[terminalId]) {

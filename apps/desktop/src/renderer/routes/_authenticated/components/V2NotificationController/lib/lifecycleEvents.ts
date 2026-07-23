@@ -172,6 +172,9 @@ export function handleV2TerminalLifecycleEvent({
 	store.clearTerminalShellRunning(payload.terminalId);
 	store.clearTerminalBackgroundRunning(payload.terminalId);
 	store.pruneTerminalSeen(payload.terminalId);
+	// (AGENT-SHELL-BLUE) the pty died — the terminal is no longer an agent
+	// terminal; a future terminal reusing panes starts as a plain shell.
+	store.pruneAgentTerminal(payload.terminalId);
 	clearSources(workspaceId, [
 		getV2TerminalNotificationSource(payload.terminalId),
 	]);
