@@ -128,24 +128,26 @@ jobs:
         shell: bash
         run: bun run compile:app
 
-      - name: Verify screenReaderMode stayed false in both renderer bundles
+      - name: Verify screenReaderMode stayed false in renderer bundles
         working-directory: apps/desktop
         shell: bash
         run: |
           set -euo pipefail
+          # Chunk names are Rollup-derived and drift with upstream refactors
+          # (desktop-v1.18.0 stopped emitting config-*.js and blocked three
+          # nightlies) — scan every renderer asset instead of naming chunks.
           assets_dir="dist/renderer/assets"
           [ -d "$assets_dir" ] || { echo "::error::renderer assets dir not found at $assets_dir"; exit 1; }
-          v1_chunk=$(ls -1 "$assets_dir"/config-*.js 2>/dev/null | head -1 || true)
-          v2_chunk=$(ls -1 "$assets_dir"/terminal-runtime-*.js 2>/dev/null | head -1 || true)
-          [ -n "$v1_chunk" ] || { echo "::error::v1 config-*.js chunk not found in $assets_dir"; exit 1; }
-          [ -n "$v2_chunk" ] || { echo "::error::v2 terminal-runtime-*.js chunk not found in $assets_dir"; exit 1; }
-          if grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v1_chunk"; then
-            echo "::error::screenReaderMode TRUTHY in v1 chunk (Wispr Flow regression)"; exit 1
+          # Positive control: xterm's option name must appear somewhere or the
+          # guard is no longer looking at the right artifacts.
+          if ! grep -rlq 'screenReaderMode' "$assets_dir" --include='*.js'; then
+            echo "::error::screenReaderMode not found in any renderer asset — guard target drifted, refusing to pass vacuously"; exit 1
           fi
-          if grep -qE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$v2_chunk"; then
-            echo "::error::screenReaderMode TRUTHY in v2 chunk (Wispr Flow regression)"; exit 1
+          truthy=$(grep -rlE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$assets_dir" --include='*.js' || true)
+          if [ -n "$truthy" ]; then
+            echo "::error::screenReaderMode TRUTHY in renderer asset(s) (Wispr Flow regression): $truthy"; exit 1
           fi
-          echo "screenReaderMode verified false in both renderer bundles."
+          echo "screenReaderMode verified false across all renderer assets."
 
       - name: Fetch @libsql + @anush008/tokenizers win32-arm64 + materialize native closure
         shell: bash
