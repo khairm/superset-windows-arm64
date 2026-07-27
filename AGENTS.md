@@ -15,24 +15,34 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 
 ## Setup / architecture (high level)
 
-- **Build (AI-free, deterministic).** `.github/workflows/build-arm64.yml`:
-  install → compile → materialize the win-arm64 native closure
+- **Build (deterministic steps, self-repairing).** `.github/workflows/build-arm64.yml`
+  orchestrates a bounded attempt/repair loop `(BUILD-REPAIR)`: the actual build
+  steps (install → compile → materialize the win-arm64 native closure
   (`scripts/materialize-native-closure.sh`: libsql/tokenizers/node-pty) →
-  package the installer → verify packaged natives are ARM64.
-- **Nightly merge (the only AI).** `.github/workflows/nightly-merge.yml`: when
-  upstream publishes a newer `desktop-v*` tag, git merges it; Opus resolves
+  package the installer → verify packaged natives are ARM64 → publish) live in
+  `.github/actions/arm64-build/action.yml` as thin shims over `scripts/*.sh`.
+  A failed attempt triggers an Opus 5 (`claude-opus-5`, effort high) repair job
+  that reads the failed log, fixes the checked-out tree, and pushes to the
+  repair branch (nightly candidate / dispatched branch); the next attempt
+  builds that exact sha so every deterministic gate re-runs. Max 3 attempts /
+  2 repairs, then fail loud. Repairs may never change the app version or touch
+  `FEATURES.md` (`scripts/check-feature-markers.mjs` gates marker survival).
+- **Nightly merge.** `.github/workflows/nightly-merge.yml` (02:13 UTC): when
+  upstream publishes a newer `desktop-v*` tag, git merges it; Opus 5 resolves
   conflicted files, then a `(MERGE-ADAPT)` proactive port pass adapts fork-only
   callers to cleanly-merging upstream API refactors. Deterministic gates follow
   (FEATURES.md marker survival, dependency/lock consistency, `(REFERR-GATE)`
   cannot-find-name check), then a bounded `(MERGE-SEMANTIC-GATE)` review →
   adapt → fresh-review loop (max 3 reviews / 2 repairs). Green all the way =
-  build, publish the Release, advance the baseline; ANY failure hard-aborts
-  with the baseline untouched → fix locally with the maintainer and
-  re-baseline. A `rehearse=true` dispatch replays a night end-to-end with zero
-  side effects.
+  build (with its own repair loop), publish the Release, advance the baseline
+  to the BUILT sha; ANY unrepaired failure hard-aborts with the baseline
+  untouched → fix locally with the maintainer and re-baseline. A
+  `rehearse=true` dispatch replays a night's merge half with zero side effects.
 - **Key files.** `FEATURES.md` (feature manifest + fenced `markers` block the
   gates parse), `.fork/upstream-baseline.txt`,
   `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
+  `scripts/check-feature-markers.mjs` (standalone marker gate),
+  `scripts/ci-repair.sh` (build-repair engine),
   `scripts/check-override-consistency.mjs`, `scripts/resolve-release-age.mjs`,
   companion native packages `github.com/khairm/libsql-windows-arm64` +
   `github.com/khairm/tokenizers-windows-arm64`.
@@ -47,8 +57,13 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 - **No build-time type/test gate except `(REFERR-GATE)`** — the tree carries
   accepted type debt; only cannot-find-name diagnostics fail the build.
   Validate + e2e locally before relying on a release.
-- **AI only in the nightly merge** (needs `CLAUDE_CODE_OAUTH_TOKEN`); the build
-  is AI-free. Rate-limited/unparsable AI output aborts rather than ships.
+- **Everything is AI-touchable** (needs `CLAUDE_CODE_OAUTH_TOKEN`): the nightly
+  merge resolves/ports/reviews, and the build self-repairs via `(BUILD-REPAIR)`.
+  Workflow YAML self-repair additionally needs the `WORKFLOW_PUSH_TOKEN` secret
+  (fine-grained PAT, Contents+Workflows write) and only takes effect the NEXT
+  run — workflow files are frozen once a run starts, which is why all step
+  logic lives in `.github/actions/` + `scripts/` (repairable mid-run).
+  Rate-limited/unparsable AI output aborts rather than ships.
 
 ## Custom features / overrides
 
@@ -107,7 +122,12 @@ In brief:
 - `.github/workflows` is fork-owned and CI's `GITHUB_TOKEN` can never push
   workflow changes — nightly-merge restores the dir mid-merge
   (`(WORKFLOW-FORK-OWNED)`); add upstream workflows only by deliberate local
-  commit with a user token.
+  commit with a user token. `(BUILD-REPAIR)` pushes that touch workflow files
+  use `WORKFLOW_PUSH_TOKEN` (also the advance job's push credential, since a
+  repaired candidate may carry workflow commits into main).
+- Never assert upstream-derived incidental names (Rollup chunk filenames, file
+  hashes, ordering) in fork-owned gates — assert the invariant over the whole
+  artifact set (`SCREENREADER-GUARD-DRIFT`: a chunk rename blocked 3 nightlies).
 
 ## Accepted limitations
 

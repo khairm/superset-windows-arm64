@@ -1,15 +1,24 @@
 name: Build Windows ARM64 (vendored fork)
 
-# Deterministic, NO-AI build of the vendored fork source at repo root.
-# Unlike the legacy pipeline there is NO upstream clone, NO patch apply, NO AI
-# re-anchor and NO arch-fixup: every Windows/ARM64 change already lives in the
-# committed source (the fork tree). This workflow only: install -> build ->
-# materialize the win-arm64 native closure -> package the NSIS installer ->
-# verify the packaged natives are ARM64 -> (optionally) publish a release.
+# Self-repairing build of the vendored fork source at repo root.
+# The build steps themselves are deterministic and live in
+# .github/actions/arm64-build (thin shims over scripts/) — this file only
+# orchestrates a bounded attempt/repair loop:
 #
-# It is the build half of the architecture: the baseline is frozen in this repo;
-# nightly-merge.yml carries upstream deltas in and calls a build like this to
-# prove the result before publishing.
+#   build-attempt-1 ──fail──> repair-1 (Opus 5) ──> build-attempt-2
+#                                   ──fail──> repair-2 (Opus 5) ──> build-attempt-3
+#
+# Max 3 build attempts / 2 AI repairs, then verdict fails LOUD. Every repair
+# is pushed to the repair branch (nightly candidate, or the dispatched branch
+# for manual runs) and the next attempt builds that exact sha, so every
+# deterministic gate re-runs on the repaired tree. (BUILD-REPAIR)
+#
+# Why the split matters: workflow YAML is frozen when a run starts and
+# GITHUB_TOKEN cannot push .github/workflows changes — but .github/actions/**
+# and scripts/** are ordinary repo files, checked out per attempt, so the
+# repair AI can fix ~everything mid-run. Workflow-YAML fixes need the
+# WORKFLOW_PUSH_TOKEN secret (fine-grained PAT, Contents+Workflows write) and
+# take effect the NEXT run.
 
 on:
   workflow_dispatch:
@@ -18,6 +27,10 @@ on:
         description: 'Publish the desktop-v<version> Release (rebuilt in place; one version, no beta)'
         type: boolean
         default: true
+      repair_branch:
+        description: 'Branch AI repairs are pushed to (default: the dispatched branch)'
+        type: string
+        default: ''
   # Reusable so nightly-merge.yml can invoke the exact same build.
   workflow_call:
     inputs:
@@ -28,297 +41,211 @@ on:
         description: 'Git ref to build (default: the triggering ref)'
         type: string
         default: ''
+      repair_branch:
+        description: 'Branch AI repairs are pushed to (nightly passes the candidate)'
+        type: string
+        default: ''
+    outputs:
+      built_sha:
+        description: 'The exact commit the successful attempt built (differs from the input ref when a repair landed)'
+        value: ${{ jobs.verdict.outputs.built_sha }}
 
 permissions:
   contents: write
+  actions: read # repair jobs download this run's failed-job logs
 
 jobs:
-  build:
+  build-attempt-1:
     runs-on: windows-11-arm
+    # Failures are handled by the repair loop; verdict is the single source of
+    # truth for the workflow result. (Job-level continue-on-error masks the
+    # failure in `needs.*.result`, so the loop keys off the `ok` OUTPUT — only
+    # a fully green attempt sets it.)
+    continue-on-error: true
+    outputs:
+      ok: ${{ steps.done.outputs.ok }}
+      sha: ${{ steps.sha.outputs.sha }}
     steps:
       # Superset has paths deeper than Windows' 260-char MAX_PATH; without this
-      # actions/checkout dies with "Filename too long". --system so the
-      # checkout action's own git invocation picks it up.
+      # actions/checkout dies with "Filename too long". Must run BEFORE
+      # checkout, so it cannot live in the composite action.
       - name: Configure git long paths (Windows MAX_PATH)
         shell: bash
         run: git config --system core.longpaths true || git config --global core.longpaths true
-
       - name: Checkout fork source
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 1
-
-      - name: Read app version
-        id: ver
+      - name: Record built sha
+        id: sha
         shell: bash
-        run: |
-          V=$(node -p "require('./apps/desktop/package.json').version")
-          [ -n "$V" ] || { echo "::error::could not read apps/desktop/package.json version"; exit 1; }
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "App version: $V"
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build, verify, publish
+        uses: ./.github/actions/arm64-build
+        with:
+          publish: ${{ inputs.publish }}
+          gh-token: ${{ github.token }}
+      - name: Mark attempt green
+        id: done
+        shell: bash
+        run: echo "ok=true" >> "$GITHUB_OUTPUT"
 
+  repair-1:
+    needs: build-attempt-1
+    if: ${{ !cancelled() && needs.build-attempt-1.outputs.ok != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      repaired: ${{ steps.repair.outputs.repaired }}
+      sha: ${{ steps.repair.outputs.sha }}
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.repair_branch || github.ref_name }}
+          fetch-depth: 50
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: AI repair (round 1)
+        id: repair
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ROUND: '1'
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash scripts/ci-repair.sh
 
-      - name: Setup Bun (native Windows ARM64)
-        uses: oven-sh/setup-bun@v2
+  build-attempt-2:
+    needs: [build-attempt-1, repair-1]
+    if: ${{ !cancelled() && needs.repair-1.outputs.repaired == 'true' }}
+    runs-on: windows-11-arm
+    continue-on-error: true
+    outputs:
+      ok: ${{ steps.done.outputs.ok }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Configure git long paths (Windows MAX_PATH)
+        shell: bash
+        run: git config --system core.longpaths true || git config --global core.longpaths true
+      - name: Checkout repaired source
+        uses: actions/checkout@v5
         with:
-          # 1.3.14 = last stable Zig release; first native win-arm64 shipped in 1.3.10.
-          bun-version: '1.3.14'
+          ref: ${{ needs.repair-1.outputs.sha }}
+          fetch-depth: 1
+      - name: Record built sha
+        id: sha
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build, verify, publish
+        uses: ./.github/actions/arm64-build
+        with:
+          publish: ${{ inputs.publish }}
+          gh-token: ${{ github.token }}
+      - name: Mark attempt green
+        id: done
+        shell: bash
+        run: echo "ok=true" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Bun is native ARM64 (fail fast, fall back to official zip)
-        shell: pwsh
-        run: |
-          function Get-PEMachine($p){ $fs=[IO.File]::OpenRead($p); $br=New-Object IO.BinaryReader($fs); $fs.Position=0x3C; $pe=$br.ReadInt32(); $fs.Position=$pe+4; $m=$br.ReadUInt16(); $br.Close(); return $m }
-          $bun = (Get-Command bun).Source
-          $m = Get-PEMachine $bun
-          $ver = (& bun --version).Trim()
-          Write-Host "bun: $bun  version=$ver  PEmachine=0x$('{0:X}' -f $m)"
-          if ($m -ne 0xAA64) {
-            Write-Host "::warning::setup-bun did not provide native ARM64 bun (machine 0x$('{0:X}' -f $m)); downloading official bun-windows-aarch64"
-            $zip = Join-Path $env:RUNNER_TEMP 'bun-arm64.zip'
-            Invoke-WebRequest -Uri 'https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-aarch64.zip' -OutFile $zip
-            $dest = Join-Path $env:RUNNER_TEMP 'bun-arm64'
-            Expand-Archive -Path $zip -DestinationPath $dest -Force
-            $found = Get-ChildItem -Recurse -Filter bun.exe $dest | Select-Object -First 1
-            if (-not $found) { Write-Error 'bun.exe not found in official ARM64 zip'; exit 1 }
-            $m2 = Get-PEMachine $found.FullName
-            if ($m2 -ne 0xAA64) { Write-Error "Official zip bun.exe is not ARM64 (0x$('{0:X}' -f $m2))"; exit 1 }
-            Add-Content -Path $env:GITHUB_PATH -Value $found.DirectoryName
-            Write-Host "Prepended native ARM64 bun ($($found.DirectoryName)) to PATH"
-          }
-
-      - name: Install dependencies (frozen lockfile)
+  repair-2:
+    needs: [repair-1, build-attempt-2]
+    if: ${{ !cancelled() && needs.repair-1.outputs.repaired == 'true' && needs.build-attempt-2.outputs.ok != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      repaired: ${{ steps.repair.outputs.repaired }}
+      sha: ${{ steps.repair.outputs.sha }}
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.repair_branch || github.ref_name }}
+          fetch-depth: 50
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: AI repair (round 2)
+        id: repair
         shell: bash
         env:
-          # Skip the flaky @electron/rebuild postinstall (install:deps). On
-          # win-arm64 it can't build native trustedDeps; the deterministic
-          # Bun-store payload repair (materialize-native-closure) handles them.
-          SUPERSET_POSTINSTALL_RUNNING: '1'
-        run: |
-          set -euo pipefail
-          # The committed bun.lock is the source of truth and is consistent with
-          # our pinned package.json (node-pty @lydell alias, mastra pins), so a
-          # FROZEN install uses the locked versions and never re-resolves — which
-          # also sidesteps bunfig's minimumReleaseAge gate (locked versions are
-          # not age-checked). If this fails the lock drifted from package.json:
-          # regenerate it (bun install --lockfile-only) and recommit.
-          bun install --frozen-lockfile
-
-      # (REFERR-GATE) Fail on cannot-find-name diagnostics ONLY (TS2304/2552/
-      # 2662/2663/18004) — bare identifiers esbuild bundles fine but that throw
-      # ReferenceError at runtime. This is exactly the class a clean-merging
-      # upstream hunk can leave in fork code (v1.14.0 layout.tsx incident: every
-      # v2 workspace view crashed). NOT a full type gate: the tree's known type
-      # debt has zero of these codes and stays allowed.
-      - name: ReferenceError-class typecheck gate
-        shell: bash
-        run: node scripts/check-dangerous-diagnostics.mjs
-
-      - name: Generate file icons
-        working-directory: apps/desktop
-        shell: bash
-        run: bun run generate:icons
-
-      - name: Build app (electron-vite / esbuild)
-        working-directory: apps/desktop
-        shell: bash
-        run: bun run compile:app
-
-      - name: Verify screenReaderMode stayed false in renderer bundles
-        working-directory: apps/desktop
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Chunk names are Rollup-derived and drift with upstream refactors
-          # (desktop-v1.18.0 stopped emitting config-*.js and blocked three
-          # nightlies) — scan every renderer asset instead of naming chunks.
-          assets_dir="dist/renderer/assets"
-          [ -d "$assets_dir" ] || { echo "::error::renderer assets dir not found at $assets_dir"; exit 1; }
-          # Positive control: xterm's option name must appear somewhere or the
-          # guard is no longer looking at the right artifacts.
-          if ! grep -rlq 'screenReaderMode' "$assets_dir" --include='*.js'; then
-            echo "::error::screenReaderMode not found in any renderer asset — guard target drifted, refusing to pass vacuously"; exit 1
-          fi
-          truthy=$(grep -rlE 'screenReaderMode[[:space:]]*:[[:space:]]*(true|!0)' "$assets_dir" --include='*.js' || true)
-          if [ -n "$truthy" ]; then
-            echo "::error::screenReaderMode TRUTHY in renderer asset(s) (Wispr Flow regression): $truthy"; exit 1
-          fi
-          echo "screenReaderMode verified false across all renderer assets."
-
-      - name: Fetch @libsql + @anush008/tokenizers win32-arm64 + materialize native closure
-        shell: bash
-        env:
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ROUND: '2'
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          LV=$(ls -d node_modules/.bun/libsql@* 2>/dev/null | sed 's#.*/libsql@##' | sort -V | tail -1)
-          [ -n "$LV" ] || { echo "::error::could not determine resolved libsql version"; exit 1; }
-          echo "Resolved libsql: $LV"
-          rm -rf libsql-dl libsql-arm64
-          if ! gh release download "$LV" --repo khairm/libsql-windows-arm64 \
-                 -p 'libsql-win32-arm64-msvc.tar.gz' -p 'libsql-win32-arm64-msvc.tar.gz.sha256' -D libsql-dl; then
-            echo "::error::No @libsql/win32-arm64-msvc Release for libsql $LV in khairm/libsql-windows-arm64."
-            echo "::error::Trigger that repo's nightly (workflow_dispatch -f libsql_version=$LV) then re-run."
-            exit 1
-          fi
-          ( cd libsql-dl && sha256sum -c libsql-win32-arm64-msvc.tar.gz.sha256 )
-          mkdir -p libsql-arm64
-          tar -xzf libsql-dl/libsql-win32-arm64-msvc.tar.gz -C libsql-arm64
-          [ -f libsql-arm64/index.node ] || { echo "::error::libsql artifact missing index.node"; exit 1; }
+          HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash scripts/ci-repair.sh
 
-          TV=$(ls -d node_modules/.bun/@anush008+tokenizers@* 2>/dev/null | sed 's#.*/@anush008+tokenizers@##' | sort -V | tail -1)
-          [ -n "$TV" ] || { echo "::error::could not determine resolved @anush008/tokenizers version"; exit 1; }
-          echo "Resolved @anush008/tokenizers: $TV"
-          rm -rf tok-dl tokenizers-arm64
-          if ! gh release download "$TV" --repo khairm/tokenizers-windows-arm64 \
-                 -p 'tokenizers-win32-arm64-msvc.tar.gz' -p 'tokenizers-win32-arm64-msvc.tar.gz.sha256' -D tok-dl; then
-            echo "::error::No @anush008/tokenizers-win32-arm64-msvc Release for tokenizers $TV in khairm/tokenizers-windows-arm64."
-            echo "::error::Trigger that repo's nightly (workflow_dispatch -f tokenizers_version=$TV) then re-run."
-            exit 1
-          fi
-          ( cd tok-dl && sha256sum -c tokenizers-win32-arm64-msvc.tar.gz.sha256 )
-          mkdir -p tokenizers-arm64
-          tar -xzf tok-dl/tokenizers-win32-arm64-msvc.tar.gz -C tokenizers-arm64
-          [ -f tokenizers-arm64/tokenizers.win32-arm64-msvc.node ] || { echo "::error::tokenizers artifact missing .node"; exit 1; }
+  build-attempt-3:
+    needs: [repair-2]
+    if: ${{ !cancelled() && needs.repair-2.outputs.repaired == 'true' }}
+    runs-on: windows-11-arm
+    # Final attempt: no continue-on-error; its failure is real and terminal.
+    outputs:
+      ok: ${{ steps.done.outputs.ok }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Configure git long paths (Windows MAX_PATH)
+        shell: bash
+        run: git config --system core.longpaths true || git config --global core.longpaths true
+      - name: Checkout repaired source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.repair-2.outputs.sha }}
+          fetch-depth: 1
+      - name: Record built sha
+        id: sha
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build, verify, publish
+        uses: ./.github/actions/arm64-build
+        with:
+          publish: ${{ inputs.publish }}
+          gh-token: ${{ github.token }}
+      - name: Mark attempt green
+        id: done
+        shell: bash
+        run: echo "ok=true" >> "$GITHUB_OUTPUT"
 
-          # Electron NODE_MODULE_VERSION (V8 ABI). better-sqlite3 is V8-ABI-bound;
-          # a wrong ABI fetches a prebuilt that crashes Electron. Derive
-          # authoritatively via node-abi against the resolved electron, fall back
-          # to a pinned map, HARD-FAIL on an unknown major (never silently guess).
-          EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
-          EV=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | sort -V | tail -1)
-          [ -n "$EM" ] || { echo "::error::could not determine resolved electron version"; exit 1; }
-          ABI=$(node -e "try{process.stdout.write(String(require('node-abi').getAbi('$EV','electron')))}catch(e){}" 2>/dev/null || true)
-          if printf '%s' "$ABI" | grep -Eq '^[0-9]+$'; then
-            echo "ABI from node-abi getAbi('$EV','electron') = $ABI"
-          else
-            case "$EM" in
-              36) ABI=135;; 37) ABI=136;; 38) ABI=139;; 39) ABI=140;; 40) ABI=143;; 41) ABI=145;; 42) ABI=146;;
-              *) echo "::error::Unknown Electron major $EM and node-abi unavailable — add its NODE_MODULE_VERSION to the ABI map"; exit 1;;
-            esac
-            echo "ABI from pinned map (node-abi unavailable) = $ABI"
-          fi
-          echo "electron version=$EV major=$EM -> ABI=$ABI"
-          export ELECTRON_ABI="$ABI" LIBSQL_ARM64_DIR="$PWD/libsql-arm64" TOKENIZERS_ARM64_DIR="$PWD/tokenizers-arm64"
-          bash scripts/materialize-native-closure.sh
-          echo "ELECTRON_ABI=$ABI" >> "$GITHUB_ENV"
-          echo "LIBSQL_ARM64_DIR=$PWD/libsql-arm64" >> "$GITHUB_ENV"
-          echo "TOKENIZERS_ARM64_DIR=$PWD/tokenizers-arm64" >> "$GITHUB_ENV"
-
-      - name: Prepare native modules (ARM64 target)
-        working-directory: apps/desktop
+  verdict:
+    needs: [build-attempt-1, repair-1, build-attempt-2, repair-2, build-attempt-3]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      built_sha: ${{ steps.decide.outputs.built_sha }}
+    steps:
+      - name: Decide build outcome
+        id: decide
         shell: bash
         env:
-          TARGET_ARCH: arm64
-          TARGET_PLATFORM: win32
-        run: bun run copy:native-modules
-
-      - name: Validate native runtime (ARM64 fail-fast gate)
-        shell: bash
-        env:
-          TARGET_ARCH: arm64
-          TARGET_PLATFORM: win32
+          OK1: ${{ needs.build-attempt-1.outputs.ok }}
+          OK2: ${{ needs.build-attempt-2.outputs.ok }}
+          OK3: ${{ needs.build-attempt-3.outputs.ok }}
+          SHA1: ${{ needs.build-attempt-1.outputs.sha }}
+          SHA2: ${{ needs.build-attempt-2.outputs.sha }}
+          SHA3: ${{ needs.build-attempt-3.outputs.sha }}
+          R1: ${{ needs.repair-1.result }}
+          R2: ${{ needs.repair-2.result }}
         run: |
           set -euo pipefail
-          bash scripts/materialize-native-closure.sh
-          cd apps/desktop
-          bun run validate:native-runtime
-
-      - name: Build Windows ARM64 installer
-        working-directory: apps/desktop
-        shell: bash
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          # native-keymap etc. use V8 APIs Electron 40 deprecated; MSVC C4996
-          # under warnings-as-errors fails node-gyp. /wd4996 disables just that
-          # warning for all native rebuilds (deterministic; runtime is fine).
-          CL: '/wd4996'
-        run: |
-          set -euo pipefail
-          npx electron-builder --win --arm64 --publish never --config electron-builder.ts
-          echo "--- release dir ---"
-          ls -la release || true
-
-      - name: Verify packaged native closure (ARM64 fail-fast gate)
-        working-directory: apps/desktop
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP="release/win-arm64-unpacked"
-          [ -d "$APP" ] || { echo "::error::$APP not found"; exit 1; }
-          pearch() { od -An -tx1 -j"$(( $(od -An -tu4 -j60 -N4 "$1"|tr -d ' ')+4 ))" -N2 "$1" | tr -d ' '; }
-          fail=0
-          m="$(pearch "$APP/Superset.exe")"
-          [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
-          TOK="$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node"
-          if [ -f "$TOK" ] && [ "$(pearch "$TOK")" = 64aa ]; then
-            echo "OK  @anush008/tokenizers-win32-arm64-msvc packaged (ARM64)"
-          else
-            echo "::error::@anush008/tokenizers-win32-arm64-msvc missing/!ARM64 at $TOK"; fail=1
+          if [ "$OK1" = "true" ]; then
+            echo "built_sha=$SHA1" >> "$GITHUB_OUTPUT"; echo "Build green on attempt 1 ($SHA1)."; exit 0
           fi
-          while IFS= read -r f; do
-            case "$f" in
-              *darwin*|*linux*|*musl*|*win32-ia32*|*win32-x64*|*win32_x64*|*win32_ia32*) continue ;;
-            esac
-            a="$(pearch "$f" 2>/dev/null || echo '')"
-            if echo "$f" | grep -Eqi 'win32.?arm64|win32_arm64'; then
-              [ "$a" = 64aa ] || { echo "::error::win32-arm64 native not ARM64: $f (0x$a)"; fail=1; }
-            fi
-          done < <(find "$APP/resources" -name '*.node' 2>/dev/null)
-          [ "$fail" = 0 ] || { echo "::error::packaged native closure verification FAILED"; exit 1; }
-          echo "Packaged native closure verified (ARM64)."
-
-      - name: Resolve installer asset
-        id: asset
-        if: inputs.publish
-        shell: bash
-        run: |
-          set -euo pipefail
-          A=$(ls apps/desktop/release/*arm64*.exe 2>/dev/null | head -1 || true)
-          [ -n "$A" ] || A=$(ls apps/desktop/release/*.exe 2>/dev/null | grep -v blockmap | head -1 || true)
-          [ -n "$A" ] || { echo "::error::no .exe produced in apps/desktop/release/"; ls -la apps/desktop/release || true; exit 1; }
-          echo "path=$A" >> "$GITHUB_OUTPUT"
-          echo "Installer: $A"
-
-      - name: Publish GitHub Release
-        if: inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
-          ASSET="${{ steps.asset.outputs.path }}"
-          # ONE version per upstream release: desktop-v<version>, rebuilt in
-          # place. Delete + recreate so the tag always points at the latest
-          # build of that version. No beta / prerelease split.
-          TAG="desktop-v${V}"
-          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          git push --delete origin "refs/tags/$TAG" 2>/dev/null || true
-          # (NIGHTLY-INTEGRITY) Tag the exact checked-out commit, then prove
-          # the remote tag landed on it. The tag is pushed via GIT first and
-          # the release created on the EXISTING tag: `gh release create
-          # --target <sha>` uses the releases API, and GITHUB_TOKEN may only
-          # create a tag there when the sha is a CURRENT BRANCH HEAD — a push
-          # to main during a long build strips that status from the built
-          # commit and the create 403s ("Resource not accessible by
-          # integration", run 29566648149). A plain git tag push has no such
-          # restriction. (Without explicit tagging at all, gh would tag the
-          # default-branch tip — during a nightly that's main BEFORE advance,
-          # one commit behind the candidate the installer was built from.)
-          BUILT_SHA=$(git rev-parse HEAD)
-          git push origin "$BUILT_SHA:refs/tags/$TAG"
-          gh release create "$TAG" "$ASSET" \
-            --repo "${{ github.repository }}" \
-            --title "Superset $V (Windows ARM64)" \
-            --notes "Native **Windows ARM64** build of the vendored superset-sh/superset fork (version $V). Built deterministically from committed source (no AI in the build). Installer is **unsigned**. Not the official superset-sh distribution."
-          REMOTE_TAG_SHA=$(git ls-remote origin "refs/tags/$TAG" | cut -f1)
-          if [ "$REMOTE_TAG_SHA" != "$BUILT_SHA" ]; then
-            echo "::error::release tag $TAG points at ${REMOTE_TAG_SHA:-<missing>}, expected built commit $BUILT_SHA"
-            exit 1
+          if [ "$OK2" = "true" ]; then
+            echo "built_sha=$SHA2" >> "$GITHUB_OUTPUT"; echo "Build green on attempt 2 after 1 AI repair ($SHA2)."; exit 0
           fi
-          echo "Release $TAG published at $BUILT_SHA."
+          if [ "$OK3" = "true" ]; then
+            echo "built_sha=$SHA3" >> "$GITHUB_OUTPUT"; echo "Build green on attempt 3 after 2 AI repairs ($SHA3)."; exit 0
+          fi
+          echo "::error::(BUILD-REPAIR) build failed after all attempts (repair-1: $R1, repair-2: $R2). See the failed build/repair jobs above."
+          exit 1

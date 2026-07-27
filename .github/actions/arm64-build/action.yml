@@ -1,0 +1,134 @@
+name: ARM64 build steps
+description: >
+  All build/package/verify/publish steps for the Windows ARM64 installer.
+  Lives under .github/actions (NOT .github/workflows) deliberately: this file
+  is part of the checked-out tree, so the (BUILD-REPAIR) AI loop can fix it
+  mid-run and the next attempt picks the fix up — workflow YAML is frozen once
+  a run starts and GITHUB_TOKEN cannot push it. Keep every step here a thin
+  shim over scripts/ where possible.
+inputs:
+  publish:
+    description: "'true' to publish the desktop-v<version> Release"
+    required: false
+    default: 'false'
+  gh-token:
+    description: token for gh release download/create + tag push
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Read app version
+      shell: bash
+      run: |
+        V=$(node -p "require('./apps/desktop/package.json').version")
+        [ -n "$V" ] || { echo "::error::could not read apps/desktop/package.json version"; exit 1; }
+        echo "App version: $V"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Setup Bun (native Windows ARM64)
+      uses: oven-sh/setup-bun@v2
+      with:
+        # 1.3.14 = last stable Zig release; first native win-arm64 shipped in 1.3.10.
+        bun-version: '1.3.14'
+
+    - name: Verify Bun is native ARM64 (fail fast, fall back to official zip)
+      shell: pwsh
+      run: ./scripts/verify-bun-arm64.ps1
+
+    - name: Install dependencies (frozen lockfile)
+      shell: bash
+      env:
+        # Skip the flaky @electron/rebuild postinstall (install:deps). On
+        # win-arm64 it can't build native trustedDeps; the deterministic
+        # Bun-store payload repair (materialize-native-closure) handles them.
+        SUPERSET_POSTINSTALL_RUNNING: '1'
+      run: |
+        set -euo pipefail
+        # The committed bun.lock is the source of truth and is consistent with
+        # our pinned package.json (node-pty @lydell alias, mastra pins), so a
+        # FROZEN install uses the locked versions and never re-resolves — which
+        # also sidesteps bunfig's minimumReleaseAge gate (locked versions are
+        # not age-checked). If this fails the lock drifted from package.json:
+        # regenerate it (bun install --lockfile-only) and recommit.
+        bun install --frozen-lockfile
+
+    # (REFERR-GATE) Fail on cannot-find-name diagnostics ONLY (TS2304/2552/
+    # 2662/2663/18004) — bare identifiers esbuild bundles fine but that throw
+    # ReferenceError at runtime. NOT a full type gate: the tree's known type
+    # debt has zero of these codes and stays allowed.
+    - name: ReferenceError-class typecheck gate
+      shell: bash
+      run: node scripts/check-dangerous-diagnostics.mjs
+
+    - name: Generate file icons
+      shell: bash
+      working-directory: apps/desktop
+      run: bun run generate:icons
+
+    - name: Build app (electron-vite / esbuild)
+      shell: bash
+      working-directory: apps/desktop
+      run: bun run compile:app
+
+    - name: Verify renderer bundle guards (screenReaderMode)
+      shell: bash
+      working-directory: apps/desktop
+      run: bash ../../scripts/verify-renderer-guards.sh
+
+    - name: Fetch native prebuilds + materialize win-arm64 closure
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+      run: bash scripts/fetch-native-prebuilds.sh
+
+    - name: Prepare native modules (ARM64 target)
+      shell: bash
+      working-directory: apps/desktop
+      env:
+        TARGET_ARCH: arm64
+        TARGET_PLATFORM: win32
+      run: bun run copy:native-modules
+
+    - name: Validate native runtime (ARM64 fail-fast gate)
+      shell: bash
+      env:
+        TARGET_ARCH: arm64
+        TARGET_PLATFORM: win32
+      run: |
+        set -euo pipefail
+        bash scripts/materialize-native-closure.sh
+        cd apps/desktop
+        bun run validate:native-runtime
+
+    - name: Build Windows ARM64 installer
+      shell: bash
+      working-directory: apps/desktop
+      env:
+        CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        # native-keymap etc. use V8 APIs Electron 40 deprecated; MSVC C4996
+        # under warnings-as-errors fails node-gyp. /wd4996 disables just that
+        # warning for all native rebuilds (deterministic; runtime is fine).
+        CL: '/wd4996'
+      run: |
+        set -euo pipefail
+        npx electron-builder --win --arm64 --publish never --config electron-builder.ts
+        echo "--- release dir ---"
+        ls -la release || true
+
+    - name: Verify packaged native closure (ARM64 fail-fast gate)
+      shell: bash
+      working-directory: apps/desktop
+      run: bash ../../scripts/verify-packaged-natives.sh
+
+    - name: Publish GitHub Release
+      shell: bash
+      env:
+        PUBLISH: ${{ inputs.publish }}
+        GH_TOKEN: ${{ inputs.gh-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: bash scripts/publish-arm64-release.sh

@@ -16,14 +16,14 @@ name: Nightly upstream merge
 # baseline untouched -> recovery loop.
 #
 # AI cost scales with the UPSTREAM delta per release, NOT with how large the fork
-# grows. The build itself stays 100% AI-free.
-#
-# NOTE: schedule only fires from the DEFAULT branch, so this is dormant until the
-# fork-baseline branch is promoted to main.
+# grows. The build is deterministic but SELF-REPAIRING: a failed attempt goes to
+# a bounded (BUILD-REPAIR) Opus 5 loop (max 2 repairs / 3 attempts) that pushes
+# fixes to the candidate branch; every deterministic gate re-runs on the
+# repaired tree. See build-arm64.yml.
 
 on:
   schedule:
-    - cron: '0 5 * * *' # 05:00 UTC daily
+    - cron: '13 2 * * *' # ~02:13 UTC daily (off-hour minute: on-the-hour crons queue for hours on GitHub's shared scheduler)
   workflow_dispatch:
     inputs:
       force_tag:
@@ -41,6 +41,7 @@ on:
 
 permissions:
   contents: write
+  actions: read # build-arm64.yml repair jobs download their run's failed-job logs
 
 # (NIGHTLY-INTEGRITY) Never let two nightly instances interleave: an overlapping
 # schedule + manual dispatch can delete/replace the mutable candidate branch
@@ -638,6 +639,10 @@ jobs:
       # branch mutation between jobs.
       ref: ${{ needs.merge.outputs.sha }}
       publish: true
+      # (BUILD-REPAIR) AI repairs land on the candidate; advance verifies the
+      # built sha descends from the gated merge commit before touching main.
+      repair_branch: ${{ needs.merge.outputs.candidate }}
+    secrets: inherit
 
   advance:
     needs: [merge, build]
@@ -648,19 +653,33 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # (BUILD-REPAIR) a repair commit may touch .github/workflows; pushing
+          # that to main needs the workflow-scoped PAT. Falls back to
+          # GITHUB_TOKEN when no workflow files changed.
+          token: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
       - name: Fast-forward main to the verified candidate + clean up
         shell: bash
         run: |
           set -euo pipefail
           CAND='${{ needs.merge.outputs.candidate }}'
           SHA='${{ needs.merge.outputs.sha }}'
+          BUILT='${{ needs.build.outputs.built_sha }}'
+          [ -n "$BUILT" ] || { echo "::error::build reported success but no built_sha output — refusing to advance."; exit 1; }
           git fetch origin "$CAND"
-          # (NIGHTLY-INTEGRITY) advance ONLY the commit that was gated + built.
-          if [ "$(git rev-parse FETCH_HEAD)" != "$SHA" ]; then
-            echo "::error::candidate $CAND moved (expected $SHA, found $(git rev-parse FETCH_HEAD)) — another run interfered; refusing to advance main."
+          # (NIGHTLY-INTEGRITY) advance ONLY what was gated + built: the
+          # candidate tip must be exactly the sha the successful attempt built,
+          # and that sha must descend from the gated merge commit (equal when
+          # no (BUILD-REPAIR) rounds ran).
+          if [ "$(git rev-parse FETCH_HEAD)" != "$BUILT" ]; then
+            echo "::error::candidate $CAND tip is $(git rev-parse FETCH_HEAD), expected built sha $BUILT — another run interfered; refusing to advance main."
             exit 1
           fi
-          # The candidate is main + the merge commit, so this is a fast-forward.
-          git push origin "$SHA:refs/heads/main"
+          if ! git merge-base --is-ancestor "$SHA" "$BUILT"; then
+            echo "::error::built sha $BUILT does not descend from the gated merge commit $SHA — refusing to advance main."
+            exit 1
+          fi
+          # The candidate is main + the merge commit (+ any repair commits), so
+          # this is a fast-forward.
+          git push origin "$BUILT:refs/heads/main"
           git push origin --delete "$CAND"
-          echo "Baseline advanced to ${{ needs.merge.outputs.newtag }}; Release published by the build job."
+          echo "Baseline advanced to ${{ needs.merge.outputs.newtag }} at $BUILT; Release published by the build job."
