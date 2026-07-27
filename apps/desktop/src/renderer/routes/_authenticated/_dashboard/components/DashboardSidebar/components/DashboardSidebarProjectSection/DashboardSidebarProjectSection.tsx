@@ -2,7 +2,6 @@ import type {
 	DraggableAttributes,
 	DraggableSyntheticListeners,
 } from "@dnd-kit/core";
-import { cn } from "@superset/ui/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo } from "react";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
@@ -134,7 +133,7 @@ export function DashboardSidebarProjectSection({
 				onRemoveFromSidebar={confirmRemoveFromSidebar}
 				onRename={startRename}
 			>
-				<div className={cn("border-b border-border last:border-b-0")}>
+				<div className="mt-1 first:mt-0">
 					<DashboardSidebarCollapsedProjectContent
 						projectId={project.id}
 						projectName={project.name}
@@ -152,7 +151,7 @@ export function DashboardSidebarProjectSection({
 	}
 
 	return (
-		<div className={cn("border-b border-border last:border-b-0")}>
+		<div className="mt-1 first:mt-0">
 			<DashboardSidebarProjectContextMenu
 				isPinned={project.isPinned}
 				onTogglePin={() => togglePinProject(project.id)}

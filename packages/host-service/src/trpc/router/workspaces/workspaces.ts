@@ -10,13 +10,7 @@ import {
 	readMultiRepoConfig,
 } from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
-import {
-	asRemoteRef,
-	type ResolvedRef,
-	resolveDefaultBranchName,
-	resolveRef,
-	resolveUpstream,
-} from "../../../runtime/git/refs";
+import { type ResolvedRef, resolveRef } from "../../../runtime/git/refs";
 import type { HostServiceContext } from "../../../types";
 import {
 	getLocalWorkspace,
@@ -59,7 +53,7 @@ import {
 	PrBranchConflictError,
 } from "../workspace-creation/utils/pr-branch-materialize";
 import { derivePrLocalBranchName } from "../workspace-creation/utils/pr-branch-name";
-import { resolveStartPoint } from "../workspace-creation/utils/resolve-start-point";
+import { resolveNewBranchStartPoint } from "../workspace-creation/utils/resolve-new-branch-start-point";
 import { deduplicateBranchName } from "../workspace-creation/utils/sanitize-branch";
 
 /**
@@ -254,65 +248,11 @@ interface BranchSourcePlan {
 	usedExistingBranch: boolean;
 }
 
-/**
- * Resolve the start point a *new* branch should fork from. No
- * `resolveRef(branch)` check — callers are responsible for guaranteeing
- * the branch name is fresh (e.g. via `deduplicateBranchName`). Useful
- * when the branch name is being chosen at the same time the start point
- * is resolved (auto-gen + AI naming path), so it can run in parallel
- * with the LLM call.
- */
-export async function resolveNewBranchStartPoint(
-	git: GitClient,
-	baseBranch: string | undefined,
-): Promise<ResolvedRef> {
-	let startPoint = await resolveStartPoint(git, baseBranch);
-
-	// Fork from upstream of the default branch when the user didn't specify
-	// a base — locals are often stale.
-	if (startPoint.kind === "local") {
-		const defaultBranchName = await resolveDefaultBranchName(git);
-		if (startPoint.shortName === defaultBranchName) {
-			const upstream = await resolveUpstream(git, defaultBranchName);
-			if (upstream) {
-				const remoteRef = asRemoteRef(upstream.remote, upstream.remoteBranch);
-				// `--quiet` confuses simple-git's `raw` (resolves on missing
-				// refs with empty stdout). Drop it; verify a sha was printed.
-				const remoteExists = await git
-					.raw(["rev-parse", "--verify", `${remoteRef}^{commit}`])
-					.then((out) => /^[0-9a-f]{40,}/.test(out.trim()))
-					.catch(() => false);
-				if (remoteExists) {
-					startPoint = {
-						kind: "remote-tracking",
-						fullRef: remoteRef,
-						shortName: upstream.remoteBranch,
-						remote: upstream.remote,
-						remoteShortName: `${upstream.remote}/${upstream.remoteBranch}`,
-					};
-				}
-			}
-		}
-	}
-
-	if (startPoint.kind === "remote-tracking") {
-		try {
-			await git.fetch([
-				startPoint.remote,
-				startPoint.shortName,
-				"--quiet",
-				"--no-tags",
-			]);
-		} catch (err) {
-			console.warn(
-				`[workspaces.create] fetch ${startPoint.remoteShortName} failed:`,
-				err,
-			);
-		}
-	}
-
-	return startPoint;
-}
+// (MULTI-REPO WORKSPACE) Upstream moved this helper into
+// workspace-creation/utils/resolve-new-branch-start-point (and generalised it to
+// any base branch with an upstream). Re-export it here so fork callers that
+// import it from this module (multi-repo-create) keep working.
+export { resolveNewBranchStartPoint };
 
 async function planBranchSource(
 	git: GitClient,

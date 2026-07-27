@@ -68,7 +68,10 @@ export function DashboardSidebarWorkspaceIcon({
 	isNonGit = false,
 }: DashboardSidebarWorkspaceIconProps) {
 	const overlayPosition = OVERLAY_POSITION[variant];
-	const iconColor = isActive ? "text-foreground" : "text-muted-foreground";
+	const iconColor = cn(
+		"text-muted-foreground",
+		isActive ? "opacity-100" : "opacity-80",
+	);
 	// The overlay slot is shared: a real status badge wins; the non-git glyph
 	// only fills it when there's no status to show.
 	const overlayStatus =

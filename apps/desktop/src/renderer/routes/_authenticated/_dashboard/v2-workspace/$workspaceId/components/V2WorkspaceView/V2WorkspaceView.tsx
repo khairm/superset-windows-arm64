@@ -1,13 +1,23 @@
 import { Workspace } from "@superset/panes";
 import { workspaceTrpc } from "@superset/workspace-client";
+import { useMatchRoute } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
+import { ZoomStable } from "renderer/components/ZoomStable";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
+import { useZoomFactor } from "renderer/hooks/useZoomFactor";
 import { useHotkey } from "renderer/hotkeys";
+import { electronTrpc } from "renderer/lib/electron-trpc";
+import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
+import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
 import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { getV2NotificationSourcesForTab } from "renderer/stores/v2-notifications";
+import {
+	COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
+	useWorkspaceSidebarStore,
+} from "renderer/stores/workspace-sidebar-state";
 import { useWorkspace } from "../../../providers/WorkspaceProvider";
 import { useBrowserShellInteractionPassthrough } from "../../hooks/useBrowserShellInteractionPassthrough";
 import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
@@ -251,6 +261,30 @@ function V2WorkspaceCenter({
 		void workspaceRun.toggleWorkspaceRun();
 	});
 
+	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
+	// Default to Mac while loading so window controls don't flash in.
+	const isMac = platform === undefined || platform === "darwin";
+	const zoomFactor = useZoomFactor();
+	const matchRoute = useMatchRoute();
+	// This view is ALSO mounted off-route by the Kanban collapse-split
+	// (V2WorkspaceMount), where the dashboard layout still renders the TopBar —
+	// so mirror the layout's own condition instead of assuming the route.
+	const onV2WorkspaceRoute = !!matchRoute({
+		to: "/v2-workspace/$workspaceId",
+		fuzzy: true,
+	});
+	const isSidebarPanelOpen = useWorkspaceSidebarStore((s) => s.isOpen);
+	const isSidebarPanelCollapsed = useWorkspaceSidebarStore((s) =>
+		s.isCollapsed(),
+	);
+	// On the v2 workspace route the layout hides the TopBar whenever the sidebar
+	// is open. An EXPANDED sidebar hosts the traffic-light pad and the
+	// sidebar/nav controls in its own header; a COLLAPSED rail is too narrow, so
+	// the tab bar takes over that chrome — without this the collapsed rail has no
+	// SidebarToggle at all and cannot be expanded again.
+	const tabBarHostsChrome =
+		onV2WorkspaceRoute && isSidebarPanelOpen && isSidebarPanelCollapsed;
+
 	const workspaceRunButton = (
 		<V2WorkspaceRunButton
 			projectId={workspace.projectId}
@@ -310,6 +344,33 @@ function V2WorkspaceCenter({
 									onToggleShowPresetsBar={setShowPresetsBar}
 								/>
 							)}
+							renderTabBarLeading={
+								tabBarHostsChrome
+									? () => (
+											<div className="flex h-full items-center">
+												{isMac && (
+													<div
+														className="drag h-full shrink-0"
+														style={{
+															width: `${Math.max(
+																80 / zoomFactor -
+																	COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
+																0,
+															)}px`,
+														}}
+													/>
+												)}
+												<ZoomStable
+													enabled={isMac}
+													className="flex items-center gap-1.5 px-1"
+												>
+													<SidebarToggle />
+													<NavigationControls />
+												</ZoomStable>
+											</div>
+										)
+									: undefined
+							}
 							renderTabBarTrailing={() => (
 								<>
 									<WorkspaceBranchLabel branch={workspace.branch} />

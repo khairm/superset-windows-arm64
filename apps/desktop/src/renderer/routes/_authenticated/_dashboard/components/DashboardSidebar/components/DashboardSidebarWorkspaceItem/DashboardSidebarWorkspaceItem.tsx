@@ -16,7 +16,6 @@ import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
 import { DashboardSidebarWorkspaceContextMenu } from "./components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu";
-import { DashboardSidebarWorkspaceDetails } from "./components/DashboardSidebarWorkspaceDetails";
 import { useDashboardSidebarWorkspaceItemActions } from "./hooks/useDashboardSidebarWorkspaceItemActions";
 
 interface DashboardSidebarWorkspaceItemProps {
@@ -153,12 +152,10 @@ export function DashboardSidebarWorkspaceItem({
 				onMouseLeave={handleMouseLeave}
 				className="relative flex w-full justify-center"
 			>
-				{(accentColor || isActive) && (
+				{accentColor && (
 					<div
 						className="absolute inset-y-0 left-0 w-0.5"
-						style={{
-							backgroundColor: accentColor ?? "var(--color-foreground)",
-						}}
+						style={{ backgroundColor: accentColor }}
 					/>
 				)}
 				<DashboardSidebarCollapsedWorkspaceButton
@@ -254,11 +251,6 @@ export function DashboardSidebarWorkspaceItem({
 			ref={rowRef}
 			onMouseEnter={handleMouseEnter}
 			onMouseLeave={handleMouseLeave}
-			// Hover/focus scope for the details strip below the row: it swaps its
-			// summary cluster for the full badges while the item is hovered, or
-			// while this is the active workspace.
-			data-active={isActive || undefined}
-			className="group/item"
 		>
 			<DashboardSidebarExpandedWorkspaceRow
 				workspace={workspace}
@@ -295,15 +287,7 @@ export function DashboardSidebarWorkspaceItem({
 				onRenameValueChange={setRenameValue}
 				onSubmitRename={submitRename}
 				onCancelRename={cancelRename}
-			>
-				{!isPending && (
-					<DashboardSidebarWorkspaceDetails
-						workspaceId={id}
-						isInSection={isInSection}
-						onClick={handleClick}
-					/>
-				)}
-			</DashboardSidebarExpandedWorkspaceRow>
+			/>
 		</div>
 	);
 
