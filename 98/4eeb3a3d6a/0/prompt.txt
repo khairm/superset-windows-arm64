@@ -39,3 +39,7 @@
 ---
 
 .
+
+---
+
+The run failed again last night - why isn't it set up so that the AI workflow can handle anything thrown at it - make sure its an opus 5 agent set up in the workflow too
