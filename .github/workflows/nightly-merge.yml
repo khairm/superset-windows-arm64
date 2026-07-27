@@ -633,6 +633,9 @@ jobs:
   build:
     needs: merge
     if: needs.merge.outputs.should_build == 'true'
+    # FOOTGUN: never add continue-on-error to THIS job — advance's implicit
+    # success() gate reads this job's real result; continue-on-error would
+    # mask a red build as success and let advance ship it.
     uses: ./.github/workflows/build-arm64.yml
     with:
       # (NIGHTLY-INTEGRITY) build the exact merge commit, immune to candidate-

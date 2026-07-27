@@ -26,9 +26,19 @@ if (lines.length === 0) {
 let missing = 0;
 for (const line of lines) {
 	const tab = line.indexOf("\t");
-	const tok = tab === -1 ? line : line.slice(0, tab);
-	const root = tab === -1 ? "." : line.slice(tab + 1).trim() || ".";
-	if (!tok) continue;
+	// Parity with the awk gate in nightly-merge.yml: a tab-less line there
+	// yields an empty root and reports MISSING — fail loud here too rather
+	// than silently defaulting to repo root.
+	if (tab === -1) {
+		console.error(`::error::malformed FEATURES.md marker line (no tab separator): '${line}'`);
+		process.exit(1);
+	}
+	const tok = line.slice(0, tab);
+	const root = line.slice(tab + 1).trim();
+	if (!tok || !root) {
+		console.error(`::error::malformed FEATURES.md marker line (empty token or root): '${line}'`);
+		process.exit(1);
+	}
 	let found = false;
 	try {
 		// -r recursive, -q quiet, -s no fs errors, -F fixed string

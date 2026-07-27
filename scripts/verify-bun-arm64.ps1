@@ -2,6 +2,12 @@
 # aarch64 zip when setup-bun handed us an emulated binary. Extracted from
 # build-arm64.yml so the CI repair AI can fix it mid-run (workflow YAML is
 # frozen once a run starts; repo files are not).
+#
+# FAILURE PROPAGATION: a nested .ps1's `exit 1` does NOT fail the parent pwsh
+# by itself. This script only fails the step because the Actions runner wraps
+# pwsh steps with $ErrorActionPreference='stop' (Write-Error becomes
+# terminating) and appends `exit $LASTEXITCODE` (runner ADR 0277). If this is
+# ever invoked outside a runner step, check $LASTEXITCODE at the call site.
 function Get-PEMachine($p){ $fs=[IO.File]::OpenRead($p); $br=New-Object IO.BinaryReader($fs); $fs.Position=0x3C; $pe=$br.ReadInt32(); $fs.Position=$pe+4; $m=$br.ReadUInt16(); $br.Close(); return $m }
 $bun = (Get-Command bun).Source
 $m = Get-PEMachine $bun

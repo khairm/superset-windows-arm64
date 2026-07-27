@@ -135,6 +135,17 @@ Unsigned installer (SmartScreen warns); no full type/test gate (type debt is
 accepted, `(REFERR-GATE)` only); an unattended nightly can publish a Release —
 the gate stack shrinks but does not eliminate the
 semantically-wrong-but-compiling window, so e2e-test before relying on one.
+`(BUILD-REPAIR)` widens that window: an unattended repair agent can push code
+that passes every deterministic gate yet is semantically wrong or (via
+prompt-injected build logs) malicious — containment is credential-less agent
+steps, trusted-blob validation, version/FEATURES.md freezes, and tip-pinning,
+not semantic review. A direct build dispatch racing a just-started nightly
+fails that nightly loudly (non-ff advance) and self-heals next night. Repair
+commits on a nightly candidate do NOT persist across nights: an aborted
+nightly's candidate is deleted and re-derived next run, so a break needing
+more than 2 repairs re-derives them from zero each night until fixed locally.
+Gate scripts are frozen against repair edits — a genuine bug in a gate script
+is deliberately NOT self-repairable (fail loud, maintainer fixes).
 
 [superset-sh/superset]: https://github.com/superset-sh/superset
 

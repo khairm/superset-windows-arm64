@@ -57,6 +57,7 @@ permissions:
 jobs:
   build-attempt-1:
     runs-on: windows-11-arm
+    timeout-minutes: 180
     # Failures are handled by the repair loop; verdict is the single source of
     # truth for the workflow result. (Job-level continue-on-error masks the
     # failure in `needs.*.result`, so the loop keys off the `ok` OUTPUT — only
@@ -72,6 +73,22 @@ jobs:
       - name: Configure git long paths (Windows MAX_PATH)
         shell: bash
         run: git config --system core.longpaths true || git config --global core.longpaths true
+      # A direct dispatch's repair loop pushes to a live branch; racing a
+      # nightly's candidate/advance would fail that nightly loudly (non-ff) —
+      # refuse up front instead. Only guards direct dispatches: when called
+      # from nightly-merge, github.workflow is the CALLER's name.
+      - name: Direct-dispatch mutex — refuse while a nightly is active
+        if: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Build Windows ARM64 (vendored fork)' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ACTIVE=$(gh run list --repo "${{ github.repository }}" --workflow nightly-merge.yml --limit 50 --json databaseId,status --jq '[.[] | select(.status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="requested" or .status=="pending")] | length')
+          if [ "$ACTIVE" != "0" ]; then
+            echo "::error::(BUILD-REPAIR) a nightly-merge run is in progress/queued — a direct build's repairs could race its candidate/advance. Retry after it finishes."
+            exit 1
+          fi
       - name: Checkout fork source
         uses: actions/checkout@v5
         with:
@@ -100,17 +117,36 @@ jobs:
       repaired: ${{ steps.repair.outputs.repaired }}
       sha: ${{ steps.repair.outputs.sha }}
     steps:
+      # persist-credentials:false — the AI step must run credential-less
+      # (build logs are untrusted input to it); the push step uses an
+      # ephemeral URL-embedded token instead.
       - name: Checkout repair branch
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.repair_branch || github.ref_name }}
           fetch-depth: 50
-          token: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
+          persist-credentials: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: AI repair (round 1)
+      - name: Collect failure evidence
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ needs.build-attempt-1.outputs.sha }}
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+        run: bash scripts/ci-repair.sh collect
+      - name: AI repair round 1 (credential-less)
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ROUND: '1'
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+        run: bash scripts/ci-repair.sh agent
+      - name: Validate + push repair
         id: repair
         shell: bash
         env:
@@ -118,15 +154,15 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           ROUND: '1'
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
+          PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: bash scripts/ci-repair.sh
+        run: bash scripts/ci-repair.sh push
 
   build-attempt-2:
     needs: [build-attempt-1, repair-1]
     if: ${{ !cancelled() && needs.repair-1.outputs.repaired == 'true' }}
     runs-on: windows-11-arm
+    timeout-minutes: 180
     continue-on-error: true
     outputs:
       ok: ${{ steps.done.outputs.ok }}
@@ -168,12 +204,28 @@ jobs:
         with:
           ref: ${{ inputs.repair_branch || github.ref_name }}
           fetch-depth: 50
-          token: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
+          persist-credentials: false
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: AI repair (round 2)
+      - name: Collect failure evidence
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ needs.build-attempt-2.outputs.sha }}
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+        run: bash scripts/ci-repair.sh collect
+      - name: AI repair round 2 (credential-less)
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ROUND: '2'
+          REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+        run: bash scripts/ci-repair.sh agent
+      - name: Validate + push repair
         id: repair
         shell: bash
         env:
@@ -181,15 +233,15 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           ROUND: '2'
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
-          GH_TOKEN: ${{ github.token }}
+          PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: bash scripts/ci-repair.sh
+        run: bash scripts/ci-repair.sh push
 
   build-attempt-3:
     needs: [repair-2]
     if: ${{ !cancelled() && needs.repair-2.outputs.repaired == 'true' }}
     runs-on: windows-11-arm
+    timeout-minutes: 180
     # Final attempt: no continue-on-error; its failure is real and terminal.
     outputs:
       ok: ${{ steps.done.outputs.ok }}

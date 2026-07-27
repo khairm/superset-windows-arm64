@@ -120,6 +120,7 @@ writeKanbanBackup	apps/desktop/src
 (KANBAN-TOGGLE)	apps/desktop/src/renderer
 (KANBAN-HOST-SOURCE)	apps/desktop/src/renderer
 (BUILD-REPAIR)	scripts
+(BUILD-REPAIR)	.github
 (SUBTOOL-RED)	apps/desktop/src/main
 (ASYNC-TOOL-RED)	apps/desktop/src/main
 (UNTAGGED-BG-RED)	apps/desktop/src/main
