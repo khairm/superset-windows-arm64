@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "e68354bbd808",
+  "strategy": "manual-commit",
+  "branch": "ci-repair-drill",
+  "checkpoints_count": 6,
+  "files_touched": [
+    ".github/actions/arm64-build/action.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e6/8354bbd808/0/metadata.json",
+      "transcript": "/e6/8354bbd808/0/full.jsonl",
+      "content_hash": "/e6/8354bbd808/0/content_hash.txt",
+      "prompt": "/e6/8354bbd808/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4,
+    "cache_creation_tokens": 1701,
+    "cache_read_tokens": 508289,
+    "output_tokens": 1649,
+    "api_call_count": 2
+  }
+}
