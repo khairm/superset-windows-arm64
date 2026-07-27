@@ -1,0 +1,124 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "40fe0a89217a",
+  "session_id": "f7713565-e464-48c1-a066-92a246fadb31",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T21:46:52.0194833Z",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "save_step_count": 6,
+  "files_touched": [
+    ".github/workflows/build-arm64.yml",
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md",
+    "FEATURES.md",
+    "scripts/check-feature-markers.mjs",
+    "scripts/ci-repair.sh",
+    "scripts/verify-bun-arm64.ps1"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "2dd67fe6eca9",
+  "checkpoint_transcript_start": 1607,
+  "transcript_lines_at_start": 1607,
+  "token_usage": {
+    "input_tokens": 40,
+    "cache_creation_tokens": 65099,
+    "cache_read_tokens": 4832394,
+    "output_tokens": 40704,
+    "api_call_count": 22
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_011xuE4jWvNqSViBEsyJw5iy",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "2dd67fe6eca9",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 563,
+        "end": 564,
+        "entry_ids": [
+          "4c3103ae-1da0-41e9-8b50-a8235be16f71"
+        ],
+        "tool_use_id": "toolu_011xuE4jWvNqSViBEsyJw5iy"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_011xuE4jWvNqSViBEsyJw5iy"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 26
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T21:46:51.8768949Z",
+    "agent_lines": 160,
+    "agent_removed": 111,
+    "human_added": 101,
+    "human_modified": 191,
+    "human_removed": 0,
+    "total_committed": 452,
+    "total_lines_changed": 563,
+    "agent_percentage": 48.13499111900533,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1680,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1873,
+      "agent_lines_removed": 1791
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
