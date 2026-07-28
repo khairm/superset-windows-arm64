@@ -1,0 +1,142 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "8599574b7ad7",
+  "session_id": "edb8e93d-6808-4d27-b954-1c08ed8d43ca",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-28T23:47:04.2335167Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "11255f6017da",
+  "token_usage": {
+    "input_tokens": 139,
+    "cache_creation_tokens": 219102,
+    "cache_read_tokens": 11756800,
+    "output_tokens": 78792,
+    "api_call_count": 74
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01UNzRYiSkxwVxFNSWvUnRws",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "call-another-llm"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "11255f6017da",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 15,
+        "end": 16,
+        "entry_ids": [
+          "d0a84dc0-60d5-40ee-bbf3-64a07df37bc7"
+        ],
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: call-another-llm",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-28T23:47:04.179012Z",
+    "agent_lines": 0,
+    "agent_removed": 1,
+    "human_added": 82,
+    "human_modified": 162,
+    "human_removed": 0,
+    "total_committed": 241,
+    "total_lines_changed": 245,
+    "agent_percentage": 0.40816326530612246,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 7560,
+      "user_lines_removed": 1680,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".playwright-mcp/page-2026-07-28T14-22-07-887Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-22-09-262Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-10-823Z.yml": 239,
+        ".playwright-mcp/page-2026-07-28T14-22-41-958Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-44-571Z.yml": 251,
+        ".playwright-mcp/page-2026-07-28T14-24-40-339Z.yml": 375,
+        ".playwright-mcp/page-2026-07-28T14-25-34-421Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-25-48-018Z.yml": 290,
+        ".playwright-mcp/page-2026-07-28T14-26-00-537Z.yml": 354,
+        ".playwright-mcp/page-2026-07-28T14-26-15-949Z.yml": 343,
+        ".playwright-mcp/page-2026-07-28T14-26-41-530Z.yml": 207,
+        ".playwright-mcp/page-2026-07-28T14-30-32-057Z.yml": 139,
+        ".playwright-mcp/page-2026-07-28T14-32-25-333Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-33-04-783Z.yml": 175,
+        ".playwright-mcp/page-2026-07-28T14-33-36-589Z.yml": 380,
+        ".playwright-mcp/page-2026-07-28T14-34-19-891Z.yml": 163,
+        ".playwright-mcp/page-2026-07-28T14-38-36-788Z.yml": 354,
+        ".playwright-mcp/page-2026-07-28T15-31-48-878Z.yml": 375,
+        ".playwright-mcp/page-2026-07-28T15-32-51-380Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-06-649Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-17-718Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-49-745Z.yml": 101,
+        ".playwright-mcp/page-2026-07-28T15-36-00-608Z.yml": 99,
+        ".playwright-mcp/page-2026-07-28T15-36-24-754Z.yml": 368,
+        ".playwright-mcp/page-2026-07-28T15-37-51-400Z.yml": 657,
+        ".playwright-mcp/page-2026-07-28T15-41-00-657Z.yml": 272,
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      },
+      "user_removed_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
+    }
+  ]
+}
