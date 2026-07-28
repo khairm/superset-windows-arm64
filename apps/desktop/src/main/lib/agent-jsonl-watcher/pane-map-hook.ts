@@ -119,7 +119,11 @@ def _read_payload():
     if len(sys.argv) > 1:
         candidates.append(("argv[1]", sys.argv[1]))
     try:
-        raw = sys.stdin.read()
+        # (HOOK-STDIN-UTF8) Hook payloads are UTF-8, but text-mode stdin on
+        # Windows decodes with the locale code page (cp1252): any non-ASCII
+        # payload char mojibakes and downstream string matching silently
+        # fails. Always decode the raw bytes as UTF-8.
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace")
         if raw:
             stdin_bytes = len(raw.encode("utf-8", "replace"))
             candidates.append(("stdin", raw))
@@ -430,7 +434,29 @@ def _decision_log(terminal_id, session_id, event_type, reason):
 def _read_payload():
     candidates = []
     try:
-        raw = sys.stdin.read()
+        # (HOOK-STDIN-UTF8) UTF-8-decode the raw bytes: Windows text-mode
+        # stdin decodes cp1252 and mojibakes non-ASCII payload chars. Captured
+        # live 2026-07-28: a teammate background_tasks description's em-dash
+        # (U+2014, 3 UTF-8 bytes) arrived as 3 cp1252 chars, so the
+        # (TEAM-ENTRY-MATCH) prefix match against the correctly-decoded
+        # transcript prompt failed on that one entry forever -> the lead
+        # terminal's dot latched yellow with zero agents running. Strict
+        # decode first (payloads are harness-emitted JSON, always valid
+        # UTF-8); on the never-expected failure, log loud and fall back to
+        # replacement decoding so the hook still POSTs the lifecycle event.
+        data = sys.stdin.buffer.read()
+        try:
+            raw = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            try:
+                _log({
+                    "action": "payload-decode-error",
+                    "error": str(exc),
+                    "stdinBytes": len(data),
+                })
+            except Exception:
+                pass
+            raw = data.decode("utf-8", "replace")
         if raw:
             candidates.append(raw)
     except (OSError, ValueError):
@@ -1182,6 +1208,56 @@ def _team_entry_droppable(entry, state, prompts):
     return True
 
 
+def _team_debug_entry(terminal_id, entry, state, prompts, droppable):
+    # (TEAM-KEPT-DEBUG) One JSONL line per teammate bg entry per decision:
+    # the raw entry shape, its normalized match prefix, which ledger names
+    # prefix-match it and their states, and the drop verdict — so a stuck
+    # yellow names its culprit directly instead of an opaque "kept N".
+    # Best-effort: never raises (caller wraps too).
+    desc = str(entry.get("description") or "")
+    stripped = desc[: len(desc) - 3] if desc.endswith("...") else desc
+    prefix = _team_norm(stripped)
+    matches = []
+    for name, p in prompts.items():
+        if p and p.startswith(prefix):
+            matches.append(name + "=" + str(state.get(name)))
+    if droppable:
+        reason = "dropped"
+    elif len(prefix) < 12:
+        reason = "short-prefix"
+    elif not matches:
+        reason = "unmatched"
+    else:
+        reason = "matched-active"
+    log_dir = pathlib.Path.home() / ".superset" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "teammate-idle-debug.log"
+    try:
+        if log_path.stat().st_size > 2097152:
+            backup = log_dir / "teammate-idle-debug.log.1"
+            try:
+                if backup.exists():
+                    backup.unlink()
+            except Exception:
+                pass
+            log_path.rename(backup)
+    except Exception:
+        pass
+    rec = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "terminal": str(terminal_id),
+        "droppable": bool(droppable),
+        "reason": reason,
+        "prefix_len": len(prefix),
+        "prefix": prefix[:220],
+        "matches": matches,
+        "ledger_state": {str(k): str(v) for k, v in state.items()},
+        "entry": {str(k): str(v)[:300] for k, v in entry.items()},
+    }
+    with open(log_path, "a", encoding="utf-8") as h:
+        h.write(json.dumps(rec) + "\\n")
+
+
 def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=None):
     # (TEAMMATE-IDLE)(TEAM-ENTRY-MATCH) Returns bg_tasks with each unfinished
     # teammate-type entry dropped IFF the transcript ledger proves that
@@ -1222,12 +1298,16 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
                 droppable = _team_entry_droppable(t, state, prompts)
             except Exception:
                 droppable = False
+            try:
+                _team_debug_entry(terminal_id, t, state, prompts, droppable)
+            except Exception:
+                pass
             if droppable:
                 dropped += 1
                 continue
             kept += 1
         out.append(t)
-    if dropped and note_out is not None:
+    if (dropped or kept) and note_out is not None:
         try:
             note_out.append(
                 " [teammate-idle: dropped "
