@@ -1,0 +1,59 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0a8a9011ca05",
+  "session_id": "edb8e93d-6808-4d27-b954-1c08ed8d43ca",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-29T22:25:43.1407306Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "743d62e73723",
+  "checkpoint_transcript_start": 468,
+  "transcript_lines_at_start": 468,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01UNzRYiSkxwVxFNSWvUnRws",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "call-another-llm"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "743d62e73723",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 15,
+        "end": 16,
+        "entry_ids": [
+          "d0a84dc0-60d5-40ee-bbf3-64a07df37bc7"
+        ],
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: call-another-llm",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
