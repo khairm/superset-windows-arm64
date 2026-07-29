@@ -1,0 +1,1142 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "5f17b0328f50",
+  "session_id": "41b65f55-7b51-4cfd-82d1-d1d1eec49d91",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-29T15:46:06.0108212Z",
+  "branch": "main",
+  "checkpoints_count": 56,
+  "save_step_count": 56,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/main/lib/keep-awake/agent-activity.ts",
+    "apps/desktop/src/main/lib/keep-awake/companion-gate.test.ts",
+    "apps/desktop/src/main/lib/keep-awake/companion-gate.ts",
+    "apps/desktop/src/main/lib/keep-awake/index.ts",
+    "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts",
+    "apps/desktop/src/main/lib/keep-awake/keep-awake.ts",
+    "apps/desktop/src/main/windows/main.ts",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/PairDeviceDialog.tsx",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/components/QrCode/QrCode.tsx",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/components/QrCode/index.ts",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/index.ts",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/utils/encodeQrMatrix/encodeQrMatrix.ts",
+    "apps/desktop/src/renderer/components/PairDeviceDialog/utils/encodeQrMatrix/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/ExperimentalSettings.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/settings/utils/settings-search/settings-search.ts",
+    "packages/host-service/src/app.ts",
+    "packages/host-service/src/companion/access-jwt.ts",
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/audit.ts",
+    "packages/host-service/src/companion/config.ts",
+    "packages/host-service/src/companion/crypto.ts",
+    "packages/host-service/src/companion/device-store.ts",
+    "packages/host-service/src/companion/http.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/keys.ts",
+    "packages/host-service/src/companion/keystrokes.ts",
+    "packages/host-service/src/companion/lease.ts",
+    "packages/host-service/src/companion/pairing.ts",
+    "packages/host-service/src/companion/push.ts",
+    "packages/host-service/src/companion/question-store.ts",
+    "packages/host-service/src/companion/read-api.ts",
+    "packages/host-service/src/companion/registry.ts",
+    "packages/host-service/src/companion/types.ts",
+    "packages/host-service/src/companion/ws.ts",
+    "packages/host-service/src/serve.ts",
+    "packages/host-service/src/trpc/router/companion/companion.ts",
+    "packages/host-service/src/trpc/router/companion/index.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts",
+    "packages/host-service/src/trpc/router/notifications/index.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts",
+    "packages/host-service/src/trpc/router/router.ts",
+    "scripts/ci-repair.sh"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "51e0ef07f2ce",
+  "token_usage": {
+    "input_tokens": 950,
+    "cache_creation_tokens": 4419979,
+    "cache_read_tokens": 174657483,
+    "output_tokens": 562224,
+    "api_call_count": 490
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01JaU26L2HXKJprkVMXTRYAY",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "call-another-llm"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "51e0ef07f2ce",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 563,
+        "end": 564,
+        "entry_ids": [
+          "49db05d7-dfc0-4d77-aae4-6807bba3e438"
+        ],
+        "tool_use_id": "toolu_01JaU26L2HXKJprkVMXTRYAY"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01JaU26L2HXKJprkVMXTRYAY"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: call-another-llm",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01R85ktPczGGRbwgtNrSU7gj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "chrome-control"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "51e0ef07f2ce",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1128,
+        "end": 1129,
+        "entry_ids": [
+          "8ccdf9c0-eb3d-4afa-9984-8624e5c5a2aa"
+        ],
+        "tool_use_id": "toolu_01R85ktPczGGRbwgtNrSU7gj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01R85ktPczGGRbwgtNrSU7gj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: chrome-control",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01XcJB5cUobbfNtT9raXAKcM",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "51e0ef07f2ce",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 2401,
+        "end": 2402,
+        "entry_ids": [
+          "da1351b8-1f0f-42ed-991a-c25d58c7d734"
+        ],
+        "tool_use_id": "toolu_01XcJB5cUobbfNtT9raXAKcM"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01XcJB5cUobbfNtT9raXAKcM"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 56
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-29T15:46:05.6033489Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 63587,
+    "human_modified": 14484,
+    "human_removed": 0,
+    "total_committed": 63587,
+    "total_lines_changed": 78071,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 5337,
+      "user_lines_removed": 1680,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".playwright-mcp/page-2026-07-28T14-22-07-887Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-22-09-262Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-10-823Z.yml": 239,
+        ".playwright-mcp/page-2026-07-28T14-22-41-958Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-44-571Z.yml": 251,
+        ".playwright-mcp/page-2026-07-28T14-24-40-339Z.yml": 375,
+        ".playwright-mcp/page-2026-07-28T14-25-34-421Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-25-48-018Z.yml": 290,
+        ".playwright-mcp/page-2026-07-28T14-26-00-537Z.yml": 354,
+        ".playwright-mcp/page-2026-07-28T14-26-15-949Z.yml": 343,
+        ".playwright-mcp/page-2026-07-28T14-26-41-530Z.yml": 207,
+        ".playwright-mcp/page-2026-07-28T14-30-32-057Z.yml": 139,
+        ".playwright-mcp/page-2026-07-28T14-32-25-333Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-33-04-783Z.yml": 175,
+        ".playwright-mcp/page-2026-07-28T14-33-36-589Z.yml": 380,
+        ".playwright-mcp/page-2026-07-28T14-34-19-891Z.yml": 163,
+        ".playwright-mcp/page-2026-07-28T14-38-36-788Z.yml": 354,
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      },
+      "user_removed_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 5337,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 5337,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 5337,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 272,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7288,
+      "agent_lines_removed": 1680,
+      "user_added_per_file": {
+        ".playwright-mcp/page-2026-07-28T15-41-00-657Z.yml": 272
+      }
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 15,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 16,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 17,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 18,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 19,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 20,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 21,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 22,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 23,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 24,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 25,
+      "user_lines_added": 7560,
+      "user_lines_removed": 1680,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".playwright-mcp/page-2026-07-28T14-22-07-887Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-22-09-262Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-10-823Z.yml": 239,
+        ".playwright-mcp/page-2026-07-28T14-22-41-958Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-22-44-571Z.yml": 251,
+        ".playwright-mcp/page-2026-07-28T14-24-40-339Z.yml": 375,
+        ".playwright-mcp/page-2026-07-28T14-25-34-421Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T14-25-48-018Z.yml": 290,
+        ".playwright-mcp/page-2026-07-28T14-26-00-537Z.yml": 354,
+        ".playwright-mcp/page-2026-07-28T14-26-15-949Z.yml": 343,
+        ".playwright-mcp/page-2026-07-28T14-26-41-530Z.yml": 207,
+        ".playwright-mcp/page-2026-07-28T14-30-32-057Z.yml": 139,
+        ".playwright-mcp/page-2026-07-28T14-32-25-333Z.yml": 18,
+        ".playwright-mcp/page-2026-07-28T14-33-04-783Z.yml": 175,
+        ".playwright-mcp/page-2026-07-28T14-33-36-589Z.yml": 380,
+        ".playwright-mcp/page-2026-07-28T14-34-19-891Z.yml": 163,
+        ".playwright-mcp/page-2026-07-28T14-38-36-788Z.yml": 354,
+        ".playwright-mcp/page-2026-07-28T15-31-48-878Z.yml": 375,
+        ".playwright-mcp/page-2026-07-28T15-32-51-380Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-06-649Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-17-718Z.yml": 117,
+        ".playwright-mcp/page-2026-07-28T15-33-49-745Z.yml": 101,
+        ".playwright-mcp/page-2026-07-28T15-36-00-608Z.yml": 99,
+        ".playwright-mcp/page-2026-07-28T15-36-24-754Z.yml": 368,
+        ".playwright-mcp/page-2026-07-28T15-37-51-400Z.yml": 657,
+        ".playwright-mcp/page-2026-07-28T15-41-00-657Z.yml": 272,
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      },
+      "user_removed_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/marketing/public/cli/install.sh": 153,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/cli/scripts/smoke-test.sh": 115,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-desktop-git-env.sh": 49,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
+    },
+    {
+      "checkpoint_number": 26,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 27,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    },
+    {
+      "checkpoint_number": 28,
+      "user_lines_added": 16578,
+      "user_lines_removed": 817,
+      "agent_lines_added": 10167,
+      "agent_lines_removed": 4287,
+      "user_added_per_file": {
+        "FEATURES.md": 8,
+        "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts": 220,
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 250,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 219,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 169,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 280,
+        "apps/desktop/src/main/windows/main.ts": 589,
+        "packages/host-service/src/companion/access-jwt.ts": 479,
+        "packages/host-service/src/companion/answer.ts": 1645,
+        "packages/host-service/src/companion/audit.ts": 186,
+        "packages/host-service/src/companion/config.ts": 386,
+        "packages/host-service/src/companion/crypto.ts": 941,
+        "packages/host-service/src/companion/device-store.ts": 551,
+        "packages/host-service/src/companion/http.ts": 1444,
+        "packages/host-service/src/companion/index.ts": 1001,
+        "packages/host-service/src/companion/keys.ts": 73,
+        "packages/host-service/src/companion/keystrokes.ts": 807,
+        "packages/host-service/src/companion/lease.ts": 326,
+        "packages/host-service/src/companion/pairing.ts": 929,
+        "packages/host-service/src/companion/push.ts": 1278,
+        "packages/host-service/src/companion/question-store.ts": 1394,
+        "packages/host-service/src/companion/read-api.ts": 883,
+        "packages/host-service/src/companion/types.ts": 1149,
+        "packages/host-service/src/companion/ws.ts": 890,
+        "packages/host-service/src/serve.ts": 133,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 99,
+        "packages/host-service/src/trpc/router/notifications/index.ts": 10,
+        "packages/host-service/src/trpc/router/notifications/notifications.ts": 239
+      },
+      "user_removed_per_file": {
+        "FEATURES.md": 2,
+        "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts": 15,
+        "apps/desktop/src/main/windows/main.ts": 579,
+        "packages/host-service/src/serve.ts": 123,
+        "packages/host-service/src/trpc/router/notifications/index.ts": 1,
+        "packages/host-service/src/trpc/router/notifications/notifications.ts": 97
+      }
+    },
+    {
+      "checkpoint_number": 29,
+      "user_lines_added": 18801,
+      "user_lines_removed": 621,
+      "agent_lines_added": 11351,
+      "agent_lines_removed": 5089,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 252,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.test.ts": 161,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 195,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 200,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 169,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 279,
+        "apps/desktop/src/main/windows/main.ts": 19,
+        "packages/host-service/src/app.ts": 320,
+        "packages/host-service/src/companion/access-jwt.ts": 479,
+        "packages/host-service/src/companion/answer.ts": 2234,
+        "packages/host-service/src/companion/audit.ts": 186,
+        "packages/host-service/src/companion/config.ts": 477,
+        "packages/host-service/src/companion/crypto.ts": 984,
+        "packages/host-service/src/companion/device-store.ts": 551,
+        "packages/host-service/src/companion/http.ts": 1487,
+        "packages/host-service/src/companion/index.ts": 1458,
+        "packages/host-service/src/companion/keys.ts": 495,
+        "packages/host-service/src/companion/keystrokes.ts": 822,
+        "packages/host-service/src/companion/lease.ts": 326,
+        "packages/host-service/src/companion/pairing.ts": 1011,
+        "packages/host-service/src/companion/push.ts": 1278,
+        "packages/host-service/src/companion/question-store.ts": 1614,
+        "packages/host-service/src/companion/read-api.ts": 946,
+        "packages/host-service/src/companion/registry.ts": 83,
+        "packages/host-service/src/companion/types.ts": 1189,
+        "packages/host-service/src/companion/ws.ts": 907,
+        "packages/host-service/src/serve.ts": 21,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 129,
+        "packages/host-service/src/trpc/router/companion/index.ts": 1,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 309,
+        "packages/host-service/src/trpc/router/notifications/notifications.ts": 150,
+        "packages/host-service/src/trpc/router/router.ts": 58,
+        "scripts/ci-repair.sh": 11
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/windows/main.ts": 6,
+        "packages/host-service/src/app.ts": 314,
+        "packages/host-service/src/serve.ts": 7,
+        "packages/host-service/src/trpc/router/notifications/notifications.ts": 239,
+        "packages/host-service/src/trpc/router/router.ts": 54,
+        "scripts/ci-repair.sh": 1
+      }
+    },
+    {
+      "checkpoint_number": 30,
+      "user_lines_added": 18222,
+      "user_lines_removed": 0,
+      "agent_lines_added": 11586,
+      "agent_lines_removed": 5366,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 252,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.test.ts": 161,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 195,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 200,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 169,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 279,
+        "packages/host-service/src/companion/access-jwt.ts": 479,
+        "packages/host-service/src/companion/answer.ts": 2234,
+        "packages/host-service/src/companion/audit.ts": 186,
+        "packages/host-service/src/companion/config.ts": 477,
+        "packages/host-service/src/companion/crypto.ts": 984,
+        "packages/host-service/src/companion/device-store.ts": 551,
+        "packages/host-service/src/companion/http.ts": 1487,
+        "packages/host-service/src/companion/index.ts": 1458,
+        "packages/host-service/src/companion/keys.ts": 495,
+        "packages/host-service/src/companion/keystrokes.ts": 822,
+        "packages/host-service/src/companion/lease.ts": 326,
+        "packages/host-service/src/companion/pairing.ts": 1011,
+        "packages/host-service/src/companion/push.ts": 1278,
+        "packages/host-service/src/companion/question-store.ts": 1614,
+        "packages/host-service/src/companion/read-api.ts": 946,
+        "packages/host-service/src/companion/registry.ts": 83,
+        "packages/host-service/src/companion/types.ts": 1189,
+        "packages/host-service/src/companion/ws.ts": 907,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 129,
+        "packages/host-service/src/trpc/router/companion/index.ts": 1,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 309
+      }
+    },
+    {
+      "checkpoint_number": 31,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 32,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 33,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 34,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 29823,
+      "agent_lines_removed": 5366
+    },
+    {
+      "checkpoint_number": 35,
+      "user_lines_added": 591,
+      "user_lines_removed": 0,
+      "agent_lines_added": 29823,
+      "agent_lines_removed": 5366,
+      "user_added_per_file": {
+        "apps/desktop/src/renderer/components/PairDeviceDialog/utils/encodeQrMatrix/encodeQrMatrix.ts": 591
+      }
+    },
+    {
+      "checkpoint_number": 36,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 37,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 32615,
+      "agent_lines_removed": 7109
+    },
+    {
+      "checkpoint_number": 38,
+      "user_lines_added": 2582,
+      "user_lines_removed": 378,
+      "agent_lines_added": 32615,
+      "agent_lines_removed": 7109,
+      "user_added_per_file": {
+        "apps/desktop/src/renderer/components/PairDeviceDialog/PairDeviceDialog.tsx": 141,
+        "packages/host-service/src/companion/answer.ts": 395,
+        "packages/host-service/src/companion/crypto.ts": 177,
+        "packages/host-service/src/companion/keys.ts": 767,
+        "packages/host-service/src/companion/keystrokes.ts": 318,
+        "packages/host-service/src/companion/lease.ts": 122,
+        "packages/host-service/src/companion/pairing.ts": 326,
+        "packages/host-service/src/companion/question-store.ts": 130,
+        "packages/host-service/src/companion/read-api.ts": 42,
+        "packages/host-service/src/companion/types.ts": 57,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 107
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/renderer/components/PairDeviceDialog/PairDeviceDialog.tsx": 10,
+        "packages/host-service/src/companion/answer.ts": 80,
+        "packages/host-service/src/companion/crypto.ts": 16,
+        "packages/host-service/src/companion/keys.ts": 152,
+        "packages/host-service/src/companion/keystrokes.ts": 40,
+        "packages/host-service/src/companion/lease.ts": 1,
+        "packages/host-service/src/companion/pairing.ts": 45,
+        "packages/host-service/src/companion/question-store.ts": 13,
+        "packages/host-service/src/companion/read-api.ts": 7,
+        "packages/host-service/src/companion/types.ts": 12,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 2
+      }
+    },
+    {
+      "checkpoint_number": 39,
+      "user_lines_added": 3263,
+      "user_lines_removed": 475,
+      "agent_lines_added": 32615,
+      "agent_lines_removed": 7109,
+      "user_added_per_file": {
+        "apps/desktop/src/renderer/components/PairDeviceDialog/PairDeviceDialog.tsx": 141,
+        "packages/host-service/src/companion/answer.ts": 406,
+        "packages/host-service/src/companion/crypto.ts": 176,
+        "packages/host-service/src/companion/device-store.ts": 438,
+        "packages/host-service/src/companion/index.ts": 154,
+        "packages/host-service/src/companion/keys.ts": 791,
+        "packages/host-service/src/companion/keystrokes.ts": 318,
+        "packages/host-service/src/companion/lease.ts": 122,
+        "packages/host-service/src/companion/pairing.ts": 334,
+        "packages/host-service/src/companion/push.ts": 47,
+        "packages/host-service/src/companion/question-store.ts": 130,
+        "packages/host-service/src/companion/read-api.ts": 42,
+        "packages/host-service/src/companion/types.ts": 57,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 107
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/renderer/components/PairDeviceDialog/PairDeviceDialog.tsx": 10,
+        "packages/host-service/src/companion/answer.ts": 83,
+        "packages/host-service/src/companion/crypto.ts": 16,
+        "packages/host-service/src/companion/device-store.ts": 46,
+        "packages/host-service/src/companion/index.ts": 44,
+        "packages/host-service/src/companion/keys.ts": 152,
+        "packages/host-service/src/companion/keystrokes.ts": 40,
+        "packages/host-service/src/companion/lease.ts": 1,
+        "packages/host-service/src/companion/pairing.ts": 45,
+        "packages/host-service/src/companion/push.ts": 4,
+        "packages/host-service/src/companion/question-store.ts": 13,
+        "packages/host-service/src/companion/read-api.ts": 7,
+        "packages/host-service/src/companion/types.ts": 12,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 2
+      }
+    },
+    {
+      "checkpoint_number": 40,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 41,
+      "user_lines_added": 282,
+      "user_lines_removed": 53,
+      "agent_lines_added": 35643,
+      "agent_lines_removed": 7109,
+      "user_added_per_file": {
+        "packages/host-service/src/companion/access-jwt.ts": 14,
+        "packages/host-service/src/companion/config.ts": 77,
+        "packages/host-service/src/companion/device-store.ts": 105,
+        "packages/host-service/src/companion/http.ts": 80,
+        "packages/host-service/src/companion/ws.ts": 6
+      },
+      "user_removed_per_file": {
+        "packages/host-service/src/companion/access-jwt.ts": 2,
+        "packages/host-service/src/companion/config.ts": 20,
+        "packages/host-service/src/companion/device-store.ts": 18,
+        "packages/host-service/src/companion/http.ts": 13
+      }
+    },
+    {
+      "checkpoint_number": 42,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 43,
+      "user_lines_added": 3815,
+      "user_lines_removed": 3293,
+      "agent_lines_added": 35872,
+      "agent_lines_removed": 7109,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts": 2653,
+        "packages/host-service/src/app.ts": 320,
+        "packages/host-service/src/companion/answer.ts": 203,
+        "packages/host-service/src/companion/index.ts": 86,
+        "packages/host-service/src/companion/keys.ts": 249,
+        "packages/host-service/src/companion/keystrokes.ts": 48,
+        "packages/host-service/src/companion/types.ts": 37,
+        "packages/host-service/src/serve.ts": 147,
+        "packages/host-service/src/trpc/router/notifications/index.ts": 10,
+        "packages/host-service/src/trpc/router/router.ts": 62
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts": 2653,
+        "packages/host-service/src/app.ts": 320,
+        "packages/host-service/src/companion/answer.ts": 48,
+        "packages/host-service/src/companion/keys.ts": 10,
+        "packages/host-service/src/companion/keystrokes.ts": 23,
+        "packages/host-service/src/companion/types.ts": 20,
+        "packages/host-service/src/serve.ts": 147,
+        "packages/host-service/src/trpc/router/notifications/index.ts": 10,
+        "packages/host-service/src/trpc/router/router.ts": 62
+      }
+    },
+    {
+      "checkpoint_number": 44,
+      "user_lines_added": 1403,
+      "user_lines_removed": 130,
+      "agent_lines_added": 32949,
+      "agent_lines_removed": 4186,
+      "user_added_per_file": {
+        "packages/host-service/src/companion/answer.ts": 673,
+        "packages/host-service/src/companion/crypto.ts": 24,
+        "packages/host-service/src/companion/device-store.ts": 9,
+        "packages/host-service/src/companion/index.ts": 131,
+        "packages/host-service/src/companion/keys.ts": 353,
+        "packages/host-service/src/companion/keystrokes.ts": 81,
+        "packages/host-service/src/companion/types.ts": 132
+      },
+      "user_removed_per_file": {
+        "packages/host-service/src/companion/answer.ts": 67,
+        "packages/host-service/src/companion/index.ts": 2,
+        "packages/host-service/src/companion/keys.ts": 10,
+        "packages/host-service/src/companion/keystrokes.ts": 24,
+        "packages/host-service/src/companion/types.ts": 27
+      }
+    },
+    {
+      "checkpoint_number": 45,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 46,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 34222,
+      "agent_lines_removed": 4186
+    },
+    {
+      "checkpoint_number": 47,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 34222,
+      "agent_lines_removed": 4186
+    },
+    {
+      "checkpoint_number": 48,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 34222,
+      "agent_lines_removed": 4186
+    },
+    {
+      "checkpoint_number": 49,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 34222,
+      "agent_lines_removed": 4186
+    },
+    {
+      "checkpoint_number": 50,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 51,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 52,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 53,
+      "user_lines_added": 2014,
+      "user_lines_removed": 1231,
+      "agent_lines_added": 34222,
+      "agent_lines_removed": 4186,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 23,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 20,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 6,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 19,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 46,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/CompanionPanicSetting.tsx": 258,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/index.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/index.ts": 4,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/useCompanionStatus.ts": 68,
+        "packages/host-service/src/companion/access-jwt.ts": 27,
+        "packages/host-service/src/companion/answer.ts": 281,
+        "packages/host-service/src/companion/config.ts": 14,
+        "packages/host-service/src/companion/crypto.ts": 268,
+        "packages/host-service/src/companion/device-store.ts": 8,
+        "packages/host-service/src/companion/http.ts": 243,
+        "packages/host-service/src/companion/index.ts": 96,
+        "packages/host-service/src/companion/keys.ts": 23,
+        "packages/host-service/src/companion/keystrokes.ts": 14,
+        "packages/host-service/src/companion/lease.ts": 181,
+        "packages/host-service/src/companion/limits.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 12,
+        "packages/host-service/src/companion/push.ts": 43,
+        "packages/host-service/src/companion/question-store.ts": 41,
+        "packages/host-service/src/companion/read-api.ts": 62,
+        "packages/host-service/src/companion/ws.ts": 54,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 54,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 15
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 16,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 24,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 9,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 29,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 66,
+        "packages/host-service/src/companion/access-jwt.ts": 21,
+        "packages/host-service/src/companion/answer.ts": 218,
+        "packages/host-service/src/companion/config.ts": 11,
+        "packages/host-service/src/companion/crypto.ts": 46,
+        "packages/host-service/src/companion/device-store.ts": 21,
+        "packages/host-service/src/companion/http.ts": 195,
+        "packages/host-service/src/companion/index.ts": 59,
+        "packages/host-service/src/companion/keys.ts": 84,
+        "packages/host-service/src/companion/keystrokes.ts": 29,
+        "packages/host-service/src/companion/lease.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 20,
+        "packages/host-service/src/companion/push.ts": 50,
+        "packages/host-service/src/companion/question-store.ts": 71,
+        "packages/host-service/src/companion/read-api.ts": 27,
+        "packages/host-service/src/companion/types.ts": 31,
+        "packages/host-service/src/companion/ws.ts": 55,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 6,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 10
+      }
+    },
+    {
+      "checkpoint_number": 54,
+      "user_lines_added": 2014,
+      "user_lines_removed": 1231,
+      "agent_lines_added": 34223,
+      "agent_lines_removed": 4186,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 23,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 20,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 6,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 19,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 46,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/CompanionPanicSetting.tsx": 258,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/index.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/index.ts": 4,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/useCompanionStatus.ts": 68,
+        "packages/host-service/src/companion/access-jwt.ts": 27,
+        "packages/host-service/src/companion/answer.ts": 281,
+        "packages/host-service/src/companion/config.ts": 14,
+        "packages/host-service/src/companion/crypto.ts": 268,
+        "packages/host-service/src/companion/device-store.ts": 8,
+        "packages/host-service/src/companion/http.ts": 243,
+        "packages/host-service/src/companion/index.ts": 96,
+        "packages/host-service/src/companion/keys.ts": 23,
+        "packages/host-service/src/companion/keystrokes.ts": 14,
+        "packages/host-service/src/companion/lease.ts": 181,
+        "packages/host-service/src/companion/limits.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 12,
+        "packages/host-service/src/companion/push.ts": 43,
+        "packages/host-service/src/companion/question-store.ts": 41,
+        "packages/host-service/src/companion/read-api.ts": 62,
+        "packages/host-service/src/companion/ws.ts": 54,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 54,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 15
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 16,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 24,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 9,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 29,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 66,
+        "packages/host-service/src/companion/access-jwt.ts": 21,
+        "packages/host-service/src/companion/answer.ts": 218,
+        "packages/host-service/src/companion/config.ts": 11,
+        "packages/host-service/src/companion/crypto.ts": 46,
+        "packages/host-service/src/companion/device-store.ts": 21,
+        "packages/host-service/src/companion/http.ts": 195,
+        "packages/host-service/src/companion/index.ts": 59,
+        "packages/host-service/src/companion/keys.ts": 84,
+        "packages/host-service/src/companion/keystrokes.ts": 29,
+        "packages/host-service/src/companion/lease.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 20,
+        "packages/host-service/src/companion/push.ts": 50,
+        "packages/host-service/src/companion/question-store.ts": 71,
+        "packages/host-service/src/companion/read-api.ts": 27,
+        "packages/host-service/src/companion/types.ts": 31,
+        "packages/host-service/src/companion/ws.ts": 55,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 6,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 10
+      }
+    },
+    {
+      "checkpoint_number": 55,
+      "user_lines_added": 2014,
+      "user_lines_removed": 1231,
+      "agent_lines_added": 34223,
+      "agent_lines_removed": 4186,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 23,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 20,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 6,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 19,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 46,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/CompanionPanicSetting.tsx": 258,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/index.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/index.ts": 4,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/useCompanionStatus.ts": 68,
+        "packages/host-service/src/companion/access-jwt.ts": 27,
+        "packages/host-service/src/companion/answer.ts": 281,
+        "packages/host-service/src/companion/config.ts": 14,
+        "packages/host-service/src/companion/crypto.ts": 268,
+        "packages/host-service/src/companion/device-store.ts": 8,
+        "packages/host-service/src/companion/http.ts": 243,
+        "packages/host-service/src/companion/index.ts": 96,
+        "packages/host-service/src/companion/keys.ts": 23,
+        "packages/host-service/src/companion/keystrokes.ts": 14,
+        "packages/host-service/src/companion/lease.ts": 181,
+        "packages/host-service/src/companion/limits.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 12,
+        "packages/host-service/src/companion/push.ts": 43,
+        "packages/host-service/src/companion/question-store.ts": 41,
+        "packages/host-service/src/companion/read-api.ts": 62,
+        "packages/host-service/src/companion/ws.ts": 54,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 54,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 15
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 16,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 24,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 9,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 29,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 66,
+        "packages/host-service/src/companion/access-jwt.ts": 21,
+        "packages/host-service/src/companion/answer.ts": 218,
+        "packages/host-service/src/companion/config.ts": 11,
+        "packages/host-service/src/companion/crypto.ts": 46,
+        "packages/host-service/src/companion/device-store.ts": 21,
+        "packages/host-service/src/companion/http.ts": 195,
+        "packages/host-service/src/companion/index.ts": 59,
+        "packages/host-service/src/companion/keys.ts": 84,
+        "packages/host-service/src/companion/keystrokes.ts": 29,
+        "packages/host-service/src/companion/lease.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 20,
+        "packages/host-service/src/companion/push.ts": 50,
+        "packages/host-service/src/companion/question-store.ts": 71,
+        "packages/host-service/src/companion/read-api.ts": 27,
+        "packages/host-service/src/companion/types.ts": 31,
+        "packages/host-service/src/companion/ws.ts": 55,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 6,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 10
+      }
+    },
+    {
+      "checkpoint_number": 56,
+      "user_lines_added": 2014,
+      "user_lines_removed": 1231,
+      "agent_lines_added": 34223,
+      "agent_lines_removed": 4186,
+      "user_added_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 23,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 20,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 6,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 19,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 46,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/CompanionPanicSetting.tsx": 258,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/components/CompanionPanicSetting/index.ts": 1,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/index.ts": 4,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/hooks/useCompanionStatus/useCompanionStatus.ts": 68,
+        "packages/host-service/src/companion/access-jwt.ts": 27,
+        "packages/host-service/src/companion/answer.ts": 281,
+        "packages/host-service/src/companion/config.ts": 14,
+        "packages/host-service/src/companion/crypto.ts": 268,
+        "packages/host-service/src/companion/device-store.ts": 8,
+        "packages/host-service/src/companion/http.ts": 243,
+        "packages/host-service/src/companion/index.ts": 96,
+        "packages/host-service/src/companion/keys.ts": 23,
+        "packages/host-service/src/companion/keystrokes.ts": 14,
+        "packages/host-service/src/companion/lease.ts": 181,
+        "packages/host-service/src/companion/limits.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 12,
+        "packages/host-service/src/companion/push.ts": 43,
+        "packages/host-service/src/companion/question-store.ts": 41,
+        "packages/host-service/src/companion/read-api.ts": 62,
+        "packages/host-service/src/companion/ws.ts": 54,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 54,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 15
+      },
+      "user_removed_per_file": {
+        "apps/desktop/src/main/lib/keep-awake/agent-activity.ts": 16,
+        "apps/desktop/src/main/lib/keep-awake/companion-gate.ts": 3,
+        "apps/desktop/src/main/lib/keep-awake/index.ts": 24,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.test.ts": 9,
+        "apps/desktop/src/main/lib/keep-awake/keep-awake.ts": 29,
+        "apps/desktop/src/renderer/routes/_authenticated/settings/experimental/components/ExperimentalSettings/components/CompanionPairingSetting/CompanionPairingSetting.tsx": 66,
+        "packages/host-service/src/companion/access-jwt.ts": 21,
+        "packages/host-service/src/companion/answer.ts": 218,
+        "packages/host-service/src/companion/config.ts": 11,
+        "packages/host-service/src/companion/crypto.ts": 46,
+        "packages/host-service/src/companion/device-store.ts": 21,
+        "packages/host-service/src/companion/http.ts": 195,
+        "packages/host-service/src/companion/index.ts": 59,
+        "packages/host-service/src/companion/keys.ts": 84,
+        "packages/host-service/src/companion/keystrokes.ts": 29,
+        "packages/host-service/src/companion/lease.ts": 130,
+        "packages/host-service/src/companion/pairing.ts": 20,
+        "packages/host-service/src/companion/push.ts": 50,
+        "packages/host-service/src/companion/question-store.ts": 71,
+        "packages/host-service/src/companion/read-api.ts": 27,
+        "packages/host-service/src/companion/types.ts": 31,
+        "packages/host-service/src/companion/ws.ts": 55,
+        "packages/host-service/src/trpc/router/companion/companion.ts": 6,
+        "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts": 10
+      }
+    }
+  ]
+}
