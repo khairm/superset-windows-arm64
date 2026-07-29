@@ -1,0 +1,108 @@
+[Image #1] I have these cards on the left-hand side in play, the three with the yellow dots. Why are they not showing in the Kanban?
+
+---
+
+<task-notification>
+<task-id>bd5ycddnw</task-id>
+<tool-use-id>toolu_01BP1qCYhP493kmU474HE1ND</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\f7713565-e464-48c1-a066-92a246fadb31\tasks\bd5ycddnw.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch publish build to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+[Image #2] - why do I have blue dots now? doesn't make sense theres nothing running in shell
+
+---
+
+<task-notification>
+<task-id>btdi9hviu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\5e268444-c369-4d81-b556-f8a0b09a2afa\tasks\btdi9hviu.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch v1.17.0 rebuild to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+.
+
+---
+
+The run failed again last night - why isn't it set up so that the AI workflow can handle anything thrown at it - make sure its an opus 5 agent set up in the workflow too
+
+---
+
+OK, we have a structural problem then. Build should not be AI-free either. Everything should be touchable by the AI. I don't want to ever face this issue.
+
+---
+
+<task-notification>
+<task-id>b602fb468</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\cef0a6c3-d5bb-4d06-b7f1-3651fd498c23\tasks\b602fb468.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch nightly-merge run 30303353026 until completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ace65e2f605432bcf</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\cef0a6c3-d5bb-4d06-b7f1-3651fd498c23\tasks\ace65e2f605432bcf.output</output-file>
+<status>completed</status>
+<summary>Agent "Diff nightly-merge changes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Q10 answered and relayed to `fable-review-buildrepair`.
+
+**10. Job with `needs: [merge, build]` and `if: needs.merge.outputs.should_build == 'true'` (no status function), when `build` FAILS → job is SKIPPED. HIGH confidence.**
+
+Two composing docs rules:
+- "A default status check of `success()` is applied unless you include one of these functions" (`success`, `always`, `cancelled`, `failure`) — https://docs.github.com/en/actions/reference/workflows-and-actions/expressions
+- "If a job fails or is skipped, all jobs that need it are skipped unless the jobs use a conditional expression" + "a failure or skip applies to all jobs in the dependency chain from the point of failure or skip onwards"; the page's only prescribed override is "use the `always()` conditional expression in `jobs.&lt;job_id&gt;.if`" — https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs
+
+Empirical confirmation of the exact shape (multi-`needs` + outputs-only `if:`, upstream skipped → dependent skipped), with a GitHub-side reply calling it expected behavior and the accepted fix being `always() &amp;&amp; (&lt;expr&gt;)`: https://github.com/orgs/community/discussions/26945
+
+**Jobs vs steps:** same rule, different scope. The implicit-`success()` rule is not step-specific — the context-availability table allows `always, cancelled, success, failure` at both `jobs.&lt;job_id&gt;.if` and `jobs.&lt;job_id&gt;.steps.if`. Only the meaning differs: job level = all `needs` jobs succeeded; step level = all previous steps succeeded.
+
+**Critical caveat flagged to them** (intersects finding #1 from the earlier batch): if `build` carries job-level `continue-on-error: true`, `needs.build.result` reports `success` despite the failure → implicit `success()` passes → the job RUNS on a red build. That is precisely the silent shipping bug. Hardening recommended: publish `outputs: ok: ${{ steps.b.outcome }}` from an `if: always()` step and assert `needs.build.outputs.ok == 'success'` explicitly — `outcome`, not `conclusion`.</result>
+<usage><subagent_tokens>90217</subagent_tokens><tool_uses>6</tool_uses><duration_ms>90120</duration_ms></usage>
+</task-notification>
+
+---
+
+/chrome-control do it for me please
+
+---
+
+<task-notification>
+<task-id>bdr8xgtti</task-id>
+<tool-use-id>toolu_01LGofDaMNwgmxfuB1yAUQaM</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\cef0a6c3-d5bb-4d06-b7f1-3651fd498c23\tasks\bdr8xgtti.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch BUILD-REPAIR drill run 30308330702" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b9vx57brv</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\cef0a6c3-d5bb-4d06-b7f1-3651fd498c23\tasks\b9vx57brv.output</output-file>
+<status>completed</status>
+<summary>Background command "Download v1.18.0 installer to Downloads" completed (exit code 0)</summary>
+</task-notification>
