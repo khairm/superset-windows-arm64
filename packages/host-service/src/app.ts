@@ -74,6 +74,12 @@ export interface CreateAppResult {
 	injectWebSocket: ReturnType<typeof createNodeWebSocket>["injectWebSocket"];
 	api: ApiClient;
 	db: HostDb;
+	/**
+	 * The live agent-binding store the notifications hook writes. Exposed so an
+	 * in-process consumer reads the SAME instance rather than constructing a
+	 * second one, which would look correct and serve a stale `byTerminal` map.
+	 */
+	terminalAgentStore: TerminalAgentStore;
 	dispose: () => Promise<void>;
 }
 
@@ -310,5 +316,5 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		}
 	};
 
-	return { app, injectWebSocket, api, db, dispose };
+	return { app, injectWebSocket, api, db, terminalAgentStore, dispose };
 }

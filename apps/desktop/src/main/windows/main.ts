@@ -44,6 +44,7 @@ import {
 import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
 import { findActiveOrganizationId } from "../lib/auto-resume/host-send/host-send";
 import { autoResumeManager } from "../lib/auto-resume/manager/manager";
+import { startKeepAwake, stopKeepAwake } from "../lib/keep-awake";
 
 // Singleton IPC handler to prevent duplicate handlers on window reopen (macOS)
 let ipcHandler: ReturnType<typeof createIPCHandler> | null = null;
@@ -313,6 +314,21 @@ export async function MainWindow() {
 	});
 	log.info("[boot] startAgentJsonlWatcher returned +" + Math.round(process.uptime() * 1000) + "ms");
 
+	// (KEEP-AWAKE) (KEEP-AWAKE-MOUNT) Hold Windows out of sleep while an agent is
+	// working or a question is pending, so the companion phone's liveness
+	// watchdog only ever fires on a real loss of contact. Timer-driven and
+	// non-blocking; the first read lands one poll interval from now.
+	// Starting is NOT the same as holding: every tick re-evaluates the companion
+	// gate (bridge enabled AND >=1 paired device, `keep-awake/companion-gate.ts`)
+	// and a closed gate — the case for every fork user without the companion —
+	// releases the power request and skips all I/O. Gating this CALL instead
+	// would mean pairing a phone did nothing until the app was restarted.
+	// (KEEP-AWAKE-MOUNT) exists ONLY on this seam — (KEEP-AWAKE) is satisfied by
+	// the fork-only lib/keep-awake/ files, so without a token unique to the start
+	// call an upstream merge could drop it here and the marker gate would still
+	// pass with the feature silently never starting.
+	startKeepAwake();
+
 	const notificationManager = new NotificationManager({
 		isSupported: () => Notification.isSupported(),
 		createNotification: (opts) => new Notification(opts),
@@ -569,6 +585,13 @@ window.webContents.on("did-finish-load", () => {
 		server.close();
 		notificationManager.dispose();
 		stopAgentJsonlWatcher();
+		// (KEEP-AWAKE) (KEEP-AWAKE-UNMOUNT) release the power request with the
+		// window, not at before-quit — that handler fires too late on Windows.
+		// A DISTINCT token from the start seam on purpose: the marker gate passes
+		// on the first hit anywhere under a root, so one shared token could not
+		// catch "stop dropped, start kept" — a power request acquired and never
+		// released for the rest of the process's life.
+		stopKeepAwake();
 		notificationsEmitter.removeAllListeners();
 		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
 		ipcHandler?.detachWindow(window);

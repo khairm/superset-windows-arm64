@@ -1,0 +1,1390 @@
+/**
+ * (COMPANION-BRIDGE) — AES-256-GCM sealed envelope + HKDF key derivation (§3).
+ *
+ * One primitive provides confidentiality, integrity, request binding and (with
+ * the nonce cache) replay protection. There is no second signature layer and
+ * therefore no second canonicalisation format to mismatch.
+ *
+ * Order of operations on an inbound envelope is NORMATIVE and must not be
+ * rearranged: parse header -> freshness -> nonce cache -> decrypt. A replayed
+ * nonce must cost no crypto.
+ *
+ * Node's built-in `node:crypto` only. No third-party crypto dependency, ever.
+ *
+ * ---------------------------------------------------------------------------
+ * INTEROP NOTE — HKDF `info` encoding (PROTOCOL.md §3.1 is ambiguous here)
+ * ---------------------------------------------------------------------------
+ * §3.1 writes `K_dev = HKDF-Expand(PRK, "sc/v1 device " || pid || deviceId, 32)`
+ * and `K_evt = HKDF-Expand-Label(K_dev, "sc/v1 seal evt " || ticketId, 32)`
+ * without saying whether `pid` / `deviceId` / `ticketId` are the raw 16-byte
+ * values or their canonical base64url text. Both are unambiguous (fixed
+ * lengths) and equally secure, but they are NOT interchangeable — picking
+ * differently on the two sides yields two different keys and every request
+ * fails as `unknown_device` with no diagnostic.
+ *
+ * RESOLVED: the id suffixes contribute their RAW BYTES, never their base64url
+ * text.
+ *     K_dev  info = utf8("sc/v1 device ")   || pid(16)      || deviceId(16)  = 45
+ *     K_evt  info = utf8("sc/v1 seal evt ") || ticketId(16)                  = 31
+ *
+ * Raw bytes, not text, because:
+ *  - it is what the Android client already implements
+ *    (`KeyDerivation.ID_ENCODING_IS_RAW_BYTES = true`), so this side is the one
+ *    that had to move;
+ *  - it matches the §4.4 pairing TRANSCRIPT, which is unambiguously raw and
+ *    byte-length-specified (117 bytes), so the whole pairing exchange now uses
+ *    ONE convention rather than two;
+ *  - it has no charset dependency.
+ *
+ * An earlier revision of this file declared the base64url-text form "normative
+ * for the Android client" while the client declared the raw-byte form normative
+ * for the bridge. The two never agreed, so pairing could never succeed. Use
+ * `hkdfExpandInfo` (raw `info` bytes) for anything carrying an id suffix;
+ * `hkdfExpandLabel` remains correct for the four fixed labels that carry none.
+ */
+
+import {
+	createCipheriv,
+	createDecipheriv,
+	createHash,
+	createHmac,
+	createPrivateKey,
+	createPublicKey,
+	diffieHellman,
+	generateKeyPairSync,
+	type KeyObject,
+	randomBytes as nodeRandomBytes,
+	timingSafeEqual,
+} from "node:crypto";
+import { open, readFile, rename, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
+import {
+	ENVELOPE_HEADER_BYTES,
+	FRESHNESS_WINDOW_MS,
+	GCM_TAG_BYTES,
+	MAX_SEALED_PLAINTEXT_BYTES,
+	MIN_ENVELOPE_BYTES,
+	NONCE_BYTES,
+	NONCE_CACHE_RETENTION_MS,
+	ENVELOPE_VERSION as PROTOCOL_ENVELOPE_VERSION,
+} from "./config";
+import {
+	KEY_BYTES,
+	WIRE_ID_BYTES,
+	WIRE_ID_CHARS,
+	X25519_KEY_BYTES,
+} from "./limits";
+import {
+	CleartextError,
+	type DeviceId,
+	ENVELOPE_KIND_EVENT,
+	ENVELOPE_KIND_REQUEST,
+	ENVELOPE_KIND_RESPONSE,
+	type EnvelopeKind,
+	type EventAadParts,
+	type ParsedEnvelope,
+	type RequestAadParts,
+	type ResponseAadParts,
+} from "./types";
+
+// ---------------------------------------------------------------------------
+// invariants
+// ---------------------------------------------------------------------------
+
+const SHA256_BYTES = 32;
+const AAD_SEPARATOR = 0x00;
+const HKDF_MAX_BLOCKS = 255;
+
+/**
+ * §3.5 says the cache is "unbounded within retention", with a steady-state
+ * ceiling of ~1 950 entries at the enforced rate limits. "Unbounded" is not
+ * implementable — a flood that outruns compaction would grow the process until
+ * it dies. This hard cap is ~33x the pre-auth ceiling (600 req/min x 15 min
+ * retention = 9 000) and is therefore unreachable by legal traffic.
+ *
+ * On reaching it the cache COMPACTS, and if it is still over the cap it
+ * REFUSES the request (`503 bridge_unavailable`). It does NOT evict live
+ * entries: eviction would silently re-open the replay window that this cache
+ * exists to close, which is exactly the class of failure the global rules
+ * forbid. Fail loud instead.
+ */
+export const REPLAY_CACHE_MAX_ENTRIES = 65_536;
+
+/**
+ * The newest N records are retained NO MATTER WHAT THE CLOCK SAYS.
+ *
+ * Age alone is not a safe retention rule, because age is measured against a
+ * clock the bridge does not control. A forward jump makes every live record look
+ * expired, compaction drops them, and after the correction a request captured
+ * inside the freshness window replays successfully — the exact hole this cache
+ * exists to close. Retention is therefore `age AND insertion order`: a record
+ * only leaves once it is BOTH older than the retention AND outside the newest
+ * `REPLAY_MIN_RETAINED_ENTRIES`.
+ *
+ * The floor is derived, not guessed: the pre-auth rate cap is 600 req/min (§12)
+ * and the accepted freshness window is 120 s wide, so at most 1 200 records can
+ * be admitted inside one window. 8 192 is ~6.8x that, and one eighth of
+ * `REPLAY_CACHE_MAX_ENTRIES`, so the floor can never stop compaction from
+ * clearing the cap.
+ */
+export const REPLAY_MIN_RETAINED_ENTRIES = 8_192;
+
+/** 16 deviceId || 12 nonce || 8 big-endian seenAtMs. */
+const REPLAY_RECORD_BYTES = WIRE_ID_BYTES + NONCE_BYTES + 8;
+const REPLAY_LOG_FILENAME = "replay.log";
+const REPLAY_LOG_TMP_FILENAME = "replay.log.tmp";
+
+/** RFC 8410 PKCS#8 prefix for an X25519 private key (16 bytes, then the scalar). */
+const X25519_PKCS8_PREFIX = Uint8Array.from([
+	0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04,
+	0x22, 0x04, 0x20,
+]);
+/** RFC 8410 SPKI prefix for an X25519 public key (12 bytes, then the point). */
+const X25519_SPKI_PREFIX = Uint8Array.from([
+	0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00,
+]);
+
+/**
+ * A bug in this module, not a protocol failure. Distinct from `CleartextError`
+ * and `SealedError` so a caller can never accidentally turn a programming
+ * mistake into a wire code.
+ */
+export class CryptoInvariantError extends Error {
+	constructor(message: string) {
+		super(`(COMPANION-BRIDGE) crypto invariant: ${message}`);
+		this.name = "CryptoInvariantError";
+	}
+}
+
+function invariant(condition: boolean, message: string): asserts condition {
+	if (!condition) {
+		throw new CryptoInvariantError(message);
+	}
+}
+
+function requireLength(
+	value: Uint8Array,
+	expected: number,
+	what: string,
+): void {
+	invariant(
+		value.length === expected,
+		`${what} must be ${expected} bytes, got ${value.length}`,
+	);
+}
+
+/** Node accepts `Uint8Array` everywhere; this is a zero-copy view, not a copy. */
+function view(bytes: Uint8Array): Buffer {
+	return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+// ---------------------------------------------------------------------------
+// §3.1 HKDF (RFC 5869)
+// ---------------------------------------------------------------------------
+
+/**
+ * RFC 5869 Extract. `PRK = HMAC-SHA256(salt, IKM)`.
+ *
+ * NOTE: this is deliberately NOT `crypto.hkdfSync`, which performs Extract AND
+ * Expand in one call. §3.1 needs the two halves separately because `PRK` is
+ * reused for four different Expand calls, and because `HKDF-Expand-Label` in
+ * steady state uses an already-uniform key directly as the PRK with no second
+ * extraction.
+ */
+export function hkdfExtract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
+	return new Uint8Array(
+		createHmac("sha256", view(salt)).update(view(ikm)).digest(),
+	);
+}
+
+/**
+ * RFC 5869 Expand with `PRK = key` and `info = utf8(label)` — no length prefix,
+ * no null terminator.
+ *
+ * Correct ONLY for the four fixed labels that carry no id suffix
+ * (`sc/v1 confirm-phone`, `sc/v1 confirm-desktop`, `sc/v1 seal c2s`,
+ * `sc/v1 seal s2c`). Anything that appends a pid / deviceId / ticketId MUST use
+ * `hkdfExpandInfo` with the RAW BYTES of that id — see the INTEROP NOTE above.
+ */
+export function hkdfExpandLabel(
+	key: Uint8Array,
+	label: string,
+	length: number,
+): Uint8Array {
+	return hkdfExpandInfo(
+		key,
+		new Uint8Array(Buffer.from(label, "utf8")),
+		length,
+	);
+}
+
+/**
+ * RFC 5869 Expand with `PRK = key` and a caller-built `info` byte string.
+ *
+ * This is the form every derivation with an id suffix uses, because an id
+ * contributes its raw bytes and not its base64url text (INTEROP NOTE above).
+ */
+export function hkdfExpandInfo(
+	key: Uint8Array,
+	info: Uint8Array,
+	length: number,
+): Uint8Array {
+	requireLength(key, SHA256_BYTES, "HKDF PRK");
+	invariant(
+		Number.isInteger(length) && length > 0,
+		`HKDF output length must be a positive integer, got ${length}`,
+	);
+	const blocks = Math.ceil(length / SHA256_BYTES);
+	invariant(
+		blocks <= HKDF_MAX_BLOCKS,
+		`HKDF output length ${length} exceeds 255 * HashLen`,
+	);
+
+	const infoView = view(info);
+	const out = Buffer.allocUnsafe(blocks * SHA256_BYTES);
+	let previous = Buffer.alloc(0);
+	for (let i = 1; i <= blocks; i += 1) {
+		previous = createHmac("sha256", view(key))
+			.update(previous)
+			.update(infoView)
+			.update(Buffer.from([i]))
+			.digest();
+		previous.copy(out, (i - 1) * SHA256_BYTES);
+	}
+	const result = new Uint8Array(out.subarray(0, length));
+	out.fill(0);
+	return result;
+}
+
+/**
+ * `utf8(label) || suffix` as one `info` byte string. The single place the
+ * label-plus-raw-id concatenation is built, so the two derivations that need it
+ * (`K_dev`, `K_evt`) cannot drift apart.
+ */
+export function hkdfInfoWithSuffix(
+	label: string,
+	...suffixes: readonly Uint8Array[]
+): Uint8Array {
+	return concatBytes([new Uint8Array(Buffer.from(label, "utf8")), ...suffixes]);
+}
+
+// ---------------------------------------------------------------------------
+// §15.1 hashes and MACs
+// ---------------------------------------------------------------------------
+
+export function sha256(bytes: Uint8Array): Uint8Array {
+	return new Uint8Array(createHash("sha256").update(view(bytes)).digest());
+}
+
+/** §4.4 key confirmation. Compared with `constantTimeEquals`, never with `===`. */
+export function hmacSha256(key: Uint8Array, data: Uint8Array): Uint8Array {
+	return new Uint8Array(
+		createHmac("sha256", view(key)).update(view(data)).digest(),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// §15.1 X25519
+// ---------------------------------------------------------------------------
+
+function x25519PrivateKeyObject(raw: Uint8Array): KeyObject {
+	requireLength(raw, X25519_KEY_BYTES, "X25519 private key");
+	const der = Buffer.concat([view(X25519_PKCS8_PREFIX), view(raw)]);
+	return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+}
+
+function x25519PublicKeyObject(raw: Uint8Array): KeyObject {
+	requireLength(raw, X25519_KEY_BYTES, "X25519 public key");
+	const der = Buffer.concat([view(X25519_SPKI_PREFIX), view(raw)]);
+	return createPublicKey({ key: der, format: "der", type: "spki" });
+}
+
+function rawFromDer(der: Buffer, prefix: Uint8Array, what: string): Uint8Array {
+	invariant(
+		der.length === prefix.length + X25519_KEY_BYTES,
+		`unexpected ${what} DER length ${der.length}`,
+	);
+	return new Uint8Array(der.subarray(prefix.length));
+}
+
+/**
+ * X25519 ECDH. Rejects an all-zero shared secret, which is what a small-order
+ * peer point produces (RFC 7748 §6.1 "check whether the output is all zero").
+ * Anything else here would silently agree on a key an attacker also knows.
+ */
+export function x25519(
+	privateKey: Uint8Array,
+	peerPublicKey: Uint8Array,
+): Uint8Array {
+	requireLength(privateKey, X25519_KEY_BYTES, "X25519 private key");
+	invariant(
+		peerPublicKey.length === X25519_KEY_BYTES,
+		`peer X25519 public key must be ${X25519_KEY_BYTES} bytes, got ${peerPublicKey.length}`,
+	);
+
+	const shared = new Uint8Array(
+		diffieHellman({
+			privateKey: x25519PrivateKeyObject(privateKey),
+			publicKey: x25519PublicKeyObject(peerPublicKey),
+		}),
+	);
+	requireLength(shared, X25519_KEY_BYTES, "X25519 shared secret");
+
+	if (isAllZero(shared)) {
+		zero(shared);
+		throw new CryptoInvariantError(
+			"X25519 produced an all-zero shared secret (small-order peer point) — rejected",
+		);
+	}
+	return shared;
+}
+
+export function generateX25519KeyPair(): {
+	privateKey: Uint8Array;
+	publicKey: Uint8Array;
+} {
+	const pair = generateKeyPairSync("x25519");
+	return {
+		privateKey: rawFromDer(
+			pair.privateKey.export({ format: "der", type: "pkcs8" }),
+			X25519_PKCS8_PREFIX,
+			"X25519 private",
+		),
+		publicKey: rawFromDer(
+			pair.publicKey.export({ format: "der", type: "spki" }),
+			X25519_SPKI_PREFIX,
+			"X25519 public",
+		),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// §3.2 envelope parsing
+// ---------------------------------------------------------------------------
+
+const KIND_VALUES: ReadonlySet<number> = new Set([
+	ENVELOPE_KIND_REQUEST,
+	ENVELOPE_KIND_RESPONSE,
+	ENVELOPE_KIND_EVENT,
+]);
+
+function envelopeInvalid(): never {
+	throw new CleartextError(400, "envelope_invalid");
+}
+
+/**
+ * Splits the 39-byte cleartext header off an inbound body.
+ *
+ * Throws `CleartextError(400, "envelope_invalid")` on a bad version, a non-zero
+ * flags byte, an unknown kind, or a body under 55 bytes; and
+ * `CleartextError(413, "body_too_large")` when the plaintext would exceed
+ * §15's 262 144-byte cap. A reserved bit is NEVER tolerated: `flags` is
+ * reserved in full and a future meaning for it is a protocol change, so
+ * ignoring an unknown bit would let a later version's semantics through
+ * unimplemented.
+ *
+ * This function performs NO cryptography. It runs before freshness and before
+ * the replay cache, so a malformed or replayed request costs nothing.
+ */
+export function parseEnvelope(body: Uint8Array): ParsedEnvelope {
+	if (body.length < MIN_ENVELOPE_BYTES) {
+		envelopeInvalid();
+	}
+	const plaintextLength = body.length - ENVELOPE_HEADER_BYTES - GCM_TAG_BYTES;
+	if (plaintextLength > MAX_SEALED_PLAINTEXT_BYTES) {
+		throw new CleartextError(413, "body_too_large");
+	}
+
+	const header = body.subarray(0, ENVELOPE_HEADER_BYTES);
+	const version = header[0];
+	const flags = header[1];
+	const kind = header[2];
+
+	if (version !== PROTOCOL_ENVELOPE_VERSION) {
+		envelopeInvalid();
+	}
+	if (flags !== 0x00) {
+		envelopeInvalid();
+	}
+	if (kind === undefined || !KIND_VALUES.has(kind)) {
+		envelopeInvalid();
+	}
+
+	const headerView = view(header);
+	const timestamp = headerView.readBigUInt64BE(19);
+	if (timestamp > BigInt(Number.MAX_SAFE_INTEGER)) {
+		envelopeInvalid();
+	}
+
+	const deviceIdBytes = new Uint8Array(header.subarray(3, 19));
+
+	return {
+		header: {
+			version: PROTOCOL_ENVELOPE_VERSION,
+			flags: 0,
+			kind: kind as EnvelopeKind,
+			deviceIdBytes,
+			deviceId: base64UrlEncode(deviceIdBytes),
+			timestampMs: Number(timestamp),
+			nonce: new Uint8Array(header.subarray(27, ENVELOPE_HEADER_BYTES)),
+		},
+		ciphertextWithTag: new Uint8Array(body.subarray(ENVELOPE_HEADER_BYTES)),
+		headerBytes: new Uint8Array(header),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// §3.3 AAD
+// ---------------------------------------------------------------------------
+
+const ASCII_PRINTABLE = /^[\x21-\x7e]+$/;
+
+function assertHeaderBytes(headerBytes: Uint8Array): void {
+	requireLength(headerBytes, ENVELOPE_HEADER_BYTES, "AAD header");
+}
+
+function assertMethod(method: string): void {
+	invariant(
+		method === "POST" || method === "GET",
+		`AAD method must be POST or GET, got ${JSON.stringify(method)}`,
+	);
+}
+
+function assertPath(path: string): void {
+	invariant(
+		ASCII_PRINTABLE.test(path) &&
+			path.startsWith("/") &&
+			!path.includes("?") &&
+			!path.includes("#"),
+		`AAD path must be an exact printable-ASCII path with no query or fragment, got ${JSON.stringify(path)}`,
+	);
+}
+
+function protocolVersionByte(protocolVersion: number): number {
+	invariant(
+		Number.isInteger(protocolVersion) &&
+			protocolVersion >= 0 &&
+			protocolVersion <= 0xff,
+		`AAD protocolVersion must fit one byte, got ${protocolVersion}`,
+	);
+	return protocolVersion;
+}
+
+/**
+ * §3.3 — `header(39) || 0x00 || METHOD || 0x00 || PATH || 0x00 || protocolVersion`.
+ *
+ * The `0x00` separators are why `("POST","/v1/ab")` and `("POST/","/v1ab")`
+ * cannot collide. They are load-bearing; do not "tidy" them away.
+ */
+export function buildRequestAad(
+	headerBytes: Uint8Array,
+	parts: RequestAadParts,
+): Uint8Array {
+	assertHeaderBytes(headerBytes);
+	assertMethod(parts.method);
+	assertPath(parts.path);
+	const version = protocolVersionByte(parts.protocolVersion);
+
+	return concatBytes([
+		headerBytes,
+		Uint8Array.of(AAD_SEPARATOR),
+		Buffer.from(parts.method, "ascii"),
+		Uint8Array.of(AAD_SEPARATOR),
+		Buffer.from(parts.path, "ascii"),
+		Uint8Array.of(AAD_SEPARATOR),
+		Uint8Array.of(version),
+	]);
+}
+
+/**
+ * §3.3 — request AAD plus the answered request's 12 nonce bytes and the uint16
+ * big-endian status code. Binding the nonce stops a captured response being
+ * re-served against a different request; binding the status stops a proxy
+ * flipping a 200 into a 403 (or the reverse) undetected.
+ */
+export function buildResponseAad(
+	headerBytes: Uint8Array,
+	parts: ResponseAadParts,
+): Uint8Array {
+	requireLength(parts.requestNonce, NONCE_BYTES, "response AAD request nonce");
+	invariant(
+		Number.isInteger(parts.statusCode) &&
+			parts.statusCode >= 0 &&
+			parts.statusCode <= 0xffff,
+		`AAD statusCode must fit uint16, got ${parts.statusCode}`,
+	);
+
+	const status = Buffer.allocUnsafe(2);
+	status.writeUInt16BE(parts.statusCode, 0);
+
+	return concatBytes([
+		buildRequestAad(headerBytes, parts),
+		Uint8Array.of(AAD_SEPARATOR),
+		parts.requestNonce,
+		Uint8Array.of(AAD_SEPARATOR),
+		status,
+	]);
+}
+
+/**
+ * §3.3 — `GET /v1/events`, the ticket's 12-byte stream seed, and the uint64
+ * big-endian per-socket frame sequence. Binding `frameSeq` is what makes a
+ * dropped or reordered frame a tag failure rather than a silent gap.
+ */
+export function buildEventAad(
+	headerBytes: Uint8Array,
+	parts: EventAadParts,
+): Uint8Array {
+	requireLength(parts.streamSeed, NONCE_BYTES, "event AAD stream seed");
+	invariant(
+		Number.isInteger(parts.frameSeq) &&
+			parts.frameSeq >= 1 &&
+			parts.frameSeq <= Number.MAX_SAFE_INTEGER,
+		`AAD frameSeq must be a positive safe integer, got ${parts.frameSeq}`,
+	);
+
+	const seq = Buffer.allocUnsafe(8);
+	seq.writeBigUInt64BE(BigInt(parts.frameSeq), 0);
+
+	return concatBytes([
+		buildRequestAad(headerBytes, {
+			method: "GET",
+			path: "/v1/events",
+			protocolVersion: parts.protocolVersion,
+		}),
+		Uint8Array.of(AAD_SEPARATOR),
+		parts.streamSeed,
+		Uint8Array.of(AAD_SEPARATOR),
+		seq,
+	]);
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+	let total = 0;
+	for (const part of parts) {
+		total += part.length;
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const part of parts) {
+		out.set(part, offset);
+		offset += part.length;
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// §3.2 AEAD
+// ---------------------------------------------------------------------------
+
+/**
+ * Decrypts a parsed envelope.
+ *
+ * A tag failure throws `CleartextError(401, "unknown_device")` — the SAME code
+ * and status an unknown device id produces, per §3.6. That is deliberate and
+ * must not be "improved": the two cases are indistinguishable on the wire on
+ * purpose, and mapping them at the call site would eventually diverge. Callers
+ * therefore cannot leak the difference even by accident.
+ */
+export function openSealed(
+	key: Uint8Array,
+	envelope: ParsedEnvelope,
+	aad: Uint8Array,
+): Uint8Array {
+	requireLength(key, KEY_BYTES, "AES-256-GCM key");
+	requireLength(envelope.header.nonce, NONCE_BYTES, "GCM nonce");
+
+	const sealed = envelope.ciphertextWithTag;
+	if (sealed.length < GCM_TAG_BYTES) {
+		envelopeInvalid();
+	}
+	const ciphertext = sealed.subarray(0, sealed.length - GCM_TAG_BYTES);
+	const tag = sealed.subarray(sealed.length - GCM_TAG_BYTES);
+
+	const decipher = createDecipheriv(
+		"aes-256-gcm",
+		view(key),
+		view(envelope.header.nonce),
+		{ authTagLength: GCM_TAG_BYTES },
+	);
+	decipher.setAAD(view(aad));
+	decipher.setAuthTag(view(tag));
+
+	try {
+		return new Uint8Array(
+			Buffer.concat([decipher.update(view(ciphertext)), decipher.final()]),
+		);
+	} catch {
+		// Authentication failed. Indistinguishable from "device id not known",
+		// by design (§3.6). No detail is logged from here — the caller logs the
+		// deviceId at a single site so the two paths look identical.
+		throw new CleartextError(401, "unknown_device");
+	}
+}
+
+/**
+ * Builds a complete outbound sealed body: `header(39) || ciphertext || tag(16)`.
+ *
+ * The AAD is built by a callback rather than passed in, because it must be
+ * computed over the exact header bytes this function just assembled — handing
+ * the caller a second chance to construct them is how a header/AAD mismatch is
+ * introduced.
+ */
+export function seal(
+	key: Uint8Array,
+	kind: EnvelopeKind,
+	deviceIdBytes: Uint8Array,
+	nonce: Uint8Array,
+	timestampMs: number,
+	plaintext: Uint8Array,
+	buildAad: (headerBytes: Uint8Array) => Uint8Array,
+): Uint8Array {
+	requireLength(key, KEY_BYTES, "AES-256-GCM key");
+	requireLength(deviceIdBytes, WIRE_ID_BYTES, "deviceId");
+	requireLength(nonce, NONCE_BYTES, "GCM nonce");
+	invariant(
+		KIND_VALUES.has(kind),
+		`envelope kind must be 0x01/0x02/0x03, got ${kind}`,
+	);
+	invariant(
+		Number.isInteger(timestampMs) &&
+			timestampMs >= 0 &&
+			timestampMs <= Number.MAX_SAFE_INTEGER,
+		`envelope timestampMs must be a non-negative safe integer, got ${timestampMs}`,
+	);
+	invariant(
+		plaintext.length <= MAX_SEALED_PLAINTEXT_BYTES,
+		`sealed plaintext ${plaintext.length} exceeds the ${MAX_SEALED_PLAINTEXT_BYTES}-byte cap`,
+	);
+
+	const header = Buffer.allocUnsafe(ENVELOPE_HEADER_BYTES);
+	header[0] = PROTOCOL_ENVELOPE_VERSION;
+	header[1] = 0x00;
+	header[2] = kind;
+	header.set(deviceIdBytes, 3);
+	header.writeBigUInt64BE(BigInt(timestampMs), 19);
+	header.set(nonce, 27);
+
+	const headerBytes = new Uint8Array(header);
+	const aad = buildAad(headerBytes);
+
+	const cipher = createCipheriv("aes-256-gcm", view(key), view(nonce), {
+		authTagLength: GCM_TAG_BYTES,
+	});
+	cipher.setAAD(view(aad));
+	const ciphertext = Buffer.concat([
+		cipher.update(view(plaintext)),
+		cipher.final(),
+	]);
+	const tag = cipher.getAuthTag();
+	requireLength(new Uint8Array(tag), GCM_TAG_BYTES, "GCM tag");
+
+	return concatBytes([headerBytes, ciphertext, tag]);
+}
+
+// ---------------------------------------------------------------------------
+// comparison, encoding, RNG
+// ---------------------------------------------------------------------------
+
+/**
+ * `crypto.timingSafeEqual`, length-safe. Every MAC, tag and id comparison in
+ * this bridge goes through here — `===` on a MAC is a timing oracle.
+ *
+ * Unequal lengths return `false` without a timing-safe compare: all values
+ * compared here (32-byte MACs, 16-byte ids) have lengths that are public by
+ * construction, so length is not secret.
+ */
+export function constantTimeEquals(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length !== b.length || a.length === 0) {
+		return false;
+	}
+	return timingSafeEqual(view(a), view(b));
+}
+
+/**
+ * Constant-time "is every byte zero?".
+ *
+ * OR every byte into an accumulator and compare once, so the answer costs the
+ * same time whichever byte is non-zero. A short-circuiting `some(b => b !== 0)`
+ * leaks the position of the first non-zero byte through timing.
+ *
+ * ONE COPY, DELIBERATELY. This test guards two different disasters — a
+ * small-order X25519 peer point (`x25519`, below) and an already-wiped `K_dev`
+ * being used as an HKDF PRK (`keys.assertDeviceKey`) — and constant-time code is
+ * the worst possible place to keep two hand-written copies: a subtlety fixed in
+ * one silently misses the other. Callers supply their own error; this function
+ * only answers the question.
+ */
+export function isAllZero(bytes: Uint8Array): boolean {
+	let accumulator = 0;
+	for (const byte of bytes) {
+		accumulator |= byte;
+	}
+	return accumulator === 0;
+}
+
+const BASE64URL_ALPHABET = /^[A-Za-z0-9_-]*$/;
+
+export function base64UrlEncode(bytes: Uint8Array): string {
+	return view(bytes).toString("base64url");
+}
+
+/**
+ * Strict: rejects padding, non-alphabet characters, and non-canonical encodings
+ * (trailing bits that are not zero). Node's `Buffer.from(x, "base64url")` is
+ * lenient about all three and would silently accept two distinct strings that
+ * decode to the same bytes — which is a de-duplication and cache-key hazard for
+ * ids that this protocol uses as map keys.
+ */
+export function base64UrlDecode(value: string): Uint8Array {
+	if (!BASE64URL_ALPHABET.test(value)) {
+		throw new CryptoInvariantError("base64url: non-alphabet character");
+	}
+	if (value.length % 4 === 1) {
+		throw new CryptoInvariantError("base64url: impossible length");
+	}
+	const decoded = new Uint8Array(Buffer.from(value, "base64url"));
+	if (base64UrlEncode(decoded) !== value) {
+		throw new CryptoInvariantError("base64url: non-canonical encoding");
+	}
+	return decoded;
+}
+
+/**
+ * THE canonical §0.1 wire-id test: 22 base64url characters that decode to
+ * exactly 16 bytes AND re-encode to the same string.
+ *
+ * WHY THIS EXISTS AS ONE FUNCTION. The 22-character id shape used to be checked
+ * four different ways with three different strictnesses — a bare
+ * `/^[A-Za-z0-9_-]{22}$/` in `keys.ts` and `read-api.ts`, a zod `length(22)` plus
+ * the same regex in `http.ts`, and a full canonical decode in `device-store.ts`.
+ * The regex forms ACCEPT what the decode REJECTS: base64url's 22nd character
+ * carries only 4 significant bits, so `...A`, `...B`, `...C` and `...D` all
+ * decode to the same 16 bytes while comparing unequal as strings. That is the
+ * exact map-key / de-duplication hazard `base64UrlDecode` was made strict to
+ * close, so the same id was legal at one boundary and refused at another —
+ * ids that pass an outer gate and then fail an inner one is the failure mode
+ * this protocol can least afford (see `limits.ts` on the label cap).
+ *
+ * A type predicate, so a caller that validates `unknown` gets `string` back.
+ */
+export function isCanonicalWireId(value: unknown): value is string {
+	if (typeof value !== "string" || value.length !== WIRE_ID_CHARS) {
+		return false;
+	}
+	try {
+		return decodeWireId(value).length === WIRE_ID_BYTES;
+	} catch {
+		// Non-alphabet or non-canonical. The CALLER decides what a rejected id
+		// means on its own boundary; this is a predicate, not a policy.
+		return false;
+	}
+}
+
+/**
+ * The bytes behind a canonical wire id, or a throw.
+ *
+ * For the callers that need the decoded 16 bytes anyway (or that want to report
+ * WHY an id was refused — `base64UrlDecode` distinguishes non-alphabet from
+ * non-canonical). `isCanonicalWireId` is the boolean form of exactly this test.
+ */
+export function decodeWireId(value: string): Uint8Array {
+	const decoded = base64UrlDecode(value);
+	if (decoded.length !== WIRE_ID_BYTES) {
+		throw new CryptoInvariantError(
+			`wire id must decode to ${WIRE_ID_BYTES} bytes, got ${decoded.length}`,
+		);
+	}
+	return decoded;
+}
+
+/** `crypto.randomBytes`. Never `Math.random` (§15.1). */
+export function randomBytes(length: number): Uint8Array {
+	invariant(
+		Number.isInteger(length) && length > 0,
+		`randomBytes length must be a positive integer, got ${length}`,
+	);
+	return new Uint8Array(nodeRandomBytes(length));
+}
+
+/**
+ * Best-effort overwrite of key material before it is dropped.
+ *
+ * HONEST LIMIT: this cannot reach copies the runtime made — a GC'd `Buffer`
+ * slice, a moved allocation, a page swapped to disk. It reduces the window in
+ * which `K_dev` or a pairing code sits in a live heap; it is not a guarantee of
+ * erasure, and nothing in this design depends on it being one.
+ */
+export function zero(bytes: Uint8Array): void {
+	bytes.fill(0);
+}
+
+// ---------------------------------------------------------------------------
+// shared async primitives
+//
+// Not cryptography, but used by the modules that are, and previously copied into
+// each of them. They live here because this module is the one every other
+// companion module already depends on, so re-homing them creates no new edge in
+// the import graph — and no cycle, since `crypto.ts` imports none of them back.
+// ---------------------------------------------------------------------------
+
+/**
+ * A tail-promise mutex: every `work` runs strictly after the previous one has
+ * settled, whether it resolved or rejected.
+ *
+ * WHY A TAIL PROMISE AND NOT A LOCK LIBRARY. The property callers need is
+ * "check-then-write is atomic", and the failure it prevents is two concurrent
+ * read-modify-writes both reading the same pre-state. `tail.then(work, work)`
+ * gives exactly that in five lines with no timers, no lock leases and nothing to
+ * release — and critically, the SAME `work` is passed to both arms, so a rejected
+ * predecessor cannot wedge the chain. The `run.then(noop, noop)` that follows is
+ * what stops that swallowing from becoming an unhandled rejection while still
+ * letting the CALLER see its own error.
+ *
+ * Three byte-identical copies of this existed (`crypto.ts`, `keys.ts`,
+ * `device-store.ts`), each guarding a durable read-modify-write. Each serialiser
+ * owns its own chain: call this once per resource, never share one across two.
+ *
+ * It is a MUTEX, not a queue with fairness or a timeout. A `work` that never
+ * settles stops the chain forever — which is the correct outcome for a durable
+ * write that has not finished, and the reason every `work` passed to it must be
+ * bounded by its own I/O.
+ */
+export function createSerialiser(): <T>(work: () => Promise<T>) => Promise<T> {
+	let tail: Promise<unknown> = Promise.resolve();
+	return <T>(work: () => Promise<T>): Promise<T> => {
+		const run = tail.then(work, work);
+		tail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	};
+}
+
+/**
+ * A `readBoundedStream` read stopped because the body crossed `maxBytes`.
+ *
+ * A distinct type because the two callers must map it to two DIFFERENT wire
+ * outcomes — `413 body_too_large` on the bridge's own inbound request, an
+ * unverifiable-token refusal on a JWKS fetch — and neither may inherit the
+ * other's. Anything else thrown out of the read (a socket error, a stream error)
+ * is NOT this type and must not be mapped as an overflow.
+ */
+export class BoundedStreamOverflowError extends Error {
+	constructor(readonly maxBytes: number) {
+		super(
+			`(COMPANION-BRIDGE) stream exceeded the ${maxBytes}-byte cap before it ended`,
+		);
+		this.name = "BoundedStreamOverflowError";
+	}
+}
+
+export interface BoundedStreamOptions {
+	/**
+	 * Cancel the reader before throwing on overflow. DELIBERATELY REQUIRED, not
+	 * defaulted: the right answer differs per caller and getting it wrong is
+	 * invisible.
+	 *
+	 * `true` for a response body being abandoned (a JWKS host streaming garbage —
+	 * cancelling closes the socket instead of leaving it draining). `false` for an
+	 * inbound REQUEST body that still owes a response on the same connection:
+	 * cancelling there destroys the request stream, and on some HTTP/1.1 stacks
+	 * that takes the not-yet-written error response with it.
+	 */
+	cancelOnOverflow: boolean;
+}
+
+/**
+ * Reads a whole `ReadableStream` into memory with the cap enforced DURING the
+ * read, not after it.
+ *
+ * This is the part that must not be re-implemented: `await response.text()` (or
+ * any buffer-then-measure) makes the cap describe nothing an attacker has to
+ * respect — a hostile peer streams gigabytes and the process allocates all of it
+ * before deciding it was too big. The running total is checked per chunk, so the
+ * read stops at the first chunk that crosses the line.
+ *
+ * DELIBERATELY NOT INCLUDED, because the callers differ by design and unifying
+ * them would be a behaviour change, not a cleanup:
+ *  - the `Content-Length` pre-check (one caller refuses a non-numeric header
+ *    outright, the other only acts on a finite oversized one);
+ *  - the empty/absent-body case (one returns zero bytes, the other refuses);
+ *  - the mapping of an overflow to a wire error.
+ * Callers keep all three and catch `BoundedStreamOverflowError`.
+ */
+export async function readBoundedStream(
+	body: ReadableStream<Uint8Array>,
+	maxBytes: number,
+	options: BoundedStreamOptions,
+): Promise<Uint8Array> {
+	invariant(
+		Number.isInteger(maxBytes) && maxBytes >= 0,
+		`readBoundedStream maxBytes must be a non-negative integer, got ${maxBytes}`,
+	);
+
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				if (options.cancelOnOverflow) {
+					await reader.cancel();
+				}
+				throw new BoundedStreamOverflowError(maxBytes);
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
+}
+
+export interface SleepOptions {
+	/**
+	 * RESOLVES — never rejects — the moment the signal aborts. That is the whole
+	 * reason this is not `node:timers/promises setTimeout`, which REJECTS on abort:
+	 * every caller here uses the sleep as a backoff between attempts and treats
+	 * "we are shutting down" as "stop waiting", not as an error to propagate up a
+	 * retry loop that is itself being torn down.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * `unref()` the timer so a pending sleep cannot by itself hold the process
+	 * open. Defaults to FALSE, which is the semantics of a plain `setTimeout`.
+	 * Only the background push sender wants `true`; a sleep inside a request that
+	 * still owes a response does not.
+	 */
+	unref?: boolean;
+}
+
+/** `setTimeout` as a promise. See `SleepOptions` for the two behaviours it covers. */
+export function sleep(ms: number, options?: SleepOptions): Promise<void> {
+	const signal = options?.signal;
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		if (options?.unref) {
+			timer.unref?.();
+		}
+		function onAbort(): void {
+			clearTimeout(timer);
+			resolve();
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+// ---------------------------------------------------------------------------
+// durable state I/O + a clock that cannot be moved
+// ---------------------------------------------------------------------------
+
+/**
+ * A clock that only ever moves forward, for ages that MUST NOT be affected by
+ * the wall clock.
+ *
+ * Every retention/staleness decision in this bridge that an attacker (or NTP, or
+ * a VM resume) could otherwise influence by moving `Date.now()` is measured with
+ * this instead. `performance.now()` is process-relative and monotonic, so it is
+ * only meaningful WITHIN one process — anything that must survive a restart
+ * still has to fall back to the wall clock, and every such site says so.
+ */
+export function monotonicNowMs(): number {
+	return performance.now();
+}
+
+/**
+ * fsync the DIRECTORY, so a `rename` is durable and not merely ordered.
+ *
+ * A `tmp -> fsync -> rename` sequence makes the file's CONTENT durable, but the
+ * directory entry that names it is separate metadata: without this, a crash can
+ * leave the old name resolving to the old inode even though the new file was
+ * fully synced. For an anti-rollback high-water mark that is the difference
+ * between "burned some counters" and "silently went backwards".
+ *
+ * WINDOWS — STATED GAP, NOT A SWALLOWED ERROR. Node cannot open a directory
+ * handle on win32 (`fs.open` on a directory fails EISDIR/EPERM) and NTFS exposes
+ * no user-space directory-fsync; the durable-rename primitive there is
+ * `MoveFileEx(MOVEFILE_WRITE_THROUGH)`, which Node does not surface. On win32
+ * the content fsync and the rename ORDER still hold, but the directory entry is
+ * not forced. This is the fork's own platform, so it is recorded here rather
+ * than pretended away.
+ *
+ * WHAT THAT GAP COSTS, AND WHY THIS STILL RETURNS RATHER THAN THROWS. A hard
+ * reset can discard the most recent rename, which reverts a file to its previous
+ * version. Throwing here would be honest and would also end the feature on the
+ * only platform it ships to, so the gap is answered where it actually bites
+ * instead: `keys.ts` mirrors the send-nonce high-water mark into a second file
+ * (SEND-WITNESS) written BEFORE the anchor on every raise, and takes the higher
+ * of the two at start, so losing either rename can no longer resume the counter
+ * below a mark that was already durable. The Android half (`FileBlobStore`)
+ * refuses to construct without directory fsync; the two halves answer the same
+ * question differently ON PURPOSE, because the phone has a platform that
+ * provides it and the bridge does not. Anything added here whose rollback would
+ * be unsafe needs the same treatment — a durable witness — not a comment.
+ */
+export async function syncDirectory(dir: string): Promise<void> {
+	if (process.platform === "win32") return;
+	const handle = await open(dir, "r");
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+/**
+ * `tmp -> write -> fsync -> close -> rename -> fsync(parent)`.
+ *
+ * The ONLY way state that must not roll back is written. Callers serialise their
+ * own writes; the temp name is derived from the target so two different targets
+ * in one directory cannot collide.
+ *
+ * THE CONTENT FSYNC ALSO ORDERS EARLIER RENAMES ON WIN32. DO NOT REMOVE IT.
+ * `syncDirectory` is a no-op there, so nothing forces a directory entry — but
+ * `handle.sync()` on the tmp file is a FlushFileBuffers, and that forces NTFS's
+ * volume metadata log, which by then carries every rename this process has
+ * already issued. That is the only thing that makes two durable writes ORDERED
+ * relative to each other on the fork's platform, and `keys.ts` depends on it:
+ * the send-nonce witness is renamed first and the anchor's own content fsync is
+ * what publishes that rename before any nonce is issued. Replacing this with a
+ * plain `writeFile` would leave both renames in one unflushed log window, where a
+ * hard reset takes both and the anti-rollback mark silently rewinds.
+ */
+export async function writeFileDurable(
+	target: string,
+	bytes: Uint8Array,
+	mode: number,
+): Promise<void> {
+	const tmp = `${target}.tmp`;
+	const handle = await open(tmp, "w", mode);
+	try {
+		await handle.write(view(bytes), 0, bytes.length, 0);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(tmp, target);
+	await syncDirectory(dirname(target));
+}
+
+// ---------------------------------------------------------------------------
+// §3.5 freshness + the persisted replay cache
+// ---------------------------------------------------------------------------
+
+/**
+ * §3.5 — `|nowMs - timestampMs| <= 60 000`. Throws
+ * `CleartextError(401, "stale_timestamp")` outside the window.
+ *
+ * This runs BEFORE the replay cache and before any decryption. A timestamp
+ * alone does not stop replay; it only bounds the window that the cache must
+ * cover. Both are required.
+ */
+export function assertFresh(timestampMs: number, nowMs: number): void {
+	if (!Number.isFinite(timestampMs)) {
+		envelopeInvalid();
+	}
+	if (Math.abs(nowMs - timestampMs) > FRESHNESS_WINDOW_MS) {
+		throw new CleartextError(401, "stale_timestamp");
+	}
+}
+
+/**
+ * §3.5 — the replay cache.
+ *
+ * This is the ONLY implementation: the admit/compact/retention rules exist here
+ * and nowhere else, and every caller passes its own request-instant clock.
+ *
+ * It is declared here rather than in `keys.ts` only to avoid an import cycle:
+ * `keys.ts` needs this module's HKDF.
+ */
+export interface ReplayCache {
+	/**
+	 * `true` => `(deviceId, nonce)` was NOT seen before and has been DURABLY
+	 * recorded (fsync'd) — the caller may now act on the request.
+	 * `false` => already seen; the caller must answer `409 replay_detected`
+	 * without decrypting.
+	 */
+	admit(deviceId: DeviceId, nonce: Uint8Array, nowMs: number): Promise<boolean>;
+	/** Drops records older than the retention. At start and every 5 minutes. */
+	compact(nowMs: number): Promise<void>;
+	/** Live entry count, for the health surface. */
+	size(): number;
+	close(): Promise<void>;
+}
+
+interface ReplayCacheOptions {
+	noncesDir: string;
+	retentionMs?: number;
+	maxEntries?: number;
+	minRetainedEntries?: number;
+}
+
+function replayKey(deviceIdBytes: Uint8Array, nonce: Uint8Array): string {
+	return `${base64UrlEncode(deviceIdBytes)}.${base64UrlEncode(nonce)}`;
+}
+
+/**
+ * One admitted `(deviceId, nonce)`.
+ *
+ * `monoAtMs` is the ONLY age this process trusts; it is `null` for records
+ * rehydrated from disk, whose only available reference is the wall clock they
+ * were written against. `order` is the insertion sequence and is what keeps the
+ * newest records alive when the clock is unusable in either direction.
+ */
+interface ReplayEntry {
+	seenAtMs: number;
+	monoAtMs: number | null;
+	order: number;
+}
+
+/**
+ * Creates the on-disk replay cache.
+ *
+ * On DISK, not only in memory: Superset restarts often, and an in-memory cache
+ * is empty afterwards — a request captured 40 s before a restart would replay
+ * successfully after it. Every record is fsync'd BEFORE `admit` resolves, so a
+ * crash can never lose a nonce it already vouched for.
+ *
+ * All I/O here is async (`node:fs/promises`). It must never become sync: the
+ * fork's live footgun list records that blocking fs on the main thread starves
+ * the renderer's `superset-app://` loader for minutes.
+ */
+export async function createReplayCache(
+	options: ReplayCacheOptions,
+): Promise<ReplayCache> {
+	const retentionMs = options.retentionMs ?? NONCE_CACHE_RETENTION_MS;
+	const maxEntries = options.maxEntries ?? REPLAY_CACHE_MAX_ENTRIES;
+	const minRetained = options.minRetainedEntries ?? REPLAY_MIN_RETAINED_ENTRIES;
+	invariant(
+		retentionMs >= 2 * FRESHNESS_WINDOW_MS && retentionMs >= 300_000,
+		`replay retention ${retentionMs}ms violates §3.5 (>= 2x window, >= 300 000)`,
+	);
+	invariant(
+		minRetained > 0 && minRetained < maxEntries,
+		`replay min-retained ${minRetained} must be positive and below the ${maxEntries} cap, or compaction could never free space`,
+	);
+
+	const logPath = join(options.noncesDir, REPLAY_LOG_FILENAME);
+	const tmpPath = join(options.noncesDir, REPLAY_LOG_TMP_FILENAME);
+
+	const entries = new Map<string, ReplayEntry>();
+	let nextOrder = 0;
+	let handle = await open(logPath, "a");
+	let closed = false;
+	/** Serialises every mutation: check-then-append must be atomic. */
+	const serialise = createSerialiser();
+
+	/**
+	 * Retention is `age AND insertion order`, never age alone.
+	 *
+	 * A record admitted by THIS process is aged on the monotonic clock, so moving
+	 * the wall clock cannot expire it. A record rehydrated from disk has no
+	 * monotonic reference and falls back to the wall clock — but the insertion
+	 * floor still protects the newest `minRetained` of them, which covers more
+	 * than a full freshness window of legal traffic.
+	 */
+	function isExpired(
+		entry: ReplayEntry,
+		nowMs: number,
+		monoNowMs: number,
+		orderFloor: number,
+	): boolean {
+		if (entry.order >= orderFloor) {
+			return false;
+		}
+		const ageMs =
+			entry.monoAtMs !== null
+				? monoNowMs - entry.monoAtMs
+				: nowMs - entry.seenAtMs;
+		// A negative age means the clock moved backwards under us. That is never a
+		// reason to forget a nonce.
+		return ageMs > retentionMs;
+	}
+
+	async function loadFromDisk(nowMs: number): Promise<void> {
+		let raw: Buffer;
+		try {
+			raw = await readFile(logPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				return;
+			}
+			throw error;
+		}
+		// A truncated tail record (torn write before an fsync completed) is
+		// dropped, not tolerated silently at a wrong offset: records are fixed
+		// width, so anything past the last whole record is discarded.
+		const whole = raw.length - (raw.length % REPLAY_RECORD_BYTES);
+		const total = whole / REPLAY_RECORD_BYTES;
+		// The newest `minRetained` records survive regardless of what their
+		// timestamps claim, for the same reason compaction keeps them.
+		const ageExemptFrom = Math.max(0, total - minRetained);
+		for (let index = 0; index < total; index += 1) {
+			const offset = index * REPLAY_RECORD_BYTES;
+			const seenAtMs = Number(
+				raw.readBigUInt64BE(offset + WIRE_ID_BYTES + NONCE_BYTES),
+			);
+			if (index < ageExemptFrom && nowMs - seenAtMs > retentionMs) {
+				continue;
+			}
+			const deviceIdBytes = new Uint8Array(
+				raw.subarray(offset, offset + WIRE_ID_BYTES),
+			);
+			const nonce = new Uint8Array(
+				raw.subarray(
+					offset + WIRE_ID_BYTES,
+					offset + WIRE_ID_BYTES + NONCE_BYTES,
+				),
+			);
+			entries.set(replayKey(deviceIdBytes, nonce), {
+				seenAtMs,
+				monoAtMs: null,
+				order: nextOrder,
+			});
+			nextOrder += 1;
+		}
+	}
+
+	async function rewrite(nowMs: number): Promise<void> {
+		const monoNowMs = monotonicNowMs();
+		const orderFloor = nextOrder - minRetained;
+		const live: [string, ReplayEntry][] = [];
+		for (const [key, entry] of entries) {
+			if (isExpired(entry, nowMs, monoNowMs, orderFloor)) {
+				entries.delete(key);
+			} else {
+				live.push([key, entry]);
+			}
+		}
+		// Insertion order is load-bearing on the way out too: `loadFromDisk` reads
+		// the tail of this file as the age-exempt window.
+		live.sort((a, b) => a[1].order - b[1].order);
+
+		const out = Buffer.allocUnsafe(live.length * REPLAY_RECORD_BYTES);
+		let offset = 0;
+		for (const [key, entry] of live) {
+			const dot = key.indexOf(".");
+			const deviceIdBytes = base64UrlDecode(key.slice(0, dot));
+			const nonce = base64UrlDecode(key.slice(dot + 1));
+			out.set(deviceIdBytes, offset);
+			out.set(nonce, offset + WIRE_ID_BYTES);
+			out.writeBigUInt64BE(
+				BigInt(entry.seenAtMs),
+				offset + WIRE_ID_BYTES + NONCE_BYTES,
+			);
+			offset += REPLAY_RECORD_BYTES;
+		}
+
+		const tmp = await open(tmpPath, "w");
+		try {
+			await tmp.write(out, 0, out.length, 0);
+			await tmp.sync();
+		} finally {
+			await tmp.close();
+		}
+		await handle.close();
+		await rename(tmpPath, logPath);
+		await syncDirectory(options.noncesDir);
+		handle = await open(logPath, "a");
+	}
+
+	await loadFromDisk(Date.now());
+
+	return {
+		admit(deviceId, nonce, nowMs) {
+			return serialise(async () => {
+				if (closed) {
+					throw new CleartextError(503, "bridge_unavailable");
+				}
+				requireLength(nonce, NONCE_BYTES, "replay cache nonce");
+				const deviceIdBytes = base64UrlDecode(deviceId);
+				requireLength(deviceIdBytes, WIRE_ID_BYTES, "replay cache deviceId");
+
+				const key = replayKey(deviceIdBytes, nonce);
+				// PRESENCE is the whole test. An earlier revision re-admitted a record
+				// whose recorded time looked older than the retention, which handed a
+				// forward clock jump the ability to un-see a nonce without compaction
+				// ever running. A record leaves this map exactly one way: compaction.
+				if (entries.has(key)) {
+					return false;
+				}
+
+				if (entries.size >= maxEntries) {
+					await rewrite(nowMs);
+					if (entries.size >= maxEntries) {
+						// Never evict a live entry to make room: that would silently
+						// re-open the replay window this cache exists to close. Refuse
+						// the request instead and let the operator see it.
+						throw new CleartextError(503, "bridge_unavailable");
+					}
+				}
+
+				const record = Buffer.allocUnsafe(REPLAY_RECORD_BYTES);
+				record.set(deviceIdBytes, 0);
+				record.set(nonce, WIRE_ID_BYTES);
+				record.writeBigUInt64BE(BigInt(nowMs), WIRE_ID_BYTES + NONCE_BYTES);
+
+				// Durable BEFORE the caller is allowed to act on the request.
+				await handle.write(record, 0, record.length);
+				await handle.sync();
+
+				entries.set(key, {
+					seenAtMs: nowMs,
+					monoAtMs: monotonicNowMs(),
+					order: nextOrder,
+				});
+				nextOrder += 1;
+				return true;
+			});
+		},
+
+		compact(nowMs) {
+			return serialise(async () => {
+				if (closed) {
+					return;
+				}
+				await rewrite(nowMs);
+			});
+		},
+
+		size() {
+			return entries.size;
+		},
+
+		close() {
+			return serialise(async () => {
+				if (closed) {
+					return;
+				}
+				closed = true;
+				await handle.close();
+				await unlink(tmpPath).catch((error: NodeJS.ErrnoException) => {
+					if (error.code !== "ENOENT") {
+						throw error;
+					}
+				});
+			});
+		},
+	};
+}

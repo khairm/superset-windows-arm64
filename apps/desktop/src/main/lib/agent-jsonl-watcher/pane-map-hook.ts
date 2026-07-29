@@ -371,6 +371,14 @@ Server maps Start->working, Stop->review, PermissionRequest->permission and
 returns {"result":{"data":{"json":{"success":true,...}}}}. Uses only stdlib
 urllib so it has no third-party dependency. Silent on every failure path — a
 broken hook must NEVER raise or abort the agent.
+
+(COMPANION-CAPTURE) The POST body additionally carries the whole
+AskUserQuestion payload — companionQuestion on PreToolUse, and
+companionQuestionResolved on the matching PostToolUse — so the companion
+bridge can render a question on a phone/watch and retract the notification
+when it is answered at the desk. Both fields are optional and additive; the
+dot decision above never reads them, and a rejected companion payload is
+retried once with the fields stripped so a dot is never lost.
 """
 import datetime
 import json
@@ -1964,6 +1972,171 @@ def _decide_event_type_inner(
     return None
 
 
+# --- (COMPANION-CAPTURE) -------------------------------------------------
+# The PreToolUse:AskUserQuestion payload already carries the WHOLE question:
+# tool_use_id, transcript_path, session_id, cwd, tool_input.questions[] (each
+# with question / header / multiSelect / options[] -> label + description) and
+# agent_id / agent_type when a subagent asked. Until now this hook read only
+# tool_name and threw the rest away, so the companion phone/watch had nothing
+# to render and no way to discover a question without parsing transcripts.
+#
+# Everything below is PURELY ADDITIVE. It runs only for AskUserQuestion, it
+# never touches _decide_event_type, and on ANY shape surprise it returns None
+# and logs -- so a Claude Code payload change can degrade the companion feature
+# but can NEVER move a dot. Regressing the dots is not an acceptable trade.
+#
+# Style constraints for this embedded template: no backticks (they break the
+# esbuild template literal) and no raw backslashes.
+
+
+def _post_hook(url, body):
+    # Single place the notify POST is issued, so the (COMPANION-CAPTURE)
+    # strip-and-retry path sends a byte-identical request to the original.
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=1.5) as resp:
+        return resp.status
+
+
+def _companion_log(reason, detail):
+    # Returns None so callers can "return _companion_log(...)" -- a skipped
+    # capture is always logged, never silent.
+    try:
+        _log({
+            "action": "companion-capture-skip",
+            "reason": reason,
+            "detail": str(detail)[:400],
+        })
+    except Exception:
+        pass
+    return None
+
+
+def _companion_item(index, raw):
+    # One tool_input.questions[] entry -> the wire shape. Returns None when the
+    # entry is not the documented shape; the caller then drops the WHOLE
+    # capture rather than forwarding a partial question.
+    if not isinstance(raw, dict):
+        return None
+    question = raw.get("question")
+    if not isinstance(question, str) or not question:
+        return None
+    # header and description are LABELS, not answer inputs. Absent means the
+    # picker shows nothing there, so "" is the faithful representation, not a
+    # guess -- and dropping an otherwise-answerable question over a missing
+    # cosmetic label would be the worse outcome. Anything the ANSWER depends on
+    # (question text, option labels, multiSelect, ordering) is required above.
+    header = raw.get("header")
+    if header is None:
+        header = ""
+    if not isinstance(header, str):
+        return None
+    multi = raw.get("multiSelect")
+    if multi is None:
+        multi = raw.get("multi_select")
+    if multi is None:
+        multi = False
+    if not isinstance(multi, bool):
+        return None
+    raw_options = raw.get("options")
+    if not isinstance(raw_options, list) or not raw_options:
+        return None
+    options = []
+    for oi, opt in enumerate(raw_options):
+        if not isinstance(opt, dict):
+            return None
+        label = opt.get("label")
+        if not isinstance(label, str) or not label:
+            return None
+        description = opt.get("description")
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            return None
+        options.append({
+            "index": oi,
+            "label": label,
+            "description": description,
+        })
+    return {
+        "index": index,
+        "header": header,
+        "question": question,
+        "multiSelect": multi,
+        "options": options,
+    }
+
+
+def _companion_question(payload, event, tool, session_id):
+    # Built only for PreToolUse:AskUserQuestion. Every field the bridge needs
+    # is required -- no defaults for missing values, because a question the
+    # bridge cannot fingerprint or verify is a question it must not let anyone
+    # answer from a phone.
+    if event != "PreToolUse" or tool != "AskUserQuestion":
+        return None
+    tool_use_id = str(
+        payload.get("tool_use_id") or payload.get("toolUseId") or ""
+    ).strip()
+    if not tool_use_id:
+        return _companion_log("no tool_use_id", sorted(payload.keys()))
+    if not session_id:
+        return _companion_log("no session_id", tool_use_id)
+    transcript_path = str(
+        payload.get("transcript_path") or payload.get("transcriptPath") or ""
+    ).strip()
+    if not transcript_path:
+        return _companion_log("no transcript_path", tool_use_id)
+    cwd = str(payload.get("cwd") or "").strip()
+    if not cwd:
+        return _companion_log("no cwd", tool_use_id)
+    tool_input = payload.get("tool_input")
+    if tool_input is None:
+        tool_input = payload.get("toolInput")
+    if not isinstance(tool_input, dict):
+        return _companion_log("tool_input is not an object", type(tool_input))
+    raw_questions = tool_input.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        return _companion_log("tool_input.questions is empty or not a list", tool_use_id)
+    items = []
+    for index, raw in enumerate(raw_questions):
+        item = _companion_item(index, raw)
+        if item is None:
+            return _companion_log("question " + str(index) + " has an unexpected shape", raw)
+        items.append(item)
+    agent_id = str(payload.get("agent_id") or payload.get("agentId") or "").strip()
+    agent_type = str(payload.get("agent_type") or payload.get("agentType") or "").strip()
+    return {
+        "toolUseId": tool_use_id,
+        "sessionId": session_id,
+        "transcriptPath": transcript_path,
+        "cwd": cwd,
+        "agentId": agent_id or None,
+        "agentType": agent_type or None,
+        "askedAtMs": int(datetime.datetime.now().timestamp() * 1000),
+        "questions": items,
+    }
+
+
+def _companion_resolved(payload, event, tool):
+    # The mirror image: an AskUserQuestion that COMPLETED was answered AT THE
+    # DESK (or from a device). Without this signal a phone notification for a
+    # question the user already handled in front of them is never retracted,
+    # which is exactly the "muted within a week" failure the delayed push was
+    # designed to avoid.
+    if event != "PostToolUse" or tool != "AskUserQuestion":
+        return None
+    tool_use_id = str(
+        payload.get("tool_use_id") or payload.get("toolUseId") or ""
+    ).strip()
+    if not tool_use_id:
+        return _companion_log("resolve without tool_use_id", sorted(payload.keys()))
+    return {"toolUseId": tool_use_id}
+
+
 def main():
     payload = _read_payload()
     session_id = (
@@ -2111,33 +2284,65 @@ def main():
         })
         return
 
-    body = json.dumps({
-        "json": {
-            "terminalId": terminal_id,
-            "eventType": event_type,
-            "agent": {"agentId": agent_id, "sessionId": session_id},
-        }
-    }).encode("utf-8")
+    # (COMPANION-CAPTURE) additive fields; absent for every event that is not
+    # an AskUserQuestion open/close, and absent whenever the payload did not
+    # carry the documented shape (see _companion_log).
+    payload_json = {
+        "terminalId": terminal_id,
+        "eventType": event_type,
+        "agent": {"agentId": agent_id, "sessionId": session_id},
+    }
+    companion_question = _companion_question(payload, event, tool, session_id)
+    if companion_question is not None:
+        payload_json["companionQuestion"] = companion_question
+    companion_resolved = _companion_resolved(payload, event, tool)
+    if companion_resolved is not None:
+        payload_json["companionQuestionResolved"] = companion_resolved
+
+    body = json.dumps({"json": payload_json}).encode("utf-8")
+    has_companion = (
+        "companionQuestion" in payload_json
+        or "companionQuestionResolved" in payload_json
+    )
 
     try:
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            status = resp.status
+        status = _post_hook(url, body)
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "agentId": sub_agent_id, "httpStatus": status, "action": "posted",
+            "companion": has_companion,
         })
     except Exception as exc:
+        # (COMPANION-CAPTURE) The dot event must survive a rejected companion
+        # payload BYTE-FOR-BYTE -- the companion feature is additive and may
+        # never cost a dot. So on any failure that carried companion fields,
+        # retry ONCE with exactly the pre-companion body. The rejection is then
+        # logged under its own action name: it means the capture shape and the
+        # route schema disagree, which is a real bug for a human to fix, not
+        # something to paper over.
+        if has_companion:
+            payload_json.pop("companionQuestion", None)
+            payload_json.pop("companionQuestionResolved", None)
+            try:
+                status = _post_hook(
+                    url, json.dumps({"json": payload_json}).encode("utf-8")
+                )
+                _log({
+                    "event": event, "tool": tool, "mappedEventType": event_type,
+                    "terminalId": terminal_id, "sessionId": session_id,
+                    "url": url, "agentId": sub_agent_id, "httpStatus": status,
+                    "action": "companion-rejected-dot-posted",
+                    "error": str(exc),
+                })
+                return
+            except Exception as retry_exc:
+                exc = retry_exc
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "agentId": sub_agent_id, "error": str(exc), "action": "post-error",
+            "companion": has_companion,
         })
     return
 

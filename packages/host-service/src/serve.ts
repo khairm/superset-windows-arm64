@@ -2,6 +2,7 @@
 import "./ws-native-off";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app";
+import { startCompanionBridgeIfEnabled } from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
 import {
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
 		apiUrl: env.SUPERSET_API_URL,
 	});
 
-	const { app, injectWebSocket, api, db } = createApp({
+	const { app, injectWebSocket, api, db, terminalAgentStore } = createApp({
 		config: {
 			organizationId: env.ORGANIZATION_ID,
 			dbPath: env.HOST_DB_PATH,
@@ -102,6 +103,29 @@ async function main(): Promise<void> {
 		console.log(`[host-service] listening on http://localhost:${info.port}`);
 
 		startTerminalReaper(db);
+
+		// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
+		// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. Mounted here,
+		// after the server is listening, so a slow fs can never delay host-service
+		// startup. `startCompanionBridgeIfEnabled` is async and never rejects — a
+		// bridge fault must not abort the rest of this callback (connectRelay
+		// below), so it is deliberately not awaited and needs no catch here.
+		// (COMPANION-BRIDGE-MOUNT) exists ONLY on this line: (COMPANION-BRIDGE) is
+		// satisfied by the fork-only companion/ directory, so without a token that
+		// lives nowhere else, an upstream merge could delete this mount and every
+		// gate would still pass with the bridge silently never starting.
+		//
+		// THE HANDLE IS NOT LOST. This callback is synchronous, so there is nothing
+		// here that could hold the returned bridge; it publishes itself to
+		// `companion/registry` once started, and the `companion` tRPC router is what
+		// reads it back. Do not "fix" this into a variable — an unread local would
+		// leave pairing and the desktop panic switch exactly as unreachable as
+		// discarding it did.
+		void startCompanionBridgeIfEnabled({
+			hostDbPath: env.HOST_DB_PATH,
+			db,
+			terminalAgentStore,
+		});
 
 		if (env.RELAY_URL) {
 			void connectRelay({

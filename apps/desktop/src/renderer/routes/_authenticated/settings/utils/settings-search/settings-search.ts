@@ -56,6 +56,8 @@ export const SETTING_ITEM_ID = {
 	EXPERIMENTAL_V1_MIGRATION: "experimental-v1-migration",
 	EXPERIMENTAL_INLINE_WORKSPACE_PORTS: "experimental-inline-workspace-ports",
 	EXPERIMENTAL_WORKSPACE_AGENTS: "experimental-workspace-agents",
+	// (COMPANION-PAIRING-SEARCH)
+	EXPERIMENTAL_COMPANION_PAIRING: "experimental-companion-pairing",
 
 	INTEGRATIONS_LINEAR: "integrations-linear",
 	INTEGRATIONS_GITHUB: "integrations-github",
@@ -172,6 +174,8 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.EXPERIMENTAL_V1_MIGRATION]: "v2",
 	[SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS]: "v2",
 	[SETTING_ITEM_ID.EXPERIMENTAL_WORKSPACE_AGENTS]: "v2",
+	// (COMPANION-PAIRING-SEARCH) the companion bridge is a v2 host-service feature.
+	[SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING]: "v2",
 
 	[SETTING_ITEM_ID.INTEGRATIONS_LINEAR]: "shared",
 	[SETTING_ITEM_ID.INTEGRATIONS_GITHUB]: "shared",
@@ -1046,6 +1050,29 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"status",
 			"toggle",
 			"switch",
+		],
+	},
+	// (COMPANION-PAIRING-SEARCH)
+	{
+		id: SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING,
+		section: "experimental",
+		title: "Pair a device",
+		description:
+			"Show a QR code that pairs a phone or watch with this desktop over your Wi-Fi",
+		keywords: [
+			"experimental",
+			"companion",
+			"pair",
+			"pairing",
+			"device",
+			"phone",
+			"watch",
+			"android",
+			"qr",
+			"qr code",
+			"scan",
+			"mobile",
+			"bridge",
 		],
 	},
 	{

@@ -1,0 +1,1 @@
+export { CompanionPairingSetting } from "./CompanionPairingSetting";

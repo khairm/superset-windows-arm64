@@ -5,6 +5,12 @@ import { attachmentsRouter } from "./attachments";
 import { authRouter } from "./auth";
 import { chatRouter } from "./chat";
 import { cloudRouter } from "./cloud";
+// (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
+// This token is registered in FEATURES.md against THIS file, not against the
+// companion/ directory — a marker satisfied only by fork-only files cannot
+// notice when a merge drops the seam that reaches them. Without this mount the
+// pairing window and the panic switch are unreachable code.
+import { companionRouter } from "./companion";
 import { configRouter } from "./config";
 import { filesystemRouter } from "./filesystem";
 import { gitRouter } from "./git";
@@ -32,6 +38,8 @@ export const appRouter = router({
 	health: healthRouter,
 	host: hostRouter,
 	chat: chatRouter,
+	// (COMPANION-ROUTER-MOUNT) fork-only.
+	companion: companionRouter,
 	config: configRouter,
 	filesystem: filesystemRouter,
 	git: gitRouter,

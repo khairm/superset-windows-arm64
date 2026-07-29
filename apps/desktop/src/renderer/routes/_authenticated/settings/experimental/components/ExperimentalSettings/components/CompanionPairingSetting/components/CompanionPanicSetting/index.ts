@@ -1,0 +1,1 @@
+export { CompanionPanicSetting } from "./CompanionPanicSetting";
