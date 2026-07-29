@@ -939,23 +939,43 @@ export interface AnswerStatusResponse {
 	 *
 	 * THE BRIDGE'S GUARANTEE. For every answer attempt this bridge admitted whose
 	 * attempt began at or after `recordsSinceMs`, a record exists — the record is
-	 * written durably before the terminal lock is taken, so no keystroke can
-	 * reach a terminal without one. The value is `max(when THIS bridge lifetime
-	 * opened the durable store, serverTimeMs − 24 h retention)`, so it also moves
-	 * forward as old records are pruned.
+	 * written durably before the terminal lock is taken, so no keystroke can reach
+	 * a terminal without one. The value is `max(the store's PROVEN coverage start,
+	 * serverTimeMs − 24 h retention)`, so it also moves forward as old records are
+	 * pruned.
 	 *
-	 * IT DOES NOT REACH BACK PAST THE CURRENT LIFETIME, AND THAT IS DELIBERATE.
-	 * The store survives a restart and is still read back — a request from before
-	 * the restart is answered from the hydrated file exactly as it was written.
-	 * What does NOT survive is the CLAIM that a MISSING record proves nothing was
-	 * sent: `writeFileDurable` cannot force a directory entry on win32 (see
-	 * `syncDirectory`), so a hard reset can discard the store's most recent rename
-	 * and revert the file to an earlier version. The reverted file carries the same
-	 * first-recording stamp as the file that was lost, so it cannot declare its own
-	 * gap — the missing records would sit INSIDE a window still claiming to cover
-	 * them, which is the "it was not sent" lie this field exists to remove. A
-	 * rollback requires a crash and therefore a restart, so bounding the window by
-	 * this lifetime is exactly what a rollback can never reach behind.
+	 * IT REACHES BACK PAST THE CURRENT LIFETIME WHENEVER THE STORE CAN PROVE ITS
+	 * OWN FILE IS CURRENT — AND IT IS THE `known: false` BRANCH THAT NEEDS THIS,
+	 * NOT THE OTHER ONE. Be exact about that, because the intuitive reading is
+	 * wrong and was written down wrong here for a while: a PRESENT record already
+	 * survived a restart without any of this, since the store is durable and
+	 * `handleAnswerStatus` returns the record's own `status` whenever it finds one.
+	 * Nothing about the witness makes a landed answer read `confirmed`; it already
+	 * did. What this field governs is the ABSENT record — the claim that nothing
+	 * was ever sent — and before the witness that claim could only be made about
+	 * the current lifetime, so a pre-restart request with no record decayed to
+	 * `unconfirmed` even when it genuinely never arrived.
+	 *
+	 * What reaching back required is a second file: `writeFileDurable` cannot force
+	 * a directory entry on win32 (see `syncDirectory`), so a hard reset can discard
+	 * the store's most recent rename and revert the file to an earlier version —
+	 * and the reverted file carries the same first-recording stamp as the version
+	 * that was lost, so it cannot declare its own gap. The missing records would sit
+	 * INSIDE a window still claiming to cover them, which is the "it was not sent"
+	 * lie this field exists to remove. `(ATTEMPT-WITNESS)` in `answer.ts` is the
+	 * rise-only witness that makes that revert DETECTABLE rather than believed,
+	 * which is the only reason the file's own stamp may be published.
+	 *
+	 * WHEN THE WITNESS CANNOT PROVE IT — the file was rolled back, the witness is
+	 * missing, unreadable, or bound to another install, or the file predates the
+	 * witness and so was never witnessable — this value DEGRADES to the instant the
+	 * current lifetime opened the store, which is exactly what it always
+	 * used to be: a rollback needs a crash and therefore a restart, so a window
+	 * starting at this mount is one a rollback can never reach behind. Records
+	 * already in the file are still returned in every case; degrading narrows what a
+	 * MISSING record proves, never what a present one says. The client's rule below
+	 * is unchanged either way — it reads this field and does not need to know which
+	 * case produced it.
 	 *
 	 * THE CLIENT'S OBLIGATION. `known: false` may be rendered as "it was not
 	 * sent" ONLY if the client can show its own submit happened at or after this
@@ -975,12 +995,19 @@ export interface AnswerStatusResponse {
 	 * When this bridge lifetime began (§6.3, identical to
 	 * `HeartbeatResponse.bridgeStartedMs`).
 	 *
-	 * The same proof as `recordsSinceMs`, stated bluntly: if the client's submit
-	 * predates it, the bridge has restarted since and a missing record proves
-	 * nothing. Gating "not sent" on this alone is safe. The two fields now agree by
-	 * construction — `recordsSinceMs` is never earlier than this lifetime — so
-	 * neither is "the field to prefer"; `recordsSinceMs` is simply the tighter of
-	 * the two once records start being pruned inside a long-running lifetime.
+	 * A CONSERVATIVE version of the same proof: if the client's submit predates it,
+	 * the bridge has restarted since, and gating "not sent" on this alone is always
+	 * SAFE. It is no longer EQUIVALENT, and that is the one thing a client author
+	 * has to know: `recordsSinceMs` may now be EARLIER than this field, because the
+	 * durable store proves coverage across restarts (see `recordsSinceMs`). What a
+	 * client that gates on `bridgeStartedMs` alone forfeits is NOT any `confirmed`
+	 * status — those come back whenever the record exists, restart or not — but the
+	 * ability to resolve a MISSING pre-restart record. Such a request stays
+	 * `unconfirmed` ("I cannot tell you") rather than resolving to the actionable
+	 * terminal "it never arrived": wrong in the harmless direction, but the exact
+	 * loss the durable store and its witness were built to end. Prefer
+	 * `recordsSinceMs`; this field remains on the response for a client that gates
+	 * on lifetime continuity alone, and as the §6.3 re-hello trigger.
 	 */
 	bridgeStartedMs: EpochMs;
 }

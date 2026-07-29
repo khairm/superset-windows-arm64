@@ -79,12 +79,12 @@
  * incident is reconstructable rather than mysterious. Logging is the mitigation.
  */
 
-import { readFile, rename } from "node:fs/promises";
+import { readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { type AuditLog, hashJsonPayload } from "./audit";
 import { ANSWER_ATTEMPT_RETENTION_MS } from "./config";
-import { sleep, writeFileDurable } from "./crypto";
+import { isCanonicalWireId, sleep, writeFileDurable } from "./crypto";
 import {
 	createRawPtyWriter,
 	encodeAnswer,
@@ -1256,6 +1256,15 @@ function sealedFromEncoding(error: KeystrokeEncodingError): SealedError {
 /** The attempt file, alongside `devices/`, `nonces/` and `audit/`. */
 export const ATTEMPT_STORE_FILENAME = "answer-attempts.json";
 
+/**
+ * (ATTEMPT-WITNESS) The attempt file's rise-only witness, in the SAME directory.
+ *
+ * Same directory is not incidental: what publishes the witness's rename is the
+ * attempts file's own content fsync forcing the volume metadata log those two
+ * renames share. See `readAttemptWitness`.
+ */
+export const ATTEMPT_WITNESS_FILENAME = "answer-attempts-witness.json";
+
 /** Bumped ONLY for an incompatible shape change; an unknown version is quarantined. */
 const ATTEMPT_FILE_VERSION = 1;
 
@@ -1318,18 +1327,195 @@ const attemptRecordSchema = z.object({
 const attemptFileSchema = z.object({
 	version: z.literal(ATTEMPT_FILE_VERSION),
 	/**
-	 * When this store first began recording, preserved across every rewrite.
+	 * The instant from which a MISSING record proves the request never arrived,
+	 * carried across every rewrite and advanced only when a gap is detected.
 	 *
-	 * DIAGNOSTIC, not load-bearing: `recordsSinceMs` no longer derives the
-	 * published coverage window from it, because a file that a lost rename rolled
-	 * back carries this stamp UNCHANGED and would assert over the very records the
-	 * rollback removed. It is kept because it is the install-time fact a future
-	 * rise-only witness (the treatment `state-anchor.json` already has) would need
-	 * in order to make pre-restart coverage provable again.
+	 * LOAD-BEARING as of (ATTEMPT-WITNESS): `recordsSinceMs` publishes this value
+	 * (floored by the retention) instead of this mount's start, which is what lets
+	 * an answer that landed before a restart still read back as `confirmed`. What
+	 * made that unsound is unchanged — a file that a lost rename rolled back
+	 * carries this stamp UNCHANGED and would assert over the very records the
+	 * rollback removed — so it is only ever believed while the witness beside it
+	 * can prove the file is the latest version that was ever durable. When the
+	 * witness reports a gap instead, the store advances this stamp to the mount
+	 * instant BEFORE it writes again, so the gap is recorded once in the file
+	 * itself and no later, clean mount re-asserts over it.
 	 */
 	coverageSinceMs: z.number().int().nonnegative(),
+	/**
+	 * The witness mark: how many durable rewrites this file has had. See
+	 * `readAttemptWitness` for why a rewrite counter is the right mark.
+	 *
+	 * OPTIONAL, defaulting to 0, which is what a pre-(ATTEMPT-WITNESS) file
+	 * hydrates as. That default is DIAGNOSTIC, not a licence to trust: an absent
+	 * mark says only "no witness could have been written for this", and a file no
+	 * witness can vouch for gets its coverage narrowed to the mount exactly like a
+	 * file whose witness was deleted — see the `witness === null` branch in
+	 * `createAttemptStore` for why treating those two as different reopened the
+	 * whole failure. What the 0 is still good for is the LOG: it says which of the
+	 * two situations a degraded mount is reporting.
+	 *
+	 * `ATTEMPT_FILE_VERSION` is deliberately NOT bumped for it: adding a field that
+	 * an older build's schema simply strips is a compatible change, and a bump
+	 * would quarantine every existing file — throwing away a real 24 h of records —
+	 * for no gain, since those records are still SERVED after a degrade. Only the
+	 * coverage window narrows.
+	 */
+	seq: z.number().int().nonnegative().default(0),
 	records: z.array(attemptRecordSchema),
 });
+
+// ---------------------------------------------------------------------------
+// (ATTEMPT-WITNESS) the rise-only witness
+// ---------------------------------------------------------------------------
+
+/**
+ * (ATTEMPT-WITNESS) A second, independent durable record of how far
+ * `answer-attempts.json` has been written, so a file that a lost rename rolled
+ * back is DETECTED rather than believed.
+ *
+ * WHY THE ATTEMPTS FILE NEEDED ONE. `writeFileDurable` gives content durability
+ * and rename ORDER, but `syncDirectory` is a no-op on win32, so the most recent
+ * rename can sit in the NTFS log for seconds and a hard reset reverts the file to
+ * its previous version. `coverageSinceMs` survives that revert UNCHANGED, so the
+ * file cannot declare its own gap: records the rollback removed would sit inside
+ * a window still claiming to cover them, and `known: false` inside a covered
+ * window is the terminal "the desktop never saw this request — it was not sent"
+ * that §11.4 records as unrecoverable. Publishing a window that started at THIS
+ * MOUNT was the honest answer while nothing could see the revert, and it cost
+ * every pre-restart answer its `confirmed` status on every restart the desktop
+ * performs — which this fork does often.
+ *
+ * WHY A REWRITE COUNTER IS THE MARK. The question the mark has to answer is "is
+ * this file BEHIND a version that was already durable" — an ORDER question, so
+ * the mark must be ordered, and it must advance on every rewrite that can add a
+ * record. A count of records is not monotonic (`prune` and `forget` lower it). A
+ * write timestamp depends on a clock that can go backwards and cannot separate
+ * two rewrites inside one millisecond. A content hash proves "different" but not
+ * "behind", so it cannot tell a rollback from an ordinary prune. A rewrite
+ * counter has none of those problems, needs no clock, and gaps in it are harmless
+ * because only the comparison is ever read.
+ *
+ * IT IS A PLAIN INTEGER, NOT keys.ts's DECIMAL-STRING BIGINT. The send-nonce mark
+ * counts nonces and genuinely reaches uint64; this one counts answers a human
+ * sent from a phone, so `Number.MAX_SAFE_INTEGER` is unreachable by many orders
+ * of magnitude and JSON round-trips it exactly. A bigint here would add a parsing
+ * boundary to guard for no property gained.
+ *
+ * BOUND TO THE INSTALL `generation` — the state anchor's install identity, minted
+ * once per install in `keys.ts`. A witness whose generation does not match means
+ * the anchor was deleted or replaced while the witness survived, and nothing left
+ * can prove the attempts file is current.
+ *
+ * ORDERING IS THE WHOLE MECHANISM, AND IT IS BORROWED WHOLE FROM SEND-WITNESS.
+ * The witness is raised BEFORE the attempts file on every rewrite, and it is the
+ * attempts file's own `handle.sync()` — a FlushFileBuffers, which forces NTFS's
+ * volume metadata log, by then already carrying the witness's rename record —
+ * that PUBLISHES the witness's rename. Call order alone would not: two renames
+ * issued microseconds apart sit in the same unflushed window. So a crash cannot
+ * discard the witness while keeping a file version it was meant to bound.
+ *
+ * THAT MAKES THE PAIRING LOAD-BEARING: every raise must be followed by the
+ * attempts-file write, in the same directory, before anything reads coverage from
+ * the file again. `persist()` is the only caller and does exactly that,
+ * unconditionally. A WITNESS-ONLY WRITE PATH — a periodic refresh, a repair pass,
+ * a raise whose file write is skipped — would put both renames in one unflushed
+ * log window where a hard reset takes both, and coverage would silently go back
+ * to being believed rather than proven. Do not add one.
+ *
+ * WHAT THIS DELIBERATELY DOES *NOT* DO, and it is the one place it must diverge
+ * from SEND-WITNESS. `keys.ts` throws `StateRollbackError` and REFUSES TO START
+ * on a witness mismatch, because a rewound send-nonce counter repeats a nonce and
+ * that destroys AES-GCM outright. A rolled-back attempts file costs idempotency
+ * and status RECORDS. Refusing to start would take away the phone's only channel
+ * in order to protect a scratch file — the same trade `createAttemptStore`
+ * already refuses to make for a malformed file. So every verdict this witness can
+ * reach DEGRADES the published window to this mount, which is exactly the
+ * behaviour that predates it, and logs loudly. Nothing about what the witness
+ * SAYS may ever throw. (A witness that cannot be WRITTEN is a different fact —
+ * the directory is not usable — and follows this store's existing I/O contract.)
+ *
+ * ABSENT is `null` with no reason: the first start after this build lands (the
+ * file is then `seq: 0`, which is what makes that case distinguishable) or a
+ * fresh install. UNPARSABLE, MALFORMED or UNREADABLE is also `null`, but WITH a
+ * reason, because "cannot prove the file is current" is the degrade path and not
+ * an outage.
+ */
+const ATTEMPT_WITNESS_VERSION = 1;
+
+const attemptWitnessSchema = z.object({
+	version: z.literal(ATTEMPT_WITNESS_VERSION),
+	/**
+	 * The anchor's install generation. Checked with the same canonical §0.1 test
+	 * every other wire id crosses, so a generation that would compare unequal to
+	 * the anchor's for a base64url encoding reason is refused here rather than
+	 * silently reading as a rollback.
+	 */
+	generation: z.string().refine(isCanonicalWireId, {
+		message: "not a canonical wire id",
+	}),
+	/** The highest `seq` `answer-attempts.json` was ever durably written with. */
+	seq: z.number().int().nonnegative(),
+});
+
+type AttemptWitness = z.infer<typeof attemptWitnessSchema>;
+
+/**
+ * The witness, or `null` plus the reason it is unusable. NEVER throws — see the
+ * section header: a witness cannot be allowed to fail the bridge's start.
+ */
+async function readAttemptWitness(
+	path: string,
+): Promise<{ witness: AttemptWitness | null; unusable: string | null }> {
+	let raw: string;
+	try {
+		raw = await readFile(path, "utf8");
+	} catch (error) {
+		// ENOENT is the first run or a fresh install and carries no reason; every
+		// other read failure DOES, because it leaves the file unproven.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { witness: null, unusable: null };
+		}
+		return {
+			witness: null,
+			unusable: `cannot be read (${
+				error instanceof Error ? error.message : String(error)
+			})`,
+		};
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		return {
+			witness: null,
+			unusable: `is not valid JSON (${
+				error instanceof Error ? error.message : String(error)
+			})`,
+		};
+	}
+	const file = attemptWitnessSchema.safeParse(parsed);
+	if (!file.success) {
+		return {
+			witness: null,
+			unusable: `does not match the shape this build writes (${file.error.message})`,
+		};
+	}
+	return { witness: file.data, unusable: null };
+}
+
+async function writeAttemptWitness(
+	path: string,
+	witness: AttemptWitness,
+): Promise<void> {
+	await writeFileDurable(
+		path,
+		new Uint8Array(
+			Buffer.from(`${JSON.stringify(witness, null, "\t")}\n`, "utf8"),
+		),
+		ATTEMPT_FILE_MODE,
+	);
+}
 
 /**
  * §11.4/§11.5 — the 24 h idempotency + status record, keyed by `requestId`.
@@ -1398,24 +1584,31 @@ export interface AttemptStore {
 	 * `known: false` means only "no record", and §11.5 requires the client to
 	 * render that as `unconfirmed`, never as failed.
 	 *
-	 * It is `max(this store's open time, nowMs - retention)`: a record older than
-	 * the retention has been pruned, and a record from before this mount cannot be
-	 * asserted over at all.
+	 * It is `max(the store's PROVEN coverage start, nowMs - retention)`: a record
+	 * older than the retention has been pruned, and a record from before the
+	 * coverage start cannot be asserted over at all.
 	 *
-	 * WHY THIS MOUNT, WHEN THE FILE ITSELF SURVIVES RESTARTS. Hydrated records are
-	 * still returned — a pre-restart request is answered from the file exactly as
-	 * it was written. What cannot be asserted is that a MISSING record proves the
-	 * request never arrived, because `writeFileDurable` cannot force a directory
-	 * entry on win32 (`syncDirectory` returns immediately there): a hard reset can
-	 * discard this file's most recent rename and revert it to an earlier version.
-	 * The reverted file carries the same `coverageSinceMs` as the version that was
-	 * lost, so it cannot declare its own gap — the missing records would sit inside
-	 * a window still claiming to cover them, which is precisely the "it was not
-	 * sent" lie. A rollback needs a crash and therefore a restart, so a window that
-	 * starts at this mount is exactly the window a rollback can never reach behind.
-	 * Making the file's own stamp load-bearing again requires giving it what
-	 * `state-anchor.json` has: a rise-only witness in a second file (SEND-WITNESS
-	 * in `keys.ts`), so a reverted file is detected rather than believed.
+	 * IT REACHES BEHIND THIS MOUNT, WHICH IS THE POINT OF THE FILE. The coverage
+	 * start is the FILE's own `coverageSinceMs` whenever
+	 * `answer-attempts-witness.json` proves the file is the latest version that was
+	 * ever durable, so an answer that landed before a restart still reads back as
+	 * `confirmed` instead of losing its status to the restart. What made that
+	 * unsound before the witness is unchanged, and is exactly why the witness
+	 * exists: `writeFileDurable` cannot force a directory entry on win32
+	 * (`syncDirectory` returns immediately there), so a hard reset can discard this
+	 * file's most recent rename and revert it to an earlier version — and the
+	 * reverted file carries the SAME `coverageSinceMs` as the version that was
+	 * lost, so it cannot declare its own gap. The witness is what turns that from
+	 * believed into detected (ATTEMPT-WITNESS).
+	 *
+	 * WHEN THE WITNESS CANNOT PROVE IT the coverage start DEGRADES to this mount,
+	 * which is precisely the window that predates the witness: a rollback needs a
+	 * crash and therefore a restart, so a window starting at this mount is one a
+	 * rollback can never reach behind. Records already in the file are still
+	 * returned either way — degrading narrows what a MISSING record proves, not
+	 * what a present one says. `createAttemptStore` degrades and logs; it never
+	 * refuses to start, because a scratch file must not be able to take down the
+	 * phone's only channel.
 	 */
 	recordsSinceMs(nowMs: EpochMs): EpochMs;
 }
@@ -1431,7 +1624,8 @@ export interface AttemptStore {
  *  - the file cannot be READ or WRITTEN (EPERM, EIO, a full disk): THROW. The
  *    bridge would be unable to record the answers it types, and the first write
  *    at the bottom of this function proves the path is usable before a single
- *    request can be served.
+ *    request can be served. The witness shares the directory and is written by
+ *    that same first write, so it is covered by this clause and by no other.
  *  - the file is present but MALFORMED (truncated by something that is not this
  *    code, hand-edited, written by a second process): it is moved aside, the
  *    fault is logged, and the store starts EMPTY. This is not tolerance of bad
@@ -1442,19 +1636,73 @@ export interface AttemptStore {
  *    was not sent". Throwing instead would turn a scratch file into a total
  *    outage of the phone's only channel, which is the same trade
  *    `device-store`'s pending-destroy list already refuses to make.
+ *
+ * AND A THIRD, ADDED WITH (ATTEMPT-WITNESS): the file parses but the witness
+ * cannot prove it is CURRENT (rolled back, bound to another install generation,
+ * unreadable, missing beside a file this build wrote, or unbindable because no
+ * generation was supplied). That is the same answer as MALFORMED minus the
+ * quarantine: the records are kept and still served, and only the published
+ * window degrades to this mount. It follows the malformed clause's reasoning
+ * exactly — and NOT `keys.ts`'s, which refuses to start on the same shape,
+ * because a repeated nonce breaks AES-GCM while a lost attempt record costs a
+ * status read its precision.
  */
 export async function createAttemptStore(options: {
 	dir: string;
 	/** Structured diagnostics. Never carries question or answer text. */
 	log: (event: Record<string, unknown>) => void;
+	/**
+	 * The install `generation` from the state anchor (`keys.ts`), which is what
+	 * binds the witness to this install.
+	 *
+	 * OPTIONAL, and a missing or non-canonical value DEGRADES coverage to this
+	 * mount rather than throwing — the (ATTEMPT-WITNESS) rule that nothing about
+	 * the witness may take the bridge down. `index.ts` opens the anchor before it
+	 * builds this store, so an absent generation is a WIRING mistake rather than a
+	 * state fact; it is logged loudly at this boundary so it reads as one instead
+	 * of quietly costing every restart its pre-restart status.
+	 */
+	generation?: string;
 	retentionMs?: DurationMs;
 	nowMs?: EpochMs;
 }): Promise<AttemptStore> {
 	const retentionMs = options.retentionMs ?? ANSWER_ATTEMPT_RETENTION_MS;
 	const path = join(options.dir, ATTEMPT_STORE_FILENAME);
+	const witnessPath = join(options.dir, ATTEMPT_WITNESS_FILENAME);
 	const startedAtMs = options.nowMs ?? Date.now();
+	/**
+	 * Asserted at the boundary, because (ATTEMPT-WITNESS) made an omission newly
+	 * fatal and in the least useful way.
+	 *
+	 * `log` is required by the type, so a caller without one is a programmer error
+	 * — but before the witness this function only logged on the malformed-file and
+	 * persist-failure paths, so a JS caller that omitted it ran clean through every
+	 * ordinary open and never found out. The witness added a path that logs on a
+	 * PERFECTLY HEALTHY open (a caller that supplies no generation degrades, and a
+	 * degrade logs), which turned that latent omission into a `TypeError` thrown
+	 * from inside `degradeCoverage` — pointing at this file's internals for a fault
+	 * that belongs entirely to the caller, and doing it while executing the very
+	 * path whose whole contract is "this must never take the bridge down".
+	 *
+	 * So: name the fault here, where it is true, rather than letting it surface as
+	 * an internal crash somewhere it is not.
+	 */
+	if (typeof options.log !== "function") {
+		throw new TypeError(
+			`(COMPANION-BRIDGE) createAttemptStore requires a \`log\` function; got ${typeof options.log}. This is a caller wiring fault — the store logs on ordinary opens (a degraded coverage window is reported, not silent), so there is no path that can run without it.`,
+		);
+	}
 	const log = options.log;
 	const records = new Map<RequestId, AnswerAttemptRecord>();
+
+	// Validated ONCE, at the boundary, with the same canonical §0.1 test the
+	// generation crosses everywhere else — an id that passes an outer gate and
+	// fails an inner one is the failure `isCanonicalWireId` was written to close.
+	// `null` from here on means "this mount cannot witness anything", and every
+	// path below reads that one variable rather than re-deriving the condition.
+	const generation = isCanonicalWireId(options.generation)
+		? options.generation
+		: null;
 
 	let raw: string | null;
 	try {
@@ -1471,6 +1719,8 @@ export async function createAttemptStore(options: {
 	}
 
 	let coverageSinceMs = startedAtMs;
+	/** The file's rewrite mark. 0 = no file, or one written before this witness. */
+	let seq = 0;
 	if (raw !== null) {
 		/**
 		 * Moves the unusable file aside and starts with no coverage. A failure to
@@ -1506,11 +1756,12 @@ export async function createAttemptStore(options: {
 					`does not match the shape this build writes: ${file.error.message}`,
 				);
 			} else {
-				// Carried forward, never advanced past this start: it records when the
-				// store first began recording. It is NOT the published coverage window
-				// (see `recordsSinceMs`) — a rolled-back file preserves this value
-				// verbatim, so it cannot bound what the rollback removed.
+				// Carried forward, floored at this start so a future-dated stamp from a
+				// skewed clock cannot claim coverage that has not happened yet. It is
+				// what `recordsSinceMs` publishes — but only if the witness verdict
+				// below leaves it alone.
 				coverageSinceMs = Math.min(file.data.coverageSinceMs, startedAtMs);
+				seq = file.data.seq;
 				for (const record of file.data.records) {
 					if (startedAtMs - record.startedAtMs > retentionMs) continue;
 					records.set(
@@ -1532,14 +1783,168 @@ export async function createAttemptStore(options: {
 		}
 	}
 
+	/**
+	 * (ATTEMPT-WITNESS) Gives up on the file's own stamp.
+	 *
+	 * It does not merely narrow what THIS mount publishes — it advances the stamp
+	 * the file is about to be rewritten with, so the gap is recorded ONCE, in the
+	 * file, and the next clean mount reads a stamp that already excludes it instead
+	 * of re-asserting over it. A gap is permanent; a degraded mount that healed the
+	 * stamp back would hand the lie to its successor.
+	 */
+	const degradeCoverage = (why: string): void => {
+		coverageSinceMs = startedAtMs;
+		log({
+			event: "companion.answer.attempt_coverage_degraded",
+			path,
+			witnessPath,
+			why,
+			effect:
+				"records already in the file are still served; only the coverage window narrows to this mount, so an earlier request with no record reports as unconfirmed, never as unsent",
+		});
+	};
+
+	if (generation === null) {
+		// Nothing this mount writes can be witnessed, so any witness left beside the
+		// file goes stale at the first `persist()` below — and a stale witness reads
+		// as merely BEHIND the file, which is the harmless direction and would make
+		// the next mount BELIEVE a file that advanced unwitnessed. Removing it is
+		// what makes the next mount see `seq >= 1` with no witness and degrade, which
+		// is the truth. A removal that fails is logged, not thrown: the degrade below
+		// stands either way and the bridge must still start.
+		try {
+			await unlink(witnessPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				log({
+					event: "companion.answer.attempt_witness_unlink_failed",
+					witnessPath,
+					error: error instanceof Error ? error.message : String(error),
+					effect:
+						"a witness this mount cannot bind is still on disk; the next mount may read it as behind the file and believe an unwitnessed file",
+				});
+			}
+		}
+		degradeCoverage(
+			options.generation === undefined
+				? "no install generation was supplied, so no witness can be bound to this install — this is a wiring fault in the caller, not a state fact"
+				: `the install generation supplied (${String(options.generation)}) is not a canonical wire id, so no witness can be bound to it`,
+		);
+	} else {
+		const { witness, unusable } = await readAttemptWitness(witnessPath);
+		if (unusable !== null) {
+			degradeCoverage(`the witness ${unusable}`);
+		} else if (witness === null) {
+			// NO WITNESS AND A FILE THAT REACHES BACK IS AN UNPROVABLE CLAIM, whatever
+			// wrote it.
+			//
+			// This deliberately does NOT distinguish "a build that predates the witness
+			// wrote this" (`seq` absent, schema-defaulted to 0) from "the witness was
+			// removed" (`seq >= 1`). An earlier revision trusted the first case once,
+			// reasoning that a legacy file is legitimately unwitnessed. It is — and it
+			// is also exactly as unverifiable as a deleted witness, so trusting it
+			// reopened the precise lie this witness exists to remove: the OLD build
+			// could lose a rename the same way (win32 cannot force a directory entry),
+			// reverting the file while its `coverageSinceMs` stamp stayed put, and the
+			// first mount of THIS build would then publish that stamp as proven and
+			// report a landed answer's missing record as the terminal "it was not
+			// sent". Nothing about a seq-0 file can rule that out.
+			//
+			// The test is therefore whether the stamp claims anything at all: a file
+			// whose stamp predates this mount is asserting coverage that no witness
+			// backs. A fresh install (no file, or a stamp already at this mount) claims
+			// nothing, so it degrades nothing and stays silent rather than logging a
+			// fault that did not happen.
+			//
+			// The cost is one mount: an upgrading install loses its pre-restart
+			// coverage exactly once — which is the behaviour of every build before this
+			// change — and is witnessed from the `persist()` below onwards. Set against
+			// a possible false "it was not sent" for an answer that landed, this is the
+			// trade the rest of the subsystem already makes everywhere: over-claiming
+			// is the worst outcome, and narrowing the window is the harmless direction.
+			if (coverageSinceMs < startedAtMs) {
+				degradeCoverage(
+					seq > 0
+						? `the witness is missing beside an attempts file this build wrote (seq ${seq}) — it was deleted or never landed, so nothing can prove the file is current`
+						: "the attempts file carries no rewrite mark, so it was written by a build with no witness — its coverage stamp cannot be verified, and a rollback under that build would be invisible",
+				);
+			}
+		} else if (witness.generation !== generation) {
+			degradeCoverage(
+				`the witness was written under install generation ${witness.generation} but this install is ${generation} — the state anchor was deleted or replaced while the witness survived, so nothing can prove freshness`,
+			);
+		} else if (witness.seq > seq) {
+			// THE CASE THIS WITNESS WAS BUILT FOR. The witness is raised before the
+			// file, so a witness ahead of the file means the file's rename was lost and
+			// reverted it to an earlier version — taking records with it that the
+			// unchanged `coverageSinceMs` would otherwise claim to cover.
+			degradeCoverage(
+				`the witness records rewrite ${witness.seq} but the attempts file is at ${seq} — the file's most recent rename was lost, so records it held are gone`,
+			);
+		}
+		// A matching generation with `witness.seq <= seq` needs nothing: the file is
+		// the latest version that was ever durable, and its stamp stands. BEHIND is
+		// the harmless direction — the witness's own rename was lost, which the
+		// `persist()` below repairs by raising it past the file.
+		seq = Math.max(seq, witness?.seq ?? 0);
+	}
+
 	/** Serialises rewrites: `writeFileDurable` uses one tmp name per target. */
 	let tail: Promise<unknown> = Promise.resolve();
 
+	/**
+	 * (ATTEMPT-WITNESS) Raises the mark, RAISE-ONLY, checked against the FILE
+	 * rather than against this object's beliefs — the same discipline as
+	 * `raiseWitness` in `keys.ts`, and for the same reason: a witness whose own
+	 * rename was lost is repaired on the next raise instead of being trusted, and a
+	 * lowered witness could not bound a rolled-back file at all. A raise to the
+	 * value already durable writes nothing.
+	 *
+	 * A witness that is unreadable or bound to another generation is REPLACED, not
+	 * thrown over: this store may never fail a `put` because of what a witness
+	 * SAYS, and the coverage such a witness would have proven is already forfeit
+	 * for this mount (the verdict above degraded it). Replacing it is what makes
+	 * the NEXT mount provable again.
+	 *
+	 * A raise that cannot be WRITTEN does reject, and deliberately: the alternative
+	 * is a file that advanced beyond its witness, which reads as merely "behind" at
+	 * the next start and would make an unwitnessed file be believed. A rejected
+	 * `put` is a path `handleAnswer` already handles on both sides of the lock — an
+	 * unwitnessed advance is a silent lie, and silence is the thing this subsystem
+	 * exists to remove.
+	 */
+	const raiseWitness = async (through: number): Promise<void> => {
+		if (generation === null) return;
+		const { witness } = await readAttemptWitness(witnessPath);
+		if (
+			witness !== null &&
+			witness.generation === generation &&
+			witness.seq >= through
+		) {
+			return;
+		}
+		await writeAttemptWitness(witnessPath, {
+			version: ATTEMPT_WITNESS_VERSION,
+			generation,
+			seq: through,
+		});
+	};
+
 	function persist(): Promise<void> {
 		const run = tail.then(async () => {
+			// (ATTEMPT-WITNESS) One rewrite, one mark, and the mark is raised BEFORE
+			// the file — the ordering the witness's whole guarantee rests on (see
+			// `readAttemptWitness`). It advances on EVERY rewrite rather than only on
+			// `put`, so "the file is behind what was witnessed" stays a single
+			// comparison instead of a case analysis over which kind of write was lost.
+			// `prune` and `forget` cost one extra small durable write each; both are
+			// rare next to the answer path, and neither is on it.
+			const next = seq + 1;
+			await raiseWitness(next);
 			const file = {
 				version: ATTEMPT_FILE_VERSION,
 				coverageSinceMs,
+				seq: next,
 				records: [...records.values()],
 			};
 			await writeFileDurable(
@@ -1549,6 +1954,11 @@ export async function createAttemptStore(options: {
 				),
 				ATTEMPT_FILE_MODE,
 			);
+			// Only after the write is durable. A failed write leaves `seq` where it
+			// was, so the next `persist` re-raises to the same mark (a no-op against
+			// the witness already on disk) and writes the file at it — the file never
+			// silently skips past a mark it was never written with.
+			seq = next;
 		});
 		tail = run.then(
 			() => undefined,
@@ -1559,8 +1969,10 @@ export async function createAttemptStore(options: {
 
 	// Written once at start, unconditionally: it stamps `coverageSinceMs` for a
 	// fresh store, collapses any `in_flight` records the previous process left,
-	// and — the reason it is not conditional — PROVES the file is writable before
-	// the bridge accepts an answer it would then be unable to record.
+	// raises the witness so a file that predates it (or a degraded mount's file) is
+	// witnessed from here on, and — the reason it is not conditional — PROVES both
+	// files are writable before the bridge accepts an answer it would then be
+	// unable to record.
 	await persist();
 
 	return {
@@ -1608,7 +2020,12 @@ export async function createAttemptStore(options: {
 			return dropped;
 		},
 		recordsSinceMs(nowMs) {
-			return Math.max(startedAtMs, nowMs - retentionMs);
+			// `coverageSinceMs` IS the proven start: the file's own stamp when the
+			// witness proved the file current, or this mount's start when it could not
+			// (`degradeCoverage` collapses the two cases into one variable rather than
+			// leaving a second one for a later reader to keep in step). Floored by the
+			// retention because anything older has been pruned.
+			return Math.max(coverageSinceMs, nowMs - retentionMs);
 		},
 	};
 }
@@ -2488,15 +2905,22 @@ async function awaitScreenAdvance(
  * The attempt store is durable, so records survive a restart and are answered
  * from the file. The RANGE over which a MISSING record proves anything is stated
  * rather than assumed: `recordsSinceMs` is the instant from which `known: false`
- * proves the request never arrived, and it starts at this bridge lifetime —
- * win32 cannot force a directory entry, so a hard reset can roll the file back
- * to an earlier version that still claims to cover the records it lost, and a
- * rollback always comes with a restart. `serverTimeMs` is on the response so the
- * client can compare AGES (server now − recordsSinceMs, against its own elapsed
- * time since it submitted) instead of two wall clocks that are allowed to
- * disagree. `bridgeStartedMs` is the same proof stated bluntly, kept on the
- * response so a client that only tracks the heartbeat's continuity value can
- * resolve this endpoint without implementing the age comparison.
+ * proves the request never arrived, and it reaches BEHIND this bridge lifetime
+ * whenever the store's rise-only witness can prove the file on disk is the latest
+ * version that was ever durable (ATTEMPT-WITNESS). That is what keeps a
+ * pre-restart answer `confirmed` instead of decaying it to `unconfirmed`. When the
+ * witness cannot prove it — the file was rolled back, or the witness is missing,
+ * unreadable or bound to another install — the range degrades to this lifetime,
+ * which is where it always used to start: win32 cannot force a directory entry, so
+ * a hard reset can roll the file back to an earlier version that still claims to
+ * cover the records it lost, and a rollback always comes with a restart.
+ * `serverTimeMs` is on the response so the client can compare AGES (server now −
+ * recordsSinceMs, against its own elapsed time since it submitted) instead of two
+ * wall clocks that are allowed to disagree. `bridgeStartedMs` is the CONSERVATIVE
+ * form of the same proof, kept on the response so a client that only tracks the
+ * heartbeat's continuity value can resolve this endpoint without implementing the
+ * age comparison — at the cost of the pre-restart coverage, since it is no longer
+ * equal to `recordsSinceMs`.
  */
 export async function handleAnswerStatus(
 	deps: AnswerDeps,

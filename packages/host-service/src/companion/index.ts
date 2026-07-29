@@ -388,7 +388,10 @@ export function createCompanionBridge(
 		// anchor chain below, so they are constructed together instead of back to
 		// back. NOTHING here is reordered against the anchor: `openStateAnchor` ->
 		// `createDeviceStore` -> the (ANCHOR-ORDER) assertion -> `createSendNonceSource`
-		// still runs strictly in sequence.
+		// still runs strictly in sequence. The attempt store reads ONE value off the
+		// anchor — `generation`, for its (ATTEMPT-WITNESS) binding — and reads it from
+		// the already-open anchor above rather than from the chain below, so the
+		// parallelism holds.
 		//
 		// `allSettled`, not `all`, and the reason is (BRIDGE-TEARDOWN-ONE-LIST):
 		// `createReplayCache` holds an open file handle, so a version that
@@ -402,6 +405,20 @@ export function createCompanionBridge(
 			// performs routinely; the file is what makes the 24 h retention real.
 			createAttemptStore({
 				dir: paths.root,
+				// (ATTEMPT-WITNESS) The install identity the attempts file's rise-only
+				// witness is bound to. `openStateAnchor` ran further up — it has to, for
+				// the send-nonce ordering — so the generation is already durable here.
+				//
+				// What the witness buys, stated precisely because the obvious guess is
+				// wrong: a RECORDED status already survives a restart, because
+				// `handleAnswerStatus` returns `known: true` with the record's own status
+				// whenever the record is there, and the file is durable. The witness
+				// works on the OTHER branch — it is what lets `known: false` be asserted
+				// for a request submitted BEFORE this mount, turning "no record, and I
+				// cannot tell you why" into the actionable "it never arrived". Absent it,
+				// coverage can only start at this mount and every pre-restart miss
+				// degrades to `unconfirmed`.
+				generation: anchor.generation,
 				log: (event) => logger.warn("answer-attempt store", event),
 			}),
 		]);
