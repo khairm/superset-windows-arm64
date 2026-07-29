@@ -25,6 +25,8 @@ import {
 	LuFolderPlus,
 	LuGitBranch,
 	LuPencil,
+	LuPin,
+	LuPinOff,
 	LuRadioTower,
 	LuRotateCcw,
 	LuTrash2,
@@ -49,13 +51,15 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	isInSection?: boolean;
 	isLocalWorkspace: boolean;
 	isNonGit?: boolean;
-	isPinned?: boolean;
+	isLocalMainWorkspace?: boolean;
+	isPinned: boolean;
 	isUnread: boolean;
 	/** Set when the row lives in the Snoozed / Archived / Recycle Bin section —
 	 * swaps the snooze/archive actions for the matching restore actions. */
 	sectionState?: WorkspaceSectionState;
 	hasStatus: boolean;
 	showDeleteHotkey?: boolean;
+	onTogglePin: () => void;
 	onCreateSection: () => void;
 	onMoveToSection: (sectionId: string | null) => void;
 	onOpenInFinder: () => void;
@@ -144,10 +148,12 @@ export function DashboardSidebarWorkspaceContextMenu({
 	isInSection,
 	isLocalWorkspace,
 	isNonGit = false,
-	isPinned = false,
+	isLocalMainWorkspace = false,
+	isPinned,
 	isUnread,
 	sectionState,
 	hasStatus,
+	onTogglePin,
 	onCreateSection,
 	onMoveToSection,
 	onOpenInFinder,
@@ -197,6 +203,26 @@ export function DashboardSidebarWorkspaceContextMenu({
 		<ContextMenu onOpenChange={setContextMenuOpen}>
 			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
 			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
+				{/* A snoozed / archived / in-bin row isn't in the active lane, so the
+				Pinned section can't show it — offer Pin only on normal rows. */}
+				{!isSectioned && (
+					<>
+						<ContextMenuItem onSelect={onTogglePin}>
+							{isPinned ? (
+								<>
+									<LuPinOff className="size-4 mr-2" />
+									Unpin
+								</>
+							) : (
+								<>
+									<LuPin className="size-4 mr-2" />
+									Pin
+								</>
+							)}
+						</ContextMenuItem>
+						<ContextMenuSeparator />
+					</>
+				)}
 				{onRename && (
 					<ContextMenuItem onSelect={onRename}>
 						<LuPencil className="size-4 mr-2" />
@@ -251,7 +277,9 @@ export function DashboardSidebarWorkspaceContextMenu({
 						)}
 					</>
 				)}
-				{!isPinned && !isSectioned && (
+				{/* Group actions mutate placement (sectionId/tabOrder), which a pinned
+				    row doesn't display — the change would only surface on unpin. */}
+				{!isPinned && !isLocalMainWorkspace && !isSectioned && (
 					<>
 						<ContextMenuSeparator />
 						<ContextMenuItem onSelect={onCreateSection}>

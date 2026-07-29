@@ -178,6 +178,9 @@ export const workspaceLocalStateSchema = z.object({
 		// to active. The permanent git-destroy lives behind "Delete permanently"
 		// inside the bin.
 		deletedAt: z.number().nullable().default(null),
+		// Epoch ms when the user pinned this workspace to the sidebar's Pinned
+		// section; null = not pinned. Ordering is pinnedAt ascending.
+		pinnedAt: z.number().int().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -221,6 +224,7 @@ const SIDEBAR_STATE_DEFAULTS = {
 	snoozeLaunchId: null,
 	completedAt: null,
 	deletedAt: null,
+	pinnedAt: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {

@@ -16,11 +16,20 @@ import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/Host
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useWorkspaceTransactionsStore } from "renderer/stores/workspace-creates";
 import type {
+	DashboardSidebarPinnedWorkspace,
 	DashboardSidebarProject,
 	DashboardSidebarProjectChild,
 	DashboardSidebarSection,
 	DashboardSidebarWorkspace,
 } from "../../types";
+// The project tree itself is still built INLINE below (computedGroups): the
+// extracted builder has no notion of the fork's Snoozed / Archived / Recycle
+// Bin buckets or the just-returned highlight. Only upstream's pinned helpers
+// are shared from it.
+import {
+	buildDashboardSidebarPinnedWorkspaces,
+	partitionSidebarWorkspacesByPinned,
+} from "./buildDashboardSidebarProjects";
 import {
 	derivePullRequestQueryTargets,
 	getDashboardSidebarPullRequestQueryKey,
@@ -88,6 +97,26 @@ function useStablePullRequestsByWorkspaceId(
 		previousRef.current = { fingerprint, map };
 		return map;
 	}, [rows]);
+}
+
+/**
+ * Returns the previous reference while the JSON serialization is unchanged.
+ * Same purpose as the fingerprinted hooks below: the sidebar builders produce
+ * fresh arrays every run, and downstream memoization needs stable identities.
+ */
+function useJsonStable<Value>(value: Value): Value {
+	const previousRef = useRef<{ fingerprint: string; value: Value } | null>(
+		null,
+	);
+	return useMemo(() => {
+		const fingerprint = JSON.stringify(value);
+		const previous = previousRef.current;
+		if (previous?.fingerprint === fingerprint) {
+			return previous.value;
+		}
+		previousRef.current = { fingerprint, value };
+		return value;
+	}, [value]);
 }
 
 function useStableDashboardSidebarProjects(
@@ -161,10 +190,10 @@ export function useDashboardSidebarData() {
 		(q) =>
 			q
 				.from({ sidebarProjects: collections.v2SidebarProjects })
-				.orderBy(({ sidebarProjects }) => sidebarProjects.tabOrder, "asc")
 				.select(({ sidebarProjects }) => ({
 					projectId: sidebarProjects.projectId,
 					isCollapsed: sidebarProjects.isCollapsed,
+					tabOrder: sidebarProjects.tabOrder,
 					isPinned: sidebarProjects.isPinned,
 					showSnoozed: sidebarProjects.showSnoozed,
 					showArchived: sidebarProjects.showArchived,
@@ -176,6 +205,21 @@ export function useDashboardSidebarData() {
 				})),
 		[collections],
 	);
+	// Sorted in JS, not via the query's orderBy: the incremental orderBy
+	// does not reliably re-sort on row inserts/renumbers (a newly added
+	// project stayed appended at the bottom until reload), and tabOrders
+	// can collide (bulk ensure paths mint duplicates) so ties need a
+	// stable secondary key. Workspaces/sections don't need this — the
+	// project-tree builder re-sorts them by tabOrder itself.
+	const orderedSidebarProjectRows = useMemo(
+		() =>
+			[...sidebarProjectRows].sort(
+				(left, right) =>
+					left.tabOrder - right.tabOrder ||
+					left.projectId.localeCompare(right.projectId),
+			),
+		[sidebarProjectRows],
+	);
 
 	const { projects: hostProjects } = useHostProjects();
 
@@ -183,7 +227,7 @@ export function useDashboardSidebarData() {
 		const projectsByKey = new Map(
 			hostProjects.map((project) => [project.projectKey, project]),
 		);
-		return sidebarProjectRows.flatMap((row) => {
+		return orderedSidebarProjectRows.flatMap((row) => {
 			const project = projectsByKey.get(row.projectId);
 			// No host serves it: stale placement row (deleted project) — drop
 			// it, same as the old inner join did.
@@ -213,13 +257,15 @@ export function useDashboardSidebarData() {
 				},
 			];
 		});
-	}, [sidebarProjectRows, hostProjects]);
+	}, [orderedSidebarProjectRows, hostProjects]);
 
 	const { data: sidebarSections = [] } = useLiveQuery(
 		(q) =>
 			q
 				.from({ sidebarSections: collections.v2SidebarSections })
+				// Same tie-breaking rationale as the projects query above.
 				.orderBy(({ sidebarSections }) => sidebarSections.tabOrder, "asc")
+				.orderBy(({ sidebarSections }) => sidebarSections.sectionId, "asc")
 				.select(({ sidebarSections }) => ({
 					id: sidebarSections.sectionId,
 					projectId: sidebarSections.projectId,
@@ -242,8 +288,13 @@ export function useDashboardSidebarData() {
 		(q) =>
 			q
 				.from({ sidebarWorkspaces: collections.v2WorkspaceLocalState })
+				// Same tie-breaking rationale as the projects query above.
 				.orderBy(
 					({ sidebarWorkspaces }) => sidebarWorkspaces.sidebarState.tabOrder,
+					"asc",
+				)
+				.orderBy(
+					({ sidebarWorkspaces }) => sidebarWorkspaces.workspaceId,
 					"asc",
 				)
 				.select(({ sidebarWorkspaces }) => ({
@@ -252,6 +303,7 @@ export function useDashboardSidebarData() {
 					tabOrder: sidebarWorkspaces.sidebarState.tabOrder,
 					sectionId: sidebarWorkspaces.sidebarState.sectionId,
 					isHidden: sidebarWorkspaces.sidebarState.isHidden,
+					pinnedAt: sidebarWorkspaces.sidebarState.pinnedAt,
 					snoozeUntil: sidebarWorkspaces.sidebarState.snoozeUntil,
 					snoozeLaunchId: sidebarWorkspaces.sidebarState.snoozeLaunchId,
 					archivedAt: sidebarWorkspaces.sidebarState.archivedAt,
@@ -285,6 +337,7 @@ export function useDashboardSidebarData() {
 						tabOrder: localState.tabOrder,
 						sectionId: localState.sectionId,
 						isHidden: localState.isHidden,
+						pinnedAt: localState.pinnedAt,
 						// (SIDEBAR-STATE-PROJECTION) Carry the fork's FULL sidebar-state
 						// fields through this projection. The bucket classifier and the
 						// Snoozed / Archived / Recycle Bin sections read them off this
@@ -493,6 +546,9 @@ export function useDashboardSidebarData() {
 					updatedAt: workspace.updatedAt,
 					tabOrder: MAIN_WORKSPACE_TAB_ORDER,
 					sectionId: null as string | null,
+					// Auto-included mains have no local-state row; pinning one
+					// creates a row first (see setWorkspacePinned).
+					pinnedAt: null as number | null,
 				})),
 		[hostWorkspaces],
 	);
@@ -609,6 +665,14 @@ export function useDashboardSidebarData() {
 	const pullRequestsByWorkspaceId =
 		useStablePullRequestsByWorkspaceId(pullRequestRows);
 
+	// Pinned rows render only in the top-level Pinned section, so they are
+	// partitioned out before the per-project tree is built. PR polling targets
+	// derive from the pre-partition list above, so pinned rows keep PR status.
+	const { pinned: pinnedRows, unpinned: unpinnedRows } = useMemo(
+		() => partitionSidebarWorkspacesByPinned(visibleSidebarWorkspaces),
+		[visibleSidebarWorkspaces],
+	);
+
 	const computedGroups = useMemo<DashboardSidebarProject[]>(() => {
 		const projectsById = new Map<
 			string,
@@ -660,7 +724,7 @@ export function useDashboardSidebarData() {
 			});
 		}
 
-		for (const workspace of visibleSidebarWorkspaces) {
+		for (const workspace of unpinnedRows) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 
@@ -691,6 +755,9 @@ export function useDashboardSidebarData() {
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
 				taskId: workspace.taskId,
+				// Always false here — pinned rows were partitioned out above and
+				// render only in the Pinned section.
+				isPinned: workspace.pinnedAt != null,
 				pendingTransaction: workspace.pendingTransaction,
 				justReturned: justReturnedIds.has(workspace.id),
 			};
@@ -752,6 +819,9 @@ export function useDashboardSidebarData() {
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
 				taskId: workspace.taskId,
+				// A snoozed / archived / soft-deleted row never renders in the Pinned
+				// section, so its pin state is irrelevant to the row it produces.
+				isPinned: false,
 				pendingTransaction: workspace.pendingTransaction,
 				snoozeUntil: workspace.snoozeUntil ?? null,
 				snoozeLaunchId: workspace.snoozeLaunchId ?? null,
@@ -888,15 +958,28 @@ export function useDashboardSidebarData() {
 		pullRequestsByWorkspaceId,
 		sidebarProjects,
 		sidebarSections,
-		visibleSidebarWorkspaces,
+		unpinnedRows,
 		snoozedSidebarWorkspaces,
 		archivedSidebarWorkspaces,
 		deletedSidebarWorkspaces,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
 
+	const computedPinnedWorkspaces = useMemo<DashboardSidebarPinnedWorkspace[]>(
+		() =>
+			buildDashboardSidebarPinnedWorkspaces({
+				pinnedSidebarWorkspaces: pinnedRows,
+				sidebarProjects,
+				machineId,
+				pullRequestsByWorkspaceId,
+			}),
+		[machineId, pinnedRows, pullRequestsByWorkspaceId, sidebarProjects],
+	);
+	const pinnedWorkspaces = useJsonStable(computedPinnedWorkspaces);
+
 	return {
 		groups,
+		pinnedWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	};

@@ -16,7 +16,7 @@ function readTemplate(name: string): string {
 
 describe("getNotifyScriptContent", () => {
 	it("bumps the notify hook marker when hook semantics change", () => {
-		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v3");
+		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v4");
 	});
 
 	it("emits the v2 host-service payload with full agent identity", () => {

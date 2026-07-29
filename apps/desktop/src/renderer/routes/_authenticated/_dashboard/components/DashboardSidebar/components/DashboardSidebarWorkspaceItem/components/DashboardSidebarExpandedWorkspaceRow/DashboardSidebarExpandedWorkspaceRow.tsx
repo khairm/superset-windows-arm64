@@ -11,6 +11,7 @@ import { LuRotateCcw, LuUndo2 } from "react-icons/lu";
 import type { DiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { HotkeyLabel } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { ProjectThumbnail } from "renderer/routes/_authenticated/components/ProjectThumbnail";
 import {
 	type DisplayStatus,
 	StatusIndicator,
@@ -50,6 +51,8 @@ interface DashboardSidebarExpandedWorkspaceRowProps
 	isInSection?: boolean;
 	isNonGit?: boolean;
 	sectionState?: "snoozed" | "archived" | "deleted";
+	/** Present when rendered in the Pinned section: shows the project avatar. */
+	pinnedContext?: { projectName: string; projectIconUrl: string | null };
 	onRestoreClick?: () => void;
 	onClick?: () => void;
 	onDoubleClick?: () => void;
@@ -78,6 +81,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 			isInSection = false,
 			isNonGit = false,
 			sectionState,
+			pinnedContext,
 			onRestoreClick,
 			onClick,
 			onDoubleClick,
@@ -262,6 +266,23 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 						</TooltipContent>
 					</Tooltip>
 
+					{pinnedContext && (
+						<Tooltip delayDuration={500}>
+							<TooltipTrigger asChild>
+								<div className="mr-1.5 flex shrink-0 items-center">
+									<ProjectThumbnail
+										projectName={pinnedContext.projectName}
+										iconUrl={pinnedContext.projectIconUrl}
+										className="size-3.5 text-[8px]"
+									/>
+								</div>
+							</TooltipTrigger>
+							<TooltipContent side="right" sideOffset={8}>
+								{pinnedContext.projectName}
+							</TooltipContent>
+						</Tooltip>
+					)}
+
 					<div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-1.5">
 						{isRenaming ? (
 							<RenameInput
@@ -375,7 +396,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 													<HiMiniMinus className="size-3.5" />
 												</button>
 											</TooltipTrigger>
-											<TooltipContent side="top" sideOffset={4}>
+											<TooltipContent side="top">
 												<HotkeyLabel label="Remove from sidebar" />
 											</TooltipContent>
 										</Tooltip>
@@ -403,7 +424,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 													<HiMiniXMark className="size-3.5" />
 												</button>
 											</TooltipTrigger>
-											<TooltipContent side="top" sideOffset={4}>
+											<TooltipContent side="top">
 												<HotkeyLabel
 													label="Close workspace"
 													id={isActive ? "CLOSE_WORKSPACE" : undefined}

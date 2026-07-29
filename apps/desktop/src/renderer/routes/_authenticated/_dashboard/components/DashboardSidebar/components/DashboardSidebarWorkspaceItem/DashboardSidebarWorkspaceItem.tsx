@@ -25,6 +25,11 @@ interface DashboardSidebarWorkspaceItemProps {
 	isCollapsed?: boolean;
 	isInSection?: boolean;
 	sectionState?: "snoozed" | "archived" | "deleted";
+	/**
+	 * Set when the row renders inside the top-level Pinned section: shows the
+	 * owning project's avatar for cross-project context.
+	 */
+	pinnedContext?: { projectName: string; projectIconUrl: string | null };
 }
 
 export function DashboardSidebarWorkspaceItem({
@@ -34,6 +39,7 @@ export function DashboardSidebarWorkspaceItem({
 	isCollapsed = false,
 	isInSection = false,
 	sectionState,
+	pinnedContext,
 }: DashboardSidebarWorkspaceItemProps) {
 	const {
 		id,
@@ -79,6 +85,7 @@ export function DashboardSidebarWorkspaceItem({
 		handleRemoveFromSidebar,
 		handleRestore,
 		handleSnooze,
+		handleTogglePin,
 		handleToggleUnread,
 		handleUnarchive,
 		handleUnsnooze,
@@ -98,6 +105,7 @@ export function DashboardSidebarWorkspaceItem({
 		workspaceName: name,
 		branch,
 		isMainWorkspace,
+		isPinned: workspace.isPinned,
 	});
 
 	const { v2Workspaces: v2WorkspaceActions } = useOptimisticCollectionActions();
@@ -187,7 +195,11 @@ export function DashboardSidebarWorkspaceItem({
 							hasStatus={!!workspaceStatus}
 							isLocalWorkspace={hostType === "local-device"}
 							isNonGit={isNonGit}
-							isPinned={isMainWorkspace && hostType === "local-device"}
+							isLocalMainWorkspace={
+								isMainWorkspace && hostType === "local-device"
+							}
+							isPinned={workspace.isPinned}
+							onTogglePin={handleTogglePin}
 							onCreateSection={handleCreateSection}
 							onMoveToSection={(targetSectionId) =>
 								moveWorkspaceToSection(id, projectId, targetSectionId)
@@ -258,6 +270,7 @@ export function DashboardSidebarWorkspaceItem({
 				isRenaming={isRenaming}
 				renameValue={renameValue}
 				shortcutLabel={shortcutLabel}
+				pinnedContext={pinnedContext}
 				diffStats={isPending ? null : diffStats}
 				workspaceStatus={workspaceStatus}
 				tabCount={rowTabCount}
@@ -309,7 +322,11 @@ export function DashboardSidebarWorkspaceItem({
 						}
 						isLocalWorkspace={hostType === "local-device"}
 						isNonGit={isNonGit}
-						isPinned={isMainWorkspace && hostType === "local-device"}
+						isLocalMainWorkspace={
+							isMainWorkspace && hostType === "local-device"
+						}
+						isPinned={workspace.isPinned}
+						onTogglePin={handleTogglePin}
 						onOpenInFinder={handleOpenInFinder}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}

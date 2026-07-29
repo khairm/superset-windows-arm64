@@ -12,7 +12,7 @@
 # the `add_item ... errno 1` cascade that wedged every chat's hooks. The wire
 # payload is byte-for-byte identical to the previous pipeline version.
 
-# Codex passes JSON as argv; Claude/Mastra/Droid/Kimi pipe via stdin.
+# Codex passes JSON as argv; Claude/Mastra/Droid/Kimi/Grok pipe via stdin.
 # `read -d ''` slurps stdin without forking `cat`.
 if [ -n "$1" ]; then
   INPUT="$1"
@@ -31,14 +31,22 @@ json_field() {
 }
 
 json_field "session_id" "$INPUT"; HOOK_SESSION_ID="$JSON_FIELD"
+if [ -z "$HOOK_SESSION_ID" ]; then
+  # Grok's envelope is camelCase.
+  json_field "sessionId" "$INPUT"; HOOK_SESSION_ID="$JSON_FIELD"
+fi
 json_field "resourceId" "$INPUT"; RESOURCE_ID="$JSON_FIELD"
 if [ -z "$RESOURCE_ID" ]; then
   json_field "resource_id" "$INPUT"; RESOURCE_ID="$JSON_FIELD"
 fi
 SESSION_ID=${RESOURCE_ID:-$HOOK_SESSION_ID}
 
-# Claude/Mastra/Droid/Kimi use "hook_event_name"; Codex uses "type".
+# Claude/Mastra/Droid/Kimi use "hook_event_name"; Grok uses camelCase
+# "hookEventName" (snake_case values, mapped server-side); Codex uses "type".
 json_field "hook_event_name" "$INPUT"; EVENT_TYPE="$JSON_FIELD"
+if [ -z "$EVENT_TYPE" ]; then
+  json_field "hookEventName" "$INPUT"; EVENT_TYPE="$JSON_FIELD"
+fi
 if [ -z "$EVENT_TYPE" ]; then
   json_field "type" "$INPUT"; CODEX_TYPE="$JSON_FIELD"
   case "$CODEX_TYPE" in
