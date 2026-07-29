@@ -1,0 +1,1 @@
+[Image #1] /call-another-llm gpt 5.6 sol  - Can you and Codex investigate why I've got a yellow dot on my care vision API chat when no agents are running at all? Why didn't I get my green dot? Why is the yellow dot stuck? If needs be, add even more logging than we already have. I need a definitive answer, not a guess.

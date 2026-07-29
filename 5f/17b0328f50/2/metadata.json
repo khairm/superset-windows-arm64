@@ -1,0 +1,90 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "5f17b0328f50",
+  "session_id": "edb8e93d-6808-4d27-b954-1c08ed8d43ca",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-29T15:46:07.1604485Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "743d62e73723",
+  "checkpoint_transcript_start": 389,
+  "transcript_lines_at_start": 389,
+  "token_usage": {
+    "input_tokens": 28,
+    "cache_creation_tokens": 252930,
+    "cache_read_tokens": 3206001,
+    "output_tokens": 8469,
+    "api_call_count": 15
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01UNzRYiSkxwVxFNSWvUnRws",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "call-another-llm"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "743d62e73723",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 15,
+        "end": 16,
+        "entry_ids": [
+          "d0a84dc0-60d5-40ee-bbf3-64a07df37bc7"
+        ],
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01UNzRYiSkxwVxFNSWvUnRws"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: call-another-llm",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-29T15:46:07.1074688Z",
+    "agent_lines": 220,
+    "agent_removed": 15,
+    "human_added": 25096,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 25316,
+    "total_lines_changed": 25339,
+    "agent_percentage": 0.9274241288132917,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7560,
+      "agent_lines_removed": 1680
+    }
+  ]
+}

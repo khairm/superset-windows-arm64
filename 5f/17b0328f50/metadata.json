@@ -3,7 +3,7 @@
   "checkpoint_id": "5f17b0328f50",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 59,
+  "checkpoints_count": 60,
   "files_touched": [
     "FEATURES.md",
     "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
@@ -64,13 +64,19 @@
       "transcript": "/5f/17b0328f50/1/full.jsonl",
       "content_hash": "/5f/17b0328f50/1/content_hash.txt",
       "prompt": "/5f/17b0328f50/1/prompt.txt"
+    },
+    {
+      "metadata": "/5f/17b0328f50/2/metadata.json",
+      "transcript": "/5f/17b0328f50/2/full.jsonl",
+      "content_hash": "/5f/17b0328f50/2/content_hash.txt",
+      "prompt": "/5f/17b0328f50/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 1073,
-    "cache_creation_tokens": 4778977,
-    "cache_read_tokens": 183708972,
-    "output_tokens": 617920,
-    "api_call_count": 556
+    "input_tokens": 1101,
+    "cache_creation_tokens": 5031907,
+    "cache_read_tokens": 186914973,
+    "output_tokens": 626389,
+    "api_call_count": 571
   }
 }
