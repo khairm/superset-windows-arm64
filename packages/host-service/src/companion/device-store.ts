@@ -21,23 +21,32 @@
  * 3. (REVOKE-DURABLE) THE INDEX IS NOT THE ONLY RECORD OF A REVOCATION, AND IT
  *    IS NOT TRUSTED ON ITS OWN. Restoring an older `devices.json` used to
  *    reinstate a revoked device — and because point 1 deliberately RETAINS
- *    `K_dev`, that device's terminal writes became valid again. Two independent
- *    defences now close that:
+ *    `K_dev`, that device's terminal writes became valid again. THREE things
+ *    close that now, and they are independent on purpose:
  *      a. every revoke stamps a tombstone INSIDE the key file, which is the
  *         very file the attack scenario says was retained; the tombstone is
  *         re-applied to the index at load, loudly;
  *      b. the index is bound to the state anchor by `(seq, digest, epoch,
  *         generation)`, so an index that has moved BACKWARDS relative to the
- *         anchor refuses to load at all.
+ *         anchor refuses to load at all;
+ *      c. (DEVICE-INDEX-DB) the index is no longer a file that CAN be restored.
+ *         It is a host.db table, committed at `synchronous = FULL` in WAL mode.
+ *         (a) and (b) narrowed the window to "all three renames lost together";
+ *         (c) removes the rename.
  *    Point 3(a) is why the review's "destroy the key at revoke time" is not
  *    implemented literally: destroying it would break §5.1's sealed 403.
  *    Invalidating it — which is what the tombstone does — achieves the same
- *    authority result without breaking the protocol.
+ *    authority result without breaking the protocol. It also stays exactly where
+ *    it is: a second record of a revocation is only worth having if it lives
+ *    somewhere the first one does not.
  *
- * On-disk layout: ONE index file, `<devicesDir>/devices.json`, written
- * durably (tmp -> fsync -> rename -> fsync parent). Key material lives in
- * `keys.ts` under `<devicesDir>/<keyRef>.key.json`; a 22-character base64url
- * keyRef can never collide with the literal name `devices`.
+ * Layout: the index is `companion_devices` + `companion_device_index` in host.db.
+ * Key material stays in files, `keys.ts` under `<devicesDir>/<keyRef>.key.json`;
+ * a 22-character base64url keyRef can never collide with the literal name
+ * `devices`. A `<devicesDir>/devices.json` left by an older build is READ ONCE
+ * and carried into the tables, then retired — and refused rather than deleted if
+ * it claims to lead them, because a file that is ahead means an older build wrote
+ * authority this database never saw.
  *
  * SCOPE OF `assertNoRollback`, STATED SO IT IS NOT OVER-READ. The checks below
  * bind the INDEX to the anchor. They do not, and cannot, police the anchor's
@@ -49,9 +58,13 @@
  * add a send-nonce check here: the anchor must keep exactly one writer.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { eq, notInArray } from "drizzle-orm";
+import type { HostDb } from "../db";
+import { companionDeviceIndex, companionDevices } from "../db";
 import {
+	assertDurableSqlite,
 	base64UrlEncode,
 	createSerialiser,
 	decodeWireId,
@@ -85,6 +98,9 @@ const INDEX_FILENAME = "devices.json";
  * obligation instead of witnessing it a second time.
  */
 const PENDING_DESTROY_FILENAME = "pending-destroy.json";
+
+/** (DEVICE-INDEX-DB) The index header's only key — there is exactly one index. */
+const INDEX_ROW_ID = 1;
 const FILE_MODE = 0o600;
 
 /** §4.8 — a revoked record is kept this long so audit entries stay attributable. */
@@ -190,6 +206,15 @@ export interface DeviceStore {
 }
 
 export interface DeviceStoreDeps {
+	/**
+	 * (DEVICE-INDEX-DB) The LIVE drizzle handle — the index is rows now.
+	 *
+	 * It was `devices.json`, written durably. Content durability was never the
+	 * problem; the RENAME was, and a reverted index re-authorises a revoked device
+	 * whose key material revocation deliberately retains. See the tables' docblocks
+	 * in `db/schema.ts`.
+	 */
+	db: HostDb;
 	/**
 	 * The anti-rollback anchor. The index alone is not authoritative: it is bound
 	 * to `(generation, epoch, seq, digest)` here, and a backwards move fails
@@ -453,7 +478,17 @@ export async function createDeviceStore(
 			"a device store already owns this state anchor — a second store would re-read the index this mount just wrote and misreport it as a rollback",
 		);
 	}
+	if (!deps.db || typeof deps.db.insert !== "function") {
+		throw new DeviceStoreError(
+			"createDeviceStore requires the live host.db handle; a read-only reader could not record a revocation, which is the one write here that must never be lost",
+		);
+	}
 	STORES_BY_ANCHOR.add(deps.anchor);
+	const db = deps.db;
+	// The revocation this store writes is only as durable as the connection under
+	// it, and that is not something to inherit from whichever subsystem happened to
+	// open first.
+	assertDurableSqlite(db, "when opening the device store");
 	const anchor = deps.anchor;
 	const keys = deps.keys;
 	const log = deps.log ?? {
@@ -781,7 +816,131 @@ export async function createDeviceStore(
 		return loaded.seq === anchored.seq + 1n;
 	}
 
+	/**
+	 * (DEVICE-INDEX-DB) Reads the index out of the tables.
+	 *
+	 * Returns null when the header row is absent, which is the ONLY signal that this
+	 * install has not yet been migrated — device rows without a header would be an
+	 * index with no binding to the anchor, which `assertNoRollback` could not judge,
+	 * so that combination is refused rather than guessed at.
+	 */
+	function readIndexTables(): {
+		records: DeviceRecord[];
+		seq: bigint;
+		epoch: bigint;
+		generation: string;
+	} | null {
+		const header = db
+			.select()
+			.from(companionDeviceIndex)
+			.where(eq(companionDeviceIndex.id, INDEX_ROW_ID))
+			.all()[0];
+		const rows = db.select().from(companionDevices).all();
+		if (header === undefined) {
+			if (rows.length > 0) {
+				throw new DeviceStoreError(
+					`host.db holds ${rows.length} companion device row(s) with no index header — the header is what binds them to the state anchor, so without it nothing can say whether this set has moved backwards`,
+				);
+			}
+			return null;
+		}
+		if (!/^[0-9]+$/.test(header.seq) || !/^[0-9]+$/.test(header.epoch)) {
+			throw new DeviceStoreError(
+				"the companion device index header holds a non-numeric epoch or sequence",
+			);
+		}
+		// Validated one at a time through the SAME parser the file used. A row is
+		// still untrusted input: this database is on the user's disk and nothing
+		// stops it being edited by hand.
+		const records: DeviceRecord[] = [];
+		const seen = new Set<string>();
+		rows.forEach((row, index) => {
+			const record = parseRecord(row, index);
+			if (seen.has(record.deviceId)) {
+				throw new DeviceStoreError(
+					`host.db contains duplicate deviceId ${record.deviceId}`,
+				);
+			}
+			seen.add(record.deviceId);
+			records.push(record);
+		});
+		return {
+			records,
+			seq: BigInt(header.seq),
+			epoch: BigInt(header.epoch),
+			generation: header.generation,
+		};
+	}
+
+	/**
+	 * (DEVICE-INDEX-DB) The sequence a leftover `devices.json` claims, or null when
+	 * there is no such file.
+	 *
+	 * Read WITHOUT parsing the device entries, because the only question being asked
+	 * is whether the file can possibly be ahead of the tables. A file that is
+	 * unreadable or malformed answers "unknown", which is treated as ahead — the
+	 * conservative direction for a file that might record a revocation.
+	 */
+	async function leftoverIndexSeq(): Promise<bigint | null> {
+		let raw: string;
+		try {
+			raw = await readFile(indexPath, "utf8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw error;
+		}
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			// A pre-anchor array carries no sequence; it predates everything, so 1.
+			if (Array.isArray(parsed)) return 1n;
+			const seqText = (parsed as Partial<StoredIndexFile>).seq;
+			if (typeof seqText === "string" && /^[0-9]+$/.test(seqText)) {
+				return BigInt(seqText);
+			}
+		} catch {
+			// fall through to the conservative answer
+		}
+		// Unknown. Reported as the largest thing it could be so the caller refuses.
+		return -1n;
+	}
+
 	async function load(): Promise<LoadedIndex> {
+		const stored = readIndexTables();
+		if (stored !== null) {
+			/**
+			 * A `devices.json` beside a migrated index is normally the file this
+			 * install was migrated FROM, one start ago, and retiring it is right.
+			 *
+			 * It is not always that. Running an older build against this state
+			 * directory writes the file and not the tables, so the file can be AHEAD —
+			 * and deleting it would discard a revocation the tables never saw, which is
+			 * the same "skip the legacy state, then delete it" bug that was found in
+			 * the send-nonce counter's migration. Merging two indexes is not
+			 * well-defined (nothing here can say which copy of a record wins), so the
+			 * answer is to refuse and say why.
+			 */
+			const leftover = await leftoverIndexSeq();
+			if (leftover !== null && (leftover < 0n || leftover > stored.seq)) {
+				throw new StateRollbackError(
+					`${indexPath} still exists and is at device-index sequence ${leftover < 0n ? "unknown" : leftover} while host.db holds ${stored.seq} — a file that leads the table means an older build wrote authority this database never saw, and nothing here can decide which copy of a device record wins. Move ${indexPath} aside deliberately, or restore the database that matches it`,
+				);
+			}
+			if (leftover !== null) {
+				await unlink(indexPath).catch((error: NodeJS.ErrnoException) => {
+					if (error.code !== "ENOENT") throw error;
+				});
+			}
+			const adopt = assertNoRollback({
+				seq: stored.seq,
+				epoch: stored.epoch,
+				generation: stored.generation,
+				legacy: false,
+				absent: false,
+				digest: authorityDigest(stored.records),
+			});
+			return { records: stored.records, seq: stored.seq, adopt };
+		}
+
 		let raw: string | null;
 		try {
 			raw = await readFile(indexPath, "utf8");
@@ -901,23 +1060,84 @@ export async function createDeviceStore(
 		} else {
 			seq = anchored.seq;
 		}
-		const file: StoredIndexFile = {
-			v: 2,
-			generation: anchor.generation,
-			epoch: anchor.epoch.toString(10),
-			seq: seq.toString(10),
-			devices: list,
-		};
-		await writeFileDurable(
-			indexPath,
-			new Uint8Array(
-				Buffer.from(`${JSON.stringify(file, null, "\t")}\n`, "utf8"),
-			),
-			FILE_MODE,
-		);
-		// (LASTSEEN-DEBOUNCE) The file just written contains `list`, which is the
+		/**
+		 * (DEVICE-INDEX-DB) ONE TRANSACTION for the rows and the header.
+		 *
+		 * The whole set is written every time, exactly as the file was, and for the
+		 * same reason: `authorityDigest` attests the set, so a partial write would
+		 * leave the anchor vouching for a digest the index no longer matches. A
+		 * transaction gives that atomically where the file got it from being one
+		 * rename.
+		 *
+		 * Devices absent from `list` are DELETED rather than left behind — a purge
+		 * that only stopped writing a record would otherwise resurrect it here, which
+		 * is the same class of bug as an index that reverts.
+		 */
+		db.transaction((tx) => {
+			for (const record of list) {
+				tx.insert(companionDevices)
+					.values({
+						deviceId: record.deviceId,
+						label: record.label,
+						surface: record.surface,
+						pairedAtMs: record.pairedAtMs,
+						lastSeenMs: record.lastSeenMs,
+						keyRef: record.keyRef,
+						fcmToken: record.fcmToken,
+						fcmTokenUpdatedMs: record.fcmTokenUpdatedMs,
+						writeEnabled: record.writeEnabled,
+						revokedAtMs: record.revokedAtMs,
+						revokeReason: record.revokeReason,
+					})
+					.onConflictDoUpdate({
+						target: companionDevices.deviceId,
+						set: {
+							label: record.label,
+							surface: record.surface,
+							pairedAtMs: record.pairedAtMs,
+							lastSeenMs: record.lastSeenMs,
+							keyRef: record.keyRef,
+							fcmToken: record.fcmToken,
+							fcmTokenUpdatedMs: record.fcmTokenUpdatedMs,
+							writeEnabled: record.writeEnabled,
+							revokedAtMs: record.revokedAtMs,
+							revokeReason: record.revokeReason,
+						},
+					})
+					.run();
+			}
+			if (list.length === 0) {
+				tx.delete(companionDevices).run();
+			} else {
+				tx.delete(companionDevices)
+					.where(
+						notInArray(
+							companionDevices.deviceId,
+							list.map((record) => record.deviceId),
+						),
+					)
+					.run();
+			}
+			tx.insert(companionDeviceIndex)
+				.values({
+					id: INDEX_ROW_ID,
+					generation: anchor.generation,
+					epoch: anchor.epoch.toString(10),
+					seq: seq.toString(10),
+				})
+				.onConflictDoUpdate({
+					target: companionDeviceIndex.id,
+					set: {
+						generation: anchor.generation,
+						epoch: anchor.epoch.toString(10),
+						seq: seq.toString(10),
+					},
+				})
+				.run();
+		});
+		// (LASTSEEN-DEBOUNCE) The rows just written contain `list`, which is the
 		// live record objects — so whatever `touchLastSeen` stamped on them is now
-		// on disk, whichever caller asked for this write.
+		// durable, whichever caller asked for this write.
 		lastSeenDirty = false;
 		if (
 			anchored === null ||

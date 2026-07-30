@@ -386,6 +386,8 @@ export function createCompanionBridge(
 		// be destroyed, but a revoke must ALSO invalidate the key file, or restoring
 		// an older index silently re-authorises the device.
 		const deviceStore = await createDeviceStore(paths.devices, {
+			// (DEVICE-INDEX-DB) The live handle: the index is rows now, not devices.json.
+			db: options.db,
 			anchor,
 			keys: keyStore,
 			log: logger,

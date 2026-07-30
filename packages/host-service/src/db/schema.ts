@@ -474,3 +474,74 @@ export const companionReplayNonces = sqliteTable("companion_replay_nonces", {
 	 */
 	ord: integer().notNull(),
 });
+
+/**
+ * (DEVICE-INDEX-DB) §5's paired devices — the record that decides whether a device
+ * may act at all.
+ *
+ * WHY IT IS A TABLE. It was `devices.json`, written durably (tmp -> fsync -> rename
+ * -> fsync parent). Content durability was never the problem; the RENAME was. On
+ * NTFS the parent fsync is not documented to publish a directory entry, and the
+ * durable-rename primitive is one libuv never passes, so a hard reset could revert
+ * the index to its previous version. That mattered because revocation deliberately
+ * RETAINS key material (§5.1 needs a revoked device to receive a sealed
+ * `403 access_denied {reason:"revoked"}`, which it cannot decrypt without its key):
+ * an index reverted past a revocation makes a revoked device's terminal writes
+ * valid again.
+ *
+ * Two defences already narrowed that — a tombstone stamped inside the key file, and
+ * the anchor binding `(seq, digest, epoch, generation)` — so a revocation survived
+ * unless the key, index AND anchor renames were ALL lost together. Narrow is not the
+ * same as closed, and a committed row cannot revert at all.
+ *
+ * The tombstone in the key file STAYS. It is independent evidence written to a file
+ * this table does not control, and it is what makes the answer to "restore an older
+ * copy of X" not depend on which single X was restored.
+ *
+ * WHAT IS NOT HERE. Capabilities: §6.3 says a client must not carry them across a
+ * restart, so they live in memory and persisting them would make a stale grant
+ * survive exactly the restart meant to invalidate it. Key material: it stays in its
+ * own per-device file under the devices directory, because the tombstone above has
+ * to be somewhere this table is not.
+ */
+export const companionDevices = sqliteTable("companion_devices", {
+	deviceId: text("device_id").primaryKey(),
+	label: text().notNull(),
+	/** `phone` or `watch`. The watch never pairs; it is recorded for provenance. */
+	surface: text().notNull(),
+	pairedAtMs: integer("paired_at_ms").notNull(),
+	/**
+	 * Excluded from the authority digest, and that exclusion is load-bearing:
+	 * `touchLastSeen` runs on EVERY sealed request, so attesting this would force a
+	 * durable anchor round-trip per request for no authority benefit.
+	 */
+	lastSeenMs: integer("last_seen_ms"),
+	/** Names the key file. 22 chars of base64url, so it cannot collide. */
+	keyRef: text("key_ref").notNull(),
+	fcmToken: text("fcm_token"),
+	/** Excluded from the digest for the same churn reason as `lastSeenMs`. */
+	fcmTokenUpdatedMs: integer("fcm_token_updated_ms"),
+	writeEnabled: integer("write_enabled", { mode: "boolean" }).notNull(),
+	revokedAtMs: integer("revoked_at_ms"),
+	/** Always set together with `revokedAtMs`; the loader refuses them out of step. */
+	revokeReason: text("revoke_reason"),
+});
+
+/**
+ * (DEVICE-INDEX-DB) The header that binds the device table to the state anchor.
+ *
+ * `(generation, epoch, seq)` is what `assertNoRollback` compares. It is a separate
+ * single-row table rather than columns on every device row because it describes the
+ * INDEX as a whole: one authority sequence, one install generation, one mount epoch,
+ * whatever number of devices happen to exist — including zero, which is a state the
+ * binding still has to be able to express.
+ */
+export const companionDeviceIndex = sqliteTable("companion_device_index", {
+	id: integer().primaryKey().default(1),
+	/** The install that wrote it. A mismatch means the anchor was replaced. */
+	generation: text().notNull(),
+	/** The mount epoch, as a decimal string — it is a uint64 and exceeds `number`. */
+	epoch: text().notNull(),
+	/** The authority sequence, decimal string for the same reason. Never lowered. */
+	seq: text().notNull(),
+});

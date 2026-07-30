@@ -1077,15 +1077,22 @@ export function monotonicNowMs(): number {
  *    ANSWER-LEDGER; `/v1/message` keeps its idempotency in memory and would have
  *    retyped.) It is now a host.db table, where compaction is a DELETE and losing
  *    that transaction brings expired rows BACK rather than dropping live ones.
- *  - DEVICE AUTHORITY STILL DOES, for the index/anchor pair and the key tombstone
- *    that records a revocation. Restoring or reverting that matched set makes a
- *    revoked device live and write-enabled again. Narrower than the others were —
- *    revocation survives unless ALL of the tombstone, index and anchor renames are
- *    lost — but it is the last one.
+ *  - DEVICE AUTHORITY DOES NOT ANY MORE (DEVICE-INDEX-DB). Its index was
+ *    `devices.json`, and reverting it re-authorised a revoked device whose key
+ *    material revocation deliberately retains. It is a host.db table now. The
+ *    revocation tombstone stamped inside the key file — which IS still written
+ *    through a rename — stays exactly where it is: it is the second, independent
+ *    record, and losing its rename now costs nothing, because the row is the one
+ *    that decides.
  *
- * That last case wants the same treatment as the other two: a table in host.db,
- * not an append-only file, because it needs deletion as well as durability and an
- * append-only log cannot forget. Until then it is exposure, not soundness.
+ * So nothing whose rollback would be unsafe depends on this function any more.
+ * That sentence has been wrong here twice; the way to keep it true is to check
+ * every `writeFileDurable` caller when adding one, rather than to trust it. What
+ * remains on renames is state where a lost write costs a retry: the anchor file
+ * (witnessed by the append-only SEND-JOURNAL), the key files (witnessed by the
+ * device rows), and `pending-destroy.json` (re-derived from the index by a sweep).
+ * Each of those has a second record somewhere a rename cannot reach, and that
+ * pattern — not this function — is what makes them safe.
  *
  * The Android half (`FileBlobStore`) refuses to construct without directory fsync;
  * the two halves answer the same question differently ON PURPOSE, because the
