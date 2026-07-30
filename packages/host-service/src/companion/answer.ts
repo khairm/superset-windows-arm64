@@ -2185,18 +2185,18 @@ async function awaitScreenAdvance(
  * it always meant the first, which after a desktop restart turned every earlier
  * MISS into a terminal "the desktop never saw this request — it was not sent".
  *
- * (COVERAGE-CONTRACT) The three proof fields this endpoint publishes —
- * `recordsSinceMs`, `serverTimeMs`, `bridgeStartedMs` — are specified ONCE, on
+ * (COVERAGE-CONTRACT) What this endpoint returns is specified ONCE, on
  * `AnswerStatusResponse` in `types.ts`, and for the wire in `PROTOCOL.md` §11.5.
  * Read them there rather than trusting a paraphrase here: this explanation used to
  * be restated in four places and five copies of one sentence went stale in a
- * single commit.
+ * single commit — which is also why this paragraph no longer lists the fields. It
+ * used to name the three proof instants in the present tense, and they were gone.
  *
  * The only two facts local to THIS function, which is all it needs to state:
- *   - a record that EXISTS is returned with its own status, unconditionally. The
- *     coverage range plays no part in that branch, and the witness never did.
- *   - the range is asked for at the top and attached to BOTH branches, so a client
- *     never has to correlate a verdict with a separately-fetched window.
+ *   - a record that EXISTS is returned with its own status, unconditionally.
+ *     Coverage plays no part in that branch and never did.
+ *   - the verdict is computed by the ledger, behind the fence, and returned whole.
+ *     Nothing here re-derives it, so there is no second copy of the rule to drift.
  */
 export async function handleAnswerStatus(
 	deps: AnswerDeps,
