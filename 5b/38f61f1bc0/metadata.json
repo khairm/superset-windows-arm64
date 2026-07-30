@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "5b38f61f1bc0",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/types.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5b/38f61f1bc0/0/metadata.json",
+      "transcript": "/5b/38f61f1bc0/0/full.jsonl",
+      "content_hash": "/5b/38f61f1bc0/0/content_hash.txt",
+      "prompt": "/5b/38f61f1bc0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1942,
+    "cache_creation_tokens": 8125957,
+    "cache_read_tokens": 386490074,
+    "output_tokens": 961829,
+    "api_call_count": 997
+  }
+}
