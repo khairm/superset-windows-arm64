@@ -1345,7 +1345,44 @@ const attemptRecordSchema = z.object({
 	resolvedAtMs: epochMsSchema.nullable(),
 	failureCode: z.enum(ATTEMPT_FAILURE_CODES).nullable(),
 	guardsPassed: z.array(attemptGuardNameSchema),
-});
+})
+	/**
+	 * Cross-field, because validating each field alone let an INCOHERENT record
+	 * through — and this boundary exists to reject exactly that.
+	 *
+	 * `confirmed` with a null `resolvedAtMs` is a record that says the keystrokes
+	 * landed while refusing to say when. Nothing this code writes produces it, so on
+	 * disk it means corruption or a hand-edit — but the schema accepted it, the
+	 * status handler served it verbatim as `known: true, confirmed`, and the client
+	 * then had to invent a policy for a shape the server should never have emitted.
+	 * The Kotlin side resolves it to `Unconfirmed`, which is the right client
+	 * behaviour, but a server that emits a self-contradictory record and leaves the
+	 * client to cope is validating at the wrong end.
+	 *
+	 * `failed` is the mirror: a failure with no `failureCode` cannot be rendered as
+	 * anything more specific than "something went wrong", and the writer always
+	 * supplies one.
+	 *
+	 * Refusing here means such a record fails the WHOLE-FILE schema and the file is
+	 * quarantined once, loudly, with the previous version preserved for diagnosis —
+	 * rather than being served as truth for the rest of its 24 hours.
+	 */
+	.refine(
+		(record) => !(record.status === "confirmed" && record.resolvedAtMs === null),
+		{
+			message:
+				"a 'confirmed' attempt must carry a resolvedAtMs — a record that says the answer landed but not when is incoherent, and nothing this bridge writes produces it",
+			path: ["resolvedAtMs"],
+		},
+	)
+	.refine(
+		(record) => !(record.status === "failed" && record.failureCode === null),
+		{
+			message:
+				"a 'failed' attempt must carry a failureCode — the writer always supplies one, so its absence means the record was not written by this bridge",
+			path: ["failureCode"],
+		},
+	);
 
 const attemptFileSchema = z.object({
 	version: z.literal(ATTEMPT_FILE_VERSION),
