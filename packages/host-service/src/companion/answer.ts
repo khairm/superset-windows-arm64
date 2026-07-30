@@ -1332,7 +1332,11 @@ const attemptFileSchema = z.object({
 	 *
 	 * LOAD-BEARING as of (ATTEMPT-WITNESS): `recordsSinceMs` publishes this value
 	 * (floored by the retention) instead of this mount's start, which is what lets
-	 * an answer that landed before a restart still read back as `confirmed`. What
+	 * a MISSING record from before a restart be resolved as "the request never
+	 * arrived" instead of the unhelpful "cannot tell". It does nothing for a
+	 * record that is PRESENT — that one always read back with its own status,
+	 * because the file is durable and the status handler returns it regardless of
+	 * coverage. What
 	 * made that unsound is unchanged — a file that a lost rename rolled back
 	 * carries this stamp UNCHANGED and would assert over the very records the
 	 * rollback removed — so it is only ever believed while the witness beside it
@@ -1383,8 +1387,10 @@ const attemptFileSchema = z.object({
  * window is the terminal "the desktop never saw this request — it was not sent"
  * that §11.4 records as unrecoverable. Publishing a window that started at THIS
  * MOUNT was the honest answer while nothing could see the revert, and it cost
- * every pre-restart answer its `confirmed` status on every restart the desktop
- * performs — which this fork does often.
+ * every pre-restart MISS its resolution on every restart the desktop performs —
+ * which this fork does often. A miss that genuinely never arrived reported as
+ * "cannot tell" instead of "it was not sent". Present records were never
+ * affected either way.
  *
  * WHY A REWRITE COUNTER IS THE MARK. The question the mark has to answer is "is
  * this file BEHIND a version that was already durable" — an ORDER question, so
@@ -1591,8 +1597,9 @@ export interface AttemptStore {
 	 * IT REACHES BEHIND THIS MOUNT, WHICH IS THE POINT OF THE FILE. The coverage
 	 * start is the FILE's own `coverageSinceMs` whenever
 	 * `answer-attempts-witness.json` proves the file is the latest version that was
-	 * ever durable, so an answer that landed before a restart still reads back as
-	 * `confirmed` instead of losing its status to the restart. What made that
+	 * ever durable, so a MISSING record from before a restart can be resolved as
+	 * "it never arrived" rather than "cannot tell". A record that is PRESENT keeps
+	 * its own status either way — that never depended on this. What made that
 	 * unsound before the witness is unchanged, and is exactly why the witness
 	 * exists: `writeFileDurable` cannot force a directory entry on win32
 	 * (`syncDirectory` returns immediately there), so a hard reset can discard this
@@ -1655,14 +1662,18 @@ export async function createAttemptStore(options: {
 	 * The install `generation` from the state anchor (`keys.ts`), which is what
 	 * binds the witness to this install.
 	 *
-	 * OPTIONAL, and a missing or non-canonical value DEGRADES coverage to this
-	 * mount rather than throwing — the (ATTEMPT-WITNESS) rule that nothing about
-	 * the witness may take the bridge down. `index.ts` opens the anchor before it
-	 * builds this store, so an absent generation is a WIRING mistake rather than a
-	 * state fact; it is logged loudly at this boundary so it reads as one instead
-	 * of quietly costing every restart its pre-restart status.
+	 * REQUIRED, but explicitly nullable. A missing or non-canonical value DEGRADES
+	 * coverage to this mount rather than throwing — the (ATTEMPT-WITNESS) rule that
+	 * nothing about the witness may take the bridge down — and that runtime
+	 * leniency is exactly why the TYPE has to be strict. As an optional property it
+	 * compiled when omitted and then silently cost every mount its pre-restart
+	 * coverage, guarded only by a warn nobody reads. `index.ts` opens the anchor
+	 * before it builds this store, so an absent generation is a WIRING mistake
+	 * rather than a state fact: making the caller write `null` on purpose is the
+	 * difference between declaring that and forgetting it. Compare the `log`
+	 * option, which throws at this same boundary for the same class of fault.
 	 */
-	generation?: string;
+	generation: string | null;
 	retentionMs?: DurationMs;
 	nowMs?: EpochMs;
 }): Promise<AttemptStore> {
@@ -1826,7 +1837,11 @@ export async function createAttemptStore(options: {
 			}
 		}
 		degradeCoverage(
-			options.generation === undefined
+			// `undefined` as well as `null`: the type now REQUIRES the property, so a
+			// caller that omits it entirely is untyped (a harness, or JS) — and it is
+			// making exactly the mistake this branch reports, so it should read the
+			// same message rather than "the generation supplied (undefined)".
+			options.generation === null || options.generation === undefined
 				? "no install generation was supplied, so no witness can be bound to this install — this is a wiring fault in the caller, not a state fact"
 				: `the install generation supplied (${String(options.generation)}) is not a canonical wire id, so no witness can be bound to it`,
 		);
@@ -1940,7 +1955,33 @@ export async function createAttemptStore(options: {
 			// `prune` and `forget` cost one extra small durable write each; both are
 			// rare next to the answer path, and neither is on it.
 			const next = seq + 1;
-			await raiseWitness(next);
+			// (ATTEMPT-WITNESS) A witness that cannot be WRITTEN degrades coverage; it
+			// does not take the bridge down.
+			//
+			// This was the rule from the start and the code broke it anyway. The raise
+			// was unguarded, so any write fault on the witness — ENOSPC, EACCES, a
+			// backup or indexer holding the target against replacement, a directory
+			// sitting at the path, a failing sync or close — rejected the whole
+			// `persist`. `createAttemptStore` ends with an unconditional proving write,
+			// so the rejection propagated out of the store's construction and
+			// `startCompanionBridgeIfEnabled` rethrew it: a fault in the SECOND file
+			// took away the phone's only channel, to protect an idempotency record.
+			// Read, JSON and schema faults were already handled; only the write path
+			// was not.
+			//
+			// Continuing after the degrade is safe, and specifically because
+			// `degradeCoverage` advances `coverageSinceMs` BEFORE `file` is built two
+			// lines below. The file therefore lands carrying a stamp that claims
+			// nothing earlier than this mount, so the witness-behind-file state this
+			// leaves — which the next mount deliberately trusts — publishes a window
+			// that is honest even though this rewrite went unwitnessed.
+			try {
+				await raiseWitness(next);
+			} catch (error) {
+				degradeCoverage(
+					`the witness could not be written (${error instanceof Error ? error.message : String(error)}), so this rewrite is unwitnessed`,
+				);
+			}
 			const file = {
 				version: ATTEMPT_FILE_VERSION,
 				coverageSinceMs,
@@ -2887,10 +2928,13 @@ async function awaitScreenAdvance(
  * unknown. Safe to retry, safe to poll.
  *
  * `known: false` after a full round trip means the write never reached the
- * bridge, which the client reports as "not sent" rather than "sent". That claim
- * is only honest because `handleAnswer` records an `in_flight` attempt as soon
- * as it takes the lease (ANSWER-INFLIGHT) — before that, this endpoint reported
- * "not sent" for ~15 s while the answer was actively being typed.
+ * bridge — but ONLY inside the coverage range published alongside it, which is
+ * what the rest of this comment is about. Outside that range it means no more
+ * than "no record", and the client must render it as `unconfirmed`. Even the
+ * in-range claim is only honest because `handleAnswer` records an `in_flight`
+ * attempt as soon as it takes the lease (ANSWER-INFLIGHT) — before that, this
+ * endpoint reported "not sent" for ~15 s while the answer was actively being
+ * typed.
  *
  * ---------------------------------------------------------------------------
  * "NOT SENT" IS A CLAIM ABOUT A TIME RANGE, SO THE RANGE IS ON THE WIRE
@@ -2907,10 +2951,13 @@ async function awaitScreenAdvance(
  * rather than assumed: `recordsSinceMs` is the instant from which `known: false`
  * proves the request never arrived, and it reaches BEHIND this bridge lifetime
  * whenever the store's rise-only witness can prove the file on disk is the latest
- * version that was ever durable (ATTEMPT-WITNESS). That is what keeps a
- * pre-restart answer `confirmed` instead of decaying it to `unconfirmed`. When the
- * witness cannot prove it — the file was rolled back, or the witness is missing,
- * unreadable or bound to another install — the range degrades to this lifetime,
+ * version that was ever durable (ATTEMPT-WITNESS). That is what lets a MISSING
+ * pre-restart record resolve to "it never arrived" instead of "cannot tell". It
+ * is NOT what preserves a `confirmed` status across a restart — a present record
+ * is returned with its own status whatever the coverage says, and always was.
+ * When the witness cannot prove it — the file was rolled back, or the witness is
+ * missing, unreadable, unwritable, bound to another install, or the file carries
+ * no rewrite mark at all — the range degrades to this lifetime,
  * which is where it always used to start: win32 cannot force a directory entry, so
  * a hard reset can roll the file back to an earlier version that still claims to
  * cover the records it lost, and a rollback always comes with a restart.

@@ -643,22 +643,36 @@ export function createCompanionBridge(
 		// next turn of the loop rather than blocking the rest of `startInner`.
 		// They are in `timers` so the teardown clears them: a bridge stopped inside
 		// that first turn must not run maintenance against a closed replay cache.
+		// (MAINTENANCE-DRAIN) Every maintenance task registers its in-flight run
+		// here, so the teardown can WAIT for one that has already started rather
+		// than only cancelling the ones that have not yet begun.
+		const maintenanceInFlight: MaintenanceInFlight = new Set();
 		const timers = [
-			soon(() => nonceCache.compact(Date.now())),
-			soon(() => audit.prune(Date.now())),
-			interval(NONCE_CACHE_COMPACT_INTERVAL_MS, () =>
-				nonceCache.compact(Date.now()),
+			soon(() => nonceCache.compact(Date.now()), maintenanceInFlight),
+			soon(() => audit.prune(Date.now()), maintenanceInFlight),
+			interval(
+				NONCE_CACHE_COMPACT_INTERVAL_MS,
+				() => nonceCache.compact(Date.now()),
+				maintenanceInFlight,
 			),
-			interval(DAY_MS, () => audit.prune(Date.now())),
-			interval(DAY_MS, () => deviceStore.purgeExpiredRevocations(Date.now())),
-			interval(HOUR_MS, async () => {
-				// The 24 h idempotency window (§11.5); the stores own the arithmetic.
-				await attempts.prune(Date.now());
-				messageAttempts.prune(Date.now());
-				// Lease expiry is otherwise lazy — a question or terminal that is
-				// never revisited would keep its lapsed record until process exit.
-				leases.sweep(Date.now());
-			}),
+			interval(DAY_MS, () => audit.prune(Date.now()), maintenanceInFlight),
+			interval(
+				DAY_MS,
+				() => deviceStore.purgeExpiredRevocations(Date.now()),
+				maintenanceInFlight,
+			),
+			interval(
+				HOUR_MS,
+				async () => {
+					// The 24 h idempotency window (§11.5); the stores own the arithmetic.
+					await attempts.prune(Date.now());
+					messageAttempts.prune(Date.now());
+					// Lease expiry is otherwise lazy — a question or terminal that is
+					// never revisited would keep its lapsed record until process exit.
+					leases.sweep(Date.now());
+				},
+				maintenanceInFlight,
+			),
 		];
 
 		state = {
@@ -686,6 +700,21 @@ export function createCompanionBridge(
 			what: "maintenance timers",
 			close: async () => {
 				for (const timer of timers) clearInterval(timer);
+				// (MAINTENANCE-DRAIN) Cancelling stops the next run; this waits out the
+				// one already executing. Without it a prune mid-flight here would go on
+				// to rewrite the attempts file from a snapshot belonging to THIS bridge
+				// after a replacement had already written newer state — destroying
+				// records and lowering the rewrite counter, in a way that leaves both
+				// files agreeing so nothing downstream can detect it.
+				//
+				// Looped rather than a single `Promise.all` because a drained task may
+				// itself have queued another (`soon` fires on the next turn of the
+				// loop), and the set is mutated as runs settle. Every tracked promise
+				// is already `.catch`ed, so this can neither reject nor mask a failure —
+				// maintenance errors are logged by the same path as always.
+				while (maintenanceInFlight.size > 0) {
+					await Promise.all([...maintenanceInFlight]);
+				}
 			},
 		});
 		startedAtMs = http.startedAtMs;
@@ -725,6 +754,15 @@ export function createCompanionBridge(
 				// reservation, already released one line before `http.start()`;
 				// `release()` is idempotent, so replaying it is a deliberate no-op
 				// rather than a second close.
+				//
+				// "Once nothing is left that could write" DEPENDS ON (MAINTENANCE-DRAIN)
+				// and used to be false. The maintenance step cancelled its timers and
+				// returned immediately, so a prune already executing kept running — and
+				// with it a live reference to this bridge's own store instance — right
+				// through the rest of this teardown and into the next bridge's lifetime.
+				// The step now waits that run out, which is the only reason the ordering
+				// described above actually holds rather than merely reading as if it
+				// does.
 				//
 				// Every step is `settle`d: best-effort and isolated, so one failing
 				// subsystem cannot skip the others, and every failure is LOGGED rather
@@ -1765,14 +1803,41 @@ async function applyDesktopPanic(
 // lifecycle helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * (MAINTENANCE-DRAIN) Maintenance work that has STARTED and not yet finished.
+ *
+ * Cancelling a timer stops the NEXT run; it does nothing about the run already
+ * executing. That gap was not theoretical: an hourly `attempts.prune` holds a
+ * reference to its own `AttemptStore` closure — that instance's records map, its
+ * rewrite counter, its paths — and the store's write serialisation and witness
+ * guard are per-INSTANCE. So a prune that was mid-flight when the bridge stopped
+ * would resume after a REPLACEMENT bridge had already written newer state, and
+ * rewrite the file from its own stale snapshot: records destroyed, and the
+ * rewrite counter LOWERED. Both files then agree, so the next start sees a
+ * consistent pair, logs no rollback, and publishes a coverage window that
+ * vouches for an answer it no longer holds — which is the one lie this whole
+ * subsystem exists to prevent. It also breaks the "rise-only" property, which
+ * only ever held within a single instance.
+ *
+ * So teardown drains instead of merely cancelling, which is what makes the claim
+ * further down — that teardown stops an old writer overlapping a new bridge —
+ * actually true rather than merely intended.
+ */
+type MaintenanceInFlight = Set<Promise<unknown>>;
+
 function interval(
 	everyMs: number,
 	task: () => Promise<unknown>,
+	inFlight: MaintenanceInFlight,
 ): NodeJS.Timeout {
 	const timer = setInterval(() => {
-		void task().catch((error: unknown) => {
+		// The CAUGHT promise is what gets tracked, so a draining teardown can
+		// `await` it without a maintenance failure rejecting the teardown itself.
+		const run = task().catch((error: unknown) => {
 			console.error(`${LOG_PREFIX} maintenance task failed:`, error);
 		});
+		inFlight.add(run);
+		void run.finally(() => inFlight.delete(run));
 	}, everyMs);
 	timer.unref();
 	return timer;
@@ -1792,11 +1857,19 @@ function interval(
  * repeating timers: Node's `clearInterval` and `clearTimeout` both close a
  * `Timeout`, so one list and one cancel path is correct here.
  */
-function soon(task: () => Promise<unknown>): NodeJS.Timeout {
+function soon(
+	task: () => Promise<unknown>,
+	inFlight: MaintenanceInFlight,
+): NodeJS.Timeout {
 	const timer = setTimeout(() => {
-		void task().catch((error: unknown) => {
+		// Tracked for the same reason as `interval` — a start-time pass that is
+		// still running when the bridge stops is exactly as capable of writing over
+		// a replacement bridge's state. See (MAINTENANCE-DRAIN).
+		const run = task().catch((error: unknown) => {
 			console.error(`${LOG_PREFIX} maintenance task failed:`, error);
 		});
+		inFlight.add(run);
+		void run.finally(() => inFlight.delete(run));
 	}, 0);
 	timer.unref();
 	return timer;

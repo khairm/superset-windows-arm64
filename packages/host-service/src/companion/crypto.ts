@@ -63,6 +63,7 @@ import {
 	ENVELOPE_HEADER_BYTES,
 	FRESHNESS_WINDOW_MS,
 	GCM_TAG_BYTES,
+	LOG_PREFIX,
 	MAX_SEALED_PLAINTEXT_BYTES,
 	MIN_ENVELOPE_BYTES,
 	NONCE_BYTES,
@@ -1022,13 +1023,30 @@ export function monotonicNowMs(): number {
  * fully synced. For an anti-rollback high-water mark that is the difference
  * between "burned some counters" and "silently went backwards".
  *
- * WINDOWS — STATED GAP, NOT A SWALLOWED ERROR. Node cannot open a directory
- * handle on win32 (`fs.open` on a directory fails EISDIR/EPERM) and NTFS exposes
- * no user-space directory-fsync; the durable-rename primitive there is
- * `MoveFileEx(MOVEFILE_WRITE_THROUGH)`, which Node does not surface. On win32
- * the content fsync and the rename ORDER still hold, but the directory entry is
- * not forced. This is the fork's own platform, so it is recorded here rather
- * than pretended away.
+ * WINDOWS — STATED GAP, NOT A SWALLOWED ERROR. On win32 the content fsync and
+ * the rename ORDER still hold, but the directory entry is not forced. This is the
+ * fork's own platform, so it is recorded here rather than pretended away.
+ *
+ * THE REASON THIS GAP EXISTS IS NOT THE ONE PREVIOUSLY WRITTEN HERE. This comment
+ * used to claim that Node cannot open a directory handle on win32 (`fs.open` on a
+ * directory failing EISDIR/EPERM). That is measurably false on this platform —
+ * `tmp/dirsync-probe.ts` under Bun 1.3.14 on win32 arm64 opens a directory with
+ * `r`, `r+` and `a` (only `w` gives EISDIR), and while `sync()` on the READ-ONLY
+ * handle fails EPERM, `sync()` on an `r+` handle SUCCEEDS — including immediately
+ * after a rename in that directory. The early return below was most likely
+ * concluded from trying `"r"`, the mode the POSIX path uses, and generalising.
+ *
+ * The early return nevertheless stays, because a successful `FlushFileBuffers` on
+ * a directory handle is not evidence that NTFS persisted the directory entry:
+ * Microsoft documents that call as flushing the specified FILE, and exposes
+ * `MoveFileEx(MOVEFILE_WRITE_THROUGH)` as the separate durable-rename primitive.
+ * A `syncDirectory` that returns success without persisting anything would be
+ * WORSE than this honest no-op, because every mechanism above it would stop
+ * compensating. Removing the early return therefore needs real evidence — an
+ * authoritative statement about directory handles on NTFS, or a crash-consistency
+ * test showing a rename surviving with the sync and lost without it. If that
+ * evidence ever arrives, this no-op and BOTH witness mechanisms that exist to
+ * work around it can be reconsidered together.
  *
  * WHAT THAT GAP COSTS, AND WHY THIS STILL RETURNS RATHER THAN THROWS. A hard
  * reset can discard the most recent rename, which reverts a file to its previous
@@ -1065,11 +1083,26 @@ export async function syncDirectory(dir: string): Promise<void> {
  * `handle.sync()` on the tmp file is a FlushFileBuffers, and that forces NTFS's
  * volume metadata log, which by then carries every rename this process has
  * already issued. That is the only thing that makes two durable writes ORDERED
- * relative to each other on the fork's platform, and `keys.ts` depends on it:
- * the send-nonce witness is renamed first and the anchor's own content fsync is
- * what publishes that rename before any nonce is issued. Replacing this with a
- * plain `writeFile` would leave both renames in one unflushed log window, where a
- * hard reset takes both and the anti-rollback mark silently rewinds.
+ * relative to each other on the fork's platform, and TWO mechanisms now depend
+ * on it: `keys.ts` renames the send-nonce witness before the anchor and relies on
+ * the anchor's content fsync to publish it before any nonce is issued, and
+ * `answer.ts` (ATTEMPT-WITNESS) renames the attempt witness before the attempts
+ * file for exactly the same reason. Replacing this with a plain `writeFile` would
+ * leave both renames of EITHER pair in one unflushed log window, where a hard
+ * reset takes both and the mark silently rewinds.
+ *
+ * HOW STRONG THAT ORDERING ACTUALLY IS — READ BEFORE RELYING ON IT FURTHER.
+ * Microsoft documents FlushFileBuffers as flushing THE SPECIFIED FILE, and says a
+ * volume handle is required to flush every modified file on a volume; the
+ * documented durable-rename primitive is `MoveFileEx(MOVEFILE_WRITE_THROUGH)`,
+ * which Node does not surface (libuv issues `MoveFileExW` with
+ * `MOVEFILE_REPLACE_EXISTING` only). So the paragraph above describes observed
+ * NTFS behaviour and an inference from how its metadata log works — NOT a
+ * guarantee the platform offers this code in writing. If both renames of a pair
+ * can in fact be lost together, the affected witness reads as consistent while
+ * its file has rolled back, which is the one state neither mechanism can detect.
+ * Treat that as an open question rather than a settled property, and do not add a
+ * THIRD dependent on this ordering without resolving it.
  */
 export async function writeFileDurable(
 	target: string,
@@ -1079,7 +1112,20 @@ export async function writeFileDurable(
 	const tmp = `${target}.tmp`;
 	const handle = await open(tmp, "w", mode);
 	try {
-		await handle.write(view(bytes), 0, bytes.length, 0);
+		// The byte count is CHECKED, not discarded. A short write reports success
+		// with fewer bytes than asked, and everything after this point would then
+		// happily fsync and rename truncated JSON into place as though it were
+		// complete — after which the next start finds a file that fails its schema,
+		// quarantines it, and LOSES every record it held. Failing here instead
+		// surfaces the fault while the previous version of the file is still the one
+		// on disk, which is the difference between a loud write error and silent
+		// data loss.
+		const { bytesWritten } = await handle.write(view(bytes), 0, bytes.length, 0);
+		if (bytesWritten !== bytes.length) {
+			throw new Error(
+				`${LOG_PREFIX} short write to ${tmp}: wrote ${bytesWritten} of ${bytes.length} bytes. Refusing to rename a partial file over ${target}.`,
+			);
+		}
 		await handle.sync();
 	} finally {
 		await handle.close();
