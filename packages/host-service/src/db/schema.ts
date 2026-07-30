@@ -256,3 +256,167 @@ export const workspaceCloudDeletes = sqliteTable("workspace_cloud_deletes", {
 		.notNull()
 		.$defaultFn(() => Date.now()),
 });
+
+// ---------------------------------------------------------------------------
+// (ANSWER-LEDGER) the companion answer ledger
+// ---------------------------------------------------------------------------
+
+/**
+ * The closed set of ledger statuses, declared HERE rather than in
+ * `src/companion/` because the persisted enum is a property of the table.
+ *
+ * Direction of dependency matters: the companion bridge consumes what the table
+ * can hold, not the other way round. A companion-side union imported into this
+ * file would let a wire-shape change silently widen what is on disk.
+ *
+ * The first four are carried over verbatim from the JSON attempt file this
+ * replaces and mean exactly what §11.5 says they mean. `unknown` is deliberately
+ * absent: it is the WIRE's degrade-to member for a status the reader does not
+ * recognise, and a record the bridge itself wrote always knows which real
+ * outcome it is in.
+ *
+ * `closed_not_received` is the new one — the TOMBSTONE. It is not a synonym for
+ * `unconfirmed`: it is a terminal NEGATIVE plus a durable FENCE. It records that
+ * the bridge has already told a client "nothing was ever received for this
+ * requestId", which is a claim about the FUTURE as much as the past, so the row
+ * has to survive to stop the answer path typing afterwards and making that claim
+ * retroactively false. See `attempt-ledger.ts` for the compare-and-set that
+ * relies on it.
+ */
+export const answerAttemptStatuses = [
+	"in_flight",
+	"confirmed",
+	"failed",
+	"unconfirmed",
+	"closed_not_received",
+] as const;
+
+export type AnswerAttemptStatus = (typeof answerAttemptStatuses)[number];
+
+/**
+ * §11.4/§11.5 — the 24 h idempotency + status record, keyed by `requestId`.
+ *
+ * WHY THIS IS A TABLE AND NOT THE `answer-attempts.json` IT REPLACES. The JSON
+ * store was durable, and durability was never the missing piece. What it could
+ * not do is DECIDE: `handleAnswer` read the record, spent ~195 lines and several
+ * awaits evaluating guards and taking a lock, and only then durably wrote
+ * `in_flight`. A status read landing in that window saw no record and reported
+ * "it was not sent" — and then the answer it had just contradicted went on to
+ * type itself into the terminal. Absence cannot prove that nothing WILL be
+ * typed, because that is a claim about the future, and no amount of durable
+ * state attestation fixes a claim made without a fence.
+ *
+ * A fence needs an atomic compare-and-set between the two paths, which needs a
+ * real transaction, which is what SQLite has and a read-modify-rewrite of a JSON
+ * file structurally does not.
+ *
+ * SECOND-ORDER WIN, worth stating because it changes an accepted failure. The
+ * JSON file was validated as a WHOLE: one incoherent record failed the file
+ * schema and quarantined all 24 h of everyone else's records. Rows validate
+ * individually here (`attempt-ledger.ts`), so one corrupt row costs exactly one
+ * requestId its status.
+ */
+export const answerAttempts = sqliteTable(
+	"answer_attempts",
+	{
+		/**
+		 * §11.4's idempotency key, and the CAS key. The PRIMARY KEY is doing real
+		 * work: it is the uniqueness constraint that makes `INSERT .. ON CONFLICT DO
+		 * NOTHING` a decision procedure rather than a race.
+		 */
+		requestId: text("request_id").primaryKey(),
+		/**
+		 * Null for a `closed_not_received` tombstone and ONLY for one — a row that
+		 * asserts nothing ever arrived has no attempt to describe. Storing a sentinel
+		 * instead would be a lie the boundary could not catch, so the nullability is
+		 * deliberate and the tombstone/attempt shapes are cross-checked on read.
+		 */
+		questionId: text("question_id"),
+		deviceId: text("device_id"),
+		surface: text().$type<"phone" | "watch">(),
+		leaseId: text("lease_id"),
+		/** The attempt's own start. Null for a tombstone, exactly as above. */
+		startedAtMs: integer("started_at_ms"),
+		/**
+		 * The row's creation instant, always set — including for a tombstone, which
+		 * is why it is separate from `startedAtMs`.
+		 *
+		 * Retention ages on THIS column so pruning has one unambiguous clock for both
+		 * row shapes. For a real attempt the two coincide (the claim happens at the
+		 * attempt's start); they are still kept apart because a single column that
+		 * means "the attempt began" for one shape and "the negative was asserted" for
+		 * another is the kind of overload a later reader gets wrong.
+		 */
+		createdAtMs: integer("created_at_ms").notNull(),
+		status: text().notNull().$type<AnswerAttemptStatus>(),
+		resolvedAtMs: integer("resolved_at_ms"),
+		/**
+		 * Plain text, not `$type`d. The authoritative union is
+		 * `AttemptFailureCode` in `src/companion/types.ts`, which this file must not
+		 * import (see `answerAttemptStatuses`), and duplicating it here would create
+		 * two lists to widen together. The ledger's own public write signature takes
+		 * `AttemptFailureCode`, so the compile-time check lives at the call site where
+		 * it is useful, and the runtime check lives at the read boundary.
+		 */
+		failureCode: text("failure_code"),
+		/** The §11.3 guards this attempt passed, as a JSON array of guard names. */
+		guardsPassedJson: text("guards_passed_json").notNull().default("[]"),
+		/**
+		 * The coverage epoch in force when this row was created.
+		 *
+		 * Not load-bearing for the status of a PRESENT row — §11.5 serves those
+		 * regardless of coverage — so this is deliberately not consulted by the CAS.
+		 * It is what makes a degraded window diagnosable after the fact: "this row
+		 * predates the rotation the client's stale epoch is complaining about".
+		 */
+		coverageEpoch: text("coverage_epoch").notNull(),
+	},
+	(table) => [
+		// Pruning scans by age; nothing else queries by anything but the key.
+		index("answer_attempts_created_at_ms_idx").on(table.createdAtMs),
+	],
+);
+
+/**
+ * (ANSWER-LEDGER) The single-row coverage epoch (always `id = 1`).
+ *
+ * WHAT IT IS. An opaque random id, NOT a timestamp, that a client captures
+ * BEFORE it submits an answer, echoes back on a status read, and the server
+ * compares for EQUALITY. Nothing is subtracted, ordered, or aged.
+ *
+ * WHY IT REPLACED A WALL CLOCK. §11.5's original coverage proof had the client
+ * compute `serverTimeMs - recordsSinceMs > its own monotonic submitAgeMs`. That
+ * arithmetic mixes two clocks, and it fails in the one direction that matters: a
+ * server clock step FORWARD inflates the apparent coverage age, so a request the
+ * bridge cannot actually vouch for satisfies the inequality and the client
+ * renders the unrecoverable "it was not sent". An opaque token has no arithmetic
+ * to get wrong — equal or not equal, and unequal is never a terminal negative.
+ *
+ * WHY IT MUST ROTATE. The token means "the coverage you captured is still the
+ * coverage I have". Anything that loses continuity — a prune, or any
+ * acknowledged gap — must rotate it in the SAME transaction, so a status read
+ * carrying the old token is answered with a degrade rather than a negative.
+ *
+ * WHY A DEDICATED TABLE AND NOT `host_settings`. `host_settings` is documented as
+ * host-wide user KNOBS that projects fall back to; every settings write path can
+ * touch it and every column there is nullable by design. This is not a knob, it
+ * is a safety token: it must be notNull, it must be rotated transactionally with
+ * a delete, and its lifecycle must be owned entirely by the ledger. Putting it in
+ * `host_settings` would hand an unrelated write path the ability to move it and
+ * would force a "no epoch yet" degenerate case into every read. The single-row
+ * `id = 1` SHAPE is borrowed from `host_settings`; the ownership is not.
+ */
+export const answerCoverageEpoch = sqliteTable("answer_coverage_epoch", {
+	id: integer().primaryKey().default(1),
+	epoch: text().notNull(),
+	rotatedAtMs: integer("rotated_at_ms").notNull(),
+	/**
+	 * How many times this install has rotated. Diagnostic only — the epoch is
+	 * compared, never ordered — but it is the number that answers "is something
+	 * rotating far more often than a daily prune" when clients report degraded
+	 * coverage.
+	 */
+	rotations: integer().notNull().default(0),
+	/** Why the last rotation happened, for the same diagnostic reason. */
+	lastRotateReason: text("last_rotate_reason"),
+});
