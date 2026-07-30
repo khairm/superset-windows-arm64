@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "e9928a9c1de2",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/host-service/src/companion/device-store.ts",
+    "packages/host-service/src/companion/keys.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e9/928a9c1de2/0/metadata.json",
+      "transcript": "/e9/928a9c1de2/0/full.jsonl",
+      "content_hash": "/e9/928a9c1de2/0/content_hash.txt",
+      "prompt": "/e9/928a9c1de2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1700,
+    "cache_creation_tokens": 6697645,
+    "cache_read_tokens": 307472933,
+    "output_tokens": 855679,
+    "api_call_count": 875
+  }
+}
