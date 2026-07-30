@@ -135,7 +135,12 @@ export const REPLAY_CACHE_MAX_ENTRIES = 65_536;
  */
 export const REPLAY_MIN_RETAINED_ENTRIES = 8_192;
 
-/** 16 deviceId || 12 nonce || 8 big-endian seenAtMs. */
+/**
+ * (REPLAY-CACHE-DB) The PRE-DATABASE record layout, kept only to read a
+ * `replay.log` an older build left behind: 16 deviceId || 12 nonce || 8 big-endian
+ * seenAtMs. Nothing writes this shape any more — admissions are rows in host.db —
+ * and these three go away once no installation can still be carrying that file.
+ */
 const REPLAY_RECORD_BYTES = WIRE_ID_BYTES + NONCE_BYTES + 8;
 const REPLAY_LOG_FILENAME = "replay.log";
 const REPLAY_LOG_TMP_FILENAME = "replay.log.tmp";
@@ -1160,16 +1165,18 @@ export async function syncDirectory(dir: string): Promise<void> {
  *
  * Node returns a byte count because a write is permitted to be short. Discarding
  * it makes a partial write indistinguishable from a complete one, and the two
- * files this module writes fail differently and both badly:
+ * kinds of write here fail differently and both badly:
  *
  *  - a whole-file rewrite (`writeFileDurable`) would fsync and rename truncated
  *    JSON into place as though complete, and the next start would find a file that
  *    fails its schema, quarantine it, and lose every record it held;
- *  - the replay cache's append is worse. Its records are FIXED WIDTH and it reads
- *    from offset 0, trimming only a trailing partial. A short append followed by
- *    any successful one misaligns every record after it, so nonces that were
- *    admitted stop being recognised and the §3.5 replay window silently reopens —
- *    no error, no schema failure, nothing to notice.
+ *  - an APPEND is worse, and the send-nonce journal is the caller that has to care.
+ *    Its records are FIXED WIDTH and replay reads from offset 0, trimming only a
+ *    trailing partial. A short append followed by any successful one misaligns
+ *    every record after it — so the mark replay computes is not the mark that was
+ *    written, with no error and no schema failure to notice it by. §3.5's replay
+ *    cache used to be the second such caller and had the same shape; its records
+ *    are rows in host.db now, where a partial row is not expressible.
  *
  * Short writes to a local NTFS volume are rare. That is equally true of the
  * whole-file path, so checking one and not the others was inconsistency rather
@@ -1209,13 +1216,13 @@ export async function writeAll(
  * documented to flush exactly the specified file. Once the file's own directory
  * entry exists, nothing about a record written this way rests on a rename.
  *
- * THAT IS WHY THE TWO MECHANISMS WHOSE ROLLBACK IS UNACCEPTABLE ARE BUILT ON
- * THIS. §3.5's replay cache appends fixed-width nonce records below, and
- * `keys.ts`'s (SEND-JOURNAL) appends the send-nonce high-water mark. Both use a
- * whole-file rewrite for COMPACTION only, where losing the rename reverts to a
- * file that is a strict superset of the admitted nonces (replay cache) or carries
- * the byte-identical maximum record (send journal) — the conservative direction in
- * both cases, by construction rather than by luck.
+ * THE ONE MECHANISM LEFT THAT NEEDS THIS IS `keys.ts`'s (SEND-JOURNAL), which
+ * appends the send-nonce high-water mark and is NEVER rewritten — not even to
+ * compact, which that file records as a deliberate correctness decision rather than
+ * an omission. §3.5's replay cache used to be the second caller, appending
+ * fixed-width nonce records to a file it compacted by rename; it is rows in host.db
+ * now (REPLAY-CACHE-DB), so its compaction is a DELETE and this function has one
+ * caller for records whose rollback is unacceptable, not two.
  *
  * `position` is `null` to write at the handle's own offset (an `"a"` handle) or an
  * explicit byte offset, which is what a caller needs when the previous mount left

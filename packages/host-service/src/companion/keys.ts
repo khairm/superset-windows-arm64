@@ -62,11 +62,16 @@
  *
  * An append has no directory entry to lose. `FlushFileBuffers` is documented to
  * flush the SPECIFIED FILE, and an append changes only that file's data and its own
- * size, so `appendDurable` needs no inference at all. The replay cache in
- * `crypto.ts` has always been structurally immune for exactly this reason; the
- * counter now uses the same shape, and the ONE rename left anywhere near it is
- * compaction, where losing the rename reverts to a file carrying the
- * byte-identical maximum record.
+ * size, so `appendDurable` needs no inference at all. The counter uses that shape,
+ * and there is NO rename left anywhere near it: this journal is never rewritten —
+ * not even to compact, which is a correctness decision recorded below rather than
+ * an omission — and its one directory entry, the file's own creation, is published
+ * where the platform allows it (SEND-JOURNAL-CREATE-SYNC).
+ *
+ * §3.5's replay cache used to be cited here as the mechanism that had always been
+ * structurally immune for the same reason. It kept its records in a file it
+ * compacted BY RENAME, which was never immune at all; it is rows in host.db now
+ * (REPLAY-CACHE-DB).
  *
  * HONEST LIMIT, STATED RATHER THAN PAPERED OVER, AND NARROWER THAN IT FIRST READ.
  * What is NOT detectable from inside this tree is any rollback that takes the
