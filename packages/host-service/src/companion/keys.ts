@@ -101,16 +101,14 @@
  * combined with a MAX, so neither can lower the other.
  *
  * THERE IS STILL A WITNESS IN THIS DIRECTORY, AND IT IS DELIBERATELY NOT SHARED
- * WITH THIS FILE. `answer.ts` (ATTEMPT-WITNESS) applies the OLD shape — a
- * generation-bound rise-only mark, written BEFORE the file it guards — to
- * `answer-attempts.json`, and it may keep doing so precisely because its POLICY is
- * opposite where it matters: a rollback here means a repeated AES-GCM nonce, so
- * this one refuses to start (`StateRollbackError`); a rollback there costs only
- * status records, so that one must NEVER refuse to start and instead narrows the
- * window it publishes. Folding both behind a fatal/non-fatal flag would put that
- * distinction one careless argument away from being inverted. What they no longer
- * share is the write-ordering assumption: `answer.ts` is now its ONLY dependent,
- * and it is the dependent that can survive the assumption being false.
+ * WITH THIS FILE, AND THERE IS NO LONGER A SECOND WITNESS AT ALL. `answer.ts`
+ * used to apply this same shape to `answer-attempts.json`, with the opposite
+ * policy: a rollback there cost only status records, so it degraded where this one
+ * refuses. That mechanism is gone — the answer ledger is a table in host.db now
+ * (ANSWER-LEDGER), with SQLite's documented durability asserted at open instead of
+ * an inference about NTFS rename ordering. This journal is the only anti-rollback
+ * mechanism left in the companion, and it needs no such inference either, because
+ * an append has no directory entry to lose.
  *
  * ---------------------------------------------------------------------------
  * WHY `keyRef` IS RANDOM AND NOT THE deviceId

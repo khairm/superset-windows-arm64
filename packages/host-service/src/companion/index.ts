@@ -44,9 +44,7 @@ import { createAccessValidator } from "./access-jwt";
 import { type AttemptLedger, createAttemptLedger } from "./attempt-ledger";
 import {
 	type AnswerDeps,
-	type AttemptStore,
 	assertAnswerDeps,
-	createAttemptStore,
 	createMessageAttemptStore,
 	type GuardSourceResult,
 	type HostTerminalRef,
@@ -240,7 +238,6 @@ interface BridgeState {
 	questions: QuestionStore;
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
-	attempts: AttemptStore;
 	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	readApi: ReadApi;
@@ -405,47 +402,24 @@ export function createCompanionBridge(
 		// back. NOTHING here is reordered against the anchor: `openStateAnchor` ->
 		// `createDeviceStore` -> the (ANCHOR-ORDER) assertion -> `createSendNonceSource`
 		// still runs strictly in sequence. The attempt store reads ONE value off the
-		// anchor — `generation`, for its (ATTEMPT-WITNESS) binding — and reads it from
-		// the already-open anchor above rather than from the chain below, so the
-		// parallelism holds.
-		//
 		// `allSettled`, not `all`, and the reason is (BRIDGE-TEARDOWN-ONE-LIST):
 		// `createReplayCache` holds an open file handle, so a version that
 		// SUCCEEDED while its partner failed must still reach the unwind list
 		// before this function throws. `all` would abandon it.
-		const [cacheOutcome, attemptsOutcome] = await Promise.allSettled([
+		// (ANSWER-LEDGER) Only the replay cache is opened here now. The JSON attempt
+		// store that used to be its partner in this `allSettled` is gone: the ledger
+		// lives in host.db and is constructed below, where a failure to open it —
+		// including its PRAGMA synchronous assertion — takes the bridge down before a
+		// single answer can be typed without a durable claim.
+		const cacheOutcome = await Promise.allSettled([
 			createReplayCache({ noncesDir: paths.nonces }),
-			// §11.4/§11.5 — DURABLE, and hydrated before the first request can be
-			// served. An in-memory map made `known: false` ("nothing was sent") a
-			// claim this bridge could not honour across the restarts the desktop
-			// performs routinely; the file is what makes the 24 h retention real.
-			createAttemptStore({
-				dir: paths.root,
-				// (ATTEMPT-WITNESS) The install identity the attempts file's rise-only
-				// witness is bound to. `openStateAnchor` ran further up — it has to, for
-				// the send-nonce ordering — so the generation is already durable here.
-				//
-				// (COVERAGE-CONTRACT) What the witness actually buys is stated once, in
-				// `types.ts` on `AnswerStatusResponse.recordsSinceMs`. Read it there; the
-				// short version, because the obvious guess is wrong, is that it governs
-				// the `known: false` branch only — a RECORDED status already survived a
-				// restart without it.
-				//
-				// The only fact local to this call site: passing a generation is what
-				// makes the witness bindable at all. `null` here would start the bridge
-				// with its coverage permanently narrowed to each mount.
-				generation: anchor.generation,
-				log: (event) => logger.warn("answer-attempt store", event),
-			}),
-		]);
+		]).then(([outcome]) => outcome);
 		if (cacheOutcome.status === "fulfilled") {
 			const cache = cacheOutcome.value;
 			unwind.push({ what: "nonce cache", close: () => cache.close() });
 		}
 		if (cacheOutcome.status === "rejected") throw cacheOutcome.reason;
-		if (attemptsOutcome.status === "rejected") throw attemptsOutcome.reason;
 		const nonceCache = cacheOutcome.value;
-		const attempts = attemptsOutcome.value;
 		// (ANSWER-LEDGER) The durable fence, on the host database rather than a JSON
 		// file, because closing the status/answer race needs a transaction. Built here
 		// so a failure to open it — including the PRAGMA synchronous assertion — takes
@@ -464,14 +438,6 @@ export function createCompanionBridge(
 		// is what stops a writer the scheduler never sees — its peers `nonceCache`
 		// and `deviceStore` already guard themselves the same way, and
 		// `deviceStore`'s debounced persist is detached and invisible to any drain.
-		unwind.push({
-			what: "answer-attempt store",
-			// `close()` is synchronous — wrapped so the step matches the teardown
-			// contract rather than widening that contract for one caller.
-			close: async () => {
-				attempts.close();
-			},
-		});
 		// (ANCHOR-ORDER) LOAD-BEARING ORDER, ASSERTED RATHER THAN ASSUMED.
 		//
 		// `createDeviceStore` is what runs the anti-rollback checks and what stamps
@@ -551,7 +517,6 @@ export function createCompanionBridge(
 			questions,
 			leases,
 			locks,
-			attempts,
 			ledger,
 			messageAttempts,
 			audit,
@@ -708,7 +673,6 @@ export function createCompanionBridge(
 				HOUR_MS,
 				async () => {
 					// The 24 h idempotency window (§11.5); the stores own the arithmetic.
-					await attempts.prune(Date.now());
 					// (ANSWER-LEDGER) Pruning the ledger ROTATES the coverage epoch in the
 					// same transaction, so a client holding the old token stops receiving
 					// terminal negatives at the instant the rows it relied on go.
@@ -734,7 +698,6 @@ export function createCompanionBridge(
 			questions,
 			leases,
 			locks,
-			attempts,
 			ledger,
 			messageAttempts,
 			readApi,
@@ -1248,7 +1211,6 @@ interface AnswerAdapterDeps {
 	questions: QuestionStore;
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
-	attempts: AttemptStore;
 	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	audit: AuditLog;
@@ -1356,7 +1318,6 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 
 		locks: deps.locks,
 		leases: deps.leases,
-		attempts: deps.attempts,
 		ledger: deps.ledger,
 		messageAttempts: deps.messageAttempts,
 		questions: deps.questions,

@@ -1060,11 +1060,11 @@ export function monotonicNowMs(): number {
  *    directory entry to lose, so this no-op cannot cost it anything; the mark's
  *    durability no longer depends on any property this function fails to provide.
  *    It is the shape to copy for anything else whose rollback is unacceptable.
- *  - `answer.ts` (ATTEMPT-WITNESS) still renames a witness before the file it
- *    guards, and relies on the ordering documented at `writeFileDurable`. It may
- *    do that because a rolled-back attempts file costs only status records: every
- *    verdict its witness can reach NARROWS the coverage window it publishes, and
- *    it is forbidden from refusing to start.
+ *  - THE ANSWER LEDGER DOES NOT RELY ON A RENAME EITHER, ANY MORE. It used to:
+ *    `answer.ts` kept a JSON attempts file with a rise-only witness renamed before
+ *    it, and that was the second dependent on the ordering below. It is now a table
+ *    in host.db (ANSWER-LEDGER) whose durability is SQLite's documented
+ *    `synchronous = FULL`, asserted at open, rather than an inference about NTFS.
  *
  * The Android half (`FileBlobStore`) refuses to construct without directory fsync;
  * the two halves answer the same question differently ON PURPOSE, because the
@@ -1096,16 +1096,16 @@ export async function syncDirectory(dir: string): Promise<void> {
  * already issued. That is the only thing that makes two durable writes ORDERED
  * relative to each other on the fork's platform.
  *
- * EXACTLY ONE MECHANISM STILL DEPENDS ON THAT ORDERING, AND IT IS THE ONE WHOSE
- * WORST CASE IS SURVIVABLE. `answer.ts` (ATTEMPT-WITNESS) renames the attempt
- * witness before the attempts file so that a reverted attempts file cannot claim
- * to cover records it lost. If the ordering does not hold, both renames are lost
- * together, the pair reads as consistent, and the store publishes a coverage
- * window it cannot actually vouch for — which costs idempotency and status
- * records, and is why that mechanism is required to DEGRADE rather than refuse.
+ * NOTHING DEPENDS ON THAT ORDERING ANY MORE, AND THAT IS THE POINT OF THIS
+ * PARAGRAPH NOW. Both dependents were removed deliberately rather than argued
+ * about, because the ordering was never a guarantee the platform offers — see
+ * below — and a correctness property resting on an inference is a property you do
+ * not have.
  *
- * THE SECOND DEPENDENT IS GONE, DELIBERATELY, AND THAT CHANGES HOW MUCH WEIGHT
- * THIS PARAGRAPH CARRIES. `keys.ts` used to rename a send-nonce witness before the
+ * `answer.ts` was the survivable one: a rise-only witness renamed before a JSON
+ * attempts file, where a lost pair cost only idempotency and status records. It is
+ * now a table in host.db (ANSWER-LEDGER) with SQLite's documented durability
+ * asserted at open. And `keys.ts` was the unsurvivable one. `keys.ts` used to rename a send-nonce witness before the
  * anchor and rely on the anchor's content fsync to publish it before any nonce was
  * issued. A lost pair there was NOT survivable: both files roll back to matching
  * values, which looks healthy, logs nothing, and silently rewinds the send-nonce
