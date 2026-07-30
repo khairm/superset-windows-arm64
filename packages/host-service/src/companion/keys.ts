@@ -37,46 +37,80 @@
  *     alone — the revocation-reversal case — fails closed instead of silently
  *     re-authorising a revoked phone.
  *
- * `send.highWater` gets one more thing on top, `send-witness.json`
- * (SEND-WITNESS), because the anchor could not police its own most important
+ * `send.highWater` gets one more thing on top, an APPEND-ONLY JOURNAL
+ * (SEND-JOURNAL), because the anchor could not police its own most important
  * field. `generation` is per install, `epoch` is per mount and `(seq, digest)`
  * move only with the device authority, so reverting `state-anchor.json` to ANY
  * earlier version written during the same mount matched every check while taking
  * the mark backwards with it — and on win32 `syncDirectory` is a no-op, so the
- * most recent rename really can be lost. The witness is written BEFORE the
- * anchor on every raise and the higher of the two wins at start.
+ * most recent rename really can be lost. `send-journal.log` appends the mark and
+ * fsyncs the same file before any nonce covered by it is issued, and the highest
+ * valid record wins at start. The anchor still carries `highWater`, demoted to a
+ * conservative FLOOR that cross-checks the journal and can only ever raise it.
+ *
+ * WHY AN APPEND AND NOT A SECOND FILE. The mark used to live in a second
+ * whole-file record (`send-witness.json`) renamed BEFORE the anchor on every
+ * raise, and the claim that made the pair work was that the anchor's own content
+ * fsync published the witness's earlier rename — see `writeFileDurable` in
+ * `crypto.ts`, which now states plainly that this is an INFERENCE about NTFS's
+ * metadata log and not a guarantee the platform offers in writing. If it is wrong,
+ * BOTH renames sit in one unflushed window, a hard reset takes both, and the two
+ * files roll back TOGETHER to matching values — which looks healthy, logs nothing,
+ * and silently rewinds the counter into values already handed out. That is the one
+ * state a pair of renamed files cannot detect, and a repeated (key, nonce) pair
+ * destroys AES-GCM outright, so the mechanism could not be left resting on it.
+ *
+ * An append has no directory entry to lose. `FlushFileBuffers` is documented to
+ * flush the SPECIFIED FILE, and an append changes only that file's data and its own
+ * size, so `appendDurable` needs no inference at all. The replay cache in
+ * `crypto.ts` has always been structurally immune for exactly this reason; the
+ * counter now uses the same shape, and the ONE rename left anywhere near it is
+ * compaction, where losing the rename reverts to a file carrying the
+ * byte-identical maximum record.
  *
  * HONEST LIMIT, STATED RATHER THAN PAPERED OVER: a rollback of the WHOLE
  * `~/.superset/companion/` tree at once (a full VM snapshot restore) restores
- * the anchor, the index, the witness and the key files together and is not
+ * the anchor, the index, the journal and the key files together and is not
  * detectable from inside that tree. Detecting it needs a monotonic reference
  * outside the rolled-back volume, which this design does not have. Every PARTIAL
  * rollback — which is what the reviewer demonstrated, and what a "restore my
  * profile" or "roll back one file" actually does — is caught: a rolled-back
  * index or key file fails closed, and a rolled-back anchor is overridden by the
- * witness and logged loudly (resuming at the higher mark, rather than refusing,
+ * journal and logged loudly (resuming at the higher mark, rather than refusing,
  * because that shape is also an ordinary crash between the two writes).
  *
- * The witness bounds a rollback of the ANCHOR, which is the shape a crash can
- * produce, because a crash cannot delete a file. It does not bound a DELIBERATE
- * edit that rolls the anchor back AND removes or rewinds `send-witness.json` in
- * the same act: two files tampered together is the tree case again, stated here
- * rather than left implied. What the witness does guarantee against any single
- * lost rename, torn write or reverted file is that the counter never resumes
- * below a mark that was ever durable.
+ * A DELIBERATE EDIT THAT REWINDS THE JOURNAL IS DETECTED, WHICH THE WITNESS COULD
+ * NOT MANAGE. Two files tampered together used to be indistinguishable from
+ * health. Now the anchor's floor is written AFTER the journal record on every
+ * raise, so `anchor.highWater > journalMark` is structurally impossible in normal
+ * operation and means the journal demonstrably lost records: the bridge refuses to
+ * start. Truncating or rewriting the journal downwards therefore fails closed
+ * rather than passing as consistent. Raising it to a merely plausible value is
+ * still undetectable and still harmless — it burns counters, it cannot repeat one —
+ * and raising it to an impossible one is refused at the parse boundary.
  *
- * THERE IS A SECOND WITNESS IN THIS DIRECTORY, AND IT IS DELIBERATELY NOT SHARED
- * WITH THIS ONE. `answer.ts` (ATTEMPT-WITNESS) applies the same shape — a
- * generation-bound rise-only mark, written BEFORE the file it guards, in the same
- * directory — to `answer-attempts.json`. The two look alike and must not be merged
- * into one primitive, because their POLICY is opposite where it matters: a
- * rollback here means a repeated AES-GCM nonce, so this one refuses to start
- * (`StateRollbackError`); a rollback there costs only status records, so that one
- * must NEVER refuse to start and instead narrows the window it publishes. Folding
- * both behind a fatal/non-fatal flag would put that distinction one careless
- * argument away from being inverted. What they DO share is the write-ordering
- * guarantee documented at `writeFileDurable` in `crypto.ts` — read that before
- * changing either, and note it now has two dependents rather than one.
+ * (SEND-WITNESS) IS RETIRED, AND `answer.ts` POINTS HERE FOR THE CONTRAST.
+ * `send-witness.json` is no longer written. It is still READ once at start, its
+ * mark folded into the floor the journal is seeded to, and then deleted — the same
+ * carry-then-retire shape `send-nonce.json` gets below, because a file that once
+ * held the only durable mark may not simply be abandoned. It was not kept as
+ * defence-in-depth: its guarantee was contingent on the very inference being
+ * removed, and defence that shares a failure mode with the thing it defends is not
+ * depth — it is a second mechanism a reader will over-trust. Two independent
+ * records remain regardless (the journal and the anchor's floor), and they are
+ * combined with a MAX, so neither can lower the other.
+ *
+ * THERE IS STILL A WITNESS IN THIS DIRECTORY, AND IT IS DELIBERATELY NOT SHARED
+ * WITH THIS FILE. `answer.ts` (ATTEMPT-WITNESS) applies the OLD shape — a
+ * generation-bound rise-only mark, written BEFORE the file it guards — to
+ * `answer-attempts.json`, and it may keep doing so precisely because its POLICY is
+ * opposite where it matters: a rollback here means a repeated AES-GCM nonce, so
+ * this one refuses to start (`StateRollbackError`); a rollback there costs only
+ * status records, so that one must NEVER refuse to start and instead narrows the
+ * window it publishes. Folding both behind a fatal/non-fatal flag would put that
+ * distinction one careless argument away from being inverted. What they no longer
+ * share is the write-ordering assumption: `answer.ts` is now its ONLY dependent,
+ * and it is the dependent that can survive the assumption being false.
  *
  * ---------------------------------------------------------------------------
  * WHY `keyRef` IS RANDOM AND NOT THE deviceId
@@ -98,6 +132,7 @@
  * the same convention, and the two MUST NOT drift.
  */
 
+import type { FileHandle } from "node:fs/promises";
 import { open, readdir, readFile, unlink } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import {
@@ -109,15 +144,19 @@ import {
 	NONCE_PREFIX_BYTES,
 } from "./config";
 import {
+	appendDurable,
 	base64UrlDecode,
 	base64UrlEncode,
+	constantTimeEquals,
 	createSerialiser,
+	decodeWireId,
 	hkdfExpandInfo,
 	hkdfExpandLabel,
 	hkdfInfoWithSuffix,
 	isAllZero,
 	isCanonicalWireId,
 	randomBytes,
+	sha256,
 	syncDirectory,
 	writeFileDurable,
 	zero,
@@ -131,8 +170,15 @@ const KEY_FILE_MODE = 0o600;
 
 const ANCHOR_FILENAME = "state-anchor.json";
 /**
- * (SEND-WITNESS) The second, independent durable record of the send-nonce
- * high-water mark. See `readSendWitness` for why it exists at all.
+ * (SEND-JOURNAL) The append-only durable record of the send-nonce high-water
+ * mark. See `replaySendJournal` for the format and `openSendJournal` for why the
+ * mark lives in an append rather than in a renamed file.
+ */
+const SEND_JOURNAL_FILENAME = "send-journal.log";
+/**
+ * (SEND-WITNESS) RETIRED. The pre-journal second copy of the mark. Read ONCE, to
+ * carry its high-water mark into the journal, then deleted. Never re-created —
+ * see the header for why it was not kept as defence-in-depth.
  */
 const SEND_WITNESS_FILENAME = "send-witness.json";
 /**
@@ -176,6 +222,432 @@ export class StateRollbackError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// (SEND-JOURNAL) — the high-water mark, in records no rename can lose
+// ---------------------------------------------------------------------------
+
+/**
+ * `"SNJ1"` — a frame marker AND the format version, in the first four bytes of
+ * every record. It is what makes "this file is not a send journal" cheap to answer
+ * and a hexdump of it legible.
+ */
+const SEND_JOURNAL_MAGIC = Buffer.from("SNJ1", "ascii");
+const SEND_JOURNAL_OFF_GENERATION = SEND_JOURNAL_MAGIC.length;
+const SEND_JOURNAL_OFF_PREFIX = SEND_JOURNAL_OFF_GENERATION + WIRE_ID_BYTES;
+const SEND_JOURNAL_OFF_HIGH_WATER =
+	SEND_JOURNAL_OFF_PREFIX + NONCE_PREFIX_BYTES;
+const SEND_JOURNAL_OFF_SEQ = SEND_JOURNAL_OFF_HIGH_WATER + NONCE_COUNTER_BYTES;
+const SEND_JOURNAL_OFF_DIGEST = SEND_JOURNAL_OFF_SEQ + 8;
+const SEND_JOURNAL_DIGEST_BYTES = 32;
+/** 4 magic || 16 generation || 4 prefix || 8 highWater || 8 seq || 32 digest. */
+const SEND_JOURNAL_RECORD_BYTES =
+	SEND_JOURNAL_OFF_DIGEST + SEND_JOURNAL_DIGEST_BYTES;
+
+const UINT64_MAX = (1n << 64n) - 1n;
+/**
+ * A mark above this cannot be extended by another reservation without exceeding
+ * the 8-byte counter field, so it is not a value this install can have
+ * legitimately produced — the same judgement the mount-epoch ceiling makes. It is
+ * checked on every byte replayed off disk, so a crafted record cannot saturate the
+ * counter and turn the bridge's refusal into an unexplained `writeBigUInt64BE`
+ * range error somewhere in the seal path.
+ */
+const SEND_JOURNAL_MAX_HIGH_WATER = UINT64_MAX - NONCE_RESERVATION_BLOCK;
+
+/**
+ * THE GROWTH BOUND, AND WHY THERE IS NO COMPACTION.
+ *
+ * One record is appended per RESERVATION — that is one per 65 536 nonces — plus
+ * one per mount (the mount's `claimSend`; a `close()` that reserved nothing
+ * appends nothing). At 72 bytes a record that is 72 bytes per 65 536 sealed
+ * responses or event frames, and 72 bytes per host-service restart.
+ *
+ * Put arithmetic on it: a user restarting host-service twenty times a day writes
+ * 526 KB a year, 5.3 MB a decade. Sustaining one hundred event frames per SECOND
+ * for a year — far past anything a phone answering questions can produce — writes
+ * 3.4 MB. The file cannot become a problem on any timeline this install has.
+ *
+ * SO IT IS NEVER REWRITTEN, AND THAT IS A CORRECTNESS DECISION, NOT LAZINESS.
+ * Compaction means writing a smaller file and renaming it over this one, and a
+ * rename is exactly what this mechanism exists to stop depending on. Worse than
+ * the general argument: between an unpublished compaction rename and a crash, the
+ * records appended AFTER the compaction live in an inode the name no longer
+ * resolves to, so a hard reset would drop marks that nonces had already been
+ * issued from — reintroducing the precise rewind the journal removes, in the one
+ * code path that only ever runs on an install too old to test. An append-only file
+ * that is never rewritten has no such window, and the size it buys back is 526 KB
+ * a year.
+ *
+ * IF THE CEILING IS EVER HIT, THE BRIDGE REFUSES TO START. Reaching a million
+ * records means either 68 billion nonces, or a million mounts (a crashloop), or a
+ * crafted file — and in every one of those a silent rewrite is the wrong answer,
+ * for the same reason the replay cache refuses rather than evicting. Fail loud and
+ * let a human look. The §3.4 rule-4 remedy applies as it does everywhere else.
+ */
+const SEND_JOURNAL_MAX_RECORDS = 1_048_576;
+
+interface SendJournalRecord {
+	/** The install generation, base64url, as the anchor spells it. */
+	generation: string;
+	/** 4 raw prefix bytes, base64url, as the anchor spells it. */
+	prefix: string;
+	highWater: bigint;
+	/** 1 for the first record ever written, then exactly one more each time. */
+	seq: bigint;
+}
+
+/**
+ * The bytes of one record. The digest covers everything before it, so the frame,
+ * the install binding, the prefix binding, the mark and the sequence are all
+ * inside it.
+ */
+function encodeSendJournalRecord(record: SendJournalRecord): Buffer {
+	const bytes = Buffer.alloc(SEND_JOURNAL_RECORD_BYTES);
+	SEND_JOURNAL_MAGIC.copy(bytes, 0);
+	// `decodeWireId` rather than `base64UrlDecode`: the generation is a canonical
+	// §0.1 wire id and must contribute exactly 16 bytes to a fixed-width record.
+	bytes.set(decodeWireId(record.generation), SEND_JOURNAL_OFF_GENERATION);
+	const prefixBytes = base64UrlDecode(record.prefix);
+	if (prefixBytes.length !== NONCE_PREFIX_BYTES) {
+		throw new StateRollbackError(
+			`cannot journal a ${prefixBytes.length}-byte send-nonce prefix, expected ${NONCE_PREFIX_BYTES}`,
+		);
+	}
+	bytes.set(prefixBytes, SEND_JOURNAL_OFF_PREFIX);
+	bytes.writeBigUInt64BE(record.highWater, SEND_JOURNAL_OFF_HIGH_WATER);
+	bytes.writeBigUInt64BE(record.seq, SEND_JOURNAL_OFF_SEQ);
+	bytes.set(
+		sha256(new Uint8Array(bytes.subarray(0, SEND_JOURNAL_OFF_DIGEST))),
+		SEND_JOURNAL_OFF_DIGEST,
+	);
+	return bytes;
+}
+
+/**
+ * One record, or `null` when its frame or digest does not hold.
+ *
+ * `null` MEANS "THESE BYTES ARE NOT A RECORD THIS PROCESS WROTE", NOT "IGNORE
+ * THEM". The caller decides, and the decision is different for the last record
+ * than for any other — see `replaySendJournal`.
+ *
+ * THE DIGEST IS AN INTEGRITY CHECK, NOT AN AUTHENTICITY ONE, AND THE DIFFERENCE
+ * MATTERS. SHA-256 is unkeyed, so anyone who can write this file can also write a
+ * digest that verifies; there is no key available at start that an attacker with
+ * write access to `~/.superset/companion/` would not also have. What it does prove
+ * is that the bytes are not a TORN or corrupted write, which is the failure an
+ * append-only file actually has. Tamper is answered elsewhere and deliberately:
+ * a record from another install fails the generation binding, a mark below the
+ * anchor's floor fails the cross-check in `openStateAnchor`, and an impossible
+ * mark fails the range check here.
+ */
+function parseSendJournalRecord(
+	raw: Buffer,
+	offset: number,
+	journalPath: string,
+): SendJournalRecord | null {
+	const bytes = raw.subarray(offset, offset + SEND_JOURNAL_RECORD_BYTES);
+	if (!bytes.subarray(0, SEND_JOURNAL_MAGIC.length).equals(SEND_JOURNAL_MAGIC)) {
+		return null;
+	}
+	const digest = sha256(
+		new Uint8Array(bytes.subarray(0, SEND_JOURNAL_OFF_DIGEST)),
+	);
+	if (
+		!constantTimeEquals(
+			digest,
+			new Uint8Array(bytes.subarray(SEND_JOURNAL_OFF_DIGEST)),
+		)
+	) {
+		return null;
+	}
+
+	// Past this point the bytes are intact, so anything wrong with their VALUES is
+	// a statement about what was written rather than about the disk, and is fatal
+	// wherever in the file it appears.
+	const generation = base64UrlEncode(
+		new Uint8Array(
+			bytes.subarray(
+				SEND_JOURNAL_OFF_GENERATION,
+				SEND_JOURNAL_OFF_GENERATION + WIRE_ID_BYTES,
+			),
+		),
+	);
+	if (!isCanonicalWireId(generation)) {
+		throw new StateRollbackError(
+			`${journalPath} record at byte ${offset} carries no usable install generation`,
+		);
+	}
+	const highWater = bytes.readBigUInt64BE(SEND_JOURNAL_OFF_HIGH_WATER);
+	if (highWater > SEND_JOURNAL_MAX_HIGH_WATER) {
+		throw new StateRollbackError(
+			`${journalPath} record at byte ${offset} claims send-nonce high-water ${highWater}, which is not a value this install can have legitimately produced (the ceiling is ${SEND_JOURNAL_MAX_HIGH_WATER})`,
+		);
+	}
+	const seq = bytes.readBigUInt64BE(SEND_JOURNAL_OFF_SEQ);
+	if (seq < 1n) {
+		throw new StateRollbackError(
+			`${journalPath} record at byte ${offset} has sequence ${seq}; the first record ever written is 1`,
+		);
+	}
+	return {
+		generation,
+		prefix: base64UrlEncode(
+			new Uint8Array(
+				bytes.subarray(
+					SEND_JOURNAL_OFF_PREFIX,
+					SEND_JOURNAL_OFF_PREFIX + NONCE_PREFIX_BYTES,
+				),
+			),
+		),
+		highWater,
+		seq,
+	};
+}
+
+/** What the previous mounts left in the journal. */
+interface SendJournalReplay {
+	/** The highest — equivalently the last — valid record, or `null` when none. */
+	highest: SendJournalRecord | null;
+	/** Valid records replayed. The next one is written at `records * RECORD`. */
+	records: number;
+	/** Bytes after the last whole record. Overwritten, never appended past. */
+	tornTailBytes: number;
+	/** A full-width final record whose frame or digest failed. */
+	discardedTailRecord: boolean;
+}
+
+/**
+ * (SEND-JOURNAL) Replays the journal, validating every byte as untrusted input.
+ *
+ * ABSENT is `null` — a fresh install, or one that predates this file.
+ *
+ * TORN TAILS ARE EXPECTED AND ARE DISCARDED WITHOUT LOSING A VALID RECORD. Records
+ * are FIXED WIDTH and one record is one append, so a crash mid-append can leave at
+ * most one incomplete record and it can only be at the end. Anything after the
+ * last whole record is therefore a torn write; it is counted, reported and
+ * OVERWRITTEN by the next append rather than appended past, because appending
+ * after torn bytes would misalign every record that follows and silently change
+ * what this function reads back.
+ *
+ * A FULL-WIDTH FINAL RECORD THAT FAILS ITS DIGEST IS ALSO A TORN WRITE. A 72-byte
+ * append can straddle a sector boundary, so a tear can land with the record's
+ * length intact and its tail garbage. Discarding it loses nothing: `appendDurable`
+ * fsyncs before it returns, `raiseSend` does not resolve until it does, and
+ * `reserve` advances `reservedThrough` only after `raiseSend` resolves — so a
+ * record whose fsync never completed cannot have had a nonce issued above it.
+ *
+ * ANY OTHER INVALID RECORD IS FATAL, AND THAT IS PROVABLE RATHER THAN CAUTIOUS. In
+ * an append-only file with an fsync per record, the durability of record N+1
+ * implies record N was already complete on disk. A bad record with a good record
+ * after it therefore cannot be a torn write; it is media damage or an edit. A
+ * counter whose rollback repeats a nonce does not get to absorb either quietly.
+ *
+ * THE SAME LOGIC MAKES THE SEQUENCE EXACT. `seq` starts at 1 and increments only
+ * after a successful fsync, and a failed append is retried at the SAME offset, so
+ * a gap or a repeat cannot be produced by any crash — only by records having been
+ * removed or spliced. Both are refused, which is what stops a truncation that
+ * happens to leave a well-formed monotone file from passing as healthy.
+ */
+async function replaySendJournal(
+	journalPath: string,
+): Promise<SendJournalReplay | null> {
+	let raw: Buffer;
+	try {
+		raw = await readFile(journalPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+
+	const tornTailBytes = raw.length % SEND_JOURNAL_RECORD_BYTES;
+	const total = (raw.length - tornTailBytes) / SEND_JOURNAL_RECORD_BYTES;
+	if (total > SEND_JOURNAL_MAX_RECORDS) {
+		throw new StateRollbackError(
+			`${journalPath} holds ${total} records, past the ${SEND_JOURNAL_MAX_RECORDS} ceiling — that is not a file legitimate use produces, and rewriting it silently is how a high-water mark gets lost`,
+		);
+	}
+
+	let highest: SendJournalRecord | null = null;
+	let records = 0;
+	let discardedTailRecord = false;
+	for (let index = 0; index < total; index += 1) {
+		const offset = index * SEND_JOURNAL_RECORD_BYTES;
+		const record = parseSendJournalRecord(raw, offset, journalPath);
+		if (record === null) {
+			if (index === total - 1 && tornTailBytes === 0) {
+				discardedTailRecord = true;
+				break;
+			}
+			throw new StateRollbackError(
+				`${journalPath} record ${index + 1} of ${total} fails its frame or digest while ${total - index - 1} record(s) and ${tornTailBytes} loose byte(s) follow it — a torn append is always last, so this file was damaged or edited and the mark it should hold is unknown`,
+			);
+		}
+		if (highest === null) {
+			if (record.seq !== 1n) {
+				throw new StateRollbackError(
+					`${journalPath} begins at sequence ${record.seq}, not 1 — records have been removed from the front, so the highest mark this journal once held is unknown`,
+				);
+			}
+		} else {
+			if (record.generation !== highest.generation) {
+				throw new StateRollbackError(
+					`${journalPath} record ${index + 1} was written under install generation ${record.generation} but the record before it under ${highest.generation} — counter state from two installs cannot be recombined`,
+				);
+			}
+			if (record.prefix !== highest.prefix) {
+				throw new StateRollbackError(
+					`${journalPath} record ${index + 1} changes the send-nonce prefix; the prefix is install-scoped and a journal cannot span two`,
+				);
+			}
+			if (record.seq !== highest.seq + 1n) {
+				throw new StateRollbackError(
+					`${journalPath} jumps from sequence ${highest.seq} to ${record.seq} — a crash cannot skip or repeat a sequence, so records have been spliced out`,
+				);
+			}
+			if (record.highWater <= highest.highWater) {
+				throw new StateRollbackError(
+					`${journalPath} record ${index + 1} lowers the send-nonce high-water mark from ${highest.highWater} to ${record.highWater} — every append strictly raises it, so this file was edited`,
+				);
+			}
+		}
+		highest = record;
+		records += 1;
+	}
+
+	return { highest, records, tornTailBytes, discardedTailRecord };
+}
+
+/**
+ * (SEND-JOURNAL) The live journal: one open handle and the mark it has durably
+ * recorded.
+ *
+ * NOT SERIALISED, DELIBERATELY. Every caller is already inside the state anchor's
+ * own serialiser (`claimSend` / `raiseSend`) or inside `openStateAnchor` before the
+ * anchor has been handed to anybody. Adding a second mutex here would suggest the
+ * ordering between the journal append and the anchor write is negotiable, and it
+ * is not: the append comes first, always.
+ */
+interface SendJournal {
+	/** The highest durably recorded mark, or `null` when nothing is recorded. */
+	mark(): bigint | null;
+	/** The prefix every record is bound to, or `null` when nothing is recorded. */
+	prefix(): string | null;
+	/**
+	 * Records `highWater` durably. A no-op when it is already the mark; throws
+	 * rather than lowering it.
+	 */
+	append(prefix: string, highWater: bigint): Promise<void>;
+	close(): Promise<void>;
+}
+
+/**
+ * Opens the journal for appending, creating it when this install has never had one.
+ *
+ * THE WRITE OFFSET IS EXPLICIT, NOT AN `"a"` HANDLE. An append-at-EOF handle would
+ * write AFTER a torn tail the previous mount left behind, permanently misaligning
+ * every subsequent record; positioning each write at `records * RECORD` overwrites
+ * those bytes instead. It also means a failed append is retried at the same offset,
+ * which is what keeps `seq` exact.
+ *
+ * A FILE THAT APPEARS BETWEEN THE REPLAY AND THE CREATE IS REFUSED, not adopted.
+ * `wx` is the same exclusive-probe idiom `put()` uses below: the only thing that
+ * could create this file is another bridge lifecycle, which is the shape of the
+ * two-owners bug, and a `w` here would truncate away its records.
+ */
+async function openSendJournal(
+	journalPath: string,
+	generation: string,
+	replay: SendJournalReplay | null,
+): Promise<SendJournal> {
+	let handle: FileHandle;
+	if (replay === null) {
+		try {
+			handle = await open(journalPath, "wx", KEY_FILE_MODE);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+				throw new StateRollbackError(
+					`${journalPath} appeared while the bridge was starting — two lifecycles cannot share the send-nonce counter`,
+				);
+			}
+			throw error;
+		}
+	} else {
+		handle = await open(journalPath, "r+");
+	}
+
+	let records = replay?.records ?? 0;
+	let mark = replay?.highest?.highWater ?? null;
+	let boundPrefix = replay?.highest?.prefix ?? null;
+	let nextSeq = (replay?.highest?.seq ?? 0n) + 1n;
+	let closed = false;
+
+	return {
+		mark: () => mark,
+		prefix: () => boundPrefix,
+
+		async append(prefix, highWater): Promise<void> {
+			if (closed) {
+				throw new Error(`${LOG_PREFIX} the send-nonce journal is closed`);
+			}
+			if (highWater > SEND_JOURNAL_MAX_HIGH_WATER) {
+				throw new StateRollbackError(
+					`refusing to journal send-nonce high-water ${highWater}: the counter has no room left for another reservation below the ${SEND_JOURNAL_MAX_HIGH_WATER} ceiling`,
+				);
+			}
+			if (boundPrefix !== null && boundPrefix !== prefix) {
+				throw new StateRollbackError(
+					`refusing to journal a send-nonce mark under prefix ${prefix} when ${journalPath} is bound to ${boundPrefix} — the prefix is install-scoped`,
+				);
+			}
+			if (mark !== null) {
+				// Equal is the ordinary `close()` flush of a block that was already
+				// reserved, and writing a record for it would break the strictly-raising
+				// invariant the replay depends on.
+				if (highWater === mark) return;
+				if (highWater < mark) {
+					throw new StateRollbackError(
+						`refusing to lower the send-nonce high-water mark from ${mark} to ${highWater} — ${journalPath} is the record that proves what was handed out, so it may only ever be raised`,
+					);
+				}
+			}
+			if (records >= SEND_JOURNAL_MAX_RECORDS) {
+				throw new StateRollbackError(
+					`${journalPath} has reached its ${SEND_JOURNAL_MAX_RECORDS}-record ceiling during this mount — refusing to append rather than rewriting the one file whose rollback repeats a nonce`,
+				);
+			}
+
+			const record = encodeSendJournalRecord({
+				generation,
+				prefix,
+				highWater,
+				seq: nextSeq,
+			});
+			// Durable — content AND the file's own size — before anything derived from
+			// the raised mark is handed out. No rename, so nothing here depends on the
+			// win32 directory-entry gap documented at `syncDirectory`.
+			await appendDurable(
+				handle,
+				record,
+				records * SEND_JOURNAL_RECORD_BYTES,
+				journalPath,
+			);
+			// Only after the fsync returns. A failed append leaves every counter here
+			// untouched, so the retry rewrites the same offset with the same sequence.
+			records += 1;
+			nextSeq += 1n;
+			mark = highWater;
+			boundPrefix = prefix;
+		},
+
+		async close(): Promise<void> {
+			if (closed) return;
+			closed = true;
+			await handle.close();
+		},
+	};
+}
+
+
+// ---------------------------------------------------------------------------
 // the state anchor
 // ---------------------------------------------------------------------------
 
@@ -188,10 +660,33 @@ interface StoredAnchorFile {
 	send: {
 		/** 4 raw bytes as base64url. Install-scoped (§3.4). */
 		prefix: string;
-		/** The first counter NOBODY may use without reserving again. */
+		/**
+		 * The first counter NOBODY may use without reserving again.
+		 *
+		 * NO LONGER AUTHORITATIVE, and the demotion is the point. (SEND-JOURNAL) is
+		 * the durable record; this is a conservative FLOOR written AFTER every
+		 * journal append. That write order is what makes the two comparable: the
+		 * journal can legitimately lead this field (the anchor's rename was lost, or
+		 * a crash landed between the two writes) but it can never legitimately trail
+		 * it, so `highWater > journalMark` proves the journal lost records and the
+		 * bridge refuses to start.
+		 */
 		highWater: string;
 		/** The one lifecycle allowed to raise `highWater`. */
 		owner: string;
+		/**
+		 * (SEND-JOURNAL) Set once, when a journal is known to hold this counter's
+		 * mark, and never cleared. It is what distinguishes "this install predates
+		 * the journal, seed one" from "the journal existed and is now gone, refuse" —
+		 * two states that are otherwise identical on disk and could not be told apart
+		 * without it. Absent on a pre-journal anchor; `true` afterwards.
+		 *
+		 * It is written in the same `mutate` as the mark, which runs AFTER the
+		 * journal append, so `journal === true` being durable PROVES at least one
+		 * append completed. That is why an empty or missing journal underneath it is
+		 * a fault rather than a first run.
+		 */
+		journal?: true;
 	} | null;
 	devices: {
 		/** Monotonic; bumps only when the AUTHORITY projection of the index changes. */
@@ -223,11 +718,16 @@ export interface StateAnchor {
 	readonly minted: boolean;
 	send(): AnchorSendState | null;
 	/**
-	 * Takes send-nonce ownership and raises the high-water mark in one durable
-	 * write. Refuses to lower the mark. Returns the new owner token.
+	 * Takes send-nonce ownership and records the high-water mark durably — in the
+	 * (SEND-JOURNAL) append first, then in the anchor. Refuses to lower the mark.
+	 * Returns the new owner token.
 	 */
 	claimSend(prefix: Uint8Array, highWater: bigint): Promise<string>;
-	/** Raises the mark. Throws if `owner` is stale or `through` would lower it. */
+	/**
+	 * Raises the mark, journal first. Throws if `owner` is stale or `through` would
+	 * lower it. Does not resolve until the raised mark is durable, which is what
+	 * lets `reserve` treat its return as permission to issue.
+	 */
 	raiseSend(owner: string, through: bigint): Promise<void>;
 	devices(): AnchorDevicesState | null;
 	/** Records the index authority state. Refuses to lower `seq`. */
@@ -252,6 +752,7 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		throw new Error(`${LOG_PREFIX} openStateAnchor requires a root directory`);
 	}
 	const anchorPath = join(rootDir, ANCHOR_FILENAME);
+	const journalPath = join(rootDir, SEND_JOURNAL_FILENAME);
 	const witnessPath = join(rootDir, SEND_WITNESS_FILENAME);
 	const registryKey = resolvePath(anchorPath);
 	if (OPEN_ANCHORS.has(registryKey)) {
@@ -261,6 +762,10 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 	}
 	OPEN_ANCHORS.add(registryKey);
 
+	// Declared out here so the failure path below can release the handle. A leaked
+	// journal handle would survive a failed start and make the NEXT start's `r+`
+	// open contend with this process for a file it no longer believes it owns.
+	let journal: SendJournal | null = null;
 	try {
 		const existing = await readAnchorFile(anchorPath);
 		const minted = existing === null;
@@ -378,138 +883,250 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		// restart the counter under the SAME prefix.
 		await retireLegacySendNonceState(rootDir);
 
-		// (SEND-WITNESS) Reconcile the second durable record of the mark, and seed
-		// it for installs that predate it. Done AFTER the epoch write so a crash
-		// mid-reconcile leaves the pair in the same shape the next start handles.
-		const witness = await readSendWitness(witnessPath);
-		if (witness !== null) {
-			if (witness.generation !== current.generation) {
-				throw new StateRollbackError(
-					`${witnessPath} was written under install generation ${witness.generation} but the anchor is ${current.generation} — the anchor was deleted or replaced while the send-nonce witness survived, so nothing can prove the counter is current`,
-				);
-			}
-			const witnessed = BigInt(witness.highWater);
-			if (current.send === null) {
-				throw new StateRollbackError(
-					`${witnessPath} witnesses send-nonce high-water ${witnessed} but the anchor carries no send state at all — the anchor's send state was rolled back`,
-				);
-			}
-			if (current.send.prefix !== witness.prefix) {
-				throw new StateRollbackError(
-					`${witnessPath} witnesses a different send-nonce prefix than the anchor holds — counter state from two installs cannot be recombined`,
-				);
-			}
-			if (witnessed > BigInt(current.send.highWater)) {
-				// The anchor's most recent rename was lost (no directory fsync on
-				// win32) or a crash landed between the witness write and the anchor
-				// write. Either way the witnessed mark is the one that may already
-				// have been handed out; resuming below it would repeat nonces.
-				console.error(
-					`${LOG_PREFIX} send-nonce high-water mark restored from the witness: the anchor says ${current.send.highWater}, the witness says ${witness.highWater}. Resuming from the witness. If this repeats every start, the anchor file is not reaching disk.`,
-				);
-				// Derived INSIDE the write from what is on disk, never from the
-				// snapshot read above: the lift must raise the mark and change
-				// nothing else, and a blind write of a pre-read `send` is the exact
-				// shape of the bug this module was reviewed for.
-				await mutate((onDisk) => {
-					if (onDisk.send === null) {
-						throw new StateRollbackError(
-							`${witnessPath} witnesses send-nonce high-water ${witnessed} but the anchor's send state vanished while it was being lifted`,
-						);
-					}
-					if (BigInt(onDisk.send.highWater) >= witnessed) return onDisk;
-					return {
-						...onDisk,
-						send: { ...onDisk.send, highWater: witness.highWater },
-					};
-				});
-			}
+		// ------------------------------------------------------------------
+		// (SEND-JOURNAL) reconcile the durable mark
+		// ------------------------------------------------------------------
+		//
+		// Everything up to `openSendJournal` is READ-ONLY, so a start that refuses
+		// never creates the file it is refusing over. It runs after the epoch write
+		// so a crash mid-reconcile leaves a shape the next start handles.
+		const replay = await replaySendJournal(journalPath);
+		const journalled = replay?.highest ?? null;
+		if (
+			replay !== null &&
+			(replay.tornTailBytes > 0 || replay.discardedTailRecord)
+		) {
+			// Evidence the previous mount died mid-append. Harmless — the discarded
+			// record's fsync never returned, so no nonce was issued above it — but it
+			// is the only place an unclean shutdown of this file is visible.
+			console.error(
+				`${LOG_PREFIX} ${journalPath} ends in an incomplete append (${replay.tornTailBytes} loose byte(s)${replay.discardedTailRecord ? " and one record that failed its digest" : ""}) — discarding it and resuming from record ${replay.records}. The previous run did not shut down cleanly.`,
+			);
 		}
-		if (current.send !== null) {
-			const send = current.send;
-			if (
-				witness === null ||
-				BigInt(witness.highWater) < BigInt(send.highWater)
-			) {
-				await writeSendWitness(witnessPath, {
-					v: 1,
-					generation: current.generation,
-					prefix: send.prefix,
-					highWater: send.highWater,
-				});
+		if (journalled !== null && journalled.generation !== current.generation) {
+			throw new StateRollbackError(
+				`${journalPath} records install generation ${journalled.generation} but the anchor is ${current.generation} — the anchor was deleted or replaced while the send-nonce journal survived, so nothing can prove the counter is current`,
+			);
+		}
+
+		// (SEND-WITNESS) The retired second copy of the mark. Read ONCE, folded into
+		// what the journal must be seeded to, then deleted at the end of this block.
+		const witness = await readSendWitness(witnessPath);
+		if (witness !== null && witness.generation !== current.generation) {
+			throw new StateRollbackError(
+				`${witnessPath} was written under install generation ${witness.generation} but the anchor is ${current.generation} — the anchor was deleted or replaced while the retired send-nonce witness survived, so nothing can prove the counter is current`,
+			);
+		}
+
+		const anchorMark =
+			current.send === null ? null : BigInt(current.send.highWater);
+		const witnessMark = witness === null ? null : BigInt(witness.highWater);
+
+		if (journalled !== null) {
+			if (current.send !== null && current.send.prefix !== journalled.prefix) {
+				throw new StateRollbackError(
+					`${journalPath} records send-nonce prefix ${journalled.prefix} but the anchor holds ${current.send.prefix} — counter state from two installs cannot be recombined`,
+				);
+			}
+			/**
+			 * THE CHECK THAT CLOSES THE STATE THE OLD PAIR OF RENAMED FILES COULD NOT
+			 * SEE, and it is worth being explicit about why it is sound.
+			 *
+			 * Every raise appends to the journal FIRST and writes the anchor's floor
+			 * second. So the journal may legitimately LEAD the anchor — the anchor's
+			 * rename was lost, or a crash landed between the two writes — but it can
+			 * never legitimately TRAIL it. An anchor ahead of the journal therefore
+			 * proves the journal lost records that a completed anchor write says were
+			 * reserved, and the only mechanisms that can do that are media damage and
+			 * an edit. In both cases the journal's TRUE maximum is unknown, so the
+			 * anchor's own value is not a safe floor to resume from either: the real
+			 * mark may have been higher than both. Refuse.
+			 *
+			 * This is what makes a rewind by tampering fail closed rather than pass as
+			 * healthy, which is exactly what a pair of files rolled back TOGETHER to
+			 * matching values used to do.
+			 *
+			 * WHAT IT COSTS, STATED RATHER THAN DISCOVERED LATER: installing a build
+			 * that PREDATES the journal, letting it raise the anchor, and then coming
+			 * back to this one lands here too, because the older build raises the anchor
+			 * without appending. That is a refusal on downgrade-then-upgrade, and it is
+			 * accepted deliberately — the bridge ships behind an experimental setting
+			 * and has no installed base carrying a pre-journal counter, whereas the
+			 * detection this check buys is the only thing standing between a truncated
+			 * journal and a silently reused nonce. Re-pair per §3.4 rule 4 if it ever
+			 * happens; do not soften the check to make the downgrade smooth.
+			 */
+			if (anchorMark !== null && anchorMark > journalled.highWater) {
+				throw new StateRollbackError(
+					`the anchor's send-nonce floor is ${anchorMark} but ${journalPath} only records ${journalled.highWater}; the journal is appended BEFORE the anchor on every raise, so it cannot legitimately trail it — records have been lost from the journal and the highest mark actually handed out is unknown`,
+				);
+			}
+		} else if (current.send?.journal === true) {
+			/**
+			 * A journal was PROVEN to exist and is now gone or empty.
+			 *
+			 * `journal: true` is written in the same anchor write as the mark, which
+			 * happens after the append, so its presence on disk proves at least one
+			 * record was durable. The anchor's own floor cannot stand in for what is
+			 * missing: if the anchor's most recent rename was also lost, its floor is
+			 * an older mark and nonces above it were issued under the journal's
+			 * authority. That is unprovable freshness, and §3.4 rule 4 has exactly one
+			 * answer for it.
+			 */
+			throw new StateRollbackError(
+				`the anchor records that a send-nonce journal exists but ${journalPath} ${replay === null ? "is missing" : "holds no valid record"} — the one record that proves which counters were handed out is gone, and the anchor's own floor cannot substitute for it`,
+			);
+		}
+
+		// Past every refusal, so the handle is only taken when this mount is going
+		// to run. Created here on a first install; the first record follows from
+		// `claimSend`.
+		journal = await openSendJournal(journalPath, current.generation, replay);
+
+		/**
+		 * SEED THE JOURNAL FROM WHATEVER THE OLDER RECORDS PROVE.
+		 *
+		 * This is the migration path and it runs at most once per install: an anchor
+		 * that predates the journal carries the mark in `send.highWater`, and an
+		 * install that ran the retired witness may carry a HIGHER one there (the
+		 * witness was written first, so it leads the anchor after a lost rename).
+		 * Both are folded in, and the journal is brought up to the maximum before
+		 * anything can issue a nonce from it.
+		 *
+		 * IT IS ALSO THE REPAIR PATH, WHICH IS WHY IT IS NOT GUARDED BY A ONE-SHOT
+		 * FLAG. A crash between the seeding append and the anchor write leaves the
+		 * flag unset with the journal already seeded; re-running takes a MAX and
+		 * appends nothing, so the whole block is idempotent and a partially migrated
+		 * install converges rather than needing a special case.
+		 */
+		let seedTo: bigint | null = null;
+		for (const candidate of [anchorMark, witnessMark]) {
+			if (candidate === null) continue;
+			if (seedTo === null || candidate > seedTo) seedTo = candidate;
+		}
+		const seedPrefix =
+			journal.prefix() ?? current.send?.prefix ?? witness?.prefix ?? null;
+		if (seedTo !== null && seedPrefix !== null) {
+			const durable = journal.mark();
+			if (durable === null || seedTo > durable) {
+				console.error(
+					`${LOG_PREFIX} seeding ${journalPath} at send-nonce high-water ${seedTo}, carried from ${
+						witnessMark !== null && (anchorMark === null || witnessMark > anchorMark)
+							? `the retired witness (the anchor says ${String(anchorMark)})`
+							: "the anchor"
+					}. This is expected exactly once per install, when it first runs a build that journals the mark.`,
+				);
+				await journal.append(seedPrefix, seedTo);
 			}
 		}
 
 		/**
-		 * (SEND-WITNESS) Raise the witness BEFORE the anchor, always.
+		 * BRING THE ANCHOR'S FLOOR UP TO THE JOURNAL, AND STAMP `journal: true`.
 		 *
-		 * That order is what makes the loss of the anchor's rename detectable: the
-		 * witness is then the higher of the two and the next start resumes from it.
-		 * The reverse order would make a lost anchor rename look identical to a
-		 * never-attempted one. A crash between the two writes leaves the witness
-		 * ahead, which costs at most one skipped block of counters and never
-		 * repeats one.
+		 * `send()` is what `createSendNonceSource` resumes from, so the resolved mark
+		 * has to be in the anchor's send state and not merely known here. Three shapes
+		 * arrive at this point and all three are repaired the same way:
 		 *
-		 * WHAT ACTUALLY MAKES THE WITNESS'S RENAME DURABLE FIRST — and it is not
-		 * the call order on its own. The two renames are issued microseconds apart
-		 * and `syncDirectory` is a no-op on win32, so nothing here forces either
-		 * directory entry. What separates them is the ANCHOR's own write: every
-		 * `mutate` goes through `writeFileDurable`, whose `handle.sync()` on the
-		 * anchor's tmp file is a FlushFileBuffers, and that forces NTFS's volume
-		 * metadata log — which by then already carries the witness's rename record.
-		 * The anchor's content fsync is therefore what PUBLISHES the witness's
-		 * rename, and it is why a crash cannot discard the witness while keeping
-		 * the anchor at a mark nonces were issued from.
+		 *  - the anchor trails the journal — its most recent rename was lost, or a
+		 *    crash landed between the append and the anchor write. Logged loudly,
+		 *    because a start that reports this EVERY time means anchor writes are not
+		 *    reaching disk at all;
+		 *  - the anchor has no send state while the journal has records — the same
+		 *    loss, on the write that first created the send block. The journal carries
+		 *    both the prefix and the mark, so nothing is unproven and there is nothing
+		 *    to refuse: rebuilding the block from it is strictly safer than letting
+		 *    `createSendNonceSource` see `null` and mint a fresh prefix;
+		 *  - the marks already agree and only the flag is missing (the install just
+		 *    migrated).
 		 *
-		 * THAT MAKES THE PAIRING LOAD-BEARING: a `raiseWitness` must always be
-		 * followed by an anchor `mutate` before any nonce above the raised mark is
-		 * emitted. Both call sites below do exactly that, unconditionally, and
-		 * `reserve` only advances `reservedThrough` after `raiseSend` resolves. A
-		 * witness-only path — a periodic refresh, a raise whose `mutate` producer
-		 * throws and then issues anyway — would put both renames in one unflushed
-		 * log window, where a hard reset takes both and the counter silently
-		 * resumes at a used value with nothing logged. Do not add one.
-		 *
-		 * RAISE ONLY, ENFORCED AGAINST THE FILE. An unconditional write here would
-		 * be a hole in the middle of the fix: `raiseSend` writes the witness before
-		 * `mutate` decides whether the raise is legal at all, so a stale owner's
-		 * refill — the case `mutate` correctly refuses — would still have LOWERED
-		 * the witness on its way to being refused, and a lowered witness cannot
-		 * bound a rolled-back anchor. The witness is therefore read back and a
-		 * lower value is refused outright rather than written, which also means a
-		 * witness whose own rename was lost is repaired on the next raise instead
-		 * of being trusted. A raise to the value already durable writes nothing.
+		 * The producer derives everything INSIDE the write from what is on disk. A
+		 * blind write of the `current` snapshot read above is the exact shape of the
+		 * bug this module was reviewed for.
 		 */
-		const raiseWitness = async (
+		const resolved = journal.mark();
+		const resolvedPrefix = journal.prefix();
+		// `mutate` writes unconditionally, so the decision not to write has to be
+		// made here. An anchor already carrying the resolved mark and the flag needs
+		// nothing, and a pointless rewrite per mount is a pointless rename per mount.
+		const needsLift =
+			resolved !== null &&
+			(current.send === null ||
+				BigInt(current.send.highWater) < resolved ||
+				current.send.journal !== true);
+		if (resolved !== null && resolvedPrefix !== null && needsLift) {
+			if (anchorMark === null) {
+				console.error(
+					`${LOG_PREFIX} the anchor carries no send-nonce state but ${journalPath} records high-water ${resolved} under prefix ${resolvedPrefix}. Rebuilding the anchor's send state from the journal. If this repeats every start, the anchor file is not reaching disk.`,
+				);
+			} else if (anchorMark < resolved) {
+				console.error(
+					`${LOG_PREFIX} send-nonce high-water mark restored from the journal: the anchor says ${anchorMark}, the journal records ${resolved}. Resuming from the journal. If this repeats every start, the anchor file is not reaching disk.`,
+				);
+			}
+			await mutate((onDisk) => {
+				if (
+					onDisk.send !== null &&
+					BigInt(onDisk.send.highWater) >= resolved &&
+					onDisk.send.journal === true
+				) {
+					return onDisk;
+				}
+				if (onDisk.send !== null && onDisk.send.prefix !== resolvedPrefix) {
+					throw new StateRollbackError(
+						`the anchor's send-nonce prefix changed to ${onDisk.send.prefix} while the journal's mark was being lifted into it`,
+					);
+				}
+				// UNREACHABLE, AND LOUD RATHER THAN SILENT IF IT EVER IS NOT. The
+				// cross-check above already refused an anchor ahead of the journal, and
+				// nothing writes the anchor between there and here. Preserving the higher
+				// value would leave a floor the NEXT start refuses on — a self-bricking
+				// anchor written by the repair path — and taking the lower one would drop
+				// a mark the anchor proved. Neither is a safe thing to do quietly.
+				if (onDisk.send !== null && BigInt(onDisk.send.highWater) > resolved) {
+					throw new StateRollbackError(
+						`the anchor's send-nonce floor moved to ${onDisk.send.highWater} while the journal's mark ${resolved} was being lifted into it`,
+					);
+				}
+				return {
+					...onDisk,
+					send: {
+						prefix: resolvedPrefix,
+						highWater: resolved.toString(10),
+						// Not a live owner — the mount's `claimSend` replaces it. A
+						// non-empty placeholder keeps the shape valid for `readAnchorFile`.
+						owner: onDisk.send?.owner ?? "journal-repair-unowned",
+						journal: true,
+					},
+				};
+			});
+		}
+
+		/**
+		 * RETIRE THE WITNESS, LAST, AND ONLY ONCE THE JOURNAL COVERS IT.
+		 *
+		 * Same discipline as `retireLegacySendNonceState`: a file that once held the
+		 * only durable copy of the mark is deleted only after a record that supersedes
+		 * it is durable. A lost `unlink` is harmless — the file reappears, its mark is
+		 * folded into the same MAX next start, and it is deleted again — which is the
+		 * conservative direction, as every rename-shaped operation left in this module
+		 * has to be.
+		 */
+		if (witness !== null && witnessMark !== null) {
+			const durable = journal.mark();
+			if (durable !== null && durable >= witnessMark) {
+				await retireSendWitness(witnessPath, rootDir);
+			}
+		}
+
+		/** Journal first, always. See `raiseSend` for why the order is the mechanism. */
+		const journalRaise = async (
 			prefix: string,
 			highWater: bigint,
 		): Promise<void> => {
-			const onDisk = await readSendWitness(witnessPath);
-			if (onDisk !== null) {
-				if (onDisk.generation !== current.generation) {
-					throw new StateRollbackError(
-						`${witnessPath} is witnessing install generation ${onDisk.generation} but this bridge is running ${current.generation} — the send-nonce witness was replaced while the bridge was running`,
-					);
-				}
-				if (onDisk.prefix !== prefix) {
-					throw new StateRollbackError(
-						`${witnessPath} is witnessing a different send-nonce prefix than the one being raised — counter state from two installs cannot be recombined`,
-					);
-				}
-				const durable = BigInt(onDisk.highWater);
-				if (highWater < durable) {
-					throw new StateRollbackError(
-						`refusing to lower the send-nonce witness from ${durable} to ${highWater} — the witness is the only record that can prove a rolled-back anchor went backwards, so it may only ever be raised`,
-					);
-				}
-				if (highWater === durable) return;
+			if (journal === null) {
+				throw new Error(`${LOG_PREFIX} the send-nonce journal is not open`);
 			}
-			await writeSendWitness(witnessPath, {
-				v: 1,
-				generation: current.generation,
-				prefix,
-				highWater: highWater.toString(10),
-			});
+			await journal.append(prefix, highWater);
 		};
 
 		return {
@@ -530,7 +1147,7 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 						);
 					}
 					const owner = base64UrlEncode(randomBytes(16));
-					await raiseWitness(base64UrlEncode(prefix), highWater);
+					await journalRaise(base64UrlEncode(prefix), highWater);
 					await mutate((onDisk) => {
 						if (onDisk.send !== null) {
 							const durable = decodeSend(onDisk.send);
@@ -551,6 +1168,7 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 								prefix: base64UrlEncode(prefix),
 								highWater: highWater.toString(10),
 								owner,
+								journal: true,
 							},
 						};
 					});
@@ -566,7 +1184,30 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 							"the send-nonce state vanished from the anchor while the bridge was running",
 						);
 					}
-					await raiseWitness(held.prefix, through);
+					/**
+					 * (SEND-JOURNAL) THE APPEND COMES FIRST, ALWAYS, AND THAT ORDER IS THE
+					 * MECHANISM RATHER THAN A PREFERENCE.
+					 *
+					 * The journal is what proves which counters were handed out, so it has
+					 * to be durable before the anchor's floor claims they were — the
+					 * reverse order would make an anchor ahead of the journal an ordinary
+					 * shape, and it is precisely by being IMPOSSIBLE that it detects a
+					 * journal that has been rewound (see the cross-check in
+					 * `openStateAnchor`).
+					 *
+					 * Unlike the retired witness, ordering here needs nothing from the
+					 * platform: `appendDurable` fsyncs the journal's own file, so the record
+					 * is durable when it returns, whatever happens to the anchor's rename
+					 * afterwards. There is no pairing to preserve and no invariant about
+					 * what must follow a raise — a journal-only write is now HARMLESS,
+					 * where under the witness it silently restored the rewind.
+					 *
+					 * A raise refused by `mutate` below has therefore already raised the
+					 * journal. That is deliberate and safe in the only direction that
+					 * matters: it burns counters this bridge will never issue, and a stale
+					 * owner poisons its source and emits nothing at all.
+					 */
+					await journalRaise(held.prefix, through);
 					await mutate((onDisk) => {
 						if (onDisk.send === null) {
 							throw new StateRollbackError(
@@ -633,10 +1274,14 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 				// behind it: this no-op runs strictly after the last pending write has
 				// settled, and cannot itself reject.
 				await serialise(async () => undefined);
+				// After the drain, so a `raiseSend` still in flight cannot lose its
+				// handle mid-append. `closed` already refuses anything queued later.
+				await journal?.close();
 				OPEN_ANCHORS.delete(registryKey);
 			},
 		};
 	} catch (error) {
+		await journal?.close().catch(() => {});
 		OPEN_ANCHORS.delete(registryKey);
 		throw error;
 	}
@@ -716,6 +1361,16 @@ async function readAnchorFile(
 		) {
 			throw new StateRollbackError(`${anchorPath} has malformed send state`);
 		}
+		// Validated as strictly as the rest, because it is the field that decides
+		// whether a missing journal is a first run or a fault. Anything other than
+		// absent-or-`true` is a file this build did not write, and reading a truthy
+		// `"false"` as "the journal exists" would turn that fault into a silent
+		// reseed at whatever the anchor happens to say.
+		if (send.journal !== undefined && send.journal !== true) {
+			throw new StateRollbackError(
+				`${anchorPath} has a malformed send-journal marker (${JSON.stringify(send.journal)}); it is absent or true and nothing else`,
+			);
+		}
 	}
 	const devices = record.devices;
 	if (devices !== null && devices !== undefined) {
@@ -746,52 +1401,47 @@ async function writeAnchorFile(
 }
 
 /**
- * (SEND-WITNESS) The mark, mirrored into a file the anchor's own anti-rollback
- * machinery does not write.
+ * (SEND-WITNESS) RETIRED. The pre-journal second copy of the mark — read once at
+ * start, folded into what (SEND-JOURNAL) is seeded to, then deleted. Never written.
  *
- * WHY. `writeFileDurable` gives content durability and rename ORDER, but
- * `syncDirectory` is a no-op on win32 — libuv maps `fs.rename` to
- * `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` with no `MOVEFILE_WRITE_THROUGH`,
- * so the most recent rename can sit in the NTFS log for seconds. A hard reset in
- * that window reverts `state-anchor.json` to its PREVIOUS version, and nothing
- * in `assertNoRollback` can see it: `generation` is per-install, `epoch` is per
- * mount, and `(seq, digest)` only move when the device authority moves — so a
- * revert to any earlier version written during the SAME mount matches every
- * witness that existed. `send.highWater` lived in exactly one file, next to the
- * fields meant to police it, and reverted with them. Each mount does exactly one
- * `claimSend`, so the exposure was one lost rename per mount, not a rare race.
+ * WHAT IT WAS, AND WHY IT IS NOT KEPT. `writeFileDurable` gives content durability
+ * and rename ORDER, but `syncDirectory` is a no-op on win32 — libuv maps
+ * `fs.rename` to `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)` with no
+ * `MOVEFILE_WRITE_THROUGH`, so the most recent rename can sit in the NTFS log for
+ * seconds. A hard reset in that window reverts `state-anchor.json` to its PREVIOUS
+ * version, and nothing in the anchor's own checks can see it: `generation` is per
+ * install, `epoch` is per mount, and `(seq, digest)` only move when the device
+ * authority moves. `send.highWater` lived in exactly one file, next to the fields
+ * meant to police it, and reverted with them. This file was a second copy of the
+ * mark, renamed BEFORE the anchor on every raise, with the higher of the two
+ * winning at start.
  *
- * WHAT THIS BUYS. Two files, two directory entries, two renames. Losing the
- * anchor's rename alone is now visible: the witness still carries the higher
- * mark, and `openStateAnchor` resumes from it. Losing the witness's rename alone
- * is harmless — the reconciliation only ever takes the MAXIMUM, so a witness
- * behind the anchor is ignored.
+ * IT WORKED ONLY IF AN INFERENCE HELD. Two renames issued microseconds apart can
+ * sit in the same unflushed log window, and writing one first does not separate
+ * them; the thing claimed to separate them was the anchor's own content fsync
+ * forcing NTFS's metadata log, and thereby publishing the witness's earlier rename.
+ * `writeFileDurable` now says plainly that this is an inference from how the
+ * metadata log is understood to work and NOT a documented guarantee —
+ * `FlushFileBuffers` is specified to flush the SPECIFIED FILE, and the documented
+ * durable-rename primitive is one Node never issues. If the inference is wrong,
+ * both files roll back TOGETHER to matching values: consistent, silent, and
+ * rewound. That is the single state a pair of renamed files cannot detect, and for
+ * a counter whose rewind repeats an AES-GCM nonce it was not an acceptable one to
+ * carry.
  *
- * LOSING BOTH IN ONE CRASH IS NOT THE TREE CASE, AND IS NOT OUT OF SCOPE. Two
- * renames issued microseconds apart can sit in the same unflushed NTFS log
- * window, and nothing about writing one first would separate them. What separates
- * them is that the anchor is written with `writeFileDurable`, whose content
- * `handle.sync()` forces the volume metadata log — publishing the witness's
- * earlier rename record along with it — and no nonce above a raised mark is
- * emitted until that anchor write has resolved (`reserve` advances
- * `reservedThrough` only after `raiseSend` returns). So the pair is ordered by an
- * fsync, not by call order, and the guarantee survives exactly as long as every
- * `raiseWitness` is followed by an anchor write before anything is issued. See
- * the invariant stated at `raiseWitness` itself; a witness-only write path would
- * silently restore the original rewind, which is why one must not be added.
+ * THE REPLACEMENT NEEDS NO INFERENCE, WHICH IS ALSO WHY THIS IS NOT KEPT ALONGSIDE
+ * IT. `send-journal.log` appends and fsyncs the same file, and an append has no
+ * directory entry to lose. Retaining a mechanism whose guarantee is contingent on
+ * the very assumption being removed would read as defence-in-depth while sharing
+ * the failure mode of the thing it defends; the honest arrangement is one
+ * unconditional record plus the anchor's floor, combined with a MAX so that
+ * neither can lower the other.
  *
- * WHY THIS RESUMES RATHER THAN REFUSES. The witness is written BEFORE the
- * anchor, so "witness ahead of anchor" is also the ordinary shape of a crash
- * landing between the two writes. Refusing there would take the bridge down and
- * demand a full re-pair for an ordinary power cut. Resuming at the maximum
- * enforces the actual invariant — never resume below a mark that was ever
- * durable — without a false positive, and it is loud: the lift is logged as an
- * error with both marks.
- *
- * ABSENT is `null` (first run, or an install that predates this file).
- * UNPARSABLE or MALFORMED THROWS, for the same reason `readAnchorFile` does: a
- * witness that cannot be read cannot bound the counter, and guessing is the
- * failure this file exists to prevent.
+ * ABSENT is `null` — a fresh install, or one that has already retired it.
+ * UNPARSABLE or MALFORMED still THROWS. It is being deleted, not ignored: while the
+ * file exists it may hold the highest mark this install ever made durable, and a
+ * copy that cannot be read cannot be proven not to. Guessing is the failure the
+ * whole module exists to prevent.
  */
 interface StoredSendWitness {
 	v: 1;
@@ -852,12 +1502,27 @@ async function readSendWitness(
 	};
 }
 
-async function writeSendWitness(
+/**
+ * (SEND-WITNESS) Deletes the retired witness, once and for all.
+ *
+ * The caller has already proven the journal records a mark at or above the one
+ * this file carries, so nothing durable is lost. The directory fsync is the same
+ * best-effort call `retireLegacySendNonceState` makes: on win32 it is a no-op and
+ * the `unlink` can be lost, which brings the file back with a mark the next start
+ * folds into the same MAX and then deletes again. Every rename-shaped operation
+ * left in this module has to fail in that direction, and this one does.
+ */
+async function retireSendWitness(
 	witnessPath: string,
-	file: StoredSendWitness,
+	rootDir: string,
 ): Promise<void> {
-	const bytes = Buffer.from(`${JSON.stringify(file, null, "\t")}\n`, "utf8");
-	await writeFileDurable(witnessPath, bytes, KEY_FILE_MODE);
+	try {
+		await unlink(witnessPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	await syncDirectory(rootDir);
 }
 
 /**

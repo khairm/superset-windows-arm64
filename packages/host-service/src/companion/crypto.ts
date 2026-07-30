@@ -1045,22 +1045,32 @@ export function monotonicNowMs(): number {
  * WORSE than this honest no-op, because every mechanism above it would stop
  * compensating. Removing the early return therefore needs real evidence — an
  * authoritative statement about directory handles on NTFS, or a crash-consistency
- * test showing a rename surviving with the sync and lost without it. If that
- * evidence ever arrives, this no-op and BOTH witness mechanisms that exist to
- * work around it can be reconsidered together.
+ * test showing a rename surviving with the sync and lost without it.
  *
  * WHAT THAT GAP COSTS, AND WHY THIS STILL RETURNS RATHER THAN THROWS. A hard
  * reset can discard the most recent rename, which reverts a file to its previous
  * version. Throwing here would be honest and would also end the feature on the
  * only platform it ships to, so the gap is answered where it actually bites
- * instead: `keys.ts` mirrors the send-nonce high-water mark into a second file
- * (SEND-WITNESS) written BEFORE the anchor on every raise, and takes the higher
- * of the two at start, so losing either rename can no longer resume the counter
- * below a mark that was already durable. The Android half (`FileBlobStore`)
- * refuses to construct without directory fsync; the two halves answer the same
- * question differently ON PURPOSE, because the phone has a platform that
- * provides it and the bridge does not. Anything added here whose rollback would
- * be unsafe needs the same treatment — a durable witness — not a comment.
+ * instead — and the two places it bites now answer it in two DIFFERENT ways,
+ * because their stakes are different:
+ *
+ *  - THE SEND-NONCE COUNTER DOES NOT RELY ON A RENAME AT ALL. A rewound counter
+ *    repeats a nonce, so `keys.ts` keeps its high-water mark in an append-only
+ *    journal (SEND-JOURNAL) written with `appendDurable`. An append has no
+ *    directory entry to lose, so this no-op cannot cost it anything; the mark's
+ *    durability no longer depends on any property this function fails to provide.
+ *    It is the shape to copy for anything else whose rollback is unacceptable.
+ *  - `answer.ts` (ATTEMPT-WITNESS) still renames a witness before the file it
+ *    guards, and relies on the ordering documented at `writeFileDurable`. It may
+ *    do that because a rolled-back attempts file costs only status records: every
+ *    verdict its witness can reach NARROWS the coverage window it publishes, and
+ *    it is forbidden from refusing to start.
+ *
+ * The Android half (`FileBlobStore`) refuses to construct without directory fsync;
+ * the two halves answer the same question differently ON PURPOSE, because the
+ * phone has a platform that provides it and the bridge does not. Anything added
+ * here whose rollback would be unsafe gets the first treatment — an append-only
+ * record — not the second, and not a comment.
  */
 export async function syncDirectory(dir: string): Promise<void> {
 	if (process.platform === "win32") return;
@@ -1084,13 +1094,26 @@ export async function syncDirectory(dir: string): Promise<void> {
  * `handle.sync()` on the tmp file is a FlushFileBuffers, and that forces NTFS's
  * volume metadata log, which by then carries every rename this process has
  * already issued. That is the only thing that makes two durable writes ORDERED
- * relative to each other on the fork's platform, and TWO mechanisms now depend
- * on it: `keys.ts` renames the send-nonce witness before the anchor and relies on
- * the anchor's content fsync to publish it before any nonce is issued, and
- * `answer.ts` (ATTEMPT-WITNESS) renames the attempt witness before the attempts
- * file for exactly the same reason. Replacing this with a plain `writeFile` would
- * leave both renames of EITHER pair in one unflushed log window, where a hard
- * reset takes both and the mark silently rewinds.
+ * relative to each other on the fork's platform.
+ *
+ * EXACTLY ONE MECHANISM STILL DEPENDS ON THAT ORDERING, AND IT IS THE ONE WHOSE
+ * WORST CASE IS SURVIVABLE. `answer.ts` (ATTEMPT-WITNESS) renames the attempt
+ * witness before the attempts file so that a reverted attempts file cannot claim
+ * to cover records it lost. If the ordering does not hold, both renames are lost
+ * together, the pair reads as consistent, and the store publishes a coverage
+ * window it cannot actually vouch for — which costs idempotency and status
+ * records, and is why that mechanism is required to DEGRADE rather than refuse.
+ *
+ * THE SECOND DEPENDENT IS GONE, DELIBERATELY, AND THAT CHANGES HOW MUCH WEIGHT
+ * THIS PARAGRAPH CARRIES. `keys.ts` used to rename a send-nonce witness before the
+ * anchor and rely on the anchor's content fsync to publish it before any nonce was
+ * issued. A lost pair there was NOT survivable: both files roll back to matching
+ * values, which looks healthy, logs nothing, and silently rewinds the send-nonce
+ * counter into counters already handed out — a repeated (key, nonce) pair, which
+ * destroys AES-GCM outright. That mechanism has been replaced by (SEND-JOURNAL),
+ * an append-only journal built on `appendDurable`, whose durability involves no
+ * rename and therefore no inference. So this ordering no longer stands between the
+ * fork and a nonce repeat; it now guards only a window that narrows.
  *
  * HOW STRONG THAT ORDERING ACTUALLY IS — READ BEFORE RELYING ON IT FURTHER.
  * Microsoft documents FlushFileBuffers as flushing THE SPECIFIED FILE, and says a
@@ -1099,11 +1122,10 @@ export async function syncDirectory(dir: string): Promise<void> {
  * which Node does not surface (libuv issues `MoveFileExW` with
  * `MOVEFILE_REPLACE_EXISTING` only). So the paragraph above describes observed
  * NTFS behaviour and an inference from how its metadata log works — NOT a
- * guarantee the platform offers this code in writing. If both renames of a pair
- * can in fact be lost together, the affected witness reads as consistent while
- * its file has rolled back, which is the one state neither mechanism can detect.
- * Treat that as an open question rather than a settled property, and do not add a
- * THIRD dependent on this ordering without resolving it.
+ * guarantee the platform offers this code in writing. Treat it as an open question
+ * rather than a settled property. DO NOT ADD A SECOND DEPENDENT: if the state
+ * being ordered must not roll back, use `appendDurable` and an append-only record,
+ * which is what the counter that could not tolerate this risk now does.
  */
 /**
  * Writes ALL of `bytes`, or throws. One definition, every durable write site.
@@ -1142,6 +1164,44 @@ export async function writeAll(
 			`${LOG_PREFIX} short write to ${what}: wrote ${bytesWritten} of ${bytes.length} bytes. Refusing to continue with a partial write.`,
 		);
 	}
+}
+
+/**
+ * Writes one record IN FULL and fsyncs THE SAME FILE. The durable primitive that
+ * involves no rename, and therefore has no directory entry to lose.
+ *
+ * WHY THIS IS STRICTLY STRONGER THAN `writeFileDurable` ON WIN32, AND NOT MERELY
+ * BY DEGREE. `writeFileDurable` publishes its result by renaming a tmp file over
+ * the target, and a rename mutates a DIRECTORY — a different file from the one
+ * whose handle was flushed. `syncDirectory` cannot force that directory on win32,
+ * so the ordering paragraph on `writeFileDurable` has to INFER, from how NTFS's
+ * metadata log is understood to work, that an earlier rename gets published by a
+ * later file's fsync. This function needs no such inference: an append changes
+ * the specified file's data and its own size, and `FlushFileBuffers` is
+ * documented to flush exactly the specified file. Once the file's own directory
+ * entry exists, nothing about a record written this way rests on a rename.
+ *
+ * THAT IS WHY THE TWO MECHANISMS WHOSE ROLLBACK IS UNACCEPTABLE ARE BUILT ON
+ * THIS. §3.5's replay cache appends fixed-width nonce records below, and
+ * `keys.ts`'s (SEND-JOURNAL) appends the send-nonce high-water mark. Both use a
+ * whole-file rewrite for COMPACTION only, where losing the rename reverts to a
+ * file that is a strict superset of the admitted nonces (replay cache) or carries
+ * the byte-identical maximum record (send journal) — the conservative direction in
+ * both cases, by construction rather than by luck.
+ *
+ * `position` is `null` to write at the handle's own offset (an `"a"` handle) or an
+ * explicit byte offset, which is what a caller needs when the previous mount left
+ * a torn tail that must be OVERWRITTEN rather than grown past — appending after
+ * torn bytes would misalign every fixed-width record that follows.
+ */
+export async function appendDurable(
+	handle: FileHandle,
+	record: Uint8Array,
+	position: number | null,
+	what: string,
+): Promise<void> {
+	await writeAll(handle, record, position, what);
+	await handle.sync();
 }
 
 export async function writeFileDurable(
@@ -1419,14 +1479,13 @@ export async function createReplayCache(
 				record.writeBigUInt64BE(BigInt(nowMs), WIRE_ID_BYTES + NONCE_BYTES);
 
 				// Durable BEFORE the caller is allowed to act on the request, and
-				// written IN FULL — see `writeAll`. A short append here is the worst of
+				// written IN FULL — see `appendDurable`. A short append here is the worst of
 				// the short-write cases: the records are fixed width and the loader
 				// reads from offset 0, so a partial record followed by any successful
 				// one misaligns the whole remainder of the file and admitted nonces
 				// stop being recognised, reopening the §3.5 replay window with nothing
 				// to notice.
-				await writeAll(handle, record, null, "the replay cache");
-				await handle.sync();
+				await appendDurable(handle, record, null, "the replay cache");
 
 				entries.set(key, {
 					seenAtMs: nowMs,
