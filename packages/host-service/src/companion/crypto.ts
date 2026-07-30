@@ -60,6 +60,9 @@ import type { FileHandle } from "node:fs/promises";
 import { open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { inArray } from "drizzle-orm";
+import type { HostDb } from "../db";
+import { companionReplayNonces } from "../db";
 import {
 	ENVELOPE_HEADER_BYTES,
 	FRESHNESS_WINDOW_MS,
@@ -1065,25 +1068,24 @@ export function monotonicNowMs(): number {
  *    it. It is now a table in host.db (ANSWER-LEDGER) whose durability is SQLite's
  *    documented `synchronous = FULL`, asserted at open, rather than an inference
  *    about NTFS.
- *  - THE REPLAY CACHE STILL DOES, AT COMPACTION (§3.5, below). An earlier version
- *    of this comment claimed nothing depended on the ordering any more. That was
- *    wrong, and wrong in the direction that matters: compaction writes a reduced
- *    log and renames it into place, and records appended to the REPLACEMENT after
- *    that rename are lost if the rename is. The old inode is a superset only at
- *    the instant of compaction, never afterwards. What it costs: a captured sealed
- *    request whose nonce was admitted after the last compaction can be admitted a
- *    second time. `/v1/answer` is nevertheless covered — its requestId is fenced
- *    durably by the ANSWER-LEDGER, so a replay returns the recorded outcome and
- *    types nothing — but `/v1/message` keeps its idempotency in memory, so there
- *    a replay across a restart CAN retype. Not a comment's job to fix; recorded so
- *    the next change to this area starts from the truth.
+ *  - THE REPLAY CACHE DOES NOT ANY MORE EITHER (REPLAY-CACHE-DB, §3.5 below). It
+ *    did, at compaction: a reduced log was written and renamed into place, and any
+ *    nonce admitted to the REPLACEMENT after that rename was lost if the rename
+ *    was — the old inode is a superset only at the instant of compaction, never
+ *    afterwards. That let a captured sealed request be admitted a second time.
+ *    (`/v1/answer` survived it, because its requestId is fenced by the
+ *    ANSWER-LEDGER; `/v1/message` keeps its idempotency in memory and would have
+ *    retyped.) It is now a host.db table, where compaction is a DELETE and losing
+ *    that transaction brings expired rows BACK rather than dropping live ones.
  *  - DEVICE AUTHORITY STILL DOES, for the index/anchor pair and the key tombstone
  *    that records a revocation. Restoring or reverting that matched set makes a
- *    revoked device live and write-enabled again.
+ *    revoked device live and write-enabled again. Narrower than the others were —
+ *    revocation survives unless ALL of the tombstone, index and anchor renames are
+ *    lost — but it is the last one.
  *
- * Both remaining cases want the same treatment as the ledger — a table in host.db,
- * not an append-only file — because both need deletion as well as durability, and
- * an append-only log cannot forget. Until then they are exposure, not soundness.
+ * That last case wants the same treatment as the other two: a table in host.db,
+ * not an append-only file, because it needs deletion as well as durability and an
+ * append-only log cannot forget. Until then it is exposure, not soundness.
  *
  * The Android half (`FileBlobStore`) refuses to construct without directory fsync;
  * the two halves answer the same question differently ON PURPOSE, because the
@@ -1286,11 +1288,82 @@ export interface ReplayCache {
 }
 
 interface ReplayCacheOptions {
+	/**
+	 * (REPLAY-CACHE-DB) The LIVE drizzle handle — this cache writes.
+	 *
+	 * It used to take a directory and keep an append-only log there beside a
+	 * compaction that renamed a reduced copy into place. The append was sound; the
+	 * rename was not, on the only platform this ships to. See the table's docblock
+	 * in `db/schema.ts` for the failure it produced.
+	 */
+	db: HostDb;
+	/**
+	 * Where the PRE-DATABASE `replay.log` lives. Read once, at open, and retired —
+	 * nothing steady-state uses it.
+	 *
+	 * Kept rather than dropped because ignoring it would forget nonces this install
+	 * has already admitted, and "legacy state skipped, then deleted" is precisely the
+	 * bug that was found in the send-nonce counter's migration. The records are the
+	 * same fixed-width shape the table wants, so importing them is cheap and the
+	 * alternative is a replay window that reopens for the length of the retention on
+	 * the one upgrade.
+	 */
 	noncesDir: string;
 	retentionMs?: number;
 	maxEntries?: number;
 	minRetainedEntries?: number;
 }
+
+/**
+ * (SQLITE-DURABLE-ASSERT) The two pragmas every durable companion claim rests on,
+ * asserted rather than assumed.
+ *
+ * Both the answer ledger and the replay cache say "committed before the caller may
+ * act", and that sentence is only true at `synchronous = FULL` in WAL mode:
+ *
+ *  - at `NORMAL`, a WAL commit is durable against a process crash but NOT against
+ *    power loss — the WAL write may still be in the OS page cache, and everything
+ *    committed since the last checkpoint can be lost. For the ledger that loses a
+ *    claim after keystrokes landed; for the replay cache it forgets an admitted
+ *    nonce and reopens §3.5's window;
+ *  - `createDb` REQUESTS WAL and ignores the answer. SQLite documents that a
+ *    journal-mode change can fail — another connection in a transaction is enough —
+ *    and that it then returns the mode still in force rather than raising. Under a
+ *    rollback journal, FULL means something different: the commit ends with a
+ *    directory operation whose durability is exactly the NTFS inference this whole
+ *    area exists to stop depending on.
+ *
+ * It FAILS LOUD instead of quietly setting either one, because this connection is
+ * shared with the rest of the host service: lowering `synchronous` for write
+ * throughput is a decision someone may legitimately want to make, and it must be
+ * made knowing it breaks both of the above — not silently undone here.
+ *
+ * Callers pass `when` so the message says which claim was about to be made.
+ */
+export function assertDurableSqlite(db: HostDb, when: string): void {
+	const synchronous = db.$client.pragma("synchronous", { simple: true });
+	if (Number(synchronous) !== 2) {
+		throw new Error(
+			`(COMPANION-BRIDGE) requires PRAGMA synchronous = FULL (2), found ${String(synchronous)} ${when}. At NORMAL a committed row can be lost to power loss, which is the exact rollback these records exist to prevent.`,
+		);
+	}
+	const journalMode = db.$client.pragma("journal_mode", { simple: true });
+	if (String(journalMode).toLowerCase() !== "wal") {
+		throw new Error(
+			`(COMPANION-BRIDGE) requires journal_mode = wal, found ${String(journalMode)} ${when}. \`createDb\` asks for WAL but the request can fail silently, and FULL durability under a rollback journal rests on the same undocumented directory-ordering assumption these records replaced.`,
+		);
+	}
+}
+
+/**
+ * Keys per `DELETE .. WHERE key IN (...)` statement during compaction.
+ *
+ * SQLite's bound-parameter limit is finite (999 by default on older builds) and
+ * `REPLAY_CACHE_MAX_ENTRIES` is far above it, so a single statement would fail
+ * exactly when the cache is fullest — the moment compaction matters most. Chunked
+ * inside one transaction, so it is still all-or-nothing.
+ */
+const DELETE_CHUNK = 500;
 
 function replayKey(deviceIdBytes: Uint8Array, nonce: Uint8Array): string {
 	return `${base64UrlEncode(deviceIdBytes)}.${base64UrlEncode(nonce)}`;
@@ -1311,16 +1384,36 @@ interface ReplayEntry {
 }
 
 /**
- * Creates the on-disk replay cache.
+ * (REPLAY-CACHE-DB) Creates the DURABLE replay cache.
  *
- * On DISK, not only in memory: Superset restarts often, and an in-memory cache
- * is empty afterwards — a request captured 40 s before a restart would replay
- * successfully after it. Every record is fsync'd BEFORE `admit` resolves, so a
+ * Durable, not only in memory: Superset restarts often, and an in-memory cache is
+ * empty afterwards — a request captured 40 s before a restart would replay
+ * successfully after it. Every admission commits BEFORE `admit` resolves, so a
  * crash can never lose a nonce it already vouched for.
  *
- * All I/O here is async (`node:fs/promises`). It must never become sync: the
- * fork's live footgun list records that blocking fs on the main thread starves
- * the renderer's `superset-app://` loader for minutes.
+ * WHAT MOVED, AND WHAT DELIBERATELY DID NOT. Only PERSISTENCE moved into host.db.
+ * Every policy rule stayed exactly where it was, because each one exists for a
+ * failure that was actually observed:
+ *
+ *  - the live map is still the presence test, and a record still leaves it exactly
+ *    one way (compaction). An earlier revision re-admitted a record whose recorded
+ *    time looked older than the retention, which handed a forward clock jump the
+ *    ability to un-see a nonce;
+ *  - records admitted by THIS process are still aged on the MONOTONIC clock, which
+ *    a database column cannot hold. Rehydrated rows fall back to the wall clock,
+ *    and the insertion-order floor still protects the newest `minRetained` of them
+ *    regardless of what their timestamps claim;
+ *  - the cap still REFUSES rather than evicting. Evicting a live entry to make room
+ *    would silently reopen the window this cache exists to close.
+ *
+ * What the database adds is that admission is now ONE STATEMENT that both decides
+ * and records: `INSERT .. ON CONFLICT DO NOTHING`, where `changes === 1` is the
+ * admission. The old code decided from the map and recorded separately, so the two
+ * could in principle disagree; now they cannot.
+ *
+ * Durability is SQLite's documented `synchronous = FULL` in WAL mode — both
+ * asserted at the answer ledger's open, which shares this connection — rather than
+ * an inference about when NTFS publishes a directory entry.
  */
 export async function createReplayCache(
 	options: ReplayCacheOptions,
@@ -1337,12 +1430,20 @@ export async function createReplayCache(
 		`replay min-retained ${minRetained} must be positive and below the ${maxEntries} cap, or compaction could never free space`,
 	);
 
-	const logPath = join(options.noncesDir, REPLAY_LOG_FILENAME);
-	const tmpPath = join(options.noncesDir, REPLAY_LOG_TMP_FILENAME);
+	const db = options.db;
+	if (!db || typeof db.insert !== "function") {
+		throw new Error(
+			"(COMPANION-BRIDGE) the replay cache requires the live host.db handle; a read-only reader would fail at the first admission, after the request had already been accepted",
+		);
+	}
+	// Asserted HERE rather than relying on the ledger having been opened first. The
+	// two subsystems share this connection and either may be constructed first;
+	// depending on that order would make this cache's durability claim true only by
+	// accident of wiring.
+	assertDurableSqlite(db, "when opening the replay cache");
 
 	const entries = new Map<string, ReplayEntry>();
 	let nextOrder = 0;
-	let handle = await open(logPath, "a");
 	let closed = false;
 	/** Serialises every mutation: check-then-append must be atomic. */
 	const serialise = createSerialiser();
@@ -1374,94 +1475,167 @@ export async function createReplayCache(
 		return ageMs > retentionMs;
 	}
 
-	async function loadFromDisk(nowMs: number): Promise<void> {
-		let raw: Buffer;
-		try {
-			raw = await readFile(logPath);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+	/**
+	 * Rehydrates the live map, in insertion order.
+	 *
+	 * `ORDER BY ord` is load-bearing rather than tidy: the age-exempt window is
+	 * defined as the newest `minRetained` ROWS, so reading them out of order would
+	 * exempt the wrong ones. A torn-record concern does not exist here — a row is
+	 * either committed or it is not — which is one of the two reasons this moved.
+	 *
+	 * Rows are renumbered from 0 as they load, so `ord` is dense per lifetime and
+	 * the floor arithmetic below cannot drift after many compactions.
+	 */
+	function loadFromDb(nowMs: number): void {
+		const rows = db
+			.select()
+			.from(companionReplayNonces)
+			.orderBy(companionReplayNonces.ord)
+			.all();
+		// The newest `minRetained` rows survive regardless of what their timestamps
+		// claim, for the same reason compaction keeps them.
+		const ageExemptFrom = Math.max(0, rows.length - minRetained);
+		rows.forEach((row, index) => {
+			if (index < ageExemptFrom && nowMs - row.seenAtMs > retentionMs) {
 				return;
 			}
-			throw error;
-		}
-		// A truncated tail record (torn write before an fsync completed) is
-		// dropped, not tolerated silently at a wrong offset: records are fixed
-		// width, so anything past the last whole record is discarded.
-		const whole = raw.length - (raw.length % REPLAY_RECORD_BYTES);
-		const total = whole / REPLAY_RECORD_BYTES;
-		// The newest `minRetained` records survive regardless of what their
-		// timestamps claim, for the same reason compaction keeps them.
-		const ageExemptFrom = Math.max(0, total - minRetained);
-		for (let index = 0; index < total; index += 1) {
-			const offset = index * REPLAY_RECORD_BYTES;
-			const seenAtMs = Number(
-				raw.readBigUInt64BE(offset + WIRE_ID_BYTES + NONCE_BYTES),
-			);
-			if (index < ageExemptFrom && nowMs - seenAtMs > retentionMs) {
-				continue;
-			}
-			const deviceIdBytes = new Uint8Array(
-				raw.subarray(offset, offset + WIRE_ID_BYTES),
-			);
-			const nonce = new Uint8Array(
-				raw.subarray(
-					offset + WIRE_ID_BYTES,
-					offset + WIRE_ID_BYTES + NONCE_BYTES,
-				),
-			);
-			entries.set(replayKey(deviceIdBytes, nonce), {
-				seenAtMs,
+			entries.set(row.key, {
+				seenAtMs: row.seenAtMs,
 				monoAtMs: null,
 				order: nextOrder,
 			});
 			nextOrder += 1;
-		}
+		});
 	}
 
-	async function rewrite(nowMs: number): Promise<void> {
+	/**
+	 * Drops the expired rows. A DELETE, where this used to be a whole-file rewrite
+	 * plus a rename.
+	 *
+	 * The map decides WHAT is expired, because only the map holds the monotonic ages
+	 * and the insertion floor; the database is then told which keys went. Both in one
+	 * transaction so a crash cannot leave the map and the table disagreeing about
+	 * what has been admitted — and note the direction of the remaining risk: if this
+	 * transaction is lost, expired rows come BACK, which costs nothing. The dangerous
+	 * direction — a live nonce forgotten — is not reachable from here at all, which
+	 * is the second reason this moved off a rename.
+	 */
+	function rewrite(nowMs: number): void {
 		const monoNowMs = monotonicNowMs();
 		const orderFloor = nextOrder - minRetained;
-		const live: [string, ReplayEntry][] = [];
+		const dead: string[] = [];
 		for (const [key, entry] of entries) {
 			if (isExpired(entry, nowMs, monoNowMs, orderFloor)) {
-				entries.delete(key);
-			} else {
-				live.push([key, entry]);
+				dead.push(key);
 			}
 		}
-		// Insertion order is load-bearing on the way out too: `loadFromDisk` reads
-		// the tail of this file as the age-exempt window.
-		live.sort((a, b) => a[1].order - b[1].order);
-
-		const out = Buffer.allocUnsafe(live.length * REPLAY_RECORD_BYTES);
-		let offset = 0;
-		for (const [key, entry] of live) {
-			const dot = key.indexOf(".");
-			const deviceIdBytes = base64UrlDecode(key.slice(0, dot));
-			const nonce = base64UrlDecode(key.slice(dot + 1));
-			out.set(deviceIdBytes, offset);
-			out.set(nonce, offset + WIRE_ID_BYTES);
-			out.writeBigUInt64BE(
-				BigInt(entry.seenAtMs),
-				offset + WIRE_ID_BYTES + NONCE_BYTES,
-			);
-			offset += REPLAY_RECORD_BYTES;
+		if (dead.length === 0) {
+			return;
 		}
-
-		const tmp = await open(tmpPath, "w");
-		try {
-			await tmp.write(out, 0, out.length, 0);
-			await tmp.sync();
-		} finally {
-			await tmp.close();
+		db.transaction((tx) => {
+			// Chunked: SQLite's parameter limit is finite and `maxEntries` is not
+			// small. One statement per chunk, all inside the one transaction.
+			for (let i = 0; i < dead.length; i += DELETE_CHUNK) {
+				tx.delete(companionReplayNonces)
+					.where(
+						inArray(companionReplayNonces.key, dead.slice(i, i + DELETE_CHUNK)),
+					)
+					.run();
+			}
+		});
+		for (const key of dead) {
+			entries.delete(key);
 		}
-		await handle.close();
-		await rename(tmpPath, logPath);
-		await syncDirectory(options.noncesDir);
-		handle = await open(logPath, "a");
 	}
 
-	await loadFromDisk(Date.now());
+	/**
+	 * (REPLAY-CACHE-DB) Carries the pre-database log into the table, once.
+	 *
+	 * Order matters and is the same as the send-nonce journal's: IMPORT first, then
+	 * retire. A lost `unlink` is harmless — the file reappears, its rows go through
+	 * the same `ON CONFLICT DO NOTHING` next start, and it is deleted again — whereas
+	 * deleting first and crashing before the insert would forget admitted nonces with
+	 * nothing left to notice.
+	 *
+	 * A record that cannot be read is DROPPED rather than fatal, which is the opposite
+	 * of the send counter's rule and correct here for the same reason deletion is
+	 * allowed at all: forgetting one admitted nonce narrows the replay window by one
+	 * request for the length of the retention, where forgetting a counter mark repeats
+	 * a nonce and breaks the cipher. Refusing to start over a damaged replay log would
+	 * be a worse trade than the exposure.
+	 *
+	 * ASYNC fs, like everything else in this module. The fork's first live footgun is
+	 * that blocking fs on the main thread at startup starves the renderer's
+	 * `superset-app://` loader and leaves the window blank for minutes; a small file
+	 * read is not an exception to that, it is how the rule gets eroded.
+	 */
+	async function importLegacyLog(nowMs: number): Promise<void> {
+		const legacyPath = join(options.noncesDir, REPLAY_LOG_FILENAME);
+		const tmpPath = join(options.noncesDir, REPLAY_LOG_TMP_FILENAME);
+		// A temp file left by a compaction that never completed under the old design
+		// can only be a partial copy, and nothing reads it either way.
+		const dropQuietly = async (path: string): Promise<void> => {
+			try {
+				await unlink(path);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		};
+		let raw: Buffer;
+		try {
+			raw = await readFile(legacyPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				await dropQuietly(tmpPath);
+				return;
+			}
+			throw error;
+		}
+		// Fixed width, so anything past the last whole record is a torn append.
+		const total = Math.floor(raw.length / REPLAY_RECORD_BYTES);
+		let carried = 0;
+		db.transaction((tx) => {
+			for (let index = 0; index < total; index += 1) {
+				const offset = index * REPLAY_RECORD_BYTES;
+				const seenAtMs = Number(
+					raw.readBigUInt64BE(offset + WIRE_ID_BYTES + NONCE_BYTES),
+				);
+				// Expired rows are not worth carrying: a request bearing one is already
+				// refused on its own timestamp.
+				if (nowMs - seenAtMs > retentionMs) {
+					continue;
+				}
+				const deviceIdBytes = new Uint8Array(
+					raw.subarray(offset, offset + WIRE_ID_BYTES),
+				);
+				const nonce = new Uint8Array(
+					raw.subarray(
+						offset + WIRE_ID_BYTES,
+						offset + WIRE_ID_BYTES + NONCE_BYTES,
+					),
+				);
+				tx.insert(companionReplayNonces)
+					.values({
+						key: replayKey(deviceIdBytes, nonce),
+						deviceId: base64UrlEncode(deviceIdBytes),
+						nonce: base64UrlEncode(nonce),
+						seenAtMs,
+						ord: carried,
+					})
+					.onConflictDoNothing({ target: companionReplayNonces.key })
+					.run();
+				carried += 1;
+			}
+		});
+		console.error(
+			`(COMPANION-BRIDGE) carried ${carried} unexpired replay record(s) of ${total} from ${legacyPath} into host.db, then retired the file. Expected exactly once per install.`,
+		);
+		await dropQuietly(legacyPath);
+		await dropQuietly(tmpPath);
+	}
+
+	await importLegacyLog(Date.now());
+	loadFromDb(Date.now());
 
 	return {
 		admit(deviceId, nonce, nowMs) {
@@ -1483,7 +1657,7 @@ export async function createReplayCache(
 				}
 
 				if (entries.size >= maxEntries) {
-					await rewrite(nowMs);
+					rewrite(nowMs);
 					if (entries.size >= maxEntries) {
 						// Never evict a live entry to make room: that would silently
 						// re-open the replay window this cache exists to close. Refuse
@@ -1492,19 +1666,38 @@ export async function createReplayCache(
 					}
 				}
 
-				const record = Buffer.allocUnsafe(REPLAY_RECORD_BYTES);
-				record.set(deviceIdBytes, 0);
-				record.set(nonce, WIRE_ID_BYTES);
-				record.writeBigUInt64BE(BigInt(nowMs), WIRE_ID_BYTES + NONCE_BYTES);
-
-				// Durable BEFORE the caller is allowed to act on the request, and
-				// written IN FULL — see `appendDurable`. A short append here is the worst of
-				// the short-write cases: the records are fixed width and the loader
-				// reads from offset 0, so a partial record followed by any successful
-				// one misaligns the whole remainder of the file and admitted nonces
-				// stop being recognised, reopening the §3.5 replay window with nothing
-				// to notice.
-				await appendDurable(handle, record, null, "the replay cache");
+				// ONE STATEMENT DECIDES AND RECORDS. `changes === 1` means this nonce was
+				// not present and now is, durably; `0` means a row already existed, which
+				// is a replay the live map had somehow lost sight of. The old shape
+				// decided from the map and appended separately, so a divergence between
+				// the two was expressible; here it is not.
+				//
+				// Committed BEFORE the caller is allowed to act on the request, at
+				// `synchronous = FULL` in WAL mode.
+				const inserted = db
+					.insert(companionReplayNonces)
+					.values({
+						key,
+						deviceId: base64UrlEncode(deviceIdBytes),
+						nonce: base64UrlEncode(nonce),
+						seenAtMs: nowMs,
+						ord: nextOrder,
+					})
+					.onConflictDoNothing({ target: companionReplayNonces.key })
+					.run();
+				if (inserted.changes === 0) {
+					// A row exists that the map did not know about — a compaction that
+					// dropped it from memory while the DELETE was lost, or a second
+					// process. Either way it has been seen, so it is a replay, and the map
+					// is corrected so the next probe answers from memory.
+					entries.set(key, {
+						seenAtMs: nowMs,
+						monoAtMs: monotonicNowMs(),
+						order: nextOrder,
+					});
+					nextOrder += 1;
+					return false;
+				}
 
 				entries.set(key, {
 					seenAtMs: nowMs,
@@ -1521,7 +1714,7 @@ export async function createReplayCache(
 				if (closed) {
 					return;
 				}
-				await rewrite(nowMs);
+				rewrite(nowMs);
 			});
 		},
 
@@ -1534,13 +1727,10 @@ export async function createReplayCache(
 				if (closed) {
 					return;
 				}
+				// No handle and no temp file to clean up any more. The connection is
+				// owned by host-service and outlives this cache, so closing it here
+				// would take the rest of the application's database with it.
 				closed = true;
-				await handle.close();
-				await unlink(tmpPath).catch((error: NodeJS.ErrnoException) => {
-					if (error.code !== "ENOENT") {
-						throw error;
-					}
-				});
 			});
 		},
 	};

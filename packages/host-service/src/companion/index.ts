@@ -396,30 +396,29 @@ export function createCompanionBridge(
 		// teardown flushes it while the anchor is still open — `persist()` may need
 		// to commit through it.
 		unwind.push({ what: "device store", close: () => deviceStore.close() });
-		// (START-PARALLEL) The replay cache and the answer-attempt store each read
-		// and rehydrate one file, and neither depends on the other or on the
-		// anchor chain below, so they are constructed together instead of back to
-		// back. NOTHING here is reordered against the anchor: `openStateAnchor` ->
+		// (REPLAY-CACHE-DB) A plain await, where this used to be a one-element
+		// `Promise.allSettled` with a paragraph explaining itself.
+		//
+		// The scaffolding was there for (BRIDGE-TEARDOWN-ONE-LIST): the replay cache
+		// held an open file handle, so a construction that SUCCEEDED while its partner
+		// in the same batch failed still had to reach the unwind list before this
+		// function threw, and `all` would have abandoned it. Both halves of that reason
+		// are gone — the JSON attempt store that was the partner is now the ledger in
+		// host.db, and the cache holds no handle now that its records are rows. A
+		// single-element `allSettled` protects nothing from itself.
+		//
+		// Still registered for unwind: `close()` is what makes a stopped bridge REFUSE
+		// admissions (STORE-CLOSED) rather than quietly accepting them into a cache
+		// nobody is compacting.
+		//
+		// NOTHING here is reordered against the anchor: `openStateAnchor` ->
 		// `createDeviceStore` -> the (ANCHOR-ORDER) assertion -> `createSendNonceSource`
-		// still runs strictly in sequence. The attempt store reads ONE value off the
-		// `allSettled`, not `all`, and the reason is (BRIDGE-TEARDOWN-ONE-LIST):
-		// `createReplayCache` holds an open file handle, so a version that
-		// SUCCEEDED while its partner failed must still reach the unwind list
-		// before this function throws. `all` would abandon it.
-		// (ANSWER-LEDGER) Only the replay cache is opened here now. The JSON attempt
-		// store that used to be its partner in this `allSettled` is gone: the ledger
-		// lives in host.db and is constructed below, where a failure to open it —
-		// including its PRAGMA synchronous assertion — takes the bridge down before a
-		// single answer can be typed without a durable claim.
-		const cacheOutcome = await Promise.allSettled([
-			createReplayCache({ noncesDir: paths.nonces }),
-		]).then(([outcome]) => outcome);
-		if (cacheOutcome.status === "fulfilled") {
-			const cache = cacheOutcome.value;
-			unwind.push({ what: "nonce cache", close: () => cache.close() });
-		}
-		if (cacheOutcome.status === "rejected") throw cacheOutcome.reason;
-		const nonceCache = cacheOutcome.value;
+		// still runs strictly in sequence.
+		const nonceCache = await createReplayCache({
+			db: options.db,
+			noncesDir: paths.nonces,
+		});
+		unwind.push({ what: "nonce cache", close: () => nonceCache.close() });
 		// (ANSWER-LEDGER) The durable fence, on the host database rather than a JSON
 		// file, because closing the status/answer race needs a transaction. Built here
 		// so a failure to open it — including the PRAGMA synchronous assertion — takes

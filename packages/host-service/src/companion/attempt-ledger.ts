@@ -73,7 +73,12 @@ import { and, eq, sql } from "drizzle-orm";
 import type { AnswerAttemptStatus, HostDb } from "../db";
 import { answerAttempts, answerCoverageEpoch } from "../db";
 import { LOG_PREFIX } from "./config";
-import { base64UrlEncode, isCanonicalWireId, randomBytes } from "./crypto";
+import {
+	assertDurableSqlite,
+	base64UrlEncode,
+	isCanonicalWireId,
+	randomBytes,
+} from "./crypto";
 import type {
 	AnswerGuardName,
 	EpochMs,
@@ -280,7 +285,9 @@ export function createAttemptLedger(options: {
 
 	/**
 	 * THE DURABILITY THIS MODULE'S WHOLE ARGUMENT RESTS ON, ASSERTED RATHER THAN
-	 * ASSUMED.
+	 * ASSUMED. Both pragmas, and the reasoning for each, live in
+	 * `assertDurableSqlite` — shared with the replay cache, which makes the same
+	 * claim on the same connection.
 	 *
 	 * The claim above is that SQLite's durability is DOCUMENTED where the file
 	 * store's was inferred. That is only true at `synchronous = FULL`. In WAL mode
@@ -302,14 +309,7 @@ export function createAttemptLedger(options: {
 	 * (WAL also means a reader never blocks a writer, which is why the CAS below
 	 * can be a short transaction without starving the status path.)
 	 */
-	const assertFullSynchronous = (when: string): void => {
-		const synchronous = db.$client.pragma("synchronous", { simple: true });
-		if (Number(synchronous) !== 2) {
-			throw new Error(
-				`${LOG_PREFIX} the answer ledger requires PRAGMA synchronous = FULL (2), found ${String(synchronous)} ${when}. At NORMAL a committed claim can be lost to power loss, which is the exact rollback the answer fence exists to prevent. Refusing to serve answers under it.`,
-			);
-		}
-	};
+	const assertDurable = (when: string): void => assertDurableSqlite(db, when);
 
 	/**
 	 * (LEDGER-SYNC-RECHECK) Re-asserted before each of the two decisions, not just
@@ -331,32 +331,7 @@ export function createAttemptLedger(options: {
 	 * `unconfirmed` at the next open. Losing it weakens a claim, which is safe. The
 	 * two paths below are the ones where losing a write would STRENGTHEN one.
 	 */
-	assertFullSynchronous("at open");
-
-	/**
-	 * (LEDGER-WAL-ASSERT) WAL is ASSERTED, not assumed, because the durability
-	 * argument above is specifically about WAL + FULL.
-	 *
-	 * `createDb` runs `PRAGMA journal_mode = WAL` and ignores what comes back. That
-	 * pragma is a REQUEST: SQLite documents that a journal-mode change can fail —
-	 * another connection in a transaction is enough — and that it then returns the
-	 * mode still in force rather than raising. So the bridge could be running under
-	 * a rollback journal while `synchronous = 2` reported green, and FULL does not
-	 * mean the same thing in the two modes: a rollback-journal commit ends with a
-	 * directory operation whose durability is exactly the kind of inference this
-	 * whole module exists to stop depending on.
-	 *
-	 * Checked once, here, because journal mode is a property of the DATABASE rather
-	 * than of a statement: nothing in a request path can change it while this
-	 * connection holds the file, so re-reading it per claim would prove nothing the
-	 * open-time read does not.
-	 */
-	const journalMode = db.$client.pragma("journal_mode", { simple: true });
-	if (String(journalMode).toLowerCase() !== "wal") {
-		throw new Error(
-			`${LOG_PREFIX} the answer ledger requires journal_mode = wal, found ${String(journalMode)}. \`createDb\` asks for WAL but the request can fail silently, and FULL durability under a rollback journal rests on the same undocumented directory-ordering assumption this ledger replaced. Refusing to serve answers under it.`,
-		);
-	}
+	assertDurable("when opening the answer ledger");
 
 	const mintEpoch = (): string =>
 		base64UrlEncode(randomBytes(COVERAGE_EPOCH_BYTES));
@@ -659,7 +634,7 @@ export function createAttemptLedger(options: {
 		},
 
 		claimForAnswer(claim) {
-			assertFullSynchronous("before claiming the right to type");
+			assertDurable("before claiming the right to type");
 			return db.transaction((tx): ClaimOutcome => {
 				const inner: Queryable = tx;
 				const epoch = readEpochRow(inner).epoch;
@@ -755,7 +730,7 @@ export function createAttemptLedger(options: {
 		},
 
 		resolveStatus(requestId, capturedEpoch) {
-			assertFullSynchronous("before deciding a request never arrived");
+			assertDurable("before deciding a request never arrived");
 			return db.transaction((tx): StatusOutcome => {
 				const inner: Queryable = tx;
 				const existing = selectRow(inner, requestId);

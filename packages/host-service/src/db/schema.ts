@@ -393,9 +393,13 @@ export const answerAttempts = sqliteTable(
  * to get wrong — equal or not equal, and unequal is never a terminal negative.
  *
  * WHY IT MUST ROTATE. The token means "the coverage you captured is still the
- * coverage I have". Anything that loses continuity — a prune, or any
- * acknowledged gap — must rotate it in the SAME transaction, so a status read
- * carrying the old token is answered with a degrade rather than a negative.
+ * coverage I have". Anything that loses continuity must rotate it in the SAME
+ * transaction, so a status read carrying the old token is answered with a degrade
+ * rather than a negative. In practice nothing does: `answer_attempts` is never
+ * pruned, because every row there is a fence and forgetting one un-decides
+ * something already announced to a phone. The token therefore changes only when a
+ * database is new or its continuity is genuinely lost — see
+ * `(LEDGER-KEEP-ATTEMPTS)` in `companion/attempt-ledger.ts`.
  *
  * WHY A DEDICATED TABLE AND NOT `host_settings`. `host_settings` is documented as
  * host-wide user KNOBS that projects fall back to; every settings write path can
@@ -419,4 +423,54 @@ export const answerCoverageEpoch = sqliteTable("answer_coverage_epoch", {
 	rotations: integer().notNull().default(0),
 	/** Why the last rotation happened, for the same diagnostic reason. */
 	lastRotateReason: text("last_rotate_reason"),
+});
+
+/**
+ * (REPLAY-CACHE-DB) §3.5's replay cache — every `(deviceId, nonce)` the bridge has
+ * admitted inside the retention window.
+ *
+ * WHY IT IS A TABLE. It was an append-only log next to a compaction that wrote a
+ * reduced copy and renamed it into place. The append half was sound; the rename was
+ * not. `FlushFileBuffers` is documented as flushing the specified FILE, the durable
+ * rename option (`MOVEFILE_WRITE_THROUGH`) is one libuv never passes, and this fork
+ * ships only on Windows — so a hard reset could discard the compaction rename and
+ * leave the name resolving to the PRE-compaction inode. The old inode is a superset
+ * of the admitted nonces only at the instant of compaction, never afterwards, so
+ * every nonce admitted since was silently forgotten and a captured sealed request
+ * could be admitted a second time. `/v1/answer` survives that (its requestId is
+ * fenced by `answer_attempts`), but `/v1/message` keeps its idempotency in memory,
+ * so a replay across a restart could retype into a terminal.
+ *
+ * WHY DELETION IS FINE HERE, unlike `answer_attempts`. A nonce older than the
+ * retention is already outside §3.5's freshness window, so a request bearing it is
+ * refused on its timestamp whether or not this table remembers it. Forgetting an
+ * expired row costs nothing, which is exactly what is NOT true of an attempt row.
+ *
+ * WHY `key` AND NOT A COMPOSITE PRIMARY KEY. Admission is one statement —
+ * `INSERT .. ON CONFLICT DO NOTHING` — and `changes === 1` IS the decision. A single
+ * text key makes that one index probe and keeps the value identical to the
+ * in-memory map's key, so the two can never disagree about what "the same nonce"
+ * means. `device_id` and `nonce` are kept as their own columns for retention
+ * queries and for reading the table by hand during an incident.
+ */
+export const companionReplayNonces = sqliteTable("companion_replay_nonces", {
+	/** `base64url(deviceId).base64url(nonce)` — the same key the live map uses. */
+	key: text().primaryKey(),
+	deviceId: text("device_id").notNull(),
+	nonce: text().notNull(),
+	/**
+	 * The wall clock this nonce was admitted against. NOT the age this process
+	 * trusts: a record admitted by the live process is aged on the monotonic clock
+	 * so that moving the wall clock cannot expire it. This is the only reference a
+	 * REHYDRATED row has, which is why insertion order below also protects the
+	 * newest rows regardless of what their timestamps claim.
+	 */
+	seenAtMs: integer("seen_at_ms").notNull(),
+	/**
+	 * Insertion sequence. Retention is `age AND order`, never age alone — the newest
+	 * `REPLAY_MIN_RETAINED_ENTRIES` rows survive whatever the clock says, which is
+	 * what keeps a clock jump in either direction from emptying the cache and
+	 * silently reopening the replay window.
+	 */
+	ord: integer().notNull(),
 });
