@@ -56,6 +56,7 @@ import {
 	randomBytes as nodeRandomBytes,
 	timingSafeEqual,
 } from "node:crypto";
+import type { FileHandle } from "node:fs/promises";
 import { open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -1104,6 +1105,45 @@ export async function syncDirectory(dir: string): Promise<void> {
  * Treat that as an open question rather than a settled property, and do not add a
  * THIRD dependent on this ordering without resolving it.
  */
+/**
+ * Writes ALL of `bytes`, or throws. One definition, every durable write site.
+ *
+ * Node returns a byte count because a write is permitted to be short. Discarding
+ * it makes a partial write indistinguishable from a complete one, and the two
+ * files this module writes fail differently and both badly:
+ *
+ *  - a whole-file rewrite (`writeFileDurable`) would fsync and rename truncated
+ *    JSON into place as though complete, and the next start would find a file that
+ *    fails its schema, quarantine it, and lose every record it held;
+ *  - the replay cache's append is worse. Its records are FIXED WIDTH and it reads
+ *    from offset 0, trimming only a trailing partial. A short append followed by
+ *    any successful one misaligns every record after it, so nonces that were
+ *    admitted stop being recognised and the §3.5 replay window silently reopens —
+ *    no error, no schema failure, nothing to notice.
+ *
+ * Short writes to a local NTFS volume are rare. That is equally true of the
+ * whole-file path, so checking one and not the others was inconsistency rather
+ * than a judgement about risk.
+ */
+export async function writeAll(
+	handle: FileHandle,
+	bytes: Uint8Array,
+	position: number | null,
+	what: string,
+): Promise<void> {
+	const { bytesWritten } = await handle.write(
+		view(bytes),
+		0,
+		bytes.length,
+		position,
+	);
+	if (bytesWritten !== bytes.length) {
+		throw new Error(
+			`${LOG_PREFIX} short write to ${what}: wrote ${bytesWritten} of ${bytes.length} bytes. Refusing to continue with a partial write.`,
+		);
+	}
+}
+
 export async function writeFileDurable(
 	target: string,
 	bytes: Uint8Array,
@@ -1112,20 +1152,7 @@ export async function writeFileDurable(
 	const tmp = `${target}.tmp`;
 	const handle = await open(tmp, "w", mode);
 	try {
-		// The byte count is CHECKED, not discarded. A short write reports success
-		// with fewer bytes than asked, and everything after this point would then
-		// happily fsync and rename truncated JSON into place as though it were
-		// complete — after which the next start finds a file that fails its schema,
-		// quarantines it, and LOSES every record it held. Failing here instead
-		// surfaces the fault while the previous version of the file is still the one
-		// on disk, which is the difference between a loud write error and silent
-		// data loss.
-		const { bytesWritten } = await handle.write(view(bytes), 0, bytes.length, 0);
-		if (bytesWritten !== bytes.length) {
-			throw new Error(
-				`${LOG_PREFIX} short write to ${tmp}: wrote ${bytesWritten} of ${bytes.length} bytes. Refusing to rename a partial file over ${target}.`,
-			);
-		}
+		await writeAll(handle, bytes, 0, tmp);
 		await handle.sync();
 	} finally {
 		await handle.close();
@@ -1391,8 +1418,14 @@ export async function createReplayCache(
 				record.set(nonce, WIRE_ID_BYTES);
 				record.writeBigUInt64BE(BigInt(nowMs), WIRE_ID_BYTES + NONCE_BYTES);
 
-				// Durable BEFORE the caller is allowed to act on the request.
-				await handle.write(record, 0, record.length);
+				// Durable BEFORE the caller is allowed to act on the request, and
+				// written IN FULL — see `writeAll`. A short append here is the worst of
+				// the short-write cases: the records are fixed width and the loader
+				// reads from offset 0, so a partial record followed by any successful
+				// one misaligns the whole remainder of the file and admitted nonces
+				// stop being recognised, reopening the §3.5 replay window with nothing
+				// to notice.
+				await writeAll(handle, record, null, "the replay cache");
 				await handle.sync();
 
 				entries.set(key, {

@@ -1641,6 +1641,30 @@ export interface AttemptStore {
 	 * phone's only channel.
 	 */
 	recordsSinceMs(nowMs: EpochMs): EpochMs;
+	/**
+	 * Releases the store: every later write becomes a no-op.
+	 *
+	 * (STORE-CLOSED) This is what actually stops a stale writer, and it belongs
+	 * here rather than in the scheduler. `nonceCache` and `deviceStore` already
+	 * guard themselves this way; this store did not, and it is the one that got
+	 * clobbered — a detached `prune` from a stopped bridge resumed after a
+	 * replacement had written newer state and rewrote the file from its own stale
+	 * snapshot.
+	 *
+	 * The teardown ALSO drains in-flight maintenance (MAINTENANCE-DRAIN), but a
+	 * drain alone cannot be the answer: waiting is unbounded by nature, `settle`
+	 * imposes no timeout, and `stop()` runs inside the lifecycle's `exclusive()` —
+	 * so one `persist` stalled on a handle an antivirus or indexer is holding would
+	 * hang `stop()` forever and no later `start()` could ever run. A guard here
+	 * needs no waiting at all: whatever the scheduler failed to cancel finds the
+	 * door shut. `deviceStore` makes the same point — its debounced persist is
+	 * detached and invisible to any drain, and `closed` is what protects it.
+	 *
+	 * Idempotent, and NOT an error to write after: a stale caller is doing what it
+	 * was told to do before the door closed, so its write is dropped quietly rather
+	 * than thrown at code that has no way to handle it.
+	 */
+	close(): void;
 }
 
 /**
@@ -1930,6 +1954,9 @@ export async function createAttemptStore(options: {
 	/** Serialises rewrites: `writeFileDurable` uses one tmp name per target. */
 	let tail: Promise<unknown> = Promise.resolve();
 
+	/** (STORE-CLOSED) Set by `close()`; every later rewrite is dropped. */
+	let closed = false;
+
 	/**
 	 * (ATTEMPT-WITNESS) Raises the mark, RAISE-ONLY, checked against the FILE
 	 * rather than against this object's beliefs — the same discipline as
@@ -1970,6 +1997,11 @@ export async function createAttemptStore(options: {
 
 	function persist(): Promise<void> {
 		const run = tail.then(async () => {
+			// (STORE-CLOSED) Checked INSIDE the serialised section, not before it: a
+			// rewrite that queued while the store was open can still be sitting in
+			// `tail` when `close()` lands, and that queued write is exactly the stale
+			// writer this guard exists to stop. Checking on entry would let it through.
+			if (closed) return;
 			// (ATTEMPT-WITNESS) One rewrite, one mark, and the mark is raised BEFORE
 			// the file — the ordering the witness's whole guarantee rests on (see
 			// `readAttemptWitness`). It advances on EVERY rewrite rather than only on
@@ -2058,6 +2090,8 @@ export async function createAttemptStore(options: {
 			await persist();
 		},
 		async forget(record) {
+			// (STORE-CLOSED) Same reason as `prune`: this removes from memory first.
+			if (closed) return;
 			if (records.get(record.requestId) !== record) return;
 			records.delete(record.requestId);
 			try {
@@ -2074,6 +2108,13 @@ export async function createAttemptStore(options: {
 			}
 		},
 		async prune(nowMs) {
+			// (STORE-CLOSED) Guarded HERE as well as inside `persist`, because prune
+			// mutates memory before it writes. Dropping records from the map while the
+			// rewrite is refused would leave this store's answers disagreeing with its
+			// own file — `get` reads the map, so a read racing teardown would report a
+			// miss for a record still durably present. Nothing may reach this store's
+			// state once its bridge is gone, in memory or on disk.
+			if (closed) return 0;
 			let dropped = 0;
 			for (const [requestId, record] of [...records]) {
 				if (nowMs - record.startedAtMs <= retentionMs) continue;
@@ -2090,6 +2131,9 @@ export async function createAttemptStore(options: {
 			// leaving a second one for a later reader to keep in step). Floored by the
 			// retention because anything older has been pruned.
 			return Math.max(coverageSinceMs, nowMs - retentionMs);
+		},
+		close() {
+			closed = true;
 		},
 	};
 }

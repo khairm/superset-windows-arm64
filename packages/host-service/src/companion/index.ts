@@ -70,7 +70,7 @@ import {
 	PUSH_QUESTION_EXPIRY_MS,
 	resolveCompanionPaths,
 } from "./config";
-import { createReplayCache, type ReplayCache } from "./crypto";
+import { createReplayCache, type ReplayCache, sleep } from "./crypto";
 import { createDeviceStore, type DeviceStore } from "./device-store";
 import {
 	type BridgeHttpServer,
@@ -134,6 +134,20 @@ import {
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
+
+/**
+ * (MAINTENANCE-DRAIN) How long teardown waits for in-flight maintenance.
+ *
+ * Bounded so a task stalled on a held file handle cannot hang `stop()` — which
+ * runs inside the lifecycle's `exclusive()`, so hanging it would prevent every
+ * later `start()`. Generous relative to the work (a maintenance pass is one
+ * durable rewrite) and short relative to a user noticing the app will not quit.
+ * Correctness does not depend on this wait: the stores refuse writes once closed.
+ */
+const MAINTENANCE_DRAIN_TIMEOUT_MS = 5_000;
+
+/** How often the drain re-checks, so it notices the deadline without busy-waiting. */
+const MAINTENANCE_DRAIN_POLL_MS = 50;
 /**
  * The `AgentLifecycleEventType` member that means "the agent is blocked waiting
  * for the user". `mapEventType` has already normalised host.db's
@@ -430,6 +444,20 @@ export function createCompanionBridge(
 		if (attemptsOutcome.status === "rejected") throw attemptsOutcome.reason;
 		const nonceCache = cacheOutcome.value;
 		const attempts = attemptsOutcome.value;
+		// (STORE-CLOSED) The attempt store was the ONLY subsystem with no teardown
+		// step, which is why it was the one a detached prune could rewrite from a
+		// stale snapshot after a replacement bridge had moved on. Shutting its door
+		// is what stops a writer the scheduler never sees — its peers `nonceCache`
+		// and `deviceStore` already guard themselves the same way, and
+		// `deviceStore`'s debounced persist is detached and invisible to any drain.
+		unwind.push({
+			what: "answer-attempt store",
+			// `close()` is synchronous — wrapped so the step matches the teardown
+			// contract rather than widening that contract for one caller.
+			close: async () => {
+				attempts.close();
+			},
+		});
 		// (ANCHOR-ORDER) LOAD-BEARING ORDER, ASSERTED RATHER THAN ASSUMED.
 		//
 		// `createDeviceStore` is what runs the anti-rollback checks and what stamps
@@ -701,19 +729,43 @@ export function createCompanionBridge(
 			close: async () => {
 				for (const timer of timers) clearInterval(timer);
 				// (MAINTENANCE-DRAIN) Cancelling stops the next run; this waits out the
-				// one already executing. Without it a prune mid-flight here would go on
-				// to rewrite the attempts file from a snapshot belonging to THIS bridge
-				// after a replacement had already written newer state — destroying
-				// records and lowering the rewrite counter, in a way that leaves both
-				// files agreeing so nothing downstream can detect it.
+				// one already executing, so a maintenance task cannot still be holding a
+				// file handle while later teardown steps close what it is writing to.
 				//
-				// Looped rather than a single `Promise.all` because a drained task may
-				// itself have queued another (`soon` fires on the next turn of the
-				// loop), and the set is mutated as runs settle. Every tracked promise
-				// is already `.catch`ed, so this can neither reject nor mask a failure —
-				// maintenance errors are logged by the same path as always.
+				// BOUNDED, and that bound is not defensive dressing. `settle` imposes no
+				// timeout and `stop()` runs inside the lifecycle's `exclusive()`, so an
+				// unbounded wait here would let one `persist` stalled on a handle held by
+				// an antivirus scanner or a search indexer — ordinary transients on this
+				// platform — hang `stop()` forever, after which no `start()` could ever
+				// run again. That would trade a data-corruption bug for a silent
+				// permanent wedge, which is a worse failure: the corruption at least
+				// announced itself at the next mount.
+				//
+				// Giving up is SAFE rather than a compromise, because correctness does
+				// not rest here. Every store the drain covers refuses writes once closed
+				// (STORE-CLOSED), so a task still running after this deadline can no
+				// longer affect durable state — the wait is about handle lifetime, and a
+				// handle outliving it is a logged nuisance, not a lie.
+				//
+				// Looped because a drained task may have queued another (`soon` fires on
+				// the next turn of the loop) and the set mutates as runs settle. Every
+				// tracked promise is already `.catch`ed, so this can neither reject nor
+				// mask a failure.
+				const deadline = Date.now() + MAINTENANCE_DRAIN_TIMEOUT_MS;
 				while (maintenanceInFlight.size > 0) {
-					await Promise.all([...maintenanceInFlight]);
+					if (Date.now() >= deadline) {
+						logger.error("maintenance did not drain before the deadline", {
+							stillRunning: maintenanceInFlight.size,
+							timeoutMs: MAINTENANCE_DRAIN_TIMEOUT_MS,
+							effect:
+								"teardown continues; the stores are already closed so nothing it does can reach durable state",
+						});
+						break;
+					}
+					await Promise.race([
+						Promise.all([...maintenanceInFlight]),
+						sleep(MAINTENANCE_DRAIN_POLL_MS),
+					]);
 				}
 			},
 		});
