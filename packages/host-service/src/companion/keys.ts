@@ -98,7 +98,7 @@
  * the same convention, and the two MUST NOT drift.
  */
 
-import { open, readFile, unlink } from "node:fs/promises";
+import { open, readdir, readFile, unlink } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import {
 	HKDF_LABEL_SEAL_C2S,
@@ -961,8 +961,52 @@ export interface KeyStore {
 	revocationOf(
 		keyRef: string,
 	): Promise<{ revokedAtMs: number; revokeReason: RevokeReason } | null>;
+	/**
+	 * Every key file the devices directory ACTUALLY holds, read from the directory
+	 * itself rather than from any record of what should be there.
+	 *
+	 * THIS EXISTS SO AN OBLIGATION CAN BE RE-DERIVED INSTEAD OF WITNESSED. A key
+	 * file whose `keyRef` appears in no device record is an orphan: nothing can
+	 * authorise it and nothing will ever come back for it. `device-store` proves
+	 * that by set difference against the index it has just loaded — which needs no
+	 * second file, no write ordering and no crash-consistency assumption. That
+	 * matters here specifically: `writeFileDurable` in `crypto.ts` states outright
+	 * that it must not acquire a THIRD dependent on its rename ordering, so
+	 * "journal the obligation harder" was not available and did not need to be.
+	 *
+	 * NOTHING IS READ OR PARSED. An orphan must be destroyable even when its
+	 * contents are corrupt, its `anchorGeneration` belongs to a previous install,
+	 * or it holds a truncated key — every one of which makes `readKeyFile` throw
+	 * while leaving `K_dev` bytes sitting on the disk. Names only.
+	 *
+	 * `<keyRef>.key.json.tmp`, the in-flight name `writeFileDurable` renames from,
+	 * does not carry the suffix this filters on, so a crash mid-write can never
+	 * present a half-written key file here as though it were a real one.
+	 *
+	 * A MISSING DEVICES DIRECTORY THROWS. `ensureCompanionDirs` creates it before
+	 * the bridge starts, so its absence is a genuine fault; answering "no key
+	 * files" would silently turn the sweep that depends on this into a no-op, and
+	 * a hygiene mechanism that quietly stops running is the failure mode the
+	 * caller exists to close.
+	 */
+	list(): Promise<KeyFileInventory>;
 	/** Wipes a revoked device's key material. */
 	destroy(keyRef: string): Promise<void>;
+}
+
+/** What `KeyStore.list()` found on disk. */
+export interface KeyFileInventory {
+	/** The stem of every `<keyRef>.key.json` file, as a canonical keyRef. */
+	keyRefs: string[];
+	/**
+	 * Names carrying the key-file suffix whose stem is NOT a canonical keyRef,
+	 * verbatim. `put()` only ever mints a canonical 22-character base64url ref, so
+	 * one of these cannot have come from this store. They are REPORTED AND NEVER
+	 * ACTED ON: `pathFor` would refuse to turn one into a path anyway, and a name
+	 * that cannot be parsed cannot be proven unreferenced either — the caller must
+	 * not delete what it cannot reason about.
+	 */
+	unrecognised: string[];
 }
 
 interface StoredKeyFile {
@@ -1156,6 +1200,29 @@ export function createKeyStore(
 				revokedAtMs: record.revokedAtMs,
 				revokeReason: record.revokeReason,
 			};
+		},
+
+		async list() {
+			// `withFileTypes` so a DIRECTORY named like a key file can never be
+			// reported as one — the caller's next move is to destroy what this
+			// returns, and `destroy` opening a directory `r+` would fail in a way
+			// that reads as a transient rather than as the anomaly it is.
+			const entries = await readdir(devicesDir, { withFileTypes: true });
+			const keyRefs: string[] = [];
+			const unrecognised: string[] = [];
+			for (const entry of entries) {
+				if (!entry.isFile() || !entry.name.endsWith(KEY_FILE_SUFFIX)) continue;
+				const keyRef = entry.name.slice(
+					0,
+					entry.name.length - KEY_FILE_SUFFIX.length,
+				);
+				if (isCanonicalWireId(keyRef)) {
+					keyRefs.push(keyRef);
+				} else {
+					unrecognised.push(entry.name);
+				}
+			}
+			return { keyRefs, unrecognised };
 		},
 
 		async destroy(keyRef) {

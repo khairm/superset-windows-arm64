@@ -74,6 +74,15 @@ const INDEX_FILENAME = "devices.json";
  * (PENDING-DESTROY) keyRefs whose records are already gone but whose key
  * material has not yet been wiped. Written BEFORE the records are dropped, so a
  * failed wipe is a recorded, retried job instead of a silently orphaned K_dev.
+ *
+ * IT IS NO LONGER THE ONLY RECORD OF THAT OBLIGATION, AND IT MUST NOT BE. On
+ * win32 `syncDirectory` is a no-op, so a hard reset can discard this file's most
+ * recent rename while the index's survives — leaving the purged records gone from
+ * `devices.json`, this journal reverted to a version that never named them, and
+ * `K_dev` on disk permanently with nothing left that would ever come back for
+ * it. That is the exact failure the journal was introduced to prevent, reproduced
+ * one file to the left. `(ORPHAN-SWEEP)` below closes it by re-deriving the
+ * obligation instead of witnessing it a second time.
  */
 const PENDING_DESTROY_FILENAME = "pending-destroy.json";
 const FILE_MODE = 0o600;
@@ -526,13 +535,48 @@ export async function createDeviceStore(
 	}
 
 	/**
-	 * Retries every outstanding wipe.
+	 * Retries every outstanding wipe, and — at start — every wipe nobody recorded.
 	 *
 	 * A wipe that fails stays on the list and is attempted again on the next purge
 	 * (daily) and at every start. It is also reported. The failure mode this
 	 * replaces was terminal AND silent: the record was deleted first, so a throw
 	 * from `destroy` left `K_dev` on disk with nothing left pointing at it and
 	 * nothing that would ever try again.
+	 *
+	 * (ORPHAN-SWEEP) THE JOURNAL IS NOT TRUSTED TO BE COMPLETE, BECAUSE IT CANNOT
+	 * BE. `writePendingDestroy` lands before the index write that drops the records
+	 * naming the same keyRefs, and on win32 `syncDirectory` is a no-op — so a hard
+	 * reset can take the JOURNAL's rename and leave the INDEX's, which is precisely
+	 * the orphaned-`K_dev`-forever case the journal exists to prevent. The keys are
+	 * revoked and tombstoned, so nothing is AUTHORISED by it; the cost is a revoked
+	 * device's key surviving indefinitely, still able to decrypt captured historical
+	 * traffic, with nothing on disk that would ever notice.
+	 *
+	 * A THIRD WITNESS FILE WOULD HAVE BEEN THE WRONG ANSWER. `writeFileDurable` in
+	 * `crypto.ts` states outright that its rename ordering — itself an inference
+	 * about NTFS rather than a documented guarantee — must not acquire a third
+	 * dependent. More importantly it was not needed, and the general form of that
+	 * is worth keeping: A WITNESS IS ONLY RIGHT WHERE THE OBLIGATION CANNOT BE
+	 * RE-DERIVED. WHERE IT CAN, RE-DERIVATION STRICTLY DOMINATES — it needs no
+	 * second file, no write ordering and no crash-consistency assumption. "This key
+	 * file is owed a wipe" is re-derivable from ground truth: a key file present on
+	 * disk whose keyRef appears in NO index record is an orphan by construction,
+	 * whatever any journal says. So the set of keyRefs to destroy is the UNION of
+	 * the journal and that difference, and a lost journal rename now costs one
+	 * start's delay instead of a permanent leak.
+	 *
+	 * WHY THE SWEEP RUNS AT START AND NOT ON THE PURGE PATH, WHICH IS NOT
+	 * TIMIDITY. `keys.put()` creates the key file BEFORE `create()` records it, and
+	 * `put` is not inside this store's serialiser — so between those two calls a
+	 * live, brand-new device's key is legitimately unreferenced. A sweep running
+	 * then would destroy it and brick a phone mid-pairing. At construction that
+	 * window provably does not exist: the store has not been handed out, so no
+	 * pairing can be in flight against it, and `(ONE-STORE-PER-ANCHOR)` guarantees
+	 * no other store is running one either. That is a structural argument, not a
+	 * grace period or an mtime heuristic, and it is the reason `phase` exists
+	 * rather than a boolean nobody can audit at the call site. Do not widen it to
+	 * `"purge"` without first serialising `put` + `create` into one critical
+	 * section.
 	 *
 	 * IT DOES NOT THROW, and that is deliberate rather than a swallowed error.
 	 * This runs at construction, so throwing meant one un-deletable file made the
@@ -542,31 +586,125 @@ export async function createDeviceStore(
 	 * that very key file, so nothing is authorised by the delay; what is left is
 	 * hygiene, and taking the whole companion feature down for hygiene is a worse
 	 * failure than reporting it. Nothing is hidden: `log.error` fires with the
-	 * count, the obligation is durably journalled in `pending-destroy.json`, and
-	 * it is retried at every start and every daily purge until it succeeds.
+	 * count, a journalled obligation stays durably in `pending-destroy.json`, an
+	 * orphaned one is re-derived from the directory at the next start, and both are
+	 * retried until they succeed.
 	 */
-	async function drainPendingDestroy(): Promise<void> {
-		let outstanding = await readPendingDestroy();
-		if (outstanding.length === 0) return;
-		const failures: { keyRef: string; error: unknown }[] = [];
-		const remaining: string[] = [];
-		for (const keyRef of outstanding) {
+	async function reclaimPurgedKeyMaterial(
+		phase: "start" | "purge",
+	): Promise<void> {
+		const journalled = await readPendingDestroy();
+
+		// (ORPHAN-SWEEP) The re-derived half. A failure to enumerate does NOT skip
+		// the journalled half: the journal is still a valid, independently durable
+		// list of work, and one unreadable directory listing must not also cancel
+		// the wipes that were recorded properly.
+		let orphans: readonly string[] = [];
+		if (phase === "start") {
 			try {
-				await keys.destroy(keyRef);
+				const inventory = await keys.list();
+				const referenced = new Set<string>();
+				for (const record of records.values()) {
+					referenced.add(record.keyRef);
+				}
+				// SET ARITHMETIC, STATED SO THE SAFE DIRECTION IS THE OBVIOUS ONE:
+				// on disk MINUS referenced-by-any-record. `referenced` spans EVERY
+				// record, live and revoked-but-unpurged alike — a revoked device keeps
+				// its key on purpose (§5.1, so it can open its own sealed 403), so
+				// filtering on "not revoked" here would destroy exactly the keys the
+				// protocol requires to survive. Nothing is ever added to this set; it
+				// can only shrink relative to the directory.
+				orphans = inventory.keyRefs.filter((keyRef) => !referenced.has(keyRef));
+				if (inventory.unrecognised.length > 0) {
+					// Cannot have been written by `put()`, which only ever mints
+					// canonical refs. Reported and left alone: a name this store cannot
+					// parse is also a name it cannot prove unreferenced.
+					log.error(
+						"the companion devices directory holds key-file names this store cannot have written; they are being left alone, because a name that cannot be parsed cannot be proven unreferenced either",
+						{ devicesDir, names: inventory.unrecognised },
+					);
+				}
 			} catch (error) {
-				failures.push({ keyRef, error });
-				remaining.push(keyRef);
+				log.error(
+					"could not enumerate the key files, so orphaned key material cannot be re-derived on this start; any journalled wipes still run and the sweep is retried at the next start",
+					{ devicesDir, error },
+				);
 			}
 		}
-		outstanding = remaining;
-		await writePendingDestroy(outstanding);
+
+		const doomed = [...new Set([...journalled, ...orphans])];
+		if (doomed.length === 0) return;
+
+		// THE ONE DIRECTION THAT WOULD BE CATASTROPHIC, REFUSED EXPLICITLY RATHER
+		// THAN ARGUED AWAY. Destroying the key of a device that is still LIVE bricks
+		// a working phone with no recovery but re-pairing. `orphans` cannot contain
+		// such a keyRef by construction (it is the difference against every record),
+		// and `journalled` cannot either (a keyRef only ever enters it from
+		// `purgeExpiredRevocations`, which requires `revokedAtMs !== null` and 30 days
+		// elapsed). So this branch is unreachable unless the journal or the index has
+		// been tampered with or corrupted — which is exactly when a cheap check is
+		// worth having, and why it reports instead of proceeding.
+		const liveOwners = new Map<string, DeviceId>();
+		for (const record of records.values()) {
+			if (record.revokedAtMs === null) {
+				liveOwners.set(record.keyRef, record.deviceId);
+			}
+		}
+
+		const journalledRefs = new Set(journalled);
+		const failures: { keyRef: string; error: unknown }[] = [];
+		const remaining: string[] = [];
+		let orphansReclaimed = 0;
+		for (const keyRef of doomed) {
+			const liveOwner = liveOwners.get(keyRef);
+			if (liveOwner !== undefined) {
+				log.error(
+					"refusing to destroy key material that a LIVE, un-revoked device record still points at — this cannot happen from a purge, so either the journal or the device index is corrupt; the device keeps working and the entry is retained for a maintainer",
+					{ keyRef, deviceId: liveOwner, journal: pendingDestroyPath },
+				);
+				if (journalledRefs.has(keyRef)) remaining.push(keyRef);
+				continue;
+			}
+			try {
+				await keys.destroy(keyRef);
+				if (!journalledRefs.has(keyRef)) orphansReclaimed += 1;
+			} catch (error) {
+				failures.push({ keyRef, error });
+				// Only the journalled half is written back. An orphan that failed to
+				// die is deliberately NOT journalled: the next start re-derives it from
+				// the directory, which is the whole point — adding it to the journal
+				// would re-introduce the dependence on a file whose rename can be lost.
+				if (journalledRefs.has(keyRef)) remaining.push(keyRef);
+			}
+		}
+
+		// `remaining` is an order-preserving subset of `journalled`, so equal lengths
+		// means nothing changed and the file does not need rewriting. That also keeps
+		// a fresh install from CREATING `pending-destroy.json` for no reason.
+		if (remaining.length !== journalled.length) {
+			await writePendingDestroy(remaining);
+		}
+		if (orphansReclaimed > 0) {
+			// A real, previously undetectable fault, now repaired — so it is said out
+			// loud once rather than fixed in silence. On a healthy install (including
+			// a fresh one and a legacy pre-anchor one) this count is 0 and nothing is
+			// logged, so the line only ever appears when there was something to find.
+			log.warn(
+				"(ORPHAN-SWEEP) destroyed key material that no device record referenced — a purge's journal write was lost while its index write survived, which used to leave a revoked device's K_dev on disk permanently",
+				{ reclaimed: orphansReclaimed, devicesDir },
+			);
+		}
 		if (failures.length > 0) {
 			log.error(
-				"key material for purged devices could not be wiped; it stays on the retry list and will be attempted again at the next purge and at every start",
+				"key material for purged devices could not be wiped; journalled entries stay on the retry list and orphaned ones are re-derived from the devices directory, and both are attempted again at the next purge and at every start",
 				{
-					pending: outstanding.length,
+					pending: remaining.length,
 					failures: failures.length,
 					journal: pendingDestroyPath,
+					errors: failures.map(({ keyRef, error }) => ({
+						keyRef,
+						error: error instanceof Error ? error.message : String(error),
+					})),
 				},
 			);
 		}
@@ -901,7 +1039,7 @@ export async function createDeviceStore(
 		);
 	}
 
-	await drainPendingDestroy();
+	await reclaimPurgedKeyMaterial("start");
 
 	return {
 		async get(deviceId) {
@@ -1064,8 +1202,12 @@ export async function createDeviceStore(
 					}
 				}
 				if (purged.length === 0) {
-					// Still retry anything an earlier purge failed to wipe.
-					await drainPendingDestroy();
+					// Still retry anything an earlier purge failed to wipe. No orphan
+					// sweep here: see `reclaimPurgedKeyMaterial` — a pairing sitting
+					// between `keys.put()` and `create()` legitimately holds an
+					// unreferenced key file, and only the construction path can prove
+					// none is in flight.
+					await reclaimPurgedKeyMaterial("purge");
 					return 0;
 				}
 				// (PENDING-DESTROY) Record the obligation BEFORE dropping the records
@@ -1084,7 +1226,7 @@ export async function createDeviceStore(
 				await persist();
 				// Only now may the key material go: until this point the device had
 				// to be able to open its own sealed revocation notice.
-				await drainPendingDestroy();
+				await reclaimPurgedKeyMaterial("purge");
 				return purged.length;
 			});
 		},
