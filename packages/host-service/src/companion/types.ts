@@ -905,9 +905,17 @@ export interface AnswerStatusRequest {
 	 * (ANSWER-LEDGER) The coverage epoch the client captured BEFORE it submitted.
 	 *
 	 * Opaque to the client: it is compared for equality and never parsed, ordered
-	 * or aged. Null from a client older than this build, which can then only be
-	 * answered with `unconfirmed` for a missing record — safe, and the reason the
-	 * field is optional rather than required.
+	 * or aged. Null from a client that holds none — an older build, or one whose
+	 * process died since the write — which can then only be answered with
+	 * `unconfirmed` for a missing record. Safe, and the reason the field is NULLABLE.
+	 *
+	 * It is nullable but NOT optional, and the distinction is load-bearing: the Zod
+	 * schema once omitted the field entirely, so it was stripped from every request
+	 * while a cast told TypeScript it had survived, and the whole terminal-negative
+	 * path became unreachable in live traffic without a single test failing. A body
+	 * that omits the key is now a 400 — `(STATUS-EPOCH-BOUNDARY)` in `http.ts` — so
+	 * the wire contract stays explicit and the client sends `null` deliberately
+	 * rather than by absence. Do not add `.optional()` to that schema.
 	 */
 	coverageEpoch: string | null;
 }

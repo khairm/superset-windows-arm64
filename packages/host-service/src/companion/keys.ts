@@ -68,26 +68,41 @@
  * compaction, where losing the rename reverts to a file carrying the
  * byte-identical maximum record.
  *
- * HONEST LIMIT, STATED RATHER THAN PAPERED OVER: a rollback of the WHOLE
- * `~/.superset/companion/` tree at once (a full VM snapshot restore) restores
- * the anchor, the index, the journal and the key files together and is not
- * detectable from inside that tree. Detecting it needs a monotonic reference
- * outside the rolled-back volume, which this design does not have. Every PARTIAL
- * rollback — which is what the reviewer demonstrated, and what a "restore my
- * profile" or "roll back one file" actually does — is caught: a rolled-back
- * index or key file fails closed, and a rolled-back anchor is overridden by the
- * journal and logged loudly (resuming at the higher mark, rather than refusing,
- * because that shape is also an ordinary crash between the two writes).
+ * HONEST LIMIT, STATED RATHER THAN PAPERED OVER, AND NARROWER THAN IT FIRST READ.
+ * What is NOT detectable from inside this tree is any rollback that takes the
+ * ANCHOR AND THE JOURNAL DOWN TOGETHER to a matching value — a full
+ * `~/.superset/companion/` snapshot restore, or a deliberate edit of exactly those
+ * two files. Detecting it needs a monotonic reference outside the rolled-back
+ * volume, which this design does not have.
  *
- * A DELIBERATE EDIT THAT REWINDS THE JOURNAL IS DETECTED, WHICH THE WITNESS COULD
- * NOT MANAGE. Two files tampered together used to be indistinguishable from
- * health. Now the anchor's floor is written AFTER the journal record on every
+ * An earlier version of this paragraph claimed every PARTIAL rollback was caught
+ * and named only the whole-tree case as exempt. That was wrong, and a reviewer
+ * demonstrated it: anchor + journal edited down in lockstep, keys and index left
+ * current, resumes below the true mark and reuses nonces. The cross-check below is
+ * `anchorMark > journalled` — STRICT — and steady state is `anchorMark ==
+ * journalMark`, so a matched low pair never trips it.
+ *
+ * What IS caught, individually: a rolled-back index or key file fails closed; a
+ * rolled-back anchor is overridden by the journal and logged loudly (resuming at
+ * the higher mark rather than refusing, because that shape is also an ordinary
+ * crash between the two writes); a journal truncated or rewritten downwards on its
+ * own leaves the anchor leading and refuses the start.
+ *
+ * The residual needs deliberate write access to the directory that also holds
+ * `K_dev`, and an attacker with that can forge ciphertext directly rather than
+ * bothering to rewind a counter — so it is bounded by something other than this
+ * check. A keyed MAC would not help: there is no key such an attacker lacks. Do not
+ * "fix" it by weakening the strict comparison to `>=`, which would refuse every
+ * healthy start; the only real remedy is the external reference this design does
+ * not have.
+ *
+ * A DELIBERATE EDIT THAT REWINDS THE JOURNAL ALONE IS DETECTED, WHICH THE WITNESS
+ * COULD NOT MANAGE. The anchor's floor is written AFTER the journal record on every
  * raise, so `anchor.highWater > journalMark` is structurally impossible in normal
  * operation and means the journal demonstrably lost records: the bridge refuses to
- * start. Truncating or rewriting the journal downwards therefore fails closed
- * rather than passing as consistent. Raising it to a merely plausible value is
- * still undetectable and still harmless — it burns counters, it cannot repeat one —
- * and raising it to an impossible one is refused at the parse boundary.
+ * start. Raising the journal to a merely plausible value is still undetectable and
+ * still harmless — it burns counters, it cannot repeat one — and raising it to an
+ * impossible one is refused at the parse boundary.
  *
  * (SEND-WITNESS) IS RETIRED, AND `answer.ts` POINTS HERE FOR THE CONTRAST.
  * `send-witness.json` is no longer written. It is still READ once at start, its
@@ -132,7 +147,7 @@
 
 import type { FileHandle } from "node:fs/promises";
 import { open, readdir, readFile, stat, unlink } from "node:fs/promises";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import {
 	HKDF_LABEL_SEAL_C2S,
 	HKDF_LABEL_SEAL_EVT,
@@ -615,6 +630,29 @@ async function openSendJournal(
 			}
 			throw error;
 		}
+		/**
+		 * (SEND-JOURNAL-CREATE-SYNC) The ONE directory entry this design cannot argue
+		 * away, published as best it can be.
+		 *
+		 * "An append has no directory entry to lose" is the sentence the whole journal
+		 * rests on, and it is true of records 2..N — they extend a file whose entry is
+		 * already durable. It is NOT true of the FIRST record, which extends a file
+		 * created moments earlier by this `wx` open. `appendDurable`'s
+		 * `FlushFileBuffers` flushes that file's data and size; by the very standard this
+		 * module applies elsewhere, it is not documented to persist the NEW file's entry
+		 * in its parent directory.
+		 *
+		 * What that costs is bounded and SAFE: lose the creation entry while the anchor's
+		 * `journal: true` survives, and the next start finds the flag without the file and
+		 * REFUSES — a spurious fatal on a healthy machine that merely crashed once, never
+		 * a reused nonce. Still worth removing rather than documenting, since a bridge
+		 * that will not start is its own kind of failure.
+		 *
+		 * `syncDirectory` is a no-op on win32 and cannot fix it there; it is called anyway
+		 * because this code also runs on platforms where it is real, and because the
+		 * alternative is a caveat that quietly becomes wrong the day that changes.
+		 */
+		await syncDirectory(dirname(journalPath));
 	} else {
 		handle = await open(journalPath, "r+");
 	}
@@ -694,8 +732,15 @@ async function openSendJournal(
 		 * — and on Windows that is the shape that produces an EBUSY nobody can explain.
 		 *
 		 * Ordered the other way, a failed close leaves this object exactly as it was:
-		 * still open, still refusing nothing it should not, and still closable. Callers
-		 * that cannot retry get a rejection instead of a silent leak.
+		 * still open, still refusing nothing it should not, and still closable.
+		 *
+		 * "Retryable" is a property of THIS object, not of the anchor that owns it. The
+		 * anchor's own `close()` sets its `closed` flag before draining — deliberately, so
+		 * nothing new can queue — which means a second `anchor.close()` returns early and
+		 * does not try again. Nobody outside holds the journal, so in practice a failed
+		 * close is a wedged lifecycle rather than something a caller can recover; the
+		 * registry entry is deliberately kept in that case (see `openStateAnchor`'s catch)
+		 * because a freed slot with a live handle is the worse of the two.
 		 */
 		async close(): Promise<void> {
 			if (closed) return;
@@ -991,11 +1036,23 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		 * licensed a block, and was later damaged or truncated. Resuming at the last
 		 * VALID record is only safe under the first, and nothing proves which happened.
 		 *
-		 * So the counter skips past the highest mark the lost record COULD have held.
-		 * That bound is exact rather than a guess: `reserve` always targets
-		 * `counter + NONCE_RESERVATION_BLOCK`, and `counter` never exceeds the mark
-		 * already recorded, so the next record's mark is at most one block above the
-		 * last valid one. Early refill only makes the real gap smaller.
+		 * So the counter skips one reservation block past the last VALID record, and is
+		 * then taken to the maximum of that and every migration mark still on disk.
+		 *
+		 * ONE BLOCK IS THE RIGHT BOUND FOR A CLAIM OR A RAISE, and only for those:
+		 * `reserve` targets `counter + NONCE_RESERVATION_BLOCK` and `counter` never
+		 * exceeds the mark already recorded, so such a record sits at most one block
+		 * above its predecessor. It is NOT the bound for a SEED record — a seed carries
+		 * `max(anchor, witness, legacy)` and can sit many blocks up. An earlier version
+		 * of this comment called the bound exact; it is exact for two of the three record
+		 * shapes.
+		 *
+		 * What covers the third is the `seedTo` maximum below, which folds in the anchor,
+		 * witness and legacy marks — the very sources a seed record was built from. Lose a
+		 * seed record and whichever of them supplied its value is still there, so the seed
+		 * is simply rebuilt. Lose the record AND every source, and the anchor floor check
+		 * above refuses the start rather than resuming low. Fail-closed, by a different
+		 * mechanism than this skip.
 		 *
 		 * It is folded into `seedTo` below rather than applied separately, so it goes
 		 * through the same durable append and the same idempotent MAX as the migration
@@ -1482,8 +1539,31 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 			},
 		};
 	} catch (error) {
-		await journal?.close().catch(() => {});
-		OPEN_ANCHORS.delete(registryKey);
+		/**
+		 * (SEND-JOURNAL-CLOSE-RETRY) The slot is freed only if the handle actually went.
+		 *
+		 * This used to swallow a failed `journal.close()` and free the registry slot
+		 * regardless, which is the wrong half to give up: a freed slot permits a second
+		 * `openStateAnchor` for a path this process still holds open, and two owners of the
+		 * nonce counter is the one thing the registry exists to prevent. Staying registered
+		 * is a wedged lifecycle — loud, local, and fixed by restarting the process.
+		 *
+		 * The close failure is reported rather than absorbed, but the ORIGINAL error is
+		 * what propagates: it is why the start failed, and replacing it with a teardown
+		 * detail would bury the cause.
+		 */
+		let released = true;
+		if (journal !== null) {
+			try {
+				await journal.close();
+			} catch (closeError) {
+				released = false;
+				console.error(
+					`${LOG_PREFIX} the send-nonce journal handle could not be released while failing a start (${closeError instanceof Error ? closeError.message : String(closeError)}). The state anchor stays registered in this process so a second one cannot be opened over the same file; restart host-service.`,
+				);
+			}
+		}
+		if (released) OPEN_ANCHORS.delete(registryKey);
 		throw error;
 	}
 }
