@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "d6e527a7ebfd",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/host-service/src/companion/attempt-ledger.ts",
+    "packages/host-service/src/companion/crypto.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/db/schema.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d6/e527a7ebfd/0/metadata.json",
+      "transcript": "/d6/e527a7ebfd/0/full.jsonl",
+      "content_hash": "/d6/e527a7ebfd/0/content_hash.txt",
+      "prompt": "/d6/e527a7ebfd/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2749,
+    "cache_creation_tokens": 8665512,
+    "cache_read_tokens": 589561686,
+    "output_tokens": 1269081,
+    "api_call_count": 1414
+  }
+}
