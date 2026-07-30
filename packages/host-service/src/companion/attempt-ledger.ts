@@ -69,25 +69,55 @@
  * this module cannot prove is never reported as terminal.
  */
 
-import { and, eq, lt, sql } from "drizzle-orm";
-import type { HostDb } from "../db";
+import { and, eq, sql } from "drizzle-orm";
+import type { AnswerAttemptStatus, HostDb } from "../db";
 import { answerAttempts, answerCoverageEpoch } from "../db";
-import type { AnswerAttemptStatus } from "../db";
-import { ANSWER_ATTEMPT_RETENTION_MS, LOG_PREFIX } from "./config";
+import { LOG_PREFIX } from "./config";
 import { base64UrlEncode, isCanonicalWireId, randomBytes } from "./crypto";
 import type {
 	AnswerGuardName,
-	AttemptFailureCode,
-	DurationMs,
 	EpochMs,
 	RequestId,
+	SealedErrorCode,
 } from "./types";
+import { ANSWER_GUARD_NAMES } from "./types";
 
 /** Bytes of randomness in a coverage epoch. 16 matches the install generation. */
 const COVERAGE_EPOCH_BYTES = 16;
 
 /** The single-row epoch table's only key. */
 const EPOCH_ROW_ID = 1;
+
+/**
+ * Every failure code the ledger may PERSIST, and the set the read boundary
+ * enforces.
+ *
+ * Wider than the old JSON store's two codes (`guard_failed`, `internal`) on
+ * purpose. Since the claim moved to the top of `handleAnswer`, a request can be
+ * refused for a reason the store never used to see — the panic write-disable, a
+ * stale question, a lost lease, an unusable agent binding — and §11.4 says a replay
+ * returns the RECORDED outcome. Recording `internal` for a `write_disabled`
+ * refusal would make that replay lie about why, so the real code is stored and
+ * rethrown verbatim.
+ *
+ * Every member is a §10 sealed code, so a stored value is always something a client
+ * already knows how to render.
+ */
+const LEDGER_FAILURE_CODES = [
+	"stale_question",
+	"already_resolved",
+	"request_closed",
+	"lease_held",
+	"guard_failed",
+	"picker_open",
+	"capability_unsupported",
+	"write_disabled",
+	"bad_request",
+	"internal",
+] as const satisfies readonly SealedErrorCode[];
+
+/** A code the ledger can store, narrowed from §10's sealed set. */
+export type LedgerFailureCode = (typeof LEDGER_FAILURE_CODES)[number];
 
 /**
  * The query surface this module uses, which BOTH the database and a transaction
@@ -115,7 +145,7 @@ export interface LedgerRecord {
 	startedAtMs: EpochMs | null;
 	createdAtMs: EpochMs;
 	resolvedAtMs: EpochMs | null;
-	failureCode: AttemptFailureCode | null;
+	failureCode: LedgerFailureCode | null;
 	guardsPassed: AnswerGuardName[];
 	coverageEpoch: string;
 }
@@ -161,14 +191,17 @@ export interface AttemptLedger {
 	/**
 	 * Records the outcome of an attempt THIS process claimed.
 	 *
-	 * Only ever advances an `in_flight` row. It cannot overwrite a tombstone (that
-	 * is the fence) and it cannot resurrect a pruned row.
+	 * Only ever advances an `in_flight` row. It cannot overwrite a tombstone — that
+	 * is the fence — and, because nothing deletes rows, the row it advances is
+	 * necessarily the one this process claimed: there is no way for a successor to
+	 * hold the same requestId, so the ABA where a late outcome lands on someone
+	 * else's claim cannot occur.
 	 */
 	recordOutcome(outcome: {
 		requestId: RequestId;
 		status: Exclude<AnswerAttemptStatus, "in_flight" | "closed_not_received">;
 		resolvedAtMs: EpochMs | null;
-		failureCode: AttemptFailureCode | null;
+		failureCode: LedgerFailureCode | null;
 		guardsPassed: readonly AnswerGuardName[];
 		/** Known only by outcome time; the claim predates the lease. */
 		leaseId: string | null;
@@ -179,10 +212,48 @@ export interface AttemptLedger {
 	 * The status path. `capturedEpoch` is what the client captured before it
 	 * submitted; a mismatch can never produce a terminal negative.
 	 */
-	resolveStatus(requestId: RequestId, capturedEpoch: string | null): StatusOutcome;
-	/** Drops rows past the retention, rotating the epoch if anything went. */
-	prune(nowMs: EpochMs): number;
-	/** Rotates the epoch. Use when continuity is lost for any other reason. */
+	resolveStatus(
+		requestId: RequestId,
+		capturedEpoch: string | null,
+	): StatusOutcome;
+	/**
+	 * (LEDGER-KEEP-ATTEMPTS) Rotates the epoch. THE MANDATORY COMPANION TO ANY
+	 * DELETION — nothing in this build deletes, so nothing calls it.
+	 *
+	 * There was a `prune(nowMs)` here that dropped rows past a 24 h retention. It
+	 * is gone, because EVERY row in this table is a fence and forgetting any of
+	 * them un-decides something that was announced as permanent:
+	 *
+	 *   - forget a CONFIRMED row and the next status read sees absence. With a
+	 *     matching epoch it reports `not_received` — for keystrokes that
+	 *     demonstrably landed. The phone re-asks under a fresh requestId and the
+	 *     agent is answered TWICE, the one unrecoverable outcome in this system.
+	 *   - forget an `in_flight` row and a second claim on the same requestId wins,
+	 *     so two callers can type; worse, the first one's late `recordOutcome`
+	 *     matches the SUCCESSOR's row (ABA) and serves one phone the other's
+	 *     answer.
+	 *   - forget a TOMBSTONE and a delayed answer for that requestId gets a fresh
+	 *     claim and types, retroactively falsifying the terminal `not_received`
+	 *     this bridge already promised.
+	 *
+	 * Rotating the epoch was supposed to cover the first of those, and does for a
+	 * client that captures its epoch before submitting and never substitutes
+	 * another. It does NOT cover a client that adopts the epoch `hello` publishes
+	 * and re-polls an older request: the adopted epoch matches, so absence reads as
+	 * authoritative. The server cannot tell the two apart — the token is opaque and
+	 * the row that would have dated the request is exactly what was deleted. Nor
+	 * does rotation touch the second and third cases at all, which are about a
+	 * requestId becoming claimable again rather than about coverage.
+	 *
+	 * So the table only grows. A row is a couple of hundred bytes and needs a human
+	 * to answer a question, which at this app's rate is a megabyte or so a year:
+	 * the cost of unbounded growth is far below the cost of any of the above.
+	 *
+	 * This is kept, exported and uncalled so that a future compaction has the
+	 * correct primitive to hand and no excuse for a bare DELETE: whatever discards
+	 * rows must rotate in the SAME transaction, or it publishes a coverage claim it
+	 * cannot honour.
+	 */
 	rotateEpoch(reason: string): string;
 }
 
@@ -196,11 +267,9 @@ export function createAttemptLedger(options: {
 	db: HostDb;
 	/** Structured diagnostics. Never carries question or answer text. */
 	log: (event: Record<string, unknown>) => void;
-	retentionMs?: DurationMs;
 	now?: () => EpochMs;
 }): AttemptLedger {
 	const { db } = options;
-	const retentionMs = options.retentionMs ?? ANSWER_ATTEMPT_RETENTION_MS;
 	const now = options.now ?? (() => Date.now() as EpochMs);
 	const log = options.log;
 	if (typeof log !== "function") {
@@ -233,14 +302,104 @@ export function createAttemptLedger(options: {
 	 * (WAL also means a reader never blocks a writer, which is why the CAS below
 	 * can be a short transaction without starving the status path.)
 	 */
-	const synchronous = db.$client.pragma("synchronous", { simple: true });
-	if (Number(synchronous) !== 2) {
+	const assertFullSynchronous = (when: string): void => {
+		const synchronous = db.$client.pragma("synchronous", { simple: true });
+		if (Number(synchronous) !== 2) {
+			throw new Error(
+				`${LOG_PREFIX} the answer ledger requires PRAGMA synchronous = FULL (2), found ${String(synchronous)} ${when}. At NORMAL a committed claim can be lost to power loss, which is the exact rollback the answer fence exists to prevent. Refusing to serve answers under it.`,
+			);
+		}
+	};
+
+	/**
+	 * (LEDGER-SYNC-RECHECK) Re-asserted before each of the two decisions, not just
+	 * at open.
+	 *
+	 * Checking once at open would only prove the pragma was right when the module
+	 * loaded. This connection is SHARED with the rest of the host service, the
+	 * pragma is connection-scoped and settable at any time, and a single
+	 * `PRAGMA synchronous = NORMAL` anywhere — a future migration, an import-time
+	 * tuning line, a REPL — would silently un-anchor every claim written after it
+	 * while an open-time check kept reporting green.
+	 *
+	 * So the two writes the fence rests on re-read it first. A pragma read is an
+	 * in-memory field access on the connection, no I/O and no statement to prepare,
+	 * against a path that is already doing a durable commit.
+	 *
+	 * `recordOutcome` deliberately does NOT re-check: an outcome lost to power loss
+	 * leaves the row `in_flight`, and `(LEDGER-REHYDRATE)` turns that into
+	 * `unconfirmed` at the next open. Losing it weakens a claim, which is safe. The
+	 * two paths below are the ones where losing a write would STRENGTHEN one.
+	 */
+	assertFullSynchronous("at open");
+
+	/**
+	 * (LEDGER-WAL-ASSERT) WAL is ASSERTED, not assumed, because the durability
+	 * argument above is specifically about WAL + FULL.
+	 *
+	 * `createDb` runs `PRAGMA journal_mode = WAL` and ignores what comes back. That
+	 * pragma is a REQUEST: SQLite documents that a journal-mode change can fail —
+	 * another connection in a transaction is enough — and that it then returns the
+	 * mode still in force rather than raising. So the bridge could be running under
+	 * a rollback journal while `synchronous = 2` reported green, and FULL does not
+	 * mean the same thing in the two modes: a rollback-journal commit ends with a
+	 * directory operation whose durability is exactly the kind of inference this
+	 * whole module exists to stop depending on.
+	 *
+	 * Checked once, here, because journal mode is a property of the DATABASE rather
+	 * than of a statement: nothing in a request path can change it while this
+	 * connection holds the file, so re-reading it per claim would prove nothing the
+	 * open-time read does not.
+	 */
+	const journalMode = db.$client.pragma("journal_mode", { simple: true });
+	if (String(journalMode).toLowerCase() !== "wal") {
 		throw new Error(
-			`${LOG_PREFIX} the answer ledger requires PRAGMA synchronous = FULL (2), found ${String(synchronous)}. At NORMAL a committed claim can be lost to power loss, which is the exact rollback the answer fence exists to prevent. Refusing to serve answers under it.`,
+			`${LOG_PREFIX} the answer ledger requires journal_mode = wal, found ${String(journalMode)}. \`createDb\` asks for WAL but the request can fail silently, and FULL durability under a rollback journal rests on the same undocumented directory-ordering assumption this ledger replaced. Refusing to serve answers under it.`,
 		);
 	}
 
-	const mintEpoch = (): string => base64UrlEncode(randomBytes(COVERAGE_EPOCH_BYTES));
+	const mintEpoch = (): string =>
+		base64UrlEncode(randomBytes(COVERAGE_EPOCH_BYTES));
+
+	/**
+	 * (LEDGER-REHYDRATE) Every `in_flight` row from a PREVIOUS lifetime becomes
+	 * `unconfirmed`, once, at open.
+	 *
+	 * `in_flight` means "keystrokes are landing right now". That is only ever true of
+	 * the process that claimed the row. A row still saying it after this process
+	 * starts belongs to a lifetime that is gone — it crashed mid-sequence, or was
+	 * killed, or refused the request after claiming it — and the honest report for a
+	 * sequence whose outcome nobody recorded is `unconfirmed`: it may have landed, it
+	 * may not, and the desk is the only place that knows.
+	 *
+	 * Without this, PROTOCOL §11.5's promise that "an in_flight row that outlives its
+	 * process is reported as unconfirmed on the next read" was simply false — the row
+	 * was served verbatim, so a crash mid-type told the phone its answer was being
+	 * typed for up to the full 24 h retention. The old JSON store did do this
+	 * (it collapsed `in_flight` at hydration); the promise survived the rewrite and
+	 * the mechanism did not.
+	 *
+	 * SOUND BECAUSE OF THE LIFETIME ARGUMENT, not because crashes are rare: no
+	 * attempt from a prior lifetime can still be typing, since typing happens inside
+	 * a lock held by a process that no longer exists. It is deliberately NOT a
+	 * heuristic on age or a timeout.
+	 *
+	 * It also drains the residue of any refusal that recorded no outcome, so a fault
+	 * that leaves a claim behind cannot outlive one restart even if a future edit
+	 * reintroduces one.
+	 */
+	const rehydrated = db
+		.update(answerAttempts)
+		.set({ status: "unconfirmed" })
+		.where(eq(answerAttempts.status, "in_flight"))
+		.run();
+	if (rehydrated.changes > 0) {
+		log({
+			event: "companion.answer.ledger_rehydrated_in_flight",
+			count: rehydrated.changes,
+			why: "rows still marked in_flight belonged to a lifetime that is gone; a sequence whose outcome nobody recorded is unconfirmed, never confirmed and never never-received",
+		});
+	}
 
 	/**
 	 * Reads the epoch, minting one on first use.
@@ -272,7 +431,9 @@ export function createAttemptLedger(options: {
 				rotatedAtMs,
 				rotations: existing === undefined ? 0 : (existing.rotations ?? 0) + 1,
 				lastRotateReason:
-					existing === undefined ? "first use" : "the stored epoch was not usable",
+					existing === undefined
+						? "first use"
+						: "the stored epoch was not usable",
 			})
 			.onConflictDoUpdate({
 				target: answerCoverageEpoch.id,
@@ -290,7 +451,13 @@ export function createAttemptLedger(options: {
 				why: "the stored coverage epoch was not a canonical id, so it could not be compared; a fresh one was minted and every in-flight client's captured token now degrades to unconfirmed",
 			});
 		}
-		return { id: EPOCH_ROW_ID, epoch, rotatedAtMs, rotations: 0, lastRotateReason: null };
+		return {
+			id: EPOCH_ROW_ID,
+			epoch,
+			rotatedAtMs,
+			rotations: 0,
+			lastRotateReason: null,
+		};
 	};
 
 	/**
@@ -304,7 +471,9 @@ export function createAttemptLedger(options: {
 	 * is correct — neither proves anything, and neither may become a negative
 	 * unless the caller can plant the fence itself.
 	 */
-	const validate = (row: typeof answerAttempts.$inferSelect): LedgerRecord | null => {
+	const validate = (
+		row: typeof answerAttempts.$inferSelect,
+	): LedgerRecord | null => {
 		const reject = (why: string): null => {
 			log({
 				event: "companion.answer.ledger_row_rejected",
@@ -323,12 +492,17 @@ export function createAttemptLedger(options: {
 			status !== "unconfirmed" &&
 			status !== "closed_not_received"
 		) {
-			return reject(`status ${JSON.stringify(status)} is not one this build knows`);
+			return reject(
+				`status ${JSON.stringify(status)} is not one this build knows`,
+			);
 		}
 		if (typeof row.createdAtMs !== "number" || row.createdAtMs < 0) {
 			return reject("createdAtMs is missing or negative");
 		}
-		if (typeof row.coverageEpoch !== "string" || row.coverageEpoch.length === 0) {
+		if (
+			typeof row.coverageEpoch !== "string" ||
+			row.coverageEpoch.length === 0
+		) {
 			return reject("coverageEpoch is missing");
 		}
 		// Cross-field, because field-by-field validation let incoherent records
@@ -341,7 +515,53 @@ export function createAttemptLedger(options: {
 		if (status === "failed" && row.failureCode === null) {
 			return reject("a failed attempt carries no failureCode");
 		}
+		// `in_flight` means "keystrokes are landing right now". A row that says that
+		// AND carries an outcome is two contradictory claims, and the dangerous half
+		// is the one a status read repeats verbatim.
+		if (
+			status === "in_flight" &&
+			(row.resolvedAtMs !== null || row.failureCode !== null)
+		) {
+			return reject(
+				"an in_flight attempt already carries an outcome; it cannot both be mid-flight and resolved",
+			);
+		}
+		// MEMBERSHIP, not just presence. The schema commit claimed "the runtime check
+		// lives at the read boundary" and this is the half that was missing: a
+		// failureCode was checked for existence and then plain-cast, so a corrupt or
+		// foreign-writer string flowed through `handleAnswer`'s replay rethrow into a
+		// sealed response as a wire code no client has ever heard of. A client degrades
+		// an unknown code safely, so it was bounded — but "bounded by the other side's
+		// tolerance" is not the same as validated, and this boundary exists to reject
+		// exactly this.
+		if (
+			row.failureCode !== null &&
+			!(LEDGER_FAILURE_CODES as readonly string[]).includes(row.failureCode)
+		) {
+			return reject(
+				`failureCode ${JSON.stringify(row.failureCode)} is not a code this bridge writes`,
+			);
+		}
+		// (LEDGER-COHERENCE) A tombstone describes the ABSENCE of an attempt, so
+		// every field that could only come from one must be null. Checking the
+		// timestamps alone let a row asserting "nothing ever arrived" also carry the
+		// question it arrived for, the device that sent it, the lease it held and the
+		// guards it passed — a shape nothing can produce, which `toWireOutcome` then
+		// served to the phone as a terminal `not_received`. An impossible row that
+		// gets SERVED is worse than a missing one, which is this boundary's whole
+		// premise; enforcing only half of it was the gap.
 		if (status === "closed_not_received") {
+			if (
+				row.questionId !== null ||
+				row.deviceId !== null ||
+				row.surface !== null ||
+				row.leaseId !== null ||
+				row.failureCode !== null
+			) {
+				return reject(
+					"a closed_not_received tombstone carries attempt identity or a failure code; it asserts nothing ever arrived, so there is no attempt to describe",
+				);
+			}
 			// The tombstone describes no attempt, so an attempt's fields being
 			// populated means it is not the row this build wrote.
 			if (row.startedAtMs !== null || row.resolvedAtMs !== null) {
@@ -370,6 +590,19 @@ export function createAttemptLedger(options: {
 			if (!Array.isArray(parsed) || parsed.some((g) => typeof g !== "string")) {
 				return reject("guardsPassed is not an array of strings");
 			}
+			// MEMBERSHIP, not just "is a string". `guardsPassed` is the audit answer to
+			// "what actually permitted this write", and `ANSWER_GUARD_NAMES` is the
+			// same list the guard stack evaluates — so an unknown name here means the
+			// row was written by a build with a different stack, and this build cannot
+			// honestly say what it proved.
+			const unknownGuard = parsed.find(
+				(g) => !(ANSWER_GUARD_NAMES as readonly string[]).includes(g as string),
+			);
+			if (unknownGuard !== undefined) {
+				return reject(
+					`guardsPassed names ${JSON.stringify(unknownGuard)}, which is not a guard this build evaluates`,
+				);
+			}
 			guardsPassed = parsed as AnswerGuardName[];
 		} catch (error) {
 			return reject(
@@ -386,7 +619,7 @@ export function createAttemptLedger(options: {
 			startedAtMs: row.startedAtMs as EpochMs | null,
 			createdAtMs: row.createdAtMs as EpochMs,
 			resolvedAtMs: row.resolvedAtMs as EpochMs | null,
-			failureCode: row.failureCode as AttemptFailureCode | null,
+			failureCode: row.failureCode as LedgerFailureCode | null,
 			guardsPassed,
 			coverageEpoch: row.coverageEpoch,
 		};
@@ -401,12 +634,32 @@ export function createAttemptLedger(options: {
 		return rows[0];
 	};
 
+	/**
+	 * (LEDGER-EPOCH-EAGER) The epoch row is minted AT OPEN, not on first use.
+	 *
+	 * `readEpochRow` mints lazily, which is correct but was the only thing creating
+	 * the row — so a freshly migrated database had an empty `answer_coverage_epoch`
+	 * until something happened to ask, and the boot harness reported exactly that:
+	 * tables present, epoch absent. Whether that was harmless depended entirely on
+	 * `hello` asking before any status read did, which is the kind of ordering
+	 * nothing enforces and nobody notices until a poll degrades.
+	 *
+	 * Minting here makes the epoch a property of the DATABASE rather than of
+	 * whichever request arrived first, keeps it off the first hello's path, and makes
+	 * it observable: an operator or a boot check can see the token exists without
+	 * having to provoke one.
+	 */
+	db.transaction((tx) => {
+		readEpochRow(tx);
+	});
+
 	return {
 		currentEpoch() {
 			return db.transaction((tx) => readEpochRow(tx).epoch);
 		},
 
 		claimForAnswer(claim) {
+			assertFullSynchronous("before claiming the right to type");
 			return db.transaction((tx): ClaimOutcome => {
 				const inner: Queryable = tx;
 				const epoch = readEpochRow(inner).epoch;
@@ -474,7 +727,7 @@ export function createAttemptLedger(options: {
 				// ONLY an `in_flight` row, which is the one this process claimed. The
 				// predicate is the safety property, not an optimisation: without it an
 				// outcome could overwrite a tombstone and erase the fence, or revive a
-				// row a concurrent prune had already dropped.
+				// row that was never there to begin with.
 				.where(
 					and(
 						eq(answerAttempts.requestId, outcome.requestId),
@@ -491,7 +744,7 @@ export function createAttemptLedger(options: {
 					event: "companion.answer.ledger_outcome_orphaned",
 					requestId: outcome.requestId,
 					status: outcome.status,
-					why: "no in_flight row was there to advance — it was pruned, fenced, or already resolved",
+					why: "no in_flight row was there to advance — it was fenced or already resolved",
 				});
 			}
 		},
@@ -502,6 +755,7 @@ export function createAttemptLedger(options: {
 		},
 
 		resolveStatus(requestId, capturedEpoch) {
+			assertFullSynchronous("before deciding a request never arrived");
 			return db.transaction((tx): StatusOutcome => {
 				const inner: Queryable = tx;
 				const existing = selectRow(inner, requestId);
@@ -525,7 +779,7 @@ export function createAttemptLedger(options: {
 				}
 				if (capturedEpoch !== epoch) {
 					// The coverage the client captured is not the coverage this bridge
-					// has. Something rotated it — a prune, or an acknowledged gap — so
+					// has. Something rotated it — an acknowledged coverage gap — so
 					// rows from before it may have gone and absence proves nothing.
 					return {
 						kind: "unconfirmed",
@@ -568,41 +822,6 @@ export function createAttemptLedger(options: {
 							why: "a concurrent claim took this requestId and its row could not be read back",
 						}
 					: { kind: "known", record };
-			});
-		},
-
-		prune(nowMs) {
-			return db.transaction((tx) => {
-				const inner: Queryable = tx;
-				const cutoff = nowMs - retentionMs;
-				const deleted = inner
-					.delete(answerAttempts)
-					.where(lt(answerAttempts.createdAtMs, cutoff))
-					.run();
-				if (deleted.changes > 0) {
-					// ROTATED IN THE SAME TRANSACTION AS THE DELETE, which is the only
-					// ordering that is safe. Pruning destroys the evidence that made
-					// absence meaningful, so any client holding the old token must stop
-					// getting negatives at the instant those rows go — not on the next
-					// tick, and not if the process dies in between.
-					const epoch = mintEpoch();
-					inner
-						.update(answerCoverageEpoch)
-						.set({
-							epoch,
-							rotatedAtMs: nowMs,
-							rotations: sql`${answerCoverageEpoch.rotations} + 1`,
-							lastRotateReason: "records passed the retention window",
-						})
-						.where(eq(answerCoverageEpoch.id, EPOCH_ROW_ID))
-						.run();
-					log({
-						event: "companion.answer.coverage_epoch_rotated",
-						pruned: deleted.changes,
-						why: "records passed the 24 h retention, so absence no longer proves a request never arrived",
-					});
-				}
-				return deleted.changes;
 			});
 		},
 

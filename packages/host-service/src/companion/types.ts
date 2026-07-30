@@ -200,13 +200,30 @@ export interface ErrorBody {
 }
 
 /** §11.3 guard 1..6, plus the two message-path guards of §7.5. */
-export type AnswerGuardName =
-	| "transcript"
-	| "binding"
-	| "session"
-	| "permission_axis"
-	| "screen"
-	| "askq_marker";
+/**
+ * (LEDGER-COHERENCE) The guard names, as a VALUE as well as a type.
+ *
+ * The union was type-only, so the ledger's read boundary could check that a
+ * stored `guardsPassed` held strings but not that it held guards — and
+ * `guardsPassed` is the durable audit answer to "what permitted this write".
+ * Deriving the union from the array keeps the runtime list and the type from ever
+ * disagreeing; `GUARD_EVALUATION_ORDER` in `answer.ts` is separately asserted at
+ * module load to cover this set exactly, so adding a guard here without wiring it
+ * into the stack is a crash rather than a guard that silently never runs.
+ *
+ * Declaration order carries no meaning. EVALUATION order does, and lives in
+ * `GUARD_EVALUATION_ORDER` where the classification assertion can enforce it.
+ */
+export const ANSWER_GUARD_NAMES = [
+	"transcript",
+	"binding",
+	"session",
+	"permission_axis",
+	"screen",
+	"askq_marker",
+] as const;
+
+export type AnswerGuardName = (typeof ANSWER_GUARD_NAMES)[number];
 
 /**
  * The message path's own guard name. §7.5's table called the session failure
@@ -968,19 +985,37 @@ export interface AnswerLease {
 }
 
 /**
- * The only failure codes an attempt record may carry, as a TYPE.
+ * The failure codes an attempt record may carry, as a TYPE.
  *
- * The on-disk schema validates against the same two values (`ATTEMPT_FAILURE_CODES`
- * in `answer.ts`), and a record carrying anything else fails the whole-file parse
- * at the next start — which quarantines the file and costs every OTHER record its
- * 24 h of coverage. That made "widen `failureCode` at a call site" a change whose
- * cost lands on a different request, hours later, so it is a COMPILE error here
- * rather than a runtime discovery: a new code has to be added to this union and to
- * `ATTEMPT_FAILURE_CODES` together, or nothing builds.
+ * WIDENED FROM TWO CODES TO THE SEALED SET, and the reason is the fence. When the
+ * durable claim moved to the top of `handleAnswer` (ANSWER-LEDGER), a request became
+ * recordable for reasons the old store never saw: the panic write-disable, a stale
+ * question, a lost lease, an unusable agent binding. §11.4 says a replay returns the
+ * RECORDED outcome, so storing `internal` for a `write_disabled` refusal would make
+ * that replay lie about why it failed.
+ *
+ * The old narrowness bought something real and it is worth recording what was given
+ * up: the JSON store validated its file as a WHOLE, so one unrecognised code
+ * quarantined every OTHER record's 24 h, which made "widen this at a call site" a
+ * change whose cost landed on a different request hours later. The ledger validates
+ * ROW BY ROW, so an unrecognised code now costs exactly the one requestId that
+ * carries it — which is what makes widening safe rather than merely convenient.
+ *
+ * `LEDGER_FAILURE_CODES` in `attempt-ledger.ts` is the runtime half and must be
+ * widened with this union; `satisfies readonly SealedErrorCode[]` ties both to §10.
  */
 export type AttemptFailureCode = Extract<
 	ErrorCode,
-	"guard_failed" | "internal"
+	| "stale_question"
+	| "already_resolved"
+	| "request_closed"
+	| "lease_held"
+	| "guard_failed"
+	| "picker_open"
+	| "capability_unsupported"
+	| "write_disabled"
+	| "bad_request"
+	| "internal"
 >;
 
 /** §11.5 — the 24 h idempotency + outcome record keyed by `requestId`. */

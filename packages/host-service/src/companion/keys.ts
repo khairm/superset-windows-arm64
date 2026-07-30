@@ -131,7 +131,7 @@
  */
 
 import type { FileHandle } from "node:fs/promises";
-import { open, readdir, readFile, unlink } from "node:fs/promises";
+import { open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import {
 	HKDF_LABEL_SEAL_C2S,
@@ -210,10 +210,17 @@ export class StateRollbackError extends Error {
 	constructor(message: string) {
 		super(
 			`${LOG_PREFIX} state freshness cannot be proven: ${message}. ` +
-				"REFUSING TO START. This is the §3.4 rule-4 / §4.8 path: delete " +
-				"~/.superset/companion/devices/ and pair every device again. Emitting " +
-				"under state that may have rolled back would repeat a nonce, which " +
-				"destroys AES-GCM outright.",
+				"REFUSING TO START. This is the §3.4 rule-4 / §4.8 path. TO RECOVER: " +
+				"delete the WHOLE ~/.superset/companion/ directory — state-anchor.json, " +
+				"send-nonce.journal and devices/ together — then pair every device " +
+				"again. Deleting only devices/ does NOT clear this: the counter state " +
+				"that cannot be proven lives in the anchor and the journal, so the next " +
+				"start refuses identically and the bridge stays unavailable. Removing " +
+				"all three is safe precisely BECAUSE it is total: a fresh install mints " +
+				"a new generation and a new nonce prefix, so nothing it emits can " +
+				"collide with anything the old state handed out. Emitting under state " +
+				"that may have rolled back would repeat a nonce, which destroys " +
+				"AES-GCM outright.",
 		);
 		this.name = "StateRollbackError";
 	}
@@ -343,7 +350,9 @@ function parseSendJournalRecord(
 	journalPath: string,
 ): SendJournalRecord | null {
 	const bytes = raw.subarray(offset, offset + SEND_JOURNAL_RECORD_BYTES);
-	if (!bytes.subarray(0, SEND_JOURNAL_MAGIC.length).equals(SEND_JOURNAL_MAGIC)) {
+	if (
+		!bytes.subarray(0, SEND_JOURNAL_MAGIC.length).equals(SEND_JOURNAL_MAGIC)
+	) {
 		return null;
 	}
 	const digest = sha256(
@@ -426,12 +435,25 @@ interface SendJournalReplay {
  * after torn bytes would misalign every record that follows and silently change
  * what this function reads back.
  *
- * A FULL-WIDTH FINAL RECORD THAT FAILS ITS DIGEST IS ALSO A TORN WRITE. A 72-byte
- * append can straddle a sector boundary, so a tear can land with the record's
- * length intact and its tail garbage. Discarding it loses nothing: `appendDurable`
- * fsyncs before it returns, `raiseSend` does not resolve until it does, and
- * `reserve` advances `reservedThrough` only after `raiseSend` resolves — so a
- * record whose fsync never completed cannot have had a nonce issued above it.
+ * A FULL-WIDTH FINAL RECORD THAT FAILS ITS DIGEST IS DISCARDED THE SAME WAY, BUT
+ * DISCARDING IS NOT FREE AND THE CALLER PAYS FOR IT. A 72-byte append can straddle
+ * a sector boundary, so a tear can land with the record's length intact and its
+ * tail garbage — which is why it is not fatal here.
+ *
+ * What it CANNOT be is proven harmless. The tempting argument is that
+ * `appendDurable` fsyncs before it returns, `raiseSend` does not resolve until it
+ * does, and `reserve` advances `reservedThrough` only afterwards, so a record whose
+ * fsync never completed cannot have licensed a nonce above it. That is sound for a
+ * TORN append and says nothing about the other shape with identical bytes: a record
+ * that WAS fsynced, licensed a block, and was later damaged or truncated. Nothing
+ * on disk distinguishes the two.
+ *
+ * So this function reports the unclean tail rather than judging it, and the startup
+ * path skips the counter past the highest mark such a record could have held —
+ * `NONCE_RESERVATION_BLOCK` above the last valid record, since a raise targets
+ * `counter + BLOCK` and `counter` never exceeds the previous mark. Costing one
+ * block of a 2^64 space beats both alternatives: trusting the tear (a silently
+ * reused nonce) and refusing to start (an unclean shutdown is expected).
  *
  * ANY OTHER INVALID RECORD IS FATAL, AND THAT IS PROVABLE RATHER THAN CAUTIOUS. In
  * an append-only file with an fsync per record, the durability of record N+1
@@ -448,6 +470,31 @@ interface SendJournalReplay {
 async function replaySendJournal(
 	journalPath: string,
 ): Promise<SendJournalReplay | null> {
+	/**
+	 * (SEND-JOURNAL-SIZE-GATE) The ceiling is checked from the file's SIZE, before
+	 * anything reads it.
+	 *
+	 * The record-count ceiling used to be enforced after `readFile`, which meant the
+	 * defence against an absurd journal allocated the absurd journal first: a
+	 * multi-gigabyte file — damage, a runaway writer, a filesystem that handed back
+	 * the wrong inode — turned a controlled `StateRollbackError` into an allocation
+	 * failure on the startup path, where the resulting message says nothing about
+	 * counter state. `stat` costs one syscall and cannot be fooled about length.
+	 */
+	let size: number;
+	try {
+		size = (await stat(journalPath)).size;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	const ceilingBytes = SEND_JOURNAL_MAX_RECORDS * SEND_JOURNAL_RECORD_BYTES;
+	if (size > ceilingBytes) {
+		throw new StateRollbackError(
+			`${journalPath} is ${size} bytes, past the ${ceilingBytes}-byte ceiling (${SEND_JOURNAL_MAX_RECORDS} records) — that is not a file legitimate use produces, and rewriting it silently is how a high-water mark gets lost`,
+		);
+	}
+
 	let raw: Buffer;
 	try {
 		raw = await readFile(journalPath);
@@ -636,14 +683,27 @@ async function openSendJournal(
 			boundPrefix = prefix;
 		},
 
+		/**
+		 * (SEND-JOURNAL-CLOSE-RETRY) The flag is set AFTER the handle is actually
+		 * released, so a failed close can be retried.
+		 *
+		 * Setting `closed` first made `close()` a one-shot: a rejected `handle.close()`
+		 * left the flag set and every later call returned immediately, so the handle
+		 * stayed open for the life of the process while the anchor believed it had let
+		 * go. The next start's `r+` open then contends with a handle nobody is tracking
+		 * — and on Windows that is the shape that produces an EBUSY nobody can explain.
+		 *
+		 * Ordered the other way, a failed close leaves this object exactly as it was:
+		 * still open, still refusing nothing it should not, and still closable. Callers
+		 * that cannot retry get a rejection instead of a silent leak.
+		 */
 		async close(): Promise<void> {
 			if (closed) return;
-			closed = true;
 			await handle.close();
+			closed = true;
 		},
 	};
 }
-
 
 // ---------------------------------------------------------------------------
 // the state anchor
@@ -765,6 +825,28 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 	// open contend with this process for a file it no longer believes it owns.
 	let journal: SendJournal | null = null;
 	try {
+		/**
+		 * (SEND-JOURNAL-LEGACY-MERGE) Read UNCONDITIONALLY, and before anything can
+		 * delete it.
+		 *
+		 * This used to be read only on the branch that MINTS an anchor, while
+		 * retirement ran on every start. So an install holding both an anchor and a
+		 * pre-anchor `send-nonce.json` — a downgrade, a restored backup, an anchor
+		 * write that landed while the legacy unlink did not — skipped the legacy mark
+		 * entirely, deleted the only file that proved it, and resumed from the anchor's
+		 * lower floor. Every nonce between the two marks was then handed out a second
+		 * time under the same prefix, which is the exact failure this module exists to
+		 * prevent, with the evidence destroyed on the way past.
+		 *
+		 * Reading it here also means a coexisting file that is malformed FAILS THE
+		 * START, because `readLegacySendNonceState` throws rather than shrugging: a
+		 * file that once held the mark and can no longer be read is unprovable
+		 * freshness, not an absent file.
+		 */
+		const legacy = readLegacySendNonceState(
+			await readLegacySendNonceText(rootDir),
+			rootDir,
+		);
 		const existing = await readAnchorFile(anchorPath);
 		const minted = existing === null;
 		let previousEpoch = existing === null ? 0n : BigInt(existing.epoch);
@@ -781,10 +863,7 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 						v: 1,
 						generation: base64UrlEncode(randomBytes(16)),
 						epoch: epoch.toString(10),
-						send: readLegacySendNonceState(
-							await readLegacySendNonceText(rootDir),
-							rootDir,
-						),
+						send: legacy,
 						devices: null,
 					}
 				: { ...existing, epoch: epoch.toString(10) };
@@ -879,7 +958,6 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		// Only once the mark it carried is durable in the anchor. Retiring it
 		// first would let a crash in between lose the high-water mark entirely and
 		// restart the counter under the SAME prefix.
-		await retireLegacySendNonceState(rootDir);
 
 		// ------------------------------------------------------------------
 		// (SEND-JOURNAL) reconcile the durable mark
@@ -898,9 +976,37 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 			// record's fsync never returned, so no nonce was issued above it — but it
 			// is the only place an unclean shutdown of this file is visible.
 			console.error(
-				`${LOG_PREFIX} ${journalPath} ends in an incomplete append (${replay.tornTailBytes} loose byte(s)${replay.discardedTailRecord ? " and one record that failed its digest" : ""}) — discarding it and resuming from record ${replay.records}. The previous run did not shut down cleanly.`,
+				`${LOG_PREFIX} ${journalPath} ends in an incomplete append (${replay.tornTailBytes} loose byte(s)${replay.discardedTailRecord ? " and one record that failed its digest" : ""}) — discarding it and resuming from record ${replay.records}, with the counter skipped one reservation block past the highest mark that record could have held. The previous run did not shut down cleanly.`,
 			);
 		}
+
+		/**
+		 * (SEND-JOURNAL-TAIL-SKIP) What an unclean tail costs, paid up front.
+		 *
+		 * `replaySendJournal` discards a torn tail or a full-width record that failed
+		 * its digest, and that is the right call — an unclean shutdown is expected and
+		 * must not become a bridge that will not start. But the discarded bytes have
+		 * TWO possible histories with identical contents on disk: an append whose fsync
+		 * never completed, which licensed nothing, and a record that was fsynced,
+		 * licensed a block, and was later damaged or truncated. Resuming at the last
+		 * VALID record is only safe under the first, and nothing proves which happened.
+		 *
+		 * So the counter skips past the highest mark the lost record COULD have held.
+		 * That bound is exact rather than a guess: `reserve` always targets
+		 * `counter + NONCE_RESERVATION_BLOCK`, and `counter` never exceeds the mark
+		 * already recorded, so the next record's mark is at most one block above the
+		 * last valid one. Early refill only makes the real gap smaller.
+		 *
+		 * It is folded into `seedTo` below rather than applied separately, so it goes
+		 * through the same durable append and the same idempotent MAX as the migration
+		 * marks. One block of a 2^64 counter space, once, per unclean shutdown.
+		 */
+		const uncleanTailFloor =
+			replay !== null &&
+			(replay.tornTailBytes > 0 || replay.discardedTailRecord)
+				? (journalled?.highWater ?? NONCE_FIRST_COUNTER) +
+					NONCE_RESERVATION_BLOCK
+				: null;
 		if (journalled !== null && journalled.generation !== current.generation) {
 			throw new StateRollbackError(
 				`${journalPath} records install generation ${journalled.generation} but the anchor is ${current.generation} — the anchor was deleted or replaced while the send-nonce journal survived, so nothing can prove the counter is current`,
@@ -919,6 +1025,37 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		const anchorMark =
 			current.send === null ? null : BigInt(current.send.highWater);
 		const witnessMark = witness === null ? null : BigInt(witness.highWater);
+		const legacyMark = legacy === null ? null : BigInt(legacy.highWater);
+
+		/**
+		 * (SEND-JOURNAL-PREFIX-COHERENCE) A carried mark is only comparable under the
+		 * SAME prefix.
+		 *
+		 * The counter is scoped to a prefix: `(prefix, counter)` is what must never
+		 * repeat, so a number carried across from a DIFFERENT prefix is not a floor,
+		 * it is an unrelated integer. The generation check above catches the ordinary
+		 * case, but generation and prefix are separate fields and a retired witness or
+		 * legacy file can agree on one while disagreeing on the other — at which point
+		 * the old code merged the number anyway and then deleted the file, destroying
+		 * incoherent evidence instead of reporting it.
+		 *
+		 * Both directions are refusals rather than repairs. Nothing here can decide
+		 * which prefix is the live one, and guessing selects between "skip a block" and
+		 * "reuse the whole counter".
+		 */
+		const livePrefix =
+			journalled?.prefix ?? current.send?.prefix ?? legacy?.prefix ?? null;
+		for (const [label, source] of [
+			[witnessPath, witness],
+			[join(rootDir, LEGACY_SEND_NONCE_FILENAME), legacy],
+		] as const) {
+			if (source === null || livePrefix === null) continue;
+			if (source.prefix !== livePrefix) {
+				throw new StateRollbackError(
+					`${label} holds send-nonce prefix ${source.prefix} but the live state holds ${livePrefix} — a high-water mark is only meaningful under its own prefix, so this one cannot be carried across and nothing here can prove which prefix issued what`,
+				);
+			}
+		}
 
 		if (journalled !== null) {
 			if (current.send !== null && current.send.prefix !== journalled.prefix) {
@@ -998,18 +1135,28 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 		 * install converges rather than needing a special case.
 		 */
 		let seedTo: bigint | null = null;
-		for (const candidate of [anchorMark, witnessMark]) {
+		for (const candidate of [
+			anchorMark,
+			witnessMark,
+			legacyMark,
+			uncleanTailFloor,
+		]) {
 			if (candidate === null) continue;
 			if (seedTo === null || candidate > seedTo) seedTo = candidate;
 		}
 		const seedPrefix =
-			journal.prefix() ?? current.send?.prefix ?? witness?.prefix ?? null;
+			journal.prefix() ??
+			current.send?.prefix ??
+			witness?.prefix ??
+			legacy?.prefix ??
+			null;
 		if (seedTo !== null && seedPrefix !== null) {
 			const durable = journal.mark();
 			if (durable === null || seedTo > durable) {
 				console.error(
 					`${LOG_PREFIX} seeding ${journalPath} at send-nonce high-water ${seedTo}, carried from ${
-						witnessMark !== null && (anchorMark === null || witnessMark > anchorMark)
+						witnessMark !== null &&
+						(anchorMark === null || witnessMark > anchorMark)
 							? `the retired witness (the anchor says ${String(anchorMark)})`
 							: "the anchor"
 					}. This is expected exactly once per install, when it first runs a build that journals the mark.`,
@@ -1116,6 +1263,27 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 			}
 		}
 
+		/**
+		 * AND THE PRE-ANCHOR FILE, ON THE SAME TERMS.
+		 *
+		 * This ran unconditionally near the top of the mount, BEFORE the journal
+		 * existed, which made it the last remaining place where losing a rename could
+		 * lose a mark: the anchor rewrite carrying the legacy value published through a
+		 * directory entry, the legacy unlink persisted, and a hard reset in between left
+		 * neither proof. Deleting it here instead — after a JOURNAL APPEND, which has
+		 * no directory entry to lose, has covered the value — removes that dependency
+		 * rather than documenting it.
+		 *
+		 * A lost `unlink` is harmless: the file reappears, its mark goes through the
+		 * same MAX next start, and it is deleted again.
+		 */
+		if (legacy !== null && legacyMark !== null) {
+			const durable = journal.mark();
+			if (durable !== null && durable >= legacyMark) {
+				await retireLegacySendNonceState(rootDir);
+			}
+		}
+
 		/** Journal first, always. See `raiseSend` for why the order is the mechanism. */
 		const journalRaise = async (
 			prefix: string,
@@ -1149,9 +1317,32 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 					await mutate((onDisk) => {
 						if (onDisk.send !== null) {
 							const durable = decodeSend(onDisk.send);
-							if (highWater < durable.highWater) {
+							/**
+							 * (SEND-CLAIM-STRICT) STRICTLY greater, because an EQUAL claim is a
+							 * second owner rather than a no-op.
+							 *
+							 * A claim mints a new owner token and installs it, which strips the
+							 * previous owner of its ability to raise. But the superseded source
+							 * object still holds the block it was already handed, and it will
+							 * happily keep emitting from it until its next raise fails. So two
+							 * sources both replay mark H, both claim H + BLOCK, the second
+							 * replaces the first, and BOTH emit the same nonces from the same
+							 * block — key reuse, from a path that reported success twice.
+							 *
+							 * `<` let that through because an equal claim looks like a harmless
+							 * repeat. It never is: every legitimate first claim targets
+							 * `counter + BLOCK` where `counter` is the mark already durable, so a
+							 * claim that fails to raise the mark has, by construction, come from
+							 * a second claimant.
+							 *
+							 * Production is additionally protected by host-service's daemon
+							 * singleton binding its port before opening state, so this is a
+							 * primitive that must not be broken rather than a live path — which
+							 * is exactly the kind of defence that quietly stops holding.
+							 */
+							if (highWater <= durable.highWater) {
 								throw new StateRollbackError(
-									`refusing to claim the send-nonce counter at ${highWater} when ${durable.highWater} is already durable — a lower mark re-issues nonces that were handed out`,
+									`refusing to claim the send-nonce counter at ${highWater} when ${durable.highWater} is already durable — a claim must strictly raise the mark, so one that does not has come from a second owner and both would issue the same block`,
 								);
 							}
 							if (base64UrlEncode(durable.prefix) !== base64UrlEncode(prefix)) {
@@ -1266,6 +1457,9 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 
 			async close(): Promise<void> {
 				if (closed) return;
+				// Set BEFORE the drain, and deliberately: it is what stops new work being
+				// queued while this runs. Unlike the journal handle's flag it does not
+				// gate a release that can fail — see below.
 				closed = true;
 				// Drain whatever is still enqueued before releasing the registry slot.
 				// The serialiser owns its chain, so the way to wait for it is to queue
@@ -1274,6 +1468,15 @@ export async function openStateAnchor(rootDir: string): Promise<StateAnchor> {
 				await serialise(async () => undefined);
 				// After the drain, so a `raiseSend` still in flight cannot lose its
 				// handle mid-append. `closed` already refuses anything queued later.
+				//
+				// (SEND-JOURNAL-CLOSE-RETRY) THE REGISTRY SLOT IS RELEASED ONLY IF THE
+				// HANDLE ACTUALLY WENT. A failed `journal.close()` used to propagate with
+				// the slot already gone in one path and never released in another; freeing
+				// it while the handle lives is the worse half, because a second
+				// `openStateAnchor` would then be permitted for a path this process still
+				// holds open — two owners of the nonce counter, which is the one thing the
+				// registry exists to prevent. Staying registered is a wedged lifecycle,
+				// which is loud, local and recoverable by restarting the process.
 				await journal?.close();
 				OPEN_ANCHORS.delete(registryKey);
 			},
@@ -2022,6 +2225,13 @@ export interface SendNonceSource {
  * "older source closes last and rewinds the mark" path is closed by the anchor
  * rather than by call ordering.
  */
+/**
+ * (SEND-SOURCE-EXCLUSIVE) Anchors with a live send source. Keyed by the anchor
+ * object, so it is scoped to the lifecycle rather than to a path, and a
+ * `WeakSet` cannot itself keep a dead anchor alive.
+ */
+const LIVE_SEND_SOURCES = new WeakSet<StateAnchor>();
+
 export async function createSendNonceSource(
 	anchor: StateAnchor,
 ): Promise<SendNonceSource> {
@@ -2030,6 +2240,31 @@ export async function createSendNonceSource(
 			`${LOG_PREFIX} createSendNonceSource requires the state anchor`,
 		);
 	}
+
+	/**
+	 * (SEND-SOURCE-EXCLUSIVE) ONE live source per anchor, enforced.
+	 *
+	 * Two sources over one anchor is the in-process shape of the two-owners bug and
+	 * it was permitted. The second one replays the mark the first has already raised,
+	 * claims a block above it, and installs a fresh owner token — which strips the
+	 * FIRST source of the right to raise while leaving it holding a block it has
+	 * already been handed. It keeps emitting from that block until its next raise
+	 * fails, so both sources emit under the same prefix.
+	 *
+	 * `claimSend`'s strictly-raising rule catches the cross-PROCESS version of this
+	 * (both replay H, both target H + BLOCK, the second cannot raise). It cannot
+	 * catch the in-process version, because the second source reads the mark the
+	 * first already raised and therefore does target a higher one. A registry is the
+	 * only thing that sees the difference.
+	 *
+	 * Released by `close()`, so an ordinary stop/start cycle is unaffected.
+	 */
+	if (LIVE_SEND_SOURCES.has(anchor)) {
+		throw new Error(
+			`${LOG_PREFIX} a send-nonce source is already live for this state anchor — two sources would install two owner tokens over one counter and both emit from their own block`,
+		);
+	}
+	LIVE_SEND_SOURCES.add(anchor);
 
 	const durable = anchor.send();
 	// A fresh random prefix is minted ONLY when there is provably no prior send
@@ -2052,10 +2287,17 @@ export async function createSendNonceSource(
 
 	// The first block is reserved, owned and durable BEFORE the source is handed
 	// out, so the very first nonce this process emits is already covered.
-	const owner = await anchor.claimSend(
-		prefix,
-		counter + NONCE_RESERVATION_BLOCK,
-	);
+	//
+	// A claim that throws must give the registry slot back, or a refused start
+	// permanently prevents a retry within the same process.
+	let owner: string;
+	try {
+		owner = await anchor.claimSend(prefix, counter + NONCE_RESERVATION_BLOCK);
+	} catch (error) {
+		LIVE_SEND_SOURCES.delete(anchor);
+		zero(prefix);
+		throw error;
+	}
 	reservedThrough = counter + NONCE_RESERVATION_BLOCK;
 
 	const reserve = async (): Promise<void> => {
@@ -2137,12 +2379,26 @@ export async function createSendNonceSource(
 				if (poisoned === null) {
 					// NEVER below what was already reserved. Burning the unspent tail of
 					// the block is free; rewinding into it is the bug this guards.
-					await anchor.raiseSend(
-						owner,
-						counter > reservedThrough ? counter : reservedThrough,
-					);
+					//
+					// A flush that finds the durable mark ALREADY HIGHER is not evidence of
+					// damage, which is the one thing `append` cannot tell on its own: it
+					// means something else raised it, and this source's tail is covered
+					// several times over. Skipping the write is therefore the honest
+					// response, where letting it through produced a fatal
+					// `StateRollbackError` naming the JOURNAL as damaged — on a teardown
+					// path, from a bridge whose state was perfectly sound.
+					//
+					// `(SEND-SOURCE-EXCLUSIVE)` makes that unreachable in this process, so
+					// this is the belt to that braces: it keeps a shutdown from being the
+					// thing that refuses the NEXT start.
+					const flushTo = counter > reservedThrough ? counter : reservedThrough;
+					const alreadyDurable = anchor.send()?.highWater ?? null;
+					if (alreadyDurable === null || flushTo > alreadyDurable) {
+						await anchor.raiseSend(owner, flushTo);
+					}
 				}
 			} finally {
+				LIVE_SEND_SOURCES.delete(anchor);
 				zero(prefix);
 			}
 		},

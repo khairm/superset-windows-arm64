@@ -41,7 +41,6 @@ import {
 	setCompanionQuestionSink,
 } from "../trpc/router/notifications";
 import { createAccessValidator } from "./access-jwt";
-import { type AttemptLedger, createAttemptLedger } from "./attempt-ledger";
 import {
 	type AnswerDeps,
 	assertAnswerDeps,
@@ -54,6 +53,7 @@ import {
 	type MessageAttemptStore,
 	type TerminalAgentInfo,
 } from "./answer";
+import { type AttemptLedger, createAttemptLedger } from "./attempt-ledger";
 import { type AuditLog, createAuditLog, hashJsonPayload } from "./audit";
 import {
 	BRIDGE_CAPABILITIES,
@@ -139,8 +139,8 @@ const HOUR_MS = 3_600_000;
  *
  * Bounded so a task stalled on a held file handle cannot hang `stop()` — which
  * runs inside the lifecycle's `exclusive()`, so hanging it would prevent every
- * later `start()`. Generous relative to the work (a maintenance pass is one
- * durable rewrite) and short relative to a user noticing the app will not quit.
+ * later `start()`. Generous relative to the work (a maintenance pass is a
+ * bounded SQL delete and an audit trim) and short relative to a user noticing the app will not quit.
  * Correctness does not depend on this wait: the stores refuse writes once closed.
  */
 const MAINTENANCE_DRAIN_TIMEOUT_MS = 5_000;
@@ -675,11 +675,15 @@ export function createCompanionBridge(
 			interval(
 				HOUR_MS,
 				async () => {
-					// The 24 h idempotency window (§11.5); the stores own the arithmetic.
-					// (ANSWER-LEDGER) Pruning the ledger ROTATES the coverage epoch in the
-					// same transaction, so a client holding the old token stops receiving
-					// terminal negatives at the instant the rows it relied on go.
-					ledger.prune(Date.now());
+					// The 24 h idempotency window (§11.5); the store owns the arithmetic.
+					//
+					// (LEDGER-KEEP-ATTEMPTS) The ANSWER ledger is deliberately absent here.
+					// Every row in it is a fence — a confirmed answer, a claim in flight, a
+					// `not_received` already promised to the phone — and deleting any of
+					// them un-decides something announced as permanent. It only grows; see
+					// `rotateEpoch`'s docblock for why that is the cheaper end of the
+					// trade. `messageAttempts` is in-memory and fences nothing, so its
+					// retention is ordinary bookkeeping.
 					messageAttempts.prune(Date.now());
 					// Lease expiry is otherwise lazy — a question or terminal that is
 					// never revisited would keep its lapsed record until process exit.
@@ -1845,21 +1849,25 @@ async function applyDesktopPanic(
  * (MAINTENANCE-DRAIN) Maintenance work that has STARTED and not yet finished.
  *
  * Cancelling a timer stops the NEXT run; it does nothing about the run already
- * executing. That gap was not theoretical: an hourly `attempts.prune` holds a
- * reference to its own `AttemptStore` closure — that instance's records map, its
- * rewrite counter, its paths — and the store's write serialisation and witness
- * guard are per-INSTANCE. So a prune that was mid-flight when the bridge stopped
- * would resume after a REPLACEMENT bridge had already written newer state, and
- * rewrite the file from its own stale snapshot: records destroyed, and the
- * rewrite counter LOWERED. Both files then agree, so the next start sees a
- * consistent pair, logs no rollback, and publishes a coverage window that
- * vouches for an answer it no longer holds — which is the one lie this whole
- * subsystem exists to prevent. It also breaks the "rise-only" property, which
- * only ever held within a single instance.
+ * executing. So teardown drains instead of merely cancelling, which is what makes
+ * the claim further down — that teardown stops an old writer overlapping a new
+ * bridge — actually true rather than merely intended.
  *
- * So teardown drains instead of merely cancelling, which is what makes the claim
- * further down — that teardown stops an old writer overlapping a new bridge —
- * actually true rather than merely intended.
+ * WHAT THIS PROTECTS, AND WHAT IT NO LONGER HAS TO. It was written for the JSON
+ * attempt store, where an hourly prune closed over that INSTANCE's records map,
+ * rewrite counter and write serialisation: a prune mid-flight at teardown could
+ * resume after a replacement bridge had written newer state and rewrite the file
+ * from its own stale snapshot, destroying records and LOWERING the counter
+ * undetectably. That class is gone — the ledger's prune is one SQL DELETE by
+ * cutoff inside a transaction, holds no snapshot, and is idempotent and monotone,
+ * so an overlapping run from a dead instance cannot produce a different result
+ * than the live one would.
+ *
+ * It still earns its place for the ordinary reason: a run in flight is holding
+ * the database handle and the audit log, teardown is about to close both, and a
+ * write against a closed handle at shutdown is an unexplained exception on the
+ * way out. Draining is bounded (`MAINTENANCE_DRAIN_TIMEOUT_MS`) precisely so this
+ * cannot itself become a reason the bridge fails to stop.
  */
 type MaintenanceInFlight = Set<Promise<unknown>>;
 

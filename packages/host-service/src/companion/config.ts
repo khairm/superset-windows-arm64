@@ -180,6 +180,11 @@ export const FCM_PROJECT_ID = "metal-complex-352812";
 // --- §14 audit -------------------------------------------------------------
 
 export const AUDIT_RETENTION_DAYS = 90;
+/**
+ * How long a ledger TOMBSTONE is kept. Rows recording a real attempt are never
+ * dropped — see `(LEDGER-KEEP-ATTEMPTS)` in `attempt-ledger.ts` for why the two
+ * classes have opposite retention.
+ */
 export const ANSWER_ATTEMPT_RETENTION_MS = 86_400_000;
 
 // --- on-disk layout (OUTSIDE both repos) -----------------------------------

@@ -1051,8 +1051,8 @@ export function monotonicNowMs(): number {
  * reset can discard the most recent rename, which reverts a file to its previous
  * version. Throwing here would be honest and would also end the feature on the
  * only platform it ships to, so the gap is answered where it actually bites
- * instead — and the two places it bites now answer it in two DIFFERENT ways,
- * because their stakes are different:
+ * instead. THE TWO CALLERS THAT CANNOT TOLERATE IT NO LONGER USE A RENAME; TWO
+ * THAT STILL DO ARE NAMED HERE RATHER THAN LEFT TO BE DISCOVERED:
  *
  *  - THE SEND-NONCE COUNTER DOES NOT RELY ON A RENAME AT ALL. A rewound counter
  *    repeats a nonce, so `keys.ts` keeps its high-water mark in an append-only
@@ -1062,15 +1062,34 @@ export function monotonicNowMs(): number {
  *    It is the shape to copy for anything else whose rollback is unacceptable.
  *  - THE ANSWER LEDGER DOES NOT RELY ON A RENAME EITHER, ANY MORE. It used to:
  *    `answer.ts` kept a JSON attempts file with a rise-only witness renamed before
- *    it, and that was the second dependent on the ordering below. It is now a table
- *    in host.db (ANSWER-LEDGER) whose durability is SQLite's documented
- *    `synchronous = FULL`, asserted at open, rather than an inference about NTFS.
+ *    it. It is now a table in host.db (ANSWER-LEDGER) whose durability is SQLite's
+ *    documented `synchronous = FULL`, asserted at open, rather than an inference
+ *    about NTFS.
+ *  - THE REPLAY CACHE STILL DOES, AT COMPACTION (§3.5, below). An earlier version
+ *    of this comment claimed nothing depended on the ordering any more. That was
+ *    wrong, and wrong in the direction that matters: compaction writes a reduced
+ *    log and renames it into place, and records appended to the REPLACEMENT after
+ *    that rename are lost if the rename is. The old inode is a superset only at
+ *    the instant of compaction, never afterwards. What it costs: a captured sealed
+ *    request whose nonce was admitted after the last compaction can be admitted a
+ *    second time. `/v1/answer` is nevertheless covered — its requestId is fenced
+ *    durably by the ANSWER-LEDGER, so a replay returns the recorded outcome and
+ *    types nothing — but `/v1/message` keeps its idempotency in memory, so there
+ *    a replay across a restart CAN retype. Not a comment's job to fix; recorded so
+ *    the next change to this area starts from the truth.
+ *  - DEVICE AUTHORITY STILL DOES, for the index/anchor pair and the key tombstone
+ *    that records a revocation. Restoring or reverting that matched set makes a
+ *    revoked device live and write-enabled again.
+ *
+ * Both remaining cases want the same treatment as the ledger — a table in host.db,
+ * not an append-only file — because both need deletion as well as durability, and
+ * an append-only log cannot forget. Until then they are exposure, not soundness.
  *
  * The Android half (`FileBlobStore`) refuses to construct without directory fsync;
  * the two halves answer the same question differently ON PURPOSE, because the
  * phone has a platform that provides it and the bridge does not. Anything added
- * here whose rollback would be unsafe gets the first treatment — an append-only
- * record — not the second, and not a comment.
+ * here whose rollback would be unsafe gets one of the first two treatments, not a
+ * comment.
  */
 export async function syncDirectory(dir: string): Promise<void> {
 	if (process.platform === "win32") return;

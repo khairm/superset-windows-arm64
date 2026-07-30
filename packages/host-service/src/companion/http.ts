@@ -611,21 +611,23 @@ const helloSchema = z.object({
 	}),
 	protocol: protocolRangeSchema,
 	capabilities: z.array(z.string().min(1).max(64)).max(64),
-});
+}) satisfies z.ZodType<HelloRequest>;
 
 const treeSchema = z.object({
 	since: z.number().int().min(0).nullable().optional(),
 	// Explicit on every request; there is no server-side default (§7.2).
 	includeIdle: z.boolean(),
-});
+}) satisfies z.ZodType<TreeRequest>;
 
 const transcriptSchema = z.object({
 	terminalId: id22,
 	before: z.string().min(1).max(512).nullable().optional(),
 	limit: z.number().int().min(1).max(LIMITS.transcriptPageMax),
-});
+}) satisfies z.ZodType<TranscriptRequest>;
 
-const questionSchema = z.object({ questionId: id22 });
+const questionSchema = z.object({
+	questionId: id22,
+}) satisfies z.ZodType<QuestionRequest>;
 
 const answerItemSchema = z.discriminatedUnion("kind", [
 	z.object({
@@ -686,23 +688,49 @@ const answerSchema = z
 				}
 			}
 		});
-	});
+	}) satisfies z.ZodType<AnswerRequest>;
 
-const answerStatusSchema = z.object({ requestId: requestIdSchema });
+/**
+ * (STATUS-EPOCH-BOUNDARY) The coverage epoch MUST be declared here, because Zod
+ * strips what it does not declare.
+ *
+ * It was omitted once, and the omission was invisible: the handler is reached
+ * through `body as AnswerStatusRequest`, so TypeScript cheerfully asserted a
+ * field that had already been deleted from the object. `resolveStatus` then read
+ * `undefined`, failed its equality check, and answered every single poll
+ * `unconfirmed` — which looks exactly like healthy conservatism and silently made
+ * the terminal-negative path unreachable in live traffic. The `satisfies` below
+ * is what makes that class of mistake a compile error rather than a quiet feature
+ * amputation; it is on every sealed schema for the same reason.
+ *
+ * NOT pinned to the exact 22 chars the bridge mints. A bounded base64url string
+ * is validated (no unbounded input reaches the ledger) but a wrong-SHAPED epoch
+ * is answered rather than rejected: it cannot equal the current epoch, so it
+ * degrades to `unconfirmed`, whereas a 400 would leave a phone holding a token
+ * from another build unable to poll at all. Refusing to answer is worse here than
+ * answering "cannot say".
+ */
+const answerStatusSchema = z.object({
+	requestId: requestIdSchema,
+	coverageEpoch: z
+		.string()
+		.regex(/^[A-Za-z0-9_-]{1,64}$/)
+		.nullable(),
+}) satisfies z.ZodType<AnswerStatusRequest>;
 
 const messageSchema = z.object({
 	terminalId: id22,
 	text: z.string().min(1).max(8192),
 	requestId: requestIdSchema,
 	confirmedBiometric: z.boolean(),
-});
+}) satisfies z.ZodType<MessageRequest>;
 
 const registerSchema = z.object({
 	fcmToken: z.string().min(1).max(4096),
 	surface: surfaceSchema,
 	appVersion: z.string().min(1).max(MAX_APP_VERSION_CHARS),
 	replacesToken: z.string().min(1).max(4096).nullable(),
-});
+}) satisfies z.ZodType<RegisterRequest>;
 
 const heartbeatSchema = z.object({
 	lastEventGseq: z.number().int().min(0).nullable(),
@@ -710,7 +738,7 @@ const heartbeatSchema = z.object({
 	// explicit "unstated" member; a client that sends the WRONG TYPE is rejected,
 	// because that is a bug rather than an older contract.
 	foreground: z.boolean().nullable().default(null),
-});
+}) satisfies z.ZodType<HeartbeatRequest>;
 
 const panicSchema = z.object({
 	mode: z.enum(["write_disable", "unpair_device", "unpair_all"]),
@@ -718,11 +746,11 @@ const panicSchema = z.object({
 	// same audit log, so both are held to the same shape (`limits.ts`).
 	reason: z.string().max(PANIC_REASON_MAX_CHARS),
 	requestId: requestIdSchema,
-});
+}) satisfies z.ZodType<PanicRequest>;
 
 const eventsTicketSchema = z.object({
 	since: z.number().int().min(0).nullable(),
-});
+}) satisfies z.ZodType<EventTicketRequest>;
 
 // ---------------------------------------------------------------------------
 // THE route table
@@ -771,7 +799,13 @@ interface SealedRoute {
  * note on `panic` there). This table says which handler a path uses; that
  * interface says the handler has to exist.
  */
-const ROUTES: Record<SealedPath, SealedRoute> = {
+/**
+ * Exported so a boundary test can parse against THE table rather than a copy of
+ * it. A copy is what let `coverageEpoch` go missing for a whole review cycle: the
+ * schema under test agreed with the wire contract while the one actually serving
+ * traffic did not.
+ */
+export const ROUTES: Record<SealedPath, SealedRoute> = {
 	"/v1/session/hello": {
 		schema: helloSchema,
 		capability: null,

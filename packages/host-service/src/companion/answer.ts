@@ -79,17 +79,14 @@
  * incident is reconstructable rather than mysterious. Logging is the mitigation.
  */
 
-import { readFile, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { z } from "zod";
-import { type AuditLog, hashJsonPayload } from "./audit";
-import { ANSWER_ATTEMPT_RETENTION_MS } from "./config";
-import { isCanonicalWireId, sleep, writeFileDurable } from "./crypto";
 import type {
 	AttemptLedger,
 	LedgerRecord,
 	StatusOutcome,
 } from "./attempt-ledger";
+import { type AuditLog, hashJsonPayload } from "./audit";
+import { ANSWER_ATTEMPT_RETENTION_MS } from "./config";
+import { sleep } from "./crypto";
 import {
 	createRawPtyWriter,
 	encodeAnswer,
@@ -114,8 +111,8 @@ import {
 	type AnswerGuardName,
 	type AnswerRequest,
 	type AnswerResponse,
-	type AnswerStatusRequest,
 	type AnswerStatusOutcome,
+	type AnswerStatusRequest,
 	type AnswerStatusResponse,
 	type AttemptFailureCode,
 	type DurationMs,
@@ -1338,24 +1335,28 @@ export function createMessageAttemptStore(
 /**
  * Records an outcome the injection has already produced.
  *
- * An I/O failure here is LOGGED, not thrown, and that is a deliberate asymmetry
- * with the `in_flight` put above rather than a swallowed error. By the time this
- * runs the keystrokes have already landed (or, for `guard_failed`, provably have
- * not), so throwing would replace a truthful `confirmed` / `unconfirmed` response
- * with a 500 the client renders as a failure — and §11.5 forbids reporting a
- * landed write as failed far more strongly than it requires this particular
- * update to be durable. The in-memory record still answers every status read for
- * the life of this process; if the process then dies, the durable `in_flight`
- * record written before the lock rehydrates as `unconfirmed`, which is the safe
- * direction.
+ * A failure here is LOGGED, not thrown, and that is a deliberate asymmetry with
+ * the CLAIM at the top of `handleAnswer` rather than a swallowed error. The claim
+ * must be durable before a byte moves, so it throws. By the time THIS runs the
+ * keystrokes have already landed (or, for `guard_failed`, provably have not), so
+ * throwing would replace a truthful `confirmed` / `unconfirmed` response with a
+ * 500 the client renders as a failure — and §11.5 forbids reporting a landed
+ * write as failed far more strongly than it requires this particular update to
+ * commit.
  *
- * `AttemptRecordShapeError` is EXEMPT and rethrown. It is a programmer error —
- * a `failureCode` that is not in `ATTEMPT_FAILURE_CODES` — raised BEFORE the
- * record reaches memory, so logging it would leave the pre-lock `in_flight`
- * record standing with nothing left to advance it: `/v1/answer/status` would
- * report "still being typed" for an attempt that has finished, for the life of
- * the process. Loud is the only safe direction for a fault whose quiet form is
- * indistinguishable from a hang.
+ * What makes that safe is that the outcome is not the fence. The claim is. If
+ * this update is lost the row stays `in_flight`, and `(LEDGER-REHYDRATE)` turns
+ * every `in_flight` row from a previous lifetime into `unconfirmed` at the next
+ * open — so the failure degrades a definite answer into "cannot say", never into
+ * a wrong one. Within this lifetime the committed row keeps answering status
+ * reads directly from the database; there is no in-memory copy to diverge from
+ * it, which is what the JSON store this replaced could not promise.
+ *
+ * There is no shape exemption left to rethrow. `failureCode` is typed
+ * `LedgerFailureCode`, the ledger validates each row as it is read, and an
+ * outcome with no `in_flight` row to advance is logged AT THE LEDGER as
+ * `ledger_outcome_orphaned` instead of being written somewhere it would be
+ * mistaken for a state transition.
  */
 async function recordOutcome(
 	deps: AnswerDeps,
@@ -1536,231 +1537,308 @@ export async function handleAnswer(
 		return ledgerRecordToResponse(previous);
 	}
 
-	// 2. Panic write-disable. The phone can always reduce its own privilege.
-	if (!ctx.device.writeEnabled) {
-		throw sealed(
-			403,
-			"write_disabled",
-			"write access is disabled for this device; re-enable is desktop-only",
-		);
-	}
-
-	// 3..6. The question must still be the thing the client thinks it is.
-	const question = deps.questions.get(request.questionId);
-	if (question === null) {
-		throw sealed(410, "stale_question", "unknown question");
-	}
-	if (question.state === "resolved") {
-		throw sealed(
-			409,
-			"already_resolved",
-			"this question was already answered",
-			{
-				resolvedBy: question.resolvedBy,
-				resolvedAtMs: question.resolvedAtMs,
-				outcome: "answered",
-			},
-		);
-	}
-	if (question.state !== "pending") {
-		throw sealed(410, "stale_question", `question is ${question.state}`);
-	}
-	if (question.fingerprint !== request.fingerprint) {
-		// Constant-time comparison is unnecessary: the client was given this value
-		// and it is not a secret. What matters is that a mismatch writes nothing.
-		throw sealed(
-			410,
-			"stale_question",
-			"fingerprint no longer matches; the question moved on",
-		);
-	}
-
-	// 7. Free text requires biometric confirmation at the client (§11.2).
-	const hasFreeText = request.answers.some((item) => item.kind === "freetext");
-	if (hasFreeText && !request.confirmedBiometric) {
-		throw sealed(
-			400,
-			"bad_request",
-			"free text requires confirmedBiometric === true",
-		);
-	}
-
-	// 8. Encode. PURE — no terminal, no lock, so every failure here provably
-	//    wrote nothing.
-	let keystrokes: Keystroke[];
+	// (LEDGER-REFUSAL) Every refusal from here on records an outcome before it
+	// escapes.
+	//
+	// The claim above is durable, so a refusal that threw straight past it used to
+	// leave the row `in_flight` FOREVER — and `in_flight` means "keystrokes are
+	// landing right now". Ten paths did exactly that: the panic write-disable, three
+	// stale-question checks, already-resolved, the biometric gate, encoding, the
+	// agent-binding assertion, the host-terminal lookup, the lease denial and the
+	// writer probe. None of them types anything, so the fence was safe — it simply
+	// traded the old false "never sent" for a false "still being typed".
+	//
+	// The lease denial made it routine rather than exotic: two devices answer the
+	// same question, the loser is refused, and its §11.4 replay then collected
+	// `409 lease_held` — "still being typed" — for 24 h, long after the winner
+	// finished, while its status polls said the same thing.
+	//
+	// So the outcome is recorded with the REAL sealed code, which is why
+	// `AttemptFailureCode` was widened past `guard_failed`/`internal`: §11.4 says a
+	// replay returns the recorded outcome, and recording `internal` for a
+	// `write_disabled` refusal would make that replay lie about why.
+	//
+	// The guard is `status === "in_flight"`: the in-lock paths already record their
+	// own outcomes, so without it this would fire on every ordinary refusal and log
+	// an orphaned-outcome warning for a row that was correctly advanced. One extra
+	// read, on the failure path only.
 	try {
-		keystrokes = encodeAnswer(question.questions, request.answers);
-	} catch (error) {
-		if (error instanceof KeystrokeEncodingError)
-			throw sealedFromEncoding(error);
-		throw error;
-	}
-
-	// 9. Refuse plain shells and non-Claude agents EXPLICITLY. This reads a
-	//    forgeable source, which is sound here because it can only cause a
-	//    refusal — a forged binding cannot make us write.
-	await assertWritableBinding(deps, question.terminalId, (kind) =>
-		kind === "codex"
-			? // v1 scope: the byte contract was established against Claude Code and
-				// NONE of it generalises — Codex's picker is a different program with
-				// different keys. Refused explicitly rather than attempted.
-				sealed(
-					501,
-					"capability_unsupported",
-					"Codex terminals cannot be answered from the companion in v1",
-					{ capability: "agent.codex" },
-				)
-			: sealed(412, "guard_failed", `unsupported agent kind: ${kind}`, {
-					guard: "no_agent_binding",
-				}),
-	);
-
-	const host = await requireHostTerminal(deps, question.terminalId);
-
-	// The branded writer. Minted (and probed) here rather than inside the lock, so
-	// a mis-wired writer fails before a lease or a lock is taken.
-	const writer = rawWriterFor(deps);
-
-	// 10. The answer-wide lease. A second device is REFUSED, never queued (§11.4).
-	const startedAtMs = deps.now();
-	const acquisition = deps.leases.acquire({
-		questionId: request.questionId,
-		deviceId: ctx.device.deviceId,
-		surface: request.surface,
-		nowMs: startedAtMs,
-	});
-	if (!acquisition.ok) {
-		throw sealed(
-			409,
-			"lease_held",
-			"another device is answering this question",
-			{
-				leaseHolderLabel: null,
-				expiresInMs: acquisition.expiresInMs,
-			},
-		);
-	}
-	const lease = acquisition.lease;
-
-	const payloadHash = hashRequest(request);
-	const baseAudit = {
-		kind: "answer" as const,
-		deviceId: ctx.device.deviceId,
-		surface: request.surface,
-		requestId: request.requestId,
-		leaseId: lease.leaseId,
-		questionId: request.questionId,
-		terminalId: question.terminalId,
-		payloadHash,
-	};
-
-	/**
-	 * The identity every attempt record for this request carries, spread into the
-	 * six outcome records below exactly as `baseAudit` is spread into the audit
-	 * lines.
-	 *
-	 * ONLY the identity. `status`, `resolvedAtMs`, `failureCode` and
-	 * `guardsPassed` stay written out at each site on purpose: the difference
-	 * between `confirmed`, `failed`, `unconfirmed` and `in_flight` is the whole
-	 * point of §11.5, and a default for any of them here would let a new outcome
-	 * inherit another outcome's honesty by omission.
-	 */
-	const baseAttempt = {
-		requestId: request.requestId,
-		questionId: request.questionId,
-		deviceId: ctx.device.deviceId,
-		surface: request.surface,
-		leaseId: lease.leaseId,
-		startedAtMs,
-	};
-
-	// 11. Audit BEFORE execution (§14). Inside the try, so a failure to write the
-	//     audit line still releases the lease — and still refuses the answer,
-	//     because an unauditable write is not one we are willing to perform.
-	try {
-		await deps.audit.append({
-			...baseAudit,
-			tsMs: startedAtMs,
-			guards: null,
-			outcome: "attempted",
-			failureCode: null,
-		});
-
-		// (ANSWER-LEDGER) There is no `in_flight` write here any more, and its absence
-		// is the fix rather than an omission.
-		//
-		// This block used to build an `in_flight` record and durably write it just
-		// before taking the lock, with a long comment explaining that the ~15 s of
-		// lock-wait-plus-sequence was a window in which the client's recovery read
-		// answered "the desktop never saw this request". Writing it HERE only narrowed
-		// that window; it could not close it, because everything above this line —
-		// preflight, the agent-kind check, the writer probe, the lease — still ran
-		// before the record existed.
-		//
-		// The claim now happens at the very top of `handleAnswer`, as an atomic
-		// compare-and-set, so by the time control reaches here the requestId has been
-		// occupied for the whole of that work and a status read can only ever report
-		// `in_flight`. The unwritable-store branch is gone with it: a claim that cannot
-		// be persisted throws out of `claimForAnswer` before any of this runs, which is
-		// the same refusal one step earlier and without a record to take back out.
-
-		const result = await deps.locks.runExclusive(
-			question.terminalId,
-			LOCK_WAIT_TIMEOUT_MS,
-			() =>
-				injectSequence(deps, {
-					question,
-					host,
-					keystrokes,
-					leaseId: lease.leaseId,
-					writer,
-				}),
-		);
-
-		if (result.kind === "confirmed") {
-			const resolvedAtMs = deps.now();
-			const recorded = deps.questions.resolve(
-				request.questionId,
-				{ deviceLabel: ctx.device.label, surface: request.surface },
-				resolvedAtMs,
+		// 2. Panic write-disable. The phone can always reduce its own privilege.
+		if (!ctx.device.writeEnabled) {
+			throw sealed(
+				403,
+				"write_disabled",
+				"write access is disabled for this device; re-enable is desktop-only",
 			);
-			if (!recorded) {
-				// The record left `pending` while the sequence ran — the hook
-				// superseded or settled it. The keystrokes still landed and the audit
-				// entry below still carries the true provenance; what we must NOT do
-				// is stamp this device onto a record it did not resolve.
-				deps.log({
-					event: "companion.answer.resolve_skipped",
-					questionId: request.questionId,
-					terminalId: question.terminalId,
-					state: question.state,
-				});
-			}
-			const record: AnswerAttemptRecord = {
-				...baseAttempt,
-				status: "confirmed",
-				resolvedAtMs,
-				failureCode: null,
-				guardsPassed: result.guardsPassed,
-			};
-			await recordOutcome(deps, record);
-			await deps.audit.append({
-				...baseAudit,
-				tsMs: resolvedAtMs,
-				guards: result.evaluation,
-				outcome: "confirmed",
-				failureCode: null,
-			});
-			return recordToResponse(record);
 		}
 
-		if (result.kind === "guard_failed") {
-			// Nothing was written: the failure happened before the first byte.
+		// 3..6. The question must still be the thing the client thinks it is.
+		const question = deps.questions.get(request.questionId);
+		if (question === null) {
+			throw sealed(410, "stale_question", "unknown question");
+		}
+		if (question.state === "resolved") {
+			throw sealed(
+				409,
+				"already_resolved",
+				"this question was already answered",
+				{
+					resolvedBy: question.resolvedBy,
+					resolvedAtMs: question.resolvedAtMs,
+					outcome: "answered",
+				},
+			);
+		}
+		if (question.state !== "pending") {
+			throw sealed(410, "stale_question", `question is ${question.state}`);
+		}
+		if (question.fingerprint !== request.fingerprint) {
+			// Constant-time comparison is unnecessary: the client was given this value
+			// and it is not a secret. What matters is that a mismatch writes nothing.
+			throw sealed(
+				410,
+				"stale_question",
+				"fingerprint no longer matches; the question moved on",
+			);
+		}
+
+		// 7. Free text requires biometric confirmation at the client (§11.2).
+		const hasFreeText = request.answers.some(
+			(item) => item.kind === "freetext",
+		);
+		if (hasFreeText && !request.confirmedBiometric) {
+			throw sealed(
+				400,
+				"bad_request",
+				"free text requires confirmedBiometric === true",
+			);
+		}
+
+		// 8. Encode. PURE — no terminal, no lock, so every failure here provably
+		//    wrote nothing.
+		let keystrokes: Keystroke[];
+		try {
+			keystrokes = encodeAnswer(question.questions, request.answers);
+		} catch (error) {
+			if (error instanceof KeystrokeEncodingError)
+				throw sealedFromEncoding(error);
+			throw error;
+		}
+
+		// 9. Refuse plain shells and non-Claude agents EXPLICITLY. This reads a
+		//    forgeable source, which is sound here because it can only cause a
+		//    refusal — a forged binding cannot make us write.
+		await assertWritableBinding(deps, question.terminalId, (kind) =>
+			kind === "codex"
+				? // v1 scope: the byte contract was established against Claude Code and
+					// NONE of it generalises — Codex's picker is a different program with
+					// different keys. Refused explicitly rather than attempted.
+					sealed(
+						501,
+						"capability_unsupported",
+						"Codex terminals cannot be answered from the companion in v1",
+						{ capability: "agent.codex" },
+					)
+				: sealed(412, "guard_failed", `unsupported agent kind: ${kind}`, {
+						guard: "no_agent_binding",
+					}),
+		);
+
+		const host = await requireHostTerminal(deps, question.terminalId);
+
+		// The branded writer. Minted (and probed) here rather than inside the lock, so
+		// a mis-wired writer fails before a lease or a lock is taken.
+		const writer = rawWriterFor(deps);
+
+		// 10. The answer-wide lease. A second device is REFUSED, never queued (§11.4).
+		const startedAtMs = deps.now();
+		const acquisition = deps.leases.acquire({
+			questionId: request.questionId,
+			deviceId: ctx.device.deviceId,
+			surface: request.surface,
+			nowMs: startedAtMs,
+		});
+		if (!acquisition.ok) {
+			throw sealed(
+				409,
+				"lease_held",
+				"another device is answering this question",
+				{
+					leaseHolderLabel: null,
+					expiresInMs: acquisition.expiresInMs,
+				},
+			);
+		}
+		const lease = acquisition.lease;
+
+		const payloadHash = hashRequest(request);
+		const baseAudit = {
+			kind: "answer" as const,
+			deviceId: ctx.device.deviceId,
+			surface: request.surface,
+			requestId: request.requestId,
+			leaseId: lease.leaseId,
+			questionId: request.questionId,
+			terminalId: question.terminalId,
+			payloadHash,
+		};
+
+		/**
+		 * The identity every attempt record for this request carries, spread into the
+		 * six outcome records below exactly as `baseAudit` is spread into the audit
+		 * lines.
+		 *
+		 * ONLY the identity. `status`, `resolvedAtMs`, `failureCode` and
+		 * `guardsPassed` stay written out at each site on purpose: the difference
+		 * between `confirmed`, `failed`, `unconfirmed` and `in_flight` is the whole
+		 * point of §11.5, and a default for any of them here would let a new outcome
+		 * inherit another outcome's honesty by omission.
+		 */
+		const baseAttempt = {
+			requestId: request.requestId,
+			questionId: request.questionId,
+			deviceId: ctx.device.deviceId,
+			surface: request.surface,
+			leaseId: lease.leaseId,
+			startedAtMs,
+		};
+
+		// 11. Audit BEFORE execution (§14). Inside the try, so a failure to write the
+		//     audit line still releases the lease — and still refuses the answer,
+		//     because an unauditable write is not one we are willing to perform.
+		try {
+			await deps.audit.append({
+				...baseAudit,
+				tsMs: startedAtMs,
+				guards: null,
+				outcome: "attempted",
+				failureCode: null,
+			});
+
+			// (ANSWER-LEDGER) There is no `in_flight` write here any more, and its absence
+			// is the fix rather than an omission.
+			//
+			// This block used to build an `in_flight` record and durably write it just
+			// before taking the lock, with a long comment explaining that the ~15 s of
+			// lock-wait-plus-sequence was a window in which the client's recovery read
+			// answered "the desktop never saw this request". Writing it HERE only narrowed
+			// that window; it could not close it, because everything above this line —
+			// preflight, the agent-kind check, the writer probe, the lease — still ran
+			// before the record existed.
+			//
+			// The claim now happens at the very top of `handleAnswer`, as an atomic
+			// compare-and-set, so by the time control reaches here the requestId has been
+			// occupied for the whole of that work and a status read can only ever report
+			// `in_flight`. The unwritable-store branch is gone with it: a claim that cannot
+			// be persisted throws out of `claimForAnswer` before any of this runs, which is
+			// the same refusal one step earlier and without a record to take back out.
+
+			const result = await deps.locks.runExclusive(
+				question.terminalId,
+				LOCK_WAIT_TIMEOUT_MS,
+				() =>
+					injectSequence(deps, {
+						question,
+						host,
+						keystrokes,
+						leaseId: lease.leaseId,
+						writer,
+					}),
+			);
+
+			if (result.kind === "confirmed") {
+				const resolvedAtMs = deps.now();
+				const recorded = deps.questions.resolve(
+					request.questionId,
+					{ deviceLabel: ctx.device.label, surface: request.surface },
+					resolvedAtMs,
+				);
+				if (!recorded) {
+					// The record left `pending` while the sequence ran — the hook
+					// superseded or settled it. The keystrokes still landed and the audit
+					// entry below still carries the true provenance; what we must NOT do
+					// is stamp this device onto a record it did not resolve.
+					deps.log({
+						event: "companion.answer.resolve_skipped",
+						questionId: request.questionId,
+						terminalId: question.terminalId,
+						state: question.state,
+					});
+				}
+				const record: AnswerAttemptRecord = {
+					...baseAttempt,
+					status: "confirmed",
+					resolvedAtMs,
+					failureCode: null,
+					guardsPassed: result.guardsPassed,
+				};
+				await recordOutcome(deps, record);
+				await deps.audit.append({
+					...baseAudit,
+					tsMs: resolvedAtMs,
+					guards: result.evaluation,
+					outcome: "confirmed",
+					failureCode: null,
+				});
+				return recordToResponse(record);
+			}
+
+			if (result.kind === "guard_failed") {
+				// Nothing was written: the failure happened before the first byte.
+				const record: AnswerAttemptRecord = {
+					...baseAttempt,
+					status: "failed",
+					resolvedAtMs: null,
+					failureCode: "guard_failed",
+					guardsPassed: result.guardsPassed,
+				};
+				await recordOutcome(deps, record);
+				await deps.audit.append({
+					...baseAudit,
+					tsMs: deps.now(),
+					guards: result.evaluation,
+					outcome: "failed",
+					failureCode: "guard_failed",
+				});
+				throw sealed(412, "guard_failed", `guard ${result.guard} failed`, {
+					guard: result.guard,
+				});
+			}
+
+			// result.kind === "unconfirmed": at least one byte landed and the sequence
+			// then aborted. The prompt is in a state we cannot describe, so we say so
+			// rather than guessing "failed" (which invites a re-send that could answer
+			// a DIFFERENT question) or "confirmed" (which is a lie).
+			//
+			// The question is marked STALE here, while this request still holds the
+			// lease, so no second attempt can ever be accepted for it. Leaving it
+			// `pending` is what made a partial multi-select write catastrophic: the
+			// toggles that landed are invisible to the screen matcher (a checked row and
+			// an unchecked row squash identically), so the user would see the same
+			// question still listed, tap the same options again with a fresh requestId,
+			// and the replayed toggles would DESELECT them and submit an empty
+			// selection — reported back as `confirmed`. §11.4's idempotency is keyed on
+			// requestId and cannot stop that; only retiring the question can. Recovery
+			// after an unconfirmed write is desk-only, by design.
+			deps.questions.markStale(
+				request.questionId,
+				`partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
+			);
+			deps.log({
+				event: "companion.answer.unconfirmed",
+				questionId: request.questionId,
+				terminalId: question.terminalId,
+				leaseId: lease.leaseId,
+				keystrokesWritten: result.written,
+				keystrokesTotal: keystrokes.length,
+				abortedAt: result.abortedAt,
+				reason: result.reason,
+			});
 			const record: AnswerAttemptRecord = {
 				...baseAttempt,
-				status: "failed",
+				status: "unconfirmed",
 				resolvedAtMs: null,
-				failureCode: "guard_failed",
+				failureCode: null,
 				guardsPassed: result.guardsPassed,
 			};
 			await recordOutcome(deps, record);
@@ -1768,116 +1846,100 @@ export async function handleAnswer(
 				...baseAudit,
 				tsMs: deps.now(),
 				guards: result.evaluation,
-				outcome: "failed",
-				failureCode: "guard_failed",
+				outcome: "unconfirmed",
+				failureCode: null,
 			});
-			throw sealed(412, "guard_failed", `guard ${result.guard} failed`, {
-				guard: result.guard,
+			return recordToResponse(record);
+		} catch (error) {
+			if (error instanceof SealedError) throw error;
+
+			// The lock was never taken, so the critical section never ran and nothing
+			// was written. Reported honestly; the client MUST NOT retry a write.
+			if (error instanceof TerminalLockTimeoutError) {
+				// LEDGER FIRST, AUDIT SECOND, and the order is load-bearing rather than
+				// stylistic. `audit.append` does I/O and can throw; when it went first, a
+				// failed audit write skipped the ledger advance entirely and left the
+				// claim `in_flight` — "keystrokes are landing right now" for a request
+				// whose lock was never even taken. `recordOutcome` swallows its own
+				// failures, so putting it first cannot cost the audit entry, while the
+				// reverse order costs the ledger. The branch below already had this order;
+				// this one did not.
+				await recordOutcome(deps, {
+					...baseAttempt,
+					status: "failed",
+					resolvedAtMs: null,
+					failureCode: "internal",
+					guardsPassed: [],
+				});
+				await deps.audit.append({
+					...baseAudit,
+					tsMs: deps.now(),
+					guards: null,
+					outcome: "failed",
+					failureCode: "internal",
+				});
+				throw sealed(
+					503,
+					"internal",
+					"the terminal was busy; nothing was written",
+				);
+			}
+			// (ANSWER-INFLIGHT) An unexpected throw from inside the critical section.
+			// The `in_flight` record MUST NOT be left behind — the client would poll it
+			// forever — and it must not be downgraded to "never sent" either, because
+			// bytes may already have landed. Unknown outcome, stated as such.
+			deps.log({
+				event: "companion.answer.internal_error",
+				questionId: request.questionId,
+				terminalId: question.terminalId,
+				leaseId: lease.leaseId,
+				error: error instanceof Error ? error.message : String(error),
 			});
-		}
-
-		// result.kind === "unconfirmed": at least one byte landed and the sequence
-		// then aborted. The prompt is in a state we cannot describe, so we say so
-		// rather than guessing "failed" (which invites a re-send that could answer
-		// a DIFFERENT question) or "confirmed" (which is a lie).
-		//
-		// The question is marked STALE here, while this request still holds the
-		// lease, so no second attempt can ever be accepted for it. Leaving it
-		// `pending` is what made a partial multi-select write catastrophic: the
-		// toggles that landed are invisible to the screen matcher (a checked row and
-		// an unchecked row squash identically), so the user would see the same
-		// question still listed, tap the same options again with a fresh requestId,
-		// and the replayed toggles would DESELECT them and submit an empty
-		// selection — reported back as `confirmed`. §11.4's idempotency is keyed on
-		// requestId and cannot stop that; only retiring the question can. Recovery
-		// after an unconfirmed write is desk-only, by design.
-		deps.questions.markStale(
-			request.questionId,
-			`partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
-		);
-		deps.log({
-			event: "companion.answer.unconfirmed",
-			questionId: request.questionId,
-			terminalId: question.terminalId,
-			leaseId: lease.leaseId,
-			keystrokesWritten: result.written,
-			keystrokesTotal: keystrokes.length,
-			abortedAt: result.abortedAt,
-			reason: result.reason,
-		});
-		const record: AnswerAttemptRecord = {
-			...baseAttempt,
-			status: "unconfirmed",
-			resolvedAtMs: null,
-			failureCode: null,
-			guardsPassed: result.guardsPassed,
-		};
-		await recordOutcome(deps, record);
-		await deps.audit.append({
-			...baseAudit,
-			tsMs: deps.now(),
-			guards: result.evaluation,
-			outcome: "unconfirmed",
-			failureCode: null,
-		});
-		return recordToResponse(record);
-	} catch (error) {
-		if (error instanceof SealedError) throw error;
-
-		// The lock was never taken, so the critical section never ran and nothing
-		// was written. Reported honestly; the client MUST NOT retry a write.
-		if (error instanceof TerminalLockTimeoutError) {
+			await recordOutcome(deps, {
+				...baseAttempt,
+				status: "unconfirmed",
+				resolvedAtMs: null,
+				failureCode: null,
+				guardsPassed: [],
+			});
 			await deps.audit.append({
 				...baseAudit,
 				tsMs: deps.now(),
 				guards: null,
-				outcome: "failed",
-				failureCode: "internal",
+				outcome: "unconfirmed",
+				failureCode: null,
 			});
-			await recordOutcome(deps, {
-				...baseAttempt,
-				status: "failed",
-				resolvedAtMs: null,
-				failureCode: "internal",
-				guardsPassed: [],
-			});
-			throw sealed(
-				503,
-				"internal",
-				"the terminal was busy; nothing was written",
-			);
+			throw error;
+		} finally {
+			// Released on confirmed, on guard_failed, on unconfirmed and on any
+			// unexpected throw. A lease that outlives its answer would lock the
+			// question out until its TTL lapsed.
+			deps.leases.release(lease.leaseId);
 		}
-		// (ANSWER-INFLIGHT) An unexpected throw from inside the critical section.
-		// The `in_flight` record MUST NOT be left behind — the client would poll it
-		// forever — and it must not be downgraded to "never sent" either, because
-		// bytes may already have landed. Unknown outcome, stated as such.
-		deps.log({
-			event: "companion.answer.internal_error",
-			questionId: request.questionId,
-			terminalId: question.terminalId,
-			leaseId: lease.leaseId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		await recordOutcome(deps, {
-			...baseAttempt,
-			status: "unconfirmed",
-			resolvedAtMs: null,
-			failureCode: null,
-			guardsPassed: [],
-		});
-		await deps.audit.append({
-			...baseAudit,
-			tsMs: deps.now(),
-			guards: null,
-			outcome: "unconfirmed",
-			failureCode: null,
-		});
+	} catch (error) {
+		// A row still `in_flight` here means the throw got past every path that
+		// records its own outcome, so this is the last chance to stop it claiming
+		// forever that keystrokes are landing.
+		//
+		// A SealedError is a REFUSAL with a known reason, recorded verbatim so §11.4's
+		// replay can say why. Anything else is a fault of unknown extent — it could
+		// have escaped after bytes moved — so it degrades to `unconfirmed` rather than
+		// to a `failed` that would assert nothing was typed.
+		if (deps.ledger.get(request.requestId)?.status === "in_flight") {
+			deps.ledger.recordOutcome({
+				requestId: request.requestId,
+				...(error instanceof SealedError
+					? {
+							status: "failed" as const,
+							failureCode: error.body.code as AttemptFailureCode,
+						}
+					: { status: "unconfirmed" as const, failureCode: null }),
+				resolvedAtMs: null,
+				guardsPassed: [],
+				leaseId: null,
+			});
+		}
 		throw error;
-	} finally {
-		// Released on confirmed, on guard_failed, on unconfirmed and on any
-		// unexpected throw. A lease that outlives its answer would lock the
-		// question out until its TTL lapsed.
-		deps.leases.release(lease.leaseId);
 	}
 }
 
