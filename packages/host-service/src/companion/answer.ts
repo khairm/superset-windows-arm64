@@ -1389,6 +1389,27 @@ const attemptFileSchema = z.object({
 	 * coverage window narrows.
 	 */
 	seq: rewriteMarkSchema.default(0),
+	/**
+	 * (PRUNE-FLOOR) The newest retention boundary this store has ever applied —
+	 * rise-only, and the reason it has to be on disk.
+	 *
+	 * `recordsSinceMs` used to be `max(coverageSinceMs, now - retention)`, where the
+	 * second term is recomputed from the WALL CLOCK on every read. Pruning is
+	 * irreversible; a clock is not. Drop a record at 25 h, let the clock step back
+	 * two hours, and that term moves BACK behind the record that was just deleted —
+	 * so the published window claims coverage over a record `get` can no longer
+	 * return, which is the "it was not sent" lie the window exists to prevent. The
+	 * hydration filter has the same shape via a forward-skewed mount clock.
+	 *
+	 * Remembering the highest boundary ever crossed makes the floor monotonic
+	 * regardless of what the clock does afterwards: once records older than X are
+	 * gone, the window never again reaches behind X.
+	 *
+	 * OPTIONAL, defaulting to 0, so a file written before this field simply has no
+	 * remembered floor and behaves as it did — the first prune or hydration under
+	 * this build establishes one.
+	 */
+	prunedThroughMs: epochMsSchema.default(0),
 	records: z.array(attemptRecordSchema),
 });
 
@@ -1779,6 +1800,8 @@ export async function createAttemptStore(options: {
 	let coverageSinceMs = startedAtMs;
 	/** The file's rewrite mark. 0 = no file, or one written before this witness. */
 	let seq = 0;
+	/** (PRUNE-FLOOR) Highest retention boundary ever crossed. Rise-only, persisted. */
+	let prunedThroughMs = 0;
 	if (raw !== null) {
 		/**
 		 * Moves the unusable file aside and starts with no coverage. A failure to
@@ -1820,8 +1843,24 @@ export async function createAttemptStore(options: {
 				// below leaves it alone.
 				coverageSinceMs = Math.min(file.data.coverageSinceMs, startedAtMs);
 				seq = file.data.seq;
+				// (PRUNE-FLOOR) Rise-only: never take a remembered floor backwards, so a
+				// clock that moved between mounts cannot re-expose dropped records.
+				prunedThroughMs = Math.max(
+					prunedThroughMs,
+					file.data.prunedThroughMs,
+				);
 				for (const record of file.data.records) {
-					if (startedAtMs - record.startedAtMs > retentionMs) continue;
+					if (startedAtMs - record.startedAtMs > retentionMs) {
+						// Dropping a record IS crossing a retention boundary, so the floor
+						// has to record it here too — not only in `prune`. Otherwise a
+						// forward-skewed mount silently discards records and a corrected
+						// clock later publishes a window that covers them again.
+						prunedThroughMs = Math.max(
+							prunedThroughMs,
+							startedAtMs - retentionMs,
+						);
+						continue;
+					}
 					records.set(
 						record.requestId,
 						// An `in_flight` record was written by a process that is now GONE:
@@ -2041,6 +2080,7 @@ export async function createAttemptStore(options: {
 				version: ATTEMPT_FILE_VERSION,
 				coverageSinceMs,
 				seq: next,
+				prunedThroughMs,
 				records: [...records.values()],
 			};
 			await writeFileDurable(
@@ -2121,6 +2161,10 @@ export async function createAttemptStore(options: {
 				records.delete(requestId);
 				dropped += 1;
 			}
+			// (PRUNE-FLOOR) Raised whether or not anything was dropped: the boundary was
+			// still crossed, and remembering it is what stops a later backward clock
+			// step from re-expanding the window behind it.
+			prunedThroughMs = Math.max(prunedThroughMs, nowMs - retentionMs);
 			if (dropped > 0) await persist();
 			return dropped;
 		},
@@ -2128,9 +2172,13 @@ export async function createAttemptStore(options: {
 			// `coverageSinceMs` IS the proven start: the file's own stamp when the
 			// witness proved the file current, or this mount's start when it could not
 			// (`degradeCoverage` collapses the two cases into one variable rather than
-			// leaving a second one for a later reader to keep in step). Floored by the
-			// retention because anything older has been pruned.
-			return Math.max(coverageSinceMs, nowMs - retentionMs);
+			// leaving a second one for a later reader to keep in step).
+			//
+			// (PRUNE-FLOOR) Floored by BOTH the live retention window and the highest
+			// boundary ever crossed. The live term alone was unsound: it is recomputed
+			// from the wall clock, so a backward step moved it behind records that had
+			// already been irreversibly pruned and the window went on claiming them.
+			return Math.max(coverageSinceMs, nowMs - retentionMs, prunedThroughMs);
 		},
 		close() {
 			closed = true;
