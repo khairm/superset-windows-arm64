@@ -42,6 +42,7 @@ import {
 	LIMITS,
 	SESSION_TTL_MS,
 } from "./config";
+import type { AttemptLedger } from "./attempt-ledger";
 import { isCanonicalWireId } from "./crypto";
 import { WIRE_ID_CHARS } from "./limits";
 import {
@@ -236,6 +237,11 @@ export interface ReadDeps {
 	};
 	/** Bridge boot stamp; a change means the client must re-hello (§6.3). */
 	bridgeStartedMs: EpochMs;
+	/**
+	 * (ANSWER-LEDGER) Read so `hello` can hand the client an epoch up front. Only
+	 * `currentEpoch` is used here; the read API never writes to the ledger.
+	 */
+	ledger: Pick<AttemptLedger, "currentEpoch">;
 	/** Highest global event sequence emitted so far (§9.3). Owned by `ws.ts`. */
 	currentGseq(): number;
 	/**
@@ -417,6 +423,11 @@ export async function handleHello(
 		limits: LIMITS,
 		serverTimeMs: Date.now(),
 		sessionTtlMs: SESSION_TTL_MS,
+		// (ANSWER-LEDGER) Handed over at hello so the client's FIRST answer can be
+		// fenced. Without it that answer captures null and §11.5 permits only
+		// `unconfirmed` for it, which on a platform that kills processes routinely
+		// would forfeit the terminal negative for a large share of real answers.
+		coverageEpoch: deps.ledger.currentEpoch(),
 	};
 }
 

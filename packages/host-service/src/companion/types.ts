@@ -162,6 +162,20 @@ export type SealedErrorCode =
 	| "guard_failed"
 	| "picker_open"
 	| "capability_unsupported"
+	/**
+	 * (ANSWER-LEDGER) A status read already reported this `requestId` as never
+	 * received, and durably FENCED it, so the answer will never be typed.
+	 *
+	 * Distinct from `already_resolved` on purpose. That one means a question was
+	 * answered — by another device or at the desk — and a client renders it as
+	 * "already answered", which for a fenced request is false in the direction that
+	 * matters: nothing was answered, this request was closed out. Reusing it would
+	 * have the client's chip contradict the very message explaining what happened.
+	 *
+	 * The remedy differs too. `already_resolved` means stop, the question is done.
+	 * This means the question may well still be open — submit a NEW request.
+	 */
+	| "request_closed"
 	| "write_disabled"
 	| "access_denied"
 	| "bad_request"
@@ -439,6 +453,20 @@ export interface HelloResponse {
 	serverTimeMs: EpochMs;
 	/** Re-hello required after this. 3 600 000. */
 	sessionTtlMs: DurationMs;
+	/**
+	 * (ANSWER-LEDGER) The coverage epoch in force, so a client has one BEFORE its
+	 * first answer rather than only after its first status read.
+	 *
+	 * This is not a convenience. Without it a freshly started process captures
+	 * `null` for its first submit, and §11.5 is explicit that a null epoch can only
+	 * ever yield `unconfirmed` — so that answer could never be resolved to the
+	 * actionable "it was not sent". Android kills the phone process routinely, so
+	 * "the first answer after a start" is a large share of real answers, not an edge
+	 * case.
+	 *
+	 * Opaque: compared for equality by the bridge and never parsed by the client.
+	 */
+	coverageEpoch: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -509,6 +509,9 @@ export function createCompanionBridge(
 					push.cancelPending(questionId);
 				}
 			},
+			// (ANSWER-LEDGER) `hello` publishes the current epoch so a client's FIRST
+			// answer can be fenced; the read API never writes to the ledger.
+			ledger,
 		});
 
 		const answerDeps = createAnswerDeps({

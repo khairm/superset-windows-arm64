@@ -1227,6 +1227,8 @@ type SealedCode =
 	| "guard_failed"
 	| "picker_open"
 	| "capability_unsupported"
+	/** (ANSWER-LEDGER) The fence. See where it is thrown for why not `already_resolved`. */
+	| "request_closed"
 	| "write_disabled"
 	| "bad_request"
 	| "internal";
@@ -1493,11 +1495,18 @@ export async function handleAnswer(
 		// requestId. Typing now would make that answer retroactively false, so this
 		// is refused permanently rather than deferred. The client is told plainly:
 		// the request was closed out, start a new one.
+		// `request_closed`, NOT `already_resolved`. The latter means a question was
+		// answered — by another device or at the desk — and a client renders it as
+		// "already answered", which for a fenced request is false in the one direction
+		// that matters: nothing was answered, this request was closed out. The chip
+		// would have contradicted the very message explaining what happened. The
+		// remedy differs too: `already_resolved` means stop, whereas this means the
+		// question may still be open, so submit a NEW request.
 		throw sealed(
 			409,
-			"already_resolved",
-			"this request was already reported as never received; it will never be typed. Submit a new answer if the question is still open.",
-			{ resolvedBy: { surface: "unknown", deviceLabel: null, atMs: null } },
+			"request_closed",
+			"a status read already reported this request as never received, and fenced it; it will never be typed. The question may still be open — submit a new answer.",
+			null,
 		);
 	}
 
