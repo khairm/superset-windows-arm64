@@ -1669,3 +1669,7 @@ STOP LEAVING JOBS TO DO - WTF IS THIS
 ---
 
 Is there any outstanding work?
+
+---
+
+/goal keep going until no more outstanding work - reach my objective / functionality
