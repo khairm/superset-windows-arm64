@@ -409,15 +409,15 @@ export function createCompanionBridge(
 				// witness is bound to. `openStateAnchor` ran further up — it has to, for
 				// the send-nonce ordering — so the generation is already durable here.
 				//
-				// What the witness buys, stated precisely because the obvious guess is
-				// wrong: a RECORDED status already survives a restart, because
-				// `handleAnswerStatus` returns `known: true` with the record's own status
-				// whenever the record is there, and the file is durable. The witness
-				// works on the OTHER branch — it is what lets `known: false` be asserted
-				// for a request submitted BEFORE this mount, turning "no record, and I
-				// cannot tell you why" into the actionable "it never arrived". Absent it,
-				// coverage can only start at this mount and every pre-restart miss
-				// degrades to `unconfirmed`.
+				// (COVERAGE-CONTRACT) What the witness actually buys is stated once, in
+				// `types.ts` on `AnswerStatusResponse.recordsSinceMs`. Read it there; the
+				// short version, because the obvious guess is wrong, is that it governs
+				// the `known: false` branch only — a RECORDED status already survived a
+				// restart without it.
+				//
+				// The only fact local to this call site: passing a generation is what
+				// makes the witness bindable at all. `null` here would start the bridge
+				// with its coverage permanently narrowed to each mount.
 				generation: anchor.generation,
 				log: (event) => logger.warn("answer-attempt store", event),
 			}),

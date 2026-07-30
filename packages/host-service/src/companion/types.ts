@@ -937,6 +937,15 @@ export interface AnswerStatusResponse {
 	/**
 	 * The instant from which `known: false` PROVES the request never arrived.
 	 *
+	 * (COVERAGE-CONTRACT) THIS IS THE CANONICAL STATEMENT of these semantics on the
+	 * TypeScript side, and `PROTOCOL.md` §11.5 is the canonical one for the wire —
+	 * it has to stand alone, because a client author reads the spec, not this file.
+	 * `answer.ts` and `index.ts` deliberately POINT HERE rather than restating it.
+	 * That is not stylistic: the same explanation previously existed in four places
+	 * and five copies of one sentence went stale inside the very commit that
+	 * corrected it. If these semantics change, this comment and §11.5 are the two
+	 * that must be rewritten; anything else should be a pointer.
+	 *
 	 * THE BRIDGE'S GUARANTEE. For every answer attempt this bridge admitted whose
 	 * attempt began at or after `recordsSinceMs`, a record exists — the record is
 	 * written durably before the terminal lock is taken, so no keystroke can reach

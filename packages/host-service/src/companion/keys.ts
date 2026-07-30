@@ -65,6 +65,19 @@
  * lost rename, torn write or reverted file is that the counter never resumes
  * below a mark that was ever durable.
  *
+ * THERE IS A SECOND WITNESS IN THIS DIRECTORY, AND IT IS DELIBERATELY NOT SHARED
+ * WITH THIS ONE. `answer.ts` (ATTEMPT-WITNESS) applies the same shape — a
+ * generation-bound rise-only mark, written BEFORE the file it guards, in the same
+ * directory — to `answer-attempts.json`. The two look alike and must not be merged
+ * into one primitive, because their POLICY is opposite where it matters: a
+ * rollback here means a repeated AES-GCM nonce, so this one refuses to start
+ * (`StateRollbackError`); a rollback there costs only status records, so that one
+ * must NEVER refuse to start and instead narrows the window it publishes. Folding
+ * both behind a fatal/non-fatal flag would put that distinction one careless
+ * argument away from being inverted. What they DO share is the write-ordering
+ * guarantee documented at `writeFileDurable` in `crypto.ts` — read that before
+ * changing either, and note it now has two dependents rather than one.
+ *
  * ---------------------------------------------------------------------------
  * WHY `keyRef` IS RANDOM AND NOT THE deviceId
  * ---------------------------------------------------------------------------

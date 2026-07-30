@@ -1306,6 +1306,29 @@ const attemptGuardNameSchema = z.enum(
 	Object.keys(GUARD_CLASSES) as [AnswerGuardName, ...AnswerGuardName[]],
 );
 
+/** An epoch-millisecond instant read off disk. One definition, four uses. */
+const epochMsSchema = z.number().int().nonnegative();
+
+/**
+ * The witness mark, in either file. Bounded BELOW `Number.MAX_SAFE_INTEGER`
+ * because `persist` increments it.
+ *
+ * At `MAX_SAFE_INTEGER` the increment stops advancing — `n + 1 === n` in a double
+ * — so a file loaded at the boundary would be rewritten at a mark it already
+ * carried, and the mark stops being an order. One past it, the value is no longer
+ * an integer this schema accepts, so the NEXT start quarantines the file and every
+ * record in it is lost. Neither is reachable by any real number of rewrites; both
+ * are reachable from a hand-edited or corrupt file, which is exactly the input
+ * this boundary exists to reject. Refusing the value here means such a file is
+ * quarantined ONCE, deliberately, instead of first being written into a state that
+ * silently cannot be ordered.
+ */
+const rewriteMarkSchema = z
+	.number()
+	.int()
+	.nonnegative()
+	.max(Number.MAX_SAFE_INTEGER - 1);
+
 /**
  * The on-disk record, validated at the disk boundary exactly as a wire body is
  * validated at the HTTP boundary. Nothing here is trusted because it came from
@@ -1317,9 +1340,9 @@ const attemptRecordSchema = z.object({
 	deviceId: z.string().min(1).max(64),
 	surface: z.enum(["phone", "watch"]),
 	leaseId: z.string().min(1).max(64),
-	startedAtMs: z.number().int().nonnegative(),
+	startedAtMs: epochMsSchema,
 	status: z.enum(["confirmed", "failed", "unconfirmed", "in_flight"]),
-	resolvedAtMs: z.number().int().nonnegative().nullable(),
+	resolvedAtMs: epochMsSchema.nullable(),
 	failureCode: z.enum(ATTEMPT_FAILURE_CODES).nullable(),
 	guardsPassed: z.array(attemptGuardNameSchema),
 });
@@ -1345,7 +1368,7 @@ const attemptFileSchema = z.object({
 	 * instant BEFORE it writes again, so the gap is recorded once in the file
 	 * itself and no later, clean mount re-asserts over it.
 	 */
-	coverageSinceMs: z.number().int().nonnegative(),
+	coverageSinceMs: epochMsSchema,
 	/**
 	 * The witness mark: how many durable rewrites this file has had. See
 	 * `readAttemptWitness` for why a rewrite counter is the right mark.
@@ -1365,7 +1388,7 @@ const attemptFileSchema = z.object({
 	 * for no gain, since those records are still SERVED after a degrade. Only the
 	 * coverage window narrows.
 	 */
-	seq: z.number().int().nonnegative().default(0),
+	seq: rewriteMarkSchema.default(0),
 	records: z.array(attemptRecordSchema),
 });
 
@@ -1461,7 +1484,7 @@ const attemptWitnessSchema = z.object({
 		message: "not a canonical wire id",
 	}),
 	/** The highest `seq` `answer-attempts.json` was ever durably written with. */
-	seq: z.number().int().nonnegative(),
+	seq: rewriteMarkSchema,
 });
 
 type AttemptWitness = z.infer<typeof attemptWitnessSchema>;
@@ -2943,31 +2966,20 @@ async function awaitScreenAdvance(
  * never arrived, or the bridge no longer has records reaching that far back —
  * and `known: false` alone cannot tell them apart. It used to be reported as if
  * it always meant the first, which after a desktop restart turned every earlier
- * answer into a terminal "the desktop never saw this request — it was not sent",
- * including answers that had already landed.
+ * MISS into a terminal "the desktop never saw this request — it was not sent".
  *
- * The attempt store is durable, so records survive a restart and are answered
- * from the file. The RANGE over which a MISSING record proves anything is stated
- * rather than assumed: `recordsSinceMs` is the instant from which `known: false`
- * proves the request never arrived, and it reaches BEHIND this bridge lifetime
- * whenever the store's rise-only witness can prove the file on disk is the latest
- * version that was ever durable (ATTEMPT-WITNESS). That is what lets a MISSING
- * pre-restart record resolve to "it never arrived" instead of "cannot tell". It
- * is NOT what preserves a `confirmed` status across a restart — a present record
- * is returned with its own status whatever the coverage says, and always was.
- * When the witness cannot prove it — the file was rolled back, or the witness is
- * missing, unreadable, unwritable, bound to another install, or the file carries
- * no rewrite mark at all — the range degrades to this lifetime,
- * which is where it always used to start: win32 cannot force a directory entry, so
- * a hard reset can roll the file back to an earlier version that still claims to
- * cover the records it lost, and a rollback always comes with a restart.
- * `serverTimeMs` is on the response so the client can compare AGES (server now −
- * recordsSinceMs, against its own elapsed time since it submitted) instead of two
- * wall clocks that are allowed to disagree. `bridgeStartedMs` is the CONSERVATIVE
- * form of the same proof, kept on the response so a client that only tracks the
- * heartbeat's continuity value can resolve this endpoint without implementing the
- * age comparison — at the cost of the pre-restart coverage, since it is no longer
- * equal to `recordsSinceMs`.
+ * (COVERAGE-CONTRACT) The three proof fields this endpoint publishes —
+ * `recordsSinceMs`, `serverTimeMs`, `bridgeStartedMs` — are specified ONCE, on
+ * `AnswerStatusResponse` in `types.ts`, and for the wire in `PROTOCOL.md` §11.5.
+ * Read them there rather than trusting a paraphrase here: this explanation used to
+ * be restated in four places and five copies of one sentence went stale in a
+ * single commit.
+ *
+ * The only two facts local to THIS function, which is all it needs to state:
+ *   - a record that EXISTS is returned with its own status, unconditionally. The
+ *     coverage range plays no part in that branch, and the witness never did.
+ *   - the range is asked for at the top and attached to BOTH branches, so a client
+ *     never has to correlate a verdict with a separately-fetched window.
  */
 export async function handleAnswerStatus(
 	deps: AnswerDeps,
