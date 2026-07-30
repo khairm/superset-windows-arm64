@@ -85,6 +85,11 @@ import { z } from "zod";
 import { type AuditLog, hashJsonPayload } from "./audit";
 import { ANSWER_ATTEMPT_RETENTION_MS } from "./config";
 import { isCanonicalWireId, sleep, writeFileDurable } from "./crypto";
+import type {
+	AttemptLedger,
+	LedgerRecord,
+	StatusOutcome,
+} from "./attempt-ledger";
 import {
 	createRawPtyWriter,
 	encodeAnswer,
@@ -110,6 +115,7 @@ import {
 	type AnswerRequest,
 	type AnswerResponse,
 	type AnswerStatusRequest,
+	type AnswerStatusOutcome,
 	type AnswerStatusResponse,
 	type AttemptFailureCode,
 	type DurationMs,
@@ -117,6 +123,7 @@ import {
 	type GuardEvaluation,
 	type MessageRequest,
 	type MessageResponse,
+	type QuestionId,
 	type QuestionItem,
 	type RequestId,
 	SealedError,
@@ -385,6 +392,11 @@ export interface AnswerDeps {
 	locks: TerminalLockRegistry;
 	leases: LeaseRegistry;
 	attempts: AttemptStore;
+	/**
+	 * (ANSWER-LEDGER) The durable fence. Supplied alongside `attempts` while the
+	 * JSON store is being retired; the status path already reads only this.
+	 */
+	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	questions: QuestionStore;
 	audit: AuditLog;
@@ -2298,6 +2310,26 @@ async function recordOutcome(
 	record: AnswerAttemptRecord,
 ): Promise<void> {
 	try {
+		// (ANSWER-LEDGER) Advances the `in_flight` row this request claimed at the
+		// top of `handleAnswer`. The ledger's update is predicated on that status, so
+		// it can neither erase a tombstone nor revive a pruned row; an outcome with
+		// nowhere to land is logged there rather than thrown, because by this point
+		// the keystrokes may already have landed and reporting a landed answer as
+		// failed is the worse lie.
+		//
+		// `in_flight` is excluded at the type level and skipped here: the claim
+		// already wrote it, and re-writing it would be a no-op that reads like a
+		// state transition.
+		if (record.status !== "in_flight") {
+			deps.ledger.recordOutcome({
+				requestId: record.requestId,
+				status: record.status,
+				resolvedAtMs: record.resolvedAtMs,
+				failureCode: record.failureCode,
+				guardsPassed: record.guardsPassed,
+				leaseId: record.leaseId,
+			});
+		}
 		await deps.attempts.put(record);
 	} catch (error) {
 		if (error instanceof AttemptRecordShapeError) throw error;
@@ -2387,13 +2419,45 @@ export async function handleAnswer(
 	ctx: SealedRequestContext,
 	request: AnswerRequest,
 ): Promise<AnswerResponse> {
-	// 1. Idempotent replay. The SAME requestId NEVER re-executes — it returns the
-	//    recorded outcome of the original attempt (§11.4). A recorded FAILURE is
-	//    re-thrown as that failure; downgrading it to "unconfirmed" would send the
-	//    client to /v1/answer/status for an outcome we already know.
-	const previous = deps.attempts.get(request.requestId);
-	if (previous !== null) {
+	// 1. THE DURABLE CLAIM, AND IT IS FIRST FOR A REASON.
+	//
+	//    (ANSWER-LEDGER) This used to be a plain read here, with the `in_flight`
+	//    record written ~195 lines later, after the guards and the lock. A status
+	//    read landing in that window saw nothing, planted no fence, and told the
+	//    phone the answer had never been sent — and then this function carried on
+	//    and typed it. Claiming first is what makes that impossible: after this
+	//    line the requestId is occupied, so a status read can only report
+	//    `in_flight`, never a negative.
+	//
+	//    It also subsumes §11.4 replay. The claim is a compare-and-set, so a repeat
+	//    of the SAME requestId does not re-execute — it comes back as `replay` with
+	//    the recorded outcome, or as `fenced` if a status read got there first.
+	const claim = deps.ledger.claimForAnswer({
+		requestId: request.requestId,
+		questionId: request.questionId,
+		deviceId: ctx.device.deviceId,
+		surface: request.surface,
+		startedAtMs: deps.now(),
+	});
+
+	if (claim.kind === "fenced") {
+		// A status read already told a client nothing was received for this
+		// requestId. Typing now would make that answer retroactively false, so this
+		// is refused permanently rather than deferred. The client is told plainly:
+		// the request was closed out, start a new one.
+		throw sealed(
+			409,
+			"already_resolved",
+			"this request was already reported as never received; it will never be typed. Submit a new answer if the question is still open.",
+			{ resolvedBy: { surface: "unknown", deviceLabel: null, atMs: null } },
+		);
+	}
+
+	if (claim.kind === "replay") {
+		const previous = claim.record;
 		if (previous.status === "failed") {
+			// A recorded FAILURE is re-thrown as that failure. Downgrading it to
+			// unconfirmed would send the client to §11.5 for an outcome we know.
 			throw sealed(
 				412,
 				(previous.failureCode as SealedCode | null) ?? "guard_failed",
@@ -2402,9 +2466,8 @@ export async function handleAnswer(
 			);
 		}
 		// (ANSWER-INFLIGHT) The sequence for this very requestId is still typing.
-		// Returning `recordToResponse` here would report `unconfirmed`, which the
-		// client treats as terminal, for a write that is about to confirm. The
-		// lease is genuinely held — say so, and let the client poll §11.5.
+		// Reporting `unconfirmed` here — which the client treats as terminal — for a
+		// write about to confirm was the original sin this whole area is fixing.
 		if (previous.status === "in_flight") {
 			throw sealed(
 				409,
@@ -2413,7 +2476,7 @@ export async function handleAnswer(
 				{ leaseHolderLabel: null, expiresInMs: null },
 			);
 		}
-		return recordToResponse(previous);
+		return ledgerRecordToResponse(previous);
 	}
 
 	// 2. Panic write-disable. The phone can always reduce its own privilege.
@@ -2566,55 +2629,23 @@ export async function handleAnswer(
 			failureCode: null,
 		});
 
-		// (ANSWER-INFLIGHT) Visible to /v1/answer/status from HERE, not from the
-		// far side of the injection. The lock wait plus the sequence deadline is up
-		// to ~15 s during which the client's only documented recovery from an
-		// unconfirmed write used to answer `known: false` — "the desktop never saw
-		// this request" — while the desktop was mid-sequence. Every exit path below
-		// overwrites this record.
+		// (ANSWER-LEDGER) There is no `in_flight` write here any more, and its absence
+		// is the fix rather than an omission.
 		//
-		// AWAITED, AND DURABLE, BEFORE THE LOCK. This is the ordering that makes
-		// `AttemptStore.recordsSinceMs` a guarantee: no byte can reach a terminal
-		// for an attempt whose record is not already on disk, so a crash mid-write
-		// leaves an `in_flight` record (rehydrated as `unconfirmed`) rather than
-		// nothing — and nothing is what the client renders as "it was not sent".
-		const inFlight: AnswerAttemptRecord = {
-			...baseAttempt,
-			status: "in_flight",
-			resolvedAtMs: null,
-			failureCode: null,
-			guardsPassed: [],
-		};
-		try {
-			await deps.attempts.put(inFlight);
-		} catch (error) {
-			// Nothing has been written to the terminal — the lock has not been taken.
-			// Refuse loudly rather than injecting an answer this bridge could not
-			// record, which would leave the client's only recovery read lying.
-			//
-			// AND TAKE THE RECORD BACK OUT. `put` writes to memory before it
-			// persists (the post-lock caller depends on that), so a rejected put
-			// leaves an `in_flight` record behind — and `get` is what
-			// `/v1/answer/status` reads. Left standing it would answer "this answer
-			// is still being typed into the terminal" forever, and a replay of the
-			// same requestId would collect `409 lease_held` saying the same thing,
-			// both contradicting the 503 below. Nothing else can ever advance it:
-			// `recordOutcome` only runs on the far side of a lock that was never
-			// taken. After `forget`, `known: false` is the honest answer, and this
-			// mount's coverage window makes that mean exactly "it was not sent".
-			await deps.attempts.forget(inFlight);
-			deps.log({
-				event: "companion.answer.attempt_store_unwritable",
-				requestId: request.requestId,
-				questionId: request.questionId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			throw sealed(
-				503,
-				"internal",
-				"this answer could not be recorded, so it was not typed; nothing was written",
-			);
-		}
+		// This block used to build an `in_flight` record and durably write it just
+		// before taking the lock, with a long comment explaining that the ~15 s of
+		// lock-wait-plus-sequence was a window in which the client's recovery read
+		// answered "the desktop never saw this request". Writing it HERE only narrowed
+		// that window; it could not close it, because everything above this line —
+		// preflight, the agent-kind check, the writer probe, the lease — still ran
+		// before the record existed.
+		//
+		// The claim now happens at the very top of `handleAnswer`, as an atomic
+		// compare-and-set, so by the time control reaches here the requestId has been
+		// occupied for the whole of that work and a status read can only ever report
+		// `in_flight`. The unwritable-store branch is gone with it: a claim that cannot
+		// be persisted throws out of `claimForAnswer` before any of this runs, which is
+		// the same refusal one step earlier and without a record to take back out.
 
 		const result = await deps.locks.runExclusive(
 			question.terminalId,
@@ -3115,32 +3146,51 @@ export async function handleAnswerStatus(
 	_ctx: SealedRequestContext,
 	request: AnswerStatusRequest,
 ): Promise<AnswerStatusResponse> {
-	const nowMs = deps.now();
-	const proof = {
-		serverTimeMs: nowMs,
-		recordsSinceMs: deps.attempts.recordsSinceMs(nowMs),
-		bridgeStartedMs: deps.bridgeStartedMs,
+	// (ANSWER-LEDGER) The verdict is computed where the state is, behind a durable
+	// fence, and returned whole. This function used to publish three instants and
+	// let the client prove "never sent" by arithmetic — which could not be correct,
+	// because a status read can overtake an admitted answer that has not yet
+	// recorded itself, and no reasoning about the past licenses a claim about
+	// whether something is about to be typed. `resolveStatus` plants the fence in
+	// the same transaction as the negative, so the answer path is bound by it.
+	const resolved = deps.ledger.resolveStatus(
+		request.requestId,
+		request.coverageEpoch,
+	);
+	return {
+		requestId: request.requestId,
+		outcome: toWireOutcome(resolved),
+		// The epoch in force now, so a client whose token went stale can adopt the
+		// current one without a second round trip.
+		coverageEpoch: deps.ledger.currentEpoch(),
 	};
-	const record = deps.attempts.get(request.requestId);
-	if (record === null) {
-		return {
-			requestId: request.requestId,
-			known: false,
-			status: "unknown",
-			questionId: null,
-			resolvedAtMs: null,
-			failureCode: null,
-			...proof,
-		};
+}
+
+/**
+ * Maps the ledger's verdict onto the wire's.
+ *
+ * The one non-obvious case is the tombstone. It IS a row, so the ledger reports it
+ * as `known` — but it is not a STATUS a client renders, it is the negative itself,
+ * and it already has its own wire kind. Collapsing it here keeps `known` to the
+ * four statuses §11.5 defines and stops `closed_not_received` leaking onto the wire
+ * as a fifth one the client would have to learn.
+ */
+function toWireOutcome(resolved: StatusOutcome): AnswerStatusOutcome {
+	if (resolved.kind === "not_received") {
+		return { kind: "not_received" };
+	}
+	if (resolved.kind === "unconfirmed") {
+		return { kind: "unconfirmed", why: resolved.why };
+	}
+	if (resolved.record.status === "closed_not_received") {
+		return { kind: "not_received" };
 	}
 	return {
-		requestId: record.requestId,
-		known: true,
-		status: record.status,
-		questionId: record.questionId,
-		resolvedAtMs: record.resolvedAtMs,
-		failureCode: record.failureCode,
-		...proof,
+		kind: "known",
+		status: resolved.record.status,
+		questionId: resolved.record.questionId as QuestionId | null,
+		resolvedAtMs: resolved.record.resolvedAtMs,
+		failureCode: resolved.record.failureCode,
 	};
 }
 
@@ -3842,6 +3892,26 @@ async function assertNoPickerOnScreen(
 		);
 	}
 	return screen;
+}
+
+/**
+ * (ANSWER-LEDGER) The §11.4 replay response, from a ledger row.
+ *
+ * `leaseId` can legitimately be null here: the claim is made before the lease is
+ * acquired, so a row whose attempt died between the two has no lease to report.
+ * The wire field is non-null, so an empty string would be a lie — an absent lease
+ * is reported as absent and the client shows the outcome, which is what it is
+ * actually asking about.
+ */
+function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
+	return {
+		status: record.status === "confirmed" ? "confirmed" : "unconfirmed",
+		requestId: record.requestId,
+		questionId: (record.questionId ?? "") as QuestionId,
+		leaseId: (record.leaseId ?? "") as AnswerResponse["leaseId"],
+		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
+		guardsPassed: record.guardsPassed,
+	};
 }
 
 function recordToResponse(record: AnswerAttemptRecord): AnswerResponse {

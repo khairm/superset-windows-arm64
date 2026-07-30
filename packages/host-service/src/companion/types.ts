@@ -856,169 +856,73 @@ export interface AnswerResponse {
 
 export interface AnswerStatusRequest {
 	requestId: RequestId;
+	/**
+	 * (ANSWER-LEDGER) The coverage epoch the client captured BEFORE it submitted.
+	 *
+	 * Opaque to the client: it is compared for equality and never parsed, ordered
+	 * or aged. Null from a client older than this build, which can then only be
+	 * answered with `unconfirmed` for a missing record — safe, and the reason the
+	 * field is optional rather than required.
+	 */
+	coverageEpoch: string | null;
 }
 
-/** §11.5 — a READ. Safe to retry and poll. It is what replaces a write retry. */
+/**
+ * §11.5 — a READ. Safe to retry and poll. It is what replaces a write retry.
+ *
+ * (COVERAGE-CONTRACT) THE SERVER DECIDES; THE CLIENT RENDERS. This used to publish
+ * three instants — `serverTimeMs`, `recordsSinceMs`, `bridgeStartedMs` — and leave
+ * the client to prove "nothing was ever sent" by comparing a server-derived
+ * wall-clock age against its own monotonic elapsed time. Two things were wrong
+ * with that, and neither was fixable by better arithmetic:
+ *
+ *  - the arithmetic mixed clocks. A FORWARD step of the desktop clock inflated the
+ *    apparent coverage, so a request the bridge could not vouch for satisfied the
+ *    inequality and the client rendered the unrecoverable "it was not sent".
+ *  - more fundamentally, no arithmetic over the PAST can license that claim at all.
+ *    A status read can overtake an answer that was already admitted but has not yet
+ *    recorded itself, and absence then says nothing about whether it is about to
+ *    type. See `attempt-ledger.ts`.
+ *
+ * So the verdict is now computed where the state is, behind a durable fence, and
+ * arrives as ONE discriminated `outcome`. A client that renders `outcome` verbatim
+ * cannot construct a wrong verdict, because it is no longer doing the proving.
+ */
+export type AnswerStatusOutcome =
+	/**
+	 * The bridge holds a record. `status` is its own, reported regardless of
+	 * coverage — a present record never depended on any of this.
+	 */
+	| {
+			kind: "known";
+			status: "in_flight" | "confirmed" | "failed" | "unconfirmed";
+			questionId: QuestionId | null;
+			resolvedAtMs: EpochMs | null;
+			failureCode: AttemptFailureCode | null;
+	  }
+	/**
+	 * PROVEN never received, and terminal. Only ever returned after the bridge has
+	 * durably fenced the requestId, so the answer path is now bound to refuse it —
+	 * which is what makes this honest rather than a guess about the future.
+	 */
+	| { kind: "not_received" }
+	/**
+	 * Nothing can be asserted. The client MUST render this as unconfirmed and never
+	 * as failed: §11.4 records a second answer against a picker as unrecoverable,
+	 * so "I cannot tell" is always the safe verdict. `why` is diagnostic text for
+	 * the log, never a verdict to show.
+	 */
+	| { kind: "unconfirmed"; why: string };
+
 export interface AnswerStatusResponse {
 	requestId: RequestId;
+	/** The whole verdict. Render it; do not re-derive it. */
+	outcome: AnswerStatusOutcome;
 	/**
-	 * false => this bridge has no record of that requestId.
-	 *
-	 * §11.5 makes it an assertion that NOTHING WAS SENT. That assertion is only
-	 * true for a request the bridge would still have a record of, so the range in
-	 * which it holds is stated on the wire rather than assumed: see
-	 * `recordsSinceMs`. Outside that range `known: false` means "no record", and
-	 * §11.5 requires the client to render it as `unconfirmed` — never as failed.
-	 *
-	 * The attempt store used to be an in-memory Map built in `start()`, so a
-	 * desktop restart emptied it and every earlier requestId came back false and
-	 * was rendered "it was not sent". It is now written `tmp -> fsync -> rename`
-	 * on every put and hydrated at start, with the `in_flight` put awaited BEFORE
-	 * the terminal lock — so no answer can reach a terminal without a durable
-	 * record, and the 24 h retention §11.5 promises is real.
+	 * The epoch in force NOW, so a client whose captured token has gone stale can
+	 * adopt the current one for subsequent submissions without a second round trip.
 	 */
-	known: boolean;
-	/**
-	 * The answer's outcome so far. This table is PROTOCOL.md §11.5's, reproduced
-	 * rather than paraphrased — an earlier paraphrase here said `unconfirmed` was
-	 * terminal and `unknown` meant "keep polling", which is the inverse of §11.5
-	 * on both rows and of what the shipped client implements. Two normative tables
-	 * that disagree cannot both be satisfied, so this one quotes:
-	 *
-	 *  | value         | terminal? | the client MUST                            |
-	 *  |---------------|-----------|--------------------------------------------|
-	 *  | `confirmed`   | **yes**   | show confirmed (§11.6)                      |
-	 *  | `failed`      | **yes**   | show failed, with `failureCode`             |
-	 *  | `in_flight`   | **no**    | show pending and KEEP POLLING               |
-	 *  | `unconfirmed` | no        | show unconfirmed verbatim; NEVER re-send    |
-	 *  | `unknown`     | no        | treat exactly as `unconfirmed`; never failed|
-	 *
-	 * "Terminal" here means "renderable as a final outcome". `unconfirmed` and
-	 * `unknown` are not terminal in the sense that a later read may still resolve
-	 * them, but neither obliges continued polling and NEITHER may ever be rendered
-	 * as `failed`. `in_flight` is the one row that obliges the client to keep
-	 * reading.
-	 *
-	 * (ANSWER-INFLIGHT) `in_flight` means the lease is held and keystrokes are
-	 * being typed into the picker RIGHT NOW. It exists because the attempt record
-	 * used to be written only AFTER the injection returned, so for up to
-	 * `LOCK_WAIT_TIMEOUT_MS + SEQUENCE_DEADLINE_MS` (~15 s) this endpoint answered
-	 * `known: false` — documented and rendered as "not sent" — for an answer that
-	 * was actively landing. That is the one window §11.5 exists to cover, and it
-	 * lied in it.
-	 *
-	 * Do NOT collapse `in_flight` into `unconfirmed`: the client treats
-	 * `unconfirmed` as an end state and stops reading, so collapsing it
-	 * re-introduces the exact lie §11.5 exists to prevent, in the direction that
-	 * makes the user re-answer a question that already succeeded.
-	 *
-	 * FORWARD COMPATIBILITY, normative for every client. This union is the set a
-	 * CURRENT build understands, not the set that will ever be sent — protocol 1's
-	 * global rule is that an unknown enum value degrades to the documented
-	 * `unknown` member, which §11.6 resolves to `unconfirmed`. A client that maps
-	 * an unrecognised status onto a terminal `failed` is not failing loud, it is
-	 * failing WRONG: it reports a hard failure for a status meaning "this build
-	 * does not understand the answer", and sends the user to re-answer a question
-	 * that may already have landed. Any future member this build does not know
-	 * MUST degrade to `unknown` — never to a terminal failure.
-	 */
-	status: "confirmed" | "failed" | "unconfirmed" | "in_flight" | "unknown";
-	questionId: QuestionId | null;
-	resolvedAtMs: EpochMs | null;
-	/** A §10 code when `status === "failed"`. */
-	failureCode: ErrorCode | null;
-	/**
-	 * The bridge's wall clock when this response was built. Same meaning as
-	 * `HeartbeatResponse.serverTimeMs`, and present here so the two fields below
-	 * can be compared as AGES rather than against a phone clock that is allowed
-	 * to disagree with the desktop's.
-	 */
-	serverTimeMs: EpochMs;
-	/**
-	 * The instant from which `known: false` PROVES the request never arrived.
-	 *
-	 * (COVERAGE-CONTRACT) THIS IS THE CANONICAL STATEMENT of these semantics on the
-	 * TypeScript side, and `PROTOCOL.md` §11.5 is the canonical one for the wire —
-	 * it has to stand alone, because a client author reads the spec, not this file.
-	 * `answer.ts` and `index.ts` deliberately POINT HERE rather than restating it.
-	 * That is not stylistic: the same explanation previously existed in four places
-	 * and five copies of one sentence went stale inside the very commit that
-	 * corrected it. If these semantics change, this comment and §11.5 are the two
-	 * that must be rewritten; anything else should be a pointer.
-	 *
-	 * THE BRIDGE'S GUARANTEE. For every answer attempt this bridge admitted whose
-	 * attempt began at or after `recordsSinceMs`, a record exists — the record is
-	 * written durably before the terminal lock is taken, so no keystroke can reach
-	 * a terminal without one. The value is `max(the store's PROVEN coverage start,
-	 * serverTimeMs − 24 h retention)`, so it also moves forward as old records are
-	 * pruned.
-	 *
-	 * IT REACHES BACK PAST THE CURRENT LIFETIME WHENEVER THE STORE CAN PROVE ITS
-	 * OWN FILE IS CURRENT — AND IT IS THE `known: false` BRANCH THAT NEEDS THIS,
-	 * NOT THE OTHER ONE. Be exact about that, because the intuitive reading is
-	 * wrong and was written down wrong here for a while: a PRESENT record already
-	 * survived a restart without any of this, since the store is durable and
-	 * `handleAnswerStatus` returns the record's own `status` whenever it finds one.
-	 * Nothing about the witness makes a landed answer read `confirmed`; it already
-	 * did. What this field governs is the ABSENT record — the claim that nothing
-	 * was ever sent — and before the witness that claim could only be made about
-	 * the current lifetime, so a pre-restart request with no record decayed to
-	 * `unconfirmed` even when it genuinely never arrived.
-	 *
-	 * What reaching back required is a second file: `writeFileDurable` cannot force
-	 * a directory entry on win32 (see `syncDirectory`), so a hard reset can discard
-	 * the store's most recent rename and revert the file to an earlier version —
-	 * and the reverted file carries the same first-recording stamp as the version
-	 * that was lost, so it cannot declare its own gap. The missing records would sit
-	 * INSIDE a window still claiming to cover them, which is the "it was not sent"
-	 * lie this field exists to remove. `(ATTEMPT-WITNESS)` in `answer.ts` is the
-	 * rise-only witness that makes that revert DETECTABLE rather than believed,
-	 * which is the only reason the file's own stamp may be published.
-	 *
-	 * WHEN THE WITNESS CANNOT PROVE IT — the file was rolled back, the witness is
-	 * missing, unreadable, or bound to another install, or the file predates the
-	 * witness and so was never witnessable — this value DEGRADES to the instant the
-	 * current lifetime opened the store, which is exactly what it always
-	 * used to be: a rollback needs a crash and therefore a restart, so a window
-	 * starting at this mount is one a rollback can never reach behind. Records
-	 * already in the file are still returned in every case; degrading narrows what a
-	 * MISSING record proves, never what a present one says. The client's rule below
-	 * is unchanged either way — it reads this field and does not need to know which
-	 * case produced it.
-	 *
-	 * THE CLIENT'S OBLIGATION. `known: false` may be rendered as "it was not
-	 * sent" ONLY if the client can show its own submit happened at or after this
-	 * instant. The skew-free comparison is on ages:
-	 *
-	 *     coverageAgeMs = serverTimeMs - recordsSinceMs
-	 *     submitAgeMs   = (client's own elapsed time since it sent the answer)
-	 *     provably-not-sent  <=>  coverageAgeMs > submitAgeMs
-	 *
-	 * Otherwise the correct outcome is `unconfirmed` ("the desktop's records do
-	 * not reach back to when this was sent"), NEVER `failed`: a request older
-	 * than the coverage may well have landed, and §11.4 says a second answer
-	 * against a picker is unrecoverable.
-	 */
-	recordsSinceMs: EpochMs;
-	/**
-	 * When this bridge lifetime began (§6.3, identical to
-	 * `HeartbeatResponse.bridgeStartedMs`).
-	 *
-	 * A CONSERVATIVE version of the same proof: if the client's submit predates it,
-	 * the bridge has restarted since, and gating "not sent" on this alone is always
-	 * SAFE. It is no longer EQUIVALENT, and that is the one thing a client author
-	 * has to know: `recordsSinceMs` may now be EARLIER than this field, because the
-	 * durable store proves coverage across restarts (see `recordsSinceMs`). What a
-	 * client that gates on `bridgeStartedMs` alone forfeits is NOT any `confirmed`
-	 * status — those come back whenever the record exists, restart or not — but the
-	 * ability to resolve a MISSING pre-restart record. Such a request stays
-	 * `unconfirmed` ("I cannot tell you") rather than resolving to the actionable
-	 * terminal "it never arrived": wrong in the harmless direction, but the exact
-	 * loss the durable store and its witness were built to end. Prefer
-	 * `recordsSinceMs`; this field remains on the response for a client that gates
-	 * on lifetime continuity alone, and as the §6.3 re-hello trigger.
-	 */
-	bridgeStartedMs: EpochMs;
+	coverageEpoch: string;
 }
 
 /** §11.3 — the six guards, as evaluated, inside the one critical section. */
@@ -1060,12 +964,17 @@ export interface AnswerAttemptRecord {
 	leaseId: LeaseId;
 	startedAtMs: EpochMs;
 	/**
-	 * `unknown` is deliberately NOT storable. It is the wire's degrade-to member
-	 * for a status the READER does not recognise; a record that the bridge itself
-	 * wrote always knows which of the four real outcomes it is in, and writing
-	 * `unknown` into one would manufacture the ambiguity §11.5 exists to remove.
+	 * The four real outcomes, and only those.
+	 *
+	 * This used to be derived from the wire response's `status` minus `"unknown"`.
+	 * It no longer can be: (ANSWER-LEDGER) replaced that field with a discriminated
+	 * `outcome`, and the persisted set now also carries `closed_not_received`, which
+	 * is a FENCE rather than an outcome and must never be written here. Stating the
+	 * four explicitly is what keeps a record the bridge wrote unambiguous — writing
+	 * `unknown` or a tombstone into one would manufacture the ambiguity §11.5 exists
+	 * to remove.
 	 */
-	status: Exclude<AnswerStatusResponse["status"], "unknown">;
+	status: "in_flight" | "confirmed" | "failed" | "unconfirmed";
 	resolvedAtMs: EpochMs | null;
 	failureCode: AttemptFailureCode | null;
 	guardsPassed: AnswerGuardName[];

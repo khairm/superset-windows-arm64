@@ -41,6 +41,7 @@ import {
 	setCompanionQuestionSink,
 } from "../trpc/router/notifications";
 import { createAccessValidator } from "./access-jwt";
+import { type AttemptLedger, createAttemptLedger } from "./attempt-ledger";
 import {
 	type AnswerDeps,
 	type AttemptStore,
@@ -240,6 +241,7 @@ interface BridgeState {
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
 	attempts: AttemptStore;
+	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	readApi: ReadApi;
 	push: PushSender;
@@ -444,6 +446,18 @@ export function createCompanionBridge(
 		if (attemptsOutcome.status === "rejected") throw attemptsOutcome.reason;
 		const nonceCache = cacheOutcome.value;
 		const attempts = attemptsOutcome.value;
+		// (ANSWER-LEDGER) The durable fence, on the host database rather than a JSON
+		// file, because closing the status/answer race needs a transaction. Built here
+		// so a failure to open it — including the PRAGMA synchronous assertion — takes
+		// the bridge down before a single answer can be typed without a durable claim.
+		const ledger = createAttemptLedger({
+			// The LIVE handle, not the `mode=ro` reader every companion READ uses (§7.2).
+			// The ledger is the one companion subsystem that must write to host.db, for
+			// the same reason `snapshotSession` does — and a read-only handle would fail
+			// at the first claim, after the bridge had already accepted the request.
+			db: options.db,
+			log: (event) => logger.warn("answer ledger", event),
+		});
 		// (STORE-CLOSED) The attempt store was the ONLY subsystem with no teardown
 		// step, which is why it was the one a detached prune could rewrite from a
 		// stale snapshot after a replacement bridge had moved on. Shutting its door
@@ -538,6 +552,7 @@ export function createCompanionBridge(
 			leases,
 			locks,
 			attempts,
+			ledger,
 			messageAttempts,
 			audit,
 			agents: options.terminalAgentStore,
@@ -694,6 +709,10 @@ export function createCompanionBridge(
 				async () => {
 					// The 24 h idempotency window (§11.5); the stores own the arithmetic.
 					await attempts.prune(Date.now());
+					// (ANSWER-LEDGER) Pruning the ledger ROTATES the coverage epoch in the
+					// same transaction, so a client holding the old token stops receiving
+					// terminal negatives at the instant the rows it relied on go.
+					ledger.prune(Date.now());
 					messageAttempts.prune(Date.now());
 					// Lease expiry is otherwise lazy — a question or terminal that is
 					// never revisited would keep its lapsed record until process exit.
@@ -716,6 +735,7 @@ export function createCompanionBridge(
 			leases,
 			locks,
 			attempts,
+			ledger,
 			messageAttempts,
 			readApi,
 			push,
@@ -1229,6 +1249,7 @@ interface AnswerAdapterDeps {
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
 	attempts: AttemptStore;
+	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	audit: AuditLog;
 	agents: TerminalAgentStore;
@@ -1336,6 +1357,7 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 		locks: deps.locks,
 		leases: deps.leases,
 		attempts: deps.attempts,
+		ledger: deps.ledger,
 		messageAttempts: deps.messageAttempts,
 		questions: deps.questions,
 		audit: deps.audit,

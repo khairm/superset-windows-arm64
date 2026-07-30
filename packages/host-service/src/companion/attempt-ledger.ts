@@ -156,7 +156,6 @@ export interface AttemptLedger {
 		questionId: string;
 		deviceId: string;
 		surface: "phone" | "watch";
-		leaseId: string;
 		startedAtMs: EpochMs;
 	}): ClaimOutcome;
 	/**
@@ -171,6 +170,8 @@ export interface AttemptLedger {
 		resolvedAtMs: EpochMs | null;
 		failureCode: AttemptFailureCode | null;
 		guardsPassed: readonly AnswerGuardName[];
+		/** Known only by outcome time; the claim predates the lease. */
+		leaseId: string | null;
 	}): void;
 	/** A plain read. Null when there is no row, or the row failed validation. */
 	get(requestId: RequestId): LedgerRecord | null;
@@ -352,13 +353,17 @@ export function createAttemptLedger(options: {
 			row.questionId === null ||
 			row.deviceId === null ||
 			row.surface === null ||
-			row.leaseId === null ||
 			row.startedAtMs === null
 		) {
 			return reject(
 				"an attempt row is missing fields only a tombstone may omit",
 			);
 		}
+		// `leaseId` is deliberately NOT in that list. The claim is made BEFORE the
+		// answer-wide lease is acquired — it has to be, or a status read could still
+		// see "absent" for an answer already admitted — so an `in_flight` row
+		// legitimately has no lease yet. It is filled in when the outcome is
+		// recorded, by which time the lease has been held and released.
 		let guardsPassed: AnswerGuardName[];
 		try {
 			const parsed: unknown = JSON.parse(row.guardsPassedJson);
@@ -416,7 +421,9 @@ export function createAttemptLedger(options: {
 						questionId: claim.questionId,
 						deviceId: claim.deviceId,
 						surface: claim.surface,
-						leaseId: claim.leaseId,
+						// Null on purpose: the lease is taken after this claim. See the
+						// read boundary's note on `leaseId`.
+						leaseId: null,
 						startedAtMs: claim.startedAtMs,
 						createdAtMs: claim.startedAtMs,
 						status: "in_flight",
@@ -462,6 +469,7 @@ export function createAttemptLedger(options: {
 					resolvedAtMs: outcome.resolvedAtMs,
 					failureCode: outcome.failureCode,
 					guardsPassedJson: JSON.stringify(outcome.guardsPassed),
+					leaseId: outcome.leaseId,
 				})
 				// ONLY an `in_flight` row, which is the one this process claimed. The
 				// predicate is the safety property, not an optimisation: without it an
