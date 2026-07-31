@@ -69,6 +69,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: false,
 			bridgeEnabled: false,
+			bridgeRunning: false,
 			pairedDeviceCount: 0,
 		});
 	});
@@ -81,6 +82,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: false,
 			bridgeEnabled: false,
+			bridgeRunning: false,
 			pairedDeviceCount: 0,
 		});
 	});
@@ -98,6 +100,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: false,
 			bridgeEnabled: true,
+			bridgeRunning: false,
 			pairedDeviceCount: 0,
 		});
 	});
@@ -154,6 +157,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: false,
 			bridgeEnabled: true,
+			bridgeRunning: true,
 			pairedDeviceCount: 0,
 		});
 	});
@@ -169,6 +173,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: true,
 			bridgeEnabled: true,
+			bridgeRunning: true,
 			pairedDeviceCount: 2,
 		});
 	});
@@ -187,6 +192,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: false,
 			bridgeEnabled: true,
+			bridgeRunning: false,
 			pairedDeviceCount: 2,
 		});
 	});
@@ -221,6 +227,7 @@ describe("pollCompanionGate", () => {
 			ok: true,
 			open: true,
 			bridgeEnabled: true,
+			bridgeRunning: true,
 			pairedDeviceCount: 2,
 		});
 	});

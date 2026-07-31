@@ -57,6 +57,9 @@ function logGateTransition(
 			: "[keep-awake] companion gate closed — the machine will never be held awake",
 		{
 			bridgeEnabled: gate.bridgeEnabled,
+			bridgeRunning: gate.bridgeRunning,
+			// 0 with bridgeRunning false means "unknowable", not "none paired" —
+			// a down bridge has no device store to count from.
 			pairedDeviceCount: gate.pairedDeviceCount,
 		},
 	);

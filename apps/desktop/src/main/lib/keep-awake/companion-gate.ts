@@ -83,10 +83,21 @@ const REQUEST_TIMEOUT_MS = 4_000;
 export type CompanionGatePoll =
 	| {
 			ok: true;
-			/** True iff BOTH halves hold: bridge enabled and >=1 live pairing. */
+			/** True iff ALL THREE hold: enabled, a running bridge, >=1 live pairing. */
 			open: boolean;
 			bridgeEnabled: boolean;
-			/** Devices that are paired right now — revoked records do not count. */
+			/**
+			 * Whether any host-service reported a RUNNING bridge. Surfaced so a
+			 * closed gate is attributable: `pairedDeviceCount` below is only
+			 * meaningful when this is true.
+			 */
+			bridgeRunning: boolean;
+			/**
+			 * Devices that are paired right now — revoked records do not count.
+			 * When `bridgeRunning` is false the production router cannot read the
+			 * device store (it lives inside a started bridge) and necessarily
+			 * answers 0 — so 0 there means "unknowable", never "none paired".
+			 */
 			pairedDeviceCount: number;
 	  }
 	| { ok: false; error: string };
@@ -202,6 +213,7 @@ export async function pollCompanionGate(
 			ok: true,
 			open: false,
 			bridgeEnabled: false,
+			bridgeRunning: false,
 			pairedDeviceCount: 0,
 		};
 	}
@@ -225,6 +237,7 @@ export async function pollCompanionGate(
 			ok: true,
 			open: false,
 			bridgeEnabled: true,
+			bridgeRunning: false,
 			pairedDeviceCount: 0,
 		};
 	}
@@ -255,18 +268,23 @@ export async function pollCompanionGate(
 				error: error instanceof Error ? error.message : String(error),
 			};
 		}
-		// The child inherits main's env (`...process.env` in the coordinator's
-		// spawn), so the two are documented to agree on the enable flag. A child
-		// that disagrees is not a state this module can interpret — one of the
-		// two processes is not the process it is assumed to be — so it is a hard
-		// error, never quietly folded into "closed".
+		// A child THIS main spawned inherits main's env (`...process.env` in the
+		// coordinator's spawn), so the two agree on the enable flag. An ADOPTED
+		// host-service (`owned: false` — spawned by another app instance, which
+		// on Windows may predate the user persisting the env var) does not, and
+		// honestly reports disabled. The gate cannot tell adoption from a real
+		// inheritance break, so both are a hard error, never quietly folded into
+		// "closed" — and the error names the benign cause so a diagnosis is not
+		// sent hunting for an impossibility. Self-heals when the foreign
+		// service exits.
 		if (!status.bridgeEnabled) {
 			return {
 				ok: false,
 				error:
 					`host-service ${orgId} reports ${COMPANION_ENABLE_ENV} unset while ` +
-					`main's environment has it set to "1" — the child inherits main's ` +
-					`env, so these cannot honestly disagree`,
+					`main's environment has it set to "1" — either it was adopted from ` +
+					`another app instance started before the variable was set (benign; ` +
+					`clears when that instance exits), or env inheritance is broken`,
 			};
 		}
 		anyBridgeRunning ||= status.bridgeRunning;
@@ -277,10 +295,15 @@ export async function pollCompanionGate(
 	// — but the sum is taken anyway rather than short-circuiting on the first
 	// running bridge: if that invariant ever breaks, a count is still a count.
 	if (pairedDeviceCount > 0 && !anyBridgeRunning) {
-		// Devices are paired but the bridge is down: the feature was asked for,
-		// something paired, and the answer path is gone. Holding the machine
-		// awake cannot help — the answer path IS the bridge — so the gate closes,
-		// but loudly, because the user believes they are covered and they are not.
+		// UNREACHABLE against the production router, which answers 0 whenever the
+		// bridge is not running (the device store lives inside a started bridge,
+		// so a down bridge has no count to give). Kept as a tripwire for that
+		// invariant breaking: a positive count with no running bridge means the
+		// answer path is gone while the user believes they are covered. The REAL
+		// paired-but-down state reaches this gate as running:false + count 0 —
+		// which is why `bridgeRunning` is part of the poll result and of the
+		// gate-transition log line, and the host-service's own [companion-bridge]
+		// start-failure log is where the reason lives.
 		log.warn(
 			"[keep-awake] companion devices are paired but no bridge is running — " +
 				"the gate is closed; the host-service log carries the reason " +
@@ -292,6 +315,7 @@ export async function pollCompanionGate(
 		ok: true,
 		open: anyBridgeRunning && pairedDeviceCount > 0,
 		bridgeEnabled: true,
+		bridgeRunning: anyBridgeRunning,
 		pairedDeviceCount,
 	};
 }

@@ -212,13 +212,15 @@ export const COMPANION_ENABLE_ENV = "SUPERSET_COMPANION_BRIDGE";
 
 /**
  * The same override every other Superset component honours (`packages/cli`'s
- * `SUPERSET_HOME_DIR`, and `apps/desktop`'s keep-awake companion gate, which
- * reads `$SUPERSET_HOME_DIR/companion/devices/devices.json` — the bridge's own
- * device index — to decide whether a phone can still reach this machine).
+ * `SUPERSET_HOME_DIR`). The desktop's keep-awake companion gate used to be the
+ * third reader — it read `$SUPERSET_HOME_DIR/companion/devices/devices.json`
+ * to count pairings — but (DEVICE-INDEX-DB) retired that file and the gate now
+ * asks the `companion.gate` tRPC query, so the count comes from host.db through
+ * the bridge and no desktop code resolves companion paths at all.
  *
- * Hardcoding `homedir()` here made the two processes disagree about a directory
- * they both own the moment the variable was set: the desktop resolved one path
- * while every bridge path resolved under another.
+ * Hardcoding `homedir()` here made the processes that DO share these paths
+ * disagree about a directory they both own the moment the variable was set:
+ * one resolved one path while every bridge path resolved under another.
  */
 export const SUPERSET_HOME_ENV = "SUPERSET_HOME_DIR";
 
