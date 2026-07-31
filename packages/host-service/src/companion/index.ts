@@ -180,6 +180,16 @@ export interface CompanionBridge {
 	disableWrites(reason: string): Promise<number>;
 	/** Desktop-side revoke. The device must pair again. */
 	revokeAllDevices(reason: string): Promise<number>;
+	/**
+	 * (KEEP-AWAKE) How many devices are paired RIGHT NOW — records whose
+	 * `revokedAtMs` is null. Revoked records are retained 30 days so audit
+	 * entries stay attributable (§4.8), and a retained record is NOT a
+	 * pairing: the keep-awake gate must drop its hold the moment `unpair_all`
+	 * runs, not in a month. Reads the device store, whose rows in host.db are
+	 * the only authority since (DEVICE-INDEX-DB) retired `devices.json`.
+	 * Rejects when the bridge is not running.
+	 */
+	pairedDeviceCount(): Promise<number>;
 	readonly startedAtMs: number;
 	readonly running: boolean;
 }
@@ -939,6 +949,10 @@ export function createCompanionBridge(
 		},
 		async revokeAllDevices(reason: string): Promise<number> {
 			return applyDesktopPanic(requireState(), logger, "unpair_all", reason);
+		},
+		async pairedDeviceCount(): Promise<number> {
+			const records = await requireState().deviceStore.list();
+			return records.filter((record) => record.revokedAtMs === null).length;
 		},
 		get startedAtMs(): number {
 			return startedAtMs;

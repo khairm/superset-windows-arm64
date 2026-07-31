@@ -15,27 +15,35 @@
  * moment either stops being true". This module is that predicate; agent
  * activity only decides whether to hold WITHIN an open gate.
  *
- * WHY BOTH HALVES ARE READ HERE RATHER THAN ASKED OF THE BRIDGE
- * ------------------------------------------------------------
- * The bridge lives in the host-service CHILD (`packages/host-service/src/
- * companion/`) and has no channel into Electron main. Both halves of its own
- * enablement are, however, plainly readable from main:
+ * WHERE THE PAIRED COUNT COMES FROM, AND WHY IT IS ASKED FOR OVER HTTP
+ * --------------------------------------------------------------------
+ * The device index is rows in the host-service's host.db — `(DEVICE-INDEX-DB)`
+ * retired the `devices.json` file this module used to read, and the migration
+ * unlinks it after import, so a file read here would answer "nothing has ever
+ * paired" forever on any machine that has actually paired. Only the bridge's
+ * device store can read those rows, and it lives in the host-service CHILD.
  *
- *   - the env var is inherited by the child from main's `process.env`
- *     (`host-service-coordinator.ts` spawns it with `...process.env`), so main
- *     and the bridge necessarily agree on it;
- *   - `devices.json` is the bridge's own persisted index, written atomically
- *     (tmp -> fsync -> rename) by `device-store.ts`, so a reader can never see
- *     a torn document.
+ * So this module asks the child, over the exact channel `agent-activity.ts`
+ * already crosses every tick the gate is open: the coordinator names the
+ * running host-services, `readManifest` supplies each one's loopback endpoint
+ * and PSK bearer token, and the `companion.gate` tRPC query answers with the
+ * authoritative count. The env var check still short-circuits first — it is
+ * inherited by the child from main's `process.env`
+ * (`host-service-coordinator.ts` spawns it with `...process.env`), so main and
+ * the bridge necessarily agree on it, and with the bridge off — the default
+ * for every fork user — a poll costs one string comparison and no I/O at all.
  *
- * Read-only, always async — the fork's live footgun list is explicit that
- * synchronous fs on the main thread starves the `superset-app://` renderer
- * loader.
+ * Failure semantics are the caller's contract (`keep-awake/index.ts`): an
+ * `ok: false` read can never ACQUIRE the hold, and never releases one that an
+ * earlier authoritative read proved open.
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { SUPERSET_HOME_DIR } from "../app-environment";
+import log from "electron-log/main";
+import { getHostServiceCoordinator } from "../host-service-coordinator";
+import {
+	type HostServiceManifest,
+	readManifest,
+} from "../host-service-manifest";
 
 /**
  * Mirror of `COMPANION_ENABLE_ENV` in
@@ -60,21 +68,12 @@ import { SUPERSET_HOME_DIR } from "../app-environment";
 export const COMPANION_ENABLE_ENV = "SUPERSET_COMPANION_BRIDGE";
 
 /**
- * The bridge's device index: `$SUPERSET_HOME_DIR/companion/devices/devices.json`
- * (`resolveCompanionPaths` + `device-store.ts`'s `INDEX_FILENAME`). Both
- * processes resolve `SUPERSET_HOME_DIR` from the same env var, which is the
- * agreement `config.ts` documents.
- *
- * Copied for the reasons above, and for one more that is unfixable from here:
- * `INDEX_FILENAME` is module-private to `device-store.ts` and not exported, so
- * even an export path for `companion/` would not reach it.
+ * Per-request budget. Loopback; a slower answer than this means trouble. Same
+ * value as `agent-activity.ts`'s `REQUEST_TIMEOUT_MS`, which is deliberately
+ * module-private there — a shared constant would couple the two polls' budgets
+ * for no reason beyond the numbers currently agreeing.
  */
-export const COMPANION_DEVICES_INDEX_PATH = join(
-	SUPERSET_HOME_DIR,
-	"companion",
-	"devices",
-	"devices.json",
-);
+const REQUEST_TIMEOUT_MS = 4_000;
 
 /**
  * A gate read either produced an authoritative answer or it did not. Never
@@ -92,46 +91,98 @@ export type CompanionGatePoll =
 	  }
 	| { ok: false; error: string };
 
-interface RawDeviceRecord {
-	deviceId: unknown;
-	revokedAtMs: unknown;
+/**
+ * What one host-service's `companion.gate` query answered. Mirrors
+ * `CompanionGateStatus` in `trpc/router/companion/companion.ts`; copied, not
+ * imported, for the same reasons as `COMPANION_ENABLE_ENV` above — and safely,
+ * because `parseGateStatus` re-validates every field at this boundary, so the
+ * copies cannot drift silently.
+ */
+interface ChildGateStatus {
+	bridgeEnabled: boolean;
+	bridgeRunning: boolean;
+	pairedDeviceCount: number;
 }
 
 /**
- * Validate at the boundary. This file decides whether the machine may sleep, so
- * an unexpected shape is a hard error for the whole read — never a silently
- * skipped row, which would under-count pairings and release the blocker on a
- * paired machine.
+ * Injected for tests only; production always passes nothing (same pattern as
+ * `KeepAwakeManagerDeps.now`).
  *
- * Deliberately validates only what the decision rests on. The bridge's
- * `parseRecord` is the full validator and owns the record contract; duplicating
- * it here would rot, and a record this reader cannot fully understand is still
- * unambiguously a pairing.
+ * `fetchFn` is typed as the call shape this module actually uses rather than
+ * `typeof fetch` — Bun's `fetch` type carries extras (`preconnect`) that a
+ * test stub has no business implementing.
  */
-function countPairedDevices(payload: unknown, file: string): number {
-	if (!Array.isArray(payload)) {
-		throw new Error(`${file}: expected a JSON array of device records`);
+export interface CompanionGateDeps {
+	env: NodeJS.ProcessEnv;
+	listOrgIds: () => string[];
+	readManifestFn: (organizationId: string) => HostServiceManifest | null;
+	fetchFn: (input: string, init?: RequestInit) => Promise<Response>;
+}
+
+/**
+ * Validate at the boundary. The host-service is ours, but this is still a
+ * network response being turned into a decision about whether the machine may
+ * sleep — an unexpected shape is a hard error for the whole tick, never a
+ * silently-defaulted field.
+ */
+function parseGateStatus(payload: unknown, endpoint: string): ChildGateStatus {
+	if (typeof payload !== "object" || payload === null) {
+		throw new Error(`${endpoint}: response was not an object`);
 	}
-	let paired = 0;
-	for (const [index, entry] of payload.entries()) {
-		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-			throw new Error(`${file}: record ${index} is not an object`);
-		}
-		const { deviceId, revokedAtMs } = entry as RawDeviceRecord;
-		if (typeof deviceId !== "string" || deviceId.length === 0) {
-			throw new Error(`${file}: record ${index} has no deviceId`);
-		}
-		if (revokedAtMs !== null && typeof revokedAtMs !== "number") {
-			throw new Error(
-				`${file}: record ${deviceId} has an invalid revokedAtMs (${typeof revokedAtMs})`,
-			);
-		}
-		// Revoked records are retained 30 days so audit entries stay
-		// attributable (§4.8). A retained record is NOT a pairing: `unpair_all`
-		// must drop the hold immediately, not in a month.
-		if (revokedAtMs === null) paired += 1;
+	const result = (payload as { result?: unknown }).result;
+	if (typeof result !== "object" || result === null) {
+		throw new Error(`${endpoint}: response has no \`result\``);
 	}
-	return paired;
+	const data = (result as { data?: unknown }).data;
+	if (typeof data !== "object" || data === null) {
+		throw new Error(`${endpoint}: response has no \`result.data\``);
+	}
+	const json = (data as { json?: unknown }).json;
+	if (typeof json !== "object" || json === null) {
+		throw new Error(`${endpoint}: \`result.data.json\` is not an object`);
+	}
+	const { bridgeEnabled, bridgeRunning, pairedDeviceCount } = json as Record<
+		string,
+		unknown
+	>;
+	if (typeof bridgeEnabled !== "boolean") {
+		throw new Error(`${endpoint}: \`bridgeEnabled\` is not a boolean`);
+	}
+	if (typeof bridgeRunning !== "boolean") {
+		throw new Error(`${endpoint}: \`bridgeRunning\` is not a boolean`);
+	}
+	if (
+		typeof pairedDeviceCount !== "number" ||
+		!Number.isInteger(pairedDeviceCount) ||
+		pairedDeviceCount < 0
+	) {
+		throw new Error(
+			`${endpoint}: \`pairedDeviceCount\` is not a non-negative integer`,
+		);
+	}
+	return { bridgeEnabled, bridgeRunning, pairedDeviceCount };
+}
+
+async function fetchGateStatus(
+	fetchFn: CompanionGateDeps["fetchFn"],
+	endpoint: string,
+	authToken: string,
+): Promise<ChildGateStatus> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const res = await fetchFn(`${endpoint}/trpc/companion.gate`, {
+			method: "GET",
+			signal: controller.signal,
+			headers: { Authorization: `Bearer ${authToken}` },
+		});
+		if (!res.ok) {
+			throw new Error(`${endpoint}: HTTP ${res.status}`);
+		}
+		return parseGateStatus(await res.json(), endpoint);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -139,15 +190,12 @@ function countPairedDevices(payload: unknown, file: string): number {
  *
  * The env check comes first and short-circuits: with the bridge off — the
  * default for every fork user — this costs one string comparison every poll and
- * touches the disk not at all.
- *
- * `env` and `indexPath` are injected for tests only; production always passes
- * neither (same pattern as `KeepAwakeManagerDeps.now`).
+ * makes no request at all.
  */
 export async function pollCompanionGate(
-	env: NodeJS.ProcessEnv = process.env,
-	indexPath: string = COMPANION_DEVICES_INDEX_PATH,
+	deps: Partial<CompanionGateDeps> = {},
 ): Promise<CompanionGatePoll> {
+	const env = deps.env ?? process.env;
 	const bridgeEnabled = env[COMPANION_ENABLE_ENV] === "1";
 	if (!bridgeEnabled) {
 		return {
@@ -158,54 +206,91 @@ export async function pollCompanionGate(
 		};
 	}
 
-	let raw: string;
-	try {
-		raw = await readFile(indexPath, "utf8");
-	} catch (error) {
-		// A missing index is not a failure: it is the bridge's own representation
-		// of "nothing has ever paired". Any OTHER errno is a real read failure and
-		// must not masquerade as an empty device list.
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+	const listOrgIds =
+		deps.listOrgIds ??
+		(() => getHostServiceCoordinator().getActiveOrganizationIds());
+	const readManifestFn = deps.readManifestFn ?? readManifest;
+	const fetchFn = deps.fetchFn ?? fetch;
+
+	// Zero running host-services is a real "closed", not a failure: with no
+	// host-service there is no answer path, so there is nothing to hold the
+	// machine awake FOR. The same REAL limitation `pollAgentActivity` states
+	// applies here: PTYs survive under the detached pty-daemon, so an agent can
+	// still be working while this app has no host-service to ask — the blocker
+	// is released in that window and the phone's liveness watchdog (§7.7) is
+	// the backstop.
+	const orgIds = listOrgIds();
+	if (orgIds.length === 0) {
+		return {
+			ok: true,
+			open: false,
+			bridgeEnabled: true,
+			pairedDeviceCount: 0,
+		};
+	}
+
+	// If ANY host-service fails to answer, the whole read is `ok: false` — a
+	// partial sum would look identical to "fewer devices are paired" and could
+	// release the machine to sleep mid-question.
+	let pairedDeviceCount = 0;
+	let anyBridgeRunning = false;
+	for (const orgId of orgIds) {
+		const manifest = readManifestFn(orgId);
+		if (!manifest) {
 			return {
-				ok: true,
-				open: false,
-				bridgeEnabled: true,
-				pairedDeviceCount: 0,
+				ok: false,
+				error: `host-service ${orgId} is running but has no manifest`,
 			};
 		}
-		return {
-			ok: false,
-			error: `${indexPath}: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		};
+		let status: ChildGateStatus;
+		try {
+			status = await fetchGateStatus(
+				fetchFn,
+				manifest.endpoint,
+				manifest.authToken,
+			);
+		} catch (error) {
+			return {
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+		// The child inherits main's env (`...process.env` in the coordinator's
+		// spawn), so the two are documented to agree on the enable flag. A child
+		// that disagrees is not a state this module can interpret — one of the
+		// two processes is not the process it is assumed to be — so it is a hard
+		// error, never quietly folded into "closed".
+		if (!status.bridgeEnabled) {
+			return {
+				ok: false,
+				error:
+					`host-service ${orgId} reports ${COMPANION_ENABLE_ENV} unset while ` +
+					`main's environment has it set to "1" — the child inherits main's ` +
+					`env, so these cannot honestly disagree`,
+			};
+		}
+		anyBridgeRunning ||= status.bridgeRunning;
+		pairedDeviceCount += status.pairedDeviceCount;
 	}
 
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch (error) {
-		return {
-			ok: false,
-			error: `${indexPath} is not valid JSON: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		};
+	// Only ONE bridge can exist per machine — a second fails loud binding 47610
+	// — but the sum is taken anyway rather than short-circuiting on the first
+	// running bridge: if that invariant ever breaks, a count is still a count.
+	if (pairedDeviceCount > 0 && !anyBridgeRunning) {
+		// Devices are paired but the bridge is down: the feature was asked for,
+		// something paired, and the answer path is gone. Holding the machine
+		// awake cannot help — the answer path IS the bridge — so the gate closes,
+		// but loudly, because the user believes they are covered and they are not.
+		log.warn(
+			"[keep-awake] companion devices are paired but no bridge is running — " +
+				"the gate is closed; the host-service log carries the reason " +
+				"(search for [companion-bridge])",
+			{ pairedDeviceCount },
+		);
 	}
-
-	let pairedDeviceCount: number;
-	try {
-		pairedDeviceCount = countPairedDevices(parsed, indexPath);
-	} catch (error) {
-		return {
-			ok: false,
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-
 	return {
 		ok: true,
-		open: pairedDeviceCount > 0,
+		open: anyBridgeRunning && pairedDeviceCount > 0,
 		bridgeEnabled: true,
 		pairedDeviceCount,
 	};

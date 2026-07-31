@@ -1,60 +1,70 @@
 /**
  * (KEEP-AWAKE) The gate decides whether a fork user's machine may be pinned out
  * of sleep at all, so every branch of it is covered here — most importantly the
- * two that must NOT read as "open": bridge disabled, and a device index that
- * could not be read.
+ * ones that must NOT read as "open": bridge disabled, no host-service to ask,
+ * a bridge that is enabled but down, and every failure to get an authoritative
+ * answer (which must be `ok: false`, never a quiet "closed").
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { COMPANION_ENABLE_ENV, pollCompanionGate } from "./companion-gate";
+import { describe, expect, it } from "bun:test";
+import type { HostServiceManifest } from "../host-service-manifest";
+import {
+	COMPANION_ENABLE_ENV,
+	type CompanionGateDeps,
+	pollCompanionGate,
+} from "./companion-gate";
 
 const ENABLED: NodeJS.ProcessEnv = { [COMPANION_ENABLE_ENV]: "1" };
 const DISABLED: NodeJS.ProcessEnv = {};
 
-function record(
-	overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+function manifest(orgId: string): HostServiceManifest {
 	return {
-		deviceId: "AAAAAAAAAAAAAAAAAAAAAA",
-		label: "Pixel",
-		surface: "phone",
-		pairedAtMs: 1,
-		lastSeenMs: null,
-		keyRef: "k",
-		fcmToken: null,
-		fcmTokenUpdatedMs: null,
-		writeEnabled: true,
-		revokedAtMs: null,
-		revokeReason: null,
+		pid: 1234,
+		endpoint: `http://127.0.0.1:5555/${orgId}`,
+		authToken: `token-${orgId}`,
+		startedAt: 1,
+		organizationId: orgId,
+	};
+}
+
+/** The tRPC envelope `companion.gate` answers with. */
+function envelope(json: unknown): string {
+	return JSON.stringify({ result: { data: { json } } });
+}
+
+function gateBody(overrides: Record<string, unknown> = {}): string {
+	return envelope({
+		bridgeEnabled: true,
+		bridgeRunning: true,
+		pairedDeviceCount: 0,
+		...overrides,
+	});
+}
+
+/** One org, one manifest, responses served per call in order. */
+function deps(
+	overrides: Partial<CompanionGateDeps> = {},
+): Partial<CompanionGateDeps> {
+	return {
+		env: ENABLED,
+		listOrgIds: () => ["org-a"],
+		readManifestFn: (orgId) => manifest(orgId),
+		fetchFn: async () => new Response(gateBody(), { status: 200 }),
 		...overrides,
 	};
 }
 
-let dir: string;
-
-beforeAll(async () => {
-	dir = await mkdtemp(join(tmpdir(), "keep-awake-gate-"));
-});
-
-afterAll(async () => {
-	await rm(dir, { recursive: true, force: true });
-});
-
-async function writeIndex(name: string, body: string): Promise<string> {
-	const path = join(dir, name);
-	await writeFile(path, body, "utf8");
-	return path;
-}
-
 describe("pollCompanionGate", () => {
-	it("is closed, and reads no disk, when the bridge is disabled", async () => {
-		const gate = await pollCompanionGate(
-			DISABLED,
-			join(dir, "never-read.json"),
-		);
+	it("is closed, and makes no request, when the bridge is disabled", async () => {
+		const gate = await pollCompanionGate({
+			env: DISABLED,
+			listOrgIds: () => {
+				throw new Error("must not be called");
+			},
+			fetchFn: async () => {
+				throw new Error("must not be called");
+			},
+		});
 		expect(gate).toEqual({
 			ok: true,
 			open: false,
@@ -65,8 +75,7 @@ describe("pollCompanionGate", () => {
 
 	it('treats an env value other than exactly "1" as disabled', async () => {
 		const gate = await pollCompanionGate(
-			{ [COMPANION_ENABLE_ENV]: "true" },
-			join(dir, "never-read.json"),
+			deps({ env: { [COMPANION_ENABLE_ENV]: "true" } }),
 		);
 		expect(gate).toEqual({
 			ok: true,
@@ -76,8 +85,15 @@ describe("pollCompanionGate", () => {
 		});
 	});
 
-	it("is closed when the device index does not exist", async () => {
-		const gate = await pollCompanionGate(ENABLED, join(dir, "absent.json"));
+	it("is closed when no host-service is running", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				listOrgIds: () => [],
+				fetchFn: async () => {
+					throw new Error("must not be called");
+				},
+			}),
+		);
 		expect(gate).toEqual({
 			ok: true,
 			open: false,
@@ -86,19 +102,54 @@ describe("pollCompanionGate", () => {
 		});
 	});
 
-	it("is closed when every device is revoked", async () => {
-		const path = await writeIndex(
-			"revoked.json",
-			JSON.stringify([
-				record({ revokedAtMs: 123, revokeReason: "panic" }),
-				record({
-					deviceId: "BBBBBBBBBBBBBBBBBBBBBB",
-					revokedAtMs: 456,
-					revokeReason: "user",
-				}),
-			]),
+	it("fails rather than guessing when a running host-service has no manifest", async () => {
+		const gate = await pollCompanionGate(deps({ readManifestFn: () => null }));
+		expect(gate.ok).toBe(false);
+		if (!gate.ok) expect(gate.error).toContain("no manifest");
+	});
+
+	it("fails rather than reporting a closed gate when the request rejects", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () => {
+					throw new Error("ECONNREFUSED");
+				},
+			}),
 		);
-		const gate = await pollCompanionGate(ENABLED, path);
+		expect(gate.ok).toBe(false);
+		if (!gate.ok) expect(gate.error).toContain("ECONNREFUSED");
+	});
+
+	it("fails rather than reporting a closed gate on a non-OK response", async () => {
+		const gate = await pollCompanionGate(
+			deps({ fetchFn: async () => new Response("nope", { status: 500 }) }),
+		);
+		expect(gate.ok).toBe(false);
+		if (!gate.ok) expect(gate.error).toContain("HTTP 500");
+	});
+
+	it("fails rather than reporting a closed gate on a malformed envelope", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () =>
+					new Response(JSON.stringify({ result: {} }), { status: 200 }),
+			}),
+		);
+		expect(gate.ok).toBe(false);
+	});
+
+	it("fails rather than silently defaulting a non-integer pairedDeviceCount", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () =>
+					new Response(gateBody({ pairedDeviceCount: "2" }), { status: 200 }),
+			}),
+		);
+		expect(gate.ok).toBe(false);
+	});
+
+	it("is closed when the bridge runs with zero pairings", async () => {
+		const gate = await pollCompanionGate(deps());
 		expect(gate).toEqual({
 			ok: true,
 			open: false,
@@ -107,55 +158,89 @@ describe("pollCompanionGate", () => {
 		});
 	});
 
-	it("is open when at least one device is live", async () => {
-		const path = await writeIndex(
-			"mixed.json",
-			JSON.stringify([
-				record({ revokedAtMs: 123, revokeReason: "user" }),
-				record({ deviceId: "BBBBBBBBBBBBBBBBBBBBBB" }),
-			]),
+	it("is open when the bridge runs with live pairings", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () =>
+					new Response(gateBody({ pairedDeviceCount: 2 }), { status: 200 }),
+			}),
 		);
-		const gate = await pollCompanionGate(ENABLED, path);
 		expect(gate).toEqual({
 			ok: true,
 			open: true,
 			bridgeEnabled: true,
-			pairedDeviceCount: 1,
+			pairedDeviceCount: 2,
 		});
 	});
 
-	it("fails rather than reporting a closed gate on unparsable JSON", async () => {
-		const path = await writeIndex("broken.json", "{not json");
-		const gate = await pollCompanionGate(ENABLED, path);
-		expect(gate.ok).toBe(false);
-	});
-
-	it("fails rather than reporting a closed gate on a non-array document", async () => {
-		const path = await writeIndex(
-			"object.json",
-			JSON.stringify({ devices: [] }),
+	it("is closed when devices are paired but the bridge is not running", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () =>
+					new Response(
+						gateBody({ bridgeRunning: false, pairedDeviceCount: 2 }),
+						{ status: 200 },
+					),
+			}),
 		);
-		const gate = await pollCompanionGate(ENABLED, path);
-		expect(gate.ok).toBe(false);
-	});
-
-	it("fails rather than silently skipping a record with a bad revokedAtMs", async () => {
-		const path = await writeIndex(
-			"bad-revoked.json",
-			JSON.stringify([record({ revokedAtMs: "yesterday" })]),
-		);
-		const gate = await pollCompanionGate(ENABLED, path);
-		expect(gate.ok).toBe(false);
-	});
-
-	it("counts an empty index as zero pairings, not as a failure", async () => {
-		const path = await writeIndex("empty.json", "[]");
-		const gate = await pollCompanionGate(ENABLED, path);
 		expect(gate).toEqual({
 			ok: true,
 			open: false,
 			bridgeEnabled: true,
-			pairedDeviceCount: 0,
+			pairedDeviceCount: 2,
 		});
+	});
+
+	it("fails when the child says the bridge env is unset while main says 1", async () => {
+		const gate = await pollCompanionGate(
+			deps({
+				fetchFn: async () =>
+					new Response(gateBody({ bridgeEnabled: false }), { status: 200 }),
+			}),
+		);
+		expect(gate.ok).toBe(false);
+		if (!gate.ok) expect(gate.error).toContain(COMPANION_ENABLE_ENV);
+	});
+
+	it("sums counts across host-services and needs only one running bridge", async () => {
+		const bodies: Record<string, string> = {
+			"org-a": gateBody({ bridgeRunning: true, pairedDeviceCount: 1 }),
+			"org-b": gateBody({ bridgeRunning: false, pairedDeviceCount: 1 }),
+		};
+		const gate = await pollCompanionGate(
+			deps({
+				listOrgIds: () => ["org-a", "org-b"],
+				fetchFn: async (input) => {
+					const url = String(input);
+					const org = url.includes("org-a") ? "org-a" : "org-b";
+					return new Response(bodies[org], { status: 200 });
+				},
+			}),
+		);
+		expect(gate).toEqual({
+			ok: true,
+			open: true,
+			bridgeEnabled: true,
+			pairedDeviceCount: 2,
+		});
+	});
+
+	it("fails the whole read when any one host-service fails to answer", async () => {
+		let call = 0;
+		const gate = await pollCompanionGate(
+			deps({
+				listOrgIds: () => ["org-a", "org-b"],
+				fetchFn: async () => {
+					call += 1;
+					if (call === 1) {
+						return new Response(gateBody({ pairedDeviceCount: 3 }), {
+							status: 200,
+						});
+					}
+					throw new Error("ECONNREFUSED");
+				},
+			}),
+		);
+		expect(gate.ok).toBe(false);
 	});
 });

@@ -26,10 +26,14 @@
  * route only a hand-crafted PSK request could call, which is the same as not
  * having one.
  *
- * WHAT IT STILL CANNOT SAY. `CompanionBridge` exposes no read of the device
- * store, so this router cannot report how many devices are paired or whether
- * their writes are currently enabled. It therefore reports NOTHING about that
- * rather than guessing, and the panic UI states only the counts these mutations
+ * WHAT IT CAN SAY ABOUT THE DEVICE STORE — exactly one number. The keep-awake
+ * gate in Electron main (`apps/desktop/src/main/lib/keep-awake/
+ * companion-gate.ts`) used to count pairings by reading `devices.json` off
+ * disk; (DEVICE-INDEX-DB) retired that file — the index is rows in host.db
+ * that only the bridge's device store can read — so `CompanionBridge` exposes
+ * `pairedDeviceCount()` and the `gate` query below is how main reaches it.
+ * That is the whole read surface: whether writes are currently enabled is
+ * still unreported, and the panic UI states only the counts these mutations
  * themselves return. See the note on `disableWrites`.
  *
  * IT NEVER CONSTRUCTS A BRIDGE. If none is registered the answer is a typed
@@ -165,6 +169,21 @@ export interface CompanionStatus extends CompanionBridgeStatus {
 	panicReasonMaxChars: number;
 }
 
+/**
+ * (KEEP-AWAKE) What the `gate` query answers with. Booleans and a count, all
+ * three always present — the gate validates this shape at its own boundary,
+ * so a field that becomes optional here is a hard error there, not a silently
+ * sleeping machine.
+ */
+export interface CompanionGateStatus {
+	/** `SUPERSET_COMPANION_BRIDGE=1` as THIS process sees it. */
+	bridgeEnabled: boolean;
+	/** Enabled AND the sealed listener actually came up. */
+	bridgeRunning: boolean;
+	/** Live pairings (revoked-but-retained records excluded). 0 unless running. */
+	pairedDeviceCount: number;
+}
+
 export const companionRouter = router({
 	/**
 	 * Whether the feature is on, and whether it actually came up. A UI must be
@@ -174,6 +193,30 @@ export const companionRouter = router({
 		return {
 			...readCompanionBridgeStatus(),
 			panicReasonMaxChars: PANIC_REASON_MAX_CHARS,
+		};
+	}),
+
+	/**
+	 * (KEEP-AWAKE) The authoritative paired-count read for the main-process
+	 * keep-awake gate, polled every tick while agents work.
+	 *
+	 * Unlike everything below it NEVER throws for the off states: bridge-off is
+	 * the normal state for every fork user, and a poll that 500s on the normal
+	 * state trains its caller to treat errors as routine. The off states are
+	 * answers here — `bridgeRunning: false` with a zero count — and an error is
+	 * reserved for what IS exceptional (the bridge stopping between the
+	 * `running` check and the store read, which tRPC surfaces as a 500 and the
+	 * gate treats as "keep the hold you have, acquire nothing").
+	 */
+	gate: protectedProcedure.query(async (): Promise<CompanionGateStatus> => {
+		const status = readCompanionBridgeStatus();
+		const bridge = getCompanionBridge();
+		const running = bridge?.running === true;
+		return {
+			bridgeEnabled: status.enabled,
+			bridgeRunning: running,
+			pairedDeviceCount:
+				running && bridge ? await bridge.pairedDeviceCount() : 0,
 		};
 	}),
 
