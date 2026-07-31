@@ -1,0 +1,1728 @@
+use opus and gpt 5.6 sol sub agents for all work and reviews going forward.
+
+---
+
+actually only need home-assistant for the server side if needed may be optional but will need a new repo for the app itself in Code Projects. I need an app for myself to install on my pixel 10 pro fold and pixel watch 4 - the point of this app is to show me of the various agent states when I open it (like how the side bar works). I can then select the chats to see whats happening as well/ read it. Now on the watch I only expect to see notifications for red dots with the ability to read the full questions and answers and select an option too. On the phone I need to be able to read the chat, chat in there .... absolutely perfect the ux with me by using askuser like crazy whilst you send off research agents and do more research agents if needed
+
+---
+
+get gpt 5.6 sol to help if needed
+
+---
+
+kill any sub agents who are finished so statusbar is clean
+
+---
+
+<agent-message from="research-android">
+Recommendation: build a native Kotlin app with Jetpack Compose Material 3 on phone, Compose for Wear only if/when a watch APK is actually needed, and optional Horologist for Data Layer helpers. For v1, use PHONE-GENERATED BRIDGED NOTIFICATIONS, not a Wear app. Use FCM high-priority data messages for red wakeups; use REST/WebSocket over always-on Tailscale only for foreground dashboard/transcript streaming and reply sync. Self-hosted ntfy+UnifiedPush is the fallback, not a permanent app-owned WebSocket.
+
+MATRIX
+- Native Kotlin + phone Compose + Wear Compose: watch 5/5, foldable 5/5, Android integrations 5/5, solo risk lowest. Official docs call Compose for Wear the recommended UI approach, and Wear Material 3 is current: https://developer.android.com/training/wearables/compose . Use Horologist selectively; it is Google-maintained gap-filling tooling, but main is a moving 0.8.x line while 0.7.x is maintenance: https://github.com/google/horologist
+- Kotlin Multiplatform: shared domain/network code is possible, but there is no distinct first-class Wear OS UI target; Wear UI still uses Android-only androidx.wear.compose. With no iOS target, KMP adds build/source-set complexity for little benefit. Compose MP officially lists Android/iOS/desktop/web, not Wear OS: https://kotlinlang.org/docs/multiplatform/supported-platforms.html
+- Flutter: generic Android is supported but Wear OS is not a first-class listed/CI target and there is no official Wear component stack; notification/Data Layer/watch packaging require native glue. https://docs.flutter.dev/reference/supported-platforms
+- React Native/Expo: weakest watch choice. RN officially lists Android/iOS in-tree and several out-of-tree platforms, but no Wear OS; Expo’s platform docs likewise do not list Wear OS. https://reactnative.dev/docs/out-of-tree-platforms and https://docs.expo.dev/versions/latest/
+
+WATCH MODEL
+1) Bridged phone notification (recommended v1): Android says phone notifications bridge to paired watches by default, specifically calling this ideal when no wearable app is installed. Expanded notifications provide a scrollable content/actions view. Wear docs explicitly support voice replies and predefined responses via RemoteInput.setChoices(): https://developer.android.com/training/wearables/notifications . Build one NotificationCompat reply action with 2–4 setChoices values AND leave setAllowFreeFormInput(true) (default), so the same action offers canned taps plus watch voice/keyboard free text. AOSP confirms choices+free-form can coexist: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/app/RemoteInput.java . Do not create one action per answer: Android’s current generic notification limit is 3 actions; one RemoteInput avoids that: https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/app/Notification.java . Use NotificationCompat styles, not RemoteViews (custom layouts are stripped on Wear). If WearableExtender.addAction() is used, it replaces normal builder actions on watch, so do not use it for this basic flow.
+2) Important hard blocker: “full question text” is not unbounded in a system notification. Current AOSP clamps each Notification Builder CharSequence to 1,024 UTF-16 code units; FCM total payload is 4,096 bytes. Source for 1,024 clamp: Notification.java above (`MAX_CHARSEQUENCE_LENGTH`, `safeCharSequence`); FCM limit: https://firebase.google.com/docs/cloud-messaging/customize-messages/set-message-type . Therefore pure bridging is sufficient only if the event API validates a <=1,024-character watch question contract. If arbitrary-length full text is non-negotiable, a pure notification cannot guarantee it: ship a minimal Wear companion whose red notification opens a Compose question screen containing full text/options. That is the only material reason this requirement may force a watch UI.
+3) A Data Layer watch app is technically NON-STANDALONE: it still depends on the paired phone. Data Layer automatically chooses encrypted Bluetooth or E2E-encrypted Google cloud relay when BT is unavailable, and requires identical package name/signature: https://developer.android.com/training/wearables/data/overview . A true standalone watch app needs its own FCM/network path and an internet-accessible reply relay. Android’s definition: https://developer.android.com/training/wearables/apps/standalone-apps .
+4) Phone-away behavior: Data Layer can cloud-route over watch LTE/Wi-Fi, but phone dependence remains. Pixel Watch support says synced texts require the connected phone to be online: https://support.google.com/googlepixelwatch/answer/12674814 . Treat bridged notifications similarly: LTE/Wi-Fi watch + online phone should work, but it is not independence from a dead/offline phone. Pixel Watch 4 live-device testing is still required for exact bridged RemoteInput presentation.
+5) Standalone Wear app is needed only for: arbitrary text beyond notification clamp/custom screen, guaranteed operation when phone is offline/dead, watch-local history/state, or custom multi-step UI. It is not needed merely for 2–4 choices + free text.
+
+PUSH/TRANSPORT
+- Primary FCM: supported for sideloaded apps. Firebase explicitly says apps are not limited to Play Store deployment; device needs Google Play services/Play Store, which Pixel phone/watch have. Also request Android 13+ POST_NOTIFICATIONS. https://firebase.google.com/docs/cloud-messaging/android/client
+- Send HIGH-priority DATA-only messages only for red/user-visible events; decrypt/validate, persist, then immediately post the rich local NotificationCompat notification. High priority can wake Doze, grants a short processing/network window, and can be deprioritized after 7 days of high messages that do not produce visible notifications. Extra work should use expedited WorkManager. https://firebase.google.com/docs/cloud-messaging/android/message-priority
+- FCM is not E2E; encrypt sensitive question/options in the data payload or send opaque ID. Keep the Firebase service-account credential only on desktop. Use event/reply idempotency IDs. If >4 KB, send ID and fetch from desktop, but notification still cannot show >1,024 in one CharSequence.
+- Tailscale transport: use a live WebSocket while phone UI is open and REST for transcript pages/reply outbox. Do not use an app-owned background WebSocket as urgent push. Doze suspends network/wakelocks/jobs; FCM gets a temporary exception, and Android warns multiple per-app persistent sockets drain battery: https://developer.android.com/training/monitoring-device-state/doze-standby . A foreground service plus battery exemption can make it work, but adds permanent notification/battery cost and still is a poor primary.
+- Fallback ntfy: direct ntfy Android notifications support only up to 3 fixed actions and no RemoteInput/free-text action, so they cannot directly satisfy 4 choices + free text: https://docs.ntfy.sh/publish/#action-buttons . Instead integrate the UnifiedPush connector in OUR app and use the ntfy app as distributor; it delivers raw 1–4,096-byte payloads, then our app posts its own RemoteInput notification: https://unifiedpush.org/developers/spec/android/ and https://unifiedpush.org/kdoc/connector/ . Self-hosted ntfy uses WebSocket/foreground-service instant delivery rather than FCM and needs battery exemption/permanent notification: https://docs.ntfy.sh/subscribe/phone/ . This is viable redundancy, but heavier than FCM.
+
+FOLDABLE UX
+Use `NavigableListDetailPaneScaffold`: expanded windows show workspace/agent list + transcript side-by-side; compact/smaller windows show one pane and navigate list→detail. It includes navigator/back handling and predictive-back animation. https://developer.android.com/develop/ui/compose/layouts/adaptive/list-detail . Drive it from `currentWindowAdaptiveInfo()` and window size/posture, never model/orientation checks; window size can change in split-screen. Persist selected conversation in ViewModel/saveable key. Use `NavigationSuiteScaffold` if a top-level rail/bar is needed. Current guidance: https://developer.android.com/develop/ui/compose/layouts/adaptive/get-started-with-adaptive-apps
+
+TAILSCALE
+- Phone: official Tailscale Android supports Android 8+, phones/tablets/Android TV; Android OS can keep a VpnService always-on from boot. Our app can run normally over it. Only one VPN service per user/profile can be active, so Tailscale conflicts with another VPN app, not with our ordinary app: https://developer.android.com/guide/topics/connectivity/vpn
+- Watch blocker: as of July 2026, Tailscale’s official platform/download docs list Android but its Android install docs only name phones, tablets and Android TV; no Wear OS/watch support is documented: https://tailscale.com/download and https://tailscale.com/docs/install/android . Do not make direct watch→home Tailscale a requirement. Unsupported APK sideloading is not an architecture.
+
+ONE ARCHITECTURE
+Home desktop is source of truth. It sends encrypted, high-priority FCM data only for red events; exposes authenticated REST/WebSocket on Tailscale. Native phone app uses Room/outbox + Flow/Compose; it validates FCM payloads, stores the event, posts a scrollable NotificationCompat notification with one RemoteInput action (2–4 choices + free-form), and retries idempotent answers to desktop over Tailscale. Wear OS receives the bridged notification; no watch APK in v1 IF <=1,024-character watch text is an accepted validated contract. Foreground app streams all colors/state/transcripts via Tailscale WebSocket. Optional fallback is self-hosted ntfy as UnifiedPush distributor. If arbitrary full-length watch text is mandatory, add a minimal native Wear Compose companion screen over Data Layer; do not jump to Flutter/RN or direct watch Tailscale.
+</agent-message>
+
+---
+
+continue please
+
+---
+
+.
+
+---
+
+continue
+
+---
+
+<task-notification>
+<task-id>a79c295015c6b8e3e</task-id>
+<tool-use-id>toolu_01FhuVZEoWd91HHoEHxkPrDp</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a79c295015c6b8e3e.output</output-file>
+<status>completed</status>
+<summary>Agent "Map terminalId to session/transcript" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Verdict first
+
+**Yes — an out-of-renderer client can resolve `terminalId` → transcript file.** Two independent persisted paths, both outside the renderer:
+
+1. **sqlite** `~/.superset/host/&lt;orgId&gt;/host.db` → `terminal_agent_bindings.agent_session_id` (authoritative, keyed by terminalId)
+2. **JSON files** `~/.superset/session-pane-map/&lt;sessionId&gt;.json` (reverse direction — scan dir, match `terminalId`)
+
+Then sessionId → transcript by filename glob: `~/.claude/projects/*/&lt;sessionId&gt;.jsonl`.
+
+---
+
+## 1. The pane map
+
+Files: `agent-jsonl-watcher.ts`, `pane-map-hook.ts`, `index.ts` (2-line re-export) in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\`
+
+**On disk, one file per agent session.** Written by an installed Python `SessionStart` hook, not by the app.
+
+Write side — `pane-map-hook.ts:241` and `:261` (inside embedded `PANE_MAP_SCRIPT`):
+
+```python
+out_dir = pathlib.Path.home() / ".superset" / "session-pane-map"
+...
+out_path = out_dir / f"{session_id}.json"
+```
+
+Read side — `agent-jsonl-watcher.ts:57` + `:306`:
+
+```typescript
+const SUPERSET_PANE_MAP_DIR = path.join(os.homedir(), ".superset", "session-pane-map");
+...
+const file = path.join(SUPERSET_PANE_MAP_DIR, `${sessionId}.json`);
+```
+
+**Keyed by sessionId, NOT terminalId.** Value (`pane-map-hook.ts:231-239`), fields omitted when empty:
+
+```python
+mapping: dict = {}
+if pane_id:      mapping["paneId"] = pane_id
+if tab_id:       mapping["tabId"] = tab_id
+if terminal_id:  mapping["terminalId"] = terminal_id
+if workspace_id: mapping["workspaceId"] = workspace_id
+```
+
+No transcript path in it. Direction is sessionId → {paneId, tabId, terminalId, workspaceId}. Reverse lookup = readdir + parse.
+
+Last-writer-wins; deleted on SessionEnd only if it still points at this terminal — `pane-map-hook.ts:582-600` (`_drop_pane_map_if_ours`).
+
+**sessionId → transcript** is by filename convention, `agent-jsonl-watcher.ts:285-298`:
+
+```
+Claude: ~/.claude/projects/&lt;encoded-cwd&gt;/&lt;session-uuid&gt;.jsonl
+Codex:  ~/.codex/sessions/**/rollout-&lt;timestamp&gt;-&lt;session-uuid&gt;.jsonl
+```
+Roots at `agent-jsonl-watcher.ts:55-56`. The `&lt;encoded-cwd&gt;` dir isn't persisted anywhere → glob required.
+
+**Direct terminalId → transcript path, persisted:** `pane-map-hook.ts:523-535` + `:1143-1154`
+
+```python
+def _teamstate_path(terminal_id):
+    return (pathlib.Path.home() / ".superset" / "agent-subagent-running"
+            / (terminal_id + ".teamstate.json"))
+...
+cache_file.write_text(json.dumps({
+    "version": 3,
+    "path": transcript_path,   # &lt;-- absolute transcript path, keyed by terminalId
+    "offset": offset, "state": state, "forkTools": fork_tools, "prompts": prompts,
+}), encoding="utf-8")
+```
+
+Caveat: only written when the teammate-ledger path runs (`_team_ledger`, called from `_without_idle_teammates`, `pane-map-hook.ts:1185/1205`) — i.e. terminals that had background agent/teammate work. Not universal. Transcript path source: `pane-map-hook.ts:1934`, `payload.get("transcript_path") or payload.get("transcriptPath")`.
+
+## 2. TerminalAgentStore
+
+`C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal-agents\store.ts:51` — **host-service process, not the renderer.** In-memory `Map` + pluggable persistence, hydrated at construction (`store.ts:59`).
+
+`agentSessionId` field: `store.ts:10`, `:103`, `:152` (`countByAgentSessionId`).
+
+Persistence is sqlite: `packages\host-service\src\terminal-agents\persistence.ts:46` `SqliteTerminalAgentBindingPersistence`. Not sessionStorage, not electron-store.
+
+Non-renderer clients can query it — it is served over host-service tRPC (see §4).
+
+## 3. Host-service DB
+
+Schema: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\db\schema.ts:46-63`
+
+```typescript
+export const terminalAgentBindings = sqliteTable(
+	"terminal_agent_bindings",
+	{
+		terminalId: text("terminal_id").primaryKey()
+			.references(() =&gt; terminalSessions.id, { onDelete: "cascade" }),
+		workspaceId: text("workspace_id").notNull(),
+		agentId: text("agent_id").notNull().$type&lt;AgentIdentityId&gt;(),
+		agentSessionId: text("agent_session_id"),
+		definitionId: text("definition_id").$type&lt;AgentDefinitionId&gt;(),
+		startedAt: integer("started_at").notNull(),
+		lastEventAt: integer("last_event_at").notNull(),
+		lastEventType: text("last_event_type").notNull(),
+	},
+```
+
+`terminal_sessions` at `schema.ts:16-44` (id, origin_workspace_id, status, …).
+
+**DB file path:** `apps\desktop\src\main\lib\host-service-coordinator.ts:674` → `HOST_DB_PATH: path.join(organizationDir, "host.db")`, with `organizationDir` from `apps\desktop\src\main\lib\host-service-manifest.ts:19-21`:
+
+```typescript
+export function manifestDir(organizationId: string): string {
+	return join(SUPERSET_HOME_DIR, "host", organizationId);
+}
+```
+
+`SUPERSET_HOME_DIR` = `$SUPERSET_HOME_DIR` env or `~/.superset` — `apps\desktop\src\main\lib\app-environment.ts:8-9`.
+
+→ **`~/.superset/host/&lt;organizationId&gt;/host.db`**, better-sqlite3, WAL (`packages\host-service\src\db\db.ts:3,13-14`). Plain sqlite file — any external process can open it read-only.
+
+No transcript path column anywhere in the DB.
+
+## 4. tRPC routes exposing the mapping
+
+Mounted at `packages\host-service\src\trpc\router\router.ts:41,46,47` as `notifications`, `terminal`, `terminalAgents`.
+
+All return `TerminalAgentBinding` (includes `agentSessionId`), file `packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts`:
+
+| route | line | auth |
+|---|---|---|
+| `terminalAgents.list` | `:41` | protected |
+| `terminalAgents.listByWorkspace` | `:45` | protected |
+| `terminalAgents.findActive` | `:61` | protected |
+| `terminalAgents.getOrCreate` | `:108` | protected (returns `{binding, created}`) |
+| `terminalAgents.clearWorkspaceStatuses` | `:87` | protected, mutation |
+| `notifications.hook` | `packages\host-service\src\trpc\router\notifications\notifications.ts:54` | **publicProcedure — unauthenticated**, write-only ingest |
+| `terminal.writeInputIfIdle` | `packages\host-service\src\trpc\router\terminal\terminal.ts:201` | protected; compares `binding?.agentSessionId !== input.expectedAgentSessionId` at `:216` |
+
+`terminalAgents.list` returns every live binding with `terminalId` + `agentSessionId` — that's the remote-readable mapping. Requires host-service PSK auth.
+
+`notifications.hook` is the ingest that populates it (`notifications.ts:85-93`):
+
+```typescript
+ctx.terminalAgentStore.recordEvent({
+	terminalId: input.terminalId,
+	workspaceId: terminalSession.originWorkspaceId,
+	eventType,
+	...(agent?.agentId ? { agentId: agent.agentId } : {}),
+	...(agent?.sessionId ? { agentSessionId: agent.sessionId } : {}),
+```
+
+No route returns a transcript path.
+
+## 5. superset-notify.py files under ~/.superset
+
+Embedded as `NOTIFY_SCRIPT` from `pane-map-hook.ts:306`; installed to `~/.superset/hooks/superset-notify.py` (`pane-map-hook.ts:25,59-60`).
+
+| path expression | line | contents | transcript path? | pending-question? |
+|---|---|---|---|---|
+| `~/.superset/agent-notify-hook.log` | `:385` | JSON-lines, every invocation | no | no |
+| `~/.superset/logs/dot-decisions.log` (+ `.log.1`, rotates 1 MB) | `:403-405` | `ts terminal=&lt;id&gt; session=&lt;id&gt; ...` | no | reason string only |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;/` | `:450-451` | dir, one file per running subagent | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.mainstopped` | `:454-460` | sentinel | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.compacting` | `:463-471` | trigger `manual`\|`auto` | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.agentbg` | `:474-486` | agent-type bg running | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.shellbg` | `:489-502` | shell-type bg running | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.bgactive` | `:505-520` | last real subagent activity ts | no | no |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.teamstate.json` | `:523-535` | `{version,path,offset,state,forkTools,prompts}` | **YES** | teammate idle ledger |
+| `~/.superset/agent-subagent-running/&lt;terminalId&gt;.askq/&lt;owner&gt;` | `:538-557` | **empty touch files**, one per owner (`_main` or sanitized agent_id) | no | **YES — presence = pending AskUserQuestion** |
+| `~/.superset/session-pane-map/&lt;sessionId&gt;.json` | `:595` | read + conditional unlink only | no | no |
+
+Markers are created with `_touch` (`:603-608`, zero-byte) — the askq dir encodes pending-question state purely by file existence per owner. Set at `PreToolUse:AskUserQuestion` (`:1805`), cleared on answer (`:1819`), owner SubagentStop (`:1625`), main turn boundary (`:1680`/`:1685`), API abort (`:1780`), session end (`:1798`).
+
+Codex job JSON is read but **not** written by the hook — `agent-jsonl-watcher.ts:448-490` scans `~/.claude/plugins/data/codex*/state/*/jobs/*.json` and `$TMPDIR/codex-companion/*/jobs/*.json`, matching `rec.sessionId` with status `queued|running`.
+
+The notify hook POSTs to `$SUPERSET_HOST_AGENT_HOOK_URL` (`:1921`) with body `{json:{terminalId, eventType, agent:{agentId, sessionId}}}` (`:2034-2040`) — no transcript path over the wire.
+
+---
+
+## Out-of-renderer resolution recipe
+
+Cheapest, most reliable:
+
+1. Open `~/.superset/host/&lt;orgId&gt;/host.db` read-only → `SELECT agent_session_id FROM terminal_agent_bindings WHERE terminal_id = ?` (join `terminal_sessions` on `status='active'` for liveness — that's what `persistence.ts:72-99` does), or call `terminalAgents.list` over tRPC with the PSK.
+2. Glob `~/.claude/projects/*/&lt;agent_session_id&gt;.jsonl` (Codex: `~/.codex/sessions/**/rollout-*-&lt;id&gt;.jsonl`).
+
+Fallbacks: `~/.superset/agent-subagent-running/&lt;terminalId&gt;.teamstate.json` → `.path` gives the transcript directly (when present); or scan `~/.superset/session-pane-map/*.json` for `terminalId` match. Pending-question state only from `~/.superset/agent-subagent-running/&lt;terminalId&gt;.askq/` file existence.
+
+Nothing modified.</result>
+<usage><subagent_tokens>69619</subagent_tokens><tool_uses>33</tool_uses><duration_ms>300312</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2140dfaaa726731e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a2140dfaaa726731e.output</output-file>
+<status>completed</status>
+<summary>Agent "Map sidebar tree data sources" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Findings below. Bottom line: **the workspace/terminal universe is fully headless-readable; the entire sidebar tiering/snooze/archive/order layer is renderer-only localStorage with no on-disk file a headless process can meaningfully read.**
+
+---
+
+## 1. Host-served workspace universe
+
+**Hook**: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\hooks\host-workspaces\useHostWorkspaces\useHostWorkspaces.ts`
+- L179: `client.workspace.list.query()` — one query per host target (local direct, remote via relay), merged in `mergeHostWorkspaces` (L242-257).
+- L203-230: live deltas via WS event bus `workspace:changed`; L23 fallback poll 30s.
+- Snapshots persisted per host to **IndexedDB** (`loadHostWorkspacesSnapshot`/`saveHostWorkspacesSnapshot`, `useHostWorkspaces.utils.ts` L4 `idb-keyval`) — renderer-only cache, not needed headlessly.
+- Item shape: `useHostWorkspaces.utils.ts` L10-22 — `HostWorkspaceRow extends SelectV2Workspace { worktreePath; worktreeExists }`; `HostWorkspaceItem` adds `hostReachable`, `source: "host" | "cloud"`.
+
+**Procedures** (all `protectedProcedure`, all served from host sqlite, zero cloud dependency):
+
+- `workspace.list` — `packages\host-service\src\trpc\router\workspace\workspace.ts:40-62`. Output per row: `toCloudShape(row, orgId)` + `worktreePath`, `worktreeExists`, `projectName`. `toCloudShape` = `packages\host-service\src\workspaces\local-workspace-store.ts:98-117`:
+  `{ id, organizationId, projectId, hostId, name (row.name || row.branch), branch, type, createdByUserId, taskId, createdAt: Date, updatedAt: Date }`
+- `workspace.get` (L15-33), `workspace.update` (L70-116), `workspace.gitStatus` (L130-157), `workspace.delete` (L159-169), `workspace.cloudList` (L118-128, cloud passthrough).
+- `project.list` — `packages\host-service\src\trpc\router\project\project.ts:65-83`: `{ id, name (name || basename(repoPath)), repoPath, repoOwner, repoName, repoUrl, worktreeBaseDir, createdAt, updatedAt }`. `project.get` at L108.
+- `terminal.listSessions({ workspaceId })` — `packages\host-service\src\trpc\router\terminal\terminal.ts:138-146` → `{ sessions: TerminalSessionSummary[] }`, each `{ terminalId, workspaceId, createdAt, exited, exitCode, attached, title }` (`packages\host-service\src\terminal\terminal.ts:569-577`, merge logic L596-656). `terminal.countBackgroundSessions` at L148.
+- `terminalAgents.list` / `listByWorkspace` / `findActive` / `clearWorkspaceStatuses` / `getOrCreate` — `packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts:41-185`. Binding shape `packages\host-service\src\terminal-agents\types.ts:13-22`: `{ terminalId, workspaceId, agentId, agentSessionId?, definitionId?, startedAt, lastEventAt, lastEventType }`.
+- Router index: `packages\host-service\src\trpc\router\router.ts:27-52` (also `acpSessions`, `ports`, `git`, `notifications`, `pullRequests`, `workspaceCreation`).
+
+**DB on disk**: `~/.superset/host/&lt;organizationId&gt;/host.db` (WAL). Path minted at `apps\desktop\src\main\lib\host-service-coordinator.ts:674` (`HOST_DB_PATH: path.join(organizationDir, "host.db")`) and `packages\cli\src\lib\host\manifest.ts:75-77`; consumed via `packages\host-service\src\env.ts:12` → `packages\host-service\src\serve.ts:57` → `packages\host-service\src\db\db.ts:10-27`. Sibling `manifest.json` (`manifest.ts:29-31`) carries `{ pid, endpoint, authToken, startedAt, organizationId }` — that is how a headless bridge discovers the tRPC endpoint + token.
+
+**Tables** (`packages\host-service\src\db\schema.ts`): `terminal_sessions` (L16), `terminal_agent_bindings` (L46), `projects` (L65), `host_settings` (L98), `pull_requests` (L105), `host_agent_configs` (L151), `workspaces` (L179), `acp_sessions` (L231), `workspace_cloud_deletes` (L253). Migrations `packages\host-service\drizzle\0000…0011`.
+
+Nothing in this schema stores snooze, archive, pin, section, or tab order.
+
+---
+
+## 2. Sidebar state — where snooze/archive/completed/deleted/pin/order actually live
+
+**Renderer localStorage. Not host sqlite. Not Electric.**
+
+Storage declaration: `apps\desktop\src\renderer\routes\_authenticated\providers\CollectionsProvider\collections.ts`
+- L781-795: `v2WorkspaceLocalState = createIndexedCollection(localStorageCollectionOptions(withReadHeal({ id: \`v2_workspace_local_state-${organizationId}\`, storageKey: \`v2-workspace-local-state-${organizationId}\`, … })))`
+- L768-775: `v2SidebarProjects`, storageKey `v2-sidebar-projects-${organizationId}` (holds `isPinned`, `tabOrder`, `isCollapsed`, `show*/`*Collapsed` flags).
+- L809-816: `v2SidebarSections`, storageKey `v2-sidebar-sections-${organizationId}`.
+- Contrast L102-130 + L284-751: only the **Electric/cloud** collections go through `createPersistedElectricCollection` → `@tanstack/electron-db-sqlite-persistence`. The sidebar collections do not.
+
+Field schema: `…\CollectionsProvider\dashboardSidebarLocal\schema.ts:139-207` — `workspaceLocalStateSchema.sidebarState` = `{ projectId, tabOrder, sectionId, changesFilter, changesViewMode, activeTab, isHidden, archivedAt, snoozeUntil, snoozeLaunchId, completedAt, deletedAt }`; plus top-level `paneLayout`, `viewedFiles`, `recentlyViewedFiles`, `workspaceRunTerminals`, `pendingMigratedTerminals`. Pin lives at L18 of the project schema (`isPinned`).
+
+**Writers** (single file, all `collections.v2WorkspaceLocalState.update/insert`) — `apps\desktop\src\renderer\routes\_authenticated\hooks\useDashboardSidebarState\useDashboardSidebarState.ts`:
+- `archiveWorkspace` L556-599 (`archivedAt = Date.now()`, clears snooze) — L577-588 inserts a pre-archived row for auto-included mains.
+- `snoozeWorkspace` L601-650 — `snoozeUntil = until` or `snoozeLaunchId = APP_LAUNCH_ID` (SNOOZE-MAIN insert path L610-636).
+- `unsnoozeWorkspace` L652-661, `unsnoozeAllInProject` L663-677, `unarchiveWorkspaces` L683-694.
+- `deleteWorkspace` L709-779 (`deletedAt`), `restoreWorkspace` L785-798.
+- `completeWorkspace` L806-836 / `uncompleteWorkspace` L838-848 (`completedAt`; set only by the kanban board).
+- `togglePinProject` L279-287 (`v2SidebarProjects.isPinned`), `reorderProjects` L289-299, `reorderWorkspaces` L301-312, `reorderProjectChildren` L314-338, `moveWorkspaceToSection(AtIndex)` L340-372 / L434-473 — all manual drag order → `tabOrder`.
+- `(REMOVE-STICKY)` tombstones: `…\useDashboardSidebarState\sidebarMutations.ts:34-63` (`tombstoneSidebarWorkspaceRecord`, sets `isHidden`) and L88-117 (`removeProjectFromSidebarState`), passive-mount guard at `useDashboardSidebarState.ts:241-264`; passive mounts at `…\v2-workspace\layout.tsx:88` and `V2WorkspaceMount.tsx:76`.
+
+Classifier `getWorkspaceSidebarBucket` — `…\CollectionsProvider\dashboardSidebarLocal\sidebarVisibility.ts:146-175`: precedence `deleted → completed → archived → snoozed → hidden → active`. `isWorkspaceArchived` L114-125 needs the host row's `type` ("main" stays merely hidden). `APP_LAUNCH_ID` L72 is a per-process `crypto.randomUUID()` — **"snooze until next launch" is meaningless outside the renderer process that minted it**; a headless reader sees an opaque UUID and cannot tell whether it matches the live app launch.
+
+`(SIDEBAR-STATE-PROJECTION)` — `…\DashboardSidebar\hooks\useDashboardSidebarData\useDashboardSidebarData.ts:288` (carries a fork's full sidebar state), with the projection query at L241-268 (selects `snoozeUntil/snoozeLaunchId/archivedAt/completedAt/deletedAt` out of the localStorage collection) and the join to host rows at L269-305 — sidebar rows only exist where a local-state row **and** a host row both exist.
+
+**Answer to the crux**: a headless process cannot read snooze/archive/pin/order. There is no sqlite table, no tRPC procedure, and no exported file. The only persistence is Chromium `localStorage` inside the Electron renderer's profile (Local Storage leveldb under Electron `userData`), keyed `v2-workspace-local-state-&lt;orgId&gt;` / `v2-sidebar-projects-&lt;orgId&gt;` / `v2-sidebar-sections-&lt;orgId&gt;`. The only sidebar-adjacent state ever written to a real file is the kanban board's daily append-only JSON snapshot: `apps\desktop\src\lib\trpc\routers\window.ts:143-204` → `~/.superset/backups/kanban/&lt;org&gt;-&lt;YYYY-MM-DD&gt;.json` (kanban cards carry their own `snoozeUntil/archivedAt/completedAt/deletedAt`, `schema.ts:542-589` — a stale, once-daily, kanban-only mirror, not the sidebar tree). Electric collections persist to `~/.superset/tanstack-db.sqlite` (`apps\desktop\src\main\lib\persistence\persistence.ts:139-158`, dir from `apps\desktop\src\main\lib\app-environment.ts:8-9`) but no sidebar collection is in it.
+
+Corroboration that this gap is real today: `apps\mobile` has **zero** matches for `snooze`, `archivedAt`, or `sidebarState` — the existing phone client reproduces workspaces from host data only.
+
+---
+
+## 3. Tiering / sort
+
+`apps\desktop\src\renderer\routes\_authenticated\_dashboard\components\DashboardSidebar\DashboardSidebar.tsx`
+- L54-64 `(ACTIVE-FIRST)`:
+  ```ts
+  function getProjectTierRank(project: DashboardSidebarProject): number {
+  	if (project.isPinned) return 0;
+  	return getProjectChildrenWorkspaces(project.children).length &gt; 0 ? 1 : 2;
+  }
+  ```
+- L185-205: stable 3-tier partition applied over the manual drag order (`projectOrder`, seeded from `groups` at L147-152).
+- L157-183: the currently-open workspace explicitly does **not** affect sort.
+- `(HOVER-FREEZE)` L216 + L230-253: pointer-inside detection via rAF-throttled bounding-rect test; `frozenOrderRef` (L233) holds the last order while the pointer is over the list, re-applied on leave; tier-change re-evaluation at L303.
+- Tier field plumbed through `types.ts:93-95` and `buildDashboardSidebarProjects.ts:22`.
+
+**"Active" is NOT dot-derived.** It is `children.length &gt; 0` where `children` are the workspaces bucketed `active` by `getWorkspaceSidebarBucket` (`useDashboardSidebarData.ts:361-380`) — i.e. host workspace rows minus renderer-local snooze/archive/complete/delete. So the tier is computable headlessly *only if* you also have the sidebar-state layer; the host half (which workspaces exist per project) is fully available, the subtractive half is not.
+
+The dot/status layer is separately renderer-only: `apps\desktop\src\renderer\stores\v2-notifications\store.ts` — Zustand persisted to `window.sessionStorage` under name `v2-notification-dots` (L630-639), `agentTerminals` registry L168, L335-355, L389-410, `(AGENT-SHELL-BLUE)` gate L849-862. Fed by main-process hook events, not queryable.
+
+---
+
+## 4. Terminals per workspace, agent vs plain shell
+
+Two independent sources; the sidebar joins them.
+
+**Host-side (headless-readable):**
+- Which terminals are alive: `terminal.listSessions` (above), merging in-memory attachment state with `terminal_sessions` rows the daemon still has alive (`terminal.ts:596-656`; dispose-stamped rows excluded L644).
+- Which of those are agents: `terminalAgents.listByWorkspace` / `list`, backed by `terminal_agent_bindings` joined to `terminal_sessions` where `status != 'disposed'` (`packages\host-service\src\terminal-agents\persistence.ts:46-60`). A terminal with a binding is an agent terminal; without, a plain shell. `lastEventType` gives working/permission.
+- `packages\host-service\src\db\schema.ts:46-63` — bindings carry `agentId`, `definitionId`, `agentSessionId`, `startedAt`, `lastEventAt`, `lastEventType`.
+
+**Renderer-side:**
+- The tab/terminal *tree the sidebar renders* comes from `paneLayout` inside `v2WorkspaceLocalState` — localStorage. `apps\desktop\src\renderer\stores\v2-notifications\store.ts:897-920` (`useV2WorkspaceTabChips` live-queries `local.paneLayout`), consumed by `…\DashboardSidebarWorkspaceDetails\hooks\useDashboardSidebarWorkspaceTabChips\useDashboardSidebarWorkspaceTabChips.ts:21-53` `(TAB-CHIPS)` which joins pane `terminalId` → host binding for the agent icon, and takes `status` from the renderer dot store, explicitly *"never host session status or raw agent lifecycle events"* (L16-20).
+- Writer: `apps\desktop\src\renderer\stores\workspace-creates\writeWorkspacePaneLayout.ts:23-74`.
+- Host bindings reach the renderer via `apps\desktop\src\renderer\hooks\host-service\useTerminalAgentBindings\useTerminalAgentBindings.ts:33-53` (query + `agent:lifecycle` / `terminal:lifecycle` invalidation).
+- Running-agent chips: `…\DashboardSidebarWorkspaceChips\hooks\useDashboardSidebarWorkspaceRunningAgents\useDashboardSidebarWorkspaceRunningAgents.ts:45-56` (host bindings ⨯ renderer dot statuses).
+- `agentTerminals` (`store.ts:168`) is a renderer sessionStorage latch used only for the blue-shell gate — not a source of truth for agent-ness; the host bindings are.
+
+**For a phone client**: the *open-tab* view is unreachable headlessly, but "which terminals exist and which are agents" is fully reachable — `terminal.listSessions` + `terminalAgents.list`. Precedent: `apps\mobile\screens\(authenticated)\(home)\home\hooks\useHostTerminalAgents\useHostTerminalAgents.ts:29-67` already derives per-workspace `working`/`permission` from `terminalAgents.list` `lastEventType` on a 5s poll (mirrors desktop's `deriveTerminalAgentStatus`).
+
+---
+
+## 5. `v2WorkspaceLocalState` backing store
+
+- Backed by `localStorageCollectionOptions` from `@tanstack/react-db` (`collections.ts:45`, used at L782), **not** Electric, **not** the Electron sqlite persistence adapter (which is applied only at `collections.ts:118-130` to Electric collections).
+- `storageKey`: `v2-workspace-local-state-${organizationId}`; key fn `item.workspaceId` (`collections.ts:786-790`). Read-time heal `healWorkspaceLocalState` (`dashboardSidebarLocal\schema.ts:416-445`) merges `SIDEBAR_STATE_DEFAULTS` (L212-224) so pre-existing rows read back normalized.
+- Three in-memory indexes on `sidebarState.projectId` / `sectionId` / `tabOrder` (`collections.ts:796-807`).
+- **Persisted file a headless reader could open: none that is usable.** The bytes sit in the Electron renderer's Chromium `Local Storage` leveldb (app `userData`), which is a private, lock-held, format-unstable store — no export, no IPC read path, no mirror in `host.db` or `~/.superset/tanstack-db.sqlite`.
+
+---
+
+## Bridge implication (one line each)
+
+- Repo rows, branch workspaces, terminals, agent-vs-shell, per-agent working/permission: **available headlessly today** via `project.list`, `workspace.list`, `terminal.listSessions`, `terminalAgents.list`, plus `workspace:changed` / `agent:lifecycle` / `terminal:lifecycle` WS events; endpoint+token from `~/.superset/host/&lt;org&gt;/manifest.json`.
+- Pinned/active/idle tiering, snooze, archive, completed, recycle bin, sections, manual drag order, pane/tab layout: **renderer-only**, so the bridge needs either (a) a new host-side table + procedures owning sidebar state, or (b) a renderer-resident exporter pushing `v2WorkspaceLocalState` / `v2SidebarProjects` / `v2SidebarSections` out (which makes the phone view dark whenever the desktop app is closed). Note `APP_LAUNCH_ID` snoozes cannot survive relocation as-is — they'd need to become absolute timestamps or a host-owned launch epoch.</result>
+<usage><subagent_tokens>141313</subagent_tokens><tool_uses>65</tool_uses><duration_ms>383619</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a79c295015c6b8e3e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a79c295015c6b8e3e.output</output-file>
+<status>completed</status>
+<summary>Agent "Map terminalId to session/transcript" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reported to probe-askuser. Findings already delivered in full above — nothing new discovered since. Summary of what was sent, in their priority order:
+
+1. **Pane map = persisted files**, not in-memory. `~/.superset/session-pane-map/&lt;sessionId&gt;.json` (pane-map-hook.ts:241,261 write; agent-jsonl-watcher.ts:57,306 read). Keyed by sessionId → `{paneId, tabId, terminalId, workspaceId}`. Reverse (terminalId→sessionId) needs a dir scan. Bonus they didn't ask for: `~/.superset/agent-subagent-running/&lt;terminalId&gt;.teamstate.json` holds `"path": &lt;transcript_path&gt;` keyed directly by terminalId (pane-map-hook.ts:523-535, 1143-1154), though only for terminals that ran background agent work.
+
+2. **Yes, both.** `terminal_agent_bindings.agent_session_id` in `~/.superset/host/&lt;orgId&gt;/host.db` (schema.ts:46-63; path from host-service-coordinator.ts:674 + host-service-manifest.ts:19-21). Routes: `terminalAgents.list` :41, `listByWorkspace` :45, `findActive` :61, `getOrCreate` :108 — all protected. `notifications.hook` :54 is public but write-only ingest.
+
+3. **TerminalAgentStore lives in host-service**, not the renderer (store.ts:51). Persists to sqlite via persistence.ts:46.
+
+No files modified.</result>
+<usage><subagent_tokens>74942</subagent_tokens><tool_uses>1</tool_uses><duration_ms>46844</duration_ms></usage>
+</task-notification>
+
+---
+
+.
+
+---
+
+Make sure Fable agents review everything. this is a tricky area and they are clever and you can use call another llm skill to get Opus 5.6 sol to weigh in as well
+
+---
+
+<task-notification>
+<task-id>bocjm17pv</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bocjm17pv.output</output-file>
+<status>completed</status>
+<summary>Background command "Call Codex gpt-5.6-sol for architecture verdict" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Try your previous response in simple plain english
+
+---
+
+.
+
+---
+
+can you do the firebase thing in google cli on google cloud instead?
+
+---
+
+PS C:\Users\khair\Code Projects\fork-superset-windows-arm64> cloudflared tunnel login
+cloudflared: The term 'cloudflared' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+
+---
+
+PS C:\Users\khair\Code Projects\fork-superset-windows-arm64> & "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel login
+A browser window should have opened at the following URL:
+
+https://dash.cloudflare.com/argotunnel?aud=&callback=https%3A%2F%2Flogin.cloudflareaccess.org%REDACTED%3D
+
+If the browser failed to open, please visit the URL above directly in your browser.
+2026-07-28T22:43:58Z INF You have successfully logged in.
+If you wish to copy your credentials to a server, they have been saved to:
+C:\Users\khair\.cloudflared\cert.pem
+
+---
+
+stop using artifacts like that doesnt open, just html use /chrome-control do what you need to
+
+---
+
+ADE owns its agents from birth - in the plan what does this mean?
+
+---
+
+fully read the plan into context
+
+---
+
+get an opus agent to use /chrome-control to go do the cloudflare thing
+
+---
+
+.
+
+---
+
+<task-notification>
+<task-id>blav33lg0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\blav33lg0.output</output-file>
+<status>completed</status>
+<summary>Background command "Install portable JDK 21 ARM64 and Android SDK" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+ok once implementation workflow is done then what
+
+---
+
+I'm going sleep so ask all your questions now
+
+---
+
+or any actions you need now
+
+---
+
+<task-notification>
+<task-id>wio28jkli</task-id>
+<tool-use-id>toolu_015qCRo4xLhobNDg4DGmVmPm</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\wio28jkli.output</output-file>
+<status>failed</status>
+<summary>Dynamic workflow "Build superset-companion end to end (fork bridge + keep-awake + Kotlin phone/watch apps) with double adversarial review" failed: Error: agent stalled on all 6 attempts (no progress for 180000ms each)
+    at K (B:/~BUN/root/src/entrypoints/cli.js:14012:2810)
+    at processTicksAndRejections (native:7:39)</summary>
+<recovery>To resume after editing the script, call: Workflow({scriptPath: 'C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\workflows\scripts\superset-companion-build-wf_c201c20e-4f5.js', resumeFromRunId: 'wf_c201c20e-4f5'})
+Agent transcripts: C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\subagents\workflows\wf_c201c20e-4f5</recovery>
+<usage><agent_count>1</agent_count><agents_done>0</agents_done><agents_error>1</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>842362</subagent_tokens><tool_uses>251</tool_uses><duration_ms>3895165</duration_ms></usage>
+</task-notification>
+
+---
+
+.
+
+---
+
+<task-notification>
+<task-id>w77dv1dz6</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\w77dv1dz6.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Build superset-companion (fork bridge + keep-awake + Kotlin phone/watch clients) with double adversarial review" completed</summary>
+<result>{"protocol":"`C:/Users/khair/Code Projects/superset-companion/PROTOCOL.md` — created, 1754 lines, 17 sections. Sole deliverable. No other file in either repo touched; no git commands run; no secret values present (only the Access AUD + client id, both recorded as safe in SETUP.md, and `&lt;64 hex — SECRET&gt;` placeholders).\n\nContents by section: 0 conventions/id lengths/clock-skew correction · 1 transport, all-writes-are-sealed-POST rule, WS-carries-reads-only made mechanical (two permitted c2s frame types, else close 1008) · 2 Access headers + the bridge's own 6-check JWT validation, fails closed on unreachable JWKS · 3 sealed envelope: 39-byte cleartext header, exact offsets, AAD binding (method/path/protocol byte, +requestNonce+statusCode for responses, +frameSeq for events), nonce = 4-byte prefix + 8-byte write-ahead-persisted counter, ±60 s window with a **900 s disk-persisted** nonce cache, closed set of cleartext-only error codes · 4 pairing: QR fragment carries `pid/pc/fp` only, 256-bit code, X25519 + HKDF(Z‖code), mutual HMAC confirmation, service token delivered inside the step-4 sealed envelope · 5 device record + revocation · 6 capability negotiation with a frozen **protocol 0** baseline as the degradation target · 7 endpoint schemas (ping, tree, transcript, question, message, register, heartbeat, panic) · 8 connection taxonomy (530/502/403/200 + client-side states) · 9 event stream: mandatory snapshot-first frame, gap-free `gseq`, `eid` de-dup, ring-buffer resume, ticket in `Sec-WebSocket-Protocol` · 10 full error-code table · 11 answer semantics: client sends intent only, six-guard transaction under one lock, answer-wide lease with the `{1,2}`⊕`{1,3}`→`{2,3}` proof, first-answer-wins, `already_resolved`, zero-retry + `/v1/answer/status` read-the-outcome, three UI states, residual race stated · 12 rate limits (10/120 per device, plus a pre-auth 600/min tier keyed on the Access client id) · 13 push: 103-byte typical data-only payload, closed key set, runtime assertions that make text-leakage throw, 180 s delayed push, retraction + foreground sweep · 14 audit log written before execution · 15 constants · 16 BUILD-REPAIR freeze list.\n\nASSUMPTIONS MADE (each is a decision the spec now imposes):\n1. **LAN pairing listener `0.0.0.0:47611`, 120 s, single-use.** Invented to break a chicken-and-egg neither DESIGN.html nor SETUP.md resolves: every request through the tunnel needs the Access service token, and pairing is what delivers that token. Consequence: phone and desktop must share a network for ~30 s during pairing. Alternative rejected: putting the Access secret in the QR (violates \"bound to the device during that exchange, not printed in the same blob\").\n2. Port `47611` chosen for adjacency and to stay outside host-service's `48000-48999` hash range. **Not verified free on the machine.**\n3. **Protocol 0** (ping/hello/tree-baseline/heartbeat, no write path) invented as the never-refuse degradation target. Nothing in the source docs defines what \"reduced feature set\" means concretely.\n4. Entity model `project → workspace → terminal → agent` and every id/field in `TreeResponse` are normative by fiat — I did **not** read fork host-service code (out of assigned scope), so the bridge must map its internals onto these names, not the reverse. The code/user naming inversion (project=repo row, workspace=branch) is documented in §7.2.\n5. Nonce cache mandated **persisted to disk with fsync**; in-memory-only is unsound across the frequent Superset restarts. Adds an I/O requirement flagged as must-not-be-on-the-main-thread (fork footgun).\n6. Response and event frames are sealed too (DESIGN only says \"bodies\"), because Cloudflare terminates TLS and question text must not sit in plaintext at the edge.\n7. Numeric choices not specified anywhere upstream, picked and now fixed: lease TTL 15 s, session TTL 1 h, heartbeat 60 s/300 s, ring buffer 1024/10 min, de-dup 512/5 min, transcript page 100, audit retention 90 d, push cap 160 B.\n8. Watch holds no key and never pairs directly — `surface:\"watch\"` exists only for answer provenance. Phone↔watch Data Layer declared out of scope for this document.\n\nCOULD NOT VERIFY:\n- Cloudflare's `common_name` JWT claim equalling the service-token client id for `non_identity` policies — from knowledge, not tested live. If wrong, §2.1's sixth check needs replacing (the other five still hold).\n- Android `network_security_config` cannot express CIDR ranges; §4.6 therefore makes the **in-code** `isSiteLocalAddress()` check mandatory and the XML advisory. **A manifest / `network_security_config.xml` change may be required — I did not edit build files.** Report to the build owner.\n- `KeyPairGenerator(\"XDH\")` availability at minSdk 33 assumed (Conscrypt), not compiled.\n- Nothing was compiled or executed; no Gradle run.","stubs":"Report follows.\n\n---\n\n**FILES CREATED — 16, all under `C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/`**\n\n| File | Contents |\n|---|---|\n| `types.ts` | **Complete.** Every protocol type from PROTOCOL.md §0–§15: id aliases, envelope header/AAD/nonce/replay-cache shapes, cleartext-vs-sealed error-code unions (closed sets kept separate), guard-name unions + per-code `detail` shapes, pairing messages 1–4 + window state, `DeviceRecord`, capability vocabulary + hello/negotiation, ping, full tree entity model, transcript, question + `QuestionSummary`, message, register, heartbeat, panic, answer/lease/attempt-record, event ticket + discriminated `EventFrame` union + the 2-member `ClientFrame` union, `ConnectionState`, rate buckets, `PushData`/`PushEnvelope`, `AuditEntry`, plus bridge-internal dispatch plumbing (`SealedPath`, `OperationClass`, `AccessClaims`, `SealedRequestContext`, `SealedResult`, `SealedError`, `CleartextError`). |\n| `config.ts` | All §15 constants (network, Access public ids, envelope, pairing, protocol, limits, event, push, audit) + `CompanionPaths` under `~/.superset/companion/` + `loadAccessServiceToken` stub. No secret values. |\n| `crypto.ts` | HKDF, X25519, envelope parse/seal/open, the three AAD builders, constant-time compare, b64url, zeroize. |\n| `keys.ts` | `KeyStore` (K_dev custody), directional + event key derivation, write-ahead send-nonce source, disk-persisted `NonceCache`. |\n| `device-store.ts` | `DeviceStore` CRUD + revocation + 30-day revoked retention. |\n| `access-jwt.ts` | `AccessValidator` — six checks, fails closed on unreachable JWKS. |\n| `pairing.ts` | LAN window handle, `handleKex`, `handleConfirm` (sealed step 4), `buildPairingTranscript`. |\n| `audit.ts` | `AuditLog.append` (fsync before execution) + `hashPayload`. |\n| `question-store.ts` | Internal `PendingQuestion` (holds `toolUseId`/`sessionId`, never projected to wire), capture from PreToolUse, `computeFingerprint`, §7.4/§9.4 projections. |\n| `lease.ts` | `LeaseRegistry` with the `{1,2}`⊕`{1,3}`→`{2,3}` rationale in the header. |\n| `answer.ts` | `AnswerDeps`, `evaluateGuards`, `handleAnswer`, `handleAnswerStatus`, `handleMessage`, `AttemptStore`. Byte contract documented as private implementation detail. |\n| `read-api.ts` | `handlePing`/`handleHello`/`handleTree`/`handleTranscript`/`handleQuestion`/`handleHeartbeat`. |\n| `http.ts` | `BridgeHttpServer`, `RouteDefinition`, two-tier `RateLimiter`, `writeCleartextError`; normative pipeline order in the header. |\n| `ws.ts` | `EventTicket`, `handleEventTicket`, `EventStreamServer`. |\n| `push.ts` | `handleRegister`, `PushSender` (schedule/cancel/retract), `assertPushDataSafe`. |\n| `index.ts` | `createCompanionBridge` composition root + `export * from \"./types\"`. |\n\nEvery stub throws `TODO(COMPANION-BRIDGE): &lt;fn&gt; not implemented` — no placeholder returns, no masked failures.\n\n**FILES MODIFIED**\n- `C:/Users/khair/Code Projects/fork-superset-windows-arm64/FEATURES.md` — 3 feature rows appended to the table; 3 tab-separated marker rows appended to the fenced `markers` blo
+... (truncated 32966 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\w77dv1dz6.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\subagents\workflows\wf_d9bc20c6-8b9/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\workflows\scripts\superset-companion-build-v2-wf_d9bc20c6-8b9.js', resumeFromRunId: 'wf_d9bc20c6-8b9'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>137</agent_count><agents_done>137</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>15500396</subagent_tokens><tool_uses>3503</tool_uses><duration_ms>9745982</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bq7f2b60e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bq7f2b60e.output</output-file>
+<status>completed</status>
+<summary>Background command "Codex sol ultra: injection safety" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a20e46925404988cb</task-id>
+<tool-use-id>toolu_017SKKKqvXGsQ7GPkNU98xoL</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a20e46925404988cb.output</output-file>
+<status>completed</status>
+<summary>Agent "Map renderer host-service tRPC call style" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Host-service tRPC from the Electron renderer
+
+## 0. Three distinct tRPC clients — don't mix them
+
+| Client | Import | Transport | Style |
+|---|---|---|---|
+| **host-service** | `renderer/lib/host-service-client` → `getHostServiceClientByUrl(hostUrl)` | HTTP to `${hostUrl}/trpc` | **vanilla** client → `.query()` / `.mutate()` |
+| Electron main IPC | `renderer/lib/electron-trpc` → `electronTrpc` | IPC | `createTRPCReact` → `.useQuery()` / `.useMutation()` |
+| Cloud/web API | `renderer/lib/api-trpc-client` → `apiTrpcClient` | HTTP `${NEXT_PUBLIC_API_URL}/api/trpc` | vanilla proxy client |
+
+Alias: `apps/desktop/tsconfig.json` line 5-8 → `"*": ["./src/*"]`, so `renderer/lib/...` = `apps/desktop/src/renderer/lib/...`.
+
+**There is no `useHostServiceClient`, `hostTrpc`, `trpcHost`, or `createTRPCReact` for host-service anywhere in the repo** (grepped `apps` + `packages`, zero hits). The host-service client is not a React hook — you call it inside a react-query `queryFn`/`mutationFn`.
+
+---
+
+## 1. The client factory
+
+`C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\lib\host-service-client.ts` (whole file, 33 lines):
+
+```ts
+import type { AppRouter } from "@superset/host-service";
+import { createTRPCClient, httpLink } from "@trpc/client";
+import superjson from "superjson";
+import { getHostServiceHeaders } from "./host-service-auth";
+
+const clientCache = new Map&lt;
+	string,
+	ReturnType&lt;typeof createTRPCClient&lt;AppRouter&gt;&gt;
+&gt;();
+
+export type HostServiceClient = ReturnType&lt;typeof createTRPCClient&lt;AppRouter&gt;&gt;;
+
+export function getHostServiceClient(port: number): HostServiceClient {
+	return getHostServiceClientByUrl(`http://127.0.0.1:${port}`);
+}
+
+export function getHostServiceClientByUrl(hostUrl: string): HostServiceClient {
+	const cached = clientCache.get(hostUrl);
+	if (cached) return cached;
+
+	const client = createTRPCClient&lt;AppRouter&gt;({
+		links: [
+			httpLink({
+				url: `${hostUrl}/trpc`,
+				transformer: superjson,
+				headers: () =&gt; getHostServiceHeaders(hostUrl),
+			}),
+		],
+	});
+
+	clientCache.set(hostUrl, client);
+	return client;
+}
+```
+
+`AppRouter` comes from `packages/host-service/src/index.ts` line 28: `export type { AppRouter } from "./trpc/router";` — package name `@superset/host-service`. Router mount table: `packages/host-service/src/trpc/router/router.ts` lines 33-62 (`workspace`, `workspaces`, `workspaceCleanup`, `workspaceCreation`, `project`, `ports`, `settings`, `git`, `terminal`, `companion` (fork-only), …).
+
+Auth headers (`apps/desktop/src/renderer/lib/host-service-auth.ts`): local host → `Authorization: Bearer &lt;PSK secret&gt;` + `x-superset-client-machine-id`; relay → user JWT. Secrets are registered by `LocalHostServiceProvider` via `setHostServiceSecret(hostUrl, secret)`.
+
+---
+
+## 2. REAL call sites
+
+### 2a. `.mutation` — vanilla, inside `useCallback`
+`...\apps\desktop\src\renderer\hooks\host-service\useDestroyWorkspace\useDestroyWorkspace.ts`
+
+Imports (lines 1-12):
+```ts
+import type {
+	DeleteInProgressCause,
+	TeardownFailureCause,
+} from "@superset/host-service";
+import { TRPCClientError } from "@trpc/client";
+import { useCallback } from "react";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import {
+	useWorkspaceHostTarget,
+	type WorkspaceHostTarget,
+} from "../useWorkspaceHostUrl";
+```
+
+Call site (lines 88-113) — one `.mutate` and one `.query`:
+```ts
+	const destroy = useCallback(
+		async (
+			input: DestroyWorkspaceInput = {},
+		): Promise&lt;DestroyWorkspaceSuccess&gt; =&gt; {
+			const client = getReadyClient(hostUrl, hostStatus);
+			try {
+				return await client.workspaceCleanup.destroy.mutate({
+					workspaceId,
+					deleteBranch: input.deleteBranch ?? false,
+					force: input.force ?? false,
+				});
+			} catch (err) {
+				throw normalizeError(err);
+			}
+		},
+		[hostUrl, hostStatus, workspaceId],
+	);
+
+	const inspect = useCallback(async (): Promise&lt;DestroyWorkspacePreview&gt; =&gt; {
+		const client = getReadyClient(hostUrl, hostStatus);
+		try {
+			return await client.workspaceCleanup.inspect.query({ workspaceId });
+		} catch (err) {
+			throw normalizeError(err);
+		}
+	}, [hostUrl, hostStatus, workspaceId]);
+```
+
+### 2b. `.mutation` — wrapped in `@tanstack/react-query` `useMutation` (component)
+`...\apps\desktop\src\renderer\routes\_authenticated\settings\v2-project\$projectId\components\V2ProjectSettings\components\BranchPrefixSection\BranchPrefixSection.tsx` (whole file, 48 lines). Imports lines 1-5:
+```ts
+import type { BranchPrefixMode } from "@superset/shared/workspace-launch";
+import { toast } from "@superset/ui/sonner";
+import { useMutation } from "@tanstack/react-query";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { BranchPrefixControl } from "renderer/routes/_authenticated/settings/components/BranchPrefixControl";
+```
+Lines 23-46:
+```tsx
+	const setMutation = useMutation({
+		mutationFn: (vars: {
+			mode: BranchPrefixMode | null;
+			customPrefix: string | null;
+		}) =&gt;
+			getHostServiceClientByUrl(hostUrl).project.setBranchPrefix.mutate({
+				projectId,
+				...vars,
+			}),
+		onSuccess: () =&gt; onChanged(),
+		onError: (err) =&gt;
+			toast.error(
+				err instanceof Error ? err.message : "Failed to update branch prefix",
+			),
+	});
+
+	return (
+		&lt;BranchPrefixControl
+			mode={mode}
+			customPrefix={customPrefix}
+			showDefault
+			disabled={setMutation.isPending}
+			onChange={(next) =&gt; setMutation.mutate(next)}
+		/&gt;
+	);
+```
+Note `hostUrl` is a **prop** here (`BranchPrefixSectionProps`, lines 7-14).
+
+### 2c. Query + mutation pair, both keyed on `hostUrl`
+`...\apps\desktop\src\renderer\routes\_authenticated\settings\components\V2WorktreeLocationPicker\useV2WorktreeLocationSettings.ts` (whole file, 44 lines):
+```ts
+import { toast } from "@superset/ui/sonner";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+
+export function v2WorktreeLocationQueryKey(hostUrl: string | null) {
+	return ["host-settings", "worktree-location", hostUrl] as const;
+}
+
+export function useV2WorktreeLocationSettings(
+	hostUrl: string | null,
+	opts?: { enabled?: boolean },
+) {
+	return useQuery({
+		queryKey: v2WorktreeLocationQueryKey(hostUrl),
+		enabled: Boolean(hostUrl) &amp;&amp; (opts?.enabled ?? true),
+		queryFn: async () =&gt; {
+			if (!hostUrl) throw new Error("Host unavailable");
+			return getHostServiceClientByUrl(
+				hostUrl,
+			).settings.worktreeLocation.get.query();
+		},
+	});
+}
+
+export function useSetV2WorktreeBaseDir(hostUrl: string | null) {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (path: string | null) =&gt; {
+			if (!hostUrl) throw new Error("Host unavailable");
+			return getHostServiceClientByUrl(
+				hostUrl,
+			).settings.worktreeLocation.set.mutate({ path });
+		},
+		onSuccess: (data, path) =&gt; {
+			queryClient.setQueryData(v2WorktreeLocationQueryKey(hostUrl), data);
+			toast.success(
+				path ? "Worktree location updated" : "Worktree location reset",
+			);
+		},
+		onError: (err) =&gt; {
+			toast.error(err instanceof Error ? err.message : String(err));
+		},
+	});
+}
+```
+
+### 2d. `.query` in a component `useQuery`
+`...\apps\desktop\src\renderer\components\RemotePathPicker\RemotePathPicker.tsx` line 31 import; lines 108-118:
+```tsx
+	const query = useQuery&lt;BrowseResult&gt;({
+		enabled: open &amp;&amp; !!hostUrl,
+		queryKey: ["remote-path-picker", hostUrl, currentPath],
+		queryFn: async () =&gt; {
+			if (!hostUrl) throw new Error("Host unavailable");
+			const client = getHostServiceClientByUrl(hostUrl);
+			return await client.filesystem.browseHost.query({
+				path: currentPath ?? undefined,
+			});
+		},
+	});
+```
+
+### 2e. `.query` + local-host mutations sequenced (no react-query)
+`...\apps\desktop\src\renderer\hooks\useEnsureV2Project\useEnsureV2Project.ts` lines 1-4 / 29-51:
+```ts
+import { useCallback } from "react";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { getHostServiceUnavailableMessage } from "renderer/lib/host-service-unavailable";
+import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+```
+```ts
+			const hostService = getHostServiceClientByUrl(activeHostUrl);
+
+			// findByPath is local-only: a candidate means this host already has
+			// the project, so setup just re-ensures the main workspace.
+			const found = await hostService.project.findByPath.query({ repoPath });
+			const candidate = found.candidates[0];
+			if (candidate) {
+				const setupResult = await hostService.project.setup.mutate({
+					projectId: candidate.id,
+					mode: { kind: "import", repoPath },
+				});
+				...
+			}
+
+			const created = await hostService.project.create.mutate({
+				name,
+				mode: { kind: "importLocal", repoPath },
+			});
+```
+
+### 2f. Fire-and-forget mutation, error → return value
+`...\apps\desktop\src\renderer\hooks\ports\usePortKillActions\killPortTarget.ts` lines 1 / 33-50:
+```ts
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+...
+	try {
+		if (target.hostUrl) {
+			return await getHostServiceClientByUrl(target.hostUrl).ports.kill.mutate(
+				payload,
+			);
+		}
+		...
+	} catch (error) {
+		return { success: false, error: toErrorMessage(error) };
+	}
+```
+
+Server side for the above (`packages/host-service/src/trpc/router/ports/ports.ts:102-114`):
+```ts
+	kill: protectedProcedure
+		.input(
+			z.object({
+				workspaceId: z.string(),
+				terminalId: z.string(),
+				port: z.number().int().positive(),
+			}),
+		)
+		.mutation(
+			async ({ input }): Promise&lt;{ success: boolean; error?: string }&gt; =&gt; {
+				return portManager.killPort(input);
+			},
+		),
+```
+
+---
+
+## 3. Per-host, always. How a component gets `hostUrl`
+
+Host-service calls are **per-host**. Every call needs a resolved `hostUrl` string. Four resolvers, in order of specificity:
+
+**(a) Local host only** — `useLocalHostService()` from `apps\desktop\src\renderer\routes\_authenticated\providers\LocalHostServiceProvider\LocalHostServiceProvider.tsx`:
+```ts
+import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+const { machineId, activeHostUrl, activeOrganizationId, hostServiceStatus, waitForHostReady } = useLocalHostService();
+```
+`activeHostUrl` = `http://127.0.0.1:${connection.port}` (line 164), `null` until the local host boots. Port + PSK come from Electron main over `electronTrpc.hostServiceCoordinator.getConnection.useQuery` (lines 76-80). `waitForHostReady(timeoutMs?)` (lines 102-141) resolves the URL on demand.
+
+**(b) By workspace id** — `apps\desktop\src\renderer\hooks\host-service\useWorkspaceHostUrl\useWorkspaceHostUrl.ts`:
+```ts
+export type WorkspaceHostTarget =
+	| { status: "loading" }
+	| { status: "not-found" }
+	| { status: "local-starting"; hostId: string }
+	| { status: "ready"; kind: "local" | "remote"; hostId: string; url: string };
+
+export function useWorkspaceHostTarget(workspaceId: string | null): WorkspaceHostTarget
+export function useWorkspaceHostUrl(workspaceId: string | null): string | null
+```
+Remote branch (lines 45-51):
+```ts
+		const routingKey = buildHostRoutingKey(match.organizationId, match.hostId);
+		return {
+			status: "ready",
+			kind: "remote",
+			hostId: match.hostId,
+			url: `${relayUrl}/hosts/${routingKey}`,
+		};
+```
+It resolves the workspace via `useHostWorkspaces()` (line 26).
+
+**(c) By hostId** — `apps\desktop\src\renderer\hooks\host-service\useHostTargetUrl\useHostTargetUrl.ts`:
+```ts
+export function useHostUrl(hostId: string | null | undefined): string | null
+export function useHostUrls(hostIds: string[]): Array&lt;{ hostId: string; url: string | null; isLocal: boolean }&gt;
+```
+Core rule (lines 26-33):
+```ts
+function resolveUrl(
+	hostId: string | null,
+	{ machineId, activeHostUrl, activeOrganizationId, relayUrl }: HostUrlContext,
+): string | null {
+	if (hostId === null || hostId === machineId) return activeHostUrl;
+	if (!activeOrganizationId) return null;
+	return `${relayUrl}/hosts/${buildHostRoutingKey(activeOrganizationId, hostId)}`;
+}
+```
+
+**(d) Fan-out over all hosts** — `deriveHostWorkspacesQueryTargets` / `deriveHostProjectsQueryTargets`, described below.
+
+---
+
+## 4. Loading/error handling
+
+- **`@tanstack/react-query` `useQuery` / `useMutation` / `useQueries` with a hand-written `queryFn`/`mutationFn`** is the dominant pattern. tRPC's own `useMutation` is **only** available on `electronTrpc` (main-process IPC), never for host-service.
+- Errors surfaced with `toast.error(...)` from `@superset/ui/sonner`; pending via `mutation.isPending` (2b above).
+- Plain async + typed error unions where a dialog needs retry semantics — see `useDestroyWorkspace` `normalizeError` (lines 131-157) which reads `err.data.teardownFailure` / `deleteInProgress` / `code === "CONFLICT"` off `TRPCClientError`, and consumer `...\DashboardSidebarDeleteDialog\hooks\useDestroyDialogState\useDestroyDialogState.ts` (`useState` for `error`, retry with `force: true` at line 128).
+- QueryClient defaults (`apps\desktop\src\renderer\providers\ElectronTRPCProvider\ElectronTRPCProvider.tsx:15-26`) — **relevant**, host-service queries inherit them:
+```ts
+const queryClient = new QueryClient({
+	defaultOptions: {
+		queries: { networkMode: "always", retry: false },
+		mutations: { networkMode: "always", retry: false },
+	},
+});
+```
+- Server side adds a 5s default timeout to **queries only** (`packages/host-service/src/trpc/index.ts:80-116`, `queryProcedure` + `meta.timeoutMs`); mutations use bare `protectedProcedure`.
+
+---
+
+## 5. Fork-specific: `(KANBAN-HOST-SOURCE)` + `useHostWorkspaces`
+
+Marker registered in `FEATURES.md:46` and scoped to `apps/desktop/src/renderer` at `FEATURES.md:124`. Rule: every fork surface needing the workspace universe reads `useHostWorkspaces`, **never** the Electric `v2Workspaces` mirror.
+
+**The hook chain:**
+1. `apps\desktop\src\renderer\routes\_authenticated\providers\HostWorkspacesProvider\HostWorkspacesProvider.tsx` — runs the fan-out **once**, shares via context. Consumer import:
+```ts
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
+```
+2. Source hook `apps\desktop\src\renderer\hooks\host-workspaces\useHostWorkspaces\useHostWorkspaces.ts` → `useHostWorkspacesSource(scopedHostId?)`.
+
+**How it reaches host-service** (lines 158-193) — `useQueries`, one query per host target, each calling `workspace.list.query()` on that host's client:
+```ts
+	const queries = useQueries({
+		queries: targets.map((target) =&gt; ({
+			queryKey: getHostWorkspacesQueryKey(target),
+			enabled: target.hostUrl !== null,
+			refetchInterval: WORKSPACES_FALLBACK_REFETCH_INTERVAL_MS,
+			networkMode: "always" as const,
+			refetchIntervalInBackground: true,
+			retry: 1,
+			queryFn: async (): Promise&lt;HostWorkspaceRow[]&gt; =&gt; {
+				if (!target.hostUrl) return [];
+				const client = getHostServiceClientByUrl(target.hostUrl);
+				const rows =
+					(await client.workspace.list.query()) as HostWorkspaceRow[];
+				setLiveAnsweredHostIds((prev) =&gt;
+					prev.has(target.machineId) ? prev : new Set(prev).add(target.machineId),
+				);
+				saveHostWorkspacesSnapshot(
+					target.organizationId,
+					target.machineId,
+					rows,
+				);
+				return rows;
+			},
+		})),
+	});
+```
+Server: `packages/host-service/src/trpc/router/workspace/workspace.ts:40` → `list: protectedProcedure.query(({ ctx }) =&gt; { ... })`.
+
+**Target derivation** — `apps\desktop\src\renderer\hooks\host-workspaces\useHostWorkspaces\useHostWorkspaces.utils.ts:56-98`:
+```ts
+export function deriveHostWorkspacesQueryTargets({
+	activeHostUrl, hosts, machineId, relayUrl,
+}: {...}): HostWorkspacesQueryTarget[] {
+	const targets: HostWorkspacesQueryTarget[] = hosts.map((host) =&gt; {
+		const isLocal = host.machineId === machineId;
+		const hostUrl = isLocal
+			? activeHostUrl
+			: host.isOnline
+				? `${relayUrl}/hosts/${buildHostRoutingKey(host.organizationId, host.machineId)}`
+				: null;
+		return { machineId: host.machineId, organizationId: host.organizationId, hostUrl, isLocal };
+	});
+	...
+}
+```
+Query key (`useHostWorkspaces.utils.ts:39-49`): `["host-service", "workspaces", "list", target.machineId, target.hostUrl] as const`.
+
+**Live updates**: WS event bus per host, not polling — `getEventBus(hostUrl, () =&gt; getHostServiceWsToken(hostUrl))` from `@superset/workspace-client`, listening `"workspace:changed"` (`useHostWorkspaces.ts:197-240`). Generic per-workspace version: `apps\desktop\src\renderer\hooks\host-service\useWorkspaceEvent\useWorkspaceEvent.ts` (`git:changed`, `fs:events`, `agent:lifecycle`, `terminal:lifecycle`, `port:changed`).
+
+**Return contract** (`UseHostWorkspacesResult`, lines 40-67) — the fork-only absence-authority API you must respect:
+```ts
+	workspaces: HostWorkspaceItem[];
+	isReady: boolean;
+	isAuthoritative: boolean;                                   // (KANBAN-HOST-SOURCE)
+	isAbsenceAuthoritative: (hostId: string | null | undefined) =&gt; boolean; // (KANBAN-HOST-SOURCE)
+	cache: HostWorkspacesCacheOps;
+```
+`cache` (lines 25-38) is the optimistic-write surface: `resolveHostUrl(hostId)`, `upsertWorkspace(row)`, `removeWorkspace(hostId, workspaceId)`, `invalidateHost(hostId)`.
+
+Real consumer of both, gating a destructive action on absence authority — `...\kanban\hooks\useKanbanActions\useKanbanActions.ts:13` import, `141-142` and `752-772`:
+```ts
+	const { workspaces: hostWorkspaces, isAbsenceAuthoritative } =
+		useHostWorkspaces();
+```
+```ts
+	const deleteCompletedCard = useCallback(
+		(cardId: string) =&gt; {
+			const card = collections.v2KanbanCards.get(cardId);
+			if (!card || card.columnId !== KANBAN_COMPLETED_COLUMN_ID) return;
+			if (
+				card.workspaceId &amp;&amp;
+				(!isAbsenceAuthoritative(card.hostId) ||
+					hostWorkspaceById.has(card.workspaceId))
+			) {
+				return;
+			}
+			collections.v2KanbanCards.delete(cardId);
+		},
+		[collections, hostWorkspaceById, isAbsenceAuthoritative],
+	);
+```
+
+Optimistic-write example combining `cache` ops with a host mutation — `apps\desktop\src\renderer\stores\workspace-creates\useWorkspaceCreates.ts:109-155`:
+```ts
+			hostWorkspacesCache.upsertWorkspace({ id: workspaceId, organizationId, ... });
+
+			const createPromise = getHostServiceClientByUrl(
+				hostUrl,
+			).workspaces.create.mutate(args.snapshot);
+			...
+				.catch&lt;SubmitOutcome&gt;((error: unknown) =&gt; {
+					const message = error instanceof Error ? error.message : String(error);
+					hostWorkspacesCache.removeWorkspace(args.hostId, workspaceId);
+```
+
+Sibling fork hook, same shape for projects: `apps\desktop\src\renderer\hooks\host-projects\useHostProjects\useHostProjects.ts:110-134` (`client.project.list.query()`, `project:changed` bus, IndexedDB snapshots).
+
+---
+
+## Minimal template to write against
+
+```ts
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "@superset/ui/sonner";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
+// or: import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
+// or: import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+
+export function useThing(workspaceId: string) {
+	const hostUrl = useWorkspaceHostUrl(workspaceId); // string | null
+	const queryClient = useQueryClient();
+
+	const query = useQuery({
+		queryKey: ["host-service", "thing", hostUrl, workspaceId] as const,
+		enabled: Boolean(hostUrl),
+		queryFn: () =&gt; {
+			if (!hostUrl) throw new Error("Host unavailable");
+			return getHostServiceClientByUrl(hostUrl).someRouter.get.query({ workspaceId });
+		},
+	});
+
+	const mutation = useMutation({
+		mutationFn: (input: { foo: string }) =&gt; {
+			if (!hostUrl) throw new Error("Host unavailable");
+			return getHostServiceClientByUrl(hostUrl).someRouter.set.mutate({ workspaceId, ...input });
+		},
+		onSuccess: () =&gt; queryClient.invalidateQueries({ queryKey: ["host-service", "thing", hostUrl, workspaceId] }),
+		onError: (err) =&gt; toast.error(err instanceof Error ? err.message : String(err)),
+	});
+
+	return { query, mutation };
+}
+```
+
+Gotchas that will bite you:
+- `getHostServiceClientByUrl` takes a **URL**, not a hostId or port. `getHostServiceClient(port)` is the loopback shortcut.
+- `hostUrl` is `null` until the local host boots — always `enabled: Boolean(hostUrl)` and throw inside the fn; never call the factory with `null`.
+- Always include `hostUrl` (or `machineId`) in the query key — otherwise two hosts share a cache entry.
+- Set `networkMode: "always"` on anything that must work offline against `127.0.0.1` (the global default already does this; keep it if you override defaultOptions locally).
+- New procedures: `.query` → `queryProcedure` (5s default timeout, raise with `.meta({ timeoutMs })`); `.mutation` → `protectedProcedure`.</result>
+<usage><subagent_tokens>98099</subagent_tokens><tool_uses>45</tool_uses><duration_ms>245335</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bey9egfvp</task-id>
+<tool-use-id>toolu_01Q8boJQan17JiFEsUfLDvHa</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bey9egfvp.output</output-file>
+<status>completed</status>
+<summary>Background command "Relaunch encoder tests with neutral framing" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<agent-message from="a46e0cedc1301e4de">
+bridge-crypto-state: the MEDIUM "Windows ACL marker is trusted forever" finding lives in companion/config.ts (ensureCompanionDirs), which is NOT in my listed file set (keys.ts, crypto.ts, device-store.ts, access-jwt.ts, index.ts). Confirm nobody else owns config.ts and I may make a surgical edit to ensureCompanionDirs only. I will proceed on that assumption unless told otherwise; if another agent owns it I will report the finding NOT-FIXED with the exact fix.
+</agent-message>
+
+---
+
+<agent-message from="general-purpose">
+STOP-CONFLICT — bridge-crypto-state is NOT the only writer in its area.
+
+Evidence (read-only, no edits made by me):
+- packages/host-service/src/companion/keys.ts is GROWING under me right now: 36933 -> 37233 -> 37707 -> 38031 bytes at 11:02:12, 11:02:49, 11:03:09, 11:03:21 local. Incremental Edit-shaped writes, ~20s apart, still ongoing.
+- crypto.ts was rewritten at 10:59:02 and now exports `writeFileDurable` / `syncDirectory`, which the new keys.ts imports. So the other writer is doing a COORDINATED multi-file pass across my area.
+- keys.ts already contains a full anti-rollback `StateAnchor` implementation (generation + monotonic mount epoch + owner-token-guarded monotonic send high-water + devices {seq,digest}), a `StateRollbackError` that fails closed instead of minting a random prefix, and a legacy send-nonce.json adoption path. That is my CRITICAL-1, CRITICAL-2 and MEDIUM-5 already implemented by somebody else.
+- Also rewritten in the last 6 minutes: types.ts (10:57), lease.ts (10:58), keystrokes.ts (10:59), pairing.ts (11:01), question-store.ts (11:02), answer.ts (11:02). Those are other fixers' areas, so this is not one rogue agent — but keys.ts/crypto.ts are explicitly MINE.
+- Untouched since long before this session's fix pass: device-store.ts (02:39), access-jwt.ts (02:43), config.ts (04:23), index.ts (04:32).
+
+I have made ZERO edits. I am holding, because concurrent Edit/Write against a file another agent is mid-pass on will corrupt it.
+
+I need one of these decisions from you:
+(A) I own keys.ts + crypto.ts — tell the other writer to stop, and confirm when it has, then I proceed.
+(B) The other writer owns keys.ts + crypto.ts — then reassign those two findings to it and I take ONLY device-store.ts, access-jwt.ts, config.ts, index.ts (the revocation-rollback HIGH, the clock/JWKS MEDIUM, the ACL MEDIUM, the purge-orphan MEDIUM, the lifecycle mutual-exclusion half of CRITICAL-1, and the LOW items in those files).
+(C) It is a duplicate of me (same brief, retried) — then kill it or kill me; two agents with one brief will fight over every file.
+
+Answer with A, B or C. Until then I will only do read-only verification.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a46e0cedc1301e4de</task-id>
+<tool-use-id>toolu_01Wmg9397LMbSbFtEFg5SRZZ</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a46e0cedc1301e4de.output</output-file>
+<status>completed</status>
+<summary>Agent "(resumed)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Both my files pass scoped Biome, 0 CR bytes, no dangling identifiers, braces balanced.
+
+## Findings — status
+
+**CRITICAL 1 — two state owners regress the nonce high-water mark → FIXED (anchor half) in `keys.ts`.**
+New `StateAnchor` (`openStateAnchor`, `keys.ts:218`) is the sole writer of the send-nonce mark. `OPEN_ANCHORS` refuses a second open of the same path in-process. Every write is a read-modify-write against the FILE (`mutate`), not against memory, so the monotonic and ownership checks are statements about durable state. `claimSend` refuses a mark below the durable one; `raiseSend` refuses a stale `owner` token AND any lowering. `createSendNonceSource` POISONS itself on `StateRollbackError` and `next()` then throws — a stale owner cannot write and cannot keep emitting. `close()` passes `max(counter, reservedThrough)`, and the anchor refuses lower regardless of what a caller asks. **The lifecycle mutual-exclusion half is in `index.ts` — not mine; contract below.**
+
+**CRITICAL 2 — state rollback repeats nonces → FIXED (bridge half) in `keys.ts` + `crypto.ts`.**
+Anchor carries `generation` (minted once, stamped into every key file as `StoredKeyFile.anchorGeneration`, v2) and a monotonic `epoch` bumped once per mount and durable before anything derived from it is used. `KeyStore.load` throws `StateRollbackError` when a key file's generation ≠ the anchor's — key material and counter state from different installs can never be recombined. Every anchor/key write goes through `writeFileDurable` (`crypto.ts:820`): tmp → write → fsync → close → rename → `syncDirectory` parent fsync. Corrupt/unparsable anchor throws; there is no permissive branch. Legacy `send-nonce.json` is adopted into the anchor and only then retired, so migration cannot restart the counter under the same prefix.
+
+**HIGH 3 — forward clock jump reopens the replay window → FIXED in `crypto.ts`.**
+`monotonicNowMs()` (`performance.now`, `crypto.ts:782`). Retention is now `age AND insertion order`: `isExpired` returns false for anything inside the newest `REPLAY_MIN_RETAINED_ENTRIES = 8_192` (§12's 600 req/min × the 120 s window = 1 200 max admissible per window, so ~6.8× headroom), uses the monotonic age for records this process admitted, and treats a negative age as never-expired. `admit` now tests **presence only** — the old `nowMs - seen &lt;= retentionMs` re-admission was the specific hole. `rewrite` re-sorts by insertion order so `loadFromDisk` can treat the file tail as the age-exempt window across restarts.
+
+**HIGH 4 — restored device index reverses revocation → key-material half FIXED in `keys.ts`; index half is `device-store.ts`.**
+`KeyStore.markRevoked` / `revocationOf` write and read the tombstone **inside the key file**, a separate file from `devices.json`. §5.1 is preserved: the key survives so the device can still open its sealed 403. Anchor also carries `devices {seq, digest}` with `commitDevices` refusing a lower seq or a changed digest at an unchanged seq.
+
+**MEDIUM 5 — corrupt nonce state failed open with a random prefix → FIXED in `keys.ts`.**
+`readAnchorFile` throws `StateRollbackError` on unparsable/malformed/wrong-version/bad-generation/bad-epoch. A fresh random prefix is minted **only** when there is provably no prior send state. The error names the §3.4-rule-4 / §4.8 remedy.
+
+**LOW — key buffers not zeroized → primitive landed, call sites NOT (see handover).** `zeroDirectionalKeys` added (`keys.ts:910`). Also added this pass: `assertDeviceKey` now rejects an **all-zero** K_dev. Without it, a wiped buffer is a valid HKDF PRK and derivation succeeds silently, presenting as an unexplained storm of `unknown_device` tag failures. Mirrors `x25519`'s existing all-zero rejection.
+
+**NOT FIXED, not my files:** MEDIUM JWKS clock rollback (`access-jwt.ts`), MEDIUM ACL marker (`config.ts` — reassigned away from me mid-task), MEDIUM key-destruction orphan (`device-store.ts` purge), LOW JWKS size cap (`access-jwt.ts`), LOW unknown-device/bad-tag timing (`http.ts`).
+
+## Handover — exact changes the other agent must make
+
+**`index.ts`** (signatures I changed; the tree does not currently compile without these):
+- `openStateAnchor(paths.root)` must be the FIRST resource in `start()`; add `anchor` to `BridgeState`.
+- `createKeyStore(paths.devices)` → `createKeyStore(paths.devices, anchor)`.
+- `createSendNonceSource(join(paths.root, "send-nonce.json"))` → `createSendNonceSource(anchor)`; drop that path (keys.ts migrates and deletes the file itself).
+- Order: anchor → keyStore → sendNonces → deviceStore → nonceCache.
+- `stop()`: `sendNonces.close()` before `anchor.close()`; anchor closes last.
+- **A failed `start()` MUST unwind and call `anchor.close()`.** `OPEN_ANCHORS` keeps the path registered otherwise, and every retry throws "already open in this process".
+- Lifecycle mutex: serialise start/stop from the first statement and gate on a phase flag. The anchor stops two owners corrupting *state*; it does not stop two half-built bridges.
+
+**`device-store.ts`** — index format gains `{v, generation, epoch, seq, digest, records}`. At load, fail closed on: `generation !== anchor.generation`; `seq !== anchor.devices().seq` (either direction is a rollback); recomputed digest ≠ `anchor.devices().digest`; `file.epoch &gt; anchor.previousEpoch` (the anchor rolled back). `anchor.devices() === null` + legacy bare array → adopt via `commitDevices(1n, digest)`; `=== null` + a v2 file with records → fail closed; non-null + file missing → fail closed.
+Digest over the **authority projection only**, sorted by deviceId: `{deviceId,label,surface,pairedAtMs,keyRef,fcmToken,writeEnabled,revokedAtMs,revokeReason}` — exclude `lastSeenMs`/`fcmTokenUpdatedMs` or per-request `touchLastSeen` forces an anchor round-trip on every request. Persist bumps `seq` + `commitDevices` only when that digest changed.
+`revoke`/`revokeAll` must `await keyStore.markRevoked(keyRef, atMs, reason)` **before** persisting. At load, reconcile every record against `keyStore.revocationOf(keyRef)` and re-apply a tombstoned revocation loudly — that is the layer that survives an index-only restore.
+Purge (fixes the orphan MEDIUM): `destroy(keyRef)` FIRST, then drop the record; on failure keep the record and log loud so the next purge retries. `KeyStore.destroy` is ENOENT-tolerant and idempotent, so retry is safe.
+
+**`access-jwt.ts`** — import `monotonicNowMs` from `./crypto`; measure `snapshot.fetchedAtMs` and `lastFetchAttemptMs` with it, keep wall `now()` only for `exp`/`iat`/`nbf`, and treat a negative age as stale. For the size LOW: stop doing `await response.text()` then checking length — bound during read off `response.body`, and reject an over-cap `content-length` up front.
+
+**Unassigned — flag to the coordinator:** `http.ts` / `ws.ts` own the two remaining LOWs. Zeroize: `zero(deviceKey)` after `deriveDirectionalKeys` (http.ts ~1203) and after `deriveEventKey` (ws.ts ~584) — both are the last use of that buffer, verified; `zeroDirectionalKeys(directional)` at request end; `zero(live.keyEvt)` on socket close. Timing: `openRequest` throws on `!device` before any key read, HKDF or GCM, so unknown-device and bad-tag do measurably different work despite identical wire output.
+
+## Unverified / assumptions
+- No compile, typecheck, test or git run (instructed). Only scoped `biome check`, which is clean. There are **no companion tests in the repo**, so nothing here is covered by an executed test — the CRITICAL/HIGH fixes are reasoned and reviewed, not re-demonstrated by me this pass.
+- `syncDirectory` is a **documented no-op on win32** — Node cannot open a directory handle there and NTFS exposes no user-space directory fsync. Content fsync and rename ordering still hold. This is the fork's own platform; recorded in the code, not papered over.
+- A rollback of the **entire** `~/.superset/companion/` tree at once is not detectable from inside that tree. Every partial rollback is. Stated in the `keys.ts` header.
+- I assumed `touchLastSeen` runs per request (it does, `http.ts:1150`), which is why the digest excludes it.
+- No secret value was read into this report or written to any repo file.</result>
+<usage><subagent_tokens>247710</subagent_tokens><tool_uses>31</tool_uses><duration_ms>906363</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a46e0cedc1301e4de</task-id>
+<tool-use-id>toolu_01TtZoqoM7VjX5mQFUHHt2zf</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a46e0cedc1301e4de.output</output-file>
+<status>completed</status>
+<summary>Agent "(resumed)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Cleaned up, lint and typecheck green.
+
+## What I changed (my four files)
+
+**`index.ts`**
+- `running` returned `state !== null` — true during teardown, false during a failed start. Now returns `phase === "running"`; the phase is the truth in both directions.
+- Wired the required `onQuestionsSettled` dep that `read-api.ts` now demands (RECONCILE-RETRACT). Moved `push` construction **above** `readApi` so it is a real binding rather than a late `?.` that silently no-ops.
+- Added `(ANCHOR-ORDER)` assert: the device store must have committed anti-rollback state before the send-nonce source exists. That ordering is what makes rollback detection work at all, so it is now checked instead of assumed.
+
+**`device-store.ts`** — the coordinator's point, addressed properly
+- The discarded `assertNoRollback` return is consumed. My earlier discard was exactly the "silence the type checker on a load-bearing check" shape they flagged.
+- Adoption is now reported (`log.warn`) rather than absorbed — reaching it means the last run died between the index write and the anchor commit.
+- Added `(ADOPT-COMMIT)` **post-condition**: after construction, the anchor must attest `(seq, digest)` equal to the set the store is about to serve — checked every start, not only adopting ones.
+
+On your specific question: `persist()` **is** unconditional and **does** already commit the adoption (traced: index at N+1/D_new, anchor at N/D_old → `commitDevices(N+1, D_new)`), so step 3 of your scenario did not actually persist. But relying on that by inference is the fragility you named, so it is now a checked invariant that fires immediately if a future edit makes `persist()` conditional. And yes — the `keys.revocationOf` reconciliation is landed and unconditional, running over every record before the store is handed out, so it independently blunts step 4. Both are proven below; no belt-and-braces added beyond the post-condition.
+
+**`access-jwt.ts`**
+- JWKS cache freshness and the refetch interval were on `Date.now()`. Moving the wall clock **backwards** makes elapsed time negative, so the snapshot never expires and a retired Cloudflare signing key stays trusted indefinitely. Both are now monotonic. Init is `-Infinity`, not `0`, or the first genuine fetch would be rate-limited for the process's first 60 s.
+- The size cap was `await response.text()` then check length — it buffered everything first. Now enforced during the read, with a `content-length` pre-check.
+
+**`config.ts`** — and this one is live and severe
+The shipped hardening call was `icacls &lt;root&gt; /inheritance:r /grant:r &lt;user&gt;:(OI)(CI)F /T`. `(OI)(CI)` are *inheritance* flags; on a leaf file they produce an **inherit-only** ACE granting nothing to the file itself, while `/inheritance:r` strips what it had. Measured on this machine: after that call, both secrets and every `*.key.json` return `EPERM to their own owner`. Since the operator must hand-place `cloudflare-access.json` before first start, the first real run bricked its own secrets and keys. The file now sets the template on the directory only, then `/reset /T` so existing children re-inherit (`(I)(F)`, this account only). I reproduced the failure and the fix side by side before accepting it. The `.acl-hardened` marker is gone — the DACL is re-read every start over root and `devices/`, drift re-applied and re-verified, unreadable ACL fails closed.
+
+## Verification
+
+`tsc --noEmit` clean across `companion/` (the 3 errors I introduced or inherited are gone); `biome check` clean on all four files.
+
+40 behavioural assertions, all passing — two-owner nonce ownership and monotonic high-water, stale-owner refusal, restart with zero re-emission, counter-state rollback failing closed *with a control proving it would otherwise have repeated mount 2's nonces*, tombstone re-application under a whole-pair rollback, pending-destroy retry, replay cache under a forward clock jump, JWKS wall-clock rollback, streaming cap, and the ADOPT block: crash window adopts, anchor is brought up to date at load, and the pre-revoke index restore is then refused.
+
+9 further assertions against the **real** `createCompanionBridge` — concurrent starts serialise, a failed start leaves `running` false and does not leak the anchor, retry is not poisoned, ACL re-verification is idempotent. This run also confirms the ACL fix end-to-end: the bridge now reads its secrets *after* hardening, which is precisely what the old `/T` form prevented.
+
+Two caveats. `better-sqlite3` is not installed in this tree, so the lifecycle test stubbed that module to force failure just past the anchor — everything before that point is the real code path. And I only asserted `companion/` is type-clean; pre-existing debt elsewhere in host-service is untouched. `http.ts`, `ws.ts`, `keys.ts`, `crypto.ts` were not modified.</result>
+<usage><subagent_tokens>138159</subagent_tokens><tool_uses>24</tool_uses><duration_ms>428404</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>wb4fak1jq</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\wb4fak1jq.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Fix every confirmed finding from the Codex + Fable review rounds, then verify" completed</summary>
+<result>{"fixed":[{"area":"bridge-crypto-state","ok":true},{"area":"android-crypto-state","ok":true},{"area":"keystrokes-answer","ok":true},{"area":"bridge-read-push","ok":true},{"area":"protocol-and-client-contract","ok":true},{"area":"client-ui-honesty","ok":true},{"area":"pairing-state-signal","ok":true}],"residual_count":14,"residual":[{"sev":"blocker","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/crypto.ts","title":"On Windows the send high-water mark can rewind undetected — no directory fsync, and no witness for it outside the anchor file"},{"sev":"medium","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/keys.ts","title":"`openStateAnchor` writes a pre-read snapshot with no monotonic or owner check — the one anchor write that bypasses `mutate`, and it can lower both `send.highWater` and `epoch`"},{"sev":"medium","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/index.ts","title":"A second host-service that can never serve still claims the nonce counter, permanently poisoning the live bridge — the two-owner race moved rather than closed"},{"sev":"blocker","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"`known:false` is a terminal FAILED on the phone, and the bridge's attempt store is in-memory — the original lie survives the pass, moved from a 15 s window to a 24 h one"},{"sev":"high","file":"C:/Users/khair/Code Projects/superset-companion/core/src/main/java/family/khaira/supersetcompanion/core/protocol/Answer.kt","title":"TAB in `/v1/message`: PROTOCOL says permitted, the Android client emits it, the bridge refuses it with 400"},{"sev":"high","file":"C:/Users/khair/Code Projects/superset-companion/core/src/main/java/family/khaira/supersetcompanion/core/protocol/Answer.kt","title":"LF in a free-text answer: the bridge was widened to accept it, the client still refuses it — the fix is unreachable end to end"},{"sev":"medium","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/types.ts","title":"The two normative status tables disagree: types.ts says `unknown` means keep polling and `unconfirmed` is terminal; PROTOCOL and the client say the opposite of both"},{"sev":"medium","file":"C:/Users/khair/Code Projects/superset-companion/PROTOCOL.md","title":"§7.5 directs the client to resolve a message outcome via §11.5, which is answer-only and structurally cannot answer"},{"sev":"low","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/pairing.ts","title":"`pair_wrong_peer` moved from 401 to 400, and the client branches on HTTP status only — a legitimate evicted phone is told to check its Wi-Fi"},{"sev":"high","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"(MESSAGE-ECHO) has no minimum anchor length, so the sole positive guard is a no-op for short messages — demonstrated end-to-end writing the trailing CR against an open picker"},{"sev":"high","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/keystrokes.ts","title":"LF is now admitted into the PICKER's inline free-text body and written raw — an unproven byte, in the module whose whole policy is to refuse unproven bytes"},{"sev":"medium","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"`screenShowsPickerChrome` — the only unforgeable source in the /v1/message picker refusal — misses realistic pickers (wrapped labels, blank-line spacing, deep indentation)"},{"sev":"low","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"`assertGuardClassification` does not enforce the invariant the module header says it enforces"},{"sev":"low","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"`assertNoPickerOnScreen` treats an `empty_screen` match result as 'the retired question is not rendered', contradicting its own 'unreadable source is a refusal' contract"}],"build":"# BUILD AND GATES — REAL OUTPUT\n\n## 1. Kotlin\n`cd C:/Users/khair/Code Projects/superset-companion`, `JAVA_HOME=C:/Users/khair/dev-tools/jdk-21`\n\n- `./gradlew assembleDebug --no-daemon` → **ASSEMBLE_EXIT=0**, `BUILD SUCCESSFUL in 13s`, 0 `w:` warnings in the final run. No source fix was needed to compile; no build file, version catalog, or settings file touched.\n- `./gradlew :core:test --no-daemon` → **CORETEST_EXIT=0**. Forced re-execution (`--rerun-tasks`) → **CORETEST_RERUN_EXIT=0**, `&gt; Task :core:testDebugUnitTest`, `BUILD SUCCESSFUL in 21s`, XML: `tests=\"2\" skipped=\"0\" failures=\"0\" errors=\"0\"`.\n- **First attempt failed and it was not a code bug.** `CrossRuntimeDifferentialVectors20260729Test` threw `IllegalStateException at :354` twice — `requiredPath()` refuses to guess and demands `SC_BRIDGE_VECTOR_FILE` / `SC_KOTLIN_VECTOR_FILE`. It is driven by `C:/Users/khair/Code Projects/fork-superset-windows-arm64/tmp/differential_vectors/run-differential.ps1`. That driver was stale: `bridge-vectors.ts` called `createSendNonceSource(path)` while `keys.ts` now takes a `StateAnchor`. I repaired the driver (tmp/ only, no repo source), and it is green end to end:\n  `bridge_properties=150 kotlin_properties=154`, `cross_open=request:PASS,response:PASS,event:PASS,pairing_response:PASS,x25519:PASS`, `byte_comparison=PASS (154/154)`, resumed nonce `11223344|00000000000003e9` (= 1001, correct).\n- Trap worth recording: `./gradlew ... | tail` masks the exit code (PIPESTATUS). The first `:core:test` reported exit 0 while `BUILD FAILED`.\n\n## 2. TypeScript (scoped, local `tsc.exe`; `npx tsc` is not the compiler here)\n- `packages/host-service`: **8 errors, 0 in touched files.** All in `src/events/event-bus.ts` (1), `src/terminal/terminal.ts` (5), `src/trpc/router/workspace-cleanup/workspace-cleanup.ts` (2) — pre-existing fork type debt, none in `git status`.\n- `apps/desktop`: **33 errors across 15 files, 0 in touched files.** Zero in `PairDeviceDialog/`, `keep-awake/`, `pane-map-hook.ts`, `windows/main.ts`, `ExperimentalSettings.tsx`, `settings-search.ts`.\n- One NEW error was introduced and fixed mid-pass: `src/companion/answer.ts(2418,49): error TS2304: Cannot find name 'MESSAGE_ALLOWED_C0'` — a missing import, which is exactly the REFERR class. Fixed by importing it from `./keystrokes`.\n- REFERR check: `grep -c \"TS2304|TS2552|TS2503\"` = **0** in both outputs.\n\n## 3. Fork gates\n- `node scripts/check-feature-markers.mjs` → **exit 0**, `All 90 feature markers present.`\n- `node scripts/check-dangerous-diagnostics.mjs` → **exit 0**, `(REFERR-GATE) clean — no ReferenceError-class diagnostics in shipped packages.` (`apps/desktop 0 dangerous / 33 total`, `packages/host-service 0 dangerous / 8 total`.)\n\n## 4. Biome (scoped; no root `lint:fix`)\n`bunx biome check` over `packages/host-service/src/companion/`, `.../trpc/router/companion/`, `companion-question-sink.ts`, `serve.ts`, `app.ts`, `router.ts`, `notifications/{index,notifications}.ts`, `apps/desktop/src/main/lib/keep-awake/`, `pane-map-hook.ts`, `PairDeviceDialog/` → **`Checked 39 files. No fixes applied.` (clean).**\nTwo write actions, both formatter-only:\n- `biome check --write packages/host-service/src/companion/keys.ts` (my file, format diagnostic from my edit).\n- `biome format --write` on `serve.ts`, `app.ts`, `router.ts`, `notifications/index.ts`, `pane-map-hook.ts`. These carried `format` errors absent from their `HEAD` baseline, i.e. introduced this session by the seam edits. `biome format` was used rather than `check --write` so nothing but whitespace changed.\n- `apps/desktop/src/main/windows/main.ts` deliberately NOT touched: its `
+... (truncated 20628 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\wb4fak1jq.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\subagents\workflows\wf_ba60e327-39d/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\workflows\scripts\companion-fixes.js', resumeFromRunId: 'wf_ba60e327-39d'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>11</agent_count><agents_done>11</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>2527311</subagent_tokens><tool_uses>918</tool_uses><duration_ms>5073390</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>wzgejv33f</task-id>
+<tool-use-id>toolu_01JoRixK7DCKSGuG2RVXA1Wn</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\wzgejv33f.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Close the 14 residual findings the verification pass raised, including 2 blockers" completed</summary>
+<result>{"closed":[{"area":"anchor-witness","ok":true},{"area":"answer-status-durability","ok":true},{"area":"control-chars-alignment","ok":true},{"area":"lifecycle-and-client","ok":true}],"still_open":6,"open":[{"sev":"medium","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"A refused pre-lock in_flight put leaves a permanent phantom in_flight record — the 503 says \"nothing was written\", the store then says \"still being typed\" forever"},{"sev":"low","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/keys.ts","title":"The witness's guarantee rests on an undocumented NTFS log-flush ordering, and keys.ts:748 mislabels the both-renames-lost case as a whole-tree rollback"},{"sev":"medium","file":"C:/Users/khair/Code Projects/superset-companion/app-phone/src/main/java/family/khaira/supersetcompanion/phone/ui/question/QuestionSheet.kt","title":"Picker free-text composer still emits LF the client itself now refuses, and only refuses it AFTER the biometric prompt"},{"sev":"low","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/types.ts","title":"MessageRequest.text docblock states the pre-TAB rule: \"no C0 control other than LF\""},{"sev":"high","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"A failed durable put wedges the requestId as in_flight forever — the 503 says \"nothing was written\", the store says \"still being typed\""},{"sev":"high","file":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts","title":"`recordsSinceMs` asserts coverage that a lost NTFS rename falsifies — the BLOCKER's own lie, moved into the field created to close it"}],"gate":"All gates run. Final report.\n\n---\n\n## FINDINGS\n\n**1. [medium] answer.ts — refused pre-lock `in_flight` put leaves a permanent phantom** — **FIXED**\n**5. [high] answer.ts — failed durable put wedges the requestId as `in_flight` forever** — **FIXED** (same defect; one fix closes both)\n\n`C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/answer.ts`\n- New `AttemptStore.forget(record)` — memory-only rollback, **identity-scoped** (`records.get(id) !== record → return`), so a concurrent attempt that replaced the record is never dropped. Disk rewrite attempted; failure logged (`companion.answer.attempt_forget_persist_failed`), not thrown — the memory map is what `get()`/`/v1/answer/status` read, and any disk residue rehydrates `in_flight → unconfirmed`, never \"sent\".\n- `handleAnswer` hoists the record to `const inFlight` and calls `await deps.attempts.forget(inFlight)` in the catch **before** throwing the 503.\n- Why it closes rather than relocates: `put` keeps `records.set` before `persist()` (post-lock `recordOutcome` must keep a landed outcome even when disk fails — reverting that would turn a landed answer into \"unsent\"). Only the caller whose 503 says \"nothing was written\" undoes its own record, so store contents now match the sentence. `known:false` for that id is then honest, and this mount's coverage window makes it mean exactly \"not sent\".\n- Second, latent trigger also closed: new `export class AttemptRecordShapeError`; `put` throws it for an unlisted `failureCode`; `recordOutcome` **rethrows** it (`if (error instanceof AttemptRecordShapeError) throw error`) instead of logging, so a mis-listed code is a loud crash, not a silent permanent `in_flight`. Plus a compile-time half in `types.ts`: `AnswerAttemptRecord.failureCode` narrowed from `ErrorCode|null` to new `AttemptFailureCode = Extract&lt;ErrorCode,\"guard_failed\"|\"internal\"&gt;` — a third code no longer compiles.\n\n**6. [high] answer.ts — `recordsSinceMs` asserts coverage a lost NTFS rename falsifies** — **FIXED**\n\nSame file. `recordsSinceMs(nowMs)` is now `Math.max(startedAtMs, nowMs - retentionMs)` (store-open time = this bridge lifetime), replacing `Math.max(coverageSinceMs, …)`.\n- Closure argument: a rollback requires a crash requires a restart, so **every** record a discarded rename can remove is necessarily older than this mount's floor. The window is exactly what a rollback can never reach behind. Not a relocation: no case remains where a missing record inside the window was ever written.\n- Not neutered: a never-arrived request submitted **during** this mount is still provably-not-sent (harness check 9).\n- `coverageSinceMs` kept in the file (v1 shape unchanged) and re-documented as **diagnostic, not load-bearing**, stating the reason (a rolled-back file preserves it verbatim) and that a rise-only witness is what would make it load-bearing again.\n- `types.ts` corrected: `recordsSinceMs` docblock now states the lifetime bound and why; `bridgeStartedMs` no longer calls `recordsSinceMs` \"the field to prefer\" — they now agree by construction. `handleAnswerStatus` docblock updated to match.\n- Impact on the shipped client: **none**. `unknownRequestOutcome` (BridgeCompanionRepository.kt:861-887) gates solely on `WriteLifetime.bridgeStartedMs` equality; the `recordsSinceMs` age rule is documented at :854-856 as the option *not yet* implemented. The fix makes the wire claim true for any client that does implement it.\n\n**2. [low] keys.ts — witness guarantee rests on undocumented NTFS log-flush ordering; :748 mislabels the both-renames-lost case** — **FIXED (documentation only; no runtime change, as the finding asked)**\n- `.../companion/crypto.ts` `writeFileDurable`: new \"THE CONTENT FSYNC ALSO ORDERS EARLIER RENAMES ON WIN32. DO NOT REMOVE IT.\" paragraph — `handle.sync()` is a FlushFileBuffers that forces NTFS's volume metadata log, which by then carries every rename already issued; that is the only thing ordering two durable writes on win32, and `keys.ts` depends on it.\n- `.../companion/keys.ts` :744-749 claim replaced: two renames lost in one crash is a **crash case, not the tree case**, and it is prevented by the fsync ordering rather than being out of scope. `raiseWitness` docblock gained \"WHAT ACTUALLY MAKES THE WITNESS'S RENAME DURABLE FIRST\" + the load-bearing invariant: every `raiseWitness` must be followed by an anchor `mutate` before any nonce above the raised mark is emitted; a witness-only path silently restores the original rewind. Verified structurally: both call sites (`claimSend` :514, `raiseSend` :550) call `raiseWitness` then `mutate` unconditionally, and `reserve` advances `reservedThrough` only after `raiseSend` resolves. No runtime assertion added (the invariant is structural/ordering, not expressible as a cheap check).\n\n**3. [medium] QuestionSheet.kt — picker free-text emits LF the client refuses, and only after the biometric** — **FIXED**\n- `C:/Users/khair/Code Projects/superset-companion/app-phone/src/main/java/family/khaira/supersetcompanion/phone/ui/question/QuestionSheet.kt` :438 — `minLines = 3` → `singleLine = true` + `keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)` (+2 imports). IME Enter can no longer insert U+000A. **No stripping in `onValueChange`** (§0.3 forbids silent rewriting).\n- `.../phone/model/Question.kt` — new `AnswerDraft.Companion.freeTextError(text)` delegating to core's `SemanticText.requireAnswerFreeText` (the one implementation, no fourth copy); `validationError`'s FreeText branch calls it **before** the `confirmedBiometric` check.\n- `.../phone/ui/ConversationViewModel.kt` — **also edited, outside the finding's named files, and it is required for closure**: the finding's stated placement does not actually precede the prompt, because `validationError` is only reached after `confirmer.confirm(...)` (:300-320). Added a pre-biometric guard at :281 that runs `AnswerDraft.freeTextError` over the FreeText choices and sets `localError` before `needsBiometric` is acted on. Without it the fix relocates the failure to the paste
+... (truncated 7975 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\wzgejv33f.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\subagents\workflows\wf_4f555b58-183/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\workflows\scripts\companion-residuals.js', resumeFromRunId: 'wf_4f555b58-183'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>8</agent_count><agents_done>8</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>1577691</subagent_tokens><tool_uses>539</tool_uses><duration_ms>4055179</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a991e7ab3c37c164f</task-id>
+<tool-use-id>toolu_01FsHSSHddJM4Mx7NRAVogYj</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a991e7ab3c37c164f.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review trpc + desktop UI" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Scope: trpc/router/companion, keep-awake, PairDeviceDialog — SIMPLIFICATION review, review-only. All claims grep-verified across both repos.
+
+## Findings (by value)
+
+**1. Panic-switch procedures have zero callers — router advertises a switch that does not exist**
+- file: `packages/host-service/src/trpc/router/companion/companion.ts`, lines 218–233 (+ `panicInput` at 51–53)
+- summary: `disableWrites` / `revokeAllDevices` are called by nothing. Grep across fork + companion repos: only definitions, the bridge impl (`companion/index.ts:769–772`), and comments. `CompanionPairingSetting.tsx` (sole companion UI) uses only `status`; `PairDeviceDialog` uses `pairingState`/`openPairing`/`closePairing`. Phone cannot reach this surface by design (§7.8 desktop-only), so no caller can exist outside the desktop renderer — and the renderer has none.
+- cost: two procedures + zod schema + two `CompanionBridge` interface methods kept in sync for an unpressable button; router header (lines 15–18) tells readers "`disableWrites` / `revokeAllDevices` are the desktop panic switch", which misleads — there is no switch, only wire surface. The panic capability §7.8 mandates is effectively unreachable (curl-with-PSK only).
+- simpler form: this is really a completeness gap wearing a dead-code costume — either add the settings-row UI that presses it, or drop the procedures until that UI lands and keep the capability on the bridge only. Whichever way, the header comment must stop asserting a switch exists.
+
+**2. `KeepAwakeState` rich snapshot + `getKeepAwakeState()` — residue of the removed disk-publisher**
+- file: `apps/desktop/src/main/lib/keep-awake/index.ts:198–200`; `keep-awake.ts:94–123, 147–149, 172–181, 201–212`
+- summary: `getKeepAwakeState()` has zero callers anywhere. `index.ts:22–24` records the superseded approach ("an earlier revision mirrored the state to `~/.superset/companion/keep-awake.json` … never written") — the publisher was deleted but the snapshot it published survived. Production reads only `getState().held` (`index.ts:83, 127`) and `failure`/`heldSinceMs` feed log lines; `lastUpdatedMs` and the stored `activeTerminalIds`/`activeEventTypes` copies (`update()` recomputes them every tick at 172–181) have no reader outside two test assertions.
+- cost: ~40 lines of state bookkeeping every future edit must keep coherent; `keep-awake.ts:94`'s comment documents an export nobody imports; readers must trace the whole surface to learn most of it is inert.
+- simpler form: manager keeps `blockerId`, `heldSinceMs`, `failure`; `getState()` shrinks to `{held, failure}` (all tick + tests need); delete `getKeepAwakeState` and `lastUpdatedMs`/stored id-set copies. `acquire()` already logs terminal/event detail from its params, so no diagnosis is lost.
+
+**3. `ActiveAgent` carries three fields with no reader**
+- file: `apps/desktop/src/main/lib/keep-awake/keep-awake.ts:82–88`; producer `agent-activity.ts:171–178`
+- summary: `workspaceId`, `agentId`, `lastEventAtMs` are validated, constructed, and never read — `update()` consumes `terminalId` + `lastEventType` only; `getState()` exposes neither.
+- cost: type + test fixtures imply the fields matter; staleness logic already used `lastEventAt` before construction, so the carried copy is pure freight.
+- simpler form: `ActiveAgent = { terminalId, lastEventType }`. Keep the boundary validation (hard-error on malformed rows) — validation and carriage are separable.
+
+**4. Barrel exports with no external consumer**
+- file: `apps/desktop/src/main/lib/keep-awake/index.ts:32–44`
+- summary: re-exports `KeepAwakeManager`, `POLL_INTERVAL_MS`, `ActivityPoll`, `CompanionGatePoll`, `pollCompanionGate`, `COMPANION_*`, `KEEP_AWAKE_BLOCKER_TYPE`, `KeepAwakeState` — `main.ts:47` imports only `startKeepAwake`/`stopKeepAwake`; tests import leaf modules directly.
+- cost: advertises a public API that doesn't exist; grep noise when tracing real consumers.
+- simpler form: export `startKeepAwake`, `stopKeepAwake` (+ the getter iff kept per finding 2).
+
+**5. Stale comment pointer**
+- file: `packages/host-service/src/trpc/router/companion/companion.ts:93`
+- summary: "Making it exact needs a `closedReason` on the handle — see the report note" points at a review artifact not in the repo.
+- cost: dead reference the next reader hunts for.
+- simpler form: state the follow-up inline ("needs `closedReason` on `PairingWindowHandle`") and drop the pointer.
+
+## Justified as-is
+
+- **`encodeQrMatrix.ts` (596-line hand-rolled QR encoder)** — verified: no QR package anywhere in the monorepo's package.jsons, and the stated rationale (a new dep moves `package.json`/`bun.lock` under the `(LOCK-REGEN)` nightly gate) matches this fork's real, repeatedly-bitten failure class. Scope is properly minimal (byte mode, fixed level M). Keep.
+- **`companion-gate.ts` partial re-validation of `devices.json`** — deliberate, documented cross-process constraint (no import path from Electron main to the bridge's `parseRecord`); validates only what the sleep decision rests on. Keep, including the duplicated `COMPANION_ENABLE_ENV` constant.
+- **Router's `trackedPairingWindow` + `observedClosedAtMs` latch** — minimal state for a real user-visible distinction (closed-early vs expired); nothing derivable replaces it once the deadline passes. Keep.
+- **`PairDeviceDialog` six-phase machine + module-level `serialize` chain** — each phase renders distinct copy tied to a distinct cause; the chain prevents a proven close-after-open race. Keep. (Negligible nit: poll effect double-guards `cancelled || !mounted.current` where `cancelled` alone suffices — not worth a change.)
+- **`index.ts` tick logic (fail-closed gate handling, never-release-on-failed-read)** — every branch encodes a distinct proof state; collapsing any would reintroduce the mid-question-sleep failure. Keep.</result>
+<usage><subagent_tokens>126655</subagent_tokens><tool_uses>20</tool_uses><duration_ms>215607</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a339932cf20ce1984</task-id>
+<tool-use-id>toolu_01SApizmzy7bAnESTFY9t8Sg</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\a339932cf20ce1984.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review crypto/keys/pairing" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All verification greps complete. Final report:
+
+## SIMPLIFICATION findings — keys.ts / crypto.ts / device-store.ts / pairing.ts / access-jwt.ts
+
+Ordered by value. Evidence: whole-fork grep + Kotlin companion repo grep for every "dead" claim.
+
+**1. Dead diagnostic surface: `SendNonceSource.state()` + `NonceState`**
+`keys.ts:1287` (interface), `keys.ts:1411` (impl), `types.ts:106` (type). Whole-repo grep: only `.next()` is ever called (`http.ts:1408`, `ws.ts:349`); `.state(` has zero call sites; `NonceState` imported only by keys.ts itself. Cost: every future change to nonce internals (block size, refill, poisoning) must keep this snapshot method coherent; readers assume something consumes it. Simpler: delete `state()` from interface+impl and delete `NonceState` from types.ts. Note `readLegacySendNonceState`/`retireLegacySendNonceState` (keys.ts:274,380,887,931) are live migration code — not this finding.
+
+**2. Write-only counter: `kexIntroductions`**
+`pairing.ts:192` (field), `551` (increment), `982` (init). Zero readers in either repo — the `coverageSinceMs` pattern exactly. Its siblings earn their keep (`confirmAttempts` gates at 827, `unattributedAttempts` logs at 880); this one records and tells no one. Cost: implies a budget/limit that doesn't exist; next editor must trace it to learn it's inert. Simpler: delete field + increment, or log it where the other counters log if visibility was the intent.
+
+**3. Dead export: `constantTimeEqualsBase64Url`**
+`crypto.ts:708`. Definition-only across the whole fork; Kotlin can't import TS. Cost: an unused constant-time primitive invites misuse-by-discovery (comparing base64url strings instead of decoded bytes) and carries timing-correctness review burden every audit pass. Simpler: delete; re-add with its first caller.
+
+**4. Dead type: `NonceCacheRecord`**
+`types.ts:145`. Definition-only across whole repo — replay cache persists its own fixed-width binary records; this JSON-shaped record type is scaffolding from an earlier pass. Cost: describes a wire/disk format that no longer exists; actively misleading about how nonces persist. Simpler: delete.
+
+**5. `NonceCache` adapter duplicates `ReplayCache` + stale comment**
+`keys.ts:1439–1477` wraps `createReplayCache` solely to curry `Date.now()` into `admit`; two interfaces (`NonceCache`, `ReplayCache`) must stay in sync for one delegation. And `crypto.ts:885–889` still says keys.ts "should delegate to `createReplayCache` rather than reimplement it" — that advice was taken; the comment now describes a superseded state (the review brief's "comment that is now WRONG" category). Cost: interface drift risk + a comment sending readers to fix a problem already fixed. Simpler: have `index.ts`/`http.ts` consume `ReplayCache` directly (callers pass `Date.now()`), delete the adapter, rewrite the crypto.ts comment to state the current relationship.
+
+**6. `serialise` tail-promise helper copy-pasted 3×**
+`keys.ts:284–291`, `crypto.ts:967–974`, `device-store.ts:433–440` — byte-identical. Cost: a fix to its error-chaining semantics (e.g. a rejected-tail leak) must be found and applied three times. Simpler: one exported `createSerialiser()` in crypto.ts (already the shared-primitives home), import twice.
+
+**7. All-zero constant-time loop duplicated**
+`crypto.ts:~331–341` (X25519 shared-secret check), `keys.ts:1218–1227` (`assertDeviceKey`) — same OR-accumulate loop, same explanatory comment. Cost: a subtlety fix (e.g. length handling) applied to one copy silently misses the other in security-critical code. Simpler: `export function isAllZero(bytes: Uint8Array): boolean` in crypto.ts; both call it.
+
+**8. Byte-length/label constants re-declared per file**
+`DEVICE_ID_BYTES` ×3 (pairing.ts:131, device-store.ts:82, +1), `X25519_KEY_BYTES` ×2, `KEY_BYTES` ×2, `MAX_LABEL_CHARS` ×2 (pairing.ts:137, device-store.ts:83). The label pair is a real cross-file invariant: pairing MAC-accepts a label pairing considers legal, then device-store's `create()` refuses it if the constants drift — a post-MAC failure. `assertLabel`/`assertSurface` (`pairing.ts:900–916`) mirror device-store's for the same reason. Cost: silent drift breaks the pairing→store handoff after the cryptographic acceptance point. Simpler: single source in config.ts (or types.ts), both files import; keep the dual *assertions* (boundary validation is deliberate) but share the *constants and predicates*.
+
+**9. Low value: parallel anchor/witness file parse scaffolding**
+`keys.ts` `readAnchorFile`/`readSendWitness` share the read → JSON.parse → field-validate → fail-loud shape with near-identical error plumbing. Cost: minor duplication; the two files genuinely differ in schema and failure policy. Only worth a shared `readJsonFileStrict` if a third durable file appears. No action needed now.
+
+**Non-finding (verified, protocol-locked):** `pairing.ts:713–714` sets both `issuedAtMs` and `serverTimeMs` to `Date.now()`. PROTOCOL.md assigns them distinct roles — `serverTimeMs` is the client clock-sync sample (§3.6, lines 59–67, 462), `issuedAtMs` is what the desktop records per device (line 693). Same instant, different contracts. Keep both.
+
+## Justified as-is
+
+- The entire **StateAnchor + SEND-WITNESS** machinery in keys.ts (owner-token single-writer, generation/epoch, witness-before-anchor, mutate's re-read-from-disk) — deliberate anti-rollback design, per brief: untouchable.
+- **device-store.ts** tombstone re-apply, ADOPT-COMMIT post-condition, pending-destroy journal, index-first-anchor-second persist ordering, and the authorityDigest projection (excluding only the two mutable-liveness fields is load-bearing, not accidental).
+- **pairing.ts** PAIR-JUNK-SURVIVAL budget split (`confirmAttempts` vs `unattributedAttempts` vs windowed MAC failures) and every key-zeroing path.
+- **access-jwt.ts** in full: the six fail-closed checks, monotonic JWKS cache, single-flight fetch, `readBoundedBody` streaming cap. It correctly imports `base64UrlDecode`/`monotonicNowMs` from crypto.ts rather than re-implementing — the copy-paste-with-variation failure mode the brief predicted did not materialize here.
+- **Dual boundary validation** (pairing re-validating what device-store validates) stays — validate at API boundaries; only the shared constants behind it should be unified (finding 8).
+- Explanatory WHY-comments throughout — deliberate; only the crypto.ts:885–889 comment is flagged (finding 5) because it is now factually superseded.
+
+Net: the five files are structurally sound for their threat model; the yield is dead diagnostic surface from earlier passes (findings 1–4) and three mechanical dedups (5–8). Nothing found that would shrink the state machines themselves.</result>
+<usage><subagent_tokens>62515</subagent_tokens><tool_uses>13</tool_uses><duration_ms>288258</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa13404b2ee211bd9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\aa13404b2ee211bd9.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review store/index/types/config" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All reading + cross-repo grep verification complete. Final report:
+
+# SIMPLIFICATION review — question-store.ts / index.ts / types.ts / config.ts
+
+## Findings (ordered by value)
+
+**1. `stop()` hand-mirrors the start-time unwind list — two teardown sequences to keep in sync**
+`index.ts:281-595` (startInner builds `unwind: {what, close}[]`), `index.ts:602-654` (`stop()`).
+`startInner` accumulates an unwind array per acquired resource, uses it only on failed start, then discards it. `stop()` re-writes the same close sequence by hand. Cost: adding a resource to startInner but forgetting stop() = silent leak on every clean shutdown; the failure is invisible (nothing asserts the lists match). Simpler: persist the unwind array into `state` on successful start; `stop()` replays it reversed. One teardown list, both paths.
+
+**2. `captureFromHook` is dead and its comment is wrong**
+`question-store.ts:634` (interface), `:1545` (impl), docstring `:642` "The real entry point".
+Zero callers anywhere in host-service — the live entry is `asCaptureSink()` (wired in index.ts via `createNotifyingCaptureSink`). "The real entry point" describes superseded wiring; a reader tracing capture flow lands on the wrong door. Cost: dead public surface on the store's most security-sensitive path, plus an actively misleading comment. Simpler: delete method; move its validation note onto `asCaptureSink`.
+
+**3. `toSummary` dead — forward-provisioning for an event stream deliberately not wired**
+`question-store.ts:694` (interface), `:1710` (impl). Zero callers. `QuestionSummary` rides only `question.pending`/`question.stale` frames — never published (only `question.resolved` is, `index.ts:948`), and `events.ws` sits in `DELIBERATELY_UNGRANTED_CAPABILITIES`. Cost: must keep answerability/headline rules in sync in a method nothing exercises. Simpler: delete; reintroduce in the commit that grants `events.ws` — matching config.ts's own stated pattern ("add this token in the commit that supplies (1)").
+
+**4. Write-only fields on `PendingQuestion` — diagnostic state dressed as custody state**
+- `staleReason` — written `question-store.ts:592, :1526, :1537, :1640`; zero reads. Its only consumer would have been never-published `question.stale` frames.
+- `hookTranscriptPath` — `:581, :1522`; zero reads. The hook-claim vs derived-path mismatch is already console.warn'd at capture (`:1491-1498`).
+- `cwd` — `:583, :1523`; zero reads in either repo.
+
+Cost: fields on the threat-model record look load-bearing; every change to eviction/reconcile/verify must reason about them for nothing. Simpler: drop all three; log `staleReason` at the `markStale` call sites instead of storing it.
+
+**5. Five §10 error-detail interfaces enforce nothing**
+`types.ts:226-247` — `AlreadyResolvedDetail`, `LeaseHeldDetail`, `GuardFailedDetail`, `CapabilityUnsupportedDetail`, `AccessDeniedDetail`. Never imported; answer.ts emits `detail` as untyped literals. Cost: the exact drift class the file header exists to prevent — documented shape vs emitted shape can diverge silently. Simpler (preferred over deletion, since they document protocol): apply at emit sites (`satisfies AlreadyResolvedDetail` etc.). One line per site.
+
+**6. Declaration-only dead types/constants**
+- `NonceCacheRecord` — `types.ts:145`; keys.ts uses its own shapes.
+- `ConnectionState` — `types.ts:1169`; zero TS readers. Kotlin owns its own (`superset-companion/core/.../ConnectionState.kt` — verified, not deserialized from this type). TS copy is a doc mirror that can silently diverge from the real one.
+- `PROTOCOL_0_OPERATIONS` — `config.ts:79`; zero readers — nothing actually enforces the protocol-0 op set from it.
+- `HandleKind` member `"question"` — `question-store.ts:179`; `deriveHandle("question", ...)` never called (question IDs come from `mintQuestionId`).
+
+Cost each: a reader must disprove relevance before every protocol change. Simpler: delete (or, for `PROTOCOL_0_OPERATIONS`, wire it into the op-dispatch assert if the enforcement was intended — currently it's neither).
+
+**7. `TranscriptWindow.sawPartialTail` returned, never read**
+`question-store.ts:787` (field), `:888` (set). Both consumers (`read-api.ts:848`, `question-store.ts:1682`) ignore it; the same fact surfaces per-entry via `newest.partial`. Simpler: drop from the return shape.
+
+**8. Minor**
+- Dead `??` fallbacks in `createNotifyingCaptureSink.resolve` — `index.ts:952-956`: after the `state === "resolved"` check, `resolvedAtMs`/`resolvedBy` are guaranteed set; fallbacks imply a reachable path that isn't.
+- Dual start instants — `bridgeStartedMs = Date.now()` `index.ts:301` vs `startedAtMs = http.startedAtMs` `:596` (read by registry.ts:81). Two near-identical timestamps with different meanings a reader must distinguish; one captured instant serves both wire and registry.
+
+## Justified as-is (verified, do not simplify)
+
+- Double validation at the capture boundary and `QuestionCaptureInput`'s structural duplication of the sink shape — stated layering reason holds; the sink is the unauthenticated attack surface.
+- Lifecycle phase machine + `exclusive()` serialization (BRIDGE-LIFECYCLE-OWNER).
+- ACL-REVERIFY every start (no marker file) and the icacls drift description path.
+- CAPTURE-BOUNDED/CAPTURE-EVICTION three-tier reclamation; live questions never evicted.
+- Bounded transcript windowing (`readTranscriptWindow` limit checks, tri-state unreadable=refusal).
+- PORT-BEFORE-STATE reservation.
+- `DELIBERATELY_UNGRANTED_CAPABILITIES` + `assertCapabilityWiring` boot assert (`index.ts:1009`) — the withheld-capability machinery itself is load-bearing; only `toSummary` (finding 3) is the unwired remnant.
+- `AnswerStatusResponse.recordsSinceMs`/`bridgeStartedMs` and `foreground: boolean|null` — documented, wire-consumed.
+- Honest-failure states and explanatory WHY-comments throughout — only the `captureFromHook` docstring (finding 2) is wrong.
+
+No finding removes a wire field any Kotlin client reads — all dead items are server-internal or ride frames never published.</result>
+<usage><subagent_tokens>62041</subagent_tokens><tool_uses>16</tool_uses><duration_ms>336199</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa8aa0439135c6a16</task-id>
+<tool-use-id>toolu_01XkTKwdSXcrZZnYYqrMDho4</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\aa8aa0439135c6a16.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review ws/push/http/read-api" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All verifications complete. Final report:
+
+---
+
+## SIMPLIFICATION review — ws.ts / push.ts / http.ts / read-api.ts / registry.ts / audit.ts / companion-question-sink.ts
+
+### Context finding first (reframes everything in ws.ts)
+
+**F0. Entire §9 event stream is dormant on BOTH sides — deliberately, and the code is honest about it.**
+- Server: `events.ws` sits in `DELIBERATELY_UNGRANTED_CAPABILITIES` (`companion/index.ts:1004-1006`), `/v1/events/ticket` is gated on it (`http.ts:825`), and `createSnapshotSource()` throws by design (`index.ts:1339-1350`, `(EVENTS-WS-PRECONDITIONS)` comment `index.ts:1328`). No ticket can ever be issued → no socket ever authenticates → all 957 lines of `ws.ts` are unreachable in production.
+- Kotlin: symmetric. `CompanionCore.eventStreamClient()` (CompanionCore.kt:98) — zero callers. `BridgeClient.eventTicket()` (BridgeClient.kt:256) — zero callers. Zero test coverage of `EventStreamClient`/`EventSequenceTracker`. `BridgeCompanionRepository.kt:~125-128` documents the decision: "The event WebSocket in `:core` is not wired up here… FCM wakes the app for the case that matters."
+- Verdict: this is documented future scaffolding, not accidental dead code — the ungranted-capability registry pattern (born from the `push.fcm` sealed-501 incident, index.ts:995-1001) is exactly right. Not proposing deletion. But it means every ws.ts finding below is about *what ships when the capability is finally granted*, and the findings should be fixed BEFORE wiring, while nothing depends on them.
+
+### Findings, ordered by value
+
+**F1. http.ts — five parallel per-path tables, plus the unifier already exists but is dead.**
+`SealedHandler` type (http.ts:181-184) and `RouteDefinition` interface (http.ts:186-192): grep-confirmed ZERO uses across both repos — leftovers of a superseded table-driven routing design. Meanwhile every route is described five times: `SCHEMAS` (:717-729), `ROUTE_CAPABILITY` (:814-826), `ROUTE_OPERATION` (:847-861), the `SealedHandlers` interface (:203-241), and a 60-line `dispatch` switch (:1331-1394) whose every case is the identical shape `{statusCode: 200, body: await h.X(ctx, body as XRequest)}`.
+Cost: adding one endpoint touches five places; a missed entry in any one is a runtime hole (the `push.fcm` incident was exactly this class). Simpler form: one `ROUTES: Record&lt;path, {schema, capability, operation, handler}&gt;` table — i.e. resurrect `RouteDefinition` or delete it. Either way delete the two dead types now.
+
+**F2. read-api.ts — `countStatuses` duplicates handleTree's status derivation verbatim.**
+The `pending !== null ? "needs_input" : binding === undefined ? "idle" : statusFromEventType(...)` derivation appears at read-api.ts:535-540 (inside handleTree, :527-544) and again at :970-975 (inside `countStatuses`, :961-981).
+Cost: a status-mapping change applied to one loop makes heartbeat counts disagree with the tree the phone renders — a silent divergence with no gate. Simpler form: extract one `deriveSessionStatus(session)` and have both call it.
+
+**F3. read-api.ts — handler-level re-validation duplicating the http.ts zod pipeline.**
+handleTree :501-508 (includeIdle/since), handleHello :364-375 (protocol range), handleHeartbeat :913-921, handleTranscript :822-837 (limit/before), and `requireCapability` :306-317 re-checking what `ROUTE_CAPABILITY` already gated. Now confirmed: NO bypass path exists — the ws snapshot source throws (F0), so every call arrives through the http.ts pipeline (zod schema at step 12, capability at step 13).
+Cost: two validation surfaces that must be kept congruent by hand; a widened zod bound not mirrored here (or vice versa) produces confusing wrong-layer rejections. Simpler form: single source — either the zod schemas own bounds and handlers trust their input types, or (if defence-in-depth is wanted for the future snapshot wiring) say so in a comment; today's comments don't claim that.
+
+**F4. ws.ts — ack machinery is dead even within the dormant design, on both sides.**
+`lastAckedSeq`: field :283, init :627, sole update :722 — write-only, nothing reads it. Kotlin: `AckFrame` (Events.kt:282) and `WebSocketHandle.ack()` (EventStreamClient.kt:83) have zero callers; the repository comment explicitly disclaims an ack loop. PROTOCOL.md §9 requires the server to *accept* ack frames — it doesn't require remembering them.
+Cost: bookkeeping that implies a redelivery contract nobody implements; a future maintainer will hunt for the reader. Simpler form: accept-and-discard the ack frame (keep the parse/refusal path — protocol-locked), delete `lastAckedSeq`. Protocol untouched.
+
+**F5. ws.ts — per-socket `emittedEids`/`emittedOrder` dedup cache derivable from `highestGseq`.**
+`EMITTED_EID_CACHE=2048` :84, structures :279-280, maintenance :333, :384-389. gseq is globally monotonic and gap-free, and every emit path (broadcast, ring replay :697-701, queued flush :704-709) ascends — one integer comparison replaces a 2048-entry Set+FIFO. CAVEAT that must survive the simplification: :683 sets `live.highestGseq = snapshot.tree.gseq` BEFORE the snapshot emit :684-694 — a naive gseq gate inside `emit` would drop the snapshot frame; set it after, or exempt the snapshot path.
+Cost: cache-eviction logic, a tunable constant, and Set/array bookkeeping standing in for `frame.gseq &gt; live.highestGseq`.
+
+**F6. Minor, each one-line.**
+- ws.ts:113/:515 `EventTicket.issuedAtMs` — write-only (expiry uses `expiresAtMs`). Delete.
+- push.ts:1277 `retract(questionId, _workspaceId)` — second param ignored (uses `record.workspaceId`); interface :914 forces callers to pass a dead arg. Drop from signature.
+- ws.ts:869-872 inline header-lowercasing loop duplicates http.ts `headersOf` :1528-1534. Import it.
+- ws.ts:126-132 `handleEventTicket` — one-line pass-through with a single caller (index.ts:484 lambda). Inline.
+
+### Leads investigated and CLEARED
+
+- **Sink `transcriptPath` is load-bearing** — not vestigial as the TRANSCRIPT-PATH-DERIVED comment first suggested: question-store.ts:1486-1522 compares the hook-supplied path against the derived one, rejects on mismatch, and retains it as `hookTranscriptPath` witness while storing the derived path. Correct as-is.
+- **JSON `{"t":"pong"}` app-frames** — protocol-normative (PROTOCOL.md:1387-1388), client sends them. The dual liveness path (raw WS pong :651-653 + JSON pong :715-717/:789-793) is protocol-locked. Keep.
+- **`maxConnections: 1` wire field** — normative (PROTOCOL.md:1322/1340). The hardcoded one-per-device replacement :571-577 is the real enforcement; constant only fills the wire field. Fine.
+
+### Justified as-is — say so plainly
+
+- **audit.ts** (186 lines): serialised fsync'd appends, rotation, retention — every piece earns its place; `hashJsonPayload` alive (answer.ts:85,3186; index.ts:58,724,1519,1620).
+- **registry.ts** (83 lines): identity-checked process-wide handle. Clean.
+- **push.ts** core design: dual-clock vouched sweep, sent-before-send commitment, RETRACT-WINDOW retention — all load-bearing against real failure modes (clock jumps, crash-between-send-and-record). Only F6's dead param.
+- **companion-question-sink.ts**: CAPTURE-BOUNDED caps, GUARD5-ANCHOR derivation, module-level sink registration mirroring registry.ts — justified.
+- **ws.ts core mechanisms** (single-use ticket, sealed per-socket frames, seq/gseq, snapshot-first, ring replay): protocol-locked and coherently built; the honest `DELIBERATELY_UNGRANTED` gate is the right way to hold unshipped surface. Findings F4/F5/F6 are the trims to make before granting `events.ws`.</result>
+<usage><subagent_tokens>77193</subagent_tokens><tool_uses>24</tool_uses><duration_ms>394159</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aae2c4383f58da0d2</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\aae2c4383f58da0d2.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review answer/lease/keystrokes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Task: SIMPLIFICATION review (review-only, one-shot report) of `answer.ts`, `lease.ts`, `keystrokes.ts` in `packages/host-service/src/companion/` — layered special cases, superseded/dead code, derivable state, copy-paste with variation. All dead-code claims grep-verified across both repos.
+
+## Findings (ordered by value)
+
+**1. lease.ts — four dead methods, verified unused (~45 lines)**
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\lease.ts:146` + 304–323 (`sweep`), `:122` + 262–264 (`get`), `:143` + 300–302 (`getMessage`), `:362` + 384–386 (`TerminalLockRegistry.isBusy`).
+- Summary: never called anywhere. Only lease-registry callers in either repo: `answer.ts:1821` (acquire), `2117` (release), `2217` (extend), `2608` (acquireMessage), `2760` (releaseMessage); only lock calls `answer.ts:1919`, `2650` (runExclusive). `index.ts` prune intervals (555–565) run `audit.prune`/`attempts.prune`/`messageAttempts.prune` but never `leases.sweep`. No tests exist under `src/companion`; no Kotlin reader.
+- Cost: ~45 lines that must stay correct through any lease refactor yet are never exercised — worst kind of debt in a file this safety-critical. Side effect worth surfacing: because `sweep` is unwired and expiry is lazy (`live()`/`liveMessage()` remove only on lookup of the same key), lease entries for abandoned questions accumulate until process restart.
+- Simpler form: delete `get`/`getMessage`/`isBusy` from interface + implementation. For `sweep`: either delete it too, or wire it into the existing `index.ts` prune interval (one line) — pick one; an unwired janitor is the current worst of both.
+
+**2. lease.ts — answer-lease vs message-lease copy-paste (~120 lines)**
+- `lease.ts:170–184` (`live`) vs 186–203 (`liveMessage`); 206–230 (`acquire`) vs 266–289 (`acquireMessage`); 253–260 (`release`) vs 291–298 (`releaseMessage`); parallel map pairs `byLeaseId`/`byQuestionId` vs `messageByLeaseId`/`messageByTerminalId`; `sweep` 304–323 duplicates the loop twice.
+- Summary: two lease tables identical except index key (questionId vs terminalId) and TTL constant.
+- Cost: every expiry/index-cleanup fix must be hand-mirrored; the two `live()` bodies have already drifted textually, so a future fix landing in one is plausible.
+- Simpler form: one generic keyed-lease table (`makeLeaseTable(keyOf, ttl)`) instantiated twice. Keep `extend` exposed only on the answer instance — the deliberate no-extendMessage rule survives as "message instance doesn't export extend". Refuse-not-queue semantics unchanged.
+
+**3. answer.ts — pre-lock preflight duplicated between handleAnswer and handleMessage**
+- `answer.ts:~1780–1813` vs `~2570–2600`.
+- Summary: agentBinding fetch → bound check → agent-kind gate (codex 501 vs generic 501) → `resolveHostTerminal` → no-workspace 412, copy-pasted with variation.
+- Cost: "which agent kinds are writable" policy lives in two places; enabling Codex v2 must touch both or the two endpoints silently diverge in what they accept.
+- Simpler form: one shared preflight helper returning `{ host, binding }` and throwing the same sealed errors; per-endpoint message wording passed in or unified.
+
+**4. answer.ts — 6 `AnswerAttemptRecord` + 6 message-attempt literals repeat identity fields**
+- Answer: `answer.ts:~1876` (in_flight), `~1951`, `~1976`, `~2030`, `~2064`, `~2093`. Message: `~2659`, `~2671`, `~2694`, `~2712`, `~2734`, `~2750`.
+- Summary: each literal re-states requestId/questionId/deviceId/surface/leaseId/startedAtMs (answer) or requestId/terminalId/startedAtMs (message); file already hoists `baseAudit` at 1841 for exactly this pattern.
+- Cost: ~60 lines of repetition; adding one record field = 6 edit sites per path, each a chance to desync a terminal-state write.
+- Simpler form: hoist `baseAttempt` next to `baseAudit`, spread + status-specific fields per site. Honest-failure states stay distinct — only the identity envelope is shared.
+
+**5. answer.ts — evaluateGuards hand-writes the sequence, then polices itself against drift**
+- `answer.ts:1049–1176`; scaffolding: `GUARD_EVALUATION_ORDER` + `assertGuardClassification()` (module load) + `at()`/`advance()` closures.
+- Summary: the walk is hand-written straight-line code, and ~40 lines of runtime assertion exist solely to prove that hand-written code matches the declared order array.
+- Cost: adding/reordering a guard = 4 edit sites (array, classification, walk body, self-check) with crash-at-runtime as the only drift detector.
+- Simpler form: loop over `GUARD_EVALUATION_ORDER` with a per-guard reader map — `veto_only` routed to `readVetoGuardSource`, others to `readGuardSource`, screen guard's `screenMatch` precomputed (pure) and threaded to failure results as today. Order becomes correct by construction; `at()`/`advance()` deletable. Explicitly preserved: same order, same short-circuit, same evaluation record, six-guard transaction and per-keystroke re-evaluation untouched.
+
+**6. answer.ts — matchPromptStillOnScreen duplicates matchPickerScreen's prologue**
+- `answer.ts:897–928` vs 677–705.
+- Summary: windows-squash → empty-screen check → prompt-anchor extraction → anchor-floor checks appear in both, differing only in `digitMapped`.
+- Cost: (GUARD5-ANCHOR) floor policy lives twice; a floor/reason-code change edits two blocks.
+- Simpler form: shared prologue helper returning `{ windows, anchor } | failure-reason`; both matchers consume it.
+
+**7. Minor pair**
+- `keystrokes.ts:1022–1063` — `assertMultiSelectSubmitShape` re-runs `assertKeystrokeBytes` (1028, already run at 994 on the only call path, `assertEmittedShape:1008` — grep confirms no other caller) and re-derives label-order facts `assertShapeGrammar:932–953` already pins. Independent value = raw-bytes suffix check (1051–1062). Caveat: layering is documented (975–984) as defense-in-depth; if kept, keep — but the duplicate `assertKeystrokeBytes` call and re-derived order facts add nothing even under that doctrine. Simpler: keep the suffix check, drop the re-derivation.
+- `answer.ts:2183–2203` (`abort()`) vs 2261–2289 (inline guard-failed branch) — both encode "written===0 ⇒ guard_failed, else unconfirmed"; `abort()` hardcodes `guard:"session"` even for non-guard reasons (deadline, lease lost), which misleads readers. Simpler: `abort(reason, guardName = "session")` used by both branches.
+
+**8. Cross-file (borders the store reviewer's scope)**
+- `question-store.ts:1276–1279` (`hasUnprovenAnswerShape`, docblock 1247–1275) — self-declared "deliberately a duplicate" of `classifyAnswerShape`'s N&gt;1 rule; docblock warns "Both must stay in step".
+- Cost: proving a new shape (e.g. multiselect within N&gt;1) requires remembering a second file or the bridge silently hides answerable prompts — the docblock's own stated failure mode.
+- Simpler form: export a pure predicate (`promptShapeUnproven(questions)`) from keystrokes.ts consumed by both. The docblock's justification (classifier needs answers that don't exist yet) blocks calling `classifyAnswerShape`, not sharing a predicate.
+
+## Justified as-is (checked, deliberately not flagged)
+
+The six-guard transaction under one lock and guard re-evaluation before every keystroke; the two null-semantics readers (`readGuardSource` fail-closed vs `readVetoGuardSource`); guard-5's anchor floors, window squashing, and ascending-band check; `screenShowsPickerChrome`'s err-toward-matching bias; the durable attempt store's two-failure-mode open logic, tmp→fsync→rename writes, `recordsSinceMs` mount-time floor, and put/forget asymmetry; MESSAGE-ECHO's split submit with composer-echo differential and in-lock re-checks; `assertNoPickerOnScreen`'s three sources; lease refuse-not-queue, fallible `extend`, and the deliberate absence of `extendMessage` (the absence, not the duplication around it); the `runExclusive` queue-slot semantics; every keystrokes.ts byte-contract refusal, the `RawPtyWriter` brand + Promise probe, control-char policy sets; and `PROVEN_AGAINST` (no reader, but it is the declared anchor for the mandated canary test — not dead). The honest-failure state set (pending/confirmed/failed/unconfirmed) is preserved untouched by every simpler form above.</result>
+<usage><subagent_tokens>62894</subagent_tokens><tool_uses>16</tool_uses><duration_ms>414525</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>woh4uit5g</task-id>
+<tool-use-id>toolu_01W5ghQHzPrTD53uPrnXbojv</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\woh4uit5g.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Apply the deduped /simplify findings: shared primitives first, then consumers, then gates" completed</summary>
+<result>{"applied":[{"area":"keys-store-pairing","ok":true},{"area":"answer-lease","ok":true},{"area":"http-ws-read-push","ok":true},{"area":"store-index-types","ok":true},{"area":"desktop-and-panic-ui","ok":true},{"area":"kotlin-dedup","ok":true}],"primitives":"All values confirmed matching before publishing. Both files typecheck standalone (`tsc --ignoreConfig`) and pass scoped `biome check`.\n\n---\n\n## Per item\n\n**1. limits.ts — DONE.** New file `C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/companion/limits.ts`. Imports nothing → no cycle possible from any consumer. Verified before writing:\n- 8 capture caps identical in sink (129-136) and question-store (105-112). ✓\n- `MAX_LABEL_CHARS` 128 in pairing.ts:137 and device-store.ts:83; http.ts:601 `z.string().min(1).max(128)`. All 128. ✓\n- `DEVICE_ID_BYTES` 16 × 3 (crypto:92, device-store:82, pairing:131); also `PID_BYTES` 16 (pairing:130) and `TICKET_ID_BYTES` 16 (keys:118) — same §0.1 width. ✓\n- `X25519_KEY_BYTES` 32 (crypto:91, pairing:132); `KEY_BYTES` 32 (keys:117, pairing:134); `AES_KEY_BYTES` 32 (crypto:89). All one width. ✓\n- `PANIC_REASON_MAX_CHARS` 200 (index.ts:138) vs `z.string().min(1).max(200)` (companion.ts:52). ✓\n\n**No divergences among the mandated pairs.** One adjacent divergence found, NOT touched — see below.\n\n**2. crypto.ts canonical id-22 validator — DONE.** `isCanonicalWireId` + `decodeWireId`, both built on the existing strict `base64UrlDecode`. Strictest form wins: the three regex-only sites currently accept non-canonical 22-char encodings that device-store refuses.\n\n**3. crypto.ts isAllZero — DONE.** Extracted; `x25519` now calls it (its inline loop deleted, `zero(shared)`-then-throw unchanged).\n\n**4. crypto.ts createSerialiser + readBoundedStream — DONE.** `createReplayCache` now uses `createSerialiser()`. `readBoundedStream` shares only the capped read.\n\n**5. crypto.ts dead surface + wrong comment — DONE.** `constantTimeEqualsBase64Url` deleted (grep over the whole fork: definition-only, zero readers). Comment at old 885-889 rewritten — I verified the claim first: `keys.ts:1461 createNonceCache` really does call `createReplayCache` and only threads the clock.\n\n**sleep — DONE**, with a deviation from the brief, stated loudly below.\n\n---\n\n## API published\n\nAll from `packages/host-service/src/companion/limits.ts`:\n```ts\nexport const WIRE_ID_BYTES = 16;        // replaces DEVICE_ID_BYTES / PID_BYTES / TICKET_ID_BYTES\nexport const WIRE_ID_CHARS = 22;\nexport const KEY_BYTES = 32;            // replaces AES_KEY_BYTES too\nexport const X25519_KEY_BYTES = 32;\nexport const MAX_LABEL_CHARS = 128;\nexport const PANIC_REASON_MAX_CHARS = 200;\nexport const MAX_ID_CHARS = 256;\nexport const MAX_PATH_CHARS = 4_096;\nexport const MAX_HEADER_CHARS = 512;\nexport const MAX_QUESTION_TEXT_CHARS = 262_144;\nexport const MAX_OPTION_LABEL_CHARS = 512;\nexport const MAX_OPTION_DESCRIPTION_CHARS = 4_096;\nexport const MAX_OPTIONS_PER_QUESTION = 32;\nexport const MAX_QUESTIONS_PER_PROMPT = 32;\n```\nNames are unchanged from the existing local declarations except the two renames noted. `MAX_ID_CHARS` (256, capture ids) is unrelated to `WIRE_ID_CHARS` (22, §0.1 wire ids) — named apart on purpose.\n\nAll from `packages/host-service/src/companion/crypto.ts`:\n```ts\nexport function isCanonicalWireId(value: unknown): value is string;\nexport function decodeWireId(value: string): Uint8Array;          // throws CryptoInvariantError\nexport function isAllZero(bytes: Uint8Array): boolean;            // constant-time\nexport function createSerialiser(): &lt;T&gt;(work: () =&gt; Promise&lt;T&gt;) =&gt; Promise&lt;T&gt;;\nexport class BoundedStreamOverflowError extends Error { readonly maxBytes: number }\nexport interface BoundedStreamOptions { cancelOnOverflow: boolean }   // REQUIRED, not optional\nexport async function readBoundedStream(\n  body: ReadableStream&lt;Uint8Array&gt;, maxBytes: number, options: BoundedStreamOptions,\n): Promise&lt;Uint8Array&gt;;\nexport interface SleepOptions { signal?: AbortSignal; unref?: boolean }\nexport function sleep(ms: number, options?: SleepOptions): Promise&lt;void&gt;;\n```\n\n---\n\n## What other agents must change in THEIR files\n\n**Deviation from the brief you must know about — `sleep` takes an options OBJECT, not a positional signal.** The brief said push's `(ms, signal)` covers both. It does not: push.ts:1314 calls `timer.unref?.()` and answer.ts:2386 does not. Merging on the brief's signature silently unrefs answer.ts's poll timers. Both behaviours are preserved via the flag instead.\n- `answer.ts` ~2385: delete local `sleep`; import from `./crypto`. Call sites unchanged — `sleep(SCREEN_ADVANCE_POLL_MS)` still compiles (`DurationMs` is a plain `number` alias, types.ts:28).\n- `push.ts` ~1304: delete local `sleep`; import from `./crypto`. Every call site must become `sleep(ms, { signal, unref: true })` — omitting `unref` drops the unref.\n\n**Second deviation, same reason — `readBoundedStream` requires an explicit `cancelOnOverflow`.** access-jwt cancels the reader on overflow (line 515), http.ts does not. Unifying either way is a behaviour change; cancelling an inbound request body can take the un-written 413 with it on some HTTP/1.1 stacks.\n- `http.ts` ~526 `readBoundedBody`: keep the `content-length` `/^\\d+$/` + `&gt;max` checks and the `if (!body) return new Uint8Array(0)` branch. Replace only the reader loop with `readBoundedStream(body, maxBytes, { cancelOnOverflow: false })`, wrapped: `catch (e) { if (e instanceof BoundedStreamOverflowError) throw new CleartextError(413, \"body_too_large\"); throw e; }`.\n- `access-jwt.ts` ~490 `readBoundedBody`: keep the `Number.isFinite` content-length check and the `body === null → unverifiable()` branch. Use `{ cancelOnOverflow: true }`; map with `catch (e) { if (e instanceof BoundedStreamOverflowError) unverifiable(); throw e; }`. Return `Buffer.from(bytes).toString(\"utf8\")`.\n- `pairing.ts` ~1237 `readBody` is a node `IncomingMessage` — leave alone, as briefed.\n\n**Serialiser** — `keys.ts` ~284 and `device-store.ts` ~433: delete the local `serialise` and its `let tail`, replace with `const serialise = createSerialiser();`. Bodies are byte-identical to the extracted one; one serialiser per resource, never shared.\n\n**isAllZero** — `keys.ts` `assertDeviceKey` ~1218-1227: replace the loop with `if (isAllZero(deviceKey)) { throw ... }`. Keep the error message and the preceding length check verbatim.\n\n**id-22 validator** — the regex forms are the LOOSE ones; switching tightens them (non-canonical trailing bits now refused), which is the point of the change:\n- `keys.ts:120` `KEY_REF_PATTERN` — delete; `pathFor` (~1007) and the two `record.generation` tests (701, 835) use `isCanonicalWireId(...)`.\n- `read-api.ts:326-331` `requireHandle` — body becomes `if (!isCanonicalWireId(value)) throw badRequest(...)`; the `typeof` check is subsumed by the type predicate, and the return type stays `string`.\n- `http.ts:583` `id22` — `z.string().refine(isCanonicalWireId, { message: \"must be a canonical 22-character base64url id\" })`. Drop `.length(22)`/`B64URL` from this schema only (`B64URL` has other users — check before deleting the const).\n- `device-store.ts:171-185` `assertDeviceId` — keep the try/catch and the `DeviceStoreError` wrapping, but call `decodeWireId` instead of `base64UrlDecode`; the separate `decoded.length !== DEVICE_ID_BYTES` branch then becomes dead and should go, since `decodeWireId` already enforces it.\n\n**Constants** — delete the local declaration and import from `./limits`:\n- `question-store.ts` 105-112 (8 caps) and `companion-question-sink.ts` 129-136 (same 8). The sink's comment at 122-127 saying the two \"must be changed together\" is now factually wrong — rewrite it to say both boundaries import one set and both must keep asserting.\n- `pairing.ts` 130-137: `PID_BYTES`/`DEVICE_ID_BYTES` → `WIRE_ID_BYTES`, `X25519_KEY_BYTES`, `KEY_
+... (truncated 15943 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\woh4uit5g.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\subagents\workflows\wf_7a5a8da6-495/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.claude\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\workflows\scripts\companion-simplify-apply.js', resumeFromRunId: 'wf_7a5a8da6-495'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>8</agent_count><agents_done>8</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>1524358</subagent_tokens><tool_uses>629</tool_uses><duration_ms>2749107</duration_ms></usage>
+</task-notification>
+
+---
+
+progress report?
+
+---
+
+.
+
+---
+
+are we done?
+
+---
+
+.
+
+---
+
+<task-notification>
+<task-id>b2mbd6h9b</task-id>
+<tool-use-id>toolu_012JBtA9jZ55FA9x9HRMxga7</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\b2mbd6h9b.output</output-file>
+<status>completed</status>
+<summary>Background command "Run REFERR gate after witness edits" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>be16dp4qu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\be16dp4qu.output</output-file>
+<status>completed</status>
+<summary>Background command "Run REFERR gate and companion tsc" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Once all this work is done, make sure you have Opus sub-agents thoroughly review it. A couple of GPT-5.6 Sol agents should review it on ultra effort by calling another LLM skill.
+
+---
+
+<task-notification>
+<task-id>bobemrhzl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bobemrhzl.output</output-file>
+<status>completed</status>
+<summary>Background command "Sol ultra review of client/server contract" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bpnnawz3z</task-id>
+<tool-use-id>toolu_01MhGGxLRbPrXbwp7RXj7Dmj</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bpnnawz3z.output</output-file>
+<status>completed</status>
+<summary>Background command "Sol ultra review of server witness" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>btf2h550e</task-id>
+<tool-use-id>toolu_01MsjZ6SDQoNzrHyyqba3sZ1</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\btf2h550e.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run Sol server review with crash-consistency framing" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+.
+
+---
+
+.
+
+---
+
+<task-notification>
+<task-id>bok9dhh1u</task-id>
+<tool-use-id>toolu_0133vurGusmMHuco2Czc4AAK</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\41b65f55-7b51-4cfd-82d1-d1d1eec49d91\tasks\bok9dhh1u.output</output-file>
+<status>completed</status>
+<summary>Background command "Run REFERR gate after server fixes" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+.
+
+---
+
+plain simple english
+
+---
+
+FIX IT ALL PROPERLY NOW - NO LOOSE THREADS
+
+---
+
+FIX IT ALL PROPERLY NOW - NO LOOSE THREADS - stop being lazy we have unlimited time
+
+---
+
+STOP LEAVING JOBS TO DO - WTF IS THIS
+
+---
+
+Is there any outstanding work?
+
+---
+
+/goal keep going until no more outstanding work - reach my objective / functionality
+
+---
+
+<task-notification>
+<task-id>bj3rdsf1x</task-id>
+<summary>Monitor event: "ARM64 build run 30557095963 completion"</summary>
+<event>BUILD FINISHED:</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+.
+
+---
+
+.
+
+---
+
+all installed now
+
+---
+
+.
+
+---
+
+<task-notification>
+<task-id>ac79f4a92bb4ae855</task-id>
+<tool-use-id>toolu_011Fct6FJ4yNRwvmVpze8F1v</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\a3c3b929-6161-4bde-bc73-ebcc9120ff02\tasks\ac79f4a92bb4ae855.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement companion gate fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Implemented, verified, and committed the keep-awake companion-gate fix on my worktree branch.
+
+**Commit:** `c35035e34` — `fix(desktop): keep-awake gate asks host-service for the paired count (GATE-ASKS-BRIDGE)` on branch `worktree-agent-ac79f4a92bb4ae855` (not pushed, per directive).
+
+**Files changed** (4 files, +425/−198):
+- `packages/host-service/src/companion/index.ts` — `CompanionBridge.pairedDeviceCount()` interface method + implementation (counts `revokedAtMs === null` via the store's `list()`, `requireState()` guard).
+- `packages/host-service/src/trpc/router/companion/companion.ts` — exported `CompanionGateStatus` interface + `gate` protectedProcedure query (never throws for off states; count 0 unless running); rewrote the now-stale "WHAT IT STILL CANNOT SAY" docblock paragraph.
+- `apps/desktop/src/main/lib/keep-awake/companion-gate.ts` — full rewrite: env short-circuit kept; zero-orgs = truthful closed with pty-daemon caveat; per-org manifest → `GET /trpc/companion.gate` with Bearer token, 4s AbortController timeout; boundary validation of the tRPC envelope; missing manifest / fetch failure / bad shape / child-env disagreement → `ok:false`; sums counts across services, `open` = sum&gt;0 AND a running bridge; warns loudly when devices are paired but no bridge runs. `CompanionGatePoll` shape unchanged; module docblock rewritten (channel = coordinator manifest, authority = host.db since DEVICE-INDEX-DB).
+- `apps/desktop/src/main/lib/keep-awake/companion-gate.test.ts` — rewritten against the injected-deps seam: 14 tests covering all directives' cases (env off/non-"1", zero orgs, missing manifest, fetch reject, HTTP 500, malformed envelope, non-integer count, count 0 closed, count 2 open, paired-but-not-running closed, child-env disagreement, multi-org sum, any-service-fails fails whole read).
+
+**Verification (exact):** keep-awake suite 22/22 pass (bun test); host-service tsc 10 errors, all pre-existing (pty-daemon/terminal/event-bus/workspace-cleanup), 0 in companion; desktop tsc 94 errors all pre-existing, 0 in touched files; `check-feature-markers.mjs` → "All 92 feature markers present"; REFERR gate → clean; biome → 0 errors 0 warnings on the four files (fixed one `useOptionalChain` warning it raised); all four staged blobs 0 CR bytes.
+
+**Deviations from directive, both minor:** (1) `CompanionGateDeps.fetchFn` is typed as the call shape `(input: string, init?: RequestInit) =&gt; Promise&lt;Response&gt;` instead of `typeof fetch` — Bun's `fetch` type requires a `preconnect` property that test stubs would have to fake (it produced 12 TS errors); noted in a comment. (2) Old test signature was positional `(env, indexPath)`; new one takes a single `Partial&lt;CompanionGateDeps&gt;` — `keep-awake/index.ts` calls `pollCompanionGate()` with no args, unchanged and still compiles.
+
+One worktree-environment note: I ran `bun install --frozen-lockfile` in the worktree (fresh worktrees have no node_modules; lockfile untouched).</result>
+<usage><subagent_tokens>224698</subagent_tokens><tool_uses>45</tool_uses><duration_ms>808684</duration_ms></usage>
+<worktree><worktreePath>C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-ac79f4a92bb4ae855</worktreePath><worktreeBranch>worktree-agent-ac79f4a92bb4ae855</worktreeBranch></worktree>
+</task-notification>
