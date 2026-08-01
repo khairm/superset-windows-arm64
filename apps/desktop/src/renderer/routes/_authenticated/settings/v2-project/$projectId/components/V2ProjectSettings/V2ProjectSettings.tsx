@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
+import { resolveProjectIconUrl } from "renderer/hooks/host-projects/resolveProjectIconUrl";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -114,9 +115,14 @@ export function V2ProjectSettings({
 		);
 	}
 
-	const iconUrl = project.repoOwner
-		? `https://github.com/${project.repoOwner}.png?size=64`
-		: null;
+	// Icons are per-host. Prefer the targeted host's row — the one the picker
+	// writes to — falling back to the merged fan-out value only while it loads
+	// (same rule as Name). Custom icon wins; else the GitHub owner avatar.
+	const projectIcon = hostProject ? hostProject.icon : project.icon;
+	const iconUrl = resolveProjectIconUrl({
+		icon: projectIcon,
+		repoOwner: project.repoOwner,
+	});
 	const canRename = Boolean(
 		targetHostUrl && targetHostId && project.hostIds.includes(targetHostId),
 	);
@@ -160,6 +166,17 @@ export function V2ProjectSettings({
 					</SettingsRow>
 					<SettingsRow label="Repository" htmlFor="project-repo">
 						<RepositorySection repoUrl={project.repoUrl} />
+					</SettingsRow>
+					<SettingsRow
+						label="Icon"
+						hint="Upload a custom image. Defaults to the linked GitHub owner's avatar."
+					>
+						<IconUploadField
+							projectId={projectId}
+							hostUrl={targetHostUrl}
+							iconUrl={iconUrl}
+							hasCustomIcon={Boolean(projectIcon)}
+						/>
 					</SettingsRow>
 					{targetHostUrl && hostProject && (
 						<SettingsRow

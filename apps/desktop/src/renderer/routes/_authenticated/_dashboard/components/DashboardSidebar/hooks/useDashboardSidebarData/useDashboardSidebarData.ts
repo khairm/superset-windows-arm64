@@ -1,6 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resolveProjectIconUrl } from "renderer/hooks/host-projects/resolveProjectIconUrl";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -236,11 +237,9 @@ export function useDashboardSidebarData() {
 				{
 					id: project.projectKey,
 					name: project.name,
-					githubOwner: project.repoOwner ?? null,
-					githubRepoName: project.repoName ?? null,
-					iconUrl: project.repoOwner
-						? `https://github.com/${project.repoOwner}.png?size=64`
-						: null,
+					githubOwner: project.repoOwner,
+					githubRepoName: project.repoName,
+					iconUrl: resolveProjectIconUrl(project),
 					createdAt: new Date(project.createdAt),
 					updatedAt: new Date(project.updatedAt),
 					isCollapsed: row.isCollapsed,

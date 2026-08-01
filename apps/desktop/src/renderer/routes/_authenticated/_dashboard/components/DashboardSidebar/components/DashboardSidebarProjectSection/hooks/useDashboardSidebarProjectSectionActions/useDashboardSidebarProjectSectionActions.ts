@@ -9,6 +9,7 @@ import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences/useV2UserPreferences";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
@@ -100,8 +101,25 @@ export function useDashboardSidebarProjectSectionActions({
 			});
 	};
 
-	const handleOpenInFinder = () => {
-		toast.info("Open in Finder is coming soon");
+	const handleOpenInFinder = async () => {
+		const hostProject = hostProjects.find(
+			(item) => item.projectKey === project.id,
+		);
+		const localRepoPath =
+			machineId && hostProject?.hostIds.includes(machineId)
+				? hostProject.repoPath
+				: undefined;
+		if (!localRepoPath) {
+			toast.error("Project folder is not on this machine");
+			return;
+		}
+		try {
+			await electronTrpcClient.external.openInFinder.mutate(localRepoPath);
+		} catch (error) {
+			toast.error(
+				`Failed to open in Finder: ${error instanceof Error ? error.message : "Unknown error"}`,
+			);
+		}
 	};
 
 	const handleOpenSettings = () => {

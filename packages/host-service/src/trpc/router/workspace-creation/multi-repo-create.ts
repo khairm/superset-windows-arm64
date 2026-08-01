@@ -7,6 +7,7 @@ import {
 	type MultiRepoConfig,
 } from "../../../runtime/git/multi-repo";
 import type { HostServiceContext } from "../../../types";
+import { buildTerminalAgentLaunch, isChatAgent } from "../agents";
 import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import {
@@ -141,11 +142,46 @@ async function finishCreate(args: {
 }): Promise<CreateFlowResult> {
 	const { ctx, input, workspaceRow, alreadyExists } = args;
 	const terminalsResult: Array<{ terminalId: string; label?: string }> = [];
+	const sugarLaunches = input.agents ?? [];
 
+	// Wait-for-setup gate, mirroring the single-repo tail in workspaces.ts: a
+	// lone terminal agent is chained behind the setup commands in the setup
+	// terminal (`setup && agent`) so it starts only after setup succeeds, and
+	// no second terminal is created. Chat agents and multi-agent launches keep
+	// the parallel path. If the command can't be built (unknown agent, missing
+	// attachment) fall back to parallel dispatch, which surfaces the error in
+	// the agents result.
+	let chainAgent: { fullCommand: string; label: string } | null = null;
+	const soleLaunch = sugarLaunches.length === 1 ? sugarLaunches[0] : null;
+	if (
+		!alreadyExists &&
+		input.waitForSetupBeforeAgents &&
+		soleLaunch &&
+		!isChatAgent(soleLaunch.agent)
+	) {
+		try {
+			chainAgent = buildTerminalAgentLaunch(ctx.db, {
+				workspaceId: workspaceRow.id,
+				agent: soleLaunch.agent,
+				prompt: soleLaunch.prompt,
+				attachmentIds: soleLaunch.attachmentIds,
+				model: soleLaunch.model,
+				effort: soleLaunch.effort,
+			});
+		} catch (err) {
+			console.warn(
+				"[workspaces.create:multi-repo] wait-for-setup chain unavailable, dispatching agent in parallel:",
+				err,
+			);
+		}
+	}
+
+	let chainedAgentResult: AgentLaunchResult | null = null;
 	if (!alreadyExists) {
-		const { terminal, warning } = await startSetupTerminalIfPresent({
+		const { terminal, warning, chained } = await startSetupTerminalIfPresent({
 			ctx,
 			workspaceId: workspaceRow.id,
+			...(chainAgent ? { chainCommand: chainAgent.fullCommand } : {}),
 		});
 		if (warning) {
 			console.warn(`[workspaces.create:multi-repo] setup warning: ${warning}`);
@@ -153,10 +189,22 @@ async function finishCreate(args: {
 		if (terminal) {
 			terminalsResult.push({ terminalId: terminal.id, label: terminal.label });
 		}
+		if (chained && chainAgent && terminal) {
+			chainedAgentResult = {
+				ok: true,
+				kind: "terminal",
+				sessionId: terminal.id,
+				label: chainAgent.label,
+			};
+		}
 	}
 
 	const [agentsResult, commandResult] = await Promise.all([
-		dispatchSugarAgents(ctx, workspaceRow.id, input.agents ?? []),
+		dispatchSugarAgents(
+			ctx,
+			workspaceRow.id,
+			chainedAgentResult ? [] : sugarLaunches,
+		),
 		input.command
 			? startCommandTerminal({
 					ctx,
@@ -180,7 +228,9 @@ async function finishCreate(args: {
 	return {
 		workspace: workspaceRow,
 		terminals: terminalsResult,
-		agents: agentsResult,
+		agents: chainedAgentResult
+			? [chainedAgentResult, ...agentsResult]
+			: agentsResult,
 		alreadyExists,
 		txid: extractCreateTxid(workspaceRow),
 	};

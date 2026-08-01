@@ -20,6 +20,12 @@ export type DisplayStatus =
 
 /** Lookup object for status indicator styling - avoids if/else chains */
 const STATUS_CONFIG = {
+	// Fork divergence (deliberate): upstream desktop-v1.18.2 recoloured
+	// permission to yellow. The fork's dot feature is specified as
+	// red = needs input > yellow = working > blue > green, and yellow-500 next
+	// to working's amber-500 is not distinguishable at 8px — "needs input"
+	// would read as "still working", which is the single signal the whole
+	// hook/latching pipeline exists to deliver. Keep it red.
 	permission: {
 		pingColor: "bg-red-400",
 		dotColor: "bg-red-500",
@@ -71,7 +77,7 @@ interface StatusIndicatorProps {
 
 /**
  * Visual indicator for pane/workspace status.
- * - Red pulsing: needs user input (permission)
+ * - Red pulsing: needs user input (permission), or agent failed
  * - Amber pulsing: agent working
  * - Green static: ready for review
  */

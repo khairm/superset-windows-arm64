@@ -14,9 +14,26 @@ function readTemplate(name: string): string {
 	return readFileSync(path.join(import.meta.dir, "templates", name), "utf-8");
 }
 
+function runNotifyHook(input: Record<string, unknown>) {
+	const script = readTemplate("notify-hook.template.sh")
+		.replaceAll("{{MARKER}}", NOTIFY_SCRIPT_MARKER)
+		.replaceAll("{{DEFAULT_PORT}}", "48763");
+	return Bun.spawnSync({
+		cmd: ["bash", "-c", script],
+		env: {
+			...process.env,
+			SUPERSET_AGENT_ID: "grok",
+			SUPERSET_DEBUG_HOOKS: "1",
+		},
+		stdin: Buffer.from(JSON.stringify(input)),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+}
+
 describe("getNotifyScriptContent", () => {
 	it("bumps the notify hook marker when hook semantics change", () => {
-		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v4");
+		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v5");
 	});
 
 	it("emits the v2 host-service payload with full agent identity", () => {
@@ -61,6 +78,40 @@ describe("getNotifyScriptContent", () => {
 		expect(script).toContain("terminalId=$SUPERSET_TERMINAL_ID");
 		expect(script).toContain("SUPERSET_TAB_ID");
 		expect(script).toContain("SUPERSET_PANE_ID");
+	});
+
+	it("normalizes Grok permission notifications to PermissionRequest", () => {
+		const result = runNotifyHook({
+			hookEventName: "notification",
+			notificationType: "permission_prompt",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr.toString()).toContain(
+			"[notify-hook] event=PermissionRequest",
+		);
+	});
+
+	it("normalizes Grok ask_user_question notifications to PermissionRequest", () => {
+		const result = runNotifyHook({
+			hookEventName: "notification",
+			notificationType: "elicitation_dialog",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr.toString()).toContain(
+			"[notify-hook] event=PermissionRequest",
+		);
+	});
+
+	it("ignores unrelated Grok notification subtypes", () => {
+		const result = runNotifyHook({
+			hookEventName: "notification",
+			notificationType: "idle_prompt",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.stderr.toString()).toBe("");
 	});
 });
 

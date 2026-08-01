@@ -58,6 +58,22 @@ if [ -z "$EVENT_TYPE" ]; then
   esac
 fi
 
+# Grok serializes its configured Notification event as lowercase
+# "notification". Only subtypes where the agent is blocked waiting on the
+# user count: permission_prompt (tool/plan approval) and elicitation_dialog
+# (ask_user_question — the common case, since Superset launches grok with
+# --always-approve so tool approvals rarely prompt). Keep the case pattern
+# in sync with GROK_BLOCKING_NOTIFICATION_TYPES in agent-wrappers-grok.ts.
+# (HOOK-FORK-DIET) extracted with the builtin json_field helper — upstream's
+# echo|grep|grep|tr pipeline would re-add four forks per notification.
+if [ "$EVENT_TYPE" = "notification" ]; then
+  json_field "notificationType" "$INPUT"; NOTIFICATION_TYPE="$JSON_FIELD"
+  case "$NOTIFICATION_TYPE" in
+    permission_prompt|elicitation_dialog) EVENT_TYPE="PermissionRequest" ;;
+    *) exit 0 ;;
+  esac
+fi
+
 # UserPromptSubmit normalizes here; other aliases are mapped server-side
 # by mapEventType so the wire stays a single source of truth.
 [ "$EVENT_TYPE" = "UserPromptSubmit" ] && EVENT_TYPE="Start"

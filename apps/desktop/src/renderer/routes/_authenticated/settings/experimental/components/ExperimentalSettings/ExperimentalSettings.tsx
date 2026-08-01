@@ -23,6 +23,7 @@ import {
 } from "../../../utils/settings-search";
 // (COMPANION-PAIRING-ENTRY) the seam that reaches the fork-only pairing surface.
 import { CompanionPairingSetting } from "./components/CompanionPairingSetting";
+import { WaitForSetupBeforeAgentSetting } from "./components/WaitForSetupBeforeAgentSetting";
 
 interface ExperimentalSettingsProps {
 	visibleItems?: SettingItemId[] | null;
@@ -50,6 +51,10 @@ export function ExperimentalSettings({
 	// (COMPANION-PAIRING-ENTRY)
 	const showCompanionPairing = isItemVisible(
 		SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING,
+		visibleItems,
+	);
+	const showWaitForSetupBeforeAgent = isItemVisible(
+		SETTING_ITEM_ID.EXPERIMENTAL_WAIT_FOR_SETUP_BEFORE_AGENT,
 		visibleItems,
 	);
 	const isV2CloudEnabled = useIsV2CloudEnabled();
@@ -163,6 +168,7 @@ export function ExperimentalSettings({
 						/>
 					</div>
 				)}
+				{showWaitForSetupBeforeAgent && <WaitForSetupBeforeAgentSetting />}
 				{/* (COMPANION-PAIRING-ENTRY) */}
 				{showCompanionPairing && <CompanionPairingSetting />}
 			</div>
