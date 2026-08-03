@@ -12,8 +12,9 @@ export interface DiffStats {
 
 export function useDiffStats(
 	workspaceId: string,
-	enabled = true,
+	options?: { enabled?: boolean },
 ): DiffStats | null {
+	const enabled = options?.enabled ?? true;
 	const hostUrl = useWorkspaceHostUrl(workspaceId);
 	// (NON-GIT WORKSPACE) Skip the git.getStatus fan-out for non-git folders —
 	// the marker branch must never reach a git command. `useIsGitRepo` stays
@@ -25,9 +26,9 @@ export function useDiffStats(
 		() => ["diff-stats", hostUrl, workspaceId] as const,
 		[hostUrl, workspaceId],
 	);
-	// Skip the per-row git.getStatus RPC + git:changed subscription when the row
-	// is parked in a Snoozed/Archived section (caller passes enabled=false), so
-	// revealing a large section doesn't fan out an unbounded burst of requests.
+	// Skip the per-row git.getStatus RPC when the row is parked in a
+	// Snoozed/Archived section (caller passes enabled=false), so revealing a
+	// large section doesn't fan out an unbounded burst of requests.
 	const isEnabled = enabled && Boolean(workspaceId) && Boolean(hostUrl);
 
 	const { data: status } = useQuery({
@@ -50,7 +51,15 @@ export function useDiffStats(
 		void queryClient.invalidateQueries({ queryKey });
 	}, [queryClient, queryKey]);
 
-	useWorkspaceEvent("git:changed", workspaceId, invalidate, isEnabled);
+	// Stays subscribed while disabled: invalidation marks the cached stats
+	// stale so they refetch when the query is re-enabled (staleTime is
+	// Infinity, so a gated subscription would freeze counts).
+	useWorkspaceEvent(
+		"git:changed",
+		workspaceId,
+		invalidate,
+		Boolean(workspaceId) && Boolean(hostUrl),
+	);
 
 	return useMemo<DiffStats | null>(() => {
 		if (!status) return null;

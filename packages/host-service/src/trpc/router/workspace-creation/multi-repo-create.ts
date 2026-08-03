@@ -16,6 +16,7 @@ import {
 	type AgentLaunchResult,
 	type CloudWorkspace,
 	type createInputSchema,
+	createWorkerBaseRefFetcher,
 	dispatchSugarAgents,
 	extractCreateTxid,
 	findExistingWorkspaceByBranch,
@@ -377,7 +378,14 @@ async function runCreate(args: {
 				continue;
 			}
 			// Locked decision: each repo branches from its OWN default branch.
-			const startPoint = await resolveNewBranchStartPoint(member.git, undefined);
+			// The base-ref fetch runs in the worker pool (scoped to THIS member's
+			// repo): fanning out across N members would otherwise spawn and drain
+			// N git fetches on the host-service event loop.
+			const startPoint = await resolveNewBranchStartPoint(
+				member.git,
+				undefined,
+				createWorkerBaseRefFetcher(ctx, member.repoPath),
+			);
 			await addBranchWorktree({
 				git: member.git,
 				plan: { branch, startPoint, usedExistingBranch: false },

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type KeyboardEvent,
+	type MouseEvent,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
@@ -11,10 +19,15 @@ import {
 } from "renderer/stores/v2-notifications";
 import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-row";
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
+import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
 import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
+import {
+	DashboardSidebarWorkspaceBulkContextMenu,
+	useWorkspaceRowContextMenu,
+} from "./components/DashboardSidebarWorkspaceBulkContextMenu";
 import { DashboardSidebarWorkspaceContextMenu } from "./components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu";
 import { useDashboardSidebarWorkspaceItemActions } from "./hooks/useDashboardSidebarWorkspaceItemActions";
 
@@ -25,6 +38,8 @@ interface DashboardSidebarWorkspaceItemProps {
 	isCollapsed?: boolean;
 	isInSection?: boolean;
 	sectionState?: "snoozed" | "archived" | "deleted";
+	isSelected?: boolean;
+	onSelectionClick?: (event: WorkspaceSelectionEvent) => boolean;
 	/**
 	 * Set when the row renders inside the top-level Pinned section: shows the
 	 * owning project's avatar for cross-project context.
@@ -39,6 +54,8 @@ export function DashboardSidebarWorkspaceItem({
 	isCollapsed = false,
 	isInSection = false,
 	sectionState,
+	isSelected = false,
+	onSelectionClick,
 	pinnedContext,
 }: DashboardSidebarWorkspaceItemProps) {
 	const {
@@ -53,9 +70,6 @@ export function DashboardSidebarWorkspaceItem({
 		pullRequest,
 	} = workspace;
 	const isMainWorkspace = workspace.type === "main";
-	// Snoozed/archived rows live in a collapsible section — don't fire their
-	// per-row git status RPC + subscription (A6: avoid a reveal-time RPC storm).
-	const diffStats = useDiffStats(id, !sectionState);
 	// (AY) Display status merges the agent rollup with the shell-running blue
 	// fallback (agent wins). Drives the workspace-icon dot.
 	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
@@ -108,6 +122,12 @@ export function DashboardSidebarWorkspaceItem({
 		isPinned: workspace.isPinned,
 	});
 
+	// Only the active workspace row shows line counts, so skip the per-item
+	// git status query everywhere else. Snoozed/archived rows live in a
+	// collapsible section and stay skipped too (A6: avoid a reveal-time RPC
+	// storm when a large section is revealed).
+	const diffStats = useDiffStats(id, { enabled: isActive && !sectionState });
+
 	const { v2Workspaces: v2WorkspaceActions } = useOptimisticCollectionActions();
 	const [renameBranchTarget, setRenameBranchTarget] = useState<string | null>(
 		null,
@@ -151,6 +171,53 @@ export function DashboardSidebarWorkspaceItem({
 		hoverSyncIfHovered(id, hoverPayload);
 	}, [isHovered, hoverSyncIfHovered, id, hoverPayload]);
 
+	const handleExpandedClick = useCallback(
+		(event: MouseEvent<HTMLElement>) => {
+			if (
+				onSelectionClick &&
+				(event.ctrlKey || event.metaKey || event.shiftKey)
+			) {
+				event.preventDefault();
+				event.stopPropagation();
+				return;
+			}
+			if (onSelectionClick?.(event)) return;
+			handleClick();
+		},
+		[handleClick, onSelectionClick],
+	);
+	const handleExpandedMouseDown = useCallback(
+		(event: MouseEvent<HTMLElement>) => {
+			if (!event.ctrlKey && !event.metaKey && !event.shiftKey) return;
+			if (
+				event.target instanceof Element &&
+				event.target.closest("button, input, textarea, [role='menuitem']")
+			) {
+				return;
+			}
+			onSelectionClick?.(event);
+		},
+		[onSelectionClick],
+	);
+	const { isBulkMenu, onRowContextMenu: handleExpandedContextMenu } =
+		useWorkspaceRowContextMenu({
+			isSelected,
+			canBulkSelect: onSelectionClick != null,
+		});
+	const handleExpandedKeyboardActivate = useCallback(
+		(event: KeyboardEvent<HTMLElement>) => {
+			if (onSelectionClick?.(event)) return;
+			handleClick();
+		},
+		[handleClick, onSelectionClick],
+	);
+	const handleWorkspaceChipsClick = useCallback(
+		(event: MouseEvent<HTMLElement>) => {
+			if (onSelectionClick?.(event)) return;
+			handleClick();
+		},
+		[handleClick, onSelectionClick],
+	);
 	if (isCollapsed) {
 		const content = (
 			// biome-ignore lint/a11y/noStaticElementInteractions: hover handlers drive a non-interactive popover, no new keyboard semantics
@@ -277,7 +344,14 @@ export function DashboardSidebarWorkspaceItem({
 				tabStatus={rowTabStatus}
 				isInSection={isInSection}
 				isNonGit={isNonGit}
-				onClick={handleClick}
+				isBulkSelectable={onSelectionClick != null}
+				isSelected={isSelected}
+				onClick={handleExpandedClick}
+				onMouseDown={handleExpandedMouseDown}
+				onContextMenu={handleExpandedContextMenu}
+				onKeyboardActivate={handleExpandedKeyboardActivate}
+				onWorkspaceChipsClick={handleWorkspaceChipsClick}
+				onDetailsStripClick={handleClick}
 				onDoubleClick={isPending || isMainWorkspace ? undefined : startRename}
 				onRemoveFromSidebarClick={handleRemoveFromSidebar}
 				onCloseWorkspaceClick={
@@ -309,6 +383,10 @@ export function DashboardSidebarWorkspaceItem({
 			<div hidden={isDeleting}>
 				{isPending ? (
 					expandedContent
+				) : isBulkMenu ? (
+					<DashboardSidebarWorkspaceBulkContextMenu>
+						{expandedContent}
+					</DashboardSidebarWorkspaceBulkContextMenu>
 				) : (
 					<DashboardSidebarWorkspaceContextMenu
 						workspaceId={id}

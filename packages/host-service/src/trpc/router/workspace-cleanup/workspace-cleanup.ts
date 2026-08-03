@@ -12,16 +12,14 @@ import {
 import { runTeardown, type TeardownResult } from "../../../runtime/teardown";
 import { disposeSessionsByWorkspaceId } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
+import type { GitTaskEnv } from "../../../workers/tasks/git";
 import { deleteLocalWorkspace } from "../../../workspaces/local-workspace-store";
 import type {
 	DeleteInProgressCause,
 	TeardownFailureCause,
 } from "../../error-types";
 import { protectedProcedure, router } from "../../index";
-import {
-	normalizeWorktreePath,
-	parseWorktreeList,
-} from "../workspace-creation/shared/worktree-list";
+import { cleanupGitOps, isIndeterminateGitTaskFailure } from "./git-ops";
 import { isMainWorkspace } from "./is-main-workspace";
 
 /**
@@ -75,12 +73,12 @@ export const workspaceCleanupRouter = router({
 	 *   - git failures (missing worktree, broken repo) → return as canDelete
 	 *     with no warnings; the destroy saga handles those states best-effort.
 	 *
-	 * Unpushed-commit detection uses `rev-list --not --remotes` so brand-new
-	 * branches with no upstream still report unpushed commits correctly.
+	 * The git reads run in the host worker pool (gitWorktreeStateTask) so a
+	 * slow status on a large worktree can't block the event loop.
 	 */
 	inspect: protectedProcedure
 		.input(z.object({ workspaceId: z.string() }))
-		.query(async ({ ctx, input }): Promise<InspectResult> => {
+		.query(async ({ ctx, input, signal }): Promise<InspectResult> => {
 			const main = await isMainWorkspace(ctx, input.workspaceId);
 			if (main.isMain) {
 				return {
@@ -117,27 +115,19 @@ export const workspaceCleanupRouter = router({
 			}
 
 			try {
-				const git = await ctx.git(local.worktreePath);
-				const status = await git.status();
-				let hasUnpushedCommits = false;
-				try {
-					const result = await git.raw([
-						"rev-list",
-						"--count",
-						"HEAD",
-						"--not",
-						"--remotes",
-					]);
-					const count = Number.parseInt(result.trim(), 10);
-					hasUnpushedCommits = Number.isFinite(count) && count > 0;
-				} catch {
-					// Leave false — `rev-list` failure isn't a signal we can act on.
-				}
+				const gitEnv = await cleanupGitOps.resolveGitEnv(
+					ctx,
+					local.worktreePath,
+				);
+				const state = await cleanupGitOps.readWorktreeState(
+					{ worktreePath: local.worktreePath, gitEnv },
+					signal,
+				);
 				return {
 					canDelete: true,
 					reason: null,
-					hasChanges: !status.isClean(),
-					hasUnpushedCommits,
+					hasChanges: state.hasChanges,
+					hasUnpushedCommits: state.hasUnpushedCommits,
 				};
 			} catch {
 				return {
@@ -242,9 +232,12 @@ async function runDestroy(
 			await preflightMultiRepoDirtyCheck(ctx, multiRepo, local.worktreePath);
 		} else {
 			try {
-				const git = await ctx.git(local.worktreePath);
-				const status = await git.status();
-				if (!status.isClean()) {
+				const gitEnv = await cleanupGitOps.resolveGitEnv(ctx, local.worktreePath);
+				const state = await cleanupGitOps.readWorktreeState({
+					worktreePath: local.worktreePath,
+					gitEnv,
+				});
+				if (state.hasChanges) {
 					throw new TRPCError({
 						code: "CONFLICT",
 						message: "Worktree has uncommitted changes",
@@ -252,6 +245,18 @@ async function runDestroy(
 				}
 			} catch (err) {
 				if (err instanceof TRPCError) throw err;
+				if (isIndeterminateGitTaskFailure(err)) {
+					// Timeout/pool failure: dirty-state is UNKNOWN. Fail closed on
+					// this destructive path rather than silently skipping the
+					// dirty-worktree block — a retry usually succeeds (the first
+					// attempt warmed the FS cache), and force skips preflight
+					// entirely as the explicit escape hatch.
+					const message = err instanceof Error ? err.message : String(err);
+					throw new TRPCError({
+						code: "INTERNAL_SERVER_ERROR",
+						message: `Couldn't verify worktree state at ${local.worktreePath}: ${message}`,
+					});
+				}
 				// Can't read status (missing worktree dir, etc.) — not a
 				// conflict. Continue; step 3b will skip idempotently.
 			}
@@ -303,12 +308,16 @@ async function runDestroy(
 
 	// 2b. Worktree. Double-force unlocks the rare locked-worktree case and
 	//     clears stale metadata when the directory was manually removed.
+	//     Runs in the worker pool: the removal is a recursive delete of the
+	//     whole worktree directory, which would otherwise stall the loop.
 	let worktreeRemoved = false;
 	let branchDeleted = false;
-	let git: Awaited<ReturnType<typeof ctx.git>> | null = null;
+	let repoGitEnv: GitTaskEnv | null = null;
+	// (MULTI-REPO WORKSPACE) the fork fan-out still works through SimpleGit
+	// clients per member repo, so it keeps its own handles.
 	let multiRepoMemberGits: Array<{
 		repoPath: string;
-		git: NonNullable<typeof git>;
+		git: Awaited<ReturnType<typeof ctx.git>>;
 	}> = [];
 	if (local && !project) {
 		worktreeRemoved = !existsSync(local.worktreePath);
@@ -333,7 +342,7 @@ async function runDestroy(
 	if (local && project && !multiRepo) {
 		worktreeRemoved = !existsSync(local.worktreePath);
 		try {
-			git = await ctx.git(project.repoPath);
+			repoGitEnv = await cleanupGitOps.resolveGitEnv(ctx, project.repoPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			// (AH) Decouple: never abort the delete because the repo couldn't
@@ -344,25 +353,17 @@ async function runDestroy(
 			);
 		}
 
-		if (git) {
-			// Remove against git's canonical path so a symlinked stored path
-			// (macOS `/var` → `/private/var`) still matches its registration.
-			const canonicalPath = normalizeWorktreePath(local.worktreePath);
-			// Best-effort: we trust git's registry below, not the command's
-			// exit text, which is locale- and version-dependent. `--force
-			// --force` also unregisters a worktree whose directory is already
-			// gone, so no separate prune (which would clobber other stale
-			// worktrees' metadata) is needed.
-			await git
-				.raw(["worktree", "remove", "--force", "--force", canonicalPath])
-				.catch(() => {});
-
-			// A `worktree list` failure here means the post-remove state is
-			// unknown — treat that like "still registered" and block rather
-			// than risk orphaning disk past the cloud commit point.
+		if (repoGitEnv) {
+			// A task failure here means the post-remove state is unknown —
+			// treat that like "still registered" and block rather than risk
+			// orphaning disk past the cloud commit point.
 			let stillRegistered = true;
 			try {
-				stillRegistered = await isRegisteredWorktree(git, local.worktreePath);
+				({ stillRegistered } = await cleanupGitOps.removeWorktree({
+					repoPath: project.repoPath,
+					worktreePath: local.worktreePath,
+					gitEnv: repoGitEnv,
+				}));
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				if (!existsSync(local.worktreePath)) {
@@ -377,7 +378,8 @@ async function runDestroy(
 						`Failed to remove worktree at ${local.worktreePath}: ${message}. It may be locked by another process (editor/terminal); the workspace was deleted and the folder left on disk.`,
 					);
 					try {
-						await git.raw(["worktree", "prune"]);
+						const repoGit = await ctx.git(project.repoPath);
+						await repoGit.raw(["worktree", "prune"]);
 					} catch {}
 				}
 			}
@@ -422,15 +424,17 @@ async function runDestroy(
 			warnings,
 		);
 	}
-	if (git && local?.branch && input.deleteBranch) {
+	// An absent ref (renamed, pruned, or never materialized) already
+	// satisfies the goal, so the task skips the delete without a scary
+	// warning; a thrown git failure lands in the warning below rather than
+	// being mistaken for "already gone".
+	if (repoGitEnv && project && local?.branch && input.deleteBranch) {
 		try {
-			// An absent ref (renamed, pruned, or never materialized) already
-			// satisfies the goal, so skip the delete without a scary warning.
-			// A thrown git failure falls through to the warning below rather
-			// than being mistaken for "already gone".
-			if (await localBranchExists(git, local.branch)) {
-				await git.raw(["branch", "-D", local.branch]);
-			}
+			await cleanupGitOps.deleteLocalBranch({
+				repoPath: project.repoPath,
+				branch: local.branch,
+				gitEnv: repoGitEnv,
+			});
 			branchDeleted = true;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -455,30 +459,4 @@ async function runDestroy(
 		branchDeleted,
 		warnings,
 	};
-}
-
-// Authoritative "is this still a worktree git tracks" check — reads git's own
-// registry (realpath-canonicalized) instead of parsing remove's error text.
-// Calls `git.raw` directly rather than the swallowing `listGitWorktrees` so a
-// failed `worktree list` throws (state unknown) instead of looking empty.
-async function isRegisteredWorktree(
-	git: Awaited<ReturnType<HostServiceContext["git"]>>,
-	worktreePath: string,
-): Promise<boolean> {
-	const target = normalizeWorktreePath(worktreePath);
-	const raw = await git.raw(["worktree", "list", "--porcelain"]);
-	return parseWorktreeList(raw).some(
-		(w) => normalizeWorktreePath(w.path) === target,
-	);
-}
-
-// `branch --list` exits 0 whether or not the branch exists (empty output when
-// absent), so a thrown error is a real git failure — not a missing ref — and
-// propagates instead of being misread as "already deleted".
-async function localBranchExists(
-	git: Awaited<ReturnType<HostServiceContext["git"]>>,
-	branch: string,
-): Promise<boolean> {
-	const out = await git.raw(["branch", "--list", branch]);
-	return out.trim().length > 0;
 }

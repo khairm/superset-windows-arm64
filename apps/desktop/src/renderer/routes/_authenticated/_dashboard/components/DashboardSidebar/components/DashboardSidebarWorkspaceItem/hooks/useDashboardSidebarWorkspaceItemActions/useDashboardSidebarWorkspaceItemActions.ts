@@ -6,6 +6,7 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { useState } from "react";
+import { getTerminalAgentBindingsQueryKey } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import {
 	useMarkWorkspaceTerminalsSeen,
 	useV2WorkspaceIsUnread,
@@ -243,7 +244,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 				workspaceHostUrl,
 			).terminalAgents.clearWorkspaceStatuses.mutate({ workspaceId });
 			await queryClient.invalidateQueries({
-				queryKey: ["terminal-agent-bindings", workspaceHostUrl, workspaceId],
+				queryKey: getTerminalAgentBindingsQueryKey(workspaceId),
 			});
 		} catch (error) {
 			toast.error(

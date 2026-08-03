@@ -1,15 +1,21 @@
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { workspaces } from "../../../../db/schema";
 import { isGitRepo } from "../../../../runtime/git/non-git";
 import { protectedProcedure } from "../../../index";
 import { requireLocalProject } from "../shared/local-project";
-import { listGitWorktrees } from "../shared/worktree-list";
+import {
+	listGitWorktrees,
+	normalizeWorktreePath,
+} from "../shared/worktree-list";
 
 /**
  * Returns the live `git worktree list` for a project — only entries that
  * are valid adoption targets (have a real branch checked out, not bare,
- * not prunable). Used by the v1→v2 importer to filter out v1 workspaces
- * whose worktree no longer exists on disk before showing them as
- * importable rows.
+ * not prunable) — annotated with whether a workspace row already tracks
+ * them. Used by the v1→v2 importer to filter out v1 workspaces whose
+ * worktree no longer exists on disk, and by the sidebar's "Import
+ * Worktrees" action to find untracked worktrees.
  */
 export const listProjectWorktrees = protectedProcedure
 	.input(z.object({ projectId: z.string() }))
@@ -19,17 +25,57 @@ export const listProjectWorktrees = protectedProcedure
 		// (NON-GIT WORKSPACE) A non-git project has no git worktrees to list —
 		// return an empty set before touching git.
 		if (!(await isGitRepo(localProject.repoPath))) {
-			return { worktrees: [] as { branch: string; path: string }[] };
+			return {
+				worktrees: [] as {
+					branch: string;
+					path: string;
+					hasWorkspace: boolean;
+					isMainWorktree: boolean;
+				}[],
+			};
 		}
 
 		const git = await ctx.git(localProject.repoPath);
 		const records = await listGitWorktrees(git);
-		const worktrees: { branch: string; path: string }[] = [];
+
+		// Tracking key is (projectId, branch) — same as searchBranches — but
+		// also match by normalized path so a tracked worktree whose branch was
+		// renamed out from under its row isn't offered for re-import.
+		const workspaceRows = ctx.db
+			.select()
+			.from(workspaces)
+			.where(eq(workspaces.projectId, input.projectId))
+			.all();
+		const workspaceBranches = new Set(
+			workspaceRows.map((row) => row.branch).filter(Boolean),
+		);
+		const workspacePaths = new Set(
+			workspaceRows
+				.map((row) => row.worktreePath)
+				.filter(Boolean)
+				.map(normalizeWorktreePath),
+		);
+		const mainRepoPath = normalizeWorktreePath(localProject.repoPath);
+
+		const worktrees: {
+			branch: string;
+			path: string;
+			hasWorkspace: boolean;
+			isMainWorktree: boolean;
+		}[] = [];
 		for (const record of records) {
 			if (record.bare) continue;
 			if (record.prunable) continue;
 			if (!record.branch) continue;
-			worktrees.push({ branch: record.branch, path: record.path });
+			const normalizedPath = normalizeWorktreePath(record.path);
+			worktrees.push({
+				branch: record.branch,
+				path: record.path,
+				hasWorkspace:
+					workspaceBranches.has(record.branch) ||
+					workspacePaths.has(normalizedPath),
+				isMainWorktree: normalizedPath === mainRepoPath,
+			});
 		}
 		return { worktrees };
 	});
