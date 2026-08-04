@@ -131,7 +131,17 @@ async function main(): Promise<void> {
 			// shipped once with the mount only there — every installed child
 			// reported enabled-but-never-started while every gate stayed green.
 			// Both entries now mount, and FEATURES.md pins this token in both
-			// files so a merge dropping either one fails the marker gate.
+			// files, so a merge dropping either file's token fails the marker
+			// gate. The gate greps the TOKEN, which lives in this comment — a
+			// merge that deletes the call while keeping the comment still
+			// passes it; the nightly semantic review is the backstop for that.
+			// KNOWN, ACCEPTED: with the bridge enabled, an orderly SIGTERM has
+			// two exit owners — this entry's shutdown() (3 s drain grace) and
+			// the bridge's own once-handler, which exits as soon as its stop
+			// settles and can cut that drain short. The loser is in-flight HTTP
+			// to a renderer that is itself dying, and the Windows coordinator
+			// hard-kills the child anyway; the bridge's teardown is settled and
+			// logged either way.
 			// Async and it never rejects; deliberately not awaited so a bridge
 			// fault can never delay the manifest write or relay connect below.
 			// The handle is not lost: it publishes itself to companion/registry,
