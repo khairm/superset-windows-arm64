@@ -28,3 +28,13 @@ export type {
 } from "./trpc/error-types";
 export type { AppRouter } from "./trpc/router";
 export type { ApiClient, HostServiceContext } from "./types";
+// (COMPANION-BRIDGE) Runtime export, not type-only, on purpose: the desktop
+// child runs its OWN serve loop (apps/desktop/src/main/host-service/index.ts),
+// not serve.ts, so the mount must be reachable from the package root or that
+// entry has no line to start the bridge from. That is not hypothetical — the
+// bridge shipped once with the mount only in serve.ts, and every production
+// child reported enabled-but-never-started while every gate stayed green.
+export {
+	type CompanionMountInput,
+	startCompanionBridgeIfEnabled,
+} from "./companion";

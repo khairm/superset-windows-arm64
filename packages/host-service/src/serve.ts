@@ -112,10 +112,14 @@ async function main(): Promise<void> {
 		// startup. `startCompanionBridgeIfEnabled` is async and never rejects — a
 		// bridge fault must not abort the rest of this callback (connectRelay
 		// below), so it is deliberately not awaited and needs no catch here.
-		// (COMPANION-BRIDGE-MOUNT) exists ONLY on this line: (COMPANION-BRIDGE) is
-		// satisfied by the fork-only companion/ directory, so without a token that
-		// lives nowhere else, an upstream merge could delete this mount and every
-		// gate would still pass with the bridge silently never starting.
+		// (COMPANION-BRIDGE-MOUNT) is pinned HERE and in the desktop entry
+		// (apps/desktop/src/main/host-service/index.ts) — production desktop
+		// children run THAT entry, not this file; this mount serves the
+		// standalone/CLI host-service. (COMPANION-BRIDGE) alone is satisfied by
+		// the fork-only companion/ directory, so without a per-entry token an
+		// upstream merge could delete a mount and every gate would still pass
+		// with the bridge silently never starting — which is exactly how the
+		// bridge first shipped: mounted only here, never started in production.
 		//
 		// THE HANDLE IS NOT LOST. This callback is synchronous, so there is nothing
 		// here that could hold the returned bridge; it publishes itself to

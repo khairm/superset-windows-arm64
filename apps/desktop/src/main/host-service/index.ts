@@ -15,6 +15,7 @@ import {
 	LocalGitCredentialProvider,
 	LocalModelProvider,
 	PskHostAuthProvider,
+	startCompanionBridgeIfEnabled,
 	startTerminalReaper,
 } from "@superset/host-service";
 import {
@@ -92,7 +93,7 @@ async function main(): Promise<void> {
 		apiUrl: env.SUPERSET_API_URL,
 	});
 
-	const { app, injectWebSocket, api, db } = createApp({
+	const { app, injectWebSocket, api, db, terminalAgentStore } = createApp({
 		config: {
 			organizationId: env.ORGANIZATION_ID,
 			dbPath: env.HOST_DB_PATH,
@@ -122,6 +123,24 @@ async function main(): Promise<void> {
 
 			// Orphan reaping + port detection for terminals no renderer has attached.
 			startTerminalReaper(db);
+
+			// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
+			// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. THIS is
+			// the mount production actually runs: the desktop child executes this
+			// entry, not packages/host-service/src/serve.ts, and the bridge
+			// shipped once with the mount only there — every installed child
+			// reported enabled-but-never-started while every gate stayed green.
+			// Both entries now mount, and FEATURES.md pins this token in both
+			// files so a merge dropping either one fails the marker gate.
+			// Async and it never rejects; deliberately not awaited so a bridge
+			// fault can never delay the manifest write or relay connect below.
+			// The handle is not lost: it publishes itself to companion/registry,
+			// which the companion tRPC router reads back.
+			void startCompanionBridgeIfEnabled({
+				hostDbPath: env.HOST_DB_PATH,
+				db,
+				terminalAgentStore,
+			});
 
 			if (env.ORGANIZATION_ID) {
 				try {

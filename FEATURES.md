@@ -168,6 +168,7 @@ togglePinProject	apps/desktop/src/renderer
 (KEEP-AWAKE-MOUNT)	apps/desktop/src/main/windows
 (KEEP-AWAKE-UNMOUNT)	apps/desktop/src/main/windows
 (COMPANION-BRIDGE-MOUNT)	packages/host-service/src/serve.ts
+(COMPANION-BRIDGE-MOUNT)	apps/desktop/src/main/host-service
 (COMPANION-CAPTURE-HOOK)	packages/host-service/src/trpc/router/notifications
 (COMPANION-ROUTER-MOUNT)	packages/host-service/src/trpc/router/router.ts
 (COMPANION-PAIRING-UI)	apps/desktop/src/renderer/components/PairDeviceDialog
