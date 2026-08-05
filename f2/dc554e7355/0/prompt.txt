@@ -1973,3 +1973,11 @@ install it detached
 ---
 
 install it detached
+
+---
+
+reinstalled
+
+---
+
+reinstalled
