@@ -225,6 +225,12 @@ export interface CompanionBridgeOptions {
 	 */
 	db: HostDb;
 	/**
+	 * (MIRROR-ORG-GATE) The org this bridge serves. Compared against
+	 * `sidebar_mirror_meta.organization_id` before any curation is applied — see
+	 * `CompanionMountInput.organizationId`.
+	 */
+	organizationId: string;
+	/**
 	 * Handed in explicitly rather than imported as a module global, so the answer
 	 * guards read the SAME live store the hook receiver writes. A second
 	 * `new TerminalAgentStore(...)` would look correct and serve a stale
@@ -623,6 +629,9 @@ export function createCompanionBridge(
 			db: hostDb,
 			questions,
 			liveness,
+			// (MIRROR-ORG-GATE) Curation is only applied to a mirror written for
+			// THIS org.
+			organizationId: options.organizationId,
 			versions: options.versions,
 			bridgeStartedMs,
 			// The real counter, from the only thing that advances it. A hardcoded 0
@@ -1104,6 +1113,17 @@ export interface CompanionMountInput {
 	/** The live drizzle handle from `createApp()` — same process, same pty writer. */
 	db: HostDb;
 	/**
+	 * (MIRROR-ORG-GATE) `env.ORGANIZATION_ID` — the org THIS host-service is
+	 * serving. Required, with no default: `host.db` is per machine and the
+	 * sidebar mirror inside it is per org, so without something to compare
+	 * against, a mirror left behind by a previous sign-in curates the current
+	 * org's tree — and because ids never collide, that reads as "every project
+	 * is not in the sidebar" and hides the whole tree. A composition root that
+	 * cannot say which org it is serving must fail to compile rather than serve
+	 * another org's curation.
+	 */
+	organizationId: string;
+	/**
 	 * The live store from `createApp()`. Taken as an explicit field rather than
 	 * the whole `CreateAppResult` so the mount seam in serve.ts stays additive to
 	 * upstream's destructure instead of restructuring it.
@@ -1143,6 +1163,7 @@ export async function startCompanionBridgeIfEnabled(
 		const bridge = createCompanionBridge({
 			hostDbPath: input.hostDbPath,
 			db: input.db,
+			organizationId: input.organizationId,
 			terminalAgentStore: input.terminalAgentStore,
 			versions: {
 				appVersion: version,

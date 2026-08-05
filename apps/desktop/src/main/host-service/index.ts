@@ -149,6 +149,7 @@ async function main(): Promise<void> {
 			void startCompanionBridgeIfEnabled({
 				hostDbPath: env.HOST_DB_PATH,
 				db,
+				organizationId: env.ORGANIZATION_ID,
 				terminalAgentStore,
 			});
 

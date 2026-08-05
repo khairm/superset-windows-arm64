@@ -75,6 +75,7 @@ describe("(BRIDGE-AGENT-KIND) resolveAgentKind", () => {
 
 const LAUNCH = "launch-abc";
 const NOW = 1_700_000_000_000;
+const ORG = "org";
 
 function mirrorWorkspace(
 	workspaceId: string,
@@ -125,6 +126,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 		const curation = createSidebarCuration(
 			{ meta: null, workspaces: [], projects: [] },
 			NOW,
+			ORG,
 		);
 		expect(curation.enabled).toBe(false);
 		expect(curation.workspaceVerdict(branch)).toBe("show");
@@ -132,7 +134,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 	});
 
 	it("shows a workspace with NO mirrored row — absence is 'no opinion recorded', never 'hidden'", () => {
-		const curation = createSidebarCuration(snapshot([], ["p1"]), NOW);
+		const curation = createSidebarCuration(snapshot([], ["p1"]), NOW, ORG);
 		expect(curation.workspaceVerdict(branch)).toBe("show");
 	});
 
@@ -148,6 +150,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 			const curation = createSidebarCuration(
 				snapshot([mirrorWorkspace("w1", overrides)], ["p1"]),
 				NOW,
+				ORG,
 			);
 			expect(`${label}:${curation.workspaceVerdict(branch)}`).toBe(
 				`${label}:${expected}`,
@@ -168,6 +171,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 				["p1"],
 			),
 			NOW,
+			ORG,
 		);
 		expect(curation.workspaceVerdict(branch)).toBe("deleted");
 	});
@@ -176,6 +180,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 		const curation = createSidebarCuration(
 			snapshot([mirrorWorkspace("w1", { snoozeUntil: NOW - 1 })], ["p1"]),
 			NOW,
+			ORG,
 		);
 		expect(curation.workspaceVerdict(branch)).toBe("show");
 	});
@@ -187,6 +192,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 				["p1"],
 			),
 			NOW,
+			ORG,
 		);
 		expect(curation.workspaceVerdict(branch)).toBe("show");
 	});
@@ -195,6 +201,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 		const curation = createSidebarCuration(
 			snapshot([mirrorWorkspace("w1", { isHidden: true })], ["p1"]),
 			NOW,
+			ORG,
 		);
 		expect(curation.workspaceVerdict(branch)).toBe("archived");
 		expect(curation.workspaceVerdict(main)).toBe("hidden");
@@ -204,20 +211,21 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 		const curation = createSidebarCuration(
 			snapshot([mirrorWorkspace("w1", { isHidden: 1 })], ["p1"]),
 			NOW,
+			ORG,
 		);
 		expect(curation.workspaceVerdict(branch)).toBe("archived");
 	});
 
 	it("drops a project with no placement row, and its threads with it — PROJECT absence IS a statement once the mirror is filled", () => {
-		const curation = createSidebarCuration(snapshot([], ["p-other"]), NOW);
+		const curation = createSidebarCuration(snapshot([], ["p-other"]), NOW, ORG);
 		expect(curation.projectVerdict("p1")).toBe("project_not_in_sidebar");
 		expect(curation.workspaceVerdict(branch)).toBe("project_not_in_sidebar");
 	});
 
 	it("reproduces isAutoIncludedLocalMainWorkspace from ABSENCE plus a placed project, without synthesising a row", () => {
-		const placed = createSidebarCuration(snapshot([], ["p1"]), NOW);
+		const placed = createSidebarCuration(snapshot([], ["p1"]), NOW, ORG);
 		expect(placed.workspaceVerdict(main)).toBe("show");
-		const unplaced = createSidebarCuration(snapshot([], ["p-other"]), NOW);
+		const unplaced = createSidebarCuration(snapshot([], ["p-other"]), NOW, ORG);
 		expect(unplaced.workspaceVerdict(main)).toBe("project_not_in_sidebar");
 	});
 
@@ -225,6 +233,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) createSidebarCuration", () => {
 		const curation = createSidebarCuration(
 			snapshot([mirrorWorkspace("w1", { projectId: "p2" })], ["p2"]),
 			NOW,
+			ORG,
 		);
 		expect(curation.effectiveProjectId(branch)).toBe("p2");
 		expect(curation.workspaceVerdict(branch)).toBe("show");

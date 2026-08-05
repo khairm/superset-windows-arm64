@@ -328,6 +328,15 @@ export interface ReadDeps {
 	 * agent, and that must fail to compile rather than degrade to noise.
 	 */
 	liveness: TerminalLiveness;
+	/**
+	 * (MIRROR-ORG-GATE) The org this host-service serves, compared against
+	 * `sidebar_mirror_meta.organization_id` before any curation is applied.
+	 * REQUIRED, with no default: `host.db` is per machine and the mirror inside
+	 * it is per org, so a reader with nothing to compare against silently serves
+	 * a previous sign-in's curation — and since ids never collide across orgs,
+	 * that hides the entire tree behind "project not in the sidebar".
+	 */
+	organizationId: string;
 	versions: {
 		appVersion: string;
 		hostServiceVersion: string;
@@ -775,7 +784,11 @@ export async function handleTree(
 
 	const nowMs = Date.now();
 	const answerability: AnswerabilityContext = { granted: ctx.granted };
-	const curation = createSidebarCuration(deps.db.readSidebarMirror(), nowMs);
+	const curation = createSidebarCuration(
+		deps.db.readSidebarMirror(),
+		nowMs,
+		deps.organizationId,
+	);
 	const projects = deps.db.listProjects();
 	const allWorkspaces = deps.db.listWorkspaces();
 	const visible = visibleWorkspaces(allWorkspaces, curation);
@@ -1292,7 +1305,11 @@ export async function handleHeartbeat(
  */
 function countStatuses(deps: ReadDeps, nowMs: EpochMs): StatusCounts {
 	const counts: StatusCounts = { needsInput: 0, working: 0, idle: 0 };
-	const curation = createSidebarCuration(deps.db.readSidebarMirror(), nowMs);
+	const curation = createSidebarCuration(
+		deps.db.readSidebarMirror(),
+		nowMs,
+		deps.organizationId,
+	);
 	const visible = visibleWorkspaces(deps.db.listWorkspaces(), curation);
 	const bindings = new Map(
 		deps.db.listBindings().map((b) => [b.terminalId, b]),

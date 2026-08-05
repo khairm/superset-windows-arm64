@@ -13,13 +13,14 @@
  * THE TWO ABSENCE RULES, WHICH ARE DELIBERATELY DIFFERENT
  * ---------------------------------------------------------------------------
  * The mirror's contract has exactly one permitted failure direction: a MISSING
- * row means "no opinion recorded", never "hidden". (Staleness is a separate
- * question and is NOT covered by that rule — a stale row still carrying
+ * row means "no opinion recorded", never "hidden". Staleness is a SEPARATE
+ * question with the opposite shape — a stale row still carrying
  * `deleted_at`/`archived_at`/`snooze_until` hides a thread that is no longer
- * hidden. What bounds that is on the writer: one push in flight and a retry
- * that never gives up while the desktop runs. See `db/schema.ts`. This module
- * therefore reads a present row as the user's last recorded opinion and does
- * not age it out — there is no heartbeat to age against.)
+ * hidden, and a stale `app_launch_id` keeps an "until next launch" snooze in
+ * force forever — so it cannot be answered by any per-row rule. It is answered
+ * WHOLESALE, by `(MIRROR-AGE-OUT)` below: past `MIRROR_MAX_AGE_MS` with no
+ * renderer heartbeat, this module stops filtering at all rather than serving a
+ * dead desktop's last opinion as if it were current.
  *
  * Applied literally to both tables the absence rule would be wrong in one
  * direction and right in the other, because the renderer itself treats the two
@@ -116,8 +117,11 @@ export interface WorkspaceCurationInput {
 
 export interface SidebarCuration {
 	/**
-	 * False when no renderer has ever synced. Every predicate below then answers
-	 * `"show"`, so a fresh install or a cleared profile cannot fail closed.
+	 * False when the mirror is not evidence about this machine's sidebar right
+	 * now — no renderer has ever synced, the last sync is older than
+	 * `MIRROR_MAX_AGE_MS`, or the mirror belongs to a different organization.
+	 * Every predicate below then answers `"show"`, so none of those states can
+	 * fail closed.
 	 */
 	readonly enabled: boolean;
 	/**
@@ -164,20 +168,74 @@ function classifyWorkspace(
 	return "show";
 }
 
+/**
+ * (MIRROR-AGE-OUT) How old `sidebar_mirror_meta.last_full_sync_at_ms` may get
+ * before this module stops filtering.
+ *
+ * Chosen against the writer's heartbeat, not against any guess about user
+ * behaviour: the renderer re-pushes the unchanged snapshot every five minutes,
+ * so a live desktop refreshes this stamp four times inside the window. That
+ * margin is the point — a single failed push, one retry backoff, or a laptop
+ * that slept through a beat must not make a running desktop look dead, because
+ * an unnecessary age-out shows the phone binned and snoozed threads. Twenty
+ * minutes is four beats: enough that only a genuinely absent renderer reaches
+ * it, short enough that a quit app stops curating the phone in minutes.
+ */
+export const MIRROR_MAX_AGE_MS = 1_200_000;
+
+/**
+ * The one disabled curation, shared by every reason for disabling. Callers of
+ * `SidebarCuration` cannot tell these reasons apart and must not: the whole
+ * contract of the disabled state is "filter nothing", and three hand-written
+ * copies of it would be three chances for one of them to drift into filtering
+ * something.
+ */
+function passThroughCuration(): SidebarCuration {
+	return {
+		enabled: false,
+		effectiveProjectId: (workspace) => workspace.projectId,
+		workspaceVerdict: () => "show",
+		projectVerdict: () => "show",
+	};
+}
+
 export function createSidebarCuration(
 	snapshot: SidebarMirrorSnapshot,
 	nowMs: number,
+	organizationId: string,
 ): SidebarCuration {
 	const meta = snapshot.meta;
 	if (meta === null) {
 		// Bootstrap: nothing has ever been mirrored, so the two tables carry no
 		// information and filtering on them would hide a sidebar we cannot see.
-		return {
-			enabled: false,
-			effectiveProjectId: (workspace) => workspace.projectId,
-			workspaceVerdict: () => "show",
-			projectVerdict: () => "show",
-		};
+		return passThroughCuration();
+	}
+	// (MIRROR-AGE-OUT) The writer heartbeats the unchanged snapshot every five
+	// minutes (`MIRROR-HEARTBEAT`), so `lastFullSyncAtMs` means "a renderer was
+	// alive at this moment" and not "somebody last dragged a thread". Past the
+	// window that is positive evidence that NO renderer is running — the app is
+	// quit, the machine woke without it, the hook chain is broken — and every
+	// hiding field in these tables is then an opinion from a session that has
+	// ended. `snooze_launch_id` is the sharpest case: it hides a thread only
+	// while it equals the CURRENT launch, so a mirror frozen mid-launch keeps
+	// hiding threads the very next launch would have released, with nothing to
+	// release them. Fail toward SHOWING: too noisy is the permitted direction,
+	// a blocked agent nobody can see is not.
+	if (nowMs - meta.lastFullSyncAtMs > MIRROR_MAX_AGE_MS) {
+		return passThroughCuration();
+	}
+	// (MIRROR-ORG-GATE) The mirror is written per ORG by whichever renderer is
+	// signed in, and `host.db` is per machine — one file that a sign-out and a
+	// sign-in to a different organization both write through. The column has
+	// been recorded and read since the mirror shipped and was never once
+	// compared, so a mirror left behind by org A curated org B's tree: A's
+	// placements decided where B's threads grouped, and A's binned/snoozed rows
+	// hid B's live ones by workspace id. Ids do not collide, so in practice the
+	// damage is the project gate — every one of B's projects is "not in the
+	// sidebar" — which hides the WHOLE tree. Same seam, same direction: a mirror
+	// that is not about this org is not evidence about this org.
+	if (meta.organizationId !== organizationId) {
+		return passThroughCuration();
 	}
 
 	const workspaceById = new Map<string, SidebarWorkspaceMirrorRow>();
