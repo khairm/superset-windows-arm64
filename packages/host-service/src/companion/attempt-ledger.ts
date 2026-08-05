@@ -299,12 +299,13 @@ export function createAttemptLedger(options: {
 	 * `NORMAL` would have swapped an undocumented inference for a documented
 	 * weakness.
 	 *
-	 * `createDb` does not set `synchronous`, so this is checking SQLite's own
-	 * default rather than a value the bridge chose. It fails LOUD instead of
-	 * quietly setting it, because this connection is shared with the rest of the
-	 * host service: if someone lowers it for write throughput, that is a
-	 * deliberate decision which must be made with the knowledge that it breaks the
-	 * answer fence, not silently undone here.
+	 * (COMPANION-DB-FULL) The connection is the bridge's OWN — the mount opens
+	 * it and sets `synchronous = FULL` explicitly, because the SHARED host-service
+	 * connection runs at the binding's WAL default (NORMAL under better-sqlite3's
+	 * standard build), which is exactly what the first installed build died on.
+	 * This assert still fails LOUD rather than re-setting the pragma: a wrong
+	 * value here means the ledger was handed a connection the mount did not
+	 * configure — a wiring bug to surface, not a tuning to quietly correct.
 	 *
 	 * (WAL also means a reader never blocks a writer, which is why the CAS below
 	 * can be a short transaction without starving the status path.)
@@ -316,8 +317,8 @@ export function createAttemptLedger(options: {
 	 * at open.
 	 *
 	 * Checking once at open would only prove the pragma was right when the module
-	 * loaded. This connection is SHARED with the rest of the host service, the
-	 * pragma is connection-scoped and settable at any time, and a single
+	 * loaded. The pragma is connection-scoped and settable at any time on the
+	 * bridge's own connection too, and a single
 	 * `PRAGMA synchronous = NORMAL` anywhere — a future migration, an import-time
 	 * tuning line, a REPL — would silently un-anchor every claim written after it
 	 * while an open-time check kept reporting green.

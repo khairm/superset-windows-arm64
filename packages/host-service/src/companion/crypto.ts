@@ -1347,10 +1347,11 @@ interface ReplayCacheOptions {
  *    directory operation whose durability is exactly the NTFS inference this whole
  *    area exists to stop depending on.
  *
- * It FAILS LOUD instead of quietly setting either one, because this connection is
- * shared with the rest of the host service: lowering `synchronous` for write
- * throughput is a decision someone may legitimately want to make, and it must be
- * made knowing it breaks both of the above — not silently undone here.
+ * It FAILS LOUD instead of quietly setting either one. Since (COMPANION-DB-FULL)
+ * the connection under test is the bridge's own — the mount sets FULL explicitly
+ * at open — so a wrong value here means a store was handed a connection the
+ * mount did not configure (or something lowered it after open): a wiring bug to
+ * surface, never a tuning to silently undo from inside an assert.
  *
  * Callers pass `when` so the message says which claim was about to be made.
  */

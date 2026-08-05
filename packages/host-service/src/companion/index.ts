@@ -72,8 +72,11 @@ import {
 	PUSH_QUESTION_EXPIRY_MS,
 	resolveCompanionPaths,
 } from "./config";
-import { createReplayCache, type ReplayCache, sleep,
+import {
 	assertDurableSqlite,
+	createReplayCache,
+	type ReplayCache,
+	sleep,
 } from "./crypto";
 import { createDeviceStore, type DeviceStore } from "./device-store";
 import {
@@ -413,16 +416,21 @@ export function createCompanionBridge(
 		// semantics are upstream's. No migrate() here — createApp already ran
 		// migrations on this database before the mount was called.
 		const companionSqlite = new Database(options.hostDbPath);
+		// Registered IMMEDIATELY — before the pragmas and the durability assert,
+		// any of which can throw. Registering after them leaked the open write
+		// handle on a failed start, pinning host.db/-wal/-shm on Windows for the
+		// life of the process with the bridge off — the exact "nothing
+		// half-registers" promise this construction exists to keep.
+		unwind.push({
+			what: "companion write db",
+			close: async () => companionSqlite.close(),
+		});
 		companionSqlite.pragma("journal_mode = WAL");
 		companionSqlite.pragma("busy_timeout = 5000");
 		companionSqlite.pragma("foreign_keys = ON");
 		companionSqlite.pragma("synchronous = FULL");
 		const companionDb = drizzle(companionSqlite, { schema: hostDbSchema });
 		assertDurableSqlite(companionDb, "opening the companion write connection");
-		unwind.push({
-			what: "companion write db",
-			close: async () => companionSqlite.close(),
-		});
 		const audit = createAuditLog(paths.audit);
 		const keyStore = createKeyStore(paths.devices, anchor);
 		// Revocation tombstones and the retryable wipe of purged key material live
