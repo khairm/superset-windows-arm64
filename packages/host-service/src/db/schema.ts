@@ -548,3 +548,51 @@ export const companionDeviceIndex = sqliteTable("companion_device_index", {
 	/** The authority sequence, decimal string for the same reason. Never lowered. */
 	seq: text().notNull(),
 });
+
+/**
+ * (PUSH-PRESENCE) The armed/sent fence for the companion push scheduler.
+ *
+ * WHY IT IS PERSISTED AT ALL. It was in-memory, and the reasoning was that a
+ * host-service restart also drops the question store, so questions get
+ * re-captured from the hook path and re-armed from zero. That reasoning was
+ * sound only while every push was DELAYED: re-arming a three-minute timer costs
+ * three minutes. Presence-gating changed both halves of it.
+ *
+ *   - A HELD question is held with no deadline. Losing the armed entry loses the
+ *     push entirely unless the hook happens to fire again, which for a question
+ *     that was captured once and is still sitting unanswered it will not. The
+ *     user's phone then never buzzes for a question nobody is looking at — the
+ *     exact failure the feature exists to prevent.
+ *   - A SENT question is worse. Without the sent record a re-capture re-arms,
+ *     presence says away, and it fires AGAIN. The 30-80 questions a day this
+ *     handles would each buzz once per host-service restart.
+ *
+ * So both states are rows. `state` is the fence: `armed` may still fire, `sent`
+ * may never fire again and is the precondition for a retraction carrying the
+ * workspaceId the original push actually used.
+ *
+ * WHY DELETION IS FINE HERE, unlike `answer_attempts`. A row here decides
+ * whether a NOTIFICATION goes out, not whether an answer was typed. A forgotten
+ * armed row costs one missed buzz for a question that has already outlived
+ * `PUSH_QUESTION_EXPIRY_MS`; a forgotten sent row costs one retraction that
+ * silently no-ops. Neither can corrupt an agent session, which is what makes an
+ * attempt row unforgettable.
+ */
+export const companionPushFence = sqliteTable("companion_push_fence", {
+	/** §0.1 canonical wire id. One row per question, ever. */
+	questionId: text("question_id").primaryKey(),
+	/**
+	 * The workspace handle the push carries. Stored rather than re-derived at
+	 * retraction time: the client matches the notification it is holding by this
+	 * value, so it must be the one the ORIGINAL push went out with.
+	 */
+	workspaceId: text("workspace_id").notNull(),
+	questionCount: integer("question_count").notNull(),
+	/** Wall clock past which buzzing is pure noise; the client discards it unopened. */
+	expiresAtMs: integer("expires_at_ms").notNull(),
+	armedAtMs: integer("armed_at_ms").notNull(),
+	/** `armed` (may still fire) or `sent` (never again; retractable). */
+	state: text().notNull(),
+	/** Null while `armed`. Set in the same write that moves the row to `sent`. */
+	sentAtMs: integer("sent_at_ms"),
+});

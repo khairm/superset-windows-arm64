@@ -795,7 +795,19 @@ export interface RegisterRequest {
 export interface RegisterResponse {
 	deviceId: DeviceId;
 	registeredAtMs: EpochMs;
-	/** 180 000 — see §13.2. */
+	/**
+	 * (PUSH-PRESENCE) ALWAYS 0, AND THE FIELD IS KEPT ON PURPOSE.
+	 *
+	 * §13.2's 180 000 ms delay is gone: the desktop now decides per question,
+	 * from presence, whether to push immediately or hold indefinitely, so there
+	 * is no delay left to advertise. The field stays on the wire because paired
+	 * phones already parse it (`Session.kt` in superset-companion), and removing
+	 * it would break every installed client's register response for a value they
+	 * can simply be told is zero.
+	 *
+	 * Zero is the honest answer rather than a placeholder: it is exactly the delay
+	 * a client should assume before a notification can arrive.
+	 */
 	pushDelayMs: DurationMs;
 	/** 900 000. */
 	pushTtlMs: DurationMs;

@@ -24,6 +24,7 @@
 
 import { isCompanionBridgeEnabled, LOG_PREFIX } from "./config";
 import type { CompanionBridge } from "./index";
+import type { PresenceBeaconInput, PresenceStore } from "./presence";
 
 let current: CompanionBridge | null = null;
 
@@ -80,4 +81,55 @@ export function readCompanionBridgeStatus(): CompanionBridgeStatus {
 		running,
 		startedAtMs: running && bridge !== null ? bridge.startedAtMs : null,
 	};
+}
+
+// ---------------------------------------------------------------------------
+// (PUSH-PRESENCE) the presence store
+// ---------------------------------------------------------------------------
+
+/**
+ * The live presence store, published for the same reason the bridge is: the
+ * `companion.presenceBeacon` tRPC mutation is the desktop's only way in, and it
+ * has no other handle on the running bridge.
+ *
+ * It is registered SEPARATELY from the bridge rather than reached through it,
+ * and that is deliberate. The bridge handle is the panic/pairing surface and
+ * every one of its operations refuses when the bridge is not running. A beacon
+ * is the opposite kind of thing — advisory telemetry that arrives every 15 s
+ * whether anyone is listening or not — and routing it through `requireBridge()`
+ * would turn the ordinary "no bridge on this machine" state into an error on a
+ * repeating desktop timer.
+ */
+let presence: PresenceStore | null = null;
+
+export function setCompanionPresenceStore(store: PresenceStore): void {
+	if (presence !== null && presence !== store) {
+		throw new Error(
+			`${LOG_PREFIX} a companion presence store is already registered; ` +
+				"clear it (clearCompanionPresenceStore) before registering another",
+		);
+	}
+	presence = store;
+}
+
+/** Identity-checked, so a stopping bridge cannot unpublish its replacement. */
+export function clearCompanionPresenceStore(store: PresenceStore): void {
+	if (presence === store) presence = null;
+}
+
+/**
+ * Record one desktop presence beacon.
+ *
+ * Returns whether anything consumed it. `false` means the bridge is off or not
+ * yet up — which is the NORMAL state for every fork user, so it is an answer and
+ * never an error. The sender logs it once and carries on; a beacon that cannot
+ * be stored has no consequence beyond the push falling back to keystrokes.
+ */
+export function recordCompanionPresenceBeacon(
+	beacon: PresenceBeaconInput,
+): boolean {
+	const store = presence;
+	if (store === null) return false;
+	store.record(beacon);
+	return true;
 }

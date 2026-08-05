@@ -159,7 +159,46 @@ export const EVENT_MAX_CONNECTIONS_PER_DEVICE = 1;
 
 // --- §13 push --------------------------------------------------------------
 
-export const PUSH_DELAY_MS = 180_000;
+/**
+ * (PUSH-PRESENCE) How recent a presence signal has to be for the user to count
+ * as AT THE DESK, and therefore for a blocked question to be held rather than
+ * pushed.
+ *
+ * THE UX CONTRACT THIS NUMBER ENCODES. A question buzzes the phone if and only
+ * if the user cannot already see it. Away at the moment of capture -> the push
+ * fires IMMEDIATELY, with no delay of any kind, because latency is the entire
+ * value of the feature. Present -> it is held, indefinitely, and is either
+ * cancelled when they answer at the desk or fired the moment presence lapses.
+ *
+ * This replaced a blanket 180 000 ms delay (`PUSH_DELAY_MS`, deleted). That
+ * delay was wrong in both directions at once: three minutes of dead air when
+ * nobody was there to answer, and a buzz at 3:00 for a question the user was
+ * reading at 2:59.
+ *
+ * 60 s is the width of "still here" for BOTH signals — a keystroke inside the
+ * last minute, or an OS idle time under a minute. Long enough that reading a
+ * paragraph of agent output does not read as absence; short enough that walking
+ * away is noticed before the question goes stale.
+ */
+export const PRESENCE_WINDOW_MS = 60_000;
+
+/**
+ * (PUSH-PRESENCE) How old the desktop's presence beacon may be before it stops
+ * counting as evidence of anything.
+ *
+ * The beacon is a POST from the Electron main process on its keep-awake tick
+ * (15 s). Three missed ticks is a desktop that is gone, suspended, or on a build
+ * that does not send them — none of which are proof the user is present, so past
+ * this the decision degrades to keystrokes alone. That under-reports presence,
+ * i.e. it errs towards PUSHING, which is the correct direction: an unnecessary
+ * buzz is an annoyance, a suppressed question is a blocked agent nobody knows
+ * about.
+ *
+ * Deliberately a little under 3 x 15 s so an ordinary late tick does not
+ * straddle the boundary on every cycle.
+ */
+export const BEACON_FRESH_MS = 45_000;
+
 export const PUSH_TTL_MS = 900_000;
 /**
  * How long a captured question stays worth buzzing about, measured from the

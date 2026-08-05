@@ -21,6 +21,7 @@ import {
 } from "@superset/shared/terminal-title-scanner";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Hono } from "hono";
+import { stampHumanInput } from "../companion/human-input.ts";
 import { isProcessAlive, readPtyDaemonManifest } from "../daemon/manifest.ts";
 import type { HostDb } from "../db/index.ts";
 import { projects, terminalSessions, workspaces } from "../db/schema.ts";
@@ -1589,8 +1590,7 @@ export async function createTerminalSessionInternal({
 	// engage on Windows. zsh/bash/fish go through the wrapper-precise check so a
 	// stale or missing wrapper resolves as unsupported instead of stalling the
 	// initial-command gate (which no longer has a timeout backstop).
-	const isPowerShellReady =
-		shellName === "pwsh" || shellName === "powershell";
+	const isPowerShellReady = shellName === "pwsh" || shellName === "powershell";
 	const shellSupportsReady =
 		!isAdopted &&
 		(isPowerShellReady ||
@@ -2088,6 +2088,23 @@ export function registerWorkspaceTerminalRoute({
 					if (session.exited) return;
 
 					if (message.type === "input") {
+						// (PUSH-PRESENCE) THE ONE PLACE A HUMAN KEYSTROKE IS RECORDED.
+						//
+						// This branch is reached only by a validated `{type:"input"}`
+						// frame from an attached renderer socket, which can only have
+						// come from a keypress in a terminal pane the user is looking
+						// at. That is what makes it evidence they are at the desk, and
+						// the companion push is held on the strength of it
+						// (`companion/presence.ts`).
+						//
+						// `writeInputToSession` / `writeFramedInputToSession` MUST NOT
+						// stamp, and the reason is not stylistic: they are the pty
+						// writers the COMPANION'S OWN answer path uses, plus every
+						// programmatic sender (auto-resume, `terminal.send`). Stamping
+						// there would make an answer typed from the phone read as the
+						// user being at their desk, and the next question would be held
+						// back from the very device that just answered one.
+						stampHumanInput();
 						session.pty.write(message.data);
 						return;
 					}

@@ -56,6 +56,7 @@ import {
 	type CompanionBridgeStatus,
 	getCompanionBridge,
 	readCompanionBridgeStatus,
+	recordCompanionPresenceBeacon,
 } from "../../../companion/registry";
 import { protectedProcedure, router } from "../../index";
 
@@ -68,6 +69,26 @@ import { protectedProcedure, router } from "../../index";
  */
 const panicInput = z.object({
 	reason: z.string().min(1).max(PANIC_REASON_MAX_CHARS),
+});
+
+/**
+ * (PUSH-PRESENCE) The desktop presence beacon, validated at the boundary.
+ *
+ * Every field is required and every field is constrained, because this decides
+ * whether a blocked agent's question buzzes a phone. `idleSeconds` is a
+ * non-negative integer (`powerMonitor.getSystemIdleTime()` is whole seconds);
+ * `locked` is a real boolean, never a truthy string; `event` is a closed enum,
+ * so a sender that invents a fifth kind is a 400 here rather than a value the
+ * store silently files under "not a resume".
+ *
+ * No upper bound on `idleSeconds` on purpose: a machine idle for a week is a
+ * legitimate reading, and the presence rules only ever compare it against a
+ * 60 s window.
+ */
+const presenceBeaconInput = z.object({
+	idleSeconds: z.number().int().min(0),
+	locked: z.boolean(),
+	event: z.enum(["tick", "lock", "unlock", "resume"]),
 });
 
 /**
@@ -219,6 +240,29 @@ export const companionRouter = router({
 				running && bridge ? await bridge.pairedDeviceCount() : 0,
 		};
 	}),
+
+	/**
+	 * (PUSH-PRESENCE) One desktop presence beacon: OS idle time and lock state,
+	 * from Electron main's `powerMonitor`.
+	 *
+	 * A MUTATION, not a query — it changes server state (the presence store) and
+	 * must never be cached, batched or replayed by a client the way a query may
+	 * be.
+	 *
+	 * Like `gate` and unlike everything below it, this NEVER throws for the off
+	 * states. Bridge off is the normal state for every fork user, and the beacon
+	 * arrives on a 15 s desktop timer whether or not anything is listening: a
+	 * mutation that 500s on the normal state would fill the log with a failure
+	 * that is not one, and would train its caller to ignore real ones. The data is
+	 * advisory — with nothing to receive it the push simply falls back to
+	 * keystroke evidence alone — so an unconsumed beacon is `accepted: false`,
+	 * stated plainly, and dropped.
+	 */
+	presenceBeacon: protectedProcedure
+		.input(presenceBeaconInput)
+		.mutation(({ input }): { accepted: boolean } => {
+			return { accepted: recordCompanionPresenceBeacon(input) };
+		}),
 
 	/**
 	 * READ-ONLY. Reports the window this router last opened; it never opens one,

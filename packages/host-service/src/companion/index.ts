@@ -103,7 +103,9 @@ import {
 } from "./lease";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { openPairingWindow, type PairingWindowHandle } from "./pairing";
+import { createPresenceStore, type PresenceStore } from "./presence";
 import { createPushSender, handleRegister, type PushSender } from "./push";
+import { createPushFence, type PushFence } from "./push-fence";
 import {
 	createQuestionStore,
 	deriveHandle,
@@ -119,7 +121,12 @@ import {
 	openHostDbReadOnly,
 	type ReadApi,
 } from "./read-api";
-import { clearCompanionBridge, setCompanionBridge } from "./registry";
+import {
+	clearCompanionBridge,
+	clearCompanionPresenceStore,
+	setCompanionBridge,
+	setCompanionPresenceStore,
+} from "./registry";
 import type {
 	AgentKind,
 	Capability,
@@ -263,6 +270,8 @@ interface BridgeState {
 	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	readApi: ReadApi;
+	presence: PresenceStore;
+	pushFence: PushFence;
 	push: PushSender;
 	events: EventStreamServer;
 	http: BridgeHttpServer;
@@ -523,9 +532,34 @@ export function createCompanionBridge(
 			snapshots: createSnapshotSource(),
 			logger,
 		});
+		/**
+		 * (PUSH-PRESENCE) The two halves of presence-gated push, built before the
+		 * sender because it consumes both.
+		 *
+		 * The presence store is published to the registry immediately, not at the
+		 * end of `startInner`: the desktop's beacon tick is already running and
+		 * every beacon that lands before registration is one the first question
+		 * cannot use. The teardown step is pushed in the same breath, so a start
+		 * that fails after this point cannot leave a dead store registered for the
+		 * next bridge to inherit.
+		 */
+		const presence = createPresenceStore();
+		setCompanionPresenceStore(presence);
+		unwind.push({
+			what: "presence store",
+			close: async () => clearCompanionPresenceStore(presence),
+		});
+		// Writes through the bridge's OWN synchronous = FULL connection
+		// (COMPANION-DB-FULL) — never the shared handle, which runs at NORMAL.
+		const pushFence = createPushFence({
+			db: companionDb,
+			log: (event) => logger.info("push fence", event),
+		});
 		const push = createPushSender({
 			serviceAccountPath: fcm.path,
 			devices: deviceStore,
+			presence,
+			fence: pushFence,
 			// Re-checked at fire time: a missed cancel would buzz the watch for a
 			// question already answered, which is the exact noise the 180 s delay
 			// exists to remove.
@@ -762,6 +796,8 @@ export function createCompanionBridge(
 			ledger,
 			messageAttempts,
 			readApi,
+			presence,
+			pushFence,
 			push,
 			events,
 			http,

@@ -13,68 +13,96 @@
  * CLOSED key set on the envelope as well as on `data`, so no later edit can add
  * an `apns`/`webpush`/`notification` block carrying text without failing.
  *
- * THE DELAY IS THE FEATURE. A red does NOT push immediately. It pushes only if
- * the question is still unanswered after `PUSH_DELAY_MS` (180 000 ms) of
- * DESKTOP-AWAKE time. 30-80 questions a day, most answered at the desk within
- * seconds; pushing every red means ~50 buzzes a day for questions already being
- * handled, and a watch that buzzes 50 times a day is muted within a week. Muted
- * is the same as not built. The notification therefore carries a specific
- * meaning: *nobody has dealt with this.*
+ * PRESENCE IS THE FEATURE, AND IT REPLACED A DELAY. A red does not wait three
+ * minutes any more; it pushes IMMEDIATELY when the user is away and NEVER while
+ * they are at the desk. This module does not own that judgement —
+ * `companion/presence.ts` does, from two signals (human keystrokes into a
+ * terminal, and the Electron beacon carrying OS idle time and lock state). This
+ * module owns what to DO with it:
  *
- * ── Sleep / resume (the reason there is no per-question `setTimeout`) ─────────
+ *   away at capture      -> fire now, zero latency. The user cannot see the
+ *                           question, so every second of delay is a blocked
+ *                           agent nobody knows about.
+ *   present at capture   -> HOLD, with no deadline. They can see it. A push for
+ *                           a question already on their screen is exactly the
+ *                           noise that gets a watch muted inside a week, and a
+ *                           muted watch is the same as one never built.
+ *   present -> away      -> the sweep fires everything still held. Walking away,
+ *                           or locking the screen, is the trigger.
+ *   answered at the desk -> `cancelPending` disarms it and it never buzzes.
  *
- * VERIFIED, not assumed. Node timers are driven by libuv's monotonic clock
- * (`uv_hrtime`), which on Windows is `QueryPerformanceCounter`, and Microsoft
- * documents QPC's suspend behaviour explicitly:
+ * There is NO CEILING on a hold. "You have been looking at this question for N
+ * minutes, so let me also buzz your wrist" is a notification about something
+ * already in front of the user. A hold ends by absence, or by the question
+ * expiring (`PUSH_QUESTION_EXPIRY_MS`) — never by a timer.
+ *
+ * The 30-80 questions a day this handles are mostly answered at the desk within
+ * seconds. Under the old delay they cost three minutes of silence each when
+ * nobody was there; under presence gating they buzz at once when nobody is
+ * there, and not at all when somebody is. The notification's meaning is
+ * unchanged and is the whole point: *nobody has dealt with this.*
+ *
+ * -- Sleep / resume (still no per-question `setTimeout`) ----------------------
+ *
+ * VERIFIED, not assumed, and the reasoning survives the redesign intact. Node
+ * timers are driven by libuv's monotonic clock (`uv_hrtime`), which on Windows
+ * is `QueryPerformanceCounter`, and Microsoft documents QPC's suspend behaviour
+ * explicitly:
  *
  *   "QueryPerformanceCounter reads the performance counter and returns the
  *    total number of ticks that have occurred since the Windows operating
  *    system was started, INCLUDING THE TIME WHEN THE MACHINE WAS IN A SLEEP
  *    STATE such as standby, hibernate, or connected standby."
- *   — learn.microsoft.com/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
+ *   -- learn.microsoft.com/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
  *
- * So the naive design fails in a specific, knowable way: a `setTimeout(180_000)`
- * armed at 17:00 and followed by a six-hour suspend does NOT fire at 17:03 and
- * does NOT fire three awake-minutes after the lid opens — the deadline elapsed
- * while the process was frozen, so it fires the instant the process thaws. Every
- * question armed before the sleep buzzes the watch simultaneously at the exact
- * moment the user sits back down: the precise failure the delay exists to
- * prevent, made worse by batching.
+ * So a `setTimeout` deadline armed before a six-hour suspend does not fire at
+ * its deadline and does not fire some grace period after the lid opens: it
+ * fires the instant the process thaws, for every question at once, at the exact
+ * moment the user sits back down. That is why there is no per-question timer
+ * here, only a coarse repeating sweep that re-evaluates presence and therefore
+ * has no deadline to miss.
  *
- * (Windows does expose sleep-excluding counters — `QueryUnbiasedInterruptTime`
- * and friends — but Node binds none of them, and reaching them would mean a
- * native addon in the win-arm64 closure. Not worth it for this.)
+ * The batched-buzz-at-lid-open failure the old awake-time accounting existed to
+ * prevent has NOT been forgotten — it moved to where it belongs. A machine that
+ * has just woken has a keystroke stamp from before the suspend and no fresh
+ * beacon, which reads as "away" and would fire everything held. `presence.ts`
+ * opens a ten-second settling window on an Electron `resume`/`unlock` beacon, in
+ * which held questions stay held (F7). It delays a correct push by ten seconds;
+ * it never cancels one.
  *
- * `Date.now()` is no better on its own: it is wall-clock, so it is corrected on
- * resume and stepped by NTP, forwards or BACKWARDS, at any moment.
+ * `Date.now()` is wall-clock, so it is corrected on resume and stepped by NTP in
+ * either direction. Every age computed from it in this feature is clamped at
+ * zero and discarded past a future tolerance, and both failure directions
+ * resolve towards "away" — see `human-input.ts` and `presence.ts`.
  *
- * So no deadline here is a timer. A single coarse sweep (`PUSH_SWEEP_INTERVAL_MS`)
- * re-evaluates every armed question, and each question accrues *awake* time one
- * tick at a time. A tick only credits awake time if BOTH clocks agree it was an
- * ordinary tick; any tick that cannot be vouched for credits ZERO:
+ * -- Serialising a send against its own retraction ----------------------------
  *
- *   - Windows suspend: both deltas huge      -> credit 0
- *   - POSIX suspend:   wall huge, mono ~0    -> credit 0
- *   - NTP step back:   wallDelta < 0         -> credit 0
- *   - NTP step fwd:    wallDelta huge        -> credit 0
- *   - long GC stall:   both > tolerance      -> credit 0 (costs one tick, fine)
- *   - normal tick:     both ~= sweep         -> credit = min(wall, mono)
+ * A send takes tens of seconds in the worst case (bounded retries with backoff).
+ * The old code committed the sent record, started the broadcast, and let
+ * `retract` run independently — so an answer arriving mid-send could complete
+ * its retraction while the ORIGINAL push was still in FCM's queue, and the
+ * original would then be delivered AFTER the retraction that was supposed to
+ * cancel it. The notification outlives its subject, which is the one thing §13.3
+ * exists to prevent.
  *
- * The consequence is deliberate and is the correct product behaviour: **time the
- * desktop spent asleep does not count toward the delay.** The 3 minutes mean
- * "three minutes in which the user had a chance to answer at the desk"; a
- * suspended desktop gives no such chance, and a machine that has just resumed is
- * a machine the user is sitting in front of. After a resume every pending
- * question gets its full three awake minutes again, which is exactly the grace a
- * user who just opened the lid needs.
+ * So every FCM operation for a questionId runs on a per-question promise chain,
+ * and a retraction additionally CANCELS the in-flight send (the cancel is
+ * checked between attempts, so a retraction does not wait out four backoffs).
+ * Chaining per question is strictly stronger than the per-(questionId, device)
+ * ordering that is actually required, and is far simpler to prove.
  *
- * The sweeper also never trusts `cancelPending`: at fire time it re-asks the
+ * -- Restart (the fence) ------------------------------------------------------
+ *
+ * Schedule state used to be deliberately in-memory: a restart drops it, but a
+ * restart also drops the question store, so questions are re-captured from the
+ * hook path and re-armed from zero. True, and harmless for a three-minute delay.
+ * Not harmless now — a HELD question has no deadline, so losing it loses the
+ * push entirely, and a question already pushed would be re-armed and pushed a
+ * SECOND time. Both the armed set and the sent set are therefore rows in host.db
+ * (`push-fence.ts`), reconstructed at start.
+ *
+ * The sweeper still never trusts `cancelPending`: at fire time it re-asks the
  * question store whether the question is still unanswered.
- *
- * Schedule state is deliberately in-memory. A host-service restart drops it —
- * but a restart also drops the question store, so questions are re-captured from
- * the hook path and re-armed from zero, which is the same "you were just at the
- * desk" reasoning.
  *
  * ── Trust / secrets ──────────────────────────────────────────────────────────
  *
@@ -91,18 +119,18 @@
 
 import { createSign, randomInt } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { performance } from "node:perf_hooks";
 
 import {
 	FCM_PROJECT_ID,
 	PUSH_DATA_HARD_CAP_BYTES,
-	PUSH_DELAY_MS,
 	PUSH_TTL_MS,
 	PUSH_VALUE_PATTERN,
 } from "./config";
 import { base64UrlEncode, sleep } from "./crypto";
 import type { DeviceStore } from "./device-store";
 import { MAX_APP_VERSION_CHARS } from "./limits";
+import type { PresenceStore, PresenceVerdict } from "./presence";
+import type { PushFence } from "./push-fence";
 import type {
 	DeviceRecord,
 	PushData,
@@ -116,34 +144,28 @@ import type {
 import { SealedError } from "./types";
 
 // ---------------------------------------------------------------------------
-// Constants. PUSH_DELAY_MS / PUSH_TTL_MS / PUSH_DATA_HARD_CAP_BYTES are
-// normative in PROTOCOL.md §15 and come from config.ts. The ones below are
-// implementation choices of this module — named, not magic.
+// Constants. PUSH_TTL_MS / PUSH_DATA_HARD_CAP_BYTES are normative in
+// PROTOCOL.md §15 and come from config.ts, as do the two presence windows
+// (PRESENCE_WINDOW_MS / BEACON_FRESH_MS) that `presence.ts` reads. The ones
+// below are implementation choices of this module — named, not magic.
 // ---------------------------------------------------------------------------
 
 /**
- * How often the scheduler re-evaluates armed questions. This is the ONLY timer
- * in the module and it is a repeating coarse tick, never a per-question
- * deadline (see the sleep/resume note above). 15 s granularity on a 180 s delay
- * means a push lands at 180-195 s of awake time, which is immaterial, and it
- * removes an entire class of suspend-related bugs.
+ * (PUSH-PRESENCE) How often the scheduler re-evaluates held questions.
+ *
+ * This is the ONLY timer in the module and it is a repeating coarse tick, never
+ * a per-question deadline (see the sleep/resume note above). It was 15 s, sized
+ * against a 180 s delay where the granularity was immaterial. It is now the
+ * latency between the user walking away and their phone buzzing about a question
+ * that was held while they were there, so it is 2 s: fast enough to feel
+ * immediate, slow enough to be free (one presence evaluation over a map that is
+ * empty almost all the time, on an unref'd timer that only runs while something
+ * is actually held).
+ *
+ * A question captured while the user is ALREADY away does not wait for a tick at
+ * all — `schedule` evaluates presence inline and fires on the spot.
  */
-export const PUSH_SWEEP_INTERVAL_MS = 15_000;
-
-/**
- * Slack allowed on a sweep tick before the elapsed time is treated as a clock
- * jump rather than ordinary scheduler lateness. Node timers under load, GC
- * pauses and Windows timer coalescing routinely add a few seconds.
- */
-export const PUSH_CLOCK_JUMP_TOLERANCE_MS = 5_000;
-
-/**
- * A sweep tick whose observed elapsed time exceeds this on EITHER clock is not
- * vouchable as awake time and credits zero. Sized as one interval plus slack for
- * ordinary scheduler lateness (GC pauses, load, Windows timer coalescing).
- */
-export const PUSH_MAX_TICK_CREDIT_MS =
-	PUSH_SWEEP_INTERVAL_MS + PUSH_CLOCK_JUMP_TOLERANCE_MS;
+export const PUSH_SWEEP_INTERVAL_MS = 2_000;
 
 /**
  * How long a "we pushed this" record is kept after the push, so `retract` knows
@@ -887,7 +909,17 @@ export async function handleRegister(
 	return {
 		deviceId: ctx.device.deviceId,
 		registeredAtMs: unchanged ? (ctx.device.fcmTokenUpdatedMs ?? nowMs) : nowMs,
-		pushDelayMs: PUSH_DELAY_MS,
+		// (PUSH-PRESENCE) WIRE COMPATIBILITY, DELIBERATELY EMITTED AS ZERO.
+		//
+		// There is no delay any more — the desktop decides per question, from
+		// presence, whether to push now or hold indefinitely. The FIELD stays
+		// because paired phones consume it (`Session.kt` in
+		// superset-companion), and dropping it from the response would break
+		// every already-installed client's register parse. Zero is the honest
+		// value: it is exactly the delay a client should assume, and a client
+		// that renders "you will be notified after N minutes" now correctly
+		// renders nothing.
+		pushDelayMs: 0,
 		pushTtlMs: PUSH_TTL_MS,
 	};
 }
@@ -898,9 +930,16 @@ export async function handleRegister(
 
 export interface PushSender {
 	/**
-	 * Arms the delay. The push fires only after `PUSH_DELAY_MS` of desktop-AWAKE
-	 * time AND only if `isStillUnanswered` still says so at that moment.
-	 * Idempotent per questionId.
+	 * (PUSH-PRESENCE) Arms the push and evaluates presence IMMEDIATELY.
+	 *
+	 * Away right now -> the push goes out on this call, with no tick of latency.
+	 * Present -> the question is HELD with no deadline and fires on the first
+	 * sweep that sees presence lapse, provided `isStillUnanswered` still says so
+	 * at that moment.
+	 *
+	 * Idempotent per questionId, and idempotent against the SENT set too: a
+	 * question that has already been pushed is never re-armed, which is what
+	 * stops a re-capture after a host-service restart from buzzing twice.
 	 */
 	schedule(input: {
 		questionId: QuestionId;
@@ -913,6 +952,10 @@ export interface PushSender {
 	 * (fire-and-forget) — a notification must never outlive its subject, and a
 	 * question that goes stale is just as resolved from the phone's point of view
 	 * as one that was answered.
+	 *
+	 * This is the desk-answer path: `question-store` settles the record, the
+	 * notifying sink in `companion/index.ts` calls this, and a question answered
+	 * at the keyboard never buzzes.
 	 */
 	cancelPending(questionId: QuestionId): void;
 	/**
@@ -925,6 +968,10 @@ export interface PushSender {
 	 * ORIGINAL push carried, or the client cannot match the notification it is
 	 * holding, and that value is the one in the sent record — never whatever a
 	 * caller happens to pass.
+	 *
+	 * Ordered against the original send: it cancels an in-flight one and runs
+	 * after it on the same per-question chain, so a retraction can never be
+	 * overtaken by the push it retracts.
 	 */
 	retract(questionId: QuestionId): Promise<void>;
 	/**
@@ -933,6 +980,16 @@ export interface PushSender {
 	 * state they must never be wrong about.
 	 */
 	getFault(): PushFault | null;
+	/**
+	 * Diagnostics for the boot harness and the probes: what is held, what has been
+	 * sent, and why the last presence evaluation decided the way it did. Read-only
+	 * — nothing in the product branches on it.
+	 */
+	inspect(): {
+		armed: QuestionId[];
+		sent: QuestionId[];
+		lastVerdict: PresenceVerdict | null;
+	};
 	stop(): void;
 }
 
@@ -941,9 +998,21 @@ export interface PushSenderDeps {
 	serviceAccountPath: string;
 	devices: DeviceStore;
 	/**
+	 * (PUSH-PRESENCE) Is the user at the desk? The scheduler asks; it never
+	 * decides. See `companion/presence.ts` for the two signals and why an
+	 * unusable one resolves towards "away".
+	 */
+	presence: PresenceStore;
+	/**
+	 * The durable armed/sent fence. `null` only in tests that are not exercising
+	 * restart behaviour — the bridge always supplies one, because without it a
+	 * host-service restart loses every held push and re-sends every sent one.
+	 */
+	fence: PushFence | null;
+	/**
 	 * Re-checked at fire time. The scheduler NEVER trusts that `cancelPending`
 	 * was called: a missed cancel would buzz the watch for a question already
-	 * answered, which is exactly the noise the delay exists to remove.
+	 * answered, which is exactly the noise presence gating exists to remove.
 	 */
 	isStillUnanswered(questionId: QuestionId): boolean;
 	/**
@@ -953,8 +1022,6 @@ export interface PushSenderDeps {
 	onFault(fault: PushFault): void;
 	/** Injectable for tests. Wall clock. */
 	now?: () => number;
-	/** Injectable for tests. Monotonic clock (`performance.now()`). */
-	monotonicNow?: () => number;
 }
 
 interface ArmedQuestion {
@@ -963,8 +1030,6 @@ interface ArmedQuestion {
 	questionCount: number;
 	expiresAtMs: number;
 	armedAtWallMs: number;
-	/** Accrued DESKTOP-AWAKE milliseconds. Suspended time does not count. */
-	awakeElapsedMs: number;
 }
 
 interface SentRecord {
@@ -972,18 +1037,49 @@ interface SentRecord {
 	sentAtMs: number;
 }
 
+/**
+ * (PUSH-PRESENCE) A cancellable unit of FCM work.
+ *
+ * `cancelled` is checked between delivery attempts, so a retraction arriving
+ * mid-send does not have to wait out four bounded backoffs before its own
+ * message can go. Cancelling does NOT unsend anything already accepted by FCM —
+ * that is what the retraction itself is for.
+ */
+interface SendToken {
+	cancelled: boolean;
+}
+
 export function createPushSender(deps: PushSenderDeps): PushSender {
 	const now = deps.now ?? (() => Date.now());
-	const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+	if (
+		deps.presence === null ||
+		deps.presence === undefined ||
+		typeof deps.presence.present !== "function"
+	) {
+		// (PUSH-PRESENCE) Validate at the boundary. Without a presence source the
+		// scheduler has no basis for either decision it can make, and the failure
+		// would present as a watch that either never buzzes or buzzes for
+		// everything — both indistinguishable from a broken phone.
+		throw new PushConfigError(
+			"createPushSender requires a presence store; without it nothing can decide whether the user is at the desk",
+		);
+	}
 
 	const armed = new Map<QuestionId, ArmedQuestion>();
 	/** Questions a push actually went out for — the retraction's precondition. */
 	const sent = new Map<QuestionId, SentRecord>();
+	/**
+	 * (PUSH-PRESENCE) One promise chain per questionId, so a send and its own
+	 * retraction can never overlap or land out of order. Entries are dropped when
+	 * the chain drains, so this cannot grow with traffic.
+	 */
+	const chains = new Map<QuestionId, Promise<void>>();
+	/** The cancel token of the send currently on each question's chain. */
+	const sendTokens = new Map<QuestionId, SendToken>();
 
 	const abort = new AbortController();
 	let sweepTimer: NodeJS.Timeout | null = null;
-	let lastWallMs = 0;
-	let lastMonoMs = 0;
+	let lastVerdict: PresenceVerdict | null = null;
 	let fault: PushFault | null = null;
 	let tokenSource: AccessTokenSource | null = null;
 	let loading: Promise<AccessTokenSource> | null = null;
@@ -1029,13 +1125,28 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		);
 	}
 
-	async function deliver(device: DeviceRecord, data: PushData): Promise<void> {
+	async function deliver(
+		device: DeviceRecord,
+		data: PushData,
+		cancel: SendToken | null,
+	): Promise<void> {
 		const token = device.fcmToken;
 		if (token === null) return;
 		const envelope = buildEnvelope(token, data);
 
 		for (let attempt = 1; attempt <= FCM_SEND_MAX_ATTEMPTS; attempt++) {
 			if (stopped) return;
+			// (PUSH-PRESENCE) A retraction is waiting behind this send on the same
+			// chain. Abandoning the remaining retries is not a lost push: whatever
+			// FCM already accepted is exactly what the retraction is about to
+			// collapse, and the alternative is making the retraction wait out four
+			// bounded backoffs while the notification sits on the handset.
+			if (cancel?.cancelled === true) {
+				console.log(
+					`${LOG} abandoning in-flight send for questionId=${data.i} — a retraction is queued behind it`,
+				);
+				return;
+			}
 
 			let accessToken: string;
 			try {
@@ -1109,7 +1220,10 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		}
 	}
 
-	async function broadcast(data: PushData): Promise<void> {
+	async function broadcast(
+		data: PushData,
+		cancel: SendToken | null,
+	): Promise<void> {
 		const devices = await targets();
 		if (devices.length === 0) {
 			console.log(
@@ -1117,13 +1231,40 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			);
 			return;
 		}
-		await Promise.all(devices.map((device) => deliver(device, data)));
+		await Promise.all(devices.map((device) => deliver(device, data, cancel)));
+	}
+
+	/**
+	 * (PUSH-PRESENCE) Run `work` after everything already queued for this
+	 * question, and never concurrently with it.
+	 *
+	 * Serialising per QUESTION is strictly stronger than the per-(questionId,
+	 * device) ordering that is actually required — a broadcast fans out to every
+	 * device inside one job — and it is the version whose correctness is obvious.
+	 * A failure is logged and does NOT poison the chain: the next operation for
+	 * the same question must still run, and the most likely next operation after a
+	 * failed send is the retraction.
+	 */
+	function enqueue(
+		questionId: QuestionId,
+		what: string,
+		work: () => Promise<void>,
+	): Promise<void> {
+		const previous = chains.get(questionId) ?? Promise.resolve();
+		const next = previous
+			.then(work, work)
+			.catch((error: unknown) => {
+				console.error(`${LOG} ${what} failed questionId=${questionId}`, error);
+			})
+			.finally(() => {
+				if (chains.get(questionId) === next) chains.delete(questionId);
+			});
+		chains.set(questionId, next);
+		return next;
 	}
 
 	function ensureSweeping(): void {
 		if (sweepTimer !== null || stopped) return;
-		lastWallMs = now();
-		lastMonoMs = monotonicNow();
 		sweepTimer = setInterval(sweep, PUSH_SWEEP_INTERVAL_MS);
 		// Never hold host-service open on account of a pending buzz.
 		sweepTimer.unref?.();
@@ -1135,56 +1276,63 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		sweepTimer = null;
 	}
 
-	/**
-	 * Accounting is SYNCHRONOUS from end to end, and every entry that fires is
-	 * removed from `armed` and recorded in `sent` before any `await` exists. A
-	 * send can take tens of seconds (bounded retries), during which further
-	 * ticks WILL run — if commitment happened after the await, a slow send would
-	 * let the next tick collect the same question again and buzz twice.
-	 */
-	function sweep(): void {
-		if (stopped) return;
-
-		const wallMs = now();
-		const monoMs = monotonicNow();
-		const wallDelta = wallMs - lastWallMs;
-		const monoDelta = monoMs - lastMonoMs;
-		lastWallMs = wallMs;
-		lastMonoMs = monoMs;
-
-		// See the header. A tick is only allowed to credit awake time if BOTH
-		// clocks agree it was an ordinary tick. Any tick we cannot vouch for —
-		// a Windows resume (both clocks jumped, QPC counts sleep), a POSIX
-		// resume (wall jumped, monotonic did not), an NTP step in either
-		// direction, or a multi-second event-loop stall — credits NOTHING. The
-		// cost of a false positive is one tick of extra delay; the cost of a
-		// false negative is a burst of stale buzzes at lid-open.
-		const vouched =
-			wallDelta >= 0 &&
-			wallDelta <= PUSH_MAX_TICK_CREDIT_MS &&
-			monoDelta <= PUSH_MAX_TICK_CREDIT_MS;
-		const credit = vouched ? Math.max(0, Math.min(wallDelta, monoDelta)) : 0;
-
-		if (!vouched) {
-			console.log(
-				`${LOG} unvouchable tick (wall ${Math.round(wallDelta)}ms, mono ${Math.round(monoDelta)}ms over a ${PUSH_SWEEP_INTERVAL_MS}ms tick) — suspend/resume or clock step; it credits 0ms, so every pending question keeps its full ${PUSH_DELAY_MS}ms of awake grace`,
+	/** Forgets a question in memory AND on disk, in that order. */
+	function forget(questionId: QuestionId): void {
+		armed.delete(questionId);
+		sent.delete(questionId);
+		try {
+			deps.fence?.clear(questionId);
+		} catch (error) {
+			// A fence write failing is not a reason to lose the in-memory decision,
+			// but it IS a reason to say so: the row will be re-read at the next
+			// start and could resurrect a question that is already resolved.
+			console.error(
+				`${LOG} could not clear the push fence for questionId=${questionId}`,
+				error,
 			);
 		}
+	}
+
+	/**
+	 * (PUSH-PRESENCE) THE PRESENCE DECISION. Everything else in this module
+	 * serves these fifteen lines.
+	 *
+	 * Called from two places and they must behave identically: the sweep, and
+	 * `schedule` itself so that a question captured while the user is already away
+	 * fires on the spot instead of waiting for a tick.
+	 *
+	 * Accounting is SYNCHRONOUS from end to end, and every entry that fires is
+	 * removed from `armed` and recorded in `sent` — in memory AND in the fence —
+	 * before any `await` exists. A send can take tens of seconds (bounded
+	 * retries), during which further ticks WILL run; if commitment happened after
+	 * the await, a slow send would let the next tick collect the same question
+	 * again and buzz twice.
+	 */
+	function evaluate(wallMs: number): void {
+		if (stopped) return;
+
+		const verdict = deps.presence.present(wallMs);
+		lastVerdict = verdict;
 
 		const due: { entry: ArmedQuestion; data: PushData }[] = [];
 		for (const entry of [...armed.values()]) {
 			if (wallMs >= entry.expiresAtMs) {
 				// The client would discard it unopened; buzzing for it is pure noise.
-				armed.delete(entry.questionId);
+				forget(entry.questionId);
 				continue;
 			}
-			entry.awakeElapsedMs += credit;
-			if (entry.awakeElapsedMs < PUSH_DELAY_MS) continue;
+			// HELD. No deadline, no ceiling: the user can see the question, and a
+			// notification about something already on their screen is the noise that
+			// gets a watch muted. It is released by absence, never by a timer.
+			if (verdict.present) continue;
 
 			armed.delete(entry.questionId);
 
 			// NEVER trust that cancelPending was called.
-			if (!deps.isStillUnanswered(entry.questionId)) continue;
+			if (!deps.isStillUnanswered(entry.questionId)) {
+				forget(entry.questionId);
+				continue;
+			}
 
 			due.push({
 				entry,
@@ -1202,11 +1350,22 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				workspaceId: entry.workspaceId,
 				sentAtMs: wallMs,
 			});
+			try {
+				deps.fence?.markSent(entry.questionId, wallMs);
+			} catch (error) {
+				// Loud, and the send still happens. A missing `sent` row costs a
+				// possible duplicate after a restart; refusing to send costs the buzz
+				// this whole feature exists for.
+				console.error(
+					`${LOG} could not record questionId=${entry.questionId} as sent in the push fence — a restart could re-send it`,
+					error,
+				);
+			}
 		}
 
 		for (const [questionId, record] of sent) {
 			if (wallMs - record.sentAtMs > PUSH_SENT_RECORD_RETENTION_MS) {
-				sent.delete(questionId);
+				forget(questionId);
 			}
 		}
 		// (RETRACT-WINDOW) Map iteration is insertion-ordered and entries are
@@ -1214,7 +1373,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		while (sent.size > PUSH_MAX_SENT_RECORDS) {
 			const oldest = sent.keys().next();
 			if (oldest.done) break;
-			sent.delete(oldest.value);
+			forget(oldest.value);
 			console.error(
 				`${LOG} sent-record table exceeded ${PUSH_MAX_SENT_RECORDS}; dropped the oldest record. A retraction for it will now silently do nothing, and the notification on the handset will survive until the client's foreground sweep.`,
 			);
@@ -1224,15 +1383,31 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 
 		for (const { entry, data } of due) {
 			console.log(
-				`${LOG} pushing questionId=${entry.questionId} after ${Math.round(entry.awakeElapsedMs)}ms awake (armed ${Math.round(wallMs - entry.armedAtWallMs)}ms ago wall-clock)`,
+				`${LOG} pushing questionId=${entry.questionId} — the user is away (${verdict.reason}, keystrokes ${verdict.humanInputAgeMs === null ? "none" : `${Math.round(verdict.humanInputAgeMs)}ms ago`}, beacon ${verdict.beaconAgeMs === null ? "none" : `${Math.round(verdict.beaconAgeMs)}ms old`}); held ${Math.round(wallMs - entry.armedAtWallMs)}ms`,
 			);
-			void broadcast(data).catch((error: unknown) => {
-				console.error(`${LOG} push broadcast failed`, error);
+			const token: SendToken = { cancelled: false };
+			sendTokens.set(entry.questionId, token);
+			void enqueue(entry.questionId, "push broadcast", async () => {
+				try {
+					await broadcast(data, token);
+				} finally {
+					if (sendTokens.get(entry.questionId) === token) {
+						sendTokens.delete(entry.questionId);
+					}
+				}
 			});
 		}
 	}
 
-	async function sendRetraction(questionId: QuestionId): Promise<void> {
+	function sweep(): void {
+		evaluate(now());
+	}
+
+	/**
+	 * §13.3. Cancels the in-flight original first, then runs BEHIND it on the same
+	 * chain — so the retraction can never be overtaken by the push it retracts.
+	 */
+	function sendRetraction(questionId: QuestionId): Promise<void> {
 		const record = sent.get(questionId);
 		if (record === undefined) {
 			// (RETRACT-WINDOW) A no-op, and it is SAID. Either no push ever went out
@@ -1243,20 +1418,85 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			console.log(
 				`${LOG} no push record for questionId=${questionId} — retraction is a no-op (no push was sent, or its record aged past ${PUSH_SENT_RECORD_RETENTION_MS}ms)`,
 			);
-			return;
+			return Promise.resolve();
 		}
-		sent.delete(questionId);
+		forget(questionId);
+		const inFlight = sendTokens.get(questionId);
+		if (inFlight !== undefined) {
+			inFlight.cancelled = true;
+			sendTokens.delete(questionId);
+		}
 		console.log(`${LOG} retracting questionId=${questionId}`);
-		await broadcast(
-			buildRetractPushData({
-				questionId,
-				// The workspaceId we actually pushed with, so the client matches
-				// the notification it is holding.
-				workspaceId: record.workspaceId,
-				nowMs: now(),
-			}),
+		return enqueue(questionId, "retraction", () =>
+			broadcast(
+				buildRetractPushData({
+					questionId,
+					// The workspaceId we actually pushed with, so the client matches
+					// the notification it is holding.
+					workspaceId: record.workspaceId,
+					nowMs: now(),
+				}),
+				null,
+			),
 		);
 	}
+
+	/**
+	 * (PUSH-PRESENCE) Rebuild the armed and sent sets from host.db.
+	 *
+	 * Runs at construction, before anything can be scheduled. A reconstructed
+	 * ARMED entry is held exactly like a fresh one and is re-checked against
+	 * `isStillUnanswered` before it can fire, so a question answered while the
+	 * host-service was down never buzzes. A reconstructed SENT entry blocks both
+	 * a re-arm and a second send, and is what makes a later retraction able to
+	 * carry the original workspaceId.
+	 */
+	function reconstruct(): void {
+		const fence = deps.fence;
+		if (fence === null) return;
+		const nowMs = now();
+		let records: Awaited<ReturnType<PushFence["load"]>>;
+		try {
+			records = fence.load({
+				nowMs,
+				sentRetentionMs: PUSH_SENT_RECORD_RETENTION_MS,
+			});
+		} catch (error) {
+			// LOUD, and not fatal: a bridge that refuses to start because it could
+			// not read a notification fence is a worse outcome than one that starts
+			// having forgotten some pushes.
+			console.error(
+				`${LOG} could not reconstruct the push fence — held pushes from before the restart are lost and already-sent ones could repeat`,
+				error,
+			);
+			return;
+		}
+
+		for (const record of records) {
+			if (record.state === "sent") {
+				sent.set(record.questionId, {
+					workspaceId: record.workspaceId,
+					sentAtMs: record.sentAtMs ?? record.armedAtMs,
+				});
+				continue;
+			}
+			armed.set(record.questionId, {
+				questionId: record.questionId,
+				workspaceId: record.workspaceId,
+				questionCount: record.questionCount,
+				expiresAtMs: record.expiresAtMs,
+				armedAtWallMs: record.armedAtMs,
+			});
+		}
+		if (armed.size > 0) {
+			console.log(
+				`${LOG} reconstructed ${armed.size} held push(es) and ${sent.size} sent record(s) from the fence`,
+			);
+			ensureSweeping();
+		}
+	}
+
+	reconstruct();
 
 	return {
 		schedule(input) {
@@ -1269,39 +1509,76 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					`refusing to arm a push for a question that already expired (${input.expiresAtMs} <= ${nowMs})`,
 				);
 			}
-			if (armed.has(input.questionId)) return;
+			// Idempotent against BOTH sets. `sent` matters as much as `armed`: after
+			// a host-service restart the hook path re-captures live questions, and
+			// re-arming one that has already buzzed would buzz it again.
+			if (armed.has(input.questionId) || sent.has(input.questionId)) return;
+			// Validate the payload NOW, at the call site that introduced it — a bad
+			// questionCount or a text leak must not surface later, from a timer.
+			buildQuestionPushData(input);
+
 			armed.set(input.questionId, {
 				questionId: input.questionId,
 				workspaceId: input.workspaceId,
 				questionCount: input.questionCount,
 				expiresAtMs: input.expiresAtMs,
 				armedAtWallMs: nowMs,
-				awakeElapsedMs: 0,
 			});
-			// Validate the payload NOW, not in 3 minutes: a bad questionCount or a
-			// text leak must fail at the call site that introduced it.
-			buildQuestionPushData(input);
+			try {
+				deps.fence?.arm({
+					questionId: input.questionId,
+					workspaceId: input.workspaceId,
+					questionCount: input.questionCount,
+					expiresAtMs: input.expiresAtMs,
+					armedAtMs: nowMs,
+				});
+			} catch (error) {
+				console.error(
+					`${LOG} could not persist the armed push for questionId=${input.questionId} — a restart would lose it`,
+					error,
+				);
+			}
 			ensureSweeping();
+			// (PUSH-PRESENCE) ZERO LATENCY WHEN NOBODY IS THERE. Evaluated inline
+			// rather than left to the next tick: if the user is already away, the
+			// whole value of the feature is that their phone buzzes NOW.
+			evaluate(nowMs);
 		},
 
 		cancelPending(questionId) {
+			const hadSent = sent.has(questionId);
 			armed.delete(questionId);
-			if (sent.has(questionId)) {
-				void sendRetraction(questionId).catch((error: unknown) => {
-					console.error(`${LOG} retraction failed`, error);
-				});
+			if (hadSent) {
+				void sendRetraction(questionId);
+			} else {
+				forget(questionId);
 			}
 			stopSweepingIfIdle();
 		},
 
 		async retract(questionId) {
+			// An armed-but-never-sent question is FORGOTTEN here, not merely
+			// disarmed. `sendRetraction` clears the fence only when there is a sent
+			// record to retract, so without this a retracted hold would leave its row
+			// behind and a restart would reconstruct a hold for a question the caller
+			// has explicitly given up on.
+			const hadSent = sent.has(questionId);
 			armed.delete(questionId);
+			if (!hadSent) forget(questionId);
 			stopSweepingIfIdle();
 			await sendRetraction(questionId);
 		},
 
 		getFault() {
 			return fault;
+		},
+
+		inspect() {
+			return {
+				armed: [...armed.keys()],
+				sent: [...sent.keys()],
+				lastVerdict,
+			};
 		},
 
 		stop() {
@@ -1311,6 +1588,12 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				sweepTimer = null;
 			}
 			abort.abort();
+			for (const token of sendTokens.values()) token.cancelled = true;
+			sendTokens.clear();
+			chains.clear();
+			// The MAPS are cleared, the ROWS are not: the fence is what a restart
+			// reads back, and a clean shutdown must not be the thing that loses a
+			// held push.
 			armed.clear();
 			sent.clear();
 			// The parsed private key is a JS string and cannot be zeroized; it is

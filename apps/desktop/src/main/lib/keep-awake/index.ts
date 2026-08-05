@@ -28,11 +28,17 @@
  * a wider API than the feature has.
  */
 
-import { powerSaveBlocker } from "electron";
+import { powerMonitor, powerSaveBlocker } from "electron";
 import log from "electron-log/main";
 import { POLL_INTERVAL_MS, pollAgentActivity } from "./agent-activity";
 import { type CompanionGatePoll, pollCompanionGate } from "./companion-gate";
 import { KeepAwakeManager } from "./keep-awake";
+import {
+	initialisePresenceLockState,
+	type PresenceBeaconEvent,
+	resetPresenceBeaconState,
+	sendPresenceBeacon,
+} from "./presence-beacon";
 
 /** Shout after this many consecutive failed reads rather than warning forever. */
 const READ_FAILURE_ALARM_AFTER = 4;
@@ -44,6 +50,30 @@ let consecutivePollFailures = 0;
 let consecutiveGateFailures = 0;
 /** null until the gate has been evaluated once; only transitions are logged. */
 let lastGateOpen: boolean | null = null;
+/**
+ * (PUSH-PRESENCE) One un-subscriber per powerMonitor listener `startKeepAwake`
+ * added, so `stopKeepAwake` removes exactly those.
+ *
+ * Closures rather than `{signal, handler}` pairs on purpose: Electron types
+ * `powerMonitor.on` as an overload per signal name, so a variable holding the
+ * union of signal names matches none of them. Keeping each name a literal at its
+ * call site is what makes both the add and the remove type-check.
+ *
+ * Anonymous inline handlers would be unremovable, and start/stop is idempotent
+ * by contract — a second start would then double every beacon forever.
+ */
+let powerListeners: Array<() => void> = [];
+
+/**
+ * (PUSH-PRESENCE) A step change in presence, reported at once instead of waiting
+ * up to one poll interval.
+ *
+ * `sendPresenceBeacon` never rejects, so this can be fire-and-forget without a
+ * catch that would only ever be dead code.
+ */
+function beacon(event: PresenceBeaconEvent): void {
+	void sendPresenceBeacon(event, { powerMonitor });
+}
 
 /** One line whenever the feature arms or disarms, never once per tick. */
 function logGateTransition(
@@ -70,6 +100,12 @@ async function tick(): Promise<void> {
 	if (inFlight || !manager) return;
 	inFlight = true;
 	try {
+		// (PUSH-PRESENCE) Piggybacked on this tick rather than given its own timer.
+		// It cannot break the tick: `sendPresenceBeacon` resolves to an outcome on
+		// every path, including a host-service that refuses the POST, and
+		// short-circuits to `skipped` before any I/O when the bridge is off.
+		await sendPresenceBeacon("tick", { powerMonitor });
+
 		const gate = await pollCompanionGate();
 		if (!gate.ok) {
 			consecutiveGateFailures += 1;
@@ -166,6 +202,23 @@ export function startKeepAwake(): void {
 	}, POLL_INTERVAL_MS);
 	// Do not keep the event loop alive purely for this.
 	timer.unref();
+
+	// (PUSH-PRESENCE) Seed the lock state from the OS before any beacon goes out:
+	// an app launched into an already-locked session must not spend its first
+	// beacons claiming the user is present.
+	initialisePresenceLockState({ powerMonitor });
+	const onLock = () => beacon("lock");
+	const onUnlock = () => beacon("unlock");
+	const onResume = () => beacon("resume");
+	powerMonitor.on("lock-screen", onLock);
+	powerMonitor.on("unlock-screen", onUnlock);
+	powerMonitor.on("resume", onResume);
+	powerListeners = [
+		() => powerMonitor.removeListener("lock-screen", onLock),
+		() => powerMonitor.removeListener("unlock-screen", onUnlock),
+		() => powerMonitor.removeListener("resume", onResume),
+	];
+
 	log.info("[keep-awake] started", { pollIntervalMs: POLL_INTERVAL_MS });
 }
 
@@ -175,6 +228,9 @@ export function stopKeepAwake(): void {
 		clearInterval(timer);
 		timer = null;
 	}
+	for (const off of powerListeners) off();
+	powerListeners = [];
+	resetPresenceBeaconState();
 	if (!manager) return;
 	manager.dispose();
 	manager = null;
