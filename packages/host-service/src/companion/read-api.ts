@@ -740,6 +740,12 @@ function visibleWorkspaces(
  * Multi-repo is checked first because a multi-repo BRANCH workspace is itself a
  * plain container folder — classifying on the workspace alone would report the
  * group as plain.
+ *
+ * `workspaces` MUST be the project's OWN rows (`workspaces.project_id`), never
+ * the sidebar-placed ones. Kind is a property of the repository; a thread the
+ * user dragged under another repo says nothing about either repo's kind, and
+ * feeding placement in here made a non-git project display as `git` the moment
+ * one git branch was dropped on it.
  */
 function deriveProjectKind(
 	project: HostProjectRow,
@@ -856,11 +862,20 @@ export async function handleTree(
 	// `workspaces.project_id`: moving a thread under another repo is a curation
 	// act, and the phone mirrors where the user put it.
 	const workspacesByProject = new Map<string, Workspace[]>();
-	const workspaceRowsByProject = new Map<string, HostWorkspaceRow[]>();
+	// Keyed on `workspaces.project_id` — the OWNING project — and deliberately
+	// NOT on the placement above. Kind is a fact about a repository (is its
+	// `repo_path` the multi-repo anchor, do its workspaces carry the non-git
+	// branch sentinel), and curation cannot change a repository. Feeding the
+	// placement map to `deriveProjectKind` made dragging one git branch under a
+	// non-git project flip that project from `plain` to `git` on the phone, and
+	// dragging the last workspace out of a project made it `unknown` — a display
+	// kind that changed because of where the user dropped a thread.
+	const workspaceRowsByOwningProject = new Map<string, HostWorkspaceRow[]>();
 	for (const row of allWorkspaces) {
 		const placement = curation.effectiveProjectId(row);
-		const kindRows = workspaceRowsByProject.get(placement);
-		if (kindRows === undefined) workspaceRowsByProject.set(placement, [row]);
+		const kindRows = workspaceRowsByOwningProject.get(row.projectId);
+		if (kindRows === undefined)
+			workspaceRowsByOwningProject.set(row.projectId, [row]);
 		else kindRows.push(row);
 
 		if (!visible.has(row.id)) continue;
@@ -922,7 +937,7 @@ export async function handleTree(
 			name:
 				row.name.length > 0 ? row.name : path.basename(row.repoPath || row.id),
 			kind: full
-				? deriveProjectKind(row, workspaceRowsByProject.get(row.id) ?? [])
+				? deriveProjectKind(row, workspaceRowsByOwningProject.get(row.id) ?? [])
 				: PROJECT_KIND_UNKNOWN,
 			workspaces: ws,
 		});
