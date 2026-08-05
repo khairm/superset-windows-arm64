@@ -1,5 +1,5 @@
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { APP_LAUNCH_ID } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
@@ -56,10 +56,43 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
  * What is left after both is the honest floor: with the renderer gone, the
  * mirror holds the user's LAST RECORDED curation. It is never an invented
  * opinion, and while the renderer runs it lags by at most the debounce plus one
- * retry backoff. NOTE FOR CONSUMERS: there is no heartbeat, so
- * `sidebar_mirror_meta.last_full_sync_at_ms` measures the last CURATION CHANGE,
- * not renderer liveness — an hours-old timestamp usually means nobody touched
- * the sidebar, not that the desktop is gone.
+ * retry backoff.
+ *
+ * ---------------------------------------------------------------------------
+ * (MIRROR-HEARTBEAT) THE UNCHANGED SNAPSHOT IS ALSO WORTH PUSHING
+ * ---------------------------------------------------------------------------
+ * The signature gate below exists to stop identical snapshots from being
+ * re-sent, and taken alone it makes `sidebar_mirror_meta.last_full_sync_at_ms`
+ * measure the last CURATION CHANGE rather than renderer liveness. That is not a
+ * documentation footnote, it is a correctness hole in the consumer: the mirror's
+ * only permitted failure direction is "too noisy", and the only way a consumer
+ * can fail toward SHOWING when the desktop is gone is to age the mirror out
+ * against a timestamp that means "a renderer was alive at this moment". A
+ * timestamp that only moves when somebody drags a thread cannot carry that
+ * meaning — an untouched sidebar is indistinguishable from a quit app.
+ *
+ * So two things force a push that the signature gate would otherwise suppress:
+ *
+ *  - THE LAUNCH ID. `APP_LAUNCH_ID` is a fresh uuid per renderer load and it is
+ *    the ONLY thing that can evaluate an "until next launch" snooze
+ *    (`snooze_launch_id === app_launch_id` on the read side). It is carried in
+ *    the meta row, NOT in the snapshot, so it is invisible to the signature: a
+ *    launch whose curation happens to serialize identically to the previous
+ *    one's would leave the mirror claiming the OLD launch, and every thread
+ *    snoozed-until-next-launch during that old launch stays hidden on the phone
+ *    even though the desktop already un-snoozed it. Pushing whenever the last
+ *    PUSHED launch differs from the current one removes that dependence on the
+ *    snapshot happening to change.
+ *  - THE HEARTBEAT. Every `MIRROR_HEARTBEAT_MS` the same snapshot is re-sent, so
+ *    the meta timestamp advances while a renderer is alive whether or not the
+ *    user touched anything. The push is a full idempotent replace, so a repeat
+ *    is free of consequence beyond one loopback request per five minutes — and
+ *    it is what lets the consumer treat an OLD `last_full_sync_at_ms` as "no
+ *    renderer is running, stop trusting this curation" instead of "nobody has
+ *    reordered their sidebar today". It also bounds an otherwise unbounded case
+ *    the signature gate has: a host-service that restarts against a DIFFERENT
+ *    `host.db` while the renderer keeps running is reachable only by a push the
+ *    signature gate suppresses, and the heartbeat caps that at one interval.
  */
 
 /** Trailing debounce. Long enough to swallow a drag, short enough to feel live. */
@@ -77,6 +110,19 @@ const SYNC_DEBOUNCE_MS = 1_000;
  */
 const RETRY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000] as const;
 const RETRY_DELAY_CAP_MS = 300_000;
+
+/**
+ * (MIRROR-HEARTBEAT) How often the UNCHANGED snapshot is re-sent.
+ *
+ * This is the resolution of the consumer's staleness signal, so it is chosen
+ * against the consumer's age-out window (`sidebar-filter.ts`) rather than
+ * against any cost here: the window has to be comfortably more than one
+ * interval so a single missed or retried push cannot make a live desktop look
+ * dead, and the interval has to be short enough that a quit app stops being
+ * trusted in minutes rather than hours. One idempotent full replace over
+ * loopback every five minutes is not a load worth trading that for.
+ */
+const MIRROR_HEARTBEAT_MS = 300_000;
 
 interface MirrorWorkspaceRow {
 	workspaceId: string;
@@ -426,6 +472,34 @@ export function useSidebarMirrorSync(): void {
 	const lastSyncedSignatureRef = useRef<string | null>(null);
 
 	/**
+	 * (MIRROR-HEARTBEAT) The launch id the mirror was last told about, and the
+	 * heartbeat beat that was last pushed. Both are things the signature CANNOT
+	 * see — the launch id travels in the meta row, and the beat is not part of the
+	 * payload at all — so each needs its own record of what actually landed. Refs
+	 * rather than state on purpose: recording a completed push must not re-render
+	 * a hook that renders nothing.
+	 */
+	const lastPushedLaunchIdRef = useRef<string | null>(null);
+	const lastPushedHeartbeatRef = useRef(0);
+
+	/**
+	 * A monotonic beat, not a timestamp. The effect below is keyed on it, so the
+	 * only thing it has to be is DIFFERENT from the last beat that was pushed —
+	 * which is also why the interval can run unconditionally: a tick while the
+	 * collections are still hydrating, or with no host-service yet, is absorbed by
+	 * the same guards every other push goes through.
+	 */
+	const [heartbeat, setHeartbeat] = useState(0);
+	useEffect(() => {
+		const timer = setInterval(() => {
+			setHeartbeat((beat) => beat + 1);
+		}, MIRROR_HEARTBEAT_MS);
+		return () => {
+			clearInterval(timer);
+		};
+	}, []);
+
+	/**
 	 * The push currently on the wire, or null — deliberately a ref so it spans
 	 * effect runs. Serializing pushes is a correctness requirement, not a load
 	 * control: two mutations issued a second apart travel on separate loopback
@@ -449,7 +523,19 @@ export function useSidebarMirrorSync(): void {
 		// No local host-service yet (still starting, or none on this machine).
 		// The effect re-runs when the URL appears.
 		if (!activeHostUrl) return;
-		if (signature === lastSyncedSignatureRef.current) return;
+		// (MIRROR-HEARTBEAT) An unchanged signature is only a reason to skip when
+		// the two things the signature cannot see are also unchanged. Both are
+		// compared against what was last PUSHED — not against what is current —
+		// because a scheduled-but-failed push must keep re-arming.
+		const launchStale = lastPushedLaunchIdRef.current !== APP_LAUNCH_ID;
+		const heartbeatDue = lastPushedHeartbeatRef.current !== heartbeat;
+		if (
+			!launchStale &&
+			!heartbeatDue &&
+			signature === lastSyncedSignatureRef.current
+		) {
+			return;
+		}
 
 		const loop = createMirrorPushLoop({
 			inFlight: inFlightRef,
@@ -462,11 +548,20 @@ export function useSidebarMirrorSync(): void {
 				}),
 			onSynced: () => {
 				lastSyncedSignatureRef.current = signature;
+				lastPushedLaunchIdRef.current = APP_LAUNCH_ID;
+				lastPushedHeartbeatRef.current = heartbeat;
 			},
 		});
 		loop.start();
 		return () => {
 			loop.cancel();
 		};
-	}, [ready, activeHostUrl, signature]);
+		// `APP_LAUNCH_ID` is read inside but is deliberately NOT listed: it is a
+		// module-scope constant, so it cannot change while this renderer lives and
+		// listing it is both a no-op and a lint error (`useExhaustiveDependencies`
+		// rejects outer-scope values — mutating them would not re-render). The
+		// launch-id force is carried by the `launchStale` comparison above, which
+		// re-evaluates on every run of this effect; there is nothing for a
+		// dependency to trigger.
+	}, [ready, activeHostUrl, signature, heartbeat]);
 }
