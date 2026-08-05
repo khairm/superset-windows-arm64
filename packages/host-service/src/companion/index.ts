@@ -130,6 +130,7 @@ import {
 	setCompanionBridge,
 	setCompanionPresenceStore,
 } from "./registry";
+import { createSidebarCuration } from "./sidebar-filter";
 import type {
 	Capability,
 	DeviceRecord,
@@ -808,6 +809,10 @@ export function createCompanionBridge(
 				push,
 				events,
 				logger,
+				// (PUSH-CURATION-GATE) The SAME reader `/v1/tree` reads curation
+				// through, so a thread the tree will not render cannot buzz.
+				db: hostDb,
+				organizationId: options.organizationId,
 			}),
 		);
 		assertQuestionSinkRegistered();
@@ -1259,6 +1264,16 @@ interface NotifyingSinkDeps {
 	push: PushSender;
 	events: EventStreamServer;
 	logger: BridgeLogger;
+	/**
+	 * (PUSH-CURATION-GATE) The same read-only host.db reader `/v1/tree` uses, for
+	 * the same curation. Needed here because arming is the one companion side
+	 * effect that happens OUTSIDE a request: nothing about a capture goes through
+	 * the read API, so without this the push path was the only surface that had
+	 * never heard of the sidebar mirror.
+	 */
+	db: HostDbReader;
+	/** (MIRROR-ORG-GATE) Whose curation the mirror has to be, to count. */
+	organizationId: string;
 }
 
 /**
@@ -1333,6 +1348,67 @@ function createNotifyingCaptureSink(
 }
 
 /**
+ * (PUSH-CURATION-GATE) Is this question's thread one the user has taken OFF
+ * their sidebar?
+ *
+ * `/v1/tree` has consumed the sidebar mirror since `(BRIDGE-SIDEBAR-FILTER)`
+ * shipped, but the push path never did, because arming does not go through the
+ * read API — it hangs off the capture sink. The result was the loudest possible
+ * disagreement between two surfaces of the same feature: a binned, archived,
+ * completed or snoozed thread would buzz the user's WATCH, and tapping the
+ * notification would open a tree that does not contain it. Snooze is the worst
+ * of the four, because "not now" is precisely a statement about being
+ * interrupted.
+ *
+ * EVERY UNCERTAIN ANSWER ARMS. This is a notification gate, and losing a buzz
+ * for a genuinely blocked agent is the one failure the feature cannot absorb,
+ * so the only thing that suppresses is a positive `!== "show"` verdict from an
+ * ENABLED curation about a workspace row that exists:
+ *
+ *  - curation disabled (never synced, aged out, another org) -> arm;
+ *  - no `workspaces` row for the question's host workspace -> arm. Absence is
+ *    "no opinion recorded" everywhere else in this feature and it is here too;
+ *  - anything thrown while asking (a locked db, a read-only reader that lost
+ *    its file) -> arm, and say so.
+ *
+ * Suppressions are logged individually and by verdict. A held push that never
+ * fires is invisible from both ends — no buzz on the wrist, nothing in the
+ * tree — so this line is the only evidence the decision was taken at all.
+ */
+function isCuratedOffSidebar(
+	deps: NotifyingSinkDeps,
+	question: PendingQuestion,
+): boolean {
+	try {
+		const curation = createSidebarCuration(
+			deps.db.readSidebarMirror(),
+			Date.now(),
+			deps.organizationId,
+		);
+		if (!curation.enabled) return false;
+		const workspace = deps.db.findWorkspace(question.hostWorkspaceId);
+		if (workspace === null) return false;
+		const verdict = curation.workspaceVerdict(workspace);
+		if (verdict === "show") return false;
+		deps.logger.info(
+			"not arming a push: the user has taken this thread off their sidebar, and the tree the notification would open does not contain it",
+			{
+				questionId: question.questionId,
+				hostWorkspaceId: question.hostWorkspaceId,
+				verdict,
+			},
+		);
+		return true;
+	} catch (error) {
+		deps.logger.error(
+			"could not read sidebar curation while arming a push — arming anyway, because a missed buzz for a blocked agent is the worse failure",
+			{ questionId: question.questionId, error },
+		);
+		return false;
+	}
+}
+
+/**
  * §13 — arm the delayed push for a newly captured question.
  *
  * `schedule` is idempotent per questionId and validates its own payload at the
@@ -1343,6 +1419,10 @@ function createNotifyingCaptureSink(
  * silent" becomes visible instead of presenting as "no questions".
  */
 function armPush(deps: NotifyingSinkDeps, question: PendingQuestion): void {
+	// (PUSH-CURATION-GATE) Asked BEFORE `schedule`, not after: `schedule` is what
+	// writes the durable fence row, and a suppressed question must leave nothing
+	// behind for `reconstruct()` to revive after a restart.
+	if (isCuratedOffSidebar(deps, question)) return;
 	try {
 		deps.push.schedule({
 			questionId: question.questionId,
