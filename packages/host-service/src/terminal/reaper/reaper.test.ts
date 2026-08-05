@@ -176,6 +176,7 @@ describe("(BRIDGE-LIVENESS) planStaleRowCorrection", () => {
 		options: {
 			alive?: string[];
 			previous?: string[];
+			previousListed?: boolean;
 			live?: (id: string) => boolean;
 		} = {},
 	) {
@@ -183,6 +184,9 @@ describe("(BRIDGE-LIVENESS) planStaleRowCorrection", () => {
 			aliveIds: new Set(options.alive ?? ["t-alive"]),
 			rowById: new Map(rows),
 			absentOnPreviousPass: new Set(options.previous ?? []),
+			// Defaulted for the cases that are about a DIFFERENT guard; the
+			// (REAPER-CORRECTION-CAP) cases below set it explicitly.
+			previousPassListedTerminals: options.previousListed ?? true,
 			isLive: options.live ?? noneLive,
 			nowMs: NOW,
 		});

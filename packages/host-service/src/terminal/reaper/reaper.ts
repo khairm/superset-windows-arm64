@@ -135,6 +135,46 @@ function loadTerminalRowsById(db: HostDb): Map<string, TerminalRow> {
 export const STALE_ROW_MIN_AGE_MS = 60_000;
 
 /**
+ * (REAPER-CORRECTION-CAP) The most rows one pass may correct, whatever the
+ * daemon said.
+ *
+ * The two-pass rule assumes the two listings are INDEPENDENT observations, and
+ * they are not: a daemon that is degraded — mid-restart, partially adopted,
+ * answering from a half-built registry — is degraded for minutes, which is
+ * longer than the five minutes between passes. Both listings can therefore be
+ * the same wrong listing, and the corrective write is the one direction with no
+ * undo: a corrected row loses its place in the session dropdown and in pane
+ * adoption, and nothing puts it back.
+ *
+ * A cap does not make that impossible, it makes it SURVIVABLE. The real backlog
+ * this walk exists for was 403 rows, so a bound of a few per pass still drains
+ * it inside a few hours, while a pathological pair of listings can only cost a
+ * handful of live terminals before somebody notices — and the next pass, with a
+ * healthy daemon, corrects nothing at all.
+ */
+export const STALE_ROW_MAX_CORRECTIONS_PER_PASS = 10;
+
+/** The other half of the cap: never more than this share of the active rows. */
+export const STALE_ROW_MAX_CORRECTION_FRACTION = 0.25;
+
+/**
+ * (REAPER-CORRECTION-CAP) `min(10, ceil(25% of active rows))`.
+ *
+ * The fraction is what protects a SMALL table, where 10 rows could be all of
+ * them: correcting a quarter of a machine's live terminals in one pass is a
+ * visible event with a visible cause, correcting all of them looks like the app
+ * losing every session. `ceil` rather than `floor` because a floor would round
+ * every table under four rows down to zero and turn the reverse walk off
+ * entirely on exactly the machines where one corpse is most conspicuous.
+ */
+export function staleRowCorrectionCap(activeRowCount: number): number {
+	return Math.min(
+		STALE_ROW_MAX_CORRECTIONS_PER_PASS,
+		Math.ceil(activeRowCount * STALE_ROW_MAX_CORRECTION_FRACTION),
+	);
+}
+
+/**
  * (BRIDGE-LIVENESS) THE REVERSE WALK: rows whose pty is gone.
  *
  * `terminal_sessions.status` leaves `active` only via an explicit dispose or a
@@ -147,8 +187,12 @@ export const STALE_ROW_MIN_AGE_MS = 60_000;
  * PURE, because the conditions under which it is safe to write are the whole
  * point and they must be testable without a daemon:
  *
- *  1. The daemon listed SOMETHING. An empty listing is the documented
- *     racy-adoption case (`PORT_SCAN_WARMUP_DELAYS_MS`) and is never evidence.
+ *  1. The daemon listed SOMETHING ON BOTH PASSES. An empty listing is the
+ *     documented racy-adoption case (`PORT_SCAN_WARMUP_DELAYS_MS`) and is never
+ *     evidence — and "never evidence" has to include the OLDER of the two
+ *     observations, not just this one. Passing the previous pass's emptiness in
+ *     explicitly is what makes that a stated condition rather than a property
+ *     that happens to fall out of the caller clearing its set.
  *  2. The row is `active` and workspace-owned. Anything else is already the
  *     forward walk's business.
  *  3. The daemon does not list it AND this process holds no live session for
@@ -158,42 +202,80 @@ export const STALE_ROW_MIN_AGE_MS = 60_000;
  *     partially-populated `daemon.list()` cannot condemn a live terminal.
  *  5. It is older than `STALE_ROW_MIN_AGE_MS`, so a session created seconds ago
  *     cannot lose a race with the listing that was taken before it existed.
+ *  6. (REAPER-CORRECTION-CAP) It is within the first `staleRowCorrectionCap()`
+ *     candidates, OLDEST FIRST. Everything over the cap stays in
+ *     `absentThisPass`, so it keeps its confirmed two-pass standing and is
+ *     corrected on a later pass instead of restarting its clock.
  *
  * Being wrong here costs a LIVE terminal its place in the session dropdown and
  * in pane adoption (`listWorkspaceTerminalSessions` filters on `status`), which
- * is why the bar is five independent conditions and not one.
+ * is why the bar is six independent conditions and not one.
  */
 export function planStaleRowCorrection({
 	aliveIds,
 	rowById,
 	absentOnPreviousPass,
+	previousPassListedTerminals,
 	isLive,
 	nowMs,
 }: {
 	aliveIds: ReadonlySet<string>;
 	rowById: Map<string, TerminalRow>;
 	absentOnPreviousPass: ReadonlySet<string>;
+	/**
+	 * Did the pass that produced `absentOnPreviousPass` see a non-empty daemon
+	 * listing? Required, because "an empty listing is never evidence" is a claim
+	 * about BOTH observations the two-pass rule rests on, and an
+	 * absent-on-previous-pass set says nothing about how it was produced.
+	 */
+	previousPassListedTerminals: boolean;
 	isLive: (terminalId: string) => boolean;
 	nowMs: number;
-}): { correct: string[]; absentThisPass: Set<string> } {
+}): {
+	correct: string[];
+	absentThisPass: Set<string>;
+	/** Feed back as the next pass's `previousPassListedTerminals`. */
+	listedThisPass: boolean;
+} {
 	const correct: string[] = [];
 	const absentThisPass = new Set<string>();
-	if (aliveIds.size === 0) return { correct, absentThisPass };
+	if (aliveIds.size === 0) {
+		return { correct, absentThisPass, listedThisPass: false };
+	}
 
+	let activeRows = 0;
+	const candidates: { id: string; touchedAt: number }[] = [];
 	for (const [id, row] of rowById) {
 		if (row.status !== "active") continue;
+		activeRows += 1;
 		if (!row.originWorkspaceId) continue;
 		if (aliveIds.has(id)) continue;
 		if (isLive(id)) continue;
 		const touchedAt = Math.max(row.createdAt ?? 0, row.lastAttachedAt ?? 0);
 		if (touchedAt > 0 && nowMs - touchedAt < STALE_ROW_MIN_AGE_MS) continue;
-		if (!absentOnPreviousPass.has(id)) {
+		if (!previousPassListedTerminals || !absentOnPreviousPass.has(id)) {
 			absentThisPass.add(id);
 			continue;
 		}
-		correct.push(id);
+		candidates.push({ id, touchedAt });
 	}
-	return { correct, absentThisPass };
+
+	// Oldest first, so a capped pass spends its budget on the rows least likely
+	// to be a live terminal the daemon merely failed to report, and so the choice
+	// of WHICH rows to correct is deterministic rather than map-iteration order.
+	candidates.sort((a, b) => a.touchedAt - b.touchedAt);
+	const cap = staleRowCorrectionCap(activeRows);
+	for (const candidate of candidates) {
+		if (correct.length >= cap) {
+			// Held, not dropped: it has already been confirmed absent twice, and
+			// re-arming it as absent-this-pass keeps that standing for the next pass
+			// rather than restarting its two-pass clock.
+			absentThisPass.add(candidate.id);
+			continue;
+		}
+		correct.push(candidate.id);
+	}
+	return { correct, absentThisPass, listedThisPass: true };
 }
 
 // Port scanning is best-effort: a port-manager error must not propagate to the
@@ -258,10 +340,21 @@ function syncPortScans(db: HostDb): ReturnType<typeof runPortScanSync> {
 	return inFlightPortScanSync;
 }
 
+/**
+ * (REAPER-CORRECTION-CAP) What one reap pass has to remember about the pass
+ * before it. A bare set was not enough: the two-pass rule rests on two
+ * observations, and the set alone cannot say whether the older one was an empty
+ * daemon listing (which is never evidence) or a real one.
+ */
+interface StaleRowPassState {
+	absentOnPreviousPass: Set<string>;
+	previousPassListedTerminals: boolean;
+}
+
 async function reapOrphanedSessions(
 	db: HostDb,
 	rowlessPendingSecondPass: Set<string>,
-	staleRowsPendingSecondPass: Set<string>,
+	staleRowState: StaleRowPassState,
 ): Promise<ReapResult> {
 	// Sync the port scanner before the empty-list short-circuit below so an idle
 	// daemon still drops stale scans.
@@ -269,7 +362,8 @@ async function reapOrphanedSessions(
 
 	if (liveSessions.length === 0) {
 		rowlessPendingSecondPass.clear();
-		staleRowsPendingSecondPass.clear();
+		staleRowState.absentOnPreviousPass.clear();
+		staleRowState.previousPassListedTerminals = false;
 		return { reaped: 0, failed: 0, corrected: 0 };
 	}
 
@@ -316,10 +410,11 @@ async function reapOrphanedSessions(
 	// only writes the row — there is no pty left to kill, which is exactly the
 	// condition being recorded.
 	const nowMs = Date.now();
-	const { correct, absentThisPass } = planStaleRowCorrection({
+	const { correct, absentThisPass, listedThisPass } = planStaleRowCorrection({
 		aliveIds: new Set(liveSessions.map((session) => session.id)),
 		rowById,
-		absentOnPreviousPass: staleRowsPendingSecondPass,
+		absentOnPreviousPass: staleRowState.absentOnPreviousPass,
+		previousPassListedTerminals: staleRowState.previousPassListedTerminals,
 		isLive: isLiveTerminalSession,
 		nowMs,
 	});
@@ -341,24 +436,27 @@ async function reapOrphanedSessions(
 			absentThisPass.add(id);
 		}
 	}
-	staleRowsPendingSecondPass.clear();
-	for (const id of absentThisPass) staleRowsPendingSecondPass.add(id);
+	staleRowState.absentOnPreviousPass.clear();
+	for (const id of absentThisPass) staleRowState.absentOnPreviousPass.add(id);
+	staleRowState.previousPassListedTerminals = listedThisPass;
 
 	return { reaped, failed, corrected };
 }
 
 export function startTerminalReaper(db: HostDb): () => void {
 	const rowlessPendingSecondPass = new Set<string>();
-	const staleRowsPendingSecondPass = new Set<string>();
+	const staleRowState: StaleRowPassState = {
+		absentOnPreviousPass: new Set<string>(),
+		// The FIRST pass has no previous observation at all, which is exactly the
+		// state an empty listing leaves behind — so it starts false and the reverse
+		// walk cannot correct anything until two real listings have been seen.
+		previousPassListedTerminals: false,
+	};
 	let running = false;
 	const run = () => {
 		if (running) return;
 		running = true;
-		void reapOrphanedSessions(
-			db,
-			rowlessPendingSecondPass,
-			staleRowsPendingSecondPass,
-		)
+		void reapOrphanedSessions(db, rowlessPendingSecondPass, staleRowState)
 			.then((result) => {
 				if (result.reaped > 0 || result.failed > 0 || result.corrected > 0) {
 					console.log(
