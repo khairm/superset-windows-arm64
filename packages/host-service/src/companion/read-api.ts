@@ -957,6 +957,15 @@ export async function handleTree(
 		gseq: full ? deps.currentGseq() : 0,
 		projects: outProjects,
 		counts,
+		// (CURATION-PROVENANCE) Emitted on every tree, not only empty ones: the
+		// question "is this tree short because nothing is running, or because the
+		// mirror hid it?" is asked of a tree that is merely SMALLER than expected
+		// at least as often as of one that is empty.
+		curation: {
+			enabled: curation.enabled,
+			lastSyncAgeMs: curation.lastSyncAgeMs,
+			hiddenWorkspaces: allWorkspaces.length - visible.size,
+		},
 	};
 }
 

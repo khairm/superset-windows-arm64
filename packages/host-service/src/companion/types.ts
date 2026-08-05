@@ -546,6 +546,32 @@ export interface TreeResponse {
 	gseq: number;
 	projects: Project[];
 	counts: StatusCounts;
+	/**
+	 * (CURATION-PROVENANCE) Why the tree looks the way it does.
+	 *
+	 * An empty `projects` array has two completely different causes that the
+	 * payload could not previously tell apart: nothing on this machine is running
+	 * an agent, or the sidebar mirror filtered everything out. The second is a
+	 * BUG SHAPE — an over-broad mirror, a project set that lost its rows, a
+	 * launch id that never advanced — and diagnosing it from the phone meant
+	 * guessing, because the filter's inputs never crossed the wire.
+	 *
+	 * OPTIONAL, and it must stay optional: both shipped clients parse this
+	 * response with unknown fields ignored and no field required beyond the ones
+	 * they already read, so an older phone must keep parsing a newer bridge's
+	 * tree. Nothing in the protocol may come to depend on it.
+	 */
+	curation?: TreeCurationInfo;
+}
+
+/** (CURATION-PROVENANCE) Diagnostic provenance for a `TreeResponse`. */
+export interface TreeCurationInfo {
+	/** false => the mirror was not filtering at all (never synced, aged out, other org). */
+	enabled: boolean;
+	/** Age of `sidebar_mirror_meta.last_full_sync_at_ms`, or null if there is no meta row. */
+	lastSyncAgeMs: number | null;
+	/** How many of this machine's workspaces the curation removed from the tree. */
+	hiddenWorkspaces: number;
 }
 
 export interface Project {

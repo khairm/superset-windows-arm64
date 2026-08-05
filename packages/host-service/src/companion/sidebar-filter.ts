@@ -125,6 +125,14 @@ export interface SidebarCuration {
 	 */
 	readonly enabled: boolean;
 	/**
+	 * (CURATION-PROVENANCE) How old the mirror was when this curation was built,
+	 * or null when there is no meta row at all. Reported even when `enabled` is
+	 * false — that is exactly the case a diagnostic needs it for, since the age
+	 * is what distinguishes "no renderer has ever synced" from "the mirror aged
+	 * out" from "the mirror belongs to another org".
+	 */
+	readonly lastSyncAgeMs: number | null;
+	/**
 	 * Where this workspace sits in the SIDEBAR, which is the mirrored placement
 	 * when there is one and the host row's own project otherwise. Placement is a
 	 * curation act: a thread dragged under another repo groups there on the
@@ -190,9 +198,10 @@ export const MIRROR_MAX_AGE_MS = 1_200_000;
  * copies of it would be three chances for one of them to drift into filtering
  * something.
  */
-function passThroughCuration(): SidebarCuration {
+function passThroughCuration(lastSyncAgeMs: number | null): SidebarCuration {
 	return {
 		enabled: false,
+		lastSyncAgeMs,
 		effectiveProjectId: (workspace) => workspace.projectId,
 		workspaceVerdict: () => "show",
 		projectVerdict: () => "show",
@@ -208,8 +217,9 @@ export function createSidebarCuration(
 	if (meta === null) {
 		// Bootstrap: nothing has ever been mirrored, so the two tables carry no
 		// information and filtering on them would hide a sidebar we cannot see.
-		return passThroughCuration();
+		return passThroughCuration(null);
 	}
+	const lastSyncAgeMs = nowMs - meta.lastFullSyncAtMs;
 	// (MIRROR-AGE-OUT) The writer heartbeats the unchanged snapshot every five
 	// minutes (`MIRROR-HEARTBEAT`), so `lastFullSyncAtMs` means "a renderer was
 	// alive at this moment" and not "somebody last dragged a thread". Past the
@@ -221,8 +231,8 @@ export function createSidebarCuration(
 	// hiding threads the very next launch would have released, with nothing to
 	// release them. Fail toward SHOWING: too noisy is the permitted direction,
 	// a blocked agent nobody can see is not.
-	if (nowMs - meta.lastFullSyncAtMs > MIRROR_MAX_AGE_MS) {
-		return passThroughCuration();
+	if (lastSyncAgeMs > MIRROR_MAX_AGE_MS) {
+		return passThroughCuration(lastSyncAgeMs);
 	}
 	// (MIRROR-ORG-GATE) The mirror is written per ORG by whichever renderer is
 	// signed in, and `host.db` is per machine — one file that a sign-out and a
@@ -235,7 +245,7 @@ export function createSidebarCuration(
 	// sidebar" — which hides the WHOLE tree. Same seam, same direction: a mirror
 	// that is not about this org is not evidence about this org.
 	if (meta.organizationId !== organizationId) {
-		return passThroughCuration();
+		return passThroughCuration(lastSyncAgeMs);
 	}
 
 	const workspaceById = new Map<string, SidebarWorkspaceMirrorRow>();
@@ -249,6 +259,7 @@ export function createSidebarCuration(
 
 	return {
 		enabled: true,
+		lastSyncAgeMs,
 		effectiveProjectId: placementOf,
 		workspaceVerdict(workspace) {
 			// The project gate first: a thread under a repo the user removed from
