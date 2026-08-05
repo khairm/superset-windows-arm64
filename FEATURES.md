@@ -165,6 +165,7 @@ togglePinProject	apps/desktop/src/renderer
 (KEEP-AWAKE)	apps/desktop/src/main
 (COMPANION-CAPTURE)	apps/desktop/src/main
 (COMPANION-BRIDGE)	packages/host-service/src
+(COMPANION-DB-FULL)	packages/host-service/src/companion/index.ts
 (KEEP-AWAKE-MOUNT)	apps/desktop/src/main/windows
 (KEEP-AWAKE-UNMOUNT)	apps/desktop/src/main/windows
 (COMPANION-BRIDGE-MOUNT)	packages/host-service/src/serve.ts

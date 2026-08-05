@@ -28,7 +28,10 @@ import { join } from "node:path";
 import hostServicePackageJson from "@superset/host-service/package.json" with {
 	type: "json",
 };
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { HostDb } from "../db";
+import * as hostDbSchema from "../db/schema";
 import {
 	isLiveTerminalSession,
 	snapshotSession,
@@ -69,7 +72,9 @@ import {
 	PUSH_QUESTION_EXPIRY_MS,
 	resolveCompanionPaths,
 } from "./config";
-import { createReplayCache, type ReplayCache, sleep } from "./crypto";
+import { createReplayCache, type ReplayCache, sleep,
+	assertDurableSqlite,
+} from "./crypto";
 import { createDeviceStore, type DeviceStore } from "./device-store";
 import {
 	type BridgeHttpServer,
@@ -198,9 +203,13 @@ export interface CompanionBridgeOptions {
 	/** `env.HOST_DB_PATH`. Opened `mode=ro`; `immutable=1` is forbidden (§7.2). */
 	hostDbPath: string;
 	/**
-	 * The live drizzle handle. Needed ONLY by `snapshotSession`, which adopts a
-	 * pty session and therefore writes; every companion READ goes through the
-	 * separate `mode=ro` reader opened from `hostDbPath`.
+	 * The live drizzle handle. Needed ONLY by the pty-session write path
+	 * (`writeFramed`/`writeInput`/`snapshotSession`), whose writes are upstream's
+	 * semantics on upstream's connection. Companion-table writes do NOT go
+	 * through this handle: it runs at the binding's WAL default (NORMAL), so the
+	 * bridge opens its own `synchronous = FULL` connection for the device store,
+	 * replay cache and answer ledger (COMPANION-DB-FULL). Every companion READ
+	 * goes through the separate `mode=ro` reader opened from `hostDbPath`.
 	 */
 	db: HostDb;
 	/**
@@ -389,6 +398,31 @@ export function createCompanionBridge(
 		unwind.push({ what: "state anchor", close: () => anchor.close() });
 		const hostDb = openHostDbReadOnly(options.hostDbPath);
 		unwind.push({ what: "host db reader", close: async () => hostDb.close() });
+		// (COMPANION-DB-FULL) The bridge's OWN write connection to host.db, at
+		// PRAGMA synchronous = FULL — set EXPLICITLY, never inherited. The shared
+		// `options.db` connection runs at the binding's WAL default, which in
+		// better-sqlite3's standard build is NORMAL (SQLITE_DEFAULT_WAL_SYNCHRONOUS=1)
+		// — a committed row can be lost to power loss, which is the exact rollback
+		// the fence rows below exist to prevent. `synchronous` is per-connection,
+		// so this strengthens ONLY companion-table writes; upstream's own write
+		// path keeps upstream's durability choice. This is also why the first
+		// installed build refused to start: the stores asserted FULL against the
+		// shared connection and honestly found NORMAL. Every companion store that
+		// WRITES host.db (device store, replay cache, answer ledger) is handed
+		// THIS connection; `options.db` remains only for pty-session writes whose
+		// semantics are upstream's. No migrate() here — createApp already ran
+		// migrations on this database before the mount was called.
+		const companionSqlite = new Database(options.hostDbPath);
+		companionSqlite.pragma("journal_mode = WAL");
+		companionSqlite.pragma("busy_timeout = 5000");
+		companionSqlite.pragma("foreign_keys = ON");
+		companionSqlite.pragma("synchronous = FULL");
+		const companionDb = drizzle(companionSqlite, { schema: hostDbSchema });
+		assertDurableSqlite(companionDb, "opening the companion write connection");
+		unwind.push({
+			what: "companion write db",
+			close: async () => companionSqlite.close(),
+		});
 		const audit = createAuditLog(paths.audit);
 		const keyStore = createKeyStore(paths.devices, anchor);
 		// Revocation tombstones and the retryable wipe of purged key material live
@@ -396,8 +430,9 @@ export function createCompanionBridge(
 		// be destroyed, but a revoke must ALSO invalidate the key file, or restoring
 		// an older index silently re-authorises the device.
 		const deviceStore = await createDeviceStore(paths.devices, {
-			// (DEVICE-INDEX-DB) The live handle: the index is rows now, not devices.json.
-			db: options.db,
+			// (DEVICE-INDEX-DB) The index is rows now, not devices.json — written
+			// through the bridge's FULL-synchronous connection, never the shared one.
+			db: companionDb,
 			anchor,
 			keys: keyStore,
 			log: logger,
@@ -427,7 +462,7 @@ export function createCompanionBridge(
 		// `createDeviceStore` -> the (ANCHOR-ORDER) assertion -> `createSendNonceSource`
 		// still runs strictly in sequence.
 		const nonceCache = await createReplayCache({
-			db: options.db,
+			db: companionDb,
 			noncesDir: paths.nonces,
 		});
 		unwind.push({ what: "nonce cache", close: () => nonceCache.close() });
@@ -436,11 +471,11 @@ export function createCompanionBridge(
 		// so a failure to open it — including the PRAGMA synchronous assertion — takes
 		// the bridge down before a single answer can be typed without a durable claim.
 		const ledger = createAttemptLedger({
-			// The LIVE handle, not the `mode=ro` reader every companion READ uses (§7.2).
-			// The ledger is the one companion subsystem that must write to host.db, for
-			// the same reason `snapshotSession` does — and a read-only handle would fail
-			// at the first claim, after the bridge had already accepted the request.
-			db: options.db,
+			// The FULL-synchronous write connection, not the `mode=ro` reader every
+			// companion READ uses (§7.2) — a read-only handle would fail at the first
+			// claim, after the bridge had already accepted the request, and the shared
+			// handle's NORMAL durability cannot carry a fence row.
+			db: companionDb,
 			log: (event) => logger.warn("answer ledger", event),
 		});
 		// (STORE-CLOSED) The attempt store was the ONLY subsystem with no teardown
