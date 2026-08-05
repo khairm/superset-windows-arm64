@@ -25,10 +25,13 @@
  * THE RENDERER IS THE SOURCE OF TRUTH — always. Nothing in the host-service
  * writes these tables, and no consumer may treat the mirror as authoritative
  * against the renderer. It is a projection with a fixed failure direction: when
- * it is stale or absent, consumers must fall back to SHOWING a row. That is
- * stated on the tables in `db/schema.ts` and it is the reason this router has
- * no "delete one workspace" verb — a partial write is exactly the state that
- * could hide something live.
+ * a row is ABSENT, consumers must fall back to SHOWING it. Staleness is not the
+ * same thing and is not automatically safe — a stale row's hiding fields hide a
+ * thread that is no longer hidden — which is why the writer serializes its
+ * pushes and never stops retrying; see `db/schema.ts` and
+ * `useSidebarMirrorSync`. It is also the reason this router has no "delete one
+ * workspace" verb — a partial write is exactly the state that could hide
+ * something live.
  *
  * IT IS ALSO NOT A READ SURFACE FOR THE PHONE. The companion bridge reads
  * `host.db` directly through its own connection; it never calls tRPC. `state`

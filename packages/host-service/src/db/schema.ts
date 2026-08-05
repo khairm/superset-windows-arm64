@@ -620,12 +620,32 @@ export const companionPushFence = sqliteTable("companion_push_fence", {
  * the host-service itself, and nothing here may be treated as authoritative if
  * it disagrees with the renderer.
  *
- * THE FAILURE DIRECTION IS FIXED. A mirror can be stale (renderer not running,
- * a sync in flight, a host-service restart between syncs). Every consumer must
- * therefore fail toward SHOWING a row: an absent or older row means "no opinion
- * recorded", never "hidden". `LEFT JOIN` with null-tolerant predicates, never
- * `INNER`. A consumer that hides on absence turns a transient miss into a
- * blocked agent the user never sees.
+ * THE FAILURE DIRECTION IS FIXED, AND ABSENCE IS NOT STALENESS. A mirror can be
+ * stale (renderer not running, a sync in flight, a host-service restart between
+ * syncs), and the two cases are NOT equally safe:
+ *
+ *  - ABSENT row = "no opinion recorded" -> SHOW. Every consumer must fail this
+ *    way: `LEFT JOIN` with null-tolerant predicates, never `INNER`. A consumer
+ *    that hides on absence turns a transient miss into a blocked agent the user
+ *    never sees.
+ *  - STALE row = the user's LAST RECORDED opinion, which is safe only because
+ *    of what the writer guarantees, not because staleness is harmless. A row
+ *    still carrying `deleted_at` / `archived_at` / `is_hidden` / `snooze_until`
+ *    from before the user restored the thread HIDES something that is no longer
+ *    hidden — the forbidden direction. What bounds it lives in the renderer
+ *    (`useSidebarMirrorSync`): exactly one push in flight, so a reordered pair
+ *    cannot leave an older snapshot installed, and a retry that never gives up
+ *    while the app runs, so a failed push cannot become a permanent state. With
+ *    the renderer gone the mirror holds the last curation the user actually
+ *    made; it never invents one.
+ *
+ * There is NO heartbeat: `sidebar_mirror_meta.last_full_sync_at_ms` records the
+ * last CURATION CHANGE, not renderer liveness, so an old timestamp usually means
+ * nobody touched the sidebar. A consumer that nonetheless wants a hard freshness
+ * bound must age the mirror out on `synced_at_ms` /
+ * `last_full_sync_at_ms` — ageing out means falling back to SHOWING everything,
+ * which is the safe direction, but it also means shipping the uncurated firehose
+ * again, so it needs a heartbeat writer first.
  */
 export const sidebarWorkspaceState = sqliteTable(
 	"sidebar_workspace_state",

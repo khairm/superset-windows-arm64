@@ -12,10 +12,18 @@
  * ---------------------------------------------------------------------------
  * THE TWO ABSENCE RULES, WHICH ARE DELIBERATELY DIFFERENT
  * ---------------------------------------------------------------------------
- * The mirror's contract has exactly one permitted failure direction: a missing
- * or stale row means "no opinion recorded", never "hidden". Applied literally to
- * both tables that would be wrong in one direction and right in the other,
- * because the renderer itself treats the two absences differently:
+ * The mirror's contract has exactly one permitted failure direction: a MISSING
+ * row means "no opinion recorded", never "hidden". (Staleness is a separate
+ * question and is NOT covered by that rule — a stale row still carrying
+ * `deleted_at`/`archived_at`/`snooze_until` hides a thread that is no longer
+ * hidden. What bounds that is on the writer: one push in flight and a retry
+ * that never gives up while the desktop runs. See `db/schema.ts`. This module
+ * therefore reads a present row as the user's last recorded opinion and does
+ * not age it out — there is no heartbeat to age against.)
+ *
+ * Applied literally to both tables the absence rule would be wrong in one
+ * direction and right in the other, because the renderer itself treats the two
+ * absences differently:
  *
  *  - WORKSPACE absence = NO OPINION -> SHOW. The renderer's own driver is the
  *    local-state row, but a workspace can legitimately exist before its row

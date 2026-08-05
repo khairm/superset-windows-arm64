@@ -33,25 +33,50 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
  * full-table replaces, and because each push is a complete snapshot, the
  * coalesced result is identical to the last one that would have been sent.
  *
- * STALENESS IS SAFE IN EXACTLY ONE DIRECTION. Consumers of the mirror are
- * required to treat a missing or older row as "no opinion recorded" and SHOW
- * the row (see `db/schema.ts`). That is why this hook never tries harder than
- * it should: a failed sync leaves the previous snapshot in place and retries a
- * bounded number of times, and the worst outcome is a consumer showing
- * something the user has already tidied away — never hiding an agent that is
- * blocked on them.
+ * ABSENCE IS SAFE; STALENESS IS NOT. Consumers are required to treat a MISSING
+ * row as "no opinion recorded" and SHOW the row (see `db/schema.ts`), so an
+ * unfilled mirror can only ever be too noisy. A STALE row is a different animal
+ * and the two must not be conflated: a row still carrying `deletedAt` /
+ * `archivedAt` / `isHidden` / `snoozeUntil` from before the user restored the
+ * thread HIDES something that is no longer hidden — precisely the forbidden
+ * direction. Nothing about a full-snapshot replace makes that self-correcting on
+ * its own, so the two mechanisms below are load-bearing, not defensive polish:
+ *
+ *  - ONE PUSH IN FLIGHT AT A TIME. Two snapshots on separate loopback
+ *    connections have no ordering guarantee. If the older one is served last,
+ *    `host.db` keeps the older snapshot while `lastSyncedSignatureRef` believes
+ *    the newer one landed, and every future push is suppressed until the next
+ *    curation change. Serializing removes the reorder, not just its likelihood.
+ *  - THE RETRY NEVER GIVES UP while the app runs (`RETRY_DELAY_CAP_MS`). A
+ *    bounded retry has a terminal state — attempts exhausted, no signature
+ *    change coming, a host-service that restarted on the same port so
+ *    `activeHostUrl` never changes either — and that terminal state is a mirror
+ *    frozen with stale HIDING fields forever.
+ *
+ * What is left after both is the honest floor: with the renderer gone, the
+ * mirror holds the user's LAST RECORDED curation. It is never an invented
+ * opinion, and while the renderer runs it lags by at most the debounce plus one
+ * retry backoff. NOTE FOR CONSUMERS: there is no heartbeat, so
+ * `sidebar_mirror_meta.last_full_sync_at_ms` measures the last CURATION CHANGE,
+ * not renderer liveness — an hours-old timestamp usually means nobody touched
+ * the sidebar, not that the desktop is gone.
  */
 
 /** Trailing debounce. Long enough to swallow a drag, short enough to feel live. */
 const SYNC_DEBOUNCE_MS = 1_000;
 
 /**
- * Retry schedule after a failed push, then stop. Stopping is deliberate: the
- * next curation change re-arms the whole thing anyway, and a mirror that is one
- * snapshot behind is a documented-safe state, so an unbounded retry loop would
- * be spending the user's CPU to avoid a harmless condition.
+ * Retry schedule after a failed push. Unlike the first cut of this hook, it does
+ * NOT stop: every attempt past the schedule waits `RETRY_DELAY_CAP_MS`, forever.
+ * Stopping looked cheap while "stale is safe" was believed, but a mirror holding
+ * a stale `deletedAt`/`archivedAt`/`snoozeUntil` HIDES a live thread, and the
+ * exhausted state has no exit — it re-arms only on a curation change or a new
+ * `activeHostUrl`, and a host-service that restarts on the same port produces
+ * neither. One request per five minutes against loopback is not a cost worth a
+ * permanently wrong mirror.
  */
-const RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;
+const RETRY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000] as const;
+const RETRY_DELAY_CAP_MS = 300_000;
 
 interface MirrorWorkspaceRow {
 	workspaceId: string;
@@ -79,6 +104,8 @@ interface MirrorSnapshot {
 	projects: MirrorProjectRow[];
 	/** Values the normalizers refused. Reported once per snapshot, never hidden. */
 	rejectedFields: number;
+	/** Rows with no usable identity/placement. Dropped, and never silently. */
+	droppedRows: number;
 }
 
 /**
@@ -107,8 +134,233 @@ function toTabOrder(value: unknown, reject: () => void): number {
 	return Math.trunc(value);
 }
 
+/**
+ * A non-empty id, or null. These fields are typed `string`, but they are NOT
+ * guaranteed to be one at runtime: localStorage collections do not run the zod
+ * schema on READS (see `CollectionsProvider/withReadHeal.ts`), and the heal
+ * deliberately refuses to synthesize identity fields — `workspaceId` and
+ * `sidebarState.projectId` "must come from the stored row" or not at all. A
+ * legacy or corrupt row therefore hands back `undefined` behind a `string`
+ * type, and every existing reader of `sidebarState.projectId` compares it with
+ * `===` and degrades to "row not shown". Touching `.length` on it instead
+ * throws inside the `useMemo` below — and because `AgentHooks` is mounted
+ * unconditionally with no boundary nearer than the ROOT route, that one row
+ * would replace the entire app with the error page and take the command
+ * watcher, device presence and worktree placer down with it.
+ */
 function toNullableId(value: unknown): string | null {
 	return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * The live-query rows AS THEY ACTUALLY ARRIVE. Every field is `unknown` on
+ * purpose. The collections declare them `string`/`number`, but a localStorage
+ * collection validates on WRITE only, so the declared type is a claim about
+ * what was once written and not about what comes back. Typing them honestly
+ * here is what forces every field through a normalizer instead of being
+ * trusted, and it is what makes the crash below impossible to reintroduce.
+ */
+interface LocalStateRowLike {
+	workspaceId: unknown;
+	projectId: unknown;
+	sectionId: unknown;
+	tabOrder: unknown;
+	isHidden: unknown;
+	archivedAt: unknown;
+	snoozeUntil: unknown;
+	snoozeLaunchId: unknown;
+	completedAt: unknown;
+	deletedAt: unknown;
+	pinnedAt: unknown;
+}
+
+interface SidebarProjectRowLike {
+	projectId: unknown;
+	tabOrder: unknown;
+	isPinned: unknown;
+	isCollapsed: unknown;
+}
+
+/**
+ * Derive the snapshot the mirror publishes from the two collections.
+ *
+ * Sorted by key, so the signature the hook derives from it is a function of
+ * CONTENT only — without that, every live-query emission would produce a new
+ * signature and re-push an identical snapshot.
+ *
+ * Exported, and free of React, so the normalization can be exercised directly;
+ * `useSidebarMirrorSync` is the only production caller.
+ */
+export function buildMirrorSnapshot(
+	localStateRows: readonly LocalStateRowLike[],
+	sidebarProjectRows: readonly SidebarProjectRowLike[],
+): MirrorSnapshot {
+	let rejectedFields = 0;
+	let droppedRows = 0;
+	const reject = (): void => {
+		rejectedFields += 1;
+	};
+	const workspaces = localStateRows
+		.map((row): MirrorWorkspaceRow | null => {
+			// Identity and placement go through `toNullableId` for the reason
+			// documented on it: both are `string` by declared type and can be
+			// `undefined` at runtime, so this must be a null check and never a
+			// `.length` one.
+			const workspaceId = toNullableId(row.workspaceId);
+			const projectId = toNullableId(row.projectId);
+			// A row with no identity, or whose placement project is missing, cannot
+			// be mirrored: the column is NOT NULL on the far side, and a placement
+			// of "nowhere" is not a statement the mirror can make. Dropping it means
+			// the consumer sees no opinion and shows the thread — the safe direction.
+			if (workspaceId === null || projectId === null) {
+				droppedRows += 1;
+				return null;
+			}
+			return {
+				workspaceId,
+				projectId,
+				sectionId: toNullableId(row.sectionId),
+				tabOrder: toTabOrder(row.tabOrder, reject),
+				isHidden: row.isHidden === true,
+				archivedAt: toEpochMs(row.archivedAt, reject),
+				snoozeUntil: toEpochMs(row.snoozeUntil, reject),
+				snoozeLaunchId: toNullableId(row.snoozeLaunchId),
+				completedAt: toEpochMs(row.completedAt, reject),
+				deletedAt: toEpochMs(row.deletedAt, reject),
+				pinnedAt: toEpochMs(row.pinnedAt, reject),
+			};
+		})
+		.filter((row): row is MirrorWorkspaceRow => row !== null)
+		.sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+
+	const projects = sidebarProjectRows
+		.map((row): MirrorProjectRow | null => {
+			const projectId = toNullableId(row.projectId);
+			if (projectId === null) {
+				droppedRows += 1;
+				return null;
+			}
+			return {
+				projectId,
+				tabOrder: toTabOrder(row.tabOrder, reject),
+				isPinned: row.isPinned === true,
+				isCollapsed: row.isCollapsed === true,
+			};
+		})
+		.filter((row): row is MirrorProjectRow => row !== null)
+		.sort((left, right) => left.projectId.localeCompare(right.projectId));
+
+	return { workspaces, projects, rejectedFields, droppedRows };
+}
+
+export interface MirrorPushLoopDeps {
+	/**
+	 * The push currently on the wire, SHARED by every loop — that sharing IS the
+	 * serialization. A loop that finds it non-null waits for it instead of
+	 * issuing a second mutation, because two mutations on separate loopback
+	 * connections have no ordering guarantee and an older one served last leaves
+	 * `host.db` holding the older snapshot while the caller already recorded the
+	 * newer one as synced.
+	 */
+	inFlight: { current: Promise<void> | null };
+	/** The NEWEST snapshot at call time, never the one this loop was built for. */
+	getSnapshot: () => MirrorSnapshot;
+	send: (snapshot: MirrorSnapshot) => Promise<unknown>;
+	/** Called iff this loop's own send resolved and the loop was not cancelled. */
+	onSynced: () => void;
+	/** Overridable so the timings can be exercised without waiting minutes. */
+	debounceMs?: number;
+	retryDelaysMs?: readonly number[];
+	retryCapMs?: number;
+	report?: (message: string, detail?: unknown) => void;
+}
+
+export interface MirrorPushLoop {
+	start: () => void;
+	cancel: () => void;
+}
+
+/**
+ * The push loop for ONE signature: debounce, send, retry — and the part that
+ * spans loops, serialization against whatever is already on the wire.
+ *
+ * Extracted from the hook and free of React so its ordering guarantees can be
+ * exercised directly; `useSidebarMirrorSync` is the only production caller.
+ */
+export function createMirrorPushLoop(deps: MirrorPushLoopDeps): MirrorPushLoop {
+	const debounceMs = deps.debounceMs ?? SYNC_DEBOUNCE_MS;
+	const retryDelaysMs = deps.retryDelaysMs ?? RETRY_DELAYS_MS;
+	const retryCapMs = deps.retryCapMs ?? RETRY_DELAY_CAP_MS;
+	const report =
+		deps.report ??
+		((message: string, detail?: unknown): void => {
+			if (detail === undefined) console.error(message);
+			else console.error(message, detail);
+		});
+
+	let cancelled = false;
+	let attempt = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+
+	const push = (): void => {
+		const inFlight = deps.inFlight.current;
+		if (inFlight !== null) {
+			// Wait for the outstanding push instead of racing it. No queue is
+			// needed: `getSnapshot` always returns the newest snapshot, so
+			// re-entering `push` after the settle sends current state rather than a
+			// backlog. `cancelled` covers a newer signature taking over meanwhile.
+			void inFlight.then(() => {
+				if (!cancelled) push();
+			});
+			return;
+		}
+		const current = deps.getSnapshot();
+		if (current.rejectedFields > 0) {
+			report(
+				`(SIDEBAR-MIRROR) ${current.rejectedFields} corrupt sidebar field(s) were sent as absent; the affected threads will show as un-curated.`,
+			);
+		}
+		if (current.droppedRows > 0) {
+			report(
+				`(SIDEBAR-MIRROR) ${current.droppedRows} sidebar row(s) had no usable id and were dropped from the snapshot; the affected threads will show as un-curated.`,
+			);
+		}
+		const settled = deps.send(current).then(
+			() => {
+				if (cancelled) return;
+				deps.onSynced();
+			},
+			(error: unknown) => {
+				if (cancelled) return;
+				// Never silent. A mirror that stops updating is invisible from the
+				// desktop — the desktop sidebar is correct either way — so the log
+				// line is the only evidence it happened.
+				report(
+					"(SIDEBAR-MIRROR) publishing sidebar state to host.db failed",
+					error instanceof Error ? error.message : String(error),
+				);
+				// No give-up branch. See RETRY_DELAY_CAP_MS.
+				const delay = retryDelaysMs[attempt] ?? retryCapMs;
+				attempt += 1;
+				timer = setTimeout(push, delay);
+			},
+		);
+		// Cleared on settle so the next push can start; assigned AFTER the handlers
+		// are attached so a waiter always resumes past the clear.
+		deps.inFlight.current = settled.finally(() => {
+			deps.inFlight.current = null;
+		});
+	};
+
+	return {
+		start: (): void => {
+			timer = setTimeout(push, debounceMs);
+		},
+		cancel: (): void => {
+			cancelled = true;
+			if (timer !== undefined) clearTimeout(timer);
+		},
+	};
 }
 
 export function useSidebarMirrorSync(): void {
@@ -154,48 +406,11 @@ export function useSidebarMirrorSync(): void {
 	 * Without that, every live-query emission would produce a new signature and
 	 * re-push an identical snapshot.
 	 */
-	const snapshot = useMemo((): MirrorSnapshot => {
-		let rejectedFields = 0;
-		const reject = (): void => {
-			rejectedFields += 1;
-		};
-		const workspaces = localStateRows
-			.map(
-				(row): MirrorWorkspaceRow => ({
-					workspaceId: row.workspaceId,
-					projectId: row.projectId,
-					sectionId: toNullableId(row.sectionId),
-					tabOrder: toTabOrder(row.tabOrder, reject),
-					isHidden: row.isHidden === true,
-					archivedAt: toEpochMs(row.archivedAt, reject),
-					snoozeUntil: toEpochMs(row.snoozeUntil, reject),
-					snoozeLaunchId: toNullableId(row.snoozeLaunchId),
-					completedAt: toEpochMs(row.completedAt, reject),
-					deletedAt: toEpochMs(row.deletedAt, reject),
-					pinnedAt: toEpochMs(row.pinnedAt, reject),
-				}),
-			)
-			// A row whose placement project is missing cannot be mirrored: the
-			// column is NOT NULL on the far side, and a placement of "nowhere" is
-			// not a statement the mirror can make. Dropping it means the consumer
-			// sees no opinion and shows the thread — the safe direction.
-			.filter((row) => row.workspaceId.length > 0 && row.projectId.length > 0)
-			.sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
-
-		const projects = sidebarProjectRows
-			.map(
-				(row): MirrorProjectRow => ({
-					projectId: row.projectId,
-					tabOrder: toTabOrder(row.tabOrder, reject),
-					isPinned: row.isPinned === true,
-					isCollapsed: row.isCollapsed === true,
-				}),
-			)
-			.filter((row) => row.projectId.length > 0)
-			.sort((left, right) => left.projectId.localeCompare(right.projectId));
-
-		return { workspaces, projects, rejectedFields };
-	}, [localStateRows, sidebarProjectRows]);
+	const snapshot = useMemo(
+		(): MirrorSnapshot =>
+			buildMirrorSnapshot(localStateRows, sidebarProjectRows),
+		[localStateRows, sidebarProjectRows],
+	);
 
 	const signature = useMemo(
 		() => JSON.stringify([snapshot.workspaces, snapshot.projects]),
@@ -210,6 +425,19 @@ export function useSidebarMirrorSync(): void {
 
 	const lastSyncedSignatureRef = useRef<string | null>(null);
 
+	/**
+	 * The push currently on the wire, or null — deliberately a ref so it spans
+	 * effect runs. Serializing pushes is a correctness requirement, not a load
+	 * control: two mutations issued a second apart travel on separate loopback
+	 * connections with no ordering guarantee, and if the OLDER one is served last
+	 * `host.db` keeps the older snapshot while `lastSyncedSignatureRef` already
+	 * records the newer one as synced — which suppresses every subsequent push
+	 * until the next curation change. Stale HIDING fields (`deletedAt`,
+	 * `archivedAt`, `isHidden`, `snoozeUntil`) surviving that way is exactly the
+	 * failure direction the mirror is not allowed to have.
+	 */
+	const inFlightRef = useRef<Promise<void> | null>(null);
+
 	const ready = localStateReady && sidebarProjectsReady;
 
 	useEffect(() => {
@@ -223,50 +451,22 @@ export function useSidebarMirrorSync(): void {
 		if (!activeHostUrl) return;
 		if (signature === lastSyncedSignatureRef.current) return;
 
-		let cancelled = false;
-		let attempt = 0;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-
-		const push = (): void => {
-			const current = snapshotRef.current;
-			if (current.rejectedFields > 0) {
-				console.error(
-					`(SIDEBAR-MIRROR) ${current.rejectedFields} corrupt sidebar field(s) were sent as absent; the affected threads will show as un-curated.`,
-				);
-			}
-			void getHostServiceClientByUrl(activeHostUrl)
-				.sidebarMirror.sync.mutate({
+		const loop = createMirrorPushLoop({
+			inFlight: inFlightRef,
+			getSnapshot: () => snapshotRef.current,
+			send: (current) =>
+				getHostServiceClientByUrl(activeHostUrl).sidebarMirror.sync.mutate({
 					appLaunchId: APP_LAUNCH_ID,
 					workspaces: current.workspaces,
 					projects: current.projects,
-				})
-				.then(
-					() => {
-						if (cancelled) return;
-						lastSyncedSignatureRef.current = signature;
-					},
-					(error: unknown) => {
-						if (cancelled) return;
-						// Never silent. A mirror that stops updating is invisible from
-						// the desktop — the desktop sidebar is correct either way — so
-						// the log line is the only evidence it happened.
-						console.error(
-							"(SIDEBAR-MIRROR) publishing sidebar state to host.db failed",
-							error instanceof Error ? error.message : String(error),
-						);
-						const delay = RETRY_DELAYS_MS[attempt];
-						if (delay === undefined) return;
-						attempt += 1;
-						timer = setTimeout(push, delay);
-					},
-				);
-		};
-
-		timer = setTimeout(push, SYNC_DEBOUNCE_MS);
-
+				}),
+			onSynced: () => {
+				lastSyncedSignatureRef.current = signature;
+			},
+		});
+		loop.start();
 		return () => {
-			cancelled = true;
-			if (timer) clearTimeout(timer);
+			loop.cancel();
 		};
 	}, [ready, activeHostUrl, signature]);
 }
