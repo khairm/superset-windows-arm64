@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "ab49e0fd68d0",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 37,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.ts",
+    "packages/host-service/src/companion/sidebar-filter.ts",
+    "packages/host-service/src/db/schema.ts",
+    "packages/host-service/src/trpc/router/sidebar-mirror/sidebar-mirror.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ab/49e0fd68d0/0/metadata.json",
+      "transcript": "/ab/49e0fd68d0/0/full.jsonl",
+      "content_hash": "/ab/49e0fd68d0/0/content_hash.txt",
+      "prompt": "/ab/49e0fd68d0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3761,
+    "cache_creation_tokens": 15816055,
+    "cache_read_tokens": 780112768,
+    "output_tokens": 1627767,
+    "api_call_count": 1962
+  }
+}
