@@ -33,6 +33,11 @@
  *  - snapshot older than the
  *    trust window              -> no evidence -> everything is live
  *
+ * `isProvablyGone` is the same evidence read at a HIGHER bar, for the callers
+ * whose verdict cannot be revisited (`(QUESTION-EXPIRY)`): it additionally
+ * refuses to read anything into an empty listing at any age, matching the
+ * reaper's reverse walk. Nothing may derive "gone" from `!isLive`.
+ *
  * ---------------------------------------------------------------------------
  * WHY `isLive` IS SYNCHRONOUS
  * ---------------------------------------------------------------------------
@@ -97,6 +102,35 @@ export interface TerminalLiveness {
 	 * keeps a terminal created after the snapshot from reading as dead.
 	 */
 	isLive(hostTerminalId: string, lastActivityMs?: number | null): boolean;
+	/**
+	 * (QUESTION-EXPIRY) The STRICTER converse of `isLive`, for the two callers
+	 * whose mistake is IRREVERSIBLE: `reconcile` settles a question `stale`
+	 * (terminal, `settle()` refuses to move it again) and the push sender drops
+	 * an armed buzz (`forget()`, gone permanently).
+	 *
+	 * `!isLive(...)` is not good enough for them, because `isLive` deliberately
+	 * trusts an EMPTY daemon listing once the warm-up window has passed: for the
+	 * tree that is right — the whole point of `(BRIDGE-LIVENESS)` is that a
+	 * machine with no live ptys must stop rendering 403 corpses, and a wrong
+	 * verdict there costs one refresh. Here it costs a live blocked agent its
+	 * only wrist surface, permanently. So this predicate matches the reaper's
+	 * reverse walk instead (`planStaleRowCorrection`: `if (aliveIds.size === 0)
+	 * return`) and treats an empty listing as NO EVIDENCE at any age.
+	 *
+	 * `true` therefore means: a listing that named at least one live pty, taken
+	 * inside the trust window, did not name this one; this process holds no
+	 * session for it; and nothing touched the row inside the activity grace.
+	 * Everything else — no snapshot, a stale snapshot, an empty listing, an
+	 * unreachable daemon — is `false`, i.e. "keep the question".
+	 *
+	 * Corroboration across passes is the CALLER's job (`reconcile` requires the
+	 * verdict twice, `QUESTION_EXPIRY_CORROBORATION_MS` apart): this is one
+	 * observation, and one observation is what the reaper refuses to act on.
+	 */
+	isProvablyGone(
+		hostTerminalId: string,
+		lastActivityMs?: number | null,
+	): boolean;
 	/** Diagnostics only. Never a control-flow input. */
 	describe(): {
 		hasSnapshot: boolean;
@@ -174,6 +208,41 @@ export function createTerminalLiveness(
 		return nowMs - snap.takenAtMs <= LIVENESS_SNAPSHOT_MAX_TRUST_MS;
 	}
 
+	/** The one copy of the verdict. Both exported predicates read it. */
+	function computeIsLive(
+		hostTerminalId: string,
+		lastActivityMs?: number | null,
+	): boolean {
+		// 1. This process owns a live session for it. Nothing else can outrank
+		//    that — it is the same fact the answer path's `session` guard proves.
+		if (deps.hasInProcessSession(hostTerminalId)) return true;
+
+		const nowMs = deps.now();
+		const snap = snapshot;
+
+		if (snap === null || !isFresh(snap, nowMs)) {
+			// No usable evidence. Kick a refresh for the NEXT caller and show.
+			if (inFlight === null) void run();
+			return true;
+		}
+		if (
+			nowMs - snap.takenAtMs >= LIVENESS_SNAPSHOT_TTL_MS &&
+			inFlight === null
+		) {
+			void run();
+		}
+		if (snap.aliveIds.has(hostTerminalId)) return true;
+
+		// 3. The row may simply be newer than the snapshot.
+		if (
+			typeof lastActivityMs === "number" &&
+			nowMs - lastActivityMs <= LIVENESS_ACTIVITY_GRACE_MS
+		) {
+			return true;
+		}
+		return false;
+	}
+
 	return {
 		async refresh() {
 			const nowMs = deps.now();
@@ -207,34 +276,22 @@ export function createTerminalLiveness(
 		},
 
 		isLive(hostTerminalId, lastActivityMs) {
-			// 1. This process owns a live session for it. Nothing else can outrank
-			//    that — it is the same fact the answer path's `session` guard proves.
-			if (deps.hasInProcessSession(hostTerminalId)) return true;
+			return computeIsLive(hostTerminalId, lastActivityMs);
+		},
 
-			const nowMs = deps.now();
+		isProvablyGone(hostTerminalId, lastActivityMs) {
+			// An EMPTY listing is never evidence here, at ANY age — see the
+			// interface. `isLive` trusts one after the warm-up; the irreversible
+			// callers do not, exactly as the reaper's reverse walk does not.
+			//
+			// Read BEFORE `computeIsLive`, which may swap the snapshot in via an
+			// opportunistic refresh: the emptiness test and the membership test must
+			// describe the same listing or "gone" could be decided against a
+			// snapshot that was never consulted.
 			const snap = snapshot;
-
-			if (snap === null || !isFresh(snap, nowMs)) {
-				// No usable evidence. Kick a refresh for the NEXT caller and show.
-				if (inFlight === null) void run();
-				return true;
-			}
-			if (
-				nowMs - snap.takenAtMs >= LIVENESS_SNAPSHOT_TTL_MS &&
-				inFlight === null
-			) {
-				void run();
-			}
-			if (snap.aliveIds.has(hostTerminalId)) return true;
-
-			// 3. The row may simply be newer than the snapshot.
-			if (
-				typeof lastActivityMs === "number" &&
-				nowMs - lastActivityMs <= LIVENESS_ACTIVITY_GRACE_MS
-			) {
-				return true;
-			}
-			return false;
+			if (snap === null || snap.aliveIds.size === 0) return false;
+			if (!isFresh(snap, deps.now())) return false;
+			return !computeIsLive(hostTerminalId, lastActivityMs);
 		},
 
 		describe() {

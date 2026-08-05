@@ -349,6 +349,95 @@ describe("(BRIDGE-LIVENESS) createTerminalLiveness", () => {
 	});
 });
 
+// ---------------------------------------------------------------------------
+// (QUESTION-EXPIRY) the strict predicate
+// ---------------------------------------------------------------------------
+
+describe("(QUESTION-EXPIRY) isProvablyGone is stricter than !isLive", () => {
+	it("requires positive evidence: no snapshot means not gone, not merely not live", () => {
+		const clock = { now: 1_000_000 };
+		const liveness = livenessHarness({ clock });
+		expect(liveness.isProvablyGone("t-unknown")).toBe(false);
+	});
+
+	it("refuses an EMPTY listing at any age, unlike isLive — the reaper's rule", async () => {
+		const clock = { now: LIVENESS_DAEMON_WARMUP_MS + 1 };
+		const liveness = livenessHarness({
+			clock,
+			startedAtMs: 0,
+			daemon: async () => [],
+		});
+		await liveness.refresh();
+		// The display filter believes it — that is what stops the tree rendering
+		// corpses on a machine with no live ptys.
+		expect(liveness.isLive("t-corpse", 0)).toBe(false);
+		// The irreversible caller does not.
+		expect(liveness.isProvablyGone("t-corpse", 0)).toBe(false);
+	});
+
+	it("says gone only when a NON-EMPTY fresh listing omits it", async () => {
+		const clock = { now: 1_000_000 };
+		const liveness = livenessHarness({
+			clock,
+			daemon: async () => ["t-alive"],
+		});
+		await liveness.refresh();
+		expect(liveness.isProvablyGone("t-corpse", 0)).toBe(true);
+		expect(liveness.isProvablyGone("t-alive", 0)).toBe(false);
+	});
+
+	it("honours the activity grace, so a terminal born after the listing is never condemned", async () => {
+		const clock = { now: 1_000_000 };
+		const liveness = livenessHarness({
+			clock,
+			daemon: async () => ["t-alive"],
+		});
+		await liveness.refresh();
+		expect(
+			liveness.isProvablyGone(
+				"t-newborn",
+				clock.now - LIVENESS_ACTIVITY_GRACE_MS + 1,
+			),
+		).toBe(false);
+		expect(
+			liveness.isProvablyGone(
+				"t-old",
+				clock.now - LIVENESS_ACTIVITY_GRACE_MS - 1,
+			),
+		).toBe(true);
+	});
+
+	it("refuses a snapshot past the trust window, and an unreachable daemon", async () => {
+		const clock = { now: 1_000_000 };
+		let fail = false;
+		const liveness = livenessHarness({
+			clock,
+			daemon: async () => {
+				if (fail) throw new Error("daemon down");
+				return ["t-alive"];
+			},
+		});
+		await liveness.refresh();
+		expect(liveness.isProvablyGone("t-corpse", 0)).toBe(true);
+		clock.now += LIVENESS_SNAPSHOT_MAX_TRUST_MS + 1;
+		expect(liveness.isProvablyGone("t-corpse", 0)).toBe(false);
+		fail = true;
+		await liveness.refresh();
+		expect(liveness.isProvablyGone("t-corpse", 0)).toBe(false);
+	});
+
+	it("never contradicts an in-process session", async () => {
+		const clock = { now: 1_000_000 };
+		const liveness = livenessHarness({
+			clock,
+			inProcess: new Set(["t-mine"]),
+			daemon: async () => ["t-alive"],
+		});
+		await liveness.refresh();
+		expect(liveness.isProvablyGone("t-mine", 0)).toBe(false);
+	});
+});
+
 describe("(BRIDGE-LIVENESS) refresh is bounded", () => {
 	it("stops waiting on a daemon listing that has not landed, and proceeds showing everything", async () => {
 		const clock = { now: 1_000_000 };

@@ -595,12 +595,22 @@ export function createCompanionBridge(
 			// presence lapse, which can be hours after the question was captured and
 			// at a moment no heartbeat has run — so this is the last point at which
 			// "the terminal you are about to be buzzed about no longer exists" can
-			// still be noticed. The predicate fails toward LIVE, so it can only
-			// suppress a buzz nobody could have acted on.
+			// still be noticed.
+			//
+			// It uses the STRICT predicate, and that is load-bearing rather than
+			// tidy. `evaluate` removes the entry from `armed` before it asks, and
+			// a `false` here routes straight to `forget()` — there is no second
+			// chance and no next tick. So the only two things allowed to drop a
+			// buzz are a record that is genuinely no longer pending and positive,
+			// non-empty-listing evidence that its terminal is gone; an unreachable
+			// daemon, a stale snapshot or an empty listing all keep the buzz.
 			isStillUnanswered: (questionId: QuestionId) => {
 				const question = questions.get(questionId);
 				if (question === null || question.state !== "pending") return false;
-				return liveness.isLive(question.hostTerminalId);
+				return !liveness.isProvablyGone(
+					question.hostTerminalId,
+					hostDb.resolveTerminalActivityMs(question.hostTerminalId),
+				);
 			},
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });

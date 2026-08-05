@@ -657,6 +657,20 @@ export interface QuestionSourceResolver {
 	 * a licence to fall back to a caller-supplied path.
 	 */
 	resolveTranscriptPath(hostTerminalId: string): string | null;
+	/**
+	 * (QUESTION-EXPIRY) The row's newest known instant — `last_attached_at ??
+	 * created_at` — or `null` when host.db has no row for the id at all.
+	 *
+	 * Unrestricted by `status`/`ended_at` and unjoined to `workspaces`, unlike
+	 * the two resolvers above: this is the input to a LIVENESS grace, and the
+	 * row it has to rescue is precisely the one that was created moments ago and
+	 * may not be in the daemon listing yet. Filtering it would reintroduce the
+	 * birth race the grace exists to close.
+	 *
+	 * `null` is "no timestamp", which the predicate treats as no grace, not as
+	 * proof of anything.
+	 */
+	resolveTerminalActivityMs(hostTerminalId: string): number | null;
 }
 
 /**
@@ -665,12 +679,28 @@ export interface QuestionSourceResolver {
  * interface so this module depends on the QUESTION it needs answered rather
  * than on the daemon plumbing that answers it.
  *
- * The predicate FAILS TOWARD LIVE, which is the direction that matters here: a
- * question wrongly expired is a blocked agent the user never hears about, while
- * a question wrongly kept is one extra row until the next heartbeat.
+ * The method is `isProvablyGone`, NOT `isLive`, and the difference is the whole
+ * safety argument. Expiry is IRREVERSIBLE — `settle(stale)` is terminal and
+ * `markStale` refuses to move a record afterwards — so this caller may act only
+ * on positive evidence of death, never on the absence of evidence of life. The
+ * strict predicate additionally refuses to read anything into an empty daemon
+ * listing, which `isLive` (a display filter, whose mistakes cost one refresh)
+ * deliberately does trust after its warm-up window.
+ *
+ * `lastActivityMs` is the row's newest known instant (`last_attached_at ??
+ * created_at`), which is what keeps a terminal created after the daemon
+ * snapshot was taken from reading as dead. Pass it: the display path
+ * (`listLiveTerminals`) always does, and it would be perverse for the one
+ * caller whose mistake is permanent to be the one flying without it.
+ *
+ * One observation is still not enough on its own — see
+ * `QUESTION_EXPIRY_CORROBORATION_MS`.
  */
 export interface QuestionTerminalLiveness {
-	isLive(hostTerminalId: string): boolean;
+	isProvablyGone(
+		hostTerminalId: string,
+		lastActivityMs?: number | null,
+	): boolean;
 }
 
 export interface QuestionStoreDeps {
@@ -1292,6 +1322,27 @@ interface TranscriptScanMark {
 }
 
 /**
+ * (QUESTION-EXPIRY) How long a question's terminal must have been PROVABLY GONE
+ * — across two separate reconcile passes, not merely twice inside one — before
+ * the question is settled `stale`.
+ *
+ * Five minutes, the same separation the reaper's reverse walk requires before
+ * it corrects a row, and for the same reason: the evidence is one `daemon.list()`
+ * per pass, a partially-populated one is a thing that happens, and the cost of
+ * believing a bad one is not symmetric. There it is a live terminal losing its
+ * place in the session list; here it is a live blocked agent losing its only
+ * wrist surface, permanently, because `settle(stale)` cannot be undone.
+ *
+ * It costs nothing that matters. The rows this exists to clear had been dead for
+ * up to 77 days; a question whose terminal really is gone is expired on the next
+ * heartbeat after the window instead of this one, and until then it behaves
+ * exactly as it did before the feature existed. The heartbeat runs every 60 s
+ * foreground / 300 s background, so this is never fewer than two passes and is
+ * usually several.
+ */
+export const QUESTION_EXPIRY_CORROBORATION_MS = 300_000;
+
+/**
  * (RECONCILE-STAT-CACHE) One stat, or `null` when there is nothing to compare.
  *
  * A failed stat is NOT swallowed into a verdict — it returns `null`, which makes
@@ -1400,6 +1451,18 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 	 * check that did not happen.
 	 */
 	let reconcileMarks = new Map<QuestionId, TranscriptScanMark>();
+
+	/**
+	 * (QUESTION-EXPIRY) questionId -> the instant this pass first saw its
+	 * terminal as provably gone. Built fresh and swapped in exactly like
+	 * `reconcileMarks`, so a question that recovers — or that settles by any
+	 * other route — silently drops its candidacy and starts from zero if it ever
+	 * comes back.
+	 *
+	 * This is the corroboration `markStale` cannot supply for itself: the verdict
+	 * it acts on is terminal, and one daemon listing is one fallible observation.
+	 */
+	let staleCandidates = new Map<QuestionId, number>();
 
 	function mintQuestionId(
 		toolUseId: string,
@@ -1783,6 +1846,8 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 			// supersede path, which retires a record without going through
 			// `settle()`.
 			const marks = new Map<QuestionId, TranscriptScanMark>();
+			// (QUESTION-EXPIRY) Same rebuild-and-swap discipline as `marks`.
+			const nextStaleCandidates = new Map<QuestionId, number>();
 			for (const question of store.listPending()) {
 				const current = await markTranscript(question.transcriptPath);
 				const previous = reconcileMarks.get(question.questionId);
@@ -1827,7 +1892,34 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 					// user answered at the desk moments before closing the pane is
 					// recorded as `resolved` with its real provenance rather than being
 					// flattened into `stale`.
-					if (deps.liveness.isLive(question.hostTerminalId)) continue;
+					//
+					// TWO INDEPENDENT OBSERVATIONS, `QUESTION_EXPIRY_CORROBORATION_MS`
+					// apart, and the strict predicate for each. `settle(stale)` is
+					// terminal — `markStale` refuses to move a non-pending record and
+					// the retraction it triggers is a push already pulled off the
+					// phone — so this decision has exactly the shape the reaper's
+					// reverse walk refuses to take on one `daemon.list()`. It costs a
+					// live blocked agent its only wrist surface, which is the one
+					// failure this feature cannot absorb, so it is held to the same bar:
+					// positive evidence (never `!isLive`), the row's own activity grace
+					// so a terminal born after the snapshot cannot lose that race, and
+					// the same verdict again on a later pass.
+					const activityMs = deps.source.resolveTerminalActivityMs(
+						question.hostTerminalId,
+					);
+					if (
+						!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)
+					) {
+						continue;
+					}
+					const firstSeenGoneAtMs =
+						staleCandidates.get(question.questionId) ?? nowMs;
+					if (nowMs - firstSeenGoneAtMs < QUESTION_EXPIRY_CORROBORATION_MS) {
+						// Carried forward, not acted on. The record stays pending and
+						// keeps its armed push, exactly as it did before this feature.
+						nextStaleCandidates.set(question.questionId, firstSeenGoneAtMs);
+						continue;
+					}
 					store.markStale(
 						question.questionId,
 						"the terminal this question was asked in no longer exists",
@@ -1844,6 +1936,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				settled.push(question.questionId);
 			}
 			reconcileMarks = marks;
+			staleCandidates = nextStaleCandidates;
 			prune(nowMs);
 			return settled;
 		},

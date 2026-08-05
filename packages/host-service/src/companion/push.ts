@@ -1013,6 +1013,15 @@ export interface PushSenderDeps {
 	 * Re-checked at fire time. The scheduler NEVER trusts that `cancelPending`
 	 * was called: a missed cancel would buzz the watch for a question already
 	 * answered, which is exactly the noise presence gating exists to remove.
+	 *
+	 * MUST FAIL TOWARD `true`. `evaluate` acts on this once and irreversibly —
+	 * the entry is already out of `armed` and a `false` goes to `forget()` —
+	 * so anything the implementation is merely UNSURE about (an unreachable
+	 * daemon, a stale liveness snapshot) has to answer "still unanswered". Only
+	 * positive knowledge that the question is settled, or positive evidence that
+	 * its terminal is gone, may return `false`. An implementation that reports
+	 * uncertainty as `false` silently loses buzzes and nothing downstream can
+	 * detect it.
 	 */
 	isStillUnanswered(questionId: QuestionId): boolean;
 	/**
@@ -1329,6 +1338,13 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			armed.delete(entry.questionId);
 
 			// NEVER trust that cancelPending was called.
+			//
+			// This is a ONE-SHOT decision: the entry is already out of `armed`, so
+			// `forget()` below is permanent — there is no later tick that
+			// reconsiders it. That is only safe because the predicate is contracted
+			// to fail toward `true` (see `isStillUnanswered`), so `false` means the
+			// question is settled or its terminal is provably gone, never merely
+			// "could not tell".
 			if (!deps.isStillUnanswered(entry.questionId)) {
 				forget(entry.questionId);
 				continue;

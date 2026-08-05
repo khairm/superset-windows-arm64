@@ -268,6 +268,15 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 						agentId: string | null;
 				  }
 				| undefined) ?? null,
+		// (QUESTION-EXPIRY) The row's newest known instant, for the liveness
+		// activity grace. Deliberately the UNRESTRICTED row lookup: the terminal
+		// this has to rescue is the one created seconds ago, which the daemon
+		// listing may predate.
+		resolveTerminalActivityMs: (id) => {
+			const row = reader.findTerminal(id);
+			if (row === null) return null;
+			return row.lastAttachedAt ?? row.createdAt;
+		},
 		readSidebarMirror: () => {
 			const meta =
 				(sidebarMetaStmt.get() as SidebarMirrorMetaRow | undefined) ?? null;
