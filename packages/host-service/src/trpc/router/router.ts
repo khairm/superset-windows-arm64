@@ -23,6 +23,13 @@ import { portsRouter } from "./ports";
 import { projectRouter } from "./project";
 import { pullRequestsRouter } from "./pull-requests";
 import { settingsRouter } from "./settings";
+// (SIDEBAR-MIRROR) fork-only: the renderer's write door for its sidebar
+// curation. Registered against THIS file as well as the router directory for
+// the same reason the companion mount is — a marker satisfied only by
+// fork-only files cannot notice when a merge drops the seam that reaches them,
+// and without this mount the mirror is never written and every consumer
+// silently falls back to the uncurated `host.db` set.
+import { sidebarMirrorRouter } from "./sidebar-mirror";
 import { terminalRouter } from "./terminal";
 import { terminalAgentsRouter } from "./terminal-agents";
 import { workspaceRouter } from "./workspace";
@@ -51,6 +58,8 @@ export const appRouter = router({
 	project: projectRouter,
 	ports: portsRouter,
 	settings: settingsRouter,
+	// (SIDEBAR-MIRROR) fork-only.
+	sidebarMirror: sidebarMirrorRouter,
 	terminal: terminalRouter,
 	terminalAgents: terminalAgentsRouter,
 	workspace: workspaceRouter,

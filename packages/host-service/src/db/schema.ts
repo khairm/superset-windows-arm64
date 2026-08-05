@@ -596,3 +596,138 @@ export const companionPushFence = sqliteTable("companion_push_fence", {
 	/** Null while `armed`. Set in the same write that moves the row to `sent`. */
 	sentAtMs: integer("sent_at_ms"),
 });
+
+/**
+ * (SIDEBAR-MIRROR) The desktop sidebar's CURATION, projected into host.db.
+ *
+ * WHY IT EXISTS. `host.db` is a lifecycle-free append store: every project,
+ * workspace and terminal session this machine has ever created, with no column
+ * for any of the judgements the user makes about them. Sidebar membership,
+ * project placement, soft-delete, archive, snooze, complete, hide, pin and
+ * manual order all live in renderer `localStorage` collections
+ * (`v2WorkspaceLocalState`, `v2SidebarProjects`), and nothing outside the
+ * renderer process can read them. Anything that wants to show "the user's
+ * sidebar" from outside the renderer — the companion bridge is the first such
+ * consumer — is therefore reading a structurally different, strictly larger set
+ * than the one on screen: 183 workspace rows where the sidebar shows a curated
+ * handful, soft-deleted and archived threads rendering as ordinary live rows.
+ *
+ * WHAT THIS IS AND IS NOT. The renderer stays the SOURCE OF TRUTH. These tables
+ * are a PROJECTION of it, refreshed by a debounced full-state replace from the
+ * renderer (`sidebarMirror.sync`), which is what makes them self-healing: any
+ * curation change, from any entry point, re-derives the whole snapshot rather
+ * than emitting a delta that could be missed. Nothing here is ever written by
+ * the host-service itself, and nothing here may be treated as authoritative if
+ * it disagrees with the renderer.
+ *
+ * THE FAILURE DIRECTION IS FIXED. A mirror can be stale (renderer not running,
+ * a sync in flight, a host-service restart between syncs). Every consumer must
+ * therefore fail toward SHOWING a row: an absent or older row means "no opinion
+ * recorded", never "hidden". `LEFT JOIN` with null-tolerant predicates, never
+ * `INNER`. A consumer that hides on absence turns a transient miss into a
+ * blocked agent the user never sees.
+ */
+export const sidebarWorkspaceState = sqliteTable(
+	"sidebar_workspace_state",
+	{
+		/** `v2WorkspaceLocalState` is keyed on this; so is `workspaces.id`. */
+		workspaceId: text("workspace_id").primaryKey(),
+		/**
+		 * The project the row is PLACED under in the sidebar, which is the
+		 * renderer's own `sidebarState.projectId` — deliberately not re-derived
+		 * from `workspaces.project_id`, because placement is a curation act and
+		 * this table records curation.
+		 */
+		projectId: text("project_id").notNull(),
+		/** Optional user-made section within the project. Null = ungrouped. */
+		sectionId: text("section_id"),
+		/** Manual drag order within its project/section. */
+		tabOrder: integer("tab_order").notNull().default(0),
+		/**
+		 * Removed from the sidebar. NOT the same as archived: the renderer's
+		 * classifier treats a hidden NON-main workspace as archived and a hidden
+		 * `main` workspace as merely hidden, so a consumer needs
+		 * `workspaces.type` to reproduce it. Mirrored raw for that reason.
+		 */
+		isHidden: integer("is_hidden", { mode: "boolean" })
+			.notNull()
+			.default(false),
+		archivedAt: integer("archived_at"),
+		/** Absolute epoch-ms deadline for a timed snooze. */
+		snoozeUntil: integer("snooze_until"),
+		/**
+		 * An "until next launch" snooze stores the renderer's per-launch id here.
+		 * It is only still snoozed while this equals the CURRENT launch id, which
+		 * is why `sidebar_mirror_meta.app_launch_id` exists — without it the
+		 * predicate is unevaluable outside the renderer.
+		 */
+		snoozeLaunchId: text("snooze_launch_id"),
+		completedAt: integer("completed_at"),
+		/** (RECYCLE-BIN) soft-delete. Set = the bin is its only surface. */
+		deletedAt: integer("deleted_at"),
+		pinnedAt: integer("pinned_at"),
+		/** When this row was last written by a sync. Freshness, not curation. */
+		syncedAtMs: integer("synced_at_ms").notNull(),
+	},
+	(table) => [
+		index("sidebar_workspace_state_project_id_idx").on(table.projectId),
+	],
+);
+
+/**
+ * (SIDEBAR-MIRROR) The project half — `v2SidebarProjects`, which is the
+ * desktop's membership gate for repos. A host project with no row here is not
+ * in the sidebar at all, however many workspaces it owns.
+ *
+ * Same staleness rule as above, with one extra trap: this collection is
+ * DEVICE-LOCAL localStorage, so a fresh install or cleared storage legitimately
+ * has zero rows. A consumer must distinguish "mirror never filled" (fall back
+ * to showing everything) from "user curated it down to nothing" — that is what
+ * `sidebar_mirror_meta` answers, and why an empty table alone must never be
+ * read as "hide every project".
+ */
+export const sidebarProjectState = sqliteTable("sidebar_project_state", {
+	/** `projects.id` — the sidebar row is keyed on the same project key. */
+	projectId: text("project_id").primaryKey(),
+	/** Manual drag order among sidebar projects. */
+	tabOrder: integer("tab_order").notNull().default(0),
+	isPinned: integer("is_pinned", { mode: "boolean" }).notNull().default(false),
+	isCollapsed: integer("is_collapsed", { mode: "boolean" })
+		.notNull()
+		.default(false),
+	syncedAtMs: integer("synced_at_ms").notNull(),
+});
+
+/**
+ * (SIDEBAR-MIRROR) One row describing the mirror ITSELF, so a consumer can tell
+ * an unfilled mirror from a curated-empty one and a live launch-scoped snooze
+ * from an expired one.
+ *
+ * ABSENCE OF THIS ROW IS THE BOOTSTRAP SIGNAL. No row = the renderer has never
+ * synced against this database, so the two tables above carry no information
+ * and every consumer must pass everything through. With a row present, an empty
+ * `sidebar_project_state` is a real statement: the user's sidebar is empty.
+ *
+ * `app_launch_id` is the renderer's current per-launch id at sync time. It is
+ * the only way to evaluate an "until next launch" snooze from outside the
+ * renderer: a workspace is launch-snoozed iff its `snooze_launch_id` equals
+ * this value.
+ */
+export const sidebarMirrorMeta = sqliteTable("sidebar_mirror_meta", {
+	/** Always 1. Single row; the mirror describes itself once. */
+	id: integer().primaryKey().default(1),
+	/** Wall clock of the last completed full replace. */
+	lastFullSyncAtMs: integer("last_full_sync_at_ms").notNull(),
+	/** The renderer launch that wrote it. See the snooze note above. */
+	appLaunchId: text("app_launch_id").notNull(),
+	/**
+	 * The org whose renderer collections this snapshot came from. `host.db` is
+	 * already per-organization, so a mismatch means the mirror and the database
+	 * disagree about whose data they hold — a consumer should refuse the mirror
+	 * (pass everything through) rather than filter on it.
+	 */
+	organizationId: text("organization_id").notNull(),
+	/** Row counts as written. Lets a reader spot a half-applied snapshot. */
+	workspaceCount: integer("workspace_count").notNull(),
+	projectCount: integer("project_count").notNull(),
+});
