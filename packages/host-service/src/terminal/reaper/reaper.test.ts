@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import {
 	PORT_SCAN_WARMUP_DELAYS_MS,
 	planPortScanSync,
+	planStaleRowCorrection,
 	REAP_INTERVAL_MS,
+	STALE_ROW_MIN_AGE_MS,
 	shouldReapRow,
 } from "./reaper.ts";
 
@@ -150,5 +152,98 @@ describe("shouldReapRow", () => {
 		expect(shouldReapRow({ status: "active", originWorkspaceId: null })).toBe(
 			true,
 		);
+	});
+});
+
+// (BRIDGE-LIVENESS) The reverse walk. Being wrong here costs a LIVE terminal its
+// place in the desktop's own session list, so every guard gets its own case.
+describe("(BRIDGE-LIVENESS) planStaleRowCorrection", () => {
+	const NOW = 10_000_000;
+	const OLD = NOW - STALE_ROW_MIN_AGE_MS - 1;
+
+	function row(overrides: Record<string, unknown> = {}) {
+		return {
+			status: "active",
+			originWorkspaceId: "w1",
+			createdAt: OLD,
+			lastAttachedAt: null,
+			...overrides,
+		};
+	}
+
+	function plan(
+		rows: [string, ReturnType<typeof row>][],
+		options: {
+			alive?: string[];
+			previous?: string[];
+			live?: (id: string) => boolean;
+		} = {},
+	) {
+		return planStaleRowCorrection({
+			aliveIds: new Set(options.alive ?? ["t-alive"]),
+			rowById: new Map(rows),
+			absentOnPreviousPass: new Set(options.previous ?? []),
+			isLive: options.live ?? noneLive,
+			nowMs: NOW,
+		});
+	}
+
+	it("needs TWO consecutive passes — one partially-populated daemon.list() must not condemn a live terminal", () => {
+		const first = plan([["t-corpse", row()]]);
+		expect(first.correct).toEqual([]);
+		expect([...first.absentThisPass]).toEqual(["t-corpse"]);
+		const second = plan([["t-corpse", row()]], { previous: ["t-corpse"] });
+		expect(second.correct).toEqual(["t-corpse"]);
+	});
+
+	it("does nothing at all when the daemon listed nothing — an empty listing is the documented racy-adoption case, never evidence", () => {
+		const result = plan([["t-corpse", row()]], {
+			alive: [],
+			previous: ["t-corpse"],
+		});
+		expect(result.correct).toEqual([]);
+		expect([...result.absentThisPass]).toEqual([]);
+	});
+
+	it("spares a row the daemon still lists", () => {
+		const result = plan([["t-alive", row()]], {
+			alive: ["t-alive"],
+			previous: ["t-alive"],
+		});
+		expect(result.correct).toEqual([]);
+	});
+
+	it("spares a row this process holds a live session for — an adopted session is absent from the daemon's view by design", () => {
+		const result = plan([["t-attached", row()]], {
+			previous: ["t-attached"],
+			live: (id) => id === "t-attached",
+		});
+		expect(result.correct).toEqual([]);
+	});
+
+	it("spares a row younger than the age floor, so a session created after the listing cannot lose the race", () => {
+		const result = plan([["t-newborn", row({ createdAt: NOW - 1 })]], {
+			previous: ["t-newborn"],
+		});
+		expect(result.correct).toEqual([]);
+	});
+
+	it("uses the NEWEST of createdAt and lastAttachedAt", () => {
+		const result = plan(
+			[["t-reattached", row({ createdAt: OLD, lastAttachedAt: NOW - 1 })]],
+			{ previous: ["t-reattached"] },
+		);
+		expect(result.correct).toEqual([]);
+	});
+
+	it("ignores rows that are not active or not workspace-owned — the forward walk owns those", () => {
+		const result = plan(
+			[
+				["t-exited", row({ status: "exited" })],
+				["t-orphan", row({ originWorkspaceId: null })],
+			],
+			{ previous: ["t-exited", "t-orphan"] },
+		);
+		expect(result.correct).toEqual([]);
 	});
 });

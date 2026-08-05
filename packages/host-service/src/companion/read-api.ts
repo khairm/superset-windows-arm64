@@ -19,21 +19,47 @@
  *    The review axis lives in renderer storage the bridge cannot reach.
  *    `needs_input` (red), `working` (yellow) and `idle` (neutral) are the whole
  *    vocabulary; a fourth state synthesised from coarse data would be a lie.
- *  - No enrichment layer in v1: snooze, archive, pin and the sidebar's manual
- *    drag order are renderer state and are not mirrored here.
- *  - No status decay. A binding whose last event was `Start` three days ago is
- *    reported as `working`, because that is what the host actually recorded.
- *    Inventing a timeout would manufacture a state transition that never
- *    happened. (`TerminalAgentStore.clearWorkspaceStatuses` is the existing
- *    escape hatch for a wedged agent, and it runs on the host side.)
+ *  - No status decay ON A LIVE TERMINAL. A binding whose last event was `Start`
+ *    three days ago is reported as `working`, because that is what the host
+ *    actually recorded. Inventing a timeout would manufacture a state
+ *    transition that never happened. (`TerminalAgentStore.clearWorkspaceStatuses`
+ *    is the existing escape hatch for a wedged agent, and it runs on the host
+ *    side.) This says NOTHING about a terminal that no longer exists — see
+ *    `(BRIDGE-LIVENESS)` below, which is not decay but existence.
  *  - No guessed transcript when the agent session is unknown: the read fails
  *    loud rather than serving somebody else's conversation.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS MODULE FILTERS, AND IN WHICH DIRECTION IT FAILS
+ * ---------------------------------------------------------------------------
+ * Two filters stand between `host.db` and the phone, and they are independent:
+ *
+ *  - `(BRIDGE-SIDEBAR-FILTER)` — CURATION. The user's sidebar, projected into
+ *    `host.db` by `(SIDEBAR-MIRROR)`: soft-deleted, completed, archived,
+ *    snoozed and hidden threads are off the desktop's default sidebar and are
+ *    therefore off the phone, and a repo the user removed from their sidebar
+ *    takes its threads with it.
+ *  - `(BRIDGE-LIVENESS)` — EXISTENCE. `status = 'active'` is not liveness; the
+ *    daemon's own listing is. 403 rows on this machine matched the old
+ *    predicate, 8 of them frozen on `PermissionRequest` and badging the phone
+ *    with permanently-blocked agents that had not existed for weeks.
+ *
+ * BOTH FAIL TOWARD SHOWING. Uncertainty — an unfilled mirror, a workspace with
+ * no mirrored row, an unreachable daemon, a stale snapshot — always renders the
+ * row. Hiding a real blocked agent is the only failure this feature cannot
+ * absorb. The answer path's guards fail the OTHER way (toward refusing) and
+ * deliberately do not consult curation at all: a question captured before its
+ * thread was snoozed is still answerable.
  */
 
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import Database from "better-sqlite3";
+import { MULTI_REPO_ANCHORS_DIR } from "../runtime/git/multi-repo";
+import { NON_GIT_BRANCH } from "../runtime/git/non-git";
+import { agentKindFromAgentId } from "./agent-kind";
+import type { AttemptLedger } from "./attempt-ledger";
 import {
 	BRIDGE_CAPABILITIES,
 	BRIDGE_PROTOCOL_RANGE,
@@ -42,9 +68,9 @@ import {
 	LIMITS,
 	SESSION_TTL_MS,
 } from "./config";
-import type { AttemptLedger } from "./attempt-ledger";
 import { isCanonicalWireId } from "./crypto";
 import { WIRE_ID_CHARS } from "./limits";
+import type { TerminalLiveness } from "./liveness";
 import {
 	type AnswerabilityContext,
 	deriveHandle,
@@ -53,6 +79,14 @@ import {
 	type QuestionStore,
 	readTranscriptWindow,
 } from "./question-store";
+import {
+	createSidebarCuration,
+	type SidebarCuration,
+	type SidebarMirrorMetaRow,
+	type SidebarMirrorSnapshot,
+	type SidebarProjectMirrorRow,
+	type SidebarWorkspaceMirrorRow,
+} from "./sidebar-filter";
 import {
 	type AgentKind,
 	type AgentStatus,
@@ -128,11 +162,18 @@ export interface HostBindingRow {
 export interface HostDbReader extends QuestionSourceResolver {
 	listProjects(): HostProjectRow[];
 	listWorkspaces(): HostWorkspaceRow[];
+	/**
+	 * Rows whose `status = 'active' AND ended_at IS NULL`. That is a DB fact, not
+	 * a liveness claim — see `(BRIDGE-LIVENESS)`. Every caller that means "this
+	 * terminal exists" goes through `listLiveTerminals` instead.
+	 */
 	listActiveTerminals(): HostTerminalRow[];
 	listBindings(): HostBindingRow[];
 	findWorkspace(hostWorkspaceId: string): HostWorkspaceRow | null;
 	findBinding(hostTerminalId: string): HostBindingRow | null;
 	findTerminal(hostTerminalId: string): HostTerminalRow | null;
+	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
+	readSidebarMirror(): SidebarMirrorSnapshot;
 	close(): void;
 }
 
@@ -178,6 +219,27 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 	const terminalSourceStmt = db.prepare(
 		"SELECT w.id AS hostWorkspaceId, w.project_id AS hostProjectId, b.agent_id AS agentId FROM terminal_sessions t JOIN workspaces w ON w.id = t.origin_workspace_id LEFT JOIN terminal_agent_bindings b ON b.terminal_id = t.id WHERE t.id = ?",
 	);
+	// (CAPTURE-BOUNDED) The SAME join, plus the session predicate, as a SEPARATE
+	// statement. It is not a tightening of the one above, deliberately: that one
+	// also serves `/v1/question` for SETTLED records, and a phone reopening the
+	// question it just answered on a terminal it has since closed must get its
+	// record back, not a 500. Two callers, two questions, two statements.
+	const activeTerminalSourceStmt = db.prepare(
+		"SELECT w.id AS hostWorkspaceId, w.project_id AS hostProjectId, b.agent_id AS agentId FROM terminal_sessions t JOIN workspaces w ON w.id = t.origin_workspace_id LEFT JOIN terminal_agent_bindings b ON b.terminal_id = t.id WHERE t.id = ? AND t.status = 'active' AND t.ended_at IS NULL",
+	);
+	// (BRIDGE-SIDEBAR-FILTER) The mirror. `sidebar_mirror_meta` is read FIRST
+	// and its absence short-circuits the other two: with nothing ever synced,
+	// their emptiness carries no information and reading them would invite a
+	// consumer to treat "no rows" as "nothing is in the sidebar".
+	const sidebarMetaStmt = db.prepare(
+		"SELECT last_full_sync_at_ms AS lastFullSyncAtMs, app_launch_id AS appLaunchId, organization_id AS organizationId, workspace_count AS workspaceCount, project_count AS projectCount FROM sidebar_mirror_meta WHERE id = 1",
+	);
+	const sidebarWorkspacesStmt = db.prepare(
+		"SELECT workspace_id AS workspaceId, project_id AS projectId, is_hidden AS isHidden, archived_at AS archivedAt, snooze_until AS snoozeUntil, snooze_launch_id AS snoozeLaunchId, completed_at AS completedAt, deleted_at AS deletedAt, pinned_at AS pinnedAt, tab_order AS tabOrder FROM sidebar_workspace_state",
+	);
+	const sidebarProjectsStmt = db.prepare(
+		"SELECT project_id AS projectId, tab_order AS tabOrder, is_pinned AS isPinned, is_collapsed AS isCollapsed FROM sidebar_project_state",
+	);
 
 	const reader: HostDbReader = {
 		listProjects: () => projectsStmt.all() as HostProjectRow[],
@@ -198,6 +260,26 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 						agentId: string | null;
 				  }
 				| undefined) ?? null,
+		resolveActiveTerminal: (id) =>
+			(activeTerminalSourceStmt.get(id) as
+				| {
+						hostProjectId: string;
+						hostWorkspaceId: string;
+						agentId: string | null;
+				  }
+				| undefined) ?? null,
+		readSidebarMirror: () => {
+			const meta =
+				(sidebarMetaStmt.get() as SidebarMirrorMetaRow | undefined) ?? null;
+			if (meta === null) {
+				return { meta: null, workspaces: [], projects: [] };
+			}
+			return {
+				meta,
+				workspaces: sidebarWorkspacesStmt.all() as SidebarWorkspaceMirrorRow[],
+				projects: sidebarProjectsStmt.all() as SidebarProjectMirrorRow[],
+			};
+		},
 		// (TRANSCRIPT-PATH-DERIVED) The question store's guard-1 source. Same
 		// derivation `/v1/transcript` uses, from the same two host.db columns, so
 		// the two can never disagree about which file is this agent's transcript.
@@ -210,7 +292,7 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 			) {
 				return null;
 			}
-			if (agentKindFromId(binding.agentId) !== "claude") return null;
+			if (agentKindFromAgentId(binding.agentId) !== "claude") return null;
 			const workspace = reader.findWorkspace(binding.workspaceId);
 			if (workspace === null) return null;
 			return deriveClaudeTranscriptPath(
@@ -230,6 +312,13 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 export interface ReadDeps {
 	db: HostDbReader;
 	questions: QuestionStore;
+	/**
+	 * (BRIDGE-LIVENESS) Does a `terminal_sessions` row still name a pty that
+	 * exists? REQUIRED, with no default: a composition root that cannot supply
+	 * it is one whose phone would badge every corpse in `host.db` as a live
+	 * agent, and that must fail to compile rather than degrade to noise.
+	 */
+	liveness: TerminalLiveness;
 	versions: {
 		appVersion: string;
 		hostServiceVersion: string;
@@ -475,9 +564,31 @@ function statusFromEventType(lastEventType: string): AgentStatus {
 }
 
 function agentKindFromId(agentId: string): AgentKind {
-	if (agentId === "claude") return "claude";
-	if (agentId === "codex") return "codex";
-	return "unknown";
+	return agentKindFromAgentId(agentId);
+}
+
+/**
+ * (BRIDGE-LIVENESS) The terminals that BOTH satisfy the `host.db` predicate and
+ * still name a pty that exists.
+ *
+ * ONE COPY, and every consumer that means "a terminal the user could be blocked
+ * in" uses it: `/v1/tree`, the `/v1/heartbeat` counts, and the wire-handle
+ * reverse lookup. They used to call `listActiveTerminals()` directly and each
+ * inherited the same 403 corpses.
+ *
+ * `lastAttachedAt ?? createdAt` is handed to the predicate as the row's newest
+ * known instant, which is what stops a terminal created after the daemon
+ * snapshot from reading as dead.
+ */
+export function listLiveTerminals(
+	db: Pick<HostDbReader, "listActiveTerminals">,
+	liveness: TerminalLiveness,
+): HostTerminalRow[] {
+	return db
+		.listActiveTerminals()
+		.filter((row) =>
+			liveness.isLive(row.id, row.lastAttachedAt ?? row.createdAt),
+		);
 }
 
 /**
@@ -525,11 +636,22 @@ function terminalTitle(binding: HostBindingRow | undefined): string {
 	return binding.agentId.charAt(0).toUpperCase() + binding.agentId.slice(1);
 }
 
+/**
+ * §7.2 reference order. `unknown` ranks LAST, below `idle`.
+ *
+ * It used to rank above `idle`, and both clients rank it below — and since the
+ * client re-sorts everything it receives, the two orders were visibly different
+ * lists. The spec never places `unknown`, so neither side was wrong; this is the
+ * side that agrees with the rest of this module, which already treats `unknown`
+ * as the weakest claim it can make: `tallyStatus` counts it as idle and
+ * `rollup()` uses it only as the final fallback. A status the bridge cannot
+ * name must not outrank one it can.
+ */
 const STATUS_RANK: Record<AgentStatus, number> = {
 	needs_input: 0,
 	working: 1,
-	unknown: 2,
-	idle: 3,
+	idle: 2,
+	unknown: 3,
 };
 
 /** Rollup precedence: red > yellow > neutral, matching the desktop's dots. */
@@ -542,14 +664,79 @@ function rollup(statuses: AgentStatus[]): AgentStatus {
 }
 
 /**
- * host.db does not record whether a project row is a plain folder, a git repo
- * or a multi-repo group — that discriminator lives in renderer/project metadata
- * the bridge cannot reach, and probing the filesystem per project on every tree
- * build is exactly the blocking-fs pattern that starves the renderer. Rather
- * than guess a kind we would have to invent, report the enum's designated
- * `unknown`. Filling this in needs a host-side source, not a heuristic.
+ * Hoisted: the anchors root never changes, and `path.resolve` on every project
+ * of every tree build would be work for nothing.
+ */
+const MULTI_REPO_ANCHOR_PREFIX = path
+	.resolve(MULTI_REPO_ANCHORS_DIR)
+	.toLowerCase();
+
+/**
+ * The baseline / no-`tree.read` value. A client that has not been granted the
+ * enriched tree gets the enum's designated member rather than a fact it was not
+ * granted, exactly like `agent.kind` and `lastActivityMs` beside it.
  */
 const PROJECT_KIND_UNKNOWN: ProjectKind = "unknown";
+
+/**
+ * (BRIDGE-SIDEBAR-FILTER) The workspaces the phone is allowed to see, as a map
+ * from `workspaces.id` to its row.
+ *
+ * ONE COPY for the same reason `deriveSessionStatus` is one copy: `/v1/tree`
+ * renders these and `/v1/heartbeat` counts them, and a badge that disagrees with
+ * the screen behind it is worse than either being wrong alone.
+ */
+function visibleWorkspaces(
+	rows: readonly HostWorkspaceRow[],
+	curation: SidebarCuration,
+): Map<string, HostWorkspaceRow> {
+	const visible = new Map<string, HostWorkspaceRow>();
+	for (const row of rows) {
+		if (curation.workspaceVerdict(row) !== "show") continue;
+		visible.set(row.id, row);
+	}
+	return visible;
+}
+
+/**
+ * The git / plain / multi-repo discriminator, derived from `host.db` alone.
+ *
+ * This used to be hardcoded `unknown` on the grounds that the discriminator
+ * "lives in renderer/project metadata the bridge cannot reach" and that
+ * computing it would need a per-project filesystem probe — the blocking-fs
+ * pattern that starves the renderer. Both halves were wrong, and the database
+ * says so: the host-service marks both kinds itself, with its own sentinels,
+ * and reading them is pure string work with no fs call at all.
+ *
+ *  - MULTI-REPO is the fork-owned ANCHOR DIRECTORY. A multi-repo project's
+ *    `repo_path` sits under `~/.superset/multi-repo/`; nothing else does. Same
+ *    rule `readMultiRepoConfig` uses, and it is deliberately the path — not the
+ *    presence of a config file — for the same reason it is there.
+ *  - PLAIN (non-git) is `NON_GIT_BRANCH`, the sentinel the host-service writes
+ *    onto a non-git workspace's `branch`. A non-git project has exactly one
+ *    workspace and it carries the sentinel.
+ *  - Everything else with at least one workspace is a git repo.
+ *  - A project with NO workspaces stays `unknown`. There is no evidence either
+ *    way, and `unknown` is the enum's designated member for exactly that.
+ *
+ * Multi-repo is checked first because a multi-repo BRANCH workspace is itself a
+ * plain container folder — classifying on the workspace alone would report the
+ * group as plain.
+ */
+function deriveProjectKind(
+	project: HostProjectRow,
+	workspaces: readonly HostWorkspaceRow[],
+): ProjectKind {
+	const repoPath = path.resolve(project.repoPath || "").toLowerCase();
+	if (
+		repoPath.startsWith(`${MULTI_REPO_ANCHOR_PREFIX}\\`) ||
+		repoPath.startsWith(`${MULTI_REPO_ANCHOR_PREFIX}/`)
+	) {
+		return "multi_repo";
+	}
+	if (workspaces.length === 0) return "unknown";
+	return workspaces.every((w) => w.branch === NON_GIT_BRANCH) ? "plain" : "git";
+}
 
 /** §7.2. `includeIdle` is explicit on every request; there is no server-side default. */
 export async function handleTree(
@@ -572,10 +759,18 @@ export async function handleTree(
 	// the client has not been granted.
 	const full = ctx.granted.includes("tree.read");
 
+	// (BRIDGE-LIVENESS) Refresh before reading, because this is one of the two
+	// handlers that can afford a daemon round trip. Never throws — a failure
+	// degrades to "no evidence", which shows everything.
+	await deps.liveness.refresh();
+
+	const nowMs = Date.now();
 	const answerability: AnswerabilityContext = { granted: ctx.granted };
+	const curation = createSidebarCuration(deps.db.readSidebarMirror(), nowMs);
 	const projects = deps.db.listProjects();
-	const workspaces = deps.db.listWorkspaces();
-	const terminals = deps.db.listActiveTerminals();
+	const allWorkspaces = deps.db.listWorkspaces();
+	const visible = visibleWorkspaces(allWorkspaces, curation);
+	const terminals = listLiveTerminals(deps.db, deps.liveness);
 	const bindings = new Map(
 		deps.db.listBindings().map((b) => [b.terminalId, b]),
 	);
@@ -585,6 +780,10 @@ export async function handleTree(
 
 	for (const row of terminals) {
 		if (row.originWorkspaceId === null) continue;
+		// Curated OUT means counted out too. The counts are the phone's badge for
+		// the very list below them; tallying a thread the user binned would make
+		// the badge argue with the screen.
+		if (!visible.has(row.originWorkspaceId)) continue;
 		const binding = bindings.get(row.id);
 		const pending = deps.questions.byHostTerminal(row.id);
 
@@ -631,12 +830,29 @@ export async function handleTree(
 		}
 	}
 
+	// (BRIDGE-SIDEBAR-FILTER) Grouped by the SIDEBAR's placement, not by
+	// `workspaces.project_id`: moving a thread under another repo is a curation
+	// act, and the phone mirrors where the user put it.
 	const workspacesByProject = new Map<string, Workspace[]>();
-	for (const row of workspaces) {
+	const workspaceRowsByProject = new Map<string, HostWorkspaceRow[]>();
+	for (const row of allWorkspaces) {
+		const placement = curation.effectiveProjectId(row);
+		const kindRows = workspaceRowsByProject.get(placement);
+		if (kindRows === undefined) workspaceRowsByProject.set(placement, [row]);
+		else kindRows.push(row);
+
+		if (!visible.has(row.id)) continue;
+
 		const all = terminalsByWorkspace.get(row.id) ?? [];
 		const status = rollup(all.map((t) => t.status));
 		const shown = includeIdle ? all : all.filter((t) => t.status !== "idle");
-		if (!includeIdle && shown.length === 0) continue;
+		// A workspace with nothing to show is dropped UNCONDITIONALLY. Emptiness
+		// is not an idle question: 63 workspaces on this machine have zero live
+		// terminals, and each one rendered an inert header row the user cannot
+		// even tap (only terminal rows are answerable). The skip used to sit
+		// behind `!includeIdle`, which every automatic client path sets to true —
+		// so it never once fired.
+		if (shown.length === 0) continue;
 
 		sortTerminals(shown);
 
@@ -659,9 +875,9 @@ export async function handleTree(
 				: null,
 		};
 
-		const list = workspacesByProject.get(row.projectId);
+		const list = workspacesByProject.get(placement);
 		if (list === undefined) {
-			workspacesByProject.set(row.projectId, [workspace]);
+			workspacesByProject.set(placement, [workspace]);
 		} else {
 			list.push(workspace);
 		}
@@ -669,8 +885,11 @@ export async function handleTree(
 
 	const outProjects: Project[] = [];
 	for (const row of projects) {
+		if (curation.projectVerdict(row.id) !== "show") continue;
 		const ws = workspacesByProject.get(row.id) ?? [];
-		if (!includeIdle && ws.length === 0) continue;
+		// Same unconditional skip, for the same reason: a project whose every
+		// workspace was dropped is a header with nothing under it.
+		if (ws.length === 0) continue;
 		ws.sort(
 			(a, b) =>
 				STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
@@ -680,7 +899,9 @@ export async function handleTree(
 			projectId: deriveHandle("project", row.id) as unknown as ProjectId,
 			name:
 				row.name.length > 0 ? row.name : path.basename(row.repoPath || row.id),
-			kind: PROJECT_KIND_UNKNOWN,
+			kind: full
+				? deriveProjectKind(row, workspaceRowsByProject.get(row.id) ?? [])
+				: PROJECT_KIND_UNKNOWN,
 			workspaces: ws,
 		});
 	}
@@ -916,11 +1137,26 @@ export async function handleTranscript(
  * over the ids host.db currently holds — never an inversion.
  *
  * (HANDLE-REVERSE-ONE-COPY) THE ENUMERATION IS THE POINT AND IT IS NOT CACHED.
- * The scan runs against `listActiveTerminals()` on EVERY call, so a terminal
- * that has closed stops resolving immediately — which is what lets the answer
- * path re-evaluate its guards before every keystroke without a stale mapping
- * surviving underneath them. Only the per-row hash is memoised, inside
- * `deriveHandle` (HANDLE-MEMO), and that is a pure function of its arguments.
+ * The scan runs on EVERY call, so a terminal that has closed stops resolving —
+ * which is what lets the answer path re-evaluate its guards before every
+ * keystroke without a stale mapping surviving underneath them. Only the per-row
+ * hash is memoised, inside `deriveHandle` (HANDLE-MEMO), and that is a pure
+ * function of its arguments.
+ *
+ * (BRIDGE-LIVENESS) The scan is over LIVE terminals, and that correction is
+ * what makes the paragraph above true. It used to scan `listActiveTerminals()`,
+ * and on the real database "a terminal that has closed stops resolving" was
+ * simply false: 403 rows still matched, so every terminal ever killed by a
+ * crash, a quit or a host-service restart kept resolving to a live wire handle
+ * indefinitely. The freshness this comment claims was being asserted by the
+ * comment rather than by the data.
+ *
+ * CURATION IS DELIBERATELY NOT APPLIED HERE. Whether a thread is on the user's
+ * sidebar decides what the phone LISTS, never what it may answer: a question
+ * captured before its workspace was snoozed is still a real question on a real
+ * terminal, and refusing it would be the "refused a healthy answer" failure.
+ * Liveness is applied because a dead terminal cannot be typed into at all — and
+ * it fails toward LIVE, so it can never manufacture that refusal either.
  *
  * `null` for an unknown handle. `index.ts`'s guard adapters want the `null`
  * (a handle they cannot resolve is a refusal, never a guess); `/v1/transcript`
@@ -928,9 +1164,10 @@ export async function handleTranscript(
  */
 export function findActiveHostTerminalId(
 	db: Pick<HostDbReader, "listActiveTerminals">,
+	liveness: TerminalLiveness,
 	handle: string,
 ): string | null {
-	for (const row of db.listActiveTerminals()) {
+	for (const row of listLiveTerminals(db, liveness)) {
 		if (deriveHandle("terminal", row.id) === handle) return row.id;
 	}
 	return null;
@@ -942,7 +1179,11 @@ export function findActiveHostTerminalId(
  * cannot see.
  */
 function resolveHostTerminalId(deps: ReadDeps, handle: string): string {
-	const hostTerminalId = findActiveHostTerminalId(deps.db, handle);
+	const hostTerminalId = findActiveHostTerminalId(
+		deps.db,
+		deps.liveness,
+		handle,
+	);
 	if (hostTerminalId === null) throw badRequest("unknown terminalId");
 	return hostTerminalId;
 }
@@ -992,6 +1233,11 @@ export async function handleHeartbeat(
 	}
 	const nowMs = Date.now();
 
+	// (BRIDGE-LIVENESS) The heartbeat is the other handler that can afford a
+	// daemon round trip, and it is the one that runs on a timer — so it is what
+	// keeps the snapshot fresh for the synchronous callers between beats.
+	await deps.liveness.refresh();
+
 	// Settle anything whose PostToolUse hook died in flight before reporting
 	// counts — a stuck "needs input" is what makes the phone cry wolf.
 	//
@@ -1003,7 +1249,7 @@ export async function handleHeartbeat(
 		deps.onQuestionsSettled(settled);
 	}
 
-	const counts = countStatuses(deps);
+	const counts = countStatuses(deps, nowMs);
 	const gseq = deps.currentGseq();
 
 	// §7.7 — the client's liveness watchdog multiplies this, so it must match the
@@ -1028,14 +1274,23 @@ export async function handleHeartbeat(
 	};
 }
 
-/** Counts are over TERMINALS — the leaf where a status is an observed fact. */
-function countStatuses(deps: ReadDeps): StatusCounts {
+/**
+ * Counts are over TERMINALS — the leaf where a status is an observed fact — and
+ * over exactly the terminals `/v1/tree` would render: live (`(BRIDGE-LIVENESS)`)
+ * and inside a curated workspace (`(BRIDGE-SIDEBAR-FILTER)`). Before both
+ * filters this returned `{needsInput: 8, working: 3, idle: 297}` on a machine
+ * whose eight "blocked" agents had last spoken 18-23 days earlier.
+ */
+function countStatuses(deps: ReadDeps, nowMs: EpochMs): StatusCounts {
 	const counts: StatusCounts = { needsInput: 0, working: 0, idle: 0 };
+	const curation = createSidebarCuration(deps.db.readSidebarMirror(), nowMs);
+	const visible = visibleWorkspaces(deps.db.listWorkspaces(), curation);
 	const bindings = new Map(
 		deps.db.listBindings().map((b) => [b.terminalId, b]),
 	);
-	for (const row of deps.db.listActiveTerminals()) {
+	for (const row of listLiveTerminals(deps.db, deps.liveness)) {
 		if (row.originWorkspaceId === null) continue;
+		if (!visible.has(row.originWorkspaceId)) continue;
 		// The SAME derivation `/v1/tree` reports, so the badge can never disagree
 		// with the screen behind it.
 		tallyStatus(

@@ -32,6 +32,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { HostDb } from "../db";
 import * as hostDbSchema from "../db/schema";
+import { getDaemonClient } from "../terminal/daemon-client-singleton";
 import {
 	isLiveTerminalSession,
 	snapshotSession,
@@ -44,6 +45,7 @@ import {
 	setCompanionQuestionSink,
 } from "../trpc/router/notifications";
 import { createAccessValidator } from "./access-jwt";
+import { resolveAgentKind } from "./agent-kind";
 import {
 	type AnswerDeps,
 	assertAnswerDeps,
@@ -102,6 +104,7 @@ import {
 	type TerminalLockRegistry,
 } from "./lease";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
+import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
 import { openPairingWindow, type PairingWindowHandle } from "./pairing";
 import { createPresenceStore, type PresenceStore } from "./presence";
 import { createPushSender, handleRegister, type PushSender } from "./push";
@@ -128,7 +131,6 @@ import {
 	setCompanionPresenceStore,
 } from "./registry";
 import type {
-	AgentKind,
 	Capability,
 	DeviceRecord,
 	EpochMs,
@@ -410,6 +412,30 @@ export function createCompanionBridge(
 		unwind.push({ what: "state anchor", close: () => anchor.close() });
 		const hostDb = openHostDbReadOnly(options.hostDbPath);
 		unwind.push({ what: "host db reader", close: async () => hostDb.close() });
+		/**
+		 * (BRIDGE-LIVENESS) The one place the bridge asks whether a terminal still
+		 * exists. Built HERE because it is the only layer that may touch the pty
+		 * plumbing: `read-api` and `question-store` take the interface, not the
+		 * daemon.
+		 *
+		 * The two sources are the same pair `listWorkspaceTerminalSessions` already
+		 * joins for the desktop's own session list — an in-process session, or an
+		 * id the daemon reports alive — so the bridge stops being LOOSER than the
+		 * host-service's own idea of a live terminal, which is what let 403 corpse
+		 * rows reach the phone.
+		 */
+		const liveness: TerminalLiveness = createTerminalLiveness({
+			hasInProcessSession: isLiveTerminalSession,
+			listDaemonAliveIds: async () => {
+				const daemon = await getDaemonClient();
+				return (await daemon.list())
+					.filter((session) => session.alive)
+					.map((session) => session.id);
+			},
+			now: () => Date.now(),
+			startedAtMs: bridgeStartedMs,
+			log: (event) => logger.warn("terminal liveness", event),
+		});
 		// (COMPANION-DB-FULL) The bridge's OWN write connection to host.db, at
 		// PRAGMA synchronous = FULL — set EXPLICITLY, never inherited. The shared
 		// `options.db` connection runs at the binding's WAL default, which in
@@ -520,7 +546,7 @@ export function createCompanionBridge(
 		// response against a closed source. The anchor, pushed further up, is
 		// released last of all: it is the ownership token for the on-disk state.
 		unwind.push({ what: "send-nonce source", close: () => sendNonces.close() });
-		const questions = createQuestionStore({ source: hostDb });
+		const questions = createQuestionStore({ source: hostDb, liveness });
 		const leases = createLeaseRegistry();
 		const locks = createTerminalLockRegistry();
 		const messageAttempts = createMessageAttemptStore();
@@ -561,10 +587,21 @@ export function createCompanionBridge(
 			presence,
 			fence: pushFence,
 			// Re-checked at fire time: a missed cancel would buzz the watch for a
-			// question already answered, which is the exact noise the 180 s delay
+			// question already answered, which is the exact noise the presence gate
 			// exists to remove.
-			isStillUnanswered: (questionId: QuestionId) =>
-				questions.get(questionId)?.state === "pending",
+			//
+			// (QUESTION-EXPIRY) Liveness is re-checked here too, and it is not
+			// redundant with the heartbeat's `reconcile`. A held push fires on
+			// presence lapse, which can be hours after the question was captured and
+			// at a moment no heartbeat has run — so this is the last point at which
+			// "the terminal you are about to be buzzed about no longer exists" can
+			// still be noticed. The predicate fails toward LIVE, so it can only
+			// suppress a buzz nobody could have acted on.
+			isStillUnanswered: (questionId: QuestionId) => {
+				const question = questions.get(questionId);
+				if (question === null || question.state !== "pending") return false;
+				return liveness.isLive(question.hostTerminalId);
+			},
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });
 			},
@@ -575,6 +612,7 @@ export function createCompanionBridge(
 		const readApi = createReadApi({
 			db: hostDb,
 			questions,
+			liveness,
 			versions: options.versions,
 			bridgeStartedMs,
 			// The real counter, from the only thing that advances it. A hardcoded 0
@@ -605,6 +643,7 @@ export function createCompanionBridge(
 		const answerDeps = createAnswerDeps({
 			db: options.db,
 			hostDb,
+			liveness,
 			questions,
 			leases,
 			locks,
@@ -1309,6 +1348,8 @@ interface AnswerAdapterDeps {
 	/** Live drizzle handle — `snapshotSession` adopts a session, so it writes. */
 	db: HostDb;
 	hostDb: HostDbReader;
+	/** (BRIDGE-LIVENESS) Gates the wire-handle reverse lookup. */
+	liveness: TerminalLiveness;
 	questions: QuestionStore;
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
@@ -1335,7 +1376,7 @@ interface AnswerAdapterDeps {
  */
 function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 	const hostTerminalIdOf = (terminalId: TerminalId): string | null =>
-		findActiveHostTerminalId(deps.hostDb, terminalId);
+		findActiveHostTerminalId(deps.hostDb, deps.liveness, terminalId);
 
 	/**
 	 * Both host ids in ONE lookup, because the pty writer needs the pair and
@@ -1468,7 +1509,17 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			const binding = deps.agents.get(hostTerminalId);
 			if (!binding) return { kind: "none", bound: false, agentSessionId: null };
 			return {
-				kind: agentKindOf(binding.definitionId),
+				// (BRIDGE-AGENT-KIND) definitionId FIRST, agentId as the fallback.
+				//
+				// This used to read `definitionId` alone, and on this machine that
+				// column is NULL on every persisted binding — the notify hook does not
+				// supply it — so guard 9 answered `unknown` for healthy Claude
+				// terminals and `/v1/answer` refused three consecutive attempts on one
+				// live question with "unsupported agent kind: unknown", while
+				// `/v1/tree` rendered the same terminal as Claude from `agent_id`.
+				// Custom agent configs make it worse: their definition ids are UUIDs,
+				// which would read `unknown` even when the column IS populated.
+				kind: resolveAgentKind(binding),
 				bound: true,
 				agentSessionId: binding.agentSessionId ?? null,
 			};
@@ -1587,14 +1638,6 @@ function askqOwnerKey(agentId: string | null): string | null {
 	if (agentId === null || agentId.length === 0) return "_main";
 	const sanitized = agentId.replace(/[^A-Za-z0-9_-]/g, "");
 	return sanitized.length > 0 ? sanitized : null;
-}
-
-function agentKindOf(definitionId: string | undefined): AgentKind {
-	if (typeof definitionId !== "string") return "unknown";
-	const id = definitionId.toLowerCase();
-	if (id.includes("claude")) return "claude";
-	if (id.includes("codex")) return "codex";
-	return "unknown";
 }
 
 /**

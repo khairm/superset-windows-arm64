@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
 import { portManager } from "../../ports/port-manager.ts";
@@ -7,6 +8,8 @@ import { disposeSessionAndWait, isLiveTerminalSession } from "../terminal.ts";
 interface ReapResult {
 	reaped: number;
 	failed: number;
+	/** (BRIDGE-LIVENESS) Rows corrected from `active` to `disposed`. */
+	corrected: number;
 }
 
 export const REAP_INTERVAL_MS = 5 * 60 * 1000;
@@ -29,6 +32,8 @@ interface TerminalRow {
 	status: string;
 	originWorkspaceId: string | null;
 	disposeRequestedAt?: number | null;
+	createdAt?: number;
+	lastAttachedAt?: number | null;
 }
 
 /**
@@ -114,10 +119,81 @@ function loadTerminalRowsById(db: HostDb): Map<string, TerminalRow> {
 			status: terminalSessions.status,
 			originWorkspaceId: terminalSessions.originWorkspaceId,
 			disposeRequestedAt: terminalSessions.disposeRequestedAt,
+			createdAt: terminalSessions.createdAt,
+			lastAttachedAt: terminalSessions.lastAttachedAt,
 		})
 		.from(terminalSessions)
 		.all();
 	return new Map(rows.map((row) => [row.id, row]));
+}
+
+/**
+ * (BRIDGE-LIVENESS) How recently a row must have been touched to be spared the
+ * reverse walk regardless of the daemon's listing. Covers a session created
+ * between the listing and this pass.
+ */
+export const STALE_ROW_MIN_AGE_MS = 60_000;
+
+/**
+ * (BRIDGE-LIVENESS) THE REVERSE WALK: rows whose pty is gone.
+ *
+ * `terminal_sessions.status` leaves `active` only via an explicit dispose or a
+ * live in-process `onExit`. A host-service crash, a force-quit or a machine
+ * reboot leaves the row `active` forever, and the reap pass only ever walked
+ * daemon -> row, so nothing corrected it. Measured: 403 such rows, spanning 77
+ * days, of which 3 had been attached in the last 24 h. They are why the phone
+ * badged eight permanently-blocked agents that had not existed for weeks.
+ *
+ * PURE, because the conditions under which it is safe to write are the whole
+ * point and they must be testable without a daemon:
+ *
+ *  1. The daemon listed SOMETHING. An empty listing is the documented
+ *     racy-adoption case (`PORT_SCAN_WARMUP_DELAYS_MS`) and is never evidence.
+ *  2. The row is `active` and workspace-owned. Anything else is already the
+ *     forward walk's business.
+ *  3. The daemon does not list it AND this process holds no live session for
+ *     it. Either alone is insufficient — an adopted session is absent from
+ *     memory by design.
+ *  4. It was absent on the PREVIOUS pass too. Five minutes apart, so a single
+ *     partially-populated `daemon.list()` cannot condemn a live terminal.
+ *  5. It is older than `STALE_ROW_MIN_AGE_MS`, so a session created seconds ago
+ *     cannot lose a race with the listing that was taken before it existed.
+ *
+ * Being wrong here costs a LIVE terminal its place in the session dropdown and
+ * in pane adoption (`listWorkspaceTerminalSessions` filters on `status`), which
+ * is why the bar is five independent conditions and not one.
+ */
+export function planStaleRowCorrection({
+	aliveIds,
+	rowById,
+	absentOnPreviousPass,
+	isLive,
+	nowMs,
+}: {
+	aliveIds: ReadonlySet<string>;
+	rowById: Map<string, TerminalRow>;
+	absentOnPreviousPass: ReadonlySet<string>;
+	isLive: (terminalId: string) => boolean;
+	nowMs: number;
+}): { correct: string[]; absentThisPass: Set<string> } {
+	const correct: string[] = [];
+	const absentThisPass = new Set<string>();
+	if (aliveIds.size === 0) return { correct, absentThisPass };
+
+	for (const [id, row] of rowById) {
+		if (row.status !== "active") continue;
+		if (!row.originWorkspaceId) continue;
+		if (aliveIds.has(id)) continue;
+		if (isLive(id)) continue;
+		const touchedAt = Math.max(row.createdAt ?? 0, row.lastAttachedAt ?? 0);
+		if (touchedAt > 0 && nowMs - touchedAt < STALE_ROW_MIN_AGE_MS) continue;
+		if (!absentOnPreviousPass.has(id)) {
+			absentThisPass.add(id);
+			continue;
+		}
+		correct.push(id);
+	}
+	return { correct, absentThisPass };
 }
 
 // Port scanning is best-effort: a port-manager error must not propagate to the
@@ -185,6 +261,7 @@ function syncPortScans(db: HostDb): ReturnType<typeof runPortScanSync> {
 async function reapOrphanedSessions(
 	db: HostDb,
 	rowlessPendingSecondPass: Set<string>,
+	staleRowsPendingSecondPass: Set<string>,
 ): Promise<ReapResult> {
 	// Sync the port scanner before the empty-list short-circuit below so an idle
 	// daemon still drops stale scans.
@@ -192,7 +269,8 @@ async function reapOrphanedSessions(
 
 	if (liveSessions.length === 0) {
 		rowlessPendingSecondPass.clear();
-		return { reaped: 0, failed: 0 };
+		staleRowsPendingSecondPass.clear();
+		return { reaped: 0, failed: 0, corrected: 0 };
 	}
 
 	const orphans: { id: string; rowless: boolean }[] = [];
@@ -234,20 +312,57 @@ async function reapOrphanedSessions(
 	rowlessPendingSecondPass.clear();
 	for (const id of stillRowless) rowlessPendingSecondPass.add(id);
 
-	return { reaped, failed };
+	// (BRIDGE-LIVENESS) The other direction: rows the daemon has forgotten. This
+	// only writes the row — there is no pty left to kill, which is exactly the
+	// condition being recorded.
+	const nowMs = Date.now();
+	const { correct, absentThisPass } = planStaleRowCorrection({
+		aliveIds: new Set(liveSessions.map((session) => session.id)),
+		rowById,
+		absentOnPreviousPass: staleRowsPendingSecondPass,
+		isLive: isLiveTerminalSession,
+		nowMs,
+	});
+	let corrected = 0;
+	for (const id of correct) {
+		try {
+			db.update(terminalSessions)
+				.set({ status: "disposed", endedAt: nowMs })
+				.where(eq(terminalSessions.id, id))
+				.run();
+			corrected += 1;
+		} catch (err) {
+			console.warn(
+				`[host-service] terminal reaper: could not correct stale row ${id}:`,
+				err,
+			);
+			// Keep it pending so the next pass retries rather than restarting the
+			// two-pass clock on a row we have already confirmed twice.
+			absentThisPass.add(id);
+		}
+	}
+	staleRowsPendingSecondPass.clear();
+	for (const id of absentThisPass) staleRowsPendingSecondPass.add(id);
+
+	return { reaped, failed, corrected };
 }
 
 export function startTerminalReaper(db: HostDb): () => void {
 	const rowlessPendingSecondPass = new Set<string>();
+	const staleRowsPendingSecondPass = new Set<string>();
 	let running = false;
 	const run = () => {
 		if (running) return;
 		running = true;
-		void reapOrphanedSessions(db, rowlessPendingSecondPass)
+		void reapOrphanedSessions(
+			db,
+			rowlessPendingSecondPass,
+			staleRowsPendingSecondPass,
+		)
 			.then((result) => {
-				if (result.reaped > 0 || result.failed > 0) {
+				if (result.reaped > 0 || result.failed > 0 || result.corrected > 0) {
 					console.log(
-						`[host-service] terminal reaper: ${result.reaped} reaped, ${result.failed} failed`,
+						`[host-service] terminal reaper: ${result.reaped} reaped, ${result.failed} failed, ${result.corrected} stale row(s) corrected`,
 					);
 				}
 			})

@@ -74,6 +74,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { agentKindFromAgentId } from "./agent-kind";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -629,6 +630,24 @@ export interface QuestionSourceResolver {
 		agentId: string | null;
 	} | null;
 	/**
+	 * (CAPTURE-BOUNDED) The same resolution, restricted to a session row that is
+	 * still `active` with no `ended_at`.
+	 *
+	 * A SEPARATE method rather than a predicate added to the one above, because
+	 * the two callers ask different questions. `capture` asks "may I start
+	 * tracking a question here?" and its own refusal text says "names no active
+	 * terminal joined to a workspace in host.db" — a claim the unrestricted query
+	 * did not make, so 212 disposed rows on this machine sailed through it.
+	 * `resolveSource` asks "where did this record come from?" and must keep
+	 * answering for SETTLED records on terminals the user has since closed, or
+	 * reopening the question you just answered becomes a 500.
+	 */
+	resolveActiveTerminal(hostTerminalId: string): {
+		hostProjectId: string;
+		hostWorkspaceId: string;
+		agentId: string | null;
+	} | null;
+	/**
 	 * (TRANSCRIPT-PATH-DERIVED) The agent transcript path for this terminal,
 	 * computed from host.db's own workspace path and agent session id — the two
 	 * facts the unauthenticated hook cannot choose independently of each other.
@@ -640,8 +659,23 @@ export interface QuestionSourceResolver {
 	resolveTranscriptPath(hostTerminalId: string): string | null;
 }
 
+/**
+ * (QUESTION-EXPIRY) Does the terminal a pending question is waiting on still
+ * exist? Implemented by `(BRIDGE-LIVENESS)`; declared as its own one-method
+ * interface so this module depends on the QUESTION it needs answered rather
+ * than on the daemon plumbing that answers it.
+ *
+ * The predicate FAILS TOWARD LIVE, which is the direction that matters here: a
+ * question wrongly expired is a blocked agent the user never hears about, while
+ * a question wrongly kept is one extra row until the next heartbeat.
+ */
+export interface QuestionTerminalLiveness {
+	isLive(hostTerminalId: string): boolean;
+}
+
 export interface QuestionStoreDeps {
 	source: QuestionSourceResolver;
+	liveness: QuestionTerminalLiveness;
 }
 
 export interface QuestionStore {
@@ -1300,9 +1334,8 @@ function sameTranscriptFile(
 // ---------------------------------------------------------------------------
 
 function agentKindOf(agentId: string | null): QuestionAgentKind {
-	if (agentId === "claude") return "claude";
-	if (agentId === "codex") return "codex";
-	return "unknown";
+	// (BRIDGE-AGENT-KIND) One rule, shared with the answer path's binding check.
+	return agentKindFromAgentId(agentId);
 }
 
 /** Which capabilities a given prompt shape needs before a phone may answer it. */
@@ -1526,7 +1559,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 			// record was unusable anyway: `resolveSource` throws for it, so every
 			// `/v1/question` and every summary projection over it failed. Rejecting
 			// it here turns a late, obscure 500 into a loud refusal at the door.
-			const binding = deps.source.resolveTerminal(input.hostTerminalId);
+			const binding = deps.source.resolveActiveTerminal(input.hostTerminalId);
 			if (binding === null) {
 				throw new CaptureRejectedError(
 					"hostTerminalId",
@@ -1771,7 +1804,37 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				}
 				// `unreadable` deliberately does nothing: it is "I could not check",
 				// and treating it as either answer would be inventing a fact.
-				if (verdict !== "resolved") continue;
+				if (verdict !== "resolved") {
+					// (QUESTION-EXPIRY) The transcript says nothing — but does the
+					// terminal still exist?
+					//
+					// `reconcile` used to settle on a `tool_result` and nothing else, so
+					// a question whose terminal was killed by a pane close, a quit or a
+					// crash stayed PENDING forever: it kept its armed push (which fires
+					// on presence lapse, not on a short timer, so the window is
+					// unbounded), kept growing `oldestUnansweredMs` while `counts`
+					// reported zero blocked agents, and kept a slot against the
+					// 512-record cap. Nothing in the system ever asked whether the
+					// terminal was still there.
+					//
+					// `stale` rather than `resolved` because nobody answered it. It is
+					// terminal, it makes `unanswerableReason` say so, and returning the
+					// id here routes it through the existing `onQuestionsSettled` ->
+					// `push.cancelPending` wiring, which is what retracts a notification
+					// already sitting on the phone.
+					//
+					// Ordering: the transcript is consulted FIRST, so a question the
+					// user answered at the desk moments before closing the pane is
+					// recorded as `resolved` with its real provenance rather than being
+					// flattened into `stale`.
+					if (deps.liveness.isLive(question.hostTerminalId)) continue;
+					store.markStale(
+						question.questionId,
+						"the terminal this question was asked in no longer exists",
+					);
+					settled.push(question.questionId);
+					continue;
+				}
 				question.resolvedAtMs = nowMs;
 				// Nothing paired resolved it — every device answer goes through
 				// `resolve()` with its own provenance — so it was answered at the
