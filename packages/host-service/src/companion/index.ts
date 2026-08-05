@@ -606,13 +606,44 @@ export function createCompanionBridge(
 			// It uses the STRICT predicate, and that is load-bearing rather than
 			// tidy. `evaluate` removes the entry from `armed` before it asks, and
 			// a `false` here routes straight to `forget()` — there is no second
-			// chance and no next tick. So the only two things allowed to drop a
-			// buzz are a record that is genuinely no longer pending and positive,
-			// non-empty-listing evidence that its terminal is gone; an unreachable
-			// daemon, a stale snapshot or an empty listing all keep the buzz.
+			// chance and no next tick. So the only three things allowed to drop a
+			// buzz are a record that is genuinely no longer pending, positive
+			// non-empty-listing evidence that its terminal is gone, and a record
+			// this store has never seen at all (the restart case, below); an
+			// unreachable daemon, a stale snapshot or an empty listing all keep the
+			// buzz.
 			isStillUnanswered: (questionId: QuestionId) => {
 				const question = questions.get(questionId);
-				if (question === null || question.state !== "pending") return false;
+				if (question === null) {
+					// ABSENT is not the same fact as SETTLED, and the two used to share
+					// a branch. Eviction cannot produce this — `evictOldestSettled` and
+					// `prune` both skip pending records by construction — so the one
+					// way a push can be armed for a questionId the store has never
+					// heard of is a HOST-SERVICE RESTART: the push fence is durable
+					// (rows in host.db) and rebuilds `armed` at construction, while
+					// QuestionStore is memory-only and starts empty. Every held push
+					// from before the restart therefore lands here.
+					//
+					// `false` is still the right answer, and it is the only one
+					// available: the record that carried the terminal id, the transcript
+					// path and the option list is gone, so the bridge could not serve
+					// `/v1/question` for it or accept an answer to it — a buzz would
+					// take the user to their wrist for a question the bridge would then
+					// 404. That is a legitimate `false` rather than the uncertainty the
+					// contract forbids reporting as `false`.
+					//
+					// It is LOGGED because it is silent otherwise and it is not free: a
+					// user who was away across a host-service restart loses the buzz for
+					// every question that was still held, and nothing else in the system
+					// would ever say so. Naming the cause here is what stops that being
+					// diagnosed as "push is broken".
+					logger.error(
+						"a held push names a question this store has never seen — the host-service restarted after it was armed (the fence is durable, the question store is memory-only); dropping the buzz because the question can no longer be served or answered",
+						{ questionId },
+					);
+					return false;
+				}
+				if (question.state !== "pending") return false;
 				return !liveness.isProvablyGone(
 					question.hostTerminalId,
 					hostDb.resolveTerminalActivityMs(question.hostTerminalId),

@@ -1022,6 +1022,17 @@ export interface PushSenderDeps {
 	 * its terminal is gone, may return `false`. An implementation that reports
 	 * uncertainty as `false` silently loses buzzes and nothing downstream can
 	 * detect it.
+	 *
+	 * ABSENCE IS A THIRD CASE AND IT IS A LEGITIMATE `false`. `reconstruct()`
+	 * below rebuilds `armed` from the durable fence at construction, but the
+	 * question store the implementation consults is in memory only — so after a
+	 * host-service restart every held push asks about a questionId that store has
+	 * never seen. That is NOT the forbidden "unsure": the record carrying the
+	 * terminal id, the transcript path and the options is gone, so `/v1/question`
+	 * would 404 and `/v1/answer` would refuse. Buzzing a wrist toward a question
+	 * the bridge cannot serve is worse than not buzzing. It is a real cost paid
+	 * silently, though, so the implementation is expected to LOG it and name the
+	 * restart rather than fold it into the settled branch.
 	 */
 	isStillUnanswered(questionId: QuestionId): boolean;
 	/**
