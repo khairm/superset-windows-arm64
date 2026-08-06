@@ -317,7 +317,6 @@ export const terminalRouter = router({
 			}
 
 			const result = await disposeSessionAndWait(input.terminalId, ctx.db);
-			ctx.terminalAgentStore.markTerminalExited(input.terminalId);
 
 			// (DISPOSE-LIMBO) Report what actually happened. This used to return
 			// `status: "disposed"` unconditionally while discarding
@@ -328,6 +327,36 @@ export const terminalRouter = router({
 			// with only an intent-to-kill stamp on it. The dispose is retried by
 			// the reaper either way; the caller's job is to stop claiming success
 			// it does not have.
+			//
+			// The agent binding is DURABLE STATE and is deleted only on
+			// `dbDisposition === "disposed"` — the one outcome that proves THIS
+			// terminal's generation was durably marked dead:
+			//
+			//  - `pending`: the close never confirmed, so the PTY and its `active`
+			//    row are still alive. Deleting the binding here dropped the
+			//    terminal out of the agent-status snapshot, and the next reconnect
+			//    sweep read that absence as "the host disowns it" and cleared a
+			//    blocked agent's red dot permanently — the exact failure the
+			//    snapshot exists to prevent, caused by the kill that failed.
+			//  - `superseded`: the id now names a REPLACEMENT terminal, so the
+			//    binding is the replacement's. Deleting it would blind the dots
+			//    for a terminal that is running right now.
+			//  - `no-row`: nothing durable references the id, so the binding is
+			//    already defunct — every read hides it via the session-liveness
+			//    join, and `deleteDefunct` collects it. Nothing to gain by racing
+			//    that, and the strict rule is easier to keep true.
+			if (result.dbDisposition === "disposed") {
+				ctx.terminalAgentStore.markTerminalExited(input.terminalId);
+			}
+
+			if (result.dbDisposition === "superseded") {
+				return {
+					terminalId: input.terminalId,
+					status: "superseded" as const,
+					reason:
+						"A newer terminal now owns this id; the old one was closed, this one was not.",
+				};
+			}
 			if (!result.daemonCloseSucceeded) {
 				return {
 					terminalId: input.terminalId,

@@ -82,6 +82,13 @@ export interface CreateAppResult {
 	 * second one, which would look correct and serve a stale `byTerminal` map.
 	 */
 	terminalAgentStore: TerminalAgentStore;
+	/**
+	 * (DISPOSE-LIMBO) The one bus this app broadcasts on. Exposed for
+	 * `startTerminalReaper`: a dispose it retries has no in-memory session left
+	 * to broadcast the confirming exit from, so without this the row flips
+	 * `active -> disposed` and the renderer is never told.
+	 */
+	eventBus: EventBus;
 	dispose: () => Promise<void>;
 }
 
@@ -338,5 +345,16 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		}
 	};
 
-	return { app, injectWebSocket, api, db, terminalAgentStore, dispose };
+	return {
+		app,
+		injectWebSocket,
+		api,
+		db,
+		terminalAgentStore,
+		// (DISPOSE-LIMBO) Exposed so the caller can hand it to
+		// `startTerminalReaper`: a reaped terminal's confirming exit has no
+		// in-memory session to broadcast from, and this is the only bus there is.
+		eventBus,
+		dispose,
+	};
 }

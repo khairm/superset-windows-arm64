@@ -93,25 +93,26 @@ async function main(): Promise<void> {
 		apiUrl: env.SUPERSET_API_URL,
 	});
 
-	const { app, injectWebSocket, api, db, terminalAgentStore } = createApp({
-		config: {
-			organizationId: env.ORGANIZATION_ID,
-			dbPath: env.HOST_DB_PATH,
-			cloudApiUrl: env.SUPERSET_API_URL,
-			migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
-			allowedOrigins: [
-				"superset-app://app",
-				`http://localhost:${env.DESKTOP_VITE_PORT}`,
-				`http://127.0.0.1:${env.DESKTOP_VITE_PORT}`,
-			],
-		},
-		providers: {
-			auth: authProvider,
-			hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
-			credentials: new LocalGitCredentialProvider(),
-			modelResolver: new LocalModelProvider(),
-		},
-	});
+	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
+		createApp({
+			config: {
+				organizationId: env.ORGANIZATION_ID,
+				dbPath: env.HOST_DB_PATH,
+				cloudApiUrl: env.SUPERSET_API_URL,
+				migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
+				allowedOrigins: [
+					"superset-app://app",
+					`http://localhost:${env.DESKTOP_VITE_PORT}`,
+					`http://127.0.0.1:${env.DESKTOP_VITE_PORT}`,
+				],
+			},
+			providers: {
+				auth: authProvider,
+				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+				credentials: new LocalGitCredentialProvider(),
+				modelResolver: new LocalModelProvider(),
+			},
+		});
 
 	const startedAt = Date.now();
 	const server = serve(
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
 			installProcessSafetyNet();
 
 			// Orphan reaping + port detection for terminals no renderer has attached.
-			startTerminalReaper(db);
+			startTerminalReaper(db, eventBus);
 
 			// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
 			// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. THIS is

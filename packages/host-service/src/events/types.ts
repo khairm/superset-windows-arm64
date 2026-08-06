@@ -56,7 +56,7 @@ export type TerminalLifecycleMessage =
 			 * resolved) and `exitCode`/`signal` describe the real exit. `false`
 			 * means the host is announcing an UNCONFIRMED close: the dispose was
 			 * requested, the sockets are gone and the row is stamped, but the
-			 * daemon never answered � the process may still be running, and the
+			 * daemon never answered — the process may still be running, and the
 			 * `exitCode: 0` on the message is a placeholder, not an observation.
 			 * Consumers that take irreversible action on an exit (marking a run
 			 * stopped, clearing latched agent state) must ignore an unconfirmed

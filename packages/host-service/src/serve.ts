@@ -54,21 +54,22 @@ async function main(): Promise<void> {
 		apiUrl: env.SUPERSET_API_URL,
 	});
 
-	const { app, injectWebSocket, api, db, terminalAgentStore } = createApp({
-		config: {
-			organizationId: env.ORGANIZATION_ID,
-			dbPath: env.HOST_DB_PATH,
-			cloudApiUrl: env.SUPERSET_API_URL,
-			migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
-			allowedOrigins: env.CORS_ORIGINS ?? [],
-		},
-		providers: {
-			auth: authProvider,
-			hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
-			credentials: new LocalGitCredentialProvider(),
-			modelResolver: new LocalModelProvider(),
-		},
-	});
+	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
+		createApp({
+			config: {
+				organizationId: env.ORGANIZATION_ID,
+				dbPath: env.HOST_DB_PATH,
+				cloudApiUrl: env.SUPERSET_API_URL,
+				migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
+				allowedOrigins: env.CORS_ORIGINS ?? [],
+			},
+			providers: {
+				auth: authProvider,
+				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+				credentials: new LocalGitCredentialProvider(),
+				modelResolver: new LocalModelProvider(),
+			},
+		});
 
 	// Dev-mode shutdown: kill the daemon on host-service exit so dev
 	// iteration on daemon code resets cleanly. Production keeps the
@@ -104,7 +105,7 @@ async function main(): Promise<void> {
 		installProcessSafetyNet();
 		console.log(`[host-service] listening on http://localhost:${info.port}`);
 
-		startTerminalReaper(db);
+		startTerminalReaper(db, eventBus);
 
 		// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
 		// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. Mounted here,

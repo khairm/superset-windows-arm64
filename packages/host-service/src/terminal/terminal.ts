@@ -1138,10 +1138,42 @@ interface DaemonCloseResult {
 	error?: unknown;
 }
 
+/**
+ * (DISPOSE-LIMBO) What the fenced DB write actually did — the half of the
+ * outcome `daemonCloseSucceeded` cannot express.
+ *
+ * A close that resolves proves a PTY died; it does NOT prove that THIS
+ * terminal's generation is the one now recorded dead. A create or adopt landing
+ * mid-kill clears the stamp and re-upserts the row `active` for a brand new
+ * live PTY, and the fence then (correctly) refuses to write — leaving the
+ * caller holding a successful close for an id that names somebody else's live
+ * terminal. Callers that take durable action on a dispose (deleting the agent
+ * binding, telling a user or an agent the terminal is gone) must branch on
+ * THIS, not on the close alone.
+ *
+ * - `disposed`   — the fenced update flipped this generation's row to
+ *                  `disposed`. The only value that licenses durable teardown.
+ * - `superseded` — the stamp is gone or no longer matches: the id now names a
+ *                  replacement terminal. Nothing was written and nothing may be
+ *                  torn down; the binding belongs to the replacement.
+ * - `no-row`     — there is no `terminal_sessions` row for this id at all. The
+ *                  expected shape of the reaper's rowless-orphan pass: a live
+ *                  daemon PTY nothing durable references.
+ * - `pending`    — the close never confirmed, so nothing was written. The row
+ *                  keeps its stamp and the reaper retries.
+ */
+export type DisposeDbDisposition =
+	| "disposed"
+	| "superseded"
+	| "no-row"
+	| "pending";
+
 export interface DisposeSessionResult {
 	terminalId: string;
 	daemonCloseAttempted: boolean;
 	daemonCloseSucceeded: boolean;
+	/** (DISPOSE-LIMBO) See {@link DisposeDbDisposition}. */
+	dbDisposition: DisposeDbDisposition;
 	/**
 	 * (DISPOSE-LIMBO) Why the daemon close did not confirm. Present iff
 	 * `daemonCloseSucceeded` is false, so a caller cannot report "disposed"
@@ -1214,8 +1246,12 @@ async function closeDaemonSessionById(
  * over from a prior crash. Exported so workspaceCleanup can dispose the
  * transient teardown session.
  */
-export function disposeSession(terminalId: string, db: HostDb) {
-	void disposeSessionAndWait(terminalId, db)
+export function disposeSession(
+	terminalId: string,
+	db: HostDb,
+	eventBus?: EventBus,
+) {
+	void disposeSessionAndWait(terminalId, db, eventBus)
 		.then((result) => {
 			if (!result.daemonCloseSucceeded) {
 				console.warn("[terminal] disposeSession daemon close failed", {
@@ -1228,9 +1264,57 @@ export function disposeSession(terminalId: string, db: HostDb) {
 		});
 }
 
-export async function disposeSessionAndWait(
+/**
+ * (DISPOSE-LIMBO) One owner per terminal id, for as long as a dispose is in
+ * flight.
+ *
+ * Two concurrent disposes used to BOTH proceed: the second one's conditional
+ * stamp write was a no-op (first request wins) but it then read the first's
+ * stamp back and issued its OWN daemon close. Those two closes are not
+ * interchangeable — the second can be delayed past the point where the first
+ * completed and a same-id REPLACEMENT terminal was created, at which point it
+ * kills the replacement's PTY, its fence correctly refuses to write, and the
+ * suppressed exit leaves an `active` row in front of a dead process: a pane
+ * that looks alive and answers nothing.
+ *
+ * So the caller that creates the entry owns the whole sequence — stamp, close,
+ * fenced write, broadcast — and everybody else awaits its result rather than
+ * running a second one. The entry is removed when it settles, which is what
+ * keeps the reaper's RETRY possible: retrying a finished dispose is the point,
+ * running a second one alongside it is the bug.
+ */
+const disposeResolutions = new Map<string, Promise<DisposeSessionResult>>();
+
+/**
+ * Coalescing front door for {@link runDisposeSession}. Deliberately NOT async:
+ * the map lookup and insert must both happen in the caller's synchronous turn,
+ * or two callers can each miss the entry before either writes it.
+ */
+export function disposeSessionAndWait(
 	terminalId: string,
 	db: HostDb,
+	eventBus?: EventBus,
+): Promise<DisposeSessionResult> {
+	const inFlight = disposeResolutions.get(terminalId);
+	if (inFlight) return inFlight;
+
+	// The owner's `eventBus` is the one the whole sequence uses; a later caller
+	// joining with a different one gets the owner's broadcasts. Every caller
+	// that matters here shares one bus per host process, and the in-memory
+	// session carries its own regardless.
+	const resolution = runDisposeSession(terminalId, db, eventBus).finally(() => {
+		if (disposeResolutions.get(terminalId) === resolution) {
+			disposeResolutions.delete(terminalId);
+		}
+	});
+	disposeResolutions.set(terminalId, resolution);
+	return resolution;
+}
+
+async function runDisposeSession(
+	terminalId: string,
+	db: HostDb,
+	eventBus?: EventBus,
 ): Promise<DisposeSessionResult> {
 	// Interlock with an in-flight attach: if resolveAttachSessionOnce is mid-
 	// create for this terminalId, a kill racing it would tear down the daemon
@@ -1269,10 +1353,23 @@ export async function disposeSessionAndWait(
 	const stampedRow = db.query.terminalSessions
 		.findFirst({
 			where: eq(terminalSessions.id, terminalId),
-			columns: { disposeRequestedAt: true },
+			columns: {
+				disposeRequestedAt: true,
+				// (DISPOSE-LIMBO) Read alongside the stamp so the fenced write below
+				// can tell "this row FLIPPED active -> disposed" from "it was already
+				// disposed and the update rewrote endedAt". Only the flip may
+				// broadcast an exit, and only the flip is news to anybody.
+				status: true,
+				// The limbo broadcast has no in-memory session to take a workspace id
+				// from — the first dispose pass deleted it. The row is the only place
+				// left that knows where the terminal lived.
+				originWorkspaceId: true,
+			},
 		})
 		.sync();
 	const stampedAt = stampedRow?.disposeRequestedAt ?? null;
+	const rowWasActive = stampedRow?.status === "active";
+	const rowWorkspaceId = stampedRow?.originWorkspaceId ?? null;
 	const session = sessions.get(terminalId);
 	let closePromise: Promise<DaemonCloseResult> | null = null;
 
@@ -1329,6 +1426,8 @@ export async function disposeSessionAndWait(
 		? await closePromise
 		: { attempted: false, succeeded: true };
 
+	let dbDisposition: DisposeDbDisposition = "pending";
+
 	if (closeResult.succeeded) {
 		const endedAt = Date.now();
 		// (DISPOSE-LIMBO) Fenced on the stamp we read at the top. If a create or
@@ -1343,10 +1442,24 @@ export async function disposeSessionAndWait(
 		// either there is no row for this id at all, or a racing create already
 		// cleared the stamp — and in the second case `IS NULL` would match that
 		// racing create's row and disposes it. Neither warrants a write.
-		let racedCreate = false;
-		if (stampedAt === null) {
+		if (stampedRow === undefined) {
+			// No row at all. This is the reaper's rowless-orphan pass doing exactly
+			// what it exists to do — kill a live daemon PTY nothing durable
+			// references — so it is a warning, not an invariant violation. It used
+			// to log at error level, which taught readers to scroll past the one
+			// line that DOES mean something (below).
+			dbDisposition = "no-row";
+			console.warn(
+				"[terminal] dispose found no session row; nothing to mark disposed",
+				{ terminalId, workspaceId: session?.workspaceId },
+			);
+		} else if (stampedAt === null) {
+			// A row exists but the stamp we wrote at the top of this function is
+			// gone: only an explicit create clears it, so the id already names a
+			// different generation. Loud — this is the race, not the routine case.
+			dbDisposition = "superseded";
 			console.error(
-				"[terminal] dispose found no stamped row; NOT marking anything disposed",
+				"[terminal] dispose found a row whose stamp was cleared; NOT marking anything disposed",
 				{ terminalId, workspaceId: session?.workspaceId },
 			);
 		} else {
@@ -1361,8 +1474,10 @@ export async function disposeSessionAndWait(
 				)
 				.returning({ id: terminalSessions.id })
 				.get();
-			if (!disposedRow) {
-				racedCreate = true;
+			if (disposedRow) {
+				dbDisposition = "disposed";
+			} else {
+				dbDisposition = "superseded";
 				console.error(
 					"[terminal] dispose raced a create/adopt; NOT marking the row disposed",
 					{ terminalId, stampedAt, workspaceId: session?.workspaceId },
@@ -1374,9 +1489,9 @@ export async function disposeSessionAndWait(
 		// never fire for this session — announce the exit here (after the
 		// row flips to disposed, so refetching readers see it dead). Skip
 		// sessions whose pty already exited: onExit broadcast that one, and
-		// skip a raced create: the id now names somebody else's live terminal,
+		// skip a superseded id: it now names somebody else's live terminal,
 		// so an exit for it would be misattributed to the newcomer.
-		if (session && !session.exited && !racedCreate) {
+		if (session && !session.exited && dbDisposition !== "superseded") {
 			session.eventBus?.broadcastTerminalLifecycle({
 				workspaceId: session.workspaceId,
 				terminalId,
@@ -1385,6 +1500,40 @@ export async function disposeSessionAndWait(
 				signal: 0,
 				occurredAt: endedAt,
 			});
+		} else if (!session && dbDisposition === "disposed" && rowWasActive) {
+			// (DISPOSE-LIMBO) THE CONFIRMING EXIT FOR A LIMBO TERMINAL.
+			//
+			// The first dispose pass ran `unsubscribeDaemon` and `sessions.delete`
+			// BEFORE awaiting a close that then failed, so the daemon's own
+			// `onExit` can never fire for this id and there is no in-memory session
+			// left for the branch above to broadcast from. Every later pass — the
+			// reaper's retry, a second explicit kill — therefore flipped the row
+			// `active -> disposed` in silence: the renderer kept the pane's dots,
+			// including a red AskUserQuestion latched at dispose time, for the rest
+			// of the session. `lifecycleEvents` justifies ignoring the earlier
+			// UNCONFIRMED exit with "the reaper emits the real one"; this is what
+			// makes that true.
+			//
+			// Gated on the row having been `active`: a row already `disposed` has
+			// had its exit announced once, and a second one would re-run teardown
+			// for a terminal nobody is watching. `eventBus` is the caller's (the
+			// reaper's), since this path by definition has no session to take one
+			// from.
+			if (rowWorkspaceId) {
+				eventBus?.broadcastTerminalLifecycle({
+					workspaceId: rowWorkspaceId,
+					terminalId,
+					eventType: "exit",
+					exitCode: 0,
+					signal: 0,
+					occurredAt: endedAt,
+				});
+			} else {
+				console.warn(
+					"[terminal] disposed a sessionless row with no workspace; renderer not notified",
+					{ terminalId },
+				);
+			}
 		}
 	} else {
 		// (DISPOSE-LIMBO) The daemon never confirmed the close. Before this
@@ -1434,6 +1583,7 @@ export async function disposeSessionAndWait(
 		terminalId,
 		daemonCloseAttempted: closeResult.attempted,
 		daemonCloseSucceeded: closeResult.succeeded,
+		dbDisposition,
 		...(closeResult.succeeded
 			? {}
 			: { daemonCloseError: describeDaemonCloseError(closeResult.error) }),
@@ -1734,6 +1884,41 @@ export async function createTerminalSessionInternal({
 					const list = await daemon.list();
 					const found = list.find((s) => s.id === terminalId && s.alive);
 					if (!found) throw err;
+					// (DISPOSE-LIMBO) This fallback is an ADOPT wearing a create's
+					// clothes, and it must refuse a stamped row for the same reason
+					// the `adoptOnly` check above does. It used to adopt happily: the
+					// upsert below keeps the stamp (correct — `isAdopted`), so the
+					// call returned SUCCESS with a row that `shouldReapRow` marks for
+					// death and `listWorkspaceTerminalSessions` hides. The renderer
+					// painted a live pane over a process the reaper killed inside one
+					// interval, for a terminal it had just been told was created.
+					//
+					// Re-read rather than reusing `existingRecord`: that read happened
+					// before an `await`-heavy stretch (env resolution, shell probe,
+					// daemon connect), which is exactly long enough for a dispose to
+					// land in between.
+					const pendingDisposeRow = db.query.terminalSessions
+						.findFirst({
+							where: eq(terminalSessions.id, terminalId),
+							columns: { disposeRequestedAt: true },
+						})
+						.sync();
+					if (pendingDisposeRow?.disposeRequestedAt != null) {
+						console.warn(
+							"[terminal] refusing to adopt an existing daemon session with a pending dispose",
+							{
+								terminalId,
+								workspaceId,
+								disposeRequestedAt: pendingDisposeRow.disposeRequestedAt,
+							},
+						);
+						// Thrown, not returned: the enclosing catch is what converts a
+						// launch failure into `{ error }`, and returning from here would
+						// skip it. The message matches the other two refusals verbatim.
+						throw new Error(
+							`Terminal session "${terminalId}" is being disposed.`,
+						);
+					}
 					openResult = { pid: found.pid };
 					isAdopted = true;
 					console.log(
@@ -2140,7 +2325,19 @@ export function registerWorkspaceTerminalRoute({
 		// been asked anything at all — the same lie removed from
 		// `terminal.killSession`, left behind here because only a profiling
 		// script calls this route.
-		const result = await disposeSessionAndWait(terminalId, db);
+		const result = await disposeSessionAndWait(terminalId, db, eventBus);
+		// (DISPOSE-LIMBO) A resolved close is not proof this terminal's generation
+		// died. `superseded` means a create/adopt took the id mid-kill, so the
+		// live thing behind it now is somebody else's — answering "disposed" here
+		// would report the replacement dead.
+		if (result.dbDisposition === "superseded") {
+			return c.json({
+				terminalId,
+				status: "superseded",
+				reason:
+					"A newer terminal now owns this id; the old one was closed, this one was not.",
+			});
+		}
 		if (!result.daemonCloseSucceeded) {
 			return c.json({
 				terminalId,
@@ -2370,7 +2567,7 @@ export function registerWorkspaceTerminalRoute({
 					}
 
 					if (message.type === "dispose") {
-						disposeSession(terminalId ?? "", db);
+						disposeSession(terminalId ?? "", db, eventBus);
 						return;
 					}
 

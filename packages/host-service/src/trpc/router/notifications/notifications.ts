@@ -288,8 +288,20 @@ export const notificationsRouter = router({
 					 * (GHOST-TERMINAL) Terminal ids the caller holds dot state for.
 					 * When present, `knownTerminalIds` comes back intersected with
 					 * these instead of listing every row the host has ever minted.
+					 *
+					 * Bounded at the boundary because it feeds `inArray`, which
+					 * expands to one bound parameter per element: past SQLite's
+					 * variable limit the query THROWS, the resync fails, and the
+					 * renderer retries the same oversized input on every reconnect —
+					 * dots frozen for the life of the connection. Rejected rather
+					 * than truncated: a silently shortened candidate list makes the
+					 * sweep treat present terminals as unknown, which is a wrong
+					 * answer dressed as a right one. The renderer sends one id per
+					 * terminal it holds dot state for (tens in practice, one per open
+					 * pane), so 500 is far above anything legitimate and no host-side
+					 * chunking is warranted.
 					 */
-					candidateTerminalIds: z.array(z.string()).optional(),
+					candidateTerminalIds: z.array(z.string().max(64)).max(500).optional(),
 				})
 				.optional(),
 		)

@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
+import type { EventBus } from "../../events/event-bus.ts";
 import { portManager } from "../../ports/port-manager.ts";
 import { getDaemonClient } from "../daemon-client-singleton.ts";
 import { disposeSessionAndWait, isLiveTerminalSession } from "../terminal.ts";
@@ -355,6 +356,7 @@ async function reapOrphanedSessions(
 	db: HostDb,
 	rowlessPendingSecondPass: Set<string>,
 	staleRowState: StaleRowPassState,
+	eventBus?: EventBus,
 ): Promise<ReapResult> {
 	// Sync the port scanner before the empty-list short-circuit below so an idle
 	// daemon still drops stale scans.
@@ -388,7 +390,7 @@ async function reapOrphanedSessions(
 	let failed = 0;
 	for (const orphan of orphans) {
 		try {
-			const result = await disposeSessionAndWait(orphan.id, db);
+			const result = await disposeSessionAndWait(orphan.id, db, eventBus);
 			if (result.daemonCloseSucceeded) {
 				reaped += 1;
 				continue;
@@ -443,7 +445,19 @@ async function reapOrphanedSessions(
 	return { reaped, failed, corrected };
 }
 
-export function startTerminalReaper(db: HostDb): () => void {
+/**
+ * `eventBus` is what lets a retried dispose still reach the renderer. The
+ * terminal it is retrying has no in-memory session left — the first pass tore
+ * that down before its close failed — so the daemon's own `onExit` can never
+ * fire for it, and without a bus here the row flips `active -> disposed` with
+ * nobody told. The pane's dots (including a red question latched at dispose
+ * time) then survive for the rest of the renderer session. Optional so tests
+ * and any embedder without a bus still get the reaping.
+ */
+export function startTerminalReaper(
+	db: HostDb,
+	eventBus?: EventBus,
+): () => void {
 	const rowlessPendingSecondPass = new Set<string>();
 	const staleRowState: StaleRowPassState = {
 		absentOnPreviousPass: new Set<string>(),
@@ -456,7 +470,12 @@ export function startTerminalReaper(db: HostDb): () => void {
 	const run = () => {
 		if (running) return;
 		running = true;
-		void reapOrphanedSessions(db, rowlessPendingSecondPass, staleRowState)
+		void reapOrphanedSessions(
+			db,
+			rowlessPendingSecondPass,
+			staleRowState,
+			eventBus,
+		)
 			.then((result) => {
 				if (result.reaped > 0 || result.failed > 0 || result.corrected > 0) {
 					console.log(

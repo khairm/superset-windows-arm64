@@ -78,17 +78,32 @@ export function selectEarliestNotificationBusDisconnect(
 export function selectDisconnectedNotificationBusLabel(
 	state: NotificationBusStatusState,
 ): string {
-	const down: string[] = [];
+	const down = new Set<string>();
 	for (const [hostUrl, since] of Object.entries(state.buses)) {
 		if (since === null) continue;
-		down.push(describeBusHost(hostUrl));
+		down.add(describeBusHost(hostUrl));
 	}
-	return down.sort().join(", ");
+	return [...down].sort().join(", ");
 }
 
+/**
+ * (OFFLINE-RELAY-HOST) A name that identifies WHICH bus is down.
+ *
+ * `URL.host` alone does not: every relayed host is subscribed at
+ * `<relayUrl>/hosts/<org>:<machine>`, so N offline relay hosts all rendered as
+ * the relay's own hostname — "relay, relay" for two of them, and a single
+ * "relay" for five. The routing key in the path is the only thing that
+ * distinguishes them, so it is what the label carries; a local host keeps its
+ * bare `host` because there is only ever one of those.
+ */
 function describeBusHost(hostUrl: string): string {
 	try {
-		return new URL(hostUrl).host || hostUrl;
+		const url = new URL(hostUrl);
+		const [, hostsSegment, routingKey] = url.pathname.split("/");
+		if (hostsSegment === "hosts" && routingKey) {
+			return `${url.host}/${decodeURIComponent(routingKey)}`;
+		}
+		return url.host || hostUrl;
 	} catch {
 		return hostUrl;
 	}

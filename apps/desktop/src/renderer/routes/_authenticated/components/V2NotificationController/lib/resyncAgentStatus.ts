@@ -91,6 +91,61 @@ function collectCandidateTerminalIds(
 }
 
 /**
+ * (DOT-PERSIST) COLD START IS A PROPERTY OF THE RENDERER SESSION, DECIDED ONCE.
+ *
+ * The store and `terminalSeenAt` both live in sessionStorage, so "both empty"
+ * identifies a real app start — but only for whichever resync runs FIRST.
+ * Re-deriving it per resync from the live store answered "no" to every resync
+ * after that one, and there are two ordinary ways to have more:
+ *
+ *  1. MULTI-HOST. One subscriber per host URL, each with its own resync. The
+ *     first one to answer fills the store, so the slower host — a relay, which
+ *     is exactly the slow one — saw a non-empty store and replayed its idle
+ *     agents' turn-end events as unread review-green, on every app start.
+ *  2. A WORKSPACE THAT BECOMES VISIBLE LATER. `workspacesKey` changing reruns
+ *     the resync mid-session; rows for the newly visible workspace had never
+ *     been reconciled, so they seeded nothing and their stale greens had no
+ *     `terminalSeenAt` to clear them.
+ *
+ * And one way that must NOT seed:
+ *
+ *  3. A TERMINAL CREATED MID-SESSION DURING A BUS OUTAGE. Its completed-agent
+ *     green was destroyed by the dead bus and this resync is the only thing
+ *     that can restore it. Seeding it away is the bug the whole-store check was
+ *     introduced to fix.
+ *
+ * The latch plus `reconciledWorkspaceKeys` separates 2 from 3, which look
+ * identical row-by-row (no entry, no seen record): in 3 the row's WORKSPACE has
+ * already been reconciled in this session — it was there at launch and its
+ * history was replayed then — while in 2 it never has. So cold-start seeding
+ * applies to a row only while the session began cold AND its workspace is being
+ * reconciled here for the first time.
+ *
+ * A renderer reload is deliberately not a cold start: sessionStorage survives
+ * it, so the first resync after a reload sees a full store, the latch stays
+ * false, and the dots the reload was supposed to preserve are preserved.
+ */
+let coldStartDecided = false;
+let sessionBeganCold = false;
+const reconciledWorkspaceKeys = new Set<string>();
+
+function workspaceReconcileKey(hostUrl: string, workspaceId: string): string {
+	// `|` appears in neither a URL nor a uuid, so the two halves cannot be
+	// confused for one another.
+	return `${hostUrl}|${workspaceId}`;
+}
+
+/**
+ * Test seam and reload guard: forget everything this module remembers about the
+ * current renderer session.
+ */
+export function resetResyncColdStartLatchForTests(): void {
+	coldStartDecided = false;
+	sessionBeganCold = false;
+	reconciledWorkspaceKeys.clear();
+}
+
+/**
  * Fetch the host snapshot and reconcile every terminal source this host owns.
  * Returns null when the snapshot could not be fetched — the caller must treat
  * that as "truth unknown" and change nothing, since clearing dots on a failed
@@ -120,16 +175,17 @@ export async function resyncAgentStatusFromHost({
 	const beforeBackground = before.backgroundRunningTerminals;
 	const beforeShell = before.shellRunningTerminals;
 
-	// (DOT-PERSIST) Cold start is a property of the WHOLE STORE, decided once,
-	// before anything is written. Deciding it per row ("this terminal has no
-	// entry and no seen record") also matched every terminal created DURING a
-	// bus outage — precisely the terminals whose completed-agent green was
-	// swallowed and which this resync exists to restore — and seeded their
-	// review away on the spot. Both maps live in sessionStorage, so both are
-	// empty together only on a real app restart.
-	const isColdStart =
-		Object.keys(beforeSources).length === 0 &&
-		Object.keys(before.terminalSeenAt).length === 0;
+	// (DOT-PERSIST) Decide the session's cold start on the FIRST resync only —
+	// see the latch above. Deciding it per row ("this terminal has no entry and
+	// no seen record") also matched every terminal created DURING a bus outage —
+	// precisely the terminals whose completed-agent green was swallowed and which
+	// this resync exists to restore — and seeded their review away on the spot.
+	if (!coldStartDecided) {
+		coldStartDecided = true;
+		sessionBeganCold =
+			Object.keys(beforeSources).length === 0 &&
+			Object.keys(before.terminalSeenAt).length === 0;
+	}
 
 	// (GHOST-TERMINAL) Tell the host which terminals we actually hold state for.
 	// Without this it answers with every `terminal_sessions` row it has ever
@@ -186,6 +242,12 @@ export async function resyncAgentStatusFromHost({
 		const sourceKey = getV2NotificationSourceKey(source);
 		const preState = useV2NotificationStore.getState();
 		const preEntry = preState.sources[sourceKey];
+		// Has this renderer session ever reconciled the workspace this row belongs
+		// to? Read BEFORE the loop-end marking below, so every row of a workspace
+		// gets the same answer.
+		const workspaceFirstReconcile = !reconciledWorkspaceKeys.has(
+			workspaceReconcileKey(hostUrl, row.originWorkspaceId),
+		);
 
 		// A live event that landed while the snapshot was in flight — the user
 		// answering the question this row still calls pending, or a fresh
@@ -218,11 +280,22 @@ export async function resyncAgentStatusFromHost({
 		// resting `lastEventType` of every idle agent tab is a turn-end. Replaying
 		// those unchanged would paint review-green on every open agent tab at every
 		// launch, for completions reviewed days ago, which is precisely the state
-		// (DOT-PERSIST) promises a restart clears. On a cold start every row is
+		// (DOT-PERSIST) promises a restart clears. On a cold start every such row is
 		// therefore marked seen AT the replayed event: working and permission
 		// still paint (they are re-derived below and from the marker), a stale
-		// green does not. Mid-session this must NOT fire — see `isColdStart`.
-		if (isColdStart) {
+		// green does not.
+		//
+		// `preEntry`/`seenAt` are what keep this correct for a workspace that first
+		// appears late in a cold-started session: a row the store already knows
+		// about got there from a live event, so it is current truth and must not be
+		// seeded over. On the genuine first resync both are empty for every row, so
+		// this is exactly the whole-store rule it replaces.
+		const seedColdStart =
+			sessionBeganCold &&
+			workspaceFirstReconcile &&
+			preEntry === undefined &&
+			preState.terminalSeenAt[row.terminalId] === undefined;
+		if (seedColdStart) {
 			useV2NotificationStore
 				.getState()
 				.markTerminalSeen(row.terminalId, row.lastEventAt);
@@ -268,6 +341,15 @@ export async function resyncAgentStatusFromHost({
 		}
 	}
 
+	// Every workspace this pass covered has now had its history replayed once, so
+	// a terminal appearing in a LATER resync for one of them is mid-session news
+	// and must replay rather than be seeded. Marked after the row loop so the
+	// loop's own reads all see the pre-pass answer, and only on a pass that
+	// actually reconciled (the discard above returns first).
+	for (const workspaceId of workspaces.keys()) {
+		reconciledWorkspaceKeys.add(workspaceReconcileKey(hostUrl, workspaceId));
+	}
+
 	// Terminals the host POSITIVELY DISOWNS — it has a session row for them but
 	// no live binding — have lost every latched axis riding the same
 	// fire-and-forget bus. Review is deliberately preserved (a finished turn
@@ -277,6 +359,11 @@ export async function resyncAgentStatusFromHost({
 	// different animal entirely and are skipped below.
 	const store = useV2NotificationStore.getState();
 	const knownIds = new Set(knownTerminalIds);
+	// `knownTerminalIds` is the host's answer INTERSECTED with what we asked
+	// about, so an id we never asked about is absent from it by construction, not
+	// by the host's judgement. Terminals that entered the store while the
+	// snapshot was in flight are exactly that case.
+	const askedAboutIds = new Set(candidateTerminalIds);
 	const ghostTerminalIds: string[] = [];
 	const ownedTerminals = new Map<string, string>();
 	for (const entry of Object.values(store.sources)) {
@@ -305,7 +392,14 @@ export async function resyncAgentStatusFromHost({
 		// on every reconnect, for a terminal that is genuinely working. Only a
 		// terminal the host POSITIVELY DISOWNS (known, not live) may be swept.
 		if (!knownIds.has(terminalId)) {
-			ghostTerminalIds.push(terminalId);
+			// Only an id we actually SENT can be called a ghost. A terminal that
+			// entered the store during the round trip was never in
+			// `candidateTerminalIds`, so the host was never asked about it and its
+			// absence from the intersected answer means nothing — reporting it as
+			// GHOST-TERMINAL sent readers hunting a broken binding that does not
+			// exist. It is skipped either way; the identity fence already keeps it
+			// from being swept.
+			if (askedAboutIds.has(terminalId)) ghostTerminalIds.push(terminalId);
 			continue;
 		}
 		const source = getV2TerminalNotificationSource(terminalId);
