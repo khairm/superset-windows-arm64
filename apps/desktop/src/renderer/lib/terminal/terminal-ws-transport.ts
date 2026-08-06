@@ -76,6 +76,22 @@ export interface TerminalTransport {
 	_socket: RelaySocket | null;
 	/** The xterm instance the socket feeds. */
 	_terminal: XTerm | null;
+	/**
+	 * (PUSH-PRESENCE) (HUMAN-INPUT-TAGGED) `Date.now()` at the last event that PROVES a person was
+	 * at this keyboard: a key press, a paste, or an IME composition. Null until
+	 * one happens.
+	 *
+	 * It exists because `onData` cannot tell. xterm fires `onData` for terminal
+	 * PROTOCOL REPLIES as well as for typing — a DA/DSR/XTGETTCAP answer to a
+	 * query the program on the other end sent — and those are the terminal
+	 * talking to itself. xterm knows the difference internally
+	 * (`wasUserInput: false`) and does not expose it on `onData`, so a TUI that
+	 * polls the cursor position could hold the companion push forever, and it
+	 * would look exactly like the user being at the desk.
+	 */
+	_lastHumanEventMs: number | null;
+	/** Internal: removes the human-input witnesses attached to the xterm. */
+	_humanInputDisposables: (() => void)[];
 	/** Internal: disposes the terminal.onData → socket.send wiring. */
 	_onDataDisposable: { dispose(): void } | null;
 	/** Internal: title-change debounce timer; see TITLE_COALESCE_MS. */
@@ -278,6 +294,8 @@ export function createTransport(
 		_onSessionEnded: options.onSessionEnded ?? null,
 		_socket: null,
 		_terminal: null,
+		_lastHumanEventMs: null,
+		_humanInputDisposables: [],
 		_onDataDisposable: null,
 		_titleNotifyTimer: null,
 		_writeCoalescer: null,
@@ -663,8 +681,104 @@ function attachSocketListeners(
 	transport._onDataDisposable = terminal.onData((data) => {
 		if (transport.connectionState !== "open") return;
 		if (socket.readyState !== WebSocket.OPEN) return;
-		socket.send(JSON.stringify({ type: "input", data }));
+		// (PUSH-PRESENCE) `human` is a claim about the ORIGIN of these bytes, and
+		// it is only ever attached when a witness proves it. See
+		// `attachHumanInputWitness` for why `onData` alone cannot answer this, and
+		// `human-input.ts` for what the host-service does with the answer. The
+		// field is OMITTED rather than sent as `false`, so an older host-service
+		// that has never heard of it parses the frame unchanged.
+		const human = isHumanInputRecent(transport, Date.now());
+		socket.send(
+			JSON.stringify(
+				human ? { type: "input", data, human: true } : { type: "input", data },
+			),
+		);
 	});
+	attachHumanInputWitness(transport, terminal);
+}
+
+/**
+ * (PUSH-PRESENCE) How recently a real keyboard/paste/composition event has to
+ * have happened for the bytes leaving `onData` to be credited to a person.
+ *
+ * Sized to cover the gap between a keypress and the data it produces, which is
+ * synchronous for a keystroke and a turn or two of the event loop for a paste
+ * or an IME commit — not to cover "the user was typing a moment ago". A wider
+ * window would start crediting protocol replies that happen to land just after
+ * a keystroke, which is the exact confusion this exists to remove; a narrower
+ * one risks dropping a slow IME commit, and a dropped stamp only means the
+ * presence decision falls back to the desktop's 15 s beacon.
+ */
+export const HUMAN_INPUT_TAG_WINDOW_MS = 1_500;
+
+function isHumanInputRecent(
+	transport: TerminalTransport,
+	nowMs: number,
+): boolean {
+	const stamp = transport._lastHumanEventMs;
+	if (stamp === null) return false;
+	// A stamp in the future is a stepped clock, not a keystroke. Both bounds
+	// fail toward "not human", which resolves toward AWAY — the direction that
+	// buzzes rather than the one that silently suppresses a blocked agent.
+	const ageMs = nowMs - stamp;
+	return ageMs >= 0 && ageMs <= HUMAN_INPUT_TAG_WINDOW_MS;
+}
+
+/**
+ * (PUSH-PRESENCE) Witness what only the renderer can see: whether a PERSON
+ * caused the bytes `onData` is about to hand to the socket.
+ *
+ * xterm fires `onData` for two very different things. One is typing. The other
+ * is the terminal ANSWERING A QUERY — a Device Attributes, cursor-position or
+ * XTGETTCAP reply that the program on the other end asked for. xterm tracks the
+ * difference internally (`wasUserInput`) and does not put it on `onData`, so
+ * the host-service had no way to tell them apart and stamped presence for both.
+ * A TUI that polls the cursor position therefore reads as a user sitting at the
+ * desk, indefinitely, and every companion push stays held.
+ *
+ * LISTENERS ARE CAPTURE-PHASE ON THE CONTAINER, not on the textarea. xterm's
+ * own handlers sit on the textarea and dispatch `onData` synchronously inside
+ * them, so a bubble-phase listener beside them can run AFTER the data has
+ * already left — and the first keystroke of every burst would go out untagged.
+ * Capturing on an ancestor is what guarantees the stamp lands first.
+ *
+ * `onKey` is subscribed as well and is not redundant: it is xterm's own
+ * "this came from a key event" signal, so it keeps working if the DOM layout
+ * around the textarea ever changes.
+ */
+function attachHumanInputWitness(
+	transport: TerminalTransport,
+	terminal: XTerm,
+): void {
+	detachHumanInputWitness(transport);
+	const stamp = (): void => {
+		transport._lastHumanEventMs = Date.now();
+	};
+
+	const keyDisposable = terminal.onKey(stamp);
+	transport._humanInputDisposables.push(() => {
+		keyDisposable.dispose();
+	});
+
+	const container = terminal.element ?? terminal.textarea;
+	if (!container) return;
+	for (const type of [
+		"keydown",
+		"paste",
+		"compositionstart",
+		"compositionupdate",
+		"compositionend",
+	] as const) {
+		container.addEventListener(type, stamp, true);
+		transport._humanInputDisposables.push(() => {
+			container.removeEventListener(type, stamp, true);
+		});
+	}
+}
+
+function detachHumanInputWitness(transport: TerminalTransport): void {
+	for (const dispose of transport._humanInputDisposables) dispose();
+	transport._humanInputDisposables = [];
 }
 
 /**
@@ -690,6 +804,7 @@ export function disconnect(transport: TerminalTransport) {
 	}
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = null;
+	detachHumanInputWitness(transport);
 	transport._writeCoalescer?.dispose();
 	transport._writeCoalescer = null;
 	transport.currentUrl = null;
@@ -733,6 +848,7 @@ export function disposeTransport(transport: TerminalTransport) {
 	}
 	transport._onDataDisposable?.dispose();
 	transport._onDataDisposable = null;
+	detachHumanInputWitness(transport);
 	transport._writeCoalescer?.dispose();
 	transport._writeCoalescer = null;
 	transport.currentUrl = null;

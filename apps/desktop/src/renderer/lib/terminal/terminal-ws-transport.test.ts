@@ -131,8 +131,13 @@ const originalRemoveEventListener = win?.removeEventListener;
 function createMockTerminal(
 	cols = 101,
 	rows = 27,
-): XTerm & { emitData(data: string): void } {
+): XTerm & { emitData(data: string): void; emitKey(): void } {
 	let onDataListener: ((data: string) => void) | null = null;
+	// (PUSH-PRESENCE) xterm's own "this came from a key event" signal, which the
+	// transport subscribes to so it can tell typing from a protocol reply. The
+	// mock carries no DOM element, which is also the real shape before
+	// `terminal.open()`.
+	let onKeyListener: (() => void) | null = null;
 	return {
 		cols,
 		rows,
@@ -140,12 +145,19 @@ function createMockTerminal(
 			onDataListener = listener;
 			return { dispose() {} };
 		},
+		onKey: (listener: () => void) => {
+			onKeyListener = listener;
+			return { dispose() {} };
+		},
 		emitData(data: string) {
 			onDataListener?.(data);
 		},
+		emitKey() {
+			onKeyListener?.();
+		},
 		write() {},
 		writeln() {},
-	} as unknown as XTerm & { emitData(data: string): void };
+	} as unknown as XTerm & { emitData(data: string): void; emitKey(): void };
 }
 
 /** Connect and drive the fake socket to a live, attached session. */
@@ -561,5 +573,60 @@ describe("terminal-ws-transport", () => {
 		expect(transport.connectionState).toBe("disconnected");
 		expect(transport.logs).toHaveLength(0);
 		expect(transport.title).toBeUndefined();
+	});
+});
+
+describe("(PUSH-PRESENCE) human-input tagging on outgoing frames", () => {
+	function inputFrames(socket: { sent: string[] }) {
+		return socket.sent
+			.map((raw) => JSON.parse(raw) as Record<string, unknown>)
+			.filter((frame) => frame.type === "input");
+	}
+
+	test("does NOT tag data that no key/paste/composition event preceded — that is a terminal protocol reply, not a person", () => {
+		const { terminal, socket } = connectAttached();
+
+		// What a TUI's DA/DSR/XTGETTCAP answer looks like on the way out: xterm
+		// fires onData for it exactly as it does for typing.
+		terminal.emitData("[?62;c");
+
+		expect(inputFrames(socket)).toEqual([{ type: "input", data: "[?62;c" }]);
+	});
+
+	test("tags data a key event produced, so the host-service may stamp presence for it", () => {
+		const { terminal, socket } = connectAttached();
+
+		terminal.emitKey();
+		terminal.emitData("l");
+
+		expect(inputFrames(socket)).toEqual([
+			{ type: "input", data: "l", human: true },
+		]);
+	});
+
+	test("stops tagging once the witness is stale — a keystroke a minute ago does not make this reply human", () => {
+		setSystemTime(new Date("2026-01-01T00:00:00Z"));
+		const { terminal, socket } = connectAttached();
+
+		terminal.emitKey();
+		setSystemTime(new Date("2026-01-01T00:00:02Z"));
+		terminal.emitData("[?62;c");
+
+		expect(inputFrames(socket)).toEqual([{ type: "input", data: "[?62;c" }]);
+	});
+
+	test("keeps tagging the whole burst a held key produces, inside the window", () => {
+		setSystemTime(new Date("2026-01-01T00:00:00Z"));
+		const { terminal, socket } = connectAttached();
+
+		terminal.emitKey();
+		terminal.emitData("a");
+		setSystemTime(new Date("2026-01-01T00:00:00.500Z"));
+		terminal.emitData("b");
+
+		expect(inputFrames(socket)).toEqual([
+			{ type: "input", data: "a", human: true },
+			{ type: "input", data: "b", human: true },
+		]);
 	});
 });

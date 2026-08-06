@@ -156,7 +156,23 @@ function getHostAgentHookUrl(): string {
 }
 
 type TerminalClientMessage =
-	| { type: "input"; data: string }
+	| {
+			type: "input";
+			data: string;
+			/**
+			 * (PUSH-PRESENCE) (HUMAN-INPUT-TAGGED) The renderer's claim that a PERSON produced these
+			 * bytes — a key press, a paste, or an IME composition within the last
+			 * moment — rather than the terminal answering a program's query.
+			 *
+			 * Optional, and its absence is never read as `true`: an older renderer
+			 * does not send it, and a renderer that cannot prove a human simply
+			 * omits it. Both then contribute nothing to presence, which is the safe
+			 * direction (no keystroke evidence means the decision falls back to the
+			 * desktop's beacon, and the fallback errs toward AWAY, i.e. toward
+			 * buzzing).
+			 */
+			human?: boolean;
+	  }
 	| { type: "resize"; cols: number; rows: number }
 	| { type: "dispose" };
 
@@ -2090,12 +2106,26 @@ export function registerWorkspaceTerminalRoute({
 					if (message.type === "input") {
 						// (PUSH-PRESENCE) THE ONE PLACE A HUMAN KEYSTROKE IS RECORDED.
 						//
-						// This branch is reached only by a validated `{type:"input"}`
-						// frame from an attached renderer socket, which can only have
-						// come from a keypress in a terminal pane the user is looking
-						// at. That is what makes it evidence they are at the desk, and
-						// the companion push is held on the strength of it
-						// (`companion/presence.ts`).
+						// Gated on `human === true`, which is the renderer's explicit
+						// claim that a PERSON produced these bytes. Reaching this branch
+						// is not by itself that evidence, and the gap is not theoretical:
+						// xterm fires `onData` for terminal PROTOCOL REPLIES too — a
+						// Device Attributes, cursor-position or XTGETTCAP answer to a
+						// query the program on the other end sent — and those arrived
+						// here as ordinary `{type:"input"}` frames. A TUI that polls the
+						// cursor position therefore stamped presence several times a
+						// second with nobody in the room, and every companion push stayed
+						// held for as long as it ran. xterm knows the difference
+						// (`wasUserInput`) and does not expose it on `onData`, so the
+						// renderer witnesses the key/paste/composition events itself and
+						// tags the frame.
+						//
+						// VALIDATED AT THE BOUNDARY: anything that is not literally `true`
+						// — absent, null, a string, an older renderer that never heard of
+						// the field — is NOT human. Presence then rests on the desktop's
+						// 15 s beacon alone, which errs toward AWAY, i.e. toward buzzing.
+						// Reading absence as human is the failure that silences a blocked
+						// agent.
 						//
 						// `writeInputToSession` / `writeFramedInputToSession` MUST NOT
 						// stamp, and the reason is not stylistic: they are the pty
@@ -2104,7 +2134,7 @@ export function registerWorkspaceTerminalRoute({
 						// there would make an answer typed from the phone read as the
 						// user being at their desk, and the next question would be held
 						// back from the very device that just answered one.
-						stampHumanInput();
+						if (message.human === true) stampHumanInput();
 						session.pty.write(message.data);
 						return;
 					}

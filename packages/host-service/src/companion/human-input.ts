@@ -1,5 +1,5 @@
 /**
- * (PUSH-PRESENCE) "A human just typed at this desktop" — the first of the two
+ * (PUSH-PRESENCE) (HUMAN-INPUT-TAGGED) "A human just typed at this desktop" — the first of the two
  * presence signals the companion push is gated on.
  *
  * WHY IT LIVES IN ITS OWN MODULE WITH NO IMPORTS
@@ -13,9 +13,26 @@
  *
  * WHAT MAY STAMP IT, AND WHAT MAY NOT — this is the whole correctness argument
  * -------------------------------------------------------------------------
- * ONLY the validated `{type:"input"}` branch of the renderer's terminal socket
- * stamps. That message can only have come from a keypress in a terminal pane in
- * front of the user.
+ * ONLY a validated `{type:"input", human:true}` message on the renderer's
+ * terminal socket stamps.
+ *
+ * `human` IS THE WHOLE POINT, and the frame type is not enough on its own.
+ * xterm fires `onData` — the source of every one of those frames — for two
+ * unrelated things: a person typing, and the terminal ANSWERING A QUERY the
+ * program on the other end sent (Device Attributes, cursor position,
+ * XTGETTCAP). xterm tracks the difference internally as `wasUserInput` and does
+ * not expose it on `onData`, so for as long as this stamped on frame type
+ * alone, a TUI polling the cursor position registered as a person at the desk
+ * several times a second with nobody in the room — and every companion push
+ * stayed held for as long as that program ran. The renderer therefore witnesses
+ * the real keyboard, paste and IME-composition events itself and tags only the
+ * frames it can attribute to one; see `terminal-ws-transport.ts`.
+ *
+ * ABSENCE IS NOT HUMAN. An older renderer never sends the field and a renderer
+ * that cannot prove a person omits it, and neither may stamp. That costs the
+ * keystroke signal only — the desktop's 15 s beacon still reports presence, and
+ * where it cannot, the decision errs toward AWAY, which buzzes. Reading absence
+ * as human is the failure that silences a blocked agent.
  *
  * `writeInputToSession` / `writeFramedInputToSession` MUST NEVER stamp. They are
  * the pty writers the companion's own answer path uses (`companion/answer.ts`),
