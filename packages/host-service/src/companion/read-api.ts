@@ -826,6 +826,12 @@ export async function handleTree(
 				answerable:
 					deps.questions.unanswerableReason(pending, answerability) === null,
 				headline: deps.questions.headline(pending),
+				// (EMIT-OPTIONAL-FIELDS) The headline is the FIRST question's header
+				// only; without the count a 3-question capture renders exactly like a
+				// 1-question one, and `multiSelect` changes what answering even means.
+				// Both are already gated by `full` — this whole ref only exists there.
+				questionCount: pending.questions.length,
+				multiSelect: pending.questions.some((item) => item.multiSelect),
 			};
 		}
 
@@ -910,6 +916,11 @@ export async function handleTree(
 						null,
 					)
 				: null,
+			// (EMIT-OPTIONAL-FIELDS) Pinning is the one act of curation that changes
+			// ORDER rather than membership, so a filter that only decides what to
+			// hide could never carry it. Not gated on `full`: it says nothing about
+			// content that the row's own name and status do not already say.
+			pinned: curation.workspacePinned(row.id),
 		};
 
 		const list = workspacesByProject.get(placement);
@@ -940,6 +951,8 @@ export async function handleTree(
 				? deriveProjectKind(row, workspaceRowsByOwningProject.get(row.id) ?? [])
 				: PROJECT_KIND_UNKNOWN,
 			workspaces: ws,
+			// (EMIT-OPTIONAL-FIELDS) `sidebar_project_state.is_pinned`.
+			pinned: curation.projectPinned(row.id),
 		});
 	}
 	outProjects.sort((a, b) => {

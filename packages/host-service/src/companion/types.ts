@@ -580,6 +580,14 @@ export interface Project {
 	name: string;
 	kind: ProjectKind;
 	workspaces: Workspace[];
+	/**
+	 * (EMIT-OPTIONAL-FIELDS) `sidebar_project_state.is_pinned`. OPTIONAL, like
+	 * every field added after a client shipped: both clients already parse this
+	 * object ignoring unknown keys, and nothing in the protocol may come to
+	 * depend on it. False when no curation is in force — absence of a mirrored
+	 * row is absence of an opinion.
+	 */
+	pinned?: boolean;
 }
 
 export interface Workspace {
@@ -591,6 +599,8 @@ export interface Workspace {
 	status: AgentStatus;
 	terminals: Terminal[];
 	lastActivityMs: EpochMs | null;
+	/** (EMIT-OPTIONAL-FIELDS) `sidebar_workspace_state.pinned_at != null`. */
+	pinned?: boolean;
 }
 
 export interface TerminalAgentBinding {
@@ -609,6 +619,20 @@ export interface PendingQuestionRef {
 	answerable: boolean;
 	/** The first question's `header`, <= 80 chars. NOT the question body. */
 	headline: string;
+	/**
+	 * (EMIT-OPTIONAL-FIELDS) How many questions this one capture carries. The
+	 * headline is the FIRST question's header only, so a client showing just the
+	 * headline for a 3-question capture is quietly misrepresenting what answering
+	 * it involves. OPTIONAL, like every field added after a client shipped.
+	 */
+	questionCount?: number;
+	/**
+	 * (EMIT-OPTIONAL-FIELDS) True when ANY item is multi-select. It changes what
+	 * answering means — a multi-select item takes a set and has its own byte
+	 * contract (§11.3) — so a client that renders single-select affordances for
+	 * one is offering an interaction the bridge will refuse.
+	 */
+	multiSelect?: boolean;
 }
 
 export interface Terminal {

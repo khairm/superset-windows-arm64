@@ -141,6 +141,16 @@ export interface SidebarCuration {
 	effectiveProjectId(workspace: WorkspaceCurationInput): string;
 	workspaceVerdict(workspace: WorkspaceCurationInput): SidebarVerdict;
 	projectVerdict(projectId: string): SidebarVerdict;
+	/**
+	 * (EMIT-OPTIONAL-FIELDS) Did the user pin this row? `pinned_at` and
+	 * `is_pinned` have been SELECTed out of the mirror since it shipped and read
+	 * by nothing — pinning is the one piece of curation that changes ORDER rather
+	 * than membership, so it was invisible to a filter that only decides what to
+	 * hide. A disabled curation answers false: absence of a mirrored row is
+	 * absence of an opinion, and "not pinned" is what absence means here.
+	 */
+	workspacePinned(workspaceId: string): boolean;
+	projectPinned(projectId: string): boolean;
 }
 
 /**
@@ -205,6 +215,8 @@ function passThroughCuration(lastSyncAgeMs: number | null): SidebarCuration {
 		effectiveProjectId: (workspace) => workspace.projectId,
 		workspaceVerdict: () => "show",
 		projectVerdict: () => "show",
+		workspacePinned: () => false,
+		projectPinned: () => false,
 	};
 }
 
@@ -253,6 +265,11 @@ export function createSidebarCuration(
 		workspaceById.set(row.workspaceId, row);
 	const projectIds = new Set<string>();
 	for (const row of snapshot.projects) projectIds.add(row.projectId);
+	const pinnedProjectIds = new Set<string>();
+	for (const row of snapshot.projects) {
+		if (row.isPinned === true || row.isPinned === 1)
+			pinnedProjectIds.add(row.projectId);
+	}
 
 	const placementOf = (workspace: WorkspaceCurationInput): string =>
 		workspaceById.get(workspace.id)?.projectId ?? workspace.projectId;
@@ -277,6 +294,12 @@ export function createSidebarCuration(
 		},
 		projectVerdict(projectId) {
 			return projectIds.has(projectId) ? "show" : "project_not_in_sidebar";
+		},
+		workspacePinned(workspaceId) {
+			return workspaceById.get(workspaceId)?.pinnedAt != null;
+		},
+		projectPinned(projectId) {
+			return pinnedProjectIds.has(projectId);
 		},
 	};
 }
