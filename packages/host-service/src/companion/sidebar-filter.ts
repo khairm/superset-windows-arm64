@@ -146,11 +146,22 @@ export interface SidebarCuration {
 	 * `is_pinned` have been SELECTed out of the mirror since it shipped and read
 	 * by nothing — pinning is the one piece of curation that changes ORDER rather
 	 * than membership, so it was invisible to a filter that only decides what to
-	 * hide. A disabled curation answers false: absence of a mirrored row is
-	 * absence of an opinion, and "not pinned" is what absence means here.
+	 * hide.
+	 *
+	 * `null` means NO OPINION, and it is not the same answer as `false`. A
+	 * disabled curation (never mirrored, aged out, another org) knows nothing
+	 * about pinning, and §7.2 distinguishes a `pinned` the bridge does not report
+	 * from one it reports as not-pinned. Answering `false` there asserted the
+	 * second on the evidence of the first, so the wire said "this row is not
+	 * pinned" about every row on a machine whose renderer had simply never
+	 * synced. The tree OMITS the field on `null` rather than flattening it.
+	 *
+	 * Within an ENABLED curation `false` is a real answer: the mirror is a
+	 * whole-snapshot replace, so a row it does not carry is a row the user has
+	 * not pinned.
 	 */
-	workspacePinned(workspaceId: string): boolean;
-	projectPinned(projectId: string): boolean;
+	workspacePinned(workspaceId: string): boolean | null;
+	projectPinned(projectId: string): boolean | null;
 }
 
 /**
@@ -215,8 +226,11 @@ function passThroughCuration(lastSyncAgeMs: number | null): SidebarCuration {
 		effectiveProjectId: (workspace) => workspace.projectId,
 		workspaceVerdict: () => "show",
 		projectVerdict: () => "show",
-		workspacePinned: () => false,
-		projectPinned: () => false,
+		// (EMIT-OPTIONAL-FIELDS) NOT `false`. This curation has no opinion about
+		// pinning, and the tree omits the field rather than asserting not-pinned
+		// on the strength of a mirror that was never written.
+		workspacePinned: () => null,
+		projectPinned: () => null,
 	};
 }
 

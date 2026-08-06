@@ -231,14 +231,14 @@ describe("(EMIT-OPTIONAL-FIELDS) pinned accessors", () => {
 		expect(curation.projectPinned("p-git")).toBe(true);
 	});
 
-	it("answers false for everything when no curation is in force", () => {
+	it("answers null — NO OPINION, which is not the same as not-pinned — when no curation is in force", () => {
 		const off = createSidebarCuration(
 			{ meta: null, workspaces: [], projects: [] },
 			NOW,
 			ORG,
 		);
-		expect(off.workspacePinned("w-1")).toBe(false);
-		expect(off.projectPinned("p-git")).toBe(false);
+		expect(off.workspacePinned("w-1")).toBeNull();
+		expect(off.projectPinned("p-git")).toBeNull();
 	});
 });
 
@@ -723,7 +723,7 @@ describe("(BRIDGE-SIDEBAR-FILTER) handleTree over a curated fixture", () => {
 		expect(ref?.headline).toBe("First");
 	});
 
-	it("reports pinned: false rather than omitting it when nothing is curated", async () => {
+	it("OMITS pinned entirely when nothing is curated, rather than asserting not-pinned on the strength of a mirror that was never written", async () => {
 		const response = await tree({
 			projects: baseProjects,
 			workspaces: [workspaceRow("w-1", "p-git")],
@@ -731,13 +731,49 @@ describe("(BRIDGE-SIDEBAR-FILTER) handleTree over a curated fixture", () => {
 			bindings: [],
 			mirror: { meta: null, workspaces: [], projects: [] },
 		});
-		expect(response.projects[0]?.pinned).toBe(false);
-		expect(response.projects[0]?.workspaces[0]?.pinned).toBe(false);
+		const project = response.projects[0];
+		const workspace = project?.workspaces[0];
+		// `in`, not `=== undefined`: §7.2 distinguishes a field the bridge does not
+		// report from one it reports, and a key present with an undefined value is
+		// the shape that reads as "reported" to anything but JSON.stringify.
+		expect(project === undefined ? null : "pinned" in project).toBe(false);
+		expect(workspace === undefined ? null : "pinned" in workspace).toBe(false);
+		// The curation object still SAYS why, which is the honest half: the phone
+		// learns pinning is unreported and learns the reason in the same response.
 		expect(response.curation).toEqual({
 			enabled: false,
 			lastSyncAgeMs: null,
 			hiddenWorkspaces: 0,
 		});
+	});
+
+	it("emits pinned with the mirror's value once curation IS enabled — the field is unreported, not removed", async () => {
+		const response = await tree({
+			projects: baseProjects,
+			workspaces: [workspaceRow("w-1", "p-git"), workspaceRow("w-2", "p-git")],
+			terminals: [terminal("t-1", "w-1"), terminal("t-2", "w-2")],
+			bindings: [],
+			mirror: snapshot(
+				[
+					mirrorWorkspace("w-1", { projectId: "p-git", pinnedAt: NOW - 5 }),
+					mirrorWorkspace("w-2", { projectId: "p-git" }),
+				],
+				[mirrorProject("p-git")],
+			),
+		});
+		const project = response.projects[0];
+		expect(project !== undefined && "pinned" in project).toBe(true);
+		expect(project?.pinned).toBe(false);
+		const byId = new Map(
+			(project?.workspaces ?? []).map((w) => [w.name, w] as const),
+		);
+		// Within an ENABLED curation, false is a real answer: the mirror is a
+		// whole-snapshot replace, so an unpinned row is a row the user has not
+		// pinned.
+		expect([...byId.values()].map((w) => w.pinned).sort()).toEqual([
+			false,
+			true,
+		]);
 	});
 });
 

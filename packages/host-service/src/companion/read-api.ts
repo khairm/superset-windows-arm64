@@ -899,6 +899,7 @@ export async function handleTree(
 
 		sortTerminals(shown);
 
+		const workspacePinned = curation.workspacePinned(row.id);
 		const workspace: Workspace = {
 			workspaceId: deriveHandle("workspace", row.id) as unknown as WorkspaceId,
 			name: row.name.length > 0 ? row.name : row.branch,
@@ -920,7 +921,13 @@ export async function handleTree(
 			// ORDER rather than membership, so a filter that only decides what to
 			// hide could never carry it. Not gated on `full`: it says nothing about
 			// content that the row's own name and status do not already say.
-			pinned: curation.workspacePinned(row.id),
+			//
+			// OMITTED, not `false`, when curation has no opinion (never mirrored,
+			// aged out, another org). §7.2 distinguishes a field the bridge does not
+			// report from one it reports as false, and emitting `false` there told
+			// the phone "this row is not pinned" on the strength of a mirror that was
+			// never written.
+			...(workspacePinned === null ? {} : { pinned: workspacePinned }),
 		};
 
 		const list = workspacesByProject.get(placement);
@@ -943,6 +950,7 @@ export async function handleTree(
 				STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
 				(b.lastActivityMs ?? 0) - (a.lastActivityMs ?? 0),
 		);
+		const projectPinned = curation.projectPinned(row.id);
 		outProjects.push({
 			projectId: deriveHandle("project", row.id) as unknown as ProjectId,
 			name:
@@ -951,8 +959,9 @@ export async function handleTree(
 				? deriveProjectKind(row, workspaceRowsByOwningProject.get(row.id) ?? [])
 				: PROJECT_KIND_UNKNOWN,
 			workspaces: ws,
-			// (EMIT-OPTIONAL-FIELDS) `sidebar_project_state.is_pinned`.
-			pinned: curation.projectPinned(row.id),
+			// (EMIT-OPTIONAL-FIELDS) `sidebar_project_state.is_pinned`, omitted on
+			// the same terms as a workspace's.
+			...(projectPinned === null ? {} : { pinned: projectPinned }),
 		});
 	}
 	outProjects.sort((a, b) => {

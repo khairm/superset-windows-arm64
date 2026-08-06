@@ -584,8 +584,9 @@ export interface Project {
 	 * (EMIT-OPTIONAL-FIELDS) `sidebar_project_state.is_pinned`. OPTIONAL, like
 	 * every field added after a client shipped: both clients already parse this
 	 * object ignoring unknown keys, and nothing in the protocol may come to
-	 * depend on it. False when no curation is in force — absence of a mirrored
-	 * row is absence of an opinion.
+	 * depend on it. ABSENT when no curation is in force — absence of a mirrored
+	 * row is absence of an opinion, and §7.2 distinguishes a field the bridge
+	 * does not report from one it reports as `false`.
 	 */
 	pinned?: boolean;
 }
@@ -599,7 +600,10 @@ export interface Workspace {
 	status: AgentStatus;
 	terminals: Terminal[];
 	lastActivityMs: EpochMs | null;
-	/** (EMIT-OPTIONAL-FIELDS) `sidebar_workspace_state.pinned_at != null`. */
+	/**
+	 * (EMIT-OPTIONAL-FIELDS) `sidebar_workspace_state.pinned_at != null`. Absent,
+	 * never `false`, when no curation is in force.
+	 */
 	pinned?: boolean;
 }
 
