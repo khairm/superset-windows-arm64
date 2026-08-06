@@ -24,6 +24,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Team/workflow work shows working | background_tasks[] entry types split the post-turn dot: agent-type work (teammate/subagent/workflow) holds yellow; shell-only goes blue | `(TEAM-YELLOW)` |
 | Codex-companion job holds the dot | detached codex worker is invisible to background_tasks[]; an active (pid-alive) codex job for the session holds yellow incl. through StopFailure AND the JSONL watcher's stream-idle/API-abort + interrupt self-heal (System 1 mirrors the same check via `codexJobActive` in agent-jsonl-watcher.ts, so a codex-only session can't false-green when the Claude API drops and no StopFailure hook fires) | `_codex_job_active` |
 | Manual compact restores shell-blue | a manual /compact ending while only a background shell runs restores the BackgroundRunning blue (turn-end snapshot marker) instead of false-greening; the JSONL-watcher re-attach after compaction must not wipe that blue | `_shellbg_marker_path`, `(BLUE-SPECTATOR)` |
+| Watcher turn-ends carry the blue verdict | the JSONL watcher's OWN turn-end emits (user interrupt, post-truncation re-read, API abort) bypass superset-notify.py, and the renderer clears the background-running axis on every non-`BackgroundRunning` agent event — so a bare watcher `Stop` wiped the blue the hook had just restored (live: compact-end `BackgroundRunning`, then 763ms later the watcher re-parsed the compaction-rewritten transcript, matched a HISTORICAL "Request interrupted by user" line and greened the dot under a still-running background shell). The watcher's emit union now includes `BackgroundRunning` and both turn-end sites share one precedence helper mirroring the hook: agent/codex/question hold → `SubagentActive`, else a live `<terminalId>.shellbg` marker → `BackgroundRunning`, else `Stop`. The destructive full-API-abort path needs no special case — it reaps `.shellbg` first, so the helper resolves to `Stop` there, matching the hook's StopFailure branch | `(WATCHER-BLUE-STOMP)` |
 | ws native modules off | host-service `ws` must use pure-JS mask/unmask — a broken packaged bufferutil wedges WS receivers and kills ALL terminal keyboard input | `WS_NO_BUFFER_UTIL` |
 | Shell-running blue dot | OSC 133 C/D command-running detection | `scanForOsc133Cd` |
 | Non-git / multi-repo workspaces | open a non-git folder as a plain workspace | `resolveNonGitFolder` |
@@ -109,6 +110,8 @@ CLAUDE-STOP-UNHOOKED	apps/desktop/src/main
 _codex_job_active	apps/desktop/src/main
 _shellbg_marker_path	apps/desktop/src/main
 (BLUE-SPECTATOR)	apps/desktop/src/renderer
+(WATCHER-BLUE-STOMP)	apps/desktop/src/main
+(WATCHER-BLUE-STOMP)	apps/desktop/src/renderer
 WS_NO_BUFFER_UTIL	apps/desktop/src/main
 WS_NO_BUFFER_UTIL	packages/host-service
 scanForOsc133Cd	packages

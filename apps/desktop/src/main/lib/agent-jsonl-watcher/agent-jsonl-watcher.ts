@@ -573,7 +573,9 @@ function clearAskqMainMarker(terminalId: string): void {
 	// uses clearAskqDir instead — that kills the shared-API teammates too.
 	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
 	try {
-		fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`, "_main"));
+		fs.unlinkSync(
+			path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`, "_main"),
+		);
 	} catch {}
 }
 
@@ -593,8 +595,62 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 	clearAskqDir(terminalId); // (UNTAGGED-BG-RED) the per-owner question-guard dir too
 }
 
+/**
+ * (WATCHER-BLUE-STOMP) Does the last turn-end snapshot say this terminal still
+ * has SHELL-only background work running? superset-notify.py writes
+ * `<terminalId>.shellbg` at every Stop/SubagentStop whose payload carries
+ * background_tasks that are all shell-type, and consumes it at the manual-compact
+ * finish to restore the BackgroundRunning blue instead of false-greening. The
+ * watcher emits turn-ends of its own that BYPASS that hook, and the renderer
+ * clears the blue axis on every non-BackgroundRunning agent event — so a bare
+ * watcher `Stop` wiped the blue the hook had just restored (live repro
+ * 2026-08-06: compact-end BackgroundRunning, then 763ms later the watcher
+ * re-parsed the compaction-rewritten transcript, saw a HISTORICAL "Request
+ * interrupted by user" line and emitted Stop → dot went green under a still-
+ * running background shell). Read the same marker the hook writes so the
+ * watcher's turn-end carries the same blue verdict. Best-effort; never throws.
+ */
+function shellBackgroundHeld(terminalId: string | undefined): boolean {
+	if (!terminalId) return false;
+	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return false;
+	try {
+		return fs.existsSync(
+			path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.shellbg`),
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * (WATCHER-BLUE-STOMP) Turn-end precedence, mirroring superset-notify.py's
+ * manual-compact finish: an agent/codex/question hold wins (yellow, red-
+ * respecting), else a live shell-background snapshot wins (blue), else a plain
+ * turn-end (green/review). Callers on the DESTRUCTIVE full-API-abort path have
+ * already run `clearAbortSiblingSentinels`, which unlinks `.shellbg` — so this
+ * naturally returns Stop there, matching the hook's StopFailure branch
+ * ("snapshot is stale; StopFailure stays no-blue"). No special-casing needed:
+ * the marker state at emit time IS the verdict.
+ */
+function resolveTurnEndEventType(
+	hold: boolean,
+	terminalId: string | undefined,
+): "Stop" | "SubagentActive" | "BackgroundRunning" {
+	if (hold) return "SubagentActive";
+	if (shellBackgroundHeld(terminalId)) return "BackgroundRunning";
+	return "Stop";
+}
+
 function emit(
-	eventType: "Start" | "Stop" | "PermissionRequest" | "SubagentActive",
+	// (WATCHER-BLUE-STOMP) `BackgroundRunning` is in the union because a watcher
+	// turn-end must be able to SAY "blue" — while it could only say Stop, every
+	// watcher-emitted turn-end wiped the background-running axis.
+	eventType:
+		| "Start"
+		| "Stop"
+		| "PermissionRequest"
+		| "SubagentActive"
+		| "BackgroundRunning",
 	sessionId: string | null,
 	cwd: string,
 	mapping: PaneMapping | undefined,
@@ -979,20 +1035,22 @@ function processFile(
 			// (BF) a codex companion runs on its OWN API and survives the Claude
 			// abort -> keep the dot working (yellow) instead of false-greening.
 			const codexActive = codexJobActive(state.sessionId);
+			// (WATCHER-BLUE-STOMP) same precedence helper as the interrupt path
+			// below. The sentinel reap above already unlinked `.shellbg`, so this
+			// resolves to Stop here — matching superset-notify.py's StopFailure
+			// branch, which removes the marker for the same reason (the snapshot
+			// died with the Claude API).
+			const abortEventType = resolveTurnEndEventType(codexActive, terminalId);
 			dbg("claude-api-abort-release", {
 				sessionId: state.sessionId,
 				terminalId: terminalId ?? null,
 				reapedMarkers: reaped,
 				clearedSiblings: !!terminalId,
 				codexActive,
+				emitted: abortEventType,
 				filePath,
 			});
-			emit(
-				codexActive ? "SubagentActive" : "Stop",
-				state.sessionId,
-				cwd,
-				mapping,
-			);
+			emit(abortEventType, state.sessionId, cwd, mapping);
 		} else if (sawApiAbort || sawInterrupt) {
 			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
 			// only re-asserts review/green — no destructive marker reap).
@@ -1018,6 +1076,11 @@ function processFile(
 			// (BF) a codex companion survives a Claude interrupt/abort (own API) ->
 			// keep working (yellow) too, not only for a held question.
 			const hold = heldRed || codexJobActive(state.sessionId);
+			// (WATCHER-BLUE-STOMP) nothing was reaped on this path (an interrupt
+			// does not kill a background shell, and a post-truncation re-read
+			// touches no markers), so a live `.shellbg` snapshot still stands:
+			// emit the blue instead of a bare Stop that would wipe it.
+			const emitted = resolveTurnEndEventType(hold, mapping?.terminalId);
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
@@ -1027,10 +1090,11 @@ function processFile(
 						sawApiAbort && truncatedReset ? "truncation-reread" : null,
 					heldRed,
 					hold,
+					emitted,
 					filePath,
 				},
 			);
-			emit(hold ? "SubagentActive" : "Stop", state.sessionId, cwd, mapping);
+			emit(emitted, state.sessionId, cwd, mapping);
 		}
 		// (AUTO-RESUME) Forward an api-error candidate. We do NOT veto the whole chunk on a
 		// co-occurring interrupt — the manager re-reads the transcript tail and only arms

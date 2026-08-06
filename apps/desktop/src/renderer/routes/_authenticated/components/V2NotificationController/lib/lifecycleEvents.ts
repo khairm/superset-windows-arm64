@@ -298,6 +298,15 @@ function updatePaneStatus(
 	// no longer dependent on the green first clearing to idle. Any OTHER agent
 	// event re-derives state, so clear the axis — the next Stop re-sets it from
 	// the live background_tasks. NEVER touches the OSC shell-running axis.
+	// (WATCHER-BLUE-STOMP) The notify hook is no longer the only source: the
+	// main-process JSONL watcher also emits "BackgroundRunning" for its own
+	// turn-ends (interrupt / post-truncation re-read) when the terminal's
+	// `.shellbg` snapshot marker is live. Both arrive here identically — the
+	// Electron IPC path passes eventType through unfiltered and the host round
+	// trip maps it 1:1 — so this branch must keep accepting it from either.
+	// NOTE: watcher-sourced events are NOT distinguishable here (the Electron
+	// payload is only {eventType, terminalId, occurredAt}), which is why the fix
+	// lives at the emit site rather than as a spectate rule in the else below.
 	if (payload.eventType === "BackgroundRunning") {
 		ndots({
 			event: "bg_axis_set",
