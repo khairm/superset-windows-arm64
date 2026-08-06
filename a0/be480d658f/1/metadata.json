@@ -1,9 +1,12 @@
 {
   "cli_version": "0.7.7",
   "checkpoint_id": "a0be480d658f",
+  "session_id": "905bacbc-36b9-4f9b-9873-1366bc98b0a8",
   "strategy": "manual-commit",
+  "created_at": "2026-08-06T09:43:03.3142361Z",
   "branch": "main",
-  "checkpoints_count": 9,
+  "checkpoints_count": 6,
+  "save_step_count": 6,
   "files_touched": [
     "FEATURES.md",
     "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/components/DashboardSidebarWorkspaceChips/DashboardSidebarWorkspaceChips.tsx",
@@ -19,25 +22,109 @@
     "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/components/DashboardSidebarWorkspaceChips/hooks/useDashboardSidebarWorkspaceRunningAgents/useDashboardSidebarWorkspaceRunningAgents.ts",
     "apps/desktop/src/renderer/stores/workspace-agents-row.ts"
   ],
-  "sessions": [
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "ead713fb336d",
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 167824,
+    "cache_read_tokens": 1668954,
+    "output_tokens": 21383,
+    "api_call_count": 18
+  },
+  "session_metrics": {
+    "turn_count": 6
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-06T09:43:03.2296068Z",
+    "agent_lines": 14,
+    "agent_removed": 452,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 14,
+    "total_lines_changed": 466,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
     {
-      "metadata": "/a0/be480d658f/0/metadata.json",
-      "transcript": "/a0/be480d658f/0/full.jsonl",
-      "content_hash": "/a0/be480d658f/0/content_hash.txt",
-      "prompt": "/a0/be480d658f/0/prompt.txt"
+      "checkpoint_number": 1,
+      "user_lines_added": 1364,
+      "user_lines_removed": 1363,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/scheduled_tasks.lock": 1,
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      },
+      "user_removed_per_file": {
+        ".superset/setup.sh": 15,
+        ".superset/teardown.sh": 15,
+        "apps/relay/scripts/deploy-staging.sh": 32,
+        "apps/relay/scripts/smoke-test.sh": 45,
+        "packages/cli-framework/src/bin.ts": 14,
+        "packages/cli/demo/add-sound.sh": 50,
+        "packages/cli/scripts/build-dist-linux-docker.sh": 68,
+        "packages/pty-daemon/src/main.ts": 223,
+        "scripts/check-git-ref-strings.sh": 72,
+        "scripts/postinstall.sh": 23,
+        "scripts/release-canary.sh": 17,
+        "scripts/smoke-pty-daemon-cleanup.mjs": 559,
+        "scripts/v1v2-import-test-cleanup.sh": 49,
+        "scripts/v1v2-import-test-setup.sh": 181
+      }
     },
     {
-      "metadata": "/a0/be480d658f/1/metadata.json",
-      "transcript": "/a0/be480d658f/1/full.jsonl",
-      "content_hash": "/a0/be480d658f/1/content_hash.txt",
-      "prompt": "/a0/be480d658f/1/prompt.txt"
+      "checkpoint_number": 2,
+      "user_lines_added": 1,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1363,
+      "agent_lines_removed": 1363,
+      "user_added_per_file": {
+        ".claude/scheduled_tasks.lock": 1
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
     }
-  ],
-  "token_usage": {
-    "input_tokens": 3927,
-    "cache_creation_tokens": 17549828,
-    "cache_read_tokens": 817775673,
-    "output_tokens": 1695919,
-    "api_call_count": 2053
-  }
+  ]
 }
