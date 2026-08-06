@@ -1,13 +1,19 @@
-import { HALF_STOP_INCOMPLETE_TEXTS } from "../auto-resume/classifier/classifier";
-
 /**
  * (WATCHER-BLUE-STOMP) Turn-end replay gate for the Claude JSONL watcher.
  *
- * The watcher emits turn-ends of its own — a user interrupt and a full API
- * abort — that BYPASS superset-notify.py. Two things have to be true before one
- * of those emits is allowed to fire: the line must really BE a turn-end, and the
- * turn it describes must have ended JUST NOW. This module owns both questions;
- * it is pure (no fs, no clock of its own) so it can be tested directly.
+ * The watcher emits exactly ONE turn-end of its own: a user interrupt, which
+ * BYPASSES superset-notify.py because Claude Code fires no hook for it. Two
+ * things have to be true before that emit is allowed to fire: the line must
+ * really BE an interrupt record, and the turn it describes must have ended JUST
+ * NOW. This module owns both questions; it is pure (no fs, no clock of its own)
+ * so it can be tested directly.
+ *
+ * A terminal API error is deliberately NOT the watcher's business. Claude Code
+ * runs its StopFailure hooks whenever the turn's last record is an api-error,
+ * and superset-notify.py's StopFailure branch answers `Stop`, so the hook
+ * already owns that whole class — and the fork's dot design is hook-is-truth.
+ * The watcher's former api-abort emit path is gone; see the (WATCHER-BLUE-STOMP)
+ * note above the Claude block in agent-jsonl-watcher.ts for the evidence.
  *
  * ── 1. Is it really a turn-end? ──────────────────────────────────────────────
  *
@@ -60,55 +66,6 @@ import { HALF_STOP_INCOMPLETE_TEXTS } from "../auto-resume/classifier/classifier
  * The exact-shape requirement is what removes the false-positive surface, so
  * keeping the third wording costs nothing.
  *
- * The API-abort predicate had the same latent defect: it substring-matched
- * `"isApiErrorMessage":true` plus a signature phrase on the RAW line. The corpus
- * holds 85 lines carrying the abort signature and NOT ONE is a real api-error
- * record — every one is a quote (log greps, FEATURES.md reads, this file's own
- * source). They escape the current predicate only because none of those quotes
- * happened to also carry the `isApiErrorMessage` substring; a single tool_result
- * that cats a real api-error transcript line would carry both. Since the abort
- * path is the DESTRUCTIVE one (it reaps subagent markers), it is parsed exactly
- * too: `isApiErrorMessage` must be a real top-level boolean on an `assistant`
- * record, and the signature must appear in the record's own extracted text.
- * Verified against all 1317 real api-error records in the corpus: every one is
- * `type:"assistant"` with a top-level `isApiErrorMessage:true` and a single text
- * block, so the parse never loses a genuine abort.
- *
- * ── 1b. WHICH api-errors end a turn? ─────────────────────────────────────────
- *
- * Re-measured 2026-08-06 over the same 10,698 transcripts. The signatures this
- * predicate used to carry — "Stream idle timeout" / "partial response received"
- * — match ZERO of the 1317 real api-error records, so the destructive path had
- * been matching nothing at all. Reading the installed 2.1.223 binary says why:
- * `Stream idle timeout - partial response received` is the message of an
- * internal `Error` object (it feeds the CLI's own telemetry classifier), never
- * the text of a transcript record. It is dropped rather than kept for
- * compatibility: it was never a transcript text in ANY of the 18 CLI versions
- * present (2.1.197 – 2.1.223), so keeping it only widens the destructive path.
- *
- * What Claude Code actually writes when a stream dies mid-response is one of
- * HALF_STOP_INCOMPLETE_TEXTS (see ../auto-resume/classifier/classifier.ts) —
- * one CLI site, `tengu_streaming_partial_finalized`, which finalizes the blocks
- * already yielded. 23 such records exist in the corpus, across 2.1.205 – 2.1.222.
- *
- * NOT every api-error is a turn-end, so admitting the family wholesale would
- * green mid-turn. Partitioning every api-error record by what follows it (the
- * same "meaningful progress" rule auto-resume uses: the next `user` record or
- * non-api-error `assistant` record) shows the half-stop family splits 19 ended /
- * 4 continued — and the split is EXACT on one field. The CLI synthesizes a
- * stop_reason onto the partial blocks it finalizes: `tool_use` when a tool call
- * was already yielded (it runs the tool and the turn CONTINUES), `end_turn`
- * otherwise. All 4 continuations sit behind an assistant record stamped
- * `stop_reason:"tool_use"`; all 19 real turn-ends sit behind `end_turn` or a
- * record with no stop_reason at all. Hence isToolUseContinuationRecord below,
- * which the watcher applies to the record preceding a matched abort.
- *
- * Everything else — rate limits, credit exhaustion, 5xx, policy blocks, prompt
- * too long — is deliberately NOT admitted here even though the corpus shows
- * most of it is terminal too. Those aborts fire Claude Code's StopFailure hook,
- * which superset-notify.py already turns into a Stop; this gate exists only for
- * the case no hook covers, and every text it admits widens a destructive path.
- *
  * ── 2. Did the turn end JUST NOW? ────────────────────────────────────────────
  *
  * Claude Code re-presents transcript content it has already written — a
@@ -121,7 +78,7 @@ import { HALF_STOP_INCOMPLETE_TEXTS } from "../auto-resume/classifier/classifier
  * 763ms later the watcher re-parsed the compaction-rewritten transcript, matched
  * a HISTORICAL interrupt and greened the dot under a still-running background
  * shell). The same replay asserts a false turn-end mid-turn during an AUTO
- * compact, and on the abort path reaps markers belonging to a live later turn.
+ * compact.
  *
  * The gate is therefore per-entry and layered:
  *
@@ -137,9 +94,9 @@ import { HALF_STOP_INCOMPLETE_TEXTS } from "../auto-resume/classifier/classifier
  *      to judge. Off (null) in steady state, where a young entry with an unseen
  *      uuid IS the normal live turn-end and must emit.
  *
- * Failing the gate emits NOTHING — no Stop, no marker reap — so the dot keeps
- * whatever the notify hook last asserted. That is the safe direction: a lingering
- * yellow self-heals on the next hook event, a false green does not.
+ * Failing the gate emits NOTHING, so the dot keeps whatever the notify hook last
+ * asserted. That is the safe direction: a lingering yellow self-heals on the
+ * next hook event, a false green does not.
  */
 
 /** Exact text of Claude Code's synthetic turn-end user message. */
@@ -148,14 +105,6 @@ const TURN_END_SENTINEL_TEXTS: ReadonlySet<string> = new Set([
 	"[Request interrupted by user for tool use]",
 	"[Request cancelled by user]",
 ]);
-
-/**
- * Signature of the API failure that ENDS a turn, as it appears in the api-error
- * record's own text. Shared with the auto-resume classifier so the two cannot
- * drift apart; see section 1b above for why this is the ONLY api-error family
- * admitted and why the older "Stream idle timeout" wording was dropped.
- */
-const API_ABORT_SIGNATURES = HALF_STOP_INCOMPLETE_TEXTS;
 
 /**
  * How old a genuine turn-end entry can be when the watcher reads it.
@@ -236,7 +185,6 @@ export interface TranscriptRecord {
 	readonly type?: unknown;
 	readonly uuid?: unknown;
 	readonly timestamp?: unknown;
-	readonly isApiErrorMessage?: unknown;
 	readonly message?: unknown;
 }
 
@@ -257,15 +205,13 @@ export interface TurnEndVerdict {
 
 /**
  * Cheap substring prefilter so the hot path only pays for JSON.parse on lines
- * that could possibly be a turn-end. Deliberately loose — the exact predicates
- * below do the real work; this only exists to keep a full-file re-read from
+ * that could possibly be a turn-end. Deliberately loose — the exact predicate
+ * below does the real work; this only exists to keep a full-file re-read from
  * parsing every line.
  */
 export function mayBeTurnEndLine(line: string): boolean {
 	return (
-		line.includes("interrupted by user") ||
-		line.includes("cancelled by user") ||
-		line.includes('"isApiErrorMessage":true')
+		line.includes("interrupted by user") || line.includes("cancelled by user")
 	);
 }
 
@@ -303,12 +249,6 @@ function messageRole(message: unknown): string | null {
 	return typeof role === "string" ? role : null;
 }
 
-function messageStopReason(message: unknown): string | null {
-	if (typeof message !== "object" || message === null) return null;
-	const reason = (message as { stop_reason?: unknown }).stop_reason;
-	return typeof reason === "string" ? reason : null;
-}
-
 /** Claude Code's synthetic "the user interrupted this turn" user record. */
 export function isSyntheticInterruptRecord(rec: TranscriptRecord): boolean {
 	if (rec.type !== "user") return false;
@@ -318,51 +258,15 @@ export function isSyntheticInterruptRecord(rec: TranscriptRecord): boolean {
 }
 
 /**
- * (API-ABORT-RELEASE) The synthetic assistant record for an API failure that
- * ENDED the turn. `isApiErrorMessage` is set by Claude Code itself and never by
- * the model, so a real top-level `true` on an `assistant` record is already
- * proof the line is not a quote; the signature is then matched against that
- * record's own text rather than the raw line.
- */
-export function isSyntheticApiAbortRecord(rec: TranscriptRecord): boolean {
-	if (rec.isApiErrorMessage !== true) return false;
-	if (rec.type !== "assistant") return false;
-	if (messageRole(rec.message) !== "assistant") return false;
-	const text = soleTextBlock(rec.message);
-	if (text === null) return false;
-	return API_ABORT_SIGNATURES.some((sig) => text.includes(sig));
-}
-
-/**
- * (WATCHER-BLUE-STOMP) Does this record show Claude Code finalizing a partial
- * response AS A TOOL CALL — i.e. the turn is about to continue?
- *
- * When the stream dies mid-response the CLI keeps the blocks it already got and
- * stamps them with a synthesized stop_reason: `tool_use` if one of those blocks
- * was a tool call, `end_turn` otherwise. `tool_use` means it will now run the
- * tool and carry on, so the api-error record sitting beside it is NOT a turn-end
- * and must not reap markers or green the dot. This is exact on the corpus: all 4
- * half-stop records whose turn continued are preceded by a `tool_use` record,
- * and all 19 whose turn ended are not.
- *
- * The caller passes the assistant record PRECEDING a matched abort. When there
- * is none (the preceding record fell in an earlier read), the answer is "not a
- * continuation" and the abort is admitted — the same behaviour as before this
- * check existed, so an unobservable predecessor can never cost us a turn-end.
- */
-export function isToolUseContinuationRecord(rec: TranscriptRecord): boolean {
-	if (rec.type !== "assistant") return false;
-	if (rec.isApiErrorMessage === true) return false;
-	if (messageRole(rec.message) !== "assistant") return false;
-	return messageStopReason(rec.message) === "tool_use";
-}
-
-/**
- * Was this entry written before `fenceMs`, allowing the same slack the age gate
- * gives a clock that has stepped? An entry with no usable timestamp is NOT
- * treated as pre-fence — `judgeTurnEndRecord` already suppresses it as
- * `undatable`, and the watcher's api-error notify wants an unusable timestamp to
- * behave like an unfenced read rather than silently vanish.
+ * Was this entry written before `fenceMs`? A direct comparison, with no skew
+ * tolerance: both stamps come from the SAME machine's clock (Claude Code wrote
+ * the record, the watcher read its own start time), so there is no cross-clock
+ * skew to absorb here — the future-skew tolerance belongs to the age gate, where
+ * the risk it covers (a backward clock step making all history read as fresh)
+ * actually exists. An entry with no usable timestamp is NOT treated as
+ * pre-fence: `judgeTurnEndRecord` already suppresses it as `undatable`, and the
+ * watcher's api-error notify wants an unusable timestamp to behave like an
+ * unfenced read rather than silently vanish.
  */
 export function recordPredatesFence(
 	rec: TranscriptRecord,
@@ -371,7 +275,7 @@ export function recordPredatesFence(
 	if (typeof rec.timestamp !== "string") return false;
 	const t = Date.parse(rec.timestamp);
 	if (!Number.isFinite(t)) return false;
-	return t < fenceMs - TURN_END_MAX_FUTURE_SKEW_MS;
+	return t < fenceMs;
 }
 
 function rememberTurnEndUuid(uuid: string): void {

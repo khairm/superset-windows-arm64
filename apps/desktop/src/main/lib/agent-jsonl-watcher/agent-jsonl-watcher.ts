@@ -6,9 +6,7 @@ import { NOTIFICATION_EVENTS } from "shared/constants";
 import type { AgentLifecycleEvent } from "shared/notification-types";
 import { installPaneMapHook } from "./pane-map-hook";
 import {
-	isSyntheticApiAbortRecord,
 	isSyntheticInterruptRecord,
-	isToolUseContinuationRecord,
 	judgeTurnEndRecord,
 	mayBeTurnEndLine,
 	parseTranscriptRecord,
@@ -226,6 +224,20 @@ interface FileState {
 	cwd: string | null;
 	sessionId: string | null;
 	parser: AgentParser;
+	/**
+	 * (WATCHER-BLUE-STOMP) Watcher start time while a Claude startup-guard tail
+	 * re-read of THIS file is still outstanding; null otherwise. Everything the
+	 * tail contains that is stamped before it is pre-start history.
+	 *
+	 * It lives on the state rather than in a processFile local because arming the
+	 * tail REWINDS `offset` before the read that consumes it: if that read throws
+	 * (a Windows lock on a file Claude Code is writing is enough), the retry pass
+	 * is no longer `isFirstSeen`, so a pass-local flag recomputes as false and the
+	 * rewound offset would be re-read UNFENCED — arming auto-resume off an
+	 * hours-old api-error. Cleared by the first pass that actually consumes the
+	 * tail (i.e. advances the offset past it).
+	 */
+	preStartFenceMs: number | null;
 }
 
 // Dedup state is keyed per agent session (`session:<uuid>` from the
@@ -372,61 +384,6 @@ const SUBAGENT_RUNNING_DIR = path.join(
 	"agent-subagent-running",
 );
 
-/**
- * (API-ABORT-RELEASE) Reap the run-dir subagent markers for a terminal when the
- * main Claude session's stream aborts. superset-notify.py creates one marker per
- * SubagentStart under agent-subagent-running/<terminalId>/ and removes it only on
- * SubagentStop; a stream that dies mid-response (an isApiErrorMessage assistant
- * line whose text is one of the half-stop signatures in ./turn-end-gate) ends
- * the turn and ORPHANS any in-flight subagent WITHOUT firing its SubagentStop, so
- * the marker leaks and the POST hook re-asserts yellow from it indefinitely. No
- * hook fires on the abort, so the POST hook can't self-heal — but the watcher
- * reads the transcript, so it reaps the orphaned per-subagent markers here. A
- * subagent that genuinely SURVIVES the abort is not under-held: mirrorSubagentToParent
- * re-asserts SubagentActive (yellow) on its NEXT transcript write, so it errs
- * green for one beat and self-heals back to yellow on the subagent's next
- * activity. Best-effort; never throws. The terminalId comes from the pane-map
- * JSON, so it's validated as a safe single path segment and the resolved dir is
- * confirmed to be a DIRECT CHILD of SUBAGENT_RUNNING_DIR before anything is
- * unlinked (path-injection guard). The sibling sentinel files
- * (<terminalId>.mainstopped/.agentbg/.bgactive…) live OUTSIDE this dir and are
- * cleared separately by the caller.
- */
-function reapOrphanedSubagentMarkers(terminalId: string): number {
-	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return 0;
-	const dir = path.join(SUBAGENT_RUNNING_DIR, terminalId);
-	if (path.dirname(path.resolve(dir)) !== path.resolve(SUBAGENT_RUNNING_DIR))
-		return 0;
-	try {
-		let reaped = 0;
-		for (const name of fs.readdirSync(dir)) {
-			try {
-				fs.unlinkSync(path.join(dir, name));
-				reaped += 1;
-			} catch {}
-		}
-		return reaped;
-	} catch {
-		return 0;
-	}
-}
-
-/**
- * (API-ABORT-RELEASE / FIX 7) A turn-killing API abort is StopFailure-equivalent:
- * also clear the sibling sentinel files in SUBAGENT_RUNNING_DIR so a zombie
- * background_tasks set can't immediately re-hold yellow via a fresh .bgactive.
- * These siblings live OUTSIDE the <terminalId>/ dir, so reapOrphanedSubagentMarkers'
- * child-of guard does not cover them — clean them explicitly. Best-effort; the
- * terminalId is validated the same way as the reap guard. Never throws.
- */
-// (BF codex-companion parity) Mirror of the Python hook's _codex_job_active. The
-// codex plugin dispatches work to a DETACHED worker (separate process, its OWN
-// API) that is invisible to Claude's background_tasks[] and SURVIVES a Claude
-// stream-idle / API abort. Each job is a JSON file tagged with the Claude
-// session_id. When the watcher self-heals a Claude abort it must NOT green the dot
-// if such a job for this session is still active — emit SubagentActive (yellow)
-// instead. "Active" = status queued|running AND (a live worker pid with a <6h-fresh
-// record, OR a pid-less record younger than 10min = spawn in progress). Best-effort.
 function listGlobFiles(
 	base: string,
 	tests: Array<(name: string) => boolean>,
@@ -531,22 +488,9 @@ function codexJobActive(sessionId: string | null): boolean {
 	return false;
 }
 
-function clearAskqDir(terminalId: string): void {
-	// (UNTAGGED-BG-RED) `.askq` is a DIRECTORY of per-owner AskUserQuestion markers;
-	// clear it recursively (a turn/session-ending abort kills every pending question
-	// on this terminal). Best-effort; terminalId validated like the reap guard.
-	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
-	try {
-		fs.rmSync(path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`), {
-			recursive: true,
-			force: true,
-		});
-	} catch {}
-}
-
 function askqHasOwner(terminalId: string, includeMain: boolean): boolean {
 	// (UNTAGGED-BG-RED) does a still-open AskUserQuestion owner marker exist? The
-	// watcher emits Stop DIRECTLY to the renderer on a main interrupt/abort, bypassing
+	// watcher emits Stop DIRECTLY to the renderer on a main interrupt, bypassing
 	// the Python central guard; if a live question remains, the renderer turn-end would
 	// clear its permission red, so the caller emits SubagentActive instead. `includeMain`
 	// false = only detached teammate/subagent owners (a genuine main interrupt aborts
@@ -581,30 +525,13 @@ function clearAskqMainMarker(terminalId: string): void {
 	// (UNTAGGED-BG-RED) remove ONLY the main-loop (`_main`) owner marker. Used on a
 	// watcher-detected MAIN interrupt: it aborts the main loop's own question, but a
 	// detached teammate keeps running on its own and its question marker must survive
-	// (clearing the whole dir would drop a live teammate's red). A full API abort
-	// uses clearAskqDir instead — that kills the shared-API teammates too.
+	// (clearing the whole dir would drop a live teammate's red).
 	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
 	try {
 		fs.unlinkSync(
 			path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.askq`, "_main"),
 		);
 	} catch {}
-}
-
-function clearAbortSiblingSentinels(terminalId: string): void {
-	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return;
-	for (const suffix of [
-		".agentbg",
-		".bgactive",
-		".shellbg",
-		".mainstopped",
-		".compacting",
-	]) {
-		try {
-			fs.unlinkSync(path.join(SUBAGENT_RUNNING_DIR, terminalId + suffix));
-		} catch {}
-	}
-	clearAskqDir(terminalId); // (UNTAGGED-BG-RED) the per-owner question-guard dir too
 }
 
 // (WATCHER-BLUE-STOMP) Turn-end identification and the replay gate both live in
@@ -787,6 +714,7 @@ function processFile(
 			cwd: null,
 			sessionId: extractSessionIdFromFilename(filePath),
 			parser: source.parser,
+			preStartFenceMs: null,
 		};
 		fileStates.set(filePath, state);
 	}
@@ -874,7 +802,15 @@ function processFile(
 	}
 
 	if (fencedTailRead) {
-		state.offset = Math.max(0, stat.size - STARTUP_GUARD_TAIL_BYTES);
+		// Back the cut up one byte so the fragment-drop below is exact: if that
+		// byte is a newline the cut was already on a record boundary and the drop
+		// takes the empty string instead of a real record; if it is not, the drop
+		// takes the genuine fragment. Either way nothing whole is lost.
+		const tailStart = Math.max(0, stat.size - STARTUP_GUARD_TAIL_BYTES);
+		state.offset = tailStart > 0 ? tailStart - 1 : 0;
+		// Persisted, because the rewind above outlives this pass if the read fails
+		// — see FileState.preStartFenceMs.
+		state.preStartFenceMs = watcherStartedAtMs;
 		dbg("startup-guard-tail", {
 			filePath,
 			sessionId: state.sessionId,
@@ -887,11 +823,12 @@ function processFile(
 	// Truncation/rotation: reset offset and re-read from the start. Fall
 	// through (don't return early) so replacement content isn't skipped
 	// until the next append.
-	// (FIX 6) Record that this pass is a from-offset-0 re-read of the whole
-	// transcript: the Claude api-abort line is permanent, so re-reading from 0
-	// would re-fire the DESTRUCTIVE marker reap against LIVE markers from later
-	// turns. The Claude block skips ONLY the reap in that case (the benign emit
-	// Stop still runs).
+	// Record that this pass is a from-offset-0 re-read of the WHOLE transcript.
+	// The Claude block still emits its (benign) interrupt Stop on such a pass,
+	// but every side effect that touches marker files is skipped: a re-read
+	// carries questions and errors from turns that may still be live, so
+	// clearing `_main`, stamping `.mainstopped` or re-arming auto-resume off one
+	// would act on a turn that never ended.
 	let truncatedReset = false;
 	if (stat.size < state.offset) {
 		dbg("file-truncated", {
@@ -922,10 +859,12 @@ function processFile(
 	const newLeftover = allLines.pop() ?? "";
 	const lines = allLines;
 
-	// (WATCHER-BLUE-STOMP) A startup-guard tail starts mid-file, so its first
-	// element is whatever fragment the cut landed in. Drop it rather than leave a
-	// truncated line for the parsers to reject by luck.
-	if (fencedTailRead && state.offset > 0) lines.shift();
+	// (WATCHER-BLUE-STOMP) A startup-guard tail starts one byte BEFORE the cut, so
+	// its first element is either "" (the cut was on a record boundary) or the
+	// fragment the cut landed in. Drop it either way — never a whole record. Keyed
+	// on the persisted fence, not on `fencedTailRead`, so a retry pass after a
+	// failed read drops the same fragment instead of feeding it to the parsers.
+	if (state.preStartFenceMs !== null && state.offset > 0) lines.shift();
 
 	// Subagent transcript: mirror activity to the parent terminal (so it shows
 	// yellow while the subagent runs) and stop here — these files carry no cwd
@@ -933,6 +872,8 @@ function processFile(
 	if (subagentParent) {
 		state.offset = newOffset;
 		state.leftover = newLeftover;
+		// The tail (if one was armed) has been consumed; see below.
+		state.preStartFenceMs = null;
 		mirrorSubagentToParent(subagentParent, lines, state.parser);
 		return;
 	}
@@ -964,6 +905,12 @@ function processFile(
 	const prevOffset = state.offset;
 	state.offset = newOffset;
 	state.leftover = newLeftover;
+	// (WATCHER-BLUE-STOMP) This pass judges the tail under the fence; the offset
+	// has now moved past it, so the next pass reads only post-start appends and
+	// must NOT be fenced (a fence that outlived its tail would suppress every
+	// live turn-end on this file for the rest of the session).
+	const preStartFenceMs = state.preStartFenceMs;
+	state.preStartFenceMs = null;
 	const cwd = state.cwd;
 	const mapping = state.sessionId
 		? loadPaneMapping(state.sessionId)
@@ -981,56 +928,51 @@ function processFile(
 	if (parser.id === "claude") {
 		// Claude main-agent lifecycle is owned by the host-service POST hook
 		// (superset-notify.py). The ONLY thing the watcher still does for a Claude
-		// main line is clear a stuck RED on a user interrupt/ESC (Claude Code fires
-		// NO hook on interrupt, so the POST hook cannot release an AskUserQuestion
-		// red) and self-heal an API-abort that orphaned in-flight subagent markers.
+		// main line is release a turn-end the hook CANNOT see: a user interrupt/ESC,
+		// for which Claude Code fires no hook at all, so nothing else can clear a
+		// stuck AskUserQuestion red or the (BA) background-blue latch.
 		// Event-driven, no timer. (Use state.sessionId — the block-scoped
 		// `const { sessionId }` below is in the temporal dead zone here.)
 		//
-		// (FIX 6) Scan the WHOLE chunk once recording which signals appeared,
-		// rather than break-ing on the first: an interrupt line BEFORE an api-abort
-		// line in the same chunk must still trigger the abort reap. After the loop,
-		// the destructive reap fires once for an api-abort — but NOT on a post-
-		// truncation full re-read (truncatedReset), where the permanent api-error
-		// line would re-reap LIVE markers from later turns.
+		// (WATCHER-BLUE-STOMP) There is deliberately NO api-error turn-end path here.
+		// Claude Code runs its StopFailure hooks whenever a turn's last record is an
+		// api-error, and superset-notify.py's StopFailure branch answers Stop — the
+		// hook owns that class, which is the fork's whole dot design (hook-is-truth),
+		// and the watcher's version of it was dead code for months: its legacy
+		// signatures matched 0 of the 1317 real api-error records in the local corpus
+		// (they were internal CLI Error strings, never transcript text) with zero
+		// stuck-dot fallout, because the hook already covered the class. Reviving it
+		// cost more than it bought. Admitting an abort needs the PRECEDING assistant
+		// record to tell a real turn-end from a tool_use continuation, but real
+		// write-time gaps (1.8-10.4s) against 250ms/2500ms polling put 8 of 9 real
+		// aborts in a chunk that does NOT carry their predecessor — so the guard is
+		// skipped, and on a live continuation the emit would fire a false Stop
+		// mid-turn, reap LIVE subagents' run-dir markers, wipe a pending question's
+		// `.askq` red, and double-ring the Agent-Complete chime against the hook's own
+		// StopFailure Stop. The watcher's only remaining contribution for an api-error
+		// is the auto-resume signal below, which asserts no dot state at all.
+		//
+		// Scan the WHOLE chunk once rather than break-ing on the first match, so a
+		// chunk carrying an interrupt anywhere in it still resolves to one emit.
 		let sawInterrupt = false;
-		let sawApiAbort = false;
 		let sawAnyApiError = false;
 		// (WATCHER-BLUE-STOMP) Per-entry replay gate — see judgeTurnEndRecord. A
-		// matched line sets sawInterrupt/sawApiAbort only if it describes a turn
-		// that ended JUST NOW; a re-presented one is recorded as suppressed and
-		// nothing is emitted or reaped for it.
+		// matched line sets sawInterrupt only if it describes a turn that ended JUST
+		// NOW; a re-presented one is recorded as suppressed and nothing is emitted.
 		const nowMs = Date.now();
-		// (WATCHER-BLUE-STOMP) Armed only on the startup-guard tail re-read, where
-		// everything stamped before the watcher started is history we are reading
-		// past, not a turn-end of ours to announce. Null in steady state — there a
-		// young entry with an unseen uuid IS the live turn-end and must emit.
-		const preStartFenceMs = fencedTailRead ? watcherStartedAtMs : null;
 		const suppressed: Array<{
-			kind: "interrupt" | "api-abort";
 			reason: TurnEndVerdict["reason"];
 			ageMs: number | null;
 			uuid: string | null;
 		}> = [];
-		// (WATCHER-BLUE-STOMP) The most recent non-api-error assistant line seen so
-		// far, kept raw and parsed only when an abort actually needs its stop_reason.
-		let precedingAssistantLine: string | null = null;
-		let continuationSkips = 0;
 		for (const line of lines) {
 			if (!line) continue;
-			const priorAssistantLine = precedingAssistantLine;
-			if (
-				line.includes('"type":"assistant"') &&
-				!line.includes('"isApiErrorMessage":true')
-			) {
-				precedingAssistantLine = line;
-			}
-			// (AUTO-RESUME) ANY api-error line (not just the half-stop signature) is a
-			// candidate for auto-resume; the manager confirms turn-finality itself.
-			// Deliberately NOT replay-gated: it arms nothing by itself — the manager
-			// re-reads the transcript tail and decides finality there. The one
-			// exception is a fenced re-read, where an api-error stamped before the
-			// watcher started is history and would arm a resume for a dead turn.
+			// (AUTO-RESUME) ANY api-error line is a candidate for auto-resume; the
+			// manager confirms turn-finality itself. Deliberately NOT replay-gated: it
+			// arms nothing by itself — the manager re-reads the transcript tail and
+			// decides finality there. The one exception is a fenced re-read, where an
+			// api-error stamped before the watcher started is history and would arm a
+			// resume for a dead turn.
 			if (line.includes('"isApiErrorMessage":true')) {
 				if (preStartFenceMs === null) {
 					sawAnyApiError = true;
@@ -1041,59 +983,26 @@ function processFile(
 				}
 			}
 			// (WATCHER-BLUE-STOMP) A turn-end must be Claude Code's EXACT synthetic
-			// record, not a line that merely contains the phrase. Both markers are
-			// quoted constantly by this repo's own agent traffic (review reports,
-			// teammate messages, tool_results that cat transcript lines), and a quote
-			// is genuinely new content — unique uuid, current timestamp — so the replay
+			// interrupt record, not a line that merely contains the phrase. The marker
+			// is quoted constantly by this repo's own agent traffic (review reports,
+			// teammate messages, tool_results that cat transcript lines), and a quote is
+			// genuinely new content — unique uuid, current timestamp — so the replay
 			// gate below certifies it as fresh and the false Stop fires MID-TURN.
-			// Corpus evidence and the record shapes are in ./turn-end-gate.
-			//
-			// (API-ABORT-RELEASE) A stream that dies mid-response on the MAIN session
-			// (an isApiErrorMessage assistant record whose text is one of the
-			// half-stop signatures) ends the turn and orphans any in-flight subagent
-			// without firing its SubagentStop — leaking its run-dir marker so the POST
-			// hook re-asserts yellow forever. No hook fires on the abort, so only the
-			// watcher (which reads the transcript) can self-heal it.
-			// (FIX 1) The turn-ENDING signature is required: a bare api-error also
-			// covers failures the CLI resolves inside the turn, which must NOT reap
-			// markers or green mid-turn. ./turn-end-gate has the corpus partition.
+			// Corpus evidence and the record shape are in ./turn-end-gate.
 			if (!mayBeTurnEndLine(line)) continue;
 			const record = parseTranscriptRecord(line);
 			if (!record) continue;
-			const isInterrupt = isSyntheticInterruptRecord(record);
-			const isApiAbort = !isInterrupt && isSyntheticApiAbortRecord(record);
-			if (!isInterrupt && !isApiAbort) continue;
+			if (!isSyntheticInterruptRecord(record)) continue;
 			const verdict = judgeTurnEndRecord(record, nowMs, preStartFenceMs);
 			if (!verdict.fresh) {
 				suppressed.push({
-					kind: isInterrupt ? "interrupt" : "api-abort",
 					reason: verdict.reason,
 					ageMs: verdict.ageMs,
 					uuid: verdict.uuid,
 				});
 				continue;
 			}
-			// (WATCHER-BLUE-STOMP) A half-stop the CLI finalized AS A TOOL CALL is not
-			// a turn-end — it runs the tool and carries on. Judging first is
-			// deliberate: the uuid is recorded by now, so this entry can never be
-			// admitted later by a re-read that no longer carries its predecessor.
-			if (isApiAbort && priorAssistantLine) {
-				const prior = parseTranscriptRecord(priorAssistantLine);
-				if (prior && isToolUseContinuationRecord(prior)) {
-					continuationSkips += 1;
-					continue;
-				}
-			}
-			if (isInterrupt) sawInterrupt = true;
-			if (isApiAbort) sawApiAbort = true;
-		}
-		if (continuationSkips > 0) {
-			dbg("api-abort-continuation-skip", {
-				sessionId: state.sessionId,
-				terminalId: mapping?.terminalId ?? null,
-				skipped: continuationSkips,
-				filePath,
-			});
+			sawInterrupt = true;
 		}
 		if (suppressed.length > 0) {
 			// (WATCHER-BLUE-STOMP) This channel is how the original stomp was found —
@@ -1103,7 +1012,7 @@ function processFile(
 				sessionId: state.sessionId,
 				terminalId: mapping?.terminalId ?? null,
 				suppressedCount: suppressed.length,
-				emittedAnyway: sawInterrupt || sawApiAbort,
+				emittedAnyway: sawInterrupt,
 				truncatedReset,
 				startupFenced: preStartFenceMs !== null,
 				maxAgeMs: TURN_END_MAX_AGE_MS,
@@ -1111,44 +1020,12 @@ function processFile(
 				filePath,
 			});
 		}
-		if (sawApiAbort && !truncatedReset) {
-			// Destructive self-heal: reap the orphaned per-subagent markers + the
-			// sibling sentinels (FIX 7), then emit review. Skipped on a post-
-			// truncation re-read so we never reap live markers from later turns.
-			const terminalId = mapping?.terminalId;
-			const reaped = terminalId ? reapOrphanedSubagentMarkers(terminalId) : 0;
-			if (terminalId) clearAbortSiblingSentinels(terminalId);
-			// (BF) a codex companion runs on its OWN API and survives the Claude
-			// abort -> keep the dot working (yellow) instead of false-greening.
-			const codexActive = codexJobActive(state.sessionId);
-			// (WATCHER-BLUE-STOMP) The verdict here is EXPLICIT, never derived from
-			// marker state. `clearAbortSiblingSentinels` above unlinks best-effort
-			// and swallows every failure, so one Windows EPERM (the hook's concurrent
-			// touch holding the handle is realistic) would otherwise flip the
-			// required Stop into something else on the ONE path that has already
-			// declared the snapshot dead. superset-notify.py's StopFailure branch
-			// returns Stop unconditionally for the same reason — regardless of
-			// whether its own marker removal succeeded.
-			const abortEventType = codexActive ? "SubagentActive" : "Stop";
-			dbg("claude-api-abort-release", {
-				sessionId: state.sessionId,
-				terminalId: terminalId ?? null,
-				reapedMarkers: reaped,
-				clearedSiblings: !!terminalId,
-				codexActive,
-				emitted: abortEventType,
-				filePath,
-			});
-			emit(abortEventType, state.sessionId, cwd, mapping);
-		} else if (sawApiAbort || sawInterrupt) {
-			// Benign turn-end emit. Allowed even on a post-truncation re-read (it
-			// only re-asserts review/green — no destructive marker reap).
-			// (UNTAGGED-BG-RED) a genuine MAIN interrupt/abort turn-end clears the
-			// MAIN loop's own question guard (no Stop hook fires on an interrupt to do
-			// it) but NOT a detached teammate's — teammates survive a main interrupt,
-			// so clear only `_main`. Skipped on a post-truncation re-read so a live
-			// later-turn question is never dropped. (A full Claude API abort kills the
-			// shared-API teammates and uses clearAbortSiblingSentinels -> clearAskqDir.)
+		if (sawInterrupt) {
+			// (UNTAGGED-BG-RED) a genuine MAIN interrupt clears the MAIN loop's own
+			// question guard (no Stop hook fires on an interrupt to do it) but NOT a
+			// detached teammate's — teammates survive a main interrupt, so clear only
+			// `_main`. Skipped on a post-truncation re-read so a live later-turn
+			// question is never dropped.
 			if (!truncatedReset && mapping?.terminalId)
 				clearAskqMainMarker(mapping.terminalId);
 			// (UNTAGGED-BG-RED) this Stop goes STRAIGHT to the renderer, bypassing the
@@ -1162,8 +1039,8 @@ function processFile(
 			// Held for a surviving teammate question on a genuine main interrupt ->
 			// stamp .mainstopped so the eventual last SubagentStop finalizes green.
 			if (heldRed && !truncatedReset && askqTid) stampMainStopped(askqTid);
-			// (BF) a codex companion survives a Claude interrupt/abort (own API) ->
-			// keep working (yellow) too, not only for a held question.
+			// (BF) a codex companion survives a Claude interrupt (own API) -> keep
+			// working (yellow) too, not only for a held question.
 			const hold = heldRed || codexJobActive(state.sessionId);
 			// (WATCHER-BLUE-STOMP) A bare `Stop` here is correct AND required. The
 			// replay gate above means this only runs for a turn that ended just now,
@@ -1172,19 +1049,15 @@ function processFile(
 			// the paths that MUST clear it. It also keeps the "Agent Complete" chime
 			// and native notification (both Stop-only) firing on a real interrupt.
 			const emitted = hold ? "SubagentActive" : "Stop";
-			dbg(
-				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
-				{
-					sessionId: state.sessionId,
-					terminalId: mapping?.terminalId ?? null,
-					reapSkipped:
-						sawApiAbort && truncatedReset ? "truncation-reread" : null,
-					heldRed,
-					hold,
-					emitted,
-					filePath,
-				},
-			);
+			dbg("claude-interrupt-release", {
+				sessionId: state.sessionId,
+				terminalId: mapping?.terminalId ?? null,
+				truncatedReset,
+				heldRed,
+				hold,
+				emitted,
+				filePath,
+			});
 			emit(emitted, state.sessionId, cwd, mapping);
 		}
 		// (AUTO-RESUME) Forward an api-error candidate. We do NOT veto the whole chunk on a
@@ -1507,6 +1380,7 @@ async function seedFileAsync(
 		cwd: null,
 		sessionId: extractSessionIdFromFilename(filePath),
 		parser: source.parser,
+		preStartFenceMs: null,
 	};
 	try {
 		const headerBytes = Math.min(8192, stat.size);

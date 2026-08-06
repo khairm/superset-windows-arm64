@@ -73,27 +73,6 @@ const POLICY_TEXT = [
 const MODEL_UNAVAILABLE_TEXT = ["currently unavailable"];
 
 // --- resumable (allow-list) signatures ------------------------------------
-/**
- * The exact texts Claude Code writes when a stream dies MID-RESPONSE and it
- * finalizes whatever was already yielded. All three are emitted from one site in
- * the CLI (the `tengu_streaming_partial_finalized` branch, read out of the
- * installed 2.1.223 binary), always as an `isApiErrorMessage` assistant record
- * carrying `error:"server_error"`; which of the three is chosen depends only on
- * the cause — stall, mid-stream 5xx, or socket close.
- *
- * Exported because the JSONL watcher's turn-end gate matches these EXACTLY on
- * its destructive abort path (see ../../agent-jsonl-watcher/turn-end-gate.ts).
- * The substring needles in HALF_STOP_TEXT below stay deliberately broader: this
- * classifier only runs once the caller has already proved turn-finality, so it
- * can afford to be generous where the gate cannot. Keep the two in step — a
- * test in turn-end-gate.test.ts asserts every text here classifies as half_stop.
- */
-export const HALF_STOP_INCOMPLETE_TEXTS = [
-	"Connection closed mid-response. The response above may be incomplete.",
-	"Response stalled mid-stream. The response above may be incomplete.",
-	"Server error mid-response. The response above may be incomplete.",
-] as const;
-
 const HALF_STOP_TEXT = [
 	"mid-response",
 	"partial response",
