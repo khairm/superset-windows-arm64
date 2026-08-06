@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "e7a432573b1f",
+  "session_id": "905bacbc-36b9-4f9b-9873-1366bc98b0a8",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-06T11:23:13.8689018Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts",
+    "packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "ead713fb336d",
+  "checkpoint_transcript_start": 365,
+  "transcript_lines_at_start": 365,
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 13621,
+    "cache_read_tokens": 841677,
+    "output_tokens": 4420,
+    "api_call_count": 4
+  },
+  "session_metrics": {
+    "turn_count": 22
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-06T11:23:13.6999574Z",
+    "agent_lines": 91,
+    "agent_removed": 18,
+    "human_added": 130,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 221,
+    "total_lines_changed": 282,
+    "agent_percentage": 38.652482269503544,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
