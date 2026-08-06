@@ -394,7 +394,7 @@ superset org members list -s satya
 
 ### projects
 
-A project is a repository checked out on a host. Projects are host-owned —
+A project is a repository checked out on a host. Projects are host-owned:
 each host serves the projects set up on that machine; there is no org-wide
 listing. Workspaces branch off a host's checkout.
 
@@ -591,7 +591,7 @@ than silently falling through to the cloud.
 	quiet="workspace IDs"
 >
 List workspaces on a host. Defaults to this machine; pass `--host <id>` for
-another host. Workspaces are host-owned — there is no org-wide listing (the
+another host. Workspaces are host-owned; there is no org-wide listing (the
 desktop app is the cross-host view). `projectName` falls back to the raw
 project id when the host doesn't know the project's name.
 </Command>
@@ -878,6 +878,67 @@ superset terminals create --workspace ws_…
 ```
 </Command>
 
+<Command
+	name="superset terminals list"
+	options={[
+		{ flag: "--workspace <id>", required: true, description: "Workspace UUID." },
+		{ flag: "--host <id>", description: "Host the workspace lives on (default: this machine)." },
+	]}
+	output={`{
+  sessions: Array<TerminalSession>;
+}`}
+>
+List the live terminal sessions in a workspace. Presence in the list means the
+PTY exists, not that an agent inside it is working or idle.
+</Command>
+
+<Command
+	name="superset terminals read"
+	options={[
+		{ flag: "--workspace <id>", required: true, description: "Workspace UUID." },
+		{ flag: "--terminal <id>", required: true, description: "Terminal session ID." },
+		{ flag: "--host <id>", description: "Host the workspace lives on (default: this machine)." },
+		{ flag: "--max-lines <n>", description: "Limit how many trailing lines to return." },
+	]}
+	output={`{
+  terminalId: string;
+  cols: number;
+  rows: number;
+  text: string;
+}`}
+>
+Read a terminal's current screen back as text without mutating the session.
+
+```bash
+superset terminals read --workspace ws_… --terminal term_… --max-lines 240
+```
+</Command>
+
+<Command
+	name="superset terminals send"
+	options={[
+		{ flag: "--workspace <id>", required: true, description: "Workspace UUID." },
+		{ flag: "--terminal <id>", required: true, description: "Terminal session ID." },
+		{ flag: "--text <string>", required: true, description: "Text to deliver to the terminal." },
+		{ flag: "--no-submit", description: "Stage the text without pressing Enter." },
+		{ flag: "--host <id>", description: "Host the workspace lives on (default: this machine)." },
+	]}
+>
+Send a follow-up message to a terminal already running in a workspace, e.g. to
+give an agent new instructions mid-session.
+</Command>
+
+<Command
+	name="superset terminals close"
+	options={[
+		{ flag: "--workspace <id>", required: true, description: "Workspace UUID." },
+		{ flag: "--terminal <id>", required: true, description: "Terminal session ID." },
+		{ flag: "--host <id>", description: "Host the workspace lives on (default: this machine)." },
+	]}
+>
+Close (dispose) a terminal running in a workspace. This ends the session.
+</Command>
+
 ---
 
 ### tasks (alias: `t`)
@@ -1059,7 +1120,7 @@ Use [`automations logs`](#superset-automations-logs-id) for run history.
 >
 Create an automation. Provide `--prompt` or `--prompt-file`; if both are
 present, the inline `--prompt` value is used. At least one of `--project`
-or `--workspace` must be provided, and it must exist on the target host —
+or `--workspace` must be provided, and it must exist on the target host;
 the CLI verifies this before creating the automation.
 
 ```bash

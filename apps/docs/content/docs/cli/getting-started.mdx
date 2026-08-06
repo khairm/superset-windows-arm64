@@ -32,9 +32,9 @@ export PATH="$HOME/.superset/bin:$PATH"
 curl -fsSL https://superset.sh/cli/install.sh | sh
 ```
 
-The script auto-detects your platform (macOS Apple Silicon or Linux x86_64),
-installs Superset under `~/superset` by default, and adds `~/superset/bin`
-to your shell `PATH`.
+The script auto-detects your platform (macOS on Apple Silicon or Intel, Linux on
+x64 or arm64), installs Superset under `~/superset` by default, and adds
+`~/superset/bin` to your shell `PATH`.
 
 ### Homebrew
 
@@ -171,7 +171,7 @@ superset workspaces list --host h_…  # another host
 Every host-scoped command targets exactly one host. Reads
 (`workspaces list`, `projects list`) default to this machine; mutating
 host commands (`projects create`, `projects setup`, `workspaces create`)
-require an explicit `--host` or `--local` — there's no default. There is
+require an explicit `--host` or `--local`; there's no default. There is
 no org-wide listing; the desktop app is the cross-host view.
 
 ## Where state lives

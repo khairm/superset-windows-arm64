@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { sanitizePromptForPty } from "@superset/shared/agent-prompt-launch";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { invalidateLabelCache } from "../../../ports/static-ports";
@@ -41,6 +42,19 @@ export interface DestroyWorkspaceInput {
 	workspaceId: string;
 	deleteBranch: boolean;
 	force: boolean;
+	/**
+	 * Teardown (step 1) behavior — deliberately separate from `force`, which
+	 * only carries the destructive git semantics (skip preflight, double-force
+	 * worktree removal):
+	 *   - "blocking":    a failed script throws PRECONDITION_FAILED so an
+	 *                    interactive caller can prompt a force-retry.
+	 *   - "best-effort": always runs; a failure degrades to a warning. For
+	 *                    non-interactive callers (CLI/SDK/MCP) with nobody to
+	 *                    prompt — skipping instead would leak the resources the
+	 *                    script provisions (#6174).
+	 *   - "skip":        don't run — the interactive force-retry contract.
+	 */
+	teardownMode: "blocking" | "best-effort" | "skip";
 }
 
 /**
@@ -143,7 +157,7 @@ export const workspaceCleanupRouter = router({
 	 * Destroy a workspace in five phases:
 	 *
 	 *   0. Preflight     — dirty-worktree check (skip if force)
-	 *   1. Teardown      — run .superset/teardown.sh (skip if force)
+	 *   1. Teardown      — run .superset/teardown.sh (per teardownMode)
 	 *   2. Local cleanup — PTYs, worktree
 	 *   3. Cloud delete  ← authoritative UI state
 	 *   4. Branch delete — optional local branch cleanup
@@ -153,9 +167,8 @@ export const workspaceCleanupRouter = router({
 	 * while the path still exists, the cloud row remains so the workspace is
 	 * still visible and delete can be retried instead of orphaning disk state.
 	 *
-	 * Force semantics:
+	 * Force semantics (git only; teardown is governed by teardownMode):
 	 *   - skips preflight (step 0)
-	 *   - skips teardown  (step 1)
 	 *   - step 2b always uses `--force --force`
 	 *   - step 4 always uses `-D` regardless: the `deleteBranch`
 	 *     checkbox is the user's consent, so refusing unmerged branches
@@ -167,7 +180,7 @@ export const workspaceCleanupRouter = router({
 	 *                            different beast — another destroy is in
 	 *                            flight for the same workspace; surface as
 	 *                            a toast and do NOT force-retry.
-	 *   - INTERNAL_SERVER_ERROR with `data.teardownFailure` → teardown
+	 *   - PRECONDITION_FAILED with `data.teardownFailure` → teardown
 	 *                            script failed; prompt force-retry
 	 *   - BAD_REQUEST          → main workspace; cannot be deleted
 	 *   - PRECONDITION_FAILED  → no cloud API configured
@@ -181,7 +194,14 @@ export const workspaceCleanupRouter = router({
 				force: z.boolean().default(false),
 			}),
 		)
-		.mutation(async ({ ctx, input }) => destroyWorkspace(ctx, input)),
+		.mutation(async ({ ctx, input }) =>
+			destroyWorkspace(ctx, {
+				...input,
+				// Interactive contract: force-retry is the user's explicit consent
+				// to abandon a failed teardown.
+				teardownMode: input.force ? "skip" : "blocking",
+			}),
+		),
 });
 
 export async function destroyWorkspace(
@@ -265,9 +285,8 @@ async function runDestroy(
 
 	// ─── Step 1: Teardown ──────────────────────────────────────────
 	// Script is the user's last chance to stop services / flush state
-	// before the workspace goes away. Failure here is recoverable
-	// via force-retry, which skips this step.
-	if (!input.force && local && project) {
+	// before the workspace goes away.
+	if (input.teardownMode !== "skip" && local && project) {
 		const teardown: TeardownResult = await runTeardown({
 			db: ctx.db,
 			workspaceId: input.workspaceId,
@@ -276,18 +295,23 @@ async function runDestroy(
 			projectId: local.projectId,
 		});
 		if (teardown.status === "failed") {
-			const cause: TeardownFailureCause = {
-				kind: "TEARDOWN_FAILED",
-				exitCode: teardown.exitCode,
-				signal: teardown.signal,
-				timedOut: teardown.timedOut,
-				outputTail: teardown.outputTail,
-			};
-			throw new TRPCError({
-				code: "INTERNAL_SERVER_ERROR",
-				message: "Teardown script failed",
-				cause,
-			});
+			if (input.teardownMode === "blocking") {
+				const cause: TeardownFailureCause = {
+					kind: "TEARDOWN_FAILED",
+					exitCode: teardown.exitCode,
+					signal: teardown.signal,
+					timedOut: teardown.timedOut,
+					outputTail: teardown.outputTail,
+				};
+				// Recoverable via force-retry — an expected user-script failure, not a
+				// service bug; must not be reported as a 500.
+				throw new TRPCError({
+					code: "PRECONDITION_FAILED",
+					message: "Teardown script failed",
+					cause,
+				});
+			}
+			warnings.push(formatTeardownWarning(teardown));
 		}
 	}
 
@@ -459,4 +483,22 @@ async function runDestroy(
 		branchDeleted,
 		warnings,
 	};
+}
+
+function formatTeardownWarning(
+	teardown: Extract<TeardownResult, { status: "failed" }>,
+): string {
+	const detail = teardown.timedOut
+		? "timed out"
+		: teardown.exitCode !== null
+			? `exit code ${teardown.exitCode}`
+			: teardown.signal !== null
+				? `signal ${teardown.signal}`
+				: "unknown failure";
+	// Tail is raw PTY bytes; strip control sequences for the plain-text
+	// warnings channel (CLI/SDK/MCP).
+	const tail = sanitizePromptForPty(teardown.outputTail).trim();
+	return tail
+		? `Teardown script failed (${detail}): ${tail}`
+		: `Teardown script failed (${detail})`;
 }
