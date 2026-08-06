@@ -762,6 +762,13 @@ function heldFenceRecord(): PushFenceRecord {
 		armedAtMs: Date.now() - 1_000,
 		state: "armed",
 		sentAtMs: null,
+		hostTerminalId: "term-held",
+		hostWorkspaceId: "w-1",
+		// (PUSH-ARMED-ORPHAN) No transcript pair: "cannot check", which is the
+		// production shape whenever host.db could not derive a path, and the one
+		// that must still fire.
+		transcriptPath: null,
+		toolUseId: null,
 	};
 }
 
@@ -779,6 +786,11 @@ function pushHarness(options: {
 	fireVerdict?: () => PushFireVerdict;
 	/** Injected wall clock, so a corroboration window can be crossed without waiting it out. */
 	now?: () => number;
+	verifyOrphanResolved?: (input: {
+		questionId: QuestionId;
+		transcriptPath: string;
+		toolUseId: string;
+	}) => Promise<boolean>;
 }) {
 	const state = {
 		hidden: options.hidden ?? true,
@@ -813,6 +825,7 @@ function pushHarness(options: {
 		fence: fence.fence,
 		fireVerdict: options.fireVerdict ?? (() => "fire"),
 		isCuratedOff,
+		verifyOrphanResolved: options.verifyOrphanResolved ?? null,
 		now: options.now,
 		onFault: () => {},
 	});
@@ -834,6 +847,10 @@ function pushHarness(options: {
 				workspaceId: HELD_WORKSPACE,
 				questionCount: 1,
 				expiresAtMs: clock() + PUSH_QUESTION_EXPIRY_MS,
+				hostTerminalId: "term-held",
+				hostWorkspaceId: "w-1",
+				transcriptPath: null,
+				toolUseId: null,
 			});
 		},
 	};
@@ -908,6 +925,7 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 				// Exactly what the probe answers when the mirror ages out or belongs to
 				// another org: curation is not in force, so nothing is held.
 				isCuratedOff: () => state.enabled,
+				verifyOrphanResolved: null,
 				onFault: () => {},
 			});
 			state.enabled = true;
@@ -916,6 +934,10 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 				workspaceId: HELD_WORKSPACE,
 				questionCount: 1,
 				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+				hostTerminalId: "term-held",
+				hostWorkspaceId: "w-1",
+				transcriptPath: null,
+				toolUseId: null,
 			});
 			expect(push.inspect().sent).toEqual([]);
 
@@ -986,7 +1008,6 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 		},
 		SWEEP_TEST_TIMEOUT_MS,
 	);
-
 	it(
 		"still drops a held entry the store reports as SETTLED — curation holds, it does not resurrect",
 		async () => {
@@ -1131,6 +1152,203 @@ describe("(PUSH-GONE-CORROBORATION) a gone verdict is a hold, not a drop", () =>
 			expect(harness.push.inspect()).toMatchObject({ armed: [], sent: [] });
 			expect(harness.fence.cleared).toEqual([HELD_QUESTION]);
 			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+});
+
+// ---------------------------------------------------------------------------
+// (PUSH-ARMED-ORPHAN) reconstruction, against PRODUCTION-SHAPED emptiness
+// ---------------------------------------------------------------------------
+
+/**
+ * A sender built the way the bridge builds one AFTER A RESTART, which is the
+ * only state reconstruction ever runs in: the fence has rows and
+ * `QuestionStore` is EMPTY, because it lives in memory and did not survive.
+ *
+ * The harness above cannot show this. Its probes are handed
+ * `questions: { get: () => pendingQuestionFixture() }` and a stubbed
+ * `fireVerdict`, so every reconstructed row is judged against a question the
+ * production store would not have — and the reconstruction case passed while
+ * production discarded every held push on its first away sweep.
+ *
+ * So both probes here are the REAL ones over `get: () => null`.
+ */
+function restartedSender(options: {
+	fenceRecords: PushFenceRecord[];
+	verifyOrphanResolved?: (input: {
+		questionId: QuestionId;
+		transcriptPath: string;
+		toolUseId: string;
+	}) => Promise<boolean>;
+}) {
+	const fence = fakeFence(options.fenceRecords);
+	const emptyStore = { get: () => null };
+	const push = createPushSender({
+		serviceAccountPath: "C:/nonexistent/fcm-service-account.json",
+		devices: {
+			list: async () => [],
+			setFcmToken: async () => {},
+		} as unknown as DeviceStore,
+		presence: presenceStub(() => false),
+		fence: fence.fence,
+		fireVerdict: createFireVerdictProbe({
+			questions: emptyStore,
+			liveness: { isProvablyGone: () => false },
+			resolveTerminalActivityMs: () => NOW - 1_000,
+			logger: { error: () => {} },
+		}),
+		isCuratedOff: createIsCuratedOffProbe({
+			questions: emptyStore,
+			db: {
+				readSidebarMirror: () =>
+					snapshot([mirrorWorkspace("w-1")], [mirrorProject("p-git")]),
+				findWorkspace: () => hostWorkspace,
+			} as unknown as HostDbReader,
+			organizationId: ORG,
+			logger: { info: () => {}, warn: () => {}, error: () => {} },
+		}),
+		verifyOrphanResolved: options.verifyOrphanResolved ?? null,
+		onFault: () => {},
+	});
+	return { push, fence };
+}
+
+/** A fence row carrying the transcript pair, so the check can actually run. */
+function heldFenceRecordWithTranscript(): PushFenceRecord {
+	return {
+		...heldFenceRecord(),
+		transcriptPath: "C:/transcripts/s-1.jsonl",
+		toolUseId: "tu-1",
+	};
+}
+
+describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
+	it(
+		"FIRES, instead of being discarded because the memory-only store has never heard of it",
+		async () => {
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecord()],
+			});
+			expect(restarted.push.inspect().armed).toEqual([HELD_QUESTION]);
+
+			// The first away sweep. This is exactly where every held push used to be
+			// lost: the real probe answers `settled` for a question the empty store
+			// cannot produce, and the entry went straight to `forget()`.
+			await nextSweep();
+			expect(restarted.push.inspect()).toMatchObject({
+				armed: [],
+				sent: [HELD_QUESTION],
+			});
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"is CANCELLED when its own transcript proves it was answered while the host-service was down",
+		async () => {
+			const asked: string[] = [];
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: async ({ transcriptPath, toolUseId }) => {
+					asked.push(`${transcriptPath}|${toolUseId}`);
+					return true;
+				},
+			});
+			await nextSweep();
+			expect(asked).toEqual(["C:/transcripts/s-1.jsonl|tu-1"]);
+			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"FIRES when the transcript check cannot prove anything — unreadable is not resolved",
+		async () => {
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: async () => false,
+			});
+			await nextSweep();
+			expect(restarted.push.inspect().sent).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"FIRES when the transcript check THROWS — could-not-check is the same answer as no-proof",
+		async () => {
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: async () => {
+					throw new Error("EBUSY");
+				},
+			});
+			await nextSweep();
+			expect(restarted.push.inspect().sent).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"HOLDS while the check is still in flight, so a question about to be proved resolved does not buzz first",
+		async () => {
+			let settle: ((resolved: boolean) => void) | null = null;
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: () =>
+					new Promise<boolean>((resolve) => {
+						settle = resolve;
+					}),
+			});
+			await nextSweep();
+			expect(restarted.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+
+			(settle as unknown as (resolved: boolean) => void)(true);
+			await nextSweep();
+			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"ADOPTS a reconstructed entry the hook re-captures, so the ordinary re-check governs it again",
+		async () => {
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				// Never settles: without adoption the entry would stay held, judged by
+				// a check it no longer needs, until the deadline.
+				verifyOrphanResolved: () => new Promise<boolean>(() => {}),
+			});
+			await nextSweep();
+			expect(restarted.push.inspect().armed).toEqual([HELD_QUESTION]);
+
+			restarted.push.schedule({
+				questionId: HELD_QUESTION,
+				workspaceId: HELD_WORKSPACE,
+				questionCount: 1,
+				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+				hostTerminalId: "term-held",
+				hostWorkspaceId: "w-1",
+				transcriptPath: "C:/transcripts/s-1.jsonl",
+				toolUseId: "tu-1",
+			});
+			await nextSweep();
+			// The empty store answers `settled` for it — which is now the governing
+			// verdict, so it is dropped rather than held or fired.
+			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
 		},
 		SWEEP_TEST_TIMEOUT_MS,
 	);

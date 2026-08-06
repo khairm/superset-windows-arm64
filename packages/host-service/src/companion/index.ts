@@ -118,6 +118,7 @@ import { createPushFence, type PushFence } from "./push-fence";
 import {
 	createQuestionStore,
 	deriveHandle,
+	findToolResultInTranscript,
 	type PendingQuestion,
 	QUESTION_STALE_TERMINAL_GONE_REASON,
 	type QuestionCaptureSink,
@@ -655,6 +656,15 @@ export function createCompanionBridge(
 				organizationId: options.organizationId,
 				logger,
 			}),
+			// (PUSH-ARMED-ORPHAN) The one check available for a push rebuilt from
+			// the fence: the question store is memory-only and empty at this point,
+			// so the row's own persisted transcript is the only thing that can say
+			// whether it was answered while the host-service was down. Same
+			// machinery as guard 1 — only a `resolved` verdict cancels; `unresolved`
+			// and `unreadable` both mean the buzz stands.
+			verifyOrphanResolved: async ({ transcriptPath, toolUseId }) =>
+				(await findToolResultInTranscript(transcriptPath, toolUseId)) ===
+				"resolved",
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });
 			},
@@ -1633,6 +1643,14 @@ export function armPush(
 			) as WorkspaceId,
 			questionCount: question.questions.length,
 			expiresAtMs: question.askedAtMs + PUSH_QUESTION_EXPIRY_MS,
+			// (PUSH-ARMED-ORPHAN) Persisted with the fence row so a restart can
+			// judge this push instead of discarding it. None of it goes to FCM.
+			// `transcriptPath` is `""` when host.db could not derive one, which the
+			// fence stores as null — "cannot check", never "resolved".
+			hostTerminalId: question.hostTerminalId,
+			hostWorkspaceId: question.hostWorkspaceId,
+			transcriptPath: question.transcriptPath,
+			toolUseId: question.toolUseId,
 		});
 	} catch (error) {
 		deps.logger.error(

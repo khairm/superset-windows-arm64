@@ -36,6 +36,18 @@ export interface PushFenceRecord {
 	state: PushFenceState;
 	/** Non-null exactly when `state` is `sent`. The loader refuses them out of step. */
 	sentAtMs: number | null;
+	/**
+	 * (PUSH-ARMED-ORPHAN) What a reconstructed row needs to be JUDGED rather than
+	 * discarded. See `companionPushFence` in `db/schema.ts` for why each is here.
+	 *
+	 * Every one is nullable and an absent value is never read as evidence: a row
+	 * written by an older build has none of them, and "cannot check" is not
+	 * "resolved". A row missing its transcript pair stays armed and fires.
+	 */
+	hostTerminalId: string | null;
+	hostWorkspaceId: string | null;
+	transcriptPath: string | null;
+	toolUseId: string | null;
 }
 
 export interface PushFence {
@@ -64,6 +76,12 @@ export interface PushFenceDeps {
 
 function isPositiveInt(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/** An absent column and an empty one are the same fact: nothing to check against. */
+function emptyToNull(value: string | null): string | null {
+	if (value === null) return null;
+	return value.length === 0 ? null : value;
 }
 
 export function createPushFence(deps: PushFenceDeps): PushFence {
@@ -153,6 +171,15 @@ export function createPushFence(deps: PushFenceDeps): PushFence {
 						armedAtMs: row.armedAtMs,
 						state,
 						sentAtMs: row.sentAtMs,
+						// (PUSH-ARMED-ORPHAN) Normalised to null rather than validated
+						// away. An empty string is the shape `resolveTranscriptPath`
+						// already produces when host.db cannot derive a path, and both it
+						// and a missing column mean the same thing here: nothing to check
+						// against, so nothing that could discard the buzz.
+						hostTerminalId: emptyToNull(row.hostTerminalId),
+						hostWorkspaceId: emptyToNull(row.hostWorkspaceId),
+						transcriptPath: emptyToNull(row.transcriptPath),
+						toolUseId: emptyToNull(row.toolUseId),
 					});
 				}
 
@@ -183,6 +210,10 @@ export function createPushFence(deps: PushFenceDeps): PushFence {
 					armedAtMs: record.armedAtMs,
 					state: "armed",
 					sentAtMs: null,
+					hostTerminalId: record.hostTerminalId,
+					hostWorkspaceId: record.hostWorkspaceId,
+					transcriptPath: record.transcriptPath,
+					toolUseId: record.toolUseId,
 				})
 				// DO NOTHING, never DO UPDATE. A row already here is either an armed
 				// entry this call is a duplicate of, or a `sent` one — and overwriting

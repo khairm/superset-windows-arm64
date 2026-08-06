@@ -268,6 +268,21 @@ export const RETRACT_TTL_MS = 86_400_000;
  * waiting is a blocked agent that never buzzes.
  */
 export const PUSH_GONE_CORROBORATION_MS = 60_000;
+/**
+ * (PUSH-ARMED-ORPHAN) How long the sweep will hold a reconstructed push while
+ * its transcript check is still in flight.
+ *
+ * The check is one bounded tail read of a JSONL file and normally returns in
+ * milliseconds, so this is not a latency budget — it is the ceiling on what a
+ * READ THAT NEVER RETURNS may cost. A transcript on a disconnected network
+ * share, or a handle held by something that has stopped, must not be able to
+ * silence a blocked agent indefinitely, which is what an unbounded hold would
+ * allow.
+ *
+ * Past it the entry fires. That is the same rule the check itself follows:
+ * unreadable is not resolved, and this feature buzzes when it cannot tell.
+ */
+export const ORPHAN_VERIFY_DEADLINE_MS = 30_000;
 export const PUSH_DATA_HARD_CAP_BYTES = 160;
 /** No natural-language string can satisfy this — that is the point (§13.1). */
 export const PUSH_VALUE_PATTERN = /^[A-Za-z0-9_-]{1,43}$/;

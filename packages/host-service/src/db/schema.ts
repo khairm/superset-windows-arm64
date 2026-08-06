@@ -595,6 +595,34 @@ export const companionPushFence = sqliteTable("companion_push_fence", {
 	state: text().notNull(),
 	/** Null while `armed`. Set in the same write that moves the row to `sent`. */
 	sentAtMs: integer("sent_at_ms"),
+	/**
+	 * (PUSH-ARMED-ORPHAN) The four columns below are what a HELD push needs after
+	 * a restart, and they exist because reconstruction was inert without them.
+	 *
+	 * The fence is durable and rebuilt `armed` correctly; `QuestionStore` is
+	 * memory-only and comes back EMPTY. So the fire-time re-check asked the store
+	 * about every reconstructed row, was told the question does not exist, and
+	 * discarded it — on the first away sweep, before it could ever buzz. Every
+	 * push held across a host-service restart was lost, which is precisely the
+	 * failure the durable fence was added to prevent.
+	 *
+	 * Firing needs none of the question's TEXT (the FCM payload is opaque ids),
+	 * so this is the identity a reconstructed row needs to be judged rather than
+	 * dropped: `hostTerminalId`/`hostWorkspaceId` say what it is about, and
+	 * `transcriptPath`/`toolUseId` are the pair `findToolResultInTranscript`
+	 * needs to ask the agent's own transcript whether the question was answered
+	 * while the host-service was down.
+	 *
+	 * ALL FOUR ARE NULLABLE, and that is a statement rather than a convenience: a
+	 * row armed by an older build carries none of them, and a question whose
+	 * transcript host.db could not derive carries no path. Absent means "cannot
+	 * check", which is NOT "resolved" — such a row stays armed and fires. A stale
+	 * buzz self-corrects when the user taps it; a lost buzz never does.
+	 */
+	hostTerminalId: text("host_terminal_id"),
+	hostWorkspaceId: text("host_workspace_id"),
+	transcriptPath: text("transcript_path"),
+	toolUseId: text("tool_use_id"),
 });
 
 /**

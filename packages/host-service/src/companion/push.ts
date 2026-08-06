@@ -122,6 +122,7 @@ import { readFile } from "node:fs/promises";
 
 import {
 	FCM_PROJECT_ID,
+	ORPHAN_VERIFY_DEADLINE_MS,
 	PUSH_DATA_HARD_CAP_BYTES,
 	PUSH_GONE_CORROBORATION_MS,
 	PUSH_TTL_MS,
@@ -132,7 +133,7 @@ import { base64UrlEncode, sleep } from "./crypto";
 import type { DeviceStore } from "./device-store";
 import { MAX_APP_VERSION_CHARS } from "./limits";
 import type { PresenceStore, PresenceVerdict } from "./presence";
-import type { PushFence } from "./push-fence";
+import type { PushFence, PushFenceRecord } from "./push-fence";
 import type {
 	DeviceRecord,
 	PushData,
@@ -960,6 +961,16 @@ export interface PushSender {
 		workspaceId: WorkspaceId;
 		questionCount: number;
 		expiresAtMs: number;
+		/**
+		 * (PUSH-ARMED-ORPHAN) The identity a HELD push needs after a restart. None
+		 * of it reaches FCM — the payload is opaque ids — it is persisted so a
+		 * reconstructed row can be judged instead of discarded. `null` is allowed
+		 * everywhere and always means "cannot check", never "resolved".
+		 */
+		hostTerminalId: string | null;
+		hostWorkspaceId: string | null;
+		transcriptPath: string | null;
+		toolUseId: string | null;
 	}): void;
 	/**
 	 * Disarms. If a push had already gone out, this ALSO fires a retraction
@@ -1075,6 +1086,34 @@ export interface PushSenderDeps {
 	 */
 	isCuratedOff(questionId: QuestionId): boolean;
 	/**
+	 * (PUSH-ARMED-ORPHAN) Was this question already answered, according to the
+	 * agent's OWN transcript?
+	 *
+	 * Asked once per entry rebuilt from the fence at construction, and only of
+	 * those: it is the one check available for a question the memory-only store
+	 * cannot know about, because the pair it needs (`transcriptPath`,
+	 * `toolUseId`) was persisted with the row. It is the same machinery guard 1
+	 * uses (`findToolResultInTranscript`), pointed at the persisted path.
+	 *
+	 * MUST ANSWER `true` ONLY ON POSITIVE PROOF. Unreadable, missing, empty,
+	 * throwing — every one of those is `false`, because they all mean "cannot
+	 * check" and the entry then fires on the ordinary away rules. That direction
+	 * is the ruling this whole path is built on: a stale buzz self-corrects the
+	 * moment the user taps it and finds nothing, while a lost buzz is a blocked
+	 * agent nobody is ever told about.
+	 *
+	 * `null` disables the check entirely — every reconstructed entry then fires
+	 * on the away rules. Required rather than optional so a composition root
+	 * states that choice instead of inheriting it.
+	 */
+	verifyOrphanResolved:
+		| ((input: {
+				questionId: QuestionId;
+				transcriptPath: string;
+				toolUseId: string;
+		  }) => Promise<boolean>)
+		| null;
+	/**
 	 * Called on a fatal auth/config fault so the desktop can surface "push is
 	 * broken" instead of degrading to silence.
 	 */
@@ -1089,6 +1128,21 @@ interface ArmedQuestion {
 	questionCount: number;
 	expiresAtMs: number;
 	armedAtWallMs: number;
+	/**
+	 * (PUSH-ARMED-ORPHAN) True for an entry rebuilt from the fence at
+	 * construction — every one of them, because `QuestionStore` is memory-only
+	 * and a restart is the only way a row gets here.
+	 *
+	 * It exists because the fire path's ordinary re-check asks that store, and
+	 * for these entries the store's honest answer is "never heard of it". Acted
+	 * on, that answer discarded every push held across a restart on the first
+	 * away sweep. An orphan is judged against its own persisted transcript
+	 * instead — see `verifyOrphans`.
+	 *
+	 * Cleared if the question is re-captured, because the store then holds the
+	 * record and the ordinary re-check applies again.
+	 */
+	storeOrphaned: boolean;
 }
 
 interface SentRecord {
@@ -1168,6 +1222,18 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * one.
 	 */
 	const goneSince = new Map<QuestionId, number>();
+	/**
+	 * (PUSH-ARMED-ORPHAN) The transcript check for each reconstructed entry.
+	 * `pending` while the read is in flight — the sweep HOLDS on that, so a
+	 * question the check is about to prove resolved does not buzz in the
+	 * meantime — and `unresolved` once it has come back without proof, which
+	 * releases the entry to the ordinary away rules. A positive proof never
+	 * lands here: it calls `forget()`.
+	 */
+	const orphanChecks = new Map<
+		QuestionId,
+		{ state: "pending" | "unresolved"; startedAtMs: number }
+	>();
 
 	const abort = new AbortController();
 	let sweepTimer: NodeJS.Timeout | null = null;
@@ -1373,6 +1439,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		armed.delete(questionId);
 		sent.delete(questionId);
 		goneSince.delete(questionId);
+		orphanChecks.delete(questionId);
 		try {
 			deps.fence?.clear(questionId);
 		} catch (error) {
@@ -1436,40 +1503,76 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// mean "never".
 			if (deps.isCuratedOff(entry.questionId)) continue;
 
-			// NEVER trust that cancelPending was called.
+			// (PUSH-ARMED-ORPHAN) A reconstructed entry does not consult the store.
+			// The store is memory-only, this entry outlived the process that filled
+			// it, and its honest "never heard of it" was the answer that discarded
+			// every push held across a restart. It is judged against its own
+			// persisted transcript instead:
 			//
-			// Asked while the entry is STILL ARMED, because one of its three answers
-			// is a hold. `"settled"` is a fact about the record and is acted on at
-			// once; `"gone"` is one daemon observation, and this used to act on it
-			// immediately too — `forget()` dropped the fence row and the buzz was
-			// gone forever, on the strength of a single listing, and silently. That
-			// is below the bar every other irreversible verdict in this feature is
-			// held to (`reconcile` corroborates before `settle(stale)`; the reaper
-			// corroborates before correcting a row). So `"gone"` HOLDS, like presence
-			// and curation, until the same verdict comes back a corroboration window
-			// later.
-			const fire = deps.fireVerdict(entry.questionId);
-			if (fire === "settled") {
-				forget(entry.questionId);
-				continue;
+			//   check in flight  -> HOLD, like presence and curation. A question the
+			//                       read is about to prove resolved must not buzz in
+			//                       the meantime.
+			//   proved resolved  -> already `forget()`-ten by the check itself, so it
+			//                       is not in `armed` to reach here.
+			//   anything else    -> FIRE on the ordinary away rules. Unreadable,
+			//                       missing, or a check that outran its deadline all
+			//                       mean "cannot check", and this feature buzzes when
+			//                       it cannot tell.
+			if (entry.storeOrphaned) {
+				const check = orphanChecks.get(entry.questionId);
+				if (
+					check !== undefined &&
+					check.state === "pending" &&
+					wallMs - check.startedAtMs < ORPHAN_VERIFY_DEADLINE_MS
+				) {
+					continue;
+				}
+				if (check !== undefined && check.state === "pending") {
+					// Deadline. Say so once, then treat it as unverifiable and let it fire.
+					console.error(
+						`${LOG} the transcript check for reconstructed questionId=${entry.questionId} has not returned in ${ORPHAN_VERIFY_DEADLINE_MS}ms; firing rather than holding a buzz on a read that may never finish`,
+					);
+					orphanChecks.set(entry.questionId, {
+						state: "unresolved",
+						startedAtMs: check.startedAtMs,
+					});
+				}
+			} else {
+				// NEVER trust that cancelPending was called.
+				//
+				// Asked while the entry is STILL ARMED, because one of its three
+				// answers is a hold. `"settled"` is a fact about the record and is
+				// acted on at once; `"gone"` is one daemon observation, and this used
+				// to act on it immediately too — `forget()` dropped the fence row and
+				// the buzz was gone forever, on the strength of a single listing, and
+				// silently. That is below the bar every other irreversible verdict in
+				// this feature is held to (`reconcile` corroborates before
+				// `settle(stale)`; the reaper corroborates before correcting a row).
+				// So `"gone"` HOLDS, like presence and curation, until the same
+				// verdict comes back a corroboration window later.
+				const fire = deps.fireVerdict(entry.questionId);
+				if (fire === "settled") {
+					forget(entry.questionId);
+					continue;
+				}
+				if (fire === "gone") {
+					const firstSeenGoneAtMs = goneSince.get(entry.questionId) ?? wallMs;
+					goneSince.set(entry.questionId, firstSeenGoneAtMs);
+					if (wallMs - firstSeenGoneAtMs < PUSH_GONE_CORROBORATION_MS) continue;
+					// LOUD, because this is where a buzz is deliberately thrown away: a
+					// blocked agent nobody will now be told about. Two observations a
+					// minute apart agreed, which is the same standard `(QUESTION-EXPIRY)`
+					// settles a question stale on.
+					console.log(
+						`${LOG} dropping the buzz for questionId=${entry.questionId} — its terminal has read as provably gone for ${Math.round(wallMs - firstSeenGoneAtMs)}ms across separate sweeps`,
+					);
+					forget(entry.questionId);
+					continue;
+				}
+				// Recovered: a flap, a mid-restart daemon, a snapshot taken between
+				// the terminal's rows. The clock starts from zero if it comes back.
+				goneSince.delete(entry.questionId);
 			}
-			if (fire === "gone") {
-				const firstSeenGoneAtMs = goneSince.get(entry.questionId) ?? wallMs;
-				goneSince.set(entry.questionId, firstSeenGoneAtMs);
-				if (wallMs - firstSeenGoneAtMs < PUSH_GONE_CORROBORATION_MS) continue;
-				// LOUD, because this is where a buzz is deliberately thrown away: a
-				// blocked agent nobody will now be told about. Two observations a
-				// minute apart agreed, which is the same standard `(QUESTION-EXPIRY)`
-				// settles a question stale on.
-				console.log(
-					`${LOG} dropping the buzz for questionId=${entry.questionId} — its terminal has read as provably gone for ${Math.round(wallMs - firstSeenGoneAtMs)}ms across separate sweeps`,
-				);
-				forget(entry.questionId);
-				continue;
-			}
-			// Recovered: a flap, a mid-restart daemon, a snapshot taken between the
-			// terminal's rows. The clock starts again from zero if it ever comes back.
-			goneSince.delete(entry.questionId);
 
 			armed.delete(entry.questionId);
 
@@ -1584,12 +1687,19 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * (PUSH-PRESENCE) Rebuild the armed and sent sets from host.db.
 	 *
 	 * Runs at construction, before anything can be scheduled. A reconstructed
-	 * ARMED entry is held exactly like a fresh one and is re-checked against
-	 * `fireVerdict` before it can fire, so a question answered while the
-	 * host-service was down never buzzes — and against `isCuratedOff`, so a
-	 * restart is not a way for a thread the user has snoozed to buzz anyway. A
+	 * ARMED entry is held exactly like a fresh one, and against `isCuratedOff`, so
+	 * a restart is not a way for a thread the user has snoozed to buzz anyway. A
 	 * reconstructed SENT entry blocks both a re-arm and a second send, and is what
 	 * makes a later retraction able to carry the original workspaceId.
+	 *
+	 * (PUSH-ARMED-ORPHAN) Every armed entry it rebuilds is marked
+	 * `storeOrphaned`, and that is a fact about reconstruction rather than a
+	 * guess: `QuestionStore` lives in memory, so the only way a row reaches here
+	 * is a process that outlived the store which held its question. The ordinary
+	 * fire-time re-check therefore answers "never heard of it" for all of them,
+	 * and acting on that answer discarded every held push on the first away sweep
+	 * after a restart. `verifyOrphans` judges them against their own persisted
+	 * transcripts instead.
 	 */
 	function reconstruct(): void {
 		const fence = deps.fence;
@@ -1626,13 +1736,81 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				questionCount: record.questionCount,
 				expiresAtMs: record.expiresAtMs,
 				armedAtWallMs: record.armedAtMs,
+				storeOrphaned: true,
 			});
 		}
 		if (armed.size > 0) {
 			console.log(
 				`${LOG} reconstructed ${armed.size} held push(es) and ${sent.size} sent record(s) from the fence`,
 			);
+			verifyOrphans(records, nowMs);
 			ensureSweeping();
+		}
+	}
+
+	/**
+	 * (PUSH-ARMED-ORPHAN) Ask each reconstructed row's own transcript whether its
+	 * question was answered while the host-service was down.
+	 *
+	 * FIRE AND FORGET, DELIBERATELY. Construction is synchronous and must stay
+	 * that way (the bridge's start path already cannot block), so these reads run
+	 * beside it and the sweep HOLDS whatever is still in flight. A hold is the
+	 * right shape: a check that is about to prove a question resolved must be
+	 * allowed to finish before its notification goes out, and the hold has a
+	 * deadline so a read that never returns cannot silence anything forever.
+	 *
+	 * Only a positive proof cancels. A row with no transcript pair is not even
+	 * asked — it goes straight to `unresolved`, which means "fires on the away
+	 * rules", because a missing path is the absence of evidence and this feature
+	 * buzzes when it cannot tell.
+	 */
+	function verifyOrphans(
+		records: readonly PushFenceRecord[],
+		startedAtMs: number,
+	): void {
+		const verify = deps.verifyOrphanResolved;
+		for (const record of records) {
+			if (record.state !== "armed") continue;
+			if (
+				verify === null ||
+				record.transcriptPath === null ||
+				record.toolUseId === null
+			) {
+				orphanChecks.set(record.questionId, {
+					state: "unresolved",
+					startedAtMs,
+				});
+				continue;
+			}
+			const { transcriptPath, toolUseId } = record;
+			orphanChecks.set(record.questionId, { state: "pending", startedAtMs });
+			void verify({ questionId: record.questionId, transcriptPath, toolUseId })
+				.then((resolved) => {
+					if (!resolved) {
+						orphanChecks.set(record.questionId, {
+							state: "unresolved",
+							startedAtMs,
+						});
+						return;
+					}
+					console.log(
+						`${LOG} dropping reconstructed questionId=${record.questionId} — its transcript proves it was answered while the host-service was down`,
+					);
+					forget(record.questionId);
+					stopSweepingIfIdle();
+				})
+				.catch((error: unknown) => {
+					// Not a reason to lose a buzz. "Could not check" is the same answer
+					// as "no proof", and both fire.
+					console.error(
+						`${LOG} transcript check failed for reconstructed questionId=${record.questionId}; it will fire on the ordinary away rules`,
+						error,
+					);
+					orphanChecks.set(record.questionId, {
+						state: "unresolved",
+						startedAtMs,
+					});
+				});
 		}
 	}
 
@@ -1652,7 +1830,21 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// Idempotent against BOTH sets. `sent` matters as much as `armed`: after
 			// a host-service restart the hook path re-captures live questions, and
 			// re-arming one that has already buzzed would buzz it again.
-			if (armed.has(input.questionId) || sent.has(input.questionId)) return;
+			const existing = armed.get(input.questionId);
+			if (existing !== undefined) {
+				// (PUSH-ARMED-ORPHAN) ADOPTION. The hook has re-captured a question
+				// this process only knew as a fence row, so the store now holds the
+				// record and the ordinary fire-time re-check applies again. Leaving
+				// the orphan flag on would keep judging it by a transcript check it no
+				// longer needs — and would keep it out of the `settled` branch that
+				// notices a desk answer.
+				if (existing.storeOrphaned) {
+					existing.storeOrphaned = false;
+					orphanChecks.delete(input.questionId);
+				}
+				return;
+			}
+			if (sent.has(input.questionId)) return;
 			// Validate the payload NOW, at the call site that introduced it — a bad
 			// questionCount or a text leak must not surface later, from a timer.
 			buildQuestionPushData(input);
@@ -1663,6 +1855,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				questionCount: input.questionCount,
 				expiresAtMs: input.expiresAtMs,
 				armedAtWallMs: nowMs,
+				storeOrphaned: false,
 			});
 			try {
 				deps.fence?.arm({
@@ -1671,6 +1864,10 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					questionCount: input.questionCount,
 					expiresAtMs: input.expiresAtMs,
 					armedAtMs: nowMs,
+					hostTerminalId: input.hostTerminalId,
+					hostWorkspaceId: input.hostWorkspaceId,
+					transcriptPath: input.transcriptPath,
+					toolUseId: input.toolUseId,
 				});
 			} catch (error) {
 				console.error(
@@ -1737,6 +1934,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			armed.clear();
 			sent.clear();
 			goneSince.clear();
+			orphanChecks.clear();
 			// The parsed private key is a JS string and cannot be zeroized; it is
 			// dropped and left to GC. Noted, not pretended otherwise.
 			tokenSource?.invalidate();
