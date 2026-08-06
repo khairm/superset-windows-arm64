@@ -257,7 +257,16 @@ export function createSidebarCuration(
 	// hiding threads the very next launch would have released, with nothing to
 	// release them. Fail toward SHOWING: too noisy is the permitted direction,
 	// a blocked agent nobody can see is not.
-	if (lastSyncAgeMs > MIRROR_MAX_AGE_MS) {
+	//
+	// (CLOCK-STEP-FAILS-OPEN) A NEGATIVE age ages out too. Both sides of this
+	// subtraction are wall clocks and the stamp is written by a different process
+	// from the one reading it, so an NTP correction or a resume can leave a mirror
+	// stamped in the future. Only the upper bound was checked, so such a stamp
+	// read as maximally fresh and kept a mirror in force that the window exists to
+	// discard — and the further ahead the stamp, the longer it held. A stamp that
+	// cannot have been written yet is not evidence about this machine's sidebar
+	// right now, which is the whole precondition this gate tests.
+	if (lastSyncAgeMs > MIRROR_MAX_AGE_MS || lastSyncAgeMs < 0) {
 		return passThroughCuration(lastSyncAgeMs);
 	}
 	// (MIRROR-ORG-GATE) The mirror is written per ORG by whichever renderer is

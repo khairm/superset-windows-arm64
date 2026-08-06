@@ -139,15 +139,30 @@ describe("(MIRROR-AGE-OUT)", () => {
 		expect(edge.workspaceVerdict(branchWorkspace)).toBe("snoozed");
 	});
 
-	it("treats a FUTURE stamp as fresh — a clock step backwards is not a reason to stop trusting content that is unaffected by it", () => {
+	it("(CLOCK-STEP-FAILS-OPEN) ages out a FUTURE stamp instead of reading it as maximally fresh", () => {
+		// This used to assert the opposite, on the reasoning that a backwards clock
+		// step does not make the mirror's CONTENT wrong. True for a small step, and
+		// beside the point for a large one: the window is the only thing standing
+		// between the phone and a mirror left behind by a renderer that has since
+		// quit, and a stamp `now` cannot have reached yet satisfies an upper bound
+		// forever. A quit desktop then curates — hides — the phone's tree for as
+		// long as the step lasts, which is the one direction this feature is not
+		// allowed to fail in.
 		const future = createSidebarCuration(
-			snapshot([], [mirrorProject("p-git")], {
-				lastFullSyncAtMs: NOW + 60_000,
-			}),
+			snapshot(
+				[mirrorWorkspace("w-1", { snoozeLaunchId: LAUNCH })],
+				[mirrorProject("p-git")],
+				{
+					lastFullSyncAtMs: NOW + 60_000,
+				},
+			),
 			NOW,
 			ORG,
 		);
-		expect(future.enabled).toBe(true);
+		expect(future.enabled).toBe(false);
+		// The row a still-in-force mirror would have hidden.
+		expect(future.workspaceVerdict(branchWorkspace)).toBe("show");
+		expect(future.lastSyncAgeMs).toBe(-60_000);
 	});
 
 	it("reports the mirror's age even when it refuses to use it", () => {
@@ -512,6 +527,40 @@ describe("(PUSH-CURATION-GATE) createIsCuratedOffProbe", () => {
 		expect(reads).toBe(1);
 		// Past it: the lapsed snooze is seen and the push is released.
 		clock = NOW + CURATION_RECHECK_MS;
+		expect(probe.ask()).toBe(false);
+		expect(reads).toBe(2);
+	});
+
+	it("(CLOCK-STEP-FAILS-OPEN) treats a cached row stamped in the future as a MISS — a backwards clock step must not latch a hold", () => {
+		let hidden = true;
+		let clock = NOW;
+		let reads = 0;
+		const probe = curationProbe({
+			mirror: () => {
+				reads++;
+				return snapshot(
+					[
+						mirrorWorkspace(
+							"w-1",
+							hidden ? { snoozeUntil: NOW + 3_600_000 } : {},
+						),
+					],
+					[mirrorProject("p-git")],
+				);
+			},
+			workspace: hostWorkspace,
+			now: () => clock,
+		});
+
+		expect(probe.ask()).toBe(true);
+		expect(reads).toBe(1);
+		hidden = false;
+		// NTP corrects an hour of drift out from under the cached row. With only
+		// the upper bound checked, the negative age satisfied the window and the
+		// hold stood for the whole hour — silencing a question whose snooze had
+		// already lapsed. The only thing worth caching here is a hold, so that is
+		// the only thing a backwards step could latch.
+		clock = NOW - 3_600_000;
 		expect(probe.ask()).toBe(false);
 		expect(reads).toBe(2);
 	});

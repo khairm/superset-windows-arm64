@@ -1557,11 +1557,19 @@ export function createIsCuratedOffProbe(deps: {
 	return (questionId: QuestionId): boolean => {
 		const nowMs = now();
 		const cached = cache.get(questionId);
-		if (
-			cached !== undefined &&
-			nowMs - cached.checkedAtMs < CURATION_RECHECK_MS
-		)
+		// (CLOCK-STEP-FAILS-OPEN) A NEGATIVE age is a cache MISS, not the freshest
+		// possible hit. `now` is a wall clock and an NTP correction or a resume can
+		// step it backwards; with only the upper bound checked, a row stamped
+		// "after" the current instant satisfied the window for as long as the step
+		// lasted, and because the only thing worth caching here is a HOLD, that
+		// latched the hold — a snoozed thread whose snooze had since lapsed stayed
+		// silent until the clock caught up. Re-reading the mirror is the same cost
+		// as the first read, and this gate's contract is that every uncertain
+		// answer buzzes.
+		const ageMs = nowMs - (cached?.checkedAtMs ?? 0);
+		if (cached !== undefined && ageMs >= 0 && ageMs < CURATION_RECHECK_MS) {
 			return cached.held;
+		}
 		const question = deps.questions.get(questionId);
 		if (question === null) {
 			// Not cached: there is nothing to re-ask about, and `isStillUnanswered`
