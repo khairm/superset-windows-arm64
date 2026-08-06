@@ -562,7 +562,36 @@ export function createCompanionBridge(
 		// response against a closed source. The anchor, pushed further up, is
 		// released last of all: it is the ownership token for the on-disk state.
 		unwind.push({ what: "send-nonce source", close: () => sendNonces.close() });
-		const questions = createQuestionStore({ source: hostDb, liveness });
+		/**
+		 * (SETTLE-CHOKE-POINT) The store settles questions and the push sender
+		 * retracts notifications about them, and each needs the other: the sender's
+		 * fire-time probes read the store, and the store's settle seam retracts
+		 * through the sender. A mutable holder rather than a closure over the
+		 * `const push` below, so the ordering is stated instead of resting on a
+		 * temporal dead zone — and so an impossible early settle says so out loud
+		 * rather than throwing an opaque reference error.
+		 */
+		const settleTarget: { push: PushSender | null } = { push: null };
+		const questions = createQuestionStore({
+			source: hostDb,
+			liveness,
+			onSettled: (question) => {
+				const sender = settleTarget.push;
+				if (sender === null) {
+					logger.error(
+						"a question settled before the push sender was wired; any notification for it will outlive it",
+						{ questionId: question.questionId, state: question.state },
+					);
+					return;
+				}
+				// §13.3, from the ONE place every ending passes through. Disarms an
+				// un-fired push and retracts one that already went out; deliberately
+				// the fire-and-forget form, because no settle path — least of all the
+				// hook route or an answer that has already been typed — may wait on
+				// FCM.
+				sender.cancelPending(question.questionId);
+			},
+		});
 		const leases = createLeaseRegistry();
 		const locks = createTerminalLockRegistry();
 		const messageAttempts = createMessageAttemptStore();
@@ -625,6 +654,10 @@ export function createCompanionBridge(
 				logger.error("push is broken", { fault });
 			},
 		});
+		// (SETTLE-CHOKE-POINT) Live from here on. Nothing can have settled yet: no
+		// route that reaches the store exists until the capture sink is registered
+		// and the HTTP listener binds, both of which are below.
+		settleTarget.push = push;
 		/**
 		 * (TREE-FRESHNESS-GSEQ) Mint the frame that matches how a record actually
 		 * settled, reading the state back from the store rather than assuming it.
@@ -718,9 +751,12 @@ export function createCompanionBridge(
 			// showing this question as "confirmed current". `reconcile` yields ids
 			// rather than provenance, which is why the frame is built by reading each
 			// record back out of the store instead of from anything passed here.
+			// (SETTLE-CHOKE-POINT) No `push.cancelPending` here. `reconcile` settles
+			// these records through `settle()`, which retracts for every one of them
+			// — including the `stale` endings this list also carries. A second call
+			// here would be a second place to keep in step.
 			onQuestionsSettled: (questionIds) => {
 				for (const questionId of questionIds) {
-					push.cancelPending(questionId);
 					publishSettledQuestion(questionId);
 				}
 			},
@@ -1370,11 +1406,10 @@ function createNotifyingCaptureSink(
 				);
 			}
 
-			// §13.3 — a notification must never outlive the thing it was about.
-			// `cancelPending` disarms an un-fired push AND fires a retraction for one
-			// that already went out; it is deliberately the fire-and-forget form,
-			// because the hook route must not wait on FCM.
-			deps.push.cancelPending(before.questionId);
+			// §13.3 is handled by `(SETTLE-CHOKE-POINT)`: `inner.resolve` above
+			// settled this record, and `settle()` retracted the notification on the
+			// way out. This wrapper is left with the one effect that genuinely
+			// belongs to the DESK route — the frame naming who answered.
 			deps.events.publish({
 				t: "question.resolved",
 				d: {

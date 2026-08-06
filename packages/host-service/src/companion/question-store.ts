@@ -707,6 +707,28 @@ export interface QuestionTerminalLiveness {
 export interface QuestionStoreDeps {
 	source: QuestionSourceResolver;
 	liveness: QuestionTerminalLiveness;
+	/**
+	 * (SETTLE-CHOKE-POINT) THE INVARIANT: every route a question can leave
+	 * `pending` by calls this, exactly once, because they all go through
+	 * `settle()` and `settle()` is the only thing that writes a terminal state.
+	 *
+	 * A settled question is exactly the moment any notification about it must be
+	 * pulled off the phone (§13.3), and the wiring for that used to hang off
+	 * individual call sites: the desk-answer sink retracted, the reconcile path
+	 * retracted, and the other two settle routes — a REMOTE answer (`/v1/answer`
+	 * resolves the record and returns) and a SUPERSEDE (a newer question on the
+	 * same terminal marks the prior one stale) — did not. Both left the watch
+	 * buzzing about a question that no longer existed, and the supersede case
+	 * left it buzzing toward a record the tree had already dropped.
+	 *
+	 * Adding the call to those two sites would have fixed those two sites. This
+	 * is the seam instead, so a settle route added later cannot forget: there is
+	 * nowhere to write `state = "resolved" | "stale"` except `settle()`.
+	 *
+	 * Called AFTER the record is settled, so a sink reading the store back sees
+	 * the ending rather than the pending state it replaced.
+	 */
+	onSettled: (question: PendingQuestion) => void;
 }
 
 export interface QuestionStore {
@@ -1513,6 +1535,17 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 		return b64url(h.digest().subarray(0, 16));
 	}
 
+	/**
+	 * (SETTLE-CHOKE-POINT) The ONLY writer of a terminal state, which is what
+	 * makes `deps.onSettled` unmissable — see the dep's docblock.
+	 *
+	 * The notification never throws into the settle. Settling has already
+	 * happened by the time it runs, so a sink that throws would leave the record
+	 * terminal while telling `resolve()`/`markStale()`/`capture()` they failed —
+	 * and on the answer path that caller has already typed into a terminal. A
+	 * failed retraction is one notification that outlives its subject; a thrown
+	 * settle is an answer the bridge reports as failed after injecting it.
+	 */
 	function settle(
 		question: PendingQuestion,
 		state: Exclude<QuestionState, "pending">,
@@ -1521,6 +1554,14 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 		const current = pendingByHostTerminal.get(question.hostTerminalId);
 		if (current === question.questionId) {
 			pendingByHostTerminal.delete(question.hostTerminalId);
+		}
+		try {
+			deps.onSettled(question);
+		} catch (error) {
+			console.error(
+				"[companion-bridge] a settled-question sink threw; anything it drives (the push retraction above all) did not happen for this question",
+				{ questionId: question.questionId, state, error },
+			);
 		}
 	}
 
@@ -1780,7 +1821,14 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 							questionId,
 						},
 					);
-					prior.state = "stale";
+					// (SETTLE-CHOKE-POINT) Through `settle()`, never by assigning
+					// `state` here. This branch used to write the field directly, so a
+					// question the user never saw again kept its notification on the
+					// watch: the prior record left `pending` without any of the effects
+					// leaving `pending` is supposed to have. `settle()` also drops the
+					// terminal's pending mapping, which the line below immediately
+					// re-points at the new question.
+					settle(prior, "stale");
 				}
 			}
 			pendingByHostTerminal.set(input.hostTerminalId, questionId);

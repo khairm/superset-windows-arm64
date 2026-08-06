@@ -76,6 +76,7 @@ function pendingQuestion(overrides: Record<string, unknown> = {}) {
 	const store = createQuestionStore({
 		source: resolver(),
 		liveness: { isProvablyGone: () => false },
+		onSettled: () => {},
 	});
 	return { store, question: store.capture(captureInput(overrides)) };
 }
@@ -139,6 +140,7 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		const gone = createQuestionStore({
 			source: resolver({ resolveTerminal: () => null }),
 			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
 		});
 		expect(
 			gone.summarize(question, { granted: BRIDGE_CAPABILITIES }),

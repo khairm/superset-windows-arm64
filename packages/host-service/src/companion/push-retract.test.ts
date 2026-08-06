@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { RETRACT_TTL_MS } from "./config";
 import { buildRetractPushData } from "./push";
-import type { QuestionId, WorkspaceId } from "./types";
+import {
+	createQuestionStore,
+	type PendingQuestion,
+	type QuestionSourceResolver,
+} from "./question-store";
+import type { QuestionId, QuestionItem, WorkspaceId } from "./types";
 
 const QUESTION = "q-1" as QuestionId;
 const WORKSPACE = "w-1" as WorkspaceId;
@@ -52,5 +57,169 @@ describe("(RETRACT-TTL) buildRetractPushData", () => {
 				nowMs: Number.NaN,
 			}),
 		).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (SETTLE-CHOKE-POINT)
+// ---------------------------------------------------------------------------
+
+const NOW = Date.now();
+
+function questionItem(): QuestionItem {
+	return {
+		index: 0,
+		header: "Pick one",
+		question: "Which?",
+		multiSelect: false,
+		options: [
+			{ index: 0, label: "A", description: "" },
+			{ index: 1, label: "B", description: "" },
+		],
+		freeTextOption: null,
+	};
+}
+
+function captureInput(overrides: Record<string, unknown> = {}) {
+	return {
+		hostTerminalId: "term-live",
+		workspaceId: "w-1",
+		toolUseId: "tu-1",
+		sessionId: "s-1",
+		transcriptPath: "",
+		cwd: "C:/wt/w-1",
+		agentId: null,
+		agentType: null,
+		askedAtMs: NOW - 60_000,
+		questions: [questionItem()],
+		...overrides,
+	};
+}
+
+function resolver(): QuestionSourceResolver {
+	return {
+		resolveTerminal: () => ({
+			hostProjectId: "p-1",
+			hostWorkspaceId: "w-1",
+			agentId: "claude",
+		}),
+		resolveActiveTerminal: () => ({
+			hostProjectId: "p-1",
+			hostWorkspaceId: "w-1",
+			agentId: "claude",
+		}),
+		resolveTranscriptPath: () => null,
+		resolveTerminalActivityMs: () => NOW - 60_000,
+	};
+}
+
+/** The store plus the record of everything its settle seam reported. */
+function settleHarness() {
+	const settled: { questionId: QuestionId; state: string }[] = [];
+	const store = createQuestionStore({
+		source: resolver(),
+		liveness: { isProvablyGone: () => false },
+		onSettled: (question: PendingQuestion) => {
+			settled.push({
+				questionId: question.questionId,
+				state: question.state,
+			});
+		},
+	});
+	return { store, settled };
+}
+
+/**
+ * One assertion per route out of `pending`. The bug these replace was not that
+ * any one route was wrong — it was that retraction was wired per-route, so the
+ * two routes nobody wired (a REMOTE answer, and a supersede) left the watch
+ * buzzing about a question that no longer existed.
+ */
+describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () => {
+	it("a REMOTE answer — the path `/v1/answer` takes, which had no retraction wiring at all", () => {
+		const { store, settled } = settleHarness();
+		const question = store.capture(captureInput());
+		expect(
+			store.resolve(
+				question.questionId,
+				{ deviceLabel: "pixel", surface: "phone" },
+				NOW,
+			),
+		).toBe(true);
+		expect(settled).toEqual([
+			{ questionId: question.questionId, state: "resolved" },
+		]);
+	});
+
+	it("a DESK answer through the capture sink", () => {
+		const { store, settled } = settleHarness();
+		const question = store.capture(captureInput());
+		store.asCaptureSink().resolve({
+			hostTerminalId: "term-live",
+			toolUseId: "tu-1",
+			resolvedAtMs: NOW,
+		});
+		expect(settled).toEqual([
+			{ questionId: question.questionId, state: "resolved" },
+		]);
+	});
+
+	it("a SUPERSEDE — the prior record left `pending` by a direct field write, so nothing retracted its notification", () => {
+		const { store, settled } = settleHarness();
+		const first = store.capture(captureInput());
+		const second = store.capture(
+			captureInput({ toolUseId: "tu-2", sessionId: "s-2" }),
+		);
+		expect(second.questionId).not.toBe(first.questionId);
+		expect(settled).toEqual([{ questionId: first.questionId, state: "stale" }]);
+		// And the supersede still re-points the terminal at the new question.
+		expect(store.byHostTerminal("term-live")?.questionId).toBe(
+			second.questionId,
+		);
+	});
+
+	it("a RECONCILE-STALE settle", () => {
+		const { store, settled } = settleHarness();
+		const question = store.capture(captureInput());
+		store.markStale(question.questionId, "terminal_gone");
+		expect(settled).toEqual([
+			{ questionId: question.questionId, state: "stale" },
+		]);
+	});
+
+	it("reports each ending exactly once — a second resolve is not a second retraction", () => {
+		const { store, settled } = settleHarness();
+		const question = store.capture(captureInput());
+		store.resolve(
+			question.questionId,
+			{ deviceLabel: null, surface: "desktop" },
+			NOW,
+		);
+		store.resolve(
+			question.questionId,
+			{ deviceLabel: null, surface: "desktop" },
+			NOW,
+		);
+		store.markStale(question.questionId, "terminal_gone");
+		expect(settled).toHaveLength(1);
+	});
+
+	it("does not let a thrown sink un-settle the question — the answer was already typed by then", () => {
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: () => {
+				throw new Error("FCM is down");
+			},
+		});
+		const question = store.capture(captureInput());
+		expect(() =>
+			store.resolve(
+				question.questionId,
+				{ deviceLabel: "pixel", surface: "phone" },
+				NOW,
+			),
+		).not.toThrow();
+		expect(store.get(question.questionId)?.state).toBe("resolved");
 	});
 });

@@ -80,6 +80,7 @@ describe("(CAPTURE-BOUNDED) capture is gated on an ACTIVE terminal", () => {
 		const store = createQuestionStore({
 			source: resolver({ resolveActiveTerminal: () => null }),
 			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
 		});
 		expect(() => store.capture(captureInput())).toThrow(CaptureRejectedError);
 		expect(store.listPending()).toEqual([]);
@@ -89,6 +90,7 @@ describe("(CAPTURE-BOUNDED) capture is gated on an ACTIVE terminal", () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
 		});
 		const question = store.capture(captureInput());
 		expect(question.state).toBe("pending");
@@ -204,6 +206,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone },
+			onSettled: () => {},
 		});
 		store.capture(captureInput());
 		return store;
@@ -276,6 +279,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 					return false;
 				},
 			},
+			onSettled: () => {},
 		});
 		store.capture(captureInput());
 		await store.reconcile(NOW);
