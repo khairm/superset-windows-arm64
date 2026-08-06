@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { TEARDOWN_TIMEOUT_MS } from "@superset/shared/constants";
 import type { HostDb } from "../../db";
+import type { EventBus } from "../../events/event-bus";
 import {
 	createTerminalSessionInternal,
 	disposeSession,
@@ -35,6 +36,12 @@ interface RunTeardownOptions {
 	timeoutMs?: number;
 	/** Override $HOME for tests. Defaults to `os.homedir()`. */
 	homeDir?: string;
+	/**
+	 * (DISPOSE-LIMBO) Rides into the transient session's dispose so a close
+	 * that outlives the in-memory session can still broadcast its confirming
+	 * exit. Optional so tests without a bus still tear down.
+	 */
+	eventBus?: EventBus;
 }
 
 /**
@@ -59,6 +66,7 @@ export async function runTeardown({
 	projectId,
 	timeoutMs = TEARDOWN_TIMEOUT_MS,
 	homeDir,
+	eventBus,
 }: RunTeardownOptions): Promise<TeardownResult> {
 	const resolved = resolveTeardownCommand({
 		repoPath,
@@ -110,7 +118,7 @@ export async function runTeardown({
 			} catch {
 				// already disposed
 			}
-			disposeSession(terminalId, db);
+			disposeSession(terminalId, db, eventBus);
 			resolve(result);
 		};
 

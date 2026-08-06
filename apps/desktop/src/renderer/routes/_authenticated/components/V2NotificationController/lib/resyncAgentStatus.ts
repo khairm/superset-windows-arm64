@@ -102,24 +102,30 @@ function collectCandidateTerminalIds(
  *     first one to answer fills the store, so the slower host — a relay, which
  *     is exactly the slow one — saw a non-empty store and replayed its idle
  *     agents' turn-end events as unread review-green, on every app start.
- *  2. A WORKSPACE THAT BECOMES VISIBLE LATER. `workspacesKey` changing reruns
- *     the resync mid-session; rows for the newly visible workspace had never
- *     been reconciled, so they seeded nothing and their stale greens had no
- *     `terminalSeenAt` to clear them.
+ *  2. A ROW WHOSE LAST EVENT PRECEDES THIS SESSION. Whether its workspace was
+ *     visible at launch or only became visible later (`workspacesKey` changing
+ *     reruns the resync mid-session), a green that completed before this
+ *     session existed is history the user has already lived past, not news.
  *
  * And one way that must NOT seed:
  *
- *  3. A TERMINAL CREATED MID-SESSION DURING A BUS OUTAGE. Its completed-agent
- *     green was destroyed by the dead bus and this resync is the only thing
- *     that can restore it. Seeding it away is the bug the whole-store check was
- *     introduced to fix.
+ *  3. A COMPLETION THAT HAPPENED DURING THIS SESSION. A terminal (or a whole
+ *     workspace) born mid-session during a bus outage finishes its work while
+ *     the bus is dead; this resync is the only thing that can restore that
+ *     green. Seeding it away is the bug the whole-store check was introduced
+ *     to fix.
  *
- * The latch plus `reconciledWorkspaceKeys` separates 2 from 3, which look
- * identical row-by-row (no entry, no seen record): in 3 the row's WORKSPACE has
- * already been reconciled in this session — it was there at launch and its
- * history was replayed then — while in 2 it never has. So cold-start seeding
- * applies to a row only while the session began cold AND its workspace is being
- * reconciled here for the first time.
+ * `sessionStartedAt` separates 2 from 3, which look identical row-by-row (no
+ * entry, no seen record): the row's own `lastEventAt` says which side of the
+ * session boundary the event happened on. Both values are host-clock-ish
+ * millis — `lastEventAt` carries the HOST's clock while `sessionStartedAt` is
+ * this renderer's `Date.now()`, the same mixed-clock caveat every
+ * `occurredAt` comparison in this file already lives with; a skew large
+ * enough to matter here misdates a green by the skew, it does not invent or
+ * destroy one. (An earlier proxy — "is this workspace being reconciled for
+ * the first time" — misfired for a workspace BORN during a bus outage in a
+ * cold-started session: its genuine minutes-old completion green was seeded
+ * away because its workspace was new to the resync.)
  *
  * A renderer reload is deliberately not a cold start: sessionStorage survives
  * it, so the first resync after a reload sees a full store, the latch stays
@@ -127,23 +133,8 @@ function collectCandidateTerminalIds(
  */
 let coldStartDecided = false;
 let sessionBeganCold = false;
-const reconciledWorkspaceKeys = new Set<string>();
-
-function workspaceReconcileKey(hostUrl: string, workspaceId: string): string {
-	// `|` appears in neither a URL nor a uuid, so the two halves cannot be
-	// confused for one another.
-	return `${hostUrl}|${workspaceId}`;
-}
-
-/**
- * Test seam and reload guard: forget everything this module remembers about the
- * current renderer session.
- */
-export function resetResyncColdStartLatchForTests(): void {
-	coldStartDecided = false;
-	sessionBeganCold = false;
-	reconciledWorkspaceKeys.clear();
-}
+/** Set once, alongside the latch — meaningless unless `sessionBeganCold`. */
+let sessionStartedAt = 0;
 
 /**
  * Fetch the host snapshot and reconcile every terminal source this host owns.
@@ -185,6 +176,9 @@ export async function resyncAgentStatusFromHost({
 		sessionBeganCold =
 			Object.keys(beforeSources).length === 0 &&
 			Object.keys(before.terminalSeenAt).length === 0;
+		// Renderer clock against host-clock `lastEventAt` — see the doc block
+		// above for why the existing mixed-clock caveat is acceptable here.
+		sessionStartedAt = Date.now();
 	}
 
 	// (GHOST-TERMINAL) Tell the host which terminals we actually hold state for.
@@ -242,12 +236,6 @@ export async function resyncAgentStatusFromHost({
 		const sourceKey = getV2NotificationSourceKey(source);
 		const preState = useV2NotificationStore.getState();
 		const preEntry = preState.sources[sourceKey];
-		// Has this renderer session ever reconciled the workspace this row belongs
-		// to? Read BEFORE the loop-end marking below, so every row of a workspace
-		// gets the same answer.
-		const workspaceFirstReconcile = !reconciledWorkspaceKeys.has(
-			workspaceReconcileKey(hostUrl, row.originWorkspaceId),
-		);
 
 		// A live event that landed while the snapshot was in flight — the user
 		// answering the question this row still calls pending, or a fresh
@@ -285,14 +273,15 @@ export async function resyncAgentStatusFromHost({
 		// still paint (they are re-derived below and from the marker), a stale
 		// green does not.
 		//
-		// `preEntry`/`seenAt` are what keep this correct for a workspace that first
-		// appears late in a cold-started session: a row the store already knows
-		// about got there from a live event, so it is current truth and must not be
-		// seeded over. On the genuine first resync both are empty for every row, so
-		// this is exactly the whole-store rule it replaces.
+		// Seeded only for events from BEFORE this session began — the invariant
+		// itself, not a proxy for it (see the doc block on `sessionStartedAt`).
+		// An event that happened during this session is news whether its
+		// workspace was visible at launch, appeared later, or was born during a
+		// bus outage. `preEntry`/`seenAt` keep this from stomping a row the
+		// store already learned about from a live event.
 		const seedColdStart =
 			sessionBeganCold &&
-			workspaceFirstReconcile &&
+			row.lastEventAt < sessionStartedAt &&
 			preEntry === undefined &&
 			preState.terminalSeenAt[row.terminalId] === undefined;
 		if (seedColdStart) {
@@ -339,15 +328,6 @@ export async function resyncAgentStatusFromHost({
 			});
 			result.pendingPermission++;
 		}
-	}
-
-	// Every workspace this pass covered has now had its history replayed once, so
-	// a terminal appearing in a LATER resync for one of them is mid-session news
-	// and must replay rather than be seeded. Marked after the row loop so the
-	// loop's own reads all see the pre-pass answer, and only on a pass that
-	// actually reconciled (the discard above returns first).
-	for (const workspaceId of workspaces.keys()) {
-		reconciledWorkspaceKeys.add(workspaceReconcileKey(hostUrl, workspaceId));
 	}
 
 	// Terminals the host POSITIVELY DISOWNS — it has a session row for them but

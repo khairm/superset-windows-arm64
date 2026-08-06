@@ -300,8 +300,16 @@ export const notificationsRouter = router({
 					 * terminal it holds dot state for (tens in practice, one per open
 					 * pane), so 500 is far above anything legitimate and no host-side
 					 * chunking is warranted.
+					 *
+					 * Element LENGTH is deliberately unbounded (min 1 only): the
+					 * creation boundaries accept caller-supplied ids of any length
+					 * (`terminal.createSession` takes a plain string, REST likewise),
+					 * and a length cap here meant one long id with dot state poisoned
+					 * every snapshot query for the host — reconciliation dead on a
+					 * retry loop. SQLite is protected by the ARRAY cap, not element
+					 * size.
 					 */
-					candidateTerminalIds: z.array(z.string().max(64)).max(500).optional(),
+					candidateTerminalIds: z.array(z.string().min(1)).max(500).optional(),
 				})
 				.optional(),
 		)

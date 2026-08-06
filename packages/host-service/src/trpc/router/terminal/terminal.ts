@@ -316,7 +316,16 @@ export const terminalRouter = router({
 				});
 			}
 
-			const result = await disposeSessionAndWait(input.terminalId, ctx.db);
+			// (DISPOSE-LIMBO) The bus rides along so a dispose with no in-memory
+			// session left (daemon disconnect, host restart, limbo retry) can
+			// still broadcast its confirming exit — this is the renderer's
+			// primary kill path, and without the bus that broadcast is a no-op
+			// and a latched red dot survives for the rest of the session.
+			const result = await disposeSessionAndWait(
+				input.terminalId,
+				ctx.db,
+				ctx.eventBus,
+			);
 
 			// (DISPOSE-LIMBO) Report what actually happened. This used to return
 			// `status: "disposed"` unconditionally while discarding
@@ -373,7 +382,7 @@ export const terminalRouter = router({
 	disposeWorkspaceSessions: protectedProcedure
 		.input(z.object({ workspaceId: z.string() }))
 		.mutation(({ ctx, input }) =>
-			disposeSessionsByWorkspaceId(input.workspaceId, ctx.db),
+			disposeSessionsByWorkspaceId(input.workspaceId, ctx.db, ctx.eventBus),
 		),
 
 	// Like disposeWorkspaceSessions but for a closed worktree, which no longer
@@ -381,7 +390,7 @@ export const terminalRouter = router({
 	disposeWorktreeSessions: protectedProcedure
 		.input(z.object({ worktreePath: z.string() }))
 		.mutation(({ ctx, input }) =>
-			disposeSessionsByWorktreePath(input.worktreePath, ctx.db),
+			disposeSessionsByWorktreePath(input.worktreePath, ctx.db, ctx.eventBus),
 		),
 
 	daemon: daemonRouter,

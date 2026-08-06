@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
 import { terminalSessions } from "../../db/schema.ts";
 import type { EventBus } from "../../events/event-bus.ts";
@@ -422,12 +422,57 @@ async function reapOrphanedSessions(
 	});
 	let corrected = 0;
 	for (const id of correct) {
+		// (DISPOSE-LIMBO) `rowById` was snapshotted BEFORE the awaited orphan
+		// disposals above; a user attach in that window respawns a fresh PTY and
+		// upserts the row `active` with a new `createdAt`. An unfenced id-only
+		// update here marked that LIVE replacement disposed — hidden from every
+		// list, then killed by the next reaper pass. So the flip is fenced on the
+		// identity this pass actually observed, and only a proven flip counts or
+		// broadcasts.
+		const observed = rowById.get(id);
+		if (observed?.createdAt == null) {
+			// Cannot fence without the observed identity; leave the row for a
+			// later pass rather than write blind.
+			absentThisPass.add(id);
+			continue;
+		}
 		try {
-			db.update(terminalSessions)
+			const flipped = db
+				.update(terminalSessions)
 				.set({ status: "disposed", endedAt: nowMs })
-				.where(eq(terminalSessions.id, id))
-				.run();
+				.where(
+					and(
+						eq(terminalSessions.id, id),
+						eq(terminalSessions.status, "active"),
+						eq(terminalSessions.createdAt, observed.createdAt),
+					),
+				)
+				.returning({ originWorkspaceId: terminalSessions.originWorkspaceId })
+				.get();
+			if (!flipped) {
+				// The row changed under us — a racing create/adopt replaced this
+				// generation (or something else already disposed it). Whatever is
+				// there now is not the row two passes condemned; do not re-arm it.
+				console.warn(
+					`[host-service] terminal reaper: stale row ${id} changed mid-pass; correction skipped`,
+				);
+				continue;
+			}
 			corrected += 1;
+			// For a limbo terminal whose PTY genuinely died, the daemon never
+			// re-lists it, so this flip is the ONLY event that ever touches the
+			// row — without a broadcast the renderer keeps the dead pane's dots
+			// (including a latched red) for the rest of the session.
+			if (flipped.originWorkspaceId) {
+				eventBus?.broadcastTerminalLifecycle({
+					workspaceId: flipped.originWorkspaceId,
+					terminalId: id,
+					eventType: "exit",
+					exitCode: 0,
+					signal: 0,
+					occurredAt: nowMs,
+				});
+			}
 		} catch (err) {
 			console.warn(
 				`[host-service] terminal reaper: could not correct stale row ${id}:`,

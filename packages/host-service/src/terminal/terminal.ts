@@ -1600,6 +1600,7 @@ async function runDisposeSession(
 export async function disposeSessionsByWorkspaceId(
 	workspaceId: string,
 	db: HostDb,
+	eventBus?: EventBus,
 ): Promise<{ terminated: number; failed: number }> {
 	const rows = db
 		.select({ id: terminalSessions.id })
@@ -1616,12 +1617,23 @@ export async function disposeSessionsByWorkspaceId(
 	let failed = 0;
 	for (const row of rows) {
 		try {
-			const result = await disposeSessionAndWait(row.id, db);
-			if (!result.daemonCloseSucceeded) {
+			const result = await disposeSessionAndWait(row.id, db, eventBus);
+			// (DISPOSE-LIMBO) Scored off the DURABLE outcome, not the daemon
+			// close: a `superseded` close succeeded against a REPLACEMENT
+			// terminal that is running right now, and counting it terminated let
+			// workspace cleanup suppress its "terminal(s) may still be running"
+			// warning and remove the worktree under a live process. `disposed`
+			// proves this generation's row is durably dead; `no-row` means
+			// nothing durable references it at all. Everything else — `pending`,
+			// `superseded` — is a terminal we cannot vouch for.
+			if (
+				result.dbDisposition === "disposed" ||
+				result.dbDisposition === "no-row"
+			) {
+				terminated += 1;
+			} else {
 				failed += 1;
-				continue;
 			}
-			terminated += 1;
 		} catch {
 			failed += 1;
 		}
@@ -1647,6 +1659,7 @@ export async function disposeSessionsByWorkspaceId(
 export async function disposeSessionsByWorktreePath(
 	worktreePath: string,
 	db: HostDb,
+	eventBus?: EventBus,
 ): Promise<{ terminated: number; failed: number }> {
 	const workspaceRows = db
 		.select({ id: workspaces.id })
@@ -1657,7 +1670,7 @@ export async function disposeSessionsByWorktreePath(
 	let terminated = 0;
 	let failed = 0;
 	for (const { id } of workspaceRows) {
-		const result = await disposeSessionsByWorkspaceId(id, db);
+		const result = await disposeSessionsByWorkspaceId(id, db, eventBus);
 		terminated += result.terminated;
 		failed += result.failed;
 	}
@@ -1739,7 +1752,9 @@ export async function createTerminalSessionInternal({
 	adoptOnly = false,
 	replayOnAdoption = true,
 	restoredNotice = false,
-}: CreateTerminalSessionOptions): Promise<TerminalSession | { error: string }> {
+}: CreateTerminalSessionOptions): Promise<
+	TerminalSession | { error: string; code?: "session-gone" }
+> {
 	const existing = sessions.get(terminalId);
 	if (existing) {
 		const mismatchError = getTerminalWorkspaceMismatchError({
@@ -1912,12 +1927,17 @@ export async function createTerminalSessionInternal({
 								disposeRequestedAt: pendingDisposeRow.disposeRequestedAt,
 							},
 						);
-						// Thrown, not returned: the enclosing catch is what converts a
-						// launch failure into `{ error }`, and returning from here would
-						// skip it. The message matches the other two refusals verbatim.
-						throw new Error(
-							`Terminal session "${terminalId}" is being disposed.`,
-						);
+						// Returned SHAPED rather than thrown: the enclosing catch keeps
+						// only the message, and this refusal must carry
+						// `code: "session-gone"` like its two siblings in
+						// resolveAttachSessionOnce — without it the renderer transport
+						// does not mark the session ended and burns an extra reconnect
+						// cycle re-asking for a terminal the host already refused.
+						// The message matches the other two refusals verbatim.
+						return {
+							error: `Terminal session "${terminalId}" is being disposed.`,
+							code: "session-gone",
+						};
 					}
 					openResult = { pid: found.pid };
 					isAdopted = true;

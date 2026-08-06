@@ -178,8 +178,9 @@ export interface TerminalCloseResult {
 	/**
 	 * (DISPOSE-LIMBO) `"disposed"` — the PTY is gone. `"dispose-pending"` — the
 	 * daemon never confirmed the close, so the terminal may still be running;
-	 * the host retries in the background. Never treat a non-`"disposed"` status
-	 * as a successful close.
+	 * the host retries in the background. `"superseded"` — a newer terminal now
+	 * owns this id; the old one was closed, the one running now was not. Never
+	 * treat a non-`"disposed"` status as a successful close.
 	 */
 	status: string;
 	/** Why the close did not confirm. Present only when `status` is not `"disposed"`. */

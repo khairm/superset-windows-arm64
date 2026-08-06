@@ -3,12 +3,6 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { invalidateLabelCache } from "../../../ports/static-ports";
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
-import {
-	deleteMultiRepoBranches,
-	destroyMultiRepoWorktrees,
-	inspectMultiRepoWorkspace,
-	preflightMultiRepoDirtyCheck,
-} from "./multi-repo-cleanup";
 import { runTeardown, type TeardownResult } from "../../../runtime/teardown";
 import { disposeSessionsByWorkspaceId } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
@@ -21,6 +15,12 @@ import type {
 import { protectedProcedure, router } from "../../index";
 import { cleanupGitOps, isIndeterminateGitTaskFailure } from "./git-ops";
 import { isMainWorkspace } from "./is-main-workspace";
+import {
+	deleteMultiRepoBranches,
+	destroyMultiRepoWorktrees,
+	inspectMultiRepoWorkspace,
+	preflightMultiRepoDirtyCheck,
+} from "./multi-repo-cleanup";
 
 /**
  * Process-local guard against concurrent destroys of the same workspace.
@@ -232,7 +232,10 @@ async function runDestroy(
 			await preflightMultiRepoDirtyCheck(ctx, multiRepo, local.worktreePath);
 		} else {
 			try {
-				const gitEnv = await cleanupGitOps.resolveGitEnv(ctx, local.worktreePath);
+				const gitEnv = await cleanupGitOps.resolveGitEnv(
+					ctx,
+					local.worktreePath,
+				);
 				const state = await cleanupGitOps.readWorktreeState({
 					worktreePath: local.worktreePath,
 					gitEnv,
@@ -274,6 +277,7 @@ async function runDestroy(
 			worktreePath: local.worktreePath,
 			repoPath: project.repoPath,
 			projectId: local.projectId,
+			eventBus: ctx.eventBus,
 		});
 		if (teardown.status === "failed") {
 			const cause: TeardownFailureCause = {
@@ -297,6 +301,7 @@ async function runDestroy(
 		const killed = await disposeSessionsByWorkspaceId(
 			input.workspaceId,
 			ctx.db,
+			ctx.eventBus,
 		);
 		if (killed.failed > 0) {
 			warnings.push(`${killed.failed} terminal(s) may still be running`);

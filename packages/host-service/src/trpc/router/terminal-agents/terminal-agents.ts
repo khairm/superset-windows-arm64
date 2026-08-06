@@ -164,14 +164,16 @@ export const terminalAgentsRouter = router({
 				} catch (err) {
 					// Hook never landed — tear down the orphaned pty so retries
 					// don't pile up zombies.
-					await disposeSessionAndWait(created.terminalId, ctx.db).catch(
-						(cleanupError) => {
-							console.warn(
-								"[terminal-agents] failed to dispose timed-out terminal",
-								{ terminalId: created.terminalId, cleanupError },
-							);
-						},
-					);
+					await disposeSessionAndWait(
+						created.terminalId,
+						ctx.db,
+						ctx.eventBus,
+					).catch((cleanupError) => {
+						console.warn(
+							"[terminal-agents] failed to dispose timed-out terminal",
+							{ terminalId: created.terminalId, cleanupError },
+						);
+					});
 					throw err;
 				}
 			})();
