@@ -1,0 +1,1 @@
+ALTER TABLE `sidebar_mirror_meta` ADD `content_hash` text;

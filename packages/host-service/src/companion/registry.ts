@@ -133,3 +133,81 @@ export function recordCompanionPresenceBeacon(
 	store.record(beacon);
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// (MIRROR-CHANGE-GSEQ) the sidebar-mirror change notifier
+// ---------------------------------------------------------------------------
+
+/**
+ * What a mirror write reports about itself. Content only — the sink turns it
+ * into the protocol frame, because the tRPC router has no business knowing what
+ * a frame looks like.
+ */
+export interface CompanionMirrorChange {
+	syncedAtMs: number;
+	workspaceCount: number;
+	projectCount: number;
+}
+
+/**
+ * (MIRROR-CHANGE-GSEQ) Published for the same reason the presence store is: the
+ * `sidebarMirror.sync` tRPC mutation is a write the companion bridge has to
+ * know about, and the router has no handle on a running bridge.
+ *
+ * WHY THE BRIDGE HAS TO KNOW. `/v1/tree` is filtered through the mirror, so
+ * curation is an input to what the phone renders — but the mirror was written
+ * entirely outside the bridge, so nothing minted an event and `gseq` never
+ * moved. The heartbeat compares `gseq` alone, kept answering `treeStale: false`,
+ * and the phone went on stamping "updated just now" over a list whose pins,
+ * membership and placement had since changed. Indefinitely: no later event
+ * could repair it, because the change that mattered had already happened.
+ *
+ * Registered SEPARATELY from the bridge, like the presence store: a sync
+ * arriving with no bridge running is the normal state for every fork user, so
+ * it is an answer and never an error.
+ */
+let mirrorChangeSink: ((change: CompanionMirrorChange) => void) | null = null;
+
+export function setCompanionMirrorChangeSink(
+	sink: (change: CompanionMirrorChange) => void,
+): void {
+	if (mirrorChangeSink !== null && mirrorChangeSink !== sink) {
+		throw new Error(
+			`${LOG_PREFIX} a companion mirror-change sink is already registered; ` +
+				"clear it (clearCompanionMirrorChangeSink) before registering another",
+		);
+	}
+	mirrorChangeSink = sink;
+}
+
+/** Identity-checked, so a stopping bridge cannot unpublish its replacement. */
+export function clearCompanionMirrorChangeSink(
+	sink: (change: CompanionMirrorChange) => void,
+): void {
+	if (mirrorChangeSink === sink) mirrorChangeSink = null;
+}
+
+/**
+ * Report a sync that CHANGED the mirror. Returns whether anything consumed it.
+ *
+ * Never throws into the caller. The mirror write has already committed by the
+ * time this runs, and a freshness signal must not be able to turn a successful
+ * curation write into a failed tRPC mutation — the desktop sidebar would then
+ * retry a write that already landed.
+ */
+export function publishCompanionMirrorChanged(
+	change: CompanionMirrorChange,
+): boolean {
+	const sink = mirrorChangeSink;
+	if (sink === null) return false;
+	try {
+		sink(change);
+		return true;
+	} catch (error) {
+		console.error(
+			`${LOG_PREFIX} the mirror-change sink threw; the phone will fall back to its counts comparison for freshness`,
+			error,
+		);
+		return false;
+	}
+}

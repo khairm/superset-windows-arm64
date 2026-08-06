@@ -39,8 +39,10 @@
  * filled at all, which is otherwise only answerable by opening the database.
  */
 
+import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { publishCompanionMirrorChanged } from "../../../companion/registry";
 import type { HostDb } from "../../../db";
 import {
 	sidebarMirrorMeta,
@@ -125,6 +127,43 @@ function chunk<T>(rows: readonly T[], size: number): T[][] {
 }
 
 /**
+ * (MIRROR-CHANGE-GSEQ) A hash of everything a consumer can observe about this
+ * snapshot, so a curation change can be told apart from the five-minute
+ * heartbeat re-push of an identical one.
+ *
+ * ORDER-INDEPENDENT BY CONSTRUCTION: both collections are sorted by their key
+ * before hashing, because the renderer derives them from live queries whose row
+ * ORDER is not stable, and a hash that moved with row order would report every
+ * heartbeat as a change — which is the failure this exists to avoid.
+ *
+ * `appLaunchId` is IN the hash, and that is not incidental. An "until next
+ * launch" snooze is only in force while a row's `snoozeLaunchId` equals the
+ * mirror's current launch id, so the same rows under a new launch id are a
+ * different curation: threads the previous launch hid are visible again.
+ */
+function computeContentHash(
+	input: SidebarMirrorSyncInput,
+	organizationId: string,
+): string {
+	const workspaces = [...input.workspaces].sort((a, b) =>
+		a.workspaceId < b.workspaceId ? -1 : a.workspaceId > b.workspaceId ? 1 : 0,
+	);
+	const projects = [...input.projects].sort((a, b) =>
+		a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0,
+	);
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				organizationId,
+				appLaunchId: input.appLaunchId,
+				workspaces,
+				projects,
+			}),
+		)
+		.digest("hex");
+}
+
+/**
  * Replace the mirror with `input`, atomically.
  *
  * The delete-then-insert pair MUST stay inside one transaction: a reader that
@@ -138,14 +177,22 @@ function chunk<T>(rows: readonly T[], size: number): T[][] {
  * from the snapshot, and a consumer treating "no row" as "no opinion" then
  * shows it again — which is correct, because the user removed it from the
  * sidebar, not from the machine.
+ *
+ * (MIRROR-CHANGE-GSEQ) Returns whether this write CHANGED anything, decided
+ * inside the transaction against the hash the previous write stored. A row with
+ * no stored hash (written before the column existed) counts as changed: one
+ * spurious refetch on upgrade beats a mirror that can never announce itself.
  */
 function replaceMirror(
 	db: HostDb,
 	input: SidebarMirrorSyncInput,
 	organizationId: string,
 	nowMs: number,
-): void {
-	db.transaction((tx) => {
+): { changed: boolean } {
+	const contentHash = computeContentHash(input, organizationId);
+	return db.transaction((tx) => {
+		const [previous] = tx.select().from(sidebarMirrorMeta).limit(1).all();
+		const changed = previous?.contentHash !== contentHash;
 		tx.delete(sidebarWorkspaceState).run();
 		tx.delete(sidebarProjectState).run();
 
@@ -195,6 +242,7 @@ function replaceMirror(
 				organizationId,
 				workspaceCount: input.workspaces.length,
 				projectCount: input.projects.length,
+				contentHash,
 			})
 			.onConflictDoUpdate({
 				target: sidebarMirrorMeta.id,
@@ -204,9 +252,11 @@ function replaceMirror(
 					organizationId,
 					workspaceCount: input.workspaces.length,
 					projectCount: input.projects.length,
+					contentHash,
 				},
 			})
 			.run();
+		return { changed };
 	});
 }
 
@@ -234,7 +284,24 @@ export const sidebarMirrorRouter = router({
 				input.projects.map((row) => row.projectId),
 				"projects",
 			);
-			replaceMirror(ctx.db, input, ctx.organizationId, nowMs);
+			const { changed } = replaceMirror(
+				ctx.db,
+				input,
+				ctx.organizationId,
+				nowMs,
+			);
+			// (MIRROR-CHANGE-GSEQ) Only a write that CHANGED the mirror announces
+			// itself. The renderer re-pushes the identical snapshot every five
+			// minutes as a liveness heartbeat, and announcing those would move the
+			// event sequence on every beat — invalidating every client's tree cache
+			// twelve times an hour for a mirror nobody touched.
+			if (changed) {
+				publishCompanionMirrorChanged({
+					syncedAtMs: nowMs,
+					workspaceCount: input.workspaces.length,
+					projectCount: input.projects.length,
+				});
+			}
 			return { syncedAtMs: nowMs };
 		}),
 
@@ -279,3 +346,13 @@ function assertUniqueKeys(keys: readonly string[], label: string): void {
 		seen.add(key);
 	}
 }
+
+/**
+ * (MIRROR-CHANGE-GSEQ) Exposed for the change-detection tests only. The
+ * changed/unchanged decision is the one bit that tells the phone its tree is
+ * stale, and both mistakes are real — never announcing leaves it blessing a
+ * stale list forever, announcing every heartbeat invalidates every client's
+ * cache twelve times an hour — so it is exercised directly against SQL rather
+ * than through a mocked tRPC context.
+ */
+export const __testing = { replaceMirror, computeContentHash };

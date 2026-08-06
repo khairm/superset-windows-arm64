@@ -785,4 +785,21 @@ export const sidebarMirrorMeta = sqliteTable("sidebar_mirror_meta", {
 	/** Row counts as written. Lets a reader spot a half-applied snapshot. */
 	workspaceCount: integer("workspace_count").notNull(),
 	projectCount: integer("project_count").notNull(),
+	/**
+	 * (MIRROR-CHANGE-GSEQ) A hash of the CONTENT this row describes, so the
+	 * writer can tell a curation change from the five-minute heartbeat re-push
+	 * of an identical snapshot.
+	 *
+	 * It exists because the two need opposite treatment. A sync that CHANGED the
+	 * mirror has to move the companion event sequence, or the phone's heartbeat
+	 * keeps reporting `treeStale: false` and blesses stale pins and membership as
+	 * fresh indefinitely — the mirror was the one input to `/v1/tree` that could
+	 * change without any event being minted. An UNCHANGED heartbeat re-push must
+	 * not move it, or every five-minute beat invalidates every client's cache.
+	 *
+	 * Nullable: a row written before this column existed has no hash, and the
+	 * first sync after that is treated as a change. One spurious refetch on
+	 * upgrade is the right side of that trade.
+	 */
+	contentHash: text("content_hash"),
 });

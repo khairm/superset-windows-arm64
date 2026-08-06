@@ -1146,6 +1146,7 @@ export type EventType =
 	| "terminal.added"
 	| "terminal.removed"
 	| "workspace.changed"
+	| "tree.curation"
 	| "capability.changed"
 	| "revoked"
 	| "heartbeat";
@@ -1183,6 +1184,27 @@ export interface TerminalRemovedEventData {
 
 export type WorkspaceChangedEventData = Workspace & { projectId: ProjectId };
 
+/**
+ * (MIRROR-CHANGE-GSEQ) The desktop sidebar's curation changed, so the tree the
+ * client is holding may no longer describe what the sidebar shows.
+ *
+ * Deliberately CARRIES NO CURATION. The mirror is a whole-snapshot replace of
+ * membership, placement, pinning and five hiding fields across every thread;
+ * a delta on the wire would be a second, independently wrong description of it.
+ * The frame's job is to move `gseq`, which is what makes the next heartbeat
+ * report `treeStale` and the client refetch `/v1/tree` — the one surface that
+ * reads the mirror.
+ *
+ * The counts are diagnostic only: they say how big the snapshot that changed
+ * was, which is what distinguishes "the user binned a thread" from "the
+ * renderer just came up and published its first snapshot".
+ */
+export interface TreeCurationEventData {
+	syncedAtMs: EpochMs;
+	workspaceCount: number;
+	projectCount: number;
+}
+
 export interface CapabilityChangedEventData {
 	granted: Capability[];
 	unsupported: Capability[];
@@ -1207,6 +1229,7 @@ export type EventFrame =
 	| EventFrameOf<"terminal.added", TerminalAddedEventData>
 	| EventFrameOf<"terminal.removed", TerminalRemovedEventData>
 	| EventFrameOf<"workspace.changed", WorkspaceChangedEventData>
+	| EventFrameOf<"tree.curation", TreeCurationEventData>
 	| EventFrameOf<"capability.changed", CapabilityChangedEventData>
 	| EventFrameOf<"revoked", RevokedEventData>
 	| EventFrameOf<"heartbeat", HeartbeatEventData>;

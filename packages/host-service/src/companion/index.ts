@@ -133,9 +133,12 @@ import {
 	type ReadApi,
 } from "./read-api";
 import {
+	type CompanionMirrorChange,
 	clearCompanionBridge,
+	clearCompanionMirrorChangeSink,
 	clearCompanionPresenceStore,
 	setCompanionBridge,
+	setCompanionMirrorChangeSink,
 	setCompanionPresenceStore,
 } from "./registry";
 import { createSidebarCuration } from "./sidebar-filter";
@@ -911,6 +914,45 @@ export function createCompanionBridge(
 		unwind.push({
 			what: "question sink",
 			close: async () => setCompanionQuestionSink(null),
+		});
+
+		/**
+		 * (MIRROR-CHANGE-GSEQ) A curation change is a change to the tree, so it
+		 * mints an event and moves `gseq`.
+		 *
+		 * The sidebar mirror is the one input to `/v1/tree` that was written
+		 * entirely outside the bridge — the renderer's `sidebarMirror.sync`
+		 * mutation replaces the rows and nothing here noticed — so `gseq` never
+		 * moved for it. The phone's heartbeat compares `gseq` alone, kept answering
+		 * `treeStale: false`, and went on stamping "updated just now" over a list
+		 * whose pins, membership and placement had since changed. Nothing later
+		 * could repair it: the change that mattered had already happened.
+		 *
+		 * Never throws into the mutation. The curation write has already committed
+		 * by the time this runs, and a freshness signal must not turn a successful
+		 * write into a failed tRPC call that the sidebar would then retry.
+		 */
+		const mirrorChangeSink = (change: CompanionMirrorChange): void => {
+			try {
+				events.publish({
+					t: "tree.curation",
+					d: {
+						syncedAtMs: change.syncedAtMs as EpochMs,
+						workspaceCount: change.workspaceCount,
+						projectCount: change.projectCount,
+					},
+				});
+			} catch (error) {
+				logger.error(
+					"could not publish tree.curation; the phone will fall back to its counts comparison for freshness",
+					{ error },
+				);
+			}
+		};
+		setCompanionMirrorChangeSink(mirrorChangeSink);
+		unwind.push({
+			what: "sidebar mirror change sink",
+			close: async () => clearCompanionMirrorChangeSink(mirrorChangeSink),
 		});
 
 		// 5. Maintenance. All unref'd: a background timer must never be the reason

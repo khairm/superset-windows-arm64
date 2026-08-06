@@ -134,6 +134,13 @@
       "when": 1785982110996,
       "tag": "0018_greedy_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1785983307625,
+      "tag": "0019_small_black_queen",
+      "breakpoints": true
     }
   ]
 }
