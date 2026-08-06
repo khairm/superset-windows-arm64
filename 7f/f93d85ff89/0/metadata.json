@@ -1,0 +1,173 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "7ff93d85ff89",
+  "session_id": "41b65f55-7b51-4cfd-82d1-d1d1eec49d91",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-06T13:50:11.292075Z",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "d645cdeb6787",
+  "token_usage": {
+    "input_tokens": 3893,
+    "cache_creation_tokens": 17382004,
+    "cache_read_tokens": 816106719,
+    "output_tokens": 1674536,
+    "api_call_count": 2035
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-goal-2026-07-30T13:14:43.2103853Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "goal"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "8ca57df28e11",
+      "timestamp": "2026-07-30T13:14:43.2103853Z",
+      "native": {
+        "command": "/goal"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/goal",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01JaU26L2HXKJprkVMXTRYAY",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "call-another-llm"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "d645cdeb6787",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 563,
+        "end": 564,
+        "entry_ids": [
+          "49db05d7-dfc0-4d77-aae4-6807bba3e438"
+        ],
+        "tool_use_id": "toolu_01JaU26L2HXKJprkVMXTRYAY"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01JaU26L2HXKJprkVMXTRYAY"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: call-another-llm",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01R85ktPczGGRbwgtNrSU7gj",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "chrome-control"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "d645cdeb6787",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1128,
+        "end": 1129,
+        "entry_ids": [
+          "8ccdf9c0-eb3d-4afa-9984-8624e5c5a2aa"
+        ],
+        "tool_use_id": "toolu_01R85ktPczGGRbwgtNrSU7gj"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01R85ktPczGGRbwgtNrSU7gj"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: chrome-control",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01XcJB5cUobbfNtT9raXAKcM",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "d645cdeb6787",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 2401,
+        "end": 2402,
+        "entry_ids": [
+          "da1351b8-1f0f-42ed-991a-c25d58c7d734"
+        ],
+        "tool_use_id": "toolu_01XcJB5cUobbfNtT9raXAKcM"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01XcJB5cUobbfNtT9raXAKcM"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_018hpFDRTKLL7nTHEQvnVJy2",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "d645cdeb6787",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 4096,
+        "end": 4097,
+        "entry_ids": [
+          "d7973503-41ed-4777-b1be-a30e6f01d83f"
+        ],
+        "tool_use_id": "toolu_018hpFDRTKLL7nTHEQvnVJy2"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_018hpFDRTKLL7nTHEQvnVJy2"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 201
+  }
+}
