@@ -1,10 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import { NON_GIT_BRANCH } from "../runtime/git/non-git";
+import { CURATION_RECHECK_MS, PUSH_QUESTION_EXPIRY_MS } from "./config";
+import type { DeviceStore } from "./device-store";
 import {
 	armPush,
+	createIsCuratedOffProbe,
 	createIsStillUnansweredProbe,
 	type NotifyingSinkDeps,
 } from "./index";
+import type { PresenceStore } from "./presence";
+import { createPushSender, PUSH_SWEEP_INTERVAL_MS } from "./push";
+import type { PushFence, PushFenceRecord } from "./push-fence";
 import type { PendingQuestion } from "./question-store";
 import {
 	type HostBindingRow,
@@ -29,6 +35,7 @@ import type {
 	SealedRequestContext,
 	TerminalId,
 	TreeResponse,
+	WorkspaceId,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -286,10 +293,15 @@ function questionItem(overrides: Partial<QuestionItem> = {}): QuestionItem {
 	};
 }
 
-function armDeps(options: {
-	mirror: SidebarMirrorSnapshot | (() => SidebarMirrorSnapshot);
-	workspace?: HostWorkspaceRow | null;
-}): { deps: NotifyingSinkDeps; scheduled: QuestionId[]; errors: string[] } {
+/**
+ * ARM-TIME DEPS. There is no curation in here any more — `armPush` arms
+ * unconditionally now — so this fixture only has to prove that.
+ */
+function armDeps(): {
+	deps: NotifyingSinkDeps;
+	scheduled: QuestionId[];
+	errors: string[];
+} {
 	const scheduled: QuestionId[] = [];
 	const errors: string[] = [];
 	const deps = {
@@ -308,14 +320,6 @@ function armDeps(options: {
 				errors.push(message);
 			},
 		},
-		db: {
-			readSidebarMirror: () =>
-				typeof options.mirror === "function"
-					? options.mirror()
-					: options.mirror,
-			findWorkspace: () => options.workspace ?? null,
-		} as unknown as HostDbReader,
-		organizationId: ORG,
 	} satisfies NotifyingSinkDeps;
 	return { deps, scheduled, errors };
 }
@@ -330,17 +334,70 @@ const hostWorkspace: HostWorkspaceRow = {
 	createdAt: NOW - 100_000,
 };
 
-describe("(PUSH-CURATION-GATE)", () => {
-	it("does NOT arm a push for a binned thread — the notification would open a tree that does not contain it", () => {
-		const { deps, scheduled } = armDeps({
+/** The fire-time probe over a fake mirror, with an injectable clock for the cache. */
+function curationProbe(options: {
+	mirror: SidebarMirrorSnapshot | (() => SidebarMirrorSnapshot);
+	workspace?: HostWorkspaceRow | null;
+	question?: PendingQuestion | null;
+	now?: () => number;
+}): {
+	ask: (questionId?: QuestionId) => boolean;
+	holds: string[];
+	errors: string[];
+} {
+	const holds: string[] = [];
+	const errors: string[] = [];
+	const question =
+		options.question === undefined
+			? pendingQuestionFixture()
+			: options.question;
+	const probe = createIsCuratedOffProbe({
+		questions: { get: () => question },
+		db: {
+			readSidebarMirror: () =>
+				typeof options.mirror === "function"
+					? options.mirror()
+					: options.mirror,
+			findWorkspace: () => options.workspace ?? null,
+		} as unknown as HostDbReader,
+		organizationId: ORG,
+		logger: {
+			info: (message: string) => {
+				holds.push(message);
+			},
+			warn: () => {},
+			error: (message: string) => {
+				errors.push(message);
+			},
+		},
+		now: options.now,
+	});
+	return {
+		ask: (questionId: QuestionId = "q-1" as QuestionId) => probe(questionId),
+		holds,
+		errors,
+	};
+}
+
+describe("(PUSH-CURATION-GATE) armPush", () => {
+	it("ARMS a question whose thread is off the sidebar — the fence row is what lets a lapsed snooze buzz later", () => {
+		const { deps, scheduled } = armDeps();
+		armPush(deps, pendingQuestionFixture());
+		expect(scheduled).toEqual(["q-1" as QuestionId]);
+	});
+});
+
+describe("(PUSH-CURATION-GATE) createIsCuratedOffProbe", () => {
+	it("holds a push for a binned thread — the notification would open a tree that does not contain it", () => {
+		const probe = curationProbe({
 			mirror: snapshot(
 				[mirrorWorkspace("w-1", { deletedAt: NOW - 50 })],
 				[mirrorProject("p-git")],
 			),
 			workspace: hostWorkspace,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual([]);
+		expect(probe.ask()).toBe(true);
+		expect(probe.holds).toHaveLength(1);
 	});
 
 	it.each([
@@ -348,40 +405,37 @@ describe("(PUSH-CURATION-GATE)", () => {
 		["snoozed on a timer", { snoozeUntil: NOW + 60_000 }],
 		["archived", { archivedAt: NOW - 50 }],
 		["completed", { completedAt: NOW - 50 }],
-	])("does NOT arm a push for a %s thread", (_label, overrides) => {
-		const { deps, scheduled } = armDeps({
+	])("holds a push for a %s thread", (_label, overrides) => {
+		const probe = curationProbe({
 			mirror: snapshot(
 				[mirrorWorkspace("w-1", overrides)],
 				[mirrorProject("p-git")],
 			),
 			workspace: hostWorkspace,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual([]);
+		expect(probe.ask()).toBe(true);
 	});
 
-	it("STILL arms when host.db has no workspace row — absence is no opinion recorded, everywhere in this feature", () => {
-		const { deps, scheduled } = armDeps({
+	it("FIRES when host.db has no workspace row — absence is no opinion recorded, everywhere in this feature", () => {
+		const probe = curationProbe({
 			mirror: snapshot(
 				[mirrorWorkspace("w-1", { deletedAt: NOW - 50 })],
 				[mirrorProject("p-git")],
 			),
 			workspace: null,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual(["q-1" as QuestionId]);
+		expect(probe.ask()).toBe(false);
 	});
 
-	it("STILL arms when no curation is in force", () => {
-		const { deps, scheduled } = armDeps({
+	it("FIRES when no curation is in force", () => {
+		const probe = curationProbe({
 			mirror: { meta: null, workspaces: [], projects: [] },
 			workspace: hostWorkspace,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual(["q-1" as QuestionId]);
+		expect(probe.ask()).toBe(false);
 	});
 
-	it("STILL arms when the mirror aged out, or belongs to another org", () => {
+	it("FIRES when the mirror aged out, or belongs to another org", () => {
 		for (const mirror of [
 			snapshot([mirrorWorkspace("w-1", { deletedAt: NOW - 50 })], [], {
 				lastFullSyncAtMs: NOW - MIRROR_MAX_AGE_MS - 1,
@@ -390,32 +444,451 @@ describe("(PUSH-CURATION-GATE)", () => {
 				organizationId: OTHER_ORG,
 			}),
 		]) {
-			const { deps, scheduled } = armDeps({ mirror, workspace: hostWorkspace });
-			armPush(deps, pendingQuestionFixture());
-			expect(scheduled).toEqual(["q-1" as QuestionId]);
+			expect(curationProbe({ mirror, workspace: hostWorkspace }).ask()).toBe(
+				false,
+			);
 		}
 	});
 
-	it("STILL arms, loudly, when reading curation throws — a missed buzz for a blocked agent is the worse failure", () => {
-		const { deps, scheduled, errors } = armDeps({
+	it("FIRES, loudly, when reading curation throws — a missed buzz for a blocked agent is the worse failure", () => {
+		const probe = curationProbe({
 			mirror: () => {
 				throw new Error("host.db is locked");
 			},
 			workspace: hostWorkspace,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual(["q-1" as QuestionId]);
-		expect(errors).toHaveLength(1);
+		expect(probe.ask()).toBe(false);
+		expect(probe.errors).toHaveLength(1);
 	});
 
-	it("arms normally for a thread that is on the sidebar", () => {
-		const { deps, scheduled } = armDeps({
+	it("FIRES for a thread that is on the sidebar", () => {
+		const probe = curationProbe({
 			mirror: snapshot([mirrorWorkspace("w-1")], [mirrorProject("p-git")]),
 			workspace: hostWorkspace,
 		});
-		armPush(deps, pendingQuestionFixture());
-		expect(scheduled).toEqual(["q-1" as QuestionId]);
+		expect(probe.ask()).toBe(false);
+		expect(probe.holds).toEqual([]);
 	});
+
+	it("FIRES for a question the store has never seen — that is the RESTART case, and isStillUnanswered owns it", () => {
+		const probe = curationProbe({
+			mirror: snapshot(
+				[mirrorWorkspace("w-1", { deletedAt: NOW - 50 })],
+				[mirrorProject("p-git")],
+			),
+			workspace: hostWorkspace,
+			question: null,
+		});
+		expect(probe.ask()).toBe(false);
+		expect(probe.holds).toEqual([]);
+	});
+
+	it("re-reads the mirror only every CURATION_RECHECK_MS — the sweep asks every 2s for up to 6h", () => {
+		let hidden = true;
+		let clock = NOW;
+		let reads = 0;
+		const probe = curationProbe({
+			mirror: () => {
+				reads++;
+				return snapshot(
+					[
+						mirrorWorkspace(
+							"w-1",
+							hidden ? { snoozeUntil: NOW + 3_600_000 } : {},
+						),
+					],
+					[mirrorProject("p-git")],
+				);
+			},
+			workspace: hostWorkspace,
+			now: () => clock,
+		});
+
+		expect(probe.ask()).toBe(true);
+		hidden = false;
+		// Still inside the window: the cached hold stands, and nothing is re-read.
+		clock = NOW + CURATION_RECHECK_MS - 1;
+		expect(probe.ask()).toBe(true);
+		expect(reads).toBe(1);
+		// Past it: the lapsed snooze is seen and the push is released.
+		clock = NOW + CURATION_RECHECK_MS;
+		expect(probe.ask()).toBe(false);
+		expect(reads).toBe(2);
+	});
+
+	it("logs a hold once per EPISODE, not once per sweep — 2s sweeps would otherwise bury the fault lines beside it", () => {
+		let hidden = true;
+		let clock = NOW;
+		const probe = curationProbe({
+			mirror: () =>
+				snapshot(
+					[
+						mirrorWorkspace(
+							"w-1",
+							hidden ? { snoozeUntil: NOW + 3_600_000 } : {},
+						),
+					],
+					[mirrorProject("p-git")],
+				),
+			workspace: hostWorkspace,
+			now: () => clock,
+		});
+
+		expect(probe.ask()).toBe(true);
+		clock = NOW + CURATION_RECHECK_MS;
+		expect(probe.ask()).toBe(true);
+		clock = NOW + CURATION_RECHECK_MS * 2;
+		expect(probe.ask()).toBe(true);
+		expect(probe.holds).toHaveLength(1);
+
+		// The snooze lapses, the push fires, and the thread is snoozed again. A new
+		// episode says so.
+		hidden = false;
+		clock = NOW + CURATION_RECHECK_MS * 3;
+		expect(probe.ask()).toBe(false);
+		hidden = true;
+		clock = NOW + CURATION_RECHECK_MS * 4;
+		expect(probe.ask()).toBe(true);
+		expect(probe.holds).toHaveLength(2);
+	});
+
+	it("prunes cached holds for questions that ended WHILE held — nothing asks about them again", () => {
+		let clock = NOW;
+		const probe = curationProbe({
+			mirror: () =>
+				snapshot(
+					[mirrorWorkspace("w-1", { snoozeUntil: NOW + 86_400_000 })],
+					[mirrorProject("p-git")],
+				),
+			workspace: hostWorkspace,
+			now: () => clock,
+		});
+		// Past the soft cap, all held, all logged once.
+		for (let i = 0; i < 70; i++) {
+			expect(probe.ask(`q-${i}` as QuestionId)).toBe(true);
+		}
+		expect(probe.holds).toHaveLength(70);
+
+		// Long enough that none of those rows can belong to a still-armed question.
+		clock = NOW + PUSH_QUESTION_EXPIRY_MS + 1;
+		expect(probe.ask("q-fresh" as QuestionId)).toBe(true);
+
+		// `q-0`'s row is gone, so asking again opens a NEW episode and logs (70 + the
+		// fresh one + this). Without the prune it would still be cached as held and
+		// stay quiet at 71.
+		expect(probe.ask("q-0" as QuestionId)).toBe(true);
+		expect(probe.holds).toHaveLength(72);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (PUSH-CURATION-GATE) the hold on the fire path itself
+// ---------------------------------------------------------------------------
+
+function presenceStub(present: () => boolean): PresenceStore {
+	return {
+		record: () => {},
+		present: () => ({
+			present: present(),
+			reason: present() ? "keystroke" : "no-signal",
+			humanInputAgeMs: null,
+			beaconAgeMs: null,
+			idleSeconds: null,
+			locked: null,
+		}),
+		snapshot: () => ({ beacon: null, lastResumeAtMs: null, beaconCount: 0 }),
+	};
+}
+
+function fakeFence(initial: PushFenceRecord[] = []): {
+	fence: PushFence;
+	cleared: QuestionId[];
+	marked: QuestionId[];
+} {
+	const rows = new Map<QuestionId, PushFenceRecord>(
+		initial.map((record) => [record.questionId, record]),
+	);
+	const cleared: QuestionId[] = [];
+	const marked: QuestionId[] = [];
+	return {
+		fence: {
+			load: () => [...rows.values()],
+			arm: (record) => {
+				if (rows.has(record.questionId)) return;
+				rows.set(record.questionId, {
+					...record,
+					state: "armed",
+					sentAtMs: null,
+				});
+			},
+			markSent: (questionId, sentAtMs) => {
+				marked.push(questionId);
+				const row = rows.get(questionId);
+				if (row !== undefined) {
+					rows.set(questionId, { ...row, state: "sent", sentAtMs });
+				}
+			},
+			clear: (questionId) => {
+				cleared.push(questionId);
+				rows.delete(questionId);
+			},
+		},
+		cleared,
+		marked,
+	};
+}
+
+const HELD_QUESTION = "q-held" as QuestionId;
+const HELD_WORKSPACE = "w-handle" as WorkspaceId;
+
+function heldFenceRecord(): PushFenceRecord {
+	return {
+		questionId: HELD_QUESTION,
+		workspaceId: HELD_WORKSPACE,
+		questionCount: 1,
+		expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+		armedAtMs: Date.now() - 1_000,
+		state: "armed",
+		sentAtMs: null,
+	};
+}
+
+/**
+ * A real `createPushSender` driven by a real `createIsCuratedOffProbe` over a
+ * mutable mirror, so these exercise the composition rather than a stubbed
+ * boolean. No device is ever registered, so nothing reaches FCM: `broadcast`
+ * returns at its empty-targets branch, and `inspect().sent` is the record of
+ * what fired.
+ */
+function pushHarness(options: {
+	hidden?: boolean;
+	present?: boolean;
+	fenceRecords?: PushFenceRecord[];
+	unanswered?: () => boolean;
+}) {
+	const state = {
+		hidden: options.hidden ?? true,
+		present: options.present ?? false,
+		/** Bumped past the probe's cache whenever curation is changed. */
+		skewMs: 0,
+	};
+	const fence = fakeFence(options.fenceRecords);
+	const isCuratedOff = createIsCuratedOffProbe({
+		questions: { get: () => pendingQuestionFixture() },
+		db: {
+			readSidebarMirror: () =>
+				state.hidden
+					? snapshot(
+							[mirrorWorkspace("w-1", { snoozeUntil: Date.now() + 3_600_000 })],
+							[mirrorProject("p-git")],
+						)
+					: snapshot([mirrorWorkspace("w-1")], [mirrorProject("p-git")]),
+			findWorkspace: () => hostWorkspace,
+		} as unknown as HostDbReader,
+		organizationId: ORG,
+		logger: { info: () => {}, warn: () => {}, error: () => {} },
+		now: () => Date.now() + state.skewMs,
+	});
+	const push = createPushSender({
+		serviceAccountPath: "C:/nonexistent/fcm-service-account.json",
+		devices: {
+			list: async () => [],
+			setFcmToken: async () => {},
+		} as unknown as DeviceStore,
+		presence: presenceStub(() => state.present),
+		fence: fence.fence,
+		isStillUnanswered: options.unanswered ?? (() => true),
+		isCuratedOff,
+		onFault: () => {},
+	});
+	return {
+		push,
+		fence,
+		/** Change curation AND move past the probe's recheck window in one act. */
+		setHidden(hidden: boolean) {
+			state.hidden = hidden;
+			state.skewMs += CURATION_RECHECK_MS * 2;
+		},
+		setPresent(present: boolean) {
+			state.present = present;
+		},
+		arm() {
+			push.schedule({
+				questionId: HELD_QUESTION,
+				workspaceId: HELD_WORKSPACE,
+				questionCount: 1,
+				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+			});
+		},
+	};
+}
+
+/** One real sweep of the sender's own interval. */
+async function nextSweep(): Promise<void> {
+	await Bun.sleep(PUSH_SWEEP_INTERVAL_MS + 600);
+}
+
+/**
+ * These wait out REAL sweeps — the point is that the scheduler's own timer
+ * releases the hold — so they need more than bun's 5s default.
+ */
+const SWEEP_TEST_TIMEOUT_MS = 30_000;
+
+describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
+	it(
+		"HOLDS instead of firing while the thread is off the sidebar, and keeps the entry armed",
+		async () => {
+			const harness = pushHarness({ hidden: true, present: false });
+			harness.arm();
+			// The user is away, so presence alone would have fired it on this call.
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+			expect(harness.fence.cleared).toEqual([]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"fires on the next sweep once the SNOOZE EXPIRES — the whole reason the gate moved off the arm path",
+		async () => {
+			const harness = pushHarness({ hidden: true, present: false });
+			harness.arm();
+			expect(harness.push.inspect().sent).toEqual([]);
+
+			harness.setHidden(false);
+			await nextSweep();
+
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [],
+				sent: [HELD_QUESTION],
+			});
+			expect(harness.fence.marked).toEqual([HELD_QUESTION]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"fires when curation stops being in force mid-hold",
+		async () => {
+			const state = { enabled: false };
+			const push = createPushSender({
+				serviceAccountPath: "C:/nonexistent/fcm-service-account.json",
+				devices: {
+					list: async () => [],
+					setFcmToken: async () => {},
+				} as unknown as DeviceStore,
+				presence: presenceStub(() => false),
+				fence: fakeFence().fence,
+				isStillUnanswered: () => true,
+				// Exactly what the probe answers when the mirror ages out or belongs to
+				// another org: curation is not in force, so nothing is held.
+				isCuratedOff: () => state.enabled,
+				onFault: () => {},
+			});
+			state.enabled = true;
+			push.schedule({
+				questionId: HELD_QUESTION,
+				workspaceId: HELD_WORKSPACE,
+				questionCount: 1,
+				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+			});
+			expect(push.inspect().sent).toEqual([]);
+
+			state.enabled = false;
+			await nextSweep();
+
+			expect(push.inspect().sent).toEqual([HELD_QUESTION]);
+			push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"HOLDS on presence even when curation releases — the two holds are independent and whichever holds, holds",
+		async () => {
+			const harness = pushHarness({ hidden: true, present: true });
+			harness.arm();
+			harness.setHidden(false);
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"is CANCELLED, never fired, when the question is answered at the desk while held",
+		async () => {
+			const harness = pushHarness({ hidden: true, present: false });
+			harness.arm();
+			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
+
+			harness.push.cancelPending(HELD_QUESTION);
+			expect(harness.fence.cleared).toEqual([HELD_QUESTION]);
+
+			// Curation lapses afterwards: there is nothing left to release.
+			harness.setHidden(false);
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"reconstructs a held curated-off row after a restart and goes on holding it",
+		async () => {
+			const harness = pushHarness({
+				hidden: true,
+				present: false,
+				fenceRecords: [heldFenceRecord()],
+			});
+			// Reconstructed at construction, before anything was scheduled.
+			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+
+			harness.setHidden(false);
+			await nextSweep();
+			expect(harness.push.inspect().sent).toEqual([HELD_QUESTION]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"still drops a held entry that is no longer unanswered — curation holds, it does not resurrect",
+		async () => {
+			const harness = pushHarness({
+				hidden: true,
+				present: false,
+				unanswered: () => false,
+			});
+			harness.arm();
+			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
+			harness.setHidden(false);
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(harness.fence.cleared).toEqual([HELD_QUESTION]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
 });
 
 // ---------------------------------------------------------------------------

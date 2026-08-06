@@ -935,7 +935,8 @@ export interface PushSender {
 	 * Away right now -> the push goes out on this call, with no tick of latency.
 	 * Present -> the question is HELD with no deadline and fires on the first
 	 * sweep that sees presence lapse, provided `isStillUnanswered` still says so
-	 * at that moment.
+	 * at that moment and `(PUSH-CURATION-GATE)`'s `isCuratedOff` is not holding it
+	 * for a thread the user has taken off their sidebar.
 	 *
 	 * Idempotent per questionId, and idempotent against the SENT set too: a
 	 * question that has already been pushed is never re-armed, which is what
@@ -1036,6 +1037,30 @@ export interface PushSenderDeps {
 	 */
 	isStillUnanswered(questionId: QuestionId): boolean;
 	/**
+	 * (PUSH-CURATION-GATE) Is this question's thread OFF the user's sidebar right
+	 * now — binned, archived, completed, hidden or snoozed?
+	 *
+	 * A HOLD, NOT A DISARM, and that is the whole point of asking here instead of
+	 * at arm time. Curation is revocable: a snooze expires, an archive is undone,
+	 * a bin is restored. Asked once when the question was captured, a `true` was
+	 * permanent — the question stayed silent for its whole six-hour life while the
+	 * sidebar it was suppressed for had long since put the thread back. Asked on
+	 * every sweep, the same `true` only means "not this sweep", and the buzz
+	 * arrives on the first sweep after the curation lapses.
+	 *
+	 * MUST FAIL TOWARD `false`. This is the opposite direction from
+	 * `isStillUnanswered` and for the opposite reason: a `false` here costs at
+	 * most one buzz the user might have preferred not to get, while a `true`
+	 * reached by uncertainty silences a genuinely blocked agent for six hours. So
+	 * curation that is not in force, a workspace the reader has no row for, and
+	 * anything thrown while asking all answer `false`.
+	 *
+	 * It must not throw: it is called from a timer callback, where a throw is an
+	 * unhandled rejection rather than a failed push. The implementation owns the
+	 * catch, exactly as it owns the fail-toward-`false` rule.
+	 */
+	isCuratedOff(questionId: QuestionId): boolean;
+	/**
 	 * Called on a fatal auth/config fault so the desktop can surface "push is
 	 * broken" instead of degrading to silence.
 	 */
@@ -1082,6 +1107,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		// everything — both indistinguishable from a broken phone.
 		throw new PushConfigError(
 			"createPushSender requires a presence store; without it nothing can decide whether the user is at the desk",
+		);
+	}
+	if (typeof deps.isCuratedOff !== "function") {
+		// (PUSH-CURATION-GATE) Validate at the boundary. A missing probe would not
+		// surface until the first sweep that finds the user away — inside a timer
+		// callback, as an unhandled TypeError, hours after start.
+		throw new PushConfigError(
+			"createPushSender requires an isCuratedOff probe; without it a thread the user has taken off their sidebar would still buzz their watch",
 		);
 	}
 
@@ -1346,6 +1379,22 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// gets a watch muted. It is released by absence, never by a timer.
 			if (verdict.present) continue;
 
+			// (PUSH-CURATION-GATE) HELD, on the same terms and for the same kind of
+			// reason: the thread is not on the user's sidebar right now, so the tree
+			// this notification would open does not contain it.
+			//
+			// THE TWO HOLDS ARE INDEPENDENT AND COMPOSE — whichever holds, holds.
+			// Presence is asked first only because it is free; neither can release an
+			// entry the other is still holding, because both are `continue`s over the
+			// same armed entry rather than a combined verdict computed once.
+			//
+			// CRUCIALLY BEFORE `armed.delete`. Everything below this line is one-shot:
+			// the entry leaves `armed` and the next branch can only fire it or
+			// `forget()` it forever. Curation is the one input here that is EXPECTED
+			// to change its mind — a snooze expires — so it has to be answered while
+			// the entry is still armed, or "not now" would silently mean "never".
+			if (deps.isCuratedOff(entry.questionId)) continue;
+
 			armed.delete(entry.questionId);
 
 			// NEVER trust that cancelPending was called.
@@ -1474,9 +1523,10 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * Runs at construction, before anything can be scheduled. A reconstructed
 	 * ARMED entry is held exactly like a fresh one and is re-checked against
 	 * `isStillUnanswered` before it can fire, so a question answered while the
-	 * host-service was down never buzzes. A reconstructed SENT entry blocks both
-	 * a re-arm and a second send, and is what makes a later retraction able to
-	 * carry the original workspaceId.
+	 * host-service was down never buzzes — and against `isCuratedOff`, so a
+	 * restart is not a way for a thread the user has snoozed to buzz anyway. A
+	 * reconstructed SENT entry blocks both a re-arm and a second send, and is what
+	 * makes a later retraction able to carry the original workspaceId.
 	 */
 	function reconstruct(): void {
 		const fence = deps.fence;

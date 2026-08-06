@@ -65,6 +65,7 @@ import {
 	BRIDGE_HOST,
 	BRIDGE_PORT,
 	type CompanionPaths,
+	CURATION_RECHECK_MS,
 	ensureCompanionDirs,
 	isCompanionBridgeEnabled,
 	LOG_PREFIX,
@@ -176,6 +177,13 @@ const PERMISSION_REQUEST_EVENT_TYPE = "PermissionRequest";
 /** UUIDv4, lowercase, hyphenated (§0.1). */
 const REQUEST_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/**
+ * (PUSH-CURATION-GATE) How many cached curation verdicts `createIsCuratedOffProbe`
+ * keeps before it walks the map for dead rows. Not a ceiling on live holds — a
+ * hundred simultaneously-held pushes is real data, not a leak — only the point
+ * past which the sweep pays for a prune.
+ */
+const CURATION_CACHE_SOFT_MAX = 64;
 
 export interface CompanionBridge {
 	start(): Promise<void>;
@@ -603,6 +611,16 @@ export function createCompanionBridge(
 					hostDb.resolveTerminalActivityMs(hostTerminalId),
 				logger,
 			}),
+			// (PUSH-CURATION-GATE) The SAME reader `/v1/tree` reads curation
+			// through, so a thread the tree will not render cannot buzz — asked on
+			// every sweep, because a snooze that expires has to be able to release
+			// the buzz it deferred.
+			isCuratedOff: createIsCuratedOffProbe({
+				questions,
+				db: hostDb,
+				organizationId: options.organizationId,
+				logger,
+			}),
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });
 			},
@@ -829,10 +847,6 @@ export function createCompanionBridge(
 				push,
 				events,
 				logger,
-				// (PUSH-CURATION-GATE) The SAME reader `/v1/tree` reads curation
-				// through, so a thread the tree will not render cannot buzz.
-				db: hostDb,
-				organizationId: options.organizationId,
 			}),
 		);
 		assertQuestionSinkRegistered();
@@ -1284,16 +1298,22 @@ export interface NotifyingSinkDeps {
 	push: PushSender;
 	events: EventStreamServer;
 	logger: BridgeLogger;
-	/**
-	 * (PUSH-CURATION-GATE) The same read-only host.db reader `/v1/tree` uses, for
-	 * the same curation. Needed here because arming is the one companion side
-	 * effect that happens OUTSIDE a request: nothing about a capture goes through
-	 * the read API, so without this the push path was the only surface that had
-	 * never heard of the sidebar mirror.
-	 */
+}
+
+/**
+ * (PUSH-CURATION-GATE) What it takes to ask whether a thread is on the sidebar:
+ * the same read-only host.db reader `/v1/tree` reads curation through, and the
+ * org that curation has to belong to.
+ *
+ * Its own interface rather than the sink's, because the question is now asked
+ * from the PUSH SENDER's fire path (see `createIsCuratedOffProbe`), which is
+ * built long before a capture sink exists and has no business holding one.
+ */
+export interface CurationGateDeps {
 	db: HostDbReader;
 	/** (MIRROR-ORG-GATE) Whose curation the mirror has to be, to count. */
 	organizationId: string;
+	logger: Pick<BridgeLogger, "info" | "error">;
 }
 
 /**
@@ -1381,23 +1401,35 @@ function createNotifyingCaptureSink(
  * of the four, because "not now" is precisely a statement about being
  * interrupted.
  *
- * EVERY UNCERTAIN ANSWER ARMS. This is a notification gate, and losing a buzz
+ * ASKED AT FIRE TIME, NOT AT ARM TIME, and the difference is the whole
+ * correctness of the gate. Curation is REVOCABLE — a snooze expires by itself,
+ * an archive or a bin is undone by hand — while `armPush` runs exactly once, at
+ * capture. Refusing to arm therefore turned a revocable "not now" into an
+ * irrevocable "never": the question kept its place in the tree, kept counting as
+ * unanswered, and had no fence row left for anything to reconsider, so the
+ * snooze the user set for twenty minutes silenced that question for its whole
+ * six-hour life. Answered from the sweep instead, the same verdict means only
+ * "not this sweep", and the buzz lands on the first sweep after the curation
+ * lapses. See `createIsCuratedOffProbe` for the caching and the log discipline
+ * that being asked every two seconds requires.
+ *
+ * EVERY UNCERTAIN ANSWER BUZZES. This is a notification gate, and losing a buzz
  * for a genuinely blocked agent is the one failure the feature cannot absorb,
- * so the only thing that suppresses is a positive `!== "show"` verdict from an
+ * so the only thing that holds is a positive `!== "show"` verdict from an
  * ENABLED curation about a workspace row that exists:
  *
- *  - curation disabled (never synced, aged out, another org) -> arm;
- *  - no `workspaces` row for the question's host workspace -> arm. Absence is
+ *  - curation disabled (never synced, aged out, another org) -> fire;
+ *  - no `workspaces` row for the question's host workspace -> fire. Absence is
  *    "no opinion recorded" everywhere else in this feature and it is here too;
  *  - anything thrown while asking (a locked db, a read-only reader that lost
- *    its file) -> arm, and say so.
+ *    its file) -> fire, and say so.
  *
- * Suppressions are logged individually and by verdict. A held push that never
- * fires is invisible from both ends — no buzz on the wrist, nothing in the
- * tree — so this line is the only evidence the decision was taken at all.
+ * Holds are logged individually and by verdict. A held push is invisible from
+ * both ends — no buzz on the wrist, and the tree the user is not looking at —
+ * so this line is the only evidence the decision was taken at all.
  */
 export function isCuratedOffSidebar(
-	deps: NotifyingSinkDeps,
+	deps: CurationGateDeps,
 	question: PendingQuestion,
 ): boolean {
 	try {
@@ -1412,7 +1444,7 @@ export function isCuratedOffSidebar(
 		const verdict = curation.workspaceVerdict(workspace);
 		if (verdict === "show") return false;
 		deps.logger.info(
-			"not arming a push: the user has taken this thread off their sidebar, and the tree the notification would open does not contain it",
+			"holding a push: the user has taken this thread off their sidebar, and the tree the notification would open does not contain it. It will fire on the first sweep after that changes",
 			{
 				questionId: question.questionId,
 				hostWorkspaceId: question.hostWorkspaceId,
@@ -1422,7 +1454,7 @@ export function isCuratedOffSidebar(
 		return true;
 	} catch (error) {
 		deps.logger.error(
-			"could not read sidebar curation while arming a push — arming anyway, because a missed buzz for a blocked agent is the worse failure",
+			"could not read sidebar curation while deciding whether to fire a push — firing anyway, because a missed buzz for a blocked agent is the worse failure",
 			{ questionId: question.questionId, error },
 		);
 		return false;
@@ -1430,7 +1462,108 @@ export function isCuratedOffSidebar(
 }
 
 /**
+ * (PUSH-CURATION-GATE) The fire-time probe `PushSenderDeps.isCuratedOff` is
+ * wired to: `isCuratedOffSidebar` narrowed from a question record to the
+ * questionId the scheduler holds, plus the two things being asked every two
+ * seconds for up to six hours makes necessary.
+ *
+ * A QUESTION THIS STORE HAS NEVER SEEN ANSWERS `false`. That is the restart
+ * case — the fence is durable and rebuilds `armed`, `QuestionStore` is memory
+ * only and starts empty — and it is deliberately NOT this gate's to act on:
+ * `isStillUnanswered` sits immediately after and drops that entry with the log
+ * line that names the restart. Holding it here instead would swallow the entry
+ * silently and forever.
+ *
+ * CACHED PER QUESTION FOR `CURATION_RECHECK_MS`. The sweep runs every
+ * `PUSH_SWEEP_INTERVAL_MS` (2s) and a held question lives up to
+ * `PUSH_QUESTION_EXPIRY_MS` (6h), so the uncached probe is ~10,800 reads of the
+ * whole sidebar mirror per held question, synchronously, on the host-service's
+ * only thread. The cost of the cache is that a lapsed snooze buzzes up to
+ * `CURATION_RECHECK_MS` late, which is nothing next to the presence lapse the
+ * push was already waiting on.
+ *
+ * LOGGED ON TRANSITION, NOT PER SWEEP, for the same arithmetic: the hold line
+ * matters exactly once per episode, and 1,800 copies of it an hour would bury
+ * the fault lines it sits next to. A hold that lapses and is re-taken logs
+ * again, because that is a different episode. Rows for questions that ended
+ * WHILE held are pruned by age — see `pruneDeadRows`.
+ */
+export function createIsCuratedOffProbe(deps: {
+	questions: Pick<QuestionStore, "get">;
+	db: HostDbReader;
+	organizationId: string;
+	logger: BridgeLogger;
+	now?: () => number;
+}): (questionId: QuestionId) => boolean {
+	const now = deps.now ?? (() => Date.now());
+	const cache = new Map<QuestionId, { held: boolean; checkedAtMs: number }>();
+	/** Quiet `info`, real `error`: a repeat hold is noise, a failed read never is. */
+	const quiet: CurationGateDeps["logger"] = {
+		info: () => {},
+		error: (message, fields) => deps.logger.error(message, fields),
+	};
+	/**
+	 * A cached hold is re-read only while its question is still armed, and the
+	 * sweep drops an armed entry at `askedAtMs + PUSH_QUESTION_EXPIRY_MS` at the
+	 * latest. A row older than that window therefore belongs to a question that
+	 * was answered, expired or fired WHILE HELD — the one path that leaves a row
+	 * nobody will ever ask about again — so dropping it can lose neither a hold
+	 * nor a log decision. Walked only past a cap, so a handful of genuinely held
+	 * questions never pays for the sweep.
+	 */
+	function pruneDeadRows(nowMs: number): void {
+		if (cache.size <= CURATION_CACHE_SOFT_MAX) return;
+		for (const [questionId, row] of cache) {
+			if (nowMs - row.checkedAtMs > PUSH_QUESTION_EXPIRY_MS) {
+				cache.delete(questionId);
+			}
+		}
+	}
+	return (questionId: QuestionId): boolean => {
+		const nowMs = now();
+		const cached = cache.get(questionId);
+		if (
+			cached !== undefined &&
+			nowMs - cached.checkedAtMs < CURATION_RECHECK_MS
+		)
+			return cached.held;
+		const question = deps.questions.get(questionId);
+		if (question === null) {
+			// Not cached: there is nothing to re-ask about, and `isStillUnanswered`
+			// is about to forget this entry anyway.
+			cache.delete(questionId);
+			return false;
+		}
+		const held = isCuratedOffSidebar(
+			{
+				db: deps.db,
+				organizationId: deps.organizationId,
+				// Log the hold only when it is NEW — see the note above.
+				logger: cached?.held === true ? quiet : deps.logger,
+			},
+			question,
+		);
+		if (held) {
+			cache.set(questionId, { held, checkedAtMs: nowMs });
+			pruneDeadRows(nowMs);
+			return true;
+		}
+		// A question that is going to fire is leaving `armed` on this very sweep,
+		// so its entry would never be read again. Drop it rather than let the map
+		// accumulate one row per push for the life of the process.
+		cache.delete(questionId);
+		return false;
+	};
+}
+
+/**
  * §13 — arm the delayed push for a newly captured question.
+ *
+ * ARMS UNCONDITIONALLY. `(PUSH-CURATION-GATE)` used to decline here, which left
+ * a suppressed question with no fence row at all; the gate now lives on the fire
+ * path (`PushSenderDeps.isCuratedOff`), so every captured question gets its
+ * durable row, restart reconstruction keeps working for all of them, and
+ * curation decides only whether a given sweep may fire.
  *
  * `schedule` is idempotent per questionId and validates its own payload at the
  * call site (a text leak or a bad count throws HERE, not in three minutes). A
@@ -1443,10 +1576,6 @@ export function armPush(
 	deps: NotifyingSinkDeps,
 	question: PendingQuestion,
 ): void {
-	// (PUSH-CURATION-GATE) Asked BEFORE `schedule`, not after: `schedule` is what
-	// writes the durable fence row, and a suppressed question must leave nothing
-	// behind for `reconstruct()` to revive after a restart.
-	if (isCuratedOffSidebar(deps, question)) return;
 	try {
 		deps.push.schedule({
 			questionId: question.questionId,
@@ -1482,11 +1611,11 @@ export function armPush(
  * stamping "updated just now" over a list with no tappable card for a live
  * blocked agent.
  *
- * Published for EVERY capture, including one `(PUSH-CURATION-GATE)` declined to
- * arm. The two gates answer different questions — that one is about interrupting
- * the user, this one is about whether a list they are already looking at is
- * current — and they fail in the same safe direction: a spurious `gseq` bump
- * costs one refetch, a missing one costs a blocked agent nobody sees.
+ * Published for EVERY capture, including one `(PUSH-CURATION-GATE)` will hold a
+ * push for. The two gates answer different questions — that one is about
+ * interrupting the user, this one is about whether a list they are already
+ * looking at is current — and they fail in the same safe direction: a spurious
+ * `gseq` bump costs one refetch, a missing one costs a blocked agent nobody sees.
  *
  * `BRIDGE_CAPABILITIES` is the right context for `answerable` here and not a
  * shortcut: a broadcast frame has no device, so the only question it can answer

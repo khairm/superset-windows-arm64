@@ -211,6 +211,20 @@ export const PUSH_TTL_MS = 900_000;
  * desktop slept through for six hours is answered at the desk, not buzzed about.
  */
 export const PUSH_QUESTION_EXPIRY_MS = 21_600_000;
+/**
+ * (PUSH-CURATION-GATE) How long a curation verdict about a held push may be
+ * reused before it is re-read from the sidebar mirror.
+ *
+ * The fire-time gate is asked once per armed question per sweep — every 2 s, for
+ * up to the 6 h above — and answering it means reading the whole mirror
+ * synchronously off host.db. Uncached that is ~10,800 full mirror reads per held
+ * question on the host-service's only thread. The price of the cache is latency
+ * in ONE direction only: a snooze that expires can hold the buzz for up to this
+ * long afterwards, which is immaterial beside the presence lapse the push is
+ * already waiting on. It cannot delay anything in the other direction, because a
+ * question that is not held is not cached.
+ */
+export const CURATION_RECHECK_MS = 30_000;
 export const PUSH_DATA_HARD_CAP_BYTES = 160;
 /** No natural-language string can satisfy this — that is the point (§13.1). */
 export const PUSH_VALUE_PATTERN = /^[A-Za-z0-9_-]{1,43}$/;
