@@ -284,10 +284,24 @@ export function useV2WorkspaceRun({
 		if (!runningState) return;
 		setIsPending(true);
 		try {
-			await killSessionMutation.mutateAsync({
+			const result = await killSessionMutation.mutateAsync({
 				terminalId: runningState.terminalId,
 				workspaceId,
 			});
+			// (DISPOSE-LIMBO) `dispose-pending` means the daemon never confirmed
+			// the close, so the run command is still running. Marking it
+			// "stopped-by-user" would leave the button offering to start a second
+			// run alongside the first.
+			if (result.status !== "disposed") {
+				toast.error("Force stop did not take effect", {
+					description:
+						"reason" in result
+							? String(result.reason)
+							: "The terminal did not close; the host will keep retrying.",
+				});
+				await utils.terminal.listSessions.invalidate({ workspaceId });
+				return;
+			}
 			const stoppedAt = Date.now();
 			updateWorkspaceRunTerminals((states) => {
 				const state = states[runningState.terminalId];

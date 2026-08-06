@@ -8,7 +8,7 @@ export function register(server: McpServer): void {
 		name: "terminals_close",
 		annotations: { destructiveHint: true },
 		description:
-			"Close (dispose) a terminal by id — kills the PTY and the agent running in it. Use to shut down an agent session you started; targets the terminal by id (the value agents_create returned as `sessionId`).",
+			"Close (dispose) a terminal by id — kills the PTY and the agent running in it. Use to shut down an agent session you started; targets the terminal by id (the value agents_create returned as `sessionId`). Check the returned `status`: `disposed` means the PTY is gone, `dispose-pending` means the close was NOT confirmed (the terminal may still be running; the host retries in the background).",
 		inputSchema: {
 			hostId: z
 				.string()
@@ -25,7 +25,11 @@ export function register(server: McpServer): void {
 				),
 		},
 		handler: async (input, ctx) => {
-			return hostServiceCall<{ terminalId: string; status: string }>(
+			return hostServiceCall<{
+				terminalId: string;
+				status: string;
+				reason?: string;
+			}>(
 				{
 					relayUrl: ctx.relayUrl,
 					organizationId: ctx.organizationId,

@@ -40,6 +40,18 @@ export default command({
 			workspaceId: options.workspace,
 		});
 
+		// (DISPOSE-LIMBO) The host reports `dispose-pending` when the daemon
+		// never confirmed the close: the PTY may still be running and the reaper
+		// will retry. Printing "Closed terminal" for that would be a lie.
+		if (result.status !== "disposed") {
+			return {
+				data: result,
+				message: `Terminal ${options.terminal} did NOT close (${result.status}): ${
+					"reason" in result ? result.reason : "unknown"
+				}. The host will retry; re-check with: superset terminals list`,
+			};
+		}
+
 		return {
 			data: result,
 			message: `Closed terminal ${options.terminal}`,

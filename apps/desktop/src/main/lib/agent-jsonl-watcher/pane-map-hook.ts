@@ -1992,6 +1992,12 @@ def _decide_event_type_inner(
 def _post_hook(url, body):
     # Single place the notify POST is issued, so the (COMPANION-CAPTURE)
     # strip-and-retry path sends a byte-identical request to the original.
+    #
+    # (DISPOSE-LIMBO) Returns (status, body). EVERY host-service outcome is a
+    # 200 -- a dropped event answers 200 with an ignored/reason body on purpose
+    # -- so the status alone cannot tell a delivered dot from one the host threw
+    # away for a terminal it has no row for, which is what a terminal stuck in
+    # dispose limbo produces.
     req = urllib.request.Request(
         url,
         data=body,
@@ -1999,7 +2005,11 @@ def _post_hook(url, body):
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=1.5) as resp:
-        return resp.status
+        try:
+            raw = resp.read(2048).decode("utf-8", "replace")
+        except Exception as read_exc:
+            raw = "<unreadable response: " + str(read_exc) + ">"
+        return resp.status, raw[:500]
 
 
 def _companion_log(reason, detail):
@@ -2306,11 +2316,12 @@ def main():
     )
 
     try:
-        status = _post_hook(url, body)
+        status, response_body = _post_hook(url, body)
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "agentId": sub_agent_id, "httpStatus": status, "action": "posted",
+            "responseBody": response_body,
             "companion": has_companion,
         })
     except Exception as exc:
@@ -2325,13 +2336,14 @@ def main():
             payload_json.pop("companionQuestion", None)
             payload_json.pop("companionQuestionResolved", None)
             try:
-                status = _post_hook(
+                status, response_body = _post_hook(
                     url, json.dumps({"json": payload_json}).encode("utf-8")
                 )
                 _log({
                     "event": event, "tool": tool, "mappedEventType": event_type,
                     "terminalId": terminal_id, "sessionId": session_id,
                     "url": url, "agentId": sub_agent_id, "httpStatus": status,
+                    "responseBody": response_body,
                     "action": "companion-rejected-dot-posted",
                     "error": str(exc),
                 })

@@ -20,7 +20,11 @@ describe("notifications.hook integration", () => {
 				eventType: "garbage",
 				terminalId: "terminal-1",
 			});
-		expect(result).toEqual({ success: true, ignored: true });
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "unmapped-event-type",
+		});
 	});
 
 	test("ignores hook with missing terminalId", async () => {
@@ -28,7 +32,11 @@ describe("notifications.hook integration", () => {
 			await scenario.host.unauthenticatedTrpc.notifications.hook.mutate({
 				eventType: "Stop",
 			});
-		expect(result).toEqual({ success: true, ignored: true });
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "no-terminal-id",
+		});
 	});
 
 	test("ignores hook for unknown terminalId", async () => {
@@ -37,7 +45,14 @@ describe("notifications.hook integration", () => {
 				eventType: "Stop",
 				terminalId: "no-such-terminal",
 			});
-		expect(result).toEqual({ success: true, ignored: true });
+		// (DISPOSE-LIMBO) Still a 200 — a non-2xx makes the bash hook fall
+		// through to the legacy Electron path — but the body names the
+		// invariant violation.
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "unknown-terminal",
+		});
 	});
 
 	test("broadcasts when terminal session resolves to a workspace", async () => {

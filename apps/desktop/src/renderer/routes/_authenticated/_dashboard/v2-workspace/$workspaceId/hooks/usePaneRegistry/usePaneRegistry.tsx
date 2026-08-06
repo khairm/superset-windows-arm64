@@ -125,8 +125,21 @@ export function usePaneRegistry({
 	const workspaceTrpcUtils = workspaceTrpc.useUtils();
 	const { mutate: killTerminalSession, isPending: isKillingTerminalSession } =
 		workspaceTrpc.terminal.killSession.useMutation({
-			onSuccess: () => {
-				toast.success("Terminal session killed");
+			onSuccess: (result) => {
+				// (DISPOSE-LIMBO) A resolved mutation is not a killed terminal —
+				// the host returns `dispose-pending` when the daemon never
+				// confirmed the close. Toasting success there told the user the
+				// terminal was gone while it was still running.
+				if (result.status !== "disposed") {
+					toast.warning("Terminal session did not close", {
+						description:
+							"reason" in result
+								? result.reason
+								: "The host will keep retrying.",
+					});
+				} else {
+					toast.success("Terminal session killed");
+				}
 				void workspaceTrpcUtils.terminal.listSessions.invalidate({
 					workspaceId,
 				});
@@ -141,7 +154,16 @@ export function usePaneRegistry({
 	// the user's intent was already expressed by closing the pane.
 	const { mutate: killTerminalSessionSilently } =
 		workspaceTrpc.terminal.killSession.useMutation({
-			onSuccess: () => {
+			onSuccess: (result) => {
+				// (DISPOSE-LIMBO) Silent to the user, never silent in the log.
+				if (result.status !== "disposed") {
+					console.warn("Removed terminal session did not close", {
+						workspaceId,
+						terminalId: result.terminalId,
+						status: result.status,
+						reason: "reason" in result ? result.reason : undefined,
+					});
+				}
 				void workspaceTrpcUtils.terminal.listSessions.invalidate({
 					workspaceId,
 				});

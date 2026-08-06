@@ -316,8 +316,25 @@ export const terminalRouter = router({
 				});
 			}
 
-			await disposeSessionAndWait(input.terminalId, ctx.db);
+			const result = await disposeSessionAndWait(input.terminalId, ctx.db);
 			ctx.terminalAgentStore.markTerminalExited(input.terminalId);
+
+			// (DISPOSE-LIMBO) Report what actually happened. This used to return
+			// `status: "disposed"` unconditionally while discarding
+			// `daemonCloseSucceeded` — the lie every caller then built on: the
+			// renderer toasted "Terminal session killed", the CLI printed "Closed
+			// terminal", and the MCP/SDK told an agent the PTY was gone, all for a
+			// terminal that was still running and whose row was still `active`
+			// with only an intent-to-kill stamp on it. The dispose is retried by
+			// the reaper either way; the caller's job is to stop claiming success
+			// it does not have.
+			if (!result.daemonCloseSucceeded) {
+				return {
+					terminalId: input.terminalId,
+					status: "dispose-pending" as const,
+					reason: result.daemonCloseError ?? "daemon close did not confirm",
+				};
+			}
 			return { terminalId: input.terminalId, status: "disposed" as const };
 		}),
 

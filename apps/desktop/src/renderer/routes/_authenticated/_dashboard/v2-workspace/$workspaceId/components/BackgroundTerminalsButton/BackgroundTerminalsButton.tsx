@@ -211,7 +211,23 @@ export const BackgroundTerminalsButton = memo(
 
 		const handleKill = async (terminalId: string) => {
 			try {
-				await killSession.mutateAsync({ terminalId, workspaceId });
+				const result = await killSession.mutateAsync({
+					terminalId,
+					workspaceId,
+				});
+				// (DISPOSE-LIMBO) `dispose-pending` = the daemon never confirmed
+				// the close, so the terminal is still a live background session.
+				// Clearing its background marker would hide a running terminal
+				// from the only surface that lists them.
+				if (result.status !== "disposed") {
+					toast.warning("Terminal session did not close", {
+						description:
+							"reason" in result
+								? String(result.reason)
+								: "The host will keep retrying.",
+					});
+					return;
+				}
 				clearTerminalBackgroundMarker(workspaceId, terminalId);
 			} catch (error) {
 				console.error(

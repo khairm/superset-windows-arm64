@@ -94,26 +94,83 @@ export const notificationsRouter = router({
 				input,
 				`unmapped eventType ${String(input.eventType)}`,
 			);
-			return { success: true, ignored: true as const };
+			return {
+				success: true,
+				ignored: true as const,
+				reason: "unmapped-event-type" as const,
+			};
 		}
 
 		if (!input.terminalId) {
 			warnDroppedCompanionCapture(input, "no terminalId on the hook payload");
-			return { success: true, ignored: true as const };
+			return {
+				success: true,
+				ignored: true as const,
+				reason: "no-terminal-id" as const,
+			};
 		}
 
+		// (DISPOSE-LIMBO) Three outcomes, not two. "No row" and "row whose
+		// originWorkspaceId went NULL" were one silent drop, so an agent POSTing
+		// against a terminal this host has never heard of looked exactly like the
+		// benign post-workspace-delete FK set-null case, and neither left a trace
+		// loud enough to notice. A missing row is an INVARIANT VIOLATION — the
+		// hook's env was stamped by a terminal we own, so the row must exist —
+		// and it is how a dispose that never completed surfaces here.
+		//
+		// All three still answer HTTP 200: the bash hook template treats a
+		// non-2xx as "host-service declined" and falls through to the legacy
+		// Electron hook path, so failing loudly on the wire would silently change
+		// agent behaviour. The distinct `reason` is the loud channel instead —
+		// (DISPOSE-LIMBO) makes both hook writers log the response BODY.
+		//
+		// We deliberately do NOT insert or adopt a row from a hook event. A row
+		// asserts "an attachable PTY exists for this id"; minting one from
+		// hearsay would let a later attach respawn a PTY for a terminal the user
+		// killed, and would resurrect exactly the rows the reaper is trying to
+		// finish killing.
 		const terminalSession = ctx.db.query.terminalSessions
 			.findFirst({
 				where: eq(terminalSessions.id, input.terminalId),
 				columns: { originWorkspaceId: true },
 			})
 			.sync();
-		if (!terminalSession?.originWorkspaceId) {
+
+		if (!terminalSession) {
+			console.error("[notifications] hook for a terminal with no session row", {
+				terminalId: input.terminalId,
+				eventType: input.eventType,
+				mappedEventType: eventType,
+				agentId: input.agent?.agentId,
+				agentSessionId: input.agent?.sessionId,
+			});
+			warnDroppedCompanionCapture(
+				input,
+				`terminal ${input.terminalId} has no session row`,
+			);
+			return {
+				success: true,
+				ignored: true as const,
+				reason: "unknown-terminal" as const,
+			};
+		}
+
+		if (!terminalSession.originWorkspaceId) {
+			// Benign and expected: deleting a workspace sets this FK to NULL while
+			// the agent in the terminal is still alive and still hooking.
+			console.warn(
+				"[notifications] dropping hook for a terminal whose workspace is gone",
+				{ terminalId: input.terminalId, mappedEventType: eventType },
+			);
 			warnDroppedCompanionCapture(
 				input,
 				`terminal ${input.terminalId} has no originWorkspaceId`,
 			);
-			return { success: true, ignored: true as const };
+			return {
+				success: true,
+				ignored: true as const,
+				reason: "null-origin-workspace" as const,
+			};
 		}
 
 		const agent = normalizeAgentIdentity(input.agent);

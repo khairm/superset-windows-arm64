@@ -395,7 +395,7 @@ async function resolveAttachSessionOnce({
 	db: HostDb;
 	eventBus?: EventBus;
 	replayOnAdoption: boolean;
-}): Promise<TerminalSession | { error: string }> {
+}): Promise<TerminalSession | { error: string; code?: "session-gone" }> {
 	const existing = sessions.get(terminalId);
 	if (existing) return existing;
 
@@ -403,7 +403,7 @@ async function resolveAttachSessionOnce({
 	if (inFlight) return inFlight;
 
 	const resolution = (async (): Promise<
-		TerminalSession | { error: string }
+		TerminalSession | { error: string; code?: "session-gone" }
 	> => {
 		const current = sessions.get(terminalId);
 		if (current) return current;
@@ -425,6 +425,33 @@ async function resolveAttachSessionOnce({
 				return live;
 			}
 			return adopted;
+		}
+
+		// (DISPOSE-LIMBO) Re-read the row immediately before respawning. The
+		// respawn below is unconditional on "adopt found no live PTY" — which is
+		// ALSO what a dispose that already killed the PTY looks like. A dispose
+		// whose row-write hasn't finished (or whose daemon close failed, leaving
+		// the row `active` and stamped) would therefore be undone here: the
+		// attach would mint a fresh PTY for a terminal the user just killed, and
+		// the reaper would kill that one too. `disposeRequestedAt` is the durable
+		// intent-to-kill, so its presence forbids respawn outright; only an
+		// explicit create clears it (see the upsert in
+		// createTerminalSessionInternal).
+		const row = db.query.terminalSessions
+			.findFirst({
+				where: eq(terminalSessions.id, terminalId),
+				columns: { disposeRequestedAt: true },
+			})
+			.sync();
+		if (row?.disposeRequestedAt != null) {
+			console.warn(
+				"[terminal] refusing to respawn a terminal with a pending dispose",
+				{ terminalId, disposeRequestedAt: row.disposeRequestedAt },
+			);
+			return {
+				error: `Terminal session "${terminalId}" is being disposed.`,
+				code: "session-gone",
+			};
 		}
 
 		// Active row but daemon no longer owns the PTY (laptop sleep,
@@ -1089,6 +1116,19 @@ export interface DisposeSessionResult {
 	terminalId: string;
 	daemonCloseAttempted: boolean;
 	daemonCloseSucceeded: boolean;
+	/**
+	 * (DISPOSE-LIMBO) Why the daemon close did not confirm. Present iff
+	 * `daemonCloseSucceeded` is false, so a caller cannot report "disposed"
+	 * without having a reason to hand instead.
+	 */
+	daemonCloseError?: string;
+}
+
+/** (DISPOSE-LIMBO) Render an unknown thrown value as one loggable line. */
+function describeDaemonCloseError(error: unknown): string {
+	if (error === undefined) return "daemon close did not confirm";
+	if (error instanceof Error) return error.message;
+	return String(error);
 }
 
 function toDaemonSignal(signal?: NodeJS.Signals): DaemonSignal {
@@ -1271,12 +1311,49 @@ export async function disposeSessionAndWait(
 				occurredAt: endedAt,
 			});
 		}
+	} else {
+		// (DISPOSE-LIMBO) The daemon never confirmed the close. Before this
+		// branch existed the function simply fell through: the row stayed
+		// `active` with only `disposeRequestedAt` stamped, NOTHING was
+		// broadcast, and the renderer was never told anything at all. Its
+		// socket had already been closed above, its re-dial was refused, and
+		// the transport latched `_terminated` — a red "Disconnected" pane that
+		// could not self-heal until the reaper's next pass (up to
+		// REAP_INTERVAL_MS later; observed at 21 minutes).
+		//
+		// The terminal is unusable from here: the sockets are closed, the row
+		// carries the intent-to-kill stamp, and attach now refuses to respawn a
+		// stamped row (see resolveAttachSessionOnce). So tell the renderer what
+		// it needs to act on — this terminal is finished — using the same
+		// lifecycle exit event the confirmed path emits. The row is
+		// deliberately left `active` for the reaper to retry; "the renderer
+		// gives up on the pane" and "the host stops trying to kill the PTY" are
+		// different questions and only the first is answered here.
+		console.error("[terminal] dispose did not confirm; terminal is in limbo", {
+			terminalId,
+			workspaceId: session?.workspaceId,
+			daemonCloseAttempted: closeResult.attempted,
+			error: closeResult.error,
+		});
+		if (session) {
+			session.eventBus?.broadcastTerminalLifecycle({
+				workspaceId: session.workspaceId,
+				terminalId,
+				eventType: "exit",
+				exitCode: 0,
+				signal: 0,
+				occurredAt: Date.now(),
+			});
+		}
 	}
 
 	return {
 		terminalId,
 		daemonCloseAttempted: closeResult.attempted,
 		daemonCloseSucceeded: closeResult.succeeded,
+		...(closeResult.succeeded
+			? {}
+			: { daemonCloseError: describeDaemonCloseError(closeResult.error) }),
 	};
 }
 
@@ -1569,27 +1646,69 @@ export async function createTerminalSessionInternal({
 				error instanceof Error ? error.message : "Failed to start terminal",
 		};
 	}
-	const pty: DaemonPty = makeDaemonPty(daemon, terminalId, openResult.pid);
 
+	// (DISPOSE-LIMBO) Everything from here to the row insert is the second half
+	// of an atomic create: the PTY is LIVE but nothing durable references it yet.
+	// A throw in this window (the insert's SQLITE_BUSY is live — busy_timeout is
+	// 5s, not infinite) used to escape with the PTY still running and no row, so
+	// the reaper killed it under a user who thought they had a terminal and
+	// persistence's deleteDefunct dropped the agent binding. Kill what we opened
+	// before rethrowing, so failure leaves nothing behind.
+	//
+	// This is a SEPARATE try from the open/adopt block above on purpose. That
+	// block converts failure to `{ error }`, which resolveAttachSessionOnce reads
+	// as "adopt found nothing, respawn it" — routing a transient DB error into
+	// that path would respawn a PTY instead of reporting the fault. A throw here
+	// keeps the pre-existing caller contract (both statements already sat outside
+	// every try, so they always threw) while adding the cleanup.
+	let pty: DaemonPty;
 	const createdAt = Date.now();
+	try {
+		pty = makeDaemonPty(daemon, terminalId, openResult.pid);
 
-	db.insert(terminalSessions)
-		.values({
-			id: terminalId,
-			originWorkspaceId: workspaceId,
-			status: "active",
-			createdAt,
-		})
-		.onConflictDoUpdate({
-			target: terminalSessions.id,
-			set: {
+		db.insert(terminalSessions)
+			.values({
+				id: terminalId,
 				originWorkspaceId: workspaceId,
 				status: "active",
 				createdAt,
-				endedAt: null,
-			},
-		})
-		.run();
+			})
+			.onConflictDoUpdate({
+				target: terminalSessions.id,
+				set: {
+					originWorkspaceId: workspaceId,
+					status: "active",
+					createdAt,
+					endedAt: null,
+					// (DISPOSE-LIMBO) An explicit create is the ONLY thing that
+					// clears the durable intent-to-kill stamp. Without this a
+					// respawned row inherited the old `disposeRequestedAt`, so
+					// shouldReapRow reaped a brand-new healthy terminal and the
+					// session dropdown hid it — the terminal died minutes after
+					// being created, for no reason the user could see.
+					disposeRequestedAt: null,
+				},
+			})
+			.run();
+	} catch (error) {
+		console.error(
+			"[terminal] create failed after the daemon PTY was open; closing it",
+			{ terminalId, workspaceId, isAdopted, error },
+		);
+		if (!isAdopted) {
+			// Only close what THIS call opened. An adopted PTY pre-dates us and
+			// may still be legitimately owned by an existing row.
+			try {
+				await closeDaemonSessionById(terminalId, "SIGHUP");
+			} catch (closeError) {
+				console.error("[terminal] failed to close the orphaned daemon PTY", {
+					terminalId,
+					closeError,
+				});
+			}
+		}
+		throw error;
+	}
 
 	// Determine shell readiness support. Adopted sessions are already past
 	// shell startup, so treat them as immediately ready — the OSC 133;A
@@ -2025,6 +2144,18 @@ export function registerWorkspaceTerminalRoute({
 					void (async () => {
 						const session = await resolveSessionForAttach();
 						if ("error" in session) {
+							// (DISPOSE-LIMBO) A refused attach used to travel ONLY
+							// down the socket: host-service.log carried no trace of
+							// it, so a pane stuck on "Disconnected" left nothing to
+							// diagnose from on the host side. It is the host's own
+							// decision — log it where the host's other terminal
+							// lifecycle decisions are logged.
+							console.warn("[terminal] attach refused", {
+								terminalId,
+								requestedWorkspaceId,
+								code: session.code,
+								error: session.error,
+							});
 							sendMessage(ws, {
 								type: "error",
 								message: session.error,

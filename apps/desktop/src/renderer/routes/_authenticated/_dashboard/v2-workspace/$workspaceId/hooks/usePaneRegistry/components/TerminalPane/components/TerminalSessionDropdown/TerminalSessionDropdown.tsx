@@ -225,10 +225,21 @@ export function TerminalSessionDropdown({
 
 	const removeTerminalSession = async (session: VisibleTerminalSession) => {
 		try {
-			await killTerminalSession.mutateAsync({
+			const result = await killTerminalSession.mutateAsync({
 				terminalId: session.terminalId,
 				workspaceId,
 			});
+			// (DISPOSE-LIMBO) `dispose-pending` means the daemon never confirmed
+			// the close. Throw so toast.promise reports the failure instead of
+			// "Terminal removed", and leave the panes open — the terminal is
+			// still there.
+			if (result.status !== "disposed") {
+				throw new Error(
+					"reason" in result
+						? String(result.reason)
+						: "The terminal did not close.",
+				);
+			}
 			closePanesForTerminal(session.terminalId);
 		} finally {
 			await utils.terminal.listSessions.invalidate({ workspaceId });

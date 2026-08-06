@@ -13,7 +13,13 @@ interface BroadcastedAgentLifecycleEvent {
 	occurredAt: number;
 }
 
-function createContext(originWorkspaceId: string | null): {
+function createContext(
+	originWorkspaceId: string | null,
+	// (DISPOSE-LIMBO) `null` origin normally means "no row at all"; pass true to
+	// model the other case — a row that EXISTS with a NULL originWorkspaceId,
+	// which the router must report distinctly.
+	rowExists = originWorkspaceId !== null,
+): {
 	ctx: HostServiceContext;
 	broadcastAgentLifecycle: ReturnType<
 		typeof mock<(event: BroadcastedAgentLifecycleEvent) => void>
@@ -25,12 +31,7 @@ function createContext(originWorkspaceId: string | null): {
 		(_event: BroadcastedAgentLifecycleEvent) => {},
 	);
 	const findFirst = mock(() => ({
-		sync: () =>
-			originWorkspaceId === null
-				? null
-				: {
-						originWorkspaceId,
-					},
+		sync: () => (rowExists ? { originWorkspaceId } : null),
 	}));
 	const terminalAgentStore = new TerminalAgentStore();
 
@@ -81,7 +82,11 @@ describe("notificationsRouter.hook", () => {
 			.createCaller(missingTerminal.ctx)
 			.hook({ eventType: "Stop" });
 
-		expect(missingResult).toEqual({ success: true, ignored: true });
+		expect(missingResult).toEqual({
+			success: true,
+			ignored: true,
+			reason: "no-terminal-id",
+		});
 		expect(missingTerminal.findFirst).not.toHaveBeenCalled();
 		expect(missingTerminal.broadcastAgentLifecycle).not.toHaveBeenCalled();
 
@@ -90,9 +95,37 @@ describe("notificationsRouter.hook", () => {
 			.createCaller(unknownTerminal.ctx)
 			.hook({ terminalId: "terminal-missing", eventType: "Stop" });
 
-		expect(unknownResult).toEqual({ success: true, ignored: true });
+		// (DISPOSE-LIMBO) A hook for a terminal with NO row is an invariant
+		// violation, and must be distinguishable on the wire from the benign
+		// row-exists-but-workspace-deleted case below.
+		expect(unknownResult).toEqual({
+			success: true,
+			ignored: true,
+			reason: "unknown-terminal",
+		});
 		expect(unknownTerminal.findFirst).toHaveBeenCalledTimes(1);
 		expect(unknownTerminal.broadcastAgentLifecycle).not.toHaveBeenCalled();
+	});
+
+	it("ignores a terminal whose workspace was deleted, distinctly", async () => {
+		// (DISPOSE-LIMBO) Row present, originWorkspaceId NULL — the FK set-null
+		// left behind by deleting a workspace whose agent is still hooking.
+		const { ctx, findFirst, broadcastAgentLifecycle } = createContext(
+			null,
+			true,
+		);
+
+		const result = await notificationsRouter
+			.createCaller(ctx)
+			.hook({ terminalId: "terminal-1", eventType: "Stop" });
+
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "null-origin-workspace",
+		});
+		expect(findFirst).toHaveBeenCalledTimes(1);
+		expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
 	});
 
 	it("ignores unknown event types before looking up the terminal", async () => {
@@ -105,7 +138,11 @@ describe("notificationsRouter.hook", () => {
 			eventType: "unknown-event",
 		});
 
-		expect(result).toEqual({ success: true, ignored: true });
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "unmapped-event-type",
+		});
 		expect(findFirst).not.toHaveBeenCalled();
 		expect(broadcastAgentLifecycle).not.toHaveBeenCalled();
 	});

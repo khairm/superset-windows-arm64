@@ -127,16 +127,27 @@ if [ -n "$SUPERSET_HOST_AGENT_HOOK_URL" ] && [ -n "$SUPERSET_TERMINAL_ID" ]; the
   json_escape "$SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
   PAYLOAD="{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
 
-  STATUS_CODE=$(curl -sX POST "$SUPERSET_HOST_AGENT_HOOK_URL" \
+  # (DISPOSE-LIMBO) Capture the response BODY as well as the status code.
+  # EVERY host-service outcome is a 200 — a dropped event answers 200 with an
+  # `ignored`/`reason` body on purpose, because a non-2xx here means "host
+  # declined" and falls through to the v1 Electron path below. So the status
+  # code alone cannot distinguish a delivered dot from one the host threw away
+  # for an unknown terminal, which is exactly what a terminal stuck in dispose
+  # limbo produces. (HOOK-FORK-DIET) The body/status split is pure parameter
+  # expansion — same single curl fork as before, no pipeline.
+  RESPONSE=$(curl -sX POST "$SUPERSET_HOST_AGENT_HOOK_URL" \
     --connect-timeout 2 --max-time 5 \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD" \
-    -o /dev/null -w "%{http_code}" 2>/dev/null)
+    -w "\n%{http_code}" 2>/dev/null)
+  STATUS_CODE="${RESPONSE##*$'\n'}"
+  RESPONSE_BODY="${RESPONSE%$'\n'*}"
+  RESPONSE_BODY="${RESPONSE_BODY:0:500}"
 
   if [ "$DEBUG_HOOKS_ENABLED" = "1" ]; then
-    echo "[notify-hook] host-service dispatched status=$STATUS_CODE" >&2
+    echo "[notify-hook] host-service dispatched status=$STATUS_CODE body=$RESPONSE_BODY" >&2
   fi
-  debug_log "host-service status=$STATUS_CODE url=$SUPERSET_HOST_AGENT_HOOK_URL"
+  debug_log "host-service status=$STATUS_CODE body=$RESPONSE_BODY url=$SUPERSET_HOST_AGENT_HOOK_URL"
 
   case "$STATUS_CODE" in
     2*) exit 0 ;;

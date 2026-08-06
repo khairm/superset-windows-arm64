@@ -9,6 +9,20 @@ import type { WorkspaceFilesystemManager } from "../runtime/filesystem/index.ts"
 import type { GitWatcher } from "./git-watcher.ts";
 import type { ClientMessage, ServerMessage } from "./types.ts";
 
+/**
+ * (DISPOSE-LIMBO) `Omit<A | B, K>` collapses a union to the keys its members
+ * have IN COMMON. `TerminalLifecycleMessage` is a union whose `exit` variant
+ * carries `exitCode`/`signal` and whose others do not, so the plain `Omit`
+ * below accepted only the shared four fields and rejected every real exit
+ * broadcast in this codebase — five long-standing errors that also left
+ * `broadcast()` unable to prove the reassembled object was a `ServerMessage`.
+ * Distributing the Omit over the union keeps each variant whole, so the
+ * discriminant actually selects the right field set.
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
+	? Omit<T, K>
+	: never;
+
 type WsSocket = {
 	send: (data: string) => void;
 	readyState: number;
@@ -180,7 +194,7 @@ export class EventBus {
 	 * mounted and therefore cannot observe the terminal websocket `exit` packet.
 	 */
 	broadcastTerminalLifecycle(
-		message: Omit<
+		message: DistributiveOmit<
 			Extract<ServerMessage, { type: "terminal:lifecycle" }>,
 			"type"
 		>,
