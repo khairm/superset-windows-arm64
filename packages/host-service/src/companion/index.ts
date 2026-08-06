@@ -113,6 +113,7 @@ import {
 	createQuestionStore,
 	deriveHandle,
 	type PendingQuestion,
+	QUESTION_STALE_TERMINAL_GONE_REASON,
 	type QuestionCaptureSink,
 	type QuestionStore,
 } from "./question-store";
@@ -606,6 +607,66 @@ export function createCompanionBridge(
 				logger.error("push is broken", { fault });
 			},
 		});
+		/**
+		 * (TREE-FRESHNESS-GSEQ) Mint the frame that matches how a record actually
+		 * settled, reading the state back from the store rather than assuming it.
+		 *
+		 * `reconcile` yields ONE list of ids covering two different endings, and
+		 * they are not interchangeable on the wire: `resolved` means somebody
+		 * answered it, while `stale` (`(QUESTION-EXPIRY)`) means its terminal
+		 * stopped existing and NOBODY ever answered.
+		 *
+		 * Nothing here invents provenance. The resolved branch reads back the
+		 * `resolvedAtMs`/`resolvedBy` the store stamped for itself before settling
+		 * (a desktop surface, no device label), and skips rather than guessing if
+		 * either is somehow absent. `outcome: "unknown"` is the honest value and
+		 * the enum's designated member for it: the evidence is a `tool_result` in
+		 * the transcript, which proves the tool call ended but not whether the user
+		 * chose an option or the agent cancelled. That is why this is NOT the
+		 * `"answered"` the hook path publishes — there, a `PostToolUse` resolve
+		 * names the surface that answered it.
+		 *
+		 * A record already pruned out of the store (settled in the same pass that
+		 * aged it past its retention) publishes nothing: the ending is no longer
+		 * readable, and a wrong frame type is worse than none. The heartbeat counts
+		 * still move for it, which is the fallback signal.
+		 *
+		 * Never throws into the caller: a frame nobody can currently receive
+		 * (`events.ws` is deliberately ungranted) must not be able to break the
+		 * retraction that runs beside it.
+		 */
+		function publishSettledQuestion(questionId: QuestionId): void {
+			try {
+				const question = questions.get(questionId);
+				if (question === null) return;
+				if (question.state === "resolved") {
+					const { resolvedAtMs, resolvedBy } = question;
+					if (resolvedAtMs === null || resolvedBy === null) return;
+					events.publish({
+						t: "question.resolved",
+						d: {
+							questionId,
+							resolvedAtMs: resolvedAtMs as EpochMs,
+							resolvedBy,
+							outcome: "unknown",
+						},
+					});
+					return;
+				}
+				if (question.state === "stale") {
+					events.publish({
+						t: "question.stale",
+						d: { questionId, reason: QUESTION_STALE_TERMINAL_GONE_REASON },
+					});
+				}
+			} catch (error) {
+				logger.error(
+					"could not publish the settled-question event; the phone will fall back to its counts comparison for freshness",
+					{ questionId, error },
+				);
+			}
+		}
+
 		// Constructed BEFORE the read API, because `onQuestionsSettled` is what
 		// retracts an already-delivered notification and a late binding there would
 		// be a `?.` that silently does nothing.
@@ -630,12 +691,19 @@ export function createCompanionBridge(
 			// reported. That is exactly the moment an armed or delivered push must be
 			// withdrawn — on ARM64 a dead hook is a documented failure mode, and
 			// without this the phone keeps a notification standing for a question
-			// answered at the desk minutes ago. Retraction only: `reconcile` yields
-			// ids, not resolution provenance, and publishing a `question.resolved`
-			// frame from here would have to invent `resolvedBy`.
+			// answered at the desk minutes ago.
+			//
+			// (TREE-FRESHNESS-GSEQ) It is also a change to the tree, so it mints an
+			// event. `gseq` is the ONLY freshness signal on the wire — `/v1/tree`
+			// stamps it and `/v1/heartbeat` compares against it for `treeStale` — and
+			// a settle that moved nothing would let the phone stamp a tree still
+			// showing this question as "confirmed current". `reconcile` yields ids
+			// rather than provenance, which is why the frame is built by reading each
+			// record back out of the store instead of from anything passed here.
 			onQuestionsSettled: (questionIds) => {
 				for (const questionId of questionIds) {
 					push.cancelPending(questionId);
+					publishSettledQuestion(questionId);
 				}
 			},
 			// (ANSWER-LEDGER) `hello` publishes the current epoch so a client's FIRST
@@ -1261,6 +1329,7 @@ function createNotifyingCaptureSink(
 				return;
 			}
 			armPush(deps, question);
+			publishPendingQuestion(deps, question);
 		},
 
 		resolve(input) {
@@ -1391,6 +1460,62 @@ export function armPush(
 	} catch (error) {
 		deps.logger.error(
 			"failed to arm the delayed push for a captured question — the watch will not buzz for it",
+			{ questionId: question.questionId, error },
+		);
+	}
+}
+
+/**
+ * (TREE-FRESHNESS-GSEQ) A NEW QUESTION IS A CHANGE TO THE TREE, so it mints an
+ * event and moves `gseq`.
+ *
+ * The phone decides whether the list on screen is still evidence about NOW from
+ * two things the heartbeat gives it: `treeStale` (this `gseq`, compared against
+ * the one the tree it holds was stamped with) and the status counts. Until this
+ * existed, `gseq` moved for exactly one reason — a question RESOLVING — so a
+ * capture had to be caught by the counts alone, and the counts do not always
+ * move: `deriveSessionStatus` already reports `needs_input` for a terminal whose
+ * binding is latched on `PermissionRequest`, which is the state a terminal is
+ * left in after `(QUESTION-EXPIRY)` settles a question stale, or in the window
+ * after a desk answer before the next hook event lands. A question captured on
+ * such a terminal changed nothing either signal could see, so the phone kept
+ * stamping "updated just now" over a list with no tappable card for a live
+ * blocked agent.
+ *
+ * Published for EVERY capture, including one `(PUSH-CURATION-GATE)` declined to
+ * arm. The two gates answer different questions — that one is about interrupting
+ * the user, this one is about whether a list they are already looking at is
+ * current — and they fail in the same safe direction: a spurious `gseq` bump
+ * costs one refetch, a missing one costs a blocked agent nobody sees.
+ *
+ * `BRIDGE_CAPABILITIES` is the right context for `answerable` here and not a
+ * shortcut: a broadcast frame has no device, so the only question it can answer
+ * is "could a fully-granted device answer this?". Per-device narrowing is
+ * §9.2's snapshot, which is built per socket.
+ *
+ * Never throws into the capture path. A capture that succeeded must not be
+ * turned into a 500 by a freshness signal, and `events.ws` is deliberately
+ * ungranted today, so the frame's only live effect IS the `gseq` bump.
+ */
+export function publishPendingQuestion(
+	deps: NotifyingSinkDeps,
+	question: PendingQuestion,
+): void {
+	try {
+		const summary = deps.questions.summarize(question, {
+			granted: BRIDGE_CAPABILITIES,
+		});
+		if (summary === null) {
+			deps.logger.warn(
+				"captured question could not be summarised (its terminal no longer resolves in host.db); no question.pending frame was published",
+				{ questionId: question.questionId },
+			);
+			return;
+		}
+		deps.events.publish({ t: "question.pending", d: summary });
+	} catch (error) {
+		deps.logger.error(
+			"could not publish question.pending; the phone will fall back to its counts comparison for freshness",
 			{ questionId: question.questionId, error },
 		);
 	}
@@ -1807,15 +1932,17 @@ function askqOwnerKey(agentId: string | null): string | null {
  * told "nothing is pending" is worse than one that cannot connect.
  *
  * (EVENTS-WS-PRECONDITIONS) `events.ws` needs BOTH this AND a publisher. The
- * publisher half is now wired for the session-independent frames
- * (`question.resolved`) in `createNotifyingCaptureSink`, so `currentGseq()`
- * finally advances and `HeartbeatResponse.treeStale` is satisfiable. What is
- * still missing, and blocks the grant, is anything that needs a PER-SESSION
- * projection: this snapshot, and `question.pending` (whose `QuestionSummary`
- * carries `answerable`, which is computed against that session's grants — a
- * broadcast copy would have to guess, and guessing "answerable" on a phone is
- * how a dead affordance gets rendered). Supply a real `EventSnapshotSource` and
- * a per-session question projection, then grant the capability in `config.ts`.
+ * publisher half is wired for every session-independent frame: `question.pending`
+ * on capture and `question.resolved`/`question.stale` on a settle
+ * (`(TREE-FRESHNESS-GSEQ)`), so `currentGseq()` advances on every transition of
+ * the pending set and `HeartbeatResponse.treeStale` is both satisfiable and
+ * complete. What is still missing, and blocks the grant, is the PER-SESSION
+ * projection: this snapshot. A broadcast `QuestionSummary` carries `answerable`
+ * evaluated against `BRIDGE_CAPABILITIES` — "could a fully-granted device answer
+ * this?" — which is the honest answer for a frame that has no device, but a
+ * SOCKET must narrow it to its own grants before rendering an affordance, and
+ * that narrowing lives in the snapshot. Supply a real `EventSnapshotSource`,
+ * then grant the capability in `config.ts`.
  */
 function createSnapshotSource(): EventSnapshotSource {
 	const unavailable = (): never => {

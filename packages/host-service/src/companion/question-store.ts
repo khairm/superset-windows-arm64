@@ -96,6 +96,7 @@ import type {
 	QuestionResponse,
 	QuestionSource,
 	QuestionState,
+	QuestionSummary,
 	ResolvedBy,
 	TerminalId,
 	TranscriptEntry,
@@ -773,6 +774,24 @@ export interface QuestionStore {
 	): Promise<QuestionResponse>;
 	/** §7.2 `headline` — the FIRST item's `header`, clamped to 80 chars. Not the body. */
 	headline(question: PendingQuestion): string;
+	/**
+	 * (TREE-FRESHNESS-GSEQ) §9.4 projection of ONE record: the same identity and
+	 * shape fields `/v1/tree` derives, minus the transcript context.
+	 *
+	 * `ctx` decides `answerable` exactly as it does everywhere else, so a caller
+	 * publishing a BROADCAST frame must pass the bridge's own capability set and
+	 * mean "answerable by a fully-granted device" — the per-device narrowing is
+	 * the snapshot's job, not a frame's.
+	 *
+	 * Returns `null` when the record's source no longer resolves in host.db.
+	 * Publishing a summary with an invented project or workspace handle would put
+	 * a fabricated identity on the wire; a missing frame is recoverable, a wrong
+	 * one is not.
+	 */
+	summarize(
+		question: PendingQuestion,
+		ctx: AnswerabilityContext,
+	): QuestionSummary | null;
 	/** Why this question cannot be answered from a phone, or `null` if it can. */
 	unanswerableReason(
 		question: PendingQuestion,
@@ -1343,6 +1362,20 @@ interface TranscriptScanMark {
 export const QUESTION_EXPIRY_CORROBORATION_MS = 300_000;
 
 /**
+ * (TREE-FRESHNESS-GSEQ) Why `(QUESTION-EXPIRY)` settles a question `stale`, in
+ * the words that go on the wire.
+ *
+ * A constant rather than a literal at each site because `markStale` LOGS the
+ * reason and does not store it (a write-only field on the record is worse than
+ * no field), so the frame published when a settle happens cannot read it back
+ * off the record and has to name the same string the caller passed. One
+ * definition is what keeps those two from drifting into a `question.stale`
+ * frame that explains a different expiry than the one that occurred.
+ */
+export const QUESTION_STALE_TERMINAL_GONE_REASON =
+	"the terminal this question was asked in no longer exists";
+
+/**
  * (RECONCILE-STAT-CACHE) One stat, or `null` when there is nothing to compare.
  *
  * A failed stat is NOT swallowed into a verdict — it returns `null`, which makes
@@ -1532,6 +1565,34 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 			);
 		}
 		return clampChars(first.header, HEADLINE_MAX_CHARS);
+	}
+
+	/**
+	 * (TREE-FRESHNESS-GSEQ) See the interface. Fails CLOSED — `null` rather than
+	 * a summary carrying a guessed project or workspace handle.
+	 */
+	function summarize(
+		question: PendingQuestion,
+		ctx: AnswerabilityContext,
+	): QuestionSummary | null {
+		let source: QuestionSource;
+		try {
+			source = resolveSource(question);
+		} catch {
+			return null;
+		}
+		return {
+			questionId: question.questionId,
+			fingerprint: question.fingerprint,
+			terminalId: source.terminalId,
+			workspaceId: source.workspaceId,
+			projectId: source.projectId,
+			askedAtMs: question.askedAtMs as EpochMs,
+			questionCount: question.questions.length,
+			multiSelect: question.questions.some((item) => item.multiSelect),
+			answerable: unanswerableReason(question, ctx) === null,
+			headline: headline(question),
+		};
 	}
 
 	function unanswerableReason(
@@ -1922,7 +1983,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 					}
 					store.markStale(
 						question.questionId,
-						"the terminal this question was asked in no longer exists",
+						QUESTION_STALE_TERMINAL_GONE_REASON,
 					);
 					settled.push(question.questionId);
 					continue;
@@ -1981,6 +2042,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 		},
 
 		headline,
+		summarize,
 		unanswerableReason,
 	};
 

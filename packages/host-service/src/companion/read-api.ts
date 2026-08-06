@@ -1327,6 +1327,23 @@ export async function handleHeartbeat(
 		writeEnabled: ctx.device.writeEnabled,
 		counts,
 		oldestUnansweredMs: deps.questions.oldestPendingAgeMs(nowMs),
+		// (TREE-FRESHNESS-GSEQ) THE FRESHNESS CLAIM, and it is only as good as
+		// what moves `gseq`.
+		//
+		// The phone treats `treeStale === false` (plus counts that match the tree
+		// it holds) as the desktop asserting, live, that a refetch would hand back
+		// what is already on screen — and stamps the list "updated just now" on
+		// the strength of it. That inference is sound only because every
+		// transition of the PENDING SET now mints a frame: `question.pending` on
+		// capture, `question.resolved`/`question.stale` on a settle. It used to be
+		// resolutions alone, which left a whole class of change — a capture on a
+		// terminal already latched red — invisible to this flag AND to the counts
+		// beside it, so the phone confidently asserted freshness over a list with
+		// no tappable card for a live blocked agent.
+		//
+		// `null` means the client has no opinion yet (a fresh session), and the
+		// honest answer to "is what you hold stale?" is then `false`: it holds
+		// nothing to be stale about, and its own foreground fetch covers it.
 		treeStale:
 			request.lastEventGseq === null ? false : request.lastEventGseq < gseq,
 		bridgeStartedMs: deps.bridgeStartedMs,
