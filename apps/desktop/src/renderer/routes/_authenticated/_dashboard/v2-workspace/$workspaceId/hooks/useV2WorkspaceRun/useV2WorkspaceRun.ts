@@ -346,6 +346,19 @@ export function useV2WorkspaceRun({
 
 	useWorkspaceEvent("terminal:lifecycle", workspaceId, (payload) => {
 		if (payload.eventType !== "exit") return;
+		// (DISPOSE-LIMBO) An unconfirmed exit is the host saying "I asked the
+		// daemon to kill this and it never answered" — the run command may still
+		// be running. Marking it stopped here would offer a second run beside a
+		// live process, and its `exitCode: 0` is a placeholder nobody observed.
+		// The force-stop path already reports `dispose-pending` to the user; the
+		// reaper's retry produces a real exit when it succeeds.
+		if (payload.confirmed === false) {
+			console.warn(
+				"[v2-run] ignoring an UNCONFIRMED terminal exit; the run may still be live",
+				{ workspaceId, terminalId: payload.terminalId },
+			);
+			return;
+		}
 		updateWorkspaceRunTerminals((states) => {
 			const state = states[payload.terminalId];
 			if (!state || state.state !== "running") return;

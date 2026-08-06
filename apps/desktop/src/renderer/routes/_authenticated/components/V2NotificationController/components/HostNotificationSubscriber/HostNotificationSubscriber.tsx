@@ -66,6 +66,15 @@ export function HostNotificationSubscriber({
 	}, [workspacesById]);
 	const connectedRef = useRef(false);
 	const openEpochRef = useRef(0);
+	// (BUS-RESYNC) Bumped by every resync this subscriber initiates. The epoch
+	// alone is too coarse: hydration fires a SECOND request inside the SAME
+	// epoch, and the first one can land after it with older truth — replaying
+	// against the null pane layout it was issued under, which re-latches a
+	// review-green on a pane the user is looking at. The per-row `>` fence
+	// cannot reject that, because the stale reply carries the same
+	// `lastEventAt` timestamps the fresh one does. Only the newest request may
+	// apply.
+	const resyncGenerationRef = useRef(0);
 	const syncedKeyRef = useRef<string | null>(null);
 	const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -103,18 +112,27 @@ export function HostNotificationSubscriber({
 		if (syncedKeyRef.current === key) return;
 		syncedKeyRef.current = key;
 		const epoch = openEpochRef.current;
+		const generation = ++resyncGenerationRef.current;
 		void resyncAgentStatusFromHost({
 			hostUrl,
 			workspaces: workspacesById,
 			// A snapshot that lands after this socket closed (or after unmount)
 			// describes a connection that no longer exists, and the epoch that
 			// replaced it runs its own resync. Applying it would replay stale
-			// history over whatever the new socket has already delivered.
-			isCurrent: () => connectedRef.current && openEpochRef.current === epoch,
+			// history over whatever the new socket has already delivered. The
+			// generation adds the same guarantee WITHIN an epoch: a later resync
+			// (a workspace set that hydrated) supersedes this one outright.
+			isCurrent: () =>
+				connectedRef.current &&
+				openEpochRef.current === epoch &&
+				resyncGenerationRef.current === generation,
 		}).then((result) => {
 			if (result !== null) return;
 			// Fetch failed: nothing was reconciled and nothing was cleared.
-			// Re-arm so the retry below (or a later reconnect) tries again.
+			// Re-arm so the retry below (or a later reconnect) tries again —
+			// but only if no newer resync has since taken over, whose bookkeeping
+			// this would otherwise clobber.
+			if (resyncGenerationRef.current !== generation) return;
 			syncedKeyRef.current = null;
 			if (retryTimerRef.current) return;
 			retryTimerRef.current = setTimeout(() => {

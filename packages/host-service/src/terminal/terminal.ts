@@ -408,6 +408,35 @@ async function resolveAttachSessionOnce({
 		const current = sessions.get(terminalId);
 		if (current) return current;
 
+		// (DISPOSE-LIMBO) Read the durable intent-to-kill BEFORE the adopt, not
+		// after it. The check used to sit below, guarding only the respawn — but
+		// a successful ADOPT reaches neither the check nor the respawn, and the
+		// create it runs through clears `disposeRequestedAt` on its way past. So
+		// attaching to a killed-but-still-breathing terminal (exactly the
+		// dispose-limbo case: close unconfirmed, pty alive, row stamped) erased
+		// the kill intent, disarmed the reaper, and resurrected the terminal
+		// permanently. The stamp forbids BOTH recovery paths; only an explicit
+		// create clears it (see the upsert in createTerminalSessionInternal).
+		const stampedRow = db.query.terminalSessions
+			.findFirst({
+				where: eq(terminalSessions.id, terminalId),
+				columns: { disposeRequestedAt: true },
+			})
+			.sync();
+		if (stampedRow?.disposeRequestedAt != null) {
+			console.warn(
+				"[terminal] refusing to attach a terminal with a pending dispose",
+				{
+					terminalId,
+					disposeRequestedAt: stampedRow.disposeRequestedAt,
+				},
+			);
+			return {
+				error: `Terminal session "${terminalId}" is being disposed.`,
+				code: "session-gone",
+			};
+		}
+
 		const adopted = await createTerminalSessionInternal({
 			terminalId,
 			workspaceId,
@@ -427,16 +456,13 @@ async function resolveAttachSessionOnce({
 			return adopted;
 		}
 
-		// (DISPOSE-LIMBO) Re-read the row immediately before respawning. The
+		// (DISPOSE-LIMBO) Re-read the stamp immediately before respawning. The
 		// respawn below is unconditional on "adopt found no live PTY" — which is
 		// ALSO what a dispose that already killed the PTY looks like. A dispose
-		// whose row-write hasn't finished (or whose daemon close failed, leaving
-		// the row `active` and stamped) would therefore be undone here: the
-		// attach would mint a fresh PTY for a terminal the user just killed, and
-		// the reaper would kill that one too. `disposeRequestedAt` is the durable
-		// intent-to-kill, so its presence forbids respawn outright; only an
-		// explicit create clears it (see the upsert in
-		// createTerminalSessionInternal).
+		// that landed DURING the adopt above (the pre-adopt check passed, then
+		// the stamp was written) would therefore be undone here: the attach
+		// would mint a fresh PTY for a terminal the user just killed, and the
+		// reaper would kill that one too.
 		const row = db.query.terminalSessions
 			.findFirst({
 				where: eq(terminalSessions.id, terminalId),
@@ -1234,6 +1260,19 @@ export async function disposeSessionAndWait(
 			),
 		)
 		.run();
+	// (DISPOSE-LIMBO) Read the stamp BACK rather than assuming the value we just
+	// wrote: "first request wins" means a concurrent dispose may own it. This
+	// exact value is the fence for the `disposed` write below — a create or
+	// adopt landing between here and the kill resolving clears the stamp and
+	// upserts `active` over a LIVE pty, and an unfenced write by id would then
+	// mark that live terminal disposed (the reaper kills it, the list hides it).
+	const stampedRow = db.query.terminalSessions
+		.findFirst({
+			where: eq(terminalSessions.id, terminalId),
+			columns: { disposeRequestedAt: true },
+		})
+		.sync();
+	const stampedAt = stampedRow?.disposeRequestedAt ?? null;
 	const session = sessions.get(terminalId);
 	let closePromise: Promise<DaemonCloseResult> | null = null;
 
@@ -1292,16 +1331,52 @@ export async function disposeSessionAndWait(
 
 	if (closeResult.succeeded) {
 		const endedAt = Date.now();
-		db.update(terminalSessions)
-			.set({ status: "disposed", endedAt })
-			.where(eq(terminalSessions.id, terminalId))
-			.run();
+		// (DISPOSE-LIMBO) Fenced on the stamp we read at the top. If a create or
+		// adopt ran while the kill was in flight it cleared `disposeRequestedAt`
+		// and re-upserted the row `active` for a BRAND NEW live pty; this update
+		// must not touch that row, and an unfenced write by id marked that live
+		// terminal disposed (the reaper kills it, the list hides it).
+		// (resolveAttachSessionOnce refusing to attach a stamped row shrinks the
+		// window; only the fence closes it.)
+		//
+		// A null `stampedAt` is NOT a licence to write with `IS NULL`: it means
+		// either there is no row for this id at all, or a racing create already
+		// cleared the stamp — and in the second case `IS NULL` would match that
+		// racing create's row and disposes it. Neither warrants a write.
+		let racedCreate = false;
+		if (stampedAt === null) {
+			console.error(
+				"[terminal] dispose found no stamped row; NOT marking anything disposed",
+				{ terminalId, workspaceId: session?.workspaceId },
+			);
+		} else {
+			const disposedRow = db
+				.update(terminalSessions)
+				.set({ status: "disposed", endedAt })
+				.where(
+					and(
+						eq(terminalSessions.id, terminalId),
+						eq(terminalSessions.disposeRequestedAt, stampedAt),
+					),
+				)
+				.returning({ id: terminalSessions.id })
+				.get();
+			if (!disposedRow) {
+				racedCreate = true;
+				console.error(
+					"[terminal] dispose raced a create/adopt; NOT marking the row disposed",
+					{ terminalId, stampedAt, workspaceId: session?.workspaceId },
+				);
+			}
+		}
 
 		// Dispose unsubscribed the daemon callbacks above, so onExit will
 		// never fire for this session — announce the exit here (after the
 		// row flips to disposed, so refetching readers see it dead). Skip
-		// sessions whose pty already exited: onExit broadcast that one.
-		if (session && !session.exited) {
+		// sessions whose pty already exited: onExit broadcast that one, and
+		// skip a raced create: the id now names somebody else's live terminal,
+		// so an exit for it would be misattributed to the newcomer.
+		if (session && !session.exited && !racedCreate) {
 			session.eventBus?.broadcastTerminalLifecycle({
 				workspaceId: session.workspaceId,
 				terminalId,
@@ -1325,10 +1400,17 @@ export async function disposeSessionAndWait(
 		// carries the intent-to-kill stamp, and attach now refuses to respawn a
 		// stamped row (see resolveAttachSessionOnce). So tell the renderer what
 		// it needs to act on — this terminal is finished — using the same
-		// lifecycle exit event the confirmed path emits. The row is
-		// deliberately left `active` for the reaper to retry; "the renderer
-		// gives up on the pane" and "the host stops trying to kill the PTY" are
-		// different questions and only the first is answered here.
+		// lifecycle exit event the confirmed path emits, but flagged
+		// `confirmed: false`. The row is deliberately left `active` for the
+		// reaper to retry; "the renderer gives up on the pane" and "the host
+		// stops trying to kill the PTY" are different questions and only the
+		// first is answered here.
+		//
+		// The flag is load-bearing, not decorative: without it this broadcast is
+		// byte-identical to a real exit, so `useV2WorkspaceRun` marked the run
+		// stopped (offering a second run beside a process that may still be
+		// live) and the dot path cleared latched agent state — both irreversible
+		// acts founded on an `exitCode: 0` nobody observed.
 		console.error("[terminal] dispose did not confirm; terminal is in limbo", {
 			terminalId,
 			workspaceId: session?.workspaceId,
@@ -1342,6 +1424,7 @@ export async function disposeSessionAndWait(
 				eventType: "exit",
 				exitCode: 0,
 				signal: 0,
+				confirmed: false,
 				occurredAt: Date.now(),
 			});
 		}
@@ -1531,6 +1614,27 @@ export async function createTerminalSessionInternal({
 	});
 	if (recordMismatchError) return { error: recordMismatchError };
 
+	// (DISPOSE-LIMBO) An adopt must never recover a terminal someone asked to
+	// kill. This is the choke point for EVERY adopt caller (the attach
+	// resolution and `getOrAdoptSession`), checked here on the row we already
+	// read rather than at each call site, because adopting a stamped row is
+	// what erases the kill intent: the upsert below runs on the adopt path too.
+	// A plain create is exempt on purpose — it is the one explicit instruction
+	// to have a terminal with this id, and clearing the stamp is its job.
+	if (adoptOnly && existingRecord?.disposeRequestedAt != null) {
+		console.warn(
+			"[terminal] refusing to adopt a terminal with a pending dispose",
+			{
+				terminalId,
+				workspaceId,
+				disposeRequestedAt: existingRecord.disposeRequestedAt,
+			},
+		);
+		return {
+			error: `Terminal session "${terminalId}" is being disposed.`,
+		};
+	}
+
 	const workspace = db.query.workspaces
 		.findFirst({ where: eq(workspaces.id, workspaceId) })
 		.sync();
@@ -1686,7 +1790,14 @@ export async function createTerminalSessionInternal({
 					// shouldReapRow reaped a brand-new healthy terminal and the
 					// session dropdown hid it — the terminal died minutes after
 					// being created, for no reason the user could see.
-					disposeRequestedAt: null,
+					//
+					// "Explicit create" means a PTY this call opened. An ADOPT —
+					// `adoptOnly`, or the "session already exists" fallback below
+					// the open — attaches to a pre-existing process, so clearing
+					// the stamp there would silently retract a kill nobody
+					// cancelled and disarm the reaper that was still chasing it.
+					// The stamp survives, and the reaper finishes the job.
+					...(isAdopted ? {} : { disposeRequestedAt: null }),
 				},
 			})
 			.run();
@@ -1698,8 +1809,27 @@ export async function createTerminalSessionInternal({
 		if (!isAdopted) {
 			// Only close what THIS call opened. An adopted PTY pre-dates us and
 			// may still be legitimately owned by an existing row.
+			//
+			// (DISPOSE-LIMBO) closeDaemonSessionById RESOLVES with
+			// `{ succeeded: false }` rather than throwing, so awaiting it without
+			// reading the result is indistinguishable from a clean close — the
+			// exact silent leak this cleanup exists to prevent, now with a
+			// reassuring `await` in front of it. A live PTY with no row is
+			// invisible to every consumer and unkillable by the reaper.
 			try {
-				await closeDaemonSessionById(terminalId, "SIGHUP");
+				const closeResult = await closeDaemonSessionById(terminalId, "SIGHUP");
+				if (!closeResult.succeeded) {
+					console.error(
+						"[terminal] FAILED to close the orphaned daemon PTY; a live PTY now has no row",
+						{
+							terminalId,
+							workspaceId,
+							createError: error,
+							closeAttempted: closeResult.attempted,
+							closeError: closeResult.error,
+						},
+					);
+				}
 			} catch (closeError) {
 				console.error("[terminal] failed to close the orphaned daemon PTY", {
 					terminalId,
@@ -1994,7 +2124,7 @@ export function registerWorkspaceTerminalRoute({
 	});
 
 	// REST dispose — does not require an open WebSocket
-	app.delete("/terminal/sessions/:terminalId", (c) => {
+	app.delete("/terminal/sessions/:terminalId", async (c) => {
 		const terminalId = c.req.param("terminalId");
 		if (!terminalId) {
 			return c.json({ error: "Missing terminalId" }, 400);
@@ -2005,7 +2135,19 @@ export function registerWorkspaceTerminalRoute({
 			return c.json({ error: "Session not found" }, 404);
 		}
 
-		disposeSession(terminalId, db);
+		// (DISPOSE-LIMBO) Await the real outcome. This used to fire-and-forget
+		// `disposeSession` and answer `status: "disposed"` before the daemon had
+		// been asked anything at all — the same lie removed from
+		// `terminal.killSession`, left behind here because only a profiling
+		// script calls this route.
+		const result = await disposeSessionAndWait(terminalId, db);
+		if (!result.daemonCloseSucceeded) {
+			return c.json({
+				terminalId,
+				status: "dispose-pending",
+				reason: result.daemonCloseError ?? "daemon close did not confirm",
+			});
+		}
 		return c.json({ terminalId, status: "disposed" });
 	});
 

@@ -42,14 +42,17 @@ export default command({
 
 		// (DISPOSE-LIMBO) The host reports `dispose-pending` when the daemon
 		// never confirmed the close: the PTY may still be running and the reaper
-		// will retry. Printing "Closed terminal" for that would be a lie.
+		// will retry. Printing "Closed terminal" for that would be a lie — and
+		// so is exiting 0, which is the only thing a script reads. A caller that
+		// closes a terminal and then acts on the assumption it is gone has to
+		// fail here, not proceed.
 		if (result.status !== "disposed") {
-			return {
-				data: result,
-				message: `Terminal ${options.terminal} did NOT close (${result.status}): ${
+			throw new CLIError(
+				`Terminal ${options.terminal} did NOT close (${result.status}): ${
 					"reason" in result ? result.reason : "unknown"
-				}. The host will retry; re-check with: superset terminals list`,
-			};
+				}`,
+				"The host will keep retrying. Re-check with: superset terminals list",
+			);
 		}
 
 		return {

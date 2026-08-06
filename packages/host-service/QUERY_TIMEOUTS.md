@@ -52,6 +52,7 @@ tight and healthy queries time out under load.
 | `git.listBranches`, `git.getBaseBranch`, `git.getPullRequest` | 5s | Cheap reads |
 | `git.getStatus`, `git.getCommitFiles` | 15s | Slow on big working trees |
 | `git.listCommits`, `git.getDiff`, `git.getBranchSyncStatus`, `git.getPullRequestThreads` | 30s | Long history, big diffs, GitHub API |
+| `notifications.agentStatusSnapshot` | 5s (default) | In-memory binding read + one marker readdir per bound terminal; the budget exists so a wedged readdir rejects instead of leaving the renderer's resync promise pending and its retry disarmed |
 
 ## What the timeout does *not* do
 

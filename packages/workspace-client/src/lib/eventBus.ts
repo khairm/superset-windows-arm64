@@ -44,6 +44,14 @@ export type TerminalLifecyclePayload =
 			terminalId: string;
 			exitCode: number;
 			signal: number;
+			/**
+			 * (DISPOSE-LIMBO) Absent or `true` = the daemon confirmed the PTY is
+			 * dead. `false` = the host requested a dispose the daemon never
+			 * confirmed; the process may still be alive and `exitCode` is a
+			 * placeholder. Never take an irreversible action on an unconfirmed
+			 * exit.
+			 */
+			confirmed?: boolean;
 			occurredAt: number;
 	  }
 	| {
@@ -229,6 +237,12 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 							terminalId: message.terminalId,
 							exitCode: message.exitCode,
 							signal: message.signal,
+							// (DISPOSE-LIMBO) Forward the honesty flag. Dropping it here
+							// would re-tell every consumer that an unconfirmed close was
+							// a real exit.
+							...(message.confirmed !== undefined
+								? { confirmed: message.confirmed }
+								: {}),
 							occurredAt: message.occurredAt,
 						}
 					: message.eventType === "command-end"

@@ -50,6 +50,19 @@ export type TerminalLifecycleMessage =
 			eventType: "exit";
 			exitCode: number;
 			signal: number;
+			/**
+			 * (DISPOSE-LIMBO) Did the PTY actually die? Absent or `true` means the
+			 * daemon confirmed it (a real `onExit`, or a dispose whose close
+			 * resolved) and `exitCode`/`signal` describe the real exit. `false`
+			 * means the host is announcing an UNCONFIRMED close: the dispose was
+			 * requested, the sockets are gone and the row is stamped, but the
+			 * daemon never answered � the process may still be running, and the
+			 * `exitCode: 0` on the message is a placeholder, not an observation.
+			 * Consumers that take irreversible action on an exit (marking a run
+			 * stopped, clearing latched agent state) must ignore an unconfirmed
+			 * one; consumers that merely stop showing a live pane may act on it.
+			 */
+			confirmed?: boolean;
 			occurredAt: number;
 	  }
 	| {

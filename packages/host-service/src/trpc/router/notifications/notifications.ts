@@ -60,6 +60,62 @@ function normalizeAgentIdentity(
 	};
 }
 
+/**
+ * (DISPOSE-LIMBO) A terminal with no session row is an invariant violation and
+ * has to be loud — but a wedged pane re-raises it on EVERY PostToolUse, and one
+ * full error object per hook event buries the log it was meant to surface.
+ * Full detail on the first sighting per terminal, then a periodic count so the
+ * condition stays visible without drowning anything else.
+ */
+const UNKNOWN_TERMINAL_REPORT_INTERVAL_MS = 10 * 60 * 1000;
+
+interface UnknownTerminalReport {
+	count: number;
+	lastReportedAt: number;
+}
+
+const unknownTerminalReports = new Map<string, UnknownTerminalReport>();
+
+/**
+ * The dedupe table is a diagnostic, not state anything depends on, so it is
+ * bounded by dropping it wholesale rather than growing one entry per ghost
+ * terminal forever. The only cost of a reset is one extra full log line each.
+ */
+const UNKNOWN_TERMINAL_REPORT_MAX_ENTRIES = 256;
+
+function reportUnknownTerminal(detail: {
+	terminalId: string;
+	eventType: string | undefined;
+	mappedEventType: string;
+	agentId: string | undefined;
+	agentSessionId: string | undefined;
+}): void {
+	const seen = unknownTerminalReports.get(detail.terminalId);
+	if (!seen) {
+		if (unknownTerminalReports.size >= UNKNOWN_TERMINAL_REPORT_MAX_ENTRIES) {
+			unknownTerminalReports.clear();
+		}
+		unknownTerminalReports.set(detail.terminalId, {
+			count: 1,
+			lastReportedAt: Date.now(),
+		});
+		console.error(
+			"[notifications] hook for a terminal with no session row",
+			detail,
+		);
+		return;
+	}
+
+	seen.count += 1;
+	const now = Date.now();
+	if (now - seen.lastReportedAt < UNKNOWN_TERMINAL_REPORT_INTERVAL_MS) return;
+	seen.lastReportedAt = now;
+	console.error(
+		`[notifications] hook for a terminal with no session row (${seen.count} events so far)`,
+		detail,
+	);
+}
+
 export const notificationsRouter = router({
 	/**
 	 * Agent lifecycle hook. The shell hook POSTs here; we normalize, resolve
@@ -137,7 +193,7 @@ export const notificationsRouter = router({
 			.sync();
 
 		if (!terminalSession) {
-			console.error("[notifications] hook for a terminal with no session row", {
+			reportUnknownTerminal({
 				terminalId: input.terminalId,
 				eventType: input.eventType,
 				mappedEventType: eventType,
@@ -224,9 +280,24 @@ export const notificationsRouter = router({
 	 * un-settling promise would keep the epoch marked synced and disarm the
 	 * retry, leaving the dots unreconciled for the life of the connection.
 	 */
-	agentStatusSnapshot: queryProcedure.query(
-		async ({ ctx }): Promise<AgentStatusSnapshot> => {
-			return buildAgentStatusSnapshot(ctx.terminalAgentStore, ctx.db);
-		},
-	),
+	agentStatusSnapshot: queryProcedure
+		.input(
+			z
+				.object({
+					/**
+					 * (GHOST-TERMINAL) Terminal ids the caller holds dot state for.
+					 * When present, `knownTerminalIds` comes back intersected with
+					 * these instead of listing every row the host has ever minted.
+					 */
+					candidateTerminalIds: z.array(z.string()).optional(),
+				})
+				.optional(),
+		)
+		.query(async ({ ctx, input }): Promise<AgentStatusSnapshot> => {
+			return buildAgentStatusSnapshot(
+				ctx.terminalAgentStore,
+				ctx.db,
+				input?.candidateTerminalIds,
+			);
+		}),
 });

@@ -69,6 +69,28 @@ function log(record: Record<string, unknown>): void {
 }
 
 /**
+ * Every terminal id the store currently holds any dot state for — the exact
+ * set the stale-clear sweep can ask about. Tens of entries in practice, so it
+ * rides in the query input rather than being re-derived host-side.
+ */
+function collectCandidateTerminalIds(
+	state: ReturnType<typeof useV2NotificationStore.getState>,
+): string[] {
+	const ids = new Set<string>();
+	for (const entry of Object.values(state.sources)) {
+		if (entry.source.type !== "terminal") continue;
+		ids.add(entry.source.id);
+	}
+	for (const terminalId of Object.keys(state.backgroundRunningTerminals)) {
+		ids.add(terminalId);
+	}
+	for (const terminalId of Object.keys(state.shellRunningTerminals)) {
+		ids.add(terminalId);
+	}
+	return [...ids];
+}
+
+/**
  * Fetch the host snapshot and reconcile every terminal source this host owns.
  * Returns null when the snapshot could not be fetched — the caller must treat
  * that as "truth unknown" and change nothing, since clearing dots on a failed
@@ -98,13 +120,31 @@ export async function resyncAgentStatusFromHost({
 	const beforeBackground = before.backgroundRunningTerminals;
 	const beforeShell = before.shellRunningTerminals;
 
+	// (DOT-PERSIST) Cold start is a property of the WHOLE STORE, decided once,
+	// before anything is written. Deciding it per row ("this terminal has no
+	// entry and no seen record") also matched every terminal created DURING a
+	// bus outage — precisely the terminals whose completed-agent green was
+	// swallowed and which this resync exists to restore — and seeded their
+	// review away on the spot. Both maps live in sessionStorage, so both are
+	// empty together only on a real app restart.
+	const isColdStart =
+		Object.keys(beforeSources).length === 0 &&
+		Object.keys(before.terminalSeenAt).length === 0;
+
+	// (GHOST-TERMINAL) Tell the host which terminals we actually hold state for.
+	// Without this it answers with every `terminal_sessions` row it has ever
+	// minted — rows are deleted only when a workspace is destroyed — and ships
+	// that unbounded list on every reconnect. The sweep only ever asks "is THIS
+	// terminal known", so the intersection answers the same question at a
+	// bounded size.
+	const candidateTerminalIds = collectCandidateTerminalIds(before);
+
 	let rows: AgentStatusSnapshotRow[];
 	let knownTerminalIds: string[];
 	try {
-		({ rows, knownTerminalIds } =
-			await getHostServiceClientByUrl(
-				hostUrl,
-			).notifications.agentStatusSnapshot.query());
+		({ rows, knownTerminalIds } = await getHostServiceClientByUrl(
+			hostUrl,
+		).notifications.agentStatusSnapshot.query({ candidateTerminalIds }));
 	} catch (error) {
 		console.error("[bus-resync] snapshot fetch FAILED — dots not reconciled", {
 			hostUrl,
@@ -146,7 +186,6 @@ export async function resyncAgentStatusFromHost({
 		const sourceKey = getV2NotificationSourceKey(source);
 		const preState = useV2NotificationStore.getState();
 		const preEntry = preState.sources[sourceKey];
-		const preSeenAt = preState.terminalSeenAt[row.terminalId];
 
 		// A live event that landed while the snapshot was in flight — the user
 		// answering the question this row still calls pending, or a fresh
@@ -179,11 +218,11 @@ export async function resyncAgentStatusFromHost({
 		// resting `lastEventType` of every idle agent tab is a turn-end. Replaying
 		// those unchanged would paint review-green on every open agent tab at every
 		// launch, for completions reviewed days ago, which is precisely the state
-		// (DOT-PERSIST) promises a restart clears. A row landing on a terminal the
-		// store has never heard of is therefore marked seen AT the replayed event:
-		// working and permission still paint (they are re-derived below and from
-		// the marker), a stale green does not.
-		if (preEntry === undefined && preSeenAt === undefined) {
+		// (DOT-PERSIST) promises a restart clears. On a cold start every row is
+		// therefore marked seen AT the replayed event: working and permission
+		// still paint (they are re-derived below and from the marker), a stale
+		// green does not. Mid-session this must NOT fire — see `isColdStart`.
+		if (isColdStart) {
 			useV2NotificationStore
 				.getState()
 				.markTerminalSeen(row.terminalId, row.lastEventAt);

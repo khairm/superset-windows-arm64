@@ -169,6 +169,22 @@ export function handleV2TerminalLifecycleEvent({
 	// exit: clear the agent source AND any lingering shell-running / (BA)
 	// background-running entry (the cloud-blue axis has no OSC self-clear), and
 	// prune the host-binding seen record for the now-dead terminal.
+	//
+	// (DISPOSE-LIMBO) Only for a CONFIRMED exit. An unconfirmed one is a dispose
+	// the daemon never answered: the process may still be running, still hooking,
+	// and about to POST the next status for this very terminal. Wiping the seen
+	// record and the agent-terminal registry on that guess would drop a live
+	// red and demote a live agent tab to a plain shell, and nothing would put
+	// either back — the row stays `active` and the reaper's eventual success
+	// emits a real exit that runs this teardown for real. Informational only:
+	// the pane keeps whatever disconnected state it already shows.
+	if (payload.confirmed === false) {
+		console.warn(
+			"[v2-notifications] UNCONFIRMED terminal exit — leaving dot state alone",
+			{ terminalId: payload.terminalId, workspaceId },
+		);
+		return;
+	}
 	store.clearTerminalShellRunning(payload.terminalId);
 	store.clearTerminalBackgroundRunning(payload.terminalId);
 	store.pruneTerminalSeen(payload.terminalId);

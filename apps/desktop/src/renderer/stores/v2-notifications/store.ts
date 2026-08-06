@@ -288,16 +288,22 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					workspaceId,
 					occurredAt = Date.now(),
 				) => {
-					set((state) => {
-						const prev = state.shellRunningTerminals[terminalId];
-						if (prev && prev.workspaceId === workspaceId) return state;
-						return {
-							shellRunningTerminals: {
-								...state.shellRunningTerminals,
-								[terminalId]: { workspaceId, occurredAt },
-							},
-						};
-					});
+					set((state) => ({
+						shellRunningTerminals: {
+							...state.shellRunningTerminals,
+							// (BUS-RESYNC) ALWAYS a fresh object with a refreshed
+							// `occurredAt`, even when the workspace is unchanged. The resync
+							// sweep fences its stale-clears on entry identity — "same object
+							// as before the snapshot request went out" is its proof that no
+							// live event touched this terminal meanwhile. The old early
+							// return here reused the existing object on a repeat set, so a
+							// command starting DURING the snapshot await left identity
+							// intact and the sweep cleared a live blue for the whole run.
+							// This matches applySourceAxes, which is always-fresh for the
+							// same reason.
+							[terminalId]: { workspaceId, occurredAt },
+						},
+					}));
 				},
 				clearTerminalShellRunning: (terminalId) => {
 					set((state) => {
@@ -313,16 +319,15 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					workspaceId,
 					occurredAt = Date.now(),
 				) => {
-					set((state) => {
-						const prev = state.backgroundRunningTerminals[terminalId];
-						if (prev && prev.workspaceId === workspaceId) return state;
-						return {
-							backgroundRunningTerminals: {
-								...state.backgroundRunningTerminals,
-								[terminalId]: { workspaceId, occurredAt },
-							},
-						};
-					});
+					set((state) => ({
+						backgroundRunningTerminals: {
+							...state.backgroundRunningTerminals,
+							// (BUS-RESYNC) Always a fresh object — see
+							// setTerminalShellRunning. Identity fencing in the resync sweep
+							// is only valid if EVERY write to this map replaces the entry.
+							[terminalId]: { workspaceId, occurredAt },
+						},
+					}));
 				},
 				clearTerminalBackgroundRunning: (terminalId) => {
 					set((state) => {

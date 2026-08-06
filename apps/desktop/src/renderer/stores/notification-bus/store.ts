@@ -59,3 +59,37 @@ export function selectEarliestNotificationBusDisconnect(
 	}
 	return earliest;
 }
+
+/**
+ * Which hosts are down, as a comma-joined label (a primitive, for the same
+ * re-render reason as above). "" when they are all up.
+ *
+ * (OFFLINE-RELAY-HOST) Naming them is not cosmetic. The pill aggregates every
+ * bus the notification controller subscribes to, which now includes a relay
+ * socket per off-machine host in the sidebar — and a host that is simply
+ * switched off is a NORMAL condition whose socket may never hold open, which
+ * would otherwise render as a permanent unexplained "offline" badge. Saying
+ * WHICH host is down at least makes that state diagnosable from the UI.
+ * OPEN QUESTION for e2e verification: if a relay socket for an offline host can
+ * never connect, this pill should probably distinguish "a host you have open is
+ * unreachable" from "your own dots are frozen" rather than merging them. Do not
+ * redesign bus registration to paper over it without measuring first.
+ */
+export function selectDisconnectedNotificationBusLabel(
+	state: NotificationBusStatusState,
+): string {
+	const down: string[] = [];
+	for (const [hostUrl, since] of Object.entries(state.buses)) {
+		if (since === null) continue;
+		down.push(describeBusHost(hostUrl));
+	}
+	return down.sort().join(", ");
+}
+
+function describeBusHost(hostUrl: string): string {
+	try {
+		return new URL(hostUrl).host || hostUrl;
+	} catch {
+		return hostUrl;
+	}
+}

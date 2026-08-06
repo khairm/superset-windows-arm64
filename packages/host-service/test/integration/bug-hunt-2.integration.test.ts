@@ -335,7 +335,11 @@ describe("bug-hunt-2: input edges", () => {
 		const result = await host.unauthenticatedTrpc.notifications.hook.mutate({
 			eventType: "Stop",
 		});
-		expect(result).toEqual({ success: true, ignored: true });
+		expect(result).toEqual({
+			success: true,
+			ignored: true,
+			reason: "no-terminal-id",
+		});
 	});
 
 	test("filesystem.searchFiles with whitespace-only query returns no matches without scanning", async () => {

@@ -3,6 +3,7 @@ import { cn } from "@superset/ui/utils";
 import { useEffect, useState } from "react";
 import { LuWifiOff } from "react-icons/lu";
 import {
+	selectDisconnectedNotificationBusLabel,
 	selectEarliestNotificationBusDisconnect,
 	useNotificationBusStatusStore,
 } from "renderer/stores/notification-bus";
@@ -35,6 +36,12 @@ export function NotificationBusPill({
 	const disconnectedSince = useNotificationBusStatusStore(
 		selectEarliestNotificationBusDisconnect,
 	);
+	// (OFFLINE-RELAY-HOST) Which bus is down, so a pill that never clears is at
+	// least attributable to a host. See the selector for the open question about
+	// relay sockets to hosts that are simply switched off.
+	const disconnectedHosts = useNotificationBusStatusStore(
+		selectDisconnectedNotificationBusLabel,
+	);
 	const [visible, setVisible] = useState(false);
 
 	useEffect(() => {
@@ -56,8 +63,9 @@ export function NotificationBusPill({
 
 	if (!visible) return null;
 
-	const tooltip =
-		"Agent notifications disconnected — dots may be stale until it reconnects";
+	const tooltip = disconnectedHosts
+		? `Agent notifications disconnected from ${disconnectedHosts} — dots may be stale until it reconnects`
+		: "Agent notifications disconnected — dots may be stale until it reconnects";
 
 	return (
 		<Tooltip delayDuration={300}>

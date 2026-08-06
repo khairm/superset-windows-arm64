@@ -1,6 +1,7 @@
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { inArray } from "drizzle-orm";
 import type { HostDb } from "../../../db";
 import { terminalSessions } from "../../../db/schema";
 import { type AgentLifecycleEventType, mapEventType } from "../../../events";
@@ -45,6 +46,10 @@ export interface AgentStatusSnapshotRow {
  * agent finishing, so "absent" alone would destroy a legitimate dot on every
  * reconnect. Present in `knownTerminalIds` but not in `rows` = positively
  * disowned; absent from both = never known, hands off.
+ *
+ * `knownTerminalIds` is INTERSECTED with the caller's `candidateTerminalIds`
+ * when it sends them, so "absent from both" keeps its meaning for every
+ * terminal the caller asked about and answers nothing about the rest.
  */
 export interface AgentStatusSnapshot {
 	rows: AgentStatusSnapshotRow[];
@@ -79,11 +84,33 @@ const SAFE_MARKER_SEGMENT = /^[A-Za-z0-9_-]+$/;
  * filesystem is not evidence of "no question", and reporting `false` there
  * would silently downgrade every pending red on the host.
  *
+ * (LEAKED-ASKQ-OWNER) A leaked owner — the hook process killed between writing
+ * the marker and the answer, a Claude session SIGKILLed with no SessionEnd —
+ * re-asserts red on every reconnect for as long as the terminal lives. There is
+ * deliberately NO reap here, because nothing host-side can prove a leak:
+ *
+ *  - the owner files are EMPTY, and their names are `_main` or a sanitized
+ *    subagent id, so they carry no session identity to match `agentSessionId`
+ *    against;
+ *  - binding liveness is already enforced upstream (`store.list()` is the
+ *    liveness-joined read), so a marker for a dead terminal never reaches here;
+ *  - mtime-vs-`binding.startedAt` looks like a session-boundary fence, but the
+ *    ONLY way a marker survives into a new session is the SessionStart hook not
+ *    running (it calls `_clear_dir` on the askq dir). In that same scenario the
+ *    binding's `startedAt` is pinned by whichever later event did post — which
+ *    can be AFTER a genuinely-open question was marked — so the fence would
+ *    drop live reds in exactly the case it was meant to clean up.
+ *
+ * So the ambiguity is LOGGED and the red is kept: a stale red is a question the
+ * user dismisses, a dropped red is an agent blocked forever with a green dot.
+ * The hook clears the directory on the next SessionStart, abort or SessionEnd.
+ *
  * Async throughout: this runs inside a tRPC query on the host-service event
  * loop, never on the desktop main thread.
  */
 async function hasPendingQuestionMarker(
 	terminalId: string,
+	sessionStartedAt: number,
 ): Promise<boolean | null> {
 	// An id we would never have written a marker for is definitively absent.
 	if (!SAFE_MARKER_SEGMENT.test(terminalId)) return false;
@@ -93,8 +120,9 @@ async function hasPendingQuestionMarker(
 		"agent-subagent-running",
 		`${terminalId}.askq`,
 	);
+	let owners: string[];
 	try {
-		return (await readdir(dir)).length > 0;
+		owners = await readdir(dir);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		console.error(
@@ -103,6 +131,47 @@ async function hasPendingQuestionMarker(
 		);
 		return null;
 	}
+	if (owners.length === 0) return false;
+
+	// (LEAKED-ASKQ-OWNER) Diagnostic only — never a reap. See the note above for
+	// why an owner older than the binding's session start is suspicious but not
+	// provably dead.
+	const suspect = await findOwnersOlderThanSession(
+		dir,
+		owners,
+		sessionStartedAt,
+	);
+	if (suspect.length > 0) {
+		console.warn(
+			"[notifications] askq owner(s) predate this terminal's agent session — a LEAKED marker would pin red forever; keeping the red (see LEAKED-ASKQ-OWNER)",
+			{ terminalId, sessionStartedAt, owners: suspect },
+		);
+	}
+	return true;
+}
+
+/**
+ * (LEAKED-ASKQ-OWNER) Owner files whose mtime predates the binding's session
+ * start, described for the log. A failed stat is reported as unknown rather
+ * than suspicious — an unreadable marker is not evidence of anything.
+ */
+async function findOwnersOlderThanSession(
+	dir: string,
+	owners: string[],
+	sessionStartedAt: number,
+): Promise<string[]> {
+	const suspect: string[] = [];
+	for (const owner of owners) {
+		try {
+			const stats = await stat(join(dir, owner));
+			if (stats.mtimeMs < sessionStartedAt) {
+				suspect.push(`${owner}@${Math.round(stats.mtimeMs)}`);
+			}
+		} catch {
+			// Raced removal or an unreadable entry: says nothing either way.
+		}
+	}
+	return suspect;
 }
 
 /**
@@ -116,6 +185,7 @@ async function hasPendingQuestionMarker(
 export async function buildAgentStatusSnapshot(
 	store: TerminalAgentStore,
 	db: HostDb,
+	candidateTerminalIds?: string[],
 ): Promise<AgentStatusSnapshot> {
 	const bindings = store.list();
 	const rows = await Promise.all(
@@ -137,21 +207,37 @@ export async function buildAgentStatusSnapshot(
 				agentId: binding.agentId,
 				lastEventType,
 				lastEventAt: binding.lastEventAt,
-				pendingPermission: await hasPendingQuestionMarker(binding.terminalId),
+				pendingPermission: await hasPendingQuestionMarker(
+					binding.terminalId,
+					binding.startedAt,
+				),
 			};
 			return row;
 		}),
 	);
-	// One covering read of the primary key. DELIBERATELY unfiltered by status:
-	// the question this answers is "has this host ever minted this terminal",
-	// and an ended or disposing session is still a terminal the host owns and
-	// may legitimately disown. Filtering by `active` here would reclassify every
-	// finished terminal as a ghost and freeze its dots forever.
-	const knownTerminalIds = db
-		.select({ id: terminalSessions.id })
-		.from(terminalSessions)
-		.all()
-		.map((session) => session.id);
+	// DELIBERATELY unfiltered by status: the question this answers is "has this
+	// host ever minted this terminal", and an ended or disposing session is
+	// still a terminal the host owns and may legitimately disown. Filtering by
+	// `active` here would reclassify every finished terminal as a ghost and
+	// freeze its dots forever.
+	//
+	// Scoped to the caller's candidates when it supplies them. Rows are deleted
+	// only when a workspace is destroyed, so the unscoped read grows without
+	// bound and was shipped in full on every reconnect — while the only
+	// question the renderer's sweep asks is "is THIS terminal known", over the
+	// tens of terminals it holds state for. An absent input keeps the full list
+	// for callers that have no candidate set.
+	const knownTerminalIds = (
+		candidateTerminalIds === undefined
+			? db.select({ id: terminalSessions.id }).from(terminalSessions).all()
+			: candidateTerminalIds.length === 0
+				? []
+				: db
+						.select({ id: terminalSessions.id })
+						.from(terminalSessions)
+						.where(inArray(terminalSessions.id, candidateTerminalIds))
+						.all()
+	).map((session) => session.id);
 	return {
 		rows: rows.filter((row): row is AgentStatusSnapshotRow => row !== null),
 		knownTerminalIds,
