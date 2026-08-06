@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "53bd78b08a19",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "packages/host-service/drizzle/0018_greedy_sauron.sql",
+    "packages/host-service/drizzle/meta/0018_snapshot.json",
+    "packages/host-service/drizzle/meta/_journal.json",
+    "packages/host-service/src/companion/config.ts",
+    "packages/host-service/src/companion/curation-gates.test.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/push-fence.ts",
+    "packages/host-service/src/companion/push.ts",
+    "packages/host-service/src/db/schema.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/53/bd78b08a19/0/metadata.json",
+      "transcript": "/53/bd78b08a19/0/full.jsonl",
+      "content_hash": "/53/bd78b08a19/0/content_hash.txt",
+      "prompt": "/53/bd78b08a19/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3867,
+    "cache_creation_tokens": 17369553,
+    "cache_read_tokens": 807775053,
+    "output_tokens": 1669016,
+    "api_call_count": 2020
+  }
+}
