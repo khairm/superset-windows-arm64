@@ -1,10 +1,11 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
-import { getEventBus } from "@superset/workspace-client";
 import { useEffect, useState } from "react";
 import { LuWifiOff } from "react-icons/lu";
-import { getHostServiceWsToken } from "renderer/lib/host-service-auth";
-import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import {
+	selectEarliestNotificationBusDisconnect,
+	useNotificationBusStatusStore,
+} from "renderer/stores/notification-bus";
 
 /**
  * (BUS-RESYNC) How long the bus may be down before we say so. Ordinary
@@ -14,56 +15,46 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
  */
 const DISCONNECTED_GRACE_MS = 15_000;
 
-function useHostBusConnected(hostUrl: string | null): boolean {
-	const [connected, setConnected] = useState(true);
-
-	useEffect(() => {
-		if (!hostUrl) {
-			setConnected(true);
-			return;
-		}
-		const bus = getEventBus(hostUrl, () => getHostServiceWsToken(hostUrl));
-		setConnected(bus.isConnected());
-		const removeListener = bus.onConnectionChange(setConnected);
-		// Connection listeners alone don't keep the socket alive.
-		const release = bus.retain();
-		return () => {
-			removeListener();
-			release();
-		};
-	}, [hostUrl]);
-
-	return connected;
-}
-
 /**
  * (BUS-RESYNC) Visible state for "agent notifications are not arriving".
  *
- * The dots are driven entirely by host-service events over one WebSocket. When
- * that socket is down the UI is silently frozen — every dot keeps rendering
- * whatever it last heard — which is indistinguishable from "nothing is
- * happening". This says which one it is. It disappears the moment the socket
- * reopens, and the reconnect itself resyncs the dots.
+ * The dots are driven entirely by host-service events over WebSockets — one per
+ * host, and a window commonly holds several: the local host plus a relay socket
+ * for every off-machine host in the sidebar. When any of them is down the dots
+ * for its workspaces are silently frozen, rendering whatever they last heard,
+ * which is indistinguishable from "nothing is happening". This says which one
+ * it is: it appears when ANY bus the notification controller subscribes to has
+ * been down past the grace window, and disappears when they are all back — the
+ * reconnect itself resyncs the dots.
  */
 export function NotificationBusPill({
 	isCollapsed = false,
 }: {
 	isCollapsed?: boolean;
 }) {
-	const { activeHostUrl } = useLocalHostService();
-	const connected = useHostBusConnected(activeHostUrl);
+	const disconnectedSince = useNotificationBusStatusStore(
+		selectEarliestNotificationBusDisconnect,
+	);
 	const [visible, setVisible] = useState(false);
 
 	useEffect(() => {
-		if (connected) {
+		if (disconnectedSince === null) {
 			setVisible(false);
 			return;
 		}
-		const timer = setTimeout(() => setVisible(true), DISCONNECTED_GRACE_MS);
+		// Grace runs from when that bus went down, not from this render: a bus
+		// already down for an hour when the sidebar mounts must show immediately.
+		const remaining = disconnectedSince + DISCONNECTED_GRACE_MS - Date.now();
+		if (remaining <= 0) {
+			setVisible(true);
+			return;
+		}
+		setVisible(false);
+		const timer = setTimeout(() => setVisible(true), remaining);
 		return () => clearTimeout(timer);
-	}, [connected]);
+	}, [disconnectedSince]);
 
-	if (!activeHostUrl || !visible) return null;
+	if (!visible) return null;
 
 	const tooltip =
 		"Agent notifications disconnected — dots may be stale until it reconnects";

@@ -3,9 +3,9 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { terminalSessions } from "../../../db/schema";
 import { mapEventType } from "../../../events";
-import { protectedProcedure, publicProcedure, router } from "../../index";
+import { publicProcedure, queryProcedure, router } from "../../index";
 import {
-	type AgentStatusSnapshotRow,
+	type AgentStatusSnapshot,
 	buildAgentStatusSnapshot,
 } from "./agent-status-snapshot";
 // (COMPANION-CAPTURE) (COMPANION-CAPTURE-HOOK) fork-only seam. Every line of
@@ -159,12 +159,17 @@ export const notificationsRouter = router({
 	 * further hook events, so a dot lost that way can never self-heal. The
 	 * renderer refetches this on every bus (re)connect and reconciles.
 	 *
-	 * Read-only and cheap: a liveness-joined in-memory store read plus one
-	 * marker-directory read per bound terminal.
+	 * Read-only and cheap: a liveness-joined in-memory store read, one
+	 * marker-directory read per bound terminal, and one covering read of the
+	 * `terminal_sessions` primary key. On `queryProcedure` (repo rule: every
+	 * `.query` carries a server-side timeout) so a wedged readdir rejects
+	 * instead of leaving the renderer's resync promise pending forever — an
+	 * un-settling promise would keep the epoch marked synced and disarm the
+	 * retry, leaving the dots unreconciled for the life of the connection.
 	 */
-	agentStatusSnapshot: protectedProcedure.query(
-		async ({ ctx }): Promise<{ rows: AgentStatusSnapshotRow[] }> => {
-			return { rows: await buildAgentStatusSnapshot(ctx.terminalAgentStore) };
+	agentStatusSnapshot: queryProcedure.query(
+		async ({ ctx }): Promise<AgentStatusSnapshot> => {
+			return buildAgentStatusSnapshot(ctx.terminalAgentStore, ctx.db);
 		},
 	),
 });

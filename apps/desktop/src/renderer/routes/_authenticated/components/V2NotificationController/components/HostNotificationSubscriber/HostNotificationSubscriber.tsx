@@ -11,6 +11,7 @@ import {
 	refreshHostServiceSecrets,
 } from "renderer/lib/host-service-auth";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
+import { useNotificationBusStatusStore } from "renderer/stores/notification-bus";
 import {
 	handleV2AgentLifecycleEvent,
 	handleV2TerminalLifecycleEvent,
@@ -51,11 +52,18 @@ export function HostNotificationSubscriber({
 	);
 	// Which workspace set a resync covered. A reconnect that lands before the
 	// workspace rows hydrate can only reconcile what it knows, so a later
-	// hydration must be allowed to complete the job.
-	const workspacesKey = useMemo(
-		() => [...workspacesById.keys()].sort().join(","),
-		[workspacesById],
-	);
+	// hydration must be allowed to complete the job. The HYDRATED ids are part of
+	// the key, not just the id set: a workspace enters this list from its host row
+	// with `paneLayout: null` and hydrates later without changing the id set, and
+	// a replay evaluated against a null layout treats every terminal as not
+	// visible — which can leave a green dot on the pane the user is looking at.
+	const workspacesKey = useMemo(() => {
+		const ids = [...workspacesById.keys()].sort();
+		const hydrated = ids.filter(
+			(id) => workspacesById.get(id)?.paneLayout != null,
+		);
+		return `${ids.join(",")}|${hydrated.join(",")}`;
+	}, [workspacesById]);
 	const connectedRef = useRef(false);
 	const openEpochRef = useRef(0);
 	const syncedKeyRef = useRef<string | null>(null);
@@ -94,9 +102,15 @@ export function HostNotificationSubscriber({
 		const key = `${openEpochRef.current}:${workspaceSetKey}`;
 		if (syncedKeyRef.current === key) return;
 		syncedKeyRef.current = key;
+		const epoch = openEpochRef.current;
 		void resyncAgentStatusFromHost({
 			hostUrl,
 			workspaces: workspacesById,
+			// A snapshot that lands after this socket closed (or after unmount)
+			// describes a connection that no longer exists, and the epoch that
+			// replaced it runs its own resync. Applying it would replay stale
+			// history over whatever the new socket has already delivered.
+			isCurrent: () => connectedRef.current && openEpochRef.current === epoch,
 		}).then((result) => {
 			if (result !== null) return;
 			// Fetch failed: nothing was reconciled and nothing was cleared.
@@ -112,6 +126,12 @@ export function HostNotificationSubscriber({
 
 	const handleConnectionChange = useEffectEvent((connected: boolean) => {
 		connectedRef.current = connected;
+		// The offline pill reads THIS host's state from the store rather than
+		// opening a bus of its own, so a relay socket that dies while the local
+		// host stays up is still surfaced.
+		useNotificationBusStatusStore
+			.getState()
+			.setNotificationBusConnected(hostUrl, connected);
 		if (!connected) {
 			// A restarted host issues a new PSK; re-read it from the coordinator so
 			// the next dial carries the current one instead of retrying a stale
@@ -142,13 +162,23 @@ export function HostNotificationSubscriber({
 		// The socket is shared across all consumers of this host, so it may
 		// already be open — in which case no "open" event is coming and this
 		// mount would never reconcile.
-		if (bus.isConnected()) handleConnectionChange(true);
+		if (bus.isConnected()) {
+			handleConnectionChange(true);
+		} else {
+			// Register the bus as down NOW rather than waiting for a close event
+			// that already fired: a host that is unreachable at mount emits nothing
+			// until its first successful open.
+			useNotificationBusStatusStore
+				.getState()
+				.setNotificationBusConnected(hostUrl, false);
+		}
 
 		return () => {
 			removeAgentListener();
 			removeTerminalListener();
 			removeConnectionListener();
 			release();
+			useNotificationBusStatusStore.getState().removeNotificationBus(hostUrl);
 			if (retryTimerRef.current) {
 				clearTimeout(retryTimerRef.current);
 				retryTimerRef.current = null;
