@@ -26,6 +26,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
 import { HiringBanner } from "renderer/components/HiringBanner";
+import { NotificationBusPill } from "renderer/components/NotificationBusPill";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { OrganizationDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/OrganizationDropdown";
@@ -526,6 +527,7 @@ export function DashboardSidebar({
 										</div>
 									)}
 
+									<NotificationBusPill isCollapsed={isCollapsed} />
 									<UpdatesPill isCollapsed={isCollapsed} />
 									<Tooltip delayDuration={300}>
 										<TooltipTrigger asChild>

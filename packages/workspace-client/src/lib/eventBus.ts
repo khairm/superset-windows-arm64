@@ -133,9 +133,26 @@ interface ConnectionState {
 	refCount: number;
 	listeners: Set<ListenerEntry>;
 	fsWatchedWorkspaces: Map<string, number>;
+	/** Mirrors the socket's open/closed state for `onConnectionChange`. */
+	connected: boolean;
+	connectionListeners: Set<(connected: boolean) => void>;
 }
 
 const connections = new Map<string, ConnectionState>();
+
+function setConnected(state: ConnectionState, connected: boolean): void {
+	if (state.connected === connected) return;
+	state.connected = connected;
+	for (const listener of state.connectionListeners) {
+		try {
+			listener(connected);
+		} catch (error) {
+			// A throwing observer must not break the socket's own handlers or
+			// starve the other observers.
+			console.error("[event-bus] connection listener failed", { error });
+		}
+	}
+}
 
 function sendCommand(state: ConnectionState, message: ClientMessage): void {
 	if (state.socket.readyState === WebSocket.OPEN) {
@@ -282,6 +299,8 @@ function getOrCreateConnection(
 		refCount: 0,
 		listeners: new Set(),
 		fsWatchedWorkspaces: new Map(),
+		connected: false,
+		connectionListeners: new Set(),
 	};
 
 	socket.addEventListener("open", () => {
@@ -289,6 +308,18 @@ function getOrCreateConnection(
 		for (const workspaceId of state.fsWatchedWorkspaces.keys()) {
 			sendCommand(state, { type: "fs:watch", workspaceId });
 		}
+		// (BUS-RESYNC) Commands are the only thing replayed here. Everything the
+		// host pushed while this socket was down is GONE — the host broadcasts
+		// fire-and-forget with no queue — so consumers that hold derived state
+		// (agent status dots) must reconcile against a host snapshot when this
+		// fires. That reconciliation lives in the renderer, next to its store.
+		setConnected(state, true);
+	});
+	socket.addEventListener("close", () => {
+		setConnected(state, false);
+	});
+	socket.addEventListener("error", () => {
+		setConnected(state, false);
 	});
 	socket.addEventListener("message", (event) => {
 		handleMessage(state, event.data);
@@ -320,6 +351,16 @@ export interface EventBusHandle {
 	watchFs(workspaceId: string): void;
 	unwatchFs(workspaceId: string): void;
 	retain(): () => void;
+	/** Whether the shared socket for this host is currently open. */
+	isConnected(): boolean;
+	/**
+	 * (BUS-RESYNC) Observe open/closed transitions of the shared socket.
+	 * `true` means a NEW socket just opened, which is the only moment a
+	 * consumer can know it may have missed events. Callers that outlive the
+	 * event subscriptions (e.g. a connection indicator) should also `retain()`,
+	 * since these listeners do not keep the connection alive on their own.
+	 */
+	onConnectionChange(listener: (connected: boolean) => void): () => void;
 }
 
 /**
@@ -378,6 +419,17 @@ export function getEventBus(
 			return () => {
 				state.refCount = Math.max(0, state.refCount - 1);
 				maybeCleanupConnection(hostUrl);
+			};
+		},
+
+		isConnected(): boolean {
+			return state.socket.readyState === WebSocket.OPEN;
+		},
+
+		onConnectionChange(listener: (connected: boolean) => void): () => void {
+			state.connectionListeners.add(listener);
+			return () => {
+				state.connectionListeners.delete(listener);
 			};
 		},
 	};

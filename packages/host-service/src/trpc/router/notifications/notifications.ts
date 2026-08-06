@@ -3,7 +3,11 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { terminalSessions } from "../../../db/schema";
 import { mapEventType } from "../../../events";
-import { publicProcedure, router } from "../../index";
+import { protectedProcedure, publicProcedure, router } from "../../index";
+import {
+	type AgentStatusSnapshotRow,
+	buildAgentStatusSnapshot,
+} from "./agent-status-snapshot";
 // (COMPANION-CAPTURE) (COMPANION-CAPTURE-HOOK) fork-only seam. Every line of
 // companion behaviour lives in companion-question-sink.ts; this file only wires
 // it. (COMPANION-CAPTURE-HOOK) appears ONLY in this file: (COMPANION-CAPTURE) is
@@ -147,4 +151,20 @@ export const notificationsRouter = router({
 
 		return { success: true, ignored: false as const };
 	}),
+
+	/**
+	 * (BUS-RESYNC) Durable agent status for every live terminal binding on this
+	 * host. The WS event bus is fire-and-forget — an event broadcast while a
+	 * renderer is disconnected is DESTROYED, and a blocked agent emits no
+	 * further hook events, so a dot lost that way can never self-heal. The
+	 * renderer refetches this on every bus (re)connect and reconciles.
+	 *
+	 * Read-only and cheap: a liveness-joined in-memory store read plus one
+	 * marker-directory read per bound terminal.
+	 */
+	agentStatusSnapshot: protectedProcedure.query(
+		async ({ ctx }): Promise<{ rows: AgentStatusSnapshotRow[] }> => {
+			return { rows: await buildAgentStatusSnapshot(ctx.terminalAgentStore) };
+		},
+	),
 });
