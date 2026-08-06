@@ -5,6 +5,16 @@ import path from "node:path";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import type { AgentLifecycleEvent } from "shared/notification-types";
 import { installPaneMapHook } from "./pane-map-hook";
+import {
+	isSyntheticApiAbortRecord,
+	isSyntheticInterruptRecord,
+	judgeTurnEndRecord,
+	mayBeTurnEndLine,
+	parseTranscriptRecord,
+	resetTurnEndGate,
+	TURN_END_MAX_AGE_MS,
+	type TurnEndVerdict,
+} from "./turn-end-gate";
 
 /**
  * Windows fallback for Claude/Codex agent lifecycle: tail per-session JSONL
@@ -596,103 +606,10 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 }
 
 /**
- * (WATCHER-BLUE-STOMP) A watcher turn-end may only fire for a turn that ended
- * JUST NOW. Claude Code re-presents transcript content it has already written —
- * a compaction rewrite, a post-truncation re-read from offset 0, a first-seen
- * file the discover poll reads whole — so the interrupt / API-abort lines the
- * Claude branch matches get re-matched long after the turn they describe.
- *
- * A replayed match used to emit a bare `Stop`, and the renderer clears the
- * background-running axis on every non-`BackgroundRunning` agent event, so the
- * replay wiped the blue the notify hook had just restored (live 2026-08-06:
- * compact-end `BackgroundRunning`, then 763ms later the watcher matched a
- * HISTORICAL "Request interrupted by user" and greened the dot under a still-
- * running background shell). The same replay also asserts a false turn-end
- * mid-turn during an AUTO compact, and on the DESTRUCTIVE api-abort path it
- * reaps subagent markers belonging to a live later turn.
- *
- * Every matched entry carries `timestamp` and `uuid` — verified 2026-08-06 over
- * ~250 local transcripts: 509/509 interrupt lines and 351/351
- * `isApiErrorMessage` lines have both, with 0 unparseable — so the gate is
- * per-entry and two-layered:
- *
- *   1. uuid: an entry already judged never counts again, at ANY age. Exact, and
- *      the only thing that catches a rewrite replaying a match seconds old.
- *   2. age: an entry stamped longer than TURN_END_MAX_AGE_MS ago is a replay.
- *      This is what covers a COLD watcher (empty uuid set) re-reading history.
- *
- * Failing the gate emits NOTHING — no Stop, no marker reap — so the dot keeps
- * whatever the notify hook last asserted. That is the safe direction: a lingering
- * yellow self-heals on the next hook event, a false green does not.
- *
- * Why 120s: measured against the live watcher debug log, 8 genuine interrupts
- * were released 0.399–0.653s after their own `timestamp`, and one genuine
- * interrupt whose write Claude Code batched behind a 15 KB pending message
- * landed 30.9s after its stamp. The replays this gate exists to kill were HOURS
- * old (the same transcript still carries interrupt lines 7h back). 120s sits ~4x
- * above the worst observed genuine write lag and far above the watcher's own
- * detection latency (a dropped fs.watch event costs at most POLL_KNOWN_MS +
- * POLL_DEBOUNCE_MS; a newly discovered file POLL_DISCOVER_MS), while still
- * suppressing every historical replay. The residual gray zone — a rewrite that
- * replays a match younger than 120s — is what layer 1 exists for.
+ * (WATCHER-BLUE-STOMP) Turn-end identification and the replay gate both live in
+ * ./turn-end-gate — see that module for the corpus evidence behind the exact
+ * synthetic-record predicates and the age bounds.
  */
-const TURN_END_MAX_AGE_MS = 120_000;
-
-/**
- * Bounded FIFO of turn-end entry uuids already judged. Matched entries are rare
- * (~860 across ~250 transcripts spanning months), so the cap is far above any
- * realistic working set. Eviction is insertion-ordered; an evicted uuid falls
- * back to the age layer, which by then gives the same answer (it is old).
- */
-const SEEN_TURN_END_UUID_CAP = 512;
-const seenTurnEndUuids = new Set<string>();
-
-function rememberTurnEndUuid(uuid: string): void {
-	seenTurnEndUuids.add(uuid);
-	while (seenTurnEndUuids.size > SEEN_TURN_END_UUID_CAP) {
-		const oldest = seenTurnEndUuids.values().next();
-		if (oldest.done) break;
-		seenTurnEndUuids.delete(oldest.value);
-	}
-}
-
-interface TurnEndVerdict {
-	fresh: boolean;
-	reason: "fresh" | "replayed-uuid" | "stale" | "undatable";
-	ageMs: number | null;
-	uuid: string | null;
-}
-
-/**
- * (WATCHER-BLUE-STOMP) Judge one matched turn-end line, and RECORD it: judging is
- * what marks the entry seen, so a later re-presentation is `replayed-uuid`
- * whatever its age. Never throws. An entry we cannot date or identify is NOT
- * fresh — we cannot prove a turn ended just now, and suppressing is the safe
- * direction; it is logged with reason "undatable" so the case stays findable.
- * A future stamp (clock skew) is not evidence of a replay, so negative ages pass.
- */
-function judgeTurnEndLine(line: string, nowMs: number): TurnEndVerdict {
-	let uuid: string | null = null;
-	let ageMs: number | null = null;
-	try {
-		const parsed: unknown = JSON.parse(line);
-		if (typeof parsed === "object" && parsed !== null) {
-			const rec = parsed as { uuid?: unknown; timestamp?: unknown };
-			if (typeof rec.uuid === "string" && rec.uuid.length > 0) uuid = rec.uuid;
-			if (typeof rec.timestamp === "string") {
-				const t = Date.parse(rec.timestamp);
-				if (Number.isFinite(t)) ageMs = nowMs - t;
-			}
-		}
-	} catch {}
-	if (uuid !== null && seenTurnEndUuids.has(uuid))
-		return { fresh: false, reason: "replayed-uuid", ageMs, uuid };
-	if (uuid !== null) rememberTurnEndUuid(uuid);
-	if (ageMs === null) return { fresh: false, reason: "undatable", ageMs, uuid };
-	if (ageMs > TURN_END_MAX_AGE_MS)
-		return { fresh: false, reason: "stale", ageMs, uuid };
-	return { fresh: true, reason: "fresh", ageMs, uuid };
-}
 
 function emit(
 	// (WATCHER-BLUE-STOMP) Deliberately NO `BackgroundRunning` here. The watcher
@@ -902,12 +819,14 @@ function processFile(
 		return;
 	}
 
-	// First time we've seen this file during a seed pass: skip its history
-	// (the user already saw those state transitions) and start tailing from
-	// the current end-of-file. Before jumping, read enough of the header to
-	// cache cwd — for Codex the cwd lives only in the first session_meta
-	// entry, so we'd otherwise never see it once we'd skipped past.
-	if (isFirstSeen && seedOnly) {
+	// First time we've seen this file, and it is one the seed owns — either this
+	// IS the seed pass, or (WATCHER-BLUE-STOMP) a write reached a pre-existing
+	// file before the deferred seed scan did. Skip its history (the user already
+	// saw those state transitions) and start tailing from the current
+	// end-of-file. Before jumping, read enough of the header to cache cwd — for
+	// Codex the cwd lives only in the first session_meta entry, so we'd otherwise
+	// never see it once we'd skipped past.
+	if (isFirstSeen && (seedOnly || isUnseededPreexistingFile(stat))) {
 		try {
 			const headerBytes = Math.min(8192, stat.size);
 			if (headerBytes > 0) {
@@ -932,6 +851,9 @@ function processFile(
 			sessionId: state.sessionId,
 			size: stat.size,
 			cwdFound: !!state.cwd,
+			// (WATCHER-BLUE-STOMP) false = a write beat the deferred seed scan to a
+			// file that already existed; we seeded it here instead of replaying it.
+			seedPass: seedOnly,
 		});
 		state.offset = stat.size;
 		return;
@@ -1064,26 +986,30 @@ function processFile(
 			if (line.includes('"isApiErrorMessage":true')) {
 				sawAnyApiError = true;
 			}
-			const isInterrupt =
-				line.includes('"type":"user"') &&
-				(line.includes("Request interrupted by user") ||
-					line.includes("Request cancelled by user"));
-			// (API-ABORT-RELEASE) a stream-idle-timeout / API error on the MAIN
-			// session ("API Error: Stream idle timeout - partial response received",
-			// written as an isApiErrorMessage assistant line) ends the turn and
-			// orphans any in-flight subagent without firing its SubagentStop —
-			// leaking its run-dir marker so the POST hook re-asserts yellow forever.
-			// No hook fires on the abort, so only the watcher (which reads the
-			// transcript) can self-heal it. (FIX 1) Require the turn-ENDING
-			// signature too — a bare isApiErrorMessage also matches TRANSIENT API
-			// errors (overloaded 529 etc.) that Claude AUTO-RETRIES within the same
-			// turn, which must NOT reap markers or green mid-turn.
-			const isApiAbort =
-				line.includes('"isApiErrorMessage":true') &&
-				(line.includes("Stream idle timeout") ||
-					line.includes("partial response received"));
+			// (WATCHER-BLUE-STOMP) A turn-end must be Claude Code's EXACT synthetic
+			// record, not a line that merely contains the phrase. Both markers are
+			// quoted constantly by this repo's own agent traffic (review reports,
+			// teammate messages, tool_results that cat transcript lines), and a quote
+			// is genuinely new content — unique uuid, current timestamp — so the replay
+			// gate below certifies it as fresh and the false Stop fires MID-TURN.
+			// Corpus evidence and the record shapes are in ./turn-end-gate.
+			//
+			// (API-ABORT-RELEASE) A stream-idle-timeout / API error on the MAIN session
+			// ("API Error: Stream idle timeout - partial response received", written as
+			// an isApiErrorMessage assistant record) ends the turn and orphans any
+			// in-flight subagent without firing its SubagentStop — leaking its run-dir
+			// marker so the POST hook re-asserts yellow forever. No hook fires on the
+			// abort, so only the watcher (which reads the transcript) can self-heal it.
+			// (FIX 1) The turn-ENDING signature is required: a bare api-error also
+			// covers TRANSIENT failures (overloaded 529 etc.) that Claude AUTO-RETRIES
+			// within the same turn, which must NOT reap markers or green mid-turn.
+			if (!mayBeTurnEndLine(line)) continue;
+			const record = parseTranscriptRecord(line);
+			if (!record) continue;
+			const isInterrupt = isSyntheticInterruptRecord(record);
+			const isApiAbort = !isInterrupt && isSyntheticApiAbortRecord(record);
 			if (!isInterrupt && !isApiAbort) continue;
-			const verdict = judgeTurnEndLine(line, nowMs);
+			const verdict = judgeTurnEndRecord(record, nowMs);
 			if (!verdict.fresh) {
 				suppressed.push({
 					kind: isInterrupt ? "interrupt" : "api-abort",
@@ -1323,8 +1249,37 @@ const SEED_SCAN_YIELD_EVERY = 25;
 // True once the initial seed has tailed every existing file to EOF. Until
 // then the discover poll must not run — it would replay the full history.
 let seedComplete = false;
+// (WATCHER-BLUE-STOMP) When the watcher started, for the pre-seed race below.
+// 0 while stopped.
+let watcherStartedAtMs = 0;
 // Prevents overlapping discover walks (a slow walk + the 12 s timer).
 let discoverInFlight = false;
+
+/**
+ * (WATCHER-BLUE-STOMP) Is this first-seen file one the seed scan has simply not
+ * reached yet?
+ *
+ * `fs.watch` is installed synchronously at startup, but the seed scan that tails
+ * every existing transcript to EOF is deferred (setImmediate + an async walk of
+ * a tree that is ~10k files here). A write to an ALREADY-ACTIVE transcript in
+ * that gap arrives as a first-seen file and gets read from offset 0 — the whole
+ * history, through a cold uuid layer. The age layer suppresses the bulk of it,
+ * but a real interrupt sentinel younger than the window would still emit a Stop
+ * on top of a live hook `Start`.
+ *
+ * A file created BEFORE the watcher started is by definition one the seed scan
+ * owns, so seed it (tail from EOF) instead of replaying it; the seed walk's own
+ * `fileStates.has` check then skips it harmlessly. A genuinely NEW file — created
+ * after we started watching — still processes from offset 0 immediately, which is
+ * both correct and what makes a new session's first lines visible.
+ *
+ * Degrades safely: where birthtime is unavailable it reads 0, the guard declines,
+ * and behaviour is exactly what it was before.
+ */
+function isUnseededPreexistingFile(stat: fs.Stats): boolean {
+	if (seedComplete || watcherStartedAtMs === 0) return false;
+	return stat.birthtimeMs > 0 && stat.birthtimeMs < watcherStartedAtMs;
+}
 
 /**
  * Async recursive walk of a logs dir, invoking `onFile` for each `.jsonl`
@@ -1539,6 +1494,7 @@ async function discoverNewFilesAsync(): Promise<void> {
  */
 export function startAgentJsonlWatcher(d: WatcherDeps): void {
 	deps = d;
+	watcherStartedAtMs = Date.now();
 
 	// Side-channel: write the SessionStart hook that maps each new agent
 	// session id → Superset pane identity. Without this, the watcher can
@@ -1629,11 +1585,12 @@ export function stopAgentJsonlWatcher(): void {
 	// restart re-seeds every existing transcript to EOF, so no history is replayed
 	// through the empty uuid layer, and anything that does get re-read afterwards
 	// is old enough for the age layer to catch.
-	seenTurnEndUuids.clear();
+	resetTurnEndGate();
 	// (AN) Reset the seed gate so a stop -> start cycle re-seeds before the
 	// discover poll runs again (fileStates was just cleared; a stale
 	// seedComplete would let discover replay the whole history).
 	seedComplete = false;
+	watcherStartedAtMs = 0;
 	discoverInFlight = false;
 	deps = null;
 }
