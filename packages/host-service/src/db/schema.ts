@@ -639,13 +639,20 @@ export const companionPushFence = sqliteTable("companion_push_fence", {
  *    the renderer gone the mirror holds the last curation the user actually
  *    made; it never invents one.
  *
- * There is NO heartbeat: `sidebar_mirror_meta.last_full_sync_at_ms` records the
- * last CURATION CHANGE, not renderer liveness, so an old timestamp usually means
- * nobody touched the sidebar. A consumer that nonetheless wants a hard freshness
- * bound must age the mirror out on `synced_at_ms` /
- * `last_full_sync_at_ms` — ageing out means falling back to SHOWING everything,
- * which is the safe direction, but it also means shipping the uncurated firehose
- * again, so it needs a heartbeat writer first.
+ * THERE IS A HEARTBEAT, and `last_full_sync_at_ms` therefore means "a renderer
+ * was alive at this moment", not "somebody last dragged a thread". The writer
+ * re-pushes the unchanged snapshot every five minutes (`(MIRROR-HEARTBEAT)` in
+ * `useSidebarMirrorSync`), which is what makes a hard freshness bound possible
+ * at all: `(MIRROR-AGE-OUT)` refuses a mirror older than four of those beats,
+ * because past that the timestamp is positive evidence that NO renderer is
+ * running and every hiding field in these tables is an opinion from a session
+ * that has ended. Ageing out means falling back to SHOWING everything — the
+ * uncurated firehose, and the safe direction.
+ *
+ * This paragraph used to say the opposite ("there is NO heartbeat ... it needs a
+ * heartbeat writer first"). It was written before the writer existed and was
+ * left behind by the commits that added it; a consumer that believed it would
+ * decline to age out a mirror abandoned by a quit desktop.
  */
 export const sidebarWorkspaceState = sqliteTable(
 	"sidebar_workspace_state",

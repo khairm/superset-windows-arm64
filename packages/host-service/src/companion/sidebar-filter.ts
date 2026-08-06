@@ -170,6 +170,19 @@ export interface SidebarCuration {
  * deleted first (the bin is a thread's only surface once it is binned), then
  * completed, archived, snoozed, hidden. Anything else is `active` — the one
  * bucket the sidebar shows by default, and therefore the one the phone shows.
+ *
+ * ARCHIVED IS TWO FACTS, which is why `isHidden` is read in two places. The
+ * renderer's `isWorkspaceArchived` is `archivedAt != null || (isHidden && type
+ * !== "main")`, so a removed NON-main thread is archived — recoverable, and
+ * classified before snooze is even asked about. Only a hidden MAIN falls
+ * through to `hidden`, and it falls through BELOW snooze.
+ *
+ * This used to test `isHidden` once, above snooze, and answer both cases from
+ * there. Every verdict was still non-`show`, so nothing was hidden or shown
+ * wrongly — but a snoozed main workspace was reported as `hidden`, and the
+ * verdict is what the hold log names when it says why a push did not fire.
+ * "Not now" and "removed from the sidebar" are different user acts, and a
+ * diagnostic that swaps them sends the reader to the wrong feature.
  */
 function classifyWorkspace(
 	row: SidebarWorkspaceMirrorRow,
@@ -179,12 +192,9 @@ function classifyWorkspace(
 ): SidebarVerdict {
 	if (row.deletedAt != null) return "deleted";
 	if (row.completedAt != null) return "completed";
-	// A hidden NON-main thread is archived; a hidden `main` is merely hidden.
-	// Both are off the default sidebar — the distinction is which revealable
-	// section they land in, which the phone does not render either way.
-	if (row.archivedAt != null) return "archived";
 	const isHidden = row.isHidden === true || row.isHidden === 1;
-	if (isHidden) return type === "main" ? "hidden" : "archived";
+	if (row.archivedAt != null) return "archived";
+	if (isHidden && type !== "main") return "archived";
 	// An "until next launch" snooze is stored as the renderer's launch id and is
 	// only still in force while that is the CURRENT launch. Comparing it to the
 	// mirror's own `app_launch_id` is the whole reason that column exists.
@@ -194,6 +204,10 @@ function classifyWorkspace(
 	if (typeof row.snoozeUntil === "number" && row.snoozeUntil > nowMs) {
 		return "snoozed";
 	}
+	// Only a hidden `main` reaches here. Every verdict above is equally off the
+	// default sidebar — the distinction is which revealable section they land in,
+	// which the phone does not render either way.
+	if (isHidden) return "hidden";
 	return "show";
 }
 

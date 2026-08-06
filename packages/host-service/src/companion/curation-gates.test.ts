@@ -220,6 +220,61 @@ describe("(MIRROR-ORG-GATE)", () => {
 	});
 });
 
+describe("classifyWorkspace matches the renderer's bucket ORDER", () => {
+	const mainWorkspace = { id: "w-1", projectId: "p-git", type: "main" };
+
+	it("calls a snoozed hidden MAIN `snoozed`, the way getWorkspaceSidebarBucket does — it used to say `hidden`", () => {
+		// The renderer asks archived, then snoozed, then hidden, and only a hidden
+		// MAIN can reach that last test. Answering both hidden cases above snooze
+		// mislabelled this one. Both verdicts are off the sidebar so the push
+		// outcome is identical either way; the verdict is what the hold log names,
+		// and "not now" is a different user act from "removed from the sidebar".
+		const curation = createSidebarCuration(
+			snapshot(
+				[
+					mirrorWorkspace("w-1", {
+						isHidden: true,
+						snoozeUntil: NOW + 3_600_000,
+					}),
+				],
+				[mirrorProject("p-git")],
+			),
+			NOW,
+			ORG,
+		);
+		expect(curation.workspaceVerdict(mainWorkspace)).toBe("snoozed");
+	});
+
+	it("still calls a hidden NON-main `archived`, above snooze, exactly as isWorkspaceArchived does", () => {
+		const curation = createSidebarCuration(
+			snapshot(
+				[
+					mirrorWorkspace("w-1", {
+						isHidden: true,
+						snoozeUntil: NOW + 3_600_000,
+					}),
+				],
+				[mirrorProject("p-git")],
+			),
+			NOW,
+			ORG,
+		);
+		expect(curation.workspaceVerdict(branchWorkspace)).toBe("archived");
+	});
+
+	it("still calls a hidden MAIN with no snooze `hidden`", () => {
+		const curation = createSidebarCuration(
+			snapshot(
+				[mirrorWorkspace("w-1", { isHidden: true })],
+				[mirrorProject("p-git")],
+			),
+			NOW,
+			ORG,
+		);
+		expect(curation.workspaceVerdict(mainWorkspace)).toBe("hidden");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // (EMIT-OPTIONAL-FIELDS) — item 8, the pinned half
 // ---------------------------------------------------------------------------
