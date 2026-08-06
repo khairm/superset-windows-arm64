@@ -145,7 +145,7 @@ interface MirrorProjectRow {
 	isCollapsed: boolean;
 }
 
-interface MirrorSnapshot {
+export interface MirrorSnapshot {
 	workspaces: MirrorWorkspaceRow[];
 	projects: MirrorProjectRow[];
 	/** Values the normalizers refused. Reported once per snapshot, never hidden. */
@@ -299,6 +299,18 @@ export function buildMirrorSnapshot(
 	return { workspaces, projects, rejectedFields, droppedRows };
 }
 
+/**
+ * The content identity of a snapshot: what changed, ignoring how the rows were
+ * ordered on the way in (`buildMirrorSnapshot` has already key-sorted both
+ * collections) and ignoring the counters, which describe the DERIVATION rather
+ * than the curation.
+ *
+ * Exported so a test can name the same identity the hook compares on.
+ */
+export function signatureOf(snapshot: MirrorSnapshot): string {
+	return JSON.stringify([snapshot.workspaces, snapshot.projects]);
+}
+
 export interface MirrorPushLoopDeps {
 	/**
 	 * The push currently on the wire, SHARED by every loop — that sharing IS the
@@ -312,8 +324,25 @@ export interface MirrorPushLoopDeps {
 	/** The NEWEST snapshot at call time, never the one this loop was built for. */
 	getSnapshot: () => MirrorSnapshot;
 	send: (snapshot: MirrorSnapshot) => Promise<unknown>;
-	/** Called iff this loop's own send resolved and the loop was not cancelled. */
-	onSynced: () => void;
+	/**
+	 * Called on this loop's own send RESOLVING, cancelled or not, with the
+	 * snapshot that actually went to the server.
+	 *
+	 * (MIRROR-SYNC-CANCEL-RACE) Both halves of that are the fix. It used to be
+	 * "resolved AND not cancelled", and it took no argument — the hook recorded
+	 * the signature its EFFECT had closed over. So a push that resolved after a
+	 * newer signature cancelled its loop recorded nothing at all, and `host.db`
+	 * held a snapshot no ref had a record of. If the next snapshot then reverted
+	 * to the signature the hook still believed was synced (undo a bin, unsnooze,
+	 * restore a thread), the effect's skip-gate matched and no push was issued —
+	 * leaving the intermediate curation installed, hiding a restored thread until
+	 * the next heartbeat five minutes later.
+	 *
+	 * The snapshot is passed rather than assumed because they can differ:
+	 * `getSnapshot` returns the NEWEST at send time, not the one the loop was
+	 * built for.
+	 */
+	onSynced: (sent: MirrorSnapshot) => void;
 	/** Overridable so the timings can be exercised without waiting minutes. */
 	debounceMs?: number;
 	retryDelaysMs?: readonly number[];
@@ -373,8 +402,14 @@ export function createMirrorPushLoop(deps: MirrorPushLoopDeps): MirrorPushLoop {
 		}
 		const settled = deps.send(current).then(
 			() => {
-				if (cancelled) return;
-				deps.onSynced();
+				// (MIRROR-SYNC-CANCEL-RACE) Reported even when cancelled: this
+				// snapshot IS what `host.db` now holds, and the ref that decides
+				// whether a later snapshot needs pushing has to agree with the
+				// database rather than with whichever loop happened to survive.
+				// Ordering is safe because `deps.inFlight` serialises sends — a
+				// cancelled loop's send has already resolved before the next one
+				// starts, so the last write here is the last snapshot sent.
+				deps.onSynced(current);
 			},
 			(error: unknown) => {
 				if (cancelled) return;
@@ -458,10 +493,7 @@ export function useSidebarMirrorSync(): void {
 		[localStateRows, sidebarProjectRows],
 	);
 
-	const signature = useMemo(
-		() => JSON.stringify([snapshot.workspaces, snapshot.projects]),
-		[snapshot],
-	);
+	const signature = useMemo(() => signatureOf(snapshot), [snapshot]);
 
 	// Latest-value ref: the effect below is keyed on `signature`, and identical
 	// content must not re-run it just because the live query handed back new
@@ -546,8 +578,10 @@ export function useSidebarMirrorSync(): void {
 					workspaces: current.workspaces,
 					projects: current.projects,
 				}),
-			onSynced: () => {
-				lastSyncedSignatureRef.current = signature;
+			onSynced: (sent) => {
+				// The signature of what LANDED, never the effect's own — see
+				// `onSynced` on MirrorPushLoopDeps.
+				lastSyncedSignatureRef.current = signatureOf(sent);
 				lastPushedLaunchIdRef.current = APP_LAUNCH_ID;
 				lastPushedHeartbeatRef.current = heartbeat;
 			},
