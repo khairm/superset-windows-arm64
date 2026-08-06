@@ -2322,6 +2322,14 @@ export function registerWorkspaceTerminalRoute({
 		});
 
 		if ("error" in result) {
+			// (DISPOSE-LIMBO) A refusal to adopt or respawn a terminal with a
+			// pending dispose is a lifecycle conflict, not a host fault: the id is
+			// spoken for and will never come back. Answering 500 invited the caller
+			// to retry a request that can only fail again, so it gets a 409 and the
+			// `code` the WS attach path already uses for the same refusal.
+			if (result.code === "session-gone") {
+				return c.json({ error: result.error, code: result.code }, 409);
+			}
 			return c.json({ error: result.error }, 500);
 		}
 

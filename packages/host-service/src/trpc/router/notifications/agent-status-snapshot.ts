@@ -54,6 +54,22 @@ export interface AgentStatusSnapshotRow {
 export interface AgentStatusSnapshot {
 	rows: AgentStatusSnapshotRow[];
 	knownTerminalIds: string[];
+	/**
+	 * (BUS-RESYNC) This host's wall clock when the snapshot was built, so the
+	 * renderer can express its OWN session start in the clock that stamped
+	 * `lastEventAt`. Every timestamp in `rows` is host-clock; the renderer's
+	 * cold-start seed boundary is renderer-clock, and comparing the two across a
+	 * relay (or a laptop that resumed with a corrected clock) misdates the
+	 * boundary by the skew in either direction. Elapsed time measured inside one
+	 * process is skew-free, so the renderer anchors to its process start and
+	 * translates: `hostNow - (rendererNow - rendererProcessStart)`.
+	 *
+	 * Captured BEFORE the marker reads below rather than after: an earlier
+	 * `hostNow` yields an earlier boundary, and an earlier boundary seeds fewer
+	 * rows away — erring toward showing a green the user may have already seen
+	 * rather than swallowing one they have not.
+	 */
+	hostNow: number;
 }
 
 /**
@@ -187,6 +203,9 @@ export async function buildAgentStatusSnapshot(
 	db: HostDb,
 	candidateTerminalIds?: string[],
 ): Promise<AgentStatusSnapshot> {
+	// Deliberately first: see `AgentStatusSnapshot.hostNow` for why the earliest
+	// defensible reading is the conservative one.
+	const hostNow = Date.now();
 	const bindings = store.list();
 	const rows = await Promise.all(
 		bindings.map(async (binding) => {
@@ -241,5 +260,6 @@ export async function buildAgentStatusSnapshot(
 	return {
 		rows: rows.filter((row): row is AgentStatusSnapshotRow => row !== null),
 		knownTerminalIds,
+		hostNow,
 	};
 }

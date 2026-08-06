@@ -37,9 +37,13 @@ interface RunTeardownOptions {
 	/** Override $HOME for tests. Defaults to `os.homedir()`. */
 	homeDir?: string;
 	/**
-	 * (DISPOSE-LIMBO) Rides into the transient session's dispose so a close
-	 * that outlives the in-memory session can still broadcast its confirming
-	 * exit. Optional so tests without a bus still tear down.
+	 * (DISPOSE-LIMBO) Rides into the transient session's creation AND its
+	 * dispose, so a close that outlives the in-memory session can still
+	 * broadcast its confirming exit. The session is `listed: false` and holds no
+	 * pane, so nothing is expected to be listening — but passing it on only one
+	 * of the two paths left the in-memory branch broadcasting through an
+	 * undefined bus, which reads as a bug the next time someone traces it.
+	 * Optional so tests without a bus still tear down.
 	 */
 	eventBus?: EventBus;
 }
@@ -82,6 +86,7 @@ export async function runTeardown({
 		terminalId,
 		workspaceId,
 		db,
+		eventBus,
 		initialCommand: resolved.initialCommand,
 		...(resolved.cwd && { cwd: resolved.cwd }),
 		listed: false,

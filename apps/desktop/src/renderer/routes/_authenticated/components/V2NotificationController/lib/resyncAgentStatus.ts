@@ -115,17 +115,35 @@ function collectCandidateTerminalIds(
  *     green. Seeding it away is the bug the whole-store check was introduced
  *     to fix.
  *
- * `sessionStartedAt` separates 2 from 3, which look identical row-by-row (no
- * entry, no seen record): the row's own `lastEventAt` says which side of the
- * session boundary the event happened on. Both values are host-clock-ish
- * millis — `lastEventAt` carries the HOST's clock while `sessionStartedAt` is
- * this renderer's `Date.now()`, the same mixed-clock caveat every
- * `occurredAt` comparison in this file already lives with; a skew large
- * enough to matter here misdates a green by the skew, it does not invent or
- * destroy one. (An earlier proxy — "is this workspace being reconciled for
- * the first time" — misfired for a workspace BORN during a bus outage in a
- * cold-started session: its genuine minutes-old completion green was seeded
- * away because its workspace was new to the resync.)
+ * The SESSION BOUNDARY separates 2 from 3, which look identical row-by-row (no
+ * entry, no seen record): the row's own `lastEventAt` says which side of it the
+ * event happened on. Two things make that comparison honest, and both were
+ * wrong when the boundary was simply `Date.now()` at the first resync:
+ *
+ *  - WHEN the session began. The first resync runs only once the bus has
+ *    connected, which on a cold start is well after the renderer process
+ *    started. An agent that finished DURING that window is stamped before the
+ *    boundary, classified as pre-session, and its genuine unread green is
+ *    seeded away and cleared — no clock skew required. So the boundary is
+ *    anchored to `moduleLoadRendererMs`, the renderer's own start.
+ *  - WHOSE CLOCK it is in. `lastEventAt` carries the HOST's clock; a renderer
+ *    `Date.now()` carries this machine's. Across a relay (or after a suspend
+ *    that resumed with a corrected clock) the two disagree, and the skew moves
+ *    the boundary in either direction — swallowing live greens or replaying
+ *    dead ones. Elapsed time measured inside ONE process is skew-free, so the
+ *    boundary is translated into the answering host's clock domain on that
+ *    host's first answering snapshot: `hostNow - (now - moduleLoadRendererMs)`.
+ *    Kept PER HOST because each host stamps its own rows — one host's clock
+ *    says nothing about another's, and the relay is exactly the skewed one.
+ *
+ * An older host that answers without `hostNow` leaves its boundary unset, and
+ * an unset boundary seeds NOTHING: a stale green is a dot the user dismisses,
+ * a swallowed green is work they never learn finished.
+ *
+ * (An earlier proxy — "is this workspace being reconciled for the first time" —
+ * misfired for a workspace BORN during a bus outage in a cold-started session:
+ * its genuine minutes-old completion green was seeded away because its
+ * workspace was new to the resync.)
  *
  * A renderer reload is deliberately not a cold start: sessionStorage survives
  * it, so the first resync after a reload sees a full store, the latch stays
@@ -133,8 +151,18 @@ function collectCandidateTerminalIds(
  */
 let coldStartDecided = false;
 let sessionBeganCold = false;
-/** Set once, alongside the latch — meaningless unless `sessionBeganCold`. */
-let sessionStartedAt = 0;
+/**
+ * When this renderer process began, by its own clock. Module evaluation is the
+ * earliest moment this file can observe; it precedes the first bus connect by
+ * however long startup takes, which is the whole point.
+ */
+const moduleLoadRendererMs = Date.now();
+/**
+ * Per host URL: `moduleLoadRendererMs` expressed in THAT host's clock, latched
+ * from its first answering snapshot. Meaningless unless `sessionBeganCold`; an
+ * absent entry means "not translatable yet" and suppresses seeding entirely.
+ */
+const hostSessionBoundaries = new Map<string, number>();
 
 /**
  * Fetch the host snapshot and reconcile every terminal source this host owns.
@@ -176,9 +204,6 @@ export async function resyncAgentStatusFromHost({
 		sessionBeganCold =
 			Object.keys(beforeSources).length === 0 &&
 			Object.keys(before.terminalSeenAt).length === 0;
-		// Renderer clock against host-clock `lastEventAt` — see the doc block
-		// above for why the existing mixed-clock caveat is acceptable here.
-		sessionStartedAt = Date.now();
 	}
 
 	// (GHOST-TERMINAL) Tell the host which terminals we actually hold state for.
@@ -191,8 +216,9 @@ export async function resyncAgentStatusFromHost({
 
 	let rows: AgentStatusSnapshotRow[];
 	let knownTerminalIds: string[];
+	let hostNow: number;
 	try {
-		({ rows, knownTerminalIds } = await getHostServiceClientByUrl(
+		({ rows, knownTerminalIds, hostNow } = await getHostServiceClientByUrl(
 			hostUrl,
 		).notifications.agentStatusSnapshot.query({ candidateTerminalIds }));
 	} catch (error) {
@@ -202,6 +228,30 @@ export async function resyncAgentStatusFromHost({
 		});
 		return null;
 	}
+
+	// (DOT-PERSIST) Latch this renderer's start in THIS host's clock, from the
+	// first snapshot it answers. The elapsed term is read HERE, after the round
+	// trip, not at request time: a longer elapsed puts the boundary earlier, an
+	// earlier boundary seeds fewer rows away, and showing a green the user has
+	// already seen beats swallowing one they have not.
+	//
+	// `hostNow` is a required field, so a missing one means a host older than it
+	// — a real possibility for a relay that upgrades on its own schedule. It
+	// leaves the boundary unset, which disables seeding for that host entirely
+	// rather than guessing with the renderer's own clock.
+	if (sessionBeganCold && !hostSessionBoundaries.has(hostUrl)) {
+		if (typeof hostNow === "number") {
+			hostSessionBoundaries.set(
+				hostUrl,
+				hostNow - (Date.now() - moduleLoadRendererMs),
+			);
+		} else {
+			console.warn(
+				`[bus-resync] host ${hostUrl} answered without hostNow — cold-start seeding disabled for it; stale greens may persist`,
+			);
+		}
+	}
+	const hostSessionBoundary = hostSessionBoundaries.get(hostUrl);
 
 	const result: ResyncResult = {
 		applied: 0,
@@ -274,14 +324,18 @@ export async function resyncAgentStatusFromHost({
 		// green does not.
 		//
 		// Seeded only for events from BEFORE this session began — the invariant
-		// itself, not a proxy for it (see the doc block on `sessionStartedAt`).
-		// An event that happened during this session is news whether its
-		// workspace was visible at launch, appeared later, or was born during a
-		// bus outage. `preEntry`/`seenAt` keep this from stomping a row the
-		// store already learned about from a live event.
+		// itself, not a proxy for it (see the doc block on the session boundary).
+		// The boundary is this renderer's process start carried into the host's
+		// clock, so "before" means before the app was launched, not before the
+		// bus finished connecting: an agent that finished while the bus was still
+		// coming up is news, as is one whose workspace was invisible at launch and
+		// appeared later. An untranslatable boundary seeds nothing.
+		// `preEntry`/`seenAt` keep this from stomping a row the store already
+		// learned about from a live event.
 		const seedColdStart =
 			sessionBeganCold &&
-			row.lastEventAt < sessionStartedAt &&
+			hostSessionBoundary !== undefined &&
+			row.lastEventAt < hostSessionBoundary &&
 			preEntry === undefined &&
 			preState.terminalSeenAt[row.terminalId] === undefined;
 		if (seedColdStart) {

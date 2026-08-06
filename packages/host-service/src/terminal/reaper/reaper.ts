@@ -432,7 +432,13 @@ async function reapOrphanedSessions(
 		const observed = rowById.get(id);
 		if (observed?.createdAt == null) {
 			// Cannot fence without the observed identity; leave the row for a
-			// later pass rather than write blind.
+			// later pass rather than write blind. Defensive: `createdAt` is NOT
+			// NULL and always selected, so this is unreachable today — but a
+			// schema change that made it reachable would re-arm this id on every
+			// pass forever, so it says so instead of deferring in silence.
+			console.warn(
+				`[host-service] terminal reaper: stale row ${id} has no observed createdAt — cannot fence the correction, deferring (schema regression?)`,
+			);
 			absentThisPass.add(id);
 			continue;
 		}
