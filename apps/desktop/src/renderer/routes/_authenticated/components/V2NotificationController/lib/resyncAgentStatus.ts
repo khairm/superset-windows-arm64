@@ -125,20 +125,27 @@ function collectCandidateTerminalIds(
  *    started. An agent that finished DURING that window is stamped before the
  *    boundary, classified as pre-session, and its genuine unread green is
  *    seeded away and cleared — no clock skew required. So the boundary is
- *    anchored to `moduleLoadRendererMs`, the renderer's own start.
+ *    anchored to `moduleLoadMonotonicMs`, the renderer's own start.
  *  - WHOSE CLOCK it is in. `lastEventAt` carries the HOST's clock; a renderer
  *    `Date.now()` carries this machine's. Across a relay (or after a suspend
  *    that resumed with a corrected clock) the two disagree, and the skew moves
  *    the boundary in either direction — swallowing live greens or replaying
- *    dead ones. Elapsed time measured inside ONE process is skew-free, so the
- *    boundary is translated into the answering host's clock domain on that
- *    host's first answering snapshot: `hostNow - (now - moduleLoadRendererMs)`.
- *    Kept PER HOST because each host stamps its own rows — one host's clock
- *    says nothing about another's, and the relay is exactly the skewed one.
+ *    dead ones. Elapsed time measured inside ONE process on a MONOTONIC clock
+ *    is skew-free, so the boundary is translated into the answering host's
+ *    clock domain on that host's first answering snapshot: `hostNow -
+ *    elapsedMs`, where `elapsedMs` is a `performance.now()` difference. Two
+ *    `Date.now()` readings would NOT be skew-free: a backwards wall-clock
+ *    correction mid-session (an NTP step while the app runs) shrinks or negates
+ *    the elapsed term, putting the boundary in the host's FUTURE, where genuine
+ *    post-launch completions read as pre-session and their greens are seeded
+ *    away. Kept PER HOST because each host stamps its own rows — one host's
+ *    clock says nothing about another's, and the relay is exactly the skewed
+ *    one.
  *
- * An older host that answers without `hostNow` leaves its boundary unset, and
- * an unset boundary seeds NOTHING: a stale green is a dot the user dismisses,
- * a swallowed green is work they never learn finished.
+ * An older host that answers without `hostNow` — or a renderer with no
+ * `performance.now` to measure elapsed time with — leaves its boundary unset,
+ * and an unset boundary seeds NOTHING: a stale green is a dot the user
+ * dismisses, a swallowed green is work they never learn finished.
  *
  * (An earlier proxy — "is this workspace being reconciled for the first time" —
  * misfired for a workspace BORN during a bus outage in a cold-started session:
@@ -152,13 +159,21 @@ function collectCandidateTerminalIds(
 let coldStartDecided = false;
 let sessionBeganCold = false;
 /**
- * When this renderer process began, by its own clock. Module evaluation is the
- * earliest moment this file can observe; it precedes the first bus connect by
- * however long startup takes, which is the whole point.
+ * When this renderer process began, on a MONOTONIC clock. Module evaluation is
+ * the earliest moment this file can observe; it precedes the first bus connect
+ * by however long startup takes, which is the whole point.
+ *
+ * `performance.now()` and not `Date.now()`: this anchor is only ever read as a
+ * DURATION, and a wall-clock correction landing between the two readings would
+ * corrupt that duration. `undefined` when the runtime has no monotonic clock,
+ * which suppresses seeding rather than falling back to wall time.
  */
-const moduleLoadRendererMs = Date.now();
+const moduleLoadMonotonicMs: number | undefined =
+	typeof performance !== "undefined" && typeof performance.now === "function"
+		? performance.now()
+		: undefined;
 /**
- * Per host URL: `moduleLoadRendererMs` expressed in THAT host's clock, latched
+ * Per host URL: `moduleLoadMonotonicMs` expressed in THAT host's clock, latched
  * from its first answering snapshot. Meaningless unless `sessionBeganCold`; an
  * absent entry means "not translatable yet" and suppresses seeding entirely.
  */
@@ -240,11 +255,13 @@ export async function resyncAgentStatusFromHost({
 	// leaves the boundary unset, which disables seeding for that host entirely
 	// rather than guessing with the renderer's own clock.
 	if (sessionBeganCold && !hostSessionBoundaries.has(hostUrl)) {
-		if (typeof hostNow === "number") {
-			hostSessionBoundaries.set(
-				hostUrl,
-				hostNow - (Date.now() - moduleLoadRendererMs),
+		if (moduleLoadMonotonicMs === undefined) {
+			console.warn(
+				"[bus-resync] renderer has no monotonic clock (performance.now) — cold-start seeding disabled; stale greens may persist",
 			);
+		} else if (typeof hostNow === "number") {
+			const elapsedMs = performance.now() - moduleLoadMonotonicMs;
+			hostSessionBoundaries.set(hostUrl, hostNow - elapsedMs);
 		} else {
 			console.warn(
 				`[bus-resync] host ${hostUrl} answered without hostNow — cold-start seeding disabled for it; stale greens may persist`,
