@@ -1,0 +1,1004 @@
+[Image #1]  WHY IS this askuser not showing as a red dot its like its working..... Also why do I have the claude symbol with 2 the ones above it already do what I need by showing each terminal box...
+
+---
+
+save your context
+
+---
+
+save your context
+
+---
+
+use opus sub agents for everything save your context
+
+---
+
+whats the outcome
+
+---
+
+<agent-message from="chip-hunt">
+Red starburst + "2" = upstream's running-agents facepile chip (Claude icon + StatusIndicator corner dot + agent count), NOT a rollup/unread counter.
+
+(a) COMPONENT + PATH
+`DashboardSidebarAgentsChip` — C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\components\DashboardSidebar\components\DashboardSidebarWorkspaceItem\components\DashboardSidebarExpandedWorkspaceRow\components\DashboardSidebarWorkspaceChips\components\DashboardSidebarAgentsChip\DashboardSidebarAgentsChip.tsx:61-105 (badge/button; count span at :102).
+Icon+red dot: ...\DashboardSidebarAgentsChip\components\DashboardSidebarAgentAvatar\DashboardSidebarAgentAvatar.tsx:19-38 (red = status "permission").
+Parent strip: ...\DashboardSidebarWorkspaceChips\DashboardSidebarWorkspaceChips.tsx:74-77 (agents chip then ports chip).
+Mount order: ...\DashboardSidebarExpandedWorkspaceRow\DashboardSidebarExpandedWorkspaceRow.tsx:478-482 = fork (TAB-CHIPS) per-tab chips row, then :483-487 = this upstream chips strip directly beneath. That is the row the user sees.
+
+(b) WHAT "2" COUNTS
+`agents.length`, where DashboardSidebarWorkspaceChips.tsx:37-38 sets
+  const agents = workspaceAgentsRowEnabled && runningAgents.length > 1 ? runningAgents : [];
+`runningAgents` = one entry per live agent binding for the workspace: useDashboardSidebarWorkspaceRunningAgents.ts:48-63 iterates useTerminalAgentBindings(workspaceId). So: count of bound agent processes (per terminal), hidden at <=1. Avatar = highest STATUS_PRIORITY agent, newest startedAt on ties (DashboardSidebarAgentsChip.tsx:38-45).
+
+(c) UPSTREAM, NOT FORK
+Introduced by upstream commit 420b2dd8c "feat(desktop): replace sidebar activity strip with port/agent chips and bulk-close hover cards (#5887)", 2026-07-22, first shipped in desktop-v1.18.0. No FEATURES.md marker. The chips ABOVE it are the fork's (TAB-CHIPS), FEATURES.md:62.
+
+(d) REUSE / BLAST RADIUS — contained
+DashboardSidebarAgentsChip has exactly one caller (DashboardSidebarWorkspaceChips.tsx:75). Its subtree (DashboardSidebarAgentAvatar, DashboardSidebarAgentHoverRow) and both hooks (useDashboardSidebarWorkspaceRunningAgents, useDashboardSidebarAgentKill) are used nowhere else. Ports chip is independent. The experiment flag useWorkspaceAgentsRowEnabled (renderer\stores\workspace-agents-row.ts) gates BOTH this chip and the fork's TAB-CHIPS row, so it is not a usable removal lever.
+
+(e) MINIMAL CHANGE
+Remove: in DashboardSidebarWorkspaceChips.tsx delete the agents branch — imports :5-6 and :8, the flag/`runningAgents`/`agents` bindings :29 and :33-38, render :74-76; guard at :40 becomes `if (ports.length === 0) return null`. Then delete the DashboardSidebarAgentsChip/ subtree + both hooks, and update the decommission checklist item 3 in workspace-agents-row.ts:13-16. Fork cost: this is an upstream-owned file, so the deletion needs its own FEATURES.md marker or a future nightly merge silently re-imports the chip.
+Merge instead of remove: the only capability lost is the hover card's per-agent Open/Stop and "Stop all agents" (DashboardSidebarAgentsChip.tsx:107-136) — no other surface can kill an agent. Port those onto the tab chip's context menu, keeping useDashboardSidebarAgentKill.
+
+NOT 100% REDUNDANT — 3 gaps. Tab chips are per-TAB (folded over panes, useDashboardSidebarWorkspaceTabChips.ts:30-50) and only render at tabChips.length >= 2 (DashboardSidebarWorkspaceDetails.tsx:32). The agents chip is per-BINDING. It shows uniquely for: 2 agents split-paned inside ONE tab, and any 1-tab workspace.
+
+SEPARATE BUG WORTH RAISING: this upstream chip re-introduces exactly what (CHIP-DOT-UNIFY) fixed. Its status comes from raw host binding lastEventType via deriveTerminalAgentStatus (apps\desktop\src\renderer\hooks\host-service\useTerminalAgentStatuses\deriveTerminalAgentStatus.ts) — a 4-case map that reads fork events (SubagentActive, BackgroundRunning) as idle — with no open-pane liveness gate. The CHIP-DOT-UNIFY fix (02fe8a222) was applied to the hook copy under DashboardSidebarWorkspaceDetails/; upstream's 420b2dd8c created a fresh unfixed copy under DashboardSidebarWorkspaceChips/. FEATURES.md:60 still claims the fixed behaviour and store.ts:736 still says "the surviving sidebar chip consumer is useV2WorkspaceTabChips" — no longer true. Consequence: the red "2" can disagree with the tab-chip dots above it and can stay trapped red on a closed tab's binding.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a52a256cc1a196f87</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\905bacbc-36b9-4f9b-9873-1366bc98b0a8\tasks\a52a256cc1a196f87.output</output-file>
+<status>completed</status>
+<summary>Agent "Trace hook POST routing" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Full trace complete. Report:
+
+---
+
+# Delivery path (chain)
+
+| # | Stage | file:line |
+|---|---|---|
+| 1 | `superset-notify.py` POST (template embedded in TS) | `apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts:59` (`NOTIFY_SCRIPT_FILENAME`), `:1992` `_post_hook`, `:2309` call |
+| 2 | Hono `/trpc/*` mount | `packages/host-service/src/app.ts:282-305` |
+| 3 | `notifications.hook` procedure | `packages/host-service/src/trpc/router/notifications/notifications.ts:86-149` |
+| 4 | eventType mapping | `packages/host-service/src/events/map-event-type.ts:36-119` |
+| 5 | WS fan-out | `packages/host-service/src/events/event-bus.ts:171-175` → `:146-163` |
+| 6 | `/events` WS route (auth) | `packages/host-service/src/app.ts:264`, `:255-262` |
+| 7 | Client bus dispatch | `packages/workspace-client/src/lib/eventBus.ts:146-257` (agent:lifecycle `:194-203`) |
+| 8 | Renderer subscribe | `.../V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.tsx:64-83` |
+| 9 | `handleV2AgentLifecycleEvent` | `.../V2NotificationController/lib/lifecycleEvents.ts:46` |
+
+---
+
+# 1. `notifications.hook` definition + handler body
+
+`packages/host-service/src/trpc/router/notifications/notifications.ts:86`
+
+```ts
+hook: publicProcedure.input(hookInput).mutation(async ({ ctx, input }) =&gt; {
+    const eventType = mapEventType(input.eventType);
+```
+
+Input schema `:30-36`: `terminalId?`, `eventType?`, `agent?` — **all optional**.
+
+**eventType mapping** — `packages/host-service/src/events/map-event-type.ts:87-98`:
+```ts
+if (
+    eventType === "PermissionRequest" ||
+    eventType === "Notification" ||
+    eventType === "PreToolUse" ||
+    eventType === "preToolUse" ||
+    eventType === "pre_tool_use" ||
+    eventType === "exec_approval_request" ||
+    eventType === "apply_patch_approval_request" ||
+    eventType === "request_user_input"
+) {
+    return "PermissionRequest";
+}
+```
+Unrecognized string → `return null` (`:118`).
+
+**Workspace resolution** — `notifications.ts:101-113`. Synchronous SQLite lookup, `terminal_sessions.origin_workspace_id`:
+```ts
+const terminalSession = ctx.db.query.terminalSessions
+    .findFirst({
+        where: eq(terminalSessions.id, input.terminalId),
+        columns: { originWorkspaceId: true },
+    })
+    .sync();
+```
+Then broadcast + store record `:118-134`:
+```ts
+ctx.eventBus.broadcastAgentLifecycle({
+    workspaceId: terminalSession.originWorkspaceId,
+    eventType,
+    terminalId: input.terminalId,
+    ...(agent ? { agent } : {}),
+    occurredAt,
+});
+```
+`occurredAt = Date.now()` (`:116`) — **host clock, ignores any hook-supplied time**.
+
+Binding row written at `packages/host-service/src/terminal-agents/store.ts:64-114`.
+
+---
+
+# 2. Binding lookup failure → silent 200, NO log
+
+Three drop branches, all `return { success: true, ignored: true }` → **HTTP 200**:
+
+- `notifications.ts:88-94` — unmapped eventType
+- `:96-99` — no `terminalId`
+- `:107-113` — no `originWorkspaceId`:
+```ts
+if (!terminalSession?.originWorkspaceId) {
+    warnDroppedCompanionCapture(
+        input,
+        `terminal ${input.terminalId} has no originWorkspaceId`,
+    );
+    return { success: true, ignored: true as const };
+}
+```
+
+**The log is a no-op for ordinary events.** `packages/host-service/src/trpc/router/notifications/companion-question-sink.ts:212-221`:
+```ts
+export function warnDroppedCompanionCapture(
+	payload: CompanionHookPayload,
+	reason: string,
+): void {
+	if (!payload.companionQuestion &amp;&amp; !payload.companionQuestionResolved) return;
+	console.warn("[companion-capture] dropping question payload:", reason, {
+```
+→ A `PermissionRequest` with no companion payload is dropped **completely silently**. The hook script sees `2*` and exits 0 (`notify-hook.template.sh:141-143`); the Python logs `"action": "posted"` with `httpStatus: 200` (`pane-map-hook.ts:2310-2314`) — **the log says "posted" for a dropped event**.
+
+`origin_workspace_id` is nullable with `onDelete: "set null"` — `packages/host-service/src/db/schema.ts:20-23`:
+```ts
+originWorkspaceId: text("origin_workspace_id").references(
+    () =&gt; workspaces.id,
+    { onDelete: "set null" },
+),
+```
+Set only on terminal open/upsert: `packages/host-service/src/terminal/terminal.ts:1579`, `:1586`.
+
+---
+
+# 3. Renderer subscription + gating
+
+**Subscribe** — `HostNotificationSubscriber.tsx:64-83`:
+```ts
+const bus = getEventBus(hostUrl, () =&gt; getHostServiceWsToken(hostUrl));
+const removeAgentListener = bus.on(
+    "agent:lifecycle",
+    "*",
+    handleAgentLifecycle,
+);
+```
+Per **host URL**, not per workspace. `"*"` → no bus-level workspace filter (`packages/workspace-client/src/lib/eventBus.ts:178-184`). `useEffect` deps `[hostUrl]` only, handler is `useEffectEvent` → no stale closure.
+
+**Gate 1 — workspace must be in this subscriber's list.** `HostNotificationSubscriber.tsx:41-54`:
+```ts
+const workspace = workspacesById.get(workspaceId);
+if (!workspace) return;
+handleV2AgentLifecycleEvent({ ... });
+```
+**Silent. No logging.** (Contrast: the Electron fallback path logs its equivalent drop — `V2NotificationController.tsx:169-180`, `reason: "workspace-not-loaded"`.)
+
+**Gate 2 — sidebar visibility filter.** `V2NotificationController.tsx:103-116`:
+```ts
+const workspaceHosts = useMemo(
+    () =&gt;
+        allWorkspaceHosts.filter((workspace) =&gt;
+            visibleWorkspaceIds.has(workspace.workspaceId),
+        ),
+```
+`useVisibleSidebarWorkspaceIds.ts:73-90` — a workspace is visible only if (a) it has a local-state row, is not `isHidden`, **and its `projectId` is in the sidebar-projects set**; or (b) it's a `type === "main"` workspace auto-included on this machine (`sidebarVisibility.ts:33-49`). Notably `useVisibleSidebarWorkspaceIds.ts:37-40` requires the sidebar project to also exist in live `hostProjects`.
+
+**Gate 3 — host-group routing.** `V2NotificationController.tsx:289-315` / `:323-340`:
+```ts
+if (machineId &amp;&amp; hostId === machineId) {
+    return activeHostUrl;
+}
+return `${relayUrl}/hosts/${buildHostRoutingKey(organizationId, hostId)}`;
+```
+`:297` `if (!hostUrl) continue;` — if `activeHostUrl` is null the workspace lands in **no** group at all.
+
+**No eventType filter, no dedupe, no seen-cursor, no sequence/ordering check before the call.** `paneLayout` being null does **not** drop: `getNotificationWorkspaceStatesById` uses `?? null` (`:256`, `:266`) and `resolveV2NotificationTarget` falls back to a tabless target (`resolveV2NotificationTarget.ts:24-33`).
+
+**Gating inside** `handleV2AgentLifecycleEvent` (`lifecycleEvents.ts:61-100`) — status update always runs first (`:66`); only the **chime + native notification** are gated:
+```ts
+if (
+    payload.eventType === "Start" ||
+    payload.eventType === "Attached" ||
+    payload.eventType === "Detached" ||
+    payload.eventType === "BackgroundRunning" ||
+    payload.eventType === "SubagentActive"
+) {
+    return;
+}
+if (shouldSuppress(target, paneLayout)) return;
+```
+`shouldSuppress` (`:344-356`) suppresses only when window focused **and** target pane visible. `PermissionRequest` is not in the early-return list → chimes.
+
+---
+
+# 4. Throttle / dedupe / rate-limit on the path
+
+**None anywhere** — no rate limiter on `/trpc/*` (`app.ts:282-305`), no `lastEventType ===` suppression, no `occurredAt &lt; lastEventAt` guard.
+
+Closest things:
+
+- `store.ts:64-114` (host `TerminalAgentStore.recordEvent`) records `lastEventAt`/`lastEventType` but **never compares** — no suppression. `:81` `if (!agentId &amp;&amp; !existing) return;` drops only when no agentId has ever been seen for that terminal.
+- `markTerminalSeen` is monotonic — `apps/desktop/src/renderer/stores/v2-notifications/store.ts:250-254`:
+  ```ts
+  // Monotonic: a late event must not roll the seen mark back.
+  const bumpSeen = prev === undefined || prev &lt; at;
+  ```
+  Affects the seen cursor only, not delivery.
+- Python-side red guard `pane-map-hook.ts:1507-1510` **rewrites** clearing events to `SubagentActive`; it does not suppress `PermissionRequest`.
+- Repeated `PermissionRequest` for the same terminal is idempotent, not suppressed — `statusTransitions.ts:90-95` returns `set: ["permission"]`; `applySourceAxes` just restamps `axes[axis] = occurredAt` (`store.ts:373`).
+
+---
+
+# 5. Why ONE terminal's `PermissionRequest` drops while others deliver
+
+Ranked, all workspace-scoped and all silent:
+
+**(a) `originWorkspaceId` is NULL for that one terminal** — `notifications.ts:107-113`. Happens when the owning workspace row was deleted (`onDelete: "set null"`, `schema.ts:22`) or the terminal row predates/missed the workspace upsert. Other terminals in other workspaces resolve fine. Returns 200, logs nothing.
+
+**(b) That workspace is not in `visibleSidebarWorkspaceIds`** — `V2NotificationController.tsx:105-108` → workspace absent from `workspacesById` → `HostNotificationSubscriber.tsx:44` `if (!workspace) return;`. Triggers: `sidebarState.isHidden === true`, its `projectId` not in the user's sidebar projects, or the project missing from live `hostProjects` (`useVisibleSidebarWorkspaceIds.ts:37-40, 73-77`). Host still broadcasts; only the renderer drops. **Zero logging.**
+
+**(c) Host-group mismatch** — workspace's `hostId !== machineId` puts it in the relay group only (`V2NotificationController.tsx:339`), while its terminal's events arrive on the local `activeHostUrl` subscriber whose `workspaces` list excludes it → `:44` drop. Or `activeHostUrl === null` → `:297` `continue` → no subscriber.
+
+**(d) Foreign-workspace axis guard (dot only, not delivery)** — `store.ts:367-369`:
+```ts
+const foreign =
+    prev !== undefined &amp;&amp; prev.workspaceId !== workspaceId;
+if (foreign &amp;&amp; ops.set.length === 0) return;
+```
+A re-homed terminal whose store entry carries a stale `workspaceId` blocks **clear-only** ops. `PermissionRequest` has `set: ["permission"]`, so it passes — this cannot drop the red, but it can strand a red set under an old workspaceId.
+
+**(e) Unmapped eventType** — `map-event-type.ts:118` `return null`. If the terminal's agent emits a permission variant outside the `:87-98` list (e.g. a Codex/Gemini/Copilot-specific name), that one terminal's reds vanish while others map fine. `notifications.ts:88-94`, 200, no log.
+
+---
+
+## Notable
+
+The Electron fallback in `V2NotificationController.tsx:188-196` calls `markV2AgentLifecycleTargetSeen` — **not** `handleV2AgentLifecycleEvent`. That path updates dots but never chimes or shows a native notification (`lifecycleEvents.ts:108-128`). It also re-POSTs to `notifications.hook` (`:200-212`), so a drop at the host is re-attempted from the renderer only for that fallback path.</result>
+<usage><subagent_tokens>103898</subagent_tokens><tool_uses>54</tool_uses><duration_ms>478634</duration_ms></usage>
+</task-notification>
+
+---
+
+make sure only opus and sol agents for code review - save fable usage wherever possible
+
+---
+
+<agent-message from="review-opus">
+Review of 1e33c3972 (AGENTS-CHIP-REMOVED) + 06fee649f (BUS-RESYNC). Verdict: FIX-FIRST. BLOCKER: none.
+
+[MAJOR] packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts:40
+Defect: The 12h mtime cap on `.askq` owner files drops a red the Python hook still considers live; the justifying comment ("Mirrors `_MARKER_STALE_SECONDS` (12h) in the Python hook") cites a cap the hook applies to a different marker set and explicitly refuses to apply to this one.
+Failure: `_MARKER_STALE_SECONDS` (pane-map-hook.ts:1398) governs run-dir markers, whose mtime is refreshed on every PostToolUse (MARKER-INACTIVE) — 12h there means 12h of inactivity. An `.askq` owner file is touched exactly once, at pane-map-hook.ts:1893 when the question is raised, and never again; it is removed only by answer / SubagentStop / turn boundary / SessionEnd. pane-map-hook.ts:1419-1427 states the hazard directly: "do NOT age-reap the matching askq owner here: a subagent legitimately BLOCKED on an open AskUserQuestion has no tool activity ... clearing its askq owner would drop a LIVE red." Concrete case: question raised Friday 18:00, subagent chatter keeps rewriting the binding's `lastEventType` to `SubagentActive`, host-service restarts Saturday morning. On reconnect the marker reads >12h old, `hasPendingQuestionMarker` returns false, the `SubagentActive` replay paints the terminal yellow, and the blocked agent never shows red again — the exact failure BUS-RESYNC exists to fix, just past 12h.
+Fix: Drop the age cap for `.askq` owners (their only lifecycle is explicit removal), or key staleness off the binding's `lastEventAt`/session liveness rather than the marker's creation mtime. If a cap is kept, correct the comment — it cites a hook rule that says the opposite.
+
+[MAJOR] apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts:108
+Defect: The unconditional replay of `row.lastEventType` re-seeds review-green on a cold app start, reversing the documented `(DOT-PERSIST)` invariant "Clears on real app restart (no stale dots across launches)" with no FEATURES.md change.
+Failure: The dot store persists to `window.sessionStorage` (stores/v2-notifications/store.ts:631), so after a real app restart both `sources` and `terminalSeenAt` are empty. The socket opens, the resync runs, and every live binding whose `lastEventType` is a turn-end (`Stop`/`Failed` — the resting state of an idle agent tab) falls through to the fallback in statusTransitions.ts:105 and sets the review axis. The monotonic seen-mark guard at resyncAgentStatus.ts:123 cannot fire because `terminalSeenAt` died with the session. Result: on every launch, essentially every open agent tab, its sidebar row and the workspace rollup light green for completions reviewed days ago — the one colour that means "unread work waiting". The binding-derived dock-badge path (hooks/host-service/useV2NotificationStatus/useV2NotificationStatus.ts:114) already behaved this way; the sidebar/tab/pane dots did not.
+Fix: Gate the replay to reconnects following a live socket in this session, or seed `terminalSeenAt[terminalId] = row.lastEventAt` for rows replayed into an empty store, or persist `terminalSeenAt` beyond sessionStorage. If intended, update the `(DOT-PERSIST)` FEATURES.md line, which now states the opposite.
+
+[MINOR] resyncAgentStatus.ts:91 — Snapshot rows are applied without comparing against state a live event wrote while the query was in flight. Socket opens, query is issued, user answers the pending question; the hook POSTs and the event now arrives over the freshly-open bus, clearing permission and setting working. The resync then applies the pre-answer snapshot, re-asserts `PermissionRequest`, and the terminal shows red while the agent is actively working — self-healing only at the next turn end (statusTransitions.ts:99), which can be many minutes. Fix: skip a row whose store entry already has `occurredAt > row.lastEventAt` (both host-clock, the same argument the file makes for `terminalSeenAt`).
+
+[MINOR] packages/host-service/src/trpc/router/notifications/notifications.ts:165 — `agentStatusSnapshot` uses `protectedProcedure`, not `queryProcedure`, so it has no server-side timeout while doing one `readdir` plus N `stat` per bound terminal. `packages/host-service/QUERY_TIMEOUTS.md` says "Use this [queryProcedure] for every `.query` procedure." With a hung home directory the query never settles; the tRPC httpLink has no client timeout either, so the promise at resyncAgentStatus.ts:68 never resolves or rejects, `syncedKeyRef` stays set, and the 10s retry — which only arms on rejection — never fires, leaving that connection epoch permanently unreconciled. Auth itself is correct and matches sibling read procedures. Fix: use `queryProcedure`.
+
+[MINOR] agent-status-snapshot.ts:63 — Every `readdir` failure is swallowed as "no question pending" with no log. The sibling reader `askqMarkerExists` (packages/host-service/src/companion/index.ts:2128) logs "askq marker read failed" and returns null (unknown). Here EACCES/EMFILE/corrupt `~/.superset` silently downgrades every pending red, and nothing reports it. Fix: treat ENOENT as "no question", log other errnos, consider propagating unknown so the renderer leaves the permission axis untouched.
+
+[MINOR] resyncAgentStatus.ts:152 — The reconcile covers agent axes only; `shellRunningTerminals` (OSC-133 blue latch) is never reconciled although it rides the same fire-and-forget bus. `setTerminalShellRunning`/`clearTerminalShellRunning` are written only from `terminal:lifecycle` events (lifecycleEvents.ts:158-172), so a `command-end`/`exit` destroyed during the outage pins a plain shell blue until some later command in that terminal ends. Same bug class, smaller blast radius. Fix: extend the snapshot with terminal command state, or drop the blue latch for terminals absent from the snapshot.
+
+[MINOR] HostNotificationSubscriber.tsx:57 — The late-hydration guard keys on the workspace ID set only, so it misses the case its own comment describes. A workspace entering `workspaceStatesById` via its host row (V2NotificationController.tsx:261) carries `paneLayout: null` until its `v2WorkspaceLocalState` row lands, and that arrival does not change the ID set, so no second resync runs; the replay then evaluates visibility against a null layout and greens a terminal the user is looking at. Bounded — `useClearActivePaneAttention` clears it on the next interaction. Fix: include a hydration signal (e.g. count of non-null pane layouts) in the key.
+
+CHECKED CLEAN: chip-removal commit (no dangling references to the five deleted symbols outside tmp/; `useDashboardSidebarChipHoverSuppression` still consumed by DashboardSidebarPortsChip.tsx:14; ports-chip behaviour and the strip's click/drag handlers unchanged; `workspace-agents-row` flag correctly retained for TAB-CHIPS). Marker path-traversal safety (`SAFE_MARKER_SEGMENT` byte-identical to the companion reader's and the Python writers' validation). Binding liveness/durability (bindings survive a host restart in host.db; `listLive()` joins on `terminal_sessions.status='active'`; `mapEventType` is idempotent over all eight normalized names, so no live terminal is dropped and stale-cleared). `terminalSeenAt` clock consistency (both call sites stamp `binding.lastEventAt`). Stale-clear loop's foreign-workspace guard and its ordering against `liveTerminalIds`. eventBus listener add/remove and retain/release balance in both consumers plus the already-open-socket mount path — no missed or doubled reconnect through the `openEpoch:workspaceKey` key. `refreshHostServiceSecrets` coalescing, 1s rate limit, never blanking a cached secret, and its `http://127.0.0.1:${port}` key matching LocalHostServiceProvider. Fork invariants: `scripts/check-feature-markers.mjs` passes 141/141 with both new markers resolving; committed blobs are LF (verified by hexdump — `core.autocrlf=true` does not leak CRLF into the objects); no `screenReaderMode`; no ws bufferutil/utf-8-validate; no new main-process fs. Tooling: biome clean on all six changed files; eventBus.test.ts 5 pass; host-service notifications + terminal-agents 28 pass. The 10 failures in stores/v2-notifications/store.test.ts are pre-existing environment breakage (`window.sessionStorage` absent under bun test) — store.ts is untouched by both commits.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>afc956eb8bd41380b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\905bacbc-36b9-4f9b-9873-1366bc98b0a8\tasks\afc956eb8bd41380b.output</output-file>
+<status>completed</status>
+<summary>Agent "Map terminal_sessions readers" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Reads of `terminal_sessions` keyed by terminal id
+
+Schema: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\db\schema.ts:16-44`. No helper named `getSessionRow` / `loadSession` / `resolveWorkspaceForTerminal` exists. Access is direct drizzle in `src/terminal*`, and raw prepared SQL in `companion/read-api.ts`.
+
+### A. `terminal/terminal.ts` (absolute: `...\packages\host-service\src\terminal\terminal.ts`)
+
+| Line | Lookup | Miss behaviour |
+|---|---|---|
+| 658-668 | `inArray(terminalSessions.id, daemonSessionIds)` — merge daemon-only sessions into workspace list | **Silent omit.** Row absent from `rows` → id never appended to `merged`. Live pty invisible in dropdown. No log. |
+| 1188-1196 | `UPDATE … set disposeRequestedAt WHERE eq(id) AND isNull(disposeRequestedAt)` | **Silent 0-row.** Durable intent-to-kill never recorded → reaper has no `disposeRequestedAt` retry hook. |
+| 1255-1258 | `UPDATE … status:"disposed" WHERE eq(id)` | Silent 0-row. |
+| 1294-1303 | `select id WHERE originWorkspaceId=? AND status != disposed` (workspace-keyed) | Rowless session not enumerated → **never disposed** on workspace destroy. Leaks pty. |
+| 1447-1449 | `db.query.terminalSessions.findFirst({where: eq(id, terminalId)})` in `createTerminalSession` | **Undefined, permissive.** `ownerWorkspaceId: existingRecord?.originWorkspaceId` → `getTerminalWorkspaceMismatchError` sees `undefined` → no mismatch → proceeds to create/adopt. |
+| 1576-1592 | `insert … onConflictDoUpdate(target: id)` | **Only self-healing write in the codebase.** Recreates a missing row on spawn/adopt. |
+| 1806-1809 | onExit `UPDATE status:"exited", endedAt WHERE eq(id)` | Silent 0-row. Exit never persisted. |
+| 1937-1940 | attach `UPDATE lastAttachedAt WHERE eq(id)` | Silent 0-row → row (if later recreated) has no activity stamp; feeds liveness activity grace. |
+| 1969-1977 | `findFirst({where: eq(id, terminalId)})` in `resolveSessionForAttach` | **Hard error.** `if (!record) { return { error: \`Terminal session "${terminalId}" not found; create it before connecting.\`, code: "session-gone" } }` → WS `close(1011)`. Renderer treats `session-gone` as dead pane. |
+
+### B. `terminal/reaper/reaper.ts`
+
+- `:115-128` `loadTerminalRowsById(db)` — whole-table `select` → `Map&lt;id, TerminalRow&gt;`. Three consumers:
+  - `:373-380` orphan walk. `const row = rowById.get(session.id); if (!row) { if (rowlessPendingSecondPass.has(session.id)) { orphans.push({id, rowless: true}); } else { stillRowless.add(session.id); } continue; }` → **missing row = the pty gets KILLED** after two consecutive passes. This is the destructive miss behaviour.
+  - `:95-97` `planPortScanSync`: `if (!row?.originWorkspaceId) continue;` → silent skip, no port scanning for that terminal.
+  - `planStaleRowCorrection` iterates `rowById` only → missing rows irrelevant there.
+- `:424-427` `UPDATE status:"disposed" WHERE eq(id)` — stale-row correction; miss → 0 rows, `catch` logs `could not correct stale row`.
+- `:45-52` `shouldReapRow` treats `!row.originWorkspaceId` as reapable — a row with a null workspace is equivalent to missing for kill purposes.
+
+### C. `terminal/resource-sessions.ts`
+
+- `:34-47` `inArray(terminalSessions.id, liveSessions.map(s =&gt; s.id))`; `:49` `rowById`.
+- `:53-60` guard: `if (!row || row.status !== "active" || typeof row.originWorkspaceId !== "string" || row.originWorkspaceId.length === 0) { return []; }` → **silent drop** from the resource list. Caller `terminal.ts:1917-1920` only logs on throw, not on empty.
+
+### D. `terminal-agents/persistence.ts` — **hard dependency, every read**
+
+All five reads join `terminalAgentBindings → terminalSessions` on `eq(terminalAgentBindings.terminalId, terminalSessions.id)`:
+
+- `:51-63` `load()` — `innerJoin` + `ne(status,"disposed")` → missing row = binding **invisible**.
+- `:72-99` `listLiveByWorkspace()` — `innerJoin` + `eq(status,"active")` + `isNotNull(originWorkspaceId)` → invisible.
+- `:101-118` `listLive()` — same → invisible.
+- `:120-149` `findLiveActive()` — same; `return row ? rowToBinding(row) : undefined` → **undefined**.
+- `:157-184` `deleteDefunct()` — `leftJoin` with `or(isNull(terminalSessions.id), inArray(status,["exited","disposed"]), isNull(originWorkspaceId))` → missing row → **binding row permanently DELETED**. Silent by design ("callers may swallow failures", `:151-156`).
+
+Verdict: a terminal with no `terminal_sessions` row has an unrepresentable agent binding, and the binding is then garbage-collected.
+
+### E. `trpc/router/notifications/notifications.ts` (companion hook ingest)
+
+- `:105-117`:
+```
+const terminalSession = ctx.db.query.terminalSessions
+    .findFirst({ where: eq(terminalSessions.id, input.terminalId), columns: { originWorkspaceId: true } })
+    .sync();
+if (!terminalSession?.originWorkspaceId) {
+    warnDroppedCompanionCapture(input, `terminal ${input.terminalId} has no originWorkspaceId`);
+    return { success: true, ignored: true as const };
+}
+```
+**Logs + drops**, returns `success: true`. Every agent lifecycle event for a rowless terminal is swallowed — no `broadcastAgentLifecycle`, no `terminalAgentStore.recordEvent`.
+
+### F. `trpc/router/notifications/agent-status-snapshot.ts` — **depends, indirectly**
+
+- `:95` `const bindings = store.list();` → `persistence.listLive()` inner join (D). Missing row → terminal absent from snapshot. Header at `:86-91` states the contract: *"the renderer treats anything absent from this list as 'no live agent' and clears its stale axes."* So missing row → **dots cleared on the renderer**. No log for this case; the only `console.warn` (`:100-107`) is for unmappable `lastEventType`.
+
+### G. `trpc/router/terminal/terminal.ts`
+
+- `:301-310` `killSession`: `findFirst({where: eq(terminalSessions.id, input.terminalId)})`; `if (!session) { throw new TRPCError({ code: "NOT_FOUND", message: "Terminal session not found" }); }` — **throws before `disposeSessionAndWait`**, so a rowless-but-live pty cannot be killed through this route.
+
+### H. `companion/*`
+
+`answer.ts`, `liveness.ts`, `question-store.ts`, `human-input.ts` never query the table directly. All access goes through `companion/read-api.ts`'s read-only prepared statements.
+
+`read-api.ts` (`...\packages\host-service\src\companion\read-api.ts`):
+
+| Line | Statement | Miss behaviour |
+|---|---|---|
+| 207-209 / 247 | `listActiveTerminals` — `WHERE status='active' AND ended_at IS NULL` | Absent from result. Silent. |
+| 210-212 / 251-252 | `findTerminal(id)` — `WHERE id = ?` | `?? null` |
+| 219-221 / 255-262 | `resolveTerminal(id)` — `terminal_sessions t JOIN workspaces w ON w.id = t.origin_workspace_id` | `?? null` (also null when `origin_workspace_id` is null — join drops it) |
+| 227-229 / 263-270 | `resolveActiveTerminal(id)` — same join `+ AND t.status='active' AND t.ended_at IS NULL` | `?? null` |
+| 275-279 | `resolveTerminalActivityMs(id)` | `const row = reader.findTerminal(id); if (row === null) return null;` → **null activity → liveness loses `LIVENESS_ACTIVITY_GRACE_MS`**, so a young terminal can be judged gone. |
+| 601-610 | `listLiveTerminals` = `listActiveTerminals().filter(liveness.isLive(...))` | absent |
+| 1233-1242 | `findActiveHostTerminalId(handle)` — scans `listLiveTerminals` | returns `null` |
+| 1249-1257 | `resolveHostTerminalId` | `if (hostTerminalId === null) throw badRequest("unknown terminalId");` → **HTTP 400** |
+
+`question-store.ts`:
+- `:1676-1682` `resolveSource`: `const resolved = deps.source.resolveTerminal(question.hostTerminalId);` → `if (hostProjectId === undefined) { throw new Error(\`companion: terminal ${question.hostTerminalId} is not in host.db — cannot build QuestionSource\`); }` — **throws**.
+- `:1727-1733` `capture`: `const binding = deps.source.resolveActiveTerminal(input.hostTerminalId); if (binding === null) { throw new CaptureRejectedError("hostTerminalId", "names no active terminal joined to a workspace in host.db; refusing to track a question that cannot be projected"); }` — **throws, question never tracked**. Strongest hard dependency in companion.
+- `:2036-2043` reconcile: `const activityMs = deps.source.resolveTerminalActivityMs(...); if (!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)) continue;` → missing row → `activityMs === null` → no grace → after `QUESTION_EXPIRY_CORROBORATION_MS` → `store.markStale(..., QUESTION_STALE_TERMINAL_GONE_REASON)` (terminal, unrecoverable).
+
+`companion/index.ts`:
+- `:648-649` wires `resolveTerminalActivityMs` → `hostDb.resolveTerminalActivityMs`.
+- `:1813-1820` `createFireVerdictProbe`: missing row → null activity → `isProvablyGone` → `return "gone"` → armed push **dropped permanently** (`forget()`).
+- `:1912-1917` answer path: `const hostWorkspaceId = deps.hostDb.findTerminal(hostTerminalId)?.originWorkspaceId ?? null; if (hostWorkspaceId === null) return null;` → `resolveHostTerminal` null → answer/snapshot guards refuse. `answer.ts:2139, 2644, 2668` consume `host.hostWorkspaceId` from this, so **answer.ts depends on the row transitively**.
+
+`liveness.ts`: reads the table **never**. Row-independent by construction; `lastActivityMs` is supplied by callers. But its accuracy is row-derived — see `resolveTerminalActivityMs` above.
+
+### Summary of miss-behaviour classes
+
+- **Throws / hard-fails (5):** `terminal.ts:1972` (`session-gone` WS close), `trpc/router/terminal/terminal.ts:305` (TRPC NOT_FOUND), `read-api.ts:1255` (400), `question-store.ts:1679` (Error), `question-store.ts:1729` (CaptureRejectedError).
+- **Logs then drops (1):** `notifications.ts:111-117` — swallows all agent lifecycle events, returns `success: true`.
+- **Silent invisibility (most):** merge list, resource-sessions, all four `persistence.ts` inner joins, `agent-status-snapshot` (→ renderer clears dots), `listActiveTerminals` / `listLiveTerminals`.
+- **Silent 0-row writes (4):** `terminal.ts:1188, 1255, 1806, 1937`; `reaper.ts:424`.
+- **Destructive on miss (2):** `reaper.ts:374-379` kills the live pty after two passes; `persistence.ts:157-184` deletes the agent binding.
+- **Only repair path (1):** `terminal.ts:1576-1592` `onConflictDoUpdate` on spawn/adopt.</result>
+<usage><subagent_tokens>82807</subagent_tokens><tool_uses>39</tool_uses><duration_ms>235827</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ab07112254110927f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\905bacbc-36b9-4f9b-9873-1366bc98b0a8\tasks\ab07112254110927f.output</output-file>
+<status>completed</status>
+<summary>Agent "Trace terminal id minting paths" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Complete map below.
+
+## 1. The mint site
+
+`apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useV2TerminalLauncher/useV2TerminalLauncher.ts:41` — sole renderer mint:
+```ts
+const terminalId = options?.terminalId ?? crypto.randomUUID();
+```
+Only one `useV2TerminalLauncher()` instantiation: `V2WorkspaceView.tsx:134`. Launcher passed down to preset exec, workspace run, pane registry, context menu, pane actions, openers, hotkeys.
+
+## 2. Every `launcher.create(` caller
+
+| file:line | explicit id? |
+|---|---|
+| `.../hooks/useCreatePendingMigratedTerminals/useCreatePendingMigratedTerminals.ts:40` | **YES** — `terminalId: terminal.terminalId` from `v2WorkspaceLocalState.pendingMigratedTerminals` (v1→v2 migration queue) |
+| `.../hooks/useDefaultContextMenuActions/useDefaultContextMenuActions.tsx:52` | no — split horizontally |
+| `.../useDefaultContextMenuActions.tsx:66` | no — split vertically |
+| `.../hooks/useDefaultPaneActions/useDefaultPaneActions.tsx:28` | no — pane header split button |
+| `.../hooks/useWorkspacePaneOpeners/useWorkspacePaneOpeners.ts:113` | no — `addBlankTerminalTab` (empty state, AddTabMenu, `NEW_GROUP` hotkey at `useWorkspaceHotkeys.ts:62`) |
+| `.../hooks/useWorkspaceHotkeys/useWorkspaceHotkeys.ts:230` | no — SPLIT_AUTO |
+| `.../useWorkspaceHotkeys.ts:246` | no — SPLIT_RIGHT |
+| `.../useWorkspaceHotkeys.ts:262` | no — SPLIT_DOWN |
+| `.../hooks/useV2PresetExecution/useV2PresetExecution.ts:182` | no — `createTerminal()`; called from plans at :229, :237/:238, :251, :260, :271/:274 (one new id per pane/command) |
+| `.../hooks/useV2WorkspaceRun/useV2WorkspaceRun.ts:173` | no — **and then swaps the id into an existing pane** at :208 (`setPaneData` reuses the prior run pane) |
+| `.../TerminalPane/components/TerminalSessionDropdown/TerminalSessionDropdown.tsx:250` | no — "New terminal" in-place; old id backgrounded (:254), pane data overwritten (:256-261) |
+
+`terminal.createSession.mutate` appears exactly once in the renderer (`useV2TerminalLauncher.ts:42`). Other repo callers are non-renderer: `packages/cli/src/commands/terminals/create/command.ts:43`, `packages/mcp/src/tools/terminals/create.ts:43`, `packages/sdk/src/resources/terminals.ts:18`, `apps/web/src/trpc/host-client.ts:94`.
+
+## 3. terminalId assigned to a pane WITHOUT the launcher
+
+| file:line | what it does |
+|---|---|
+| `.../$workspaceId/utils/focusTerminalPane/focusTerminalPane.ts:47-54` | `focusOrAddTerminalPane` — builds `{kind:"terminal", data:{terminalId}}` from an id supplied by a caller; no createSession |
+| `.../hooks/useAutoAdoptBackgroundSessions/useAutoAdoptBackgroundSessions.ts:70` | adopts every unattached `terminal.listSessions` id into a new tab on workspace open. Only surface that resurrects CLI/daemon sessions |
+| `.../components/BackgroundTerminalsButton/BackgroundTerminalsButton.tsx:205` | manual adopt from background dropdown → `focusOrAddTerminalPane` |
+| `.../hooks/useConsumeAutomationRunLink/useConsumeAutomationRunLink.ts:181` | deep link `?terminalId=` → `focusOrAddTerminalPane` (validates id belongs to workspace first, :168) |
+| `.../hooks/usePaneRegistry/usePaneRegistry.tsx:186-197` | `createNewAgentSession`: id comes from `agents.run` mutation result (`result.sessionId`), host-minted; pane added split or new tab |
+| `.../TerminalSessionDropdown.tsx:198-203` | `handleSelectSession` — retargets the SAME pane to another existing session id |
+| `renderer/stores/workspace-creates/appendLaunchesToPaneLayout.ts:37-38, 76-79` | folds host `workspaces.create` result (`terminals[].terminalId`, `agents[].sessionId`) into the persisted pane layout, before any pane mounts |
+| `renderer/stores/workspace-creates/writeWorkspacePaneLayout.ts:30-41, 59-73` | writes that layout into `v2WorkspaceLocalState` (insert or update `draft.paneLayout`); called twice per create (`useWorkspaceCreates.ts:153` empty, `:162` with results) |
+| `renderer/lib/v1-migration/terminals.ts:48` | `const terminalId = newTerminalId();` — fresh id per migrated v1 pane, queued as `pendingMigratedTerminals` (no session yet) |
+| `renderer/lib/v1-migration/runV1Migration.ts:521` | `newTerminalId: () =&gt; crypto.randomUUID()` — the migration's mint |
+
+Host-side mints that surface as pane ids (outside renderer, for completeness): `packages/host-service/src/trpc/router/agents/agents.ts:353`, `.../workspace-creation/shared/setup-terminal.ts:72`, `.../shared/command-terminal.ts:24`, `.../terminal-agents/terminal-agents.ts:135`.
+
+Main process mints nothing: `apps/desktop/src/main/windows/main.ts:339-347` only routes an existing `ids.terminalId` to `FOCUS_V2_NOTIFICATION_SOURCE`; agent-setup templates/auto-resume/keep-awake only read `SUPERSET_TERMINAL_ID`.
+
+## 4. Dispose / exit / recreate
+
+- `usePaneRegistry.tsx:342-351` `onAfterClose`: if background intent consumed → `terminalRuntimeRegistry.release`; else `clearWorkspaceRunTerminal` + `terminalRuntimeRegistry.dispose(terminalId)` + `killSession`. Never recreates.
+- `terminal-runtime-registry.ts` — all keyed by `(terminalId, instanceId=paneId)`: `mount:178`, `connect:235`, `reconnect:253` (URL swap), `retryConnect:266`, `detach:294`, `release:418`, `dispose:457`. No id generation anywhere; a changed `terminalId` creates a *new* entry and leaves the old one parked until eviction.
+- `TerminalPane.tsx:148-168` mount/connect effect and `:218-224` reconnect effect depend on `[terminalId, terminalInstanceId]` — pane data id swap re-runs them without remounting the component (no `key=` on the terminal pane; `packages/panes/.../Pane/Pane.tsx:275` calls `definition.renderPane(context)` unkeyed).
+- Exit handling: `useV2WorkspaceRun.ts:333-343` `terminal:lifecycle` exit → only marks `workspaceRunTerminals[...]` stopped. No respawn/restart path exists in v2. `restartTerminal` / `SessionKilledOverlay` are v1-only (`renderer/screens/main/.../Terminal/hooks/useTerminalLifecycle.ts:209,342`).
+- `TerminalSessionDropdown.tsx:212-236` kill → close panes for that id; no replacement session.
+
+## 5. Persistence layer
+
+- Store: TanStack DB collection `v2WorkspaceLocalState`, field `paneLayout` (schema `renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts`; `pendingMigratedTerminals` at :199). Backed by the SQLite electron persistence, not localStorage.
+- Write: `useV2WorkspacePaneLayout.ts:81-106` — store subscription snapshots `{version,tabs,activeTabId}` → `collections.v2WorkspaceLocalState.update(... draft.paneLayout = ...)` on every mutation, skipped if the row is absent.
+- Rehydrate: `useV2WorkspacePaneLayout.ts:71-79` — `store.getState().replaceState(persistedPaneLayout)`. **No createSession per terminal pane.** Panes just render and the WebSocket dials `/terminal/&lt;terminalId&gt;` (`TerminalPane.tsx:95-99`). Reattachment to a dead/never-created id therefore yields a pane whose id has no PTY — the only repair paths are host-service's idempotent adopt-on-connect, `useCreatePendingMigratedTerminals` (migration queue only), and `useAutoAdoptBackgroundSessions` (adds panes, never reconciles orphaned ones).
+- Store fresh per workspace id (`useV2WorkspacePaneLayout.ts:27-35`), so a workspace switch drops all in-memory pane state and re-reads the persisted layout.</result>
+<usage><subagent_tokens>152252</subagent_tokens><tool_uses>57</tool_uses><duration_ms>336002</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="review-fixes">
+All nine findings (F1-F8 plus the mid-run F9) are fixed and committed. F9 IS done — folded into the same commit as instructed.
+
+COMMIT: 5f23faeef "fix(desktop,host-service): harden BUS-RESYNC reconcile per review (BUS-RESYNC)" — one commit on main, local only, not pushed. (It amends my own earlier 191ec19dd to fold F9 in; the two commits under review, 1e33c3972 and 06fee649f, are untouched.) 8 files, +410/-119. Working tree clean.
+
+PER-FINDING
+
+F1 — snapshot/live fence. C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts. (a) Per-row supersede check: a row is skipped when the store entry already has occurredAt > row.lastEventAt (line 158, counted as skippedNewerLocal). (b) New optional isCurrent callback checked right after the await; an obsolete result returns a non-null discarded result so the caller neither applies it nor re-arms a retry (line 130), wired in HostNotificationSubscriber.tsx:113 as connectedRef.current && openEpochRef.current === epoch. (c) Stale-clear fenced by object identity, not a clock: the sources / backgroundRunningTerminals / shellRunningTerminals records are captured before the fetch (line 96) and an entry is only cleared when it is still the same object. A terminal created after the host copied bindings has no "before" entry, so it fails the same check instead of being swept.
+
+F2 — cold-start green. Same file, line 189. A row landing on a terminal with neither a store entry nor a terminalSeenAt gets markTerminalSeen(terminalId, row.lastEventAt), which also drops the review axis it just set. Working/permission still paint. FEATURES.md DOT-PERSIST line untouched.
+
+F3 — 12h cap removed. packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:85-105. hasPendingQuestionMarker is now one readdir, no stat, no cutoff (the stat import went with it). The comment records the distinction the old code got wrong: _MARKER_STALE_SECONDS governs run-dir markers refreshed per PostToolUse, while _reap_stale_markers in pane-map-hook.ts:1419-1427 explicitly refuses to age an askq owner.
+
+F4 — unreadable is not absent. Same file: pendingPermission is boolean | null; ENOENT returns false, any other errno logs via console.error and returns null (line 99). Renderer branch at resyncAgentStatus.ts:204 — on null it re-latches the pre-existing permission axis at its original timestamp (guarded on the workspace matching), so the replayed lastEventType cannot clear a red the host could not confirm.
+
+F5 — other latched axes. resyncAgentStatus.ts:239-315. The sweep now iterates a union of terminal ids from sources and backgroundRunningTerminals (blue-only terminals had no sources entry) and clears the background-running blue (line 294) in addition to permission/working. Review preserved.
+
+F6 — pill covers every bus. New store apps\desktop\src\renderer\stores\notification-bus\store.ts (+ index.ts). Each HostNotificationSubscriber registers its own host URL on mount, updates it from handleConnectionChange, removes it on unmount (HostNotificationSubscriber.tsx:134, 173, 181). NotificationBusPill.tsx now selects the oldest continuous disconnect across all registered buses; it no longer opens a bus or reads activeHostUrl, so it renders for a dead relay socket and in windows with no local host. Grace runs from when the bus went down, not from render.
+
+F7 — queryProcedure. notifications.ts:170; protectedProcedure is no longer imported there (nothing else used it).
+
+F8 — hydration in the dedupe key. HostNotificationSubscriber.tsx:60-66 — key is now "<all ids>|<hydrated ids>", so a workspace arriving with paneLayout null and hydrating later triggers one more reconcile.
+
+F9 — ghost-terminal guard. Host: agent-status-snapshot.ts:49 defines AgentStatusSnapshot { rows, knownTerminalIds }; knownTerminalIds is one covering select on the terminal_sessions primary key (line 150), deliberately unfiltered by status — the question is "has this host ever minted this id", and filtering to active would reclassify every finished terminal as a ghost and freeze its dots. buildAgentStatusSnapshot takes db: HostDb; notifications.ts:170-173 passes ctx.db. Renderer: sweep order is live -> skip, !known -> ghost skip (line 269), else clear; all three clear operations (axes, bg-blue, shell latch) sit behind that gate, composing with the F1(c) identity fence. Ghosts surface as a ghostsSkipped count and a loud console.warn tagged (GHOST-TERMINAL) with count + ids (line 323). Your live case (pane fc7ffd00 / workspace f85bc39c, dot painted by the Electron fallback) is quoted in the interface doc so the next reader knows it is observed, not hypothetical.
+
+VERIFICATION (all re-run after F9)
+- bunx biome check on all touched files: clean, no fixes outstanding.
+- node scripts/check-feature-markers.mjs: "All 141 feature markers present."
+- bunx tsc --noEmit in packages/host-service: 7 errors, output byte-identical to the pre-change capture. In apps/desktop: 26 errors; diffing against the pre-change capture shows the only textual difference is tsc reordering union members inside two pre-existing mermaid errors. Zero errors in any touched file. Zero REFERR-class (TS2304/TS2307/cannot-find-name/cannot-find-module) in either package. Positive control: row.pendingPermission === null compiles without TS2367, proving the nullable type flows through inferRouterOutputs to the renderer.
+- Tests: workspace-client eventBus.test.ts 5/5; host-service notifications.test.ts 8/8; V2NotificationController 16/16. Pre-existing failures left alone and confirmed unrelated: v2-notifications/store.test.ts 10 failures (bun has no window.sessionStorage), and persisted-keys.test.ts flags kanbanSplitLayout.ts + recycleBinRetention.ts as unregistered writers — neither file is in this commit, and the new store uses no persistence at all.
+- Staged blobs verified at zero CR bytes each (note: git show :path applies the smudge filter on Windows and lies about this; git cat-file blob is the honest read). git status clean.
+
+DELIBERATE DEVIATIONS (3)
+
+1. F5(b), shell-running latch: cleared only for terminals the durable agentTerminals registry marks (line 310), not for every absent terminal. A plain shell has no agent binding, so it is absent from every agent snapshot by construction — a blanket clear would kill the blue dot on a live `npm run dev` on each reconnect, a worse regression than the leak. The snapshot carries no command state, so the plain-shell half is genuinely unprovable and stays untouched. In practice the agent-terminal half is close to cosmetic, since getSourceDisplayStatus already masks shell-blue on agent terminals.
+
+2. F9 shape: no input parameter. I considered sending the renderer's candidate ids and returning the intersection, which is tighter. I did not, because host-service-client.ts uses httpLink (not batch), so query input rides in the GET URL — a few hundred ids would be a ~20KB URL. Returning known ids in the response body has no such ceiling, and the table is pruned (terminal.ts:1320 deletes non-active rows per workspace) so it stays small.
+
+3. FEATURES.md line 92 prose updated; marker count unchanged at 141. The BUS-RESYNC description claimed the resync "clears the working/permission latches of terminals the host has no live binding for" — after F5 and F9 that sentence is false, so I corrected it to describe the disown gate and the ghost skip. Only the table cell prose changed; the (BUS-RESYNC) token and the fenced markers block are untouched, and the gate still reports 141. I did NOT add a (GHOST-TERMINAL) marker: it is a sub-tag inside an existing feature (same pattern as (ASKQ-MARKER-READ) / (DOT-AXES)), and adding one would have broken the 141 count you specified.
+
+ONE CAVEAT TO CARRY FORWARD: the F1(a) comparison assumes both timestamps are host-clock. That holds on the lifecycle path (payload.occurredAt) but a few store writers default occurredAt to renderer Date.now(). On a relayed host with a skewed clock, a renderer running ahead skips rows (conservative — current state kept) and one running behind loses that particular fence. Same mixed-clock assumption terminalSeenAt already makes.
+</agent-message>
+
+---
+
+<agent-message from="ghost-investigate">
+GHOST-TERMINAL INVESTIGATION — FINAL. Headline: there was no ghost. `fc7ffd00` has both a `terminal_sessions` row and a `terminal_agent_bindings` row, and its WS attach succeeded. The reported narrative does not survive host.db + the hook logs. A real bug of that shape DOES exist in the create path, but it did not fire on 2026-08-06.
+
+EVIDENCE (read from a copy of C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\host.db; DB times UTC, hook-log times local BST=UTC+1):
+  terminal_sessions
+    fc7ffd00-… | f85bc39c-… | active   | created 10:49:22Z | last_attached_at 10:49:23Z
+    795ee9f0-… | f85bc39c-… | disposed | created 10:26:03Z | dispose_requested 10:28:12Z | ended_at 10:49:23Z
+  terminal_agent_bindings
+    fc7ffd00-… | f85bc39c-… | claude | session 824c4068-… | started 10:49:56Z | last_event 11:18:52Z | SubagentActive
+`last_attached_at` is written ONLY inside `attachSocketToSession` (packages\host-service\src\terminal\terminal.ts:1937-1940), which runs only after `resolveSessionForAttach` returns a session — so the attach for fc7ffd00 succeeded. The red Disconnected badge was never fc7ffd00; it was 795ee9f0 during its failed-dispose limbo.
+
+(1) MINTING PATH. Normal launcher create — no non-launcher path involved. `useV2TerminalLauncher.ts:41` mints the uuid, `:42` awaits `terminal.createSession.mutate`, which reaches `createTerminalSessionInternal` (terminal.ts:1418) and inserts at :1576-1592. Order observed: row 10:49:22 → WS attach 10:49:23 → first hook SessionStart 10:49:57 → binding 10:49:56 → dots 10:50:14. Textbook, with the hook arriving 35s AFTER registration.
+
+(2) ORDERING WINDOW. Contract is: host insert (terminal.ts:1576, immediately after `daemon.open` at :1537) → WS attach (:1969-1977, refuses without a row) → pane-map write + hook POSTs (the hook can only learn the id from `SUPERSET_TERMINAL_ID`, injected into ptyEnv at packages\host-service\src\terminal\env.ts:233 before `daemon.open`). So the hook-before-row window is bounded by the gap between `daemon.open` returning and the insert committing — normally microseconds, and empirically negative here (+35s). The window only becomes real if the insert THROWS; see (3).
+
+(3) FIX DESIGN.
+ a. Fail-loud in `notifications.hook` (packages\host-service\src\trpc\router\notifications\notifications.ts:105-117): split one guard into three — row+originWorkspaceId (broadcast, unchanged); row with NULL originWorkspaceId (FK `set null` after workspace delete → WARN, drop); NO row (invariant violation → `console.error` with terminalId/eventType/agent, return distinct `reason:"unknown-terminal"`). Do NOT 4xx: notify-hook.template.sh treats non-2xx as "fall through to the legacy Electron path" (`case "$STATUS_CODE" in 2*) exit 0`), so a 404 silently changes hook behaviour and drops the companion capture. Do NOT insert an adoption row from the hook — a row asserts "attachable PTY exists" and an unauthenticated notification has no evidence for that; it would let the attach path respawn a PTY on hearsay and resurrect rows the reaper is killing. If you want the dot restored rowless, add `workspaceId` to the payload (already in hook env — pane-map-hook.ts:243 writes it; absent only from the POST bodies in apps\desktop\src\main\lib\agent-setup\templates\notify-hook.template.sh and pane-map-hook.ts:1379,1435,2206), validate it against `workspaces`, and never feed it to `forwardCompanionCapture` (companion guards must stay DB-derived per notifications.ts:70-88).
+ b. Registration, all packages\host-service\src\terminal\terminal.ts unless noted: (i) the try/catch at :1536-1571 wraps ONLY `daemon.open` — `makeDaemonPty` (:1572) and the `db.insert` (:1576) sit outside it, so a throw there (SQLITE_BUSY is live: busy_timeout 5000ms, host.db-wal currently 4.1MB) leaks a live PTY with no row. Extend the try over both and close the daemon session on failure. (ii) Add `disposeRequestedAt: null` to the upsert `set` at :1583-1591 — today a respawned row returns still stamped, making `shouldReapRow` (reaper.ts:45-52) true so the reaper kills a healthy terminal, while :674 hides it from the dropdown meanwhile. (iii) Principled version: insert `status:'starting'` BEFORE `daemon.open`, promote to active, delete on failure — the DB then owns "a PTY may exist under this id", which is what the rowless-orphan reaper needs. (iv) `killSession` (trpc\router\terminal\terminal.ts:319-321) discards `daemonCloseSucceeded` and returns `status:"disposed"` unconditionally — a lie when the close failed, and the direct cause of the 21-minute limbo. (v) Attach failures are sent to the socket and never logged host-side, which is why host-service.log has zero mentions of either terminal.
+ DISPOSE-RECREATE RACE: `disposeSessionAndWait` awaits an in-flight attach before stamping (:1175-1182), but the reverse is unguarded — an attach starting after the stamp and before the close completes will respawn the terminal the dispose is killing. Make `resolveAttachSessionOnce` (:411-448) refuse to respawn when the row carries `disposeRequestedAt`, returning session-gone; only an explicit user-initiated create should clear the stamp.
+
+(4) BLAST RADIUS (your map, confirmed and folded in). The two DESTRUCTIVE-on-miss sites are what make the non-atomic create dangerous rather than untidy: reaper.ts:373-380 kills the rowless PTY after two passes, and terminal-agents\persistence.ts:157-184 deleteDefunct permanently deletes the binding. Then unattachable (terminal.ts:1969-1977), unkillable by RPC (trpc\router\terminal\terminal.ts:301-310 NOT_FOUND), invisible in the workspace list (terminal.ts:658-668), in resource-sessions.ts:53-60, in every persistence.ts innerJoin, and in agent-status-snapshot.ts:95 via listLive() → renderer clears dots. Silent 0-row writes at terminal.ts:1188/1255/1806/1937 and reaper.ts:424. Only repair path is the upsert at terminal.ts:1576-1592 — keep the permissive missing-row guard at :1447-1449 (it is what lets the upsert heal a lost row), but pair it with the disposeRequestedAt clear.
+
+(5) THE TWO PUZZLES. Both dissolve — they were downstream of the false premise.
+ • "How did the chat work rowless?" It didn't. fc7ffd00 was registered at 10:49:22 and attached at 10:49:23, 34s before its agent binding and 35s before its first hook. Nothing ran rowless.
+ • "Why didn't the reaper kill it?" Nothing rowless existed to kill, and no chat ran during the gap: ~/.superset/agent-notify-hook.log records ZERO hook invocations for session 824c4068 between 11:28:14 and 11:49:57 local; ~/.superset/logs/dot-decisions.log agrees (last 795ee9f0 entry 10:28:14Z, first fc7ffd00 entry 10:50:14Z). The "22 minutes of dropped POSTs" was inferred, not observed — the hook logs only httpStatus, and `{ignored:true}` is a 200, so a dropped POST is indistinguishable from a delivered one. Note your own map refutes the narrative independently: reaper.ts:373-380 kills a rowless PTY after two passes at REAP_INTERVAL_MS=5min, so a rowless PTY cannot run a chat for 22 minutes — ceiling ~10.
+ WHAT ACTUALLY HAPPENED: a dispose was requested for 795ee9f0 at 10:28:12Z; the agent died 2s later; the daemon close never confirmed, so terminal.ts:1252-1272 left the row `active` with only the dispose_requested_at stamp and broadcast NO exit event, so the renderer was never told. The pane re-dialed, the respawn in resolveAttachSessionOnce returned an error, the transport set `_terminated` and reconnect was disabled permanently → red Disconnected that cannot self-heal. 21 minutes later a new terminal was created normally, and the reaper's retry finally completed the old dispose at 10:49:23Z.
+
+CHEAPEST HIGH-VALUE FIX, independent of the above: log the hook RESPONSE BODY, not just the status code, in notify-hook.template.sh and superset-notify.py. That single gap is what let a wrong diagnosis look well-evidenced.
+
+No code edits made. DB copy used: C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\905bacbc-36b9-4f9b-9873-1366bc98b0a8\scratchpad\host-copy.db
+</agent-message>
+
+---
+
+<agent-message from="limbo-fix">
+DISPOSE-LIMBO fix batch complete. ONE commit on main, local only, NOT pushed: **7254526b8** `fix(desktop,host-service): dispose-limbo terminal lifecycle honesty (DISPOSE-LIMBO)`. HEAD~1 is 5f23faeef — the three pre-existing local commits (1e33c3972, 06fee649f, 5f23faeef) are untouched. Tree was clean before I started and `git status` is clean now. 16 files, +434/-51.
+
+Nothing is incomplete. The one item I could not answer is the read-only dispose-trigger question, and that is an evidence limitation, not unfinished work — details below.
+
+## Per-item changes
+
+**A. Notification ingest — `packages/host-service/src/trpc/router/notifications/notifications.ts:113-174`**
+One silent drop became three outcomes: (1) row with `originWorkspaceId` → broadcast, unchanged; (2) row with NULL origin → `console.warn`, `reason:"null-origin-workspace"`; (3) no row at all → invariant violation, `console.error` carrying terminalId/raw eventType/mapped eventType/agentId/agentSessionId, `reason:"unknown-terminal"`. All three still return HTTP 200 (`success:true, ignored:true`). No row is ever inserted or adopted from a hook event; the comment records why (a row asserts an attachable PTY exists, so hearsay would let attach respawn PTYs and resurrect rows the reaper is killing).
+
+**B. Create atomicity — `packages/host-service/src/terminal/terminal.ts:1625-1691`**
+`makeDaemonPty` and the `db.insert` now sit inside a try that, on failure, closes the just-opened daemon session (guarded by `!isAdopted` so an adopted PTY that pre-dates the call is never killed) and rethrows. I used a **second** try rather than extending the existing one, deliberately: the open/adopt block converts failure into `{ error }`, which `resolveAttachSessionOnce` reads as "adopt found nothing, respawn it" — routing a transient SQLITE_BUSY down that path would have respawned a PTY instead of reporting the fault. Rethrowing also preserves the pre-existing caller contract, since both statements previously sat outside every try and therefore always threw.
+
+**C. Stamp clearing — `packages/host-service/src/terminal/terminal.ts:1665-1672`**
+`disposeRequestedAt: null` added to the upsert `set`.
+
+**D. Dispose honesty — `packages/host-service/src/trpc/router/terminal/terminal.ts:319-341`**
+`killSession` returns `dispose-pending` plus a reason when `daemonCloseSucceeded` is false, `disposed` otherwise. To have a reason to return, `DisposeSessionResult` gained an optional `daemonCloseError` (`terminal.ts:1088-1105`, populated via a small `describeDaemonCloseError` helper). All callers checked and updated:
+- CLI `packages/cli/src/commands/terminals/close/command.ts:38-56` — prints a did-NOT-close message with the reason instead of "Closed terminal".
+- MCP `packages/mcp/src/tools/terminals/close.ts:10,28-32` — result type widened with `reason?`, and the tool description now tells the agent what each status means.
+- SDK `packages/sdk/src/resources/terminals.ts:176-187` — `TerminalCloseResult` documents both statuses and adds `reason?`.
+- Renderer `usePaneRegistry.tsx:127-166` — success toast becomes a warning on pending; the silent onAfterClose variant stays silent to the user but `console.warn`s.
+- Renderer `TerminalSessionDropdown.tsx:226-246` — throws on pending so `toast.promise` reports failure, and panes are left open since the terminal is still there.
+- Renderer `BackgroundTerminalsButton.tsx:213-232` — does not clear the background marker for a still-live terminal (that would hide a running terminal from the only surface listing them).
+- Renderer `useV2WorkspaceRun.ts:286-305` — does not mark the run `stopped-by-user`, which would have offered a second run alongside the first.
+No caller treats dispose-pending as success, silently or otherwise. There is no web host-client caller (`grep` over apps/web + packages/host-client returned nothing).
+
+**E. Failed dispose reaches the renderer — `packages/host-service/src/terminal/terminal.ts:1312-1349`, plus `2146-2159`**
+The unconfirmed-close path now `console.error`s with terminalId/workspaceId/attempted/error and broadcasts the same `terminal:lifecycle` `exit` event the confirmed path emits, via the existing `broadcastTerminalLifecycle`. The row is deliberately left `active` for the reaper — "the renderer gives up on the pane" and "the host stops trying to kill the PTY" are different questions and only the first is answered there. Note the union only admits exit/command-start/command-end, so I used `exit` rather than minting a new eventType: a new variant would have been a silent no-op in the renderer and the dead pane would have persisted. Separately, refused attaches are now logged host-side at `2146-2159` (`[terminal] attach refused` with terminalId, requestedWorkspaceId, code, error) — previously the error travelled only down the socket.
+
+**F. Dispose-recreate race — `packages/host-service/src/terminal/terminal.ts:426-457`**
+Before the respawn, the row is re-read for `disposeRequestedAt`; if set, it returns the `session-gone` error and logs. Only the explicit create in C clears the stamp. `resolveAttachSessionOnce`'s return type widened to `{ error: string; code?: "session-gone" }` to carry the code, matching what `resolveSessionForAttach` already returns.
+
+**G. Hook observability**
+- Bash `apps/desktop/src/main/lib/agent-setup/templates/notify-hook.template.sh:130-151` — `-o /dev/null` dropped for `-w "\n%{http_code}"`, split with pure parameter expansion (`${RESPONSE##*$'\n'}` / `${RESPONSE%$'\n'*}`) and truncated with `${RESPONSE_BODY:0:500}`. Still exactly one fork (curl), no pipeline — HOOK-FORK-DIET intact. I verified the split against a normal body, an empty body (curl connection failure → `\n000`), and a multi-line body.
+- Python `apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts:1992-2013` — `_post_hook` returns `(status, body)` with `resp.read(2048).decode("utf-8","replace")[:500]`; both call sites (the normal post and the companion-rejected retry) destructure it and log `responseBody`. No backticks or `${` introduced, so the TS template literal is unaffected.
+
+**H. FEATURES.md**
+One feature row ("A dispose that fails says so") appended after the BUS-RESYNC row, and one tab-separated marker line `(DISPOSE-LIMBO)\tpackages/host-service/src/terminal/terminal.ts` appended in the fenced `markers` block. Marker count 141 → 142.
+
+## Dispose-trigger answer (10:28:12Z, terminal 795ee9f0-*)
+
+**Not attributable from the logs**, for two independent reasons. First, the live `host-service.log` begins at the host-service start around 10:37 — roughly nine minutes *after* the incident — and the only other two files in that directory (`host-service.log.bak-231104`, `host-service.log.pre-fix-bak`) are from May 18; `grep` for `795ee9f0` across all three returns zero hits. Second, even with coverage nothing would have been recorded: before this commit no dispose entry point logged the requester. The `killSession` tRPC procedure logged nothing, `disposeSessionAndWait` logged nothing, `disposeSession` logged only on failure ("disposeSession daemon close failed", terminalId only, no requester), and the reaper logs an aggregate count at `reaper.ts:461-464` ("N reaped, N failed, N stale row(s) corrected") rather than per-terminal attribution. So renderer killSession vs reaper vs workspace op cannot be distinguished retrospectively. That blind spot is exactly what item E's `console.error` on the limbo path and the attach-refused `console.warn` now close.
+
+## Verification
+
+- **biome**: `bunx biome check` on all 13 touched TS/TSX files (never root `lint:fix`) — clean, "No fixes applied". I ran `--write` scoped to those files mid-way to fix three genuine wrapping nits.
+- **Marker gate**: `node scripts/check-feature-markers.mjs` → "All 142 feature markers present."
+- **tsc**: `packages/host-service` went from 8 errors on baseline to **2**, both pre-existing (`TS2305` on the `hasRunningForegroundProcess` import at terminal.ts:5, `TS2554` at terminal.ts:1906). `apps/desktop` errors are unchanged mermaid/hast dep-version conflicts plus V2PresetsBar/useDashboardSidebarState arity debt — **no error in any file I touched**. Baseline established by stashing my changes and re-running, not by assumption. Zero cannot-find-name class; `node scripts/check-dangerous-diagnostics.mjs` reports "(REFERR-GATE) clean" across all seven shipped packages.
+- **Tests**: notifications 13/13 pass (unit + integration), including a new case I added for the null-origin branch. Terminal suites: 106 pass / 4 fail — the four failures are `src/terminal/env.test.ts` `resolveLaunchShell`/`getShellLaunchArgs` platform tests, and I confirmed by stashing that the identical four fail on baseline. Zero new failures.
+- **Extra checks not asked for but warranted by the traps**: `bash -n` on the hook template passes; I extracted both embedded Python templates from the TS template literals (undoing the escaping) and `py_compile`d them — both OK, and the tuple-return change is consistent at both call sites.
+- **LF**: all 16 staged blobs verified via `git cat-file blob $(git rev-parse :<path>)` → zero CRLF.
+
+## Deviations, with reasons
+
+1. **Two extra `reason` values on the pre-existing drop branches** (`unmapped-event-type`, `no-terminal-id`) beyond the two the task specified. Without them, item G's body logging would show a bodyless `{"success":true,"ignored":true}` for two of the five drop paths, so you could not tell which one fired — defeating the point of logging the body at all.
+2. **`packages/host-service/src/events/event-bus.ts` was touched** (a `DistributiveOmit` alias applied to `broadcastTerminalLifecycle`, lines 10-24 and 191-198), which is outside the listed files. Reason: `Omit<A|B, K>` collapses a union to its common keys, so the parameter type rejected `exitCode`/`signal` on *every* exit broadcast in the file — five long-standing errors. Item E's broadcast added a sixth instance, which would have violated the "zero NEW errors" bar. Fixing the root cause instead removed all six: host-service tsc 8 → 2. It is a type-only change with no runtime effect, and tsc confirms it introduced no errors anywhere else.
+
+## One trap worth recording for future batches
+
+`core.autocrlf=true` here, so biome flags CRLF on untouched files too — and a `git stash push`/`pop` round-trip silently re-applies CRLF to the working tree on checkout. I LF-normalized, then lost it to the baseline stash, and had to re-normalize before staging. Also note `grep -c $'\r' <file>` in this Bash tool expands to the empty pattern and matches every line, so it reports a false CRLF count; use python (`b.count(b'\r\n')`) to check line endings here.
+</agent-message>
+
+---
+
+<agent-message from="review2-opus">
+review2-opus final — `5f23faeef` (BUS-RESYNC hardening) + `7254526b8` (DISPOSE-LIMBO). Verdict: **FIX-FIRST**.
+
+**BLOCKER: none.**
+
+---
+
+**[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1338** (+ `apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useV2WorkspaceRun/useV2WorkspaceRun.ts:347`)
+Defect: the new failed-dispose `exit` broadcast defeats the `dispose-pending` guard added in the same commit. `useV2WorkspaceRun` already listens for `terminal:lifecycle` `exit` and marks the run stopped unconditionally.
+Failure: Force Stop → daemon close unconfirmed → host broadcasts `exit` with `exitCode: 0, signal: 0`, then returns `dispose-pending`. `forceStopWorkspaceRun` correctly early-returns without `markStopped` — but the WS listener at useV2WorkspaceRun.ts:347-356 has already run `markStopped(state, occurredAt, {exitCode: 0, signal: 0})`. Run reads as a clean exit; button offers a second run alongside the still-live first. Verbatim the outcome the comment at useV2WorkspaceRun.ts:291-294 claims to prevent.
+Fix: don't reuse `exit` for an unconfirmed close — distinct event type or `confirmed: false` on the payload that the dot path honours and the run path ignores.
+
+**[MAJOR] ...\packages\host-service\src\terminal\terminal.ts:1689**
+Defect: `disposeRequestedAt: null` on the upsert also runs on the ADOPT path, and the respawn refusal (terminal.ts:440-455) sits AFTER the adopt attempt → adopting a live PTY erases the durable intent-to-kill stamp.
+Failure: "Kill Terminal Session" (pane stays open) → close fails → row `active` + stamped, reaper meant to retry (reaper.ts:45-51). Any attach before the next reaper pass (window reload, workspace reopen, second window, MCP/SDK) → `resolveAttachSessionOnce` → `createTerminalSessionInternal({adoptOnly:true})` → `daemon.list()` still shows it alive → adopts at 1598-1611 → upsert writes `active` + `disposeRequestedAt: null`. `shouldReapRow` now false, refusal at 446 can never fire. Killed terminal permanently resurrected, agent still running.
+Fix: read `disposeRequestedAt` BEFORE the adopt attempt; or clear the stamp only on the non-adopt branch.
+
+**[MAJOR] ...\packages\host-service\test\integration\bug-hunt-2.integration.test.ts:338**
+Defect: third assertion on the `notifications.hook` shape not updated for the new `reason` field; `toEqual` is exact.
+Failure: reproduced — `bun test test/integration/bug-hunt-2.integration.test.ts -t "notifications.hook with eventType only"` fails with `+ "reason": "no-terminal-id"`. Fork has no test gate so the nightly is unaffected, but the suite is red.
+Fix: add `reason: "no-terminal-id"`, matching the two files the commit did update.
+
+**[MAJOR] ...\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:186**
+Defect: cold-start seed uses a per-terminal test (`preEntry === undefined && preSeenAt === undefined`) as a proxy for "window just started". Also matches any terminal the store has never heard of mid-session.
+Failure: host-service restarts, bus dead for hours. Hook POSTs still reach the host over HTTP so bindings record, but no WS events reach the renderer. A terminal CREATED during the outage runs an agent to completion → on reconnect it has no `sources` entry and no `terminalSeenAt` → seeded → replayed turn-end green immediately cleared. User never told that agent finished — the exact swallowed completion BUS-RESYNC exists to restore. Pre-outage terminals are safe (first resync of the window seeded their `terminalSeenAt`).
+Fix: decide cold-start once per resync from the whole store (`before.sources` and `before.terminalSeenAt` both empty), or a module-level first-resync flag.
+
+**[MAJOR] ...\packages\host-service\src\terminal\terminal.ts:1293**
+Defect: dispose success branch writes `status: "disposed"` by id with no fence on the stamp it placed. Pre-existing, but `disposeRequestedAt: null` changes the failure route without closing the window.
+Failure: pane close → dispose stamps, blocks on `pty.kill()`. A `POST /terminal/sessions` or an adopt for the same terminalId lands in that window and upserts `active` + `disposeRequestedAt: null` over a live PTY. The kill resolves → unconditional `status: "disposed", endedAt`. Live terminal now carries a `disposed` row → reaper kills it, `listWorkspaceTerminalSessions` hides it, terminal dies for no visible reason.
+Fix: fence the write on the stamp value captured at line 1228 (`where(and(eq(id), eq(disposeRequestedAt, stampedAt)))`).
+
+---
+
+**[MINOR] ...\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:150** — `knownTerminalIds` is an uncapped full scan of the `terminal_sessions` PK; rows are deleted only in `disposeSessionsByWorkspaceId` (terminal.ts:1397, workspace destroy). Every terminal ever created is serialized on every reconnect — most frequent exactly when a host flaps. Renderer only needs the tens of ids it holds dots for. Fix: intersect against renderer-supplied ids, or bound the scan.
+
+**[MINOR] ...\apps\desktop\src\renderer\components\NotificationBusPill\NotificationBusPill.tsx:33** — pill scope widened from local host only to every registered bus, incl. relay sockets for powered-off machines (`HostWorkspacesProvider` serves "remote hosts live or last-seen"; `groupWorkspacesByHostUrl` has no online filter). If a relay socket for an absent host can't hold open, the store deliberately never resets the down-time → permanent "Agent notifications disconnected" for a normal condition. CONDITIONAL: relay behaviour for an offline host is not decidable from this repo — confirm before shipping. Fix: register only hosts believed online, or name the down host in the pill.
+
+**[MINOR] ...\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:97** — removing `ASKQ_MARKER_STALE_MS` leaves a leaked `.askq` owner with no escape. ARM64 Git-bash hook crash after `_touch(askq_dir/_main)` + a session ending without `SessionEnd` (which `_clear_dir` at pane-map-hook.ts:1886 relies on) → every reconnect re-asserts a red dot forever. The rationale for dropping the mtime cap is sound; the missing half is a non-mtime reaper. Fix: reap owners whose agent session is provably gone (session id absent from the binding store).
+
+**[MINOR] ...\packages\host-service\src\terminal\terminal.ts:2008** — `DELETE /terminal/sessions/:terminalId` still fire-and-forgets `disposeSession` and returns `status: "disposed"` before the close is attempted — the same lie removed from `terminal.killSession`. Only `apps/desktop/scripts/cdp-terminal-flood-profile.ts` calls it, so low impact, but the honesty invariant is stated as covering every caller.
+
+**[MINOR] ...\packages\host-service\src\trpc\router\notifications\notifications.ts:140** — `console.error` per hook POST for an unknown terminal, not per incident. The ghost terminal the sibling commit documents posts on every `PostToolUse`; each now writes a five-field error object to `host-service.log` for the life of the pane. Fix: dedupe by terminalId (first + periodic count).
+
+**[MINOR] ...\packages\host-service\QUERY_TIMEOUTS.md:44** — `notifications.agentStatusSnapshot` moved onto `queryProcedure` but is absent from the "Current budgets" table, which lists other default-5s procedures.
+
+---
+
+**Checked clean.** Bash template body/status split — executed the expansions against empty body, trailing newline, mid-body newlines, curl-failure `000`: all correct; still one curl fork, no pipeline; `#!/bin/bash` so `$'\n'` and `${v:0:500}` are in-idiom. Embedded Python — extracted through the TS template-literal escapes and `py_compile`d clean; both `_post_hook` call sites updated; `read(2048)` truncation safe via `errors="replace"` then `[:500]`. `queryProcedure = protectedProcedure.use(timeoutMiddleware)` — auth preserved, no authorization regression. Resync object-identity fence valid (`applySourceAxes` always writes a fresh entry object — no immer, no in-place mutation); `isCurrent` checked once with no `await` after it, and a discarded result leaves a stale epoch key so the next epoch re-syncs. `liveTerminalIds.add` precedes every `continue`, so unknown-workspace / newer-local / null-permission rows all block the sweep. Sweep's cross-host scoping correct. `entry.occurredAt` regressing on the null-permission re-latch is harmless (resync fence is its only reader). `resolveV2NotificationTarget` never retargets to another terminalId. Second `try/catch` in `createTerminalSessionInternal` — `makeDaemonPty` is a pure factory, so no double-close and no leaked subscription; rethrow preserves the caller contract. Attach refusal is not a permanent trap (`planStaleRowCorrection` finalizes stale active rows). `mapEventType` round-trips all 8 `AgentLifecycleEventType` values and `recordEvent` has one caller → the `null` row drop in `buildAgentStatusSnapshot` is unreachable. Every `killSession` caller (CLI, MCP, SDK, both `usePaneRegistry` mutations, `TerminalSessionDropdown`, `BackgroundTerminalsButton`, `useV2WorkspaceRun`) handles `dispose-pending`; none closes panes or mutates layout on the pending path. `DistributiveOmit` type-only, no runtime effect.
+
+**Gates run.** `check-feature-markers.mjs` — all 142 present. `check-dangerous-diagnostics.mjs` (REFERR-GATE) — clean. `tsc` — zero new errors in any changed file (host-service's 2 and desktop's 21 are pre-existing debt at untouched lines). `bunx biome check` — clean on all 19 changed TS files. All committed blobs LF, zero CR. No `screenReaderMode`, no `ws` native validate, no new sync fs on the desktop main thread. The 4 failures in `terminal.integration.test.ts` are environmental, not regressions — the pty-daemon cannot bind a unix socket on Windows (`listen EACCES`, reproduced by running the bundle directly).
+</agent-message>
+
+---
+
+<agent-message from="review2-fixes">
+All 15 findings fixed in one commit on top of the stack. Nothing pushed, tree clean.
+
+COMMIT: 9f60de86f — `fix(desktop,host-service): close dispose/adopt races and resync fences per round-2 review (DISPOSE-LIMBO)` (17 files, +555/-83), parent 7254526b8.
+
+PER-FINDING CHANGES (absolute paths below the list; line numbers are post-commit)
+
+R1 — lifecycle `confirmed` end-to-end. Added `confirmed?: boolean` to the exit variant of `TerminalLifecycleMessage` (packages/host-service/src/events/types.ts:65) and of `TerminalLifecyclePayload` (packages/workspace-client/src/lib/eventBus.ts:54), forwarded through the per-eventType re-narrow (eventBus.ts:243) so the flag is not dropped on the way to the renderer. The unconfirmed dispose broadcast sets `confirmed: false` (terminal.ts:1427); the confirmed path omits it (absent = confirmed). All three consumers of `terminal:lifecycle` exit were traced and each handled deliberately:
+  • useV2WorkspaceRun.ts:355 — ignores unconfirmed exits (no markStopped) and warns.
+  • lifecycleEvents.ts:181 — returns before the exit teardown, so `clearTerminalShellRunning` / `clearTerminalBackgroundRunning` / `pruneTerminalSeen` / `pruneAgentTerminal` / `clearSources` do NOT run. Informational only; the pane keeps whatever disconnected state it already shows. Rationale in the comment: the process may still be hooking, and nothing would put a wiped seen record or agent-terminal registration back.
+  • useTerminalAgentBindings.ts:61 — deliberately NOT gated, with a comment saying why: it only invalidates a query, so it re-reads host truth rather than asserting any.
+
+R2 — refuse before adopt. The stamp read moved ahead of the adopt in `resolveAttachSessionOnce` (terminal.ts:411-436, warn at :428, returns `code: "session-gone"`). I also put the same check inside `createTerminalSessionInternal` on the `existingRecord` it already reads (terminal.ts:1620-1634) because that is the choke point for EVERY adopt caller — `getOrAdoptSession` (terminal.ts:816) was a second unguarded adopt path the finding did not name. The upsert now clears the stamp only on a genuine non-adopt create: `...(isAdopted ? {} : { disposeRequestedAt: null })` (terminal.ts:1800), which also covers the "session already exists" adopt fallback nested inside a plain create. The post-adopt re-read is kept as a narrower guard (a dispose landing DURING the adopt) with its comment rewritten to say so.
+
+R3 — cleanup result inspected. terminal.ts:1815-1836: the `closeDaemonSessionById` result is read; `succeeded: false` logs `terminalId`, `workspaceId`, the original create error, `closeAttempted` and `closeError` at console.error before the rethrow. Text is explicit that the helper resolves rather than throws.
+
+R4 — fresh blue entries. `setTerminalShellRunning` (stores/v2-notifications/store.ts:286) and `setTerminalBackgroundRunning` (:317) drop the reuse early-return and always write a new object with a refreshed `occurredAt`. Verified no consumer depends on reference stability: the only readers are `?.workspaceId` lookups (lifecycleEvents.ts:142-143), truthiness checks (lifecycleEvents.ts:308, store.ts:859/863), the debug dump (store.ts:1229+), the persist partialize, and the resync identity fence itself.
+
+R5 — resync generation. `resyncGenerationRef` (HostNotificationSubscriber.tsx:77), bumped per initiated resync (:115), and `isCurrent` requires connected AND exact epoch AND exact generation (:126-128). It bumps on every `runResync`, so both per-epoch and per-workspaceSetKey (hydration) resyncs get a distinct generation. I additionally gated the failure/retry branch on generation (:135) — a stale request failing would otherwise reset `syncedKeyRef` and schedule a retry over a newer in-flight resync's bookkeeping.
+
+R6 — CLI exit code. packages/cli/src/commands/terminals/close/command.ts:50 throws `CLIError(message, hint)` following the file's two existing `throw new CLIError(...)` conventions; message carries the status + reason, hint carries "re-check with: superset terminals list".
+
+R7 — test assertion. bug-hunt-2.integration.test.ts:338-342 now asserts `{ success: true, ignored: true, reason: "no-terminal-id" }`, matching notifications.test.ts:87-88 and notifications.integration.test.ts:37-38. That test passes.
+
+R8 — cold start decided once. `isColdStart` computed from the pre-request snapshot's `sources` AND `terminalSeenAt` both being empty (resyncAgentStatus.ts:130-132); the per-row seed now keys on it (:225). The per-row `preSeenAt` local was removed.
+
+R9 — fenced disposed write. The stamp is read BACK after stamping (terminal.ts:1263-1275, `stampedAt`) rather than assuming the value written, since "first request wins" means a concurrent dispose may own it. The disposed write is fenced `where(and(eq(id), eq(disposeRequestedAt, stampedAt)))` with `.returning({id}).get()` (terminal.ts:1352-1372). Zero rows matched logs loudly and does not mark disposed.
+  One extra hole I found and closed while implementing: a null `stampedAt` cannot be treated as `isNull(disposeRequestedAt)` in the fence — that predicate would MATCH a racing create's freshly-cleared row and dispose a live terminal, i.e. the exact bug R9 describes, reintroduced by the fix. So a null stamp skips the write entirely and logs (terminal.ts:1347-1351).
+  Also: the exit broadcast is suppressed when a create was positively detected as having raced (`racedCreate`, terminal.ts:1346/1381), because the id then names a different, live terminal and the exit would be misattributed to it. A null stamp does not suppress the broadcast (the pty we tore down genuinely died).
+
+R10 — bounded knownTerminalIds. Renderer: `collectCandidateTerminalIds` (resyncAgentStatus.ts:76) unions terminal-typed `sources`, `backgroundRunningTerminals` and `shellRunningTerminals` — exactly the id set the sweep can ask about — and sends it (:140, :146-148). Host: `buildAgentStatusSnapshot` takes `candidateTerminalIds?: string[]` (agent-status-snapshot.ts:188) and returns the `inArray` intersection when present, `[]` for an empty candidate list, and the full unscoped list when the input is absent (:229-240). Procedure input added (notifications.ts:288-297).
+
+R11 — pill names the host (conservative only). New primitive selector `selectDisconnectedNotificationBusLabel` (stores/notification-bus/store.ts:78) returning a sorted comma-joined list of down hosts (URL `.host`, raw string fallback); exported from the barrel; tooltip and aria-label include it (NotificationBusPill.tsx:43, :66). The `(OFFLINE-RELAY-HOST)` comment on the selector states the open question — whether a relay socket to a switched-off host can ever hold open, and whether the pill should distinguish "a host you have open is unreachable" from "your own dots are frozen" — and explicitly says not to redesign registration without measuring. Registration untouched.
+
+R12 — see DEVIATION below.
+
+R13 — REST DELETE honest. terminal.ts:2124 handler is now async, awaits `disposeSessionAndWait`, and returns `{status: "dispose-pending", reason}` on a non-confirmed close (:2144-2150) mirroring `terminal.killSession`.
+
+R14 — deduped unknown-terminal error. `reportUnknownTerminal` (notifications.ts:86) logs the full error object on first sighting per terminalId, then a running count at most every 10 minutes (`UNKNOWN_TERMINAL_REPORT_INTERVAL_MS`, :70). The dedupe table is capped at 256 entries and cleared wholesale when exceeded (:84, :95) so it cannot become the unbounded-growth problem R10 was about. Call site at :196.
+
+R15 — docs. `notifications.agentStatusSnapshot | 5s (default)` row added to the Current budgets table (packages/host-service/QUERY_TIMEOUTS.md:55) with the reason (wedged readdir must reject rather than leave the resync promise pending and the retry disarmed).
+
+DEVIATION — R12: no reap implemented; logged + red kept (R12's own stated fallback)
+
+I investigated the owner files as instructed (apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts: `_askq_dir` :572, `_askq_owner` :594, `_clear_dir` :659, `_reap_askq` :667, `_touch(askq_dir / _askq_owner(...))` :1893). Findings:
+  • The owner files are EMPTY; their names are `_main` or a sanitized subagent id. They carry no session identity, so a `binding.agentSessionId` match is impossible from the marker.
+  • Binding liveness is ALREADY enforced upstream of this read: `store.list()` routes to `persistence.listLive()` (terminal-agents/store.ts:178-183), a liveness-joined read (session active + workspace-owned), so a marker for a dead terminal never reaches `hasPendingQuestionMarker`.
+  • The mtime-vs-`binding.startedAt` fence looks like a safe session boundary but is not, and would misfire in exactly the scenario it targets: a marker only survives into a new session when the SessionStart hook FAILED to run (SessionStart calls `_clear_dir` on the askq dir, pane-map-hook.ts:1660). In that same scenario the binding's `startedAt` is pinned by whichever later event did post, which can be AFTER a genuinely open question was marked — so the fence would drop a live red. `startedAt` also resets on a fresh binding and on an agentId change, widening that exposure.
+Conclusion: no host-side check is provably safe, so I took R12's explicit fallback — `pendingPermission` stays true, the ambiguity is logged loudly (owners whose mtime predates the binding's session start are named, with mtimes, at console.warn: agent-status-snapshot.ts:144-149), and the whole analysis is documented under `(LEAKED-ASKQ-OWNER)` at agent-status-snapshot.ts:87-106 including why this does NOT reintroduce the F3 mtime cap (a question pending overnight in the CURRENT session is never flagged). `hasPendingQuestionMarker` now takes `sessionStartedAt`; helper `findOwnersOlderThanSession` at :158. If you want an actual reap, the only safe place is the Python hook, not the host.
+
+VERIFICATION
+
+• biome: `bunx biome check <each touched file>` — "Checked 16 files. No fixes applied." Root `lint:fix` never run.
+• marker gate: `node scripts/check-feature-markers.mjs` → "All 142 feature markers present." exit 0. No new marker added; only prose/comments changed.
+• REFERR gate: `node scripts/check-dangerous-diagnostics.mjs` → clean across all 7 packages, exit 0 ("0 dangerous" everywhere).
+• tsc host-service: exactly the 2 pre-existing errors, unchanged from the HEAD baseline the previous commit documented ("8 to 2") — `hasRunningForegroundProcess` (terminal.ts:5) and `portManager.checkOutputForHint` (terminal.ts:2036, untouched code). Zero new.
+• tsc desktop: 21 errors, ZERO in any file I touched. I enumerated the error files: mermaid/hast duplicate-version debt (5 files), pty-daemon/terminal main-process types (6 files), V2WorkspaceView `trailing` prop, useDashboardSidebarState arity, plus the 2 host-service ones. Zero new.
+• tsc cli: adds only pre-existing `companion/http.ts:1593`. Zero new.
+• tests:
+  – host-service notifications unit + integration: pass.
+  – bug-hunt-2: 27 pass / 4 fail. Its notifications.hook test is GREEN (verified in isolation: 1 pass, 0 fail). NOTE: the suite is not fully green, and the 4 failures are pre-existing Windows-environment failures, not assertions — 2 are `EPERM: operation not permitted, symlink` (Windows blocks symlink creation without Developer Mode/admin), 2 are worktree-teardown failures surfacing `RangeError: Cannot use a closed database` in `ensureMainWorkspace`. None touch code in this commit. I did not attempt to fix them.
+  – reaper + notifications unit: 35 pass / 0 fail.
+  – workspace-client eventBus: 5 pass / 0 fail.
+  – renderer V2NotificationController: 16 pass / 0 fail.
+  – `terminal.adoption.node-test.ts` could NOT be run: it fails at module load on better-sqlite3 resolution (the known local win-arm64 limitation), so my R2 adopt changes have no local test coverage. Flagging that as a gap.
+• LF: verified on the COMMITTED blobs, not the worktree — `git rev-parse HEAD:<file>` + `git cat-file blob` + Python `raw.count(b'\r\n')` over all 17 files → 0 CRLF in every one. No `git stash` used anywhere.
+
+FILES (absolute)
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\events\types.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\notifications.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\test\integration\bug-hunt-2.integration.test.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\QUERY_TIMEOUTS.md
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\workspace-client\src\lib\eventBus.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\cli\src\commands\terminals\close\command.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\v2-workspace\$workspaceId\hooks\useV2WorkspaceRun\useV2WorkspaceRun.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\lifecycleEvents.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\components\HostNotificationSubscriber\HostNotificationSubscriber.tsx
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\v2-notifications\store.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\notification-bus\store.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\notification-bus\index.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\components\NotificationBusPill\NotificationBusPill.tsx
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\hooks\host-service\useTerminalAgentBindings\useTerminalAgentBindings.ts
+
+INCOMPLETE / CAVEATS
+1. R12 is a documented log-only outcome, not a reap — reasoning above; R12 authorized this fallback.
+2. bug-hunt-2 is not 100% green: 4 pre-existing Windows env failures remain (symlink EPERM ×2, worktree teardown ×2). The finding's own target test is green.
+3. `terminal.adoption.node-test.ts` cannot run locally (better-sqlite3 load failure), so R2's adopt-refusal path is unit-untested here; it typechecks and the reaper/notification suites pass.
+4. No new FEATURES.md marker; gate still reports 142. I introduced two comment-only tokens for traceability, `(LEAKED-ASKQ-OWNER)` and `(OFFLINE-RELAY-HOST)`, which are not registered markers and not asserted by any gate.
+</agent-message>
+
+---
+
+<agent-message from="review3-opus">
+Round-3 delta review of `9f60de86f` (DISPOSE-LIMBO round-2 fixes, R1-R15). BLOCKER band: EMPTY. Two MAJOR regressions introduced by this commit, five MINOR. Verdict: FIX-FIRST.
+
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:130
+Defect: R8 made cold-start seeding a whole-store decision taken per resync, but only the FIRST resync of a renderer session can ever see an empty store — every later resync in the same cold start replays stale review-greens unseeded.
+Failure: App restart (sessionStorage empty). Gen-1 resync covers the workspaces visible at that moment; rows whose `originWorkspaceId` is not yet in `workspaces` are dropped at :182 (`skippedUnknownWorkspace`). The user expands another project, `visibleWorkspaceIds` grows, `workspacesKey` changes, HostNotificationSubscriber.tsx:210 fires gen-2. `isColdStart` is now false (gen 1 wrote `sources`), so those rows apply their resting turn-end `lastEventType` at :202 with no `markTerminalSeen`, and no `terminalSeenAt` record exists to clear them at :234 — review-green latches on every agent tab of the newly-visible workspace for turns finished days ago, and nothing clears it. Identical failure across hosts: one `HostNotificationSubscriber` per hostUrl, buses open at different times, so host B's first resync sees host A's writes. The pre-R8 per-row test (`preEntry === undefined && preSeenAt === undefined`) handled both cases; R8 traded them for the outage case.
+Fix: Decide cold start ONCE per renderer session — a module-level `hasSeededColdStart` latch (or a sessionStorage key) set by the first resync and honoured by every later one, so a late-arriving workspace or a second host still seeds.
+
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1379
+Defect: R1's unconfirmed-exit gate is justified by "the reaper's eventual success emits a real exit" (lifecycleEvents.ts:178) — no such event is ever emitted, so a limbo terminal's dots stay latched for the life of the renderer session.
+Failure: Dispose fails to confirm. The first pass already ran `session.unsubscribeDaemon()` and `sessions.delete(terminalId)` (:1305-1319) before awaiting the close, so the daemon `onExit` broadcast at :2066 can never fire for this id. The reaper retries 5 min later via `disposeSessionAndWait`; `sessions.get()` is undefined, the fenced update flips the row to `disposed`, and both broadcast sites (:1380, :1421) sit inside `if (session ...)` — nothing is sent. lifecycleEvents.ts:181 returned early, so `sources[terminal:<id>]` axes, `shellRunningTerminals`, `backgroundRunningTerminals`, `terminalSeenAt` and `agentTerminals` keep their pre-dispose values. A terminal that was red on an AskUserQuestion when disposed shows red beside a dead pane until a manual workspace clear, a bus-reconnect sweep (which clears permission/working/background but deliberately not review), or an app restart.
+Fix: Thread the EventBus into `disposeSessionAndWait` (`startTerminalReaper` would take it too) and broadcast `eventType: "exit", confirmed: true` whenever the fenced update at :1353 actually flips a row from `active` to `disposed` with no in-memory session.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\events\types.ts:59
+Defect: Committed blob contains a U+FFFD replacement character (bytes `ef bf bd`) where an em dash belongs — "the daemon never answered <?> the process may still be running".
+Failure: Cosmetic, but it is mojibake baked into source and will ride along in every future diff of that hunk. Only such byte in the commit (all 17 blobs scanned, otherwise LF-clean).
+Fix: Restore the em dash.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1347
+Defect: `stampedAt === null` logs `console.error("dispose found no stamped row")` on a path the reaper takes by design.
+Failure: `reapOrphanedSessions` disposes rowless orphans (`orphan.rowless: true`, a documented two-pass-confirmed case); every such reap now emits an error-level line claiming an invariant violation. The stamp write and read-back are adjacent synchronous statements, so "row exists but stamp vanished" is effectively unreachable — in practice this branch only fires for the deliberate rowless case, training the reader to ignore a genuinely loud message.
+Fix: Re-read whether a row exists; log at warn for "no row", keep console.error for "row present, stamp gone".
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1800
+Defect: An explicit create that falls through to the "session already exists" adopt (:1733-1738) sets `isAdopted = true`, so the stamp is not cleared — yet the call returns success and marks the row `active`.
+Failure: Pane rehydration passes a persisted terminalId (`useV2TerminalLauncher` `CreateOptions.terminalId`). If that row is stamped from an unconfirmed dispose and the daemon still owns the PTY, the create adopts it, returns `{status:"active"}`, the renderer paints a live pane — while `listWorkspaceTerminalSessions` hides it (:727) and `shouldReapRow` kills it within one reap interval, silently. Keeping the stamp is right; returning success is not.
+Fix: Apply the adoptOnly refusal (:1624) to the adopt fallback too — return `{ error: "...is being disposed." }`.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\notifications.ts:292
+Defect: `candidateTerminalIds: z.array(z.string()).optional()` — no length cap, no per-element constraint, feeds straight into `inArray()` at agent-status-snapshot.ts:230.
+Failure: A large id set exceeds SQLite's bound-parameter limit, the query throws, `resyncAgentStatusFromHost` returns null, dots go unreconciled on a 10s retry loop. Violates validate-at-API-boundaries on a newly added input.
+Fix: `z.array(z.string().max(64)).max(500)` (or chunk the read host-side); reject rather than truncate.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:308
+Defect: `candidateTerminalIds` is captured before the request, so a terminal entering the store during the round-trip is absent from `knownTerminalIds` and is reported as a GHOST-TERMINAL.
+Failure: `console.warn("(GHOST-TERMINAL) ... unknown to host ... — axes left untouched")` names a terminal the host knows, and inflates `ghostsSkipped`. No state damage (the identity fence would skip it anyway), but the message is "loud on purpose" for a broken binding, so the false positive misdirects diagnosis.
+Fix: Skip ghost classification and the warn for ids that were never in `candidateTerminalIds` — only ids asked about and returned absent are ghosts.
+
+CHECKED CLEAN: `confirmed` flows end to end (host union -> `broadcastTerminalLifecycle` spread -> JSON -> `ServerMessage` cast -> re-narrow at eventBus.ts:243; type imported from `@superset/host-service/events`, so it typechecks and survives serialization); all three `terminal:lifecycle` consumers accounted for (useV2WorkspaceRun gated, lifecycleEvents gated, useTerminalAgentBindings deliberately not — a refetch asserts nothing); R9 fence under two racing disposes (second adopts the first's stamp, both writes idempotent, no double exit broadcast since the session is already out of the map) and under the reaper retry (stamp preserved, row correctly flips to `disposed`); R5 generation fence cannot strand an epoch (only the newest generation owns `syncedKeyRef`, and it re-arms its own failure); R4 always-fresh entries do not re-render pathologically (selectors derive a joined status string, `Object.is` still short-circuits); R10 empty-vs-absent candidate semantics correct (`[]`→`[]`, `undefined`→full list); `.returning().get()` valid for this better-sqlite3 drizzle dialect, matches project.ts:219; R6 CLIError signature/import correct; R13 async Hono handler correct; R14 dedupe cap/reset sound; R12 `binding.startedAt` exists, normal-case `pendingPermission` semantics unchanged (log-only). Fork invariants: FEATURES.md untouched, all 142 markers present, every changed blob LF-clean, biome clean on all 16 files, no new sync fs on the desktop main thread (the new `.sync()` reads are host-service).
+
+TEST/TYPE STATUS (all failures pre-existing, verified against the parent blob or environmental): host-service tsc reports 2 errors (`hasRunningForegroundProcess`, `checkOutputForHint`) byte-identical in `9f60de86f^`; desktop tsc errors are the known mermaid/lydell/windsurf debt, none in the 8 changed renderer files; 4 terminal integration failures are `listen EACCES` on the pty-daemon socket plus a Windows shell-resolution expectation; 4 bug-hunt-2 failures are symlink/git-fixture environment; 10 v2-notification store failures are `window.sessionStorage` undefined in `beforeEach` under bun test. R7's new assertion (`reason: "no-terminal-id"`) passes; reaper unit tests 26/26 pass.
+
+VERDICT: FIX-FIRST
+</agent-message>
+
+---
+
+<agent-message from="review3-fixes">
+ROUND-3 FIXES COMPLETE. Commit `1ae692e5b` on main, on top of `9f60de86f`. 10 files, +460/-74. No amend, no push. Tree clean.
+
+Title: `fix(desktop,host-service): dispose ownership, durable-disposition propagation, cold-start latch per round-3 review (DISPOSE-LIMBO)`. Body lists T1-T11. Committed with `git commit -F`.
+
+## DISPOSE-OWNERSHIP DESIGN
+
+Took the structural route, both halves.
+
+**(a) Ownership.** `packages/host-service/src/terminal/terminal.ts:1286-1312`. New `disposeResolutions` map, one entry per terminal id. `disposeSessionAndWait` is now a deliberately NON-async front door — lookup and insert both land in the caller's synchronous turn, so two callers cannot each miss the entry — wrapping a renamed private `runDisposeSession`. First caller owns stamp -> close -> fenced write -> broadcast; later callers get its promise. Entry self-removes on settle via `.finally`, so a reaper retry AFTER the owner finishes still runs a fresh dispose. No deadlock: `runDisposeSession` awaits `attachResolutions`, and nothing in the attach path calls dispose.
+
+**(b) Disposition.** `terminal.ts:1148-1183`. `DisposeSessionResult` gains `dbDisposition: "disposed" | "superseded" | "no-row" | "pending"`, set from the fenced write instead of discarded. Initial value `pending`, so an unconfirmed close cannot report a DB outcome it never had.
+
+## PER-FINDING
+
+T1 [MAJOR] `packages/host-service/src/trpc/router/terminal/terminal.ts:319-347`. `markTerminalExited` now runs only under `dbDisposition === "disposed"`. Documented why each other value must not delete: `pending` = your exact failure (PTY + active stamped row alive, binding gone, sweep clears a blocked agent's red permanently); `superseded` = binding belongs to the replacement; `no-row` = already defunct, hidden by the session-liveness join and collected by `deleteDefunct`.
+
+T2 [MAJOR] `packages/host-service/src/trpc/router/terminal/terminal.ts:349-361` + `packages/host-service/src/terminal/terminal.ts:2333-2352`. Both endpoints return a distinct `status: "superseded"` with a reason, checked BEFORE the `dispose-pending` branch. Zero consumer changes needed: all five call sites (BackgroundTerminalsButton:218, TerminalSessionDropdown:232, usePaneRegistry:127+156, useV2WorkspaceRun:291, `packages/cli/src/commands/terminals/close/command.ts:43`) already branch on `result.status !== "disposed"`, so superseded lands on today's non-success path exactly as specified.
+
+T3 [MAJOR] Closed by the coalescing map above.
+
+T4 [MAJOR] `packages/host-service/src/terminal/terminal.ts:1758-1793`. EEXIST fallback applies the stamped-row refusal and throws `Terminal session "<id>" is being disposed.` — thrown not returned, because the enclosing catch is what converts to `{ error }`. Re-reads the stamp rather than reusing `existingRecord`: that read predates env resolution, shell probe and daemon connect.
+
+T5 [MAJOR] `apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts:93-146, 178-188, 250-296`. Module latch `coldStartDecided`/`sessionBeganCold` decides once per renderer session, plus `reconciledWorkspaceKeys` keyed `${hostUrl}|${workspaceId}`. A row seeds iff session began cold AND its workspace is being reconciled for the FIRST time AND it has neither store entry nor `terminalSeenAt`. The reconciled set is what separates your scenario 2 from 3 — indistinguishable row-by-row, but a mid-session outage terminal belongs to a workspace already reconciled at gen-1 while a late-arriving workspace never was. On the genuine first resync all three conditions hold for every row = identical to the old whole-store rule. Reconnect (new epoch, same workspaces) correctly does NOT seed. Renderer reload correctly not cold: sessionStorage rehydrates before the first resync. All three scenarios documented at the latch.
+
+T6 [MAJOR] `packages/host-service/src/terminal/terminal.ts:1503-1533` + threading. EventBus threaded through `disposeSessionAndWait`, `runDisposeSession`, `disposeSession`, `reapOrphanedSessions`, `startTerminalReaper` (`packages/host-service/src/terminal/reaper/reaper.ts:4, 380, 393, 446-458, 470`). `createApp` returns its `eventBus` (`packages/host-service/src/app.ts:84-91, 350-359`); both entries pass it (`packages/host-service/src/serve.ts:107`, `apps/desktop/src/main/host-service/index.ts:126`). Stamped-row read widened to fetch `status` + `originWorkspaceId`; a sessionless `active -> disposed` flip broadcasts a confirmed `eventType:"exit"` with the row's workspaceId. Gated on the row having been `active` so a later pass cannot re-emit.
+
+T7 [MINOR] `packages/host-service/src/events/types.ts:59`. Em dash restored; verified in the COMMITTED blob: `daemon never answered — the process`.
+
+T8 [MINOR] `packages/host-service/src/terminal/terminal.ts:1445-1485`. Three outcomes: no row at all -> `console.warn` + `no-row` (the reaper's deliberate rowless-orphan path); row present but stamp cleared -> `console.error` + `superseded`; fence miss -> existing `console.error` + `superseded`.
+
+T9 [MINOR] `packages/host-service/src/trpc/router/notifications/notifications.ts:283-303`. `z.array(z.string().max(64)).max(500)`, rejects not truncates. Confirmed renderer count: one id per terminal it holds dot state for (`collectCandidateTerminalIds` unions sources + background + shell), ids are `crypto.randomUUID()` (36 chars). Far below the cap -> picked validation only, no host-side chunking.
+
+T10 [MINOR] `.../resyncAgentStatus.ts:325-360`. New `askedAboutIds` set from `candidateTerminalIds`; only ids SENT and absent from `knownTerminalIds` are ghosts. Others skip silently, identity fence still protects them.
+
+T11 [MINOR] `apps/desktop/src/renderer/stores/notification-bus/store.ts:78-110`. `describeBusHost` keeps the routing key from the `/hosts/<key>` path segment (`${url.host}/${decodeURIComponent(routingKey)}`); label collection is now a `Set` so duplicates cannot appear.
+
+## VERIFICATION
+
+- biome: `bunx biome check` per touched file, all 10, exit 0, no fixes pending. Never ran root `lint:fix`.
+- markers: `node scripts/check-feature-markers.mjs` -> "All 142 feature markers present." No FEATURES.md changes.
+- REFERR: `node scripts/check-dangerous-diagnostics.mjs` -> clean.
+- tsc `--noEmit`, desktop + host-service + cli: ZERO NEW errors. host-service's two (`hasRunningForegroundProcess` missing from pty-daemon export; `checkOutputForHint` arity from stale `packages/port-scanner/dist-types/port-manager.d.ts`) both exist verbatim at HEAD — confirmed the identical call site via `git show HEAD:...terminal.ts`. Desktop's are the known mermaid/hast duplicate-version + `V2PresetsBar`/`useDashboardSidebarState` debt; I listed every erroring file and none of mine appear.
+- tests, no new failures: host-service notifications + reaper 35/0. Renderer V2NotificationController 16/0. workspace-client 13/0. host-service terminal-agents + events 42/0.
+- For the two failing suites I did NOT assume — built a detached worktree at HEAD (`tmp/baseline-r3`, node_modules junctioned) and ran side by side. `bug-hunt-2`: mine 14 pass/4 fail; HEAD 14/4 then 13/5. Same 3 core failures both sides (2 symlink EPERM + worktree-removal), 4th/5th flap; baseline flakier than my tree. `terminal.integration.test.ts`: identical 5 pass/4 fail on both, same four names, all need a real pty-daemon. Adoption node-test fails `Cannot find module 'bun:sqlite'` (known env). Worktree + junctions removed; `git worktree list` shows only the repo and one unrelated pre-existing entry.
+- Blob bytes via `git cat-file -p HEAD:<path>` + python counts, all 10 files: CRLF=0, bare CR=0, `0xEF 0xBF 0xBD`=0, NUL=0.
+- No `git stash` at any point.
+
+## DEVIATIONS
+
+1. Session-broadcast gate changed from `!racedCreate` to `dbDisposition !== "superseded"`. The old flag was FALSE when a row existed with its stamp cleared — precisely when the id names a replacement — so it broadcast a misattributed exit. Suppressing it is the same direction as T2.
+2. `disposeSessionsByWorkspaceId` still counts terminated/failed off `daemonCloseSucceeded`. A superseded dispose during workspace teardown is a rare race; rescoring it was outside the brief.
+3. Added `resetResyncColdStartLatchForTests` (`resyncAgentStatus.ts:142-146`) — currently UNUSED. Module-scoped session state is otherwise untestable and no resync test exists yet. Say the word and I'll drop it.
+
+## NOT DONE (deliberate, flagging)
+
+The reaper's REVERSE WALK (`planStaleRowCorrection`, `reaper.ts`) flips rows `active -> disposed` with a raw `db.update`, not the fenced write, so it still broadcasts nothing. That is the "row survived but the daemon forgot the PTY" path (host crash/reboot), not the limbo path T6 describes ("whenever the fenced update flips a row"). In scope as written = done; if you want the renderer told there too it is a small separate follow-up.
+</agent-message>
+
+---
+
+<agent-message from="review4-opus">
+Round-4 review of `1ae692e5b` (DISPOSE-LIMBO round-3 fixes). 0 BLOCKER, 2 MAJOR, 5 MINOR. Headline: T6's confirming-exit fix is not wired into the renderer's own kill path, so the defect it fixes survives on the most common route.
+
+```
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\terminal\terminal.ts:319
+Defect: tRPC `killSession` calls `disposeSessionAndWait(input.terminalId, ctx.db)` with no eventBus, so T6's sessionless confirming-exit broadcast is a no-op on the renderer's primary kill path. `ctx.eventBus` is in scope and used two procedures above (lines 251, 273).
+Failure: `sessions` is empty while rows stay `active` after any pty-daemon disconnect (terminal.ts:556 `sessions.clear()`), after any host-service restart, and for every limbo terminal. A user kills such a terminal from the pane dropdown / BackgroundTerminalsButton / pane close -> runDisposeSession takes the `!session && dbDisposition === "disposed" && rowWasActive` branch (terminal.ts:1503) -> `eventBus?.broadcastTerminalLifecycle` on `undefined` -> nothing sent, and no warning either (the warn only covers a null workspaceId). `handleV2TerminalLifecycleEvent` (lifecycleEvents.ts:188-196) is the ONLY caller of `clearSources`/`pruneAgentTerminal`/`pruneTerminalSeen`, so the dead terminal's dots — including a red AskUserQuestion latched at dispose time — persist in the tab, pane header, sidebar row and rollup for the rest of the renderer session. The reaper cannot repair it: the row is now `disposed`, so `shouldReapRow` never selects it again.
+Fix: pass `ctx.eventBus` as the third argument. Same omission at packages/host-service/src/terminal/terminal.ts:1619 (`disposeSessionsByWorkspaceId`) and packages/host-service/src/runtime/teardown/teardown.ts:113 — workspace-teardown paths where it matters less, but thread it there too rather than leave it inconsistent.
+
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\reaper\reaper.ts:423-431
+Defect: `planStaleRowCorrection`'s apply loop flips rows `active -> disposed` with a raw unfenced `update ... where id = ?` and no broadcast — the same pair of defects T6 and the dispose fence exist to close, on the sibling code path. (Pre-existing; this is your item 7, confirmed real.)
+Failure, half A (no broadcast): a limbo terminal whose PTY actually died while the close call failed is never re-listed by the daemon, so `reapOrphanedSessions` never retries it and the eventBus-carrying dispose never runs. `planStaleRowCorrection` is what eventually flips the row, silently. The renderer keeps the pane's dots forever — the precise symptom T6 claims to fix, for a reachable limbo sub-case.
+Failure, half B (no fence): `rowById` is snapshotted at reaper.ts:363 before the awaited orphan-disposal loop (each iteration awaits a daemon close). A user attaching in that window drives `resolveAttachSessionOnce`'s respawn, which mints a fresh PTY and upserts the row `active` with the stamp cleared. The unfenced update at 427 then marks that live terminal `disposed`; `listWorkspaceTerminalSessions` hides it and the next reaper pass sees `shouldReapRow` true (status `disposed`) and kills the PTY. The user's just-restored terminal dies within one interval.
+Fix: fence the update on the snapshot's identity (`and(eq(id), eq(status,"active"), eq(createdAt, row.createdAt))`, or the same `disposeRequestedAt` fence dispose uses), take `.returning()`, and broadcast a confirmed exit carrying the row's `originWorkspaceId` only when the update actually flipped it.
+```
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1919
+Defect: the T4 EEXIST refusal throws a bare Error, so the outer catch (terminal.ts:1926) returns `{ error }` WITHOUT `code: "session-gone"`. The two sibling refusals it says it matches (terminal.ts:435, 478) both set the code. The message matches verbatim; the code does not.
+Failure: on the WS attach path the renderer transport (terminal-ws-transport.ts:606) marks a session permanently ended only on `session-gone`; without it the pane retries the reconnect. Self-corrects next attempt (the pre-adopt stamp check at terminal.ts:428 sees the stamp and returns the code), so the cost is one extra reconnect cycle, not a hang.
+Fix: return `{ error, code: "session-gone" }` from this branch instead of throwing, or thread the code through the catch.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:293-298
+Defect: `workspaceFirstReconcile` is a proxy for "this row's event predates the renderer session", and it is wrong for a workspace whose entire life so far fell inside a bus outage.
+Failure: cold-started session; bus goes down; a workspace is created and an agent in it finishes a turn during the outage; bus recovers. That workspace has never been reconciled, so `workspaceFirstReconcile` is true, `preEntry` and `terminalSeenAt` are both empty (the dead bus destroyed the event), `sessionBeganCold` is still true — `seedColdStart` fires and marks the genuine minutes-old review-green as seen. Nothing puts it back. This is scenario 3 in the module's own doc block leaking through the scenario-2 discriminator.
+Fix: gate on event age rather than the workspace proxy — record the renderer session start when the latch is set and require `row.lastEventAt < sessionStartedAt`. That states the real invariant and makes `reconciledWorkspaceKeys` unnecessary.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:142
+Defect: `resetResyncColdStartLatchForTests` is exported with zero callers, and there is no test file for this module (the sibling `lib/` dir has tests for notificationContent, resolveV2NotificationTarget and statusTransitions only). Its doc calls it a "reload guard", which nothing implements.
+Failure: no runtime failure. It is a live footgun — calling it mid-session re-arms cold-start seeding and would mark every unseeded row seen — dressed as a supported seam.
+Fix: DROP it, or add the test that justifies it.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:1619-1623
+Defect: `disposeSessionsByWorkspaceId` still scores `terminated`/`failed` off `daemonCloseSucceeded`, which this commit established is not proof this generation died.
+Failure: a `superseded` result counts as `terminated`, so `workspaceCleanup.destroy` surfaces no warning while a live replacement PTY exists for a workspace being destroyed. The post-loop delete at 1630 spares `active` rows, so the row survives and the reaper eventually collects it. Acceptable, but it is the same lie T2 removed from the other two endpoints.
+Fix: count `dbDisposition === "disposed"` (and `"no-row"`) as terminated, everything else as failed.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\sdk\src\resources\terminals.ts:179-186
+Defect: the `TerminalCloseResult.status` JSDoc enumerates only `"disposed"` and `"dispose-pending"`; this commit added a third value SDK callers will now see.
+Failure: documentation only — the "never treat a non-disposed status as a successful close" rule keeps callers correct.
+Fix: add `"superseded"` to the doc.
+```
+
+VERDICT ON ITEM 7 — two parts:
+1. `planStaleRowCorrection` silence: MAJOR, not a nice-to-have. It is not merely "renderer never told"; it is the T6 symptom surviving for the limbo terminal whose PTY genuinely died (daemon stops listing it, so the eventBus-carrying reaper dispose never runs and this raw update is the only thing that ever touches the row). The missing fence is a separate, equally real half — see MAJOR #2 half B, which kills a just-respawned live terminal.
+2. `resetResyncColdStartLatchForTests`: DROP. No test exists to use it, and it is a footgun if ever called in production.
+
+CHECKED AND CLEAN: the `disposeResolutions` front door (non-async, lookup+insert in one synchronous turn, no leak — `runDisposeSession` is `async` so a synchronous throw becomes a rejection, `.finally` self-removes on both settle paths with an identity guard, and a post-settle reaper retry gets a fresh dispose); no attach/dispose deadlock (`resolveAttachSessionOnce` and `createTerminalSessionInternal` contain no dispose call; `terminal-agents.ts:167`'s dispose runs after the create resolves); no double-broadcast (the two branches are mutually exclusive on `!session`) and the limbo broadcast carries the ROW's `originWorkspaceId`; the gate change from `!racedCreate` to `dbDisposition !== "superseded"` correctly newly suppresses the stamp-cleared case and suppresses no genuine exit (the sessionless branch requires a successful fenced write, which requires a confirmed close); all five killSession consumers (BackgroundTerminalsButton:220, TerminalSessionDropdown:236, usePaneRegistry:130 and :158, useV2WorkspaceRun:295, CLI close/command.ts:48) branch on `status !== "disposed"` with `"reason" in result`, none string-matches `"dispose-pending"`; the EEXIST refusal does reach the `{ error }` catch and cannot deadlock with the dispose map; serve.ts:107 and apps/desktop/src/main/host-service/index.ts:126 wiring compiles and reaper.ts's `EventBus` import is type-only (no cycle); a closed EventBus broadcasts to an empty client map without throwing; the cold-start latch is correct for renderer reload (zustand `persist` over `window.sessionStorage` hydrates synchronously, so the first resync sees a full store and the latch stays false), multi-host, and a discarded resync (the discard returns before `reconciledWorkspaceKeys` is marked); module-level latch state is per-realm with no leak across workspace switches; T9's `.max(64)` is safe for every production terminal id (all `crypto.randomUUID`, 36 chars); T10 and T11 logic including `decodeURIComponent` throwing inside the try. Invariants: FEATURES.md untouched, all 142 markers present; zero CR bytes and zero U+FFFD across all ten committed blobs; tsc clean on every changed file (host-service 2 errors, desktop 18, cli 4 — all pre-existing, `git blame` dates 2026-05 to 2026-07); `bun test` 51/51 pass on reaper + notifications + terminal-agents store, 324/327 on the desktop notification and terminal libs with the 3 failures in `launch-command.test.ts`, untouched since the fork baseline; biome clean on all ten files; no new synchronous fs on the desktop main thread; ws native-validate env untouched.
+
+VERDICT: FIX-FIRST
+</agent-message>
+
+---
+
+<agent-message from="review5-opus">
+ROUND-5 DELTA REVIEW — ed4f61e95 (9 files, +168/-90). Verdict: MINOR-ONLY. No BLOCKER, no MAJOR. Stack ships.
+
+=== FINDINGS (ranked) ===
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:284
+Defect: row.lastEventAt is HOST clock (notifications.ts:233 sets occurredAt = Date.now() in the host process); sessionStartedAt is RENDERER clock. This is the first genuine cross-machine comparison in the file — the existing preEntry.occurredAt > row.lastEventAt compares host-broadcast values to each other, so the doc's "same caveat as every occurredAt comparison" is generous.
+Failure: relay host clock BEHIND renderer by S. Cold start + dead bus + agent completes within the first S ms of the session → host stamps lastEventAt = start + D − S; with D < S the row scores as pre-session, markTerminalSeen fires, and the immediately following block (seenAt >= lastEventAt && status === "review") calls clearSourceAttention → a genuine completion green is destroyed with nothing to restore it. Opposite skew (host ahead) is benign — pre-session greens inside S merely survive as unread. Local host = same clock = S 0, the common case. The damaging direction needs skewed relay AND dead bus AND completion inside S, hence MINOR not MAJOR.
+Fix: derive the boundary from host time — return a host `now` on the snapshot and set sessionStartedAt from the first snapshot's host clock, or subtract an observed (hostNow − rendererNow) offset before comparing.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\reaper\reaper.ts:433
+Defect: `if (observed?.createdAt == null)` is unreachable — id comes from `correct`, built by iterating rowById; createdAt is .notNull() with a default (db/schema.ts:25) and is always selected (reaper.ts:123). If it ever became reachable it re-adds the id to absentThisPass every pass and the row can never be corrected — a silent permanent leak, against the fail-loud rule.
+Failure: no live failure today. A future schema change making createdAt nullable silently stops the reverse walk for those rows, with zero log output.
+Fix: drop the branch, or keep it and console.warn instead of skipping mutely.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\teardown\teardown.ts:121 (with :81)
+Defect: the threaded eventBus is inert on the path it was added for. The transient teardown session is created at :81 WITHOUT eventBus, so session.eventBus is undefined; runDisposeSession's in-memory branch (terminal.ts:1494) broadcasts via session.eventBus, not the passed bus. The passed bus reaches only the sessionless branch (terminal.ts:1523).
+Failure: nothing user-visible — the teardown terminal is listed:false with no pane, so a missing broadcast costs nothing. But the commit message's "no dispose path is bus-less" is overstated here and a later reader will assume the bus is live.
+Fix: pass eventBus into the createTerminalSessionInternal call at :81 too, or state in the option JSDoc that it only covers the sessionless retry.
+
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\terminal.ts:2324
+Defect: REST POST /terminal/sessions discards the new `code` and answers a plain 500. The EEXIST refusal at :1937 is reachable from REST (non-adoptOnly path), so that boundary cannot distinguish "being disposed" from a server error.
+Failure: a REST/SDK caller retries a create the host will refuse until the dispose lands, instead of treating the session as gone. No regression — it was a bare 500 before too.
+Fix: forward the code and answer 409 when code === "session-gone".
+
+=== VERIFIED CLEAN (with the evidence) ===
+
+Reaper fence (U2) — core claim holds, proven empirically. The create/adopt upsert REWRITES createdAt (terminal.ts:1990), so a racing respawn changes the fenced identity. A drizzle/better-sqlite3 probe against the real schema confirmed all three cases: match returns {originWorkspaceId}; miss returns undefined (no throw — `if (!flipped)` is the correct guard); with createdAt rewritten the update matches nothing and the LIVE replacement row stays `active`, which is exactly the row the unfenced update used to kill. Fence-miss skips without re-arming = the two-pass clock restarts, not a leak: the next pass re-reads the row fresh and re-condemns it if still stale. Broadcast uses the returned row's originWorkspaceId, fires only on a proven flip, never on miss or throw.
+
+EventBus threading (U1) — every non-test call site of disposeSession / disposeSessionAndWait / disposeSessionsBy* now carries a bus; ctx.eventBus is non-optional on HostServiceContext (types.ts:40), one bus per host process. No double-broadcast: in-memory and sessionless branches are mutually exclusive and `superseded` never broadcasts. The renderer already acted on status === "disposed" from the tRPC response (BackgroundTerminalsButton.tsx:224), so the broadcast asserts nothing the kill path didn't already assert.
+
+U3 scoring — dbDisposition is only ever non-"pending" inside if (closeResult.succeeded), so the ONLY behaviour change is superseded → failed. "no-row" as terminated is correct: it implies the close succeeded and nothing durable references the id. Effect on workspace-cleanup is a warning string, never an abort.
+
+U4 — terminal.createSession really is z.string().optional() unbounded, so the element cap was inconsistent with the creation boundary. agentStatusSnapshot is queryProcedure = protectedProcedure + timeout, so the relaxation sits behind auth; the array cap (500) still bounds the inArray parameter count.
+
+U5 — return-instead-of-throw skips no cleanup (the enclosing catch only reshapes the error). resolveAttachSessionOnce propagates via `return created`; WS attach forwards it (terminal.ts:2515/2521); terminal-ws-transport.ts:606 marks the session ended on it. Every consumer narrows with `"error" in x` — none switches on exact object shape.
+
+U6/U7 — zero dangling references to resetResyncColdStartLatchForTests, reconciledWorkspaceKeys, workspaceReconcileKey anywhere in the tree. preEntry/preState are still captured before apply(), so the live-event fence is intact. Latch/sessionStartedAt set before the snapshot fetch: on a failed fetch the timestamp stays early, which errs toward showing greens (the safe direction).
+
+Biome reformat (probe 6) — word-level diff shows only an identical import block relocated, one call wrapped, plus the two ctx.eventBus additions. multi-repo-cleanup has no cycle back into workspace-cleanup and no module-scope side effects. Semantically inert.
+
+Invariants — 142/142 markers present, FEATURES.md untouched by this commit. No U+FFFD in any committed blob. Blobs are CRLF, but so is EVERY blob in this repo (package.json, FEATURES.md, schema.ts all 100% CRLF) and the diff carries no EOL churn — consistent, not a regression. Working tree clean; HEAD == ed4f61e95.
+
+Typecheck — host-service: 2 errors, both pre-existing on untouched lines (terminal.ts:5, hasRunningForegroundProcess IS exported from packages/pty-daemon/src/process-tree.ts:240 = stale dist types; terminal.ts:2241). desktop: 64 lines, all pre-existing node-pty .d.ts / mermaid / windsurf debt, ZERO in resyncAgentStatus or V2NotificationController.
+
+Tests — reaper.test.ts 26/26 pass; terminal-ws-transport.test.ts 23/23 pass; host-service src/terminal + src/trpc 432 pass / 8 fail, all 8 in resolveLaunchShell, resolveInitialCommand and git-network workspace-creation tests (Windows-env, untouched code). Biome clean on all 9 files. Coverage gap worth knowing: the reaper's fenced write has NO test — reaper.test.ts covers only the pure planner; my runtime probe substitutes for it.
+
+Also checked clean: no new sync fs on the desktop main thread (the only desktop file is a renderer module with no fs), no ws native-validate changes, no secrets/injection surface.
+
+VERDICT: SHIP
+</agent-message>
