@@ -3,21 +3,35 @@
   "checkpoint_id": "5249b7f9e0cc",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 3,
-  "files_touched": null,
+  "checkpoints_count": 14,
+  "files_touched": [
+    "apps/desktop/src/renderer/components/NotificationBusPill/NotificationBusPill.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts",
+    "apps/desktop/src/renderer/stores/notification-bus/index.ts",
+    "apps/desktop/src/renderer/stores/notification-bus/store.ts",
+    "packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts"
+  ],
   "sessions": [
     {
       "metadata": "/52/49b7f9e0cc/0/metadata.json",
       "transcript": "/52/49b7f9e0cc/0/full.jsonl",
       "content_hash": "/52/49b7f9e0cc/0/content_hash.txt",
       "prompt": "/52/49b7f9e0cc/0/prompt.txt"
+    },
+    {
+      "metadata": "/52/49b7f9e0cc/1/metadata.json",
+      "transcript": "/52/49b7f9e0cc/1/full.jsonl",
+      "content_hash": "/52/49b7f9e0cc/1/content_hash.txt",
+      "prompt": "/52/49b7f9e0cc/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 3893,
-    "cache_creation_tokens": 17382004,
-    "cache_read_tokens": 816106719,
-    "output_tokens": 1674536,
-    "api_call_count": 2035
+    "input_tokens": 3950,
+    "cache_creation_tokens": 17586050,
+    "cache_read_tokens": 821150084,
+    "output_tokens": 1704253,
+    "api_call_count": 2065
   }
 }

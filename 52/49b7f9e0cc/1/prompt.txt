@@ -1,0 +1,306 @@
+[Image #1]  WHY IS this askuser not showing as a red dot its like its working..... Also why do I have the claude symbol with 2 the ones above it already do what I need by showing each terminal box...
+
+---
+
+save your context
+
+---
+
+save your context
+
+---
+
+use opus sub agents for everything save your context
+
+---
+
+whats the outcome
+
+---
+
+<agent-message from="chip-hunt">
+Red starburst + "2" = upstream's running-agents facepile chip (Claude icon + StatusIndicator corner dot + agent count), NOT a rollup/unread counter.
+
+(a) COMPONENT + PATH
+`DashboardSidebarAgentsChip` — C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\components\DashboardSidebar\components\DashboardSidebarWorkspaceItem\components\DashboardSidebarExpandedWorkspaceRow\components\DashboardSidebarWorkspaceChips\components\DashboardSidebarAgentsChip\DashboardSidebarAgentsChip.tsx:61-105 (badge/button; count span at :102).
+Icon+red dot: ...\DashboardSidebarAgentsChip\components\DashboardSidebarAgentAvatar\DashboardSidebarAgentAvatar.tsx:19-38 (red = status "permission").
+Parent strip: ...\DashboardSidebarWorkspaceChips\DashboardSidebarWorkspaceChips.tsx:74-77 (agents chip then ports chip).
+Mount order: ...\DashboardSidebarExpandedWorkspaceRow\DashboardSidebarExpandedWorkspaceRow.tsx:478-482 = fork (TAB-CHIPS) per-tab chips row, then :483-487 = this upstream chips strip directly beneath. That is the row the user sees.
+
+(b) WHAT "2" COUNTS
+`agents.length`, where DashboardSidebarWorkspaceChips.tsx:37-38 sets
+  const agents = workspaceAgentsRowEnabled && runningAgents.length > 1 ? runningAgents : [];
+`runningAgents` = one entry per live agent binding for the workspace: useDashboardSidebarWorkspaceRunningAgents.ts:48-63 iterates useTerminalAgentBindings(workspaceId). So: count of bound agent processes (per terminal), hidden at <=1. Avatar = highest STATUS_PRIORITY agent, newest startedAt on ties (DashboardSidebarAgentsChip.tsx:38-45).
+
+(c) UPSTREAM, NOT FORK
+Introduced by upstream commit 420b2dd8c "feat(desktop): replace sidebar activity strip with port/agent chips and bulk-close hover cards (#5887)", 2026-07-22, first shipped in desktop-v1.18.0. No FEATURES.md marker. The chips ABOVE it are the fork's (TAB-CHIPS), FEATURES.md:62.
+
+(d) REUSE / BLAST RADIUS — contained
+DashboardSidebarAgentsChip has exactly one caller (DashboardSidebarWorkspaceChips.tsx:75). Its subtree (DashboardSidebarAgentAvatar, DashboardSidebarAgentHoverRow) and both hooks (useDashboardSidebarWorkspaceRunningAgents, useDashboardSidebarAgentKill) are used nowhere else. Ports chip is independent. The experiment flag useWorkspaceAgentsRowEnabled (renderer\stores\workspace-agents-row.ts) gates BOTH this chip and the fork's TAB-CHIPS row, so it is not a usable removal lever.
+
+(e) MINIMAL CHANGE
+Remove: in DashboardSidebarWorkspaceChips.tsx delete the agents branch — imports :5-6 and :8, the flag/`runningAgents`/`agents` bindings :29 and :33-38, render :74-76; guard at :40 becomes `if (ports.length === 0) return null`. Then delete the DashboardSidebarAgentsChip/ subtree + both hooks, and update the decommission checklist item 3 in workspace-agents-row.ts:13-16. Fork cost: this is an upstream-owned file, so the deletion needs its own FEATURES.md marker or a future nightly merge silently re-imports the chip.
+Merge instead of remove: the only capability lost is the hover card's per-agent Open/Stop and "Stop all agents" (DashboardSidebarAgentsChip.tsx:107-136) — no other surface can kill an agent. Port those onto the tab chip's context menu, keeping useDashboardSidebarAgentKill.
+
+NOT 100% REDUNDANT — 3 gaps. Tab chips are per-TAB (folded over panes, useDashboardSidebarWorkspaceTabChips.ts:30-50) and only render at tabChips.length >= 2 (DashboardSidebarWorkspaceDetails.tsx:32). The agents chip is per-BINDING. It shows uniquely for: 2 agents split-paned inside ONE tab, and any 1-tab workspace.
+
+SEPARATE BUG WORTH RAISING: this upstream chip re-introduces exactly what (CHIP-DOT-UNIFY) fixed. Its status comes from raw host binding lastEventType via deriveTerminalAgentStatus (apps\desktop\src\renderer\hooks\host-service\useTerminalAgentStatuses\deriveTerminalAgentStatus.ts) — a 4-case map that reads fork events (SubagentActive, BackgroundRunning) as idle — with no open-pane liveness gate. The CHIP-DOT-UNIFY fix (02fe8a222) was applied to the hook copy under DashboardSidebarWorkspaceDetails/; upstream's 420b2dd8c created a fresh unfixed copy under DashboardSidebarWorkspaceChips/. FEATURES.md:60 still claims the fixed behaviour and store.ts:736 still says "the surviving sidebar chip consumer is useV2WorkspaceTabChips" — no longer true. Consequence: the red "2" can disagree with the tab-chip dots above it and can stay trapped red on a closed tab's binding.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a52a256cc1a196f87</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\905bacbc-36b9-4f9b-9873-1366bc98b0a8\tasks\a52a256cc1a196f87.output</output-file>
+<status>completed</status>
+<summary>Agent "Trace hook POST routing" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Full trace complete. Report:
+
+---
+
+# Delivery path (chain)
+
+| # | Stage | file:line |
+|---|---|---|
+| 1 | `superset-notify.py` POST (template embedded in TS) | `apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts:59` (`NOTIFY_SCRIPT_FILENAME`), `:1992` `_post_hook`, `:2309` call |
+| 2 | Hono `/trpc/*` mount | `packages/host-service/src/app.ts:282-305` |
+| 3 | `notifications.hook` procedure | `packages/host-service/src/trpc/router/notifications/notifications.ts:86-149` |
+| 4 | eventType mapping | `packages/host-service/src/events/map-event-type.ts:36-119` |
+| 5 | WS fan-out | `packages/host-service/src/events/event-bus.ts:171-175` → `:146-163` |
+| 6 | `/events` WS route (auth) | `packages/host-service/src/app.ts:264`, `:255-262` |
+| 7 | Client bus dispatch | `packages/workspace-client/src/lib/eventBus.ts:146-257` (agent:lifecycle `:194-203`) |
+| 8 | Renderer subscribe | `.../V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.tsx:64-83` |
+| 9 | `handleV2AgentLifecycleEvent` | `.../V2NotificationController/lib/lifecycleEvents.ts:46` |
+
+---
+
+# 1. `notifications.hook` definition + handler body
+
+`packages/host-service/src/trpc/router/notifications/notifications.ts:86`
+
+```ts
+hook: publicProcedure.input(hookInput).mutation(async ({ ctx, input }) =&gt; {
+    const eventType = mapEventType(input.eventType);
+```
+
+Input schema `:30-36`: `terminalId?`, `eventType?`, `agent?` — **all optional**.
+
+**eventType mapping** — `packages/host-service/src/events/map-event-type.ts:87-98`:
+```ts
+if (
+    eventType === "PermissionRequest" ||
+    eventType === "Notification" ||
+    eventType === "PreToolUse" ||
+    eventType === "preToolUse" ||
+    eventType === "pre_tool_use" ||
+    eventType === "exec_approval_request" ||
+    eventType === "apply_patch_approval_request" ||
+    eventType === "request_user_input"
+) {
+    return "PermissionRequest";
+}
+```
+Unrecognized string → `return null` (`:118`).
+
+**Workspace resolution** — `notifications.ts:101-113`. Synchronous SQLite lookup, `terminal_sessions.origin_workspace_id`:
+```ts
+const terminalSession = ctx.db.query.terminalSessions
+    .findFirst({
+        where: eq(terminalSessions.id, input.terminalId),
+        columns: { originWorkspaceId: true },
+    })
+    .sync();
+```
+Then broadcast + store record `:118-134`:
+```ts
+ctx.eventBus.broadcastAgentLifecycle({
+    workspaceId: terminalSession.originWorkspaceId,
+    eventType,
+    terminalId: input.terminalId,
+    ...(agent ? { agent } : {}),
+    occurredAt,
+});
+```
+`occurredAt = Date.now()` (`:116`) — **host clock, ignores any hook-supplied time**.
+
+Binding row written at `packages/host-service/src/terminal-agents/store.ts:64-114`.
+
+---
+
+# 2. Binding lookup failure → silent 200, NO log
+
+Three drop branches, all `return { success: true, ignored: true }` → **HTTP 200**:
+
+- `notifications.ts:88-94` — unmapped eventType
+- `:96-99` — no `terminalId`
+- `:107-113` — no `originWorkspaceId`:
+```ts
+if (!terminalSession?.originWorkspaceId) {
+    warnDroppedCompanionCapture(
+        input,
+        `terminal ${input.terminalId} has no originWorkspaceId`,
+    );
+    return { success: true, ignored: true as const };
+}
+```
+
+**The log is a no-op for ordinary events.** `packages/host-service/src/trpc/router/notifications/companion-question-sink.ts:212-221`:
+```ts
+export function warnDroppedCompanionCapture(
+	payload: CompanionHookPayload,
+	reason: string,
+): void {
+	if (!payload.companionQuestion &amp;&amp; !payload.companionQuestionResolved) return;
+	console.warn("[companion-capture] dropping question payload:", reason, {
+```
+→ A `PermissionRequest` with no companion payload is dropped **completely silently**. The hook script sees `2*` and exits 0 (`notify-hook.template.sh:141-143`); the Python logs `"action": "posted"` with `httpStatus: 200` (`pane-map-hook.ts:2310-2314`) — **the log says "posted" for a dropped event**.
+
+`origin_workspace_id` is nullable with `onDelete: "set null"` — `packages/host-service/src/db/schema.ts:20-23`:
+```ts
+originWorkspaceId: text("origin_workspace_id").references(
+    () =&gt; workspaces.id,
+    { onDelete: "set null" },
+),
+```
+Set only on terminal open/upsert: `packages/host-service/src/terminal/terminal.ts:1579`, `:1586`.
+
+---
+
+# 3. Renderer subscription + gating
+
+**Subscribe** — `HostNotificationSubscriber.tsx:64-83`:
+```ts
+const bus = getEventBus(hostUrl, () =&gt; getHostServiceWsToken(hostUrl));
+const removeAgentListener = bus.on(
+    "agent:lifecycle",
+    "*",
+    handleAgentLifecycle,
+);
+```
+Per **host URL**, not per workspace. `"*"` → no bus-level workspace filter (`packages/workspace-client/src/lib/eventBus.ts:178-184`). `useEffect` deps `[hostUrl]` only, handler is `useEffectEvent` → no stale closure.
+
+**Gate 1 — workspace must be in this subscriber's list.** `HostNotificationSubscriber.tsx:41-54`:
+```ts
+const workspace = workspacesById.get(workspaceId);
+if (!workspace) return;
+handleV2AgentLifecycleEvent({ ... });
+```
+**Silent. No logging.** (Contrast: the Electron fallback path logs its equivalent drop — `V2NotificationController.tsx:169-180`, `reason: "workspace-not-loaded"`.)
+
+**Gate 2 — sidebar visibility filter.** `V2NotificationController.tsx:103-116`:
+```ts
+const workspaceHosts = useMemo(
+    () =&gt;
+        allWorkspaceHosts.filter((workspace) =&gt;
+            visibleWorkspaceIds.has(workspace.workspaceId),
+        ),
+```
+`useVisibleSidebarWorkspaceIds.ts:73-90` — a workspace is visible only if (a) it has a local-state row, is not `isHidden`, **and its `projectId` is in the sidebar-projects set**; or (b) it's a `type === "main"` workspace auto-included on this machine (`sidebarVisibility.ts:33-49`). Notably `useVisibleSidebarWorkspaceIds.ts:37-40` requires the sidebar project to also exist in live `hostProjects`.
+
+**Gate 3 — host-group routing.** `V2NotificationController.tsx:289-315` / `:323-340`:
+```ts
+if (machineId &amp;&amp; hostId === machineId) {
+    return activeHostUrl;
+}
+return `${relayUrl}/hosts/${buildHostRoutingKey(organizationId, hostId)}`;
+```
+`:297` `if (!hostUrl) continue;` — if `activeHostUrl` is null the workspace lands in **no** group at all.
+
+**No eventType filter, no dedupe, no seen-cursor, no sequence/ordering check before the call.** `paneLayout` being null does **not** drop: `getNotificationWorkspaceStatesById` uses `?? null` (`:256`, `:266`) and `resolveV2NotificationTarget` falls back to a tabless target (`resolveV2NotificationTarget.ts:24-33`).
+
+**Gating inside** `handleV2AgentLifecycleEvent` (`lifecycleEvents.ts:61-100`) — status update always runs first (`:66`); only the **chime + native notification** are gated:
+```ts
+if (
+    payload.eventType === "Start" ||
+    payload.eventType === "Attached" ||
+    payload.eventType === "Detached" ||
+    payload.eventType === "BackgroundRunning" ||
+    payload.eventType === "SubagentActive"
+) {
+    return;
+}
+if (shouldSuppress(target, paneLayout)) return;
+```
+`shouldSuppress` (`:344-356`) suppresses only when window focused **and** target pane visible. `PermissionRequest` is not in the early-return list → chimes.
+
+---
+
+# 4. Throttle / dedupe / rate-limit on the path
+
+**None anywhere** — no rate limiter on `/trpc/*` (`app.ts:282-305`), no `lastEventType ===` suppression, no `occurredAt &lt; lastEventAt` guard.
+
+Closest things:
+
+- `store.ts:64-114` (host `TerminalAgentStore.recordEvent`) records `lastEventAt`/`lastEventType` but **never compares** — no suppression. `:81` `if (!agentId &amp;&amp; !existing) return;` drops only when no agentId has ever been seen for that terminal.
+- `markTerminalSeen` is monotonic — `apps/desktop/src/renderer/stores/v2-notifications/store.ts:250-254`:
+  ```ts
+  // Monotonic: a late event must not roll the seen mark back.
+  const bumpSeen = prev === undefined || prev &lt; at;
+  ```
+  Affects the seen cursor only, not delivery.
+- Python-side red guard `pane-map-hook.ts:1507-1510` **rewrites** clearing events to `SubagentActive`; it does not suppress `PermissionRequest`.
+- Repeated `PermissionRequest` for the same terminal is idempotent, not suppressed — `statusTransitions.ts:90-95` returns `set: ["permission"]`; `applySourceAxes` just restamps `axes[axis] = occurredAt` (`store.ts:373`).
+
+---
+
+# 5. Why ONE terminal's `PermissionRequest` drops while others deliver
+
+Ranked, all workspace-scoped and all silent:
+
+**(a) `originWorkspaceId` is NULL for that one terminal** — `notifications.ts:107-113`. Happens when the owning workspace row was deleted (`onDelete: "set null"`, `schema.ts:22`) or the terminal row predates/missed the workspace upsert. Other terminals in other workspaces resolve fine. Returns 200, logs nothing.
+
+**(b) That workspace is not in `visibleSidebarWorkspaceIds`** — `V2NotificationController.tsx:105-108` → workspace absent from `workspacesById` → `HostNotificationSubscriber.tsx:44` `if (!workspace) return;`. Triggers: `sidebarState.isHidden === true`, its `projectId` not in the user's sidebar projects, or the project missing from live `hostProjects` (`useVisibleSidebarWorkspaceIds.ts:37-40, 73-77`). Host still broadcasts; only the renderer drops. **Zero logging.**
+
+**(c) Host-group mismatch** — workspace's `hostId !== machineId` puts it in the relay group only (`V2NotificationController.tsx:339`), while its terminal's events arrive on the local `activeHostUrl` subscriber whose `workspaces` list excludes it → `:44` drop. Or `activeHostUrl === null` → `:297` `continue` → no subscriber.
+
+**(d) Foreign-workspace axis guard (dot only, not delivery)** — `store.ts:367-369`:
+```ts
+const foreign =
+    prev !== undefined &amp;&amp; prev.workspaceId !== workspaceId;
+if (foreign &amp;&amp; ops.set.length === 0) return;
+```
+A re-homed terminal whose store entry carries a stale `workspaceId` blocks **clear-only** ops. `PermissionRequest` has `set: ["permission"]`, so it passes — this cannot drop the red, but it can strand a red set under an old workspaceId.
+
+**(e) Unmapped eventType** — `map-event-type.ts:118` `return null`. If the terminal's agent emits a permission variant outside the `:87-98` list (e.g. a Codex/Gemini/Copilot-specific name), that one terminal's reds vanish while others map fine. `notifications.ts:88-94`, 200, no log.
+
+---
+
+## Notable
+
+The Electron fallback in `V2NotificationController.tsx:188-196` calls `markV2AgentLifecycleTargetSeen` — **not** `handleV2AgentLifecycleEvent`. That path updates dots but never chimes or shows a native notification (`lifecycleEvents.ts:108-128`). It also re-POSTs to `notifications.hook` (`:200-212`), so a drop at the host is re-attempted from the renderer only for that fallback path.</result>
+<usage><subagent_tokens>103898</subagent_tokens><tool_uses>54</tool_uses><duration_ms>478634</duration_ms></usage>
+</task-notification>
+
+---
+
+make sure only opus and sol agents for code review - save fable usage wherever possible
+
+---
+
+<agent-message from="review-opus">
+Review of 1e33c3972 (AGENTS-CHIP-REMOVED) + 06fee649f (BUS-RESYNC). Verdict: FIX-FIRST. BLOCKER: none.
+
+[MAJOR] packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts:40
+Defect: The 12h mtime cap on `.askq` owner files drops a red the Python hook still considers live; the justifying comment ("Mirrors `_MARKER_STALE_SECONDS` (12h) in the Python hook") cites a cap the hook applies to a different marker set and explicitly refuses to apply to this one.
+Failure: `_MARKER_STALE_SECONDS` (pane-map-hook.ts:1398) governs run-dir markers, whose mtime is refreshed on every PostToolUse (MARKER-INACTIVE) — 12h there means 12h of inactivity. An `.askq` owner file is touched exactly once, at pane-map-hook.ts:1893 when the question is raised, and never again; it is removed only by answer / SubagentStop / turn boundary / SessionEnd. pane-map-hook.ts:1419-1427 states the hazard directly: "do NOT age-reap the matching askq owner here: a subagent legitimately BLOCKED on an open AskUserQuestion has no tool activity ... clearing its askq owner would drop a LIVE red." Concrete case: question raised Friday 18:00, subagent chatter keeps rewriting the binding's `lastEventType` to `SubagentActive`, host-service restarts Saturday morning. On reconnect the marker reads >12h old, `hasPendingQuestionMarker` returns false, the `SubagentActive` replay paints the terminal yellow, and the blocked agent never shows red again — the exact failure BUS-RESYNC exists to fix, just past 12h.
+Fix: Drop the age cap for `.askq` owners (their only lifecycle is explicit removal), or key staleness off the binding's `lastEventAt`/session liveness rather than the marker's creation mtime. If a cap is kept, correct the comment — it cites a hook rule that says the opposite.
+
+[MAJOR] apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts:108
+Defect: The unconditional replay of `row.lastEventType` re-seeds review-green on a cold app start, reversing the documented `(DOT-PERSIST)` invariant "Clears on real app restart (no stale dots across launches)" with no FEATURES.md change.
+Failure: The dot store persists to `window.sessionStorage` (stores/v2-notifications/store.ts:631), so after a real app restart both `sources` and `terminalSeenAt` are empty. The socket opens, the resync runs, and every live binding whose `lastEventType` is a turn-end (`Stop`/`Failed` — the resting state of an idle agent tab) falls through to the fallback in statusTransitions.ts:105 and sets the review axis. The monotonic seen-mark guard at resyncAgentStatus.ts:123 cannot fire because `terminalSeenAt` died with the session. Result: on every launch, essentially every open agent tab, its sidebar row and the workspace rollup light green for completions reviewed days ago — the one colour that means "unread work waiting". The binding-derived dock-badge path (hooks/host-service/useV2NotificationStatus/useV2NotificationStatus.ts:114) already behaved this way; the sidebar/tab/pane dots did not.
+Fix: Gate the replay to reconnects following a live socket in this session, or seed `terminalSeenAt[terminalId] = row.lastEventAt` for rows replayed into an empty store, or persist `terminalSeenAt` beyond sessionStorage. If intended, update the `(DOT-PERSIST)` FEATURES.md line, which now states the opposite.
+
+[MINOR] resyncAgentStatus.ts:91 — Snapshot rows are applied without comparing against state a live event wrote while the query was in flight. Socket opens, query is issued, user answers the pending question; the hook POSTs and the event now arrives over the freshly-open bus, clearing permission and setting working. The resync then applies the pre-answer snapshot, re-asserts `PermissionRequest`, and the terminal shows red while the agent is actively working — self-healing only at the next turn end (statusTransitions.ts:99), which can be many minutes. Fix: skip a row whose store entry already has `occurredAt > row.lastEventAt` (both host-clock, the same argument the file makes for `terminalSeenAt`).
+
+[MINOR] packages/host-service/src/trpc/router/notifications/notifications.ts:165 — `agentStatusSnapshot` uses `protectedProcedure`, not `queryProcedure`, so it has no server-side timeout while doing one `readdir` plus N `stat` per bound terminal. `packages/host-service/QUERY_TIMEOUTS.md` says "Use this [queryProcedure] for every `.query` procedure." With a hung home directory the query never settles; the tRPC httpLink has no client timeout either, so the promise at resyncAgentStatus.ts:68 never resolves or rejects, `syncedKeyRef` stays set, and the 10s retry — which only arms on rejection — never fires, leaving that connection epoch permanently unreconciled. Auth itself is correct and matches sibling read procedures. Fix: use `queryProcedure`.
+
+[MINOR] agent-status-snapshot.ts:63 — Every `readdir` failure is swallowed as "no question pending" with no log. The sibling reader `askqMarkerExists` (packages/host-service/src/companion/index.ts:2128) logs "askq marker read failed" and returns null (unknown). Here EACCES/EMFILE/corrupt `~/.superset` silently downgrades every pending red, and nothing reports it. Fix: treat ENOENT as "no question", log other errnos, consider propagating unknown so the renderer leaves the permission axis untouched.
+
+[MINOR] resyncAgentStatus.ts:152 — The reconcile covers agent axes only; `shellRunningTerminals` (OSC-133 blue latch) is never reconciled although it rides the same fire-and-forget bus. `setTerminalShellRunning`/`clearTerminalShellRunning` are written only from `terminal:lifecycle` events (lifecycleEvents.ts:158-172), so a `command-end`/`exit` destroyed during the outage pins a plain shell blue until some later command in that terminal ends. Same bug class, smaller blast radius. Fix: extend the snapshot with terminal command state, or drop the blue latch for terminals absent from the snapshot.
+
+[MINOR] HostNotificationSubscriber.tsx:57 — The late-hydration guard keys on the workspace ID set only, so it misses the case its own comment describes. A workspace entering `workspaceStatesById` via its host row (V2NotificationController.tsx:261) carries `paneLayout: null` until its `v2WorkspaceLocalState` row lands, and that arrival does not change the ID set, so no second resync runs; the replay then evaluates visibility against a null layout and greens a terminal the user is looking at. Bounded — `useClearActivePaneAttention` clears it on the next interaction. Fix: include a hydration signal (e.g. count of non-null pane layouts) in the key.
+
+CHECKED CLEAN: chip-removal commit (no dangling references to the five deleted symbols outside tmp/; `useDashboardSidebarChipHoverSuppression` still consumed by DashboardSidebarPortsChip.tsx:14; ports-chip behaviour and the strip's click/drag handlers unchanged; `workspace-agents-row` flag correctly retained for TAB-CHIPS). Marker path-traversal safety (`SAFE_MARKER_SEGMENT` byte-identical to the companion reader's and the Python writers' validation). Binding liveness/durability (bindings survive a host restart in host.db; `listLive()` joins on `terminal_sessions.status='active'`; `mapEventType` is idempotent over all eight normalized names, so no live terminal is dropped and stale-cleared). `terminalSeenAt` clock consistency (both call sites stamp `binding.lastEventAt`). Stale-clear loop's foreign-workspace guard and its ordering against `liveTerminalIds`. eventBus listener add/remove and retain/release balance in both consumers plus the already-open-socket mount path — no missed or doubled reconnect through the `openEpoch:workspaceKey` key. `refreshHostServiceSecrets` coalescing, 1s rate limit, never blanking a cached secret, and its `http://127.0.0.1:${port}` key matching LocalHostServiceProvider. Fork invariants: `scripts/check-feature-markers.mjs` passes 141/141 with both new markers resolving; committed blobs are LF (verified by hexdump — `core.autocrlf=true` does not leak CRLF into the objects); no `screenReaderMode`; no ws bufferutil/utf-8-validate; no new main-process fs. Tooling: biome clean on all six changed files; eventBus.test.ts 5 pass; host-service notifications + terminal-agents 28 pass. The 10 failures in stores/v2-notifications/store.test.ts are pre-existing environment breakage (`window.sessionStorage` absent under bun test) — store.ts is untouched by both commits.
+</agent-message>
