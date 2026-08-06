@@ -2,10 +2,7 @@ import { cn } from "@superset/ui/utils";
 import type { MouseEventHandler } from "react";
 import { useDashboardSidebarWorkspacePorts } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarPortsProvider";
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
-import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-row";
-import { DashboardSidebarAgentsChip } from "./components/DashboardSidebarAgentsChip";
 import { DashboardSidebarPortsChip } from "./components/DashboardSidebarPortsChip";
-import { useDashboardSidebarWorkspaceRunningAgents } from "./hooks/useDashboardSidebarWorkspaceRunningAgents";
 
 interface DashboardSidebarWorkspaceChipsProps {
 	workspaceId: string;
@@ -15,10 +12,8 @@ interface DashboardSidebarWorkspaceChipsProps {
 }
 
 /**
- * Activity line beneath a workspace row, left-aligned with the title: an
- * agents chip and a ports chip. Agent chips appear only when more than one
- * agent is running — a lone agent is the norm for a workspace and showing it
- * adds no signal.
+ * Activity line beneath a workspace row, left-aligned with the title: a ports
+ * chip. Agent presence lives in the per-tab chips row above (TAB-CHIPS).
  */
 export function DashboardSidebarWorkspaceChips({
 	workspaceId,
@@ -26,18 +21,14 @@ export function DashboardSidebarWorkspaceChips({
 	onClick,
 }: DashboardSidebarWorkspaceChipsProps) {
 	const inlineWorkspacePortsEnabled = useInlineWorkspacePortsEnabled();
-	const workspaceAgentsRowEnabled = useWorkspaceAgentsRowEnabled();
 
 	const portGroup = useDashboardSidebarWorkspacePorts(workspaceId);
 	const ports = inlineWorkspacePortsEnabled ? (portGroup?.ports ?? []) : [];
-	const runningAgents = useDashboardSidebarWorkspaceRunningAgents(
-		workspaceId,
-		workspaceAgentsRowEnabled,
-	);
-	const agents =
-		workspaceAgentsRowEnabled && runningAgents.length > 1 ? runningAgents : [];
 
-	if (ports.length === 0 && agents.length === 0) {
+	// (AGENTS-CHIP-REMOVED) upstream's agents facepile chip is deleted in this
+	// fork — the per-tab chips row (TAB-CHIPS) is the agent surface, so this
+	// strip is ports-only. Do not re-import DashboardSidebarAgentsChip.
+	if (ports.length === 0) {
 		return null;
 	}
 
@@ -71,10 +62,7 @@ export function DashboardSidebarWorkspaceChips({
 				onClick(event);
 			}}
 		>
-			{agents.length > 0 && (
-				<DashboardSidebarAgentsChip workspaceId={workspaceId} agents={agents} />
-			)}
-			{ports.length > 0 && <DashboardSidebarPortsChip ports={ports} />}
+			<DashboardSidebarPortsChip ports={ports} />
 		</div>
 	);
 }

@@ -11,9 +11,10 @@ import { devtools, persist } from "zustand/middleware";
  *   1. This store + `useWorkspaceAgentsRowEnabled`.
  *   2. The toggle UI in `ExperimentalSettings` and its `settings-search` entry
  *      (`EXPERIMENTAL_WORKSPACE_AGENTS`).
- *   3. The flag branch in `DashboardSidebarWorkspaceChips` (the agents chip)
- *      and the `enabled` it threads into
- *      `useDashboardSidebarWorkspaceRunningAgents`.
+ *   3. (AGENTS-CHIP-REMOVED) Nothing — upstream's agents facepile chip in
+ *      `DashboardSidebarWorkspaceChips` is deleted in this fork, so that flag
+ *      branch (and `useDashboardSidebarWorkspaceRunningAgents`) no longer
+ *      exists. The flag survives solely for item 4.
  *   4. The flag branch in `DashboardSidebarWorkspaceDetails` (the (TAB-CHIPS)
  *      per-tab section) and the `enabled` it threads into
  *      `useDashboardSidebarWorkspaceTabChips`.
