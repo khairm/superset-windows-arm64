@@ -4,8 +4,10 @@ import {
 	planPortScanSync,
 	planStaleRowCorrection,
 	REAP_INTERVAL_MS,
+	STALE_ROW_MAX_CORRECTIONS_PER_PASS,
 	STALE_ROW_MIN_AGE_MS,
 	shouldReapRow,
+	staleRowCorrectionCap,
 } from "./reaper.ts";
 
 const noneLive = () => false;
@@ -249,5 +251,100 @@ describe("(BRIDGE-LIVENESS) planStaleRowCorrection", () => {
 			{ previous: ["t-exited", "t-orphan"] },
 		);
 		expect(result.correct).toEqual([]);
+	});
+});
+
+// (REAPER-CORRECTION-CAP) The two passes are not two independent observations —
+// a degraded daemon stays degraded for longer than the five minutes between
+// them — so the corrective write, which has no undo, is bounded.
+describe("(REAPER-CORRECTION-CAP)", () => {
+	const NOW = 10_000_000;
+	const OLD = NOW - STALE_ROW_MIN_AGE_MS - 1;
+
+	function staleRow(overrides: Record<string, unknown> = {}) {
+		return {
+			status: "active",
+			originWorkspaceId: "w1",
+			createdAt: OLD,
+			lastAttachedAt: null,
+			...overrides,
+		};
+	}
+
+	// Each successive row is one ms OLDER than the last, so "oldest first" is the
+	// REVERSE of insertion order and a passing order assertion cannot be an
+	// accident of map iteration.
+	function corpses(count: number): [string, ReturnType<typeof staleRow>][] {
+		return Array.from({ length: count }, (_, i) => [
+			`t-corpse-${String(i).padStart(3, "0")}`,
+			staleRow({ createdAt: OLD - i }),
+		]);
+	}
+
+	function plan(
+		rows: [string, ReturnType<typeof staleRow>][],
+		options: {
+			alive?: string[];
+			previousListed?: boolean;
+		} = {},
+	) {
+		return planStaleRowCorrection({
+			aliveIds: new Set(options.alive ?? ["t-alive"]),
+			rowById: new Map([...rows, ["t-alive", staleRow()]]),
+			// Every corpse already has its first observation behind it, so these
+			// cases are about the CAP and nothing else.
+			absentOnPreviousPass: new Set(rows.map(([id]) => id)),
+			previousPassListedTerminals: options.previousListed ?? true,
+			isLive: noneLive,
+			nowMs: NOW,
+		});
+	}
+
+	it("caps a mass correction at ten, whatever the daemon said", () => {
+		// 400 corpses — the shape the reverse walk was built for. A quarter of the
+		// 401 active rows is 101, so the absolute cap is what binds here.
+		const result = plan(corpses(400));
+		expect(result.correct).toHaveLength(STALE_ROW_MAX_CORRECTIONS_PER_PASS);
+	});
+
+	it("caps a SMALL table at a quarter of it — ten rows could be all of them", () => {
+		// 8 corpses + 1 live row = 9 active rows; ceil(9 * 0.25) = 3.
+		const result = plan(corpses(8));
+		expect(result.correct).toHaveLength(3);
+	});
+
+	it("still corrects ONE on a table too small for a quarter to round up — a floor would switch the walk off entirely there", () => {
+		expect(staleRowCorrectionCap(1)).toBe(1);
+		expect(staleRowCorrectionCap(2)).toBe(1);
+		expect(staleRowCorrectionCap(0)).toBe(0);
+	});
+
+	it("spends the budget OLDEST FIRST, deterministically", () => {
+		const result = plan(corpses(8));
+		expect(result.correct).toEqual([
+			"t-corpse-007",
+			"t-corpse-006",
+			"t-corpse-005",
+		]);
+	});
+
+	it("HOLDS the rows it did not correct, so they keep their confirmed two-pass standing instead of restarting the clock", () => {
+		const result = plan(corpses(8));
+		expect(result.absentThisPass.size).toBe(5);
+		for (const id of result.correct) {
+			expect(result.absentThisPass.has(id)).toBe(false);
+		}
+	});
+
+	it("corrects nothing when the PREVIOUS pass had no listing — 'an empty listing is never evidence' has to be true of the older observation too", () => {
+		const result = plan(corpses(3), { previousListed: false });
+		expect(result.correct).toEqual([]);
+		// Re-armed rather than dropped, so the next pass is their second.
+		expect(result.absentThisPass.size).toBe(3);
+	});
+
+	it("reports whether THIS pass listed anything, so the next pass can apply the same rule", () => {
+		expect(plan(corpses(1)).listedThisPass).toBe(true);
+		expect(plan(corpses(1), { alive: [] }).listedThisPass).toBe(false);
 	});
 });

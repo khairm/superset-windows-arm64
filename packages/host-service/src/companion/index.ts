@@ -593,63 +593,15 @@ export function createCompanionBridge(
 			devices: deviceStore,
 			presence,
 			fence: pushFence,
-			// Re-checked at fire time: a missed cancel would buzz the watch for a
-			// question already answered, which is the exact noise the presence gate
-			// exists to remove.
-			//
-			// (QUESTION-EXPIRY) Liveness is re-checked here too, and it is not
-			// redundant with the heartbeat's `reconcile`. A held push fires on
-			// presence lapse, which can be hours after the question was captured and
-			// at a moment no heartbeat has run — so this is the last point at which
-			// "the terminal you are about to be buzzed about no longer exists" can
-			// still be noticed.
-			//
-			// It uses the STRICT predicate, and that is load-bearing rather than
-			// tidy. `evaluate` removes the entry from `armed` before it asks, and
-			// a `false` here routes straight to `forget()` — there is no second
-			// chance and no next tick. So the only three things allowed to drop a
-			// buzz are a record that is genuinely no longer pending, positive
-			// non-empty-listing evidence that its terminal is gone, and a record
-			// this store has never seen at all (the restart case, below); an
-			// unreachable daemon, a stale snapshot or an empty listing all keep the
-			// buzz.
-			isStillUnanswered: (questionId: QuestionId) => {
-				const question = questions.get(questionId);
-				if (question === null) {
-					// ABSENT is not the same fact as SETTLED, and the two used to share
-					// a branch. Eviction cannot produce this — `evictOldestSettled` and
-					// `prune` both skip pending records by construction — so the one
-					// way a push can be armed for a questionId the store has never
-					// heard of is a HOST-SERVICE RESTART: the push fence is durable
-					// (rows in host.db) and rebuilds `armed` at construction, while
-					// QuestionStore is memory-only and starts empty. Every held push
-					// from before the restart therefore lands here.
-					//
-					// `false` is still the right answer, and it is the only one
-					// available: the record that carried the terminal id, the transcript
-					// path and the option list is gone, so the bridge could not serve
-					// `/v1/question` for it or accept an answer to it — a buzz would
-					// take the user to their wrist for a question the bridge would then
-					// 404. That is a legitimate `false` rather than the uncertainty the
-					// contract forbids reporting as `false`.
-					//
-					// It is LOGGED because it is silent otherwise and it is not free: a
-					// user who was away across a host-service restart loses the buzz for
-					// every question that was still held, and nothing else in the system
-					// would ever say so. Naming the cause here is what stops that being
-					// diagnosed as "push is broken".
-					logger.error(
-						"a held push names a question this store has never seen — the host-service restarted after it was armed (the fence is durable, the question store is memory-only); dropping the buzz because the question can no longer be served or answered",
-						{ questionId },
-					);
-					return false;
-				}
-				if (question.state !== "pending") return false;
-				return !liveness.isProvablyGone(
-					question.hostTerminalId,
-					hostDb.resolveTerminalActivityMs(question.hostTerminalId),
-				);
-			},
+			// (QUESTION-EXPIRY) See `createIsStillUnansweredProbe`; extracted so the
+			// three-way split it makes can be exercised without booting a bridge.
+			isStillUnanswered: createIsStillUnansweredProbe({
+				questions,
+				liveness,
+				resolveTerminalActivityMs: (hostTerminalId) =>
+					hostDb.resolveTerminalActivityMs(hostTerminalId),
+				logger,
+			}),
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });
 			},
@@ -1257,7 +1209,7 @@ export async function startCompanionBridgeIfEnabled(
 // (COMPANION-CAPTURE-WIRE) the capture seam + its side effects
 // ---------------------------------------------------------------------------
 
-interface NotifyingSinkDeps {
+export interface NotifyingSinkDeps {
 	/** `QuestionStore.asCaptureSink()` — validates HARD and owns custody. */
 	inner: QuestionCaptureSink;
 	questions: QuestionStore;
@@ -1375,7 +1327,7 @@ function createNotifyingCaptureSink(
  * fires is invisible from both ends — no buzz on the wrist, nothing in the
  * tree — so this line is the only evidence the decision was taken at all.
  */
-function isCuratedOffSidebar(
+export function isCuratedOffSidebar(
 	deps: NotifyingSinkDeps,
 	question: PendingQuestion,
 ): boolean {
@@ -1418,7 +1370,10 @@ function isCuratedOffSidebar(
  * LOUD — `PushSender.getFault()` and this line are how "the watch will stay
  * silent" becomes visible instead of presenting as "no questions".
  */
-function armPush(deps: NotifyingSinkDeps, question: PendingQuestion): void {
+export function armPush(
+	deps: NotifyingSinkDeps,
+	question: PendingQuestion,
+): void {
 	// (PUSH-CURATION-GATE) Asked BEFORE `schedule`, not after: `schedule` is what
 	// writes the durable fence row, and a suppressed question must leave nothing
 	// behind for `reconstruct()` to revive after a restart.
@@ -1439,6 +1394,67 @@ function armPush(deps: NotifyingSinkDeps, question: PendingQuestion): void {
 			{ questionId: question.questionId, error },
 		);
 	}
+}
+
+/**
+ * (QUESTION-EXPIRY) The push sender's fire-time re-check.
+ *
+ * Extracted from the composition root so the THREE-WAY split it makes can be
+ * exercised without booting a bridge; `createCompanionBridge` is the only
+ * production caller.
+ *
+ * Re-checked at fire time because the scheduler never trusts that
+ * `cancelPending` was called: a missed cancel would buzz the watch for a
+ * question already answered, which is the exact noise the presence gate exists
+ * to remove. Liveness is re-checked here too, and it is not redundant with the
+ * heartbeat's `reconcile` — a held push fires on presence lapse, which can be
+ * hours after capture and at a moment no heartbeat has run, so this is the last
+ * point at which "the terminal you are about to be buzzed about no longer
+ * exists" can still be noticed.
+ *
+ * It uses the STRICT liveness predicate, and that is load-bearing rather than
+ * tidy. `evaluate` removes the entry from `armed` before it asks, and a `false`
+ * here routes straight to `forget()` — there is no second chance and no next
+ * tick. So exactly three things may drop a buzz:
+ *
+ *  1. A record that is genuinely no longer `pending`.
+ *  2. Positive, non-empty-listing evidence that its terminal is gone.
+ *  3. A record this store has never seen — the RESTART case. Eviction cannot
+ *     produce it (`evictOldestSettled` and `prune` both skip pending records by
+ *     construction); the push fence is durable and rebuilds `armed` at
+ *     construction while `QuestionStore` is memory-only and starts empty, so
+ *     every push held across a host-service restart lands here. `false` is the
+ *     only available answer — without the record there is no terminal id,
+ *     transcript path or option list, so `/v1/question` would 404 and
+ *     `/v1/answer` would refuse, and buzzing a wrist toward a question the
+ *     bridge cannot serve is worse than not buzzing. It is LOGGED because the
+ *     cost is real and otherwise invisible: a user away across a restart loses
+ *     the buzz for every question that was still held.
+ *
+ * An unreachable daemon, a stale snapshot or an empty listing all KEEP the buzz.
+ */
+export function createIsStillUnansweredProbe(deps: {
+	questions: Pick<QuestionStore, "get">;
+	liveness: Pick<TerminalLiveness, "isProvablyGone">;
+	/** host.db's newest instant for the row; keeps a young terminal from losing the race. */
+	resolveTerminalActivityMs(hostTerminalId: string): number | null;
+	logger: Pick<BridgeLogger, "error">;
+}): (questionId: QuestionId) => boolean {
+	return (questionId: QuestionId): boolean => {
+		const question = deps.questions.get(questionId);
+		if (question === null) {
+			deps.logger.error(
+				"a held push names a question this store has never seen — the host-service restarted after it was armed (the fence is durable, the question store is memory-only); dropping the buzz because the question can no longer be served or answered",
+				{ questionId },
+			);
+			return false;
+		}
+		if (question.state !== "pending") return false;
+		return !deps.liveness.isProvablyGone(
+			question.hostTerminalId,
+			deps.resolveTerminalActivityMs(question.hostTerminalId),
+		);
+	};
 }
 
 /**
