@@ -1,1 +1,1 @@
-desktop-v1.18.3
+desktop-v1.19.0

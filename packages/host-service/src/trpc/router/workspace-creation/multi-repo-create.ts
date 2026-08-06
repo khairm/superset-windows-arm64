@@ -1,4 +1,5 @@
 import { mkdirSync, rmSync } from "node:fs";
+import { runWithPostCheckoutHookTolerance } from "@superset/shared/git-hook-tolerance";
 import { generateFriendlyBranchName } from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
 import type { z } from "zod";
@@ -25,6 +26,7 @@ import {
 	registerLocalWorkspace,
 	resolveNewBranchStartPoint,
 } from "../workspaces/workspaces";
+import { findWorktreeAtPath } from "./shared/branch-search";
 import { startCommandTerminal } from "./shared/command-terminal";
 import { enablePushAutoSetupRemote } from "./shared/git-config";
 import type { requireLocalProject } from "./shared/local-project";
@@ -368,7 +370,38 @@ async function runCreate(args: {
 				// Resume: check the pre-existing local branch out into a fresh
 				// worktree. Fails loud (and rolls back) if the branch is already
 				// checked out elsewhere — git refuses a second checkout.
-				await member.git.raw(["worktree", "add", workTreePath, branch]);
+				//
+				// Post-checkout hooks run after the checkout, so a hook that exits
+				// non-zero (or gets killed on timeout) fails `worktree add` with the
+				// worktree fully in place. Rolling back on that would tear down every
+				// member's worktree and abort a resume that actually succeeded, so
+				// the on-disk state is the ground truth — same contract as
+				// `addBranchWorktree` on the fresh-create path below.
+				await runWithPostCheckoutHookTolerance({
+					context: `Worktree created at ${workTreePath}`,
+					run: async () => {
+						await member.git.raw(["worktree", "add", workTreePath, branch]);
+					},
+					didSucceed: async () => {
+						if (!(await findWorktreeAtPath(member.git, workTreePath, branch))) {
+							return false;
+						}
+						try {
+							// The worktree list can report a branch for a half-created
+							// worktree; require a resolvable HEAD in the worktree itself.
+							await member.git.raw([
+								"-C",
+								workTreePath,
+								"rev-parse",
+								"--verify",
+								"HEAD",
+							]);
+							return true;
+						} catch {
+							return false;
+						}
+					},
+				});
 				created.push({ git: member.git, worktreePath: workTreePath });
 				await enablePushAutoSetupRemote(
 					member.git,

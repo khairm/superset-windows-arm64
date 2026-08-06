@@ -8,6 +8,14 @@
 			"types": "./src/constants.ts",
 			"default": "./src/constants.ts"
 		},
+		"./git-hook-tolerance": {
+			"types": "./src/git-hook-tolerance.ts",
+			"default": "./src/git-hook-tolerance.ts"
+		},
+		"./sentry": {
+			"types": "./src/sentry.ts",
+			"default": "./src/sentry.ts"
+		},
 		"./terminal-wheel-handler": {
 			"types": "./src/terminal-wheel-handler/index.ts",
 			"default": "./src/terminal-wheel-handler/index.ts"
