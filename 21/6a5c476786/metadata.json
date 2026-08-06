@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "216a5c476786",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 14,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/question-freshness.test.ts",
+    "packages/host-service/src/companion/question-store.ts",
+    "packages/host-service/src/companion/read-api.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/21/6a5c476786/0/metadata.json",
+      "transcript": "/21/6a5c476786/0/full.jsonl",
+      "content_hash": "/21/6a5c476786/0/content_hash.txt",
+      "prompt": "/21/6a5c476786/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3827,
+    "cache_creation_tokens": 17329579,
+    "cache_read_tokens": 795917358,
+    "output_tokens": 1651761,
+    "api_call_count": 1999
+  }
+}
