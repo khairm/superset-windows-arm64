@@ -1389,12 +1389,14 @@ def _reconcile_run_dir(run_dir, bg_ids, terminal_id):
 # not just its start: an actively-working subagent (incl. one on a long tool that
 # streams progress) keeps it fresh and survives; only a truly abandoned one ages
 # out. The COMMON leak — an in-flight subagent orphaned by an API stream-idle-
-# timeout (no SubagentStop) — is caught fast + deterministically by the watcher's
-# (API-ABORT-RELEASE) reap on the transcript's isApiErrorMessage line, NOT by this
-# timer (a short timer here false-greened subagents on long tools — flaky). 12h
-# is kept only so a subagent that hangs with NO error signal AND that the harness
-# keeps (wrongly) listing in background_tasks[] (which defeats MARKER-RECONCILE)
-# can't pin yellow FOREVER; it errs green, the file's documented safe direction.
+# timeout (no SubagentStop) — is caught fast + deterministically by this file's
+# OWN StopFailure branch, whose _clear_dir(run_dir) drops every orphan the moment
+# the abort arrives (Claude Code fires StopFailure whenever the turn's last
+# assistant record is an api-error), NOT by this timer (a short timer here
+# false-greened subagents on long tools — flaky). 12h is kept only so a subagent
+# that hangs with NO error signal AND that the harness keeps (wrongly) listing
+# in background_tasks[] (which defeats MARKER-RECONCILE) can't pin yellow
+# FOREVER; it errs green, the file's documented safe direction.
 _MARKER_STALE_SECONDS = 43200
 
 
@@ -1854,11 +1856,19 @@ def _decide_event_type_inner(
                 return "SubagentActive"
             _reason("GREEN: subagent StopFailure, last fork done + main stopped" + _skip_suffix(cx_skip))
             return "Stop"  # central guard re-holds if a question owner (incl _main) remains
-        # (AX)/(BF) A MAIN Claude API/rate-limit abort kills the shared-API Claude
-        # subagent tree (clear its markers + green), BUT a codex-companion
-        # worker is a SEPARATE process on its OWN API — the Claude failure does
-        # not stop it, so keep showing it as working. (has_background is NOT
-        # consulted here: Claude background_tasks share the dead Claude API.)
+        # (AX)/(BF)/(API-ABORT-RELEASE) A MAIN Claude API/rate-limit abort kills
+        # the shared-API Claude subagent tree and fires NO SubagentStop for any
+        # of them, so their run-dir markers would pin the dot yellow with
+        # nothing running. Claude Code runs StopFailure whenever the turn's last
+        # assistant record is an api-error, so THIS branch is where that leak is
+        # released: clear the whole run dir + every snapshot marker + the .askq
+        # guard, then green. Deterministic and event-driven — no timer, and no
+        # transcript reader involved (the JSONL watcher deliberately emits no
+        # dot state for an api-error; see WATCHER-BLUE-STOMP). BUT a
+        # codex-companion worker is a SEPARATE process on its OWN API — the
+        # Claude failure does not stop it, so keep showing it as working.
+        # (has_background is NOT consulted here: Claude background_tasks share
+        # the dead Claude API.)
         _clear_dir(run_dir)
         _remove(sentinel)
         _remove(compact_marker)

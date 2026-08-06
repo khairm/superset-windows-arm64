@@ -301,14 +301,15 @@ function updatePaneStatus(
 	// (WATCHER-BLUE-STOMP) The notify hook is the ONLY source of
 	// "BackgroundRunning" — the main-process JSONL watcher deliberately cannot
 	// emit it. That matters because this else-branch clears the blue axis on
-	// every other agent event, and the watcher's own turn-ends (interrupt /
-	// API abort) bypass the hook entirely: a watcher `Stop` replayed off a
-	// re-presented transcript line used to wipe the blue the hook had just
-	// restored. Watcher-sourced events are NOT distinguishable here (the
-	// Electron payload is only {eventType, terminalId, occurredAt}), so the fix
-	// lives at the watcher's emit site — it replay-gates each matched turn-end
-	// entry by uuid and timestamp age and stays SILENT on a replay, instead of
-	// this branch trying to guess which Stop to spectate.
+	// every other agent event, and the watcher's own turn-end (a user interrupt,
+	// the one turn-end Claude Code fires no hook for) bypasses the hook
+	// entirely: a watcher `Stop` replayed off a re-presented transcript line
+	// used to wipe the blue the hook had just restored. Watcher-sourced events
+	// are NOT distinguishable here (the Electron payload is only {eventType,
+	// terminalId, occurredAt}), so the fix lives at the watcher's emit site —
+	// it replay-gates each matched turn-end entry by uuid and timestamp age and
+	// stays SILENT on a replay, instead of this branch trying to guess which
+	// Stop to spectate.
 	if (payload.eventType === "BackgroundRunning") {
 		ndots({
 			event: "bg_axis_set",

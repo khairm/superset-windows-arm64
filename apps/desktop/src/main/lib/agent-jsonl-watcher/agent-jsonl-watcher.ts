@@ -236,6 +236,11 @@ interface FileState {
 	 * rewound offset would be re-read UNFENCED — arming auto-resume off an
 	 * hours-old api-error. Cleared by the first pass that actually consumes the
 	 * tail (i.e. advances the offset past it).
+	 *
+	 * ACCEPTED DEBT: this lifecycle is module-private and reads a hardcoded
+	 * CLAUDE_PROJECTS_DIR, so it has no test seam — any refactor of it MUST add
+	 * the arm -> throw-retry -> cwd-skip -> advance test the current structure
+	 * prevents.
 	 */
 	preStartFenceMs: number | null;
 }
@@ -384,6 +389,15 @@ const SUBAGENT_RUNNING_DIR = path.join(
 	"agent-subagent-running",
 );
 
+// (BF codex-companion parity) Mirror of the Python hook's _codex_job_active. The
+// codex plugin dispatches work to a DETACHED worker (separate process, its OWN
+// API) that is invisible to Claude's background_tasks[] and SURVIVES a Claude
+// interrupt. Each job is a JSON file tagged with the Claude session_id. When the
+// watcher emits its own interrupt turn-end it must NOT green the dot if such a
+// job for this session is still active — emit SubagentActive (yellow) instead.
+// "Active" = status queued|running AND (a live worker pid with a <6h-fresh
+// record, OR a pid-less record younger than 10min = spawn in progress).
+// Best-effort.
 function listGlobFiles(
 	base: string,
 	tests: Array<(name: string) => boolean>,
