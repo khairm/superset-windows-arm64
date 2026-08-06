@@ -8,9 +8,11 @@ import { installPaneMapHook } from "./pane-map-hook";
 import {
 	isSyntheticApiAbortRecord,
 	isSyntheticInterruptRecord,
+	isToolUseContinuationRecord,
 	judgeTurnEndRecord,
 	mayBeTurnEndLine,
 	parseTranscriptRecord,
+	recordPredatesFence,
 	resetTurnEndGate,
 	TURN_END_MAX_AGE_MS,
 	type TurnEndVerdict,
@@ -374,8 +376,8 @@ const SUBAGENT_RUNNING_DIR = path.join(
  * (API-ABORT-RELEASE) Reap the run-dir subagent markers for a terminal when the
  * main Claude session's stream aborts. superset-notify.py creates one marker per
  * SubagentStart under agent-subagent-running/<terminalId>/ and removes it only on
- * SubagentStop; a stream-idle-timeout / API error ("API Error: Stream idle
- * timeout - partial response received", an isApiErrorMessage assistant line) ends
+ * SubagentStop; a stream that dies mid-response (an isApiErrorMessage assistant
+ * line whose text is one of the half-stop signatures in ./turn-end-gate) ends
  * the turn and ORPHANS any in-flight subagent WITHOUT firing its SubagentStop, so
  * the marker leaks and the POST hook re-asserts yellow from it indefinitely. No
  * hook fires on the abort, so the POST hook can't self-heal — but the watcher
@@ -605,11 +607,9 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 	clearAskqDir(terminalId); // (UNTAGGED-BG-RED) the per-owner question-guard dir too
 }
 
-/**
- * (WATCHER-BLUE-STOMP) Turn-end identification and the replay gate both live in
- * ./turn-end-gate — see that module for the corpus evidence behind the exact
- * synthetic-record predicates and the age bounds.
- */
+// (WATCHER-BLUE-STOMP) Turn-end identification and the replay gate both live in
+// ./turn-end-gate — see that module for the corpus evidence behind the exact
+// synthetic-record predicates and the age bounds.
 
 function emit(
 	// (WATCHER-BLUE-STOMP) Deliberately NO `BackgroundRunning` here. The watcher
@@ -819,14 +819,28 @@ function processFile(
 		return;
 	}
 
-	// First time we've seen this file, and it is one the seed owns — either this
-	// IS the seed pass, or (WATCHER-BLUE-STOMP) a write reached a pre-existing
-	// file before the deferred seed scan did. Skip its history (the user already
-	// saw those state transitions) and start tailing from the current
-	// end-of-file. Before jumping, read enough of the header to cache cwd — for
-	// Codex the cwd lives only in the first session_meta entry, so we'd otherwise
-	// never see it once we'd skipped past.
-	if (isFirstSeen && (seedOnly || isUnseededPreexistingFile(stat))) {
+	// (WATCHER-BLUE-STOMP) Is this a pre-existing file that a write reached before
+	// the deferred seed scan did? Blind-tailing such a file to EOF is what makes
+	// the seed's own gap dangerous: an append that lands between fs.watch going
+	// live and the seed reaching this file is skipped PAST, never judged, never
+	// emitted. For Claude that can swallow a real interrupt, which has no hook
+	// fallback at all, so the dot stays stuck. Instead the Claude path re-reads a
+	// bounded tail under the pre-start fence (below) — recent enough to contain
+	// anything written since we started, small enough never to stall the main
+	// thread on a multi-megabyte transcript at startup.
+	const startupGuard =
+		isFirstSeen && !seedOnly && isUnseededPreexistingFile(stat);
+	// Codex keeps the old blind seed: its parser matches raw substrings on lines
+	// that carry no timestamp, so there is nothing to fence a re-read against and
+	// replaying history would emit stale permission/stop transitions.
+	const fencedTailRead = startupGuard && source.parser.id === "claude";
+
+	// First time we've seen this file, and it is one the seed owns. Skip its
+	// history (the user already saw those state transitions) and start tailing
+	// from the current end-of-file. Before jumping, read enough of the header to
+	// cache cwd — for Codex the cwd lives only in the first session_meta entry, so
+	// we'd otherwise never see it once we'd skipped past.
+	if (isFirstSeen && (seedOnly || (startupGuard && !fencedTailRead))) {
 		try {
 			const headerBytes = Math.min(8192, stat.size);
 			if (headerBytes > 0) {
@@ -857,6 +871,17 @@ function processFile(
 		});
 		state.offset = stat.size;
 		return;
+	}
+
+	if (fencedTailRead) {
+		state.offset = Math.max(0, stat.size - STARTUP_GUARD_TAIL_BYTES);
+		dbg("startup-guard-tail", {
+			filePath,
+			sessionId: state.sessionId,
+			size: stat.size,
+			fromOffset: state.offset,
+			fenceMs: watcherStartedAtMs,
+		});
 	}
 
 	// Truncation/rotation: reset offset and re-read from the start. Fall
@@ -896,6 +921,11 @@ function processFile(
 	const allLines = chunk.split("\n");
 	const newLeftover = allLines.pop() ?? "";
 	const lines = allLines;
+
+	// (WATCHER-BLUE-STOMP) A startup-guard tail starts mid-file, so its first
+	// element is whatever fragment the cut landed in. Drop it rather than leave a
+	// truncated line for the parsers to reject by luck.
+	if (fencedTailRead && state.offset > 0) lines.shift();
 
 	// Subagent transcript: mirror activity to the parent terminal (so it shows
 	// yellow while the subagent runs) and stop here — these files carry no cwd
@@ -966,25 +996,49 @@ function processFile(
 		let sawInterrupt = false;
 		let sawApiAbort = false;
 		let sawAnyApiError = false;
-		// (WATCHER-BLUE-STOMP) Per-entry replay gate — see judgeTurnEndLine. A
+		// (WATCHER-BLUE-STOMP) Per-entry replay gate — see judgeTurnEndRecord. A
 		// matched line sets sawInterrupt/sawApiAbort only if it describes a turn
 		// that ended JUST NOW; a re-presented one is recorded as suppressed and
 		// nothing is emitted or reaped for it.
 		const nowMs = Date.now();
+		// (WATCHER-BLUE-STOMP) Armed only on the startup-guard tail re-read, where
+		// everything stamped before the watcher started is history we are reading
+		// past, not a turn-end of ours to announce. Null in steady state — there a
+		// young entry with an unseen uuid IS the live turn-end and must emit.
+		const preStartFenceMs = fencedTailRead ? watcherStartedAtMs : null;
 		const suppressed: Array<{
 			kind: "interrupt" | "api-abort";
 			reason: TurnEndVerdict["reason"];
 			ageMs: number | null;
 			uuid: string | null;
 		}> = [];
+		// (WATCHER-BLUE-STOMP) The most recent non-api-error assistant line seen so
+		// far, kept raw and parsed only when an abort actually needs its stop_reason.
+		let precedingAssistantLine: string | null = null;
+		let continuationSkips = 0;
 		for (const line of lines) {
 			if (!line) continue;
+			const priorAssistantLine = precedingAssistantLine;
+			if (
+				line.includes('"type":"assistant"') &&
+				!line.includes('"isApiErrorMessage":true')
+			) {
+				precedingAssistantLine = line;
+			}
 			// (AUTO-RESUME) ANY api-error line (not just the half-stop signature) is a
 			// candidate for auto-resume; the manager confirms turn-finality itself.
 			// Deliberately NOT replay-gated: it arms nothing by itself — the manager
-			// re-reads the transcript tail and decides finality there.
+			// re-reads the transcript tail and decides finality there. The one
+			// exception is a fenced re-read, where an api-error stamped before the
+			// watcher started is history and would arm a resume for a dead turn.
 			if (line.includes('"isApiErrorMessage":true')) {
-				sawAnyApiError = true;
+				if (preStartFenceMs === null) {
+					sawAnyApiError = true;
+				} else {
+					const errRecord = parseTranscriptRecord(line);
+					if (errRecord && !recordPredatesFence(errRecord, preStartFenceMs))
+						sawAnyApiError = true;
+				}
 			}
 			// (WATCHER-BLUE-STOMP) A turn-end must be Claude Code's EXACT synthetic
 			// record, not a line that merely contains the phrase. Both markers are
@@ -994,22 +1048,22 @@ function processFile(
 			// gate below certifies it as fresh and the false Stop fires MID-TURN.
 			// Corpus evidence and the record shapes are in ./turn-end-gate.
 			//
-			// (API-ABORT-RELEASE) A stream-idle-timeout / API error on the MAIN session
-			// ("API Error: Stream idle timeout - partial response received", written as
-			// an isApiErrorMessage assistant record) ends the turn and orphans any
-			// in-flight subagent without firing its SubagentStop — leaking its run-dir
-			// marker so the POST hook re-asserts yellow forever. No hook fires on the
-			// abort, so only the watcher (which reads the transcript) can self-heal it.
+			// (API-ABORT-RELEASE) A stream that dies mid-response on the MAIN session
+			// (an isApiErrorMessage assistant record whose text is one of the
+			// half-stop signatures) ends the turn and orphans any in-flight subagent
+			// without firing its SubagentStop — leaking its run-dir marker so the POST
+			// hook re-asserts yellow forever. No hook fires on the abort, so only the
+			// watcher (which reads the transcript) can self-heal it.
 			// (FIX 1) The turn-ENDING signature is required: a bare api-error also
-			// covers TRANSIENT failures (overloaded 529 etc.) that Claude AUTO-RETRIES
-			// within the same turn, which must NOT reap markers or green mid-turn.
+			// covers failures the CLI resolves inside the turn, which must NOT reap
+			// markers or green mid-turn. ./turn-end-gate has the corpus partition.
 			if (!mayBeTurnEndLine(line)) continue;
 			const record = parseTranscriptRecord(line);
 			if (!record) continue;
 			const isInterrupt = isSyntheticInterruptRecord(record);
 			const isApiAbort = !isInterrupt && isSyntheticApiAbortRecord(record);
 			if (!isInterrupt && !isApiAbort) continue;
-			const verdict = judgeTurnEndRecord(record, nowMs);
+			const verdict = judgeTurnEndRecord(record, nowMs, preStartFenceMs);
 			if (!verdict.fresh) {
 				suppressed.push({
 					kind: isInterrupt ? "interrupt" : "api-abort",
@@ -1019,8 +1073,27 @@ function processFile(
 				});
 				continue;
 			}
+			// (WATCHER-BLUE-STOMP) A half-stop the CLI finalized AS A TOOL CALL is not
+			// a turn-end — it runs the tool and carries on. Judging first is
+			// deliberate: the uuid is recorded by now, so this entry can never be
+			// admitted later by a re-read that no longer carries its predecessor.
+			if (isApiAbort && priorAssistantLine) {
+				const prior = parseTranscriptRecord(priorAssistantLine);
+				if (prior && isToolUseContinuationRecord(prior)) {
+					continuationSkips += 1;
+					continue;
+				}
+			}
 			if (isInterrupt) sawInterrupt = true;
 			if (isApiAbort) sawApiAbort = true;
+		}
+		if (continuationSkips > 0) {
+			dbg("api-abort-continuation-skip", {
+				sessionId: state.sessionId,
+				terminalId: mapping?.terminalId ?? null,
+				skipped: continuationSkips,
+				filePath,
+			});
 		}
 		if (suppressed.length > 0) {
 			// (WATCHER-BLUE-STOMP) This channel is how the original stomp was found —
@@ -1032,6 +1105,7 @@ function processFile(
 				suppressedCount: suppressed.length,
 				emittedAnyway: sawInterrupt || sawApiAbort,
 				truncatedReset,
+				startupFenced: preStartFenceMs !== null,
 				maxAgeMs: TURN_END_MAX_AGE_MS,
 				samples: suppressed.slice(0, 5),
 				filePath,
@@ -1246,6 +1320,20 @@ function pollKnownFilesForGrowth(): void {
 //      touches genuinely-new files, and walks asynchronously.
 const SEED_SCAN_YIELD_EVERY = 25;
 
+/**
+ * (WATCHER-BLUE-STOMP) How much of a pre-existing Claude transcript the startup
+ * guard re-reads to find appends the deferred seed would have skipped past.
+ *
+ * The window it has to cover is the gap between fs.watch going live and the seed
+ * reaching this file — ~1.2 s warm here — so a quarter megabyte is orders of
+ * magnitude more than a session can write in it, while keeping the SYNCHRONOUS
+ * read bounded. That bound is the point: an active transcript is routinely tens
+ * of megabytes, and reading one whole on the main thread at startup is exactly
+ * the blocking-I/O footgun that starved the renderer and left the window blank
+ * for minutes. Same size as auto-resume's transcript tail, for the same reason.
+ */
+const STARTUP_GUARD_TAIL_BYTES = 256 * 1024;
+
 // True once the initial seed has tailed every existing file to EOF. Until
 // then the discover poll must not run — it would replay the full history.
 let seedComplete = false;
@@ -1268,10 +1356,13 @@ let discoverInFlight = false;
  * on top of a live hook `Start`.
  *
  * A file created BEFORE the watcher started is by definition one the seed scan
- * owns, so seed it (tail from EOF) instead of replaying it; the seed walk's own
- * `fileStates.has` check then skips it harmlessly. A genuinely NEW file — created
- * after we started watching — still processes from offset 0 immediately, which is
- * both correct and what makes a new session's first lines visible.
+ * owns. Codex seeds it (tail from EOF) instead of replaying it; Claude re-reads
+ * a bounded tail under the pre-start fence, because tailing blind would swallow
+ * the very append that woke us — see the startupGuard branch in processFile. The
+ * seed walk's own `fileStates.has` check then skips the file either way.
+ * A genuinely NEW file — created after we started watching — still processes from
+ * offset 0 immediately, which is both correct and what makes a new session's
+ * first lines visible.
  *
  * Degrades safely: where birthtime is unavailable it reads 0, the guard declines,
  * and behaviour is exactly what it was before.

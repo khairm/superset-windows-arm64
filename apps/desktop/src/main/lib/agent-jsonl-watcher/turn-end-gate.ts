@@ -1,3 +1,5 @@
+import { HALF_STOP_INCOMPLETE_TEXTS } from "../auto-resume/classifier/classifier";
+
 /**
  * (WATCHER-BLUE-STOMP) Turn-end replay gate for the Claude JSONL watcher.
  *
@@ -72,6 +74,41 @@
  * `type:"assistant"` with a top-level `isApiErrorMessage:true` and a single text
  * block, so the parse never loses a genuine abort.
  *
+ * ── 1b. WHICH api-errors end a turn? ─────────────────────────────────────────
+ *
+ * Re-measured 2026-08-06 over the same 10,698 transcripts. The signatures this
+ * predicate used to carry — "Stream idle timeout" / "partial response received"
+ * — match ZERO of the 1317 real api-error records, so the destructive path had
+ * been matching nothing at all. Reading the installed 2.1.223 binary says why:
+ * `Stream idle timeout - partial response received` is the message of an
+ * internal `Error` object (it feeds the CLI's own telemetry classifier), never
+ * the text of a transcript record. It is dropped rather than kept for
+ * compatibility: it was never a transcript text in ANY of the 18 CLI versions
+ * present (2.1.197 – 2.1.223), so keeping it only widens the destructive path.
+ *
+ * What Claude Code actually writes when a stream dies mid-response is one of
+ * HALF_STOP_INCOMPLETE_TEXTS (see ../auto-resume/classifier/classifier.ts) —
+ * one CLI site, `tengu_streaming_partial_finalized`, which finalizes the blocks
+ * already yielded. 23 such records exist in the corpus, across 2.1.205 – 2.1.222.
+ *
+ * NOT every api-error is a turn-end, so admitting the family wholesale would
+ * green mid-turn. Partitioning every api-error record by what follows it (the
+ * same "meaningful progress" rule auto-resume uses: the next `user` record or
+ * non-api-error `assistant` record) shows the half-stop family splits 19 ended /
+ * 4 continued — and the split is EXACT on one field. The CLI synthesizes a
+ * stop_reason onto the partial blocks it finalizes: `tool_use` when a tool call
+ * was already yielded (it runs the tool and the turn CONTINUES), `end_turn`
+ * otherwise. All 4 continuations sit behind an assistant record stamped
+ * `stop_reason:"tool_use"`; all 19 real turn-ends sit behind `end_turn` or a
+ * record with no stop_reason at all. Hence isToolUseContinuationRecord below,
+ * which the watcher applies to the record preceding a matched abort.
+ *
+ * Everything else — rate limits, credit exhaustion, 5xx, policy blocks, prompt
+ * too long — is deliberately NOT admitted here even though the corpus shows
+ * most of it is terminal too. Those aborts fire Claude Code's StopFailure hook,
+ * which superset-notify.py already turns into a Stop; this gate exists only for
+ * the case no hook covers, and every text it admits widens a destructive path.
+ *
  * ── 2. Did the turn end JUST NOW? ────────────────────────────────────────────
  *
  * Claude Code re-presents transcript content it has already written — a
@@ -92,6 +129,13 @@
  *      the only layer that catches a rewrite replaying a match seconds old.
  *   2. age  — an entry stamped longer than TURN_END_MAX_AGE_MS ago is a replay.
  *      This is what covers a COLD watcher (empty uuid set) re-reading history.
+ *   3. pre-start fence — OPTIONAL, and used only on the watcher's startup-guard
+ *      path, where a file that pre-dates the watcher is re-read from a bounded
+ *      tail to catch appends the deferred seed would otherwise swallow. There
+ *      every entry stamped before the watcher started is by definition history,
+ *      whatever its age; only entries written after we started watching are ours
+ *      to judge. Off (null) in steady state, where a young entry with an unseen
+ *      uuid IS the normal live turn-end and must emit.
  *
  * Failing the gate emits NOTHING — no Stop, no marker reap — so the dot keeps
  * whatever the notify hook last asserted. That is the safe direction: a lingering
@@ -107,14 +151,11 @@ const TURN_END_SENTINEL_TEXTS: ReadonlySet<string> = new Set([
 
 /**
  * Signature of the API failure that ENDS a turn, as it appears in the api-error
- * record's own text. A bare api-error also covers TRANSIENT failures (overloaded
- * 529 etc.) that Claude auto-retries within the same turn, which must not reap
- * markers or green mid-turn.
+ * record's own text. Shared with the auto-resume classifier so the two cannot
+ * drift apart; see section 1b above for why this is the ONLY api-error family
+ * admitted and why the older "Stream idle timeout" wording was dropped.
  */
-const API_ABORT_SIGNATURES = [
-	"Stream idle timeout",
-	"partial response received",
-] as const;
+const API_ABORT_SIGNATURES = HALF_STOP_INCOMPLETE_TEXTS;
 
 /**
  * How old a genuine turn-end entry can be when the watcher reads it.
@@ -130,10 +171,16 @@ const API_ABORT_SIGNATURES = [
  * at 435ms, sitting on that distribution's median — a sentinel is an ordinary
  * entry as far as write lag goes.
  *
- * 120s is ~8.5x the worst observed. The bound does not need to be tight: what it
- * exists to reject is HOURS old (the same transcript still carries interrupt
- * lines 7h back), so the whole region between 15s and hours is empty and there
- * is nothing to gain by moving the line down into the measurement's tail.
+ * 120s is ~8.5x the worst observed, and it is conservative BY DESIGN rather than
+ * fitted to that tail. The measurement above cannot see the whole distribution:
+ * it samples the age of the NEWEST entry in each chunk, so an entry that Claude
+ * Code flushed behind a later write is invisible to it. Measuring the gaps
+ * between genuine sentinels and the writes that expose them independently gives
+ * a p99 of 194s, so the region past 15s is populated, not empty. The bound is
+ * therefore set where the COST of being wrong flips: what it exists to reject is
+ * hours-old history (the same transcript still carries interrupt lines 7h back),
+ * and everything under it is cheap to admit because the uuid layer already
+ * catches re-presentation.
  *
  * (The earlier basis for this constant — "0.399-0.653s, one genuine interrupt
  * batched 30.9s behind a 15 KB pending message" — was drawn from a corpus that
@@ -197,6 +244,7 @@ export type TurnEndReason =
 	| "fresh"
 	| "replayed-uuid"
 	| "stale"
+	| "pre-start"
 	| "future-skew"
 	| "undatable";
 
@@ -255,6 +303,12 @@ function messageRole(message: unknown): string | null {
 	return typeof role === "string" ? role : null;
 }
 
+function messageStopReason(message: unknown): string | null {
+	if (typeof message !== "object" || message === null) return null;
+	const reason = (message as { stop_reason?: unknown }).stop_reason;
+	return typeof reason === "string" ? reason : null;
+}
+
 /** Claude Code's synthetic "the user interrupted this turn" user record. */
 export function isSyntheticInterruptRecord(rec: TranscriptRecord): boolean {
 	if (rec.type !== "user") return false;
@@ -279,6 +333,47 @@ export function isSyntheticApiAbortRecord(rec: TranscriptRecord): boolean {
 	return API_ABORT_SIGNATURES.some((sig) => text.includes(sig));
 }
 
+/**
+ * (WATCHER-BLUE-STOMP) Does this record show Claude Code finalizing a partial
+ * response AS A TOOL CALL — i.e. the turn is about to continue?
+ *
+ * When the stream dies mid-response the CLI keeps the blocks it already got and
+ * stamps them with a synthesized stop_reason: `tool_use` if one of those blocks
+ * was a tool call, `end_turn` otherwise. `tool_use` means it will now run the
+ * tool and carry on, so the api-error record sitting beside it is NOT a turn-end
+ * and must not reap markers or green the dot. This is exact on the corpus: all 4
+ * half-stop records whose turn continued are preceded by a `tool_use` record,
+ * and all 19 whose turn ended are not.
+ *
+ * The caller passes the assistant record PRECEDING a matched abort. When there
+ * is none (the preceding record fell in an earlier read), the answer is "not a
+ * continuation" and the abort is admitted — the same behaviour as before this
+ * check existed, so an unobservable predecessor can never cost us a turn-end.
+ */
+export function isToolUseContinuationRecord(rec: TranscriptRecord): boolean {
+	if (rec.type !== "assistant") return false;
+	if (rec.isApiErrorMessage === true) return false;
+	if (messageRole(rec.message) !== "assistant") return false;
+	return messageStopReason(rec.message) === "tool_use";
+}
+
+/**
+ * Was this entry written before `fenceMs`, allowing the same slack the age gate
+ * gives a clock that has stepped? An entry with no usable timestamp is NOT
+ * treated as pre-fence — `judgeTurnEndRecord` already suppresses it as
+ * `undatable`, and the watcher's api-error notify wants an unusable timestamp to
+ * behave like an unfenced read rather than silently vanish.
+ */
+export function recordPredatesFence(
+	rec: TranscriptRecord,
+	fenceMs: number,
+): boolean {
+	if (typeof rec.timestamp !== "string") return false;
+	const t = Date.parse(rec.timestamp);
+	if (!Number.isFinite(t)) return false;
+	return t < fenceMs - TURN_END_MAX_FUTURE_SKEW_MS;
+}
+
 function rememberTurnEndUuid(uuid: string): void {
 	seenTurnEndUuids.add(uuid);
 	while (seenTurnEndUuids.size > SEEN_TURN_END_UUID_CAP) {
@@ -294,10 +389,16 @@ function rememberTurnEndUuid(uuid: string): void {
  * Never throws. An entry that cannot be dated or identified is NOT fresh — we
  * cannot prove a turn ended just now, and suppressing is the safe direction; it
  * is reported as "undatable" so the case stays findable in the debug log.
+ *
+ * `preStartFenceMs` arms the startup fence (layer 3): pass the watcher's start
+ * time on the startup-guard re-read, where anything stamped earlier is history
+ * we are only re-reading to reach the appends behind it, and null everywhere
+ * else. Passing it in keeps this module free of the watcher's clock.
  */
 export function judgeTurnEndRecord(
 	rec: TranscriptRecord,
 	nowMs: number,
+	preStartFenceMs: number | null = null,
 ): TurnEndVerdict {
 	const uuid =
 		typeof rec.uuid === "string" && rec.uuid.length > 0 ? rec.uuid : null;
@@ -310,6 +411,8 @@ export function judgeTurnEndRecord(
 		return { fresh: false, reason: "replayed-uuid", ageMs, uuid };
 	if (uuid !== null) rememberTurnEndUuid(uuid);
 	if (ageMs === null) return { fresh: false, reason: "undatable", ageMs, uuid };
+	if (preStartFenceMs !== null && recordPredatesFence(rec, preStartFenceMs))
+		return { fresh: false, reason: "pre-start", ageMs, uuid };
 	if (ageMs < -TURN_END_MAX_FUTURE_SKEW_MS)
 		return { fresh: false, reason: "future-skew", ageMs, uuid };
 	if (ageMs > TURN_END_MAX_AGE_MS)
@@ -318,9 +421,10 @@ export function judgeTurnEndRecord(
 }
 
 /**
- * Drop the uuid layer. Called when the watcher stops: a restart re-seeds every
- * existing transcript to EOF, so no history is replayed through the empty layer,
- * and anything re-read afterwards is old enough for the age layer to catch.
+ * Drop the uuid layer. Called when the watcher stops: on the next start every
+ * pre-existing transcript is either seeded straight to EOF or re-read under the
+ * pre-start fence, so no history reaches an emit through the empty layer, and
+ * anything re-read after that is old enough for the age layer to catch.
  */
 export function resetTurnEndGate(): void {
 	seenTurnEndUuids.clear();
