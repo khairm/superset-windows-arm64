@@ -1,15 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import { NON_GIT_BRANCH } from "../runtime/git/non-git";
-import { CURATION_RECHECK_MS, PUSH_QUESTION_EXPIRY_MS } from "./config";
+import {
+	CURATION_RECHECK_MS,
+	PUSH_GONE_CORROBORATION_MS,
+	PUSH_QUESTION_EXPIRY_MS,
+} from "./config";
 import type { DeviceStore } from "./device-store";
 import {
 	armPush,
+	createFireVerdictProbe,
 	createIsCuratedOffProbe,
-	createIsStillUnansweredProbe,
 	type NotifyingSinkDeps,
 } from "./index";
 import type { PresenceStore } from "./presence";
-import { createPushSender, PUSH_SWEEP_INTERVAL_MS } from "./push";
+import {
+	createPushSender,
+	PUSH_SWEEP_INTERVAL_MS,
+	type PushFireVerdict,
+} from "./push";
 import type { PushFence, PushFenceRecord } from "./push-fence";
 import type { PendingQuestion } from "./question-store";
 import {
@@ -540,7 +548,7 @@ describe("(PUSH-CURATION-GATE) createIsCuratedOffProbe", () => {
 		expect(probe.holds).toEqual([]);
 	});
 
-	it("FIRES for a question the store has never seen — that is the RESTART case, and isStillUnanswered owns it", () => {
+	it("FIRES for a question the store has never seen — that is the RESTART case, and createFireVerdictProbe owns it", () => {
 		const probe = curationProbe({
 			mirror: snapshot(
 				[mirrorWorkspace("w-1", { deletedAt: NOW - 50 })],
@@ -768,7 +776,9 @@ function pushHarness(options: {
 	hidden?: boolean;
 	present?: boolean;
 	fenceRecords?: PushFenceRecord[];
-	unanswered?: () => boolean;
+	fireVerdict?: () => PushFireVerdict;
+	/** Injected wall clock, so a corroboration window can be crossed without waiting it out. */
+	now?: () => number;
 }) {
 	const state = {
 		hidden: options.hidden ?? true,
@@ -801,10 +811,12 @@ function pushHarness(options: {
 		} as unknown as DeviceStore,
 		presence: presenceStub(() => state.present),
 		fence: fence.fence,
-		isStillUnanswered: options.unanswered ?? (() => true),
+		fireVerdict: options.fireVerdict ?? (() => "fire"),
 		isCuratedOff,
+		now: options.now,
 		onFault: () => {},
 	});
+	const clock = options.now ?? (() => Date.now());
 	return {
 		push,
 		fence,
@@ -821,7 +833,7 @@ function pushHarness(options: {
 				questionId: HELD_QUESTION,
 				workspaceId: HELD_WORKSPACE,
 				questionCount: 1,
-				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+				expiresAtMs: clock() + PUSH_QUESTION_EXPIRY_MS,
 			});
 		},
 	};
@@ -892,7 +904,7 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 				} as unknown as DeviceStore,
 				presence: presenceStub(() => false),
 				fence: fakeFence().fence,
-				isStillUnanswered: () => true,
+				fireVerdict: () => "fire",
 				// Exactly what the probe answers when the mirror ages out or belongs to
 				// another org: curation is not in force, so nothing is held.
 				isCuratedOff: () => state.enabled,
@@ -976,12 +988,12 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 	);
 
 	it(
-		"still drops a held entry that is no longer unanswered — curation holds, it does not resurrect",
+		"still drops a held entry the store reports as SETTLED — curation holds, it does not resurrect",
 		async () => {
 			const harness = pushHarness({
 				hidden: true,
 				present: false,
-				unanswered: () => false,
+				fireVerdict: () => "settled",
 			});
 			harness.arm();
 			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
@@ -996,16 +1008,16 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 });
 
 // ---------------------------------------------------------------------------
-// isStillUnanswered — item 7
+// createFireVerdictProbe — item 7
 // ---------------------------------------------------------------------------
 
-describe("(QUESTION-EXPIRY) createIsStillUnansweredProbe", () => {
+describe("(QUESTION-EXPIRY) createFireVerdictProbe", () => {
 	function probe(options: {
 		question: PendingQuestion | null;
 		gone?: boolean;
 	}) {
 		const errors: string[] = [];
-		const fn = createIsStillUnansweredProbe({
+		const fn = createFireVerdictProbe({
 			questions: { get: () => options.question },
 			liveness: { isProvablyGone: () => options.gone ?? false },
 			resolveTerminalActivityMs: () => NOW - 1_000,
@@ -1019,29 +1031,109 @@ describe("(QUESTION-EXPIRY) createIsStillUnansweredProbe", () => {
 	}
 
 	it("keeps the buzz for a pending question on a terminal that is not provably gone", () => {
-		expect(probe({ question: pendingQuestionFixture() }).answer).toBe(true);
+		expect(probe({ question: pendingQuestionFixture() }).answer).toBe("fire");
 	});
 
-	it("drops the buzz for a SETTLED question, silently — that is the ordinary path and it needs no log line", () => {
+	it("reports a SETTLED question silently — that is the ordinary path and it needs no log line", () => {
 		const settled = probe({
 			question: pendingQuestionFixture({ state: "resolved" }),
 		});
-		expect(settled.answer).toBe(false);
+		expect(settled.answer).toBe("settled");
 		expect(settled.errors).toEqual([]);
 	});
 
-	it("drops the buzz when the terminal is provably gone", () => {
+	it("reports `gone` — NOT `settled` — for a provably absent terminal, because the caller has to corroborate one of those and not the other", () => {
 		expect(
 			probe({ question: pendingQuestionFixture(), gone: true }).answer,
-		).toBe(false);
+		).toBe("gone");
 	});
 
-	it("drops the buzz for an ABSENT question and NAMES the restart — the fence is durable, the store is memory-only, and the lost buzz is otherwise invisible", () => {
+	it("reports an ABSENT question as `settled` and NAMES the restart — the fence is durable, the store is memory-only, and the lost buzz is otherwise invisible", () => {
 		const absent = probe({ question: null });
-		expect(absent.answer).toBe(false);
+		expect(absent.answer).toBe("settled");
 		expect(absent.errors).toHaveLength(1);
 		expect(absent.errors[0]).toContain("restarted");
 	});
+});
+
+describe("(PUSH-GONE-CORROBORATION) a gone verdict is a hold, not a drop", () => {
+	it(
+		"HOLDS the entry on the first gone verdict instead of forgetting it — one daemon listing is one fallible observation and `forget()` cannot be undone",
+		async () => {
+			const harness = pushHarness({
+				hidden: false,
+				present: false,
+				fireVerdict: () => "gone",
+			});
+			harness.arm();
+			// Two real sweeps, well inside the corroboration window. Before this, the
+			// first sweep dropped the fence row and the buzz was gone forever.
+			await nextSweep();
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+			expect(harness.fence.cleared).toEqual([]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"FIRES if the terminal reads live again — a flap or a mid-restart daemon resets the clock rather than condemning the question",
+		async () => {
+			let verdict: PushFireVerdict = "gone";
+			const harness = pushHarness({
+				hidden: false,
+				present: false,
+				fireVerdict: () => verdict,
+			});
+			harness.arm();
+			await nextSweep();
+			expect(harness.push.inspect().sent).toEqual([]);
+
+			verdict = "fire";
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({
+				armed: [],
+				sent: [HELD_QUESTION],
+			});
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"forgets only once the same verdict has stood for the whole window",
+		async () => {
+			let clock = NOW;
+			const harness = pushHarness({
+				hidden: false,
+				present: false,
+				fireVerdict: () => "gone",
+				now: () => clock,
+			});
+			harness.arm();
+			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
+
+			// One millisecond short of the window: still a hold, still armed, nothing
+			// cleared. Real sweeps, reading the injected clock.
+			clock = NOW + PUSH_GONE_CORROBORATION_MS - 1;
+			await nextSweep();
+			expect(harness.push.inspect().armed).toEqual([HELD_QUESTION]);
+			expect(harness.fence.cleared).toEqual([]);
+
+			// Corroborated. The drop is held to the same standard `(QUESTION-EXPIRY)`
+			// settles a question stale on: the same verdict, twice, a window apart.
+			clock = NOW + PUSH_GONE_CORROBORATION_MS;
+			await nextSweep();
+			expect(harness.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(harness.fence.cleared).toEqual([HELD_QUESTION]);
+			harness.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
 });
 
 // ---------------------------------------------------------------------------

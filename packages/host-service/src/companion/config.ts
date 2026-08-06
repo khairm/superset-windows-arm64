@@ -249,6 +249,25 @@ export const CURATION_RECHECK_MS = 30_000;
  * §13.3 exists to prevent.
  */
 export const RETRACT_TTL_MS = 86_400_000;
+/**
+ * (PUSH-GONE-CORROBORATION) How long a "this terminal is gone" verdict must
+ * keep being true, at fire time, before the push sender forgets the question.
+ *
+ * The same argument `QUESTION_EXPIRY_CORROBORATION_MS` makes for `settle(stale)`
+ * applies here, because the consequence is the same shape: `forget()` drops the
+ * fence row, so a question dropped on one observation can never buzz again, at
+ * any later moment, for any reason. One daemon listing is one fallible
+ * observation — a mid-restart daemon, a partially adopted registry, a snapshot
+ * taken between a terminal's rows — and the sweep had been acting on exactly
+ * one, then discarding the entry silently.
+ *
+ * Much shorter than reconcile's five minutes, and deliberately so: this runs on
+ * the 2 s sweep rather than on the heartbeat, so a minute is ~30 independent
+ * observations, and the cost of waiting is only that a genuinely dead
+ * terminal's question keeps a fence row for another minute. The cost of not
+ * waiting is a blocked agent that never buzzes.
+ */
+export const PUSH_GONE_CORROBORATION_MS = 60_000;
 export const PUSH_DATA_HARD_CAP_BYTES = 160;
 /** No natural-language string can satisfy this — that is the point (§13.1). */
 export const PUSH_VALUE_PATTERN = /^[A-Za-z0-9_-]{1,43}$/;

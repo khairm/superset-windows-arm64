@@ -108,7 +108,12 @@ import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
 import { openPairingWindow, type PairingWindowHandle } from "./pairing";
 import { createPresenceStore, type PresenceStore } from "./presence";
-import { createPushSender, handleRegister, type PushSender } from "./push";
+import {
+	createPushSender,
+	handleRegister,
+	type PushFireVerdict,
+	type PushSender,
+} from "./push";
 import { createPushFence, type PushFence } from "./push-fence";
 import {
 	createQuestionStore,
@@ -633,7 +638,7 @@ export function createCompanionBridge(
 			fence: pushFence,
 			// (QUESTION-EXPIRY) See `createIsStillUnansweredProbe`; extracted so the
 			// three-way split it makes can be exercised without booting a bridge.
-			isStillUnanswered: createIsStillUnansweredProbe({
+			fireVerdict: createFireVerdictProbe({
 				questions,
 				liveness,
 				resolveTerminalActivityMs: (hostTerminalId) =>
@@ -1505,7 +1510,7 @@ export function isCuratedOffSidebar(
  * A QUESTION THIS STORE HAS NEVER SEEN ANSWERS `false`. That is the restart
  * case — the fence is durable and rebuilds `armed`, `QuestionStore` is memory
  * only and starts empty — and it is deliberately NOT this gate's to act on:
- * `isStillUnanswered` sits immediately after and drops that entry with the log
+ * `createFireVerdictProbe` sits immediately after and drops that entry with the log
  * line that names the restart. Holding it here instead would swallow the entry
  * silently and forever.
  *
@@ -1572,7 +1577,7 @@ export function createIsCuratedOffProbe(deps: {
 		}
 		const question = deps.questions.get(questionId);
 		if (question === null) {
-			// Not cached: there is nothing to re-ask about, and `isStillUnanswered`
+			// Not cached: there is nothing to re-ask about, and `fireVerdict`
 			// is about to forget this entry anyway.
 			cache.delete(questionId);
 			return false;
@@ -1709,48 +1714,51 @@ export function publishPendingQuestion(
  * point at which "the terminal you are about to be buzzed about no longer
  * exists" can still be noticed.
  *
- * It uses the STRICT liveness predicate, and that is load-bearing rather than
- * tidy. `evaluate` removes the entry from `armed` before it asks, and a `false`
- * here routes straight to `forget()` — there is no second chance and no next
- * tick. So exactly three things may drop a buzz:
+ * IT ANSWERS WITH A VERDICT, NOT A BOOLEAN, because the two ways of not firing
+ * are not the same kind of fact and the caller must not treat them alike:
  *
- *  1. A record that is genuinely no longer `pending`.
- *  2. Positive, non-empty-listing evidence that its terminal is gone.
- *  3. A record this store has never seen — the RESTART case. Eviction cannot
- *     produce it (`evictOldestSettled` and `prune` both skip pending records by
- *     construction); the push fence is durable and rebuilds `armed` at
- *     construction while `QuestionStore` is memory-only and starts empty, so
- *     every push held across a host-service restart lands here. `false` is the
- *     only available answer — without the record there is no terminal id,
- *     transcript path or option list, so `/v1/question` would 404 and
- *     `/v1/answer` would refuse, and buzzing a wrist toward a question the
- *     bridge cannot serve is worse than not buzzing. It is LOGGED because the
- *     cost is real and otherwise invisible: a user away across a restart loses
- *     the buzz for every question that was still held.
+ *  - `"settled"` — the record is no longer `pending`, or this store has never
+ *    seen it. Both are one-shot and final. The second is the RESTART case:
+ *    eviction cannot produce it (`evictOldestSettled` and `prune` both skip
+ *    pending records by construction), the push fence is durable and rebuilds
+ *    `armed` at construction while `QuestionStore` is memory-only and starts
+ *    empty, so every push held across a host-service restart lands here. It is
+ *    LOGGED because the cost is real and otherwise invisible.
+ *  - `"gone"` — positive, non-empty-listing evidence that the question's
+ *    terminal no longer exists. ONE observation, and the sweep is required to
+ *    corroborate it before acting (`PUSH_GONE_CORROBORATION_MS`); see the hold
+ *    in `evaluate`.
  *
- * An unreachable daemon, a stale snapshot or an empty listing all KEEP the buzz.
+ * `"fire"` is everything else. An unreachable daemon, a stale snapshot or an
+ * empty listing all KEEP the buzz — the predicate is the strict
+ * `isProvablyGone`, never `!isLive`.
  */
-export function createIsStillUnansweredProbe(deps: {
+export function createFireVerdictProbe(deps: {
 	questions: Pick<QuestionStore, "get">;
 	liveness: Pick<TerminalLiveness, "isProvablyGone">;
 	/** host.db's newest instant for the row; keeps a young terminal from losing the race. */
 	resolveTerminalActivityMs(hostTerminalId: string): number | null;
 	logger: Pick<BridgeLogger, "error">;
-}): (questionId: QuestionId) => boolean {
-	return (questionId: QuestionId): boolean => {
+}): (questionId: QuestionId) => PushFireVerdict {
+	return (questionId: QuestionId): PushFireVerdict => {
 		const question = deps.questions.get(questionId);
 		if (question === null) {
 			deps.logger.error(
 				"a held push names a question this store has never seen — the host-service restarted after it was armed (the fence is durable, the question store is memory-only); dropping the buzz because the question can no longer be served or answered",
 				{ questionId },
 			);
-			return false;
+			return "settled";
 		}
-		if (question.state !== "pending") return false;
-		return !deps.liveness.isProvablyGone(
-			question.hostTerminalId,
-			deps.resolveTerminalActivityMs(question.hostTerminalId),
-		);
+		if (question.state !== "pending") return "settled";
+		if (
+			deps.liveness.isProvablyGone(
+				question.hostTerminalId,
+				deps.resolveTerminalActivityMs(question.hostTerminalId),
+			)
+		) {
+			return "gone";
+		}
+		return "fire";
 	};
 }
 

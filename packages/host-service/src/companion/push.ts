@@ -123,6 +123,7 @@ import { readFile } from "node:fs/promises";
 import {
 	FCM_PROJECT_ID,
 	PUSH_DATA_HARD_CAP_BYTES,
+	PUSH_GONE_CORROBORATION_MS,
 	PUSH_TTL_MS,
 	PUSH_VALUE_PATTERN,
 	RETRACT_TTL_MS,
@@ -946,7 +947,7 @@ export interface PushSender {
 	 *
 	 * Away right now -> the push goes out on this call, with no tick of latency.
 	 * Present -> the question is HELD with no deadline and fires on the first
-	 * sweep that sees presence lapse, provided `isStillUnanswered` still says so
+	 * sweep that sees presence lapse, provided `fireVerdict` still says so
 	 * at that moment and `(PUSH-CURATION-GATE)`'s `isCuratedOff` is not holding it
 	 * for a thread the user has taken off their sidebar.
 	 *
@@ -1027,27 +1028,28 @@ export interface PushSenderDeps {
 	 * was called: a missed cancel would buzz the watch for a question already
 	 * answered, which is exactly the noise presence gating exists to remove.
 	 *
-	 * MUST FAIL TOWARD `true`. `evaluate` acts on this once and irreversibly —
-	 * the entry is already out of `armed` and a `false` goes to `forget()` —
-	 * so anything the implementation is merely UNSURE about (an unreachable
-	 * daemon, a stale liveness snapshot) has to answer "still unanswered". Only
-	 * positive knowledge that the question is settled, or positive evidence that
-	 * its terminal is gone, may return `false`. An implementation that reports
-	 * uncertainty as `false` silently loses buzzes and nothing downstream can
-	 * detect it.
+	 * MUST FAIL TOWARD `"fire"`. Anything the implementation is merely UNSURE
+	 * about (an unreachable daemon, a stale liveness snapshot) has to answer
+	 * `"fire"`. Only positive knowledge may answer otherwise. An implementation
+	 * that reports uncertainty as a drop silently loses buzzes and nothing
+	 * downstream can detect it.
 	 *
-	 * ABSENCE IS A THIRD CASE AND IT IS A LEGITIMATE `false`. `reconstruct()`
-	 * below rebuilds `armed` from the durable fence at construction, but the
-	 * question store the implementation consults is in memory only — so after a
-	 * host-service restart every held push asks about a questionId that store has
-	 * never seen. That is NOT the forbidden "unsure": the record carrying the
-	 * terminal id, the transcript path and the options is gone, so `/v1/question`
-	 * would 404 and `/v1/answer` would refuse. Buzzing a wrist toward a question
-	 * the bridge cannot serve is worse than not buzzing. It is a real cost paid
-	 * silently, though, so the implementation is expected to LOG it and name the
-	 * restart rather than fold it into the settled branch.
+	 * THE TWO NON-FIRING ANSWERS ARE NOT INTERCHANGEABLE, which is why this is a
+	 * verdict rather than a boolean:
+	 *
+	 *  - `"settled"` is a FACT ABOUT THE RECORD and needs no corroboration: it
+	 *    is either no longer `pending`, or absent from a memory-only store that
+	 *    a restart emptied. Absence is a legitimate `"settled"` — the record
+	 *    carrying the terminal id and the options is gone, so `/v1/question`
+	 *    would 404 — and the implementation is expected to LOG it and name the
+	 *    restart, because it is a real cost otherwise paid silently.
+	 *  - `"gone"` is ONE OBSERVATION of a daemon listing. `evaluate` treats it
+	 *    as a HOLD and requires the same answer again after
+	 *    `PUSH_GONE_CORROBORATION_MS` before it forgets anything, for the same
+	 *    reason `reconcile` corroborates before `settle(stale)`: the action is
+	 *    irreversible and one listing is fallible.
 	 */
-	isStillUnanswered(questionId: QuestionId): boolean;
+	fireVerdict(questionId: QuestionId): PushFireVerdict;
 	/**
 	 * (PUSH-CURATION-GATE) Is this question's thread OFF the user's sidebar right
 	 * now — binned, archived, completed, hidden or snoozed?
@@ -1061,7 +1063,7 @@ export interface PushSenderDeps {
 	 * arrives on the first sweep after the curation lapses.
 	 *
 	 * MUST FAIL TOWARD `false`. This is the opposite direction from
-	 * `isStillUnanswered` and for the opposite reason: a `false` here costs at
+	 * `fireVerdict` and for the opposite reason: a `false` here costs at
 	 * most one buzz the user might have preferred not to get, while a `true`
 	 * reached by uncertainty silences a genuinely blocked agent for six hours. So
 	 * curation that is not in force, a workspace the reader has no row for, and
@@ -1093,6 +1095,18 @@ interface SentRecord {
 	workspaceId: WorkspaceId;
 	sentAtMs: number;
 }
+
+/**
+ * What the fire-time re-check may answer. `"fire"` and `"settled"` are acted on
+ * at once; `"gone"` is one observation and is HELD for corroboration — see
+ * `PushSenderDeps.fireVerdict` and `PUSH_GONE_CORROBORATION_MS`.
+ *
+ * Lives here rather than beside its implementation (`createFireVerdictProbe` in
+ * `index.ts`) because the CONTRACT belongs to the caller that acts on it, and
+ * because `index.ts` already imports this module — the other direction would
+ * close a cycle.
+ */
+export type PushFireVerdict = "fire" | "settled" | "gone";
 
 /**
  * (PUSH-PRESENCE) A cancellable unit of FCM work.
@@ -1141,6 +1155,19 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	const chains = new Map<QuestionId, Promise<void>>();
 	/** The cancel token of the send currently on each question's chain. */
 	const sendTokens = new Map<QuestionId, SendToken>();
+	/**
+	 * (PUSH-GONE-CORROBORATION) questionId -> the instant the fire path FIRST saw
+	 * its terminal read as provably gone, while the entry was still armed.
+	 *
+	 * The second observation this map exists to enable is the whole point: one
+	 * daemon listing is fallible, and `forget()` cannot be undone. An entry that
+	 * recovers drops its candidacy and starts from zero if it ever comes back, so
+	 * a flapping daemon can never accumulate its way to a drop.
+	 *
+	 * Bounded by `armed`: only an armed entry can add a row, and `forget()` clears
+	 * one.
+	 */
+	const goneSince = new Map<QuestionId, number>();
 
 	const abort = new AbortController();
 	let sweepTimer: NodeJS.Timeout | null = null;
@@ -1345,6 +1372,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	function forget(questionId: QuestionId): void {
 		armed.delete(questionId);
 		sent.delete(questionId);
+		goneSince.delete(questionId);
 		try {
 			deps.fence?.clear(questionId);
 		} catch (error) {
@@ -1395,32 +1423,55 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// reason: the thread is not on the user's sidebar right now, so the tree
 			// this notification would open does not contain it.
 			//
-			// THE TWO HOLDS ARE INDEPENDENT AND COMPOSE — whichever holds, holds.
-			// Presence is asked first only because it is free; neither can release an
-			// entry the other is still holding, because both are `continue`s over the
+			// THE HOLDS ARE INDEPENDENT AND COMPOSE — whichever holds, holds.
+			// Presence is asked first only because it is free; none can release an
+			// entry another is still holding, because they are `continue`s over the
 			// same armed entry rather than a combined verdict computed once.
 			//
 			// CRUCIALLY BEFORE `armed.delete`. Everything below this line is one-shot:
 			// the entry leaves `armed` and the next branch can only fire it or
-			// `forget()` it forever. Curation is the one input here that is EXPECTED
-			// to change its mind — a snooze expires — so it has to be answered while
-			// the entry is still armed, or "not now" would silently mean "never".
+			// `forget()` it forever. Curation is one of the inputs here that is
+			// EXPECTED to change its mind — a snooze expires — so it has to be
+			// answered while the entry is still armed, or "not now" would silently
+			// mean "never".
 			if (deps.isCuratedOff(entry.questionId)) continue;
-
-			armed.delete(entry.questionId);
 
 			// NEVER trust that cancelPending was called.
 			//
-			// This is a ONE-SHOT decision: the entry is already out of `armed`, so
-			// `forget()` below is permanent — there is no later tick that
-			// reconsiders it. That is only safe because the predicate is contracted
-			// to fail toward `true` (see `isStillUnanswered`), so `false` means the
-			// question is settled or its terminal is provably gone, never merely
-			// "could not tell".
-			if (!deps.isStillUnanswered(entry.questionId)) {
+			// Asked while the entry is STILL ARMED, because one of its three answers
+			// is a hold. `"settled"` is a fact about the record and is acted on at
+			// once; `"gone"` is one daemon observation, and this used to act on it
+			// immediately too — `forget()` dropped the fence row and the buzz was
+			// gone forever, on the strength of a single listing, and silently. That
+			// is below the bar every other irreversible verdict in this feature is
+			// held to (`reconcile` corroborates before `settle(stale)`; the reaper
+			// corroborates before correcting a row). So `"gone"` HOLDS, like presence
+			// and curation, until the same verdict comes back a corroboration window
+			// later.
+			const fire = deps.fireVerdict(entry.questionId);
+			if (fire === "settled") {
 				forget(entry.questionId);
 				continue;
 			}
+			if (fire === "gone") {
+				const firstSeenGoneAtMs = goneSince.get(entry.questionId) ?? wallMs;
+				goneSince.set(entry.questionId, firstSeenGoneAtMs);
+				if (wallMs - firstSeenGoneAtMs < PUSH_GONE_CORROBORATION_MS) continue;
+				// LOUD, because this is where a buzz is deliberately thrown away: a
+				// blocked agent nobody will now be told about. Two observations a
+				// minute apart agreed, which is the same standard `(QUESTION-EXPIRY)`
+				// settles a question stale on.
+				console.log(
+					`${LOG} dropping the buzz for questionId=${entry.questionId} — its terminal has read as provably gone for ${Math.round(wallMs - firstSeenGoneAtMs)}ms across separate sweeps`,
+				);
+				forget(entry.questionId);
+				continue;
+			}
+			// Recovered: a flap, a mid-restart daemon, a snapshot taken between the
+			// terminal's rows. The clock starts again from zero if it ever comes back.
+			goneSince.delete(entry.questionId);
+
+			armed.delete(entry.questionId);
 
 			due.push({
 				entry,
@@ -1534,7 +1585,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 *
 	 * Runs at construction, before anything can be scheduled. A reconstructed
 	 * ARMED entry is held exactly like a fresh one and is re-checked against
-	 * `isStillUnanswered` before it can fire, so a question answered while the
+	 * `fireVerdict` before it can fire, so a question answered while the
 	 * host-service was down never buzzes — and against `isCuratedOff`, so a
 	 * restart is not a way for a thread the user has snoozed to buzz anyway. A
 	 * reconstructed SENT entry blocks both a re-arm and a second send, and is what
@@ -1685,6 +1736,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			// held push.
 			armed.clear();
 			sent.clear();
+			goneSince.clear();
 			// The parsed private key is a JS string and cannot be zeroized; it is
 			// dropped and left to GC. Noted, not pretended otherwise.
 			tokenSource?.invalidate();
