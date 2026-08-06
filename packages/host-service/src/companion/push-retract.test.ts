@@ -113,6 +113,23 @@ function resolver(): QuestionSourceResolver {
 	};
 }
 
+describe("(HOOK-CLAIM-NOT-TRUSTED) the workspace a question belongs to", () => {
+	it("stores host.db's value, not the hook's claim", () => {
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
+		});
+		// An unauthenticated localhost POST naming somebody else's thread. That id
+		// decides which thread the phone opens and is the one the curation gate
+		// asks about, so the derived value is the only one that may be stored.
+		const question = store.capture(
+			captureInput({ workspaceId: "w-somebody-elses" }),
+		);
+		expect(question.hostWorkspaceId).toBe("w-1");
+	});
+});
+
 /** The store plus the record of everything its settle seam reported. */
 function settleHarness() {
 	const settled: { questionId: QuestionId; state: string }[] = [];

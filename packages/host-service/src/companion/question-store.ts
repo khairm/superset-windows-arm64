@@ -1777,6 +1777,26 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				);
 			}
 
+			// (HOOK-CLAIM-NOT-TRUSTED) host.db's value, never the hook's. Same rule
+			// as the transcript path directly above, applied to the other field the
+			// hook also claims: `resolveActiveTerminal` has just returned this
+			// terminal's `hostWorkspaceId` from the database, and storing
+			// `input.workspaceId` instead let an unauthenticated localhost POST
+			// choose which workspace a question belongs to. It decides which thread
+			// the phone opens, and it is the id `(PUSH-CURATION-GATE)` asks curation
+			// about — so a wrong one buzzes about, and opens, somebody else's thread.
+			// The claim is kept only so a mismatch is investigable.
+			if (input.workspaceId !== binding.hostWorkspaceId) {
+				console.warn(
+					"[companion-bridge] workspace mismatch: the hook claimed a different workspace than host.db derives for this terminal; using the derived one",
+					{
+						hostTerminalId: input.hostTerminalId,
+						derived: binding.hostWorkspaceId,
+						claimed: input.workspaceId,
+					},
+				);
+			}
+
 			const question: PendingQuestion = {
 				questionId,
 				fingerprint: computeFingerprint({
@@ -1796,7 +1816,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				questions: input.questions,
 				origin: "unauthenticated_localhost_hook",
 				hostTerminalId: input.hostTerminalId,
-				hostWorkspaceId: input.workspaceId,
+				hostWorkspaceId: binding.hostWorkspaceId,
 				transcriptPath: derivedTranscriptPath,
 				agentKind: agentKindOf(binding.agentId),
 				agentId: input.agentId,
