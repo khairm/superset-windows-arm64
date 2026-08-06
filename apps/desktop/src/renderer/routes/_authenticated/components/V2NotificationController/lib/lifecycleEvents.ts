@@ -298,15 +298,17 @@ function updatePaneStatus(
 	// no longer dependent on the green first clearing to idle. Any OTHER agent
 	// event re-derives state, so clear the axis — the next Stop re-sets it from
 	// the live background_tasks. NEVER touches the OSC shell-running axis.
-	// (WATCHER-BLUE-STOMP) The notify hook is no longer the only source: the
-	// main-process JSONL watcher also emits "BackgroundRunning" for its own
-	// turn-ends (interrupt / post-truncation re-read) when the terminal's
-	// `.shellbg` snapshot marker is live. Both arrive here identically — the
-	// Electron IPC path passes eventType through unfiltered and the host round
-	// trip maps it 1:1 — so this branch must keep accepting it from either.
-	// NOTE: watcher-sourced events are NOT distinguishable here (the Electron
-	// payload is only {eventType, terminalId, occurredAt}), which is why the fix
-	// lives at the emit site rather than as a spectate rule in the else below.
+	// (WATCHER-BLUE-STOMP) The notify hook is the ONLY source of
+	// "BackgroundRunning" — the main-process JSONL watcher deliberately cannot
+	// emit it. That matters because this else-branch clears the blue axis on
+	// every other agent event, and the watcher's own turn-ends (interrupt /
+	// API abort) bypass the hook entirely: a watcher `Stop` replayed off a
+	// re-presented transcript line used to wipe the blue the hook had just
+	// restored. Watcher-sourced events are NOT distinguishable here (the
+	// Electron payload is only {eventType, terminalId, occurredAt}), so the fix
+	// lives at the watcher's emit site — it replay-gates each matched turn-end
+	// entry by uuid and timestamp age and stays SILENT on a replay, instead of
+	// this branch trying to guess which Stop to spectate.
 	if (payload.eventType === "BackgroundRunning") {
 		ndots({
 			event: "bg_axis_set",

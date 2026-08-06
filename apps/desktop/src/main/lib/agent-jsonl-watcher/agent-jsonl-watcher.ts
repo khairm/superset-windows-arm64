@@ -596,61 +596,112 @@ function clearAbortSiblingSentinels(terminalId: string): void {
 }
 
 /**
- * (WATCHER-BLUE-STOMP) Does the last turn-end snapshot say this terminal still
- * has SHELL-only background work running? superset-notify.py writes
- * `<terminalId>.shellbg` at every Stop/SubagentStop whose payload carries
- * background_tasks that are all shell-type, and consumes it at the manual-compact
- * finish to restore the BackgroundRunning blue instead of false-greening. The
- * watcher emits turn-ends of its own that BYPASS that hook, and the renderer
- * clears the blue axis on every non-BackgroundRunning agent event — so a bare
- * watcher `Stop` wiped the blue the hook had just restored (live repro
- * 2026-08-06: compact-end BackgroundRunning, then 763ms later the watcher
- * re-parsed the compaction-rewritten transcript, saw a HISTORICAL "Request
- * interrupted by user" line and emitted Stop → dot went green under a still-
- * running background shell). Read the same marker the hook writes so the
- * watcher's turn-end carries the same blue verdict. Best-effort; never throws.
+ * (WATCHER-BLUE-STOMP) A watcher turn-end may only fire for a turn that ended
+ * JUST NOW. Claude Code re-presents transcript content it has already written —
+ * a compaction rewrite, a post-truncation re-read from offset 0, a first-seen
+ * file the discover poll reads whole — so the interrupt / API-abort lines the
+ * Claude branch matches get re-matched long after the turn they describe.
+ *
+ * A replayed match used to emit a bare `Stop`, and the renderer clears the
+ * background-running axis on every non-`BackgroundRunning` agent event, so the
+ * replay wiped the blue the notify hook had just restored (live 2026-08-06:
+ * compact-end `BackgroundRunning`, then 763ms later the watcher matched a
+ * HISTORICAL "Request interrupted by user" and greened the dot under a still-
+ * running background shell). The same replay also asserts a false turn-end
+ * mid-turn during an AUTO compact, and on the DESTRUCTIVE api-abort path it
+ * reaps subagent markers belonging to a live later turn.
+ *
+ * Every matched entry carries `timestamp` and `uuid` — verified 2026-08-06 over
+ * ~250 local transcripts: 509/509 interrupt lines and 351/351
+ * `isApiErrorMessage` lines have both, with 0 unparseable — so the gate is
+ * per-entry and two-layered:
+ *
+ *   1. uuid: an entry already judged never counts again, at ANY age. Exact, and
+ *      the only thing that catches a rewrite replaying a match seconds old.
+ *   2. age: an entry stamped longer than TURN_END_MAX_AGE_MS ago is a replay.
+ *      This is what covers a COLD watcher (empty uuid set) re-reading history.
+ *
+ * Failing the gate emits NOTHING — no Stop, no marker reap — so the dot keeps
+ * whatever the notify hook last asserted. That is the safe direction: a lingering
+ * yellow self-heals on the next hook event, a false green does not.
+ *
+ * Why 120s: measured against the live watcher debug log, 8 genuine interrupts
+ * were released 0.399–0.653s after their own `timestamp`, and one genuine
+ * interrupt whose write Claude Code batched behind a 15 KB pending message
+ * landed 30.9s after its stamp. The replays this gate exists to kill were HOURS
+ * old (the same transcript still carries interrupt lines 7h back). 120s sits ~4x
+ * above the worst observed genuine write lag and far above the watcher's own
+ * detection latency (a dropped fs.watch event costs at most POLL_KNOWN_MS +
+ * POLL_DEBOUNCE_MS; a newly discovered file POLL_DISCOVER_MS), while still
+ * suppressing every historical replay. The residual gray zone — a rewrite that
+ * replays a match younger than 120s — is what layer 1 exists for.
  */
-function shellBackgroundHeld(terminalId: string | undefined): boolean {
-	if (!terminalId) return false;
-	if (!/^[A-Za-z0-9_-]+$/.test(terminalId)) return false;
-	try {
-		return fs.existsSync(
-			path.join(SUBAGENT_RUNNING_DIR, `${terminalId}.shellbg`),
-		);
-	} catch {
-		return false;
+const TURN_END_MAX_AGE_MS = 120_000;
+
+/**
+ * Bounded FIFO of turn-end entry uuids already judged. Matched entries are rare
+ * (~860 across ~250 transcripts spanning months), so the cap is far above any
+ * realistic working set. Eviction is insertion-ordered; an evicted uuid falls
+ * back to the age layer, which by then gives the same answer (it is old).
+ */
+const SEEN_TURN_END_UUID_CAP = 512;
+const seenTurnEndUuids = new Set<string>();
+
+function rememberTurnEndUuid(uuid: string): void {
+	seenTurnEndUuids.add(uuid);
+	while (seenTurnEndUuids.size > SEEN_TURN_END_UUID_CAP) {
+		const oldest = seenTurnEndUuids.values().next();
+		if (oldest.done) break;
+		seenTurnEndUuids.delete(oldest.value);
 	}
 }
 
+interface TurnEndVerdict {
+	fresh: boolean;
+	reason: "fresh" | "replayed-uuid" | "stale" | "undatable";
+	ageMs: number | null;
+	uuid: string | null;
+}
+
 /**
- * (WATCHER-BLUE-STOMP) Turn-end precedence, mirroring superset-notify.py's
- * manual-compact finish: an agent/codex/question hold wins (yellow, red-
- * respecting), else a live shell-background snapshot wins (blue), else a plain
- * turn-end (green/review). Callers on the DESTRUCTIVE full-API-abort path have
- * already run `clearAbortSiblingSentinels`, which unlinks `.shellbg` — so this
- * naturally returns Stop there, matching the hook's StopFailure branch
- * ("snapshot is stale; StopFailure stays no-blue"). No special-casing needed:
- * the marker state at emit time IS the verdict.
+ * (WATCHER-BLUE-STOMP) Judge one matched turn-end line, and RECORD it: judging is
+ * what marks the entry seen, so a later re-presentation is `replayed-uuid`
+ * whatever its age. Never throws. An entry we cannot date or identify is NOT
+ * fresh — we cannot prove a turn ended just now, and suppressing is the safe
+ * direction; it is logged with reason "undatable" so the case stays findable.
+ * A future stamp (clock skew) is not evidence of a replay, so negative ages pass.
  */
-function resolveTurnEndEventType(
-	hold: boolean,
-	terminalId: string | undefined,
-): "Stop" | "SubagentActive" | "BackgroundRunning" {
-	if (hold) return "SubagentActive";
-	if (shellBackgroundHeld(terminalId)) return "BackgroundRunning";
-	return "Stop";
+function judgeTurnEndLine(line: string, nowMs: number): TurnEndVerdict {
+	let uuid: string | null = null;
+	let ageMs: number | null = null;
+	try {
+		const parsed: unknown = JSON.parse(line);
+		if (typeof parsed === "object" && parsed !== null) {
+			const rec = parsed as { uuid?: unknown; timestamp?: unknown };
+			if (typeof rec.uuid === "string" && rec.uuid.length > 0) uuid = rec.uuid;
+			if (typeof rec.timestamp === "string") {
+				const t = Date.parse(rec.timestamp);
+				if (Number.isFinite(t)) ageMs = nowMs - t;
+			}
+		}
+	} catch {}
+	if (uuid !== null && seenTurnEndUuids.has(uuid))
+		return { fresh: false, reason: "replayed-uuid", ageMs, uuid };
+	if (uuid !== null) rememberTurnEndUuid(uuid);
+	if (ageMs === null) return { fresh: false, reason: "undatable", ageMs, uuid };
+	if (ageMs > TURN_END_MAX_AGE_MS)
+		return { fresh: false, reason: "stale", ageMs, uuid };
+	return { fresh: true, reason: "fresh", ageMs, uuid };
 }
 
 function emit(
-	// (WATCHER-BLUE-STOMP) `BackgroundRunning` is in the union because a watcher
-	// turn-end must be able to SAY "blue" — while it could only say Stop, every
-	// watcher-emitted turn-end wiped the background-running axis.
-	eventType:
-		| "Start"
-		| "Stop"
-		| "PermissionRequest"
-		| "SubagentActive"
-		| "BackgroundRunning",
+	// (WATCHER-BLUE-STOMP) Deliberately NO `BackgroundRunning` here. The watcher
+	// never asserts blue: it stays SILENT on a replayed turn-end, so the blue the
+	// notify hook asserted is never stomped in the first place, and a genuine
+	// turn-end still emits a bare `Stop` (which is how the (BA) blue latch is
+	// meant to clear — blue has no self-clear — and what keeps the "Agent
+	// Complete" chime and native notification firing).
+	eventType: "Start" | "Stop" | "PermissionRequest" | "SubagentActive",
 	sessionId: string | null,
 	cwd: string,
 	mapping: PaneMapping | undefined,
@@ -993,20 +1044,30 @@ function processFile(
 		let sawInterrupt = false;
 		let sawApiAbort = false;
 		let sawAnyApiError = false;
+		// (WATCHER-BLUE-STOMP) Per-entry replay gate — see judgeTurnEndLine. A
+		// matched line sets sawInterrupt/sawApiAbort only if it describes a turn
+		// that ended JUST NOW; a re-presented one is recorded as suppressed and
+		// nothing is emitted or reaped for it.
+		const nowMs = Date.now();
+		const suppressed: Array<{
+			kind: "interrupt" | "api-abort";
+			reason: TurnEndVerdict["reason"];
+			ageMs: number | null;
+			uuid: string | null;
+		}> = [];
 		for (const line of lines) {
 			if (!line) continue;
-			if (
-				line.includes('"type":"user"') &&
-				(line.includes("Request interrupted by user") ||
-					line.includes("Request cancelled by user"))
-			) {
-				sawInterrupt = true;
-			}
 			// (AUTO-RESUME) ANY api-error line (not just the half-stop signature) is a
 			// candidate for auto-resume; the manager confirms turn-finality itself.
+			// Deliberately NOT replay-gated: it arms nothing by itself — the manager
+			// re-reads the transcript tail and decides finality there.
 			if (line.includes('"isApiErrorMessage":true')) {
 				sawAnyApiError = true;
 			}
+			const isInterrupt =
+				line.includes('"type":"user"') &&
+				(line.includes("Request interrupted by user") ||
+					line.includes("Request cancelled by user"));
 			// (API-ABORT-RELEASE) a stream-idle-timeout / API error on the MAIN
 			// session ("API Error: Stream idle timeout - partial response received",
 			// written as an isApiErrorMessage assistant line) ends the turn and
@@ -1017,13 +1078,38 @@ function processFile(
 			// signature too — a bare isApiErrorMessage also matches TRANSIENT API
 			// errors (overloaded 529 etc.) that Claude AUTO-RETRIES within the same
 			// turn, which must NOT reap markers or green mid-turn.
-			if (
+			const isApiAbort =
 				line.includes('"isApiErrorMessage":true') &&
 				(line.includes("Stream idle timeout") ||
-					line.includes("partial response received"))
-			) {
-				sawApiAbort = true;
+					line.includes("partial response received"));
+			if (!isInterrupt && !isApiAbort) continue;
+			const verdict = judgeTurnEndLine(line, nowMs);
+			if (!verdict.fresh) {
+				suppressed.push({
+					kind: isInterrupt ? "interrupt" : "api-abort",
+					reason: verdict.reason,
+					ageMs: verdict.ageMs,
+					uuid: verdict.uuid,
+				});
+				continue;
 			}
+			if (isInterrupt) sawInterrupt = true;
+			if (isApiAbort) sawApiAbort = true;
+		}
+		if (suppressed.length > 0) {
+			// (WATCHER-BLUE-STOMP) This channel is how the original stomp was found —
+			// keep every gated match findable. Samples are capped so a whole-file
+			// re-read cannot flood the log.
+			dbg("turn-end-replay-suppressed", {
+				sessionId: state.sessionId,
+				terminalId: mapping?.terminalId ?? null,
+				suppressedCount: suppressed.length,
+				emittedAnyway: sawInterrupt || sawApiAbort,
+				truncatedReset,
+				maxAgeMs: TURN_END_MAX_AGE_MS,
+				samples: suppressed.slice(0, 5),
+				filePath,
+			});
 		}
 		if (sawApiAbort && !truncatedReset) {
 			// Destructive self-heal: reap the orphaned per-subagent markers + the
@@ -1035,12 +1121,15 @@ function processFile(
 			// (BF) a codex companion runs on its OWN API and survives the Claude
 			// abort -> keep the dot working (yellow) instead of false-greening.
 			const codexActive = codexJobActive(state.sessionId);
-			// (WATCHER-BLUE-STOMP) same precedence helper as the interrupt path
-			// below. The sentinel reap above already unlinked `.shellbg`, so this
-			// resolves to Stop here — matching superset-notify.py's StopFailure
-			// branch, which removes the marker for the same reason (the snapshot
-			// died with the Claude API).
-			const abortEventType = resolveTurnEndEventType(codexActive, terminalId);
+			// (WATCHER-BLUE-STOMP) The verdict here is EXPLICIT, never derived from
+			// marker state. `clearAbortSiblingSentinels` above unlinks best-effort
+			// and swallows every failure, so one Windows EPERM (the hook's concurrent
+			// touch holding the handle is realistic) would otherwise flip the
+			// required Stop into something else on the ONE path that has already
+			// declared the snapshot dead. superset-notify.py's StopFailure branch
+			// returns Stop unconditionally for the same reason — regardless of
+			// whether its own marker removal succeeded.
+			const abortEventType = codexActive ? "SubagentActive" : "Stop";
 			dbg("claude-api-abort-release", {
 				sessionId: state.sessionId,
 				terminalId: terminalId ?? null,
@@ -1076,11 +1165,13 @@ function processFile(
 			// (BF) a codex companion survives a Claude interrupt/abort (own API) ->
 			// keep working (yellow) too, not only for a held question.
 			const hold = heldRed || codexJobActive(state.sessionId);
-			// (WATCHER-BLUE-STOMP) nothing was reaped on this path (an interrupt
-			// does not kill a background shell, and a post-truncation re-read
-			// touches no markers), so a live `.shellbg` snapshot still stands:
-			// emit the blue instead of a bare Stop that would wipe it.
-			const emitted = resolveTurnEndEventType(hold, mapping?.terminalId);
+			// (WATCHER-BLUE-STOMP) A bare `Stop` here is correct AND required. The
+			// replay gate above means this only runs for a turn that ended just now,
+			// so there is no stale-marker phantom to guard against — and the (BA)
+			// background-blue latch has no self-clear, so a real interrupt is one of
+			// the paths that MUST clear it. It also keeps the "Agent Complete" chime
+			// and native notification (both Stop-only) firing on a real interrupt.
+			const emitted = hold ? "SubagentActive" : "Stop";
 			dbg(
 				sawInterrupt ? "claude-interrupt-release" : "claude-api-abort-release",
 				{
@@ -1534,6 +1625,11 @@ export function stopAgentJsonlWatcher(): void {
 	for (const s of lifecycleStates.values()) cancelIdleTimer(s);
 	lifecycleStates.clear();
 	fileStates.clear();
+	// (WATCHER-BLUE-STOMP) Reset with the rest of the watcher state. Safe: a
+	// restart re-seeds every existing transcript to EOF, so no history is replayed
+	// through the empty uuid layer, and anything that does get re-read afterwards
+	// is old enough for the age layer to catch.
+	seenTurnEndUuids.clear();
 	// (AN) Reset the seed gate so a stop -> start cycle re-seeds before the
 	// discover poll runs again (fileStates was just cleared; a stale
 	// seedComplete would let discover replay the whole history).
