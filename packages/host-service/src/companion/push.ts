@@ -125,6 +125,7 @@ import {
 	PUSH_DATA_HARD_CAP_BYTES,
 	PUSH_TTL_MS,
 	PUSH_VALUE_PATTERN,
+	RETRACT_TTL_MS,
 } from "./config";
 import { base64UrlEncode, sleep } from "./crypto";
 import type { DeviceStore } from "./device-store";
@@ -411,19 +412,30 @@ export function buildQuestionPushData(input: {
 	};
 }
 
-/** §13.3 — `k: "r"`, cancel the notification; a notification must never outlive its subject. */
+/**
+ * §13.3 — `k: "r"`, cancel the notification; a notification must never outlive
+ * its subject.
+ *
+ * (RETRACT-TTL) `x` is the frame's OWN expiry, not the question's. The client
+ * checks `isExpired(now)` before it looks at `k`, so stamping `nowMs` here made
+ * every retraction expired on arrival and the notification it named survived on
+ * the handset. See `RETRACT_TTL_MS` for why the window is a day.
+ */
 export function buildRetractPushData(input: {
 	questionId: QuestionId;
 	workspaceId: WorkspaceId;
 	nowMs: number;
 }): PushData {
+	if (!Number.isInteger(input.nowMs) || input.nowMs <= 0) {
+		throw new PushConfigError("nowMs must be a positive integer");
+	}
 	return {
 		v: "1",
 		k: "r",
 		i: input.questionId,
 		w: input.workspaceId,
 		n: "0",
-		x: String(input.nowMs),
+		x: String(input.nowMs + RETRACT_TTL_MS),
 	};
 }
 

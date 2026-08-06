@@ -225,6 +225,30 @@ export const PUSH_QUESTION_EXPIRY_MS = 21_600_000;
  * question that is not held is not cached.
  */
 export const CURATION_RECHECK_MS = 30_000;
+/**
+ * (RETRACT-TTL) How long a RETRACTION frame stays valid, measured from the
+ * moment it is minted.
+ *
+ * §13's `x` field is one thing on the wire and the client applies it uniformly:
+ * `isExpired(now)` runs BEFORE the `k` switch, so an already-elapsed `x`
+ * discards the frame without ever reaching the retract branch. A retraction
+ * stamped with `now` is therefore self-cancelling — it is expired on arrival by
+ * construction — and the notification it was sent to clear survives on the
+ * handset.
+ *
+ * A retraction must instead OUTLIVE ANY PLAUSIBLE DELIVERY DELAY: a handset that
+ * was off the network, in Doze, or powered down when the answer landed gets the
+ * frame whenever it next reconnects, and that gap is measured in hours, not
+ * seconds. Twenty-four hours covers a phone left in a drawer overnight and is
+ * still short enough that a retraction cannot be replayed into a later day.
+ *
+ * OVER-LONG IS SAFE HERE, and that asymmetry is why this is generous. The phone
+ * independently drops a retraction naming a notification it no longer shows, so
+ * a late one is inert; a retraction that expires early leaves a live
+ * notification about a question that is already answered, which is the failure
+ * §13.3 exists to prevent.
+ */
+export const RETRACT_TTL_MS = 86_400_000;
 export const PUSH_DATA_HARD_CAP_BYTES = 160;
 /** No natural-language string can satisfy this — that is the point (§13.1). */
 export const PUSH_VALUE_PATTERN = /^[A-Za-z0-9_-]{1,43}$/;
