@@ -69,9 +69,11 @@ import type { AnswerItem, QuestionItem } from "./types";
  * DO NOT advance this constant on the strength of reading the CLI's source. The
  * BYTES — that one bare digit still selects and submits, that digit N+1 opens the
  * editor, that `\r` submits it — are behaviour, and only a live pty shows
- * behaviour. `RENDER_OBSERVED_AGAINST` below is the weaker claim that source
- * reading does support, kept separate on purpose so nothing can quietly upgrade
- * one into the other.
+ * behaviour. It stands at 2.1.226 because all three were DRIVEN there and the
+ * agent's own `tool_result` confirmed each one; source reading alone would never
+ * have earned it. `RENDER_OBSERVED_AGAINST` below is the weaker claim that source
+ * reading does support, kept separate so nothing can quietly upgrade one into the
+ * other.
  */
 export const PROVEN_AGAINST = "claude-code@2.1.226";
 

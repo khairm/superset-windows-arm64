@@ -619,7 +619,10 @@ function squashedWindows(
 	windowLines: number = SCREEN_LINE_WINDOW,
 ): string[] {
 	const lines = screen.split("\n");
-	if (lines.length <= windowLines) return [squash(screen)];
+	// NO whole-screen special case for short screens. It returned a single window
+	// covering everything, which breaks the invariant every caller relies on —
+	// window i starts at line i — so a two-line screen could not match a row that
+	// was plainly on it. The general loop below handles any length.
 	const windows: string[] = [];
 	// EVERY line starts a window, including the last one (whose window is just
 	// itself). Stopping a line early left the final line unable to START a window,
@@ -837,32 +840,19 @@ export function matchPickerScreen(input: {
 			digitMapped: true,
 		};
 	}
-	// (GUARD5-EVIDENCE-TIERS) No digit is being pressed (a multi-select toggle
-	// re-check), so no single row is load-bearing — but the block must still be
-	// anchored by SOMETHING more than a run of one-character labels, or an item of
-	// weak anchors could confirm a picker on evidence none of its rows carry.
-	if (
-		input.requireOptionIndex === null &&
-		!input.item.options.some((option) =>
-			rowIsStronglyVerified({
-				option,
-				windows,
-				from: 0,
-				to: windows.length,
-			}),
-		)
-	) {
-		return {
-			ok: false,
-			reason: "anchor_too_weak",
-			missing: ["row_evidence"],
-			digitMapped: true,
-		};
-	}
+	// (GUARD5-BLOCK-ANCHOR) There is deliberately NO separate "at least one strong
+	// row" pre-check here. There was one, and once the evidence region was clamped
+	// below each row it degenerated into "does any label anywhere near the top of
+	// the viewport reach eight characters" — which a multi-select of short labels
+	// fails even when its rows are perfectly anchored by their descriptions. That
+	// turned a REFUSAL into a PARTIAL WRITE: the toggle digits passed and were
+	// typed, then the submit keystroke (which presses no option) refused, leaving
+	// the picker half-toggled and the question unanswerable. `rowsFormPickerBlock`
+	// already enforces the same property correctly, at the ACCEPTED PLACEMENT, for
+	// every call including the no-digit ones.
 	const block = rowsFormPickerBlock({
 		rowWindows,
 		options: input.item.options,
-		windows,
 		lines,
 		cols: derivedCols(lines),
 		requireOptionIndex: input.requireOptionIndex,
@@ -872,14 +862,32 @@ export function matchPickerScreen(input: {
 		return {
 			ok: false,
 			reason: block === "gap" ? "row_gap_unexplained" : "anchor_too_weak",
-			missing:
-				block === "gap"
-					? ["row_block"]
-					: [`option:${input.requireOptionIndex ?? 0}`],
+			missing: block === "gap" ? ["row_block"] : [evidenceSubject(input)],
 			digitMapped: true,
 		};
 	}
 	return { ok: true, reason: "match", missing: [], digitMapped: true };
+}
+
+/**
+ * (GUARD5-EVIDENCE-SUBJECT) What an evidence refusal is ABOUT.
+ *
+ * It used to always read `option:<requireOptionIndex ?? 0>`, which named a row
+ * that does not exist when the free-text digit is pressed (`option:2` on a
+ * two-option item) and blamed option 0 when no digit is pressed at all. A
+ * diagnostic that points at the wrong row is worse than a vague one.
+ */
+function evidenceSubject(input: {
+	item: QuestionItem;
+	requireOptionIndex: number | null;
+}): string {
+	const pressed = input.requireOptionIndex;
+	if (pressed === null) return "row_evidence";
+	const freeText = input.item.freeTextOption;
+	if (freeText !== null && pressed === freeText.index) {
+		return `freetext:${pressed}`;
+	}
+	return `option:${pressed}`;
 }
 
 /**
@@ -946,7 +954,6 @@ function rowsAreOrdered(rowWindows: readonly number[][]): boolean {
 function rowsFormPickerBlock(input: {
 	rowWindows: readonly number[][];
 	options: readonly QuestionOption[];
-	windows: readonly string[];
 	lines: readonly string[];
 	cols: number;
 	requireOptionIndex: number | null;
@@ -964,8 +971,7 @@ function rowsFormPickerBlock(input: {
 	 */
 	evidenceBlind?: boolean;
 }): "ok" | "gap" | "evidence" {
-	const { rowWindows, options, windows, lines, cols, requireOptionIndex } =
-		input;
+	const { rowWindows, options, lines, cols, requireOptionIndex } = input;
 	const evidenceBlind = input.evidenceBlind === true;
 	const chain: readonly (readonly number[])[] =
 		input.freeTextWindows === null
@@ -1003,14 +1009,14 @@ function rowsFormPickerBlock(input: {
 				evidenceBlind ||
 				rowIsVerifiedEnough({
 					options,
-					windows,
+					lines,
 					requireOptionIndex,
 					row,
 					from: at,
-					to: windows.length,
+					to: lines.length,
 				});
 			if (!ok) blockedOnEvidence = true;
-			if (ok && rowIsOptionAndStrong(options, row, windows, at)) {
+			if (ok && rowIsOptionAndStrong(options, row, lines, at, lines.length)) {
 				sawStrongRow = true;
 			}
 		} else {
@@ -1031,7 +1037,7 @@ function rowsFormPickerBlock(input: {
 					!evidenceBlind &&
 					!rowIsVerifiedEnough({
 						options,
-						windows,
+						lines,
 						requireOptionIndex,
 						row,
 						from: at,
@@ -1043,7 +1049,7 @@ function rowsFormPickerBlock(input: {
 				}
 				if (placeable(row + 1, next)) {
 					ok = true;
-					if (rowIsOptionAndStrong(options, row, windows, at)) {
+					if (rowIsOptionAndStrong(options, row, lines, at, next)) {
 						sawStrongRow = true;
 					}
 					break;
@@ -1076,17 +1082,13 @@ function rowsFormPickerBlock(input: {
 function rowIsOptionAndStrong(
 	options: readonly QuestionOption[],
 	row: number,
-	windows: readonly string[],
+	lines: readonly string[],
 	at: number,
+	to: number,
 ): boolean {
 	const option = options[row];
 	if (option === undefined) return false;
-	return rowIsStronglyVerified({
-		option,
-		windows,
-		from: at,
-		to: windows.length,
-	});
+	return rowIsStronglyVerified({ option, lines, from: at, to });
 }
 
 /**
@@ -1119,7 +1121,7 @@ function rowIsOptionAndStrong(
  */
 function rowIsVerifiedEnough(input: {
 	options: readonly QuestionOption[];
-	windows: readonly string[];
+	lines: readonly string[];
 	requireOptionIndex: number | null;
 	row: number;
 	from: number;
@@ -1139,7 +1141,7 @@ function rowIsVerifiedEnough(input: {
 	if (option.index !== input.requireOptionIndex) return true;
 	return rowIsStronglyVerified({
 		option,
-		windows: input.windows,
+		lines: input.lines,
 		from: input.from,
 		to: input.to,
 	});
@@ -1165,7 +1167,7 @@ const SCREEN_EVIDENCE_REGION_LINES = SCREEN_ROW_ADJACENT_SLACK + 1;
 
 function rowIsStronglyVerified(input: {
 	option: QuestionOption;
-	windows: readonly string[];
+	lines: readonly string[];
 	from: number;
 	to: number;
 }): boolean {
@@ -1180,76 +1182,64 @@ function rowIsStronglyVerified(input: {
 		SCREEN_DESCRIPTION_ANCHOR_CHARS,
 	);
 	if (description.length < SCREEN_MIN_ANCHOR_CHARS) return false;
-	// (GUARD5-EVIDENCE-REGION) Bounded below the row, never to the end of screen.
+	// (GUARD5-EVIDENCE-REGION) RAW LINES, bounded below the row, and STRICTLY
+	// SHORT OF THE NEXT ROW. The overlapping two-line windows used here before let
+	// the NEXT option's row supply this option's description: a capture claiming
+	// option 1's description is "Escalate to the owner" matched the text of row 2,
+	// so a phone could present row 1 as the escalation while digit 1 selected
+	// "Yes". `to` is the next row's line and is never included.
 	const end = Math.min(input.to, input.from + SCREEN_EVIDENCE_REGION_LINES);
-	for (let i = input.from; i < end; i += 1) {
-		if (input.windows[i]?.includes(description) === true) return true;
-	}
-	return false;
+	if (end <= input.from) return false;
+	const region = squash(input.lines.slice(input.from, end).join(""));
+	return region.includes(description);
 }
 
-/**
- * (GUARD5-FREETEXT-COPY) Is the free-text row on screen at `digitIndex`?
- *
- * The label is NOT taken from `freeTextOption.label`. That value is bridge-owned
- * (`question-store.deriveFreeTextOption`) and reads `"Other"`, which is what the
- * picker rendered when the contract was proven and is not what it renders now —
- * so every free-text answer was refused with `row_absent`. The strings below were
- * read out of the installed Claude Code binary rather than guessed off a
- * screenshot, which is also how the trailing full stop came to light:
- *
- *     const psh = mL.multiSelect ? "Type something" : "Type something."
- *
- * Only the single-select variant is reachable today, because
- * `deriveFreeTextOption` returns `null` for a multi-select item — the other is
- * carried so a future multi-select free-text contract does not have to rediscover
- * it. The editor's own placeholder ("Type something…") is a THIRD string and is
- * deliberately absent: it renders inside the editor, i.e. after this row has
- * already been pressed.
- *
- * Why a pinned set rather than matching the digit and the block position alone:
- * the label is the only thing that distinguishes "row N+1 is the editor slot"
- * from "row N+1 is a fifth real option the capture failed to report", and typing
- * free text into a real option is exactly the irreversible wrong answer this
- * guard exists to prevent. An unknown label therefore refuses, loudly and
- * diagnosably, rather than being assumed benign — and because this copy is
- * upstream-owned and has drifted once, that refusal is the signal to re-prove the
- * contract, alongside `keystrokes.PROVEN_AGAINST`.
- */
 /**
  * (GUARD5-FREETEXT-PLACEMENT) Where the free-text row is, if it is on screen.
  *
  * The label comes from `item.freeTextOption.label`, which `question-store`
- * DERIVES from the versioned picker contract for the Claude Code that is actually
- * installed — never from the capture, and never from a union of every version's
- * copy. A union was wrong in a way that mattered: pinning 2.1.226's
- * "Type something." while the byte contract declared 2.1.220 (whose row read
- * "Other") meant one of the two was always going to be false, and on the version
- * whose bytes we claim to drive the row would never be found.
+ * DERIVES from the versioned picker contract — never from the capture, and never
+ * from a union of every version's copy. On the proven build (2.1.226) that is
+ * "Type something.", byte-exact including the full stop, and the free-text
+ * sequence behind it has been driven end to end.
  *
- * The match is END-BOUNDED, not a prefix search: a REAL option whose label merely
- * BEGINS with the free-text copy would otherwise satisfy this and the digit would
- * select it. The row must be the whole label and nothing more.
+ * The match is EXACT and END-BOUNDED against the raw line: no squashing, no case
+ * folding, no substring. Squashing accepted "Type some thing.", "TYPE
+ * SOMETHING." and a tab-separated spelling as the editor row, so a REAL option
+ * wearing any of those was pressed instead. And if the label turns up at more
+ * than one digit, that is a refusal rather than a choice — which row the digit
+ * lands on is precisely what cannot be established.
  */
-function freeTextRowWindows(
-	windows: readonly string[],
+function freeTextRowLines(
 	lines: readonly string[],
-	digitIndex: number,
+	digit: number,
 	label: string,
 ): number[] {
-	const anchor = squash(label);
-	if (anchor.length === 0) return [];
-	const digit = digitIndex + 1;
+	// RAW line, EXACT label: no squash, no case folding, no substring. Squashing
+	// made "Type some thing.", "TYPE SOMETHING." and "Type\tsomething." all match
+	// the contract copy, so a REAL option wearing any of those spellings was
+	// accepted as the editor slot and its digit pressed. `$` after the label is
+	// what stops "Type something else entirely" matching too.
 	const pattern = new RegExp(
-		`^[^0-9a-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[^a-z0-9]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${escapeRegExp(anchor)}$`,
+		`^[^0-9A-Za-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[.)\\]:]?[ \\t]{0,4}${escapeRegExp(label)}[ \\t]*$`,
 	);
 	const hits: number[] = [];
 	for (let i = 0; i < lines.length; i += 1) {
-		// The LINE, not a two-line window: `$` has to mean end of the row, and a
-		// window would let the next line's text sit past the label and still match.
-		if (pattern.test(squash(lines[i] ?? ""))) hits.push(i);
+		if (pattern.test(lines[i] ?? "")) hits.push(i);
 	}
-	return hits.filter((hit) => hit < windows.length);
+	return hits;
+}
+
+/** Every digit whose row carries the contract label, exactly. */
+function digitsCarryingLabel(
+	lines: readonly string[],
+	label: string,
+): Set<number> {
+	const found = new Set<number>();
+	for (let digit = 1; digit <= 9; digit += 1) {
+		if (freeTextRowLines(lines, digit, label).length > 0) found.add(digit);
+	}
+	return found;
 }
 
 type FreeTextVerdict =
@@ -1266,13 +1256,16 @@ function verifyFreeTextRow(input: {
 }): FreeTextVerdict {
 	const freeText = input.item.freeTextOption;
 	if (freeText === null) return { kind: "absent" };
-	const hits = freeTextRowWindows(
-		input.windows,
-		input.lines,
-		input.digitIndex,
-		freeText.label,
-	);
+	const digit = input.digitIndex + 1;
+	const hits = freeTextRowLines(input.lines, digit, freeText.label);
 	if (hits.length === 0) return { kind: "absent" };
+	// TWO candidate rows is a refusal, not a choice. If the contract label appears
+	// at more than one digit — a real option spelled exactly like the system row,
+	// with the true system row sitting below it — then which one this digit selects
+	// is exactly what cannot be established, and pressing it is irreversible.
+	const carrying = digitsCarryingLabel(input.lines, freeText.label);
+	if (carrying.size !== 1 || !carrying.has(digit)) return { kind: "conflict" };
+	if (hits.length !== 1) return { kind: "conflict" };
 	// A real option wearing this digit means the capture and the screen disagree
 	// about the numbering; pressing it would submit an answer nobody chose.
 	for (const option of input.item.options) {
@@ -1331,10 +1324,42 @@ function cellWidth(codePoint: number): number {
 	return 1;
 }
 
+const graphemes =
+	typeof Intl.Segmenter === "function"
+		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		: null;
+
+/**
+ * (GUARD5-CELL-WIDTH) Width in cells, counted per GRAPHEME rather than per code
+ * point.
+ *
+ * Per code point gets emoji wrong in both directions. A variation-selector
+ * sequence like "☺️" is U+263A + U+FE0F: the base is narrow and VS16 is zero, so
+ * it counted as ONE cell while the terminal renders TWO — an emoji-heavy
+ * description then looked narrower than it is and was refused as an unexplained
+ * gap. A ZWJ family is the opposite: many wide code points that render as one
+ * two-cell glyph, counted as eight.
+ */
 export function displayWidth(text: string): number {
+	if (graphemes === null) {
+		let fallback = 0;
+		for (const character of text) {
+			fallback += cellWidth(character.codePointAt(0) ?? 0);
+		}
+		return fallback;
+	}
 	let width = 0;
-	for (const character of text) {
-		width += cellWidth(character.codePointAt(0) ?? 0);
+	for (const { segment } of graphemes.segment(text)) {
+		const points = [...segment].map((c) => c.codePointAt(0) ?? 0);
+		// VS16 forces emoji presentation: the whole cluster is two cells.
+		if (points.includes(0xfe0f) || points.includes(0x200d)) {
+			width += 2;
+			continue;
+		}
+		let cluster = 0;
+		for (const point of points) cluster += cellWidth(point);
+		// A cluster always occupies at least one cell, even if it is all marks.
+		width += Math.max(cluster, 1);
 	}
 	return width;
 }
@@ -1385,12 +1410,42 @@ function gapIsExplained(input: {
 	if (matched < SCREEN_MIN_ANCHOR_CHARS) return false;
 
 	// Cells, not code units, and the screen's own width — see (GUARD5-CELL-WIDTH).
+	// Measured on the UNSQUASHED prefix, because the rendered text carries the
+	// inter-word spaces the squash removed, and divided by the width actually
+	// available to a description rather than the full terminal: the picker indents
+	// it. Ignoring both made the estimate far too small, so an honest description
+	// of a thousand-odd characters at 80 columns wrapped to more lines than the
+	// budget allowed and was refused.
 	const matchedCells = displayWidth(
-		squash(option.description).slice(0, matched),
+		unsquashedPrefix(option.description, matched),
 	);
+	const usableCols = Math.max(input.cols - DESCRIPTION_INDENT_CELLS, 8);
 	const budget =
-		Math.ceil(matchedCells / input.cols) + SCREEN_ROW_ADJACENT_SLACK;
+		Math.ceil(matchedCells / usableCols) + SCREEN_ROW_ADJACENT_SLACK;
 	return input.to - input.from <= budget;
+}
+
+/**
+ * (GUARD5-MATCHED-BUDGET) How far a picker indents a description under its row.
+ * Subtracted from the terminal width so the wrap estimate uses the space the text
+ * actually gets.
+ */
+const DESCRIPTION_INDENT_CELLS = 5;
+
+/**
+ * The prefix of the ORIGINAL description holding `squashedChars` non-whitespace
+ * characters — i.e. the same text the matcher proved, with its spaces put back,
+ * which is what the terminal actually wrapped.
+ */
+function unsquashedPrefix(description: string, squashedChars: number): string {
+	let counted = 0;
+	let index = 0;
+	for (const character of description) {
+		index += character.length;
+		if (!/\s/.test(character)) counted += 1;
+		if (counted >= squashedChars) break;
+	}
+	return description.slice(0, index);
 }
 
 /**

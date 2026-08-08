@@ -582,6 +582,241 @@ describe("(GUARD5-MATCHED-BUDGET) reviewer findings", () => {
 	});
 });
 
+describe("(GUARD5-BLOCK-ANCHOR) final verify round", () => {
+	const SHORT_WITH_DESCRIPTIONS = [
+		{
+			index: 0,
+			label: "Yes",
+			description: "Enable the nightly duplicate sweep for every home.",
+		},
+		{
+			index: 1,
+			label: "No",
+			description: "Leave the sweep switched off until the review lands.",
+		},
+		{
+			index: 2,
+			label: "Later",
+			description: "Revisit this after the clinical review has finished.",
+		},
+	];
+
+	it("a multi-select of SHORT labels with real descriptions matches on a submit re-check", () => {
+		// (V-BLOCKER) The regression that mattered most: this refused, so the toggle
+		// digits were written and the submit keystroke then aborted the sequence,
+		// leaving the picker half-toggled and the question unanswerable. The older
+		// all-weak test used EMPTY descriptions, so it passed either way — which is
+		// exactly how this got through.
+		const subject = item({
+			multiSelect: true,
+			options: SHORT_WITH_DESCRIPTIONS,
+		});
+		const screen = renderPicker(subject, 100).join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: null }),
+		).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+		for (const requireOptionIndex of [0, 1, 2]) {
+			expect(
+				matchPickerScreen({ screen, item: subject, requireOptionIndex }).ok,
+			).toBe(true);
+		}
+	});
+
+	it("an all-weak block with no descriptions still refuses on a submit re-check", () => {
+		const subject = item({
+			multiSelect: true,
+			options: [
+				{ index: 0, label: "A", description: "" },
+				{ index: 1, label: "B", description: "" },
+			],
+		});
+		const screen = [` ☐ ${subject.header} `, "", "  1. A", "  2. B"].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: null }).ok,
+		).toBe(false);
+	});
+
+	it("free-text look-alike rows are not the editor slot", () => {
+		// (V-S1) Each of these was accepted when the comparison squashed case and
+		// whitespace. They are REAL options; pressing the digit selects them.
+		for (const impostor of [
+			"Type some thing.",
+			"TYPE SOMETHING.",
+			"Type\tsomething.",
+			"Type something else entirely",
+		]) {
+			const subject = item({
+				options: [
+					{
+						index: 0,
+						label: "Retire the duplicates",
+						description: "Retire the exact same-product twins now.",
+					},
+					{
+						index: 1,
+						label: "Escalate to the owner",
+						description: "Hand the pair to the owner for a decision.",
+					},
+				],
+				freeTextOption: { index: 2, label: "Type something." },
+			});
+			// The impostor sits AT THE FREE-TEXT DIGIT — the whole point. A squashing
+			// comparison accepted it as the editor slot and pressed 3.
+			const screen = [
+				` ☐ ${subject.header} `,
+				"",
+				"  1. Retire the duplicates",
+				"     Retire the exact same-product twins now.",
+				"  2. Escalate to the owner",
+				"     Hand the pair to the owner for a decision.",
+				`  3. ${impostor}`,
+			].join("\n");
+			expect(
+				matchPickerScreen({ screen, item: subject, requireOptionIndex: 2 }).ok,
+			).toBe(false);
+		}
+	});
+
+	it("the contract label at two digits is a refusal, not a choice", () => {
+		// (V-S1) A real option spelled exactly like the system row, with the true
+		// system row below it. Which one the digit selects is unknowable.
+		const subject = item({
+			options: [
+				{
+					index: 0,
+					label: "Retire the duplicates",
+					description: "Retire the exact same-product twins now.",
+				},
+				{
+					index: 1,
+					label: "Type something.",
+					description: "A real option wearing the system row's copy.",
+				},
+			],
+			freeTextOption: { index: 2, label: "Type something." },
+		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			"  1. Retire the duplicates",
+			"     Retire the exact same-product twins now.",
+			"  2. Type something.",
+			"     A real option wearing the system row's copy.",
+			"  3. Type something.",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 2 }),
+		).toEqual({
+			ok: false,
+			reason: "freetext_row_conflict",
+			missing: ["freetext:2"],
+			digitMapped: true,
+		});
+	});
+
+	it("the NEXT row's label cannot serve as this row's description", () => {
+		// (V-S2) The capture claims option 1's description is the text of row 2, so
+		// a phone could present row 1 as the escalation while digit 1 selects "Yes".
+		const subject = item({
+			options: [
+				{ index: 0, label: "Yes", description: "Escalate to the owner" },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			"  1. Yes",
+			"  2. Escalate to the owner",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(false);
+	});
+
+	it("a long honest description at 80 columns is not refused", () => {
+		// (V-M1) The budget divided squashed cells by the FULL width, ignoring the
+		// spaces and the indent, so honest descriptions past ~1200 characters were
+		// refused even though the cap allows 4096.
+		const sentence =
+			"Retire the exact same-product twins and prepare an approval brief with counts. ";
+		const description = sentence.repeat(16).trim();
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [` ☐ ${subject.header} `, "", "  1. Retire the duplicates"];
+		for (const chunk of description.match(/.{1,74}/g) ?? []) {
+			lines.push(`     ${chunk}`);
+		}
+		lines.push("  2. Escalate to the owner");
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("an emoji-heavy description is measured in the cells it renders", () => {
+		// (V-M2) "☺️" is U+263A + VS16: one code point wide, two cells rendered.
+		const description = `Flag the pair ${"☺️".repeat(30)} and report it back.`;
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [` ☐ ${subject.header} `, "", "  1. Retire the duplicates"];
+		for (const chunk of description.match(/.{1,20}/g) ?? []) {
+			lines.push(`     ${chunk}`);
+		}
+		lines.push("  2. Escalate to the owner");
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("a screen shorter than the window still matches its rows", () => {
+		// (V-M5) The whole-screen special case broke "window i starts at line i".
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: "" },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+			header: "Retire the duplicates",
+		});
+		const screen = "  1. Retire the duplicates\n  2. Escalate to the owner";
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(true);
+	});
+
+	it("an evidence refusal names the row it is about", () => {
+		// (V-M4) It used to emit option:2 on a two-option item, or blame option 0.
+		const subject = item({
+			options: [
+				{ index: 0, label: "A", description: "" },
+				{ index: 1, label: "B", description: "" },
+			],
+		});
+		const screen = [` ☐ ${subject.header} `, "", "  1. A", "  2. B"].join("\n");
+		const verdict = matchPickerScreen({
+			screen,
+			item: subject,
+			requireOptionIndex: null,
+		});
+		expect(verdict.missing).toEqual(["row_evidence"]);
+	});
+});
+
 describe("(GUARD5-PICKER-GEOMETRY) screens that must still be refused", () => {
 	it("an empty screen", () => {
 		expect(

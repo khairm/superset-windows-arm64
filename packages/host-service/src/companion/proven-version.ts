@@ -21,6 +21,8 @@
  *     things drift breaks (unknown free-text copy, an unproven prompt shape).
  *   - not a clock. It is read once, when the bridge starts, and reported.
  *
+ * Read once per process (memoised).
+ *
  * UNKNOWN IS NOT MISMATCH. If the CLI cannot be located — a bun-compiled binary
  * somewhere unusual, a user who installs it another way — `installed` is `null`
  * and `mismatch` is FALSE. Reporting a scary mismatch on the strength of a failed
@@ -127,7 +129,22 @@ export async function readInstalledClaudeCodeVersion(): Promise<string | null> {
 	return null;
 }
 
-export async function resolveProvenVersionStatus(): Promise<ProvenVersionStatus> {
+/**
+ * Memoised for the process lifetime. The header calls this a once-at-start read,
+ * and it was — until `companion.gate` began reporting it, at which point the
+ * keep-awake poll called it every 15 seconds, up to four `readFile` attempts a
+ * tick, forever. The installed version cannot change under a running process
+ * without restarting it, so one read is not just an optimisation, it is the
+ * honest cardinality.
+ */
+let cached: Promise<ProvenVersionStatus> | null = null;
+
+export function resolveProvenVersionStatus(): Promise<ProvenVersionStatus> {
+	cached ??= computeProvenVersionStatus();
+	return cached;
+}
+
+async function computeProvenVersionStatus(): Promise<ProvenVersionStatus> {
 	const installed = await readInstalledClaudeCodeVersion();
 	return {
 		installed,
