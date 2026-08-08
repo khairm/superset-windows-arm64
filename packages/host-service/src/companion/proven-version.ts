@@ -130,18 +130,40 @@ export async function readInstalledClaudeCodeVersion(): Promise<string | null> {
 }
 
 /**
- * Memoised for the process lifetime. The header calls this a once-at-start read,
- * and it was — until `companion.gate` began reporting it, at which point the
+ * Memoised, but ONLY ON SUCCESS. The header calls this a once-at-start read, and
+ * it was — until `companion.gate` began reporting it, at which point the
  * keep-awake poll called it every 15 seconds, up to four `readFile` attempts a
- * tick, forever. The installed version cannot change under a running process
- * without restarting it, so one read is not just an optimisation, it is the
- * honest cardinality.
+ * tick, forever. The installed version cannot change under a running process, so
+ * one successful read is not just an optimisation, it is the honest cardinality.
+ *
+ * A FAILED read is deliberately not retained. Every failure here resolves to
+ * `installed: null`, which is indistinguishable from "no install found" — and a
+ * transient miss is entirely possible at bridge start, when the process is
+ * competing for disk with everything else coming up. Caching that would pin the
+ * bridge to "unknown version" for its whole lifetime on the strength of one bad
+ * moment, and unknown suppresses the drift warning, so the failure mode is a
+ * diagnostic that goes quiet exactly when it might have had something to say.
+ * Retrying costs at most a few `readFile` calls on a poll that was already
+ * running.
  */
 let cached: Promise<ProvenVersionStatus> | null = null;
 
 export function resolveProvenVersionStatus(): Promise<ProvenVersionStatus> {
-	cached ??= computeProvenVersionStatus();
-	return cached;
+	if (cached !== null) return cached;
+	const attempt = computeProvenVersionStatus();
+	cached = attempt;
+	// Drop the cache unless the read actually found something. The identity check
+	// matters: a later call may already have replaced `cached` with its own
+	// attempt, and clearing that one would throw away a good result.
+	attempt.then(
+		(status) => {
+			if (status.installed === null && cached === attempt) cached = null;
+		},
+		() => {
+			if (cached === attempt) cached = null;
+		},
+	);
+	return attempt;
 }
 
 async function computeProvenVersionStatus(): Promise<ProvenVersionStatus> {
