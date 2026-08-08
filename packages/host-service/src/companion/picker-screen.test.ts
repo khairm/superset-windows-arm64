@@ -705,15 +705,91 @@ describe("(GUARD5-PICKER-GEOMETRY) screens that must still be refused", () => {
 	});
 
 	it("a forged item whose labels are too short to be evidence", () => {
+		// (O5) This used to carry header "c", so it refused on the PROMPT anchor and
+		// proved nothing about labels. It now has a real header that IS on screen,
+		// so the refusal is about the pressed row's evidence and the verdict is
+		// asserted in full.
 		const subject = item({
-			header: "c",
-			question: "c",
+			header: "Duplicate pairs",
+			question: "Which one?",
 			options: [{ index: 0, label: "2", description: "" }],
 		});
+		const screen = [" ☐ Duplicate pairs ", "", "  1. 2", "", "> "].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }),
+		).toEqual({
+			ok: false,
+			reason: "anchor_too_weak",
+			missing: ["option:0"],
+			digitMapped: true,
+		});
+	});
+
+	it("a last option verified by its description far below the picker", () => {
+		// (O2) The last row's evidence region ran to the end of the viewport, so a
+		// short-labelled last option was verified by its description appearing
+		// anywhere underneath — including in unrelated output.
+		const description =
+			"Do not ask again for this resident; move on to the next home.";
+		const subject = item({
+			options: [
+				{
+					index: 0,
+					label: "Retire the duplicates",
+					description: "Retire the exact same-product twins now.",
+				},
+				{ index: 1, label: "Skip", description },
+			],
+		});
+		const lines = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. Retire the duplicates",
+			"     Retire the exact same-product twins now.",
+			"  2. Skip",
+		];
+		for (let i = 0; i < 12; i += 1) lines.push(FILLER);
+		lines.push(`  ${description}`);
 		expect(
 			matchPickerScreen({
-				screen: "  12\n  > ",
+				screen: lines.join("\n"),
 				item: subject,
+				requireOptionIndex: 1,
+			}).reason,
+		).toBe("anchor_too_weak");
+	});
+
+	it("the free-text digit does not excuse an all-weak block", () => {
+		// (O3) Pressing the free-text digit names no option, so every option row was
+		// corroboration-only and nothing had to be strong at all.
+		const subject = item({
+			options: [
+				{ index: 0, label: "A", description: "" },
+				{ index: 1, label: "B", description: "" },
+			],
+			freeTextOption: { index: 2, label: "Other" },
+		});
+		const screen = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. A",
+			"  2. B",
+			"  3. Other",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 2 }).ok,
+		).toBe(false);
+	});
+
+	it("a viewport clipped above the picker refuses rather than guesses", () => {
+		// (O8) A window shorter than the picker loses rows off the top. Refusing is
+		// the intended outcome; this pins it as such. It IS a false-refusal class on
+		// small terminals, recorded as a follow-up rather than relaxed here.
+		const clipped = LIVE_VIEWPORT.split("\n").slice(24).join("\n");
+		expect(
+			matchPickerScreen({
+				screen: clipped,
+				item: LIVE_ITEM,
 				requireOptionIndex: 0,
 			}).ok,
 		).toBe(false);

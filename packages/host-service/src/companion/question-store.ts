@@ -75,7 +75,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import { provenPickerContract } from "./keystrokes";
+import { provenFreeTextRowLabel } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -408,11 +408,7 @@ function requireArray(value: unknown, field: string, max: number): unknown[] {
  * a different build's copy, so the item the phone received and the needle the
  * screen check used could disagree — and did.
  */
-function freeTextRowLabel(): string | null {
-	const contract = provenPickerContract();
-	if (contract === null) return null;
-	return contract.freeTextBytesProven ? contract.freeTextRowLabel : null;
-}
+const freeTextRowLabel = provenFreeTextRowLabel;
 
 /**
  * The picker's free-text slot, DERIVED — never accepted from the capture.

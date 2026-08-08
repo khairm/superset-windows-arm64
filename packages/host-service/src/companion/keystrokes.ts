@@ -144,6 +144,25 @@ export function provenPickerContract(): PickerContract | null {
 	return pickerContractFor(PROVEN_AGAINST);
 }
 
+/**
+ * (PICKER-CONTRACT-VERSIONED) The free-text row's label for the proven build, or
+ * `null` when that build has no proven free-text sequence / is unknown.
+ *
+ * THE single derivation. Both the capture PRODUCER
+ * (`trpc/router/notifications/companion-question-sink.ts`) and the capture
+ * VALIDATOR (`companion/question-store.ts`) call this, because they previously
+ * held the literal independently and a comment saying "change the two together"
+ * was the only thing holding them in agreement. When they drifted, `validateCapture`
+ * rejected EVERY single-question capture at ingestion — the hook 500s, the question
+ * is never stored and the phone is never notified — and no test caught it because
+ * they all pass `freeTextOption: null`, which skips the cross-check.
+ */
+export function provenFreeTextRowLabel(): string | null {
+	const contract = provenPickerContract();
+	if (contract === null) return null;
+	return contract.freeTextBytesProven ? contract.freeTextRowLabel : null;
+}
+
 // ---------------------------------------------------------------------------
 // raw bytes
 // ---------------------------------------------------------------------------

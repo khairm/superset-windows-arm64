@@ -958,9 +958,15 @@ function rowsFormPickerBlock(input: {
 	 * digit at a real option further down the real picker.
 	 */
 	freeTextWindows: readonly number[] | null;
+	/**
+	 * (GUARD5-REASON-PER-CANDIDATE) Internal: re-run ignoring the evidence tier, to
+	 * decide which property actually blocked a refusal. Never set by callers.
+	 */
+	evidenceBlind?: boolean;
 }): "ok" | "gap" | "evidence" {
 	const { rowWindows, options, windows, lines, cols, requireOptionIndex } =
 		input;
+	const evidenceBlind = input.evidenceBlind === true;
 	const chain: readonly (readonly number[])[] =
 		input.freeTextWindows === null
 			? rowWindows
@@ -972,6 +978,19 @@ function rowsFormPickerBlock(input: {
 	 * Tracked so a refusal names the property that actually blocked it.
 	 */
 	let blockedOnEvidence = false;
+	/**
+	 * (GUARD5-BLOCK-ANCHOR) Whether the ACCEPTED placement contains at least one
+	 * option row strongly verified at the position the block gave it.
+	 *
+	 * Two holes shared this root. Pressing the FREE-TEXT digit names no option, so
+	 * every option row counted as "not the row being pressed" and nothing had to be
+	 * strong at all — an item of one-character labels passed on that digit while
+	 * being refused on every other press. And the fallback meant to cover the
+	 * no-digit case searched the WHOLE SCREEN rather than the accepted block, so
+	 * evidence outside the picker satisfied it. Requiring it per placement closes
+	 * both, and ties the anchor to the block instead of to the viewport.
+	 */
+	let sawStrongRow = false;
 	/** `row:window` -> can the rows BELOW `row` be placed from here. */
 	const memo = new Map<string, boolean>();
 	const placeable = (row: number, at: number): boolean => {
@@ -980,17 +999,20 @@ function rowsFormPickerBlock(input: {
 		if (cached !== undefined) return cached;
 		let ok = false;
 		if (row === last) {
-			// The last row's region runs to the end of the screen: there is no
-			// following row to bound it.
-			ok = rowIsVerifiedEnough({
-				options,
-				windows,
-				requireOptionIndex,
-				row,
-				from: at,
-				to: windows.length,
-			});
+			ok =
+				evidenceBlind ||
+				rowIsVerifiedEnough({
+					options,
+					windows,
+					requireOptionIndex,
+					row,
+					from: at,
+					to: windows.length,
+				});
 			if (!ok) blockedOnEvidence = true;
+			if (ok && rowIsOptionAndStrong(options, row, windows, at)) {
+				sawStrongRow = true;
+			}
 		} else {
 			for (const next of chain[row + 1] ?? []) {
 				if (next < at) continue;
@@ -1006,6 +1028,7 @@ function rowsFormPickerBlock(input: {
 					continue;
 				}
 				if (
+					!evidenceBlind &&
 					!rowIsVerifiedEnough({
 						options,
 						windows,
@@ -1020,6 +1043,9 @@ function rowsFormPickerBlock(input: {
 				}
 				if (placeable(row + 1, next)) {
 					ok = true;
+					if (rowIsOptionAndStrong(options, row, windows, at)) {
+						sawStrongRow = true;
+					}
 					break;
 				}
 			}
@@ -1027,8 +1053,40 @@ function rowsFormPickerBlock(input: {
 		memo.set(key, ok);
 		return ok;
 	};
-	if ((chain[0] ?? []).some((start) => placeable(0, start))) return "ok";
-	return blockedOnEvidence ? "evidence" : "gap";
+	if ((chain[0] ?? []).some((start) => placeable(0, start))) {
+		// (GUARD5-BLOCK-ANCHOR) A block whose every row is weakly anchored is not
+		// evidence that this picker is on screen, whichever digit is being pressed.
+		return evidenceBlind || sawStrongRow ? "ok" : "evidence";
+	}
+	// (GUARD5-REASON-PER-CANDIDATE) `blockedOnEvidence` latches across candidate
+	// placements, so on its own it would report `anchor_too_weak` for a screen the
+	// GAP rule rejected. Re-run with the evidence requirement dropped: if the block
+	// then forms, evidence was the blocker; if it still does not, the geometry was.
+	if (blockedOnEvidence && evidenceBlind === false) {
+		const withoutEvidence = rowsFormPickerBlock({
+			...input,
+			evidenceBlind: true,
+		});
+		return withoutEvidence === "ok" ? "evidence" : "gap";
+	}
+	return "gap";
+}
+
+/** Is row `row` an OPTION row (not the appended free-text row) and strong here? */
+function rowIsOptionAndStrong(
+	options: readonly QuestionOption[],
+	row: number,
+	windows: readonly string[],
+	at: number,
+): boolean {
+	const option = options[row];
+	if (option === undefined) return false;
+	return rowIsStronglyVerified({
+		option,
+		windows,
+		from: at,
+		to: windows.length,
+	});
 }
 
 /**
@@ -1070,14 +1128,10 @@ function rowIsVerifiedEnough(input: {
 	const option = input.options[input.row];
 	if (option === undefined) return false;
 	// Not the row being pressed: matching its digit is all that is asked of it.
-	if (input.requireOptionIndex !== null) {
-		if (option.index !== input.requireOptionIndex) return true;
-	} else if (input.options.length > 1) {
-		// No digit is being pressed (a toggle or a submit re-check). Nothing to
-		// pin down, so corroboration is enough — but see the caller: at least one
-		// row still has to be strong, or nothing anchors the block.
-		return true;
-	}
+	// When the pressed digit names NO option (a toggle re-check, or the free-text
+	// slot) this makes every row corroboration-only, which is why the caller
+	// additionally requires one strong row inside the accepted placement.
+	if (option.index !== input.requireOptionIndex) return true;
 	return rowIsStronglyVerified({
 		option,
 		windows: input.windows,
@@ -1091,6 +1145,19 @@ function rowIsVerifiedEnough(input: {
  * long enough to be evidence on its own, or the option's description rendered in
  * the row's own region of the screen.
  */
+/**
+ * (GUARD5-EVIDENCE-REGION) How far below a row its own description may start.
+ *
+ * An option's description begins on the line after its row, give or take the
+ * label wrapping. It is NOT "anywhere below the picker": the last row's region
+ * used to run to the end of the viewport, so a short-labelled last option — the
+ * exact "Skip" case this tiering exists for — was verified by its description
+ * appearing anywhere further down the screen, including in unrelated output.
+ * A tight constant is also viewport-independent, so a taller terminal cannot buy
+ * a bigger search region.
+ */
+const SCREEN_EVIDENCE_REGION_LINES = SCREEN_ROW_ADJACENT_SLACK + 1;
+
 function rowIsStronglyVerified(input: {
 	option: QuestionOption;
 	windows: readonly string[];
@@ -1108,7 +1175,9 @@ function rowIsStronglyVerified(input: {
 		SCREEN_DESCRIPTION_ANCHOR_CHARS,
 	);
 	if (description.length < SCREEN_MIN_ANCHOR_CHARS) return false;
-	for (let i = input.from; i < input.to; i += 1) {
+	// (GUARD5-EVIDENCE-REGION) Bounded below the row, never to the end of screen.
+	const end = Math.min(input.to, input.from + SCREEN_EVIDENCE_REGION_LINES);
+	for (let i = input.from; i < end; i += 1) {
 		if (input.windows[i]?.includes(description) === true) return true;
 	}
 	return false;

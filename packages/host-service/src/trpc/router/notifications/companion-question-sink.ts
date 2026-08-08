@@ -29,6 +29,7 @@
  */
 
 import { z } from "zod";
+import { provenFreeTextRowLabel } from "../../../companion/keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -252,7 +253,14 @@ function deriveFreeTextOption(
 ): QuestionItem["freeTextOption"] {
 	if (item.multiSelect) return null;
 	if (questionCount !== 1) return null;
-	return { index: item.options.length, label: "Other" };
+	// (PICKER-CONTRACT-VERSIONED) The SHARED derivation, not a second literal —
+	// see `provenFreeTextRowLabel`. This file previously held its own copy of the
+	// label, kept in agreement with the bridge's by nothing but a comment; when
+	// they drifted, `validateCapture` rejected EVERY single-question capture at
+	// ingestion, so the hook 500s and the phone is never notified.
+	const label = provenFreeTextRowLabel();
+	if (label === null) return null;
+	return { index: item.options.length, label };
 }
 
 /**
