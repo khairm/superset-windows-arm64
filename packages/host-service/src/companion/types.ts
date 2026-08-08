@@ -982,12 +982,19 @@ export interface AnswerResponse {
 	/** The guards that passed, for the audit trail the client shows. */
 	guardsPassed: AnswerGuardName[];
 	/**
-	 * (GUARD4-ABSTAIN) The guards that were CARRIED without reading positively ��
+	 * (GUARD4-ABSTAIN) The guards that were CARRIED without reading positively —
 	 * disjoint from `guardsPassed`, and never folded into it. A client that shows
 	 * an audit trail must be able to tell "this guard vouched for the write" from
 	 * "this guard had nothing to say and the load-bearing ones carried it".
+	 *
+	 * NULLABLE, and the null is load-bearing: it means THIS RESPONSE CANNOT SAY,
+	 * which a §11.4 replay reconstructed from a non-`confirmed` ledger row
+	 * genuinely cannot (see `replayedGuardsAbstained`). `[]` is reserved for the
+	 * positive claim "nothing abstained" — using it for "unknown" is how the
+	 * replay path came to assert, on every reconstructed response, something it
+	 * had no evidence for.
 	 */
-	guardsAbstained: AnswerGuardName[];
+	guardsAbstained: AnswerGuardName[] | null;
 }
 
 export interface AnswerStatusRequest {

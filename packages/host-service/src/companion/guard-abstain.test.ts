@@ -7,7 +7,9 @@ import {
 	GUARD_EVALUATION_ORDER,
 	type GuardSourceResult,
 	LOAD_BEARING_GUARDS,
+	ledgerRecordToResponse,
 } from "./answer";
+import type { LedgerRecord } from "./attempt-ledger";
 import type { ScreenExpectation } from "./keystrokes";
 import type { PendingQuestion } from "./question-store";
 import type { Fingerprint, QuestionId, TerminalId } from "./types";
@@ -308,5 +310,84 @@ describe("(GUARD4-ABSTAIN) the permission axis", () => {
 				lastLoadBearing,
 			);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (GUARD4-ABSTAIN) the REPLAY contract
+//
+// The ledger has no abstain column, so a §11.4 replay has to reconstruct the
+// fact or admit it cannot. It used to do neither: every replayed response
+// carried `guardsAbstained: []`, which is a positive claim that nothing
+// abstained, made on a row that never recorded whether anything did.
+// ---------------------------------------------------------------------------
+
+function ledgerRow(overrides: Partial<LedgerRecord> = {}): LedgerRecord {
+	return {
+		requestId: "req-1" as LedgerRecord["requestId"],
+		status: "confirmed",
+		questionId: "q-abstain",
+		deviceId: "dev-1",
+		surface: "phone",
+		leaseId: "lease-1",
+		startedAtMs: 1 as LedgerRecord["startedAtMs"],
+		createdAtMs: 1 as LedgerRecord["createdAtMs"],
+		resolvedAtMs: 2 as LedgerRecord["resolvedAtMs"],
+		failureCode: null,
+		guardsPassed: [...GUARD_EVALUATION_ORDER],
+		coverageEpoch: "epoch-1",
+		...overrides,
+	};
+}
+
+describe("(GUARD4-ABSTAIN) a replayed answer", () => {
+	it("DERIVES the abstain from a confirmed row that omits the guard", () => {
+		// A `confirmed` row is one where every keystroke walked the WHOLE stack, so
+		// every guard was reached. An abstaining-class guard missing from
+		// `guardsPassed` there was reached, did not pass, and did not refuse — which
+		// is exactly, and only, what abstaining is.
+		const response = ledgerRecordToResponse(
+			ledgerRow({
+				guardsPassed: GUARD_EVALUATION_ORDER.filter(
+					(guard) => guard !== "permission_axis",
+				),
+			}),
+		);
+		expect(response.status).toBe("confirmed");
+		expect(response.guardsAbstained).toEqual(["permission_axis"]);
+		expect(response.guardsPassed).not.toContain("permission_axis");
+	});
+
+	it("reports NOTHING abstained when the confirmed row names every guard", () => {
+		const response = ledgerRecordToResponse(ledgerRow());
+		expect(response.guardsAbstained).toEqual([]);
+	});
+
+	it("says it CANNOT SAY for a row that is not confirmed — never []", () => {
+		// `[transcript, screen, session, binding]` is produced BOTH by "refused at
+		// permission_axis" and by "abstained at permission_axis, then refused at
+		// askq_marker". The row cannot choose between them, so it does not.
+		const response = ledgerRecordToResponse(
+			ledgerRow({
+				status: "unconfirmed",
+				resolvedAtMs: null,
+				guardsPassed: ["transcript", "screen", "session", "binding"],
+			}),
+		);
+		expect(response.status).toBe("unconfirmed");
+		expect(response.guardsAbstained).toBeNull();
+	});
+
+	it("every abstaining guard is derivable this way, not just the one", () => {
+		// The derivation is over ABSTAINING_GUARDS rather than a hardcoded name, so
+		// a guard added to that list is covered without touching this path.
+		const response = ledgerRecordToResponse(
+			ledgerRow({
+				guardsPassed: GUARD_EVALUATION_ORDER.filter(
+					(guard) => !ABSTAINING_GUARDS.includes(guard),
+				),
+			}),
+		);
+		expect(response.guardsAbstained).toEqual([...ABSTAINING_GUARDS]);
 	});
 });

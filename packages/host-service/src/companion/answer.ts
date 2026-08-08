@@ -4209,6 +4209,35 @@ async function assertNoPickerOnScreen(
 }
 
 /**
+ * (GUARD4-ABSTAIN) What a DURABLE row can still say about abstains.
+ *
+ * The ledger stores `guardsPassed` and no abstain column — deliberately: a new
+ * column needs a migration, and on the row that matters the fact is DERIVABLE.
+ * A `confirmed` row is one where every keystroke walked the WHOLE stack, so
+ * every guard was reached; an abstaining-class guard missing from `guardsPassed`
+ * on such a row was reached, did not pass, and did not refuse. That is exactly
+ * what abstaining is, and it is the only thing it can be.
+ *
+ * `null` — NOT `[]` — for every other status, because there the same absence has
+ * a second explanation and the row cannot choose between them. An `unconfirmed`
+ * row carries the guards from its LAST evaluation, which may have stopped before
+ * this guard was read at all; and `[transcript, screen, session, binding]` is
+ * produced BOTH by "refused at permission_axis" and by "abstained at
+ * permission_axis, then refused at askq_marker", with the same status and the
+ * same failure code. Returning `[]` there would assert "nothing abstained" on
+ * evidence that cannot support it, which is the bug this replaces: an empty
+ * array is a claim, and this path is not entitled to make it.
+ */
+function replayedGuardsAbstained(
+	record: LedgerRecord,
+): AnswerGuardName[] | null {
+	if (record.status !== "confirmed") return null;
+	return ABSTAINING_GUARDS.filter(
+		(guard) => !record.guardsPassed.includes(guard),
+	);
+}
+
+/**
  * (ANSWER-LEDGER) The §11.4 replay response, from a ledger row.
  *
  * `leaseId` can legitimately be null here: the claim is made before the lease is
@@ -4216,8 +4245,11 @@ async function assertNoPickerOnScreen(
  * The wire field is non-null, so an empty string would be a lie — an absent lease
  * is reported as absent and the client shows the outcome, which is what it is
  * actually asking about.
+ *
+ * Exported for the replay contract test: it is a pure record-to-response mapper,
+ * and the derivation above is the part worth pinning.
  */
-function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
+export function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
 	return {
 		status: record.status === "confirmed" ? "confirmed" : "unconfirmed",
 		requestId: record.requestId,
@@ -4225,13 +4257,7 @@ function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
 		leaseId: (record.leaseId ?? "") as AnswerResponse["leaseId"],
 		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
 		guardsPassed: record.guardsPassed,
-		// (GUARD4-ABSTAIN) A REPLAY cannot report this: the ledger stores only
-		// `guardsPassed`, deliberately (a new column would need a migration, and the
-		// fact is recoverable — a row that reached an outcome with a guard in
-		// `ABSTAINING_GUARDS` missing from `guardsPassed` is a row that abstained).
-		// Empty is the honest shape for "this response is reconstructed from durable
-		// state", not a claim that nothing abstained.
-		guardsAbstained: [],
+		guardsAbstained: replayedGuardsAbstained(record),
 	};
 }
 
