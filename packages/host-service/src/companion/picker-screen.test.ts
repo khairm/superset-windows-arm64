@@ -1027,10 +1027,11 @@ describe("(GUARD5-PICKER-GEOMETRY) screens that must still be refused", () => {
 		).toBe(false);
 	});
 
-	it("a viewport clipped above the picker refuses rather than guesses", () => {
-		// (O8) A window shorter than the picker loses rows off the top. Refusing is
-		// the intended outcome; this pins it as such. It IS a false-refusal class on
-		// small terminals, recorded as a follow-up rather than relaxed here.
+	it("a viewport clipped above the picker still refuses the row it cannot see", () => {
+		// (O8) A window shorter than the picker loses rows off the top. The clip is
+		// now survivable — see the (GUARD5-CLIPPED-VIEWPORT) block below — but only
+		// for a row that is actually on screen. Option 0's row is one of the three
+		// this clip ate, so pressing it is refused exactly as before.
 		const clipped = LIVE_VIEWPORT.split("\n").slice(24).join("\n");
 		expect(
 			matchPickerScreen({
@@ -1151,5 +1152,225 @@ describe("(GUARD5-PICKER-GEOMETRY) screens that must still be refused", () => {
 			missing: ["freetext:2"],
 			digitMapped: true,
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (GUARD5-CLIPPED-VIEWPORT)
+//
+// (O8) A terminal shorter than the prompt shows its TAIL: the header goes first,
+// then the question, then the early option rows. Guard 5 used to require all of
+// them, so every honest answer from a small window was refused — `row_absent`
+// while only rows were missing, `anchor_absent` once the header went with them.
+//
+// A clip is now admitted, but only when it is PROVEN: the pressed row is on
+// screen and strongly verified, the visible rows are a prefix or a suffix of the
+// block rather than a hole in it, and the clipped edge is affirmatively at the
+// viewport boundary — the space above the block matching the TAIL of whatever
+// renders there, the space below it explained by the last visible row's own
+// description. These cases pin both directions.
+// ---------------------------------------------------------------------------
+describe("(GUARD5-CLIPPED-VIEWPORT) a picker taller than the window", () => {
+	/**
+	 * The live fixture with its first 24 lines eaten. Header, question and the
+	 * rows for options 0-2 are all gone; option 3's row and the free-text row
+	 * survive, under the tail of option 2's description.
+	 */
+	const CLIPPED_ABOVE = LIVE_VIEWPORT.split("\n").slice(24).join("\n");
+
+	/** The live item's first three options, rendered whole at 100 columns. */
+	function threeOptionItem(): QuestionItem {
+		return item({
+			header: "587 dup pairs",
+			question: LIVE_ITEM.question,
+			options: LIVE_ITEM.options.slice(0, 3),
+		});
+	}
+
+	/** That render, cut off after `keepLines` lines. */
+	function bottomClipped(keepLines: number): string {
+		return renderPicker(threeOptionItem(), 100).slice(0, keepLines).join("\n");
+	}
+
+	/** The line the third row sits on, so a clip can be placed just above it. */
+	function thirdRowLine(): number {
+		return optionRowLines(bottomClipped(1000))[2] ?? 0;
+	}
+
+	it("the clip really did eat the prompt — this block is not vacuous", () => {
+		expect(CLIPPED_ABOVE).not.toContain(LIVE_ITEM.header);
+		expect(CLIPPED_ABOVE).not.toContain("Leftover duplicates follow-up");
+		expect(optionRowLines(CLIPPED_ABOVE)).toEqual([2, 5, 7]);
+	});
+
+	it("a visible row on a top-clipped viewport is answerable", () => {
+		expect(
+			matchPickerScreen({
+				screen: CLIPPED_ABOVE,
+				item: LIVE_ITEM,
+				requireOptionIndex: 3,
+			}),
+		).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+	});
+
+	it("the free-text row of a top-clipped viewport is answerable", () => {
+		expect(
+			matchPickerScreen({
+				screen: CLIPPED_ABOVE,
+				item: LIVE_ITEM,
+				requireOptionIndex: 4,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("a row the clip ate is still refused, and refused as anchor_absent", () => {
+		// The prompt anchor went with those rows, so the refusal reads exactly as it
+		// did before the relaxation: nothing about the clip leaks into diagnostics.
+		for (const requireOptionIndex of [0, 1, 2]) {
+			expect(
+				matchPickerScreen({
+					screen: CLIPPED_ABOVE,
+					item: LIVE_ITEM,
+					requireOptionIndex,
+				}),
+			).toEqual({
+				ok: false,
+				reason: "anchor_absent",
+				missing: ["prompt"],
+				digitMapped: true,
+			});
+		}
+	});
+
+	it("the top edge must be the previous option's own description", () => {
+		// Same geometry, but the two lines above the surviving row are unrelated
+		// output rather than the tail of option 2's description. That is not a clip,
+		// it is a row floating in somebody else's text.
+		const forged = [
+			"  ⎿  ran 4 tasks and printed their output to the log",
+			"     nothing here belongs to this prompt at all",
+			...CLIPPED_ABOVE.split("\n").slice(2),
+		].join("\n");
+		expect(
+			matchPickerScreen({
+				screen: forged,
+				item: LIVE_ITEM,
+				requireOptionIndex: 3,
+			}).ok,
+		).toBe(false);
+	});
+
+	it("a bottom-clipped picker answers a row it can see", () => {
+		// Cut the viewport off inside option 1's description: rows 1 and 2 are on
+		// screen, row 3 never rendered.
+		const screen = bottomClipped(thirdRowLine() - 1);
+		expect(optionRowLines(screen).length).toBe(2);
+		expect(
+			matchPickerScreen({
+				screen,
+				item: threeOptionItem(),
+				requireOptionIndex: 1,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("a bottom-clipped picker still refuses the row it cannot see", () => {
+		expect(
+			matchPickerScreen({
+				screen: bottomClipped(thirdRowLine() - 1),
+				item: threeOptionItem(),
+				requireOptionIndex: 2,
+			}),
+		).toEqual({
+			ok: false,
+			reason: "row_absent",
+			missing: ["option:2"],
+			digitMapped: true,
+		});
+	});
+
+	it("a bottom clip nowhere near the bottom edge is refused", () => {
+		// The rows stop, and then a screenful of unrelated output follows. Nothing
+		// clipped this list; it simply is not all there.
+		const screen = [
+			...bottomClipped(thirdRowLine() - 1).split("\n"),
+			...Array.from({ length: 12 }, () => FILLER),
+		].join("\n");
+		expect(
+			matchPickerScreen({
+				screen,
+				item: threeOptionItem(),
+				requireOptionIndex: 1,
+			}).ok,
+		).toBe(false);
+	});
+
+	it("a hole in the middle of the block is refused", () => {
+		const subject = item();
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			subject.question,
+			"",
+			"  1. Retire the duplicates",
+			"  3. Do nothing today",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }),
+		).toEqual({
+			ok: false,
+			reason: "row_absent",
+			missing: ["option:1"],
+			digitMapped: true,
+		});
+	});
+
+	it("a clip at BOTH ends at once is refused", () => {
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: "" },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+				{ index: 2, label: "Do nothing today", description: "" },
+				{ index: 3, label: "Show me a sample first", description: "" },
+			],
+		});
+		const screen = [
+			`  ${subject.question}`,
+			"  2. Escalate to the owner",
+			"  3. Do nothing today",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 1 }).ok,
+		).toBe(false);
+	});
+
+	it("a viewport that opens ON the first row proves nothing and is refused", () => {
+		// No prompt anchor, and nothing above the block to corroborate one. There is
+		// deliberately no "the row is on line 0, so nothing could be above it" escape.
+		const subject = item();
+		const screen = [
+			"  1. Retire the duplicates",
+			"  2. Escalate to the owner",
+			"  3. Do nothing today",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(false);
+	});
+
+	it("a question tail above the rows carries a clipped-away header", () => {
+		// Only the header line went. The question's own tail is then what proves the
+		// viewport was clipped, rather than that these rows belong to another list.
+		const subject = item({
+			question:
+				"How should the leftover duplicate pairs be handled today, given that the new code already stops fresh ones from appearing at all?",
+		});
+		const full = renderPicker(subject, 100);
+		const headerAt = full.findIndex((line) => line.includes(subject.header));
+		const screen = full.slice(headerAt + 2).join("\n");
+		expect(screen).not.toContain(subject.header);
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(true);
 	});
 });

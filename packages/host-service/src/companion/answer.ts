@@ -765,9 +765,10 @@ function matchPromptOnScreen(input: {
  *     the check into "does `<digit><char>` occur anywhere"; what changed in
  *     (GUARD5-EVIDENCE-TIERS) is that the requirement now falls on the row whose
  *     digit is about to be typed instead of on all of them;
- *   - EVERY option row must be present — already true — AND the rows must form
- *     one PICKER BLOCK (`rows_out_of_order` / `row_gap_unexplained`), which is
- *     the structural property defined on `rowsFormPickerBlock` below;
+ *   - the rows that ARE on screen must form one PICKER BLOCK
+ *     (`rows_out_of_order` / `row_gap_unexplained`), which is the structural
+ *     property defined on `rowsFormPickerBlock` below. Rows that are NOT on
+ *     screen are admitted only under (GUARD5-CLIPPED-VIEWPORT);
  *   - the free-text row is matched against bridge-owned copy read out of the
  *     Claude Code binary, never against a caller-supplied label
  *     (`question-store.deriveFreeTextOption`).
@@ -776,6 +777,51 @@ function matchPromptOnScreen(input: {
  * fixture in `picker-screen.test.ts` is an unedited 120-column viewport captured
  * off the live emulator through this guard's own snapshot path, plus renders of
  * the same prompt at 80 and 100 columns.
+ *
+ * ---------------------------------------------------------------------------
+ * (GUARD5-CLIPPED-VIEWPORT) WHEN THE PICKER IS TALLER THAN THE WINDOW
+ * ---------------------------------------------------------------------------
+ * This used to require EVERY option row, and the prompt's own anchor, to be
+ * visible. Claude Code renders inline in the normal buffer, so a terminal
+ * shorter than the prompt shows its TAIL: the header goes first, then the
+ * question, then the early option rows. Every honest answer from a small window
+ * was therefore refused — `row_absent` when only rows were lost, `anchor_absent`
+ * once the header went too — and the user walked to the desk for a picker that
+ * was plainly on their phone.
+ *
+ * A clip is now ADMITTED, but only when it is PROVEN to be a clip rather than
+ * assumed from what is missing. Three things must hold, and each replaces
+ * evidence the clip took away with evidence the clip cannot fake:
+ *
+ *   1. THE PRESSED ROW IS VISIBLE AND STRONG. A row that is not on screen is
+ *      never pressed — that has not moved, and is the whole reason a clip is
+ *      survivable at all: the claim guard 5 makes is about ONE row.
+ *   2. THE VISIBLE ROWS ARE A PREFIX OR A SUFFIX of the block, never a hole in
+ *      the middle and never both ends at once. A hole is not a clip; it is a
+ *      screen whose digits do not belong to one list.
+ *   3. THE CLIPPED EDGE IS AT THE VIEWPORT BOUNDARY, affirmatively. Below, the
+ *      space under the last visible row is explained by that row's own
+ *      description with no room left for the next row (`gapIsExplained`, the
+ *      same rule interior gaps use). Above, the space over the first visible row
+ *      must MATCH THE TAIL of the text that renders immediately above it — the
+ *      previous option's description, or the item's own question when no row was
+ *      lost (`clipAboveIsExplained`). There is deliberately no "the row is on
+ *      line 0, so nothing could be above it" escape: a viewport whose very first
+ *      line is a numbered row proves nothing about which list that row is in.
+ *
+ * The prompt anchor is subject to (3) rather than exempt from it. When the
+ * header and the question opening are BOTH off screen the matcher does not fail
+ * fast on `anchor_absent`; it continues, and the top-edge rule then has to be
+ * satisfied by capture-derived prose — which is a LONGER and more
+ * position-pinned needle than the eight-character header anchor it stands in
+ * for. If that proof does not land, the refusal reported is the ORIGINAL
+ * `anchor_absent`, so no screen refused before this change is refused
+ * differently now, and nothing about the relaxation leaks into diagnostics.
+ *
+ * NOT admitted: a clip at both ends at once (a viewport shorter than the block
+ * with rows lost above AND below). It is representable and it is refused — one
+ * intact end is what keeps a run of digits tied to a list rather than to a
+ * window someone chose.
  */
 export function matchPickerScreen(input: {
 	screen: string;
@@ -788,8 +834,25 @@ export function matchPickerScreen(input: {
 		item: input.item,
 		digitMapped: true,
 	});
-	if (!prologue.ok) return prologue.failure;
-	const windows = prologue.windows;
+	/**
+	 * (GUARD5-CLIPPED-VIEWPORT) The refusal a screen with no prompt anchor on it
+	 * gets, held rather than returned. EVERY later refusal returns this instead of
+	 * its own reason when it is set, so relaxing the anchor cannot change what a
+	 * currently-refused screen reports.
+	 *
+	 * `empty_screen` and `anchor_too_weak` are NOT held: the first has no rows to
+	 * reason about, and the second means the item carries no anchor worth
+	 * searching for at all, which no amount of screen evidence repairs.
+	 */
+	let anchorFailure: PickerScreenMatch | null = null;
+	let windows: string[];
+	if (prologue.ok) {
+		windows = prologue.windows;
+	} else {
+		if (prologue.failure.reason !== "anchor_absent") return prologue.failure;
+		anchorFailure = prologue.failure;
+		windows = squashedWindows(input.screen);
+	}
 	/**
 	 * The raw lines. The gap rule works on LINES rather than on the overlapping
 	 * two-line windows, because a window that starts on the last gap line also
@@ -799,12 +862,28 @@ export function matchPickerScreen(input: {
 	const lines = input.screen.split("\n");
 
 	const missing: string[] = [];
-	/** Per option, the screen-line windows its digit-mapped row appears in. */
-	const rowWindows: number[][] = [];
-	for (const option of input.item.options) {
+	/**
+	 * (GUARD5-CLIPPED-VIEWPORT) Only the rows actually ON SCREEN, with their
+	 * options kept alongside so the two arrays stay index-aligned: everything
+	 * downstream addresses a row by its position in the block, and a clipped block
+	 * is a shorter block rather than one with holes in it.
+	 */
+	const presentOptions: QuestionOption[] = [];
+	const presentWindows: number[][] = [];
+	let firstPresent = -1;
+	let lastPresent = -1;
+	for (let position = 0; position < input.item.options.length; position += 1) {
+		const option = input.item.options[position];
+		if (option === undefined) continue;
 		const hits = screenRowWindows(windows, option.index, option.label);
-		if (hits.length === 0) missing.push(`option:${option.index}`);
-		rowWindows.push(hits);
+		if (hits.length === 0) {
+			missing.push(`option:${option.index}`);
+			continue;
+		}
+		if (firstPresent < 0) firstPresent = position;
+		lastPresent = position;
+		presentOptions.push(option);
+		presentWindows.push(hits);
 	}
 
 	const freeText = input.item.freeTextOption;
@@ -818,27 +897,63 @@ export function matchPickerScreen(input: {
 		});
 		if (verdict.kind === "absent") missing.push(`freetext:${freeText.index}`);
 		if (verdict.kind === "conflict") {
-			return {
-				ok: false,
-				reason: "freetext_row_conflict",
-				missing: [`freetext:${freeText.index}`],
-				digitMapped: true,
-			};
+			return (
+				anchorFailure ?? {
+					ok: false,
+					reason: "freetext_row_conflict",
+					missing: [`freetext:${freeText.index}`],
+					digitMapped: true,
+				}
+			);
 		}
 		if (verdict.kind === "found") freeTextWindows = verdict.windows;
 	}
 
+	const rowsRefusal: PickerScreenMatch = anchorFailure ?? {
+		ok: false,
+		reason: "row_absent",
+		missing,
+		digitMapped: true,
+	};
+	const clippedAbove = firstPresent > 0;
+	const clippedBelow =
+		lastPresent >= 0 && lastPresent < input.item.options.length - 1;
 	if (missing.length > 0) {
-		return { ok: false, reason: "row_absent", missing, digitMapped: true };
+		// (GUARD5-CLIPPED-VIEWPORT) 1. The row being pressed is never optional.
+		if (pressedRowIsMissing(input, missing)) return rowsRefusal;
+		// A block with nothing left in it is not a clipped block.
+		if (presentOptions.length === 0) return rowsRefusal;
+		// 2. A run, at one end. Anything else is a hole or a two-ended window.
+		if (presentOptions.length !== lastPresent - firstPresent + 1) {
+			return rowsRefusal;
+		}
+		if (clippedAbove && clippedBelow) return rowsRefusal;
+		// The free-text row renders BELOW every option, so seeing it while options
+		// below the block are missing is a hole wearing a clip's clothes.
+		if (clippedBelow && freeTextWindows !== null) return rowsRefusal;
 	}
 
-	if (!rowsAreOrdered(rowWindows)) {
-		return {
-			ok: false,
-			reason: "rows_out_of_order",
-			missing: ["row_order"],
-			digitMapped: true,
-		};
+	/**
+	 * (GUARD5-CLIPPED-VIEWPORT) 3. The text that must render immediately above the
+	 * first visible row, when the top edge has to be proven at all. `null` means
+	 * nothing was lost above it and the region is not examined.
+	 */
+	const clipAboveText = clippedAbove
+		? (input.item.options[firstPresent - 1]?.description ?? null)
+		: anchorFailure !== null
+			? input.item.question
+			: null;
+	if (clippedAbove && clipAboveText === null) return rowsRefusal;
+
+	if (!rowsAreOrdered(presentWindows)) {
+		return (
+			anchorFailure ?? {
+				ok: false,
+				reason: "rows_out_of_order",
+				missing: ["row_order"],
+				digitMapped: true,
+			}
+		);
 	}
 	// (GUARD5-BLOCK-ANCHOR) There is deliberately NO separate "at least one strong
 	// row" pre-check here. There was one, and once the evidence region was clamped
@@ -851,22 +966,46 @@ export function matchPickerScreen(input: {
 	// already enforces the same property correctly, at the ACCEPTED PLACEMENT, for
 	// every call including the no-digit ones.
 	const block = rowsFormPickerBlock({
-		rowWindows,
-		options: input.item.options,
+		rowWindows: presentWindows,
+		options: presentOptions,
 		lines,
 		cols: derivedCols(lines),
 		requireOptionIndex: input.requireOptionIndex,
 		freeTextWindows,
+		clipAboveText,
+		clipBelow: clippedBelow,
 	});
 	if (block !== "ok") {
-		return {
-			ok: false,
-			reason: block === "gap" ? "row_gap_unexplained" : "anchor_too_weak",
-			missing: block === "gap" ? ["row_block"] : [evidenceSubject(input)],
-			digitMapped: true,
-		};
+		return (
+			anchorFailure ?? {
+				ok: false,
+				reason: block === "gap" ? "row_gap_unexplained" : "anchor_too_weak",
+				missing: block === "gap" ? ["row_block"] : [evidenceSubject(input)],
+				digitMapped: true,
+			}
+		);
 	}
 	return { ok: true, reason: "match", missing: [], digitMapped: true };
+}
+
+/**
+ * (GUARD5-CLIPPED-VIEWPORT) Is the row this keystroke is about to press one of
+ * the rows that is NOT on screen?
+ *
+ * Asked against the `missing` list rather than recomputed, so there is exactly
+ * one place that decides a row is absent. A press with no row behind it
+ * (`null` — a multi-select toggle re-check or the submit) has no row to lose.
+ */
+function pressedRowIsMissing(
+	input: { requireOptionIndex: number | null },
+	missing: readonly string[],
+): boolean {
+	const pressed = input.requireOptionIndex;
+	if (pressed === null) return false;
+	return (
+		missing.includes(`option:${pressed}`) ||
+		missing.includes(`freetext:${pressed}`)
+	);
 }
 
 /**
@@ -930,10 +1069,13 @@ function rowsAreOrdered(rowWindows: readonly number[][]): boolean {
  * honest picker satisfies at any column width.
  *
  * Rows are still permitted to share a window, and the LAST row's trailing region
- * is not examined: there is no following row to bound it, and requiring the last
- * description to be fully on screen would refuse a picker whose footer has
- * scrolled — a refusal that buys nothing, because every row's presence and every
- * earlier gap has already been proven.
+ * is not examined UNLESS rows were clipped off the bottom
+ * ((GUARD5-CLIPPED-VIEWPORT), `clipBelow`): with nothing following the block
+ * there is no gap to explain, and requiring the last description to be fully on
+ * screen would refuse a picker whose footer has scrolled — a refusal that buys
+ * nothing, because every row's presence and every earlier gap has already been
+ * proven. When a row IS missing below, that same region becomes the proof that
+ * the viewport ended rather than the list.
  *
  * The search is exhaustive over row placements rather than greedy: an upper
  * bound on a gap means an earlier hit for row N can strand row N+1 where a later
@@ -965,6 +1107,20 @@ function rowsFormPickerBlock(input: {
 	 * digit at a real option further down the real picker.
 	 */
 	freeTextWindows: readonly number[] | null;
+	/**
+	 * (GUARD5-CLIPPED-VIEWPORT) The text that renders immediately ABOVE the first
+	 * row of this block — the previous option's description when rows were clipped
+	 * off the top, or the item's own question when only the prompt was. `null`
+	 * means nothing was lost above the block and the region is not examined at
+	 * all, which is the ordinary unclipped case.
+	 */
+	clipAboveText: string | null;
+	/**
+	 * (GUARD5-CLIPPED-VIEWPORT) Rows were lost off the BOTTOM, so the last visible
+	 * row's trailing region — normally not examined at all — has to prove there was
+	 * no room left on screen for the row that follows it.
+	 */
+	clipBelow: boolean;
 	/**
 	 * (GUARD5-REASON-PER-CANDIDATE) Internal: re-run ignoring the evidence tier, to
 	 * decide which property actually blocked a refusal. Never set by callers.
@@ -1005,7 +1161,19 @@ function rowsFormPickerBlock(input: {
 		if (cached !== undefined) return cached;
 		let ok = false;
 		if (row === last) {
-			ok =
+			// (GUARD5-CLIPPED-VIEWPORT) The trailing region is examined ONLY when a
+			// row was lost below it. Unclipped, the last description is allowed to
+			// have scrolled — there is no following row for it to explain.
+			const edgeOk =
+				!input.clipBelow ||
+				gapIsExplained({
+					lines,
+					cols,
+					option: options[row],
+					from: at,
+					to: lines.length,
+				});
+			const evidenceOk =
 				evidenceBlind ||
 				rowIsVerifiedEnough({
 					options,
@@ -1015,7 +1183,8 @@ function rowsFormPickerBlock(input: {
 					from: at,
 					to: lines.length,
 				});
-			if (!ok) blockedOnEvidence = true;
+			if (!evidenceOk) blockedOnEvidence = true;
+			ok = edgeOk && evidenceOk;
 			if (ok && rowIsOptionAndStrong(options, row, lines, at, lines.length)) {
 				sawStrongRow = true;
 			}
@@ -1059,7 +1228,17 @@ function rowsFormPickerBlock(input: {
 		memo.set(key, ok);
 		return ok;
 	};
-	if ((chain[0] ?? []).some((start) => placeable(0, start))) {
+	if (
+		(chain[0] ?? []).some(
+			(start) =>
+				clipAboveIsExplained({
+					lines,
+					cols,
+					text: input.clipAboveText,
+					at: start,
+				}) && placeable(0, start),
+		)
+	) {
 		// (GUARD5-BLOCK-ANCHOR) A block whose every row is weakly anchored is not
 		// evidence that this picker is on screen, whichever digit is being pressed.
 		return evidenceBlind || sawStrongRow ? "ok" : "evidence";
@@ -1431,6 +1610,91 @@ function gapIsExplained(input: {
  * actually gets.
  */
 const DESCRIPTION_INDENT_CELLS = 5;
+
+/**
+ * (GUARD5-CLIPPED-VIEWPORT) Is the space ABOVE the first row of the block filled
+ * by the tail of the text that is supposed to render there?
+ *
+ * The mirror image of `gapIsExplained`, and it exists for the same reason: a gap
+ * is admissible when the render of what belongs in it is actually in it. What
+ * differs is which end survives. An interior gap shows the description from its
+ * START, so the needle is a PREFIX; a clipped top shows whatever the viewport
+ * did not eat, so the needle is a SUFFIX.
+ *
+ * `text` is the previous option's description when option rows were lost off the
+ * top, and the item's own question when only the header/question opening was.
+ * Both are capture-derived — but so is every other needle in this matcher, and
+ * matching a long prose tail at a pinned position is a strictly harder thing to
+ * fabricate than the eight-character prompt anchor this stands in for.
+ *
+ * THERE IS NO `at === 0` ESCAPE. A viewport whose very first line is a numbered
+ * row has nothing above it to corroborate, and "nothing to check" is not
+ * "checked" — that is the rule this whole file is built on. Such a screen is
+ * refused, which costs the rare maximal clip and buys the guarantee that a
+ * clipped block is always tied to this item by text outside the rows.
+ */
+function clipAboveIsExplained(input: {
+	lines: readonly string[];
+	cols: number;
+	text: string | null;
+	at: number;
+}): boolean {
+	if (input.text === null) return true;
+	const above = input.lines.slice(0, input.at);
+	if (above.length === 0) return false;
+	const aboveText = squash(above.join(""));
+	const matched = matchedTextSuffix(input.text, aboveText);
+	if (matched < SCREEN_MIN_ANCHOR_CHARS) return false;
+	// Same budget arithmetic as `gapIsExplained`: how many lines the text that WAS
+	// matched can occupy at this width, plus wrap slack. The region cannot be
+	// wider than what the matched tail explains.
+	const matchedCells = displayWidth(unsquashedSuffix(input.text, matched));
+	const usableCols = Math.max(input.cols - DESCRIPTION_INDENT_CELLS, 8);
+	return (
+		input.at <= Math.ceil(matchedCells / usableCols) + SCREEN_ROW_ADJACENT_SLACK
+	);
+}
+
+/**
+ * (GUARD5-CLIPPED-VIEWPORT) The longest SUFFIX of `text` (squashed) that appears
+ * in `region`, in characters. `matchedDescriptionPrefix` from the other end.
+ *
+ * Binary search on the same monotonicity: a suffix of length n contains every
+ * shorter suffix, so if length n is absent every longer one is too.
+ */
+function matchedTextSuffix(text: string, region: string): number {
+	const squashed = squash(text);
+	if (squashed.length < SCREEN_MIN_ANCHOR_CHARS) return 0;
+	if (!region.includes(squashed.slice(-SCREEN_MIN_ANCHOR_CHARS))) return 0;
+	let low = SCREEN_MIN_ANCHOR_CHARS;
+	let high = squashed.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (region.includes(squashed.slice(squashed.length - mid))) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return low;
+}
+
+/**
+ * The suffix of the ORIGINAL `text` holding `squashedChars` non-whitespace
+ * characters — the same text the matcher proved, with its spaces put back, which
+ * is what the terminal actually wrapped. `unsquashedPrefix` from the other end.
+ */
+function unsquashedSuffix(text: string, squashedChars: number): string {
+	const characters = [...text];
+	let counted = 0;
+	let start = characters.length;
+	for (let index = characters.length - 1; index >= 0; index -= 1) {
+		start = index;
+		if (!/\s/.test(characters[index] ?? "")) counted += 1;
+		if (counted >= squashedChars) break;
+	}
+	return characters.slice(start).join("");
+}
 
 /**
  * The prefix of the ORIGINAL description holding `squashedChars` non-whitespace
