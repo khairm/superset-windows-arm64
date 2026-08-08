@@ -2610,3 +2610,7 @@ Gate outputs, all green on the committed tree: `check-feature-markers.mjs` → "
 ---
 
 i have that left that same chat with another question - this time I need you to do an e2e test and answer B stateless. Make sure its as close to the test that would run from the phone so you can truly test it
+
+---
+
+do whatever you can in parallel using sol and opus sub agents
