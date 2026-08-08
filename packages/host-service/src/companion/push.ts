@@ -1244,8 +1244,24 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 */
 	const orphanChecks = new Map<
 		QuestionId,
-		{ state: "pending" | "unresolved"; startedAtMs: number }
+		{ state: "pending" | "unresolved"; startedAtMs: number; generation: number }
 	>();
+	/**
+	 * (PUSH-ORPHAN-STALE-VERDICT) Monotonic id for each transcript check, so a
+	 * result that arrives after its check stopped being the current one can be
+	 * recognised and dropped.
+	 *
+	 * The reads are fire-and-forget and can take as long as the filesystem takes.
+	 * In that window the entry they were started for can be ADOPTED (the hook
+	 * re-captured the question, so it is governed by the ordinary re-check again),
+	 * FIRED past its deadline, forgotten, or retracted. Acting on a late verdict
+	 * then operates on something that is no longer the thing that was asked about:
+	 * a `gone` landing after adoption called `forget()` on a LIVE entry — a
+	 * notification silently lost for an agent still blocked — and the same late
+	 * callback after a deadline fire deleted the `sent` record, which is what a
+	 * later retraction needs to pull the buzz off the phone.
+	 */
+	let orphanGeneration = 0;
 
 	const abort = new AbortController();
 	let sweepTimer: NodeJS.Timeout | null = null;
@@ -1544,9 +1560,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					console.error(
 						`${LOG} the transcript check for reconstructed questionId=${entry.questionId} has not returned in ${ORPHAN_VERIFY_DEADLINE_MS}ms; firing rather than holding a buzz on a read that may never finish`,
 					);
+					// (PUSH-ORPHAN-STALE-VERDICT) A NEW generation, so the read this
+					// sweep gave up on cannot come back later and act on an entry that
+					// has since fired.
+					orphanGeneration += 1;
 					orphanChecks.set(entry.questionId, {
 						state: "unresolved",
 						startedAtMs: check.startedAtMs,
+						generation: orphanGeneration,
 					});
 				}
 			} else {
@@ -1778,6 +1799,35 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * GONE is the other kind of positive proof, and it retires the row for a
 	 * different reason than an answer does — see `verifyOrphanResolved`.
 	 */
+	/**
+	 * (PUSH-ORPHAN-STALE-VERDICT) May a transcript verdict that has just come back
+	 * still be acted on?
+	 *
+	 * THE ENTRY IS RE-READ, never captured. `record` is a snapshot of a fence row
+	 * taken at construction and says nothing about what the entry has done since;
+	 * only the live maps do. Three things must hold, and each rules out a
+	 * different way for the answer to be about something that is no longer there:
+	 *
+	 *   - the entry is STILL ARMED. If it has fired, been forgotten, retracted or
+	 *     cancelled there is nothing left to cancel — and worse, `forget()` would
+	 *     go on to delete the `sent` record a later retraction needs to pull the
+	 *     buzz off the phone, so the retraction would silently no-op.
+	 *   - it is still `storeOrphaned`. ADOPTION clears that flag: the hook
+	 *     re-captured the question, the store holds it, and the ordinary fire-time
+	 *     re-check governs it again. A `gone` landing after adoption would
+	 *     `forget()` a LIVE entry — a notification lost for an agent still blocked.
+	 *   - the check generation still matches, which covers a deadline the sweep
+	 *     has already given up on and any later check that replaced this one.
+	 */
+	function orphanVerdictStillApplies(
+		questionId: QuestionId,
+		generation: number,
+	): boolean {
+		const entry = armed.get(questionId);
+		if (entry === undefined || !entry.storeOrphaned) return false;
+		return orphanChecks.get(questionId)?.generation === generation;
+	}
+
 	function verifyOrphans(
 		records: readonly PushFenceRecord[],
 		startedAtMs: number,
@@ -1785,6 +1835,8 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		const verify = deps.verifyOrphanResolved;
 		for (const record of records) {
 			if (record.state !== "armed") continue;
+			orphanGeneration += 1;
+			const generation = orphanGeneration;
 			if (
 				verify === null ||
 				record.transcriptPath === null ||
@@ -1793,17 +1845,24 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				orphanChecks.set(record.questionId, {
 					state: "unresolved",
 					startedAtMs,
+					generation,
 				});
 				continue;
 			}
 			const { transcriptPath, toolUseId } = record;
-			orphanChecks.set(record.questionId, { state: "pending", startedAtMs });
+			orphanChecks.set(record.questionId, {
+				state: "pending",
+				startedAtMs,
+				generation,
+			});
 			void verify({ questionId: record.questionId, transcriptPath, toolUseId })
 				.then((verdict) => {
+					if (!orphanVerdictStillApplies(record.questionId, generation)) return;
 					if (verdict === "unresolved") {
 						orphanChecks.set(record.questionId, {
 							state: "unresolved",
 							startedAtMs,
+							generation,
 						});
 						return;
 					}
@@ -1831,9 +1890,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 						`${LOG} transcript check failed for reconstructed questionId=${record.questionId}; it will fire on the ordinary away rules`,
 						error,
 					);
+					// Currency-checked too, and not merely for tidiness: writing here
+					// unconditionally would re-create a row for a question that has
+					// already been forgotten, and nothing would ever remove it.
+					if (!orphanVerdictStillApplies(record.questionId, generation)) return;
 					orphanChecks.set(record.questionId, {
 						state: "unresolved",
 						startedAtMs,
+						generation,
 					});
 				});
 		}

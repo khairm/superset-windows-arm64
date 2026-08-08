@@ -4,9 +4,11 @@ import {
 	type AnswerDeps,
 	evaluateGuards,
 	GUARD_CLASSES,
+	GUARD_EVALUATION_ORDER,
 	type GuardSourceResult,
 	LOAD_BEARING_GUARDS,
 } from "./answer";
+import type { ScreenExpectation } from "./keystrokes";
 import type { PendingQuestion } from "./question-store";
 import type { Fingerprint, QuestionId, TerminalId } from "./types";
 
@@ -72,6 +74,19 @@ const PICKER_SCREEN = [
 	"  2. Escalate to the owner",
 ].join("\n");
 
+/**
+ * A viewport the WEAK form matches and the strong form does not: the composer is
+ * echoing the prompt's text back with the picker gone. `matchPromptStillOnScreen`
+ * asks only "is this prompt still what is on screen", and this satisfies it.
+ */
+const PROMPT_ECHO_SCREEN = [
+	" ☐ Duplicate pairs ",
+	"",
+	"How should the leftover duplicate pairs be handled today?",
+	"",
+	"> ",
+].join("\n");
+
 /** A viewport guard 5 refuses: an idle composer. */
 const COMPOSER_SCREEN = [
 	"● Ran 4 tasks",
@@ -114,13 +129,17 @@ function deps(options: StubOptions): {
 	return { deps: stub as unknown as AnswerDeps, events };
 }
 
-async function evaluate(options: StubOptions, screen: string) {
+async function evaluate(
+	options: StubOptions,
+	screen: string,
+	expectation: ScreenExpectation = { kind: "item_picker", itemIndex: 0 },
+) {
 	const { deps: stub, events } = deps(options);
 	const outcome = await evaluateGuards(stub, {
 		question: question(),
 		screen,
-		expectation: { kind: "item_picker", itemIndex: 0 },
-		requireOptionIndex: 0,
+		expectation,
+		requireOptionIndex: expectation.kind === "item_picker" ? 0 : null,
 	});
 	return { outcome, events };
 }
@@ -217,5 +236,77 @@ describe("(GUARD4-ABSTAIN) the permission axis", () => {
 			PICKER_SCREEN,
 		);
 		expect(outcome.failed).toBe("transcript");
+	});
+
+	it("the abstained guard is NOT reported as passed", () => {
+		// (GUARD4-ABSTAIN) `guardsPassed` is the durable audit answer to "what
+		// permitted this write". A row naming a guard there while `evaluation`
+		// records `false` for it is a self-contradiction nobody can later resolve,
+		// and it is what the ledger and the wire both carry.
+		return (async () => {
+			const { outcome } = await evaluate(
+				{ permissionAxis: false },
+				PICKER_SCREEN,
+			);
+			expect(outcome.passed).not.toContain("permission_axis");
+			expect(outcome.abstained).toEqual(["permission_axis"]);
+			// Disjoint, and the stack still walked every guard after it — the order
+			// self-check is driven by its own position counter, not by passed.length.
+			expect(outcome.passed).toContain("askq_marker");
+			for (const guard of outcome.abstained) {
+				expect(outcome.passed).not.toContain(guard);
+			}
+		})();
+	});
+
+	it("REFUSES on a weak same_prompt keystroke, whatever the load-bearing guards said", async () => {
+		// (GUARD4-ABSTAIN) The one case the abstain must not cover.
+		// `matchPromptStillOnScreen` asserts only that this prompt's text is on
+		// screen, which a Claude Code composer echoing the prompt satisfies with the
+		// picker GONE. The free-text tail is three consecutive `same_prompt`
+		// keystrokes carrying arbitrary text, so abstaining here would let a desk
+		// Escape mid-sequence turn the remainder into a typed-and-submitted prompt.
+		// On this form the axis is the only thing left that notices the picker shut.
+		const { outcome, events } = await evaluate(
+			{ permissionAxis: false },
+			PROMPT_ECHO_SCREEN,
+			{ kind: "same_prompt", itemIndex: 0 },
+		);
+		expect(outcome.failed).toBe("permission_axis");
+		expect(outcome.abstained).toEqual([]);
+		expect(events.filter((e) => e.event === "companion.guard.abstain")).toEqual(
+			[],
+		);
+	});
+
+	it("a LATCHED axis still passes on the weak form — only the abstain is withheld", async () => {
+		const { outcome } = await evaluate(
+			{ permissionAxis: true },
+			PROMPT_ECHO_SCREEN,
+			{
+				kind: "same_prompt",
+				itemIndex: 0,
+			},
+		);
+		expect(outcome.failed).toBeNull();
+		expect(outcome.abstained).toEqual([]);
+	});
+
+	it("the abstain list is held to its own rules at module load", () => {
+		// (GUARD4-ABSTAIN) The list used to be inert — a name the branch happened to
+		// check against, with nothing stopping a load-bearing guard, or one that runs
+		// BEFORE the guards whose passing is the premise of abstaining, being added
+		// to it. `assertGuardClassification` now crashes the module on both.
+		const lastLoadBearing = Math.max(
+			...LOAD_BEARING_GUARDS.map((name) =>
+				GUARD_EVALUATION_ORDER.indexOf(name),
+			),
+		);
+		for (const name of ABSTAINING_GUARDS) {
+			expect(GUARD_CLASSES[name]).toBe("forgeable");
+			expect(GUARD_EVALUATION_ORDER.indexOf(name)).toBeGreaterThan(
+				lastLoadBearing,
+			);
+		}
 	});
 });

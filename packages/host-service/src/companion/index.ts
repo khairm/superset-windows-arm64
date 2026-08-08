@@ -1216,6 +1216,7 @@ export function createCompanionBridge(
 						questionId: null,
 						terminalId: null,
 						guards: null,
+						guardsAbstained: null,
 						payloadHash: hashJsonPayload({
 							deviceId: record.deviceId,
 							label: record.label,
@@ -2381,6 +2382,7 @@ function createPanicHandler(deps: PanicDeps) {
 			questionId: null,
 			terminalId: null,
 			guards: null,
+			guardsAbstained: null,
 			payloadHash: hashJsonPayload(request),
 		};
 		// Before, always. A panic that crashed the process mid-apply must still be
@@ -2490,6 +2492,7 @@ async function applyDesktopPanic(
 			questionId: null,
 			terminalId: null,
 			guards: null,
+			guardsAbstained: null,
 			payloadHash,
 			outcome,
 			failureCode: null,

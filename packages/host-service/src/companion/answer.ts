@@ -346,6 +346,32 @@ function assertGuardClassification(): void {
 		}
 		seenNonLoadBearing = name;
 	}
+	// (GUARD4-ABSTAIN) The abstain list was inert: it was a name the branch below
+	// happened to check against, with nothing stopping a guard being added to it
+	// that is load-bearing, or that runs BEFORE the guards whose passing is the
+	// entire premise of abstaining. Both are now startup crashes, so the list
+	// carries the weight the abstain branch gives it.
+	const lastLoadBearing = Math.max(
+		...LOAD_BEARING_GUARDS.map((name) => GUARD_EVALUATION_ORDER.indexOf(name)),
+	);
+	for (const name of ABSTAINING_GUARDS) {
+		if (GUARD_CLASSES[name] !== "forgeable") {
+			throw new Error(
+				`(COMPANION-BRIDGE) guard ${name} may abstain but is classified ${GUARD_CLASSES[name]}; only a forgeable guard — one whose refusal is as forgeable as its permission would be — may abstain. Refusing to load`,
+			);
+		}
+		const position = GUARD_EVALUATION_ORDER.indexOf(name);
+		if (position < 0) {
+			throw new Error(
+				`(COMPANION-BRIDGE) guard ${name} may abstain but is never evaluated; refusing to load`,
+			);
+		}
+		if (position < lastLoadBearing) {
+			throw new Error(
+				`(COMPANION-BRIDGE) guard ${name} may abstain but is evaluated at position ${position}, before the load-bearing guard at ${lastLoadBearing}; abstaining is only sound once every load-bearing guard has PASSED. Refusing to load`,
+			);
+		}
+	}
 }
 assertGuardClassification();
 
@@ -858,11 +884,14 @@ function matchPromptOnScreen(input: {
  * The prompt anchor is subject to (3) rather than exempt from it. When the
  * header and the question opening are BOTH off screen the matcher does not fail
  * fast on `anchor_absent`; it continues, and the top-edge rule then has to be
- * satisfied by capture-derived prose — which is a LONGER and more
- * position-pinned needle than the eight-character header anchor it stands in
- * for. If that proof does not land, the refusal reported is the ORIGINAL
- * `anchor_absent`, so no screen refused before this change is refused
- * differently now, and nothing about the relaxation leaks into diagnostics.
+ * satisfied by capture-derived prose. That needle is held to a HIGHER floor than
+ * ordinary screen evidence — `SCREEN_CLIP_ANCHOR_CHARS`, the header anchor's own
+ * length, not `SCREEN_MIN_ANCHOR_CHARS` — and it is END-ANCHORED to the row
+ * rather than found anywhere in the region, so it is at least as long as the
+ * anchor it replaces and pinned to a position the prompt anchor never was. If
+ * that proof does not land, the refusal reported is the ORIGINAL `anchor_absent`,
+ * so no screen refused before this change is refused differently now, and
+ * nothing about the relaxation leaks into diagnostics.
  *
  * NOT admitted: a clip at both ends at once (a viewport shorter than the block
  * with rows lost above AND below). It is representable and it is refused — one
@@ -932,17 +961,45 @@ export function matchPickerScreen(input: {
 		presentWindows.push(hits);
 	}
 
+	/**
+	 * (GUARD5-FREETEXT-CONTRADICTION) The free-text row's presence is established
+	 * on EVERY keystroke, not only on the one that presses its digit.
+	 *
+	 * It used to be looked for only when `requireOptionIndex` named it, which made
+	 * the contradiction check below unreachable on an ordinary option press — and
+	 * that is the press the check matters for. A screen showing `1. <option>` and
+	 * `5. Type something.` with rows 2-4 nowhere on it was accepted as a bottom
+	 * clip, when the visible editor row proves the opposite: the editor renders
+	 * BELOW every option, so the options between them were not clipped away, they
+	 * are not there.
+	 *
+	 * The verdicts are read differently by press, because they mean different
+	 * things to it:
+	 *   - ABSENT is only a refusal when this keystroke presses that digit.
+	 *   - CONFLICT (the contract copy at more than one digit) is FATAL only on a
+	 *     press — that is when "which row does this digit select" has to have an
+	 *     answer. Off a press it just means presence is unknown, so it is not used
+	 *     as evidence in either direction.
+	 *   - FOUND feeds the chain only on a press (GUARD5-FREETEXT-PLACEMENT), but
+	 *     feeds the contradiction check always.
+	 */
 	const freeText = input.item.freeTextOption;
-	let freeTextWindows: number[] | null = null;
-	if (freeText !== null && input.requireOptionIndex === freeText.index) {
+	const pressingFreeText =
+		freeText !== null && input.requireOptionIndex === freeText.index;
+	/** Where the editor row is, whoever is pressing. `null` = absent or unknown. */
+	let freeTextRowAt: number[] | null = null;
+	if (freeText !== null) {
 		const verdict = verifyFreeTextRow({
 			windows,
 			lines,
 			item: input.item,
 			digitIndex: freeText.index,
 		});
-		if (verdict.kind === "absent") missing.push(`freetext:${freeText.index}`);
-		if (verdict.kind === "conflict") {
+		if (verdict.kind === "found") freeTextRowAt = verdict.windows;
+		if (verdict.kind === "absent" && pressingFreeText) {
+			missing.push(`freetext:${freeText.index}`);
+		}
+		if (verdict.kind === "conflict" && pressingFreeText) {
 			return (
 				anchorFailure ?? {
 					ok: false,
@@ -952,8 +1009,9 @@ export function matchPickerScreen(input: {
 				}
 			);
 		}
-		if (verdict.kind === "found") freeTextWindows = verdict.windows;
 	}
+	/** (GUARD5-FREETEXT-PLACEMENT) In the chain ONLY when its digit is pressed. */
+	const freeTextWindows = pressingFreeText ? freeTextRowAt : null;
 
 	const rowsRefusal: PickerScreenMatch = anchorFailure ?? {
 		ok: false,
@@ -964,6 +1022,11 @@ export function matchPickerScreen(input: {
 	const clippedAbove = firstPresent > 0;
 	const clippedBelow =
 		lastPresent >= 0 && lastPresent < input.item.options.length - 1;
+	// (GUARD5-FREETEXT-CONTRADICTION) The editor row renders BELOW every option,
+	// so seeing it while options below the block are missing is not a clip — it is
+	// a screen whose numbering does not match the capture. Refused on EVERY
+	// keystroke, including the ones that press an ordinary option.
+	if (clippedBelow && freeTextRowAt !== null) return rowsRefusal;
 	if (missing.length > 0) {
 		// (GUARD5-CLIPPED-VIEWPORT) 1. The row being pressed is never optional.
 		if (pressedRowIsMissing(input, missing)) return rowsRefusal;
@@ -974,9 +1037,6 @@ export function matchPickerScreen(input: {
 			return rowsRefusal;
 		}
 		if (clippedAbove && clippedBelow) return rowsRefusal;
-		// The free-text row renders BELOW every option, so seeing it while options
-		// below the block are missing is a hole wearing a clip's clothes.
-		if (clippedBelow && freeTextWindows !== null) return rowsRefusal;
 	}
 
 	/**
@@ -1467,8 +1527,14 @@ function digitsCarryingLabel(
 	return found;
 }
 
+/**
+ * (GUARD5-FREETEXT-CONTRADICTION) Three verdicts, and the caller reads each of
+ * them differently depending on whether this keystroke presses that digit. There
+ * is deliberately no `not_pressed` member: the row's presence is now established
+ * on every keystroke, and a fourth value meaning "did not look" was the shape
+ * that let the contradiction check go unreachable on an option press.
+ */
 type FreeTextVerdict =
-	| { kind: "not_pressed" }
 	| { kind: "absent" }
 	| { kind: "conflict" }
 	| { kind: "found"; windows: number[] };
@@ -1669,9 +1735,26 @@ const DESCRIPTION_INDENT_CELLS = 5;
  *
  * `text` is the previous option's description when option rows were lost off the
  * top, and the item's own question when only the header/question opening was.
- * Both are capture-derived — but so is every other needle in this matcher, and
- * matching a long prose tail at a pinned position is a strictly harder thing to
- * fabricate than the eight-character prompt anchor this stands in for.
+ *
+ * (GUARD5-CLIP-ADJACENT) THE MATCH IS END-ANCHORED, NOT A SUBSTRING SEARCH, and
+ * that is the whole of its strength. `includes` accepted the needle ANYWHERE in
+ * the region, so a screen reading
+ *
+ *     …genuine description tail
+ *     THEN SOME UNRELATED OUTPUT
+ *      4. Final expected choice
+ *
+ * passed: the description tail was up there somewhere, and the line the digit
+ * actually sits under was not examined at all. The squashed region must now END
+ * with the needle, so the proven text is the text IMMEDIATELY ABOVE the row —
+ * which is the only position the claim "this row follows that description" is
+ * about. Squashing strips whitespace, so blank separator lines and indentation
+ * do not break the anchoring; anything else between the two does, deliberately.
+ *
+ * The floor is `SCREEN_CLIP_ANCHOR_CHARS`, which is not
+ * `SCREEN_MIN_ANCHOR_CHARS`: this needle STANDS IN FOR the prompt anchor, so it
+ * has to be at least as long as the header anchor it replaces rather than merely
+ * long enough to be evidence at all.
  *
  * THERE IS NO `at === 0` ESCAPE. A viewport whose very first line is a numbered
  * row has nothing above it to corroborate, and "nothing to check" is not
@@ -1690,10 +1773,11 @@ function clipAboveIsExplained(input: {
 	if (above.length === 0) return false;
 	const aboveText = squash(above.join(""));
 	const matched = matchedTextSuffix(input.text, aboveText);
-	if (matched < SCREEN_MIN_ANCHOR_CHARS) return false;
+	if (matched < SCREEN_CLIP_ANCHOR_CHARS) return false;
 	// Same budget arithmetic as `gapIsExplained`: how many lines the text that WAS
-	// matched can occupy at this width, plus wrap slack. The region cannot be
-	// wider than what the matched tail explains.
+	// matched can occupy at this width, plus wrap slack. It bounds the TERMINAL
+	// SEGMENT — the matched tail now provably ends at the row, so this is what
+	// stops a screenful of unrelated output sitting above it and still counting.
 	const matchedCells = displayWidth(unsquashedSuffix(input.text, matched));
 	const usableCols = Math.max(input.cols - DESCRIPTION_INDENT_CELLS, 8);
 	return (
@@ -1702,21 +1786,34 @@ function clipAboveIsExplained(input: {
 }
 
 /**
- * (GUARD5-CLIPPED-VIEWPORT) The longest SUFFIX of `text` (squashed) that appears
- * in `region`, in characters. `matchedDescriptionPrefix` from the other end.
+ * (GUARD5-CLIPPED-VIEWPORT) The floor on a clip needle.
  *
- * Binary search on the same monotonicity: a suffix of length n contains every
- * shorter suffix, so if length n is absent every longer one is too.
+ * Deliberately the HEADER anchor's length rather than `SCREEN_MIN_ANCHOR_CHARS`.
+ * The clip proof is what a viewport with no header and no question opening on it
+ * offers INSTEAD of the prompt anchor, so a floor of eight would have accepted a
+ * shorter needle than the one it replaces — which is the opposite of the trade
+ * the clip relaxation is supposed to be making.
+ */
+const SCREEN_CLIP_ANCHOR_CHARS = SCREEN_HEADER_ANCHOR_CHARS;
+
+/**
+ * (GUARD5-CLIPPED-VIEWPORT) The longest SUFFIX of `text` (squashed) that the
+ * region ENDS WITH, in characters. `matchedDescriptionPrefix` from the other end.
+ *
+ * Binary search on the same monotonicity: a region that ends with the n-character
+ * suffix also ends with every shorter one, so if length n does not match, no
+ * longer one does either.
  */
 function matchedTextSuffix(text: string, region: string): number {
 	const squashed = squash(text);
-	if (squashed.length < SCREEN_MIN_ANCHOR_CHARS) return 0;
-	if (!region.includes(squashed.slice(-SCREEN_MIN_ANCHOR_CHARS))) return 0;
-	let low = SCREEN_MIN_ANCHOR_CHARS;
+	if (squashed.length < SCREEN_CLIP_ANCHOR_CHARS) return 0;
+	// `endsWith`, never `includes` — see (GUARD5-CLIP-ADJACENT).
+	if (!region.endsWith(squashed.slice(-SCREEN_CLIP_ANCHOR_CHARS))) return 0;
+	let low = SCREEN_CLIP_ANCHOR_CHARS;
 	let high = squashed.length;
 	while (low < high) {
 		const mid = Math.ceil((low + high) / 2);
-		if (region.includes(squashed.slice(squashed.length - mid))) {
+		if (region.endsWith(squashed.slice(squashed.length - mid))) {
 			low = mid;
 		} else {
 			high = mid - 1;
@@ -1953,13 +2050,17 @@ function evaluateScreenGuard(input: {
 
 export interface GuardOutcome {
 	evaluation: GuardEvaluation;
+	/**
+	 * The guards that PASSED — the durable audit answer to "what permitted this
+	 * write". An abstaining guard is deliberately NOT here: it did not pass, and a
+	 * row saying it did while `evaluation` records `false` for it is a durable
+	 * self-contradiction nobody can later resolve.
+	 */
 	passed: AnswerGuardName[];
 	/**
 	 * (GUARD4-ABSTAIN) Guards that did NOT read positively and were carried
-	 * anyway, because every load-bearing guard had passed and they are in
-	 * `ABSTAINING_GUARDS`. They appear in `passed` too — the stack did walk past
-	 * them — so this is what tells a reader the difference, and `evaluation` keeps
-	 * the raw reading rather than being written up to `true`.
+	 * anyway, because every load-bearing guard had passed, the screen guard ran in
+	 * its strong form, and they are in `ABSTAINING_GUARDS`. Disjoint from `passed`.
 	 */
 	abstained: AnswerGuardName[];
 	/** The FIRST guard that failed, in evaluation order. */
@@ -2100,17 +2201,35 @@ export async function evaluateGuards(
 	 * Every step through the stack is checked against `GUARD_EVALUATION_ORDER`, so
 	 * the classification's ordering rule is enforced against what this function
 	 * ACTUALLY does rather than against the shape of the source below.
+	 *
+	 * (GUARD4-ABSTAIN) The position is its OWN counter and no longer
+	 * `passed.length`. An abstaining guard advances the stack without joining
+	 * `passed` — it did not pass, and `guardsPassed` is the durable audit answer
+	 * to "what permitted this write" — so deriving position from that array would
+	 * throw the self-check off by one for every guard after it.
 	 */
+	let position = 0;
 	const at = (guard: AnswerGuardName): void => {
-		if (GUARD_EVALUATION_ORDER[passed.length] !== guard) {
+		if (GUARD_EVALUATION_ORDER[position] !== guard) {
 			throw new Error(
-				`(COMPANION-BRIDGE) guard stack self-check: reached ${guard} at position ${passed.length}, where GUARD_EVALUATION_ORDER requires ${String(GUARD_EVALUATION_ORDER[passed.length])}`,
+				`(COMPANION-BRIDGE) guard stack self-check: reached ${guard} at position ${position}, where GUARD_EVALUATION_ORDER requires ${String(GUARD_EVALUATION_ORDER[position])}`,
 			);
 		}
 	};
 	const advance = (guard: AnswerGuardName): void => {
 		at(guard);
+		position += 1;
 		passed.push(guard);
+	};
+	/**
+	 * (GUARD4-ABSTAIN) Walk past a guard WITHOUT recording it as passed. The two
+	 * arrays are disjoint by construction, so a durable row can never say a guard
+	 * both permitted the write and read false.
+	 */
+	const abstain = (guard: AnswerGuardName): void => {
+		at(guard);
+		position += 1;
+		abstained.push(guard);
 	};
 	const fail = (
 		guard: AnswerGuardName,
@@ -2193,18 +2312,37 @@ export async function evaluateGuards(
 	// evidence about what was observed, and an abstain must not be able to forge a
 	// record of a latch that was not there.
 	evaluation.permission_axis = permissionAxis === true;
-	if (permissionAxis !== true) {
-		// (GUARD4-ABSTAIN) The condition is CHECKED here rather than inferred from
-		// the fact that guard 4 runs fourth. If a future edit moves a load-bearing
-		// guard after this one, the axis goes back to refusing rather than quietly
-		// abstaining on a stack that has proved less than this comment claims.
+	if (permissionAxis === true) {
+		advance("permission_axis");
+	} else {
+		// (GUARD4-ABSTAIN) THREE conditions, all checked here rather than inferred
+		// from the fact that guard 4 runs fourth:
+		//
+		//  1. every load-bearing guard actually passed, read back off `evaluation`,
+		//     so a reordering makes the axis refuse again rather than quietly
+		//     abstain on a stack that has proved less than it claims;
+		//  2. this guard is on the abstain list, which `assertGuardClassification`
+		//     now holds to its own rules at module load;
+		//  3. THE SCREEN GUARD RAN IN ITS STRONG FORM. This is the one that is not
+		//     about guard 4 at all. `matchPromptStillOnScreen` — the `same_prompt`
+		//     expectation — asserts only that this prompt's text is on screen, and
+		//     a Claude Code composer echoing the prompt satisfies it with the
+		//     picker GONE. The free-text tail is three consecutive `same_prompt`
+		//     keystrokes carrying arbitrary text, so abstaining there would let a
+		//     desk Escape mid-sequence turn the remainder into a typed-and-
+		//     submitted prompt. On a weak-form keystroke the axis keeps its
+		//     refusal: it is the only thing left that notices the picker closed.
 		const loadBearingPassed = LOAD_BEARING_GUARDS.every(
 			(guard) => evaluation[guard],
 		);
-		if (!loadBearingPassed || !ABSTAINING_GUARDS.includes("permission_axis")) {
+		const strongScreenForm = input.expectation.kind === "item_picker";
+		if (
+			!loadBearingPassed ||
+			!ABSTAINING_GUARDS.includes("permission_axis") ||
+			!strongScreenForm
+		) {
 			return fail("permission_axis", screenMatch);
 		}
-		abstained.push("permission_axis");
 		deps.log({
 			event: "companion.guard.abstain",
 			guard: "permission_axis",
@@ -2213,11 +2351,12 @@ export async function evaluateGuards(
 			// event overwrote, versus a store this process could not read at all.
 			reading: permissionAxis === null ? "unreadable" : "clear",
 			loadBearing: [...LOAD_BEARING_GUARDS],
+			expectation: input.expectation.kind,
 			questionId: input.question.questionId,
 			terminalId: input.question.terminalId,
 		});
+		abstain("permission_axis");
 	}
-	advance("permission_axis");
 
 	// --- guard 6: the .askq marker still exists (VETO ONLY) ---
 	// Presence is NOT evidence — markers leak. Only its absence is used, and only
@@ -2705,6 +2844,11 @@ export async function handleAnswer(
 			questionId: request.questionId,
 			terminalId: question.terminalId,
 			payloadHash,
+			// (GUARD4-ABSTAIN) Null until the stack has actually run. The three sites
+			// below that HAVE a guard evaluation override it with the real list; the
+			// ones that do not are lines written before or instead of the stack, and
+			// `[]` there would read as "nothing abstained" rather than "never asked".
+			guardsAbstained: null as AnswerGuardName[] | null,
 		};
 
 		/**
@@ -2735,6 +2879,7 @@ export async function handleAnswer(
 				...baseAudit,
 				tsMs: startedAtMs,
 				guards: null,
+				guardsAbstained: null,
 				outcome: "attempted",
 				failureCode: null,
 			});
@@ -2795,12 +2940,14 @@ export async function handleAnswer(
 					resolvedAtMs,
 					failureCode: null,
 					guardsPassed: result.guardsPassed,
+					guardsAbstained: result.guardsAbstained,
 				};
 				await recordOutcome(deps, record);
 				await deps.audit.append({
 					...baseAudit,
 					tsMs: resolvedAtMs,
 					guards: result.evaluation,
+					guardsAbstained: result.guardsAbstained,
 					outcome: "confirmed",
 					failureCode: null,
 				});
@@ -2815,12 +2962,14 @@ export async function handleAnswer(
 					resolvedAtMs: null,
 					failureCode: "guard_failed",
 					guardsPassed: result.guardsPassed,
+					guardsAbstained: result.guardsAbstained,
 				};
 				await recordOutcome(deps, record);
 				await deps.audit.append({
 					...baseAudit,
 					tsMs: deps.now(),
 					guards: result.evaluation,
+					guardsAbstained: result.guardsAbstained,
 					outcome: "failed",
 					failureCode: "guard_failed",
 				});
@@ -2864,12 +3013,14 @@ export async function handleAnswer(
 				resolvedAtMs: null,
 				failureCode: null,
 				guardsPassed: result.guardsPassed,
+				guardsAbstained: result.guardsAbstained,
 			};
 			await recordOutcome(deps, record);
 			await deps.audit.append({
 				...baseAudit,
 				tsMs: deps.now(),
 				guards: result.evaluation,
+				guardsAbstained: result.guardsAbstained,
 				outcome: "unconfirmed",
 				failureCode: null,
 			});
@@ -2894,11 +3045,13 @@ export async function handleAnswer(
 					resolvedAtMs: null,
 					failureCode: "internal",
 					guardsPassed: [],
+					guardsAbstained: [],
 				});
 				await deps.audit.append({
 					...baseAudit,
 					tsMs: deps.now(),
 					guards: null,
+					guardsAbstained: null,
 					outcome: "failed",
 					failureCode: "internal",
 				});
@@ -2925,11 +3078,13 @@ export async function handleAnswer(
 				resolvedAtMs: null,
 				failureCode: null,
 				guardsPassed: [],
+				guardsAbstained: [],
 			});
 			await deps.audit.append({
 				...baseAudit,
 				tsMs: deps.now(),
 				guards: null,
+				guardsAbstained: null,
 				outcome: "unconfirmed",
 				failureCode: null,
 			});
@@ -2975,12 +3130,15 @@ type InjectionResult =
 	| {
 			kind: "confirmed";
 			guardsPassed: AnswerGuardName[];
+			/** (GUARD4-ABSTAIN) Disjoint from `guardsPassed`; see `GuardOutcome`. */
+			guardsAbstained: AnswerGuardName[];
 			evaluation: GuardEvaluation;
 	  }
 	| {
 			kind: "guard_failed";
 			guard: AnswerGuardName;
 			guardsPassed: AnswerGuardName[];
+			guardsAbstained: AnswerGuardName[];
 			evaluation: GuardEvaluation;
 	  }
 	| {
@@ -2989,6 +3147,7 @@ type InjectionResult =
 			abortedAt: number;
 			written: number;
 			guardsPassed: AnswerGuardName[];
+			guardsAbstained: AnswerGuardName[];
 			evaluation: GuardEvaluation;
 	  };
 
@@ -3020,6 +3179,8 @@ async function injectSequence(
 	let written = 0;
 	let previousScreen: string | null = null;
 	let guardsPassed: AnswerGuardName[] = [];
+	/** (GUARD4-ABSTAIN) Carried beside `guardsPassed`, never merged into it. */
+	let guardsAbstained: AnswerGuardName[] = [];
 	let evaluation: GuardEvaluation = {
 		transcript: false,
 		screen: false,
@@ -3053,6 +3214,7 @@ async function injectSequence(
 					kind: "guard_failed",
 					guard,
 					guardsPassed,
+					guardsAbstained,
 					evaluation,
 				}
 			: {
@@ -3061,6 +3223,7 @@ async function injectSequence(
 					abortedAt: index,
 					written,
 					guardsPassed,
+					guardsAbstained,
 					evaluation,
 				};
 
@@ -3130,6 +3293,7 @@ async function injectSequence(
 			requireOptionIndex: keystroke.optionIndex,
 		});
 		guardsPassed = outcome.passed;
+		guardsAbstained = outcome.abstained;
 		evaluation = outcome.evaluation;
 
 		if (outcome.failed !== null) {
@@ -3180,6 +3344,7 @@ async function injectSequence(
 				abortedAt: index,
 				written,
 				guardsPassed,
+				guardsAbstained,
 				evaluation,
 			};
 		}
@@ -3202,7 +3367,12 @@ async function injectSequence(
 		previousScreen = screen;
 	}
 
-	return { kind: "confirmed", guardsPassed, evaluation };
+	return {
+		kind: "confirmed",
+		guardsPassed,
+		guardsAbstained,
+		evaluation,
+	};
 }
 
 /**
@@ -3505,6 +3675,7 @@ export async function handleMessage(
 			questionId: null,
 			terminalId: request.terminalId,
 			guards: null,
+			guardsAbstained: null,
 			payloadHash,
 			outcome,
 			failureCode,
@@ -4054,6 +4225,13 @@ function ledgerRecordToResponse(record: LedgerRecord): AnswerResponse {
 		leaseId: (record.leaseId ?? "") as AnswerResponse["leaseId"],
 		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
 		guardsPassed: record.guardsPassed,
+		// (GUARD4-ABSTAIN) A REPLAY cannot report this: the ledger stores only
+		// `guardsPassed`, deliberately (a new column would need a migration, and the
+		// fact is recoverable — a row that reached an outcome with a guard in
+		// `ABSTAINING_GUARDS` missing from `guardsPassed` is a row that abstained).
+		// Empty is the honest shape for "this response is reconstructed from durable
+		// state", not a claim that nothing abstained.
+		guardsAbstained: [],
 	};
 }
 
@@ -4069,6 +4247,7 @@ function recordToResponse(record: AnswerAttemptRecord): AnswerResponse {
 		leaseId: record.leaseId,
 		resolvedAtMs: record.status === "confirmed" ? record.resolvedAtMs : null,
 		guardsPassed: record.guardsPassed,
+		guardsAbstained: record.guardsAbstained,
 	};
 }
 

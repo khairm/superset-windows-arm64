@@ -106,7 +106,13 @@ describe("(PUSH-ARMED-ORPHAN) readOrphanTranscriptVerdict", () => {
 		await fs.rm(tree.root, { recursive: true, force: true });
 	});
 
-	it("gone — the whole slug directory went with the worktree", async () => {
+	it("unresolved — a missing SLUG directory is out of scope, not proof", async () => {
+		// The scope check, distinct from the transient one below. No slug directory
+		// means Claude Code has no record of this worktree at all, which is equally
+		// consistent with "the transcript was deleted" and with "the path we derived
+		// was never the right one" — a renamed worktree, an edited host.db row, a
+		// derivation that drifted. Only a file missing from a directory that DOES
+		// exist is evidence about the file.
 		const tree = await transcriptTree();
 		await fs.rm(path.dirname(tree.transcriptPath), {
 			recursive: true,
@@ -117,7 +123,7 @@ describe("(PUSH-ARMED-ORPHAN) readOrphanTranscriptVerdict", () => {
 				transcriptPath: tree.transcriptPath,
 				toolUseId: TOOL_USE_ID,
 			}),
-		).toBe("gone");
+		).toBe("unresolved");
 		await fs.rm(tree.root, { recursive: true, force: true });
 	});
 

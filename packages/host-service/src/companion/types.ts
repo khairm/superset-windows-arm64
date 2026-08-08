@@ -981,6 +981,13 @@ export interface AnswerResponse {
 	resolvedAtMs: EpochMs | null;
 	/** The guards that passed, for the audit trail the client shows. */
 	guardsPassed: AnswerGuardName[];
+	/**
+	 * (GUARD4-ABSTAIN) The guards that were CARRIED without reading positively ��
+	 * disjoint from `guardsPassed`, and never folded into it. A client that shows
+	 * an audit trail must be able to tell "this guard vouched for the write" from
+	 * "this guard had nothing to say and the load-bearing ones carried it".
+	 */
+	guardsAbstained: AnswerGuardName[];
 }
 
 export interface AnswerStatusRequest {
@@ -1133,6 +1140,8 @@ export interface AnswerAttemptRecord {
 	resolvedAtMs: EpochMs | null;
 	failureCode: AttemptFailureCode | null;
 	guardsPassed: AnswerGuardName[];
+	/** (GUARD4-ABSTAIN) Disjoint from `guardsPassed`. See `AnswerResponse`. */
+	guardsAbstained: AnswerGuardName[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1350,6 +1359,13 @@ export interface AuditEntry {
 	terminalId: TerminalId | null;
 	/** The six guards, as evaluated. */
 	guards: GuardEvaluation | null;
+	/**
+	 * (GUARD4-ABSTAIN) Which of them were carried on a non-positive reading. Null
+	 * for a line written before the stack ran at all. It is stated rather than
+	 * inferred from `guards`, because "read false and abstained" and "read false
+	 * and refused" produce the same `guards` and only one of them wrote bytes.
+	 */
+	guardsAbstained: AnswerGuardName[] | null;
 	/** SHA-256 of the plaintext body, base64url. */
 	payloadHash: Base64Url;
 	outcome: AuditOutcome;

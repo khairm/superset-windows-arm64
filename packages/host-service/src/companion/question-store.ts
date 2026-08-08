@@ -1376,12 +1376,22 @@ export async function readOrphanTranscriptVerdict(input: {
  * momentarily unreachable — a roaming profile, an unmounted volume — and that is
  * exactly the transient this must not act on.
  *
- * So the store itself has to read back first. `<home>/.claude/projects` is the
- * root every derived transcript path hangs off (`deriveClaudeTranscriptPath`),
- * and it is taken positionally from the path rather than re-derived, so this
- * cannot drift from the derivation. If that root cannot be stat'd, the answer is
- * "cannot tell" and the buzz stands. If it CAN be stat'd and this file is
- * `ENOENT` underneath it, the transcript is gone rather than unavailable.
+ * So BOTH DIRECTORIES ABOVE IT have to read back first, and they answer
+ * different questions:
+ *
+ *   - `<home>/.claude/projects`, the root every derived transcript path hangs
+ *     off (`deriveClaudeTranscriptPath`). Unreadable => the whole store is
+ *     unavailable, and nothing under it can be called absent.
+ *   - THE PROJECT'S OWN SLUG DIRECTORY. This one is not a transient check, it is
+ *     a scope check: a missing slug directory means Claude Code has no record of
+ *     this worktree AT ALL, which is equally consistent with "the transcript was
+ *     deleted" and with "the path we derived was never the right one" — a
+ *     worktree renamed, a host.db row edited, a derivation that drifted. Absence
+ *     of the whole directory is therefore CANNOT TELL, and only a file missing
+ *     from a directory that does exist is evidence about the file.
+ *
+ * Both are taken positionally from the path rather than re-derived, so this
+ * cannot drift from the derivation it is checking.
  *
  * Any other errno — EACCES, EIO, EBUSY — is `false`. Only the errno that
  * positively means "no such directory entry" is evidence of absence.
@@ -1389,11 +1399,14 @@ export async function readOrphanTranscriptVerdict(input: {
 async function transcriptIsProvablyAbsent(
 	transcriptPath: string,
 ): Promise<boolean> {
-	const projectsRoot = path.dirname(path.dirname(transcriptPath));
-	try {
-		await fs.stat(projectsRoot);
-	} catch {
-		return false;
+	const slugDirectory = path.dirname(transcriptPath);
+	const projectsRoot = path.dirname(slugDirectory);
+	for (const directory of [projectsRoot, slugDirectory]) {
+		try {
+			await fs.stat(directory);
+		} catch {
+			return false;
+		}
 	}
 	try {
 		await fs.stat(transcriptPath);

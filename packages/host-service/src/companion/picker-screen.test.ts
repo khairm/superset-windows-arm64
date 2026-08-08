@@ -1358,6 +1358,90 @@ describe("(GUARD5-CLIPPED-VIEWPORT) a picker taller than the window", () => {
 		).toBe(false);
 	});
 
+	it("the top edge must be ADJACENT to the row, not merely somewhere above it", () => {
+		// (GUARD5-CLIP-ADJACENT) The executed false accept. `includes` found the
+		// description tail anywhere in the region, so the line the digit actually
+		// sits under was never examined — junk could be spliced between the proven
+		// text and the row and the clip still counted. The squashed region must now
+		// END with the needle.
+		const clipped = CLIPPED_ABOVE.split("\n");
+		const spliced = [
+			clipped[0] ?? "",
+			clipped[1] ?? "",
+			"  ⎿  and then some entirely unrelated output landed here",
+			...clipped.slice(2),
+		].join("\n");
+		expect(
+			matchPickerScreen({
+				screen: spliced,
+				item: LIVE_ITEM,
+				requireOptionIndex: 3,
+			}).ok,
+		).toBe(false);
+	});
+
+	it("a clip needle shorter than the header anchor it replaces is refused", () => {
+		// (GUARD5-CLIPPED-VIEWPORT) The floor is SCREEN_HEADER_ANCHOR_CHARS, not
+		// SCREEN_MIN_ANCHOR_CHARS: this needle stands IN FOR the prompt anchor, so a
+		// shorter one would be a weaker check wearing a stronger check's clothes.
+		// Eleven squashed characters clears the old floor of eight and not this one.
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: "Do it now." },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const screen = ["     Do it now.", "  2. Escalate to the owner"].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 1 }).ok,
+		).toBe(false);
+	});
+
+	it("a visible free-text row below MISSING options is refused on an option press", () => {
+		// (GUARD5-FREETEXT-CONTRADICTION) The editor row renders below every option,
+		// so seeing it while options above it are absent is not a clip — the
+		// numbering on screen does not match the capture. This used to be unreachable
+		// on an option press, because the editor row was only looked for when its own
+		// digit was the one being pressed.
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: "" },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+				{ index: 2, label: "Do nothing today", description: "" },
+				{ index: 3, label: "Show me a sample first", description: "" },
+			],
+			freeTextOption: { index: 4, label: "Type something." },
+		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			subject.question,
+			"",
+			"  1. Retire the duplicates",
+			"  5. Type something.",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(false);
+	});
+
+	it("an honest bottom clip that has NOT reached the free-text row still answers", () => {
+		// The other side of the same rule: the editor row is below the fold too, so
+		// there is no contradiction and the clip stands.
+		const screen = bottomClipped(thirdRowLine() - 1);
+		expect(screen).not.toContain("Type something.");
+		expect(
+			matchPickerScreen({
+				screen,
+				item: {
+					...threeOptionItem(),
+					freeTextOption: { index: 3, label: "Type something." },
+				},
+				requireOptionIndex: 1,
+			}).ok,
+		).toBe(true);
+	});
+
 	it("a question tail above the rows carries a clipped-away header", () => {
 		// Only the header line went. The question's own tail is then what proves the
 		// viewport was clipped, rather than that these rows belong to another list.

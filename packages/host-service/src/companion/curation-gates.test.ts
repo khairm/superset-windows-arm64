@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { NON_GIT_BRANCH } from "../runtime/git/non-git";
 import {
 	CURATION_RECHECK_MS,
+	ORPHAN_VERIFY_DEADLINE_MS,
 	PUSH_GONE_CORROBORATION_MS,
 	PUSH_QUESTION_EXPIRY_MS,
 } from "./config";
@@ -1184,6 +1185,8 @@ function restartedSender(options: {
 		transcriptPath: string;
 		toolUseId: string;
 	}) => Promise<OrphanTranscriptVerdict>;
+	/** Injected wall clock, so ORPHAN_VERIFY_DEADLINE_MS can be crossed at once. */
+	now?: () => number;
 }) {
 	const fence = fakeFence(options.fenceRecords);
 	const emptyStore = { get: () => null };
@@ -1213,6 +1216,7 @@ function restartedSender(options: {
 		}),
 		verifyOrphanResolved: options.verifyOrphanResolved ?? null,
 		onFault: () => {},
+		...(options.now === undefined ? {} : { now: options.now }),
 	});
 	return { push, fence };
 }
@@ -1375,6 +1379,85 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 			// verdict, so it is dropped rather than held or fired.
 			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
 			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"IGNORES a `gone` verdict that lands after the entry was adopted",
+		async () => {
+			// (PUSH-ORPHAN-STALE-VERDICT) The read is fire-and-forget and the entry can
+			// change underneath it. Adoption means the hook re-captured the question,
+			// so the store holds it and the ordinary re-check governs it — acting on
+			// the stale verdict would `forget()` a LIVE entry and silently lose the
+			// notification for an agent that is still blocked.
+			let settle: ((verdict: OrphanTranscriptVerdict) => void) | null = null;
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: () =>
+					new Promise<OrphanTranscriptVerdict>((resolve) => {
+						settle = resolve;
+					}),
+			});
+			await nextSweep();
+			restarted.push.schedule({
+				questionId: HELD_QUESTION,
+				workspaceId: HELD_WORKSPACE,
+				questionCount: 1,
+				expiresAtMs: Date.now() + PUSH_QUESTION_EXPIRY_MS,
+				hostTerminalId: "term-held",
+				hostWorkspaceId: "w-1",
+				transcriptPath: "C:/transcripts/s-1.jsonl",
+				toolUseId: "tu-1",
+			});
+			await nextSweep();
+			const clearedAfterAdoption = [...restarted.fence.cleared];
+
+			(settle as unknown as (verdict: OrphanTranscriptVerdict) => void)("gone");
+			await nextSweep();
+			// Not a second retirement. `forget()` is idempotent on the maps but NOT on
+			// the fence, so a stale verdict acting would show up as an extra clear.
+			expect(restarted.fence.cleared).toEqual(clearedAfterAdoption);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"IGNORES a verdict that lands after the deadline already let the entry fire",
+		async () => {
+			// (PUSH-ORPHAN-STALE-VERDICT) The other half. Once the sweep has given up
+			// waiting and fired, the entry lives in `sent` — which is exactly what a
+			// later retraction needs to pull the buzz off the phone. A stale `gone`
+			// calling `forget()` deletes that record, and the retraction then no-ops
+			// against a notification still sitting on the watch.
+			let clockMs = Date.now();
+			let settle: ((verdict: OrphanTranscriptVerdict) => void) | null = null;
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: () =>
+					new Promise<OrphanTranscriptVerdict>((resolve) => {
+						settle = resolve;
+					}),
+				now: () => clockMs,
+			});
+			await nextSweep();
+			// Held, because the read is still in flight and inside its deadline.
+			expect(restarted.push.inspect()).toMatchObject({
+				armed: [HELD_QUESTION],
+				sent: [],
+			});
+
+			clockMs += ORPHAN_VERIFY_DEADLINE_MS + 1_000;
+			await nextSweep();
+			expect(restarted.push.inspect().sent).toEqual([HELD_QUESTION]);
+
+			(settle as unknown as (verdict: OrphanTranscriptVerdict) => void)("gone");
+			await nextSweep();
+			// The sent record — the retraction's precondition — survives.
+			expect(restarted.push.inspect().sent).toEqual([HELD_QUESTION]);
+			expect(restarted.fence.cleared).toEqual([]);
 			restarted.push.stop();
 		},
 		SWEEP_TEST_TIMEOUT_MS,
