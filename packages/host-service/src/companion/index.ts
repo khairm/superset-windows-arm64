@@ -122,11 +122,11 @@ import { createPushFence, type PushFence } from "./push-fence";
 import {
 	createQuestionStore,
 	deriveHandle,
-	findToolResultInTranscript,
 	type PendingQuestion,
 	QUESTION_STALE_TERMINAL_GONE_REASON,
 	type QuestionCaptureSink,
 	type QuestionStore,
+	readOrphanTranscriptVerdict,
 } from "./question-store";
 import {
 	badRequest,
@@ -666,12 +666,13 @@ export function createCompanionBridge(
 			// (PUSH-ARMED-ORPHAN) The one check available for a push rebuilt from
 			// the fence: the question store is memory-only and empty at this point,
 			// so the row's own persisted transcript is the only thing that can say
-			// whether it was answered while the host-service was down. Same
-			// machinery as guard 1 — only a `resolved` verdict cancels; `unresolved`
-			// and `unreadable` both mean the buzz stands.
-			verifyOrphanResolved: async ({ transcriptPath, toolUseId }) =>
-				(await findToolResultInTranscript(transcriptPath, toolUseId)) ===
-				"resolved",
+			// whether it was answered while the host-service was down — or whether
+			// it still exists at all. Same machinery as guard 1, three-way: only
+			// `resolved` and `gone` retire the entry, and `gone` is corroborated
+			// against the projects root before it counts. Everything else means
+			// "cannot check", and the buzz stands.
+			verifyOrphanResolved: ({ transcriptPath, toolUseId }) =>
+				readOrphanTranscriptVerdict({ transcriptPath, toolUseId }),
 			onFault: (fault) => {
 				logger.error("push is broken", { fault });
 			},

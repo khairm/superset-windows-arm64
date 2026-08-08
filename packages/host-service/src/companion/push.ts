@@ -134,6 +134,7 @@ import type { DeviceStore } from "./device-store";
 import { MAX_APP_VERSION_CHARS } from "./limits";
 import type { PresenceStore, PresenceVerdict } from "./presence";
 import type { PushFence, PushFenceRecord } from "./push-fence";
+import type { OrphanTranscriptVerdict } from "./question-store";
 import type {
 	DeviceRecord,
 	PushData,
@@ -1086,8 +1087,7 @@ export interface PushSenderDeps {
 	 */
 	isCuratedOff(questionId: QuestionId): boolean;
 	/**
-	 * (PUSH-ARMED-ORPHAN) Was this question already answered, according to the
-	 * agent's OWN transcript?
+	 * (PUSH-ARMED-ORPHAN) What does this question's OWN transcript say about it?
 	 *
 	 * Asked once per entry rebuilt from the fence at construction, and only of
 	 * those: it is the one check available for a question the memory-only store
@@ -1095,12 +1095,24 @@ export interface PushSenderDeps {
 	 * `toolUseId`) was persisted with the row. It is the same machinery guard 1
 	 * uses (`findToolResultInTranscript`), pointed at the persisted path.
 	 *
-	 * MUST ANSWER `true` ONLY ON POSITIVE PROOF. Unreadable, missing, empty,
-	 * throwing — every one of those is `false`, because they all mean "cannot
-	 * check" and the entry then fires on the ordinary away rules. That direction
-	 * is the ruling this whole path is built on: a stale buzz self-corrects the
-	 * moment the user taps it and finds nothing, while a lost buzz is a blocked
-	 * agent nobody is ever told about.
+	 * THREE ANSWERS, AND ONLY TWO OF THEM ACT:
+	 *
+	 *   `"resolved"` — POSITIVE PROOF the question was answered while the
+	 *     host-service was down. Cancels the buzz.
+	 *   `"gone"` — POSITIVE, CORROBORATED PROOF the transcript file no longer
+	 *     exists (`readOrphanTranscriptVerdict`). Retires the fence row too, but
+	 *     for a different reason: not "somebody answered it" but "this
+	 *     notification is inert". The phone's question view reads that transcript
+	 *     and would render nothing, and guard 1 reads that same derived path and
+	 *     refuses every answer attempt against it. Nobody can open this buzz and
+	 *     nobody can answer it, and it would otherwise be rebuilt and re-held on
+	 *     every restart until its 6-hour expiry.
+	 *   `"unresolved"` — EVERYTHING ELSE. Unreadable, empty, a tree this process
+	 *     cannot see, a check that threw. They all mean "cannot check" and the
+	 *     entry then fires on the ordinary away rules. That direction is the
+	 *     ruling this whole path is built on: a stale buzz self-corrects the
+	 *     moment the user taps it and finds nothing, while a lost buzz is a
+	 *     blocked agent nobody is ever told about.
 	 *
 	 * `null` disables the check entirely — every reconstructed entry then fires
 	 * on the away rules. Required rather than optional so a composition root
@@ -1111,7 +1123,7 @@ export interface PushSenderDeps {
 				questionId: QuestionId;
 				transcriptPath: string;
 				toolUseId: string;
-		  }) => Promise<boolean>)
+		  }) => Promise<OrphanTranscriptVerdict>)
 		| null;
 	/**
 	 * Called on a fatal auth/config fault so the desktop can surface "push is
@@ -1762,7 +1774,9 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * Only a positive proof cancels. A row with no transcript pair is not even
 	 * asked — it goes straight to `unresolved`, which means "fires on the away
 	 * rules", because a missing path is the absence of evidence and this feature
-	 * buzzes when it cannot tell.
+	 * buzzes when it cannot tell. A path that IS there and whose file is provably
+	 * GONE is the other kind of positive proof, and it retires the row for a
+	 * different reason than an answer does — see `verifyOrphanResolved`.
 	 */
 	function verifyOrphans(
 		records: readonly PushFenceRecord[],
@@ -1785,17 +1799,28 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			const { transcriptPath, toolUseId } = record;
 			orphanChecks.set(record.questionId, { state: "pending", startedAtMs });
 			void verify({ questionId: record.questionId, transcriptPath, toolUseId })
-				.then((resolved) => {
-					if (!resolved) {
+				.then((verdict) => {
+					if (verdict === "unresolved") {
 						orphanChecks.set(record.questionId, {
 							state: "unresolved",
 							startedAtMs,
 						});
 						return;
 					}
-					console.log(
-						`${LOG} dropping reconstructed questionId=${record.questionId} — its transcript proves it was answered while the host-service was down`,
-					);
+					if (verdict === "gone") {
+						// LOUD, because this is a buzz being deliberately thrown away. It
+						// is not a claim that the question was answered: the fence row
+						// names a transcript that no longer exists, so this notification
+						// could not be opened or answered by anything, and leaving it
+						// armed re-holds it on every restart until it expires.
+						console.log(
+							`${LOG} retiring reconstructed questionId=${record.questionId} — its transcript file no longer exists, so the buzz could not be opened or answered`,
+						);
+					} else {
+						console.log(
+							`${LOG} dropping reconstructed questionId=${record.questionId} — its transcript proves it was answered while the host-service was down`,
+						);
+					}
 					forget(record.questionId);
 					stopSweepingIfIdle();
 				})

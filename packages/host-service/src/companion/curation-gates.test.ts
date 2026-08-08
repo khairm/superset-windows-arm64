@@ -19,7 +19,10 @@ import {
 	type PushFireVerdict,
 } from "./push";
 import type { PushFence, PushFenceRecord } from "./push-fence";
-import type { PendingQuestion } from "./question-store";
+import type {
+	OrphanTranscriptVerdict,
+	PendingQuestion,
+} from "./question-store";
 import {
 	type HostBindingRow,
 	type HostDbReader,
@@ -790,7 +793,7 @@ function pushHarness(options: {
 		questionId: QuestionId;
 		transcriptPath: string;
 		toolUseId: string;
-	}) => Promise<boolean>;
+	}) => Promise<OrphanTranscriptVerdict>;
 }) {
 	const state = {
 		hidden: options.hidden ?? true,
@@ -1180,7 +1183,7 @@ function restartedSender(options: {
 		questionId: QuestionId;
 		transcriptPath: string;
 		toolUseId: string;
-	}) => Promise<boolean>;
+	}) => Promise<OrphanTranscriptVerdict>;
 }) {
 	const fence = fakeFence(options.fenceRecords);
 	const emptyStore = { get: () => null };
@@ -1253,7 +1256,7 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 				fenceRecords: [heldFenceRecordWithTranscript()],
 				verifyOrphanResolved: async ({ transcriptPath, toolUseId }) => {
 					asked.push(`${transcriptPath}|${toolUseId}`);
-					return true;
+					return "resolved";
 				},
 			});
 			await nextSweep();
@@ -1266,11 +1269,32 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 	);
 
 	it(
+		"is RETIRED when its transcript file is gone — the buzz could not be opened or answered",
+		async () => {
+			// The stale-armed-fence class: a fence row survives, but the transcript
+			// its path names does not (a deleted worktree, a cleaned project dir).
+			// Nothing can ever corroborate it — the phone's question view reads that
+			// same file and would render nothing, and guard 1 reads that same derived
+			// path and refuses every answer attempt against it. Left armed, the row is
+			// rebuilt and re-held on every restart until its 6-hour expiry.
+			const restarted = restartedSender({
+				fenceRecords: [heldFenceRecordWithTranscript()],
+				verifyOrphanResolved: async () => "gone",
+			});
+			await nextSweep();
+			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
+			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
+			restarted.push.stop();
+		},
+		SWEEP_TEST_TIMEOUT_MS,
+	);
+
+	it(
 		"FIRES when the transcript check cannot prove anything — unreadable is not resolved",
 		async () => {
 			const restarted = restartedSender({
 				fenceRecords: [heldFenceRecordWithTranscript()],
-				verifyOrphanResolved: async () => false,
+				verifyOrphanResolved: async () => "unresolved",
 			});
 			await nextSweep();
 			expect(restarted.push.inspect().sent).toEqual([HELD_QUESTION]);
@@ -1298,11 +1322,11 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 	it(
 		"HOLDS while the check is still in flight, so a question about to be proved resolved does not buzz first",
 		async () => {
-			let settle: ((resolved: boolean) => void) | null = null;
+			let settle: ((verdict: OrphanTranscriptVerdict) => void) | null = null;
 			const restarted = restartedSender({
 				fenceRecords: [heldFenceRecordWithTranscript()],
 				verifyOrphanResolved: () =>
-					new Promise<boolean>((resolve) => {
+					new Promise<OrphanTranscriptVerdict>((resolve) => {
 						settle = resolve;
 					}),
 			});
@@ -1312,7 +1336,9 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 				sent: [],
 			});
 
-			(settle as unknown as (resolved: boolean) => void)(true);
+			(settle as unknown as (verdict: OrphanTranscriptVerdict) => void)(
+				"resolved",
+			);
 			await nextSweep();
 			expect(restarted.push.inspect()).toMatchObject({ armed: [], sent: [] });
 			expect(restarted.fence.cleared).toEqual([HELD_QUESTION]);
@@ -1328,7 +1354,8 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 				fenceRecords: [heldFenceRecordWithTranscript()],
 				// Never settles: without adoption the entry would stay held, judged by
 				// a check it no longer needs, until the deadline.
-				verifyOrphanResolved: () => new Promise<boolean>(() => {}),
+				verifyOrphanResolved: () =>
+					new Promise<OrphanTranscriptVerdict>(() => {}),
 			});
 			await nextSweep();
 			expect(restarted.push.inspect().armed).toEqual([HELD_QUESTION]);
@@ -1492,9 +1519,13 @@ describe("(BRIDGE-SIDEBAR-FILTER) handleTree over a curated fixture", () => {
 		expect(response.counts.idle).toBe(1);
 		expect(response.curation?.enabled).toBe(true);
 		expect(response.curation?.hiddenWorkspaces).toBe(1);
-		// A real age, measured against the real clock the handler reads.
+		// A real age, measured against the real clock the handler reads. The upper
+		// bound is the window that actually means something — a mirror still in
+		// force — and NOT a round 60s: `NOW` is captured when this module loads, so
+		// a 60s bound was really an assertion about how long the whole suite takes
+		// to reach this line, and it started failing when the file grew.
 		expect(response.curation?.lastSyncAgeMs).toBeGreaterThanOrEqual(1_000);
-		expect(response.curation?.lastSyncAgeMs).toBeLessThan(60_000);
+		expect(response.curation?.lastSyncAgeMs).toBeLessThan(MIRROR_MAX_AGE_MS);
 	});
 
 	it("an EMPTY tree is now distinguishable from an over-filtered one", async () => {
