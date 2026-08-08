@@ -42,7 +42,10 @@
  *     a path that would permit a write;
  *   - a forgeable guard may cause a REFUSAL but can never contribute to a
  *     permission (`assertGuardClassification` keeps that invariant honest as
- *     guards are added);
+ *     guards are added) — with ONE listed exception, `permission_axis`, which
+ *     ABSTAINS once both load-bearing guards have passed because its refusal was
+ *     as forgeable as its permission would have been and proved nothing they had
+ *     not. See (GUARD4-ABSTAIN) on `ABSTAINING_GUARDS`;
  *   - every guard that cannot be evaluated — the source threw, the file was
  *     unreadable — counts as FALSE. "Could not check" is never "probably fine".
  *     The ONE exception is the `veto_only` class below, where "could not check"
@@ -227,6 +230,44 @@ export const GUARD_CLASSES: Readonly<Record<AnswerGuardName, GuardClass>> = {
 	session: "supporting",
 	askq_marker: "veto_only",
 };
+
+/**
+ * (GUARD4-ABSTAIN) Forgeable guards that ABSTAIN rather than refuse once every
+ * load-bearing guard has passed.
+ *
+ * "May refuse; may never permit" is the right rule for a forgeable source in
+ * general, and it stays the rule for `binding` — which proves the captured
+ * question belongs to the agent session currently on the terminal, something
+ * neither the transcript nor the screen says anything about.
+ *
+ * `permission_axis` is different in two ways that together make its refusal
+ * worth less than the honest answers it was costing:
+ *
+ *   - IT ADDS NOTHING. The axis is `lastEventType === PermissionRequest` — "a
+ *     permission request is the most recent thing this terminal reported". By
+ *     the time it is read, guard 1 has proved the tool call is still unanswered
+ *     in the agent's own transcript and guard 5 has proved THIS question's
+ *     picker is on screen right now with the pressed row where the capture says
+ *     it is. Those two prove a pending permission request more directly than a
+ *     single latched enum ever did.
+ *   - IT IS A LATCH, AND ITS REFUSAL IS ITSELF FORGEABLE. Any later hook event
+ *     overwrites `lastEventType`, so an ordinary race between capture and answer
+ *     clears it and the wire code for that is indistinguishable from staleness.
+ *     And the same unauthenticated localhost hook that could forge the axis to
+ *     `true` can clear it to `false` — so leaving it able to refuse hands an
+ *     attacker a denial primitive while giving the defence nothing, which is the
+ *     wrong side of every trade in this file.
+ *
+ * The abstain is CONDITIONAL and the condition is checked, not assumed: it
+ * applies only when every guard in `LOAD_BEARING_GUARDS` has actually passed.
+ * The evaluation order already guarantees that at the point guard 4 runs, but a
+ * reordering must break the build's behaviour loudly rather than silently widen
+ * this, so the condition is evaluated from `evaluation` rather than inferred
+ * from position.
+ */
+export const ABSTAINING_GUARDS: readonly AnswerGuardName[] = [
+	"permission_axis",
+];
 
 export const LOAD_BEARING_GUARDS: readonly AnswerGuardName[] = (
 	Object.keys(GUARD_CLASSES) as AnswerGuardName[]
@@ -441,7 +482,12 @@ export interface AnswerDeps {
 	/** GUARD 3, supporting. The pty session is alive. */
 	sessionActive(terminalId: TerminalId): Promise<GuardSourceResult>;
 
-	/** GUARD 4, FORGEABLE. The permission (red) axis is still latched. */
+	/**
+	 * GUARD 4, FORGEABLE and ABSTAINING. The permission (red) axis is still
+	 * latched. A non-positive reading no longer refuses on its own once both
+	 * load-bearing guards have passed — see (GUARD4-ABSTAIN) on
+	 * `ABSTAINING_GUARDS` for why, and for the one thing it is still read for.
+	 */
 	permissionAxisLatched(terminalId: TerminalId): Promise<GuardSourceResult>;
 
 	/**
@@ -1908,6 +1954,14 @@ function evaluateScreenGuard(input: {
 export interface GuardOutcome {
 	evaluation: GuardEvaluation;
 	passed: AnswerGuardName[];
+	/**
+	 * (GUARD4-ABSTAIN) Guards that did NOT read positively and were carried
+	 * anyway, because every load-bearing guard had passed and they are in
+	 * `ABSTAINING_GUARDS`. They appear in `passed` too — the stack did walk past
+	 * them — so this is what tells a reader the difference, and `evaluation` keeps
+	 * the raw reading rather than being written up to `true`.
+	 */
+	abstained: AnswerGuardName[];
 	/** The FIRST guard that failed, in evaluation order. */
 	failed: AnswerGuardName | null;
 	screenMatch: PickerScreenMatch | null;
@@ -1986,6 +2040,33 @@ async function readVetoGuardSource(
 }
 
 /**
+ * (GUARD4-ABSTAIN) The reader for a guard in `ABSTAINING_GUARDS`, which needs
+ * the RAW tri-state rather than `readGuardSource`'s collapse to `false`.
+ *
+ * "Could not read" and "read, and it is clear" are the same outcome for such a
+ * guard — neither refuses — but they are not the same DIAGNOSIS, and the abstain
+ * event says which one happened. Collapsing them first would throw that away at
+ * the only place it is cheap to keep.
+ */
+async function readAbstainingGuardSource(
+	name: AnswerGuardName,
+	deps: AnswerDeps,
+	read: () => Promise<GuardSourceResult>,
+): Promise<GuardSourceResult> {
+	try {
+		return await read();
+	} catch (error) {
+		deps.log({
+			event: "companion.guard.error",
+			guard: name,
+			result: null,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
+/**
  * §11.3 — all six guards, evaluated inside the caller's critical section.
  *
  * Order is load-bearing FIRST and short-circuiting. That is the mechanism by
@@ -2013,6 +2094,8 @@ export async function evaluateGuards(
 		askq_marker: false,
 	};
 	const passed: AnswerGuardName[] = [];
+	/** (GUARD4-ABSTAIN) Guards carried on a non-positive reading. */
+	const abstained: AnswerGuardName[] = [];
 	/**
 	 * Every step through the stack is checked against `GUARD_EVALUATION_ORDER`, so
 	 * the classification's ordering rule is enforced against what this function
@@ -2037,6 +2120,7 @@ export async function evaluateGuards(
 		return {
 			evaluation,
 			passed,
+			abstained,
 			failed: guard,
 			screenMatch,
 		} satisfies GuardOutcome;
@@ -2099,12 +2183,40 @@ export async function evaluateGuards(
 	if (!bindingOk) return fail("binding", screenMatch);
 	advance("binding");
 
-	// --- guard 4: the permission axis is still latched (FORGEABLE) ---
-	const permissionOk = await readGuardSource("permission_axis", deps, () =>
-		deps.permissionAxisLatched(input.question.terminalId),
+	// --- guard 4: the permission axis is still latched (FORGEABLE, ABSTAINS) ---
+	const permissionAxis = await readAbstainingGuardSource(
+		"permission_axis",
+		deps,
+		() => deps.permissionAxisLatched(input.question.terminalId),
 	);
-	evaluation.permission_axis = permissionOk;
-	if (!permissionOk) return fail("permission_axis", screenMatch);
+	// The RAW reading, never written up to `true`. The ledger's `guards` column is
+	// evidence about what was observed, and an abstain must not be able to forge a
+	// record of a latch that was not there.
+	evaluation.permission_axis = permissionAxis === true;
+	if (permissionAxis !== true) {
+		// (GUARD4-ABSTAIN) The condition is CHECKED here rather than inferred from
+		// the fact that guard 4 runs fourth. If a future edit moves a load-bearing
+		// guard after this one, the axis goes back to refusing rather than quietly
+		// abstaining on a stack that has proved less than this comment claims.
+		const loadBearingPassed = LOAD_BEARING_GUARDS.every(
+			(guard) => evaluation[guard],
+		);
+		if (!loadBearingPassed || !ABSTAINING_GUARDS.includes("permission_axis")) {
+			return fail("permission_axis", screenMatch);
+		}
+		abstained.push("permission_axis");
+		deps.log({
+			event: "companion.guard.abstain",
+			guard: "permission_axis",
+			guardClass: GUARD_CLASSES.permission_axis,
+			// The two readings an abstain covers, kept apart: a latch the next hook
+			// event overwrote, versus a store this process could not read at all.
+			reading: permissionAxis === null ? "unreadable" : "clear",
+			loadBearing: [...LOAD_BEARING_GUARDS],
+			questionId: input.question.questionId,
+			terminalId: input.question.terminalId,
+		});
+	}
 	advance("permission_axis");
 
 	// --- guard 6: the .askq marker still exists (VETO ONLY) ---
@@ -2121,7 +2233,7 @@ export async function evaluateGuards(
 	if (!markerPresent) return fail("askq_marker", screenMatch);
 	advance("askq_marker");
 
-	return { evaluation, passed, failed: null, screenMatch };
+	return { evaluation, passed, abstained, failed: null, screenMatch };
 }
 
 // ---------------------------------------------------------------------------
