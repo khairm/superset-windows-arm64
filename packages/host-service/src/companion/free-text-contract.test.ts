@@ -3,33 +3,25 @@ import { encodeAnswer, KeystrokeEncodingError } from "./keystrokes";
 import type { AnswerItem, QuestionItem } from "./types";
 
 // ---------------------------------------------------------------------------
-// (FREETEXT-CONTRACT-BROKEN)
+// (FREETEXT-CONTRACT-REPROVEN)
 //
-// Established by driving the REAL installed claude-code (2.1.226) in a pty
-// through a headless emulator, twice, and reading the screen the guard would
-// read. The picker rendered:
+// The free-text shape was briefly refused outright, on a reading that a bare
+// digit on that row only moved the selection caret. The caret DID move and the
+// footer did gain "ctrl+g to edit in Notepad" — but that screen does not
+// distinguish "row focused" from "editor open": the option list stays rendered
+// either way, and that run never typed anything, so the conclusion rested on a
+// placeholder string that was expected and not seen.
 //
-//     ❯ 1. Yes
-//          Enable the first canary option for this run.
-//       2. Skip
-//          Leave the second canary option alone entirely.
-//       3. Type something.
-//     ─────────────────────────────────────────────────
-//       4. Chat about this
+// A later run drove the whole sequence against the installed 2.1.226 and the
+// agent's own `tool_result` came back carrying the typed text verbatim. That is
+// ground truth for a byte sequence in a way a screen reading is not, so the
+// original `[digit N+1, text, "\r"]` shape stands.
 //
-// Pressing a bare "3" did NOT open an inline editor. It moved the caret onto
-// row 3 and changed the footer to "... · ctrl+g to edit in Notepad · Esc to
-// cancel" — i.e. the row is FOCUSED, not opened. The fork's byte contract says
-// digit N+1 opens the editor, so `[digit, text, "\r"]` would type the answer
-// into a picker that is not accepting text and then commit whatever was focused.
-//
-// Until the real sequence is characterised, the shape is refused at the encoder.
-// It must be refused THERE and not merely blocked by guard 5's screen check,
-// because the label copy that guard 5 was tripping over has now been fixed —
-// and one bug is not allowed to be the containment for another.
+// What is still refused is refused for reasons nobody has driven either way:
+// multi-select free text, and free text on an N>1 prompt.
 // ---------------------------------------------------------------------------
 
-function singleSelectItem(): QuestionItem {
+function singleSelectItem(overrides: Partial<QuestionItem> = {}): QuestionItem {
 	return {
 		index: 0,
 		header: "Canary",
@@ -48,32 +40,63 @@ function singleSelectItem(): QuestionItem {
 			},
 		],
 		freeTextOption: { index: 2, label: "Type something." },
+		...overrides,
 	};
 }
 
-describe("(FREETEXT-CONTRACT-BROKEN) the free-text shape fails closed", () => {
-	it("refuses to encode a free-text answer as shape_unproven", () => {
-		const answers: AnswerItem[] = [
-			{ kind: "freetext", questionIndex: 0, text: "a written answer" },
-		];
-		let thrown: unknown;
-		try {
-			encodeAnswer([singleSelectItem()], answers);
-		} catch (error) {
-			thrown = error;
-		}
-		expect(thrown).toBeInstanceOf(KeystrokeEncodingError);
-		expect((thrown as KeystrokeEncodingError).reason).toBe("shape_unproven");
+describe("(FREETEXT-CONTRACT-REPROVEN) the proven shapes encode", () => {
+	it("free text is [digit N+1, text, submit]", () => {
+		const keystrokes = encodeAnswer(
+			[singleSelectItem()],
+			[{ kind: "freetext", questionIndex: 0, text: "a written answer" }],
+		);
+		expect(
+			keystrokes.map((keystroke) => ({
+				kind: keystroke.kind,
+				data: keystroke.data,
+			})),
+		).toEqual([
+			{ kind: "freetext_open", data: "3" },
+			{ kind: "freetext_body", data: "a written answer" },
+			{ kind: "submit_return", data: "\r" },
+		]);
 	});
 
-	it("still encodes an ordinary option press — one bare digit, no Enter", () => {
-		// The contract that IS still true on 2.1.226: the live desk answer landed a
-		// tool_result in ~2s from a single byte, so options 1..N are unaffected by
-		// the free-text refusal above.
+	it("an ordinary option press is one bare digit, no Enter", () => {
 		const keystrokes = encodeAnswer([singleSelectItem()], [
 			{ kind: "select", questionIndex: 0, optionIndex: 1 },
 		] as AnswerItem[]);
 		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual(["2"]);
-		expect(keystrokes).toHaveLength(1);
+	});
+});
+
+describe("(FREETEXT-CONTRACT-REPROVEN) shapes nobody has driven stay refused", () => {
+	it("refuses free text on a multi-select item", () => {
+		// The row IS rendered there ("Type something", no full stop) — the earlier
+		// comment claiming otherwise was refuted by the same pty run. It is refused
+		// because its editor was never driven, not because it is absent.
+		let thrown: unknown;
+		try {
+			encodeAnswer(
+				[singleSelectItem({ multiSelect: true })],
+				[{ kind: "freetext", questionIndex: 0, text: "anything" }],
+			);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(KeystrokeEncodingError);
+	});
+
+	it("refuses free text when the item has no derived slot", () => {
+		let thrown: unknown;
+		try {
+			encodeAnswer(
+				[singleSelectItem({ freeTextOption: null })],
+				[{ kind: "freetext", questionIndex: 0, text: "anything" }],
+			);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(KeystrokeEncodingError);
 	});
 });

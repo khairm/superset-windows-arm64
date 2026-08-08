@@ -73,13 +73,20 @@ import type { AnswerItem, QuestionItem } from "./types";
  * reading does support, kept separate on purpose so nothing can quietly upgrade
  * one into the other.
  */
-export const PROVEN_AGAINST = "claude-code@2.1.220";
+export const PROVEN_AGAINST = "claude-code@2.1.226";
 
 /**
- * The build whose RENDERED SHAPE has been read directly out of the installed
- * binary: the free-text labels below, and the row order
- * `[...options, freeText, chat?]` (the chat row context-gated and suppressed for
- * multi-select, carrying the sentinel `"__chat__"`).
+ * The build whose RENDERED SHAPE has been observed directly: the free-text labels
+ * below, and the row order `[...options, freeText, chat?]` with the chat row
+ * carrying the sentinel `"__chat__"`.
+ *
+ * REFUTED by a live pty run, and corrected here rather than left as folklore: a
+ * multi-select picker DOES render a free-text row ("Type something", no full
+ * stop) at N+1 and the chat row at N+2. The binary's `!mL.multiSelect` gate does
+ * not mean what the earlier comment claimed. Multi-select free text is still
+ * refused, but for the honest reason — its editor was never driven — and not
+ * because the row is absent. Chat-row context-gating is likewise unconfirmed, so
+ * nothing asserts its presence OR its absence.
  *
  * Strictly weaker than `PROVEN_AGAINST` and never a substitute for it. It exists
  * so the copy constants can cite what they are true of without implying the byte
@@ -122,10 +129,15 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 	},
 	{
 		version: "claude-code@2.1.226",
-		// Read out of the installed binary: `mL.multiSelect ? "Type something" :
-		// "Type something."` — the trailing full stop is real.
+		// Byte-exact, confirmed twice over: read out of the installed binary
+		// (`mL.multiSelect ? "Type something" : "Type something."`) and then seen
+		// rendered in a live pty. The trailing full stop is real.
 		freeTextRowLabel: "Type something.",
-		freeTextBytesProven: false,
+		// DRIVEN, not inferred: digit N+1 opened the inline editor, the text was
+		// typed, `\r` submitted, and the agent's own `tool_result` came back
+		// carrying that text verbatim. A `tool_result` is the only ground truth
+		// this contract accepts for a byte sequence.
+		freeTextBytesProven: true,
 	},
 ];
 
@@ -703,31 +715,20 @@ export function digitFor(optionIndex: number, itemIndex: number): string {
 }
 
 /**
- * (FREETEXT-CONTRACT-BROKEN) The free-text sequence in `encodeFreeTextOne` was
- * proven against claude-code@2.1.220 and is WRONG for the installed 2.1.226.
+ * (FREETEXT-CONTRACT-REPROVEN) The free-text sequence, re-driven on 2.1.226.
  *
- * Driving the real CLI in a pty (`tmp/refusal-2026-08-08/pty_canary_node.mjs`,
- * reproduced on two independent runs) shows that a bare digit on the free-text
- * row does NOT open the inline editor: it only moves the selection caret onto the
- * row, and the footer gains "ctrl+g to edit in Notepad". Opening the editor needs
- * a further keystroke this fork has not yet characterised.
+ * This was briefly refused outright on my reading that a bare digit on the
+ * free-text row only MOVED THE CARET — the caret did move onto the row and the
+ * footer gained "ctrl+g to edit in Notepad", which I took as "focused, not
+ * opened". That screen does not actually distinguish the two: the option list
+ * stays rendered either way, and I never typed, so the reading rested on a
+ * placeholder string I expected and did not see. A later run drove the WHOLE
+ * sequence and the agent's `tool_result` came back with the typed text verbatim,
+ * which settles it — the original `[digit N+1, text, "\r"]` shape is correct.
  *
- * `[digit, text, "\r"]` against that picker would therefore move the caret, feed
- * the answer text to a picker that is not accepting text, and then press Enter —
- * committing something nobody chose while discarding the user's actual answer.
- * That is the unrecoverable outcome §11 forbids guessing at.
- *
- * So the shape is refused here, by name, until it is re-proven. It was already
- * unreachable in practice, because guard 5 was rejecting the row on drifted label
- * copy as well — but relying on one bug to contain another is not containment:
- * fixing the label (independently correct, and now fixed) would have quietly
- * re-armed this.
- *
- * TO LIFT: drive the picker in a pty, establish the keystrokes that open and
- * submit the editor, update `encodeFreeTextOne` and `PROVEN_AGAINST` together,
- * and only then flip this.
+ * The lesson worth keeping: a missing needle is not evidence of a missing
+ * behaviour. Only a `tool_result` proves a byte sequence.
  */
-const FREE_TEXT_CONTRACT_PROVEN = false;
 
 /**
  * Intent -> the exact keystroke sequence. Pure: it touches no terminal, holds no
@@ -743,13 +744,6 @@ export function encodeAnswer(
 ): Keystroke[] {
 	validateAnswerItems(questions, answers);
 	const shape = classifyAnswerShape(questions, answers);
-
-	if (shape === "freetext_one" && !FREE_TEXT_CONTRACT_PROVEN) {
-		throw new KeystrokeEncodingError(
-			"shape_unproven",
-			"the free-text byte contract is known-wrong for the installed Claude Code: a bare digit on that row moves the caret instead of opening the editor, so the answer text would land in the picker and then be committed. Answer this one at the desk",
-		);
-	}
 
 	const keystrokes: Keystroke[] =
 		shape === "single_select_one"

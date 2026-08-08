@@ -1126,6 +1126,11 @@ function rowIsVerifiedEnough(input: {
 	to: number;
 }): boolean {
 	const option = input.options[input.row];
+	// The APPENDED free-text row has no entry in `options`. It is not verified by
+	// this tier at all: its evidence is the end-anchored match against the proven
+	// contract copy plus its placement inside this block, both already established
+	// by `verifyFreeTextRow`. Failing it here would refuse every free-text press.
+	if (input.row >= input.options.length) return true;
 	if (option === undefined) return false;
 	// Not the row being pressed: matching its digit is all that is asked of it.
 	// When the pressed digit names NO option (a toggle re-check, or the free-text

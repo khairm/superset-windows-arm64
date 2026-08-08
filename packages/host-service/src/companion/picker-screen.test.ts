@@ -108,7 +108,7 @@ const LIVE_ITEM: QuestionItem = {
 				"I'll produce a readable HTML sample (e.g. 30 pairs across homes) so you can see what they look like before deciding.",
 		},
 	],
-	freeTextOption: { index: 4, label: "Other" },
+	freeTextOption: { index: 4, label: "Type something." },
 };
 
 /**
@@ -278,13 +278,11 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 		).toBe(true);
 	});
 
-	it("the free-text row is version-gated, not matched against every version's copy", () => {
-		// (GUARD5-FREETEXT-PLACEMENT) LIVE_ITEM carries the label the fork's proven
-		// contract (2.1.220) derives, "Other". The captured screen is a 2.1.226
-		// render, which says "Type something." So the row is legitimately NOT found
-		// and the digit is refused — which is the honest outcome of a version
-		// mismatch, and is why the label must come from ONE versioned contract rather
-		// than a union of every version's copy.
+	it("the free-text digit matches the real row on the live capture", () => {
+		// (GUARD5-FREETEXT-PLACEMENT) The proven contract for the installed build
+		// derives "Type something.", which is exactly what this real 2.1.226 capture
+		// renders at digit 5 — so the free-text digit is answerable against real
+		// bytes. The negative below keeps the label doing work.
 		expect(
 			matchPickerScreen({
 				screen: LIVE_VIEWPORT,
@@ -296,6 +294,19 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 			matchPickerScreen({
 				screen: LIVE_VIEWPORT,
 				item: LIVE_ITEM,
+				requireOptionIndex: 4,
+			}),
+		).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+	});
+
+	it("a free-text label that is not the proven copy is refused", () => {
+		expect(
+			matchPickerScreen({
+				screen: LIVE_VIEWPORT,
+				item: {
+					...LIVE_ITEM,
+					freeTextOption: { index: 4, label: "Write your own answer" },
+				},
 				requireOptionIndex: 4,
 			}),
 		).toEqual({
