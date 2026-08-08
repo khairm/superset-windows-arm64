@@ -109,6 +109,10 @@ import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
 import { openPairingWindow, type PairingWindowHandle } from "./pairing";
 import { createPresenceStore, type PresenceStore } from "./presence";
 import {
+	logProvenVersionStatus,
+	resolveProvenVersionStatus,
+} from "./proven-version";
+import {
 	createPushSender,
 	handleRegister,
 	type PushFireVerdict,
@@ -1074,6 +1078,18 @@ export function createCompanionBridge(
 		logger.info(
 			`listening on http://${BRIDGE_HOST}:${BRIDGE_PORT} (app ${options.versions.appVersion}, fork ${options.versions.forkTag})`,
 		);
+		// (PROVEN-VERSION-DRIFT) Fire-and-forget on purpose: this is a diagnostic
+		// about the picker contract, and start() must neither wait on a file read
+		// nor fail because one threw. It reports; it never refuses.
+		void resolveProvenVersionStatus()
+			.then((status) => {
+				logProvenVersionStatus(status, (event) => {
+					logger.warn(JSON.stringify(event));
+				});
+			})
+			.catch(() => {
+				// Unknown is not drift; see `proven-version.ts`.
+			});
 	};
 
 	const stop = (reason = "requested"): Promise<void> =>

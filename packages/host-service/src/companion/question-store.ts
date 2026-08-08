@@ -75,6 +75,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
+import { FREE_TEXT_ROW_LABEL } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -395,8 +396,19 @@ function requireArray(value: unknown, field: string, max: number): unknown[] {
 	return value;
 }
 
-/** The one label this fork has a proven byte contract for. Bridge-owned. */
-const FREE_TEXT_OPTION_LABEL = "Other";
+/**
+ * (GUARD5-FREETEXT-COPY) The label the picker actually renders on its free-text
+ * row, owned by `keystrokes.ts` beside the byte contract and the build it was
+ * observed on.
+ *
+ * It used to be the local literal `"Other"`, which is what an older Claude Code
+ * rendered. Guard 5 matches this string against the screen before it presses the
+ * row's digit, so once the copy changed under us every free-text answer was
+ * refused with `row_absent`. Importing the shared constant is what makes the item
+ * the phone receives and the needle the matcher searches for incapable of
+ * disagreeing.
+ */
+const FREE_TEXT_OPTION_LABEL = FREE_TEXT_ROW_LABEL;
 
 /**
  * The picker's free-text slot, DERIVED — never accepted from the capture.

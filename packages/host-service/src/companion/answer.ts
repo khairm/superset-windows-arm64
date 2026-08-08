@@ -99,6 +99,7 @@ import {
 	type Keystroke,
 	KeystrokeEncodingError,
 	MESSAGE_ALLOWED_C0,
+	PROVEN_FREE_TEXT_LABELS,
 	type RawPtyWriter,
 	type RawWriteFn,
 	type ScreenExpectation,
@@ -584,7 +585,8 @@ export type PickerMatchReason =
 	| "anchor_too_weak"
 	| "row_absent"
 	| "rows_out_of_order"
-	| "row_gap_unexplained";
+	| "row_gap_unexplained"
+	| "freetext_row_conflict";
 
 export interface PickerScreenMatch {
 	ok: boolean;
@@ -801,16 +803,29 @@ export function matchPickerScreen(input: {
 	}
 
 	const freeText = input.item.freeTextOption;
-	if (
-		freeText !== null &&
-		input.requireOptionIndex === freeText.index &&
-		!screenShowsFreeTextRow(windows, freeText.index)
-	) {
-		missing.push(`freetext:${freeText.index}`);
+	let freeTextVerdict: FreeTextVerdict = "ok";
+	if (freeText !== null && input.requireOptionIndex === freeText.index) {
+		freeTextVerdict = verifyFreeTextRow({
+			windows,
+			item: input.item,
+			digitIndex: freeText.index,
+			rowWindows,
+		});
+		if (freeTextVerdict === "absent")
+			missing.push(`freetext:${freeText.index}`);
 	}
 
 	if (missing.length > 0) {
 		return { ok: false, reason: "row_absent", missing, digitMapped: true };
+	}
+
+	if (freeTextVerdict === "conflict") {
+		return {
+			ok: false,
+			reason: "freetext_row_conflict",
+			missing: [`freetext:${freeText?.index ?? 0}`],
+			digitMapped: true,
+		};
 	}
 
 	if (!rowsAreOrdered(rowWindows)) {
@@ -1103,17 +1118,58 @@ function rowIsStronglyVerified(input: {
  * contract, alongside `keystrokes.PROVEN_AGAINST`.
  */
 export const SCREEN_FREE_TEXT_LABELS: readonly string[] = [
-	"Type something.",
-	"Type something",
+	PROVEN_FREE_TEXT_LABELS.singleSelect,
+	PROVEN_FREE_TEXT_LABELS.multiSelect,
 ];
 
-function screenShowsFreeTextRow(
+/**
+ * (GUARD5-FREETEXT-COPY) Where the free-text row is on screen, if it is.
+ *
+ * Proven copy is necessary but not sufficient. Two structural conditions come
+ * with it, because the digit is about to be pressed and the row it lands on has
+ * to be the EDITOR SLOT and not something else wearing that digit:
+ *
+ *   - it must sit at or below the last option row, i.e. it CONTINUES the picker
+ *     block rather than appearing above it or in some unrelated render;
+ *   - no option of this item may also match at that digit. If one does, the
+ *     capture and the screen disagree about the numbering — the row is a real
+ *     option — and pressing it would submit an answer nobody chose instead of
+ *     opening an editor.
+ */
+function freeTextRowWindows(
 	windows: readonly string[],
 	digitIndex: number,
-): boolean {
-	return SCREEN_FREE_TEXT_LABELS.some(
-		(label) => screenRowWindows(windows, digitIndex, label).length > 0,
-	);
+): number[] {
+	const hits = new Set<number>();
+	for (const label of SCREEN_FREE_TEXT_LABELS) {
+		for (const hit of screenRowWindows(windows, digitIndex, label)) {
+			hits.add(hit);
+		}
+	}
+	return [...hits].sort((a, b) => a - b);
+}
+
+type FreeTextVerdict = "ok" | "absent" | "conflict";
+
+function verifyFreeTextRow(input: {
+	windows: readonly string[];
+	item: QuestionItem;
+	digitIndex: number;
+	rowWindows: readonly number[][];
+}): FreeTextVerdict {
+	const hits = freeTextRowWindows(input.windows, input.digitIndex);
+	if (hits.length === 0) return "absent";
+	for (const option of input.item.options) {
+		if (
+			screenRowWindows(input.windows, input.digitIndex, option.label).length > 0
+		) {
+			return "conflict";
+		}
+	}
+	const lastOptionRow = input.rowWindows[input.rowWindows.length - 1] ?? [];
+	const earliestLastOption = lastOptionRow[0];
+	if (earliestLastOption === undefined) return "conflict";
+	return hits.some((hit) => hit >= earliestLastOption) ? "ok" : "conflict";
 }
 
 /**

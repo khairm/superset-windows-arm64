@@ -59,8 +59,65 @@ import type { AnswerItem, QuestionItem } from "./types";
  * The Claude Code build the contract above was proven against. A canary test
  * per Claude Code upgrade is this module's obligation (PROTOCOL §11.1); this
  * constant is what that test reports against.
+ *
+ * (PROVEN-VERSION-DRIFT) `proven-version.ts` compares this against the CLI that
+ * is actually installed and reports a mismatch on the bridge's status surface. It
+ * does NOT refuse anything: drift is a prompt to re-prove the contract, and a
+ * bridge that refused every answer the day after a Claude Code auto-update would
+ * be a worse failure than the drift it was warning about.
+ *
+ * DO NOT advance this constant on the strength of reading the CLI's source. The
+ * BYTES — that one bare digit still selects and submits, that digit N+1 opens the
+ * editor, that `\r` submits it — are behaviour, and only a live pty shows
+ * behaviour. `RENDER_OBSERVED_AGAINST` below is the weaker claim that source
+ * reading does support, kept separate on purpose so nothing can quietly upgrade
+ * one into the other.
  */
 export const PROVEN_AGAINST = "claude-code@2.1.220";
+
+/**
+ * The build whose RENDERED SHAPE has been read directly out of the installed
+ * binary: the free-text labels below, and the row order
+ * `[...options, freeText, chat?]` (the chat row context-gated and suppressed for
+ * multi-select, carrying the sentinel `"__chat__"`).
+ *
+ * Strictly weaker than `PROVEN_AGAINST` and never a substitute for it. It exists
+ * so the copy constants can cite what they are true of without implying the byte
+ * contract was re-driven.
+ */
+export const RENDER_OBSERVED_AGAINST = "claude-code@2.1.226";
+
+/**
+ * (GUARD5-FREETEXT-COPY) The free-text row's label AS THE PICKER RENDERS IT.
+ *
+ * This module owns it because it is the same KIND of fact as the byte contract
+ * above — an observation about a specific Claude Code build that has to be
+ * re-proven when that build changes — and because two consumers must never
+ * disagree about it: `question-store.deriveFreeTextOption` puts it on the item,
+ * and `answer.matchPickerScreen` looks for it on screen.
+ *
+ * Read out of the installed binary rather than guessed off a screenshot:
+ *
+ *     const psh = mL.multiSelect ? "Type something" : "Type something."
+ *
+ * The trailing full stop on the single-select variant is real and load-bearing;
+ * a matcher pinned to the wrong one refuses every free-text answer, which is
+ * exactly what the previous value ("Other" — the copy from an older build) did.
+ *
+ * `multiSelect` is carried for completeness and is unreachable today, because
+ * `deriveFreeTextOption` returns `null` for a multi-select item: that shape's
+ * free-text behaviour has never been proven in a pty and is refused rather than
+ * guessed. The inline editor's own placeholder ("Type something…", with U+2026)
+ * is deliberately NOT here — it renders after the row has been pressed, so it is
+ * never evidence that the row is there to press.
+ */
+export const PROVEN_FREE_TEXT_LABELS = {
+	singleSelect: "Type something.",
+	multiSelect: "Type something",
+} as const;
+
+/** The one variant the bridge can currently drive. */
+export const FREE_TEXT_ROW_LABEL = PROVEN_FREE_TEXT_LABELS.singleSelect;
 
 // ---------------------------------------------------------------------------
 // raw bytes
@@ -602,6 +659,33 @@ export function digitFor(optionIndex: number, itemIndex: number): string {
 }
 
 /**
+ * (FREETEXT-CONTRACT-BROKEN) The free-text sequence in `encodeFreeTextOne` was
+ * proven against claude-code@2.1.220 and is WRONG for the installed 2.1.226.
+ *
+ * Driving the real CLI in a pty (`tmp/refusal-2026-08-08/pty_canary_node.mjs`,
+ * reproduced on two independent runs) shows that a bare digit on the free-text
+ * row does NOT open the inline editor: it only moves the selection caret onto the
+ * row, and the footer gains "ctrl+g to edit in Notepad". Opening the editor needs
+ * a further keystroke this fork has not yet characterised.
+ *
+ * `[digit, text, "\r"]` against that picker would therefore move the caret, feed
+ * the answer text to a picker that is not accepting text, and then press Enter —
+ * committing something nobody chose while discarding the user's actual answer.
+ * That is the unrecoverable outcome §11 forbids guessing at.
+ *
+ * So the shape is refused here, by name, until it is re-proven. It was already
+ * unreachable in practice, because guard 5 was rejecting the row on drifted label
+ * copy as well — but relying on one bug to contain another is not containment:
+ * fixing the label (independently correct, and now fixed) would have quietly
+ * re-armed this.
+ *
+ * TO LIFT: drive the picker in a pty, establish the keystrokes that open and
+ * submit the editor, update `encodeFreeTextOne` and `PROVEN_AGAINST` together,
+ * and only then flip this.
+ */
+const FREE_TEXT_CONTRACT_PROVEN = false;
+
+/**
  * Intent -> the exact keystroke sequence. Pure: it touches no terminal, holds no
  * lock and has no side effects, so every failure here is provably
  * "nothing was written".
@@ -615,6 +699,13 @@ export function encodeAnswer(
 ): Keystroke[] {
 	validateAnswerItems(questions, answers);
 	const shape = classifyAnswerShape(questions, answers);
+
+	if (shape === "freetext_one" && !FREE_TEXT_CONTRACT_PROVEN) {
+		throw new KeystrokeEncodingError(
+			"shape_unproven",
+			"the free-text byte contract is known-wrong for the installed Claude Code: a bare digit on that row moves the caret instead of opening the editor, so the answer text would land in the picker and then be committed. Answer this one at the desk",
+		);
+	}
 
 	const keystrokes: Keystroke[] =
 		shape === "single_select_one"

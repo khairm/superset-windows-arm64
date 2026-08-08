@@ -53,6 +53,10 @@ import type { CompanionBridge } from "../../../companion";
 import { PANIC_REASON_MAX_CHARS } from "../../../companion/limits";
 import type { PairingWindowHandle } from "../../../companion/pairing";
 import {
+	type ProvenVersionStatus,
+	resolveProvenVersionStatus,
+} from "../../../companion/proven-version";
+import {
 	type CompanionBridgeStatus,
 	getCompanionBridge,
 	readCompanionBridgeStatus,
@@ -203,6 +207,17 @@ export interface CompanionGateStatus {
 	bridgeRunning: boolean;
 	/** Live pairings (revoked-but-retained records excluded). 0 unless running. */
 	pairedDeviceCount: number;
+	/**
+	 * (PROVEN-VERSION-DRIFT) Whether the installed Claude Code is the build the
+	 * AskUserQuestion picker contract was proven against.
+	 *
+	 * Always present, like everything else here, so a consumer cannot silently
+	 * read `undefined` as "fine". `installed: null` means the CLI could not be
+	 * located, and `mismatch` is then FALSE — unknown is not drift. Nothing about
+	 * this field refuses an answer; it exists so the drift is VISIBLE rather than
+	 * discovered by a user being refused.
+	 */
+	pickerContract: ProvenVersionStatus;
 }
 
 export const companionRouter = router({
@@ -238,6 +253,7 @@ export const companionRouter = router({
 			bridgeRunning: running,
 			pairedDeviceCount:
 				running && bridge ? await bridge.pairedDeviceCount() : 0,
+			pickerContract: await resolveProvenVersionStatus(),
 		};
 	}),
 
