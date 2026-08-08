@@ -56,10 +56,12 @@
  *     supplied, and it requires the matching `tool_use` block to be positively
  *     observed before it will report "still unanswered". Reading a hook-named
  *     file made "point it at an empty file" a way to pass guard 1 on demand;
- *   - guard 5's anchors have a MINIMUM LENGTH and its rows must be a contiguous
- *     ascending band (`SCREEN_MIN_ANCHOR_CHARS`, `rowsFormAscendingBand`).
- *     Without those, a capture with one-character labels reduced the check to a
- *     two-character substring search that an idle composer satisfied.
+ *   - guard 5's anchors have a MINIMUM LENGTH and its rows must form one picker
+ *     block — ascending digit order, every gap between consecutive rows
+ *     explained by the render of the option above it (`SCREEN_MIN_ANCHOR_CHARS`,
+ *     `rowsFormPickerBlock`). Without those, a capture with one-character labels
+ *     reduced the check to a two-character substring search that an idle
+ *     composer satisfied.
  * Do not weaken either without replacing it with something equally mechanical.
  *
  * Guard 6 (`askq_marker`) is a VETO, never proof: markers leak (17 stale, oldest
@@ -122,6 +124,7 @@ import {
 	type MessageResponse,
 	type QuestionId,
 	type QuestionItem,
+	type QuestionOption,
 	type RequestId,
 	SealedError,
 	type SealedRequestContext,
@@ -539,15 +542,38 @@ export const SCREEN_ROW_DECORATION_MAX_CHARS = 6;
 export const SCREEN_MIN_ANCHOR_CHARS = 8;
 
 /**
- * (GUARD5-ANCHOR) How far apart the first and last matched option rows may be,
- * measured in screen-line windows, beyond the number of rows themselves.
+ * (GUARD5-PICKER-GEOMETRY) How many screen-line windows two consecutive option
+ * rows may be apart with NO further explanation — pure wrap slack.
  *
- * A picker renders its options as CONSECUTIVE lines. Without this, the matcher
- * accepted rows scattered anywhere in the viewport in any order, so unrelated
- * text that happened to contain each needle somewhere satisfied it. Rows must
- * now appear in ascending digit order inside one contiguous band.
+ * A row that is not followed by description text sits directly above the next
+ * row, give or take the emulator wrapping a long label and the odd blank
+ * separator line. Anything wider than this has to be explained by the option's
+ * own rendered description; see `gapIsExplained`.
  */
-export const SCREEN_ROW_BAND_SLACK = 3;
+export const SCREEN_ROW_ADJACENT_SLACK = 3;
+
+/**
+ * (GUARD5-PICKER-GEOMETRY) Squashed prefix of an option's DESCRIPTION used as
+ * the on-screen anchor that explains the gap below its row.
+ *
+ * A prefix rather than the whole string because the picker hard-wraps the
+ * description and may ellipsise its tail; the opening survives both. Longer
+ * than the label anchor because a description is prose and a 16-character
+ * opening ("same rule as the ") is a weaker discriminator than 16 characters of
+ * a label.
+ */
+export const SCREEN_DESCRIPTION_ANCHOR_CHARS = 24;
+
+/**
+ * (GUARD5-PICKER-GEOMETRY) The narrowest terminal the row-gap budget assumes.
+ *
+ * The budget converts a description's length into the number of screen lines it
+ * may legitimately occupy, and the matcher does not know the real column count.
+ * Assuming a narrow terminal makes the budget an UPPER bound at every real
+ * width — the wrong direction to be wrong in is refusing a wide, honestly
+ * rendered picker.
+ */
+export const SCREEN_MIN_ASSUMED_COLS = 24;
 
 export type PickerMatchReason =
 	| "match"
@@ -555,7 +581,8 @@ export type PickerMatchReason =
 	| "anchor_absent"
 	| "anchor_too_weak"
 	| "row_absent"
-	| "rows_out_of_order";
+	| "rows_out_of_order"
+	| "row_gap_unexplained";
 
 export interface PickerScreenMatch {
 	ok: boolean;
@@ -733,17 +760,16 @@ function matchPromptOnScreen(input: {
  *   - an anchor below `SCREEN_MIN_ANCHOR_CHARS` is not evidence at all
  *     (`anchor_too_weak`), so a one-character label can no longer collapse the
  *     row test into "does `<digit><char>` occur anywhere";
- *   - EVERY option row must be present — already true — AND they must appear in
- *     ascending digit order inside one contiguous band of screen lines
- *     (`rows_out_of_order`), which is how a picker actually renders and is not
- *     something scattered unrelated text satisfies;
+ *   - EVERY option row must be present — already true — AND the rows must form
+ *     one PICKER BLOCK (`rows_out_of_order` / `row_gap_unexplained`), which is
+ *     the structural property defined on `rowsFormPickerBlock` below;
  *   - the free-text label is bridge-owned (`validateCapture` derives it), so the
  *     one row whose anchor is legitimately short is not caller-chosen.
  *
- * NOT YET CANARIED against real Claude Code picker output — the row-decoration
- * allowance, the anchor lengths and the band slack above are the knobs a canary
- * test would tune. Until that test exists this matcher is expected to be
- * over-strict, which is the safe direction.
+ * (GUARD5-PICKER-GEOMETRY) CANARIED against a real Claude Code picker: the
+ * fixture in `picker-screen.test.ts` is an unedited 120-column viewport captured
+ * off the live emulator through this guard's own snapshot path, plus renders of
+ * the same prompt at 80 and 100 columns.
  */
 export function matchPickerScreen(input: {
 	screen: string;
@@ -800,7 +826,7 @@ export function matchPickerScreen(input: {
 		return { ok: false, reason: "row_absent", missing, digitMapped: true };
 	}
 
-	if (!rowsFormAscendingBand(rowWindows)) {
+	if (!rowsAreOrdered(rowWindows)) {
 		return {
 			ok: false,
 			reason: "rows_out_of_order",
@@ -808,48 +834,160 @@ export function matchPickerScreen(input: {
 			digitMapped: true,
 		};
 	}
+	if (
+		!rowsFormPickerBlock({
+			rowWindows,
+			options: input.item.options,
+			windows,
+		})
+	) {
+		return {
+			ok: false,
+			reason: "row_gap_unexplained",
+			missing: ["row_block"],
+			digitMapped: true,
+		};
+	}
 	return { ok: true, reason: "match", missing: [], digitMapped: true };
 }
 
 /**
- * (GUARD5-ANCHOR) Can the matched rows be assigned window indices that are
- * non-decreasing in digit order and span at most `rows + SCREEN_ROW_BAND_SLACK`
- * windows?
+ * (GUARD5-PICKER-GEOMETRY) Can the matched rows be assigned window indices that
+ * are non-decreasing in digit order?
  *
  * Windows overlap by design (`SCREEN_LINE_WINDOW`), so two adjacent rows can
  * legitimately match the SAME window — hence non-decreasing rather than strictly
- * increasing. Greedy from each possible start, because taking the earliest hit
- * for row 0 can strand a later row that only appears further down.
+ * increasing. Taking the earliest hit for each row in turn is optimal here
+ * because ordering alone has no upper bound: no earlier choice can strand a
+ * later row that a later choice would have reached.
  */
-function rowsFormAscendingBand(rowWindows: readonly number[][]): boolean {
-	const first = rowWindows[0];
-	if (first === undefined) return false;
-	const span = rowWindows.length + SCREEN_ROW_BAND_SLACK;
-	for (const start of first) {
-		let cursor = start;
-		let ok = true;
-		for (let i = 1; i < rowWindows.length; i += 1) {
-			const hits = rowWindows[i];
-			if (hits === undefined) return false;
-			const next = hits.find((w) => w >= cursor && w - start <= span);
-			if (next === undefined) {
-				ok = false;
+function rowsAreOrdered(rowWindows: readonly number[][]): boolean {
+	let cursor = 0;
+	for (const hits of rowWindows) {
+		const next = hits.find((window) => window >= cursor);
+		if (next === undefined) return false;
+		cursor = next;
+	}
+	return true;
+}
+
+/**
+ * (GUARD5-PICKER-GEOMETRY) THE INVARIANT: the matched rows are one picker block
+ * — every gap between consecutive option rows is accounted for by the render of
+ * the option above it.
+ *
+ * A gap is admissible when EITHER it is small enough to be wrap slack
+ * (`SCREEN_ROW_ADJACENT_SLACK`), OR the preceding option's own description is
+ * rendered inside it AND the gap fits the number of lines that description can
+ * occupy (`descriptionLineBudget`).
+ *
+ * Why not simply "the rows sit inside one narrow band": a real Claude Code
+ * picker renders each option's DESCRIPTION under its row, wrapped, so four
+ * options span ten or more screen lines and no band that admits that is worth
+ * anything. Explaining each gap is the stronger property anyway. A band asks
+ * only "are these close together"; this asks "is the space between row N and
+ * row N+1 filled by the text option N is supposed to be showing" — which forged
+ * or unrelated content does not satisfy even when it is dense, and which an
+ * honest picker satisfies at any column width.
+ *
+ * Rows are still permitted to share a window, and the LAST row's trailing region
+ * is not examined: there is no following row to bound it, and requiring the last
+ * description to be fully on screen would refuse a picker whose footer has
+ * scrolled — a refusal that buys nothing, because every row's presence and every
+ * earlier gap has already been proven.
+ *
+ * The search is exhaustive over row placements rather than greedy: an upper
+ * bound on a gap means an earlier hit for row N can strand row N+1 where a later
+ * hit would have fitted, so committing to the first placement would refuse
+ * honest pickers whose digits also appear elsewhere on screen (an N-question
+ * prompt restarts at 1 for every question).
+ */
+function rowsFormPickerBlock(input: {
+	rowWindows: readonly number[][];
+	options: readonly QuestionOption[];
+	windows: readonly string[];
+}): boolean {
+	const { rowWindows, options, windows } = input;
+	const last = rowWindows.length - 1;
+	if (last < 0) return false;
+	/** `row:window` -> can the rows BELOW `row` be placed from here. */
+	const memo = new Map<string, boolean>();
+	const placeable = (row: number, at: number): boolean => {
+		if (row === last) return true;
+		const key = `${row}:${at}`;
+		const cached = memo.get(key);
+		if (cached !== undefined) return cached;
+		let ok = false;
+		for (const next of rowWindows[row + 1] ?? []) {
+			if (next < at) continue;
+			if (
+				!gapIsExplained({ windows, option: options[row], from: at, to: next })
+			) {
+				continue;
+			}
+			if (placeable(row + 1, next)) {
+				ok = true;
 				break;
 			}
-			cursor = next;
 		}
-		if (ok) return true;
+		memo.set(key, ok);
+		return ok;
+	};
+	return (rowWindows[0] ?? []).some((start) => placeable(0, start));
+}
+
+/**
+ * (GUARD5-PICKER-GEOMETRY) Is the space between `option`'s row and the next
+ * option's row explained by `option`'s own render?
+ *
+ * An option with no description — or one too short to be evidence — gets only
+ * the wrap-slack allowance, which is how such a picker actually renders. It is
+ * never given the benefit of the doubt on a wide gap.
+ */
+function gapIsExplained(input: {
+	windows: readonly string[];
+	option: QuestionOption | undefined;
+	from: number;
+	to: number;
+}): boolean {
+	if (input.to - input.from <= SCREEN_ROW_ADJACENT_SLACK) return true;
+	const option = input.option;
+	if (option === undefined) return false;
+	const anchor = anchorOf(option.description, SCREEN_DESCRIPTION_ANCHOR_CHARS);
+	if (anchor.length < SCREEN_MIN_ANCHOR_CHARS) return false;
+	if (input.to - input.from > descriptionLineBudget(option.description)) {
+		return false;
+	}
+	for (let i = input.from; i < input.to; i += 1) {
+		if (input.windows[i]?.includes(anchor) === true) return true;
 	}
 	return false;
 }
 
 /**
+ * (GUARD5-PICKER-GEOMETRY) How many screen-line windows a description of this
+ * length may occupy, at the narrowest width the matcher is willing to assume,
+ * plus the wrap slack the row itself is allowed.
+ *
+ * This is what keeps "the description is somewhere in the gap" from admitting an
+ * arbitrarily wide gap: a caller cannot claim more room than the text it must
+ * also put on screen can fill.
+ */
+function descriptionLineBudget(description: string): number {
+	return (
+		Math.ceil(squash(description).length / SCREEN_MIN_ASSUMED_COLS) +
+		SCREEN_ROW_ADJACENT_SLACK
+	);
+}
+
+/**
  * Which screen-line windows contain `<digit><=6 decoration chars><label anchor>`.
  *
- * Returns the indices rather than a boolean so the caller can also check that
- * the rows are in ascending digit order inside one band — a picker renders its
- * options as consecutive lines, and "each needle is somewhere on screen" is a
- * much weaker claim than "these rows are rendered as a list".
+ * Returns ALL the indices rather than a boolean, because the caller then has to
+ * choose a placement per row that satisfies `rowsFormPickerBlock` — "each needle
+ * is somewhere on screen" is a much weaker claim than "these rows are rendered
+ * as one list", and a row's digit can legitimately appear more than once (an
+ * N-question prompt restarts its numbering for every question).
  */
 function screenRowWindows(
 	windows: readonly string[],
