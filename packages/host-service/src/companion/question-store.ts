@@ -75,7 +75,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import { FREE_TEXT_ROW_LABEL } from "./keystrokes";
+import { provenPickerContract } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -397,18 +397,22 @@ function requireArray(value: unknown, field: string, max: number): unknown[] {
 }
 
 /**
- * (GUARD5-FREETEXT-COPY) The label the picker actually renders on its free-text
- * row, owned by `keystrokes.ts` beside the byte contract and the build it was
- * observed on.
+ * (PICKER-CONTRACT-VERSIONED) The free-text row's label for the build the byte
+ * contract is proven against — `null` when that build has no proven free-text
+ * sequence, or is not a build this fork has observed at all.
  *
- * It used to be the local literal `"Other"`, which is what an older Claude Code
- * rendered. Guard 5 matches this string against the screen before it presses the
- * row's digit, so once the copy changed under us every free-text answer was
- * refused with `row_absent`. Importing the shared constant is what makes the item
- * the phone receives and the needle the matcher searches for incapable of
- * disagreeing.
+ * `null` propagates to `freeTextOption: null`, which makes the slot absent
+ * everywhere at once: the phone is not offered it, the encoder is never asked for
+ * it, and guard 5 never looks for its row. That single source is the point. The
+ * label used to be a local literal `"Other"` here while the matcher searched for
+ * a different build's copy, so the item the phone received and the needle the
+ * screen check used could disagree — and did.
  */
-const FREE_TEXT_OPTION_LABEL = FREE_TEXT_ROW_LABEL;
+function freeTextRowLabel(): string | null {
+	const contract = provenPickerContract();
+	if (contract === null) return null;
+	return contract.freeTextBytesProven ? contract.freeTextRowLabel : null;
+}
 
 /**
  * The picker's free-text slot, DERIVED — never accepted from the capture.
@@ -431,7 +435,9 @@ function deriveFreeTextOption(
 ): QuestionItem["freeTextOption"] {
 	if (multiSelect) return null;
 	if (questionCount !== 1) return null;
-	return { index: optionCount, label: FREE_TEXT_OPTION_LABEL };
+	const label = freeTextRowLabel();
+	if (label === null) return null;
+	return { index: optionCount, label };
 }
 
 /**

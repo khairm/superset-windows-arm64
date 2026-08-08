@@ -88,36 +88,61 @@ export const PROVEN_AGAINST = "claude-code@2.1.220";
 export const RENDER_OBSERVED_AGAINST = "claude-code@2.1.226";
 
 /**
- * (GUARD5-FREETEXT-COPY) The free-text row's label AS THE PICKER RENDERS IT.
+ * (PICKER-CONTRACT-VERSIONED) One entry per Claude Code build the fork has
+ * OBSERVED, owning both halves of the contract for that build: the bytes, and the
+ * exact copy the free-text row renders.
  *
- * This module owns it because it is the same KIND of fact as the byte contract
- * above — an observation about a specific Claude Code build that has to be
- * re-proven when that build changes — and because two consumers must never
- * disagree about it: `question-store.deriveFreeTextOption` puts it on the item,
- * and `answer.matchPickerScreen` looks for it on screen.
+ * The two halves have to live together and be keyed by version, because they were
+ * briefly not: the free-text labels pinned 2.1.226's "Type something." while
+ * `PROVEN_AGAINST` declared 2.1.220, whose row reads "Other". One of the two was
+ * always going to be false, and on the build whose bytes the fork claims to drive
+ * the row would never have been found at all.
  *
- * Read out of the installed binary rather than guessed off a screenshot:
+ * `freeTextBytesProven` is per version for the same reason: 2.1.220's free-text
+ * sequence was driven in a pty and worked; 2.1.226's does NOT (a bare digit
+ * focuses the row instead of opening the editor — see FREE_TEXT_CONTRACT_PROVEN).
  *
- *     const psh = mL.multiSelect ? "Type something" : "Type something."
- *
- * The trailing full stop on the single-select variant is real and load-bearing;
- * a matcher pinned to the wrong one refuses every free-text answer, which is
- * exactly what the previous value ("Other" — the copy from an older build) did.
- *
- * `multiSelect` is carried for completeness and is unreachable today, because
- * `deriveFreeTextOption` returns `null` for a multi-select item: that shape's
- * free-text behaviour has never been proven in a pty and is refused rather than
- * guessed. The inline editor's own placeholder ("Type something…", with U+2026)
- * is deliberately NOT here — it renders after the row has been pressed, so it is
- * never evidence that the row is there to press.
+ * An UNKNOWN version resolves to `null` and everything downstream fails closed.
+ * To add a build: append an entry with what a pty run actually showed, and move
+ * `PROVEN_AGAINST` only if its bytes were re-driven.
  */
-export const PROVEN_FREE_TEXT_LABELS = {
-	singleSelect: "Type something.",
-	multiSelect: "Type something",
-} as const;
+export interface PickerContract {
+	version: string;
+	/** The label the free-text row renders, exactly, on this build. */
+	freeTextRowLabel: string;
+	/** Whether `[digit N+1, text, "\r"]` was driven in a pty on this build. */
+	freeTextBytesProven: boolean;
+}
 
-/** The one variant the bridge can currently drive. */
-export const FREE_TEXT_ROW_LABEL = PROVEN_FREE_TEXT_LABELS.singleSelect;
+export const PICKER_CONTRACTS: readonly PickerContract[] = [
+	{
+		version: "claude-code@2.1.220",
+		freeTextRowLabel: "Other",
+		freeTextBytesProven: true,
+	},
+	{
+		version: "claude-code@2.1.226",
+		// Read out of the installed binary: `mL.multiSelect ? "Type something" :
+		// "Type something."` — the trailing full stop is real.
+		freeTextRowLabel: "Type something.",
+		freeTextBytesProven: false,
+	},
+];
+
+export function pickerContractFor(version: string): PickerContract | null {
+	return (
+		PICKER_CONTRACTS.find((contract) => contract.version === version) ?? null
+	);
+}
+
+/**
+ * The contract for the build the byte sequences are proven against. This is what
+ * the answer path drives, so it is what `question-store` derives the free-text
+ * row's label from.
+ */
+export function provenPickerContract(): PickerContract | null {
+	return pickerContractFor(PROVEN_AGAINST);
+}
 
 // ---------------------------------------------------------------------------
 // raw bytes

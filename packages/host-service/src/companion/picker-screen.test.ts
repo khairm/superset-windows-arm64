@@ -278,11 +278,13 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 		).toBe(true);
 	});
 
-	it("the free-text row is only required when its own digit is pressed", () => {
-		// (GUARD5-FREETEXT-COPY) The live picker renders its free-text slot as
-		// "Type something.", not the bridge-derived "Other" that the item carries,
-		// so the row is matched against the copy read out of the Claude Code binary
-		// rather than against `freeTextOption.label`.
+	it("the free-text row is version-gated, not matched against every version's copy", () => {
+		// (GUARD5-FREETEXT-PLACEMENT) LIVE_ITEM carries the label the fork's proven
+		// contract (2.1.220) derives, "Other". The captured screen is a 2.1.226
+		// render, which says "Type something." So the row is legitimately NOT found
+		// and the digit is refused — which is the honest outcome of a version
+		// mismatch, and is why the label must come from ONE versioned contract rather
+		// than a union of every version's copy.
 		expect(
 			matchPickerScreen({
 				screen: LIVE_VIEWPORT,
@@ -296,7 +298,28 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 				item: LIVE_ITEM,
 				requireOptionIndex: 4,
 			}),
-		).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+		).toEqual({
+			ok: false,
+			reason: "row_absent",
+			missing: ["freetext:4"],
+			digitMapped: true,
+		});
+	});
+
+	it("matches when the last option row is the final line of the viewport", () => {
+		// Regression: every line must be able to START a window, or a picker whose
+		// last row sits on the last line is refused once rows are line-anchored.
+		const subject = item();
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			"  1. Retire the duplicates",
+			"  2. Escalate to the owner",
+			"  3. Do nothing today",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 2 }).ok,
+		).toBe(true);
 	});
 
 	it("short labels — the live 'Skip' refusal — answer on their descriptions", () => {
@@ -388,6 +411,163 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 				matchPickerScreen({ screen, item: subject, requireOptionIndex: 1 }).ok,
 			).toBe(true);
 		}
+	});
+});
+
+describe("(GUARD5-MATCHED-BUDGET) reviewer findings", () => {
+	const HAN =
+		"该选项会立即停用所有重复的用药记录并生成一份完整的审计报告供您在批准之前仔细检查每一项内容";
+
+	it("a CJK description wraps to twice as many lines and still matches", () => {
+		// (GUARD5-CELL-WIDTH) 46 Han characters are 46 code units but 92 cells, so a
+		// length-based budget under-counted the real rendered lines and refused.
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: HAN },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [` ☐ ${subject.header} `, "", "  1. Retire the duplicates"];
+		// 20 Han per line = 40 cells, the honest wrap at ~46 columns.
+		for (let i = 0; i < HAN.length; i += 20) {
+			lines.push(`     ${HAN.slice(i, i + 20)}`);
+		}
+		lines.push("  2. Escalate to the owner");
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("a narrow viewport (~30 cells) still matches", () => {
+		const description =
+			"Retire the exact same-product twins and prepare the approval brief.";
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. Retire the",
+			"     duplicates",
+		];
+		for (const chunk of description.match(/.{1,24}/g) ?? []) {
+			lines.push(`    ${chunk}`);
+		}
+		lines.push("  2. Escalate to the");
+		lines.push("     owner");
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).ok,
+		).toBe(true);
+	});
+
+	it("a tab-indented description still matches", () => {
+		const description = "Retire the twins and prepare the approval brief.";
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const screen = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. Retire the duplicates",
+			`\t${description}`,
+			"  2. Escalate to the owner",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }).ok,
+		).toBe(true);
+	});
+
+	it("a CLAIMED long description cannot buy a gap it has not rendered", () => {
+		// (GUARD5-MATCHED-BUDGET) The capture may claim thousands of characters while
+		// putting only a short prefix on screen. The budget is derived from what is
+		// MATCHED, so the claim buys nothing.
+		const onScreen = "Retire the exact same-product twins now.";
+		const subject = item({
+			options: [
+				{
+					index: 0,
+					label: "Retire the duplicates",
+					description: `${onScreen} ${"padding that is nowhere on the screen ".repeat(80)}`,
+				},
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. Retire the duplicates",
+			`     ${onScreen}`,
+		];
+		for (let i = 0; i < 25; i += 1) lines.push(FILLER);
+		lines.push("  2. Escalate to the owner");
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).reason,
+		).toBe("row_gap_unexplained");
+	});
+
+	it("prose that merely contains a number is not a row", () => {
+		// (GUARD5-ROW-ANCHOR) "then step 2. Then do X" used to satisfy row 2.
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description: "" },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const screen = [
+			" ☐ Duplicate pairs ",
+			"",
+			"  1. Retire the duplicates",
+			"  I ran step 2. Escalate to the owner was not chosen by anyone",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 1 }),
+		).toEqual({
+			ok: false,
+			reason: "row_absent",
+			missing: ["option:1"],
+			digitMapped: true,
+		});
+	});
+
+	it("the NEXT row's line cannot supply the previous row's description", () => {
+		// The gap region is strictly between the two row lines, so a description
+		// rendered on the next row's own line does not explain the gap above it.
+		const description = "Retire the exact same-product twins now and report.";
+		const subject = item({
+			options: [
+				{ index: 0, label: "Retire the duplicates", description },
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const lines = [" ☐ Duplicate pairs ", "", "  1. Retire the duplicates"];
+		for (let i = 0; i < 6; i += 1) lines.push(FILLER);
+		// The description sits on the SAME line as row 2, not in the gap.
+		lines.push(`  2. Escalate to the owner ${description}`);
+		expect(
+			matchPickerScreen({
+				screen: lines.join("\n"),
+				item: subject,
+				requireOptionIndex: 0,
+			}).reason,
+		).toBe("row_gap_unexplained");
 	});
 });
 

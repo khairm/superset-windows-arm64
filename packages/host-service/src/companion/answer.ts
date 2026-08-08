@@ -99,7 +99,6 @@ import {
 	type Keystroke,
 	KeystrokeEncodingError,
 	MESSAGE_ALLOWED_C0,
-	PROVEN_FREE_TEXT_LABELS,
 	type RawPtyWriter,
 	type RawWriteFn,
 	type ScreenExpectation,
@@ -567,17 +566,6 @@ export const SCREEN_ROW_ADJACENT_SLACK = 3;
  */
 export const SCREEN_DESCRIPTION_ANCHOR_CHARS = 24;
 
-/**
- * (GUARD5-PICKER-GEOMETRY) The narrowest terminal the row-gap budget assumes.
- *
- * The budget converts a description's length into the number of screen lines it
- * may legitimately occupy, and the matcher does not know the real column count.
- * Assuming a narrow terminal makes the budget an UPPER bound at every real
- * width — the wrong direction to be wrong in is refusing a wide, honestly
- * rendered picker.
- */
-export const SCREEN_MIN_ASSUMED_COLS = 24;
-
 export type PickerMatchReason =
 	| "match"
 	| "empty_screen"
@@ -633,7 +621,14 @@ function squashedWindows(
 	const lines = screen.split("\n");
 	if (lines.length <= windowLines) return [squash(screen)];
 	const windows: string[] = [];
-	for (let i = 0; i + 1 < lines.length; i += 1) {
+	// EVERY line starts a window, including the last one (whose window is just
+	// itself). Stopping a line early left the final line unable to START a window,
+	// which was invisible while the row pattern was an unanchored substring search
+	// — the row could still be found inside the previous line's window — and became
+	// a refusal the moment (GUARD5-ROW-ANCHOR) required the row to begin its
+	// window. A picker whose last option is the last line of the viewport is
+	// ordinary, not suspicious.
+	for (let i = 0; i < lines.length; i += 1) {
 		windows.push(squash(lines.slice(i, i + windowLines).join("")));
 	}
 	return windows;
@@ -772,7 +767,7 @@ function matchPromptOnScreen(input: {
  *     the structural property defined on `rowsFormPickerBlock` below;
  *   - the free-text row is matched against bridge-owned copy read out of the
  *     Claude Code binary, never against a caller-supplied label
- *     (`SCREEN_FREE_TEXT_LABELS`).
+ *     (`question-store.deriveFreeTextOption`).
  *
  * (GUARD5-PICKER-GEOMETRY) CANARIED against a real Claude Code picker: the
  * fixture in `picker-screen.test.ts` is an unedited 120-column viewport captured
@@ -792,6 +787,13 @@ export function matchPickerScreen(input: {
 	});
 	if (!prologue.ok) return prologue.failure;
 	const windows = prologue.windows;
+	/**
+	 * The raw lines. The gap rule works on LINES rather than on the overlapping
+	 * two-line windows, because a window that starts on the last gap line also
+	 * contains the NEXT ROW's line — which let that row's own text be counted as
+	 * the previous row's description.
+	 */
+	const lines = input.screen.split("\n");
 
 	const missing: string[] = [];
 	/** Per option, the screen-line windows its digit-mapped row appears in. */
@@ -803,29 +805,28 @@ export function matchPickerScreen(input: {
 	}
 
 	const freeText = input.item.freeTextOption;
-	let freeTextVerdict: FreeTextVerdict = "ok";
+	let freeTextWindows: number[] | null = null;
 	if (freeText !== null && input.requireOptionIndex === freeText.index) {
-		freeTextVerdict = verifyFreeTextRow({
+		const verdict = verifyFreeTextRow({
 			windows,
+			lines,
 			item: input.item,
 			digitIndex: freeText.index,
-			rowWindows,
 		});
-		if (freeTextVerdict === "absent")
-			missing.push(`freetext:${freeText.index}`);
+		if (verdict.kind === "absent") missing.push(`freetext:${freeText.index}`);
+		if (verdict.kind === "conflict") {
+			return {
+				ok: false,
+				reason: "freetext_row_conflict",
+				missing: [`freetext:${freeText.index}`],
+				digitMapped: true,
+			};
+		}
+		if (verdict.kind === "found") freeTextWindows = verdict.windows;
 	}
 
 	if (missing.length > 0) {
 		return { ok: false, reason: "row_absent", missing, digitMapped: true };
-	}
-
-	if (freeTextVerdict === "conflict") {
-		return {
-			ok: false,
-			reason: "freetext_row_conflict",
-			missing: [`freetext:${freeText?.index ?? 0}`],
-			digitMapped: true,
-		};
 	}
 
 	if (!rowsAreOrdered(rowWindows)) {
@@ -862,7 +863,10 @@ export function matchPickerScreen(input: {
 		rowWindows,
 		options: input.item.options,
 		windows,
+		lines,
+		cols: derivedCols(lines),
 		requireOptionIndex: input.requireOptionIndex,
+		freeTextWindows,
 	});
 	if (block !== "ok") {
 		return {
@@ -943,10 +947,25 @@ function rowsFormPickerBlock(input: {
 	rowWindows: readonly number[][];
 	options: readonly QuestionOption[];
 	windows: readonly string[];
+	lines: readonly string[];
+	cols: number;
 	requireOptionIndex: number | null;
+	/**
+	 * (GUARD5-FREETEXT-PLACEMENT) Where the free-text row was found, when its digit
+	 * is the one being pressed. It is appended to the chain as a FINAL row so it has
+	 * to sit inside the SAME accepted placement as the options — a viewport-wide
+	 * "is it anywhere below the last row" test let a truncated capture point the
+	 * digit at a real option further down the real picker.
+	 */
+	freeTextWindows: readonly number[] | null;
 }): "ok" | "gap" | "evidence" {
-	const { rowWindows, options, windows, requireOptionIndex } = input;
-	const last = rowWindows.length - 1;
+	const { rowWindows, options, windows, lines, cols, requireOptionIndex } =
+		input;
+	const chain: readonly (readonly number[])[] =
+		input.freeTextWindows === null
+			? rowWindows
+			: [...rowWindows, input.freeTextWindows];
+	const last = chain.length - 1;
 	if (last < 0) return "gap";
 	/**
 	 * Whether any placement satisfied the gap rule but failed only on evidence.
@@ -973,10 +992,16 @@ function rowsFormPickerBlock(input: {
 			});
 			if (!ok) blockedOnEvidence = true;
 		} else {
-			for (const next of rowWindows[row + 1] ?? []) {
+			for (const next of chain[row + 1] ?? []) {
 				if (next < at) continue;
 				if (
-					!gapIsExplained({ windows, option: options[row], from: at, to: next })
+					!gapIsExplained({
+						lines,
+						cols,
+						option: options[row],
+						from: at,
+						to: next,
+					})
 				) {
 					continue;
 				}
@@ -1002,7 +1027,7 @@ function rowsFormPickerBlock(input: {
 		memo.set(key, ok);
 		return ok;
 	};
-	if ((rowWindows[0] ?? []).some((start) => placeable(0, start))) return "ok";
+	if ((chain[0] ?? []).some((start) => placeable(0, start))) return "ok";
 	return blockedOnEvidence ? "evidence" : "gap";
 }
 
@@ -1117,71 +1142,151 @@ function rowIsStronglyVerified(input: {
  * upstream-owned and has drifted once, that refusal is the signal to re-prove the
  * contract, alongside `keystrokes.PROVEN_AGAINST`.
  */
-export const SCREEN_FREE_TEXT_LABELS: readonly string[] = [
-	PROVEN_FREE_TEXT_LABELS.singleSelect,
-	PROVEN_FREE_TEXT_LABELS.multiSelect,
-];
-
 /**
- * (GUARD5-FREETEXT-COPY) Where the free-text row is on screen, if it is.
+ * (GUARD5-FREETEXT-PLACEMENT) Where the free-text row is, if it is on screen.
  *
- * Proven copy is necessary but not sufficient. Two structural conditions come
- * with it, because the digit is about to be pressed and the row it lands on has
- * to be the EDITOR SLOT and not something else wearing that digit:
+ * The label comes from `item.freeTextOption.label`, which `question-store`
+ * DERIVES from the versioned picker contract for the Claude Code that is actually
+ * installed — never from the capture, and never from a union of every version's
+ * copy. A union was wrong in a way that mattered: pinning 2.1.226's
+ * "Type something." while the byte contract declared 2.1.220 (whose row read
+ * "Other") meant one of the two was always going to be false, and on the version
+ * whose bytes we claim to drive the row would never be found.
  *
- *   - it must sit at or below the last option row, i.e. it CONTINUES the picker
- *     block rather than appearing above it or in some unrelated render;
- *   - no option of this item may also match at that digit. If one does, the
- *     capture and the screen disagree about the numbering — the row is a real
- *     option — and pressing it would submit an answer nobody chose instead of
- *     opening an editor.
+ * The match is END-BOUNDED, not a prefix search: a REAL option whose label merely
+ * BEGINS with the free-text copy would otherwise satisfy this and the digit would
+ * select it. The row must be the whole label and nothing more.
  */
 function freeTextRowWindows(
 	windows: readonly string[],
+	lines: readonly string[],
 	digitIndex: number,
+	label: string,
 ): number[] {
-	const hits = new Set<number>();
-	for (const label of SCREEN_FREE_TEXT_LABELS) {
-		for (const hit of screenRowWindows(windows, digitIndex, label)) {
-			hits.add(hit);
-		}
+	const anchor = squash(label);
+	if (anchor.length === 0) return [];
+	const digit = digitIndex + 1;
+	const pattern = new RegExp(
+		`^[^0-9a-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[^a-z0-9]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${escapeRegExp(anchor)}$`,
+	);
+	const hits: number[] = [];
+	for (let i = 0; i < lines.length; i += 1) {
+		// The LINE, not a two-line window: `$` has to mean end of the row, and a
+		// window would let the next line's text sit past the label and still match.
+		if (pattern.test(squash(lines[i] ?? ""))) hits.push(i);
 	}
-	return [...hits].sort((a, b) => a - b);
+	return hits.filter((hit) => hit < windows.length);
 }
 
-type FreeTextVerdict = "ok" | "absent" | "conflict";
+type FreeTextVerdict =
+	| { kind: "not_pressed" }
+	| { kind: "absent" }
+	| { kind: "conflict" }
+	| { kind: "found"; windows: number[] };
 
 function verifyFreeTextRow(input: {
 	windows: readonly string[];
+	lines: readonly string[];
 	item: QuestionItem;
 	digitIndex: number;
-	rowWindows: readonly number[][];
 }): FreeTextVerdict {
-	const hits = freeTextRowWindows(input.windows, input.digitIndex);
-	if (hits.length === 0) return "absent";
+	const freeText = input.item.freeTextOption;
+	if (freeText === null) return { kind: "absent" };
+	const hits = freeTextRowWindows(
+		input.windows,
+		input.lines,
+		input.digitIndex,
+		freeText.label,
+	);
+	if (hits.length === 0) return { kind: "absent" };
+	// A real option wearing this digit means the capture and the screen disagree
+	// about the numbering; pressing it would submit an answer nobody chose.
 	for (const option of input.item.options) {
 		if (
 			screenRowWindows(input.windows, input.digitIndex, option.label).length > 0
 		) {
-			return "conflict";
+			return { kind: "conflict" };
 		}
 	}
-	const lastOptionRow = input.rowWindows[input.rowWindows.length - 1] ?? [];
-	const earliestLastOption = lastOptionRow[0];
-	if (earliestLastOption === undefined) return "conflict";
-	return hits.some((hit) => hit >= earliestLastOption) ? "ok" : "conflict";
+	return { kind: "found", windows: hits };
 }
 
 /**
- * (GUARD5-PICKER-GEOMETRY) Is the space between `option`'s row and the next
- * option's row explained by `option`'s own render?
+ * (GUARD5-CELL-WIDTH) Width of `text` in TERMINAL CELLS, not code units.
  *
- * An option with no description — or one too short to be evidence — gets only
- * the wrap-slack allowance, which is how such a picker actually renders. It is
- * never given the benefit of the doubt on a wide gap.
+ * Every wrap estimate here is really a question about how many screen lines a
+ * string occupies, and that is measured in cells. `String.length` gets it wrong
+ * in both directions: a CJK ideograph is one code unit and TWO cells, so 80 Han
+ * characters occupy 160 cells and wrap to twice as many lines as a length-based
+ * estimate predicts — which refused honest CJK pickers as `row_gap_unexplained`
+ * — while a combining mark is one code unit and zero cells.
+ *
+ * Deliberately a small wcwidth rather than a dependency: the ranges below are the
+ * ones that occur in picker text (CJK, Hangul, Kana, fullwidth forms, emoji
+ * presentation), and being approximate is acceptable because the result only ever
+ * bounds a gap. A tab is counted as `TAB_CELLS` because the emulator has already
+ * expanded it by the time the snapshot is read.
  */
+const TAB_CELLS = 8;
+
+function cellWidth(codePoint: number): number {
+	if (codePoint === 0x09) return TAB_CELLS;
+	// Combining marks and zero-width joiners occupy no cell.
+	if (
+		(codePoint >= 0x0300 && codePoint <= 0x036f) ||
+		codePoint === 0x200b ||
+		codePoint === 0x200d ||
+		codePoint === 0xfe0f
+	) {
+		return 0;
+	}
+	if (
+		(codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
+		(codePoint >= 0x2e80 && codePoint <= 0xa4cf) || // CJK radicals .. Yi
+		(codePoint >= 0xac00 && codePoint <= 0xd7a3) || // Hangul syllables
+		(codePoint >= 0xf900 && codePoint <= 0xfaff) || // CJK compatibility
+		(codePoint >= 0xfe30 && codePoint <= 0xfe6f) || // CJK compatibility forms
+		(codePoint >= 0xff00 && codePoint <= 0xff60) || // Fullwidth forms
+		(codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+		(codePoint >= 0x1f300 && codePoint <= 0x1f64f) || // emoji
+		(codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+		(codePoint >= 0x20000 && codePoint <= 0x3fffd)
+	) {
+		return 2;
+	}
+	return 1;
+}
+
+export function displayWidth(text: string): number {
+	let width = 0;
+	for (const character of text) {
+		width += cellWidth(character.codePointAt(0) ?? 0);
+	}
+	return width;
+}
+
+/**
+ * (GUARD5-CELL-WIDTH) The terminal's usable width, derived FROM THE SCREEN.
+ *
+ * The matcher is not given the column count, and it must not take one from the
+ * caller — a wide claimed width would shrink every wrap estimate and buy the
+ * caller bigger gaps. The widest rendered line is a sound screen-derived
+ * estimate, floored so a nearly-empty viewport cannot drive the estimate to zero
+ * and divide by it.
+ */
+const MIN_DERIVED_COLS = 20;
+
+function derivedCols(lines: readonly string[]): number {
+	let widest = 0;
+	for (const line of lines) {
+		const width = displayWidth(line);
+		if (width > widest) widest = width;
+	}
+	return Math.max(widest, MIN_DERIVED_COLS);
+}
 function gapIsExplained(input: {
-	windows: readonly string[];
+	lines: readonly string[];
+	cols: number;
 	option: QuestionOption | undefined;
 	from: number;
 	to: number;
@@ -1189,35 +1294,75 @@ function gapIsExplained(input: {
 	if (input.to - input.from <= SCREEN_ROW_ADJACENT_SLACK) return true;
 	const option = input.option;
 	if (option === undefined) return false;
-	const anchor = anchorOf(option.description, SCREEN_DESCRIPTION_ANCHOR_CHARS);
-	if (anchor.length < SCREEN_MIN_ANCHOR_CHARS) return false;
-	if (input.to - input.from > descriptionLineBudget(option.description)) {
-		return false;
-	}
-	for (let i = input.from; i < input.to; i += 1) {
-		if (input.windows[i]?.includes(anchor) === true) return true;
-	}
-	return false;
-}
 
-/**
- * (GUARD5-PICKER-GEOMETRY) How many screen-line windows a description of this
- * length may occupy, at the narrowest width the matcher is willing to assume,
- * plus the wrap slack the row itself is allowed.
- *
- * This is what keeps "the description is somewhere in the gap" from admitting an
- * arbitrarily wide gap: a caller cannot claim more room than the text it must
- * also put on screen can fill.
- */
-function descriptionLineBudget(description: string): number {
-	return (
-		Math.ceil(squash(description).length / SCREEN_MIN_ASSUMED_COLS) +
-		SCREEN_ROW_ADJACENT_SLACK
+	// The region STRICTLY BETWEEN the two row lines. Both row lines are excluded:
+	// including the next row's line let that row's own text supply the previous
+	// row's description anchor, which is the overlap the 2-line windows introduced
+	// and is exactly backwards — the point is to explain the space between them.
+	const between = input.lines.slice(input.from + 1, input.to);
+	if (between.length === 0) return false;
+	const betweenText = squash(between.join(""));
+
+	// How much of the description is ACTUALLY on screen here. The budget is
+	// derived from this and never from `option.description.length`: the capture
+	// may claim thousands of characters while putting a two-line prefix on screen,
+	// and a claim-derived budget therefore bought a viewport-sized gap for free.
+	const matched = matchedDescriptionPrefix(option.description, betweenText);
+	if (matched < SCREEN_MIN_ANCHOR_CHARS) return false;
+
+	// Cells, not code units, and the screen's own width — see (GUARD5-CELL-WIDTH).
+	const matchedCells = displayWidth(
+		squash(option.description).slice(0, matched),
 	);
+	const budget =
+		Math.ceil(matchedCells / input.cols) + SCREEN_ROW_ADJACENT_SLACK;
+	return input.to - input.from <= budget;
 }
 
 /**
- * Which screen-line windows contain `<digit><=6 decoration chars><label anchor>`.
+ * (GUARD5-MATCHED-BUDGET) The longest prefix of `description` (squashed) that
+ * actually appears in `betweenText`, in characters.
+ *
+ * Binary search rather than a scan: `includes` is monotone in the prefix length —
+ * if a prefix of length n is absent, every longer one is too — so the boundary is
+ * findable in log steps, which keeps this cheap enough to run per candidate row
+ * placement.
+ *
+ * A PREFIX specifically, because that is what a rendered description is: the
+ * picker wraps it from the start and may ellipsise the tail, so the opening is the
+ * part guaranteed to be there if any of it is.
+ */
+function matchedDescriptionPrefix(
+	description: string,
+	betweenText: string,
+): number {
+	const squashed = squash(description);
+	if (squashed.length === 0) return 0;
+	if (!betweenText.includes(squashed.slice(0, SCREEN_MIN_ANCHOR_CHARS))) {
+		return 0;
+	}
+	let low = SCREEN_MIN_ANCHOR_CHARS;
+	let high = squashed.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (betweenText.includes(squashed.slice(0, mid))) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return low;
+}
+
+/**
+ * Which screen lines OPEN with `<decoration><digit><=6 decoration><label anchor>`.
+ *
+ * LINE-ANCHORED (`^`). Without the anchor this was a substring search over a
+ * squashed two-line window, so ordinary prose containing a number matched a row:
+ * "…then step 2. Then do X" satisfied row 2, and any agent output that happens to
+ * enumerate something could stand in for a picker. A row is a LINE that begins
+ * with its digit, and windows already start at a line boundary, so anchoring the
+ * pattern to the window start is exactly "the line starts with this row".
  *
  * Returns ALL the indices rather than a boolean, because the caller then has to
  * choose a placement per row that satisfies `rowsFormPickerBlock` — "each needle
@@ -1234,7 +1379,7 @@ function screenRowWindows(
 	if (anchor.length === 0) return [];
 	const digit = optionIndex + 1;
 	const pattern = new RegExp(
-		`${digit}[^a-z0-9]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${escapeRegExp(anchor)}`,
+		`^[^0-9a-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[^a-z0-9]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${escapeRegExp(anchor)}`,
 	);
 	const hits: number[] = [];
 	for (let i = 0; i < windows.length; i += 1) {
