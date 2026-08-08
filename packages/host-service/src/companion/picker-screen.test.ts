@@ -279,9 +279,10 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 	});
 
 	it("the free-text row is only required when its own digit is pressed", () => {
-		// The live picker renders its free-text slot as "Type something.", not as
-		// the bridge-derived "Other" — so pressing that digit is refused (below),
-		// while every real option still answers.
+		// (GUARD5-FREETEXT-COPY) The live picker renders its free-text slot as
+		// "Type something.", not the bridge-derived "Other" that the item carries,
+		// so the row is matched against the copy read out of the Claude Code binary
+		// rather than against `freeTextOption.label`.
 		expect(
 			matchPickerScreen({
 				screen: LIVE_VIEWPORT,
@@ -295,12 +296,64 @@ describe("(GUARD5-PICKER-GEOMETRY) honest pickers that must pass", () => {
 				item: LIVE_ITEM,
 				requireOptionIndex: 4,
 			}),
-		).toEqual({
-			ok: false,
-			reason: "row_absent",
-			missing: ["freetext:4"],
-			digitMapped: true,
+		).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+	});
+
+	it("short labels — the live 'Skip' refusal — answer on their descriptions", () => {
+		// The round-2 live failure: four options, the fourth just "Skip", refused
+		// with anchor_too_weak / option:3 — a row the user was not even pressing.
+		const subject = item({
+			header: "Dup pairs",
+			options: [
+				{
+					index: 0,
+					label: "Yes",
+					description:
+						"Retire the exact same-product twins now and prepare the approval brief with counts.",
+				},
+				{
+					index: 1,
+					label: "No",
+					description:
+						"Leave every pair in place; new duplicates cannot accumulate any more anyway.",
+				},
+				{
+					index: 2,
+					label: "Later",
+					description:
+						"Revisit this after the clinical review of the 1,091 swept rows has landed.",
+				},
+				{
+					index: 3,
+					label: "Skip",
+					description:
+						"Do not ask again for this resident; move straight on to the next home.",
+				},
+			],
 		});
+		const screen = renderPicker(subject, 100).join("\n");
+		for (const requireOptionIndex of [0, 1, 2, 3]) {
+			expect(
+				matchPickerScreen({ screen, item: subject, requireOptionIndex }),
+			).toEqual({ ok: true, reason: "match", missing: [], digitMapped: true });
+		}
+	});
+
+	it("a trailing 'Chat about this' row does not disturb options 1..N", () => {
+		// Read out of the CLI: rows are [...options, freetext, chat?], the chat row
+		// is context-gated and carries the sentinel "__chat__", so it neither shifts
+		// a digit nor is answerable. Unknown trailing rows must be tolerated.
+		const subject = item({ freeTextOption: { index: 3, label: "Other" } });
+		const screen = [
+			...renderPicker(subject, 100),
+			"  5. Chat about this",
+			"  6. Some row a later Claude Code invented",
+		].join("\n");
+		for (const requireOptionIndex of [0, 1, 2]) {
+			expect(
+				matchPickerScreen({ screen, item: subject, requireOptionIndex }).ok,
+			).toBe(true);
+		}
 	});
 
 	it("an N-question prompt, where the digits restart for every question", () => {
@@ -487,22 +540,113 @@ describe("(GUARD5-PICKER-GEOMETRY) screens that must still be refused", () => {
 	});
 
 	it("a real screen answered with an item carrying one-character labels", () => {
+		// (GUARD5-EVIDENCE-TIERS) The rows are deliberately PRESENT here, so the
+		// only thing left to refuse on is the pressed row's evidence — this is the
+		// forgery the anchor floor was built for, and it is still refused.
 		const subject = item({
 			options: [
 				{ index: 0, label: "A", description: "" },
 				{ index: 1, label: "B", description: "" },
 			],
 		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			subject.question,
+			"",
+			"  1. A",
+			"  2. B",
+			"",
+			"> ",
+		].join("\n");
 		expect(
-			matchPickerScreen({
-				screen: LIVE_VIEWPORT,
-				item: { ...subject, header: LIVE_ITEM.header },
-				requireOptionIndex: 0,
-			}),
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }),
 		).toEqual({
 			ok: false,
 			reason: "anchor_too_weak",
-			missing: ["option:0", "option:1"],
+			missing: ["option:0"],
+			digitMapped: true,
+		});
+	});
+
+	it("a short label whose description is NOT on screen", () => {
+		// The description is the substitute for a weak label, so it has to actually
+		// be rendered. Claiming one that is absent must not answer.
+		const subject = item({
+			options: [
+				{
+					index: 0,
+					label: "Yes",
+					description: "Retire every duplicate pair across all 45 homes now.",
+				},
+				{ index: 1, label: "Escalate to the owner", description: "" },
+			],
+		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			subject.question,
+			"",
+			"  1. Yes",
+			"  2. Escalate to the owner",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 0 }),
+		).toEqual({
+			ok: false,
+			reason: "anchor_too_weak",
+			missing: ["option:0"],
+			digitMapped: true,
+		});
+		// ...while the strongly-labelled sibling is still answerable on the same
+		// screen, because the tier applies to the row being pressed.
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 1 }).ok,
+		).toBe(true);
+	});
+
+	it("an all-weak item with no digit pressed anchors on nothing", () => {
+		const subject = item({
+			options: [
+				{ index: 0, label: "A", description: "" },
+				{ index: 1, label: "B", description: "" },
+			],
+		});
+		const screen = [
+			` ☐ ${subject.header} `,
+			"",
+			subject.question,
+			"",
+			"  1. A",
+			"  2. B",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: null }),
+		).toEqual({
+			ok: false,
+			reason: "anchor_too_weak",
+			missing: ["row_evidence"],
+			digitMapped: true,
+		});
+	});
+
+	it("a free-text digit pressed against copy the fork has never proven", () => {
+		const subject = item({
+			options: LIVE_ITEM.options.slice(0, 2),
+			freeTextOption: { index: 2, label: "Other" },
+		});
+		const screen = [
+			...renderPicker(subject, 100).filter(
+				(line) => !line.includes("Type something"),
+			),
+			"  3. Write your own answer",
+		].join("\n");
+		expect(
+			matchPickerScreen({ screen, item: subject, requireOptionIndex: 2 }),
+		).toEqual({
+			ok: false,
+			reason: "row_absent",
+			missing: ["freetext:2"],
 			digitMapped: true,
 		});
 	});

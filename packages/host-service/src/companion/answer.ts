@@ -56,12 +56,14 @@
  *     supplied, and it requires the matching `tool_use` block to be positively
  *     observed before it will report "still unanswered". Reading a hook-named
  *     file made "point it at an empty file" a way to pass guard 1 on demand;
- *   - guard 5's anchors have a MINIMUM LENGTH and its rows must form one picker
- *     block — ascending digit order, every gap between consecutive rows
- *     explained by the render of the option above it (`SCREEN_MIN_ANCHOR_CHARS`,
- *     `rowsFormPickerBlock`). Without those, a capture with one-character labels
- *     reduced the check to a two-character substring search that an idle
- *     composer satisfied.
+ *   - guard 5 requires the row it is about to PRESS to be strongly verified and
+ *     the rows to form one picker block — ascending digit order, every gap
+ *     between consecutive rows explained by the render of the option above it
+ *     (`rowIsStronglyVerified`, `rowsFormPickerBlock`). Without those, a capture
+ *     with one-character labels reduced the check to a two-character substring
+ *     search that an idle composer satisfied. The strength requirement is tiered
+ *     by role rather than applied to every row, because upstream's own tool
+ *     schema asks for labels of "1-5 words" — see (GUARD5-EVIDENCE-TIERS).
  * Do not weaken either without replacing it with something equally mechanical.
  *
  * Guard 6 (`askq_marker`) is a VETO, never proof: markers leak (17 stale, oldest
@@ -757,14 +759,18 @@ function matchPromptOnScreen(input: {
  * (GUARD5-ANCHOR) Every needle here comes from the CAPTURE, and the capture
  * arrives on the unauthenticated localhost hook. Three properties keep that from
  * making the guard attacker-parameterised:
- *   - an anchor below `SCREEN_MIN_ANCHOR_CHARS` is not evidence at all
- *     (`anchor_too_weak`), so a one-character label can no longer collapse the
- *     row test into "does `<digit><char>` occur anywhere";
+ *   - the row being PRESSED must be strongly verified — a label anchor clearing
+ *     `SCREEN_MIN_ANCHOR_CHARS`, or its own description rendered in its region of
+ *     the screen (`anchor_too_weak`). A one-character label still cannot collapse
+ *     the check into "does `<digit><char>` occur anywhere"; what changed in
+ *     (GUARD5-EVIDENCE-TIERS) is that the requirement now falls on the row whose
+ *     digit is about to be typed instead of on all of them;
  *   - EVERY option row must be present — already true — AND the rows must form
  *     one PICKER BLOCK (`rows_out_of_order` / `row_gap_unexplained`), which is
  *     the structural property defined on `rowsFormPickerBlock` below;
- *   - the free-text label is bridge-owned (`validateCapture` derives it), so the
- *     one row whose anchor is legitimately short is not caller-chosen.
+ *   - the free-text row is matched against bridge-owned copy read out of the
+ *     Claude Code binary, never against a caller-supplied label
+ *     (`SCREEN_FREE_TEXT_LABELS`).
  *
  * (GUARD5-PICKER-GEOMETRY) CANARIED against a real Claude Code picker: the
  * fixture in `picker-screen.test.ts` is an unedited 120-column viewport captured
@@ -785,22 +791,6 @@ export function matchPickerScreen(input: {
 	if (!prologue.ok) return prologue.failure;
 	const windows = prologue.windows;
 
-	// (GUARD5-ANCHOR) Weak option anchors are refused BEFORE any screen search,
-	// so a short label can never be the thing that made the guard pass.
-	const weak = input.item.options.filter(
-		(option) =>
-			anchorOf(option.label, SCREEN_OPTION_ANCHOR_CHARS).length <
-			SCREEN_MIN_ANCHOR_CHARS,
-	);
-	if (weak.length > 0) {
-		return {
-			ok: false,
-			reason: "anchor_too_weak",
-			missing: weak.map((option) => `option:${option.index}`),
-			digitMapped: true,
-		};
-	}
-
 	const missing: string[] = [];
 	/** Per option, the screen-line windows its digit-mapped row appears in. */
 	const rowWindows: number[][] = [];
@@ -814,10 +804,7 @@ export function matchPickerScreen(input: {
 	if (
 		freeText !== null &&
 		input.requireOptionIndex === freeText.index &&
-		// The free-text label is bridge-derived, not caller-chosen, so it is
-		// exempt from the anchor floor — but it must still be on screen at its
-		// own digit before that digit is pressed.
-		screenRowWindows(windows, freeText.index, freeText.label).length === 0
+		!screenShowsFreeTextRow(windows, freeText.index)
 	) {
 		missing.push(`freetext:${freeText.index}`);
 	}
@@ -834,17 +821,42 @@ export function matchPickerScreen(input: {
 			digitMapped: true,
 		};
 	}
+	// (GUARD5-EVIDENCE-TIERS) No digit is being pressed (a multi-select toggle
+	// re-check), so no single row is load-bearing — but the block must still be
+	// anchored by SOMETHING more than a run of one-character labels, or an item of
+	// weak anchors could confirm a picker on evidence none of its rows carry.
 	if (
-		!rowsFormPickerBlock({
-			rowWindows,
-			options: input.item.options,
-			windows,
-		})
+		input.requireOptionIndex === null &&
+		!input.item.options.some((option) =>
+			rowIsStronglyVerified({
+				option,
+				windows,
+				from: 0,
+				to: windows.length,
+			}),
+		)
 	) {
 		return {
 			ok: false,
-			reason: "row_gap_unexplained",
-			missing: ["row_block"],
+			reason: "anchor_too_weak",
+			missing: ["row_evidence"],
+			digitMapped: true,
+		};
+	}
+	const block = rowsFormPickerBlock({
+		rowWindows,
+		options: input.item.options,
+		windows,
+		requireOptionIndex: input.requireOptionIndex,
+	});
+	if (block !== "ok") {
+		return {
+			ok: false,
+			reason: block === "gap" ? "row_gap_unexplained" : "anchor_too_weak",
+			missing:
+				block === "gap"
+					? ["row_block"]
+					: [`option:${input.requireOptionIndex ?? 0}`],
 			digitMapped: true,
 		};
 	}
@@ -901,39 +913,207 @@ function rowsAreOrdered(rowWindows: readonly number[][]): boolean {
  * hit would have fitted, so committing to the first placement would refuse
  * honest pickers whose digits also appear elsewhere on screen (an N-question
  * prompt restarts at 1 for every question).
+ *
+ * (GUARD5-EVIDENCE-TIERS) The PRESSED row additionally has to be STRONGLY
+ * verified at the placement the accepted block uses — see `rowIsStronglyVerified`
+ * for what that means and why the requirement lands here rather than as a
+ * pre-filter over every row.
+ *
+ * Returns which property failed, because the two are different accidents: `gap`
+ * means the rows are not one block, `evidence` means the block is fine but the
+ * one row this keystroke is about to press is not pinned down well enough to
+ * press it.
  */
 function rowsFormPickerBlock(input: {
 	rowWindows: readonly number[][];
 	options: readonly QuestionOption[];
 	windows: readonly string[];
-}): boolean {
-	const { rowWindows, options, windows } = input;
+	requireOptionIndex: number | null;
+}): "ok" | "gap" | "evidence" {
+	const { rowWindows, options, windows, requireOptionIndex } = input;
 	const last = rowWindows.length - 1;
-	if (last < 0) return false;
+	if (last < 0) return "gap";
+	/**
+	 * Whether any placement satisfied the gap rule but failed only on evidence.
+	 * Tracked so a refusal names the property that actually blocked it.
+	 */
+	let blockedOnEvidence = false;
 	/** `row:window` -> can the rows BELOW `row` be placed from here. */
 	const memo = new Map<string, boolean>();
 	const placeable = (row: number, at: number): boolean => {
-		if (row === last) return true;
 		const key = `${row}:${at}`;
 		const cached = memo.get(key);
 		if (cached !== undefined) return cached;
 		let ok = false;
-		for (const next of rowWindows[row + 1] ?? []) {
-			if (next < at) continue;
-			if (
-				!gapIsExplained({ windows, option: options[row], from: at, to: next })
-			) {
-				continue;
-			}
-			if (placeable(row + 1, next)) {
-				ok = true;
-				break;
+		if (row === last) {
+			// The last row's region runs to the end of the screen: there is no
+			// following row to bound it.
+			ok = rowIsVerifiedEnough({
+				options,
+				windows,
+				requireOptionIndex,
+				row,
+				from: at,
+				to: windows.length,
+			});
+			if (!ok) blockedOnEvidence = true;
+		} else {
+			for (const next of rowWindows[row + 1] ?? []) {
+				if (next < at) continue;
+				if (
+					!gapIsExplained({ windows, option: options[row], from: at, to: next })
+				) {
+					continue;
+				}
+				if (
+					!rowIsVerifiedEnough({
+						options,
+						windows,
+						requireOptionIndex,
+						row,
+						from: at,
+						to: next,
+					})
+				) {
+					blockedOnEvidence = true;
+					continue;
+				}
+				if (placeable(row + 1, next)) {
+					ok = true;
+					break;
+				}
 			}
 		}
 		memo.set(key, ok);
 		return ok;
 	};
-	return (rowWindows[0] ?? []).some((start) => placeable(0, start));
+	if ((rowWindows[0] ?? []).some((start) => placeable(0, start))) return "ok";
+	return blockedOnEvidence ? "evidence" : "gap";
+}
+
+/**
+ * (GUARD5-EVIDENCE-TIERS) Is row `row` pinned down well enough for what this
+ * keystroke is about to do?
+ *
+ * TWO TIERS, because the rows do not carry equal weight. The claim guard 5 has to
+ * establish is "the digit I am about to press selects the option I believe it
+ * selects". That is a claim about ONE row. The others are corroboration: they
+ * show the block is this question's picker, which the prompt anchor and the gap
+ * rule already carry most of.
+ *
+ * So the row being PRESSED must be STRONGLY verified — its label anchor clears
+ * `SCREEN_MIN_ANCHOR_CHARS`, or its own DESCRIPTION is rendered in its region of
+ * the screen. Every other row need only match its digit.
+ *
+ * This is what a blanket anchor floor over all rows got wrong. Upstream's own
+ * tool schema asks agents for labels of "1-5 words" and makes `description`
+ * REQUIRED, so "Yes" / "No" / "Skip" / "Later" are the DOCUMENTED shape of a real
+ * option, and a floor of eight characters refused honest pickers — including,
+ * live, a four-option prompt whose fourth option was "Skip" and whose refusal
+ * named `option:3`, a row the user was not even pressing. The floor was aimed at
+ * a forged item collapsing the row test into a two-character substring search;
+ * that attack is about the row being PRESSED, and it is still refused here.
+ *
+ * A short label plus a description that is genuinely on screen is not weak
+ * evidence: the description is long prose the forger would have to reproduce
+ * from the victim's own screen at the right row, which is the same bar the label
+ * floor was imposing, met by a different needle.
+ */
+function rowIsVerifiedEnough(input: {
+	options: readonly QuestionOption[];
+	windows: readonly string[];
+	requireOptionIndex: number | null;
+	row: number;
+	from: number;
+	to: number;
+}): boolean {
+	const option = input.options[input.row];
+	if (option === undefined) return false;
+	// Not the row being pressed: matching its digit is all that is asked of it.
+	if (input.requireOptionIndex !== null) {
+		if (option.index !== input.requireOptionIndex) return true;
+	} else if (input.options.length > 1) {
+		// No digit is being pressed (a toggle or a submit re-check). Nothing to
+		// pin down, so corroboration is enough — but see the caller: at least one
+		// row still has to be strong, or nothing anchors the block.
+		return true;
+	}
+	return rowIsStronglyVerified({
+		option,
+		windows: input.windows,
+		from: input.from,
+		to: input.to,
+	});
+}
+
+/**
+ * (GUARD5-EVIDENCE-TIERS) Strong verification for a single row: a label anchor
+ * long enough to be evidence on its own, or the option's description rendered in
+ * the row's own region of the screen.
+ */
+function rowIsStronglyVerified(input: {
+	option: QuestionOption;
+	windows: readonly string[];
+	from: number;
+	to: number;
+}): boolean {
+	if (
+		anchorOf(input.option.label, SCREEN_OPTION_ANCHOR_CHARS).length >=
+		SCREEN_MIN_ANCHOR_CHARS
+	) {
+		return true;
+	}
+	const description = anchorOf(
+		input.option.description,
+		SCREEN_DESCRIPTION_ANCHOR_CHARS,
+	);
+	if (description.length < SCREEN_MIN_ANCHOR_CHARS) return false;
+	for (let i = input.from; i < input.to; i += 1) {
+		if (input.windows[i]?.includes(description) === true) return true;
+	}
+	return false;
+}
+
+/**
+ * (GUARD5-FREETEXT-COPY) Is the free-text row on screen at `digitIndex`?
+ *
+ * The label is NOT taken from `freeTextOption.label`. That value is bridge-owned
+ * (`question-store.deriveFreeTextOption`) and reads `"Other"`, which is what the
+ * picker rendered when the contract was proven and is not what it renders now —
+ * so every free-text answer was refused with `row_absent`. The strings below were
+ * read out of the installed Claude Code binary rather than guessed off a
+ * screenshot, which is also how the trailing full stop came to light:
+ *
+ *     const psh = mL.multiSelect ? "Type something" : "Type something."
+ *
+ * Only the single-select variant is reachable today, because
+ * `deriveFreeTextOption` returns `null` for a multi-select item — the other is
+ * carried so a future multi-select free-text contract does not have to rediscover
+ * it. The editor's own placeholder ("Type something…") is a THIRD string and is
+ * deliberately absent: it renders inside the editor, i.e. after this row has
+ * already been pressed.
+ *
+ * Why a pinned set rather than matching the digit and the block position alone:
+ * the label is the only thing that distinguishes "row N+1 is the editor slot"
+ * from "row N+1 is a fifth real option the capture failed to report", and typing
+ * free text into a real option is exactly the irreversible wrong answer this
+ * guard exists to prevent. An unknown label therefore refuses, loudly and
+ * diagnosably, rather than being assumed benign — and because this copy is
+ * upstream-owned and has drifted once, that refusal is the signal to re-prove the
+ * contract, alongside `keystrokes.PROVEN_AGAINST`.
+ */
+export const SCREEN_FREE_TEXT_LABELS: readonly string[] = [
+	"Type something.",
+	"Type something",
+];
+
+function screenShowsFreeTextRow(
+	windows: readonly string[],
+	digitIndex: number,
+): boolean {
+	return SCREEN_FREE_TEXT_LABELS.some(
+		(label) => screenRowWindows(windows, digitIndex, label).length > 0,
+	);
 }
 
 /**
