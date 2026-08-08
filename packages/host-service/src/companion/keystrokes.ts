@@ -32,10 +32,21 @@
  *        `encodeAnswer` never emits SUBMIT_RETURN for a multi-select without a
  *        preceding SUBMIT_TAB, and `assertMultiSelectSubmitShape` re-checks the
  *        emitted sequence before it is handed to the injector.
+ *     ONLY as the whole prompt. Inside an N > 1 prompt the right-arrow is the
+ *     NEXT-QUESTION key, not the Submit tab — see (FREETEXT-N2-PROVEN).
  *
- *   free text
+ *   free text, ONE question
  *     digit N+1 (the slot after the last real option) opens an inline editor,
- *     then the UTF-8 text, then `\r`.
+ *     then the UTF-8 text, then `\r`, which SUBMITS the prompt.
+ *
+ *   free text, N > 1 questions  (FREETEXT-N2-PROVEN)
+ *     the SAME three keystrokes per question — digit N+1, the text, `\r` — but
+ *     there the `\r` ADVANCES to the next question instead of submitting, exactly
+ *     as a bare select digit does. The prompt is submitted by the review-screen
+ *     `\r` that already terminates `single_select_many`. So a question answered
+ *     with free text and a question answered with a digit compose freely, and
+ *     free text on the LAST question emits two consecutive returns: one to leave
+ *     the editor, one on the review screen.
  *
  *   bracketed paste is INERT against the picker
  *     `terminal.send` / `writeFramedInputToSession` CANNOT drive it. Only raw
@@ -83,12 +94,12 @@ export const PROVEN_AGAINST = "claude-code@2.1.226";
  * carrying the sentinel `"__chat__"`.
  *
  * REFUTED by a live pty run, and corrected here rather than left as folklore: a
- * multi-select picker DOES render a free-text row ("Type something", no full
- * stop) at N+1 and the chat row at N+2. The binary's `!mL.multiSelect` gate does
- * not mean what the earlier comment claimed. Multi-select free text is still
- * refused, but for the honest reason — its editor was never driven — and not
- * because the row is absent. Chat-row context-gating is likewise unconfirmed, so
- * nothing asserts its presence OR its absence.
+ * multi-select picker DOES render a free-text row at N+1 and the chat row at N+2.
+ * The binary's `!mL.multiSelect` gate does not mean what the earlier comment
+ * claimed. What that row does when its digit is pressed was then driven, twice,
+ * and the answer is worse than "unknown" — see `multiSelectFreeTextBytesProven`.
+ * Chat-row context-gating is still unconfirmed, so nothing asserts its presence
+ * OR its absence.
  *
  * Strictly weaker than `PROVEN_AGAINST` and never a substitute for it. It exists
  * so the copy constants can cite what they are true of without implying the byte
@@ -107,9 +118,12 @@ export const RENDER_OBSERVED_AGAINST = "claude-code@2.1.226";
  * always going to be false, and on the build whose bytes the fork claims to drive
  * the row would never have been found at all.
  *
- * `freeTextBytesProven` is per version for the same reason: 2.1.220's free-text
- * sequence was driven in a pty and worked; 2.1.226's does NOT (a bare digit
- * focuses the row instead of opening the editor — see FREE_TEXT_CONTRACT_PROVEN).
+ * The `*BytesProven` flags are PER SHAPE and per version, because the shapes are
+ * genuinely independent behaviours of the same row: on 2.1.226 the one-question
+ * and N>1 free-text sequences both work and the multi-select one is actively
+ * harmful (see each flag). 2.1.220 is recorded as it was driven at the time —
+ * only the one-question shape — and is NOT retro-fitted with claims about a build
+ * nobody re-drove.
  *
  * An UNKNOWN version resolves to `null` and everything downstream fails closed.
  * To add a build: append an entry with what a pty run actually showed, and move
@@ -117,17 +131,42 @@ export const RENDER_OBSERVED_AGAINST = "claude-code@2.1.226";
  */
 export interface PickerContract {
 	version: string;
-	/** The label the free-text row renders, exactly, on this build. */
+	/**
+	 * The label the free-text row renders, exactly, on a SINGLE-SELECT question.
+	 * A multi-select question renders different copy (2.1.226: "Type something",
+	 * no full stop) and a checkbox before it, which is deliberately not recorded
+	 * as a usable label — no multi-select free-text row is ever pressed.
+	 */
 	freeTextRowLabel: string;
-	/** Whether `[digit N+1, text, "\r"]` was driven in a pty on this build. */
-	freeTextBytesProven: boolean;
+	/**
+	 * Whether `[digit N+1, text, "\r"]` was driven on a prompt of exactly ONE
+	 * single-select question, where the `\r` submits the whole prompt.
+	 */
+	freeTextOneBytesProven: boolean;
+	/**
+	 * (FREETEXT-N2-PROVEN) Whether the SAME three keystrokes were driven for a
+	 * question inside an N > 1 single-select prompt, where the `\r` advances to
+	 * the next question and the prompt is submitted by the review-screen return.
+	 */
+	freeTextManyBytesProven: boolean;
+	/**
+	 * Whether free text on a MULTI-SELECT question has a proven sequence.
+	 *
+	 * `false` on every build, and on 2.1.226 that is a REFUTATION rather than an
+	 * absence of evidence — see the refusal in `validateAnswerItem`.
+	 */
+	multiSelectFreeTextBytesProven: boolean;
 }
 
 export const PICKER_CONTRACTS: readonly PickerContract[] = [
 	{
 		version: "claude-code@2.1.220",
 		freeTextRowLabel: "Other",
-		freeTextBytesProven: true,
+		freeTextOneBytesProven: true,
+		// Never driven on this build. Not inferred from 2.1.226: the flags are per
+		// version precisely so a later build's proof cannot backfill an earlier one.
+		freeTextManyBytesProven: false,
+		multiSelectFreeTextBytesProven: false,
 	},
 	{
 		version: "claude-code@2.1.226",
@@ -139,7 +178,21 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 		// typed, `\r` submitted, and the agent's own `tool_result` came back
 		// carrying that text verbatim. A `tool_result` is the only ground truth
 		// this contract accepts for a byte sequence.
-		freeTextBytesProven: true,
+		freeTextOneBytesProven: true,
+		// (FREETEXT-N2-PROVEN) Driven on N=2 prompts in three arrangements — free
+		// text on the first question, on the last, and on both — twice each, plus
+		// an N=3 prompt with free text in the middle. Every run's `tool_result`
+		// carried the typed text against the right question and the digit-selected
+		// label against the others.
+		freeTextManyBytesProven: true,
+		// REFUTED on this build, twice, and this is why it is a hard refusal
+		// rather than a cautious one. Pressing the multi-select free-text row's
+		// digit TOGGLES its checkbox and leaves the caret where it was; the body
+		// text is then swallowed entirely (nothing echoes); and the terminating
+		// `\r` toggles whatever row the caret is still on. The run that drove it
+		// asked for free text and the agent's `tool_result` came back
+		// `"…"="Mone"` — the first option, which nobody chose.
+		multiSelectFreeTextBytesProven: false,
 	},
 ];
 
@@ -162,19 +215,64 @@ export function provenPickerContract(): PickerContract | null {
  * (PICKER-CONTRACT-VERSIONED) The free-text row's label for the proven build, or
  * `null` when that build has no proven free-text sequence / is unknown.
  *
- * THE single derivation. Both the capture PRODUCER
- * (`trpc/router/notifications/companion-question-sink.ts`) and the capture
- * VALIDATOR (`companion/question-store.ts`) call this, because they previously
- * held the literal independently and a comment saying "change the two together"
- * was the only thing holding them in agreement. When they drifted, `validateCapture`
- * rejected EVERY single-question capture at ingestion — the hook 500s, the question
- * is never stored and the phone is never notified — and no test caught it because
- * they all pass `freeTextOption: null`, which skips the cross-check.
+ * THE label. Kept as its own accessor because the label is also what guard 5
+ * matches the row against and what the copy tests pin, but production code should
+ * reach for `provenFreeTextOption` instead: the label alone cannot say whether
+ * THIS prompt shape has a proven sequence.
  */
 export function provenFreeTextRowLabel(): string | null {
 	const contract = provenPickerContract();
 	if (contract === null) return null;
-	return contract.freeTextBytesProven ? contract.freeTextRowLabel : null;
+	if (!contract.freeTextOneBytesProven && !contract.freeTextManyBytesProven) {
+		return null;
+	}
+	return contract.freeTextRowLabel;
+}
+
+/**
+ * (FREETEXT-N2-PROVEN) THE free-text derivation — the whole of it, in one place.
+ *
+ * Both the capture PRODUCER
+ * (`trpc/router/notifications/companion-question-sink.ts`) and the capture
+ * VALIDATOR (`companion/question-store.ts`) call this. They previously held the
+ * shape rules AND the label independently, with a comment saying "change the two
+ * together" as the only thing holding them in agreement. When they drifted,
+ * `validateCapture` rejected EVERY single-question capture at ingestion — the
+ * hook 500s, the question is never stored and the phone is never notified — and
+ * no test caught it because they all pass `freeTextOption: null`, which skips the
+ * cross-check. So the rules moved here with the label, and the two call sites
+ * became one-line delegations that cannot disagree.
+ *
+ * Returns `null` — no free-text row offered, and `validateAnswerItem` then refuses
+ * any `freetext` answer for the item — whenever the SHAPE has no proven byte
+ * sequence on the proven build:
+ *
+ *   - `multiSelect`, on every build. On 2.1.226 this is a refutation, not
+ *     caution: the row is rendered, and driving it answers the question WRONG.
+ *     See `multiSelectFreeTextBytesProven`.
+ *   - `questionCount > 1` on a build where the per-question sequence was not
+ *     driven (2.1.220).
+ *   - an unknown build.
+ */
+export function provenFreeTextOption(input: {
+	multiSelect: boolean;
+	optionCount: number;
+	questionCount: number;
+}): { index: number; label: string } | null {
+	const contract = provenPickerContract();
+	if (contract === null) return null;
+	if (input.multiSelect) {
+		return contract.multiSelectFreeTextBytesProven
+			? { index: input.optionCount, label: contract.freeTextRowLabel }
+			: null;
+	}
+	const proven =
+		input.questionCount === 1
+			? contract.freeTextOneBytesProven
+			: contract.freeTextManyBytesProven;
+	return proven
+		? { index: input.optionCount, label: contract.freeTextRowLabel }
+		: null;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,28 +336,35 @@ export class KeystrokeEncodingError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * The four shapes with a PROVEN byte sequence. Anything else is
+ * The five shapes with a PROVEN byte sequence. Anything else is
  * `shape_unproven` and is refused.
  *
- * Deliberately absent, and why: a multi-select or a free-text item inside an
- * N > 1 prompt. The proven multi-select submit (`\x1b[C` then `\r`) and the
- * proven free-text terminator (`\r`) were both established against a
- * SINGLE-question prompt, where they end the whole prompt. Whether they advance
- * to the next question or submit the entire prompt when other questions follow
- * was never observed. Guessing wrong either strands the prompt half-answered or
- * submits answers the user never gave — so those combinations are refused until
- * someone proves them in a pty. This is the same reason `agent.codex` is never
- * granted in v1.
+ * Deliberately absent, and why: a MULTI-SELECT question inside an N > 1 prompt,
+ * in any combination. The multi-select submit (`\x1b[C` then `\r`) was proven on
+ * a prompt of exactly one question, where the right-arrow lands on the Submit
+ * tab. Inside an N > 1 prompt the right-arrow is the NEXT-QUESTION key — a live
+ * run drove `[toggle, "\x1b[C", "\r"]` on question 1 of a two-question prompt and
+ * the right-arrow moved to question 2, where the `\r` then SELECTED that
+ * question's focused row. The bridge would have answered a question the user was
+ * never shown. So an N > 1 prompt carrying a multi-select question has no
+ * answerable path at all here, and every one of its items is refused. This is the
+ * same reason `agent.codex` is never granted in v1.
  */
 export type AnswerShape =
 	/** Exactly one single-select question: `[digit]`. Atomic select+submit. */
 	| "single_select_one"
-	/** N > 1 questions, ALL single-select: `[digit × N, "\r"]`. */
+	/** N > 1 questions, ALL single-select, ALL answered by digit: `[digit × N, "\r"]`. */
 	| "single_select_many"
 	/** Exactly one multi-select question: `[toggle × k, "\x1b[C", "\r"]`. */
 	| "multiselect_one"
 	/** Exactly one question answered with free text: `[digit N+1, text, "\r"]`. */
-	| "freetext_one";
+	| "freetext_one"
+	/**
+	 * (FREETEXT-N2-PROVEN) N > 1 single-select questions, at least one answered
+	 * with free text: per question either `[digit]` or `[digit N+1, text, "\r"]`,
+	 * then the review-screen `"\r"`.
+	 */
+	| "freetext_many";
 
 export type KeystrokeKind =
 	/** A bare digit that selects (and, when it is the only one, submits). */
@@ -408,17 +513,20 @@ function validateAnswerItem(item: QuestionItem, answer: AnswerItem): void {
 		case "freetext": {
 			// PROTOCOL §11.3: `kind` MUST match the item's `multiSelect` flag AND
 			// the presence of `freeTextOption`. Both conjuncts are checked, and the
-			// multiSelect one first — a multiSelect picker's free-text row was never
-			// characterised in a pty, and typing into one would TOGGLE an arbitrary
-			// subset (digits/space toggle, Enter toggles rather than submits) and
-			// leave the picker open on a selection nobody made. Symmetric with the
-			// "select" and "multiselect" cases above; a producer that synthesised a
-			// free-text slot onto a multiSelect item must be refused here, not
-			// merely be unreachable through a well-behaved client.
+			// multiSelect one first, because on 2.1.226 driving that row is not
+			// merely unproven — it was DRIVEN and it answers the question wrong.
+			// Twice: the digit toggles the row's checkbox without moving the caret,
+			// the body text is swallowed with no echo at all, and the terminating
+			// `\r` toggles whatever row the caret was still resting on. The run that
+			// asked for free text got back `tool_result` `"…"="Mone"`, the first
+			// option. Symmetric with the "select" and "multiselect" cases above; a
+			// producer that synthesised a free-text slot onto a multiSelect item
+			// must be refused here, not merely be unreachable through a well-behaved
+			// client.
 			if (item.multiSelect) {
 				throw new KeystrokeEncodingError(
 					"kind_mismatch",
-					`item ${item.index} is multiSelect; "freetext" has no proven byte contract there and is never coerced into it`,
+					`item ${item.index} is multiSelect; its free-text row toggles a checkbox and swallows the text, so "freetext" is never coerced into it`,
 				);
 			}
 			if (item.freeTextOption === null) {
@@ -685,15 +793,24 @@ export function classifyAnswerShape(
 		}
 	}
 
+	// (FREETEXT-N2-PROVEN) N > 1. `select` and `freetext` compose freely here,
+	// because both leave the picker on the NEXT question: a bare digit advances,
+	// and so does the `\r` that closes an inline editor. `multiselect` does not —
+	// its submit pair's right-arrow is the next-question key inside an N > 1
+	// prompt, so `\r` would land on a question the user has not answered.
+	let sawFreeText = false;
 	for (const answer of answers) {
-		if (answer.kind !== "select") {
-			throw new KeystrokeEncodingError(
-				"shape_unproven",
-				`item ${answer.questionIndex} is "${answer.kind}" inside an ${questions.length}-question prompt; the byte sequence for that combination was never proven against a live picker and is refused rather than guessed`,
-			);
+		if (answer.kind === "select") continue;
+		if (answer.kind === "freetext") {
+			sawFreeText = true;
+			continue;
 		}
+		throw new KeystrokeEncodingError(
+			"shape_unproven",
+			`item ${answer.questionIndex} is "${answer.kind}" inside an ${questions.length}-question prompt; the right-arrow that submits a lone multi-select is the NEXT-QUESTION key there, so the following return would select a row on a question nobody answered — refused rather than guessed`,
+		);
 	}
-	return "single_select_many";
+	return sawFreeText ? "freetext_many" : "single_select_many";
 }
 
 // ---------------------------------------------------------------------------
@@ -750,8 +867,8 @@ export function encodeAnswer(
 	const keystrokes: Keystroke[] =
 		shape === "single_select_one"
 			? encodeSingleSelectOne(questions, answers)
-			: shape === "single_select_many"
-				? encodeSingleSelectMany(questions, answers)
+			: shape === "single_select_many" || shape === "freetext_many"
+				? encodeMany(questions, answers)
 				: shape === "multiselect_one"
 					? encodeMultiSelectOne(questions, answers)
 					: encodeFreeTextOne(questions, answers);
@@ -784,28 +901,88 @@ function encodeSingleSelectOne(
 	];
 }
 
-/** `[digit × N, "\r"]` — N digits, then Enter on the review screen. */
-function encodeSingleSelectMany(
+/**
+ * (FREETEXT-N2-PROVEN) Every N > 1 prompt: per question either `[digit]` or
+ * `[digit N+1, text, "\r"]`, then the review-screen `"\r"`.
+ *
+ * ONE encoder for `single_select_many` and `freetext_many` because the picker
+ * makes no distinction between them — both per-question groups end with the
+ * picker sitting on the next question, which is exactly why they compose. Two
+ * shapes, because their PROOFS are separate and a build may earn one without the
+ * other (`freeTextManyBytesProven`); one encoder, because a second copy of the
+ * "…then the review-screen return" rule is a place for the two to drift.
+ *
+ * Note the two consecutive returns when the LAST question is answered with free
+ * text: the first closes the inline editor and advances onto the review screen,
+ * the second submits. Both were driven; neither is inferred from the other.
+ */
+function encodeMany(
 	questions: readonly QuestionItem[],
 	answers: readonly AnswerItem[],
 ): Keystroke[] {
 	const keystrokes: Keystroke[] = [];
 	for (let i = 0; i < answers.length; i += 1) {
 		const answer = answers[i];
-		if (answer === undefined || answer.kind !== "select") {
+		const item = questions[i];
+		if (answer === undefined || item === undefined) {
 			throw new KeystrokeEncodingError(
-				"kind_mismatch",
-				`item ${i} is not a select`,
+				"arity_mismatch",
+				`missing answer or question item at position ${i}`,
 			);
 		}
+		if (answer.kind === "select") {
+			keystrokes.push({
+				kind: "select_digit",
+				data: digitFor(answer.optionIndex, i),
+				questionIndex: i,
+				optionIndex: answer.optionIndex,
+				// Each digit advances the picker, so the screen guard-5 must see is
+				// item i's own numbered list, not item 0's.
+				expect: { kind: "item_picker", itemIndex: i },
+				submits: false,
+			});
+			continue;
+		}
+		if (answer.kind !== "freetext") {
+			// `classifyAnswerShape` has already refused every other kind here. This
+			// is the encoder refusing to be the place where that stops being true.
+			throw new KeystrokeEncodingError(
+				"kind_mismatch",
+				`item ${i} is "${answer.kind}", which has no proven sequence inside an ${questions.length}-question prompt`,
+			);
+		}
+		if (item.freeTextOption === null) {
+			throw new KeystrokeEncodingError(
+				"kind_mismatch",
+				`item ${i} has no free-text slot`,
+			);
+		}
+		const slot = item.freeTextOption.index;
 		keystrokes.push({
-			kind: "select_digit",
-			data: digitFor(answer.optionIndex, i),
+			kind: "freetext_open",
+			data: digitFor(slot, i),
 			questionIndex: i,
-			optionIndex: answer.optionIndex,
-			// Each digit advances the picker, so the screen guard-5 must see is
-			// item i's own numbered list, not item 0's.
+			optionIndex: slot,
 			expect: { kind: "item_picker", itemIndex: i },
+			submits: false,
+		});
+		keystrokes.push({
+			kind: "freetext_body",
+			data: answer.text,
+			questionIndex: i,
+			optionIndex: slot,
+			// The inline editor's layout was never proven.
+			expect: { kind: "same_prompt", itemIndex: i },
+			submits: false,
+		});
+		keystrokes.push({
+			kind: "submit_return",
+			data: KEY_RETURN,
+			questionIndex: i,
+			optionIndex: slot,
+			expect: { kind: "same_prompt", itemIndex: i },
+			// It closes the editor and advances. Only the review-screen return below
+			// submits, and `assertEmittedShape` requires exactly one that does.
 			submits: false,
 		});
 	}
@@ -1092,6 +1269,75 @@ function assertShapeGrammar(
 			) {
 				throw selfCheck(
 					`freetext_one must be [freetext_open, freetext_body, submit_return]; got [${kinds.join(", ")}]`,
+				);
+			}
+			return;
+		}
+		case "freetext_many": {
+			// (FREETEXT-N2-PROVEN) One GROUP per question, in question order, each
+			// either `[select_digit]` or `[freetext_open, freetext_body,
+			// submit_return]`, then the review-screen `submit_return`. At least one
+			// group must be a free-text one, or this is `single_select_many` wearing
+			// the wrong shape name and the stricter grammar above should have run.
+			const trailing = keystrokes[keystrokes.length - 1];
+			if (trailing?.kind !== "submit_return" || !trailing.submits) {
+				throw selfCheck(
+					`freetext_many must end with the submitting review-screen return; got [${kinds.join(", ")}]`,
+				);
+			}
+			let index = 0;
+			let question = 0;
+			let freeTextGroups = 0;
+			while (index < keystrokes.length - 1) {
+				const first = keystrokes[index];
+				if (first?.questionIndex !== question) {
+					throw selfCheck(
+						`freetext_many position ${index} answers question ${first?.questionIndex}, expected ${question}; groups must run 0..N-1 in order`,
+					);
+				}
+				if (first.kind === "select_digit") {
+					index += 1;
+					question += 1;
+					continue;
+				}
+				const body = keystrokes[index + 1];
+				const close = keystrokes[index + 2];
+				if (
+					first.kind !== "freetext_open" ||
+					body?.kind !== "freetext_body" ||
+					close?.kind !== "submit_return" ||
+					body.questionIndex !== question ||
+					close.questionIndex !== question
+				) {
+					throw selfCheck(
+						`freetext_many question ${question} must be [select_digit] or [freetext_open, freetext_body, submit_return]; got [${kinds.join(", ")}]`,
+					);
+				}
+				// The editor-closing return ADVANCES; only the review-screen one
+				// submits. A group whose return claimed to submit would satisfy the
+				// "exactly one submitting keystroke" check on the wrong key.
+				if (close.submits) {
+					throw selfCheck(
+						`freetext_many question ${question}: the editor-closing return advances to the next question, it does not submit`,
+					);
+				}
+				freeTextGroups += 1;
+				index += 3;
+				question += 1;
+			}
+			if (question < 2) {
+				throw selfCheck(
+					`freetext_many covers ${question} question(s); it is the N > 1 shape`,
+				);
+			}
+			if (freeTextGroups === 0) {
+				throw selfCheck(
+					"freetext_many carries no free-text group; an all-digit prompt is single_select_many",
+				);
+			}
+			if (trailing.questionIndex !== question - 1) {
+				throw selfCheck(
+					`freetext_many review-screen return names question ${trailing.questionIndex}, expected the last one (${question - 1})`,
 				);
 			}
 			return;

@@ -1374,3 +1374,233 @@ describe("(GUARD5-CLIPPED-VIEWPORT) a picker taller than the window", () => {
 		).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// (FREETEXT-N2-PROVEN)
+//
+// Free text inside an N > 1 prompt. Until the sequence was driven, no N > 1 item
+// ever carried a `freeTextOption`, so guard 5 was never asked to verify a
+// free-text row on a multi-question screen and nothing pinned what it does
+// there. The three fixtures below are UNEDITED 100-column viewports captured off
+// the live headless emulator while a real two-question AskUserQuestion prompt
+// blocked Claude Code 2.1.226 — question 1's picker, question 2's picker after
+// the first answer advanced it, and the review screen.
+//
+// The load-bearing property they pin is DISCRIMINATION BETWEEN QUESTIONS. Every
+// question in an N > 1 prompt numbers its rows from 1 and renders its own
+// free-text row at the same digit, and the tab bar keeps EVERY header on screen
+// the whole time — so "a picker for this prompt is up" is satisfied by the wrong
+// question's screen, and only the option rows tell them apart. A guard that got
+// this wrong would type question 2's digit into question 1's list.
+// ---------------------------------------------------------------------------
+
+/** Question 1's picker, exactly as rendered. Free-text row at digit 3. */
+const N2_QUESTION_1_VIEWPORT = `
+❯ Use the AskUserQuestion tool RIGHT NOW, once, with exactly 2 questions in that single call.
+  question 1: header 'Alpha', question 'Which alpha value should this canary run use?', multiSelect
+  false, exactly two options: label 'Aone' with description 'Use the first alpha value for this
+  canary run.' and label 'Atwo' with description 'Use the second alpha value for this canary run.'.
+  question 2: header 'Beta', question 'Which beta value should this canary run use?', multiSelect
+  false, exactly two options: label 'Bone' with description 'Use the first beta value for this
+  canary run.' and label 'Btwo' with description 'Use the second beta value for this canary run.'.
+  Do not use any other tool, do not write any files, and do not say anything before the tool call.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Alpha  ☐ Beta  ✔ Submit  →
+
+Which alpha value should this canary run use?
+
+❯ 1. Aone
+     Use the first alpha value for this canary run.
+  2. Atwo
+     Use the second alpha value for this canary run.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel`;
+
+/**
+ * Question 2's picker, after question 1's free-text answer advanced the prompt.
+ * Note what did NOT change: the tab bar still names Alpha, and the composer echo
+ * above still contains every word of question 1 — including its option labels.
+ */
+const N2_QUESTION_2_VIEWPORT = `
+❯ Use the AskUserQuestion tool RIGHT NOW, once, with exactly 2 questions in that single call.
+  question 1: header 'Alpha', question 'Which alpha value should this canary run use?', multiSelect
+  false, exactly two options: label 'Aone' with description 'Use the first alpha value for this
+  canary run.' and label 'Atwo' with description 'Use the second alpha value for this canary run.'.
+  question 2: header 'Beta', question 'Which beta value should this canary run use?', multiSelect
+  false, exactly two options: label 'Bone' with description 'Use the first beta value for this
+  canary run.' and label 'Btwo' with description 'Use the second beta value for this canary run.'.
+  Do not use any other tool, do not write any files, and do not say anything before the tool call.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Alpha  ☐ Beta  ✔ Submit  →
+
+Which beta value should this canary run use?
+
+❯ 1. Bone
+     Use the first beta value for this canary run.
+  2. Btwo
+     Use the second beta value for this canary run.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel`;
+
+/** The review screen the last answer lands on. No question's option list is up. */
+const N2_REVIEW_VIEWPORT = `
+❯ Use the AskUserQuestion tool RIGHT NOW, once, with exactly 2 questions in that single call.
+  question 1: header 'Alpha', question 'Which alpha value should this canary run use?', multiSelect
+  false, exactly two options: label 'Aone' with description 'Use the first alpha value for this
+  canary run.' and label 'Atwo' with description 'Use the second alpha value for this canary run.'.
+  question 2: header 'Beta', question 'Which beta value should this canary run use?', multiSelect
+  false, exactly two options: label 'Bone' with description 'Use the first beta value for this
+  canary run.' and label 'Btwo' with description 'Use the second beta value for this canary run.'.
+  Do not use any other tool, do not write any files, and do not say anything before the tool call.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Alpha  ☒ Beta  ✔ Submit  →
+
+Review your answers
+
+ ● Which alpha value should this canary run use?
+   → zebrafreetextalpha
+ ● Which beta value should this canary run use?
+   → Bone
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel`;
+
+const N2_ALPHA: QuestionItem = {
+	index: 0,
+	header: "Alpha",
+	question: "Which alpha value should this canary run use?",
+	multiSelect: false,
+	options: [
+		{
+			index: 0,
+			label: "Aone",
+			description: "Use the first alpha value for this canary run.",
+		},
+		{
+			index: 1,
+			label: "Atwo",
+			description: "Use the second alpha value for this canary run.",
+		},
+	],
+	freeTextOption: { index: 2, label: "Type something." },
+};
+
+const N2_BETA: QuestionItem = {
+	index: 1,
+	header: "Beta",
+	question: "Which beta value should this canary run use?",
+	multiSelect: false,
+	options: [
+		{
+			index: 0,
+			label: "Bone",
+			description: "Use the first beta value for this canary run.",
+		},
+		{
+			index: 1,
+			label: "Btwo",
+			description: "Use the second beta value for this canary run.",
+		},
+	],
+	freeTextOption: { index: 2, label: "Type something." },
+};
+
+describe("(FREETEXT-N2-PROVEN) guard 5 on a real two-question prompt", () => {
+	it("confirms question 1's free-text row on question 1's screen", () => {
+		expect(
+			matchPickerScreen({
+				screen: N2_QUESTION_1_VIEWPORT,
+				item: N2_ALPHA,
+				requireOptionIndex: 2,
+			}),
+		).toMatchObject({ ok: true, reason: "match" });
+	});
+
+	it("confirms question 2's free-text row on question 2's screen", () => {
+		expect(
+			matchPickerScreen({
+				screen: N2_QUESTION_2_VIEWPORT,
+				item: N2_BETA,
+				requireOptionIndex: 2,
+			}),
+		).toMatchObject({ ok: true, reason: "match" });
+	});
+
+	it("refuses question 2's digit against question 1's screen", () => {
+		// The whole hazard of an N > 1 prompt in one assertion. Both questions
+		// number their rows from 1, both render "Type something." at digit 3, and
+		// question 2's header AND its full text are on this screen — in the tab bar
+		// and in the composer echo. Only the OPTION ROWS differ, so only they can
+		// refuse this, and they must.
+		const match = matchPickerScreen({
+			screen: N2_QUESTION_1_VIEWPORT,
+			item: N2_BETA,
+			requireOptionIndex: 2,
+		});
+		expect(match.ok).toBe(false);
+		expect(match.reason).toBe("row_absent");
+	});
+
+	it("refuses question 1's digit against question 2's screen", () => {
+		const match = matchPickerScreen({
+			screen: N2_QUESTION_2_VIEWPORT,
+			item: N2_ALPHA,
+			requireOptionIndex: 2,
+		});
+		expect(match.ok).toBe(false);
+		expect(match.reason).toBe("row_absent");
+	});
+
+	it("refuses either question's digit on the review screen", () => {
+		// The review screen echoes every question's text and every chosen answer,
+		// and carries its own rows numbered from 1 ("Submit answers", "Cancel").
+		// Pressing a picker digit there would press one of those instead.
+		for (const subject of [N2_ALPHA, N2_BETA]) {
+			expect(
+				matchPickerScreen({
+					screen: N2_REVIEW_VIEWPORT,
+					item: subject,
+					requireOptionIndex: 2,
+				}).ok,
+			).toBe(false);
+		}
+	});
+
+	it("refuses a screen where a real option also spells the free-text label", () => {
+		// A prompt-injected capture cannot choose the label — it is derived from the
+		// picker contract — but the AGENT chooses the option labels, so it can spell
+		// one of them "Type something." and sit it above the true row. Which row the
+		// digit lands on is then exactly what cannot be established.
+		const screen = N2_QUESTION_2_VIEWPORT.replace(
+			"❯ 1. Bone",
+			"❯ 1. Type something.",
+		);
+		const impostor: QuestionItem = {
+			...N2_BETA,
+			options: [
+				{ index: 0, label: "Type something.", description: "" },
+				{
+					index: 1,
+					label: "Btwo",
+					description: "Use the second beta value for this canary run.",
+				},
+			],
+		};
+		const match = matchPickerScreen({
+			screen,
+			item: impostor,
+			requireOptionIndex: 2,
+		});
+		expect(match.ok).toBe(false);
+		expect(match.reason).toBe("freetext_row_conflict");
+	});
+});

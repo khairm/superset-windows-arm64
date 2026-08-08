@@ -75,7 +75,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import { provenFreeTextRowLabel } from "./keystrokes";
+import { provenFreeTextOption } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -397,44 +397,22 @@ function requireArray(value: unknown, field: string, max: number): unknown[] {
 }
 
 /**
- * (PICKER-CONTRACT-VERSIONED) The free-text row's label for the build the byte
- * contract is proven against — `null` when that build has no proven free-text
- * sequence, or is not a build this fork has observed at all.
- *
- * `null` propagates to `freeTextOption: null`, which makes the slot absent
- * everywhere at once: the phone is not offered it, the encoder is never asked for
- * it, and guard 5 never looks for its row. That single source is the point. The
- * label used to be a local literal `"Other"` here while the matcher searched for
- * a different build's copy, so the item the phone received and the needle the
- * screen check used could disagree — and did.
- */
-const freeTextRowLabel = provenFreeTextRowLabel;
-
-/**
  * The picker's free-text slot, DERIVED — never accepted from the capture.
  *
  * (GUARD5-ANCHOR) The label is an on-screen anchor guard 5 matches a digit row
  * against, so letting the caller supply it hands the caller a knob on the only
- * load-bearing screen check. It is therefore computed here, from the same
- * PROVEN byte contract `companion-question-sink.ts` uses, and a capture that
- * disagrees is rejected rather than silently overridden.
+ * load-bearing screen check. It is therefore computed from the same PROVEN byte
+ * contract `companion-question-sink.ts` uses — literally the same function — and
+ * a capture that disagrees is rejected rather than silently overridden.
  *
- * Proven by driving a real Claude Code picker in a pty: for a prompt of exactly
- * ONE single-select question, digit N+1 opens an inline editor. `multiSelect`
- * inverts the picker and an N>1 prompt has no proven free-text shape, so both
- * are `null`.
+ * (FREETEXT-N2-PROVEN) The shape rules live with the label in
+ * `keystrokes.provenFreeTextOption`; this is a one-line delegation so the
+ * producer and the validator cannot drift. The label used to be a local literal
+ * `"Other"` here while the matcher searched for a different build's copy, so the
+ * item the phone received and the needle the screen check used could disagree —
+ * and did.
  */
-function deriveFreeTextOption(
-	multiSelect: boolean,
-	optionCount: number,
-	questionCount: number,
-): QuestionItem["freeTextOption"] {
-	if (multiSelect) return null;
-	if (questionCount !== 1) return null;
-	const label = freeTextRowLabel();
-	if (label === null) return null;
-	return { index: optionCount, label };
-}
+const deriveFreeTextOption = provenFreeTextOption;
 
 /**
  * Validate a capture at this module's boundary.
@@ -510,11 +488,11 @@ export function validateCapture(
 		// not match what this fork can actually drive is a refusal, not an
 		// override: the two disagreeing means one of them is wrong about a live
 		// pty, and guessing which is how a wrong digit gets typed.
-		const freeTextOption = deriveFreeTextOption(
+		const freeTextOption = deriveFreeTextOption({
 			multiSelect,
-			options.length,
+			optionCount: options.length,
 			questionCount,
-		);
+		});
 		if (q.freeTextOption !== null && q.freeTextOption !== undefined) {
 			const ft = requireObject(
 				q.freeTextOption,
@@ -1351,6 +1329,82 @@ export async function findToolResultInTranscript(
 }
 
 /**
+ * (PUSH-ARMED-ORPHAN) What the push sender's reconstructed-entry check may
+ * answer about a fence row's own persisted transcript.
+ *
+ * Three values, not two, because `findToolResultInTranscript`'s `unreadable`
+ * covers two facts with opposite consequences for a held buzz. "The file is
+ * there and does not prove anything" means CANNOT CHECK, and this feature buzzes
+ * when it cannot tell. "The file is not there at all" means the notification is
+ * INERT: the phone's question view reads that same transcript and would render
+ * nothing, and guard 1 reads that same derived path and refuses every answer
+ * attempt against it, forever. A buzz nobody can open and nobody can answer is
+ * not a buzz worth keeping alive.
+ */
+export type OrphanTranscriptVerdict = "resolved" | "unresolved" | "gone";
+
+/**
+ * (PUSH-ARMED-ORPHAN) The reconstructed-entry check, whole: read the transcript,
+ * and when it cannot be read, decide whether that is because it is GONE.
+ *
+ * Lives here rather than in the composition root so the three-way split can be
+ * exercised against a real filesystem without booting a bridge — it is the same
+ * reason `createFireVerdictProbe` was extracted.
+ */
+export async function readOrphanTranscriptVerdict(input: {
+	transcriptPath: string;
+	toolUseId: string;
+}): Promise<OrphanTranscriptVerdict> {
+	const verdict = await findToolResultInTranscript(
+		input.transcriptPath,
+		input.toolUseId,
+	);
+	if (verdict === "resolved") return "resolved";
+	if (verdict === "unresolved") return "unresolved";
+	return (await transcriptIsProvablyAbsent(input.transcriptPath))
+		? "gone"
+		: "unresolved";
+}
+
+/**
+ * (PUSH-ARMED-ORPHAN) Is the transcript file PROVABLY not there — as opposed to
+ * unreadable, or on a tree this process cannot see right now?
+ *
+ * CORROBORATED, because acting on this is irreversible: `forget()` drops the
+ * fence row and a wrong drop is a blocked agent nobody is ever told about. One
+ * `ENOENT` on the file alone would also fire for a `~/.claude` that is
+ * momentarily unreachable — a roaming profile, an unmounted volume — and that is
+ * exactly the transient this must not act on.
+ *
+ * So the store itself has to read back first. `<home>/.claude/projects` is the
+ * root every derived transcript path hangs off (`deriveClaudeTranscriptPath`),
+ * and it is taken positionally from the path rather than re-derived, so this
+ * cannot drift from the derivation. If that root cannot be stat'd, the answer is
+ * "cannot tell" and the buzz stands. If it CAN be stat'd and this file is
+ * `ENOENT` underneath it, the transcript is gone rather than unavailable.
+ *
+ * Any other errno — EACCES, EIO, EBUSY — is `false`. Only the errno that
+ * positively means "no such directory entry" is evidence of absence.
+ */
+async function transcriptIsProvablyAbsent(
+	transcriptPath: string,
+): Promise<boolean> {
+	const projectsRoot = path.dirname(path.dirname(transcriptPath));
+	try {
+		await fs.stat(projectsRoot);
+	} catch {
+		return false;
+	}
+	try {
+		await fs.stat(transcriptPath);
+		// It is there. `unreadable` was about its CONTENT, which proves nothing.
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+	}
+}
+
+/**
  * (RECONCILE-STAT-CACHE) The identity of a transcript file at the moment a
  * verdict was computed from it, plus that verdict.
  *
@@ -1479,11 +1533,12 @@ function requiredCapabilities(questions: QuestionItem[]): Capability[] {
  * prompt it can now drive.
  *
  * The proven shapes are: one question (select / multiselect / freetext), and N>1
- * questions where EVERY item is a plain single select. A `multiSelect` item
- * inside an N>1 prompt has no proven sequence — `validateAnswerItems` refuses to
- * coerce `"select"` onto a multiSelect item, so such an item can only be
- * answered with `kind: "multiselect"`, which `classifyAnswerShape` then refuses
- * with `shape_unproven`.
+ * questions where EVERY item is a plain single select, each answered with a
+ * digit or (FREETEXT-N2-PROVEN) with free text. A `multiSelect` item inside an
+ * N>1 prompt has no proven sequence — `validateAnswerItems` refuses to coerce
+ * `"select"` onto a multiSelect item, so such an item can only be answered with
+ * `kind: "multiselect"`, which `classifyAnswerShape` then refuses with
+ * `shape_unproven`.
  *
  * Before this check the phone and watch showed the prompt as answerable, the
  * user read it, picked an answer for every question, submitted, and only THEN
@@ -1491,9 +1546,9 @@ function requiredCapabilities(questions: QuestionItem[]): Capability[] {
  * picker is unrecoverable — but it arrived after all of the work. Nothing about
  * the refusal changes here; only its timing.
  *
- * `freeTextOption` needs no companion check: `deriveFreeTextOption` already
- * returns `null` for every N>1 prompt, so no free-text slot is ever offered in a
- * shape where free text is unproven.
+ * `freeTextOption` needs no companion check either way:
+ * `keystrokes.provenFreeTextOption` is the single place that decides which
+ * shapes get a slot, so a slot is offered exactly where free text can be driven.
  */
 function hasUnprovenAnswerShape(questions: QuestionItem[]): boolean {
 	if (questions.length <= 1) return false;

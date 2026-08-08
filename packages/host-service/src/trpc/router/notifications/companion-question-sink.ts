@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod";
-import { provenFreeTextRowLabel } from "../../../companion/keystrokes";
+import { provenFreeTextOption } from "../../../companion/keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -227,40 +227,30 @@ export function warnDroppedCompanionCapture(
  * and derived conservatively, because a wrong derivation here is not a bad
  * render, it is wrong bytes in a live pty.
  *
- * Proven by driving a real Claude Code picker in a pty: for a prompt of exactly
- * ONE single-select question, digit N+1 opens an inline editor, then UTF-8 text,
- * then `\r` (index === options.length, as PROTOCOL §7.4 requires). Nothing else
- * was ever proven, and both remaining cases are refused rather than assumed:
- *
- *  - `multiSelect` INVERTS the picker — digits and space TOGGLE, and Enter
- *    toggles rather than submits. Emitting [N+1, text, `\r`] there would toggle
- *    an arbitrary subset chosen by the body text and leave the picker open on a
- *    selection nobody made, with no safe retry and no compensating keystroke.
- *  - an N>1 prompt has a proven shape only when EVERY item is a plain select
- *    (`classifyAnswerShape` refuses any other kind with `shape_unproven`), so a
- *    free-text slot on those items can only ever produce a refusal — a dead
- *    affordance rendered on a phone.
+ * (FREETEXT-N2-PROVEN) The rules AND the label live in
+ * `companion/keystrokes.provenFreeTextOption`; this is a one-line delegation.
+ * That file's `PICKER_CONTRACTS` records which shapes were driven in a pty and
+ * which were not — currently a single-select question is offered a slot whether
+ * the prompt has one question or many, and a multi-select question never is.
  *
  * (GUARD5-ANCHOR) The BRIDGE is the authority on this: `validateCapture` in
- * `companion/question-store.ts` re-derives the slot with the identical rule and
- * REFUSES a capture that disagrees, because the label is an on-screen anchor
- * guard 5 matches a digit row against. Change the two together or the capture
- * is rejected — which is the intended failure mode, not a hazard.
+ * `companion/question-store.ts` re-derives the slot by calling the SAME function
+ * and REFUSES a capture that disagrees, because the label is an on-screen anchor
+ * guard 5 matches a digit row against. This file used to hold its own copy of the
+ * rules and the label, kept in agreement with the bridge's by nothing but a
+ * comment saying to change both; when they drifted, `validateCapture` rejected
+ * EVERY single-question capture at ingestion, so the hook 500s and the phone is
+ * never notified. One function is what makes that unrepeatable.
  */
 function deriveFreeTextOption(
 	item: { options: readonly unknown[]; multiSelect: boolean },
 	questionCount: number,
 ): QuestionItem["freeTextOption"] {
-	if (item.multiSelect) return null;
-	if (questionCount !== 1) return null;
-	// (PICKER-CONTRACT-VERSIONED) The SHARED derivation, not a second literal —
-	// see `provenFreeTextRowLabel`. This file previously held its own copy of the
-	// label, kept in agreement with the bridge's by nothing but a comment; when
-	// they drifted, `validateCapture` rejected EVERY single-question capture at
-	// ingestion, so the hook 500s and the phone is never notified.
-	const label = provenFreeTextRowLabel();
-	if (label === null) return null;
-	return { index: item.options.length, label };
+	return provenFreeTextOption({
+		multiSelect: item.multiSelect,
+		optionCount: item.options.length,
+		questionCount,
+	});
 }
 
 /**
