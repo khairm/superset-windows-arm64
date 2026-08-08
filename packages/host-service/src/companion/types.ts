@@ -176,6 +176,24 @@ export type SealedErrorCode =
 	 * This means the question may well still be open — submit a NEW request.
 	 */
 	| "request_closed"
+	/**
+	 * (SESSION-EXPIRED-VERDICT) The device has no live §6.3 session — it never
+	 * `hello`'d on this bridge mount, or the one it had aged out — and the route
+	 * it called is capability-gated.
+	 *
+	 * Distinct from `capability_unsupported` on purpose. Capabilities are session
+	 * state, so a dead session degrades to an EMPTY grant set, and every gated
+	 * route then answers the 501 that means "this bridge will not do that for
+	 * you". The two are indistinguishable on the wire, and the documented client
+	 * action for 501 is "re-hello, and if still ungranted show answer at the
+	 * desk" — so a phone whose session died across a bridge restart showed the
+	 * terminal message for a condition one `hello` would have fixed.
+	 *
+	 * The remedy differs: this one says re-negotiate and retry, the grant set is
+	 * unknown rather than known-empty. A session that IS live and lacks the asked
+	 * capability still gets `capability_unsupported`.
+	 */
+	| "session_expired"
 	| "write_disabled"
 	| "access_denied"
 	| "bad_request"

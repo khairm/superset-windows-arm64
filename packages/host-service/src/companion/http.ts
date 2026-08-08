@@ -325,7 +325,7 @@ export function createUnverifiedClientFlagPolicy(
 // session registry — the negotiated protocol byte lives in the AAD (§3.3, §6.2)
 // ---------------------------------------------------------------------------
 
-interface NegotiatedSession {
+export interface NegotiatedSession {
 	protocolVersion: ProtocolVersion;
 	granted: readonly Capability[];
 	expiresAtMs: number;
@@ -1002,7 +1002,46 @@ function contentCapabilities(path: SealedPath, body: unknown): Capability[] {
 	return required;
 }
 
-function requireCapabilities(
+/**
+ * (SESSION-EXPIRED-VERDICT) A dead session is its own verdict, not an empty
+ * grant set.
+ *
+ * `sessions` is in-memory and per-mount, so a bridge restart or a TTL lapse
+ * silently turns every device back into "no session". `granted` then degrades to
+ * `[]` and `requireCapabilities` answers `501 capability_unsupported` — the same
+ * bytes a deliberately withheld capability produces. The phone cannot tell the
+ * two apart, so it takes the documented 501 action, re-`hello`s once, and if
+ * that races or fails renders "answer at the desk" for a bridge that would have
+ * accepted the write immediately after one successful negotiation.
+ *
+ * So: no live session + a capability-GATED route = `409 session_expired`, which
+ * says re-negotiate, the grant set is unknown. Ungated routes (`capability:
+ * null` — `/v1/session/hello`, which CREATES the session, plus `/v1/tree`,
+ * `/v1/heartbeat` and `/v1/panic`) are unchanged and still work sessionless;
+ * `/v1/panic` in particular must never acquire a session precondition, for the
+ * reason spelled out on its route entry above.
+ *
+ * A session that exists and lacks the asked capability still gets 501.
+ *
+ * Exported so the boundary test judges THE gating rule rather than a copy of it:
+ * which paths are gated is read off `ROUTES` here, so a route that later gains
+ * or loses a capability changes both the server and the test at once.
+ */
+export function requireLiveSession(
+	path: SealedPath,
+	session: NegotiatedSession | null,
+): void {
+	if (session !== null) return;
+	if (ROUTES[path].capability === null) return;
+	throw new SealedError(409, {
+		code: "session_expired",
+		message: "no live session for this device; re-hello and retry",
+		retryAfterMs: null,
+		detail: { path },
+	});
+}
+
+export function requireCapabilities(
 	granted: readonly Capability[],
 	required: readonly (Capability | null)[],
 ): void {
@@ -1258,7 +1297,11 @@ export function createBridgeHttpServer(
 			// 12. schema at the boundary, before anything else happens
 			const body = parseBody(path, opened.plaintext);
 
-			// 13. capabilities: route-level plus whatever the content requires
+			// 13. capabilities: route-level plus whatever the content requires.
+			//     A dead session is separated out FIRST (SESSION-EXPIRED-VERDICT) —
+			//     it degrades `granted` to `[]`, which would otherwise answer the
+			//     same 501 a deliberately withheld capability does.
+			requireLiveSession(path, session);
 			requireCapabilities(granted, [
 				ROUTES[path].capability,
 				...contentCapabilities(path, body),
