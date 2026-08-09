@@ -261,27 +261,29 @@ describe("(GUARD4-ABSTAIN) the permission axis", () => {
 		})();
 	});
 
-	it("REFUSES on a weak same_prompt keystroke, whatever the load-bearing guards said", async () => {
-		// (GUARD4-ABSTAIN) The one case the abstain must not cover.
-		// `matchPromptStillOnScreen` asserts only that this prompt's text is on
-		// screen, which a Claude Code composer echoing the prompt satisfies with the
-		// picker GONE. The free-text tail is three consecutive `same_prompt`
-		// keystrokes carrying arbitrary text, so abstaining here would let a desk
-		// Escape mid-sequence turn the remainder into a typed-and-submitted prompt.
-		// On this form the axis is the only thing left that notices the picker shut.
+	it("ABSTAINS on a weak same_prompt keystroke too — the free-text tail must never die to the latch", async () => {
+		// (GUARD4-ABSTAIN) The axis vetoed 2/2 legitimate free-text answers
+		// mid-write on 2026-08-09: text and Enter carry `same_prompt`, the latch
+		// had been overwritten by a later hook event while the picker was
+		// verifiably still up, and the old strong-form-only abstain aborted the
+		// sequence with the editor already open — a half-written answer, worse
+		// than either finishing or refusing up front. Load-bearing guards still
+		// run before every byte; the axis is ledger evidence, never a veto.
 		const { outcome, events } = await evaluate(
 			{ permissionAxis: false },
 			PROMPT_ECHO_SCREEN,
 			{ kind: "same_prompt", itemIndex: 0 },
 		);
-		expect(outcome.failed).toBe("permission_axis");
-		expect(outcome.abstained).toEqual([]);
-		expect(events.filter((e) => e.event === "companion.guard.abstain")).toEqual(
-			[],
+		expect(outcome.failed).toBeNull();
+		expect(outcome.abstained).toEqual(["permission_axis"]);
+		const abstains = events.filter(
+			(e) => e.event === "companion.guard.abstain",
 		);
+		expect(abstains).toHaveLength(1);
+		expect(abstains[0]?.expectation).toBe("same_prompt");
 	});
 
-	it("a LATCHED axis still passes on the weak form — only the abstain is withheld", async () => {
+	it("a LATCHED axis still passes on the weak form", async () => {
 		const { outcome } = await evaluate(
 			{ permissionAxis: true },
 			PROMPT_ECHO_SCREEN,

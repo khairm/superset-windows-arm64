@@ -2315,32 +2315,31 @@ export async function evaluateGuards(
 	if (permissionAxis === true) {
 		advance("permission_axis");
 	} else {
-		// (GUARD4-ABSTAIN) THREE conditions, all checked here rather than inferred
+		// (GUARD4-ABSTAIN) TWO conditions, both checked here rather than inferred
 		// from the fact that guard 4 runs fourth:
 		//
 		//  1. every load-bearing guard actually passed, read back off `evaluation`,
 		//     so a reordering makes the axis refuse again rather than quietly
 		//     abstain on a stack that has proved less than it claims;
 		//  2. this guard is on the abstain list, which `assertGuardClassification`
-		//     now holds to its own rules at module load;
-		//  3. THE SCREEN GUARD RAN IN ITS STRONG FORM. This is the one that is not
-		//     about guard 4 at all. `matchPromptStillOnScreen` — the `same_prompt`
-		//     expectation — asserts only that this prompt's text is on screen, and
-		//     a Claude Code composer echoing the prompt satisfies it with the
-		//     picker GONE. The free-text tail is three consecutive `same_prompt`
-		//     keystrokes carrying arbitrary text, so abstaining there would let a
-		//     desk Escape mid-sequence turn the remainder into a typed-and-
-		//     submitted prompt. On a weak-form keystroke the axis keeps its
-		//     refusal: it is the only thing left that notices the picker closed.
+		//     holds to its own rules at module load.
+		//
+		// There is deliberately NO expectation-form condition. The axis used to
+		// keep its refusal on weak `same_prompt` keystrokes (the free-text tail) to
+		// catch a desk Escape mid-sequence — but the latch is overwritten by ANY
+		// later hook event, so on a busy terminal it reads clear while the picker
+		// is verifiably still up, and it vetoed 2/2 legitimate free-text answers
+		// mid-write, aborting between the editor-open digit and the submit and
+		// leaving a half-open editor behind. A forgeable latch whose false-veto
+		// aborts a proven sequence partway is strictly worse than completing the
+		// proven sequence: the write window is sub-second, the per-keystroke
+		// load-bearing guards (transcript + screen) still run before every byte,
+		// and the operator has one seat. The axis is evidence in the ledger now,
+		// never a veto.
 		const loadBearingPassed = LOAD_BEARING_GUARDS.every(
 			(guard) => evaluation[guard],
 		);
-		const strongScreenForm = input.expectation.kind === "item_picker";
-		if (
-			!loadBearingPassed ||
-			!ABSTAINING_GUARDS.includes("permission_axis") ||
-			!strongScreenForm
-		) {
+		if (!loadBearingPassed || !ABSTAINING_GUARDS.includes("permission_axis")) {
 			return fail("permission_axis", screenMatch);
 		}
 		deps.log({
@@ -3307,6 +3306,12 @@ async function injectSequence(
 				written,
 				screenReason: outcome.screenMatch?.reason ?? null,
 				screenMissing: outcome.screenMatch?.missing ?? null,
+				// First-shot diagnosis: the complete per-guard picture at the failing
+				// keystroke, not just the name of the guard that tripped.
+				expectation: keystroke.expect.kind,
+				evaluation: { ...outcome.evaluation },
+				passed: [...outcome.passed],
+				abstained: [...outcome.abstained],
 			});
 			return abort(
 				`guard ${outcome.failed} failed mid-sequence`,
