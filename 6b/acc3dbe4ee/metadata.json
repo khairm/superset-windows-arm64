@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "6bacc3dbe4ee",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/guard-abstain.test.ts",
+    "packages/host-service/src/companion/http.ts",
+    "packages/host-service/src/companion/keystrokes.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6b/acc3dbe4ee/0/metadata.json",
+      "transcript": "/6b/acc3dbe4ee/0/full.jsonl",
+      "content_hash": "/6b/acc3dbe4ee/0/content_hash.txt",
+      "prompt": "/6b/acc3dbe4ee/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4511,
+    "cache_creation_tokens": 19786939,
+    "cache_read_tokens": 893457423,
+    "output_tokens": 1879915,
+    "api_call_count": 2360
+  }
+}
