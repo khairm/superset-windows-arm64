@@ -8,6 +8,7 @@ import {
 	type GuardSourceResult,
 	LOAD_BEARING_GUARDS,
 	ledgerRecordToResponse,
+	mergeAttemptEvidence,
 } from "./answer";
 import type { LedgerRecord } from "./attempt-ledger";
 import type { ScreenExpectation } from "./keystrokes";
@@ -294,6 +295,34 @@ describe("(GUARD4-ABSTAIN) the permission axis", () => {
 		);
 		expect(outcome.failed).toBeNull();
 		expect(outcome.abstained).toEqual([]);
+	});
+
+	it("an abstain on ANY keystroke survives into the attempt-wide evidence", async () => {
+		// The sources can change between per-keystroke reads: the axis is a
+		// latch any hook event overwrites. If the attempt record kept only the
+		// last keystroke's picture, a sequence whose early bytes were permitted
+		// only by abstention would be recorded — in the ledger, the audit event
+		// and the derived replay — as if nothing had abstained.
+		const first = await evaluate({ permissionAxis: false }, PICKER_SCREEN);
+		const second = await evaluate({ permissionAxis: true }, PICKER_SCREEN);
+		expect(first.outcome.abstained).toEqual(["permission_axis"]);
+		expect(second.outcome.passed).toContain("permission_axis");
+
+		let evidence = mergeAttemptEvidence(null, first.outcome);
+		evidence = mergeAttemptEvidence(evidence, second.outcome);
+
+		expect(evidence.guardsAbstained).toEqual(["permission_axis"]);
+		expect(evidence.guardsPassed).not.toContain("permission_axis");
+		// Raw reading ANDs: it did NOT read latched before every byte.
+		expect(evidence.evaluation.permission_axis).toBe(false);
+		// Disjointness holds attempt-wide.
+		for (const guard of evidence.guardsAbstained) {
+			expect(evidence.guardsPassed).not.toContain(guard);
+		}
+		// Load-bearing guards passed every evaluation and stay passed.
+		for (const guard of LOAD_BEARING_GUARDS) {
+			expect(evidence.guardsPassed).toContain(guard);
+		}
 	});
 
 	it("the abstain list is held to its own rules at module load", () => {

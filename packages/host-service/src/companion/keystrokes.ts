@@ -175,6 +175,18 @@ export interface PickerContract {
 	 * absence of evidence — see the refusal in `validateAnswerItem`.
 	 */
 	multiSelectFreeTextBytesProven: boolean;
+	/**
+	 * (GUARD5-MSEL-EDITOR-DETECT) DETECTION-ONLY: the exact raw-row copy of the
+	 * multi-select editor row in each toggle state, as the build renders it at
+	 * digit `options.length + 1`. Guard 5 uses it as numbering evidence — the
+	 * row renders BELOW every option, so seeing it while options are missing
+	 * proves a mis-numbered screen rather than a clip. It is NEVER offered as a
+	 * pressable slot (`provenFreeTextOption` refuses multi-select free text;
+	 * on 2.1.226 the press is refuted, not unproven). Empty when the copy was
+	 * never captured for the build — the contradiction check then simply stays
+	 * unarmed for multi items, exactly as it was before the needle existed.
+	 */
+	multiSelectFreeTextRowDetectLabels: readonly string[];
 }
 
 export const PICKER_CONTRACTS: readonly PickerContract[] = [
@@ -187,6 +199,8 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 		freeTextManyBytesProven: false,
 		multiSelectManyBytesProven: false,
 		multiSelectFreeTextBytesProven: false,
+		// Never captured on 2.1.220 — check stays unarmed for multi items there.
+		multiSelectFreeTextRowDetectLabels: [],
 	},
 	{
 		version: "claude-code@2.1.226",
@@ -222,6 +236,14 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 		// asked for free text and the agent's `tool_result` came back
 		// `"…"="Mone"` — the first option, which nobody chose.
 		multiSelectFreeTextBytesProven: false,
+		// (GUARD5-MSEL-EDITOR-DETECT) Captured live
+		// (tmp/pty-proof-msel/mix_ft_first-r1-04..06-*.txt): the checkbox editor
+		// row renders `[ ] Type something` untoggled — no full stop, unlike the
+		// single-select row above — and `[✔] Type something` once toggled.
+		multiSelectFreeTextRowDetectLabels: [
+			"[ ] Type something",
+			"[✔] Type something",
+		],
 	},
 ];
 
@@ -256,6 +278,19 @@ export function provenFreeTextRowLabel(): string | null {
 		return null;
 	}
 	return contract.freeTextRowLabel;
+}
+
+/**
+ * (GUARD5-MSEL-EDITOR-DETECT) The multi-select editor row's exact raw-row
+ * copies for the proven build — one per toggle state — or `[]` when unknown.
+ *
+ * DETECTION ONLY. Guard 5 uses these as numbering evidence on multi-select
+ * items (the row renders below every option, so its presence proves missing
+ * option rows were not clipped away); nothing ever presses this row, and
+ * `provenFreeTextOption` keeps refusing multi-select free text regardless.
+ */
+export function provenMultiSelectFreeTextDetectLabels(): readonly string[] {
+	return provenPickerContract()?.multiSelectFreeTextRowDetectLabels ?? [];
 }
 
 /**
@@ -340,6 +375,13 @@ export type KeystrokeEncodingReason =
 	| "duplicate_option"
 	/** `optionIndexes` was not sorted ascending. */
 	| "unsorted_options"
+	/**
+	 * `optionIndexes` was empty. Zero toggles is mechanically drivable (a bare
+	 * advance arrow) but claude-code@2.1.226 then OMITS the question from the
+	 * agent's tool_result — proven in tmp/pty-proof-msel/PROOF.md §3 — so an
+	 * empty selection cannot be committed as if it were an answer.
+	 */
+	| "empty_selection"
 	/** An option index needs two digits; a single bare digit cannot address it. */
 	| "digit_out_of_range"
 	/** Free text was empty, too long, or carried control bytes. */
@@ -538,6 +580,12 @@ function validateAnswerItem(item: QuestionItem, answer: AnswerItem): void {
 				throw new KeystrokeEncodingError(
 					"kind_mismatch",
 					`item ${item.index} is single-select; "multiselect" is never coerced into it`,
+				);
+			}
+			if (answer.optionIndexes.length === 0) {
+				throw new KeystrokeEncodingError(
+					"empty_selection",
+					`item ${item.index} selects nothing; the desk CLI silently drops an untoggled multi-select question from the agent's result, so an empty selection cannot be committed`,
 				);
 			}
 			let previous = -1;
@@ -978,12 +1026,12 @@ function encodeSingleSelectOne(
  * text: the first closes the inline editor and advances onto the review screen,
  * the second submits. Both were driven; neither is inferred from the other.
  *
- * A multi-select group with an EMPTY `optionIndexes` is legal (PROTOCOL §11.2)
- * and encodes to just the advance arrow. Driven: the CLI accepts it and then
- * OMITS that question from the `tool_result` entirely — the same thing a desk
- * submit past the review screen's "not answered all questions" warning does.
- * The agent sees only the answered questions; nothing here pretends the empty
- * group was "answered with nothing".
+ * A multi-select group with an EMPTY `optionIndexes` never reaches this encoder:
+ * `validateAnswerItems` refuses it (`empty_selection`) because the CLI, though
+ * it accepts the bare advance arrow, then OMITS that question from the
+ * `tool_result` entirely (PROOF §3) — a "confirmed" answer the agent never
+ * sees is not an answer. The zero-toggle byte group itself was driven and
+ * works; the refusal is at the meaning layer, not the byte layer.
  */
 function encodeMany(
 	questions: readonly QuestionItem[],
@@ -1040,11 +1088,14 @@ function encodeMany(
 			continue;
 		}
 		if (answer.kind !== "freetext") {
-			// `classifyAnswerShape` has already refused every other kind here. This
+			// `classifyAnswerShape` has already refused every other kind here, so
+			// `answer` narrows to `never`: a 4th AnswerItem kind added later fails
+			// COMPILATION on this line instead of sailing past a string cast. This
 			// is the encoder refusing to be the place where that stops being true.
+			const unreachable: never = answer;
 			throw new KeystrokeEncodingError(
 				"kind_mismatch",
-				`item ${i} is "${(answer as AnswerItem).kind}", which has no proven sequence inside an ${questions.length}-question prompt`,
+				`item ${i} carries an unknown answer kind: ${JSON.stringify(unreachable)}`,
 			);
 		}
 		if (item.freeTextOption === null) {
@@ -1103,8 +1154,8 @@ function encodeMany(
  * the Submit tab, which is why the two are emitted as an inseparable pair and
  * re-checked by `assertMultiSelectSubmitShape`.
  *
- * An empty `optionIndexes` is legal (PROTOCOL §11.2) and encodes to just the
- * submit pair.
+ * An empty `optionIndexes` never reaches this encoder — `validateAnswerItems`
+ * refuses it (`empty_selection`); see the note on `encodeMany`.
  */
 function encodeMultiSelectOne(
 	questions: readonly QuestionItem[],

@@ -454,17 +454,24 @@ describe("(MSEL-N2-PROVEN) a multi-select question inside N > 1 encodes", () => 
 		]);
 	});
 
-	it("an EMPTY multi group is just the advance arrow (PROOF case E: the CLI omits the question from the tool_result, as a desk submit past the warning does)", () => {
+	it("an EMPTY multi selection is refused at the boundary — the CLI silently drops the question from the tool_result (PROOF §3)", () => {
+		// The zero-toggle byte group (a bare advance arrow) was driven and works
+		// mechanically, but the agent's tool_result then omits the question
+		// entirely: "confirmed" would claim an answer the agent never sees. The
+		// refusal is at the meaning layer (`validateAnswerItems`), mirrored by
+		// the HTTP schema's min-1.
 		const questions = reindex([multiItem(0), ...twoQuestions().slice(1)]);
-		const keystrokes = encodeAnswer(questions, [
-			{ kind: "multiselect", questionIndex: 0, optionIndexes: [] },
-			{ kind: "select", questionIndex: 1, optionIndex: 1 },
-		]);
-		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
-			"\x1b[C",
-			"2",
-			"\r",
-		]);
+		expect(() =>
+			encodeAnswer(questions, [
+				{ kind: "multiselect", questionIndex: 0, optionIndexes: [] },
+				{ kind: "select", questionIndex: 1, optionIndex: 1 },
+			]),
+		).toThrow(
+			expect.objectContaining({
+				name: "KeystrokeEncodingError",
+				reason: "empty_selection",
+			}),
+		);
 	});
 
 	it("a multi group composes with a free-text sibling in the same prompt (PROOF §4)", () => {

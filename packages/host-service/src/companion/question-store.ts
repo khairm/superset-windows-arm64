@@ -75,7 +75,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import { provenFreeTextOption, provenPickerContract } from "./keystrokes";
+import {
+	MAX_DIGIT_ADDRESSABLE_INDEX,
+	provenFreeTextOption,
+	provenPickerContract,
+} from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -1565,6 +1569,24 @@ function requiredCapabilities(questions: QuestionItem[]): Capability[] {
  * shapes get a slot, so a slot is offered exactly where free text can be driven.
  */
 function hasUnprovenAnswerShape(questions: QuestionItem[]): boolean {
+	// Digit addressability is part of the shape: a bare digit addresses rows
+	// 1..9 only, so an option at index > MAX_DIGIT_ADDRESSABLE_INDEX has no
+	// single-keystroke encoding and `digitFor` refuses it at submit
+	// (`digit_out_of_range`). Refusing it up front is the same
+	// (SHAPE-UNPROVEN-UPFRONT) timing rule as the flag checks below — the
+	// client must not offer a prompt, collect every answer, and only then
+	// learn the submit was never possible. The free-text slot sits at digit
+	// `options.length + 1`, so it gets the same bound.
+	if (
+		questions.some(
+			(q) =>
+				q.options.length - 1 > MAX_DIGIT_ADDRESSABLE_INDEX ||
+				(q.freeTextOption !== null &&
+					q.freeTextOption.index > MAX_DIGIT_ADDRESSABLE_INDEX),
+		)
+	) {
+		return true;
+	}
 	if (questions.length <= 1) return false;
 	if (!questions.some((q) => q.multiSelect)) return false;
 	return provenPickerContract()?.multiSelectManyBytesProven !== true;

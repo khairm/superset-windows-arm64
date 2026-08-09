@@ -1771,4 +1771,88 @@ describe("(MSEL-N2-PROVEN) the real 2.1.226 multi-select rows inside an N > 1 pr
 		});
 		expect(match.ok).toBe(false);
 	});
+
+	// (GUARD5-MSEL-EDITOR-DETECT) The contradiction check must be armed for
+	// multi items even though they never carry a freeTextOption: the checkbox
+	// editor row renders BELOW every option, so seeing it while option rows are
+	// missing proves a mis-numbered screen, not a bottom clip. Before the
+	// detection needle, this byte-identical screen was refused for a
+	// single-select item (`row_absent`) and ACCEPTED for a multi item.
+	const CLIPPED_MSEL_ITEM: QuestionItem = {
+		index: 0,
+		header: "Multi",
+		question: "Which multi values should this canary run use?",
+		multiSelect: true,
+		options: [
+			{
+				index: 0,
+				label: "Mone",
+				description: "Include the first multi value in this canary run.",
+			},
+			{
+				index: 1,
+				label: "Mtwo",
+				description: "Include the second multi value in this canary run.",
+			},
+			{
+				index: 2,
+				label: "Mthree",
+				description: "Include the third multi value in this canary run.",
+			},
+			{
+				index: 3,
+				label: "Mfour",
+				description: "Include the fourth multi value in this canary run.",
+			},
+		],
+		freeTextOption: null,
+	};
+
+	const CONTRADICTED_VIEWPORT = [
+		"Which multi values should this canary run use?",
+		"",
+		"❯ 1. [ ] Mone",
+		"  Include the first multi value in this canary run.",
+		"  5. [ ] Type something",
+		"     Submit",
+	].join("\n");
+
+	it("a 'bottom clip' with the editor row visible is a numbering contradiction, on a toggle press", () => {
+		const match = matchPickerScreen({
+			screen: CONTRADICTED_VIEWPORT,
+			item: CLIPPED_MSEL_ITEM,
+			requireOptionIndex: 0,
+		});
+		expect(match.ok).toBe(false);
+		expect(match.ok === false && match.reason).toBe("row_absent");
+	});
+
+	it("…and on the advance arrow's requireOptionIndex:null evaluation too", () => {
+		const match = matchPickerScreen({
+			screen: CONTRADICTED_VIEWPORT,
+			item: CLIPPED_MSEL_ITEM,
+			requireOptionIndex: null,
+		});
+		expect(match.ok).toBe(false);
+	});
+
+	it("a REAL bottom clip — editor row scrolled out with the missing rows — stays accepted", () => {
+		// The needle must arm the contradiction, not refuse genuine clips: rows
+		// 3-4 and the editor row are below the fold together, which is exactly
+		// what a short viewport does.
+		const clipped = [
+			"Which multi values should this canary run use?",
+			"",
+			"❯ 1. [ ] Mone",
+			"  Include the first multi value in this canary run.",
+			"  2. [ ] Mtwo",
+			"  Include the second multi value in this canary run.",
+		].join("\n");
+		const match = matchPickerScreen({
+			screen: clipped,
+			item: CLIPPED_MSEL_ITEM,
+			requireOptionIndex: 0,
+		});
+		expect(match.ok).toBe(true);
+	});
 });

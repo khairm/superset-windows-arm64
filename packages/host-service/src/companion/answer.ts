@@ -102,6 +102,7 @@ import {
 	type Keystroke,
 	KeystrokeEncodingError,
 	MESSAGE_ALLOWED_C0,
+	provenMultiSelectFreeTextDetectLabels,
 	type RawPtyWriter,
 	type RawWriteFn,
 	type ScreenExpectation,
@@ -993,7 +994,7 @@ export function matchPickerScreen(input: {
 			windows,
 			lines,
 			item: input.item,
-			digitIndex: freeText.index,
+			slot: { index: freeText.index, label: freeText.label },
 		});
 		if (verdict.kind === "found") freeTextRowAt = verdict.windows;
 		if (verdict.kind === "absent" && pressingFreeText) {
@@ -1008,6 +1009,31 @@ export function matchPickerScreen(input: {
 					digitMapped: true,
 				}
 			);
+		}
+	} else if (input.item.multiSelect) {
+		// (GUARD5-MSEL-EDITOR-DETECT) A multi-select item never OFFERS a free-text
+		// slot (`provenFreeTextOption` refuses; the row is CLI-refuted), so
+		// `freeText` is always null here — which used to structurally disarm the
+		// contradiction check below: a bottom-clipped multi list was accepted
+		// where the identical single-select list was refused `row_absent`, and a
+		// toggle digit was pressed against rows never verified to belong to this
+		// question. But 2.1.226 still RENDERS the checkbox editor row below every
+		// option, so the contract carries its exact copy (both toggle states) as
+		// a DETECTION-ONLY needle: found feeds the numbering contradiction,
+		// nothing here ever makes it pressable. A conflict verdict is ignored —
+		// off a press it means presence is unknown, evidence in neither
+		// direction, exactly as for the single-select row.
+		for (const label of provenMultiSelectFreeTextDetectLabels()) {
+			const verdict = verifyFreeTextRow({
+				windows,
+				lines,
+				item: input.item,
+				slot: { index: input.item.options.length, label },
+			});
+			if (verdict.kind === "found") {
+				freeTextRowAt = verdict.windows;
+				break;
+			}
 		}
 	}
 	/** (GUARD5-FREETEXT-PLACEMENT) In the chain ONLY when its digit is pressed. */
@@ -1543,25 +1569,30 @@ function verifyFreeTextRow(input: {
 	windows: readonly string[];
 	lines: readonly string[];
 	item: QuestionItem;
-	digitIndex: number;
+	/**
+	 * The row to look for: its digit index and the EXACT raw-row copy. For a
+	 * single-select item this is the offered `freeTextOption`; for a multi-select
+	 * item it is a DETECTION-ONLY needle from the picker contract — the checkbox
+	 * editor row is never pressable, but its presence below the option block is
+	 * the same numbering evidence (GUARD5-FREETEXT-CONTRADICTION) either way.
+	 */
+	slot: { index: number; label: string };
 }): FreeTextVerdict {
-	const freeText = input.item.freeTextOption;
-	if (freeText === null) return { kind: "absent" };
-	const digit = input.digitIndex + 1;
-	const hits = freeTextRowLines(input.lines, digit, freeText.label);
+	const digit = input.slot.index + 1;
+	const hits = freeTextRowLines(input.lines, digit, input.slot.label);
 	if (hits.length === 0) return { kind: "absent" };
 	// TWO candidate rows is a refusal, not a choice. If the contract label appears
 	// at more than one digit — a real option spelled exactly like the system row,
 	// with the true system row sitting below it — then which one this digit selects
 	// is exactly what cannot be established, and pressing it is irreversible.
-	const carrying = digitsCarryingLabel(input.lines, freeText.label);
+	const carrying = digitsCarryingLabel(input.lines, input.slot.label);
 	if (carrying.size !== 1 || !carrying.has(digit)) return { kind: "conflict" };
 	if (hits.length !== 1) return { kind: "conflict" };
 	// A real option wearing this digit means the capture and the screen disagree
 	// about the numbering; pressing it would submit an answer nobody chose.
 	for (const option of input.item.options) {
 		if (
-			screenRowWindows(input.windows, input.digitIndex, option.label).length > 0
+			screenRowWindows(input.windows, input.slot.index, option.label).length > 0
 		) {
 			return { kind: "conflict" };
 		}
@@ -2059,13 +2090,68 @@ export interface GuardOutcome {
 	passed: AnswerGuardName[];
 	/**
 	 * (GUARD4-ABSTAIN) Guards that did NOT read positively and were carried
-	 * anyway, because every load-bearing guard had passed, the screen guard ran in
-	 * its strong form, and they are in `ABSTAINING_GUARDS`. Disjoint from `passed`.
+	 * anyway, because every load-bearing guard had passed and they are in
+	 * `ABSTAINING_GUARDS`. There is no expectation-form condition: the axis
+	 * abstains on weak `same_prompt` keystrokes too, or it aborts proven
+	 * free-text sequences mid-write. Disjoint from `passed`.
 	 */
 	abstained: AnswerGuardName[];
 	/** The FIRST guard that failed, in evaluation order. */
 	failed: AnswerGuardName | null;
 	screenMatch: PickerScreenMatch | null;
+}
+
+/** The attempt-wide guard evidence carried into the ledger, audit and wire. */
+export interface AttemptEvidence {
+	guardsPassed: AnswerGuardName[];
+	guardsAbstained: AnswerGuardName[];
+	evaluation: GuardEvaluation;
+}
+
+/**
+ * Fold one keystroke's `GuardOutcome` into the attempt-wide evidence record.
+ *
+ * The guards run before EVERY byte and their sources can change between reads
+ * (the permission axis is a latch any hook event overwrites), so a record that
+ * keeps only the final keystroke's picture can claim "nothing abstained" about
+ * a sequence whose earlier bytes were permitted only by abstention — a false
+ * ledger row, a false audit event, and a falsely-derived replay. So:
+ *
+ *   - `guardsAbstained` is the UNION across keystrokes: abstaining once is an
+ *     attempt-wide fact;
+ *   - `guardsPassed` is the INTERSECTION, minus anything that ever abstained —
+ *     a guard passed the attempt only if it passed every evaluation;
+ *   - `evaluation` ANDs per guard: the raw reading is `true` only if it read
+ *     `true` before every byte.
+ *
+ * Disjointness (`guardsPassed` ∩ `guardsAbstained` = ∅) holds attempt-wide.
+ * `previous` is null on the first keystroke.
+ */
+export function mergeAttemptEvidence(
+	previous: AttemptEvidence | null,
+	outcome: GuardOutcome,
+): AttemptEvidence {
+	const guardsAbstained =
+		previous === null
+			? [...outcome.abstained]
+			: [...new Set([...previous.guardsAbstained, ...outcome.abstained])];
+	const guardsPassed = (
+		previous === null
+			? [...outcome.passed]
+			: previous.guardsPassed.filter((guard) => outcome.passed.includes(guard))
+	).filter((guard) => !guardsAbstained.includes(guard));
+	const evaluation =
+		previous === null
+			? { ...outcome.evaluation }
+			: (Object.fromEntries(
+					(Object.keys(outcome.evaluation) as AnswerGuardName[]).map(
+						(guard) => [
+							guard,
+							previous.evaluation[guard] && outcome.evaluation[guard],
+						],
+					),
+				) as GuardEvaluation);
+	return { guardsPassed, guardsAbstained, evaluation };
 }
 
 /** A source that throws or answers `null` counts as FALSE. Never "probably fine". */
@@ -3291,9 +3377,12 @@ async function injectSequence(
 			expectation: keystroke.expect,
 			requireOptionIndex: keystroke.optionIndex,
 		});
-		guardsPassed = outcome.passed;
-		guardsAbstained = outcome.abstained;
-		evaluation = outcome.evaluation;
+		// Attempt-wide evidence, not last-keystroke evidence. See
+		// `mergeAttemptEvidence`.
+		({ guardsPassed, guardsAbstained, evaluation } = mergeAttemptEvidence(
+			index === 0 ? null : { guardsPassed, guardsAbstained, evaluation },
+			outcome,
+		));
 
 		if (outcome.failed !== null) {
 			deps.log({

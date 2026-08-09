@@ -638,8 +638,19 @@ const answerItemSchema = z.discriminatedUnion("kind", [
 	z.object({
 		questionIndex: nonNegativeInt,
 		kind: z.literal("multiselect"),
-		// MAY be empty — "select nothing" is a real answer.
-		optionIndexes: z.array(nonNegativeInt).max(64),
+		// NEVER empty. Zero toggles is mechanically drivable (the group is a bare
+		// advance arrow) but claude-code@2.1.226 then OMITS the question from the
+		// agent's tool_result entirely — proven in tmp/pty-proof-msel/PROOF.md §3.
+		// A "confirmed" answer whose question silently vanishes from the agent's
+		// view is not an answer, so emptiness is refused at the boundary rather
+		// than committed as if "select nothing" were a real outcome.
+		optionIndexes: z
+			.array(nonNegativeInt)
+			.min(1, {
+				message:
+					"optionIndexes must name at least one option: the desk CLI silently drops an untoggled multi-select question from the agent's result, so an empty selection cannot be committed",
+			})
+			.max(64),
 	}),
 	z.object({
 		questionIndex: nonNegativeInt,
