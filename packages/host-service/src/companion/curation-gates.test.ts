@@ -1497,6 +1497,7 @@ function treeDeps(fixture: TreeFixture): ReadDeps {
 	const pending = fixture.pendingByHostTerminal ?? {};
 	return {
 		db,
+		log: () => {},
 		questions: {
 			byHostTerminal: (hostTerminalId: string) =>
 				pending[hostTerminalId] ?? null,

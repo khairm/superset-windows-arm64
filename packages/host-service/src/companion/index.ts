@@ -748,6 +748,7 @@ export function createCompanionBridge(
 			db: hostDb,
 			questions,
 			liveness,
+			log: (event) => logger.info("read", event),
 			// (MIRROR-ORG-GATE) Curation is only applied to a mirror written for
 			// THIS org.
 			organizationId: options.organizationId,
@@ -1084,8 +1085,9 @@ export function createCompanionBridge(
 		// nor fail because one threw. It reports; it never refuses.
 		void resolveProvenVersionStatus()
 			.then((status) => {
-				logProvenVersionStatus(status, (event) => {
-					logger.warn(JSON.stringify(event));
+				logProvenVersionStatus(status, {
+					info: (event) => logger.info(JSON.stringify(event)),
+					warn: (event) => logger.warn(JSON.stringify(event)),
 				});
 			})
 			.catch(() => {

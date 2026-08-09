@@ -2718,6 +2718,17 @@ export async function handleAnswer(
 	ctx: SealedRequestContext,
 	request: AnswerRequest,
 ): Promise<AnswerResponse> {
+	// Intake, before the ledger claim and every guard: a refused or fenced
+	// answer must show an arrival line next to its refusal, not silence. Item
+	// KINDS only — free-text bodies never reach a log.
+	deps.log({
+		event: "companion.answer.intake",
+		requestId: request.requestId,
+		questionId: request.questionId,
+		deviceId: ctx.device.deviceId,
+		surface: request.surface,
+		itemKinds: request.answers.map((item) => item.kind),
+	});
 	// 1. THE DURABLE CLAIM, AND IT IS FIRST FOR A REASON.
 	//
 	//    (ANSWER-LEDGER) This used to be a plain read here, with the `in_flight`

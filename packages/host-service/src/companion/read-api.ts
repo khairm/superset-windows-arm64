@@ -368,6 +368,15 @@ export interface ReadDeps {
 	 * rather than degrade to silence.
 	 */
 	onQuestionsSettled(questionIds: QuestionId[]): void;
+	/**
+	 * Structured diagnostics, mirroring `AnswerDeps.log`. NEVER carries question
+	 * text, option labels or transcript content — identities, shapes and
+	 * verdicts only. REQUIRED, not optional-with-a-no-op: a silently absent
+	 * logger is the observability failure this field exists to close
+	 * (2026-08-09: a watch refusal took an hour to diagnose because the read
+	 * path recorded nothing about what `answerable` verdict it served).
+	 */
+	log(event: Record<string, unknown>): void;
 }
 
 /** Convenience binder so a composition root can hand around one object. */
@@ -1272,7 +1281,25 @@ export async function handleQuestion(
 	if (question === null) {
 		throw badRequest("unknown questionId");
 	}
-	return deps.questions.toResponse(question, { granted: ctx.granted });
+	const response = await deps.questions.toResponse(question, {
+		granted: ctx.granted,
+	});
+	// One line per served detail — the durable record of what verdict this
+	// device was shown, and against which granted set. This is the line whose
+	// absence turned the 2026-08-09 watch refusal into an hour of forensics.
+	deps.log({
+		event: "companion.question.served",
+		questionId: response.questionId,
+		deviceId: ctx.device.deviceId,
+		state: response.state,
+		agentKind: response.source.agentKind,
+		questionCount: response.questions.length,
+		multiSelect: response.questions.some((item) => item.multiSelect),
+		granted: [...ctx.granted],
+		answerable: response.answerable,
+		unanswerableReason: response.unanswerableReason,
+	});
+	return response;
 }
 
 // ---------------------------------------------------------------------------

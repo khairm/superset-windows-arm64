@@ -1343,6 +1343,15 @@ export function createBridgeHttpServer(
 					granted: hello.capabilities.granted,
 					expiresAtMs: nowMs + (hello.sessionTtlMs || SESSION_TTL_MS),
 				});
+				// The durable record of this session's granted set. The registry is
+				// in-memory only, so without this line the grants a refusal was
+				// evaluated against are unreconstructable after the fact.
+				deps.logger.info("[companion] session hello", {
+					deviceId: opened.device.deviceId,
+					protocol: hello.protocol,
+					granted: hello.capabilities.granted,
+					expiresAtMs: nowMs + (hello.sessionTtlMs || SESSION_TTL_MS),
+				});
 			}
 
 			await touchLastSeen(opened.device.deviceId, nowMs);
@@ -1360,7 +1369,12 @@ export function createBridgeHttpServer(
 					nowMs,
 				);
 			}
-			const sealed = toSealedError(error, path, deps.logger);
+			const sealed = toSealedError(
+				error,
+				path,
+				deps.logger,
+				opened.device.deviceId,
+			);
 			return sealResponse(
 				path,
 				opened,
@@ -1677,15 +1691,37 @@ export function headersOf(request: Request): Readonly<Record<string, string>> {
 /**
  * Maps an unexpected throw onto a stable wire code. The real error is logged
  * with a correlation id and is NEVER serialised into the response (§10).
+ *
+ * A deliberate `SealedError` (401/403/409/429/501 — every refusal this bridge
+ * issues) is logged too, at warn: until 2026-08-09 these returned silently, so
+ * every sealed refusal a device ever saw was invisible in host-service.log and
+ * a phone-side complaint could not be matched to the bridge's decision. The
+ * body is exactly what the client receives — sealed-safe by construction.
  */
 function toSealedError(
 	error: unknown,
 	path: SealedPath,
 	logger: BridgeLogger,
+	deviceId: string,
 ): SealedError {
-	if (error instanceof SealedError) return error;
+	if (error instanceof SealedError) {
+		logger.warn("[companion] sealed refusal", {
+			path,
+			deviceId,
+			statusCode: error.statusCode,
+			code: error.body.code,
+			message: error.body.message,
+			detail: error.body.detail,
+		});
+		return error;
+	}
 	const ref = base64UrlEncode(randomBytes(6));
-	logger.error("[companion] unhandled handler failure", { path, ref, error });
+	logger.error("[companion] unhandled handler failure", {
+		path,
+		deviceId,
+		ref,
+		error,
+	});
 	return new SealedError(500, {
 		code: "internal",
 		message: `internal error (ref ${ref})`,

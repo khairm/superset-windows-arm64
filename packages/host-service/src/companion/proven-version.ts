@@ -182,10 +182,23 @@ async function computeProvenVersionStatus(): Promise<ProvenVersionStatus> {
  */
 export function logProvenVersionStatus(
 	status: ProvenVersionStatus,
-	log: (event: Record<string, unknown>) => void,
+	log: {
+		info: (event: Record<string, unknown>) => void;
+		warn: (event: Record<string, unknown>) => void;
+	},
 ): void {
+	// The affirmative record, every boot. Its absence in a log is itself
+	// information (a bridge that never got this far), and its presence is the
+	// only durable answer to "what contract was this bridge running against?" —
+	// the RCA of 2026-08-09 had to infer it from the install directory.
+	log.info({
+		event: "companion.picker_contract.status",
+		installed: status.installed,
+		proven: status.proven,
+		mismatch: status.mismatch,
+	});
 	if (!status.mismatch) return;
-	log({
+	log.warn({
 		event: "companion.picker_contract.version_drift",
 		installed: status.installed,
 		proven: status.proven,
