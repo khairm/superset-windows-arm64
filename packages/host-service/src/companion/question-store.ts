@@ -75,7 +75,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import { provenFreeTextOption } from "./keystrokes";
+import { provenFreeTextOption, provenPickerContract } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -1541,23 +1541,24 @@ function requiredCapabilities(questions: QuestionItem[]): Capability[] {
  * at submit time, hoisted to the point where the client decides whether to offer
  * the prompt at all. It is deliberately a duplicate of that rule and not a call
  * into it: the encoder classifies a (questions, answers) PAIR and needs answers
- * that do not exist yet here. Both must stay in step — if `classifyAnswerShape`
- * ever proves a new shape, this must stop refusing it, or the bridge will hide a
- * prompt it can now drive.
+ * that do not exist yet here. Both must stay in step — each consults the same
+ * `provenPickerContract()` flag, so proving a shape on a new build (or moving
+ * `PROVEN_AGAINST` to a build that lacks one) flips offering and driving
+ * together.
  *
- * The proven shapes are: one question (select / multiselect / freetext), and N>1
- * questions where EVERY item is a plain single select, each answered with a
- * digit or (FREETEXT-N2-PROVEN) with free text. A `multiSelect` item inside an
- * N>1 prompt has no proven sequence — `validateAnswerItems` refuses to coerce
- * `"select"` onto a multiSelect item, so such an item can only be answered with
- * `kind: "multiselect"`, which `classifyAnswerShape` then refuses with
- * `shape_unproven`.
+ * (MSEL-N2-PROVEN) Every prompt SHAPE now has a proven sequence on 2.1.226:
+ * one question (select / multiselect / freetext), and N > 1 questions in any
+ * mix of single-select, free text and multi-select per-question groups. The
+ * only remaining refusal — free text ON a multi-select question — is an
+ * ANSWER-kind refusal, not a prompt-shape one: the prompt itself stays
+ * answerable by toggles, and `provenFreeTextOption` simply never offers the
+ * slot (see below).
  *
- * Before this check the phone and watch showed the prompt as answerable, the
- * user read it, picked an answer for every question, submitted, and only THEN
- * got a 501. The refusal was correct — guessing a byte sequence against a live
- * picker is unrecoverable — but it arrived after all of the work. Nothing about
- * the refusal changes here; only its timing.
+ * Before this check the phone and watch showed an unproven-shape prompt as
+ * answerable, the user read it, picked an answer for every question, submitted,
+ * and only THEN got a 501. Nothing about the refusal-timing rule changes here;
+ * a build whose contract loses `multiSelectManyBytesProven` refuses up front
+ * again.
  *
  * `freeTextOption` needs no companion check either way:
  * `keystrokes.provenFreeTextOption` is the single place that decides which
@@ -1565,7 +1566,8 @@ function requiredCapabilities(questions: QuestionItem[]): Capability[] {
  */
 function hasUnprovenAnswerShape(questions: QuestionItem[]): boolean {
 	if (questions.length <= 1) return false;
-	return questions.some((q) => q.multiSelect);
+	if (!questions.some((q) => q.multiSelect)) return false;
+	return provenPickerContract()?.multiSelectManyBytesProven !== true;
 }
 
 // ---------------------------------------------------------------------------

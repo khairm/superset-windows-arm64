@@ -26,14 +26,26 @@
  *
  *   multiSelect  — INVERTS EVERY RULE ABOVE
  *     digits and space TOGGLE a row. `Enter` TOGGLES TOO and does NOT submit.
- *     Submitting is right-arrow (`\x1b[C`) onto the Submit tab, THEN `\r`.
+ *     Submitting a LONE multi-select is right-arrow (`\x1b[C`) onto the Submit
+ *     tab, THEN `\r`.
  *     => appending Enter "to submit" a multi-select silently FLIPS a selection
  *        and still does not submit. That shape is rejected here by construction:
  *        `encodeAnswer` never emits SUBMIT_RETURN for a multi-select without a
  *        preceding SUBMIT_TAB, and `assertMultiSelectSubmitShape` re-checks the
  *        emitted sequence before it is handed to the injector.
- *     ONLY as the whole prompt. Inside an N > 1 prompt the right-arrow is the
- *     NEXT-QUESTION key, not the Submit tab — see (FREETEXT-N2-PROVEN).
+ *
+ *   multiSelect inside N > 1  (MSEL-N2-PROVEN)
+ *     digits toggle exactly as at N=1, then the SAME `\x1b[C` ADVANCES — to the
+ *     next question mid-prompt, to the review screen on the last — and the
+ *     review-screen `\r` submits the whole prompt. Driven first, middle and
+ *     last, twice each (`tmp/pty-proof-msel/PROOF.md`). The one absolute rule:
+ *     NO `\r` may ever land inside a multi-select question — mid-prompt or not,
+ *     it TOGGLES the caret's row and silently adds an option nobody chose
+ *     (`assertNoReturnIntoMultiSelect` re-checks the emitted sequence). An
+ *     earlier refutation of this shape refuted only the N=1 submit PAIR
+ *     (`\x1b[C` then `\r`): that trailing `\r` was landing on the NEXT
+ *     question. Dropping it and letting the next question's own group run is
+ *     the whole difference.
  *
  *   free text, ONE question
  *     digit N+1 (the slot after the last real option) opens an inline editor,
@@ -150,6 +162,13 @@ export interface PickerContract {
 	 */
 	freeTextManyBytesProven: boolean;
 	/**
+	 * (MSEL-N2-PROVEN) Whether `[toggle digit × k, "\x1b[C"]` was driven as a
+	 * per-question group for a multi-select question INSIDE an N > 1 prompt —
+	 * the arrow advancing to the next question mid-prompt and onto the review
+	 * screen on the last, with the review-screen `\r` submitting.
+	 */
+	multiSelectManyBytesProven: boolean;
+	/**
 	 * Whether free text on a MULTI-SELECT question has a proven sequence.
 	 *
 	 * `false` on every build, and on 2.1.226 that is a REFUTATION rather than an
@@ -166,6 +185,7 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 		// Never driven on this build. Not inferred from 2.1.226: the flags are per
 		// version precisely so a later build's proof cannot backfill an earlier one.
 		freeTextManyBytesProven: false,
+		multiSelectManyBytesProven: false,
 		multiSelectFreeTextBytesProven: false,
 	},
 	{
@@ -185,6 +205,15 @@ export const PICKER_CONTRACTS: readonly PickerContract[] = [
 		// carried the typed text against the right question and the digit-selected
 		// label against the others.
 		freeTextManyBytesProven: true,
+		// (MSEL-N2-PROVEN) Driven with the multi-select question FIRST (N=2),
+		// LAST (N=2) and in the MIDDLE (N=3), twice each, plus the empty
+		// zero-toggle group first and last — `tmp/pty-proof-msel/PROOF.md`. Every
+		// run's `tool_result` carried exactly the toggled options (a 3-option
+		// multi with `Mtwo` untouched proves no over-commit) and the digit answer
+		// on every sibling question. The ENTER probe in the same proof is why the
+		// encoder never emits `\r` inside a multi-select group: it TOGGLED the
+		// caret's row (`Multi="Mthree, Mone"` from one intended toggle).
+		multiSelectManyBytesProven: true,
 		// REFUTED on this build, twice, and this is why it is a hard refusal
 		// rather than a cautious one. Pressing the multi-select free-text row's
 		// digit TOGGLES its checkbox and leaves the caret where it was; the body
@@ -279,7 +308,11 @@ export function provenFreeTextOption(input: {
 // raw bytes
 // ---------------------------------------------------------------------------
 
-/** Right-arrow. Moves onto the multi-select Submit tab. NOT a submit by itself. */
+/**
+ * Right-arrow. On a LONE multi-select it moves onto the Submit tab; inside an
+ * N > 1 prompt it ADVANCES a multi-select question (next question mid-prompt,
+ * review screen on the last). Never a submit by itself.
+ */
 export const KEY_RIGHT_ARROW = "\x1b[C";
 /** Carriage return. Submits a review screen / a free-text editor. TOGGLES a multi-select row. */
 export const KEY_RETURN = "\r";
@@ -336,19 +369,19 @@ export class KeystrokeEncodingError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * The five shapes with a PROVEN byte sequence. Anything else is
+ * The six shapes with a PROVEN byte sequence. Anything else is
  * `shape_unproven` and is refused.
  *
- * Deliberately absent, and why: a MULTI-SELECT question inside an N > 1 prompt,
- * in any combination. The multi-select submit (`\x1b[C` then `\r`) was proven on
- * a prompt of exactly one question, where the right-arrow lands on the Submit
- * tab. Inside an N > 1 prompt the right-arrow is the NEXT-QUESTION key — a live
- * run drove `[toggle, "\x1b[C", "\r"]` on question 1 of a two-question prompt and
- * the right-arrow moved to question 2, where the `\r` then SELECTED that
- * question's focused row. The bridge would have answered a question the user was
- * never shown. So an N > 1 prompt carrying a multi-select question has no
- * answerable path at all here, and every one of its items is refused. This is the
- * same reason `agent.codex` is never granted in v1.
+ * (MSEL-N2-PROVEN) A multi-select question inside an N > 1 prompt joined the
+ * proven set once its per-question group — toggles, then the right-arrow as the
+ * ADVANCE — was driven first, middle and last (`tmp/pty-proof-msel/PROOF.md`).
+ * The earlier refutation of this shape refuted only the N=1 submit pair
+ * (`\x1b[C` then `\r`) reused verbatim: that trailing `\r` landed on the NEXT
+ * question and selected its focused row. The group form has no trailing `\r`,
+ * and `assertNoReturnIntoMultiSelect` makes emitting one impossible.
+ *
+ * Still deliberately absent: free text ON a multi-select question — REFUTED,
+ * not unproven (see `multiSelectFreeTextBytesProven`).
  */
 export type AnswerShape =
 	/** Exactly one single-select question: `[digit]`. Atomic select+submit. */
@@ -364,7 +397,16 @@ export type AnswerShape =
 	 * with free text: per question either `[digit]` or `[digit N+1, text, "\r"]`,
 	 * then the review-screen `"\r"`.
 	 */
-	| "freetext_many";
+	| "freetext_many"
+	/**
+	 * (MSEL-N2-PROVEN) N > 1 questions, at least one multi-select. Per question
+	 * either `[digit]`, `[digit N+1, text, "\r"]` (free text on a single-select
+	 * sibling), or `[toggle digit × k, "\x1b[C"]` for a multi-select — k may be
+	 * 0, which the CLI accepts and then OMITS that question from the
+	 * `tool_result`, exactly as a desk submit past the review-screen warning
+	 * does. Then the review-screen `"\r"`.
+	 */
+	| "multiselect_many";
 
 export type KeystrokeKind =
 	/** A bare digit that selects (and, when it is the only one, submits). */
@@ -375,7 +417,14 @@ export type KeystrokeKind =
 	| "freetext_open"
 	/** The UTF-8 free-text body. */
 	| "freetext_body"
-	/** Right-arrow onto the multi-select Submit tab. Not a submit. */
+	/**
+	 * Right-arrow. On a lone multi-select it moves onto the Submit tab; inside
+	 * an N > 1 prompt it ADVANCES a multi-select question (next question
+	 * mid-prompt, review screen on the last). The same byte either way, and
+	 * never itself a submit. The picker's own footer under the rows reads
+	 * `Next` mid-prompt and `Submit` on the last question — a rendering detail,
+	 * never a reason to branch on which byte to send.
+	 */
 	| "submit_tab"
 	/** `\r` — submits a review screen or a free-text editor. */
 	| "submit_return";
@@ -761,7 +810,7 @@ function assertFreeText(text: string, itemIndex: number): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Classifies a validated (questions, answers) pair into one of the four PROVEN
+ * Classifies a validated (questions, answers) pair into one of the PROVEN
  * shapes, or throws `shape_unproven`.
  *
  * Call `validateAnswerItems` first — this assumes the pair is already
@@ -793,22 +842,30 @@ export function classifyAnswerShape(
 		}
 	}
 
-	// (FREETEXT-N2-PROVEN) N > 1. `select` and `freetext` compose freely here,
-	// because both leave the picker on the NEXT question: a bare digit advances,
-	// and so does the `\r` that closes an inline editor. `multiselect` does not —
-	// its submit pair's right-arrow is the next-question key inside an N > 1
-	// prompt, so `\r` would land on a question the user has not answered.
+	// N > 1. All three kinds compose freely here, because every per-question
+	// group leaves the picker on the NEXT question: a bare digit advances, the
+	// `\r` that closes an inline editor advances (FREETEXT-N2-PROVEN), and a
+	// multi-select group's terminating `\x1b[C` advances (MSEL-N2-PROVEN).
+	// The multi-select group is gated on its per-version proof: on a build
+	// where it was never driven, refusing is still the only honest option.
 	let sawFreeText = false;
+	let sawMultiSelect = false;
 	for (const answer of answers) {
 		if (answer.kind === "select") continue;
 		if (answer.kind === "freetext") {
 			sawFreeText = true;
 			continue;
 		}
-		throw new KeystrokeEncodingError(
-			"shape_unproven",
-			`item ${answer.questionIndex} is "${answer.kind}" inside an ${questions.length}-question prompt; the right-arrow that submits a lone multi-select is the NEXT-QUESTION key there, so the following return would select a row on a question nobody answered — refused rather than guessed`,
-		);
+		sawMultiSelect = true;
+	}
+	if (sawMultiSelect) {
+		if (provenPickerContract()?.multiSelectManyBytesProven !== true) {
+			throw new KeystrokeEncodingError(
+				"shape_unproven",
+				`a multi-select group inside an ${questions.length}-question prompt has no proven byte sequence on ${PROVEN_AGAINST}; refused rather than guessed`,
+			);
+		}
+		return "multiselect_many";
 	}
 	return sawFreeText ? "freetext_many" : "single_select_many";
 }
@@ -867,13 +924,16 @@ export function encodeAnswer(
 	const keystrokes: Keystroke[] =
 		shape === "single_select_one"
 			? encodeSingleSelectOne(questions, answers)
-			: shape === "single_select_many" || shape === "freetext_many"
+			: shape === "single_select_many" ||
+					shape === "freetext_many" ||
+					shape === "multiselect_many"
 				? encodeMany(questions, answers)
 				: shape === "multiselect_one"
 					? encodeMultiSelectOne(questions, answers)
 					: encodeFreeTextOne(questions, answers);
 
 	assertEmittedShape(shape, keystrokes);
+	assertNoReturnIntoMultiSelect(questions, keystrokes);
 	return keystrokes;
 }
 
@@ -902,19 +962,28 @@ function encodeSingleSelectOne(
 }
 
 /**
- * (FREETEXT-N2-PROVEN) Every N > 1 prompt: per question either `[digit]` or
- * `[digit N+1, text, "\r"]`, then the review-screen `"\r"`.
+ * Every N > 1 prompt: per question `[digit]`, `[digit N+1, text, "\r"]`
+ * (FREETEXT-N2-PROVEN) or `[toggle digit × k, "\x1b[C"]` (MSEL-N2-PROVEN),
+ * then the review-screen `"\r"`.
  *
- * ONE encoder for `single_select_many` and `freetext_many` because the picker
- * makes no distinction between them — both per-question groups end with the
- * picker sitting on the next question, which is exactly why they compose. Two
- * shapes, because their PROOFS are separate and a build may earn one without the
- * other (`freeTextManyBytesProven`); one encoder, because a second copy of the
- * "…then the review-screen return" rule is a place for the two to drift.
+ * ONE encoder for `single_select_many`, `freetext_many` and `multiselect_many`
+ * because the picker makes no distinction between them — every per-question
+ * group ends with the picker sitting on the next question, which is exactly why
+ * they compose. Three shapes, because their PROOFS are separate and a build may
+ * earn one without the others (`freeTextManyBytesProven`,
+ * `multiSelectManyBytesProven`); one encoder, because a second copy of the
+ * "…then the review-screen return" rule is a place for them to drift.
  *
  * Note the two consecutive returns when the LAST question is answered with free
  * text: the first closes the inline editor and advances onto the review screen,
  * the second submits. Both were driven; neither is inferred from the other.
+ *
+ * A multi-select group with an EMPTY `optionIndexes` is legal (PROTOCOL §11.2)
+ * and encodes to just the advance arrow. Driven: the CLI accepts it and then
+ * OMITS that question from the `tool_result` entirely — the same thing a desk
+ * submit past the review screen's "not answered all questions" warning does.
+ * The agent sees only the answered questions; nothing here pretends the empty
+ * group was "answered with nothing".
  */
 function encodeMany(
 	questions: readonly QuestionItem[],
@@ -943,12 +1012,39 @@ function encodeMany(
 			});
 			continue;
 		}
+		if (answer.kind === "multiselect") {
+			// (MSEL-N2-PROVEN) toggles, then the arrow as the ADVANCE. No `\r`
+			// anywhere in the group: the ENTER probe showed it TOGGLES the caret's
+			// row, silently adding an option nobody chose.
+			for (const optionIndex of answer.optionIndexes) {
+				keystrokes.push({
+					kind: "toggle_digit",
+					data: digitFor(optionIndex, i),
+					questionIndex: i,
+					optionIndex,
+					expect: { kind: "item_picker", itemIndex: i },
+					submits: false,
+				});
+			}
+			keystrokes.push({
+				kind: "submit_tab",
+				data: KEY_RIGHT_ARROW,
+				questionIndex: i,
+				optionIndex: null,
+				// The multi's own numbered list is still on screen when the arrow is
+				// pressed — the STRONG expectation holds, exactly as it does for the
+				// lone multi-select's tab in `encodeMultiSelectOne`.
+				expect: { kind: "item_picker", itemIndex: i },
+				submits: false,
+			});
+			continue;
+		}
 		if (answer.kind !== "freetext") {
 			// `classifyAnswerShape` has already refused every other kind here. This
 			// is the encoder refusing to be the place where that stops being true.
 			throw new KeystrokeEncodingError(
 				"kind_mismatch",
-				`item ${i} is "${answer.kind}", which has no proven sequence inside an ${questions.length}-question prompt`,
+				`item ${i} is "${(answer as AnswerItem).kind}", which has no proven sequence inside an ${questions.length}-question prompt`,
 			);
 		}
 		if (item.freeTextOption === null) {
@@ -1342,6 +1438,97 @@ function assertShapeGrammar(
 			}
 			return;
 		}
+		case "multiselect_many": {
+			// (MSEL-N2-PROVEN) One GROUP per question, in question order, each
+			// `[select_digit]`, `[freetext_open, freetext_body, submit_return]` or
+			// `[toggle_digit × k(≥0), submit_tab]`, then the review-screen
+			// `submit_return`. At least one group must be a multi-select one, or
+			// this is `freetext_many`/`single_select_many` wearing the wrong shape
+			// name and a stricter grammar should have run.
+			const trailing = keystrokes[keystrokes.length - 1];
+			if (trailing?.kind !== "submit_return" || !trailing.submits) {
+				throw selfCheck(
+					`multiselect_many must end with the submitting review-screen return; got [${kinds.join(", ")}]`,
+				);
+			}
+			let index = 0;
+			let question = 0;
+			let multiSelectGroups = 0;
+			while (index < keystrokes.length - 1) {
+				const first = keystrokes[index];
+				if (first?.questionIndex !== question) {
+					throw selfCheck(
+						`multiselect_many position ${index} answers question ${first?.questionIndex}, expected ${question}; groups must run 0..N-1 in order`,
+					);
+				}
+				if (first.kind === "select_digit") {
+					index += 1;
+					question += 1;
+					continue;
+				}
+				if (first.kind === "freetext_open") {
+					const body = keystrokes[index + 1];
+					const close = keystrokes[index + 2];
+					if (
+						body?.kind !== "freetext_body" ||
+						close?.kind !== "submit_return" ||
+						body.questionIndex !== question ||
+						close.questionIndex !== question
+					) {
+						throw selfCheck(
+							`multiselect_many question ${question} free-text group must be [freetext_open, freetext_body, submit_return]; got [${kinds.join(", ")}]`,
+						);
+					}
+					// The editor-closing return ADVANCES; only the review-screen one
+					// submits.
+					if (close.submits) {
+						throw selfCheck(
+							`multiselect_many question ${question}: the editor-closing return advances to the next question, it does not submit`,
+						);
+					}
+					index += 3;
+					question += 1;
+					continue;
+				}
+				// A multi-select group: zero or more toggles, then the advance arrow.
+				let cursor = index;
+				while (
+					keystrokes[cursor]?.kind === "toggle_digit" &&
+					keystrokes[cursor]?.questionIndex === question
+				) {
+					cursor += 1;
+				}
+				const advance = keystrokes[cursor];
+				if (
+					advance?.kind !== "submit_tab" ||
+					advance.questionIndex !== question ||
+					advance.submits
+				) {
+					throw selfCheck(
+						`multiselect_many question ${question} multi-select group must be [toggle_digit × k, submit_tab]; got [${kinds.join(", ")}]`,
+					);
+				}
+				multiSelectGroups += 1;
+				index = cursor + 1;
+				question += 1;
+			}
+			if (question < 2) {
+				throw selfCheck(
+					`multiselect_many covers ${question} question(s); it is the N > 1 shape`,
+				);
+			}
+			if (multiSelectGroups === 0) {
+				throw selfCheck(
+					"multiselect_many carries no multi-select group; that prompt is freetext_many or single_select_many",
+				);
+			}
+			if (trailing.questionIndex !== question - 1) {
+				throw selfCheck(
+					`multiselect_many review-screen return names question ${trailing.questionIndex}, expected the last one (${question - 1})`,
+				);
+			}
+			return;
+		}
 		default: {
 			const unreachable: never = shape;
 			throw selfCheck(`unknown shape ${String(unreachable)}`);
@@ -1420,6 +1607,46 @@ export function assertMultiSelectSubmitShape(
 	if (raw.slice(0, raw.length - submitSuffix.length).includes(KEY_RETURN)) {
 		throw selfCheck(
 			"multi-select bytes carry a return before the Submit tab; every such return silently flips a selection",
+		);
+	}
+}
+
+/**
+ * (MSEL-N2-PROVEN) The one absolute rule of the multi-select contract, checked
+ * against the BYTES and the PROMPT rather than the encoder's labels: no
+ * keystroke whose data carries a `\r` may target a multi-select question,
+ * except the sequence-final review-screen submit.
+ *
+ * The ENTER probe in `tmp/pty-proof-msel/PROOF.md` is why: a `\r` landing on a
+ * multi-select — lone or inside an N > 1 prompt — TOGGLES the caret's row and
+ * silently adds an option nobody chose. `questions[].multiSelect` is ground
+ * truth from the captured prompt, so a future encoder bug that mislabels a
+ * return's kind or its questionIndex still cannot slip one past this: either
+ * the data says `\r` into a multi-select and it throws here, or the label lies
+ * about the target question and the grammar walker's group-order check throws.
+ * Runs for EVERY shape — on the ones with no multi-select question it is a
+ * no-op by construction.
+ */
+export function assertNoReturnIntoMultiSelect(
+	questions: readonly QuestionItem[],
+	keystrokes: readonly Keystroke[],
+): void {
+	for (let index = 0; index < keystrokes.length; index += 1) {
+		const keystroke = keystrokes[index];
+		if (keystroke === undefined) continue;
+		if (!keystroke.data.includes(KEY_RETURN)) continue;
+		const item = questions[keystroke.questionIndex];
+		if (item === undefined) {
+			throw selfCheck(
+				`keystroke ${index} targets question ${keystroke.questionIndex}, which does not exist`,
+			);
+		}
+		if (!item.multiSelect) continue;
+		// The review-screen submit is labeled with the LAST question; when that
+		// question is a multi-select this is the one legitimate return to name it.
+		if (index === keystrokes.length - 1 && keystroke.submits) continue;
+		throw selfCheck(
+			`keystroke ${index} carries a return into multi-select question ${keystroke.questionIndex}; a return there toggles the caret's row and silently adds an option nobody chose`,
 		);
 	}
 }

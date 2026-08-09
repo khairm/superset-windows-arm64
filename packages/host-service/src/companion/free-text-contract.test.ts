@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+	assertNoReturnIntoMultiSelect,
 	encodeAnswer,
+	type Keystroke,
 	KeystrokeEncodingError,
 	pickerContractFor,
 	provenFreeTextOption,
@@ -22,8 +24,10 @@ import type { AnswerItem, QuestionItem } from "./types";
 // ground truth for a byte sequence in a way a screen reading is not, so the
 // original `[digit N+1, text, "\r"]` shape stands.
 //
-// What is still refused is refused for reasons nobody has driven either way:
-// multi-select free text, and free text on an N>1 prompt.
+// What is still refused is refused on a REFUTED run, not on absence of
+// evidence: free text on a multi-select question — the digit toggles the row's
+// checkbox and the typed body is swallowed. See (MSEL-N2-PROVEN) below for the
+// multi-select groups that ARE proven, N > 1 included.
 // ---------------------------------------------------------------------------
 
 function singleSelectItem(overrides: Partial<QuestionItem> = {}): QuestionItem {
@@ -370,28 +374,180 @@ describe("(FREETEXT-N2-PROVEN) the derivation both sides of the capture share", 
 	});
 });
 
-describe("(FREETEXT-N2-PROVEN) a multi-select question inside N > 1 stays refused", () => {
-	it("refuses a multiselect answer item in a two-question prompt", () => {
-		// Driven, twice: on a two-question prompt the right-arrow that submits a
-		// LONE multi-select is the next-question key instead, so the `\r` that
-		// follows it selects a row on a question the user was never shown.
-		const questions = twoQuestions();
-		questions[0] = {
-			...(questions[0] as QuestionItem),
+describe("(MSEL-N2-PROVEN) a multi-select question inside N > 1 encodes", () => {
+	// Mirrors tmp/pty-proof-msel/PROOF.md: the multi under test has THREE options
+	// so "toggle 1 and 3" leaves Mtwo provably untouched.
+	function multiItem(index: number): QuestionItem {
+		return {
+			index,
+			header: "Multi",
+			question: "Which multi values should this canary run use?",
 			multiSelect: true,
+			options: [
+				{ index: 0, label: "Mone", description: "The first multi value." },
+				{ index: 1, label: "Mtwo", description: "The second multi value." },
+				{ index: 2, label: "Mthree", description: "The third multi value." },
+			],
 			freeTextOption: null,
 		};
-		let thrown: unknown;
-		try {
-			encodeAnswer(questions, [
-				{ kind: "multiselect", questionIndex: 0, optionIndexes: [0] },
-				{ kind: "select", questionIndex: 1, optionIndex: 0 },
-			]);
-		} catch (error) {
-			thrown = error;
-		}
-		expect(thrown).toBeInstanceOf(KeystrokeEncodingError);
-		expect((thrown as KeystrokeEncodingError).reason).toBe("shape_unproven");
+	}
+
+	function reindex(items: QuestionItem[]): QuestionItem[] {
+		return items.map((item, index) => ({ ...item, index }));
+	}
+
+	it("multi FIRST in N=2 is toggles, the advance arrow, the digit, the review return (PROOF case A)", () => {
+		const questions = reindex([multiItem(0), ...twoQuestions().slice(1)]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "multiselect", questionIndex: 0, optionIndexes: [0, 2] },
+			{ kind: "select", questionIndex: 1, optionIndex: 1 },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"1",
+			"3",
+			"\x1b[C",
+			"2",
+			"\r",
+		]);
+		// The arrow ADVANCES with the multi's list still on screen — strong
+		// expectation, and never itself the submit.
+		const arrow = keystrokes[2];
+		expect(arrow?.kind).toBe("submit_tab");
+		expect(arrow?.expect).toEqual({ kind: "item_picker", itemIndex: 0 });
+		expect(arrow?.submits).toBe(false);
+		expect(keystrokes[keystrokes.length - 1]?.submits).toBe(true);
+	});
+
+	it("multi LAST in N=2 advances onto the review screen, then the return submits (PROOF case B)", () => {
+		const questions = reindex([
+			twoQuestions()[0] as QuestionItem,
+			multiItem(1),
+		]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "select", questionIndex: 0, optionIndex: 0 },
+			{ kind: "multiselect", questionIndex: 1, optionIndexes: [0, 2] },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"1",
+			"1",
+			"3",
+			"\x1b[C",
+			"\r",
+		]);
+	});
+
+	it("multi MIDDLE in N=3 (PROOF case C)", () => {
+		const [alpha, beta] = twoQuestions() as [QuestionItem, QuestionItem];
+		const questions = reindex([alpha, multiItem(1), beta]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "select", questionIndex: 0, optionIndex: 0 },
+			{ kind: "multiselect", questionIndex: 1, optionIndexes: [0, 2] },
+			{ kind: "select", questionIndex: 2, optionIndex: 1 },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"1",
+			"1",
+			"3",
+			"\x1b[C",
+			"2",
+			"\r",
+		]);
+	});
+
+	it("an EMPTY multi group is just the advance arrow (PROOF case E: the CLI omits the question from the tool_result, as a desk submit past the warning does)", () => {
+		const questions = reindex([multiItem(0), ...twoQuestions().slice(1)]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "multiselect", questionIndex: 0, optionIndexes: [] },
+			{ kind: "select", questionIndex: 1, optionIndex: 1 },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"\x1b[C",
+			"2",
+			"\r",
+		]);
+	});
+
+	it("a multi group composes with a free-text sibling in the same prompt (PROOF §4)", () => {
+		const [alpha, beta] = twoQuestions() as [QuestionItem, QuestionItem];
+		const questions = reindex([alpha, multiItem(1), beta]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "select", questionIndex: 0, optionIndex: 0 },
+			{ kind: "multiselect", questionIndex: 1, optionIndexes: [0, 2] },
+			{ kind: "freetext", questionIndex: 2, text: "a typed reply" },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"1",
+			"1",
+			"3",
+			"\x1b[C",
+			"3",
+			"a typed reply",
+			"\r",
+			"\r",
+		]);
+		// The editor-closing return targets the free-text question, never the
+		// multi; the final return is the review-screen submit.
+		expect(keystrokes[6]?.questionIndex).toBe(2);
+		expect(keystrokes[6]?.submits).toBe(false);
+	});
+
+	it("free text FIRST with the multi LAST (PROOF §4 case H) — and the free-text digit is the answering question's OWN slot", () => {
+		// Alpha has 2 options + slot at 3; the multi sibling has 3 options. A bug
+		// deriving the free-text digit from any other question's option count
+		// would emit "4" here.
+		const [alpha, beta] = twoQuestions() as [QuestionItem, QuestionItem];
+		const questions = reindex([alpha, beta, multiItem(2)]);
+		const keystrokes = encodeAnswer(questions, [
+			{ kind: "freetext", questionIndex: 0, text: "a typed reply" },
+			{ kind: "select", questionIndex: 1, optionIndex: 1 },
+			{ kind: "multiselect", questionIndex: 2, optionIndexes: [0, 2] },
+		]);
+		expect(keystrokes.map((keystroke) => keystroke.data)).toEqual([
+			"3",
+			"a typed reply",
+			"\r",
+			"2",
+			"1",
+			"3",
+			"\x1b[C",
+			"\r",
+		]);
+	});
+
+	it("never emits a return into a multi-select question — the assertion throws on a handcrafted one", () => {
+		const questions = reindex([multiItem(0), ...twoQuestions().slice(1)]);
+		const poisoned: Keystroke[] = [
+			{
+				kind: "toggle_digit",
+				data: "1",
+				questionIndex: 0,
+				optionIndex: 0,
+				expect: { kind: "item_picker", itemIndex: 0 },
+				submits: false,
+			},
+			{
+				// The refuted N=1 tail reused verbatim: this return lands on the
+				// multi and toggles the caret's row.
+				kind: "submit_return",
+				data: "\r",
+				questionIndex: 0,
+				optionIndex: null,
+				expect: { kind: "same_prompt", itemIndex: 0 },
+				submits: false,
+			},
+		];
+		expect(() => assertNoReturnIntoMultiSelect(questions, poisoned)).toThrow(
+			/return into multi-select question 0/,
+		);
+	});
+
+	it("keys the shape flag per build: 2.1.220 never earned it", () => {
+		expect(
+			pickerContractFor("claude-code@2.1.220")?.multiSelectManyBytesProven,
+		).toBe(false);
+		expect(
+			pickerContractFor("claude-code@2.1.226")?.multiSelectManyBytesProven,
+		).toBe(true);
 	});
 
 	it("refuses a free-text answer for an N > 1 item that has no derived slot", () => {

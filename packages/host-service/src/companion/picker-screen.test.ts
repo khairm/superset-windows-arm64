@@ -1688,3 +1688,87 @@ describe("(FREETEXT-N2-PROVEN) guard 5 on a real two-question prompt", () => {
 		expect(match.reason).toBe("freetext_row_conflict");
 	});
 });
+
+describe("(MSEL-N2-PROVEN) the real 2.1.226 multi-select rows inside an N > 1 prompt", () => {
+	// Verbatim picker region from the mixed-proof capture
+	// tmp/pty-proof-msel/mix_ft_first-r1-05-q3-after-toggle-Mone.txt: the multi
+	// question of an N=3 prompt after one toggle. Rows carry checkbox decoration
+	// between the digit and the label (`1. [✔] Mone`), each option's description
+	// renders on the line below its row, the free-text row is the CHECKBOX
+	// variant without the trailing period, and the footer under the rows reads
+	// `Submit` (last question; it reads `Next` mid-prompt — same byte either
+	// way).
+	const MSEL_N2_VIEWPORT = [
+		"←  ☒ Alpha  ☒ Beta  ☒ Multi  ✔ Submit  →",
+		"",
+		"Which multi values should this canary run use?",
+		"",
+		"❯ 1. [✔] Mone",
+		"  Include the first multi value in this canary run.",
+		"  2. [ ] Mtwo",
+		"  Include the second multi value in this canary run.",
+		"  3. [ ] Mthree",
+		"  Include the third multi value in this canary run.",
+		"  4. [ ] Type something",
+		"     Submit",
+		"────────────────────────────────────────────────────────────────────",
+		"  5. Chat about this",
+		"",
+		"Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+	].join("\n");
+
+	const MSEL_ITEM: QuestionItem = {
+		index: 2,
+		header: "Multi",
+		question: "Which multi values should this canary run use?",
+		multiSelect: true,
+		options: [
+			{
+				index: 0,
+				label: "Mone",
+				description: "Include the first multi value in this canary run.",
+			},
+			{
+				index: 1,
+				label: "Mtwo",
+				description: "Include the second multi value in this canary run.",
+			},
+			{
+				index: 2,
+				label: "Mthree",
+				description: "Include the third multi value in this canary run.",
+			},
+		],
+		freeTextOption: null,
+	};
+
+	it("every toggle digit is answerable against the real checkbox decoration", () => {
+		// The labels are 4-6 characters — under the label anchor floor — so each
+		// pressed row is verified by its own description rendered in its region.
+		for (const requireOptionIndex of [0, 1, 2]) {
+			expect(
+				matchPickerScreen({
+					screen: MSEL_N2_VIEWPORT,
+					item: MSEL_ITEM,
+					requireOptionIndex,
+				}).ok,
+			).toBe(true);
+		}
+	});
+
+	it("the multi's checkbox free-text row is NOT matchable as a proven free-text slot", () => {
+		// The refuted shape's row renders "Type something" — checkbox, no period.
+		// The proven single-select label is "Type something." — a forged slot
+		// carrying the proven label must not find that row.
+		const forged: QuestionItem = {
+			...MSEL_ITEM,
+			freeTextOption: { index: 3, label: "Type something." },
+		};
+		const match = matchPickerScreen({
+			screen: MSEL_N2_VIEWPORT,
+			item: forged,
+			requireOptionIndex: 3,
+		});
+		expect(match.ok).toBe(false);
+	});
+});

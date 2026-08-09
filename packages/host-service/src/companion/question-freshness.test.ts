@@ -116,6 +116,10 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		});
 		expect(summary?.questionCount).toBe(2);
 		expect(summary?.multiSelect).toBe(true);
+		// (MSEL-N2-PROVEN) The shape is answerable: the per-question multi-select
+		// group was driven on the proven build, so the up-front
+		// `hasUnprovenAnswerShape` refusal no longer fires for it.
+		expect(summary?.answerable).toBe(true);
 	});
 
 	it("decides `answerable` with the same rule as every other surface — an ungranted context makes it false rather than throwing", () => {
