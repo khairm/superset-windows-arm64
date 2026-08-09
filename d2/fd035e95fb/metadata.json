@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "d2fd035e95fb",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 13,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/keystrokes.ts",
+    "packages/host-service/src/companion/question-store.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d2/fd035e95fb/0/metadata.json",
+      "transcript": "/d2/fd035e95fb/0/full.jsonl",
+      "content_hash": "/d2/fd035e95fb/0/content_hash.txt",
+      "prompt": "/d2/fd035e95fb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4391,
+    "cache_creation_tokens": 19720582,
+    "cache_read_tokens": 882647581,
+    "output_tokens": 1845054,
+    "api_call_count": 2300
+  }
+}
