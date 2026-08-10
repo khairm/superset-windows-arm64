@@ -21,8 +21,6 @@ import { CgLaptop } from "react-icons/cg";
 import {
 	LuArrowUpRight,
 	LuCircleCheck,
-	LuCircleDashed,
-	LuCircleX,
 	LuGitBranch,
 	LuLaptop,
 	LuMonitor,
@@ -31,15 +29,16 @@ import {
 import { RiPushpinFill, RiPushpinLine } from "react-icons/ri";
 import { GATED_FEATURES, usePaywall } from "renderer/components/Paywall";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
+import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { V2WorkspacePrHoverCardContent } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspacePrHoverCardContent";
+import { WorkspaceChecksDot } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/components/WorkspaceChecksDot";
 import type {
 	AccessibleV2Workspace,
 	V2WorkspaceHostType,
 	V2WorkspacePrSummary,
 } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
-import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
 import { PRIcon } from "renderer/screens/main/components/PRIcon/PRIcon";
 import { getRelativeTime } from "renderer/screens/main/components/WorkspacesListView/utils";
 
@@ -67,8 +66,11 @@ export function V2WorkspaceRow({
 	} = useDashboardSidebarState();
 	const { copyToClipboard } = useCopyToClipboard();
 	const isMainWorkspace = workspace.type === "main";
-	const { isDeleting } = useDeletingWorkspaces();
-	const deleting = isDeleting(workspace.id);
+	// Upstream retired the DeletingWorkspacesProvider context in favour of this
+	// store; the fork's in-flight-delete row treatment (spinner, aria-busy,
+	// inert row) reads the same state from it.
+	const deletingIds = useDeletingWorkspacesStore((state) => state.deletingIds);
+	const deleting = deletingIds.has(workspace.id);
 
 	const HostIcon = hostIconFor(workspace.hostType);
 
@@ -429,7 +431,7 @@ function WorkspacePrPill({ pr, branch }: WorkspacePrPillProps) {
 				>
 					<PRIcon state={pr.state} className="size-3" />
 					<span className="tabular-nums">#{pr.prNumber}</span>
-					<ChecksDot status={pr.checksStatus} />
+					<WorkspaceChecksDot status={pr.checksStatus} />
 				</a>
 			</HoverCardTrigger>
 			<HoverCardContent
@@ -442,21 +444,6 @@ function WorkspacePrPill({ pr, branch }: WorkspacePrPillProps) {
 			</HoverCardContent>
 		</HoverCard>
 	);
-}
-
-interface ChecksDotProps {
-	status: V2WorkspacePrSummary["checksStatus"];
-}
-
-function ChecksDot({ status }: ChecksDotProps) {
-	if (status === "none") return null;
-	if (status === "pending") {
-		return <LuCircleDashed className="size-3 text-amber-500" />;
-	}
-	if (status === "success") {
-		return <LuCircleCheck className="size-3 text-emerald-500" />;
-	}
-	return <LuCircleX className="size-3 text-red-500" />;
 }
 
 const ASCII_SPINNER_FRAMES = ["◰", "◳", "◲", "◱"];

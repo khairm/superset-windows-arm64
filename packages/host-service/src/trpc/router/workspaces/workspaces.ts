@@ -1,7 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { runWithPostCheckoutHookTolerance } from "@superset/shared/git-hook-tolerance";
-import { generateFriendlyBranchName } from "@superset/shared/workspace-launch";
+import {
+	generateFriendlyBranchName,
+	sanitizeUserBranchName,
+} from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -17,16 +19,15 @@ import type { HostServiceContext } from "../../../types";
 import { getHostWorkerPool } from "../../../workers/host-worker-pool";
 import { gitFetchBaseRefTask } from "../../../workers/tasks/git";
 import {
+	type CloudShapedWorkspace,
 	getLocalWorkspace,
 	insertLocalWorkspace,
 	toCloudShape,
 } from "../../../workspaces/local-workspace-store";
 import { protectedProcedure, router } from "../../index";
 import {
-	type AgentRunResult,
 	buildTerminalAgentLaunch,
 	isChatAgent,
-	runAgentInWorkspace,
 	validateAgentLaunchEffort,
 } from "../agents";
 import { ensureMainWorkspace } from "../project/utils/ensure-main-workspace";
@@ -34,6 +35,7 @@ import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
 import { normalizeWorktreePath } from "../workspace-creation/shared/worktree-list";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import { createMultiRepoWorkspaceFlow } from "../workspace-creation/multi-repo-create";
+import { createSession } from "../workspace-creation/procedures/create-session";
 import { adoptExistingWorktree } from "../workspace-creation/shared/adopt-existing-worktree";
 import {
 	findWorktreeAtPath,
@@ -41,10 +43,19 @@ import {
 	listWorktreeBranches,
 } from "../workspace-creation/shared/branch-search";
 import { startCommandTerminal } from "../workspace-creation/shared/command-terminal";
+import {
+	type AgentLaunchResult,
+	agentLaunchSchema,
+	dispatchSugarAgents,
+} from "../workspace-creation/shared/dispatch-agents";
 import { enablePushAutoSetupRemote } from "../workspace-creation/shared/git-config";
 import { requireLocalProject } from "../workspace-creation/shared/local-project";
 import { copyProjectSupersetConfigToWorktree } from "../workspace-creation/shared/project-superset-config";
 import { startSetupTerminalIfPresent } from "../workspace-creation/shared/setup-terminal";
+import {
+	addWorktreeWithSparseCheckout,
+	parseSparseCheckoutPaths,
+} from "../workspace-creation/shared/sparse-checkout";
 import type { GitClient } from "../workspace-creation/shared/types";
 import { safeResolveWorktreePath } from "../workspace-creation/shared/worktree-paths";
 import { generateBranchNameFromPrompt } from "../workspace-creation/utils/ai-branch-name";
@@ -72,19 +83,13 @@ import {
 } from "../workspace-creation/utils/resolve-new-branch-start-point";
 import { deduplicateBranchName } from "../workspace-creation/utils/sanitize-branch";
 
-export const agentLaunchSchema = z
-	.object({
-		agent: z.string().min(1),
-		prompt: z.string(),
-		attachmentIds: z.array(z.string().uuid()).optional(),
-		model: z.string().optional(),
-		effort: z.string().optional(),
-	})
-	.refine(
-		(value) =>
-			value.prompt.length > 0 || (value.attachmentIds?.length ?? 0) > 0,
-		{ message: "Agent launch requires a prompt or attachments" },
-	);
+// Re-exported for the fork's (MULTI-REPO WORKSPACE) creation flow, which
+// upstream's workspaces.ts knows nothing about: multi-repo-create.ts consumes
+// the same launch contract this router does. Upstream moved the definitions
+// into workspace-creation/shared/dispatch-agents; the seam stays here so the
+// fork module never has to track where upstream parks them next.
+export { agentLaunchSchema, dispatchSugarAgents };
+export type { AgentLaunchResult };
 
 export const createInputSchema = z
 	.object({
@@ -96,6 +101,12 @@ export const createInputSchema = z
 		// start. With no prompt, the friendly-random fallback is final.
 		name: z.string().min(1).optional(),
 		branch: z.string().min(1).optional(),
+		// Use the typed branch verbatim instead of namespacing it under the
+		// project branch prefix; a name collision reuses the existing branch
+		// (and its workspace), as with any typed branch. Set when the branch
+		// comes from an external provider (Linear's branchName), whose exact
+		// format the provider autolinks.
+		skipBranchPrefix: z.boolean().optional(),
 		pr: z.number().int().positive().optional(),
 		baseBranch: z.string().min(1).optional(),
 		taskId: z.string().uuid().optional(),
@@ -146,15 +157,9 @@ export async function acquireWorkspaceCreateLock(key: string): Promise<() => voi
 	};
 }
 
-export type AgentLaunchResult =
-	| ({ ok: true } & AgentRunResult)
-	| { ok: false; error: string };
-
-export type CloudWorkspace = NonNullable<
-	Awaited<
-		ReturnType<HostServiceContext["api"]["v2Workspace"]["getFromHost"]["query"]>
-	>
->;
+// Workspaces have no cloud mirror since local-first (#5731); the host's own
+// cloud-compatible row shape is the response type.
+export type CloudWorkspace = CloudShapedWorkspace;
 
 export function extractCreateTxid(row: CloudWorkspace): number | null {
 	const txid = (row as { txid?: unknown }).txid;
@@ -349,58 +354,59 @@ export async function addBranchWorktree(args: {
 	git: GitClient;
 	plan: BranchSourcePlan;
 	worktreePath: string;
+	sparsePaths: string[];
 }): Promise<void> {
-	const { git, plan, worktreePath } = args;
+	const { git, plan, worktreePath, sparsePaths } = args;
 
 	// Post-checkout hooks run after the checkout itself, so a hook that exits
-	// non-zero fails `worktree add` with the worktree fully in place. Every
+	// non-zero fails the operation with the worktree fully in place. Every
 	// branch case below checks out `plan.branch`, so registered-at-path with
-	// that branch is the ground truth.
-	const runWorktreeAdd = (addArgs: string[]) =>
-		runWithPostCheckoutHookTolerance({
-			context: `Worktree created at ${worktreePath}`,
-			run: async () => {
-				await git.raw(addArgs);
-			},
-			didSucceed: async () => {
-				if (!(await findWorktreeAtPath(git, worktreePath, plan.branch))) {
-					return false;
-				}
-				try {
-					// The worktree list can report a branch for a half-created
-					// worktree; require a resolvable HEAD in the worktree itself.
-					await git.raw(["-C", worktreePath, "rev-parse", "--verify", "HEAD"]);
-					return true;
-				} catch {
-					return false;
-				}
-			},
-		});
+	// that branch is the ground truth. Handed to addWorktreeWithSparseCheckout
+	// so it applies to whichever command actually performs the checkout —
+	// the plain add below, or the sparse path's explicit `checkout` step.
+	const hookTolerance = {
+		context: `Worktree created at ${worktreePath}`,
+		didSucceed: async () => {
+			if (!(await findWorktreeAtPath(git, worktreePath, plan.branch))) {
+				return false;
+			}
+			try {
+				// The worktree list can report a branch for a half-created
+				// worktree; require a resolvable HEAD in the worktree itself.
+				await git.raw(["-C", worktreePath, "rev-parse", "--verify", "HEAD"]);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+	};
 
 	if (plan.usedExistingBranch) {
 		// Existing branch — check it out into a fresh worktree. Remote-tracking
 		// refs need explicit --track + -b so the worktree gets a real local
 		// branch, not detached HEAD.
-		await runWorktreeAdd(
-			plan.startPoint.kind === "remote-tracking"
-				? [
-						"worktree",
-						"add",
-						"--track",
-						"-b",
-						plan.branch,
-						worktreePath,
-						plan.startPoint.remoteShortName,
-					]
-				: [
-						"worktree",
-						"add",
-						worktreePath,
-						plan.startPoint.kind === "head"
-							? "HEAD"
-							: plan.startPoint.shortName,
-					],
-		);
+		await addWorktreeWithSparseCheckout({
+			git,
+			worktreeArgs:
+				plan.startPoint.kind === "remote-tracking"
+					? [
+							"--track",
+							"-b",
+							plan.branch,
+							worktreePath,
+							plan.startPoint.remoteShortName,
+						]
+					: [
+							worktreePath,
+							plan.startPoint.kind === "head"
+								? "HEAD"
+								: plan.startPoint.shortName,
+						],
+			worktreePath,
+			sparsePaths,
+			logPrefix: "[workspaces.create]",
+			hookTolerance,
+		});
 		return;
 	}
 
@@ -413,15 +419,20 @@ export async function addBranchWorktree(args: {
 			: plan.startPoint.kind === "remote-tracking"
 				? plan.startPoint.remoteShortName
 				: plan.startPoint.shortName;
-	await runWorktreeAdd([
-		"worktree",
-		"add",
-		"--no-track",
-		"-b",
-		plan.branch,
+	await addWorktreeWithSparseCheckout({
+		git,
+		worktreeArgs: [
+			"--no-track",
+			"-b",
+			plan.branch,
+			worktreePath,
+			startPointArg,
+		],
 		worktreePath,
-		startPointArg,
-	]);
+		sparsePaths,
+		logPrefix: "[workspaces.create]",
+		hookTolerance,
+	});
 }
 
 export async function recordBaseBranchConfig(args: {
@@ -444,6 +455,28 @@ export async function recordBaseBranchConfig(args: {
 				err,
 			);
 		});
+}
+
+/**
+ * Best-effort cloud lookup of the linked task's provider branch name
+ * (Linear's branchName, synced into tasks.branch). Bounded so an offline
+ * host never stalls workspace creation.
+ */
+async function fetchLinkedTaskBranch(
+	ctx: HostServiceContext,
+	taskId: string,
+): Promise<string | undefined> {
+	try {
+		const task = await Promise.race([
+			ctx.api.task.byId.query(taskId),
+			new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+		]);
+		const branch = task?.branch?.trim();
+		return branch ? sanitizeUserBranchName(branch) || undefined : undefined;
+	} catch (err) {
+		console.warn("[workspaces.create] linked task branch lookup failed:", err);
+		return undefined;
+	}
 }
 
 /**
@@ -483,35 +516,8 @@ export async function registerLocalWorkspace(args: {
 	return toCloudShape(localRow, ctx.organizationId);
 }
 
-export async function dispatchSugarAgents(
-	ctx: HostServiceContext,
-	workspaceId: string,
-	launches: z.infer<typeof agentLaunchSchema>[],
-): Promise<AgentLaunchResult[]> {
-	if (launches.length === 0) return [];
-	return Promise.all(
-		launches.map(async (entry) => {
-			try {
-				const result = await runAgentInWorkspace(ctx, {
-					workspaceId,
-					agent: entry.agent,
-					prompt: entry.prompt,
-					attachmentIds: entry.attachmentIds,
-					model: entry.model,
-					effort: entry.effort,
-				});
-				return { ok: true as const, ...result };
-			} catch (err) {
-				return {
-					ok: false as const,
-					error: err instanceof Error ? err.message : String(err),
-				};
-			}
-		}),
-	);
-}
-
 export const workspacesRouter = router({
+	createSession,
 	create: protectedProcedure
 		.input(createInputSchema)
 		.mutation(async ({ ctx, input }) => {
@@ -569,6 +575,7 @@ export const workspacesRouter = router({
 					? generateWorkspaceNamesFromPrompt(
 							composerPrompt,
 							namingAgent ? { db: ctx.db, agent: namingAgent } : undefined,
+							localProject.namingInstructions,
 						).catch((err) => {
 							console.warn("[workspaces.create] AI naming failed", err);
 							return null;
@@ -590,6 +597,11 @@ export const workspacesRouter = router({
 			);
 			const worktreeBaseDir =
 				localProject.worktreeBaseDir ?? getHostWorktreeBaseDir(ctx);
+			// Empty means a full checkout. Only applies to worktrees we create —
+			// adopted ones keep whatever checkout they already have.
+			const sparsePaths = parseSparseCheckoutPaths(
+				localProject.sparseCheckoutPaths,
+			);
 
 			// Free branches still claimed by registrations whose dirs are
 			// gone — without this, `git worktree add` later fails with
@@ -724,12 +736,13 @@ export const workspacesRouter = router({
 							if (adoptLocalBranch) {
 								await normalizeExistingPrBranch();
 								try {
-									await git.raw([
-										"worktree",
-										"add",
+									await addWorktreeWithSparseCheckout({
+										git,
+										worktreeArgs: [worktreePath, resolvedBranch],
 										worktreePath,
-										resolvedBranch,
-									]);
+										sparsePaths,
+										logPrefix: "[workspaces.create]",
+									});
 								} catch (err) {
 									throw new TRPCError({
 										code: "CONFLICT",
@@ -767,12 +780,13 @@ export const workspacesRouter = router({
 									});
 									recordMaterializedWarning(materialized);
 									worktreeAddStarted = true;
-									await git.raw([
-										"worktree",
-										"add",
+									await addWorktreeWithSparseCheckout({
+										git,
+										worktreeArgs: [worktreePath, resolvedBranch],
 										worktreePath,
-										resolvedBranch,
-									]);
+										sparsePaths,
+										logPrefix: "[workspaces.create]",
+									});
 								} catch (err) {
 									if (worktreeAddStarted || materialized?.createdBranch) {
 										await rollbackPreparedPr();
@@ -849,7 +863,16 @@ export const workspacesRouter = router({
 					"[workspaces.create]",
 				);
 			} else {
-				const typedBranch = input.branch?.trim();
+				// A linked task can supply the branch when the caller didn't
+				// pick one (CLI/MCP/automation creates from a task — desktop
+				// surfaces resolve it client-side). Provider branch names are
+				// used exactly, like an explicit skipBranchPrefix create.
+				const taskBranch =
+					!input.branch && input.taskId
+						? await fetchLinkedTaskBranch(ctx, input.taskId)
+						: undefined;
+				const skipBranchPrefix = input.skipBranchPrefix || !!taskBranch;
+				const typedBranch = input.branch?.trim() || taskBranch;
 				let plan: BranchSourcePlan;
 
 				if (typedBranch) {
@@ -870,8 +893,9 @@ export const workspacesRouter = router({
 					resolvedBranch = plan.branch;
 					// Namespace newly-created branches under the configured
 					// prefix. A typed branch that resolves to an existing ref is
-					// checked out as-is and never re-prefixed.
-					if (!plan.usedExistingBranch) {
+					// checked out as-is and never re-prefixed. Provider-supplied
+					// branches (skipBranchPrefix) keep their exact format.
+					if (!plan.usedExistingBranch && !skipBranchPrefix) {
 						const prefix = await resolveProjectBranchPrefix({
 							ctx,
 							project: localProject,
@@ -984,7 +1008,12 @@ export const workspacesRouter = router({
 
 						let adoptedRow: CloudWorkspace | undefined;
 						try {
-							await addBranchWorktree({ git, plan, worktreePath });
+							await addBranchWorktree({
+								git,
+								plan,
+								worktreePath,
+								sparsePaths,
+							});
 						} catch (err) {
 							// Branch is already claimed by another worktree that the
 							// pre-check missed (auto-gen path, or a race). Adopt at
@@ -1202,6 +1231,23 @@ export const workspacesRouter = router({
 				});
 			}
 
+			// Work is starting on the linked task — move it to In Progress.
+			// Best-effort cloud call; creation never blocks on it. A reused
+			// workspace keeps its own task link, so only nudge when this call
+			// actually linked the requested task.
+			if (
+				input.taskId &&
+				(!alreadyExists || workspaceRow.taskId === input.taskId)
+			) {
+				const taskId = input.taskId;
+				void ctx.api.task.start.mutate({ id: taskId }).catch((err) => {
+					console.warn(
+						`[workspaces.create] failed to mark task ${taskId} as started:`,
+						err,
+					);
+				});
+			}
+
 			return {
 				workspace: workspaceRow,
 				terminals: terminalsResult,
@@ -1228,9 +1274,13 @@ export const workspacesRouter = router({
 					message: `Workspace not found: ${input.workspaceId}`,
 				});
 			}
-			const project = ctx.db.query.projects
-				.findFirst({ where: eq(projects.id, local.projectId) })
-				.sync();
+			// AI rename also renames the git branch against the project repo;
+			// session workspaces (null projectId) have neither.
+			const project = local.projectId
+				? ctx.db.query.projects
+						.findFirst({ where: eq(projects.id, local.projectId) })
+						.sync()
+				: undefined;
 			if (!project) {
 				throw new TRPCError({
 					code: "NOT_FOUND",
@@ -1245,6 +1295,7 @@ export const workspacesRouter = router({
 				oldBranchName: local.branch,
 				oldWorkspaceName: local.name || local.branch,
 				prompt: input.prompt,
+				namingInstructions: project.namingInstructions,
 				renameTitle: true,
 				renameBranch: true,
 			}).catch((err) => {

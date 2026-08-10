@@ -52,7 +52,6 @@ import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { V2NotificationController } from "./components/V2NotificationController";
 import { createPierreWorker } from "./lib/pierreWorker";
 import { CollectionsProvider } from "./providers/CollectionsProvider";
-import { DeletingWorkspacesProvider } from "./providers/DeletingWorkspacesProvider";
 import { HostWorkspacesProvider } from "./providers/HostWorkspacesProvider";
 import { LocalHostServiceProvider } from "./providers/LocalHostServiceProvider";
 
@@ -283,40 +282,38 @@ function AuthenticatedLayout() {
 				<GlobalBrowserLifecycle />
 				<LocalHostServiceProvider>
 					<HostWorkspacesProvider>
-						<DeletingWorkspacesProvider>
-							<WorkerPoolContextProvider
-								poolOptions={{ workerFactory: createPierreWorker, poolSize: 8 }}
-								highlighterOptions={{ preferredHighlighter: "shiki-wasm" }}
-							>
-								<DiffThemeSync />
-								<AgentHooks />
-								<FileMenuListener />
-								<V2NotificationController />
-								<AutoResumeController />
-								<DockBadgeController />
-								<DaemonAutoUpdateFailureDialog />
-								<Outlet />
-								<V1ImportModal />
-								{isV2CloudEnabled ? (
-									<>
-										<V1MigrationContinuity />
-										<V2FlipWelcome />
-									</>
-								) : (
-									<V1FlipNotice />
-								)}
-								<V1AutoMigration />
-								<WorkspaceInitEffects />
-								{isV2CloudEnabled ? (
-									<DashboardNewWorkspaceModal />
-								) : (
-									<NewWorkspaceModal />
-								)}
-								<InitGitDialog />
-								<TeardownLogsDialog />
-								<Paywall />
-							</WorkerPoolContextProvider>
-						</DeletingWorkspacesProvider>
+						<WorkerPoolContextProvider
+							poolOptions={{ workerFactory: createPierreWorker, poolSize: 8 }}
+							highlighterOptions={{ preferredHighlighter: "shiki-wasm" }}
+						>
+							<DiffThemeSync />
+							<AgentHooks />
+							<FileMenuListener />
+							<V2NotificationController />
+							<AutoResumeController />
+							<DockBadgeController />
+							<DaemonAutoUpdateFailureDialog />
+							<Outlet />
+							<V1ImportModal />
+							{isV2CloudEnabled ? (
+								<>
+									<V1MigrationContinuity />
+									<V2FlipWelcome />
+								</>
+							) : (
+								<V1FlipNotice />
+							)}
+							<V1AutoMigration />
+							<WorkspaceInitEffects />
+							{isV2CloudEnabled ? (
+								<DashboardNewWorkspaceModal />
+							) : (
+								<NewWorkspaceModal />
+							)}
+							<InitGitDialog />
+							<TeardownLogsDialog />
+							<Paywall />
+						</WorkerPoolContextProvider>
 					</HostWorkspacesProvider>
 				</LocalHostServiceProvider>
 			</CollectionsProvider>

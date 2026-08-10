@@ -10,7 +10,6 @@ import {
 import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
-import { useDeletingWorkspaces } from "renderer/routes/_authenticated/providers/DeletingWorkspacesProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import {
 	getHighestPriorityDisplayStatus,
@@ -44,7 +43,8 @@ interface DashboardSidebarWorkspaceItemProps {
 	 * Set when the row renders inside the top-level Pinned section: shows the
 	 * owning project's avatar for cross-project context.
 	 */
-	pinnedContext?: { projectName: string; projectIconUrl: string | null };
+	/** projectName is null for pinned project-less "session" workspaces. */
+	pinnedContext?: { projectName: string | null; projectIconUrl: string | null };
 }
 
 export function DashboardSidebarWorkspaceItem({
@@ -97,6 +97,7 @@ export function DashboardSidebarWorkspaceItem({
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleRemovePullRequest,
 		handleRestore,
 		handleSnooze,
 		handleTogglePin,
@@ -136,9 +137,6 @@ export function DashboardSidebarWorkspaceItem({
 		v2WorkspaceActions.updateWorkspace(id, { branch: newBranchName });
 	};
 	const isPending = pendingTransaction?.type === "insert";
-	// Keep the delete dialog outside the hidden wrapper below — the destroy
-	// flow reopens it into an error pane on conflict/teardown-failed.
-	const isDeleting = useDeletingWorkspaces().isDeleting(id);
 
 	const {
 		hoveredId: hoverHoveredId,
@@ -259,7 +257,7 @@ export function DashboardSidebarWorkspaceItem({
 
 		return (
 			<>
-				<div hidden={isDeleting}>
+				<div>
 					{isPending ? (
 						content
 					) : (
@@ -269,6 +267,7 @@ export function DashboardSidebarWorkspaceItem({
 							isInSection={isInSection}
 							isUnread={isUnread}
 							hasStatus={!!workspaceStatus}
+							hasPullRequest={!!pullRequest}
 							isLocalWorkspace={hostType === "local-device"}
 							isNonGit={isNonGit}
 							isLocalMainWorkspace={
@@ -284,6 +283,7 @@ export function DashboardSidebarWorkspaceItem({
 							onCopyPath={handleCopyPath}
 							onCopyBranchName={handleCopyBranchName}
 							onRemoveFromSidebar={handleRemoveFromSidebar}
+							onRemovePullRequest={handleRemovePullRequest}
 							onRename={isMainWorkspace ? undefined : startRename}
 							onDelete={
 								isMainWorkspace || sectionState === "deleted"
@@ -389,7 +389,7 @@ export function DashboardSidebarWorkspaceItem({
 
 	return (
 		<>
-			<div hidden={isDeleting}>
+			<div>
 				{isPending ? (
 					expandedContent
 				) : isBulkMenu ? (
@@ -403,6 +403,7 @@ export function DashboardSidebarWorkspaceItem({
 						isInSection={isInSection}
 						isUnread={isUnread}
 						hasStatus={!!workspaceStatus}
+						hasPullRequest={!!pullRequest}
 						onCreateSection={handleCreateSection}
 						onMoveToSection={(targetSectionId) =>
 							moveWorkspaceToSection(id, projectId, targetSectionId)
@@ -418,6 +419,7 @@ export function DashboardSidebarWorkspaceItem({
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
 						onRemoveFromSidebar={handleRemoveFromSidebar}
+						onRemovePullRequest={handleRemovePullRequest}
 						onRename={isMainWorkspace ? undefined : startRename}
 						onDelete={
 							isMainWorkspace || sectionState === "deleted"

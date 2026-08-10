@@ -16,7 +16,12 @@ import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { useNavigate } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpIcon, HistoryIcon, PaperclipIcon } from "lucide-react";
+import {
+	ArrowUpIcon,
+	HistoryIcon,
+	PaperclipIcon,
+	Settings2Icon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoIssueOpened } from "react-icons/go";
 import { LuGitPullRequest } from "react-icons/lu";
@@ -39,6 +44,7 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
 import { SupersetIcon } from "renderer/routes/_authenticated/onboarding/providers/components/SupersetIcon";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import { newWorkspaceAttachmentPaths } from "renderer/stores/new-workspace-attachments";
 import { useNewWorkspacePromptContext } from "renderer/stores/new-workspace-prompt-context";
 import { useV2WorkspaceCreateDefaultsStore } from "renderer/stores/v2-workspace-create-defaults";
 import { useDashboardNewWorkspaceDraft } from "../../DashboardNewWorkspaceDraftContext";
@@ -72,6 +78,8 @@ import { SamplePrompts } from "./components/SamplePrompts";
 interface NewWorkspaceScreenProps {
 	isOpen: boolean;
 	preSelectedProjectId: string | null;
+	/** Open with "No project" (session) preselected. */
+	preSelectedSession?: boolean;
 }
 
 /**
@@ -83,6 +91,7 @@ interface NewWorkspaceScreenProps {
 export function NewWorkspaceScreen({
 	isOpen,
 	preSelectedProjectId,
+	preSelectedSession = false,
 }: NewWorkspaceScreenProps) {
 	const navigate = useNavigate();
 	const [promptSeed, setPromptSeed] = useState(0);
@@ -113,9 +122,6 @@ export function NewWorkspaceScreen({
 	// case (Esc-cancelled drags, drops outside the window) that an enter/leave
 	// counter gets permanently stuck on.
 	const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-	// Source paths for dropped/picked files, keyed by filename — the attachment
-	// items only keep an object URL, and Finder reveal needs the original path.
-	const attachmentPathsRef = useRef(new Map<string, string>());
 	useEffect(() => {
 		if (!isOpen) return;
 		let timer: number | null = null;
@@ -127,8 +133,8 @@ export function NewWorkspaceScreen({
 					// Attachment items only expose the basename, so the map is
 					// name-keyed; a second same-named file from elsewhere makes the
 					// name ambiguous — poison it so no card reveals the wrong file.
-					const existing = attachmentPathsRef.current.get(file.name);
-					attachmentPathsRef.current.set(
+					const existing = newWorkspaceAttachmentPaths.get(file.name);
+					newWorkspaceAttachmentPaths.set(
 						file.name,
 						existing !== undefined && existing !== path ? "" : path,
 					);
@@ -194,8 +200,27 @@ export function NewWorkspaceScreen({
 	// modal) — re-applying on every draft change would snap the picker back
 	// and make switching projects impossible.
 	const appliedPreSelectionRef = useRef<string | null>(null);
+	const appliedSessionPreselectionRef = useRef(false);
+	// Re-arm per intent so a second session-open cycle on a reused screen
+	// instance applies again.
+	useEffect(() => {
+		if (!preSelectedSession) appliedSessionPreselectionRef.current = false;
+	}, [preSelectedSession]);
 	useEffect(() => {
 		if (!isOpen || !areProjectsReady) return;
+		if (preSelectedSession && !appliedSessionPreselectionRef.current) {
+			appliedSessionPreselectionRef.current = true;
+			// Same clears as the manual "No project" path — a leftover
+			// project draft's PR/base-branch would fail at submit.
+			updateDraft({
+				selectedProjectId: null,
+				isSession: true,
+				linkedPR: null,
+				baseBranch: null,
+				baseBranchSource: null,
+			});
+			return;
+		}
 		const isValid = (id: string | null | undefined) =>
 			Boolean(id && projects.some((project) => project.id === id));
 		if (
@@ -209,6 +234,9 @@ export function NewWorkspaceScreen({
 			}
 			return;
 		}
+		// An explicit "No project" (session) choice must survive project-list
+		// updates — never auto-select over it.
+		if (draft.isSession) return;
 		if (isValid(draft.selectedProjectId)) return;
 		const { lastProjectId } = useV2WorkspaceCreateDefaultsStore.getState();
 		updateDraft({
@@ -220,7 +248,9 @@ export function NewWorkspaceScreen({
 		isOpen,
 		areProjectsReady,
 		preSelectedProjectId,
+		preSelectedSession,
 		draft.selectedProjectId,
+		draft.isSession,
 		projects,
 		updateDraft,
 	]);
@@ -395,7 +425,7 @@ export function NewWorkspaceScreen({
 
 	const { otherHosts } = useWorkspaceHostOptions();
 	const submitBlocker = useMemo<string | null>(() => {
-		if (!projectId) return "Select a project";
+		if (!projectId && !draft.isSession) return "Select a project";
 		const selectedHostId = draft.hostId ?? machineId;
 		if (!selectedHostId) return "No active host";
 		if (selectedHostId !== machineId) {
@@ -405,7 +435,14 @@ export function NewWorkspaceScreen({
 			return "Host service is not running";
 		}
 		return null;
-	}, [projectId, draft.hostId, machineId, activeHostUrl, otherHosts]);
+	}, [
+		projectId,
+		draft.isSession,
+		draft.hostId,
+		machineId,
+		activeHostUrl,
+		otherHosts,
+	]);
 
 	const handleGoToSetup = useCallback(() => {
 		if (!selectedProject?.id) return;
@@ -415,6 +452,22 @@ export function NewWorkspaceScreen({
 			to: "/settings/projects/$projectId",
 			params: { projectId: targetProjectId },
 			search: { hostId: draft.hostId ?? machineId ?? undefined },
+		});
+	}, [closeModal, draft.hostId, machineId, navigate, selectedProject?.id]);
+
+	// AI naming (title + branch) follows the project's naming instructions;
+	// this is the jump from "where do these names come from?" to the setting.
+	const handleGoToNamingInstructions = useCallback(() => {
+		if (!selectedProject?.id) return;
+		const targetProjectId = selectedProject.id;
+		closeModal();
+		void navigate({
+			to: "/settings/projects/$projectId",
+			params: { projectId: targetProjectId },
+			search: {
+				hostId: draft.hostId ?? machineId ?? undefined,
+				focus: "naming-instructions",
+			},
 		});
 	}, [closeModal, draft.hostId, machineId, navigate, selectedProject?.id]);
 
@@ -480,7 +533,26 @@ export function NewWorkspaceScreen({
 			</AnimatePresence>
 			{/* no-drag + clear of the page's window-drag strip (which ends at
 			    right-12) so the button actually receives clicks. */}
-			<div className="no-drag absolute right-3 top-2.5 z-10">
+			<div className="no-drag absolute right-3 top-2.5 z-10 flex items-center gap-0.5">
+				{selectedProject && !needsSetup && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon"
+								aria-label="Update naming instructions"
+								className="size-7 text-muted-foreground"
+								onClick={handleGoToNamingInstructions}
+							>
+								<Settings2Icon className="size-4" />
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							Update naming instructions for {selectedProject.name}
+						</TooltipContent>
+					</Tooltip>
+				)}
 				<PromptHistoryCommand
 					onSelect={applyPrompt}
 					tooltipLabel="Previous prompts"
@@ -561,7 +633,7 @@ export function NewWorkspaceScreen({
 							))}
 							{visibleFiles.map((file) => {
 								const sourcePath = file.filename
-									? attachmentPathsRef.current.get(file.filename) || null
+									? newWorkspaceAttachmentPaths.get(file.filename) || null
 									: null;
 								return (
 									<AttachmentCard
@@ -709,9 +781,22 @@ export function NewWorkspaceScreen({
 						<ProjectPickerPill
 							selectedProject={selectedProject}
 							projects={projects}
+							isSessionSelected={draft.isSession}
 							onSelectProject={(selectedProjectId) => {
+								if (selectedProjectId === null) {
+									// Sessions can't check out a PR or fork a branch —
+									// clear repo-scoped inputs instead of failing at submit.
+									updateDraft({
+										selectedProjectId: null,
+										isSession: true,
+										linkedPR: null,
+										baseBranch: null,
+										baseBranchSource: null,
+									});
+									return;
+								}
 								setLastProjectId(selectedProjectId);
-								updateDraft({ selectedProjectId });
+								updateDraft({ selectedProjectId, isSession: false });
 							}}
 						/>
 						{draft.linkedPR ? (
@@ -719,7 +804,7 @@ export function NewWorkspaceScreen({
 								<LuGitPullRequest className="size-3 shrink-0" />
 								based off PR #{draft.linkedPR.prNumber}
 							</span>
-						) : (
+						) : draft.isSession ? null : (
 							<CompareBaseBranchPicker {...pickerProps} />
 						)}
 					</div>

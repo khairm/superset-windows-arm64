@@ -3,6 +3,7 @@ import { type FSWatcher, watch } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
+import { isNull } from "drizzle-orm";
 import type { HostDb } from "../db/index.ts";
 import { workspaces } from "../db/schema.ts";
 import type { WorkspaceFilesystemManager } from "../runtime/filesystem/index.ts";
@@ -324,6 +325,7 @@ export class GitWatcher {
 					worktreePath: workspaces.worktreePath,
 				})
 				.from(workspaces)
+				.where(isNull(workspaces.archivedAt))
 				.all();
 		} catch {
 			return;

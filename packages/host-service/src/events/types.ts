@@ -97,10 +97,11 @@ export interface PortChangedMessage {
  */
 export interface WorkspaceSnapshot {
 	id: string;
-	projectId: string;
+	/** Null for project-less "session" workspaces. */
+	projectId: string | null;
 	name: string;
 	branch: string;
-	type: "main" | "worktree";
+	type: "main" | "worktree" | "session";
 	worktreePath: string;
 	taskId: string | null;
 	createdByUserId: string | null;
@@ -132,6 +133,8 @@ export interface ProjectSnapshot {
 	worktreeBaseDir: string | null;
 	/** Custom icon data-URI, or null to fall back to the GitHub avatar. */
 	icon: string | null;
+	/** Accent color as a `#rrggbb` hex, or null for the default. */
+	color: string | null;
 	createdAt: number;
 	updatedAt: number;
 }

@@ -7,15 +7,20 @@ import {
 	buildWrapperScript,
 	createWrapper,
 	isSupersetManagedHookCommand,
-	reconcileManagedEntries,
 	writeFileIfChanged,
 } from "./agent-wrappers-common";
+import {
+	ensureManagedJsonHooks,
+	getManagedJsonHooksContent,
+	type ManagedJsonHooksSpec,
+	removeManagedJsonHooks,
+} from "./managed-json-hooks";
 import { HOOKS_DIR } from "./paths";
 
 export const CURSOR_HOOK_SCRIPT_NAME = "cursor-hook.sh";
 
 const CURSOR_HOOK_SIGNATURE = "# Superset cursor hook";
-const CURSOR_HOOK_VERSION = "v4";
+const CURSOR_HOOK_VERSION = "v6";
 export const CURSOR_HOOK_MARKER = `${CURSOR_HOOK_SIGNATURE} ${CURSOR_HOOK_VERSION}`;
 
 const CURSOR_HOOK_TEMPLATE_PATH = path.join(
@@ -26,12 +31,6 @@ const CURSOR_HOOK_TEMPLATE_PATH = path.join(
 
 interface CursorHookEntry {
 	command: string;
-	[key: string]: unknown;
-}
-
-interface CursorHooksJson {
-	version?: number;
-	hooks?: Record<string, CursorHookEntry[]>;
 	[key: string]: unknown;
 }
 
@@ -50,61 +49,56 @@ export function getCursorHookScriptContent(): string {
 		.replaceAll("{{DEFAULT_PORT}}", String(env.DESKTOP_NOTIFICATIONS_PORT));
 }
 
+// Cursor invokes the hook script with the event name as argv; the script
+// path is absolute (per-install), so the outside-Superset guard lives inside
+// the script rather than in the registered command.
+const CURSOR_MANAGED_EVENT_ARGS: Record<string, string> = {
+	sessionStart: "SessionStart",
+	sessionEnd: "SessionEnd",
+	beforeSubmitPrompt: "Start",
+	stop: "Stop",
+	beforeShellExecution: "PermissionRequest",
+	beforeMCPExecution: "PermissionRequest",
+};
+
+function cursorHooksSpec(
+	hookScriptPath: string,
+): ManagedJsonHooksSpec<CursorHookEntry> {
+	return {
+		fileLabel: "Cursor hooks.json",
+		agentLabel: "Cursor",
+		getFilePath: getCursorGlobalHooksJsonPath,
+		eventsContainerKey: "hooks",
+		// Cursor runs each hook `command` as a shell command; on Windows a bare
+		// `.sh` path is ShellExecuted and opens in the user's default `.sh` editor
+		// instead of running, so wrap it in Git bash (see buildAgentHookCommand).
+		// A null command (Windows without Git bash) registers no managed entry at
+		// all rather than one that could only pop the editor.
+		desiredEntriesByEvent: Object.fromEntries(
+			Object.entries(CURSOR_MANAGED_EVENT_ARGS).map(([eventName, arg]) => {
+				const command = buildAgentHookCommand(hookScriptPath, arg);
+				return [eventName, command ? [{ command }] : []];
+			}),
+		),
+		cleanEntry: (entry) =>
+			entry.command?.includes(hookScriptPath) ||
+			isSupersetManagedHookCommand(entry.command, CURSOR_HOOK_SCRIPT_NAME)
+				? null
+				: entry,
+		applyRootDefaults: (root) => {
+			if (!root.version) root.version = 1;
+		},
+	};
+}
+
 /**
  * Reads existing ~/.cursor/hooks.json, merges our hook entries (identified by
  * hook script path), and preserves any user-defined hooks.
  */
-export function getCursorHooksJsonContent(hookScriptPath: string): string {
-	const globalPath = getCursorGlobalHooksJsonPath();
-
-	let existing: CursorHooksJson = {};
-	try {
-		if (fs.existsSync(globalPath)) {
-			existing = JSON.parse(fs.readFileSync(globalPath, "utf-8"));
-		}
-	} catch {
-		console.warn(
-			"[agent-setup] Could not parse existing ~/.cursor/hooks.json, merging carefully",
-		);
-	}
-
-	if (!existing.version) {
-		existing.version = 1;
-	}
-	if (!existing.hooks || typeof existing.hooks !== "object") {
-		existing.hooks = {};
-	}
-
-	// Cursor runs each hook `command` as a shell command; on Windows a bare `.sh`
-	// path is ShellExecuted and opens in the user's default `.sh` editor instead
-	// of running, so wrap it in Git bash (see buildAgentHookCommand). The value is
-	// the lifecycle label the cursor-hook.sh script reads as $1.
-	const hookArgByEvent: Record<string, string> = {
-		sessionStart: "SessionStart",
-		sessionEnd: "SessionEnd",
-		beforeSubmitPrompt: "Start",
-		stop: "Stop",
-		beforeShellExecution: "PermissionRequest",
-		beforeMCPExecution: "PermissionRequest",
-	};
-
-	for (const [eventName, hookArg] of Object.entries(hookArgByEvent)) {
-		const command = buildAgentHookCommand(hookScriptPath, hookArg);
-		const current = existing.hooks[eventName];
-		const { entries } = reconcileManagedEntries({
-			current,
-			// Null (Windows + no Git bash) → remove our managed entry entirely.
-			desired: command ? [{ command }] : [],
-			isManaged: (entry: CursorHookEntry) =>
-				entry.command?.includes(hookScriptPath) ||
-				isSupersetManagedHookCommand(entry.command, CURSOR_HOOK_SCRIPT_NAME),
-			isEquivalent: (entry: CursorHookEntry, desiredEntry: CursorHookEntry) =>
-				entry.command === desiredEntry.command,
-		});
-		existing.hooks[eventName] = entries;
-	}
-
-	return JSON.stringify(existing, null, 2);
+export function getCursorHooksJsonContent(
+	hookScriptPath: string,
+): string | null {
+	return getManagedJsonHooksContent(cursorHooksSpec(hookScriptPath));
 }
 
 export function createCursorHookScript(): void {
@@ -123,15 +117,14 @@ export function createCursorAgentWrapper(): void {
 	createWrapper("cursor-agent", script);
 }
 
-export function createCursorHooksJson(): void {
-	const hookScriptPath = getCursorHookScriptPath();
-	const globalPath = getCursorGlobalHooksJsonPath();
-	const content = getCursorHooksJsonContent(hookScriptPath);
+/**
+ * Removes Superset-managed hook entries from ~/.cursor/hooks.json, preserving
+ * user hooks. No-op when the file does not exist.
+ */
+export function removeCursorManagedHooks(): void {
+	removeManagedJsonHooks(cursorHooksSpec(getCursorHookScriptPath()));
+}
 
-	const dir = path.dirname(globalPath);
-	fs.mkdirSync(dir, { recursive: true });
-	const changed = writeFileIfChanged(globalPath, content, 0o644);
-	console.log(
-		`[agent-setup] ${changed ? "Updated" : "Verified"} Cursor hooks.json`,
-	);
+export function createCursorHooksJson(): void {
+	ensureManagedJsonHooks(cursorHooksSpec(getCursorHookScriptPath()));
 }

@@ -808,6 +808,10 @@ export const gitRouter = router({
 				});
 			}
 
+			// Session workspaces (null projectId) have no GitHub remote.
+			if (workspace.projectId === null) {
+				return { reviewThreads: [], conversationComments: [] };
+			}
 			let repo: { owner: string; name: string };
 			try {
 				repo = await resolveGithubRepo(ctx, workspace.projectId);

@@ -6,6 +6,8 @@ export type LinkedIssue = {
 	source?: "github" | "internal";
 	url?: string;
 	taskId?: string;
+	/** Provider branch name (e.g. Linear's), synced into `tasks.branch`. */
+	branch?: string;
 	number?: number;
 	state?: "open" | "closed";
 };
@@ -29,6 +31,8 @@ export interface DraftAttachment {
 
 export interface NewWorkspaceDraft {
 	selectedProjectId: string | null;
+	/** Explicit "No project" (session) choice — distinct from not-yet-selected. */
+	isSession: boolean;
 	hostId: string | null;
 	prompt: string;
 	baseBranch: string | null;
@@ -37,6 +41,12 @@ export interface NewWorkspaceDraft {
 	workspaceNameEdited: boolean;
 	branchName: string;
 	branchNameEdited: boolean;
+	/**
+	 * True while branchName is the provider's own branch name (Linear's
+	 * branchName) seeded by linking an issue. Cleared on manual edits.
+	 * Provider branches are created verbatim — no project branch prefix.
+	 */
+	branchNameFromProvider: boolean;
 	linkedIssues: LinkedIssue[];
 	linkedPR: LinkedPR | null;
 	selectedAgentId: string | null;
@@ -55,6 +65,7 @@ interface NewWorkspaceDraftState extends NewWorkspaceDraft {
 function buildInitialDraft(): NewWorkspaceDraft {
 	return {
 		selectedProjectId: null,
+		isSession: false,
 		hostId: null,
 		prompt: "",
 		baseBranch: null,
@@ -63,6 +74,7 @@ function buildInitialDraft(): NewWorkspaceDraft {
 		workspaceNameEdited: false,
 		branchName: "",
 		branchNameEdited: false,
+		branchNameFromProvider: false,
 		linkedIssues: [],
 		linkedPR: null,
 		selectedAgentId: null,

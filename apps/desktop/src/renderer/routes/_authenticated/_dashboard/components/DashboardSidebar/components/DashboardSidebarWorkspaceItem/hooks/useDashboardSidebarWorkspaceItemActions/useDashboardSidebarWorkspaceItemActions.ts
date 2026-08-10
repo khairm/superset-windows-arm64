@@ -17,6 +17,7 @@ import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
+import { DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
 import {
@@ -29,7 +30,8 @@ import { useV2NotificationStore } from "renderer/stores/v2-notifications";
 
 interface UseDashboardSidebarWorkspaceItemActionsOptions {
 	workspaceId: string;
-	projectId: string;
+	/** Null for project-less "session" workspaces. */
+	projectId: string | null;
 	workspaceName: string;
 	branch: string;
 	isMainWorkspace?: boolean;
@@ -173,6 +175,8 @@ export function useDashboardSidebarWorkspaceItemActions({
 	};
 
 	const handleCreateSection = () => {
+		// Sessions get groups in the stacked nesting PR.
+		if (projectId === null) return;
 		const sectionId = createSection(projectId);
 		moveWorkspaceToSection(workspaceId, projectId, sectionId);
 		requestSectionRename(sectionId);
@@ -253,6 +257,27 @@ export function useDashboardSidebarWorkspaceItemActions({
 		}
 	};
 
+	const handleRemovePullRequest = async () => {
+		if (!workspaceHostUrl) {
+			showHostServiceUnavailableToast(hostService, {
+				action: "remove the PR link",
+			});
+			return;
+		}
+		try {
+			await getHostServiceClientByUrl(
+				workspaceHostUrl,
+			).pullRequests.unlinkFromWorkspace.mutate({ workspaceId });
+			await queryClient.invalidateQueries({
+				queryKey: DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX,
+			});
+		} catch (error) {
+			toast.error(
+				`Failed to remove PR link: ${error instanceof Error ? error.message : "Unknown error"}`,
+			);
+		}
+	};
+
 	const handleCopyBranchName = async () => {
 		if (!branch) {
 			toast.error("Branch name is not available");
@@ -280,6 +305,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
+		handleRemovePullRequest,
 		handleRestore,
 		handleSnooze,
 		handleTogglePin,

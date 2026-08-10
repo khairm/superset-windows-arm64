@@ -31,6 +31,7 @@ import {
 	LuRotateCcw,
 	LuTrash2,
 	LuUndo2,
+	LuUnlink,
 	LuX,
 } from "react-icons/lu";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -47,7 +48,8 @@ export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
 
 interface DashboardSidebarWorkspaceContextMenuProps {
 	workspaceId: string;
-	projectId: string;
+	/** Null for project-less "session" workspaces (no group actions yet). */
+	projectId: string | null;
 	isInSection?: boolean;
 	isLocalWorkspace: boolean;
 	isNonGit?: boolean;
@@ -58,6 +60,10 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	 * swaps the snooze/archive actions for the matching restore actions. */
 	sectionState?: WorkspaceSectionState;
 	hasStatus: boolean;
+	hasPullRequest: boolean;
+	/** Accepted for call-site parity with upstream, deliberately not rendered:
+	 * this menu's "Delete" is the (RECYCLE-BIN) soft-delete, while the
+	 * CLOSE_WORKSPACE hotkey opens the permanent destroy dialog. */
 	showDeleteHotkey?: boolean;
 	onTogglePin: () => void;
 	onCreateSection: () => void;
@@ -81,6 +87,7 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onArchive: () => void;
 	onUnarchive: () => void;
 	onClearStatus: () => void;
+	onRemovePullRequest: () => void;
 	children: React.ReactNode;
 }
 
@@ -153,6 +160,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	isUnread,
 	sectionState,
 	hasStatus,
+	hasPullRequest,
 	onTogglePin,
 	onCreateSection,
 	onMoveToSection,
@@ -170,11 +178,17 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onArchive,
 	onUnarchive,
 	onClearStatus,
+	onRemovePullRequest,
 	children,
 }: DashboardSidebarWorkspaceContextMenuProps) {
 	const collections = useCollections();
 	const { setContextMenuOpen } = useDashboardSidebarHover();
 	const isSectioned = sectionState !== undefined;
+	// Group actions mutate placement (sectionId/tabOrder). They need a project
+	// (sessions have none) and a row that actually renders its placement — a
+	// pinned, main, or sectioned row does not.
+	const canUseGroupActions =
+		!isPinned && !isLocalMainWorkspace && !isSectioned && projectId !== null;
 	const portGroup = useDashboardSidebarWorkspacePorts(workspaceId);
 	const { isPending: isKillingPorts, killPorts } =
 		useDashboardSidebarPortKill();
@@ -183,8 +197,12 @@ export function DashboardSidebarWorkspaceContextMenu({
 		(q) =>
 			q
 				.from({ sidebarSections: collections.v2SidebarSections })
+				// `?? ""` and not null: TanStack DB's eq(col, null) never
+				// matches, and no section can have an empty-string projectId,
+				// so sessions resolve to an empty list without relying on the
+				// eq(null) quirk.
 				.where(({ sidebarSections }) =>
-					eq(sidebarSections.projectId, projectId),
+					eq(sidebarSections.projectId, projectId ?? ""),
 				)
 				.orderBy(({ sidebarSections }) => sidebarSections.tabOrder, "asc")
 				.select(({ sidebarSections }) => ({
@@ -277,9 +295,13 @@ export function DashboardSidebarWorkspaceContextMenu({
 						)}
 					</>
 				)}
-				{/* Group actions mutate placement (sectionId/tabOrder), which a pinned
-				    row doesn't display — the change would only surface on unpin. */}
-				{!isPinned && !isLocalMainWorkspace && !isSectioned && (
+				{hasPullRequest && (
+					<ContextMenuItem onSelect={onRemovePullRequest}>
+						<LuUnlink className="size-4 mr-2" />
+						Remove PR Link
+					</ContextMenuItem>
+				)}
+				{canUseGroupActions && (
 					<>
 						<ContextMenuSeparator />
 						<ContextMenuItem onSelect={onCreateSection}>
