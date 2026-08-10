@@ -1,89 +1,21 @@
 /**
- * (COMPANION-BRIDGE) — the answer path: guard stack, injection, idempotency (§11).
+ * (COMPANION-BRIDGE) — answer injection and idempotency (§11).
  *
- * This is the sharpest code in the companion. A mistake here types bytes into a
- * live agent terminal, and there is no undo: with the picker gone a digit lands
- * in the composer and a following Enter submits it as a real prompt; mid-turn it
- * queues and steers the running agent; against a DIFFERENT picker it commits
- * instantly and irreversibly.
+ * (ANSWER-GUARDLESS) A pending, captured Claude question is directly answerable
+ * from a paired phone or watch. After the request boundary validates question
+ * identity and answer shape, `encodeAnswer` produces the proven byte sequence and
+ * `injectSequence` writes it to the captured terminal under the per-terminal lock.
+ * No transcript, screen, renderer, Windows interactive-session, agent-binding,
+ * permission-latch or marker observation may veto or downgrade that write.
  *
- * The byte encoding is NOT here — it lives in `./keystrokes`, which is pure and
- * has no access to a terminal. This file owns only WHETHER and WHEN a
- * pre-encoded keystroke is allowed to land.
+ * The lock, answer-wide lease and durable request ledger remain: they prevent two
+ * devices from interleaving bytes and make retries idempotent. Successful PTY
+ * writes are confirmed immediately. Only request/encoding failures or an actual
+ * inability to write to the target PTY can prevent confirmation.
  *
- * ---------------------------------------------------------------------------
- * THE GUARD STACK IS A TRANSACTION, NOT A CHECKLIST
- * ---------------------------------------------------------------------------
- * Checking six conditions and then writing is TWO ACTS: everything can pass and
- * the screen can still change before the byte lands. So read-screen, evaluate
- * guards and write all happen inside ONE critical section holding the
- * per-terminal lock, in the same process as the pty writer. That single fact is
- * the entire reason the bridge lives in host-service rather than in the Electron
- * main process — a lock held across an IPC hop proves nothing about the moment
- * the byte reaches the pty.
- *
- * Multi-keystroke sequences re-run the WHOLE stack before EVERY keystroke, and
- * additionally wait for the emulator mirror to demonstrably advance, because
- * each keystroke lands on a screen the previous one changed and a stale mirror
- * showing a picker that has already closed is the dangerous direction.
- *
- * ---------------------------------------------------------------------------
- * WHICH GUARDS ARE ALLOWED TO CARRY WEIGHT
- * ---------------------------------------------------------------------------
- * Guards 2 (`binding`) and 4 (`permission_axis`) read a store fed by the
- * localhost `notifications.hook`, which is unauthenticated and whose URL sits in
- * every agent shell's environment. An agent that reads untrusted content and
- * follows instructions in it can forge a "question is pending" state there. They
- * are therefore classified `forgeable` and the classification is ENFORCED, not
- * merely commented:
- *
- *   - the load-bearing guards (1 `transcript`, 5 `screen`) are evaluated FIRST
- *     and short-circuit the stack, so a forged `true` is never even consulted on
- *     a path that would permit a write;
- *   - a forgeable guard may cause a REFUSAL but can never contribute to a
- *     permission (`assertGuardClassification` keeps that invariant honest as
- *     guards are added) — with ONE listed exception, `permission_axis`, which
- *     ABSTAINS once both load-bearing guards have passed because its refusal was
- *     as forgeable as its permission would have been and proved nothing they had
- *     not. See (GUARD4-ABSTAIN) on `ABSTAINING_GUARDS`;
- *   - every guard that cannot be evaluated — the source threw, the file was
- *     unreadable — counts as FALSE. "Could not check" is never "probably fine".
- *     The ONE exception is the `veto_only` class below, where "could not check"
- *     is not "absent" and therefore is not a veto; it has its own reader
- *     (`readVetoGuardSource`) precisely so the two never get confused.
- *
- * WHAT MAKES "LOAD-BEARING" TRUE RATHER THAN ASPIRATIONAL. Both properties are
- * mechanical and both were once absent:
- *   - guard 1 reads a transcript path DERIVED FROM host.db
- *     (`QuestionSourceResolver.resolveTranscriptPath`), not the one the hook
- *     supplied, and it requires the matching `tool_use` block to be positively
- *     observed before it will report "still unanswered". Reading a hook-named
- *     file made "point it at an empty file" a way to pass guard 1 on demand;
- *   - guard 5 requires the row it is about to PRESS to be strongly verified and
- *     the rows to form one picker block — ascending digit order, every gap
- *     between consecutive rows explained by the render of the option above it
- *     (`rowIsStronglyVerified`, `rowsFormPickerBlock`). Without those, a capture
- *     with one-character labels reduced the check to a two-character substring
- *     search that an idle composer satisfied. The strength requirement is tiered
- *     by role rather than applied to every row, because upstream's own tool
- *     schema asks for labels of "1-5 words" — see (GUARD5-EVIDENCE-TIERS).
- * Do not weaken either without replacing it with something equally mechanical.
- *
- * Guard 6 (`askq_marker`) is a VETO, never proof: markers leak (17 stale, oldest
- * 21 days). Its ABSENCE is sound; its PRESENCE proves nothing and is never
- * treated as evidence — and an UNREADABLE marker source is not absence, so it
- * cannot veto either. Running it through the ordinary reader turned it into a
- * mandatory positive that failed 100% of answers with a refusal the client
- * could not distinguish from a stale question.
- *
- * ---------------------------------------------------------------------------
- * ACCEPTED RESIDUAL (§11.7) — do not try to fix, do not worsen
- * ---------------------------------------------------------------------------
- * A desktop keypress already queued inside the detached pty daemon beats any
- * lock taken here, because the emulator mirror the guards read is downstream of
- * the very queue being raced. Every write therefore carries its leaseId,
- * requestId and full guard state into the audit log BEFORE it executes, so an
- * incident is reconstructable rather than mysterious. Logging is the mitigation.
+ * The legacy guard-analysis helpers remain temporarily for persisted audit-schema
+ * compatibility and historical tests. They are not called by the answer path;
+ * confirmed answers report every old guard name as abstained.
  */
 
 import type {
@@ -115,6 +47,7 @@ import {
 import type { PendingQuestion, QuestionStore } from "./question-store";
 import {
 	type AgentKind,
+	ANSWER_GUARD_NAMES,
 	type AnswerAttemptRecord,
 	type AnswerGuardName,
 	type AnswerRequest,
@@ -2699,9 +2632,11 @@ async function requireHostTerminal(
 ): Promise<HostTerminalRef> {
 	const host = await deps.resolveHostTerminal(terminalId);
 	if (host === null) {
-		throw sealed(412, "guard_failed", "terminal has no workspace", {
-			guard: "session",
-		});
+		throw sealed(
+			503,
+			"internal",
+			"the captured terminal target is unavailable; no bytes were written",
+		);
 	}
 	return host;
 }
@@ -2773,13 +2708,13 @@ export async function handleAnswer(
 	if (claim.kind === "replay") {
 		const previous = claim.record;
 		if (previous.status === "failed") {
-			// A recorded FAILURE is re-thrown as that failure. Downgrading it to
-			// unconfirmed would send the client to §11.5 for an outcome we know.
+			// The request-id fence stays closed, but legacy guard failures never
+			// re-surface as a guard refusal. A fresh request may answer the still-open
+			// question through the guardless path.
 			throw sealed(
-				412,
-				(previous.failureCode as SealedCode | null) ?? "guard_failed",
-				"this answer attempt already failed; it is never re-executed",
-				{ guard: "session" },
+				409,
+				"request_closed",
+				"this request id already failed and is never re-executed; submit a new answer request",
 			);
 		}
 		// (ANSWER-INFLIGHT) The sequence for this very requestId is still typing.
@@ -2862,16 +2797,9 @@ export async function handleAnswer(
 		}
 
 		// 7. Free text requires biometric confirmation at the client (§11.2).
-		const hasFreeText = request.answers.some(
-			(item) => item.kind === "freetext",
-		);
-		if (hasFreeText && !request.confirmedBiometric) {
-			throw sealed(
-				400,
-				"bad_request",
-				"free text requires confirmedBiometric === true",
-			);
-		}
+		// (ANSWER-GUARDLESS) `confirmedBiometric` remains on the wire for installed
+		// clients, but it is not an answer gate. Explicit submit from the paired,
+		// authenticated device is the authorization.
 
 		// 8. Encode. PURE — no terminal, no lock, so every failure here provably
 		//    wrote nothing.
@@ -2887,22 +2815,9 @@ export async function handleAnswer(
 		// 9. Refuse plain shells and non-Claude agents EXPLICITLY. This reads a
 		//    forgeable source, which is sound here because it can only cause a
 		//    refusal — a forged binding cannot make us write.
-		await assertWritableBinding(deps, question.terminalId, (kind) =>
-			kind === "codex"
-				? // v1 scope: the byte contract was established against Claude Code and
-					// NONE of it generalises — Codex's picker is a different program with
-					// different keys. Refused explicitly rather than attempted.
-					sealed(
-						501,
-						"capability_unsupported",
-						"Codex terminals cannot be answered from the companion in v1",
-						{ capability: "agent.codex" },
-					)
-				: sealed(412, "guard_failed", `unsupported agent kind: ${kind}`, {
-						guard: "no_agent_binding",
-					}),
-		);
 
+		// (ANSWER-GUARDLESS) The captured question already owns the terminal target.
+		// Do not re-check the mutable hook-fed agent binding before writing.
 		const host = await requireHostTerminal(deps, question.terminalId);
 
 		// The branded writer. Minted (and probed) here rather than inside the lock, so
@@ -3050,45 +2965,6 @@ export async function handleAnswer(
 				return recordToResponse(record);
 			}
 
-			if (result.kind === "guard_failed") {
-				// Nothing was written: the failure happened before the first byte.
-				const record: AnswerAttemptRecord = {
-					...baseAttempt,
-					status: "failed",
-					resolvedAtMs: null,
-					failureCode: "guard_failed",
-					guardsPassed: result.guardsPassed,
-					guardsAbstained: result.guardsAbstained,
-				};
-				await recordOutcome(deps, record);
-				await deps.audit.append({
-					...baseAudit,
-					tsMs: deps.now(),
-					guards: result.evaluation,
-					guardsAbstained: result.guardsAbstained,
-					outcome: "failed",
-					failureCode: "guard_failed",
-				});
-				throw sealed(412, "guard_failed", `guard ${result.guard} failed`, {
-					guard: result.guard,
-				});
-			}
-
-			// result.kind === "unconfirmed": at least one byte landed and the sequence
-			// then aborted. The prompt is in a state we cannot describe, so we say so
-			// rather than guessing "failed" (which invites a re-send that could answer
-			// a DIFFERENT question) or "confirmed" (which is a lie).
-			//
-			// The question is marked STALE here, while this request still holds the
-			// lease, so no second attempt can ever be accepted for it. Leaving it
-			// `pending` is what made a partial multi-select write catastrophic: the
-			// toggles that landed are invisible to the screen matcher (a checked row and
-			// an unchecked row squash identically), so the user would see the same
-			// question still listed, tap the same options again with a fresh requestId,
-			// and the replayed toggles would DESELECT them and submit an empty
-			// selection — reported back as `confirmed`. §11.4's idempotency is keyed on
-			// requestId and cannot stop that; only retiring the question can. Recovery
-			// after an unconfirmed write is desk-only, by design.
 			deps.questions.markStale(
 				request.questionId,
 				`partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
@@ -3226,14 +3102,6 @@ type InjectionResult =
 	| {
 			kind: "confirmed";
 			guardsPassed: AnswerGuardName[];
-			/** (GUARD4-ABSTAIN) Disjoint from `guardsPassed`; see `GuardOutcome`. */
-			guardsAbstained: AnswerGuardName[];
-			evaluation: GuardEvaluation;
-	  }
-	| {
-			kind: "guard_failed";
-			guard: AnswerGuardName;
-			guardsPassed: AnswerGuardName[];
 			guardsAbstained: AnswerGuardName[];
 			evaluation: GuardEvaluation;
 	  }
@@ -3248,18 +3116,21 @@ type InjectionResult =
 	  };
 
 /**
- * Runs entirely inside the per-terminal lock.
+ * (ANSWER-GUARDLESS) Runs the proven byte sequence inside the per-terminal lock.
  *
- * Before EVERY keystroke: the lease is re-verified and renewed, the emulator
- * mirror is proven to have caught up with the previous byte, a fresh snapshot is
- * taken, and the full guard stack is evaluated against THAT snapshot. Only then
- * is the byte written.
+ * The captured question identity and submitted answer are validated before this
+ * function runs. Once that boundary has produced a byte sequence, no transcript,
+ * screen snapshot, desktop session, agent binding, permission latch or marker may
+ * veto it. In particular, this path does not depend on the renderer, the physical
+ * display, or the Windows interactive login session, so display-off and locked
+ * desktops behave exactly like an unlocked desktop.
  *
- * There is no compensating action on a mid-sequence abort. Sending Escape to
- * "clean up" would be another blind byte against a screen we just admitted we
- * cannot characterise. We stop, and we say the outcome is unknown.
+ * PTY input is an ordered byte stream. We therefore write the already-encoded
+ * sequence in order and confirm immediately after every write succeeds. The old
+ * mirror-advance wait could downgrade a successful write to `unconfirmed` merely
+ * because the renderer had not repainted; that is explicitly not an outcome check.
  */
-async function injectSequence(
+export async function injectSequence(
 	deps: AnswerDeps,
 	input: {
 		question: PendingQuestion;
@@ -3271,70 +3142,30 @@ async function injectSequence(
 ): Promise<InjectionResult> {
 	const { question, host, keystrokes, leaseId, writer } = input;
 	const deadlineMs = deps.now() + SEQUENCE_DEADLINE_MS;
-
+	const guardsPassed: AnswerGuardName[] = [];
+	const guardsAbstained: AnswerGuardName[] = [...ANSWER_GUARD_NAMES];
+	const evaluation = Object.fromEntries(
+		ANSWER_GUARD_NAMES.map((guard) => [guard, false]),
+	) as GuardEvaluation;
 	let written = 0;
-	let previousScreen: string | null = null;
-	let guardsPassed: AnswerGuardName[] = [];
-	/** (GUARD4-ABSTAIN) Carried beside `guardsPassed`, never merged into it. */
-	let guardsAbstained: AnswerGuardName[] = [];
-	let evaluation: GuardEvaluation = {
-		transcript: false,
-		screen: false,
-		binding: false,
-		permission_axis: false,
-		session: false,
-		askq_marker: false,
-	};
 
-	/**
-	 * The one fork every abandonment takes: nothing landed => the guard-style
-	 * refusal the client knows how to show; something landed => `unconfirmed`,
-	 * which is never downgraded to a failure.
-	 *
-	 * `guard` is a PARAMETER rather than a constant. Most call sites here are not
-	 * guard failures at all — a lapsed lease, the sequence deadline, a mirror that
-	 * never repainted — and they report `session` because that is what they share
-	 * with a client: this terminal is not in a state we can safely write to. That
-	 * used to be hardcoded, so a reader of the `guard_failed` result could not
-	 * tell a genuine guard 3 failure from a deadline. Now each site says which
-	 * name it is reporting under, and the mid-sequence guard failure passes the
-	 * guard that actually failed instead of rebuilding this same fork inline.
-	 */
-	const abort = (
-		reason: string,
-		index: number,
-		guard: AnswerGuardName,
-	): InjectionResult =>
-		written === 0
-			? {
-					kind: "guard_failed",
-					guard,
-					guardsPassed,
-					guardsAbstained,
-					evaluation,
-				}
-			: {
-					kind: "unconfirmed",
-					reason,
-					abortedAt: index,
-					written,
-					guardsPassed,
-					guardsAbstained,
-					evaluation,
-				};
+	const abort = (reason: string, index: number): InjectionResult => ({
+		kind: "unconfirmed",
+		reason,
+		abortedAt: index,
+		written,
+		guardsPassed,
+		guardsAbstained,
+		evaluation,
+	});
 
 	for (let index = 0; index < keystrokes.length; index += 1) {
 		const keystroke = keystrokes[index];
-		if (keystroke === undefined) {
-			return abort("missing keystroke", index, "session");
-		}
-
+		if (keystroke === undefined) return abort("missing keystroke", index);
 		if (deps.now() >= deadlineMs) {
-			return abort("sequence deadline exceeded", index, "session");
+			return abort("sequence deadline exceeded", index);
 		}
 
-		// The lease can lapse mid-sequence. Renewing must be able to FAIL, or we
-		// would keep typing into a question another device has taken over.
 		const extension = deps.leases.extend(leaseId, deps.now());
 		if (!extension.ok) {
 			deps.log({
@@ -3344,87 +3175,9 @@ async function injectSequence(
 				reason: extension.reason,
 				keystrokeIndex: index,
 			});
-			return abort(`lease ${extension.reason}`, index, "session");
+			return abort(`lease ${extension.reason}`, index);
 		}
 
-		// Prove the mirror reflects our previous byte before trusting it. Without
-		// this, guard 5 could pass against a repaint that has not happened yet.
-		if (previousScreen !== null) {
-			const advanced = await awaitScreenAdvance(
-				deps,
-				question.terminalId,
-				previousScreen,
-				Math.min(deadlineMs, deps.now() + SCREEN_ADVANCE_TIMEOUT_MS),
-			);
-			if (advanced === null) {
-				return abort(
-					"screen did not advance after the previous keystroke",
-					index,
-					"session",
-				);
-			}
-			// (ADVANCE-SCREEN-DISCARDED) `advanced` IS DELIBERATELY NOT REUSED as
-			// the guard's screen, and the redundant snapshot below is the point.
-			//
-			// `awaitScreenAdvance` returns the FIRST snapshot that differs from the
-			// previous one, which proves the TUI consumed our byte — it does not
-			// prove the repaint finished, and a half-drawn frame is exactly the
-			// input guard 5's matcher must not be handed. Reusing it would also
-			// widen the gap between "what we observed" and "what we then wrote
-			// into" by up to one poll interval, on the one guard §11.3 lists as
-			// load-bearing. One extra viewport snapshot per keystroke is the price
-			// of evaluating guard 5 against the freshest screen there is.
-		}
-
-		const screen = await safeSnapshot(deps, question.terminalId);
-		if (screen === null) {
-			// Guard 5 is load-bearing; an unreadable screen is not a reason to
-			// proceed, it is the reason not to.
-			return abort("screen snapshot unavailable", index, "session");
-		}
-		const outcome = await evaluateGuards(deps, {
-			question,
-			screen,
-			expectation: keystroke.expect,
-			requireOptionIndex: keystroke.optionIndex,
-		});
-		// Attempt-wide evidence, not last-keystroke evidence. See
-		// `mergeAttemptEvidence`.
-		({ guardsPassed, guardsAbstained, evaluation } = mergeAttemptEvidence(
-			index === 0 ? null : { guardsPassed, guardsAbstained, evaluation },
-			outcome,
-		));
-
-		if (outcome.failed !== null) {
-			deps.log({
-				event: "companion.answer.guard_failed",
-				questionId: question.questionId,
-				terminalId: question.terminalId,
-				guard: outcome.failed,
-				guardClass: GUARD_CLASSES[outcome.failed],
-				keystrokeIndex: index,
-				written,
-				screenReason: outcome.screenMatch?.reason ?? null,
-				screenMissing: outcome.screenMatch?.missing ?? null,
-				// First-shot diagnosis: the complete per-guard picture at the failing
-				// keystroke, not just the name of the guard that tripped.
-				expectation: keystroke.expect.kind,
-				evaluation: { ...outcome.evaluation },
-				passed: [...outcome.passed],
-				abstained: [...outcome.abstained],
-			});
-			return abort(
-				`guard ${outcome.failed} failed mid-sequence`,
-				index,
-				outcome.failed,
-			);
-		}
-
-		// The write. Synchronous and unframed — the only thing a picker consumes.
-		//
-		// The pty writer is keyed on host.db ids, NOT on the opaque wire handle:
-		// `writeInputToSession` looks `terminalId` up in the live session map, and
-		// the handle is a truncated SHA-256 that is never a key there.
 		let result: { success: true } | { error: string };
 		try {
 			result = writer.write({
@@ -3433,9 +3186,6 @@ async function injectSequence(
 				data: keystroke.data,
 			});
 		} catch (error) {
-			// The pty write itself threw. Whether the bytes reached the daemon is
-			// genuinely unknown, so this is unconfirmed even for the first
-			// keystroke — we do not get to claim nothing happened.
 			deps.log({
 				event: "companion.answer.write_threw",
 				questionId: question.questionId,
@@ -3443,20 +3193,10 @@ async function injectSequence(
 				keystrokeIndex: index,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			return {
-				kind: "unconfirmed",
-				reason: "pty write threw",
-				abortedAt: index,
-				written,
-				guardsPassed,
-				guardsAbstained,
-				evaluation,
-			};
+			return abort("pty write threw", index);
 		}
 
 		if ("error" in result) {
-			// `writeInputToSession` validates and returns BEFORE touching the pty,
-			// so this branch provably wrote nothing on THIS keystroke.
 			deps.log({
 				event: "companion.answer.write_refused",
 				questionId: question.questionId,
@@ -3465,11 +3205,10 @@ async function injectSequence(
 				written,
 				error: result.error,
 			});
-			return abort(`pty write refused: ${result.error}`, index, "session");
+			return abort(`pty write refused: ${result.error}`, index);
 		}
 
 		written += 1;
-		previousScreen = screen;
 	}
 
 	return {

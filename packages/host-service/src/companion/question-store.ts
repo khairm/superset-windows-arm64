@@ -1,85 +1,28 @@
 /**
  * (COMPANION-BRIDGE) — capture and custody of pending AskUserQuestion prompts (§7.4).
  *
- * Source of truth for question TEXT is the `PreToolUse` hook payload, captured
- * at the moment the question was raised: it already carries `tool_name`,
- * `tool_use_id`, `transcript_path`, `session_id`, `cwd`, `tool_input.questions[]`
- * and `agent_id`/`agent_type` for a subagent. No transcript parsing is needed to
- * DISCOVER a question; the transcript is a cross-check, not the source.
+ * Question text and terminal identity arrive through the validated PreToolUse hook
+ * capture. Nothing sensitive (`tool_use_id`, session id, transcript path or host PTY
+ * ids) is sent to a client.
  *
- * Nothing here ever leaves the process unredacted: `tool_use_id`, `session_id`,
- * transcript paths and pty handles are NEVER sent to a client.
+ * (ANSWER-GUARDLESS) Captured hook state is intentionally the pending-question
+ * source of truth. For any pending captured question whose host.db terminal resolves,
+ * phone and watch surfaces always offer the answer. Transcript, screen, renderer,
+ * Windows login-session, hook-latch and capability observations cannot veto it.
+ * The answer endpoint still validates the question fingerprint and answer shape,
+ * then writes only the proven byte sequence to the captured terminal target.
  *
- * Delivery route: `notifications.hook` -> `companion-question-sink` ->
- * `QuestionStore.asCaptureSink()`. The route zod-validates the wire shape; this
- * module re-validates everything it is handed, because the sink is a
- * process-global anything in this process can call and a second validation is
- * cheap next to a malformed question reaching a phone.
- *
- * ---------------------------------------------------------------------------
- * THREAT MODEL — READ THIS BEFORE USING ANYTHING THIS MODULE RETURNS
- * ---------------------------------------------------------------------------
- * Everything in this store arrives through `notifications.hook`, which is
- * DELIBERATELY UNAUTHENTICATED on localhost and whose URL sits in every agent
- * shell's environment. Any process on this machine — including an agent that
- * read untrusted content and followed instructions in it — can POST an
- * arbitrary, well-formed "a question is pending on terminal X" payload.
- *
- * Therefore:
- *
- *   1. Every record in this store is UNVERIFIED ATTACKER-INFLUENCEABLE INPUT.
- *      That is why the internal record carries `origin:
- *      "unauthenticated_localhost_hook"` and why every accessor below is
- *      documented as returning unverified state. It is not decoration; it is
- *      the only honest description of the data.
- *
- *   2. THIS STORE MUST NEVER BE THE LOAD-BEARING GUARD FOR AN INJECTION.
- *      §11.3 guards 1 (`transcript`) and 5 (`screen`) are load-bearing, and
- *      both are outside this endpoint's reach. Guards 2 (`binding`) and 4
- *      (`permission_axis`) read state written by this same unauthenticated
- *      endpoint and are explicitly NOT load-bearing. This module deliberately
- *      exposes NO method whose name or return type could be mistaken for
- *      "it is safe to type into that terminal".
- *
- *   3. The one verification primitive this module owns is
- *      `verifyResolvedInTranscript()` — guard 1. It reads the agent's own
- *      on-disk transcript, which the hook endpoint cannot write, and returns a
- *      TRI-STATE: `resolved` / `unresolved` / `unreadable`. `unreadable` is
- *      never silently collapsed into either answer; callers must treat it as a
- *      refusal, not as permission.
- *
- *      (TRANSCRIPT-PATH-DERIVED) Guard 1 only carries anti-forgery weight if
- *      the hook cannot choose WHICH FILE it reads. It previously could: the
- *      hook's `transcriptPath` was stored verbatim and handed straight to
- *      `findToolResultInTranscript`, so pointing it at an empty file made
- *      "no tool_result here" — i.e. "still unanswered" — true on demand, and
- *      guard 1 passed for a question that was never asked. The path is now
- *      DERIVED from host.db (`QuestionSourceResolver.resolveTranscriptPath`)
- *      and the hook's own value is never stored: it is compared against the
- *      derived path once, at capture, and a mismatch is logged LOUDLY. It is
- *      never opened, and never read by a guard or by the transcript
- *      endpoint. When the path cannot be derived it is EMPTY, guard 1 answers
- *      `unreadable`, and the answer is refused.
- *
- *      Absence of evidence is also not evidence: `findToolResultInTranscript`
- *      requires the matching `tool_use` block to be POSITIVELY OBSERVED before
- *      it will report `unresolved`. A file that does not contain the tool call
- *      at all — empty, rotated, foreign, or forged — is `unreadable`.
- *
- * Worst case if a forged payload is accepted: the phone shows a question that
- * was never asked, and every answer attempt against it fails guard 1 and/or 5
- * and writes nothing. That is the containment the structure above buys.
+ * The localhost capture route is unauthenticated and attacker-influenceable. This
+ * single-user product explicitly accepts that trade in favour of uninterrupted
+ * remote answering; pairing authentication, strict boundary validation, terminal
+ * id resolution, the per-terminal lock, answer lease and idempotency ledger remain.
  */
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { agentKindFromAgentId } from "./agent-kind";
-import {
-	MAX_DIGIT_ADDRESSABLE_INDEX,
-	provenFreeTextOption,
-	provenPickerContract,
-} from "./keystrokes";
+import { provenFreeTextOption } from "./keystrokes";
 import {
 	MAX_HEADER_CHARS,
 	MAX_ID_CHARS,
@@ -276,7 +219,7 @@ export interface QuestionCaptureInput {
 	toolUseId: string;
 	/** Claude's `session_id`. Internal; part of the §7.4 fingerprint. */
 	sessionId: string;
-	/** Absolute path of the session transcript. Internal; guard 1 reads it. */
+	/** Absolute session transcript path. Internal; used only for context/diagnostics. */
 	transcriptPath: string;
 	cwd: string;
 	/** SUBAGENT id when a subagent asked; `null` on the main loop. */
@@ -591,25 +534,20 @@ export interface PendingQuestion {
 	/** host.db `workspaces.id`. Never sent to a client. */
 	hostWorkspaceId: string;
 	/**
-	 * (TRANSCRIPT-PATH-DERIVED) Absolute path to the agent's own transcript,
-	 * DERIVED FROM host.db — never the hook's own value. Empty string when it
-	 * could not be derived, which makes guard 1 answer `unreadable` (a refusal).
-	 * Never sent to a client.
+	 * Absolute transcript path derived from host.db, never the hook's own value.
+	 * Empty when unavailable. Used for context and diagnostics only; never sent.
 	 */
 	transcriptPath: string;
 	/** Resolved from host.db's agent binding, NOT from the hook payload. */
 	agentKind: QuestionAgentKind;
-	/**
-	 * SUBAGENT id when a subagent asked; `null` on the main loop. Never sent to a
-	 * client. Guard 6 needs it to compute the per-owner `.askq` marker key.
-	 */
+	/** SUBAGENT id when one asked; `null` on the main loop. Never sent. */
 	agentId: string | null;
 }
 
-/** Result of guard 1 (§11.3). `unreadable` is a REFUSAL, never a pass. */
+/** Diagnostic transcript scan result; never an answer verdict. */
 export type TranscriptVerdict = "resolved" | "unresolved" | "unreadable";
 
-/** Per-session answerability inputs. `granted` is this device's session grant (§6.2). */
+/** Retained wire-context shape; grants no longer veto pending Claude questions. */
 export interface AnswerabilityContext {
 	granted: readonly Capability[];
 }
@@ -767,20 +705,13 @@ export interface QuestionStore {
 		atMs: number,
 	): boolean;
 	markStale(questionId: QuestionId, reason: string): void;
-	/**
-	 * GUARD 1 (§11.3), the load-bearing one this module owns: does the question's
-	 * `tool_use_id` still have NO `tool_result` in the agent's own transcript?
-	 * Tri-state on purpose — `unreadable` must be handled as a refusal.
-	 */
+	/** Diagnostic transcript query. Never permits, refuses, or settles an answer. */
 	verifyResolvedInTranscript(
 		question: PendingQuestion,
 	): Promise<TranscriptVerdict>;
 	/**
-	 * Cross-check every pending record against the transcript and settle the ones
-	 * the hook never told us about. A `PostToolUse` hook can die mid-flight —
-	 * emulated msys2 on this ARM64 box has form for exactly that — so
-	 * hook-silence is NOT evidence a question is still open. Returns the ids it
-	 * moved to `resolved`. Also prunes records past 24 h.
+	 * Expire only questions whose terminal is provably gone across the
+	 * corroboration window. Transcript contents never settle a pending question.
 	 */
 	reconcile(nowMs: EpochMs): Promise<QuestionId[]>;
 	/** Age of the oldest pending question, for §7.7 `oldestUnansweredMs`. */
@@ -1422,32 +1353,6 @@ async function transcriptIsProvablyAbsent(
 }
 
 /**
- * (RECONCILE-STAT-CACHE) The identity of a transcript file at the moment a
- * verdict was computed from it, plus that verdict.
- *
- * A transcript is append-only, and `findToolResultInTranscript` is a pure
- * function of (file bytes, toolUseId). So if the file is byte-for-byte the one
- * a verdict was already computed from, re-reading up to 8 MiB of it and
- * re-parsing the JSONL produces the same answer — which is what the 60-second
- * heartbeat was doing, once per pending question, forever.
- *
- * ALL FOUR FIELDS ARE REQUIRED and equality must be exact. `size` alone would
- * accept a file that was truncated and rewritten to the same length; `(dev,
- * ino)` catches a replaced file; `mtimeNs` catches a same-length in-place
- * rewrite. Anything that does not match exactly — including a file that SHRANK,
- * which is not something an append-only log does — invalidates the mark and
- * forces the full scan. `bigint: true` because a 64-bit inode does not survive
- * a JS number on win32.
- */
-interface TranscriptScanMark {
-	dev: bigint;
-	ino: bigint;
-	size: bigint;
-	mtimeNs: bigint;
-	verdict: TranscriptVerdict;
-}
-
-/**
  * (QUESTION-EXPIRY) How long a question's terminal must have been PROVABLY GONE
  * — across two separate reconcile passes, not merely twice inside one — before
  * the question is settled `stale`.
@@ -1482,44 +1387,6 @@ export const QUESTION_EXPIRY_CORROBORATION_MS = 300_000;
 export const QUESTION_STALE_TERMINAL_GONE_REASON =
 	"the terminal this question was asked in no longer exists";
 
-/**
- * (RECONCILE-STAT-CACHE) One stat, or `null` when there is nothing to compare.
- *
- * A failed stat is NOT swallowed into a verdict — it returns `null`, which makes
- * the caller take the full scan, and the full scan reports `unreadable` on its
- * own terms. The only thing lost here is the cheap proof that a re-read can be
- * skipped.
- */
-async function markTranscript(
-	transcriptPath: string,
-): Promise<Omit<TranscriptScanMark, "verdict"> | null> {
-	if (transcriptPath.length === 0) return null;
-	try {
-		const stat = await fs.stat(transcriptPath, { bigint: true });
-		if (!stat.isFile()) return null;
-		return {
-			dev: stat.dev,
-			ino: stat.ino,
-			size: stat.size,
-			mtimeNs: stat.mtimeNs,
-		};
-	} catch {
-		return null;
-	}
-}
-
-function sameTranscriptFile(
-	mark: TranscriptScanMark,
-	current: Omit<TranscriptScanMark, "verdict">,
-): boolean {
-	return (
-		mark.dev === current.dev &&
-		mark.ino === current.ino &&
-		mark.size === current.size &&
-		mark.mtimeNs === current.mtimeNs
-	);
-}
-
 // ---------------------------------------------------------------------------
 // answerability
 // ---------------------------------------------------------------------------
@@ -1529,89 +1396,10 @@ function agentKindOf(agentId: string | null): QuestionAgentKind {
 	return agentKindFromAgentId(agentId);
 }
 
-/** Which capabilities a given prompt shape needs before a phone may answer it. */
-function requiredCapabilities(questions: QuestionItem[]): Capability[] {
-	const needed: Capability[] = ["answer.single"];
-	if (questions.length > 1) needed.push("answer.multi_question");
-	if (questions.some((q) => q.multiSelect)) needed.push("answer.multiselect");
-	return needed;
-}
-
-/**
- * (SHAPE-UNPROVEN-UPFRONT) Does this prompt have a shape the fork has no proven
- * byte sequence for?
- *
- * This is the SAME classification `keystrokes.ts` `classifyAnswerShape` applies
- * at submit time, hoisted to the point where the client decides whether to offer
- * the prompt at all. It is deliberately a duplicate of that rule and not a call
- * into it: the encoder classifies a (questions, answers) PAIR and needs answers
- * that do not exist yet here. Both must stay in step — each consults the same
- * `provenPickerContract()` flag, so proving a shape on a new build (or moving
- * `PROVEN_AGAINST` to a build that lacks one) flips offering and driving
- * together.
- *
- * (MSEL-N2-PROVEN) Every prompt SHAPE now has a proven sequence on 2.1.226:
- * one question (select / multiselect / freetext), and N > 1 questions in any
- * mix of single-select, free text and multi-select per-question groups. The
- * only remaining refusal — free text ON a multi-select question — is an
- * ANSWER-kind refusal, not a prompt-shape one: the prompt itself stays
- * answerable by toggles, and `provenFreeTextOption` simply never offers the
- * slot (see below).
- *
- * Before this check the phone and watch showed an unproven-shape prompt as
- * answerable, the user read it, picked an answer for every question, submitted,
- * and only THEN got a 501. Nothing about the refusal-timing rule changes here;
- * a build whose contract loses `multiSelectManyBytesProven` refuses up front
- * again.
- *
- * `freeTextOption` needs no companion check either way:
- * `keystrokes.provenFreeTextOption` is the single place that decides which
- * shapes get a slot, so a slot is offered exactly where free text can be driven.
- */
-function hasUnprovenAnswerShape(questions: QuestionItem[]): boolean {
-	// Digit addressability is part of the shape: a bare digit addresses rows
-	// 1..9 only, so an option at index > MAX_DIGIT_ADDRESSABLE_INDEX has no
-	// single-keystroke encoding and `digitFor` refuses it at submit
-	// (`digit_out_of_range`). Refusing it up front is the same
-	// (SHAPE-UNPROVEN-UPFRONT) timing rule as the flag checks below — the
-	// client must not offer a prompt, collect every answer, and only then
-	// learn the submit was never possible. The free-text slot sits at digit
-	// `options.length + 1`, so it gets the same bound.
-	if (
-		questions.some(
-			(q) =>
-				q.options.length - 1 > MAX_DIGIT_ADDRESSABLE_INDEX ||
-				(q.freeTextOption !== null &&
-					q.freeTextOption.index > MAX_DIGIT_ADDRESSABLE_INDEX),
-		)
-	) {
-		return true;
-	}
-	if (questions.length <= 1) return false;
-	if (!questions.some((q) => q.multiSelect)) return false;
-	return provenPickerContract()?.multiSelectManyBytesProven !== true;
-}
-
-// ---------------------------------------------------------------------------
-// the store
-// ---------------------------------------------------------------------------
-
 export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 	const byId = new Map<QuestionId, PendingQuestion>();
 	/** host terminal id -> questionId of the record currently `pending` there. */
 	const pendingByHostTerminal = new Map<string, QuestionId>();
-	/**
-	 * (RECONCILE-STAT-CACHE) The verdict `reconcile()` last computed for a
-	 * question, together with the identity of the transcript file it computed it
-	 * from. Rebuilt from scratch on every pass, so it holds at most one entry per
-	 * CURRENTLY pending question and cannot outlive one.
-	 *
-	 * This is ONLY consulted by `reconcile()`. `verifyResolvedInTranscript` — the
-	 * guard-1 entry point — never reads it and never will: the per-keystroke guard
-	 * re-run is an explicit design mandate and a cached verdict there would be a
-	 * check that did not happen.
-	 */
-	let reconcileMarks = new Map<QuestionId, TranscriptScanMark>();
 
 	/**
 	 * (QUESTION-EXPIRY) questionId -> the instant this pass first saw its
@@ -1744,37 +1532,16 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 
 	function unanswerableReason(
 		question: PendingQuestion,
-		ctx: AnswerabilityContext,
+		_ctx: AnswerabilityContext,
 	): UnanswerableReason | null {
 		if (question.state === "resolved") return "resolved";
 		if (question.state !== "pending") return "stale";
-		// v1 never grants `agent.codex`: the Codex byte contract is not
-		// established, and a wrong keystroke against a picker is unrecoverable.
-		if (question.agentKind === "codex") return "codex_agent";
-		if (question.agentKind !== "claude") return "no_agent_binding";
-		if (!ctx.granted.includes("agent.claude")) return "capability_missing";
-		for (const needed of requiredCapabilities(question.questions)) {
-			if (!ctx.granted.includes(needed)) return "capability_missing";
-		}
-		// (SHAPE-UNPROVEN-UPFRONT) Granted capabilities are not enough: the prompt
-		// also has to be a shape this fork has actually driven against a live
-		// picker. See `hasUnprovenAnswerShape`.
-		//
-		// HONEST LIMIT ON THE WIRE VALUE: the accurate reason is "this shape has no
-		// proven byte sequence", and `UnanswerableReason` (types.ts, PROTOCOL.md
-		// §7.4) has no such member, so it is reported as `capability_missing`. That
-		// is the same category the submit-time refusal already uses — `answer.ts`
-		// answers this exact shape with `501 capability_unsupported`,
-		// `detail: { capability: "answer.multiselect", reason: "shape_unproven" }` —
-		// so the client's user-visible outcome is unchanged and only its timing
-		// moves. It IS misleading to a human debugging grants, which is why adding a
-		// distinct `shape_unproven` member to the enum (types.ts + PROTOCOL.md §7.4
-		// + the Kotlin `UnanswerableReason`, which already tolerates unknown wire
-		// strings via its UNKNOWN member) is the follow-up.
-		if (hasUnprovenAnswerShape(question.questions)) return "capability_missing";
-		// A missing `answer.freetext` grant does NOT make the prompt
-		// unanswerable — every listed option is still selectable; only the
-		// free-text slot is unavailable, and the client disables that control.
+
+		// (ANSWER-GUARDLESS) Every pending captured question with a resolvable
+		// terminal is offered. Installed-device capabilities, hook-fed agent kinds
+		// and bindings, picker probes, transcripts, screens and login state are not
+		// preflight vetoes. The answer endpoint validates the submitted shape and
+		// writes only the bridge-owned byte sequence to the captured terminal.
 		return null;
 	}
 
@@ -2075,102 +1842,33 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 
 		async reconcile(nowMs) {
 			const settled: QuestionId[] = [];
-			// (RECONCILE-STAT-CACHE) Built fresh and swapped in at the end, so the
-			// surviving marks are exactly the ones for questions still pending when
-			// this pass ran. Nothing has to remember to evict — including the
-			// supersede path, which retires a record without going through
-			// `settle()`.
-			const marks = new Map<QuestionId, TranscriptScanMark>();
-			// (QUESTION-EXPIRY) Same rebuild-and-swap discipline as `marks`.
 			const nextStaleCandidates = new Map<QuestionId, number>();
 			for (const question of store.listPending()) {
-				const current = await markTranscript(question.transcriptPath);
-				const previous = reconcileMarks.get(question.questionId);
-				let verdict: TranscriptVerdict;
+				// (ANSWER-GUARDLESS) Transcript contents never settle a pending question.
+				// The hook capture remains pending until an explicit answer/resolve event or
+				// until the target terminal is provably gone across the corroboration window.
+				// This keeps a visible picker answerable through display-off, Windows lock,
+				// transcript rotation and transcript-reader failures.
+				const activityMs = deps.source.resolveTerminalActivityMs(
+					question.hostTerminalId,
+				);
 				if (
-					current !== null &&
-					previous !== undefined &&
-					sameTranscriptFile(previous, current)
+					!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)
 				) {
-					// Byte-identical file, same tool call: the scan cannot say anything
-					// it did not already say. RECONCILE-RETRACT semantics are unchanged —
-					// the verdict acted on below is the same one a re-read would produce.
-					verdict = previous.verdict;
-				} else {
-					verdict = await store.verifyResolvedInTranscript(question);
-				}
-				if (current !== null) {
-					marks.set(question.questionId, { ...current, verdict });
-				}
-				// `unreadable` deliberately does nothing: it is "I could not check",
-				// and treating it as either answer would be inventing a fact.
-				if (verdict !== "resolved") {
-					// (QUESTION-EXPIRY) The transcript says nothing — but does the
-					// terminal still exist?
-					//
-					// `reconcile` used to settle on a `tool_result` and nothing else, so
-					// a question whose terminal was killed by a pane close, a quit or a
-					// crash stayed PENDING forever: it kept its armed push (which fires
-					// on presence lapse, not on a short timer, so the window is
-					// unbounded), kept growing `oldestUnansweredMs` while `counts`
-					// reported zero blocked agents, and kept a slot against the
-					// 512-record cap. Nothing in the system ever asked whether the
-					// terminal was still there.
-					//
-					// `stale` rather than `resolved` because nobody answered it. It is
-					// terminal, it makes `unanswerableReason` say so, and returning the
-					// id here routes it through the existing `onQuestionsSettled` ->
-					// `push.cancelPending` wiring, which is what retracts a notification
-					// already sitting on the phone.
-					//
-					// Ordering: the transcript is consulted FIRST, so a question the
-					// user answered at the desk moments before closing the pane is
-					// recorded as `resolved` with its real provenance rather than being
-					// flattened into `stale`.
-					//
-					// TWO INDEPENDENT OBSERVATIONS, `QUESTION_EXPIRY_CORROBORATION_MS`
-					// apart, and the strict predicate for each. `settle(stale)` is
-					// terminal — `markStale` refuses to move a non-pending record and
-					// the retraction it triggers is a push already pulled off the
-					// phone — so this decision has exactly the shape the reaper's
-					// reverse walk refuses to take on one `daemon.list()`. It costs a
-					// live blocked agent its only wrist surface, which is the one
-					// failure this feature cannot absorb, so it is held to the same bar:
-					// positive evidence (never `!isLive`), the row's own activity grace
-					// so a terminal born after the snapshot cannot lose that race, and
-					// the same verdict again on a later pass.
-					const activityMs = deps.source.resolveTerminalActivityMs(
-						question.hostTerminalId,
-					);
-					if (
-						!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)
-					) {
-						continue;
-					}
-					const firstSeenGoneAtMs =
-						staleCandidates.get(question.questionId) ?? nowMs;
-					if (nowMs - firstSeenGoneAtMs < QUESTION_EXPIRY_CORROBORATION_MS) {
-						// Carried forward, not acted on. The record stays pending and
-						// keeps its armed push, exactly as it did before this feature.
-						nextStaleCandidates.set(question.questionId, firstSeenGoneAtMs);
-						continue;
-					}
-					store.markStale(
-						question.questionId,
-						QUESTION_STALE_TERMINAL_GONE_REASON,
-					);
-					settled.push(question.questionId);
 					continue;
 				}
-				question.resolvedAtMs = nowMs;
-				// Nothing paired resolved it — every device answer goes through
-				// `resolve()` with its own provenance — so it was answered at the
-				// desk (or the agent cancelled it).
-				question.resolvedBy = { deviceLabel: null, surface: "desktop" };
-				settle(question, "resolved");
+				const firstSeenGoneAtMs =
+					staleCandidates.get(question.questionId) ?? nowMs;
+				if (nowMs - firstSeenGoneAtMs < QUESTION_EXPIRY_CORROBORATION_MS) {
+					nextStaleCandidates.set(question.questionId, firstSeenGoneAtMs);
+					continue;
+				}
+				store.markStale(
+					question.questionId,
+					QUESTION_STALE_TERMINAL_GONE_REASON,
+				);
 				settled.push(question.questionId);
 			}
-			reconcileMarks = marks;
 			staleCandidates = nextStaleCandidates;
 			prune(nowMs);
 			return settled;

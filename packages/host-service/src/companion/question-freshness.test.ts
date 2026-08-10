@@ -72,9 +72,12 @@ function resolver(
 	};
 }
 
-function pendingQuestion(overrides: Record<string, unknown> = {}) {
+function pendingQuestion(
+	overrides: Record<string, unknown> = {},
+	source: QuestionSourceResolver = resolver(),
+) {
 	const store = createQuestionStore({
-		source: resolver(),
+		source,
 		liveness: { isProvablyGone: () => false },
 		onSettled: () => {},
 	});
@@ -122,9 +125,30 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		expect(summary?.answerable).toBe(true);
 	});
 
-	it("decides `answerable` with the same rule as every other surface — an ungranted context makes it false rather than throwing", () => {
+	it("offers every pending question even when capability evidence is absent", () => {
 		const { store, question } = pendingQuestion();
-		expect(store.summarize(question, { granted: [] })?.answerable).toBe(false);
+		expect(store.summarize(question, { granted: [] })?.answerable).toBe(true);
+	});
+
+	it.each([
+		null,
+		"codex",
+	])("does not turn agent kind %p into an answer barrier", (agentId) => {
+		const source = resolver({
+			resolveTerminal: () => ({
+				hostProjectId: "p-1",
+				hostWorkspaceId: "w-1",
+				agentId,
+			}),
+			resolveActiveTerminal: () => ({
+				hostProjectId: "p-1",
+				hostWorkspaceId: "w-1",
+				agentId,
+			}),
+		});
+		const { store, question } = pendingQuestion({}, source);
+
+		expect(store.summarize(question, { granted: [] })?.answerable).toBe(true);
 	});
 
 	it("clamps the headline to the first item's header, never the body", () => {
