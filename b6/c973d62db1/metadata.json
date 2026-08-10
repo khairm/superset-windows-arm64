@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "b6c973d62db1",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/answer-guardless.test.ts",
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/curation-gates.test.ts",
+    "packages/host-service/src/companion/guard-abstain.test.ts",
+    "packages/host-service/src/companion/http.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/keystrokes.ts",
+    "packages/host-service/src/companion/lease.ts",
+    "packages/host-service/src/companion/liveness.ts",
+    "packages/host-service/src/companion/question-freshness.test.ts",
+    "packages/host-service/src/companion/question-lifecycle.test.ts",
+    "packages/host-service/src/companion/question-store.ts",
+    "packages/host-service/src/companion/read-api.ts",
+    "packages/host-service/src/companion/session-expired.test.ts",
+    "packages/host-service/src/companion/types.ts",
+    "packages/host-service/src/terminal/DaemonClient/DaemonClient.node-test.ts",
+    "packages/host-service/src/terminal/DaemonClient/DaemonClient.ts",
+    "packages/host-service/src/terminal/terminal.ts",
+    "packages/pty-daemon/src/handlers/handlers.test.ts",
+    "packages/pty-daemon/src/handlers/handlers.ts",
+    "packages/pty-daemon/src/protocol/index.ts",
+    "packages/pty-daemon/src/protocol/messages.ts",
+    "packages/pty-daemon/src/protocol/version.ts",
+    "packages/pty-daemon/src/protocol/wire-shape.test.ts",
+    "packages/pty-daemon/test/control-plane.test.ts",
+    "packages/pty-daemon/test/helpers/client.ts",
+    "packages/pty-daemon/test/integration.test.ts",
+    "scripts/smoke-pty-daemon-cleanup.mjs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b6/c973d62db1/0/metadata.json",
+      "transcript": "/b6/c973d62db1/0/full.jsonl",
+      "content_hash": "/b6/c973d62db1/0/content_hash.txt",
+      "prompt": "/b6/c973d62db1/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2462047,
+    "cache_creation_tokens": 20678905,
+    "cache_read_tokens": 1021100423,
+    "output_tokens": 2106936,
+    "api_call_count": 3132
+  }
+}
