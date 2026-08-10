@@ -9,13 +9,15 @@
  * permission-latch or marker observation may veto or downgrade that write.
  *
  * The lock, answer-wide lease and durable request ledger remain: they prevent two
- * devices from interleaving bytes and make retries idempotent. Successful PTY
- * writes are confirmed immediately. Only request/encoding failures or an actual
- * inability to write to the target PTY can prevent confirmation.
+ * devices from interleaving bytes and make retries idempotent. Each PTY write is
+ * counted only after the daemon acknowledges `pty.write`, and the response is
+ * confirmed only after the ledger outcome is written and read back. An actual PTY
+ * failure prevents confirmation; a ledger failure after landed bytes returns an
+ * honest, duplicate-fenced `unconfirmed` outcome.
  *
- * The legacy guard-analysis helpers remain temporarily for persisted audit-schema
- * compatibility and historical tests. They are not called by the answer path;
- * confirmed answers report every old guard name as abstained.
+ * Legacy guard-analysis helpers remain temporarily for historical tests. They
+ * have no production caller; answer attempts record empty guard arrays and
+ * `null` evaluation for persisted audit-schema compatibility.
  */
 
 import type {
@@ -37,6 +39,7 @@ import {
 	provenMultiSelectFreeTextDetectLabels,
 	type RawPtyWriter,
 	type RawWriteFn,
+	type RawWriteResult,
 	type ScreenExpectation,
 } from "./keystrokes";
 import {
@@ -47,7 +50,6 @@ import {
 import type { PendingQuestion, QuestionStore } from "./question-store";
 import {
 	type AgentKind,
-	ANSWER_GUARD_NAMES,
 	type AnswerAttemptRecord,
 	type AnswerGuardName,
 	type AnswerRequest,
@@ -56,6 +58,7 @@ import {
 	type AnswerStatusRequest,
 	type AnswerStatusResponse,
 	type AttemptFailureCode,
+	type AuditEntry,
 	type DurationMs,
 	type EpochMs,
 	type GuardEvaluation,
@@ -83,9 +86,6 @@ export const LOCK_WAIT_TIMEOUT_MS = 5_000;
 /** Poll interval while waiting for the emulator mirror to reflect our last byte. */
 export const SCREEN_ADVANCE_POLL_MS = 25;
 
-/** How long to wait for that advance before abandoning the sequence. */
-export const SCREEN_ADVANCE_TIMEOUT_MS = 1_000;
-
 /**
  * Hard ceiling on one keystroke sequence. Bounds how long the terminal lock can
  * be held, and keeps the sequence inside the answer lease's TTL.
@@ -99,8 +99,8 @@ export const MESSAGE_MAX_CHARS = 8_192;
  * (MESSAGE-ECHO) How long `/v1/message` waits for the composer to render the
  * text it just pasted, before it will write the trailing submit.
  *
- * Longer than `SCREEN_ADVANCE_TIMEOUT_MS` because a paste of up to 8 192 chars is
- * a bigger repaint than a picker moving its highlight. Bounded, because the
+ * A paste of up to 8 192 chars can require a substantial repaint. The wait is
+ * bounded because the
  * terminal lock is held throughout.
  */
 export const MESSAGE_ECHO_TIMEOUT_MS = 2_000;
@@ -342,23 +342,19 @@ export interface HostTerminalRef {
  * Note the two writers are deliberately DIFFERENT SHAPES so neither can be
  * passed where the other belongs:
  *  - `writer` is a `RawPtyWriter`, mintable only by `createRawPtyWriter`, which
- *    probes the function at startup and refuses anything that returns a Promise
- *    (i.e. the paste-framing writer). Bracketed paste is INERT against the
- *    picker, so wiring the framed writer here would make answers silently never
- *    arrive;
+ *    requires the acknowledged raw-writer runtime marker. Bracketed paste is
+ *    INERT against the picker, while fire-and-forget input cannot report daemon
+ *    refusal, so either wrong writer fails at bridge startup;
  *  - `writeFramed` is async and takes `{text, submit}`, and is used ONLY by
  *    `handleMessage`, which never touches a picker.
  */
 export interface AnswerDeps {
 	/**
-	 * Raw, unframed, SYNCHRONOUS pty write. MUST be `writeInputToSession` from
-	 * `../terminal/terminal`, in THIS process.
-	 *
-	 * It is never called directly: `rawWriterFor` runs it through
-	 * `createRawPtyWriter`, which probes it with an impossible terminal id and
-	 * refuses anything that returns a Promise — i.e. the paste-framing writer.
-	 * Bracketed paste is INERT against the picker, so wiring the framed writer
-	 * here would make answers silently never arrive rather than fail.
+	 * Raw, unframed, ACKNOWLEDGED pty write. MUST be the composition-root adapter
+	 * around `writeAcknowledgedInputToSession` from `../terminal/terminal`; its
+	 * `prepare` method is bound to host.db in THIS process so a detached session is
+	 * adopted headlessly before the answer lease and final identity check. The
+	 * runtime marker prevents wiring paste framing or fire-and-forget input.
 	 */
 	writeInput: RawWriteFn;
 	/**
@@ -472,10 +468,8 @@ export interface AnswerDeps {
 /**
  * One probe per distinct writer function, not one per request.
  *
- * The probe is side-effect-free (`createRawPtyWriter` calls it with a terminal
- * id that cannot exist and empty data), so running it lazily is safe — but the
- * composition root SHOULD call `assertAnswerDeps` at bridge start so a
- * mis-wired writer fails loud there rather than on the first answer of the day.
+ * The composition root SHOULD call `assertAnswerDeps` at bridge start so the
+ * acknowledged-writer marker is checked before the first answer of the day.
  */
 const rawWriters = new WeakMap<RawWriteFn, RawPtyWriter>();
 
@@ -2514,62 +2508,57 @@ export function createMessageAttemptStore(
 // ---------------------------------------------------------------------------
 
 /**
- * Records an outcome the injection has already produced.
- *
- * A failure here is LOGGED, not thrown, and that is a deliberate asymmetry with
- * the CLAIM at the top of `handleAnswer` rather than a swallowed error. The claim
- * must be durable before a byte moves, so it throws. By the time THIS runs the
- * keystrokes have already landed (or, for `guard_failed`, provably have not), so
- * throwing would replace a truthful `confirmed` / `unconfirmed` response with a
- * 500 the client renders as a failure — and §11.5 forbids reporting a landed
- * write as failed far more strongly than it requires this particular update to
- * commit.
- *
- * What makes that safe is that the outcome is not the fence. The claim is. If
- * this update is lost the row stays `in_flight`, and `(LEDGER-REHYDRATE)` turns
- * every `in_flight` row from a previous lifetime into `unconfirmed` at the next
- * open — so the failure degrades a definite answer into "cannot say", never into
- * a wrong one. Within this lifetime the committed row keeps answering status
- * reads directly from the database; there is no in-memory copy to diverge from
- * it, which is what the JSON store this replaced could not promise.
- *
- * There is no shape exemption left to rethrow. `failureCode` is typed
- * `LedgerFailureCode`, the ledger validates each row as it is read, and an
- * outcome with no `in_flight` row to advance is logged AT THE LEDGER as
- * `ledger_outcome_orphaned` instead of being written somewhere it would be
- * mistaken for a state transition.
+ * Advances the durable claim and reads it back from the DB before reporting
+ * success. A PTY acknowledgement proves where the bytes went; only this readback
+ * proves the outcome survived. Callers downgrade landed bytes to `unconfirmed`
+ * when this returns false, while the original `in_flight` claim remains a fence.
  */
 async function recordOutcome(
 	deps: AnswerDeps,
 	record: AnswerAttemptRecord,
-): Promise<void> {
+): Promise<boolean> {
 	try {
-		// (ANSWER-LEDGER) Advances the `in_flight` row this request claimed at the
-		// top of `handleAnswer`. The ledger's update is predicated on that status, so
-		// it can neither erase a tombstone nor revive a pruned row; an outcome with
-		// nowhere to land is logged there rather than thrown, because by this point
-		// the keystrokes may already have landed and reporting a landed answer as
-		// failed is the worse lie.
-		//
-		// `in_flight` is excluded at the type level and skipped here: the claim
-		// already wrote it, and re-writing it would be a no-op that reads like a
-		// state transition.
-		if (record.status !== "in_flight") {
-			deps.ledger.recordOutcome({
-				requestId: record.requestId,
-				status: record.status,
-				resolvedAtMs: record.resolvedAtMs,
-				failureCode: record.failureCode,
-				guardsPassed: record.guardsPassed,
-				leaseId: record.leaseId,
-			});
+		if (record.status === "in_flight") return true;
+		deps.ledger.recordOutcome({
+			requestId: record.requestId,
+			status: record.status,
+			resolvedAtMs: record.resolvedAtMs,
+			failureCode: record.failureCode,
+			guardsPassed: record.guardsPassed,
+			leaseId: record.leaseId,
+		});
+		const durable = deps.ledger.get(record.requestId);
+		if (durable?.status !== record.status) {
+			throw new Error(
+				`ledger outcome verification read ${durable?.status ?? "missing"}, expected ${record.status}`,
+			);
 		}
+		return true;
 	} catch (error) {
 		deps.log({
 			event: "companion.answer.attempt_persist_failed",
 			requestId: record.requestId,
 			questionId: record.questionId,
 			status: record.status,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return false;
+	}
+}
+
+async function appendAnswerAudit(
+	deps: AnswerDeps,
+	entry: AuditEntry,
+): Promise<void> {
+	try {
+		await deps.audit.append(entry);
+	} catch (error) {
+		deps.log({
+			event: "companion.answer.audit_persist_failed",
+			requestId: entry.requestId,
+			questionId: entry.questionId,
+			terminalId: entry.terminalId,
+			outcome: entry.outcome,
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
@@ -2602,9 +2591,8 @@ const WRITABLE_AGENT_KIND: AgentKind = "claude";
  * a message to ANY non-Claude agent cannot be sent at all because the picker
  * store that gates the trailing `\r` is structurally blind to it.
  *
- * Deliberately returns nothing. The binding is re-read INSIDE the lock by guard
- * 2 on the answer path; a value carried out of here would be a pre-lock fact
- * that looks like a post-lock one.
+ * Deliberately returns nothing. This helper belongs only to `/v1/message`;
+ * `(ANSWER-GUARDLESS)` never re-reads mutable agent-binding state.
  */
 async function assertWritableBinding(
 	deps: AnswerDeps,
@@ -2621,10 +2609,10 @@ async function assertWritableBinding(
 }
 
 /**
- * The host.db half of the preflight: the opaque wire handle resolves to a live
+ * `/v1/message` resolves the requested opaque wire handle to a live
  * `(terminal, workspace)` pair. Both ids come back together — see
  * `AnswerDeps.resolveHostTerminal` for why resolving them separately once made
- * every answer fail as `Terminal session not found`.
+ * every message fail as `Terminal session not found`.
  */
 async function requireHostTerminal(
 	deps: AnswerDeps,
@@ -2635,18 +2623,64 @@ async function requireHostTerminal(
 		throw sealed(
 			503,
 			"internal",
-			"the captured terminal target is unavailable; no bytes were written",
+			"the requested terminal is unavailable; no message bytes were written",
 		);
 	}
 	return host;
 }
 
+function requirePendingAnswerQuestion(
+	deps: AnswerDeps,
+	request: Pick<AnswerRequest, "questionId" | "fingerprint">,
+	requireTerminalCurrent = false,
+): PendingQuestion {
+	const question = deps.questions.get(request.questionId);
+	if (question === null) {
+		throw sealed(410, "stale_question", "unknown question");
+	}
+	if (question.state === "resolved") {
+		throw sealed(
+			409,
+			"already_resolved",
+			"this question was already answered",
+			{
+				resolvedBy: question.resolvedBy,
+				resolvedAtMs: question.resolvedAtMs,
+				outcome: "answered",
+			},
+		);
+	}
+	if (question.state !== "pending") {
+		throw sealed(410, "stale_question", `question is ${question.state}`);
+	}
+	if (question.fingerprint !== request.fingerprint) {
+		throw sealed(
+			410,
+			"stale_question",
+			"fingerprint no longer matches; the question moved on",
+		);
+	}
+	if (
+		requireTerminalCurrent &&
+		deps.questions.byHostTerminal(question.hostTerminalId)?.questionId !==
+			question.questionId
+	) {
+		throw sealed(
+			410,
+			"stale_question",
+			"the captured question changed before the terminal write; nothing was written",
+		);
+	}
+	return question;
+}
+
 /**
  * The whole write.
  *
- * Refusals are cheap and happen before anything is acquired; the lease, the
- * audit line and the terminal lock are taken in that order, and the lease is
- * released on every exit path.
+ * Refusals are cheap and happen before anything is acquired; the lease and the
+ * terminal lock are taken in that order, and the lease is released on every exit
+ * path. Audit appends are attempted around the write but can never veto input or
+ * replace its outcome.
  */
 export async function handleAnswer(
 	deps: AnswerDeps,
@@ -2767,39 +2801,11 @@ export async function handleAnswer(
 		}
 
 		// 3..6. The question must still be the thing the client thinks it is.
-		const question = deps.questions.get(request.questionId);
-		if (question === null) {
-			throw sealed(410, "stale_question", "unknown question");
-		}
-		if (question.state === "resolved") {
-			throw sealed(
-				409,
-				"already_resolved",
-				"this question was already answered",
-				{
-					resolvedBy: question.resolvedBy,
-					resolvedAtMs: question.resolvedAtMs,
-					outcome: "answered",
-				},
-			);
-		}
-		if (question.state !== "pending") {
-			throw sealed(410, "stale_question", `question is ${question.state}`);
-		}
-		if (question.fingerprint !== request.fingerprint) {
-			// Constant-time comparison is unnecessary: the client was given this value
-			// and it is not a secret. What matters is that a mismatch writes nothing.
-			throw sealed(
-				410,
-				"stale_question",
-				"fingerprint no longer matches; the question moved on",
-			);
-		}
+		const question = requirePendingAnswerQuestion(deps, request);
 
-		// 7. Free text requires biometric confirmation at the client (§11.2).
-		// (ANSWER-GUARDLESS) `confirmedBiometric` remains on the wire for installed
-		// clients, but it is not an answer gate. Explicit submit from the paired,
-		// authenticated device is the authorization.
+		// 7. (ANSWER-GUARDLESS) Installed clients may still send the legacy
+		//    `confirmedBiometric` claim, but it is optional and ignored. Explicit
+		//    submit from the paired, authenticated device is the authorization.
 
 		// 8. Encode. PURE — no terminal, no lock, so every failure here provably
 		//    wrote nothing.
@@ -2818,11 +2824,51 @@ export async function handleAnswer(
 
 		// (ANSWER-GUARDLESS) The captured question already owns the terminal target.
 		// Do not re-check the mutable hook-fed agent binding before writing.
-		const host = await requireHostTerminal(deps, question.terminalId);
+		// (ANSWER-GUARDLESS) The capture already resolved and stored the host.db
+		// terminal/workspace pair. Do not route it back through the read-side liveness
+		// filter: a daemon snapshot may be stale while the PTY write still succeeds.
+		const host: HostTerminalRef = {
+			hostTerminalId: question.hostTerminalId,
+			hostWorkspaceId: question.hostWorkspaceId,
+		};
 
 		// The branded writer. Minted (and probed) here rather than inside the lock, so
-		// a mis-wired writer fails before a lease or a lock is taken.
+		// a mis-wired writer fails before a lease or a lock is taken. Headless adoption
+		// also completes here: no host.db/daemon/replay I/O may sit between the final
+		// current-question check and the first input frame.
 		const writer = rawWriterFor(deps);
+		let prepared: Awaited<ReturnType<RawPtyWriter["prepare"]>>;
+		try {
+			prepared = await writer.prepare({
+				terminalId: host.hostTerminalId,
+				workspaceId: host.hostWorkspaceId,
+			});
+		} catch (error) {
+			deps.log({
+				event: "companion.answer.prepare_failed",
+				questionId: request.questionId,
+				terminalId: question.terminalId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			throw sealed(
+				503,
+				"internal",
+				"the terminal could not be prepared; nothing was written — submit a new request to retry",
+			);
+		}
+		if ("error" in prepared) {
+			deps.log({
+				event: "companion.answer.prepare_refused",
+				questionId: request.questionId,
+				terminalId: question.terminalId,
+				error: prepared.error,
+			});
+			throw sealed(
+				503,
+				"internal",
+				`the terminal could not be prepared; nothing was written — submit a new request to retry (${prepared.error})`,
+			);
+		}
 
 		// 10. The answer-wide lease. A second device is REFUSED, never queued (§11.4).
 		const startedAtMs = deps.now();
@@ -2886,7 +2932,7 @@ export async function handleAnswer(
 		//     audit line still releases the lease — and still refuses the answer,
 		//     because an unauditable write is not one we are willing to perform.
 		try {
-			await deps.audit.append({
+			await appendAnswerAudit(deps, {
 				...baseAudit,
 				tsMs: startedAtMs,
 				guards: null,
@@ -2916,14 +2962,22 @@ export async function handleAnswer(
 			const result = await deps.locks.runExclusive(
 				question.terminalId,
 				LOCK_WAIT_TIMEOUT_MS,
-				() =>
-					injectSequence(deps, {
+				() => {
+					// The preflight happened before audit I/O and lock acquisition. Re-check
+					// the store at the last synchronous point before the first PTY write so a
+					// desk answer or superseding capture cannot turn this answer into composer
+					// text or an answer to the replacement picker. This is question identity,
+					// not screen/transcript/session evidence.
+					requirePendingAnswerQuestion(deps, request, true);
+					return injectSequence(deps, {
 						question,
 						host,
 						keystrokes,
 						leaseId: lease.leaseId,
+						acknowledgedInputSupported: prepared.acknowledgedInputSupported,
 						writer,
-					}),
+					});
+				},
 			);
 
 			if (result.kind === "confirmed") {
@@ -2950,24 +3004,82 @@ export async function handleAnswer(
 					status: "confirmed",
 					resolvedAtMs,
 					failureCode: null,
-					guardsPassed: result.guardsPassed,
-					guardsAbstained: result.guardsAbstained,
+					guardsPassed: [],
+					guardsAbstained: [],
 				};
-				await recordOutcome(deps, record);
-				await deps.audit.append({
+				if (!(await recordOutcome(deps, record))) {
+					const unconfirmed: AnswerAttemptRecord = {
+						...record,
+						status: "unconfirmed",
+						resolvedAtMs: null,
+					};
+					deps.log({
+						event: "companion.answer.confirmed_downgraded_not_durable",
+						questionId: request.questionId,
+						terminalId: question.terminalId,
+						requestId: request.requestId,
+					});
+					// A transient first failure may still allow this downgrade to commit. If
+					// it does not, the original durable in-flight claim remains the fence.
+					await recordOutcome(deps, unconfirmed);
+					await appendAnswerAudit(deps, {
+						...baseAudit,
+						tsMs: resolvedAtMs,
+						guards: null,
+						guardsAbstained: [],
+						outcome: "unconfirmed",
+						failureCode: null,
+					});
+					return recordToResponse(unconfirmed);
+				}
+				await appendAnswerAudit(deps, {
 					...baseAudit,
 					tsMs: resolvedAtMs,
-					guards: result.evaluation,
-					guardsAbstained: result.guardsAbstained,
+					guards: null,
+					guardsAbstained: [],
 					outcome: "confirmed",
 					failureCode: null,
 				});
 				return recordToResponse(record);
 			}
 
+			if (result.written === 0 && result.writeOutcome === "not_written") {
+				deps.log({
+					event: "companion.answer.write_failed_before_input",
+					questionId: request.questionId,
+					terminalId: question.terminalId,
+					leaseId: lease.leaseId,
+					reason: result.reason,
+				});
+				const record: AnswerAttemptRecord = {
+					...baseAttempt,
+					status: "failed",
+					resolvedAtMs: null,
+					failureCode: "internal",
+					guardsPassed: [],
+					guardsAbstained: [],
+				};
+				await recordOutcome(deps, record);
+				await appendAnswerAudit(deps, {
+					...baseAudit,
+					tsMs: deps.now(),
+					guards: null,
+					guardsAbstained: [],
+					outcome: "failed",
+					failureCode: "internal",
+				});
+				throw sealed(
+					503,
+					"internal",
+					"the terminal accepted no answer input; nothing was written — submit a new request to retry",
+				);
+			}
+
 			deps.questions.markStale(
 				request.questionId,
-				`partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
+				result.writeOutcome === "unknown"
+					? `write outcome unknown after ${result.written}/${keystrokes.length} acknowledged keystrokes: ${result.reason}`
+					: `partial write: ${result.written}/${keystrokes.length} keystrokes landed, then ${result.reason}`,
 			);
 			deps.log({
 				event: "companion.answer.unconfirmed",
@@ -2977,6 +3089,7 @@ export async function handleAnswer(
 				keystrokesWritten: result.written,
 				keystrokesTotal: keystrokes.length,
 				abortedAt: result.abortedAt,
+				writeOutcome: result.writeOutcome,
 				reason: result.reason,
 			});
 			const record: AnswerAttemptRecord = {
@@ -2984,15 +3097,15 @@ export async function handleAnswer(
 				status: "unconfirmed",
 				resolvedAtMs: null,
 				failureCode: null,
-				guardsPassed: result.guardsPassed,
-				guardsAbstained: result.guardsAbstained,
+				guardsPassed: [],
+				guardsAbstained: [],
 			};
 			await recordOutcome(deps, record);
-			await deps.audit.append({
+			await appendAnswerAudit(deps, {
 				...baseAudit,
 				tsMs: deps.now(),
-				guards: result.evaluation,
-				guardsAbstained: result.guardsAbstained,
+				guards: null,
+				guardsAbstained: [],
 				outcome: "unconfirmed",
 				failureCode: null,
 			});
@@ -3019,7 +3132,7 @@ export async function handleAnswer(
 					guardsPassed: [],
 					guardsAbstained: [],
 				});
-				await deps.audit.append({
+				await appendAnswerAudit(deps, {
 					...baseAudit,
 					tsMs: deps.now(),
 					guards: null,
@@ -3052,7 +3165,7 @@ export async function handleAnswer(
 				guardsPassed: [],
 				guardsAbstained: [],
 			});
-			await deps.audit.append({
+			await appendAnswerAudit(deps, {
 				...baseAudit,
 				tsMs: deps.now(),
 				guards: null,
@@ -3099,20 +3212,13 @@ export async function handleAnswer(
 // ---------------------------------------------------------------------------
 
 type InjectionResult =
-	| {
-			kind: "confirmed";
-			guardsPassed: AnswerGuardName[];
-			guardsAbstained: AnswerGuardName[];
-			evaluation: GuardEvaluation;
-	  }
+	| { kind: "confirmed" }
 	| {
 			kind: "unconfirmed";
 			reason: string;
 			abortedAt: number;
 			written: number;
-			guardsPassed: AnswerGuardName[];
-			guardsAbstained: AnswerGuardName[];
-			evaluation: GuardEvaluation;
+			writeOutcome: "not_written" | "unknown";
 	  };
 
 /**
@@ -3126,9 +3232,10 @@ type InjectionResult =
  * desktops behave exactly like an unlocked desktop.
  *
  * PTY input is an ordered byte stream. We therefore write the already-encoded
- * sequence in order and confirm immediately after every write succeeds. The old
- * mirror-advance wait could downgrade a successful write to `unconfirmed` merely
- * because the renderer had not repainted; that is explicitly not an outcome check.
+ * sequence in order and confirm immediately after the daemon acknowledges every
+ * `pty.write`. The old mirror-advance wait could downgrade a successful write to
+ * `unconfirmed` merely because the renderer had not repainted; that is explicitly
+ * not an outcome check.
  */
 export async function injectSequence(
 	deps: AnswerDeps,
@@ -3137,33 +3244,95 @@ export async function injectSequence(
 		host: HostTerminalRef;
 		keystrokes: readonly Keystroke[];
 		leaseId: string;
+		acknowledgedInputSupported: boolean;
 		writer: RawPtyWriter;
 	},
 ): Promise<InjectionResult> {
-	const { question, host, keystrokes, leaseId, writer } = input;
+	const {
+		question,
+		host,
+		keystrokes,
+		leaseId,
+		acknowledgedInputSupported,
+		writer,
+	} = input;
 	const deadlineMs = deps.now() + SEQUENCE_DEADLINE_MS;
-	const guardsPassed: AnswerGuardName[] = [];
-	const guardsAbstained: AnswerGuardName[] = [...ANSWER_GUARD_NAMES];
-	const evaluation = Object.fromEntries(
-		ANSWER_GUARD_NAMES.map((guard) => [guard, false]),
-	) as GuardEvaluation;
 	let written = 0;
 
-	const abort = (reason: string, index: number): InjectionResult => ({
+	const abort = (
+		reason: string,
+		index: number,
+		writeOutcome: "not_written" | "unknown",
+	): InjectionResult => ({
 		kind: "unconfirmed",
 		reason,
 		abortedAt: index,
 		written,
-		guardsPassed,
-		guardsAbstained,
-		evaluation,
+		writeOutcome,
 	});
+
+	if (!acknowledgedInputSupported) {
+		if (keystrokes.length === 0) {
+			return abort("missing keystroke sequence", 0, "not_written");
+		}
+		if (deps.now() >= deadlineMs) {
+			return abort("sequence deadline exceeded", 0, "not_written");
+		}
+		const extension = deps.leases.extend(leaseId, deps.now());
+		if (!extension.ok) {
+			deps.log({
+				event: "companion.answer.lease_lost",
+				questionId: question.questionId,
+				leaseId,
+				reason: extension.reason,
+				keystrokeIndex: 0,
+			});
+			return abort(`lease ${extension.reason}`, 0, "not_written");
+		}
+
+		let result: RawWriteResult;
+		try {
+			result = await writer.write({
+				terminalId: host.hostTerminalId,
+				workspaceId: host.hostWorkspaceId,
+				data: keystrokes.map((keystroke) => keystroke.data).join(""),
+			});
+		} catch (error) {
+			deps.log({
+				event: "companion.answer.write_threw",
+				questionId: question.questionId,
+				terminalId: question.terminalId,
+				keystrokeIndex: 0,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return abort("legacy sequence write threw", 0, "unknown");
+		}
+		if ("error" in result) {
+			deps.log({
+				event: "companion.answer.legacy_sequence_unconfirmed",
+				questionId: question.questionId,
+				terminalId: question.terminalId,
+				keystrokesQueued: keystrokes.length,
+				writeOutcome: result.writeOutcome,
+				error: result.error,
+			});
+			return abort(
+				`legacy daemon sequence outcome: ${result.error}`,
+				keystrokes.length,
+				result.writeOutcome,
+			);
+		}
+		written = keystrokes.length;
+		return { kind: "confirmed" };
+	}
 
 	for (let index = 0; index < keystrokes.length; index += 1) {
 		const keystroke = keystrokes[index];
-		if (keystroke === undefined) return abort("missing keystroke", index);
+		if (keystroke === undefined) {
+			return abort("missing keystroke", index, "not_written");
+		}
 		if (deps.now() >= deadlineMs) {
-			return abort("sequence deadline exceeded", index);
+			return abort("sequence deadline exceeded", index, "not_written");
 		}
 
 		const extension = deps.leases.extend(leaseId, deps.now());
@@ -3175,12 +3344,12 @@ export async function injectSequence(
 				reason: extension.reason,
 				keystrokeIndex: index,
 			});
-			return abort(`lease ${extension.reason}`, index);
+			return abort(`lease ${extension.reason}`, index, "not_written");
 		}
 
-		let result: { success: true } | { error: string };
+		let result: RawWriteResult;
 		try {
-			result = writer.write({
+			result = await writer.write({
 				terminalId: host.hostTerminalId,
 				workspaceId: host.hostWorkspaceId,
 				data: keystroke.data,
@@ -3193,7 +3362,7 @@ export async function injectSequence(
 				keystrokeIndex: index,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			return abort("pty write threw", index);
+			return abort("pty write threw", index, "unknown");
 		}
 
 		if ("error" in result) {
@@ -3203,20 +3372,20 @@ export async function injectSequence(
 				terminalId: question.terminalId,
 				keystrokeIndex: index,
 				written,
+				writeOutcome: result.writeOutcome,
 				error: result.error,
 			});
-			return abort(`pty write refused: ${result.error}`, index);
+			return abort(
+				`pty write refused: ${result.error}`,
+				index,
+				result.writeOutcome,
+			);
 		}
 
 		written += 1;
 	}
 
-	return {
-		kind: "confirmed",
-		guardsPassed,
-		guardsAbstained,
-		evaluation,
-	};
+	return { kind: "confirmed" };
 }
 
 /**
@@ -4053,32 +4222,15 @@ async function assertNoPickerOnScreen(
 }
 
 /**
- * (GUARD4-ABSTAIN) What a DURABLE row can still say about abstains.
- *
- * The ledger stores `guardsPassed` and no abstain column — deliberately: a new
- * column needs a migration, and on the row that matters the fact is DERIVABLE.
- * A `confirmed` row is one where every keystroke walked the WHOLE stack, so
- * every guard was reached; an abstaining-class guard missing from `guardsPassed`
- * on such a row was reached, did not pass, and did not refuse. That is exactly
- * what abstaining is, and it is the only thing it can be.
- *
- * `null` — NOT `[]` — for every other status, because there the same absence has
- * a second explanation and the row cannot choose between them. An `unconfirmed`
- * row carries the guards from its LAST evaluation, which may have stopped before
- * this guard was read at all; and `[transcript, screen, session, binding]` is
- * produced BOTH by "refused at permission_axis" and by "abstained at
- * permission_axis, then refused at askq_marker", with the same status and the
- * same failure code. Returning `[]` there would assert "nothing abstained" on
- * evidence that cannot support it, which is the bug this replaces: an empty
- * array is a claim, and this path is not entitled to make it.
+ * (ANSWER-GUARDLESS) Durable answer rows do not carry a guard evaluation.
+ * Confirmed rows therefore replay the same honest empty abstain list returned by
+ * the original request; non-confirmed legacy rows retain `null` because their
+ * historical evidence cannot be reconstructed from the ledger.
  */
 function replayedGuardsAbstained(
 	record: LedgerRecord,
 ): AnswerGuardName[] | null {
-	if (record.status !== "confirmed") return null;
-	return ABSTAINING_GUARDS.filter(
-		(guard) => !record.guardsPassed.includes(guard),
-	);
+	return record.status === "confirmed" ? [] : null;
 }
 
 /**

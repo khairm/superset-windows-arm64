@@ -817,18 +817,18 @@ export async function handleTree(
 
 	for (const row of terminals) {
 		if (row.originWorkspaceId === null) continue;
-		// Curated OUT means counted out too. The counts are the phone's badge for
-		// the very list below them; tallying a thread the user binned would make
-		// the badge argue with the screen.
-		if (!visible.has(row.originWorkspaceId)) continue;
-		const binding = bindings.get(row.id);
 		const pending = deps.questions.byHostTerminal(row.id);
+		// Curated ordinary threads stay out of both the list and its counts. A live
+		// question is the exception: curation also holds its push, so filtering it
+		// here would erase every phone/watch discovery path.
+		if (!visible.has(row.originWorkspaceId) && pending === null) continue;
+		const binding = bindings.get(row.id);
 
 		const status = deriveSessionStatus(pending, binding);
 		tallyStatus(counts, status);
 
 		let pendingRef: PendingQuestionRef | null = null;
-		if (full && pending !== null) {
+		if (pending !== null) {
 			pendingRef = {
 				questionId: pending.questionId,
 				askedAtMs: pending.askedAtMs,
@@ -838,7 +838,8 @@ export async function handleTree(
 				// (EMIT-OPTIONAL-FIELDS) The headline is the FIRST question's header
 				// only; without the count a 3-question capture renders exactly like a
 				// 1-question one, and `multiSelect` changes what answering even means.
-				// Both are already gated by `full` — this whole ref only exists there.
+				// Pending-question identity is baseline data: a paired device must be able
+				// to discover the question even before capability negotiation.
 				questionCount: pending.questions.length,
 				multiSelect: pending.questions.some((item) => item.multiSelect),
 			};
@@ -893,9 +894,8 @@ export async function handleTree(
 			workspaceRowsByOwningProject.set(row.projectId, [row]);
 		else kindRows.push(row);
 
-		if (!visible.has(row.id)) continue;
-
 		const all = terminalsByWorkspace.get(row.id) ?? [];
+		if (!visible.has(row.id) && all.length === 0) continue;
 		const status = rollup(all.map((t) => t.status));
 		const shown = includeIdle ? all : all.filter((t) => t.status !== "idle");
 		// A workspace with nothing to show is dropped UNCONDITIONALLY. Emptiness
@@ -949,8 +949,9 @@ export async function handleTree(
 
 	const outProjects: Project[] = [];
 	for (const row of projects) {
-		if (curation.projectVerdict(row.id) !== "show") continue;
 		const ws = workspacesByProject.get(row.id) ?? [];
+		// A project omitted from the sidebar still carries a pending-question
+		// workspace admitted above. The workspace list is the final visibility fact.
 		// Same unconditional skip, for the same reason: a project whose every
 		// workspace was dropped is a header with nothing under it.
 		if (ws.length === 0) continue;
@@ -1275,7 +1276,6 @@ export async function handleQuestion(
 	ctx: SealedRequestContext,
 	request: QuestionRequest,
 ): Promise<QuestionResponse> {
-	requireCapability(ctx, "question.read");
 	const questionId = requireHandle(request.questionId, "questionId");
 	const question = deps.questions.get(questionId);
 	if (question === null) {
@@ -1406,16 +1406,11 @@ function countStatuses(deps: ReadDeps, nowMs: EpochMs): StatusCounts {
 	);
 	for (const row of listLiveTerminals(deps.db, deps.liveness)) {
 		if (row.originWorkspaceId === null) continue;
-		if (!visible.has(row.originWorkspaceId)) continue;
-		// The SAME derivation `/v1/tree` reports, so the badge can never disagree
-		// with the screen behind it.
-		tallyStatus(
-			counts,
-			deriveSessionStatus(
-				deps.questions.byHostTerminal(row.id),
-				bindings.get(row.id),
-			),
-		);
+		const pending = deps.questions.byHostTerminal(row.id);
+		if (!visible.has(row.originWorkspaceId) && pending === null) continue;
+		// The SAME derivation and pending-question curation escape `/v1/tree`
+		// reports, so the badge can never disagree with the screen behind it.
+		tallyStatus(counts, deriveSessionStatus(pending, bindings.get(row.id)));
 	}
 	return counts;
 }

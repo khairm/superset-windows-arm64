@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../db";
@@ -200,6 +200,80 @@ function requireFirstPendingId(store: QuestionStore) {
 	if (first === undefined) throw new Error("expected one pending question");
 	return first.questionId;
 }
+
+describe("transcript reconciliation cache", () => {
+	it("retries an unreadable transcript even when its stat identity is unchanged", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "companion-reconcile-cache-"));
+		const transcriptPath = join(dir, "session.jsonl");
+		writeFileSync(transcriptPath, "stable transcript bytes", "utf8");
+		try {
+			const store = createQuestionStore({
+				source: resolver(),
+				liveness: { isProvablyGone: () => false },
+				onSettled: () => {},
+			});
+			const question = store.capture(captureInput({ transcriptPath }));
+			let scans = 0;
+			store.verifyResolvedInTranscript = async () => {
+				scans += 1;
+				return scans === 1 ? "unreadable" : "resolved";
+			};
+
+			expect(await store.reconcile(NOW)).toEqual([]);
+			expect(store.get(question.questionId)?.state).toBe("pending");
+			expect(await store.reconcile(NOW + 1)).toEqual([question.questionId]);
+			expect(store.get(question.questionId)?.state).toBe("resolved");
+			expect(scans).toBe(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not overwrite a phone resolution that lands during the transcript read", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "companion-reconcile-race-"));
+		const transcriptPath = join(dir, "session.jsonl");
+		writeFileSync(transcriptPath, "stable transcript bytes", "utf8");
+		try {
+			const store = createQuestionStore({
+				source: resolver(),
+				liveness: { isProvablyGone: () => false },
+				onSettled: () => {},
+			});
+			const question = store.capture(captureInput({ transcriptPath }));
+			let announceScan!: () => void;
+			const scanStarted = new Promise<void>((resolve) => {
+				announceScan = resolve;
+			});
+			let finishScan!: (verdict: "resolved") => void;
+			const scanResult = new Promise<"resolved">((resolve) => {
+				finishScan = resolve;
+			});
+			store.verifyResolvedInTranscript = async () => {
+				announceScan();
+				return scanResult;
+			};
+
+			const reconciliation = store.reconcile(NOW);
+			await scanStarted;
+			expect(
+				store.resolve(
+					question.questionId,
+					{ deviceLabel: "phone", surface: "phone" },
+					NOW - 1,
+				),
+			).toBe(true);
+			finishScan("resolved");
+
+			expect(await reconciliation).toEqual([]);
+			expect(store.get(question.questionId)?.resolvedBy).toEqual({
+				deviceLabel: "phone",
+				surface: "phone",
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 	function goneStore(isProvablyGone: () => boolean): QuestionStore {

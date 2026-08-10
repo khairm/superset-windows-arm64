@@ -114,6 +114,27 @@ test("input is forwarded; resize updates dims", async () => {
 	await c.dispose();
 });
 
+test("acknowledged input resolves after write and rejects a missing session", async () => {
+	const c = new DaemonClient({ socketPath: sockPath });
+	await c.connect();
+
+	const id = "host-test-input-ack";
+	await c.open(id, {
+		shell: "/bin/sh",
+		argv: ["-i"],
+		cols: 80,
+		rows: 24,
+	});
+	await c.inputAcknowledged(id, Buffer.from("echo acknowledged-input\n"));
+	await assert.rejects(
+		c.inputAcknowledged("missing-input-session", Buffer.from("x")),
+		/ENOENT/,
+	);
+
+	await c.close(id, "SIGTERM");
+	await c.dispose();
+});
+
 test("multiple local subscribers get fanned out from one wire subscription", async () => {
 	const c = new DaemonClient({ socketPath: sockPath });
 	await c.connect();

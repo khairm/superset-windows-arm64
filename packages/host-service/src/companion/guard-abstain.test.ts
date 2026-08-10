@@ -371,12 +371,10 @@ function ledgerRow(overrides: Partial<LedgerRecord> = {}): LedgerRecord {
 	};
 }
 
-describe("(GUARD4-ABSTAIN) a replayed answer", () => {
-	it("DERIVES the abstain from a confirmed row that omits the guard", () => {
-		// A `confirmed` row is one where every keystroke walked the WHOLE stack, so
-		// every guard was reached. An abstaining-class guard missing from
-		// `guardsPassed` there was reached, did not pass, and did not refuse — which
-		// is exactly, and only, what abstaining is.
+describe("(ANSWER-GUARDLESS) a replayed answer", () => {
+	it("does not fabricate abstention from legacy guard evidence", () => {
+		// Legacy rows can name guards that the old answer path evaluated. A replay
+		// reports that stored evidence but does not infer new guard outcomes from it.
 		const response = ledgerRecordToResponse(
 			ledgerRow({
 				guardsPassed: GUARD_EVALUATION_ORDER.filter(
@@ -385,7 +383,7 @@ describe("(GUARD4-ABSTAIN) a replayed answer", () => {
 			}),
 		);
 		expect(response.status).toBe("confirmed");
-		expect(response.guardsAbstained).toEqual(["permission_axis"]);
+		expect(response.guardsAbstained).toEqual([]);
 		expect(response.guardsPassed).not.toContain("permission_axis");
 	});
 
@@ -409,9 +407,8 @@ describe("(GUARD4-ABSTAIN) a replayed answer", () => {
 		expect(response.guardsAbstained).toBeNull();
 	});
 
-	it("every abstaining guard is derivable this way, not just the one", () => {
-		// The derivation is over ABSTAINING_GUARDS rather than a hardcoded name, so
-		// a guard added to that list is covered without touching this path.
+	it("ignores every omitted abstaining guard on confirmed legacy rows", () => {
+		// Omission from a legacy evidence array is not a guard evaluation result.
 		const response = ledgerRecordToResponse(
 			ledgerRow({
 				guardsPassed: GUARD_EVALUATION_ORDER.filter(
@@ -419,6 +416,6 @@ describe("(GUARD4-ABSTAIN) a replayed answer", () => {
 				),
 			}),
 		);
-		expect(response.guardsAbstained).toEqual([...ABSTAINING_GUARDS]);
+		expect(response.guardsAbstained).toEqual([]);
 	});
 });

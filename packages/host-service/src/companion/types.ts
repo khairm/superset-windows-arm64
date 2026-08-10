@@ -967,8 +967,8 @@ export interface AnswerRequest {
 	requestId: RequestId;
 	/** One per QuestionItem, in `index` order, ALL of them. Partial answers do not exist. */
 	answers: AnswerItem[];
-	/** MUST be true if any item is `freetext`. */
-	confirmedBiometric: boolean;
+	/** Legacy client claim. Accepted when present, but never required or trusted. */
+	confirmedBiometric?: boolean;
 	surface: Surface;
 }
 

@@ -146,6 +146,74 @@ describe("handlers", () => {
 		expect(result?.type).toBe("error");
 	});
 
+	test("acknowledged input replies only after pty.write succeeds", () => {
+		const ctx = makeCtx();
+		handleOpen(ctx, {
+			type: "open",
+			id: "s0",
+			meta: { shell: "/bin/sh", argv: [], cols: 80, rows: 24 },
+		});
+		const result = handleInput(
+			ctx,
+			{ type: "input", id: "s0", requestId: "write-1" },
+			Buffer.from("hello"),
+		);
+		expect(states[0]?.written.map((b) => b.toString())).toEqual(["hello"]);
+		expect(result).toEqual({
+			type: "input-ok",
+			id: "s0",
+			requestId: "write-1",
+		});
+	});
+
+	test("acknowledged input correlates missing, exited, and write errors", () => {
+		const ctx = makeCtx();
+		const missing = handleInput(
+			ctx,
+			{ type: "input", id: "missing", requestId: "write-missing" },
+			Buffer.from("x"),
+		);
+		expect(missing).toMatchObject({
+			type: "error",
+			code: "ENOENT",
+			requestId: "write-missing",
+		});
+
+		handleOpen(ctx, {
+			type: "open",
+			id: "s0",
+			meta: { shell: "/bin/sh", argv: [], cols: 80, rows: 24 },
+		});
+		const session = ctx.store.get("s0");
+		if (!session) throw new Error("test session missing");
+		session.exited = true;
+		const exited = handleInput(
+			ctx,
+			{ type: "input", id: "s0", requestId: "write-exited" },
+			Buffer.from("x"),
+		);
+		expect(exited).toMatchObject({
+			type: "error",
+			code: "EEXITED",
+			requestId: "write-exited",
+		});
+
+		session.exited = false;
+		session.pty.write = () => {
+			throw new Error("synthetic write failure");
+		};
+		const failed = handleInput(
+			ctx,
+			{ type: "input", id: "s0", requestId: "write-failed" },
+			Buffer.from("x"),
+		);
+		expect(failed).toMatchObject({
+			type: "error",
+			code: "EWRITE",
+			requestId: "write-failed",
+		});
+	});
+
 	test("resize updates dims", () => {
 		const ctx = makeCtx();
 		handleOpen(ctx, {

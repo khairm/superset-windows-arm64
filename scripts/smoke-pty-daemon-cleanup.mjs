@@ -115,7 +115,7 @@ class PtyDaemonClient {
 		const client = new PtyDaemonClient(socket);
 		const ack = await client.request({
 			type: "hello",
-			protocols: [2, 1],
+			protocols: [3],
 			clientVersion: "cleanup-smoke",
 		});
 		if (ack.type !== "hello-ack") {

@@ -6,6 +6,7 @@ import {
 import type {
 	CloseMessage,
 	InputMessage,
+	InputOkMessage,
 	ListReplyMessage,
 	OpenMessage,
 	OpenOkMessage,
@@ -100,20 +101,36 @@ export function handleInput(
 	payload: Uint8Array | null,
 ): ServerMessage | undefined {
 	const session = ctx.store.get(msg.id);
-	if (!session) return errorFor(msg.id, `unknown session: ${msg.id}`, "ENOENT");
-	if (session.exited)
-		return errorFor(msg.id, `session exited: ${msg.id}`, "EEXITED");
-	if (!payload || payload.byteLength === 0) {
-		// Empty input is a no-op; surfacing an error would force callers
-		// to special-case zero-length writes for no real benefit.
-		return undefined;
+	if (!session) {
+		return errorFor(
+			msg.id,
+			`unknown session: ${msg.id}`,
+			"ENOENT",
+			msg.requestId,
+		);
 	}
-	try {
-		session.pty.write(Buffer.from(payload));
-	} catch (err) {
-		return errorFor(msg.id, (err as Error).message, "EWRITE");
+	if (session.exited) {
+		return errorFor(
+			msg.id,
+			`session exited: ${msg.id}`,
+			"EEXITED",
+			msg.requestId,
+		);
 	}
-	return undefined;
+	if (payload && payload.byteLength > 0) {
+		try {
+			session.pty.write(Buffer.from(payload));
+		} catch (err) {
+			return errorFor(msg.id, (err as Error).message, "EWRITE", msg.requestId);
+		}
+	}
+	if (msg.requestId === undefined) return undefined;
+	const reply: InputOkMessage = {
+		type: "input-ok",
+		id: msg.id,
+		requestId: msg.requestId,
+	};
+	return reply;
 }
 
 export function handleResize(
@@ -198,6 +215,7 @@ function errorFor(
 	id: string | undefined,
 	message: string,
 	code?: string,
+	requestId?: string,
 ): ServerMessage {
-	return { type: "error", id, message, code };
+	return { type: "error", id, requestId, message, code };
 }

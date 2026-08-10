@@ -13,6 +13,7 @@ export type {
 	HelloAckMessage,
 	HelloMessage,
 	InputMessage,
+	InputOkMessage,
 	ListMessage,
 	ListReplyMessage,
 	OpenMessage,

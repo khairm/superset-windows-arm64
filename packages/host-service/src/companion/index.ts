@@ -6,8 +6,8 @@
  * host-service a single start/stop handle.
  *
  * Contract with the rest of host-service:
- *  - it runs IN-PROCESS with the pty writer, because the answer guard stack and
- *    the injection must share one critical section (§11.3);
+ *  - it runs IN-PROCESS with the pty writer, because exact-current-question
+ *    arbitration and injection must share one terminal critical section (§11.3);
  *  - it fails loud on a taken port, a missing secret, or an unreadable device
  *    store — the companion feature is then reported unavailable in the desktop
  *    UI rather than silently degraded;
@@ -15,10 +15,10 @@
  *    renderer's `superset-app://` loader starves and the window stays blank.
  *
  * This module owns WIRING AND LIFECYCLE ONLY. Every behaviour lives in a sibling
- * module. Where a source of truth genuinely does not exist yet, the adapter
- * reports `null` ("unreadable", which every consumer must treat as a refusal) or
- * throws with the exact remedy — it NEVER fabricates a value that would let a
- * guard pass or a tree look healthy.
+ * module. Where a source of truth genuinely does not exist yet, an observational
+ * adapter reports `null` or throws with the exact remedy — it NEVER fabricates a
+ * value that would make a tree look healthy. Answer injection does not use those
+ * observations as eligibility gates.
  */
 
 import { access } from "node:fs/promises";
@@ -35,9 +35,10 @@ import * as hostDbSchema from "../db/schema";
 import { getDaemonClient } from "../terminal/daemon-client-singleton";
 import {
 	isLiveTerminalSession,
+	prepareAcknowledgedInputSession,
 	snapshotSession,
+	writeAcknowledgedInputToSession,
 	writeFramedInputToSession,
-	writeInputToSession,
 } from "../terminal/terminal";
 import type { TerminalAgentStore } from "../terminal-agents";
 import {
@@ -98,6 +99,11 @@ import {
 	type SendNonceSource,
 	type StateAnchor,
 } from "./keys";
+import {
+	RAW_PTY_WRITER_KIND,
+	type RawWriteInput,
+	type RawWriteTarget,
+} from "./keystrokes";
 import {
 	createLeaseRegistry,
 	createTerminalLockRegistry,
@@ -803,12 +809,10 @@ export function createCompanionBridge(
 			logger,
 			bridgeStartedMs,
 		});
-		// Proves the raw writer is the raw writer HERE, at start, rather than on
-		// the first answer of the day. `createRawPtyWriter`'s probe is the only
-		// structural defence against the paste-framing writer being wired into the
-		// injector (names do not survive bundling), and it is lazy — without this
-		// call a mis-wired writer would surface as an untyped 500 on a real
-		// answer, long after every read path had been seen working.
+		// Proves the acknowledged raw-writer marker HERE, at start, rather than on
+		// the first answer of the day. Without this call either the paste-framed or
+		// fire-and-forget writer could surface as a real answer failure long after
+		// every read path had been seen working.
 		assertAnswerDeps(answerDeps);
 		const panic = createPanicHandler({ deviceStore, audit, events });
 
@@ -1912,10 +1916,10 @@ interface AnswerAdapterDeps {
  * back through `deriveHandle` — the same deterministic function question-store
  * mints with. An unmappable handle is `null`, never a guess.
  *
- * `writer` is the RAW pty write and is the only thing that drives a picker:
- * bracketed-paste framing is INERT against it, proven in a real pty.
- * `createRawPtyWriter` probes the function at startup so wiring the framed
- * writer here is a loud failure rather than answers that silently never arrive.
+ * `writer` is the acknowledged RAW pty write and is the only thing that drives
+ * a picker: bracketed-paste framing is INERT against it, and ordinary terminal
+ * input cannot report daemon refusal. `createRawPtyWriter` checks the explicit
+ * runtime marker at startup so either wrong path fails loud.
  */
 function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 	const hostTerminalIdOf = (terminalId: TerminalId): string | null =>
@@ -1937,8 +1941,17 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 		return { hostTerminalId, hostWorkspaceId };
 	};
 
+	const writeInput = Object.assign(
+		(input: RawWriteInput) => writeAcknowledgedInputToSession(input),
+		{
+			writerKind: RAW_PTY_WRITER_KIND,
+			prepare: (input: RawWriteTarget) =>
+				prepareAcknowledgedInputSession({ ...input, db: deps.db }),
+		},
+	);
+
 	return {
-		writeInput: writeInputToSession,
+		writeInput,
 		async writeFramed({ terminalId, workspaceId, text, submit }) {
 			return writeFramedInputToSession({
 				terminalId,
@@ -2012,21 +2025,11 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 
 		resolveHostTerminal,
 
-		// GUARD 1, LOAD-BEARING. The transcript is the one source the
-		// unauthenticated localhost hook cannot write — AND, since
-		// (TRANSCRIPT-PATH-DERIVED), cannot CHOOSE either: `PendingQuestion.transcriptPath`
-		// is computed from host.db by `HostDbReader.resolveTranscriptPath`, never
-		// taken from the hook payload. While the hook named the file, "point guard 1
-		// at an empty file" made "still unanswered" true on demand and guard 1
-		// passed for a question that was never asked.
-		//
-		// It verifies the tool call it was ASKED about. Re-deriving the question
-		// from `byTerminal(terminalId)` and reading that record's `toolUseId`
-		// instead — which this adapter used to do — hands the choice of which tool
-		// call gets verified back to the unauthenticated hook, and guard 1 stops
-		// being the one source the hook cannot move. A supersede mid-sequence then
-		// makes guard 1 answer about the NEW question while the injector keeps
-		// typing the old one's digits.
+		// Positive-only transcript observation for reconciliation and diagnostics.
+		// (TRANSCRIPT-PATH-DERIVED) keeps the path host.db-derived rather than trusting
+		// the localhost hook. Match the requested tool call exactly; a different
+		// current question cannot provide settlement evidence for this one. Answer
+		// injection deliberately does not call this adapter.
 		async toolResultExists({
 			terminalId,
 			toolUseId,

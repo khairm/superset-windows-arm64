@@ -54,17 +54,18 @@ function captureInput(overrides: Record<string, unknown> = {}) {
 
 function resolver(
 	overrides: Partial<QuestionSourceResolver> = {},
+	agentId: string | null = "claude",
 ): QuestionSourceResolver {
 	return {
 		resolveTerminal: () => ({
 			hostProjectId: "p-1",
 			hostWorkspaceId: "w-1",
-			agentId: "claude",
+			agentId,
 		}),
 		resolveActiveTerminal: () => ({
 			hostProjectId: "p-1",
 			hostWorkspaceId: "w-1",
-			agentId: "claude",
+			agentId,
 		}),
 		resolveTranscriptPath: () => null,
 		resolveTerminalActivityMs: () => NOW - 60_000,
@@ -134,19 +135,7 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		null,
 		"codex",
 	])("does not turn agent kind %p into an answer barrier", (agentId) => {
-		const source = resolver({
-			resolveTerminal: () => ({
-				hostProjectId: "p-1",
-				hostWorkspaceId: "w-1",
-				agentId,
-			}),
-			resolveActiveTerminal: () => ({
-				hostProjectId: "p-1",
-				hostWorkspaceId: "w-1",
-				agentId,
-			}),
-		});
-		const { store, question } = pendingQuestion({}, source);
+		const { store, question } = pendingQuestion({}, resolver({}, agentId));
 
 		expect(store.summarize(question, { granted: [] })?.answerable).toBe(true);
 	});

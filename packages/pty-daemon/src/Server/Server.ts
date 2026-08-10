@@ -16,6 +16,7 @@ import {
 import { adoptFromFd } from "../Pty/index.ts";
 import {
 	type ClientMessage,
+	CURRENT_PROTOCOL_VERSION,
 	encodeFrame,
 	FrameDecoder,
 	type HandoffMessage,
@@ -475,6 +476,19 @@ export class Server {
 				return;
 			}
 			case "input": {
+				if (
+					msg.requestId !== undefined &&
+					conn.negotiated < CURRENT_PROTOCOL_VERSION
+				) {
+					conn.send({
+						type: "error",
+						id: msg.id,
+						requestId: msg.requestId,
+						message: "acknowledged input requires protocol 3",
+						code: "EPROTO",
+					});
+					return;
+				}
 				const reply = handleInput(ctx, msg, payload);
 				if (reply) conn.send(reply);
 				return;

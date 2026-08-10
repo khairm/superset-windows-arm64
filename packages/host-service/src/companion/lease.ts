@@ -413,7 +413,7 @@ export interface TerminalLockRegistry {
 	runExclusive<T>(
 		terminalId: TerminalId,
 		timeoutMs: DurationMs,
-		fn: () => Promise<T>,
+		fn: () => T | Promise<T>,
 	): Promise<T>;
 }
 
@@ -439,7 +439,7 @@ export function createTerminalLockRegistry(): TerminalLockRegistry {
 		async runExclusive<T>(
 			terminalId: TerminalId,
 			timeoutMs: DurationMs,
-			fn: () => Promise<T>,
+			fn: () => T | Promise<T>,
 		): Promise<T> {
 			if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
 				throw new Error(

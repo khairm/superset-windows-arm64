@@ -26,11 +26,11 @@ after(async () => {
 
 test("handshake: hello → hello-ack", async () => {
 	const c = await connect(sockPath);
-	c.send({ type: "hello", protocols: [2] });
+	c.send({ type: "hello", protocols: [3] });
 	const ack = await c.waitFor((m) => m.type === "hello-ack");
 	assert.equal(ack.type, "hello-ack");
 	if (ack.type === "hello-ack") {
-		assert.equal(ack.protocol, 2);
+		assert.equal(ack.protocol, 3);
 		assert.equal(ack.daemonVersion, "0.0.0-test");
 	}
 	await c.close();

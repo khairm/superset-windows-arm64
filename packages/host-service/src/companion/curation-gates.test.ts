@@ -1564,8 +1564,16 @@ const FULL_CTX = {
 	device: { revokedAtMs: null, writesDisabledAtMs: null },
 } as unknown as SealedRequestContext;
 
-async function tree(fixture: TreeFixture): Promise<TreeResponse> {
-	return handleTree(treeDeps(fixture), FULL_CTX, { includeIdle: true });
+const BASELINE_CTX = {
+	granted: [],
+	device: { revokedAtMs: null, writesDisabledAtMs: null },
+} as unknown as SealedRequestContext;
+
+async function tree(
+	fixture: TreeFixture,
+	ctx: SealedRequestContext = FULL_CTX,
+): Promise<TreeResponse> {
+	return handleTree(treeDeps(fixture), ctx, { includeIdle: true });
 }
 
 describe("(BRIDGE-SIDEBAR-FILTER) handleTree over a curated fixture", () => {
@@ -1610,6 +1618,38 @@ describe("(BRIDGE-SIDEBAR-FILTER) handleTree over a curated fixture", () => {
 		// to reach this line, and it started failing when the file grew.
 		expect(response.curation?.lastSyncAgeMs).toBeGreaterThanOrEqual(1_000);
 		expect(response.curation?.lastSyncAgeMs).toBeLessThan(MIRROR_MAX_AGE_MS);
+	});
+
+	it("offers a pending question even when curation hides its workspace and no tree capability was negotiated", async () => {
+		const pending = pendingQuestionFixture({ hostTerminalId: "t-binned" });
+		const response = await tree(
+			{
+				projects: baseProjects,
+				workspaces: [workspaceRow("w-binned", "p-git")],
+				terminals: [terminal("t-binned", "w-binned")],
+				bindings: [],
+				mirror: snapshot(
+					[
+						mirrorWorkspace("w-binned", {
+							projectId: "p-git",
+							deletedAt: NOW - 10,
+						}),
+					],
+					[],
+				),
+				pendingByHostTerminal: { "t-binned": pending },
+			},
+			BASELINE_CTX,
+		);
+
+		const workspace = response.projects[0]?.workspaces[0];
+		expect(workspace?.name).toBe("w-binned");
+		expect(workspace?.terminals[0]?.pendingQuestion).toMatchObject({
+			questionId: pending.questionId,
+			answerable: true,
+		});
+		expect(response.curation?.hiddenWorkspaces).toBe(1);
+		expect(response.counts.needsInput).toBe(1);
 	});
 
 	it("an EMPTY tree is now distinguishable from an over-filtered one", async () => {
@@ -1827,6 +1867,24 @@ describe("(BRIDGE-SIDEBAR-FILTER) handleHeartbeat counts the same set the tree r
 			foreground: true,
 		});
 		expect(heartbeat.counts).toEqual({ needsInput: 0, working: 0, idle: 1 });
+
+		const treeResponse = await handleTree(deps, FULL_CTX, {
+			includeIdle: true,
+		});
+		expect(heartbeat.counts).toEqual(treeResponse.counts);
+	});
+
+	it("counts a pending question that pierces curation, and the tree agrees", async () => {
+		const fixture = curatedFixture();
+		fixture.pendingByHostTerminal = {
+			"t-binned": pendingQuestionFixture({ hostTerminalId: "t-binned" }),
+		};
+		const deps = treeDeps(fixture);
+		const heartbeat = await handleHeartbeat(deps, FULL_CTX, {
+			lastEventGseq: null,
+			foreground: true,
+		});
+		expect(heartbeat.counts).toEqual({ needsInput: 1, working: 0, idle: 1 });
 
 		const treeResponse = await handleTree(deps, FULL_CTX, {
 			includeIdle: true,

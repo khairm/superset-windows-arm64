@@ -20,7 +20,9 @@ import {
 	type ClientMessage,
 	encodeFrame,
 	FrameDecoder,
+	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@superset/pty-daemon/protocol";
+import { DaemonClient } from "../terminal/DaemonClient/DaemonClient.ts";
 import {
 	DaemonSupervisor,
 	probeDaemonVersion,
@@ -77,6 +79,9 @@ interface FakeDaemonOptions {
 	hangUpAfterHello?: boolean;
 	respondWithWrongMessageFirst?: boolean;
 	silent?: boolean;
+	protocol?: number;
+	onHello?: (protocols: readonly number[]) => void;
+	onMessage?: (message: ClientMessage) => void;
 }
 
 async function startFakeDaemon(opts: FakeDaemonOptions): Promise<{
@@ -95,7 +100,9 @@ async function startFakeDaemon(opts: FakeDaemonOptions): Promise<{
 			decoder.push(chunk);
 			for (const decoded of decoder.drain()) {
 				const msg = decoded.message as ClientMessage;
+				opts.onMessage?.(msg);
 				if (msg.type !== "hello") continue;
+				opts.onHello?.(msg.protocols);
 				if (opts.silent) return;
 				if (opts.hangUpAfterHello) {
 					sock.end();
@@ -119,7 +126,7 @@ async function startFakeDaemon(opts: FakeDaemonOptions): Promise<{
 					sock.write(
 						encodeFrame({
 							type: "hello-ack",
-							protocol: 1,
+							protocol: opts.protocol ?? 1,
 							daemonVersion: opts.respondWithVersion,
 							daemonPid: opts.daemonPid,
 						}),
@@ -146,6 +153,51 @@ describe("probeDaemonVersion", () => {
 		try {
 			expect(await probeDaemonVersion(fake.socketPath, 1500)).toBe("0.1.0");
 		} finally {
+			await fake.close();
+		}
+	});
+
+	test("probes an existing v2 daemon without making it unreachable", async () => {
+		const observed: { protocols?: readonly number[] } = {};
+		const fake = await startFakeDaemon({
+			respondWithVersion: "0.3.0",
+			protocol: 2,
+			onHello: (protocols) => {
+				observed.protocols = protocols;
+			},
+		});
+		try {
+			expect(await probeDaemonVersion(fake.socketPath, 1500)).toBe("0.3.0");
+			expect(observed.protocols).toEqual(SUPPORTED_PROTOCOL_VERSIONS);
+		} finally {
+			await fake.close();
+		}
+	});
+
+	test("adopts v2 and queues companion input with an honest unknown outcome", async () => {
+		const messages: ClientMessage[] = [];
+		const fake = await startFakeDaemon({
+			respondWithVersion: "0.3.0",
+			protocol: 2,
+			onMessage: (message) => messages.push(message),
+		});
+		const client = new DaemonClient({ socketPath: fake.socketPath });
+		try {
+			await client.connect();
+			expect(client.protocol).toBe(2);
+			await expect(
+				client.inputAcknowledged("terminal", Buffer.from("1")),
+			).rejects.toMatchObject({ writeOutcome: "unknown" });
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(messages.map((message) => message.type)).toEqual([
+				"hello",
+				"input",
+			]);
+			const input = messages[1];
+			expect(input?.type).toBe("input");
+			if (input?.type === "input") expect(input.requestId).toBeUndefined();
+		} finally {
+			await client.dispose();
 			await fake.close();
 		}
 	});
@@ -362,6 +414,7 @@ describe("DaemonSupervisor.tryAdopt", () => {
 			expect(adopted).not.toBeNull();
 			expect(adopted?.pid).toBe(childPid);
 			expect(adopted?.runningVersion).toBe("0.1.0");
+			expect(adopted?.updatePending).toBe(true);
 			// The live daemon must not have taken the destructive reject path.
 			expect(
 				loggedEvents.some((e) => e.event === "pty_daemon_adopt_rejected"),

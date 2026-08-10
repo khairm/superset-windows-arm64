@@ -4,9 +4,20 @@
 
 import { describe, expect, test } from "bun:test";
 import { decodeFrame, encodeFrame } from "./framing.ts";
+import {
+	CURRENT_PROTOCOL_VERSION,
+	SUPPORTED_PROTOCOL_VERSIONS,
+} from "./version.ts";
 
 const HEADER = 4;
 const INNER = 4;
+
+describe("protocol migration", () => {
+	test("prefers v3 while retaining v2 ordinary-operation adoption", () => {
+		expect(CURRENT_PROTOCOL_VERSION).toBe(3);
+		expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual([3, 2]);
+	});
+});
 
 describe("v2 wire shape", () => {
 	test("output frames carry bytes in the binary tail, not the JSON header", () => {
@@ -56,6 +67,7 @@ describe("v2 wire shape", () => {
 		const cases = [
 			{ type: "hello-ack", protocol: 2, daemonVersion: "x" },
 			{ type: "open-ok", id: "s0", pid: 123 },
+			{ type: "input-ok", id: "s0", requestId: "write-1" },
 			{ type: "closed", id: "s0" },
 			{ type: "exit", id: "s0", code: 0, signal: null },
 			{ type: "list-reply", sessions: [] },

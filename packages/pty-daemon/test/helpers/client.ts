@@ -225,7 +225,7 @@ export async function connectAndHello(
 	socketPath: string,
 ): Promise<DaemonClient> {
 	const c = await connect(socketPath);
-	c.send({ type: "hello", protocols: [2] });
+	c.send({ type: "hello", protocols: [3] });
 	await c.waitFor((m) => m.type === "hello-ack");
 	return c;
 }

@@ -1,21 +1,60 @@
 /**
  * (COMPANION-BRIDGE) — capture and custody of pending AskUserQuestion prompts (§7.4).
  *
- * Question text and terminal identity arrive through the validated PreToolUse hook
- * capture. Nothing sensitive (`tool_use_id`, session id, transcript path or host PTY
- * ids) is sent to a client.
+ * Source of truth for question TEXT is the `PreToolUse` hook payload, captured
+ * at the moment the question was raised: it already carries `tool_name`,
+ * `tool_use_id`, `transcript_path`, `session_id`, `cwd`, `tool_input.questions[]`
+ * and `agent_id`/`agent_type` for a subagent. No transcript parsing is needed to
+ * DISCOVER a question; the transcript is a cross-check, not the source.
  *
- * (ANSWER-GUARDLESS) Captured hook state is intentionally the pending-question
- * source of truth. For any pending captured question whose host.db terminal resolves,
- * phone and watch surfaces always offer the answer. Transcript, screen, renderer,
- * Windows login-session, hook-latch and capability observations cannot veto it.
- * The answer endpoint still validates the question fingerprint and answer shape,
- * then writes only the proven byte sequence to the captured terminal target.
+ * Nothing here ever leaves the process unredacted: `tool_use_id`, `session_id`,
+ * transcript paths and pty handles are NEVER sent to a client.
  *
- * The localhost capture route is unauthenticated and attacker-influenceable. This
- * single-user product explicitly accepts that trade in favour of uninterrupted
- * remote answering; pairing authentication, strict boundary validation, terminal
- * id resolution, the per-terminal lock, answer lease and idempotency ledger remain.
+ * Delivery route: `notifications.hook` -> `companion-question-sink` ->
+ * `QuestionStore.asCaptureSink()`. The route zod-validates the wire shape; this
+ * module re-validates everything it is handed, because the sink is a
+ * process-global anything in this process can call and a second validation is
+ * cheap next to a malformed question reaching a phone.
+ *
+ * (ANSWER-GUARDLESS) A pending captured question is always offered when its
+ * host.db terminal resolves. Transcript, screen, renderer, Windows login state,
+ * hook-fed agent kind/binding and negotiated capabilities cannot veto it. A
+ * positive transcript tool-result still retires a question answered at the desk;
+ * unreadable or unresolved transcripts never block or settle anything.
+ *
+ * ---------------------------------------------------------------------------
+ * THREAT MODEL — READ THIS BEFORE USING ANYTHING THIS MODULE RETURNS
+ * ---------------------------------------------------------------------------
+ * Everything in this store arrives through `notifications.hook`, which is
+ * DELIBERATELY UNAUTHENTICATED on localhost and whose URL sits in every agent
+ * shell's environment. Any process on this machine — including an agent that
+ * read untrusted content and followed instructions in it — can POST an
+ * arbitrary, well-formed "a question is pending on terminal X" payload.
+ *
+ * Therefore:
+ *
+ *   1. Every record in this store is UNVERIFIED ATTACKER-INFLUENCEABLE INPUT.
+ *      That is why the internal record carries `origin:
+ *      "unauthenticated_localhost_hook"` and why every accessor below is
+ *      documented as returning unverified state. It is not decoration; it is
+ *      the only honest description of the data.
+ *
+ *   2. (ANSWER-GUARDLESS) This store is the captured-question source of truth
+ *      for remote answering. Transcript, screen, renderer, Windows login state,
+ *      binding, permission latch and capability observations never veto a
+ *      pending answer. The explicit single-user trade-off is that a forged local
+ *      capture can reach the same authenticated phone UI as a real capture.
+ *
+ *   3. `verifyResolvedInTranscript()` is a background freshness primitive, not
+ *      an answer guard. It returns `resolved` / `unresolved` / `unreadable`.
+ *      Only a positive `resolved` verdict retires a question already answered at
+ *      the desk; `unresolved` and `unreadable` do nothing and never block input.
+ *
+ *      (TRANSCRIPT-PATH-DERIVED) The path is still derived from host.db rather
+ *      than trusted from the hook, so a positive tool-result verdict belongs to
+ *      this terminal. The hook's claimed path is compared once and a mismatch is
+ *      logged loudly. Absence of evidence is not evidence: an empty, rotated or
+ *      foreign file remains `unreadable`, which leaves the question pending.
  */
 
 import { createHash } from "node:crypto";
@@ -141,10 +180,9 @@ function b64url(bytes: Buffer): string {
  * memoised hash and NOTHING ELSE. It is emphatically not a cache of "which
  * terminals exist": the reverse lookups in `index.ts` and `read-api.ts` still
  * enumerate `listActiveTerminals()` on every single call, so a terminal that
- * has gone away is still absent from every scan and the per-keystroke guard
- * re-evaluation is unweakened. What the memo removes is the SHA-256 those scans
- * recomputed per row per call — roughly five adapter calls per answer, each
- * re-hashing every live terminal, and the whole tree projection on every read.
+ * has gone away is still absent from every scan. What the memo removes is the
+ * SHA-256 those scans recomputed per row per call — across observational
+ * adapters and the whole tree projection on every read.
  *
  * Bounded by clearing wholesale at the cap rather than by an LRU: entries are
  * interchangeable and a rebuild costs one hash each, so the simplest bound that
@@ -219,7 +257,7 @@ export interface QuestionCaptureInput {
 	toolUseId: string;
 	/** Claude's `session_id`. Internal; part of the §7.4 fingerprint. */
 	sessionId: string;
-	/** Absolute session transcript path. Internal; used only for context/diagnostics. */
+	/** Absolute path of the session transcript. Internal; freshness reconciliation reads it. */
 	transcriptPath: string;
 	cwd: string;
 	/** SUBAGENT id when a subagent asked; `null` on the main loop. */
@@ -534,20 +572,25 @@ export interface PendingQuestion {
 	/** host.db `workspaces.id`. Never sent to a client. */
 	hostWorkspaceId: string;
 	/**
-	 * Absolute transcript path derived from host.db, never the hook's own value.
-	 * Empty when unavailable. Used for context and diagnostics only; never sent.
+	 * (TRANSCRIPT-PATH-DERIVED) Absolute path to the agent's own transcript,
+	 * DERIVED FROM host.db — never the hook's own value. Empty string when it
+	 * could not be derived; that disables transcript freshness reconciliation but
+	 * never blocks an answer. Never sent to a client.
 	 */
 	transcriptPath: string;
 	/** Resolved from host.db's agent binding, NOT from the hook payload. */
 	agentKind: QuestionAgentKind;
-	/** SUBAGENT id when one asked; `null` on the main loop. Never sent. */
+	/**
+	 * SUBAGENT id when a subagent asked; `null` on the main loop. Never sent to a
+	 * client. Guard 6 needs it to compute the per-owner `.askq` marker key.
+	 */
 	agentId: string | null;
 }
 
-/** Diagnostic transcript scan result; never an answer verdict. */
+/** Transcript freshness verdict. Only `resolved` changes question state. */
 export type TranscriptVerdict = "resolved" | "unresolved" | "unreadable";
 
-/** Retained wire-context shape; grants no longer veto pending Claude questions. */
+/** Per-session answerability inputs. `granted` is this device's session grant (§6.2). */
 export interface AnswerabilityContext {
 	granted: readonly Capability[];
 }
@@ -705,13 +748,20 @@ export interface QuestionStore {
 		atMs: number,
 	): boolean;
 	markStale(questionId: QuestionId, reason: string): void;
-	/** Diagnostic transcript query. Never permits, refuses, or settles an answer. */
+	/**
+	 * Check whether the question's `tool_use_id` has a positive `tool_result` in
+	 * the agent's transcript. `unreadable` leaves the pending record unchanged so
+	 * reconciliation can retry after a transient read failure.
+	 */
 	verifyResolvedInTranscript(
 		question: PendingQuestion,
 	): Promise<TranscriptVerdict>;
 	/**
-	 * Expire only questions whose terminal is provably gone across the
-	 * corroboration window. Transcript contents never settle a pending question.
+	 * Cross-check every pending record against the transcript and settle the ones
+	 * the hook never told us about. A `PostToolUse` hook can die mid-flight —
+	 * emulated msys2 on this ARM64 box has form for exactly that — so
+	 * hook-silence is NOT evidence a question is still open. Returns the ids it
+	 * moved to `resolved`. Also prunes records past 24 h.
 	 */
 	reconcile(nowMs: EpochMs): Promise<QuestionId[]>;
 	/** Age of the oldest pending question, for §7.7 `oldestUnansweredMs`. */
@@ -1200,22 +1250,16 @@ function toolDetailFromResult(
 }
 
 /**
- * GUARD 1 (§11.3). Scan the tail of the transcript for a `tool_result` block
- * carrying `toolUseId`.
+ * Scan the transcript tail for a `tool_result` carrying `toolUseId`.
  *
- * Tri-state and fail-closed: an unreadable, missing or rotated transcript
- * returns `unreadable`, which callers MUST treat as a refusal. Collapsing it to
- * `unresolved` would turn "I could not check" into "it is safe to type", which
- * is precisely the failure this guard exists to prevent.
+ * This is freshness reconciliation, never an answer precondition. Only a
+ * positive `resolved` verdict retires a pending record already answered at the
+ * desk. Missing, rotated, foreign or unreadable files return `unreadable` and
+ * leave the question pending and answerable.
  *
- * (TRANSCRIPT-PATH-DERIVED) ABSENCE OF EVIDENCE IS NOT EVIDENCE OF ABSENCE.
- * `unresolved` — the ONLY verdict that permits a keystroke — now requires the
- * matching `tool_use` block to have been POSITIVELY OBSERVED in the scan
- * window. It used to be returned for any file in which the id simply did not
- * appear, so an empty file (or any file smaller than the scan window that never
- * mentions the id) reported "still unanswered" and guard 1 passed for a
- * question that was never asked. A file that does not contain the tool call is
- * now `unreadable`.
+ * (TRANSCRIPT-PATH-DERIVED) `unresolved` still requires the matching `tool_use`
+ * block to be positively observed. A file that never contained this question
+ * cannot establish any fact about it and therefore remains `unreadable`.
  */
 export async function findToolResultInTranscript(
 	transcriptPath: string,
@@ -1271,10 +1315,9 @@ export async function findToolResultInTranscript(
  * covers two facts with opposite consequences for a held buzz. "The file is
  * there and does not prove anything" means CANNOT CHECK, and this feature buzzes
  * when it cannot tell. "The file is not there at all" means the notification is
- * INERT: the phone's question view reads that same transcript and would render
- * nothing, and guard 1 reads that same derived path and refuses every answer
- * attempt against it, forever. A buzz nobody can open and nobody can answer is
- * not a buzz worth keeping alive.
+ * INERT: after a host-service restart the memory-only question store is gone,
+ * and without that transcript the phone has no question body to reopen. A buzz
+ * nobody can open is not worth keeping alive.
  */
 export type OrphanTranscriptVerdict = "resolved" | "unresolved" | "gone";
 
@@ -1353,6 +1396,32 @@ async function transcriptIsProvablyAbsent(
 }
 
 /**
+ * (RECONCILE-STAT-CACHE) The identity of a transcript file at the moment a
+ * verdict was computed from it, plus that verdict.
+ *
+ * A transcript is append-only, and `findToolResultInTranscript` is a pure
+ * function of (file bytes, toolUseId). So if the file is byte-for-byte the one
+ * a verdict was already computed from, re-reading up to 8 MiB of it and
+ * re-parsing the JSONL produces the same answer — which is what the 60-second
+ * heartbeat was doing, once per pending question, forever.
+ *
+ * ALL FOUR FIELDS ARE REQUIRED and equality must be exact. `size` alone would
+ * accept a file that was truncated and rewritten to the same length; `(dev,
+ * ino)` catches a replaced file; `mtimeNs` catches a same-length in-place
+ * rewrite. Anything that does not match exactly — including a file that SHRANK,
+ * which is not something an append-only log does — invalidates the mark and
+ * forces the full scan. `bigint: true` because a 64-bit inode does not survive
+ * a JS number on win32.
+ */
+interface TranscriptScanMark {
+	dev: bigint;
+	ino: bigint;
+	size: bigint;
+	mtimeNs: bigint;
+	verdict: TranscriptVerdict;
+}
+
+/**
  * (QUESTION-EXPIRY) How long a question's terminal must have been PROVABLY GONE
  * — across two separate reconcile passes, not merely twice inside one — before
  * the question is settled `stale`.
@@ -1387,6 +1456,44 @@ export const QUESTION_EXPIRY_CORROBORATION_MS = 300_000;
 export const QUESTION_STALE_TERMINAL_GONE_REASON =
 	"the terminal this question was asked in no longer exists";
 
+/**
+ * (RECONCILE-STAT-CACHE) One stat, or `null` when there is nothing to compare.
+ *
+ * A failed stat is NOT swallowed into a verdict — it returns `null`, which makes
+ * the caller take the full scan, and the full scan reports `unreadable` on its
+ * own terms. The only thing lost here is the cheap proof that a re-read can be
+ * skipped.
+ */
+async function markTranscript(
+	transcriptPath: string,
+): Promise<Omit<TranscriptScanMark, "verdict"> | null> {
+	if (transcriptPath.length === 0) return null;
+	try {
+		const stat = await fs.stat(transcriptPath, { bigint: true });
+		if (!stat.isFile()) return null;
+		return {
+			dev: stat.dev,
+			ino: stat.ino,
+			size: stat.size,
+			mtimeNs: stat.mtimeNs,
+		};
+	} catch {
+		return null;
+	}
+}
+
+function sameTranscriptFile(
+	mark: TranscriptScanMark,
+	current: Omit<TranscriptScanMark, "verdict">,
+): boolean {
+	return (
+		mark.dev === current.dev &&
+		mark.ino === current.ino &&
+		mark.size === current.size &&
+		mark.mtimeNs === current.mtimeNs
+	);
+}
+
 // ---------------------------------------------------------------------------
 // answerability
 // ---------------------------------------------------------------------------
@@ -1396,10 +1503,25 @@ function agentKindOf(agentId: string | null): QuestionAgentKind {
 	return agentKindFromAgentId(agentId);
 }
 
+// ---------------------------------------------------------------------------
+// the store
+// ---------------------------------------------------------------------------
+
 export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 	const byId = new Map<QuestionId, PendingQuestion>();
 	/** host terminal id -> questionId of the record currently `pending` there. */
 	const pendingByHostTerminal = new Map<string, QuestionId>();
+	/**
+	 * (RECONCILE-STAT-CACHE) The verdict `reconcile()` last computed for a
+	 * question, together with the identity of the transcript file it computed it
+	 * from. Rebuilt from scratch on every pass, so it holds at most one entry per
+	 * CURRENTLY pending question and cannot outlive one.
+	 *
+	 * This is ONLY consulted by `reconcile()`. Direct transcript reads never use
+	 * it; the cache exists solely to avoid rescanning an unchanged file during
+	 * background freshness passes.
+	 */
+	let reconcileMarks = new Map<QuestionId, TranscriptScanMark>();
 
 	/**
 	 * (QUESTION-EXPIRY) questionId -> the instant this pass first saw its
@@ -1626,10 +1748,10 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				);
 			}
 
-			// (TRANSCRIPT-PATH-DERIVED) Guard 1's file is chosen HERE, from host.db,
-			// and never by the caller. `null` -> empty -> guard 1 is `unreadable` ->
-			// the answer path refuses. The hook's own claim is kept only so a
-			// mismatch is investigable.
+			// (TRANSCRIPT-PATH-DERIVED) The freshness file is chosen HERE, from
+			// host.db, and never by the caller. `null` -> empty disables transcript
+			// reconciliation without blocking answers. The hook's own claim is kept
+			// only so a mismatch is investigable.
 			const derivedTranscriptPath =
 				deps.source.resolveTranscriptPath(input.hostTerminalId) ?? "";
 			if (
@@ -1829,10 +1951,9 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 		},
 
 		async verifyResolvedInTranscript(question) {
-			// GUARD 1. UNCACHED, ALWAYS, BY MANDATE. (RECONCILE-STAT-CACHE) memoises
-			// the HEARTBEAT's use of this scan; this entry point is the one the
-			// per-keystroke guard stack calls, and every keystroke must re-read the
-			// file. Do not route it through the mark cache.
+			// Read directly for positive settlement. Reconciliation's stat cache avoids
+			// unchanged scans across heartbeat cycles; this explicit check must observe
+			// the transcript state at call time. An unreadable file settles nothing.
 			if (question.transcriptPath.length === 0) return "unreadable";
 			return findToolResultInTranscript(
 				question.transcriptPath,
@@ -1842,33 +1963,110 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 
 		async reconcile(nowMs) {
 			const settled: QuestionId[] = [];
+			// (RECONCILE-STAT-CACHE) Built fresh and swapped in at the end, so the
+			// surviving marks are exactly the ones for questions still pending when
+			// this pass ran. Nothing has to remember to evict — including the
+			// supersede path, which retires a record without going through
+			// `settle()`.
+			const marks = new Map<QuestionId, TranscriptScanMark>();
+			// (QUESTION-EXPIRY) Same rebuild-and-swap discipline as `marks`.
 			const nextStaleCandidates = new Map<QuestionId, number>();
 			for (const question of store.listPending()) {
-				// (ANSWER-GUARDLESS) Transcript contents never settle a pending question.
-				// The hook capture remains pending until an explicit answer/resolve event or
-				// until the target terminal is provably gone across the corroboration window.
-				// This keeps a visible picker answerable through display-off, Windows lock,
-				// transcript rotation and transcript-reader failures.
-				const activityMs = deps.source.resolveTerminalActivityMs(
-					question.hostTerminalId,
-				);
+				const current = await markTranscript(question.transcriptPath);
+				const previous = reconcileMarks.get(question.questionId);
+				let verdict: TranscriptVerdict;
 				if (
-					!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)
+					current !== null &&
+					previous !== undefined &&
+					previous.verdict !== "unreadable" &&
+					sameTranscriptFile(previous, current)
 				) {
+					// Byte-identical file, same tool call: the scan cannot say anything
+					// it did not already say. RECONCILE-RETRACT semantics are unchanged —
+					// the verdict acted on below is the same one a re-read would produce.
+					verdict = previous.verdict;
+				} else {
+					verdict = await store.verifyResolvedInTranscript(question);
+				}
+				// `unreadable` can be a transient Windows sharing violation even when
+				// stat metadata is unchanged. Caching it would suppress every later retry
+				// and leave a desk-answered question remotely live forever.
+				if (current !== null && verdict !== "unreadable") {
+					marks.set(question.questionId, { ...current, verdict });
+				}
+				// `unreadable` deliberately does nothing: it is "I could not check",
+				// and treating it as either answer would be inventing a fact.
+				if (verdict !== "resolved") {
+					// (QUESTION-EXPIRY) The transcript says nothing — but does the
+					// terminal still exist?
+					//
+					// `reconcile` used to settle on a `tool_result` and nothing else, so
+					// a question whose terminal was killed by a pane close, a quit or a
+					// crash stayed PENDING forever: it kept its armed push (which fires
+					// on presence lapse, not on a short timer, so the window is
+					// unbounded), kept growing `oldestUnansweredMs` while `counts`
+					// reported zero blocked agents, and kept a slot against the
+					// 512-record cap. Nothing in the system ever asked whether the
+					// terminal was still there.
+					//
+					// `stale` rather than `resolved` because nobody answered it. It is
+					// terminal, it makes `unanswerableReason` say so, and returning the
+					// id here routes it through the existing `onQuestionsSettled` ->
+					// `push.cancelPending` wiring, which is what retracts a notification
+					// already sitting on the phone.
+					//
+					// Ordering: the transcript is consulted FIRST, so a question the
+					// user answered at the desk moments before closing the pane is
+					// recorded as `resolved` with its real provenance rather than being
+					// flattened into `stale`.
+					//
+					// TWO INDEPENDENT OBSERVATIONS, `QUESTION_EXPIRY_CORROBORATION_MS`
+					// apart, and the strict predicate for each. `settle(stale)` is
+					// terminal — `markStale` refuses to move a non-pending record and
+					// the retraction it triggers is a push already pulled off the
+					// phone — so this decision has exactly the shape the reaper's
+					// reverse walk refuses to take on one `daemon.list()`. It costs a
+					// live blocked agent its only wrist surface, which is the one
+					// failure this feature cannot absorb, so it is held to the same bar:
+					// positive evidence (never `!isLive`), the row's own activity grace
+					// so a terminal born after the snapshot cannot lose that race, and
+					// the same verdict again on a later pass.
+					const activityMs = deps.source.resolveTerminalActivityMs(
+						question.hostTerminalId,
+					);
+					if (
+						!deps.liveness.isProvablyGone(question.hostTerminalId, activityMs)
+					) {
+						continue;
+					}
+					const firstSeenGoneAtMs =
+						staleCandidates.get(question.questionId) ?? nowMs;
+					if (nowMs - firstSeenGoneAtMs < QUESTION_EXPIRY_CORROBORATION_MS) {
+						// Carried forward, not acted on. The record stays pending and
+						// keeps its armed push, exactly as it did before this feature.
+						nextStaleCandidates.set(question.questionId, firstSeenGoneAtMs);
+						continue;
+					}
+					store.markStale(
+						question.questionId,
+						QUESTION_STALE_TERMINAL_GONE_REASON,
+					);
+					settled.push(question.questionId);
 					continue;
 				}
-				const firstSeenGoneAtMs =
-					staleCandidates.get(question.questionId) ?? nowMs;
-				if (nowMs - firstSeenGoneAtMs < QUESTION_EXPIRY_CORROBORATION_MS) {
-					nextStaleCandidates.set(question.questionId, firstSeenGoneAtMs);
-					continue;
+				// Arbitrate after the async transcript read. A phone answer or supersede
+				// may have settled this record while reconciliation was waiting.
+				if (
+					store.resolve(
+						question.questionId,
+						{ deviceLabel: null, surface: "desktop" },
+						nowMs,
+					)
+				) {
+					settled.push(question.questionId);
 				}
-				store.markStale(
-					question.questionId,
-					QUESTION_STALE_TERMINAL_GONE_REASON,
-				);
-				settled.push(question.questionId);
 			}
+			reconcileMarks = marks;
 			staleCandidates = nextStaleCandidates;
 			prune(nowMs);
 			return settled;

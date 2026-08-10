@@ -139,8 +139,8 @@ const MAX_WIRE_BODY_BYTES =
 
 /**
  * §6.1 — protocol 0 is frozen forever and has NO write path at all: no
- * answering, no messaging, no push registration, no WebSocket. A session that
- * negotiated 0 may reach exactly these sealed paths (plus unsealed `GET /v1/ping`).
+ * answering, no messaging, no push registration, no WebSocket. A request opened
+ * as protocol 0 may reach exactly these sealed paths (plus unsealed `GET /v1/ping`).
  */
 const PROTOCOL_0_PATHS: ReadonlySet<SealedPath> = new Set<SealedPath>([
 	"/v1/session/hello",
@@ -244,8 +244,9 @@ export interface SealedHandlers {
 // ---------------------------------------------------------------------------
 
 /**
- * Free text — a `/v1/message`, or any `freetext` answer item — requires the user
- * to have authenticated on the device. An option tap does not.
+ * `/v1/message` retains the protocol-1 client presence flag. (ANSWER-GUARDLESS)
+ * Answer items never use this policy: explicit submit from a paired,
+ * authenticated device authorizes select, multi-select and free text alike.
  *
  * ───────────────────────────────────────────────────────────────────────────
  * READ THIS BEFORE WRITING A POLICY.
@@ -277,7 +278,7 @@ export interface FreeTextAuthorizationPolicy {
 	 */
 	authorize(input: {
 		ctx: SealedRequestContext;
-		kind: "answer.freetext" | "message.send";
+		kind: "message.send";
 		/** `confirmedBiometric`, exactly as the client sent it. */
 		claimedByClient: boolean;
 	}): Promise<{ evidence: string }>;
@@ -665,7 +666,7 @@ const answerSchema = z
 		fingerprint: id22,
 		requestId: requestIdSchema,
 		answers: z.array(answerItemSchema).min(1).max(32),
-		confirmedBiometric: z.boolean(),
+		confirmedBiometric: z.boolean().optional(),
 		surface: surfaceSchema,
 	})
 	.superRefine((value, ctx) => {
@@ -840,21 +841,29 @@ export const ROUTES: Record<SealedPath, SealedRoute> = {
 		operation: "read",
 		handler: (h, ctx, body) => h.transcript(ctx, body as TranscriptRequest),
 	},
+	// (ANSWER-GUARDLESS) The fingerprint and complete option shape are required
+	// to construct a validated answer, so paired-device authentication is the
+	// boundary here too; negotiation cannot make an answer undiscoverable.
 	"/v1/question": {
 		schema: questionSchema,
-		capability: "question.read",
+		capability: null,
 		operation: "read",
 		handler: (h, ctx, body) => h.question(ctx, body as QuestionRequest),
 	},
+	// (ANSWER-GUARDLESS) A paired, authenticated device does not need a
+	// negotiated answer capability or live hello session to answer a captured
+	// question or read that request's durable outcome. The schemas still validate
+	// every field and the handler still enforces device write-disable, question
+	// identity, answer shape, locking, leases and idempotency.
 	"/v1/answer": {
 		schema: answerSchema,
-		capability: "answer.single",
+		capability: null,
 		operation: "write",
 		handler: (h, ctx, body) => h.answer(ctx, body as AnswerRequest),
 	},
 	"/v1/answer/status": {
 		schema: answerStatusSchema,
-		capability: "answer.single",
+		capability: null,
 		operation: "read",
 		handler: (h, ctx, body) => h.answerStatus(ctx, body as AnswerStatusRequest),
 	},
@@ -877,12 +886,11 @@ export const ROUTES: Record<SealedPath, SealedRoute> = {
 		handler: (h, ctx, body) => h.heartbeat(ctx, body as HeartbeatRequest),
 	},
 	/**
-	 * `/v1/panic` is `capability: null` AND is excluded from
-	 * `contentCapabilities`. The kill switch must not be reachable only through a
-	 * successful capability negotiation: a bridge whose grant set comes back
-	 * empty — a mis-populated `BRIDGE_CAPABILITIES`, a protocol-0 degrade, a
-	 * client that asked for the wrong tokens — would answer `501
-	 * capability_unsupported` to the one request whose whole purpose is to work
+	 * `/v1/panic` is `capability: null` and has no other capability gate. The
+	 * kill switch must not be reachable only through a
+	 * successful capability negotiation once protocol 1+ is active: a bridge whose
+	 * grant set comes back empty — a mis-populated `BRIDGE_CAPABILITIES` or a client
+	 * that asked for the wrong tokens — would answer `501 capability_unsupported` to the one request whose whole purpose is to work
 	 * when something has gone wrong. The documented client action for 501 is
 	 * "re-hello", which re-negotiates to the same empty set, so the phone loops
 	 * and the only remaining revocation path is physical access to the desktop,
@@ -892,7 +900,8 @@ export const ROUTES: Record<SealedPath, SealedRoute> = {
 	 * rate-limited out of your own kill switch would be the wrong failure. Panic
 	 * is still bounded by that bucket, still refused from a revoked device, and
 	 * still cannot raise privilege — every mode it accepts is strictly more
-	 * restrictive.
+	 * restrictive. Protocol 0 remains baseline read-only and is rejected by
+	 * `requireProtocolPath` before this route policy runs.
 	 */
 	"/v1/panic": {
 		schema: panicSchema,
@@ -987,32 +996,6 @@ function parseBody(path: SealedPath, plaintext: Uint8Array): unknown {
 	return parsed.data;
 }
 
-// ---------------------------------------------------------------------------
-// content-derived capabilities (§6.4)
-// ---------------------------------------------------------------------------
-
-/**
- * Capabilities the request's CONTENT requires on top of the route's. The shape
- * of an answer decides which `answer.*` capability it needs; that is not
- * knowable from the path.
- *
- * `/v1/panic` deliberately requires NOTHING. See its entry in `ROUTES` above:
- * the `panic.*` tokens exist so a client can discover the switch, never so the
- * bridge can withhold it.
- */
-function contentCapabilities(path: SealedPath, body: unknown): Capability[] {
-	const required: Capability[] = [];
-	if (path === "/v1/answer") {
-		const answer = body as AnswerRequest;
-		if (answer.answers.length > 1) required.push("answer.multi_question");
-		for (const item of answer.answers) {
-			if (item.kind === "multiselect") required.push("answer.multiselect");
-			if (item.kind === "freetext") required.push("answer.freetext");
-		}
-	}
-	return required;
-}
-
 /**
  * (SESSION-EXPIRED-VERDICT) A dead session is its own verdict, not an empty
  * grant set.
@@ -1027,10 +1010,9 @@ function contentCapabilities(path: SealedPath, body: unknown): Capability[] {
  *
  * So: no live session + a capability-GATED route = `409 session_expired`, which
  * says re-negotiate, the grant set is unknown. Ungated routes (`capability:
- * null` — `/v1/session/hello`, which CREATES the session, plus `/v1/tree`,
- * `/v1/heartbeat` and `/v1/panic`) are unchanged and still work sessionless;
- * `/v1/panic` in particular must never acquire a session precondition, for the
- * reason spelled out on its route entry above.
+ * null`, including the guardless answer submission/status routes) still work
+ * sessionless; `/v1/panic` in particular must never acquire a session
+ * precondition, for the reason spelled out on its route entry above.
  *
  * A session that exists and lacks the asked capability still gets 501.
  *
@@ -1038,6 +1020,19 @@ function contentCapabilities(path: SealedPath, body: unknown): Capability[] {
  * which paths are gated is read off `ROUTES` here, so a route that later gains
  * or loses a capability changes both the server and the test at once.
  */
+export function requireProtocolPath(
+	path: SealedPath,
+	protocolVersion: ProtocolVersion,
+): void {
+	if (protocolVersion !== 0 || PROTOCOL_0_PATHS.has(path)) return;
+	throw new SealedError(501, {
+		code: "capability_unsupported",
+		message: "operation is not part of protocol 0",
+		retryAfterMs: null,
+		detail: { capability: path },
+	});
+}
+
 export function requireLiveSession(
 	path: SealedPath,
 	session: NegotiatedSession | null,
@@ -1280,18 +1275,7 @@ export function createBridgeHttpServer(
 			const granted: readonly Capability[] = session?.granted ?? [];
 
 			// 10. protocol 0 has NO write path at all (§6.1)
-			if (
-				session !== null &&
-				session.protocolVersion === 0 &&
-				!PROTOCOL_0_PATHS.has(path)
-			) {
-				throw new SealedError(501, {
-					code: "capability_unsupported",
-					message: "operation is not part of protocol 0",
-					retryAfterMs: null,
-					detail: { capability: path },
-				});
-			}
+			requireProtocolPath(path, opened.protocolVersion);
 
 			// 11. panic write-disable (§5.1). Panic ITSELF is accepted from a
 			//     write-disabled device — you can always make things more
@@ -1308,15 +1292,11 @@ export function createBridgeHttpServer(
 			// 12. schema at the boundary, before anything else happens
 			const body = parseBody(path, opened.plaintext);
 
-			// 13. capabilities: route-level plus whatever the content requires.
-			//     A dead session is separated out FIRST (SESSION-EXPIRED-VERDICT) —
-			//     it degrades `granted` to `[]`, which would otherwise answer the
-			//     same 501 a deliberately withheld capability does.
+			// 13. route capability. A dead session is separated out FIRST
+			//     (SESSION-EXPIRED-VERDICT); guardless answer routes are deliberately
+			//     ungated while remaining paired, authenticated and schema-validated.
 			requireLiveSession(path, session);
-			requireCapabilities(granted, [
-				ROUTES[path].capability,
-				...contentCapabilities(path, body),
-			]);
+			requireCapabilities(granted, [ROUTES[path].capability]);
 
 			const ctx: SealedRequestContext = {
 				path,
@@ -1498,26 +1478,17 @@ export function createBridgeHttpServer(
 		path: SealedPath,
 		body: unknown,
 	): Promise<void> {
-		if (path === "/v1/message") {
-			// §7.5 — every message is free text, so presence is always required.
-			const message = body as MessageRequest;
-			await deps.freeText.authorize({
-				ctx,
-				kind: "message.send",
-				claimedByClient: message.confirmedBiometric,
-			});
-			return;
-		}
-		if (path !== "/v1/answer") return;
-		const answer = body as AnswerRequest;
-		// §11.2 — `confirmedBiometric` MUST be true if any item is `freetext`; for a
-		// pure option tap it MAY be false and the bridge does not require it.
-		if (!answer.answers.some((item) => item.kind === "freetext")) return;
+		if (path !== "/v1/message") return;
+		// §7.5 — messages retain their existing client-flag policy.
+		const message = body as MessageRequest;
 		await deps.freeText.authorize({
 			ctx,
-			kind: "answer.freetext",
-			claimedByClient: answer.confirmedBiometric,
+			kind: "message.send",
+			claimedByClient: message.confirmedBiometric,
 		});
+		// (ANSWER-GUARDLESS) `/v1/answer` never enters this policy. Explicit submit
+		// from a paired, authenticated device is enough for select, multi-select and
+		// free-text answers; the legacy wire flag remains accepted but is ignored.
 	}
 
 	async function dispatch(

@@ -62,6 +62,11 @@ export interface OpenMessage {
 export interface InputMessage {
 	type: "input";
 	id: string;
+	/**
+	 * When present, the daemon MUST reply after `pty.write` returns. Ordinary
+	 * interactive input omits it and remains fire-and-forget.
+	 */
+	requestId?: string;
 }
 
 export interface ResizeMessage {
@@ -114,6 +119,13 @@ export interface OpenOkMessage {
 	pid: number;
 }
 
+/** Correlated acknowledgement emitted only after an input write succeeds. */
+export interface InputOkMessage {
+	type: "input-ok";
+	id: string;
+	requestId: string;
+}
+
 /** Bytes ride in the frame's binary tail; this message just names the session. */
 export interface OutputMessage {
 	type: "output";
@@ -140,6 +152,8 @@ export interface ListReplyMessage {
 export interface ErrorMessage {
 	type: "error";
 	id?: string;
+	/** Correlates acknowledged input errors without stealing another session op. */
+	requestId?: string;
 	message: string;
 	code?: string;
 }
@@ -170,6 +184,7 @@ export type ClientMessage =
 export type ServerMessage =
 	| HelloAckMessage
 	| OpenOkMessage
+	| InputOkMessage
 	| OutputMessage
 	| ExitMessage
 	| ClosedMessage

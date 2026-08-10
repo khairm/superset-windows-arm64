@@ -6,6 +6,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { NodeWebSocket } from "@hono/node-ws";
 import { hasRunningForegroundProcess } from "@superset/pty-daemon/process-tree";
+import { CURRENT_PROTOCOL_VERSION } from "@superset/pty-daemon/protocol";
 import {
 	createOsc133CdScanState,
 	type Osc133CdScanState,
@@ -34,6 +35,7 @@ import { portManager } from "../ports/port-manager.ts";
 import { sweepAgentBindingsAfterDaemonLoss } from "../terminal-agents/daemon-loss-sweep.ts";
 import { markTerminalAgentBindingEnded } from "../terminal-agents/persistence.ts";
 import {
+	AcknowledgedInputError,
 	DaemonClient,
 	type Signal as DaemonSignal,
 } from "./DaemonClient/index.ts";
@@ -74,7 +76,9 @@ interface PtyDataDisposer {
 
 interface DaemonPty {
 	pid: number;
+	acknowledgedInputSupported: boolean;
 	write(data: string): void;
+	writeAcknowledged(data: string): Promise<void>;
 	resize(cols: number, rows: number): void;
 	kill(signal?: NodeJS.Signals): Promise<void>;
 	onData(cb: (data: string) => void): PtyDataDisposer;
@@ -90,8 +94,12 @@ function makeDaemonPty(
 ): DaemonPty {
 	return {
 		pid,
+		acknowledgedInputSupported: daemon.protocol === CURRENT_PROTOCOL_VERSION,
 		write(data) {
 			daemon.input(sessionId, Buffer.from(data, "utf8"));
+		},
+		writeAcknowledged(data) {
+			return daemon.inputAcknowledged(sessionId, Buffer.from(data, "utf8"));
 		},
 		resize(cols, rows) {
 			try {
@@ -952,6 +960,101 @@ export function writeInputToSession({
 
 	session.pty.write(data);
 	return { success: true };
+}
+
+/**
+ * Ensure a companion answer's target session is process-local before the answer
+ * lease and terminal lock are acquired. Adoption can perform host.db, daemon-list
+ * and replay I/O, so it must not sit between the final question check and input.
+ * No input frame is sent here; every failure is definitively zero-write.
+ */
+export async function prepareAcknowledgedInputSession({
+	terminalId,
+	workspaceId,
+	db,
+	eventBus,
+}: {
+	terminalId: string;
+	workspaceId: string;
+	db: HostDb;
+	eventBus?: EventBus;
+}): Promise<
+	{ success: true; acknowledgedInputSupported: boolean } | { error: string }
+> {
+	try {
+		const session = await getOrAdoptSession({
+			terminalId,
+			workspaceId,
+			db,
+			eventBus,
+		});
+		if ("error" in session) return session;
+		if (session.exited) return { error: "Terminal session has exited" };
+		return {
+			success: true,
+			acknowledgedInputSupported: session.pty.acknowledgedInputSupported,
+		};
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Terminal session adoption failed",
+		};
+	}
+}
+
+/**
+ * Companion-only raw write against a session prepared above. Resolves success
+ * only after the daemon confirms that its `pty.write` returned; ordinary terminal
+ * input keeps the lower-latency fire-and-forget function above.
+ */
+export async function writeAcknowledgedInputToSession({
+	terminalId,
+	workspaceId,
+	data,
+}: {
+	terminalId: string;
+	workspaceId: string;
+	data: string;
+}): Promise<
+	{ success: true } | { error: string; writeOutcome: "not_written" | "unknown" }
+> {
+	const session = sessions.get(terminalId);
+	if (!session) {
+		return {
+			error: "Terminal session not prepared",
+			writeOutcome: "not_written",
+		};
+	}
+	if (session.workspaceId !== workspaceId) {
+		return {
+			error: "Terminal session does not belong to this workspace",
+			writeOutcome: "not_written",
+		};
+	}
+	if (session.exited) {
+		return {
+			error: "Terminal session has exited",
+			writeOutcome: "not_written",
+		};
+	}
+
+	try {
+		await session.pty.writeAcknowledged(data);
+		return { success: true };
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Daemon acknowledged-input outcome is unknown",
+			writeOutcome:
+				error instanceof AcknowledgedInputError
+					? error.writeOutcome
+					: "unknown",
+		};
+	}
 }
 
 // (AUTO-RESUME) Fire-time preflight write. Appends the platform EOL so the prompt is

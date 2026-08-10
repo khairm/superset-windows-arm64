@@ -15,6 +15,7 @@
 // respawning the daemon and host-service can reconnect by constructing a new
 // DaemonClient. There is no in-band reconnect logic here — keep it dumb.
 
+import { randomUUID } from "node:crypto";
 import * as net from "node:net";
 import {
 	CURRENT_PROTOCOL_VERSION,
@@ -23,6 +24,7 @@ import {
 	type ServerMessage,
 	type SessionInfo,
 	type SessionMeta,
+	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@superset/pty-daemon/protocol";
 
 export interface OpenResult {
@@ -60,11 +62,28 @@ export interface DaemonClientOptions {
  */
 const OPEN_TIMEOUT_MS = 15_000;
 const CLOSE_TIMEOUT_MS = 5_000;
+const INPUT_ACK_TIMEOUT_MS = 5_000;
 const LIST_TIMEOUT_MS = 5_000;
 // Daemon-side handoff has to write a snapshot, spawn a child Node process,
 // await successor adopt-ack, then reply. The Server uses 5s for the ack
 // alone; 15s here covers spawn + ack + reply round-trip with margin.
 const PREPARE_UPGRADE_TIMEOUT_MS = 15_000;
+
+export type AcknowledgedInputFailureKind = "not_written" | "unknown";
+
+/**
+ * Carries the only distinction a caller may use after a missing input ack.
+ * `unknown` means the frame left this client and the PTY may have received it.
+ */
+export class AcknowledgedInputError extends Error {
+	readonly writeOutcome: AcknowledgedInputFailureKind;
+
+	constructor(message: string, writeOutcome: AcknowledgedInputFailureKind) {
+		super(message);
+		this.name = "AcknowledgedInputError";
+		this.writeOutcome = writeOutcome;
+	}
+}
 
 export class DaemonClient {
 	private readonly opts: DaemonClientOptions;
@@ -181,6 +200,49 @@ export class DaemonClient {
 		this.send({ type: "input", id }, data);
 	}
 
+	/**
+	 * Write bytes and resolve only after the daemon's `pty.write` returns.
+	 * Companion answers use this path so a daemon-side refusal cannot become a
+	 * false confirmation. A detached v2 daemon still receives the bytes through
+	 * its legacy input frame, followed by an `unknown` outcome because it cannot
+	 * acknowledge them. Ordinary interactive input remains on `input()` above.
+	 */
+	async inputAcknowledged(id: string, data: Buffer): Promise<void> {
+		if (this.negotiated === 2) {
+			try {
+				this.input(id, data);
+			} catch (error) {
+				throw new AcknowledgedInputError(
+					error instanceof Error ? error.message : String(error),
+					"not_written",
+				);
+			}
+			throw new AcknowledgedInputError(
+				`input ${id}: queued on daemon protocol 2 without an acknowledgement`,
+				"unknown",
+			);
+		}
+		if (this.negotiated !== CURRENT_PROTOCOL_VERSION) {
+			throw new AcknowledgedInputError(
+				`input ${id}: daemon protocol ${this.negotiated ?? "unnegotiated"} is unsupported`,
+				"not_written",
+			);
+		}
+		const requestId = randomUUID();
+		const reply = await this.requestInput(id, requestId, data);
+		if (reply.type === "input-ok") return;
+		if (reply.type === "error") {
+			throw new AcknowledgedInputError(
+				`input ${id}: ${reply.code ?? "EINPUT"}: ${reply.message}`,
+				"not_written",
+			);
+		}
+		throw new AcknowledgedInputError(
+			`input ${id}: unexpected reply ${reply.type}`,
+			"unknown",
+		);
+	}
+
 	/** Fire-and-forget; daemon validates dims. */
 	resize(id: string, cols: number, rows: number): void {
 		this.send({ type: "resize", id, cols, rows });
@@ -257,7 +319,7 @@ export class DaemonClient {
 	private async handshake(): Promise<void> {
 		this.send({
 			type: "hello",
-			protocols: [CURRENT_PROTOCOL_VERSION],
+			protocols: [...SUPPORTED_PROTOCOL_VERSIONS],
 		});
 		const ack = await this.waitForFrame(
 			(m) => m.type === "hello-ack" || m.type === "error",
@@ -271,6 +333,80 @@ export class DaemonClient {
 		}
 		this.daemonVersion = ack.daemonVersion;
 		this.negotiated = ack.protocol;
+	}
+
+	private requestInput(
+		id: string,
+		requestId: string,
+		data: Buffer,
+	): Promise<ServerMessage> {
+		return new Promise<ServerMessage>((resolve, reject) => {
+			let settled = false;
+			let frameQueued = false;
+			const finish = (message: ServerMessage) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(message);
+			};
+			const fail = (error: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(error);
+			};
+			const off = this.on((message) => {
+				if (
+					message.type === "input-ok" &&
+					message.id === id &&
+					message.requestId === requestId
+				) {
+					finish(message);
+					return;
+				}
+				if (
+					message.type === "error" &&
+					message.id === id &&
+					message.requestId === requestId
+				) {
+					finish(message);
+				}
+			});
+			const offDisconnect = this.onDisconnect((error) =>
+				fail(
+					new AcknowledgedInputError(
+						error?.message ?? "daemon disconnected",
+						frameQueued ? "unknown" : "not_written",
+					),
+				),
+			);
+			const timer = setTimeout(
+				() =>
+					fail(
+						new AcknowledgedInputError(
+							`daemon acknowledged input ${id}: timed out after ${INPUT_ACK_TIMEOUT_MS}ms`,
+							"unknown",
+						),
+					),
+				INPUT_ACK_TIMEOUT_MS,
+			);
+			const cleanup = () => {
+				off();
+				offDisconnect();
+				clearTimeout(timer);
+			};
+			try {
+				this.send({ type: "input", id, requestId }, data);
+				frameQueued = true;
+			} catch (error) {
+				fail(
+					new AcknowledgedInputError(
+						error instanceof Error ? error.message : String(error),
+						"not_written",
+					),
+				);
+			}
+		});
 	}
 
 	private requestSession(
@@ -295,7 +431,8 @@ export class DaemonClient {
 				reject(err);
 			};
 			const off = this.on((m) => {
-				if (m.type === "error" && m.id === id) settle(m);
+				if (m.type === "error" && m.id === id && m.requestId === undefined)
+					settle(m);
 				else if (req.type === "open" && m.type === "open-ok" && m.id === id)
 					settle(m);
 				else if (req.type === "close" && m.type === "closed" && m.id === id)

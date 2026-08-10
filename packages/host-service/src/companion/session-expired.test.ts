@@ -4,6 +4,7 @@ import {
 	ROUTES,
 	requireCapabilities,
 	requireLiveSession,
+	requireProtocolPath,
 } from "./http";
 import { type Capability, SealedError, type SealedPath } from "./types";
 
@@ -53,6 +54,39 @@ function verdict(fn: () => void): SealedError {
 	throw new Error("expected a SealedError, got a pass");
 }
 
+describe("protocol 0 paths", () => {
+	const admitted: SealedPath[] = [
+		"/v1/heartbeat",
+		"/v1/session/hello",
+		"/v1/tree",
+	];
+
+	it("keeps protocol 0 read-only even when no negotiated session exists", () => {
+		const blocked: SealedPath[] = [];
+		for (const path of ALL_PATHS) {
+			try {
+				requireProtocolPath(path, 0);
+			} catch (error) {
+				if (!(error instanceof SealedError)) throw error;
+				expect(error.statusCode).toBe(501);
+				expect(error.body.code).toBe("capability_unsupported");
+				blocked.push(path);
+			}
+		}
+
+		expect(ALL_PATHS.filter((path) => !blocked.includes(path)).sort()).toEqual(
+			admitted,
+		);
+		expect(blocked).toContain("/v1/answer");
+	});
+
+	it("does not restrict protocol 1 paths", () => {
+		for (const path of ALL_PATHS) {
+			expect(() => requireProtocolPath(path, 1)).not.toThrow();
+		}
+	});
+});
+
 describe("(SESSION-EXPIRED-VERDICT) no live session", () => {
 	it("refuses every capability-gated route with 409 session_expired", () => {
 		// A vacuous loop would pass silently if the route table lost its gates.
@@ -67,13 +101,17 @@ describe("(SESSION-EXPIRED-VERDICT) no live session", () => {
 		}
 	});
 
-	it("still admits the ungated routes, which is exactly these four", () => {
-		// Asserted as a SET, not a count: `/v1/session/hello` CREATES the session,
-		// so gating it would deadlock every device, and `/v1/panic` is the kill
-		// switch that has to work when negotiation is what went wrong.
+	it("admits baseline, panic, and guardless question routes", () => {
+		// Asserted as a SET, not a count: hello creates sessions, panic must work
+		// when negotiation failed, and (ANSWER-GUARDLESS) question discovery,
+		// detail, submission, and status depend on paired-device authentication
+		// rather than negotiated grants.
 		expect([...UNGATED_PATHS].sort()).toEqual([
+			"/v1/answer",
+			"/v1/answer/status",
 			"/v1/heartbeat",
 			"/v1/panic",
+			"/v1/question",
 			"/v1/session/hello",
 			"/v1/tree",
 		]);
@@ -92,8 +130,8 @@ describe("(SESSION-EXPIRED-VERDICT) a live session", () => {
 	});
 
 	it("still gets 501 capability_unsupported when the capability is withheld", () => {
-		const path: SealedPath = "/v1/answer";
-		const session = liveSession({ granted: ["message.send"] });
+		const path: SealedPath = "/v1/message";
+		const session = liveSession({ granted: ["answer.single"] });
 
 		expect(() => requireLiveSession(path, session)).not.toThrow();
 
@@ -102,13 +140,13 @@ describe("(SESSION-EXPIRED-VERDICT) a live session", () => {
 		);
 		expect(error.statusCode).toBe(501);
 		expect(error.body.code).toBe("capability_unsupported");
-		expect(error.body.detail).toEqual({ capability: "answer.single" });
+		expect(error.body.detail).toEqual({ capability: "message.send" });
 	});
 
 	it("gets 501 rather than 409 even when its grant set is empty", () => {
 		// The whole point of the split: an EMPTY grant set that a `hello` really
 		// negotiated is a withheld capability, not a dead session.
-		const path: SealedPath = "/v1/answer";
+		const path: SealedPath = "/v1/message";
 		const session = liveSession({ granted: [] as readonly Capability[] });
 
 		expect(() => requireLiveSession(path, session)).not.toThrow();

@@ -62,8 +62,8 @@
  *
  *   bracketed paste is INERT against the picker
  *     `terminal.send` / `writeFramedInputToSession` CANNOT drive it. Only raw
- *     `writeInputToSession` works. `createRawPtyWriter` below makes wiring the
- *     wrong one a loud startup failure rather than a silent no-op.
+ *     `writeAcknowledgedInputToSession` works, and it reports daemon refusal.
+ *     `createRawPtyWriter` makes either wrong writer a loud startup failure.
  *
  * ---------------------------------------------------------------------------
  * WHY EVERY REFUSAL HERE IS DELIBERATE
@@ -1706,97 +1706,76 @@ export function assertNoReturnIntoMultiSelect(
 // the raw writer — making the wrong writer impossible to wire
 // ---------------------------------------------------------------------------
 
-export interface RawWriteInput {
+export interface RawWriteTarget {
 	terminalId: string;
 	workspaceId: string;
+}
+
+export interface RawWriteInput extends RawWriteTarget {
 	data: string;
 }
 
-export type RawWriteResult = { success: true } | { error: string };
+export type RawPrepareResult =
+	| { success: true; acknowledgedInputSupported: boolean }
+	| { error: string };
 
-/** A synchronous, unframed pty write. This is `writeInputToSession`'s shape. */
-export type RawWriteFn = (input: RawWriteInput) => RawWriteResult;
+export type RawWriteResult =
+	| { success: true }
+	| {
+			error: string;
+			/** Whether the failed acknowledgement still leaves a possible PTY write. */
+			writeOutcome: "not_written" | "unknown";
+	  };
 
-// A real runtime symbol, deliberately NOT `declare const`. The brand is used as
-// a computed property key when the writer is minted below, so a type-only
-// declaration compiles cleanly and then throws `ReferenceError` the moment
-// anything constructs one — which the bridge does at startup, so the whole
-// service failed to boot rather than failing on the first answer.
-const RAW_PTY_WRITER_BRAND: unique symbol = Symbol("RAW_PTY_WRITER_BRAND");
+export const RAW_PTY_WRITER_KIND = "companion-raw-pty-ack-v1" as const;
 
 /**
- * A writer that has been PROVEN, at wiring time, to be the raw synchronous pty
- * write and not a paste-framing one. The brand cannot be produced by a type
- * assertion a reviewer would miss: only `createRawPtyWriter` mints it, and only
- * after the probe below passes.
+ * An acknowledged, unframed PTY write. Success means the daemon's `pty.write`
+ * returned, not merely that a socket frame was queued.
  */
+export type RawWriteFn = ((input: RawWriteInput) => Promise<RawWriteResult>) & {
+	readonly writerKind: typeof RAW_PTY_WRITER_KIND;
+	prepare(input: RawWriteTarget): Promise<RawPrepareResult>;
+};
+
+const RAW_PTY_WRITER_BRAND: unique symbol = Symbol("RAW_PTY_WRITER_BRAND");
+
 export interface RawPtyWriter {
-	readonly [RAW_PTY_WRITER_BRAND]: "writeInputToSession";
-	write(input: RawWriteInput): RawWriteResult;
+	readonly [RAW_PTY_WRITER_BRAND]: "writeAcknowledgedInputToSession";
+	prepare(input: RawWriteTarget): Promise<RawPrepareResult>;
+	write(input: RawWriteInput): Promise<RawWriteResult>;
 }
 
 /**
- * A terminal id that cannot exist: `writeInputToSession` looks the id up in its
- * in-memory session map before touching a pty, and no id in that map contains a
- * NUL. The probe therefore reaches the "not found" branch and returns without
- * writing a byte anywhere. `data` is empty as a second layer of safety.
- */
-const PROBE_ID = `${String.fromCharCode(0)}companion/raw-writer-probe`;
-
-const PROBE_INPUT: RawWriteInput = {
-	terminalId: PROBE_ID,
-	workspaceId: PROBE_ID,
-	data: "",
-};
-
-/**
- * Wraps the raw writer and FAILS LOUD at startup if what it was handed is not
- * one.
- *
- * Bracketed paste is inert against the picker, so wiring
- * `writeFramedInputToSession` / `terminal.send` here would not throw and would
- * not warn — the answer would simply never arrive, intermittently, in
- * production. The discriminator is structural rather than name-based (names do
- * not survive bundling): the framed writer is `async` and returns a Promise; the
- * raw one is synchronous and returns a plain result object. The probe is
- * side-effect-free by construction (see `PROBE_INPUT`).
- *
- * Call this ONCE, in the composition root, at bridge start.
+ * Wraps the acknowledged raw writer and fails loud if the composition root wires
+ * the fire-and-forget or paste-framed path instead. The explicit runtime marker
+ * survives bundling and distinguishes async writers whose return shape alone can
+ * no longer do so.
  */
 export function createRawPtyWriter(
-	writeInputToSession: RawWriteFn,
+	writeAcknowledgedInputToSession: RawWriteFn,
 ): RawPtyWriter {
-	if (typeof writeInputToSession !== "function") {
+	if (typeof writeAcknowledgedInputToSession !== "function") {
 		throw new Error(
 			"(COMPANION-BRIDGE) raw pty writer: expected a function, got " +
-				typeof writeInputToSession,
+				typeof writeAcknowledgedInputToSession,
 		);
 	}
-
-	const probe: unknown = writeInputToSession(PROBE_INPUT);
-
-	if (probe !== null && typeof probe === "object" && "then" in probe) {
+	if (writeAcknowledgedInputToSession.writerKind !== RAW_PTY_WRITER_KIND) {
 		throw new Error(
-			"(COMPANION-BRIDGE) raw pty writer returned a Promise. That is the " +
-				"paste-FRAMING writer (writeFramedInputToSession / terminal.send). " +
-				"Bracketed paste is INERT against the AskUserQuestion picker, so " +
-				"answers would silently never arrive. Wire writeInputToSession.",
+			"(COMPANION-BRIDGE) raw pty writer is not the acknowledged terminal " +
+				"writer; refusing a path that could confirm before daemon pty.write.",
 		);
 	}
-	if (
-		probe === null ||
-		typeof probe !== "object" ||
-		!("error" in probe || "success" in probe)
-	) {
+	if (typeof writeAcknowledgedInputToSession.prepare !== "function") {
 		throw new Error(
-			"(COMPANION-BRIDGE) raw pty writer probe returned an unrecognised " +
-				"shape; refusing to build an injector on a writer whose contract " +
-				"is not the one this module was proven against.",
+			"(COMPANION-BRIDGE) raw pty writer has no headless prepare step",
 		);
 	}
 
 	return {
-		[RAW_PTY_WRITER_BRAND]: "writeInputToSession",
-		write: (input) => writeInputToSession(input),
-	} as RawPtyWriter;
+		[RAW_PTY_WRITER_BRAND]: "writeAcknowledgedInputToSession",
+		prepare: (input) => writeAcknowledgedInputToSession.prepare(input),
+		write: (input) => writeAcknowledgedInputToSession(input),
+	};
 }

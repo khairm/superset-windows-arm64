@@ -41,18 +41,14 @@
  * ---------------------------------------------------------------------------
  * WHY `isLive` IS SYNCHRONOUS
  * ---------------------------------------------------------------------------
- * The answer path consults this 4-6 times per answer sequence through
- * `findActiveHostTerminalId`, inside guard adapters that must not each pay a
- * daemon round trip. So the daemon listing is a SNAPSHOT refreshed by the two
- * async read handlers (`/v1/tree`, `/v1/heartbeat`) that already await, plus an
- * opportunistic background refresh whenever a synchronous caller finds the
- * snapshot older than its TTL. A synchronous caller therefore reads at worst a
- * slightly stale snapshot — and staleness fails toward live.
+ * Read-side tree projection and expiry checks may run between asynchronous
+ * daemon refreshes, so they consume a bounded snapshot and kick an opportunistic
+ * refresh whenever it is older than its TTL. A synchronous caller therefore
+ * reads at worst a slightly stale snapshot — and staleness fails toward live.
  *
- * This is a DISPLAY-AND-EXPIRY predicate, not an answer guard. The answer path
- * still proves liveness for real with `isLiveTerminalSession` (guard `session`)
- * before it types anything; nothing here can turn a dead terminal into a
- * writable one.
+ * (ANSWER-GUARDLESS) This is a DISPLAY-AND-EXPIRY predicate, never an answer
+ * precondition. The answer path uses the captured host.db ids directly and lets
+ * the daemon-acknowledged PTY write report whether the target accepts input.
  */
 
 /** How old a snapshot may get before a synchronous read kicks a refresh. */
