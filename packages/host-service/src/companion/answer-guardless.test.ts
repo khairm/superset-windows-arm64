@@ -2,14 +2,17 @@ import { describe, expect, it } from "bun:test";
 import {
 	type AnswerDeps,
 	injectSequence,
+	ledgerRecordToResponse,
 	SEQUENCE_DEADLINE_MS,
 } from "./answer";
+import type { LedgerRecord } from "./attempt-ledger";
 import { ROUTES } from "./http";
 import {
 	createRawPtyWriter,
 	type Keystroke,
 	RAW_PTY_WRITER_KIND,
 	type RawWriteInput,
+	type RawWriteResult,
 } from "./keystrokes";
 import { createLeaseRegistry } from "./lease";
 import type { PendingQuestion } from "./question-store";
@@ -90,13 +93,7 @@ function stubDeps(overrides: Partial<AnswerDeps> = {}): AnswerDeps {
 	} as unknown as AnswerDeps;
 }
 
-function testWriter(
-	write: (
-		data: string,
-	) =>
-		| { success: true }
-		| { error: string; writeOutcome: "not_written" | "unknown" },
-) {
+function testWriter(write: (data: string) => RawWriteResult) {
 	return createRawPtyWriter(
 		Object.assign(async (input: RawWriteInput) => write(input.data), {
 			writerKind: RAW_PTY_WRITER_KIND,
@@ -167,11 +164,9 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 				},
 			})),
 			snapshotScreen: forbidden,
-			toolResultExists: forbidden,
 			sessionActive: forbidden,
 			agentBinding: forbidden,
 			permissionAxisLatched: forbidden,
-			askqMarkerExists: forbidden,
 		});
 
 		const result = await run(writer, deps);
@@ -257,5 +252,78 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 			abortedAt: 1,
 			reason: "pty write refused: pty unavailable",
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (ANSWER-GUARDLESS) the REPLAY contract
+//
+// A durable ledger row has no abstain column and, since the guard stack was
+// removed, no guard evaluation to reconstruct either. `ledgerRecordToResponse`
+// is the only place a §11.4 replay decides what to say about that, and it is a
+// pure record-to-response mapper, so the derivation is pinned here.
+// ---------------------------------------------------------------------------
+
+function ledgerRow(overrides: Partial<LedgerRecord> = {}): LedgerRecord {
+	return {
+		requestId:
+			"00000000-0000-4000-8000-000000000001" as LedgerRecord["requestId"],
+		status: "confirmed",
+		questionId: "q-guardless",
+		deviceId: "device-guardless",
+		surface: "phone",
+		leaseId: "lease-guardless",
+		startedAtMs: 1 as LedgerRecord["startedAtMs"],
+		createdAtMs: 1 as LedgerRecord["createdAtMs"],
+		resolvedAtMs: 2 as LedgerRecord["resolvedAtMs"],
+		failureCode: null,
+		guardsPassed: [],
+		coverageEpoch: "epoch-1",
+		...overrides,
+	};
+}
+
+describe("(ANSWER-GUARDLESS) a replayed answer", () => {
+	it("reports nothing abstained on a confirmed row", () => {
+		const response = ledgerRecordToResponse(ledgerRow());
+
+		expect(response.status).toBe("confirmed");
+		expect(response.resolvedAtMs).toBe(2 as LedgerRecord["resolvedAtMs"]);
+		expect(response.guardsPassed).toEqual([]);
+		expect(response.guardsAbstained).toEqual([]);
+	});
+
+	it("says it CANNOT SAY for a row that is not confirmed — never []", () => {
+		const response = ledgerRecordToResponse(
+			ledgerRow({ status: "unconfirmed", resolvedAtMs: null }),
+		);
+
+		expect(response.status).toBe("unconfirmed");
+		expect(response.resolvedAtMs).toBeNull();
+		expect(response.guardsAbstained).toBeNull();
+	});
+
+	it("replays a legacy row's stored guard evidence without inferring new outcomes", () => {
+		// Rows written by an older bridge still name the guards that build
+		// evaluated. They are reported verbatim, and nothing is derived from which
+		// guards are absent.
+		const response = ledgerRecordToResponse(
+			ledgerRow({ guardsPassed: ["transcript", "screen", "session"] }),
+		);
+
+		expect(response.guardsPassed).toEqual(["transcript", "screen", "session"]);
+		expect(response.guardsAbstained).toEqual([]);
+	});
+
+	it("reports an absent lease as absent rather than inventing one", () => {
+		// The claim is made before the lease is acquired, so a row whose attempt
+		// died between the two has no lease to report.
+		const response = ledgerRecordToResponse(
+			ledgerRow({ status: "failed", leaseId: null, questionId: null }),
+		);
+
+		expect(response.status).toBe("unconfirmed");
+		expect(response.leaseId).toBe("");
+		expect(response.questionId).toBe("");
 	});
 });

@@ -217,20 +217,18 @@ export interface ErrorBody {
 	detail: Record<string, unknown> | null;
 }
 
-/** §11.3 guard 1..6, plus the two message-path guards of §7.5. */
 /**
- * (LEDGER-COHERENCE) The guard names, as a VALUE as well as a type.
+ * (LEDGER-COHERENCE) The closed set of answer-guard names.
  *
- * The union was type-only, so the ledger's read boundary could check that a
- * stored `guardsPassed` held strings but not that it held guards — and
- * `guardsPassed` is the durable audit answer to "what permitted this write".
- * Deriving the union from the array keeps the runtime list and the type from ever
- * disagreeing; `GUARD_EVALUATION_ORDER` in `answer.ts` is separately asserted at
- * module load to cover this set exactly, so adding a guard here without wiring it
- * into the stack is a crash rather than a guard that silently never runs.
+ * `(ANSWER-GUARDLESS)` writes no `guardsPassed` / `guardsAbstained` entries, so
+ * for the answer path this is now purely a READ boundary: persisted ledger and
+ * audit rows written by older bridge versions still name these guards, and
+ * removing the value set would make those rows unreadable. `session` remains
+ * live in the other direction — `/v1/message` emits it as a `GuardFailedDetail`
+ * — so this is not dead code that can be deleted with the ledger's history.
  *
- * Declaration order carries no meaning. EVALUATION order does, and lives in
- * `GUARD_EVALUATION_ORDER` where the classification assertion can enforce it.
+ * It is a VALUE as well as a type so `attempt-ledger.ts` can check MEMBERSHIP,
+ * not merely "is a string", when it reads a stored `guardsPassed`.
  */
 export const ANSWER_GUARD_NAMES = [
 	"transcript",
@@ -979,13 +977,19 @@ export interface AnswerResponse {
 	leaseId: LeaseId;
 	/** Set iff `status === "confirmed"`. */
 	resolvedAtMs: EpochMs | null;
-	/** The guards that passed, for the audit trail the client shows. */
+	/**
+	 * The guards that passed, for the audit trail the client shows.
+	 *
+	 * `(ANSWER-GUARDLESS)` evaluates no guards, so a response this build
+	 * produces carries `[]`. A §11.4 replay of a row written by an older
+	 * bridge still reports that row's stored list verbatim.
+	 */
 	guardsPassed: AnswerGuardName[];
 	/**
-	 * (GUARD4-ABSTAIN) The guards that were CARRIED without reading positively —
-	 * disjoint from `guardsPassed`, and never folded into it. A client that shows
-	 * an audit trail must be able to tell "this guard vouched for the write" from
-	 * "this guard had nothing to say and the load-bearing ones carried it".
+	 * Guards that were CARRIED without reading positively — disjoint from
+	 * `guardsPassed`, and never folded into it. `(ANSWER-GUARDLESS)` never
+	 * populates it; the field stays on the wire because installed clients
+	 * decode it and because a replay must still be able to describe a legacy row.
 	 *
 	 * NULLABLE, and the null is load-bearing: it means THIS RESPONSE CANNOT SAY,
 	 * which a §11.4 replay reconstructed from a non-`confirmed` ledger row
@@ -1147,7 +1151,7 @@ export interface AnswerAttemptRecord {
 	resolvedAtMs: EpochMs | null;
 	failureCode: AttemptFailureCode | null;
 	guardsPassed: AnswerGuardName[];
-	/** (GUARD4-ABSTAIN) Disjoint from `guardsPassed`. See `AnswerResponse`. */
+	/** Disjoint from `guardsPassed`. See `AnswerResponse`. */
 	guardsAbstained: AnswerGuardName[];
 }
 
@@ -1364,13 +1368,18 @@ export interface AuditEntry {
 	leaseId: LeaseId | null;
 	questionId: QuestionId | null;
 	terminalId: TerminalId | null;
-	/** The six guards, as evaluated. */
+	/**
+	 * The guards, as evaluated. `(ANSWER-GUARDLESS)` always writes `null` —
+	 * there is no stack to evaluate — and the field is retained so lines written
+	 * by older bridge versions stay readable.
+	 */
 	guards: GuardEvaluation | null;
 	/**
-	 * (GUARD4-ABSTAIN) Which of them were carried on a non-positive reading. Null
-	 * for a line written before the stack ran at all. It is stated rather than
-	 * inferred from `guards`, because "read false and abstained" and "read false
-	 * and refused" produce the same `guards` and only one of them wrote bytes.
+	 * Which of them were carried on a non-positive reading, or `null` for a line
+	 * written without a stack at all — which is every line this build writes. It
+	 * is stated rather than inferred from `guards`, because "read false and
+	 * abstained" and "read false and refused" produce the same `guards` and only
+	 * one of them wrote bytes.
 	 */
 	guardsAbstained: AnswerGuardName[] | null;
 	/** SHA-256 of the plaintext body, base64url. */

@@ -15,11 +15,11 @@
  * failure prevents confirmation; a ledger failure after landed bytes returns an
  * honest, duplicate-fenced `unconfirmed` outcome.
  *
- * Legacy guard-analysis helpers remain temporarily for historical tests. They
- * have no production caller; answer attempts record empty guard arrays and
- * `null` evaluation for persisted audit-schema compatibility.
+ * Answer attempts record empty guard arrays and `null` evaluation solely for
+ * persisted audit-schema compatibility.
  */
 
+import type { AcknowledgedInputFailureKind } from "../terminal/DaemonClient";
 import type {
 	AttemptLedger,
 	LedgerRecord,
@@ -36,11 +36,9 @@ import {
 	type Keystroke,
 	KeystrokeEncodingError,
 	MESSAGE_ALLOWED_C0,
-	provenMultiSelectFreeTextDetectLabels,
 	type RawPtyWriter,
 	type RawWriteFn,
 	type RawWriteResult,
-	type ScreenExpectation,
 } from "./keystrokes";
 import {
 	type LeaseRegistry,
@@ -61,12 +59,10 @@ import {
 	type AuditEntry,
 	type DurationMs,
 	type EpochMs,
-	type GuardEvaluation,
 	type MessageRequest,
 	type MessageResponse,
 	type QuestionId,
 	type QuestionItem,
-	type QuestionOption,
 	type RequestId,
 	SealedError,
 	type SealedRequestContext,
@@ -119,16 +115,15 @@ export const MESSAGE_ECHO_ANCHOR_CHARS = 24;
  * `MESSAGE_ECHO_ANCHOR_CHARS` is a ceiling — `slice(0, 24)` of a three-character
  * message is the whole three characters. With no floor the check collapsed to
  * "does this short string occur anywhere in a band on screen", and the needle is
- * the CLIENT's own text, so it is attacker-parameterisable in exactly the way
- * guard 5's capture-derived anchors were. Measured against the real
- * `handleMessage` path with an inert paste (the picker case): the text "yes"
- * matched a picker's own option label "Yes, proceed…" and the text "1" matched
- * the picker's own row number — both returned `sent` and wrote the trailing
- * `\r` into an open picker.
+ * the CLIENT's own text, so it is attacker-parameterisable. Measured against the
+ * real `handleMessage` path with an inert paste (the picker case): the text
+ * "yes" matched a picker's own option label "Yes, proceed…" and the text "1"
+ * matched the picker's own row number — both returned `sent` and wrote the
+ * trailing `\r` into an open picker.
  *
- * Same value and same reasoning as `SCREEN_MIN_ANCHOR_CHARS` (guard 5's remedy
- * for the identical class), kept as its own name because the two paths are free
- * to diverge.
+ * Same value and same reasoning as `SCREEN_MIN_ANCHOR_CHARS`, which fixes the
+ * identical class on the retired-prompt check, kept as its own name because the
+ * two paths are free to diverge.
  */
 export const MESSAGE_ECHO_MIN_ANCHOR_CHARS = 8;
 
@@ -143,177 +138,13 @@ export const MESSAGE_ECHO_MIN_ANCHOR_CHARS = 8;
 export const MESSAGE_ECHO_MAX_WINDOW_LINES = 16;
 
 // ---------------------------------------------------------------------------
-// guard classification — enforced, not documentation
-// ---------------------------------------------------------------------------
-
-export type GuardClass =
-	/** Outside the unauthenticated hook's reach. Only these may permit a write. */
-	| "load_bearing"
-	/** Fed by `notifications.hook`. May refuse; may never permit. */
-	| "forgeable"
-	/** Absence is a sound veto; presence is never evidence. */
-	| "veto_only"
-	/** Neither forgeable nor sufficient — a sanity condition. */
-	| "supporting";
-
-export const GUARD_CLASSES: Readonly<Record<AnswerGuardName, GuardClass>> = {
-	transcript: "load_bearing",
-	screen: "load_bearing",
-	binding: "forgeable",
-	permission_axis: "forgeable",
-	session: "supporting",
-	askq_marker: "veto_only",
-};
-
-/**
- * (GUARD4-ABSTAIN) Forgeable guards that ABSTAIN rather than refuse once every
- * load-bearing guard has passed.
- *
- * "May refuse; may never permit" is the right rule for a forgeable source in
- * general, and it stays the rule for `binding` — which proves the captured
- * question belongs to the agent session currently on the terminal, something
- * neither the transcript nor the screen says anything about.
- *
- * `permission_axis` is different in two ways that together make its refusal
- * worth less than the honest answers it was costing:
- *
- *   - IT ADDS NOTHING. The axis is `lastEventType === PermissionRequest` — "a
- *     permission request is the most recent thing this terminal reported". By
- *     the time it is read, guard 1 has proved the tool call is still unanswered
- *     in the agent's own transcript and guard 5 has proved THIS question's
- *     picker is on screen right now with the pressed row where the capture says
- *     it is. Those two prove a pending permission request more directly than a
- *     single latched enum ever did.
- *   - IT IS A LATCH, AND ITS REFUSAL IS ITSELF FORGEABLE. Any later hook event
- *     overwrites `lastEventType`, so an ordinary race between capture and answer
- *     clears it and the wire code for that is indistinguishable from staleness.
- *     And the same unauthenticated localhost hook that could forge the axis to
- *     `true` can clear it to `false` — so leaving it able to refuse hands an
- *     attacker a denial primitive while giving the defence nothing, which is the
- *     wrong side of every trade in this file.
- *
- * The abstain is CONDITIONAL and the condition is checked, not assumed: it
- * applies only when every guard in `LOAD_BEARING_GUARDS` has actually passed.
- * The evaluation order already guarantees that at the point guard 4 runs, but a
- * reordering must break the build's behaviour loudly rather than silently widen
- * this, so the condition is evaluated from `evaluation` rather than inferred
- * from position.
- */
-export const ABSTAINING_GUARDS: readonly AnswerGuardName[] = [
-	"permission_axis",
-];
-
-export const LOAD_BEARING_GUARDS: readonly AnswerGuardName[] = (
-	Object.keys(GUARD_CLASSES) as AnswerGuardName[]
-).filter((name) => GUARD_CLASSES[name] === "load_bearing");
-
-/**
- * The order `evaluateGuards` MUST run the stack in, as data rather than as a
- * hand-written sequence of statements.
- *
- * The classification above is only worth anything if the ordering it implies is
- * mechanical. It was not: `assertGuardClassification` used to check nothing but
- * "at least one load-bearing guard exists", while the header claimed a forgeable
- * guard "can never contribute to a permission" and named that function as what
- * kept it honest. The ordering happened to be correct; nothing made it stay
- * correct, and a future guard classified `forgeable` and inserted early — the
- * natural thing to do if it is cheap — would have been consulted on a path that
- * permits, which is precisely what the classification exists to deny.
- *
- * Now: this array is asserted at module load to place every `load_bearing` guard
- * ahead of every other class, and `evaluateGuards` asserts that it walks the
- * stack in exactly this order, so drift is a crash rather than a silent
- * weakening.
- */
-export const GUARD_EVALUATION_ORDER: readonly AnswerGuardName[] = [
-	"transcript",
-	"screen",
-	"session",
-	"binding",
-	"permission_axis",
-	"askq_marker",
-];
-
-/**
- * Run at module load. A guard added to `AnswerGuardName` without a class here is
- * a compile error; a stack with no load-bearing guard at all, one that
- * `GUARD_EVALUATION_ORDER` does not cover exactly, or an order that consults a
- * forgeable guard before a load-bearing one is a startup crash. All of them beat
- * discovering it after an answer landed on the wrong screen.
- */
-function assertGuardClassification(): void {
-	if (LOAD_BEARING_GUARDS.length === 0) {
-		throw new Error(
-			"(COMPANION-BRIDGE) the answer guard stack has no load-bearing guard; refusing to load",
-		);
-	}
-	const classified = Object.keys(GUARD_CLASSES) as AnswerGuardName[];
-	const ordered = new Set(GUARD_EVALUATION_ORDER);
-	if (ordered.size !== GUARD_EVALUATION_ORDER.length) {
-		throw new Error(
-			"(COMPANION-BRIDGE) GUARD_EVALUATION_ORDER lists a guard twice; refusing to load",
-		);
-	}
-	for (const name of classified) {
-		if (!ordered.has(name)) {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard ${name} is classified but never evaluated; refusing to load`,
-			);
-		}
-	}
-	for (const name of GUARD_EVALUATION_ORDER) {
-		if (!classified.includes(name)) {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard ${name} is evaluated but not classified; refusing to load`,
-			);
-		}
-	}
-	let seenNonLoadBearing: AnswerGuardName | null = null;
-	for (const name of GUARD_EVALUATION_ORDER) {
-		if (GUARD_CLASSES[name] === "load_bearing") {
-			if (seenNonLoadBearing !== null) {
-				throw new Error(
-					`(COMPANION-BRIDGE) load-bearing guard ${name} is evaluated after ${seenNonLoadBearing} (${GUARD_CLASSES[seenNonLoadBearing]}); a guard that may never permit must not be consulted before one that does. Refusing to load`,
-				);
-			}
-			continue;
-		}
-		seenNonLoadBearing = name;
-	}
-	// (GUARD4-ABSTAIN) The abstain list was inert: it was a name the branch below
-	// happened to check against, with nothing stopping a guard being added to it
-	// that is load-bearing, or that runs BEFORE the guards whose passing is the
-	// entire premise of abstaining. Both are now startup crashes, so the list
-	// carries the weight the abstain branch gives it.
-	const lastLoadBearing = Math.max(
-		...LOAD_BEARING_GUARDS.map((name) => GUARD_EVALUATION_ORDER.indexOf(name)),
-	);
-	for (const name of ABSTAINING_GUARDS) {
-		if (GUARD_CLASSES[name] !== "forgeable") {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard ${name} may abstain but is classified ${GUARD_CLASSES[name]}; only a forgeable guard — one whose refusal is as forgeable as its permission would be — may abstain. Refusing to load`,
-			);
-		}
-		const position = GUARD_EVALUATION_ORDER.indexOf(name);
-		if (position < 0) {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard ${name} may abstain but is never evaluated; refusing to load`,
-			);
-		}
-		if (position < lastLoadBearing) {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard ${name} may abstain but is evaluated at position ${position}, before the load-bearing guard at ${lastLoadBearing}; abstaining is only sound once every load-bearing guard has PASSED. Refusing to load`,
-			);
-		}
-	}
-}
-assertGuardClassification();
-
-// ---------------------------------------------------------------------------
 // dependencies
 // ---------------------------------------------------------------------------
 
-/** What a guard source reports. `null` means "could not determine" and fails closed. */
+/**
+ * What a `/v1/message` observation reports. `null` means "could not determine";
+ * every caller treats it as a refusal, never as a pass.
+ */
 export type GuardSourceResult = boolean | null;
 
 export interface TerminalAgentInfo {
@@ -380,11 +211,13 @@ export interface AnswerDeps {
 		submit: boolean;
 	}): Promise<{ success: true } | { error: string }>;
 	/**
-	 * The terminal's VISIBLE VIEWPORT as plain text. Guard 5's source.
+	 * The terminal's VISIBLE VIEWPORT as plain text. The `/v1/message` picker
+	 * check's only source.
 	 *
 	 * Viewport, not buffer: Claude Code renders inline in the normal buffer, so a
 	 * whole-buffer snapshot carries up to 1 000 lines of scrollback containing
-	 * every earlier picker render, and guard 5 would confirm against one of those.
+	 * every earlier picker render, and the check would confirm against one of
+	 * those.
 	 */
 	snapshotScreen(terminalId: TerminalId): Promise<string>;
 
@@ -422,44 +255,14 @@ export interface AnswerDeps {
 	 */
 	resolveHostTerminal(terminalId: TerminalId): Promise<HostTerminalRef | null>;
 
-	/**
-	 * GUARD 1, LOAD-BEARING. true => the tool call has already been answered.
-	 * Read from the transcript, which the unauthenticated hook cannot write.
-	 */
-	toolResultExists(input: {
-		terminalId: TerminalId;
-		sessionId: string;
-		toolUseId: string;
-	}): Promise<GuardSourceResult>;
-
-	/** GUARD 2, FORGEABLE. The agent binding currently on the terminal. */
+	/** Current agent binding, used only by `/v1/message`. */
 	agentBinding(terminalId: TerminalId): Promise<TerminalAgentInfo | null>;
 
-	/** GUARD 3, supporting. The pty session is alive. */
+	/** Whether the pty session is alive, used only by `/v1/message`. */
 	sessionActive(terminalId: TerminalId): Promise<GuardSourceResult>;
 
-	/**
-	 * GUARD 4, FORGEABLE and ABSTAINING. The permission (red) axis is still
-	 * latched. A non-positive reading no longer refuses on its own once both
-	 * load-bearing guards have passed — see (GUARD4-ABSTAIN) on
-	 * `ABSTAINING_GUARDS` for why, and for the one thing it is still read for.
-	 */
+	/** Current permission-axis latch, used only to keep `/v1/message` off pickers. */
 	permissionAxisLatched(terminalId: TerminalId): Promise<GuardSourceResult>;
-
-	/**
-	 * GUARD 6, VETO ONLY. Presence proves nothing; absence is a sound veto.
-	 *
-	 * The marker is keyed by HOST TERMINAL ID and by the RAISING AGENT (the
-	 * sanitized subagent `agent_id`, or `_main` on the main loop) — so both are
-	 * passed. `agentType` is not a key and never was; it is carried only for
-	 * diagnostics. An implementation that cannot compute the owner key must
-	 * return `null` (unreadable) rather than answering about the wrong owner.
-	 */
-	askqMarkerExists(input: {
-		terminalId: TerminalId;
-		agentId: string | null;
-		agentType: string | null;
-	}): Promise<GuardSourceResult>;
 
 	/** Structured diagnostics. Never carries question or answer text. */
 	log(event: Record<string, unknown>): void;
@@ -494,95 +297,33 @@ export function assertAnswerDeps(deps: AnswerDeps): void {
 	}
 	if (typeof deps.snapshotScreen !== "function") {
 		throw new Error(
-			"(COMPANION-BRIDGE) answer deps: snapshotScreen is required — guard 5 cannot run without a screen",
+			"(COMPANION-BRIDGE) answer deps: snapshotScreen is required for /v1/message picker checks",
 		);
 	}
 }
 
 // ---------------------------------------------------------------------------
-// guard 5 — the screen matcher
+// message-path screen helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Whitespace-free chars of an option label used as the on-screen anchor. Short
- * enough to survive the emulator hard-wrapping a long label across columns,
- * long enough that a false positive is implausible.
- */
-export const SCREEN_OPTION_ANCHOR_CHARS = 16;
+/** Squashed characters used to identify the item's header. */
+const SCREEN_HEADER_ANCHOR_CHARS = 12;
 
-/** Same idea for the item's header. */
-export const SCREEN_HEADER_ANCHOR_CHARS = 12;
+/** Squashed characters used when an item has no usable header. */
+const SCREEN_QUESTION_ANCHOR_CHARS = 24;
 
-/** Fallback anchor when an item has no header worth matching. */
-export const SCREEN_QUESTION_ANCHOR_CHARS = 24;
+/** Minimum prompt anchor length accepted as evidence by `/v1/message`. */
+const SCREEN_MIN_ANCHOR_CHARS = 8;
 
-/**
- * Decoration permitted between a row's digit and its label — ".", ")", "❯",
- * "[x]" and similar. Bounded, so the digit stays tied to the label it addresses.
- */
-export const SCREEN_ROW_DECORATION_MAX_CHARS = 6;
-
-/**
- * (GUARD5-ANCHOR) Minimum squashed anchor length before an anchor may be used
- * as SCREEN EVIDENCE.
- *
- * Every needle this matcher searches for is capture-derived, and the capture
- * arrives on the unauthenticated localhost hook. With no floor, a forged item
- * of `{header: "c", options: [{index: 0, label: "2"}]}` collapsed the whole
- * check to "does the two-character substring `12` occur anywhere in a two-line
- * window" — which an ordinary idle Claude composer satisfies. Guard 5 then
- * confirmed a picker that was not there, and the answer path typed a bare digit
- * into a composer.
- *
- * A floor does not make the anchors unforgeable — nothing here can — but it
- * forces a forgery to reproduce a long, specific string that is ALREADY on the
- * victim's screen at the right digit row, which is no longer a free choice. Real
- * Claude Code headers and option labels are comfortably longer than this; a
- * prompt that is not is REFUSED rather than answered on weak evidence, and the
- * user answers it at the desk.
- */
-export const SCREEN_MIN_ANCHOR_CHARS = 8;
-
-/**
- * (GUARD5-PICKER-GEOMETRY) How many screen-line windows two consecutive option
- * rows may be apart with NO further explanation — pure wrap slack.
- *
- * A row that is not followed by description text sits directly above the next
- * row, give or take the emulator wrapping a long label and the odd blank
- * separator line. Anything wider than this has to be explained by the option's
- * own rendered description; see `gapIsExplained`.
- */
-export const SCREEN_ROW_ADJACENT_SLACK = 3;
-
-/**
- * (GUARD5-PICKER-GEOMETRY) Squashed prefix of an option's DESCRIPTION used as
- * the on-screen anchor that explains the gap below its row.
- *
- * A prefix rather than the whole string because the picker hard-wraps the
- * description and may ellipsise its tail; the opening survives both. Longer
- * than the label anchor because a description is prose and a 16-character
- * opening ("same rule as the ") is a weaker discriminator than 16 characters of
- * a label.
- */
-export const SCREEN_DESCRIPTION_ANCHOR_CHARS = 24;
-
-export type PickerMatchReason =
+type PromptMatchReason =
 	| "match"
 	| "empty_screen"
 	| "anchor_absent"
-	| "anchor_too_weak"
-	| "row_absent"
-	| "rows_out_of_order"
-	| "row_gap_unexplained"
-	| "freetext_row_conflict";
+	| "anchor_too_weak";
 
-export interface PickerScreenMatch {
+interface PromptScreenMatch {
 	ok: boolean;
-	reason: PickerMatchReason;
-	/** Which anchors were not found. Diagnostics; never contains a full label. */
-	missing: string[];
-	/** false => this was the WEAK `same_prompt` form, not the digit-mapped one. */
-	digitMapped: boolean;
+	reason: PromptMatchReason;
 }
 
 /** Lowercase and strip ALL whitespace: immune to indentation and hard wraps. */
@@ -625,12 +366,11 @@ function squashedWindows(
 	// was plainly on it. The general loop below handles any length.
 	const windows: string[] = [];
 	// EVERY line starts a window, including the last one (whose window is just
-	// itself). Stopping a line early left the final line unable to START a window,
-	// which was invisible while the row pattern was an unanchored substring search
-	// — the row could still be found inside the previous line's window — and became
-	// a refusal the moment (GUARD5-ROW-ANCHOR) required the row to begin its
-	// window. A picker whose last option is the last line of the viewport is
-	// ordinary, not suspicious.
+	// itself). Stopping a line early leaves the final line unable to START a
+	// window, which is invisible to an unanchored substring search — the row can
+	// still be found inside the previous line's window — but is a silent refusal
+	// for any caller that requires a match to begin its window. A picker whose
+	// last option is the last line of the viewport is ordinary, not suspicious.
 	for (let i = 0; i < lines.length; i += 1) {
 		windows.push(squash(lines.slice(i, i + windowLines).join("")));
 	}
@@ -644,23 +384,13 @@ function anyWindowIncludes(
 	return windows.some((window) => window.includes(needle));
 }
 
-function escapeRegExp(text: string): string {
-	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function anchorOf(text: string, maxChars: number): string {
 	return squash(text).slice(0, maxChars);
 }
 
 /**
- * The anchor that proves this PROMPT is on screen. Prefers the header (short,
- * always rendered beside the options); falls back to the question's opening,
- * which a long question may have scrolled away — so a fallback miss is a refusal
- * rather than a guess.
- *
- * (GUARD5-ANCHOR) An anchor shorter than `SCREEN_MIN_ANCHOR_CHARS` is not
- * evidence, so a short header falls through to the question rather than being
- * used; if neither clears the floor the caller gets `""` and refuses.
+ * Prompt anchor used only to refuse `/v1/message` when a recently retired
+ * question may still be rendered. Short anchors are inconclusive.
  */
 function promptAnchor(item: QuestionItem): string {
 	const header = anchorOf(item.header, SCREEN_HEADER_ANCHOR_CHARS);
@@ -671,1221 +401,31 @@ function promptAnchor(item: QuestionItem): string {
 }
 
 /**
- * The prologue BOTH screen matchers run, and the only thing they share: squash
- * the viewport into overlapping line windows, refuse an empty screen, and
- * require the prompt's own anchor to be long enough to be evidence and to
- * actually be present.
- *
- * `digitMapped` is threaded through rather than derived, because it is the
- * caller's identity and not a property of the prologue: the same missing anchor
- * is reported as `digitMapped: true` by the strong matcher and `false` by the
- * weak one, and nothing downstream may confuse the two.
- *
- * DO NOT go on to unify the matchers themselves. `matchPickerScreen` is used to
- * PERMIT a write and so errs toward refusing; `matchPromptStillOnScreen` is used
- * to REFUSE one and asserts nothing beyond "this prompt is still up". The biases
- * are opposite on purpose — sharing the prologue removes copy-paste, sharing the
- * bodies would remove the distinction.
+ * Checks whether a recently retired question's prompt remains visible. Used only
+ * by `/v1/message` in the refusing direction; option rows are irrelevant.
  */
-type PromptPrologue =
-	| { ok: true; windows: string[] }
-	| { ok: false; failure: PickerScreenMatch };
-
 function matchPromptOnScreen(input: {
 	screen: string;
 	item: QuestionItem;
-	digitMapped: boolean;
-}): PromptPrologue {
-	const { digitMapped } = input;
+}): PromptScreenMatch {
 	const windows = squashedWindows(input.screen);
 	if (windows.every((window) => window.length === 0)) {
-		return {
-			ok: false,
-			failure: {
-				ok: false,
-				reason: "empty_screen",
-				missing: ["screen"],
-				digitMapped,
-			},
-		};
+		return { ok: false, reason: "empty_screen" };
 	}
 
 	const anchor = promptAnchor(input.item);
 	if (anchor.length === 0) {
-		// Neither the header nor the question opening is long enough to be
-		// evidence. Refuse; do not fall back to a weaker check.
-		return {
-			ok: false,
-			failure: {
-				ok: false,
-				reason: "anchor_too_weak",
-				missing: ["prompt"],
-				digitMapped,
-			},
-		};
+		return { ok: false, reason: "anchor_too_weak" };
 	}
 	if (!anyWindowIncludes(windows, anchor)) {
-		return {
-			ok: false,
-			failure: {
-				ok: false,
-				reason: "anchor_absent",
-				missing: ["prompt"],
-				digitMapped,
-			},
-		};
+		return { ok: false, reason: "anchor_absent" };
 	}
-	return { ok: true, windows };
+	return { ok: true, reason: "match" };
 }
 
 /**
- * GUARD 5, the load-bearing one.
- *
- * It does not merely assert "some picker is up". It asserts that the DIGIT this
- * keystroke is about to press maps, on the screen as rendered right now, to the
- * option we believe it selects. That is the only property that makes injecting a
- * bare digit defensible.
- *
- * `screen` MUST be the VISIBLE VIEWPORT and nothing else. Claude Code renders
- * its conversation inline in the normal buffer, so a snapshot that includes
- * scrollback contains every earlier render of every earlier picker — and this
- * matcher would then happily confirm "the picker is on screen" against a picker
- * the user closed at the desk minutes ago, while the viewport shows a composer.
- * `index.ts`'s snapshot adapter is what bounds it; do not widen that.
- *
- * The matcher is deliberately strict and fails closed: a refusal costs the user
- * one walk to the desk, a false positive costs them a wrong irreversible answer.
- *
- * (GUARD5-ANCHOR) Every needle here comes from the CAPTURE, and the capture
- * arrives on the unauthenticated localhost hook. Three properties keep that from
- * making the guard attacker-parameterised:
- *   - the row being PRESSED must be strongly verified — a label anchor clearing
- *     `SCREEN_MIN_ANCHOR_CHARS`, or its own description rendered in its region of
- *     the screen (`anchor_too_weak`). A one-character label still cannot collapse
- *     the check into "does `<digit><char>` occur anywhere"; what changed in
- *     (GUARD5-EVIDENCE-TIERS) is that the requirement now falls on the row whose
- *     digit is about to be typed instead of on all of them;
- *   - the rows that ARE on screen must form one PICKER BLOCK
- *     (`rows_out_of_order` / `row_gap_unexplained`), which is the structural
- *     property defined on `rowsFormPickerBlock` below. Rows that are NOT on
- *     screen are admitted only under (GUARD5-CLIPPED-VIEWPORT);
- *   - the free-text row is matched against bridge-owned copy read out of the
- *     Claude Code binary, never against a caller-supplied label
- *     (`question-store.deriveFreeTextOption`).
- *
- * (GUARD5-PICKER-GEOMETRY) CANARIED against a real Claude Code picker: the
- * fixture in `picker-screen.test.ts` is an unedited 120-column viewport captured
- * off the live emulator through this guard's own snapshot path, plus renders of
- * the same prompt at 80 and 100 columns.
- *
- * ---------------------------------------------------------------------------
- * (GUARD5-CLIPPED-VIEWPORT) WHEN THE PICKER IS TALLER THAN THE WINDOW
- * ---------------------------------------------------------------------------
- * This used to require EVERY option row, and the prompt's own anchor, to be
- * visible. Claude Code renders inline in the normal buffer, so a terminal
- * shorter than the prompt shows its TAIL: the header goes first, then the
- * question, then the early option rows. Every honest answer from a small window
- * was therefore refused — `row_absent` when only rows were lost, `anchor_absent`
- * once the header went too — and the user walked to the desk for a picker that
- * was plainly on their phone.
- *
- * A clip is now ADMITTED, but only when it is PROVEN to be a clip rather than
- * assumed from what is missing. Three things must hold, and each replaces
- * evidence the clip took away with evidence the clip cannot fake:
- *
- *   1. THE PRESSED ROW IS VISIBLE AND STRONG. A row that is not on screen is
- *      never pressed — that has not moved, and is the whole reason a clip is
- *      survivable at all: the claim guard 5 makes is about ONE row.
- *   2. THE VISIBLE ROWS ARE A PREFIX OR A SUFFIX of the block, never a hole in
- *      the middle and never both ends at once. A hole is not a clip; it is a
- *      screen whose digits do not belong to one list.
- *   3. THE CLIPPED EDGE IS AT THE VIEWPORT BOUNDARY, affirmatively. Below, the
- *      space under the last visible row is explained by that row's own
- *      description with no room left for the next row (`gapIsExplained`, the
- *      same rule interior gaps use). Above, the space over the first visible row
- *      must MATCH THE TAIL of the text that renders immediately above it — the
- *      previous option's description, or the item's own question when no row was
- *      lost (`clipAboveIsExplained`). There is deliberately no "the row is on
- *      line 0, so nothing could be above it" escape: a viewport whose very first
- *      line is a numbered row proves nothing about which list that row is in.
- *
- * The prompt anchor is subject to (3) rather than exempt from it. When the
- * header and the question opening are BOTH off screen the matcher does not fail
- * fast on `anchor_absent`; it continues, and the top-edge rule then has to be
- * satisfied by capture-derived prose. That needle is held to a HIGHER floor than
- * ordinary screen evidence — `SCREEN_CLIP_ANCHOR_CHARS`, the header anchor's own
- * length, not `SCREEN_MIN_ANCHOR_CHARS` — and it is END-ANCHORED to the row
- * rather than found anywhere in the region, so it is at least as long as the
- * anchor it replaces and pinned to a position the prompt anchor never was. If
- * that proof does not land, the refusal reported is the ORIGINAL `anchor_absent`,
- * so no screen refused before this change is refused differently now, and
- * nothing about the relaxation leaks into diagnostics.
- *
- * NOT admitted: a clip at both ends at once (a viewport shorter than the block
- * with rows lost above AND below). It is representable and it is refused — one
- * intact end is what keeps a run of digits tied to a list rather than to a
- * window someone chose.
- */
-export function matchPickerScreen(input: {
-	screen: string;
-	item: QuestionItem;
-	/** The row this keystroke is about to press, when it presses one. */
-	requireOptionIndex: number | null;
-}): PickerScreenMatch {
-	const prologue = matchPromptOnScreen({
-		screen: input.screen,
-		item: input.item,
-		digitMapped: true,
-	});
-	/**
-	 * (GUARD5-CLIPPED-VIEWPORT) The refusal a screen with no prompt anchor on it
-	 * gets, held rather than returned. EVERY later refusal returns this instead of
-	 * its own reason when it is set, so relaxing the anchor cannot change what a
-	 * currently-refused screen reports.
-	 *
-	 * `empty_screen` and `anchor_too_weak` are NOT held: the first has no rows to
-	 * reason about, and the second means the item carries no anchor worth
-	 * searching for at all, which no amount of screen evidence repairs.
-	 */
-	let anchorFailure: PickerScreenMatch | null = null;
-	let windows: string[];
-	if (prologue.ok) {
-		windows = prologue.windows;
-	} else {
-		if (prologue.failure.reason !== "anchor_absent") return prologue.failure;
-		anchorFailure = prologue.failure;
-		windows = squashedWindows(input.screen);
-	}
-	/**
-	 * The raw lines. The gap rule works on LINES rather than on the overlapping
-	 * two-line windows, because a window that starts on the last gap line also
-	 * contains the NEXT ROW's line — which let that row's own text be counted as
-	 * the previous row's description.
-	 */
-	const lines = input.screen.split("\n");
-
-	const missing: string[] = [];
-	/**
-	 * (GUARD5-CLIPPED-VIEWPORT) Only the rows actually ON SCREEN, with their
-	 * options kept alongside so the two arrays stay index-aligned: everything
-	 * downstream addresses a row by its position in the block, and a clipped block
-	 * is a shorter block rather than one with holes in it.
-	 */
-	const presentOptions: QuestionOption[] = [];
-	const presentWindows: number[][] = [];
-	let firstPresent = -1;
-	let lastPresent = -1;
-	for (let position = 0; position < input.item.options.length; position += 1) {
-		const option = input.item.options[position];
-		if (option === undefined) continue;
-		const hits = screenRowWindows(windows, option.index, option.label);
-		if (hits.length === 0) {
-			missing.push(`option:${option.index}`);
-			continue;
-		}
-		if (firstPresent < 0) firstPresent = position;
-		lastPresent = position;
-		presentOptions.push(option);
-		presentWindows.push(hits);
-	}
-
-	/**
-	 * (GUARD5-FREETEXT-CONTRADICTION) The free-text row's presence is established
-	 * on EVERY keystroke, not only on the one that presses its digit.
-	 *
-	 * It used to be looked for only when `requireOptionIndex` named it, which made
-	 * the contradiction check below unreachable on an ordinary option press — and
-	 * that is the press the check matters for. A screen showing `1. <option>` and
-	 * `5. Type something.` with rows 2-4 nowhere on it was accepted as a bottom
-	 * clip, when the visible editor row proves the opposite: the editor renders
-	 * BELOW every option, so the options between them were not clipped away, they
-	 * are not there.
-	 *
-	 * The verdicts are read differently by press, because they mean different
-	 * things to it:
-	 *   - ABSENT is only a refusal when this keystroke presses that digit.
-	 *   - CONFLICT (the contract copy at more than one digit) is FATAL only on a
-	 *     press — that is when "which row does this digit select" has to have an
-	 *     answer. Off a press it just means presence is unknown, so it is not used
-	 *     as evidence in either direction.
-	 *   - FOUND feeds the chain only on a press (GUARD5-FREETEXT-PLACEMENT), but
-	 *     feeds the contradiction check always.
-	 */
-	const freeText = input.item.freeTextOption;
-	const pressingFreeText =
-		freeText !== null && input.requireOptionIndex === freeText.index;
-	/** Where the editor row is, whoever is pressing. `null` = absent or unknown. */
-	let freeTextRowAt: number[] | null = null;
-	if (freeText !== null) {
-		const verdict = verifyFreeTextRow({
-			windows,
-			lines,
-			item: input.item,
-			slot: { index: freeText.index, label: freeText.label },
-		});
-		if (verdict.kind === "found") freeTextRowAt = verdict.windows;
-		if (verdict.kind === "absent" && pressingFreeText) {
-			missing.push(`freetext:${freeText.index}`);
-		}
-		if (verdict.kind === "conflict" && pressingFreeText) {
-			return (
-				anchorFailure ?? {
-					ok: false,
-					reason: "freetext_row_conflict",
-					missing: [`freetext:${freeText.index}`],
-					digitMapped: true,
-				}
-			);
-		}
-	} else if (input.item.multiSelect) {
-		// (GUARD5-MSEL-EDITOR-DETECT) A multi-select item never OFFERS a free-text
-		// slot (`provenFreeTextOption` refuses; the row is CLI-refuted), so
-		// `freeText` is always null here — which used to structurally disarm the
-		// contradiction check below: a bottom-clipped multi list was accepted
-		// where the identical single-select list was refused `row_absent`, and a
-		// toggle digit was pressed against rows never verified to belong to this
-		// question. But 2.1.226 still RENDERS the checkbox editor row below every
-		// option, so the contract carries its exact copy (both toggle states) as
-		// a DETECTION-ONLY needle: found feeds the numbering contradiction,
-		// nothing here ever makes it pressable. A conflict verdict is ignored —
-		// off a press it means presence is unknown, evidence in neither
-		// direction, exactly as for the single-select row.
-		for (const label of provenMultiSelectFreeTextDetectLabels()) {
-			const verdict = verifyFreeTextRow({
-				windows,
-				lines,
-				item: input.item,
-				slot: { index: input.item.options.length, label },
-			});
-			if (verdict.kind === "found") {
-				freeTextRowAt = verdict.windows;
-				break;
-			}
-		}
-	}
-	/** (GUARD5-FREETEXT-PLACEMENT) In the chain ONLY when its digit is pressed. */
-	const freeTextWindows = pressingFreeText ? freeTextRowAt : null;
-
-	const rowsRefusal: PickerScreenMatch = anchorFailure ?? {
-		ok: false,
-		reason: "row_absent",
-		missing,
-		digitMapped: true,
-	};
-	const clippedAbove = firstPresent > 0;
-	const clippedBelow =
-		lastPresent >= 0 && lastPresent < input.item.options.length - 1;
-	// (GUARD5-FREETEXT-CONTRADICTION) The editor row renders BELOW every option,
-	// so seeing it while options below the block are missing is not a clip — it is
-	// a screen whose numbering does not match the capture. Refused on EVERY
-	// keystroke, including the ones that press an ordinary option.
-	if (clippedBelow && freeTextRowAt !== null) return rowsRefusal;
-	if (missing.length > 0) {
-		// (GUARD5-CLIPPED-VIEWPORT) 1. The row being pressed is never optional.
-		if (pressedRowIsMissing(input, missing)) return rowsRefusal;
-		// A block with nothing left in it is not a clipped block.
-		if (presentOptions.length === 0) return rowsRefusal;
-		// 2. A run, at one end. Anything else is a hole or a two-ended window.
-		if (presentOptions.length !== lastPresent - firstPresent + 1) {
-			return rowsRefusal;
-		}
-		if (clippedAbove && clippedBelow) return rowsRefusal;
-	}
-
-	/**
-	 * (GUARD5-CLIPPED-VIEWPORT) 3. The text that must render immediately above the
-	 * first visible row, when the top edge has to be proven at all. `null` means
-	 * nothing was lost above it and the region is not examined.
-	 */
-	const clipAboveText = clippedAbove
-		? (input.item.options[firstPresent - 1]?.description ?? null)
-		: anchorFailure !== null
-			? input.item.question
-			: null;
-	if (clippedAbove && clipAboveText === null) return rowsRefusal;
-
-	if (!rowsAreOrdered(presentWindows)) {
-		return (
-			anchorFailure ?? {
-				ok: false,
-				reason: "rows_out_of_order",
-				missing: ["row_order"],
-				digitMapped: true,
-			}
-		);
-	}
-	// (GUARD5-BLOCK-ANCHOR) There is deliberately NO separate "at least one strong
-	// row" pre-check here. There was one, and once the evidence region was clamped
-	// below each row it degenerated into "does any label anywhere near the top of
-	// the viewport reach eight characters" — which a multi-select of short labels
-	// fails even when its rows are perfectly anchored by their descriptions. That
-	// turned a REFUSAL into a PARTIAL WRITE: the toggle digits passed and were
-	// typed, then the submit keystroke (which presses no option) refused, leaving
-	// the picker half-toggled and the question unanswerable. `rowsFormPickerBlock`
-	// already enforces the same property correctly, at the ACCEPTED PLACEMENT, for
-	// every call including the no-digit ones.
-	const block = rowsFormPickerBlock({
-		rowWindows: presentWindows,
-		options: presentOptions,
-		lines,
-		cols: derivedCols(lines),
-		requireOptionIndex: input.requireOptionIndex,
-		freeTextWindows,
-		clipAboveText,
-		clipBelow: clippedBelow,
-	});
-	if (block !== "ok") {
-		return (
-			anchorFailure ?? {
-				ok: false,
-				reason: block === "gap" ? "row_gap_unexplained" : "anchor_too_weak",
-				missing: block === "gap" ? ["row_block"] : [evidenceSubject(input)],
-				digitMapped: true,
-			}
-		);
-	}
-	return { ok: true, reason: "match", missing: [], digitMapped: true };
-}
-
-/**
- * (GUARD5-CLIPPED-VIEWPORT) Is the row this keystroke is about to press one of
- * the rows that is NOT on screen?
- *
- * Asked against the `missing` list rather than recomputed, so there is exactly
- * one place that decides a row is absent. A press with no row behind it
- * (`null` — a multi-select toggle re-check or the submit) has no row to lose.
- */
-function pressedRowIsMissing(
-	input: { requireOptionIndex: number | null },
-	missing: readonly string[],
-): boolean {
-	const pressed = input.requireOptionIndex;
-	if (pressed === null) return false;
-	return (
-		missing.includes(`option:${pressed}`) ||
-		missing.includes(`freetext:${pressed}`)
-	);
-}
-
-/**
- * (GUARD5-EVIDENCE-SUBJECT) What an evidence refusal is ABOUT.
- *
- * It used to always read `option:<requireOptionIndex ?? 0>`, which named a row
- * that does not exist when the free-text digit is pressed (`option:2` on a
- * two-option item) and blamed option 0 when no digit is pressed at all. A
- * diagnostic that points at the wrong row is worse than a vague one.
- */
-function evidenceSubject(input: {
-	item: QuestionItem;
-	requireOptionIndex: number | null;
-}): string {
-	const pressed = input.requireOptionIndex;
-	if (pressed === null) return "row_evidence";
-	const freeText = input.item.freeTextOption;
-	if (freeText !== null && pressed === freeText.index) {
-		return `freetext:${pressed}`;
-	}
-	return `option:${pressed}`;
-}
-
-/**
- * (GUARD5-PICKER-GEOMETRY) Can the matched rows be assigned window indices that
- * are non-decreasing in digit order?
- *
- * Windows overlap by design (`SCREEN_LINE_WINDOW`), so two adjacent rows can
- * legitimately match the SAME window — hence non-decreasing rather than strictly
- * increasing. Taking the earliest hit for each row in turn is optimal here
- * because ordering alone has no upper bound: no earlier choice can strand a
- * later row that a later choice would have reached.
- */
-function rowsAreOrdered(rowWindows: readonly number[][]): boolean {
-	let cursor = 0;
-	for (const hits of rowWindows) {
-		const next = hits.find((window) => window >= cursor);
-		if (next === undefined) return false;
-		cursor = next;
-	}
-	return true;
-}
-
-/**
- * (GUARD5-PICKER-GEOMETRY) THE INVARIANT: the matched rows are one picker block
- * — every gap between consecutive option rows is accounted for by the render of
- * the option above it.
- *
- * A gap is admissible when EITHER it is small enough to be wrap slack
- * (`SCREEN_ROW_ADJACENT_SLACK`), OR the preceding option's own description is
- * rendered inside it AND the gap fits the number of lines that description can
- * occupy (`descriptionLineBudget`).
- *
- * Why not simply "the rows sit inside one narrow band": a real Claude Code
- * picker renders each option's DESCRIPTION under its row, wrapped, so four
- * options span ten or more screen lines and no band that admits that is worth
- * anything. Explaining each gap is the stronger property anyway. A band asks
- * only "are these close together"; this asks "is the space between row N and
- * row N+1 filled by the text option N is supposed to be showing" — which forged
- * or unrelated content does not satisfy even when it is dense, and which an
- * honest picker satisfies at any column width.
- *
- * Rows are still permitted to share a window, and the LAST row's trailing region
- * is not examined UNLESS rows were clipped off the bottom
- * ((GUARD5-CLIPPED-VIEWPORT), `clipBelow`): with nothing following the block
- * there is no gap to explain, and requiring the last description to be fully on
- * screen would refuse a picker whose footer has scrolled — a refusal that buys
- * nothing, because every row's presence and every earlier gap has already been
- * proven. When a row IS missing below, that same region becomes the proof that
- * the viewport ended rather than the list.
- *
- * The search is exhaustive over row placements rather than greedy: an upper
- * bound on a gap means an earlier hit for row N can strand row N+1 where a later
- * hit would have fitted, so committing to the first placement would refuse
- * honest pickers whose digits also appear elsewhere on screen (an N-question
- * prompt restarts at 1 for every question).
- *
- * (GUARD5-EVIDENCE-TIERS) The PRESSED row additionally has to be STRONGLY
- * verified at the placement the accepted block uses — see `rowIsStronglyVerified`
- * for what that means and why the requirement lands here rather than as a
- * pre-filter over every row.
- *
- * Returns which property failed, because the two are different accidents: `gap`
- * means the rows are not one block, `evidence` means the block is fine but the
- * one row this keystroke is about to press is not pinned down well enough to
- * press it.
- */
-function rowsFormPickerBlock(input: {
-	rowWindows: readonly number[][];
-	options: readonly QuestionOption[];
-	lines: readonly string[];
-	cols: number;
-	requireOptionIndex: number | null;
-	/**
-	 * (GUARD5-FREETEXT-PLACEMENT) Where the free-text row was found, when its digit
-	 * is the one being pressed. It is appended to the chain as a FINAL row so it has
-	 * to sit inside the SAME accepted placement as the options — a viewport-wide
-	 * "is it anywhere below the last row" test let a truncated capture point the
-	 * digit at a real option further down the real picker.
-	 */
-	freeTextWindows: readonly number[] | null;
-	/**
-	 * (GUARD5-CLIPPED-VIEWPORT) The text that renders immediately ABOVE the first
-	 * row of this block — the previous option's description when rows were clipped
-	 * off the top, or the item's own question when only the prompt was. `null`
-	 * means nothing was lost above the block and the region is not examined at
-	 * all, which is the ordinary unclipped case.
-	 */
-	clipAboveText: string | null;
-	/**
-	 * (GUARD5-CLIPPED-VIEWPORT) Rows were lost off the BOTTOM, so the last visible
-	 * row's trailing region — normally not examined at all — has to prove there was
-	 * no room left on screen for the row that follows it.
-	 */
-	clipBelow: boolean;
-	/**
-	 * (GUARD5-REASON-PER-CANDIDATE) Internal: re-run ignoring the evidence tier, to
-	 * decide which property actually blocked a refusal. Never set by callers.
-	 */
-	evidenceBlind?: boolean;
-}): "ok" | "gap" | "evidence" {
-	const { rowWindows, options, lines, cols, requireOptionIndex } = input;
-	const evidenceBlind = input.evidenceBlind === true;
-	const chain: readonly (readonly number[])[] =
-		input.freeTextWindows === null
-			? rowWindows
-			: [...rowWindows, input.freeTextWindows];
-	const last = chain.length - 1;
-	if (last < 0) return "gap";
-	/**
-	 * Whether any placement satisfied the gap rule but failed only on evidence.
-	 * Tracked so a refusal names the property that actually blocked it.
-	 */
-	let blockedOnEvidence = false;
-	/**
-	 * (GUARD5-BLOCK-ANCHOR) Whether the ACCEPTED placement contains at least one
-	 * option row strongly verified at the position the block gave it.
-	 *
-	 * Two holes shared this root. Pressing the FREE-TEXT digit names no option, so
-	 * every option row counted as "not the row being pressed" and nothing had to be
-	 * strong at all — an item of one-character labels passed on that digit while
-	 * being refused on every other press. And the fallback meant to cover the
-	 * no-digit case searched the WHOLE SCREEN rather than the accepted block, so
-	 * evidence outside the picker satisfied it. Requiring it per placement closes
-	 * both, and ties the anchor to the block instead of to the viewport.
-	 */
-	let sawStrongRow = false;
-	/** `row:window` -> can the rows BELOW `row` be placed from here. */
-	const memo = new Map<string, boolean>();
-	const placeable = (row: number, at: number): boolean => {
-		const key = `${row}:${at}`;
-		const cached = memo.get(key);
-		if (cached !== undefined) return cached;
-		let ok = false;
-		if (row === last) {
-			// (GUARD5-CLIPPED-VIEWPORT) The trailing region is examined ONLY when a
-			// row was lost below it. Unclipped, the last description is allowed to
-			// have scrolled — there is no following row for it to explain.
-			const edgeOk =
-				!input.clipBelow ||
-				gapIsExplained({
-					lines,
-					cols,
-					option: options[row],
-					from: at,
-					to: lines.length,
-				});
-			const evidenceOk =
-				evidenceBlind ||
-				rowIsVerifiedEnough({
-					options,
-					lines,
-					requireOptionIndex,
-					row,
-					from: at,
-					to: lines.length,
-				});
-			if (!evidenceOk) blockedOnEvidence = true;
-			ok = edgeOk && evidenceOk;
-			if (ok && rowIsOptionAndStrong(options, row, lines, at, lines.length)) {
-				sawStrongRow = true;
-			}
-		} else {
-			for (const next of chain[row + 1] ?? []) {
-				if (next < at) continue;
-				if (
-					!gapIsExplained({
-						lines,
-						cols,
-						option: options[row],
-						from: at,
-						to: next,
-					})
-				) {
-					continue;
-				}
-				if (
-					!evidenceBlind &&
-					!rowIsVerifiedEnough({
-						options,
-						lines,
-						requireOptionIndex,
-						row,
-						from: at,
-						to: next,
-					})
-				) {
-					blockedOnEvidence = true;
-					continue;
-				}
-				if (placeable(row + 1, next)) {
-					ok = true;
-					if (rowIsOptionAndStrong(options, row, lines, at, next)) {
-						sawStrongRow = true;
-					}
-					break;
-				}
-			}
-		}
-		memo.set(key, ok);
-		return ok;
-	};
-	if (
-		(chain[0] ?? []).some(
-			(start) =>
-				clipAboveIsExplained({
-					lines,
-					cols,
-					text: input.clipAboveText,
-					at: start,
-				}) && placeable(0, start),
-		)
-	) {
-		// (GUARD5-BLOCK-ANCHOR) A block whose every row is weakly anchored is not
-		// evidence that this picker is on screen, whichever digit is being pressed.
-		return evidenceBlind || sawStrongRow ? "ok" : "evidence";
-	}
-	// (GUARD5-REASON-PER-CANDIDATE) `blockedOnEvidence` latches across candidate
-	// placements, so on its own it would report `anchor_too_weak` for a screen the
-	// GAP rule rejected. Re-run with the evidence requirement dropped: if the block
-	// then forms, evidence was the blocker; if it still does not, the geometry was.
-	if (blockedOnEvidence && evidenceBlind === false) {
-		const withoutEvidence = rowsFormPickerBlock({
-			...input,
-			evidenceBlind: true,
-		});
-		return withoutEvidence === "ok" ? "evidence" : "gap";
-	}
-	return "gap";
-}
-
-/** Is row `row` an OPTION row (not the appended free-text row) and strong here? */
-function rowIsOptionAndStrong(
-	options: readonly QuestionOption[],
-	row: number,
-	lines: readonly string[],
-	at: number,
-	to: number,
-): boolean {
-	const option = options[row];
-	if (option === undefined) return false;
-	return rowIsStronglyVerified({ option, lines, from: at, to });
-}
-
-/**
- * (GUARD5-EVIDENCE-TIERS) Is row `row` pinned down well enough for what this
- * keystroke is about to do?
- *
- * TWO TIERS, because the rows do not carry equal weight. The claim guard 5 has to
- * establish is "the digit I am about to press selects the option I believe it
- * selects". That is a claim about ONE row. The others are corroboration: they
- * show the block is this question's picker, which the prompt anchor and the gap
- * rule already carry most of.
- *
- * So the row being PRESSED must be STRONGLY verified — its label anchor clears
- * `SCREEN_MIN_ANCHOR_CHARS`, or its own DESCRIPTION is rendered in its region of
- * the screen. Every other row need only match its digit.
- *
- * This is what a blanket anchor floor over all rows got wrong. Upstream's own
- * tool schema asks agents for labels of "1-5 words" and makes `description`
- * REQUIRED, so "Yes" / "No" / "Skip" / "Later" are the DOCUMENTED shape of a real
- * option, and a floor of eight characters refused honest pickers — including,
- * live, a four-option prompt whose fourth option was "Skip" and whose refusal
- * named `option:3`, a row the user was not even pressing. The floor was aimed at
- * a forged item collapsing the row test into a two-character substring search;
- * that attack is about the row being PRESSED, and it is still refused here.
- *
- * A short label plus a description that is genuinely on screen is not weak
- * evidence: the description is long prose the forger would have to reproduce
- * from the victim's own screen at the right row, which is the same bar the label
- * floor was imposing, met by a different needle.
- */
-function rowIsVerifiedEnough(input: {
-	options: readonly QuestionOption[];
-	lines: readonly string[];
-	requireOptionIndex: number | null;
-	row: number;
-	from: number;
-	to: number;
-}): boolean {
-	const option = input.options[input.row];
-	// The APPENDED free-text row has no entry in `options`. It is not verified by
-	// this tier at all: its evidence is the end-anchored match against the proven
-	// contract copy plus its placement inside this block, both already established
-	// by `verifyFreeTextRow`. Failing it here would refuse every free-text press.
-	if (input.row >= input.options.length) return true;
-	if (option === undefined) return false;
-	// Not the row being pressed: matching its digit is all that is asked of it.
-	// When the pressed digit names NO option (a toggle re-check, or the free-text
-	// slot) this makes every row corroboration-only, which is why the caller
-	// additionally requires one strong row inside the accepted placement.
-	if (option.index !== input.requireOptionIndex) return true;
-	return rowIsStronglyVerified({
-		option,
-		lines: input.lines,
-		from: input.from,
-		to: input.to,
-	});
-}
-
-/**
- * (GUARD5-EVIDENCE-TIERS) Strong verification for a single row: a label anchor
- * long enough to be evidence on its own, or the option's description rendered in
- * the row's own region of the screen.
- */
-/**
- * (GUARD5-EVIDENCE-REGION) How far below a row its own description may start.
- *
- * An option's description begins on the line after its row, give or take the
- * label wrapping. It is NOT "anywhere below the picker": the last row's region
- * used to run to the end of the viewport, so a short-labelled last option — the
- * exact "Skip" case this tiering exists for — was verified by its description
- * appearing anywhere further down the screen, including in unrelated output.
- * A tight constant is also viewport-independent, so a taller terminal cannot buy
- * a bigger search region.
- */
-const SCREEN_EVIDENCE_REGION_LINES = SCREEN_ROW_ADJACENT_SLACK + 1;
-
-function rowIsStronglyVerified(input: {
-	option: QuestionOption;
-	lines: readonly string[];
-	from: number;
-	to: number;
-}): boolean {
-	if (
-		anchorOf(input.option.label, SCREEN_OPTION_ANCHOR_CHARS).length >=
-		SCREEN_MIN_ANCHOR_CHARS
-	) {
-		return true;
-	}
-	const description = anchorOf(
-		input.option.description,
-		SCREEN_DESCRIPTION_ANCHOR_CHARS,
-	);
-	if (description.length < SCREEN_MIN_ANCHOR_CHARS) return false;
-	// (GUARD5-EVIDENCE-REGION) RAW LINES, bounded below the row, and STRICTLY
-	// SHORT OF THE NEXT ROW. The overlapping two-line windows used here before let
-	// the NEXT option's row supply this option's description: a capture claiming
-	// option 1's description is "Escalate to the owner" matched the text of row 2,
-	// so a phone could present row 1 as the escalation while digit 1 selected
-	// "Yes". `to` is the next row's line and is never included.
-	const end = Math.min(input.to, input.from + SCREEN_EVIDENCE_REGION_LINES);
-	if (end <= input.from) return false;
-	const region = squash(input.lines.slice(input.from, end).join(""));
-	return region.includes(description);
-}
-
-/**
- * (GUARD5-FREETEXT-PLACEMENT) Where the free-text row is, if it is on screen.
- *
- * The label comes from `item.freeTextOption.label`, which `question-store`
- * DERIVES from the versioned picker contract — never from the capture, and never
- * from a union of every version's copy. On the proven build (2.1.226) that is
- * "Type something.", byte-exact including the full stop, and the free-text
- * sequence behind it has been driven end to end.
- *
- * The match is EXACT and END-BOUNDED against the raw line: no squashing, no case
- * folding, no substring. Squashing accepted "Type some thing.", "TYPE
- * SOMETHING." and a tab-separated spelling as the editor row, so a REAL option
- * wearing any of those was pressed instead. And if the label turns up at more
- * than one digit, that is a refusal rather than a choice — which row the digit
- * lands on is precisely what cannot be established.
- */
-function freeTextRowLines(
-	lines: readonly string[],
-	digit: number,
-	label: string,
-): number[] {
-	// RAW line, EXACT label: no squash, no case folding, no substring. Squashing
-	// made "Type some thing.", "TYPE SOMETHING." and "Type\tsomething." all match
-	// the contract copy, so a REAL option wearing any of those spellings was
-	// accepted as the editor slot and its digit pressed. `$` after the label is
-	// what stops "Type something else entirely" matching too.
-	const pattern = new RegExp(
-		`^[^0-9A-Za-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[.)\\]:]?[ \\t]{0,4}${escapeRegExp(label)}[ \\t]*$`,
-	);
-	const hits: number[] = [];
-	for (let i = 0; i < lines.length; i += 1) {
-		if (pattern.test(lines[i] ?? "")) hits.push(i);
-	}
-	return hits;
-}
-
-/** Every digit whose row carries the contract label, exactly. */
-function digitsCarryingLabel(
-	lines: readonly string[],
-	label: string,
-): Set<number> {
-	const found = new Set<number>();
-	for (let digit = 1; digit <= 9; digit += 1) {
-		if (freeTextRowLines(lines, digit, label).length > 0) found.add(digit);
-	}
-	return found;
-}
-
-/**
- * (GUARD5-FREETEXT-CONTRADICTION) Three verdicts, and the caller reads each of
- * them differently depending on whether this keystroke presses that digit. There
- * is deliberately no `not_pressed` member: the row's presence is now established
- * on every keystroke, and a fourth value meaning "did not look" was the shape
- * that let the contradiction check go unreachable on an option press.
- */
-type FreeTextVerdict =
-	| { kind: "absent" }
-	| { kind: "conflict" }
-	| { kind: "found"; windows: number[] };
-
-function verifyFreeTextRow(input: {
-	windows: readonly string[];
-	lines: readonly string[];
-	item: QuestionItem;
-	/**
-	 * The row to look for: its digit index and the EXACT raw-row copy. For a
-	 * single-select item this is the offered `freeTextOption`; for a multi-select
-	 * item it is a DETECTION-ONLY needle from the picker contract — the checkbox
-	 * editor row is never pressable, but its presence below the option block is
-	 * the same numbering evidence (GUARD5-FREETEXT-CONTRADICTION) either way.
-	 */
-	slot: { index: number; label: string };
-}): FreeTextVerdict {
-	const digit = input.slot.index + 1;
-	const hits = freeTextRowLines(input.lines, digit, input.slot.label);
-	if (hits.length === 0) return { kind: "absent" };
-	// TWO candidate rows is a refusal, not a choice. If the contract label appears
-	// at more than one digit — a real option spelled exactly like the system row,
-	// with the true system row sitting below it — then which one this digit selects
-	// is exactly what cannot be established, and pressing it is irreversible.
-	const carrying = digitsCarryingLabel(input.lines, input.slot.label);
-	if (carrying.size !== 1 || !carrying.has(digit)) return { kind: "conflict" };
-	if (hits.length !== 1) return { kind: "conflict" };
-	// A real option wearing this digit means the capture and the screen disagree
-	// about the numbering; pressing it would submit an answer nobody chose.
-	for (const option of input.item.options) {
-		if (
-			screenRowWindows(input.windows, input.slot.index, option.label).length > 0
-		) {
-			return { kind: "conflict" };
-		}
-	}
-	return { kind: "found", windows: hits };
-}
-
-/**
- * (GUARD5-CELL-WIDTH) Width of `text` in TERMINAL CELLS, not code units.
- *
- * Every wrap estimate here is really a question about how many screen lines a
- * string occupies, and that is measured in cells. `String.length` gets it wrong
- * in both directions: a CJK ideograph is one code unit and TWO cells, so 80 Han
- * characters occupy 160 cells and wrap to twice as many lines as a length-based
- * estimate predicts — which refused honest CJK pickers as `row_gap_unexplained`
- * — while a combining mark is one code unit and zero cells.
- *
- * Deliberately a small wcwidth rather than a dependency: the ranges below are the
- * ones that occur in picker text (CJK, Hangul, Kana, fullwidth forms, emoji
- * presentation), and being approximate is acceptable because the result only ever
- * bounds a gap. A tab is counted as `TAB_CELLS` because the emulator has already
- * expanded it by the time the snapshot is read.
- */
-const TAB_CELLS = 8;
-
-function cellWidth(codePoint: number): number {
-	if (codePoint === 0x09) return TAB_CELLS;
-	// Combining marks and zero-width joiners occupy no cell.
-	if (
-		(codePoint >= 0x0300 && codePoint <= 0x036f) ||
-		codePoint === 0x200b ||
-		codePoint === 0x200d ||
-		codePoint === 0xfe0f
-	) {
-		return 0;
-	}
-	if (
-		(codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
-		(codePoint >= 0x2e80 && codePoint <= 0xa4cf) || // CJK radicals .. Yi
-		(codePoint >= 0xac00 && codePoint <= 0xd7a3) || // Hangul syllables
-		(codePoint >= 0xf900 && codePoint <= 0xfaff) || // CJK compatibility
-		(codePoint >= 0xfe30 && codePoint <= 0xfe6f) || // CJK compatibility forms
-		(codePoint >= 0xff00 && codePoint <= 0xff60) || // Fullwidth forms
-		(codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-		(codePoint >= 0x1f300 && codePoint <= 0x1f64f) || // emoji
-		(codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
-		(codePoint >= 0x20000 && codePoint <= 0x3fffd)
-	) {
-		return 2;
-	}
-	return 1;
-}
-
-const graphemes =
-	typeof Intl.Segmenter === "function"
-		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
-		: null;
-
-/**
- * (GUARD5-CELL-WIDTH) Width in cells, counted per GRAPHEME rather than per code
- * point.
- *
- * Per code point gets emoji wrong in both directions. A variation-selector
- * sequence like "☺️" is U+263A + U+FE0F: the base is narrow and VS16 is zero, so
- * it counted as ONE cell while the terminal renders TWO — an emoji-heavy
- * description then looked narrower than it is and was refused as an unexplained
- * gap. A ZWJ family is the opposite: many wide code points that render as one
- * two-cell glyph, counted as eight.
- */
-export function displayWidth(text: string): number {
-	if (graphemes === null) {
-		let fallback = 0;
-		for (const character of text) {
-			fallback += cellWidth(character.codePointAt(0) ?? 0);
-		}
-		return fallback;
-	}
-	let width = 0;
-	for (const { segment } of graphemes.segment(text)) {
-		const points = [...segment].map((c) => c.codePointAt(0) ?? 0);
-		// VS16 forces emoji presentation: the whole cluster is two cells.
-		if (points.includes(0xfe0f) || points.includes(0x200d)) {
-			width += 2;
-			continue;
-		}
-		let cluster = 0;
-		for (const point of points) cluster += cellWidth(point);
-		// A cluster always occupies at least one cell, even if it is all marks.
-		width += Math.max(cluster, 1);
-	}
-	return width;
-}
-
-/**
- * (GUARD5-CELL-WIDTH) The terminal's usable width, derived FROM THE SCREEN.
- *
- * The matcher is not given the column count, and it must not take one from the
- * caller — a wide claimed width would shrink every wrap estimate and buy the
- * caller bigger gaps. The widest rendered line is a sound screen-derived
- * estimate, floored so a nearly-empty viewport cannot drive the estimate to zero
- * and divide by it.
- */
-const MIN_DERIVED_COLS = 20;
-
-function derivedCols(lines: readonly string[]): number {
-	let widest = 0;
-	for (const line of lines) {
-		const width = displayWidth(line);
-		if (width > widest) widest = width;
-	}
-	return Math.max(widest, MIN_DERIVED_COLS);
-}
-function gapIsExplained(input: {
-	lines: readonly string[];
-	cols: number;
-	option: QuestionOption | undefined;
-	from: number;
-	to: number;
-}): boolean {
-	if (input.to - input.from <= SCREEN_ROW_ADJACENT_SLACK) return true;
-	const option = input.option;
-	if (option === undefined) return false;
-
-	// The region STRICTLY BETWEEN the two row lines. Both row lines are excluded:
-	// including the next row's line let that row's own text supply the previous
-	// row's description anchor, which is the overlap the 2-line windows introduced
-	// and is exactly backwards — the point is to explain the space between them.
-	const between = input.lines.slice(input.from + 1, input.to);
-	if (between.length === 0) return false;
-	const betweenText = squash(between.join(""));
-
-	// How much of the description is ACTUALLY on screen here. The budget is
-	// derived from this and never from `option.description.length`: the capture
-	// may claim thousands of characters while putting a two-line prefix on screen,
-	// and a claim-derived budget therefore bought a viewport-sized gap for free.
-	const matched = matchedDescriptionPrefix(option.description, betweenText);
-	if (matched < SCREEN_MIN_ANCHOR_CHARS) return false;
-
-	// Cells, not code units, and the screen's own width — see (GUARD5-CELL-WIDTH).
-	// Measured on the UNSQUASHED prefix, because the rendered text carries the
-	// inter-word spaces the squash removed, and divided by the width actually
-	// available to a description rather than the full terminal: the picker indents
-	// it. Ignoring both made the estimate far too small, so an honest description
-	// of a thousand-odd characters at 80 columns wrapped to more lines than the
-	// budget allowed and was refused.
-	const matchedCells = displayWidth(
-		unsquashedPrefix(option.description, matched),
-	);
-	const usableCols = Math.max(input.cols - DESCRIPTION_INDENT_CELLS, 8);
-	const budget =
-		Math.ceil(matchedCells / usableCols) + SCREEN_ROW_ADJACENT_SLACK;
-	return input.to - input.from <= budget;
-}
-
-/**
- * (GUARD5-MATCHED-BUDGET) How far a picker indents a description under its row.
- * Subtracted from the terminal width so the wrap estimate uses the space the text
- * actually gets.
- */
-const DESCRIPTION_INDENT_CELLS = 5;
-
-/**
- * (GUARD5-CLIPPED-VIEWPORT) Is the space ABOVE the first row of the block filled
- * by the tail of the text that is supposed to render there?
- *
- * The mirror image of `gapIsExplained`, and it exists for the same reason: a gap
- * is admissible when the render of what belongs in it is actually in it. What
- * differs is which end survives. An interior gap shows the description from its
- * START, so the needle is a PREFIX; a clipped top shows whatever the viewport
- * did not eat, so the needle is a SUFFIX.
- *
- * `text` is the previous option's description when option rows were lost off the
- * top, and the item's own question when only the header/question opening was.
- *
- * (GUARD5-CLIP-ADJACENT) THE MATCH IS END-ANCHORED, NOT A SUBSTRING SEARCH, and
- * that is the whole of its strength. `includes` accepted the needle ANYWHERE in
- * the region, so a screen reading
- *
- *     …genuine description tail
- *     THEN SOME UNRELATED OUTPUT
- *      4. Final expected choice
- *
- * passed: the description tail was up there somewhere, and the line the digit
- * actually sits under was not examined at all. The squashed region must now END
- * with the needle, so the proven text is the text IMMEDIATELY ABOVE the row —
- * which is the only position the claim "this row follows that description" is
- * about. Squashing strips whitespace, so blank separator lines and indentation
- * do not break the anchoring; anything else between the two does, deliberately.
- *
- * The floor is `SCREEN_CLIP_ANCHOR_CHARS`, which is not
- * `SCREEN_MIN_ANCHOR_CHARS`: this needle STANDS IN FOR the prompt anchor, so it
- * has to be at least as long as the header anchor it replaces rather than merely
- * long enough to be evidence at all.
- *
- * THERE IS NO `at === 0` ESCAPE. A viewport whose very first line is a numbered
- * row has nothing above it to corroborate, and "nothing to check" is not
- * "checked" — that is the rule this whole file is built on. Such a screen is
- * refused, which costs the rare maximal clip and buys the guarantee that a
- * clipped block is always tied to this item by text outside the rows.
- */
-function clipAboveIsExplained(input: {
-	lines: readonly string[];
-	cols: number;
-	text: string | null;
-	at: number;
-}): boolean {
-	if (input.text === null) return true;
-	const above = input.lines.slice(0, input.at);
-	if (above.length === 0) return false;
-	const aboveText = squash(above.join(""));
-	const matched = matchedTextSuffix(input.text, aboveText);
-	if (matched < SCREEN_CLIP_ANCHOR_CHARS) return false;
-	// Same budget arithmetic as `gapIsExplained`: how many lines the text that WAS
-	// matched can occupy at this width, plus wrap slack. It bounds the TERMINAL
-	// SEGMENT — the matched tail now provably ends at the row, so this is what
-	// stops a screenful of unrelated output sitting above it and still counting.
-	const matchedCells = displayWidth(unsquashedSuffix(input.text, matched));
-	const usableCols = Math.max(input.cols - DESCRIPTION_INDENT_CELLS, 8);
-	return (
-		input.at <= Math.ceil(matchedCells / usableCols) + SCREEN_ROW_ADJACENT_SLACK
-	);
-}
-
-/**
- * (GUARD5-CLIPPED-VIEWPORT) The floor on a clip needle.
- *
- * Deliberately the HEADER anchor's length rather than `SCREEN_MIN_ANCHOR_CHARS`.
- * The clip proof is what a viewport with no header and no question opening on it
- * offers INSTEAD of the prompt anchor, so a floor of eight would have accepted a
- * shorter needle than the one it replaces — which is the opposite of the trade
- * the clip relaxation is supposed to be making.
- */
-const SCREEN_CLIP_ANCHOR_CHARS = SCREEN_HEADER_ANCHOR_CHARS;
-
-/**
- * (GUARD5-CLIPPED-VIEWPORT) The longest SUFFIX of `text` (squashed) that the
- * region ENDS WITH, in characters. `matchedDescriptionPrefix` from the other end.
- *
- * Binary search on the same monotonicity: a region that ends with the n-character
- * suffix also ends with every shorter one, so if length n does not match, no
- * longer one does either.
- */
-function matchedTextSuffix(text: string, region: string): number {
-	const squashed = squash(text);
-	if (squashed.length < SCREEN_CLIP_ANCHOR_CHARS) return 0;
-	// `endsWith`, never `includes` — see (GUARD5-CLIP-ADJACENT).
-	if (!region.endsWith(squashed.slice(-SCREEN_CLIP_ANCHOR_CHARS))) return 0;
-	let low = SCREEN_CLIP_ANCHOR_CHARS;
-	let high = squashed.length;
-	while (low < high) {
-		const mid = Math.ceil((low + high) / 2);
-		if (region.endsWith(squashed.slice(squashed.length - mid))) {
-			low = mid;
-		} else {
-			high = mid - 1;
-		}
-	}
-	return low;
-}
-
-/**
- * The suffix of the ORIGINAL `text` holding `squashedChars` non-whitespace
- * characters — the same text the matcher proved, with its spaces put back, which
- * is what the terminal actually wrapped. `unsquashedPrefix` from the other end.
- */
-function unsquashedSuffix(text: string, squashedChars: number): string {
-	const characters = [...text];
-	let counted = 0;
-	let start = characters.length;
-	for (let index = characters.length - 1; index >= 0; index -= 1) {
-		start = index;
-		if (!/\s/.test(characters[index] ?? "")) counted += 1;
-		if (counted >= squashedChars) break;
-	}
-	return characters.slice(start).join("");
-}
-
-/**
- * The prefix of the ORIGINAL description holding `squashedChars` non-whitespace
- * characters — i.e. the same text the matcher proved, with its spaces put back,
- * which is what the terminal actually wrapped.
- */
-function unsquashedPrefix(description: string, squashedChars: number): string {
-	let counted = 0;
-	let index = 0;
-	for (const character of description) {
-		index += character.length;
-		if (!/\s/.test(character)) counted += 1;
-		if (counted >= squashedChars) break;
-	}
-	return description.slice(0, index);
-}
-
-/**
- * (GUARD5-MATCHED-BUDGET) The longest prefix of `description` (squashed) that
- * actually appears in `betweenText`, in characters.
- *
- * Binary search rather than a scan: `includes` is monotone in the prefix length —
- * if a prefix of length n is absent, every longer one is too — so the boundary is
- * findable in log steps, which keeps this cheap enough to run per candidate row
- * placement.
- *
- * A PREFIX specifically, because that is what a rendered description is: the
- * picker wraps it from the start and may ellipsise the tail, so the opening is the
- * part guaranteed to be there if any of it is.
- */
-function matchedDescriptionPrefix(
-	description: string,
-	betweenText: string,
-): number {
-	const squashed = squash(description);
-	if (squashed.length === 0) return 0;
-	if (!betweenText.includes(squashed.slice(0, SCREEN_MIN_ANCHOR_CHARS))) {
-		return 0;
-	}
-	let low = SCREEN_MIN_ANCHOR_CHARS;
-	let high = squashed.length;
-	while (low < high) {
-		const mid = Math.ceil((low + high) / 2);
-		if (betweenText.includes(squashed.slice(0, mid))) {
-			low = mid;
-		} else {
-			high = mid - 1;
-		}
-	}
-	return low;
-}
-
-/**
- * Which screen lines OPEN with `<decoration><digit><=6 decoration><label anchor>`.
- *
- * LINE-ANCHORED (`^`). Without the anchor this was a substring search over a
- * squashed two-line window, so ordinary prose containing a number matched a row:
- * "…then step 2. Then do X" satisfied row 2, and any agent output that happens to
- * enumerate something could stand in for a picker. A row is a LINE that begins
- * with its digit, and windows already start at a line boundary, so anchoring the
- * pattern to the window start is exactly "the line starts with this row".
- *
- * Returns ALL the indices rather than a boolean, because the caller then has to
- * choose a placement per row that satisfies `rowsFormPickerBlock` — "each needle
- * is somewhere on screen" is a much weaker claim than "these rows are rendered
- * as one list", and a row's digit can legitimately appear more than once (an
- * N-question prompt restarts its numbering for every question).
- */
-function screenRowWindows(
-	windows: readonly string[],
-	optionIndex: number,
-	label: string,
-): number[] {
-	const anchor = anchorOf(label, SCREEN_OPTION_ANCHOR_CHARS);
-	if (anchor.length === 0) return [];
-	const digit = optionIndex + 1;
-	const pattern = new RegExp(
-		`^[^0-9a-z]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${digit}[^a-z0-9]{0,${SCREEN_ROW_DECORATION_MAX_CHARS}}${escapeRegExp(anchor)}`,
-	);
-	const hits: number[] = [];
-	for (let i = 0; i < windows.length; i += 1) {
-		const window = windows[i];
-		if (window !== undefined && pattern.test(window)) hits.push(i);
-	}
-	return hits;
-}
-
-/**
- * (GUARD5-ANCHOR / PICKER-CHROME) Does the viewport show the STRUCTURE of a
- * picker — a run of numbered rows in ascending digit order starting at 1?
+ * (PICKER-CHROME) Does the viewport show the STRUCTURE of a picker — a run of
+ * numbered rows in ascending digit order starting at 1?
  *
  * Nothing in this function comes from a capture: it is the only screen evidence
  * the bridge has that no caller can parameterise. It is deliberately used ONLY
@@ -1948,448 +488,6 @@ export function screenShowsPickerChrome(screen: string): boolean {
 	}
 	return false;
 }
-
-/**
- * The WEAK form, for the screens whose layout was never proven: the N-question
- * review screen, the multi-select Submit tab, the open free-text editor. It can
- * only assert that this prompt is still what is on screen. It is used ONLY for
- * `same_prompt` expectations and is reported as `digitMapped: false` so nothing
- * downstream can mistake it for the strong check.
- *
- * (GUARD5-ANCHOR) `anchor_too_weak` is reported separately from `anchor_absent`
- * because the two mean opposite things to a REFUSING caller: "this prompt is
- * demonstrably not on screen" versus "this prompt has no anchor worth
- * searching for, so nothing was demonstrated". A caller using this to rule a
- * picker OUT must treat `anchor_too_weak` as inconclusive.
- */
-export function matchPromptStillOnScreen(input: {
-	screen: string;
-	item: QuestionItem;
-}): PickerScreenMatch {
-	const prologue = matchPromptOnScreen({
-		screen: input.screen,
-		item: input.item,
-		digitMapped: false,
-	});
-	if (!prologue.ok) return prologue.failure;
-	// Deliberately nothing else. The prompt being on screen is the WHOLE claim
-	// this form makes; the option rows are not consulted at all.
-	return { ok: true, reason: "match", missing: [], digitMapped: false };
-}
-
-function evaluateScreenGuard(input: {
-	screen: string;
-	question: PendingQuestion;
-	expectation: ScreenExpectation;
-	requireOptionIndex: number | null;
-}): PickerScreenMatch {
-	const item = input.question.questions[input.expectation.itemIndex];
-	if (item === undefined) {
-		return {
-			ok: false,
-			reason: "anchor_absent",
-			missing: [`item:${input.expectation.itemIndex}`],
-			digitMapped: input.expectation.kind === "item_picker",
-		};
-	}
-	if (input.expectation.kind === "item_picker") {
-		return matchPickerScreen({
-			screen: input.screen,
-			item,
-			requireOptionIndex: input.requireOptionIndex,
-		});
-	}
-	return matchPromptStillOnScreen({ screen: input.screen, item });
-}
-
-// ---------------------------------------------------------------------------
-// the guard stack
-// ---------------------------------------------------------------------------
-
-export interface GuardOutcome {
-	evaluation: GuardEvaluation;
-	/**
-	 * The guards that PASSED — the durable audit answer to "what permitted this
-	 * write". An abstaining guard is deliberately NOT here: it did not pass, and a
-	 * row saying it did while `evaluation` records `false` for it is a durable
-	 * self-contradiction nobody can later resolve.
-	 */
-	passed: AnswerGuardName[];
-	/**
-	 * (GUARD4-ABSTAIN) Guards that did NOT read positively and were carried
-	 * anyway, because every load-bearing guard had passed and they are in
-	 * `ABSTAINING_GUARDS`. There is no expectation-form condition: the axis
-	 * abstains on weak `same_prompt` keystrokes too, or it aborts proven
-	 * free-text sequences mid-write. Disjoint from `passed`.
-	 */
-	abstained: AnswerGuardName[];
-	/** The FIRST guard that failed, in evaluation order. */
-	failed: AnswerGuardName | null;
-	screenMatch: PickerScreenMatch | null;
-}
-
-/** The attempt-wide guard evidence carried into the ledger, audit and wire. */
-export interface AttemptEvidence {
-	guardsPassed: AnswerGuardName[];
-	guardsAbstained: AnswerGuardName[];
-	evaluation: GuardEvaluation;
-}
-
-/**
- * Fold one keystroke's `GuardOutcome` into the attempt-wide evidence record.
- *
- * The guards run before EVERY byte and their sources can change between reads
- * (the permission axis is a latch any hook event overwrites), so a record that
- * keeps only the final keystroke's picture can claim "nothing abstained" about
- * a sequence whose earlier bytes were permitted only by abstention — a false
- * ledger row, a false audit event, and a falsely-derived replay. So:
- *
- *   - `guardsAbstained` is the UNION across keystrokes: abstaining once is an
- *     attempt-wide fact;
- *   - `guardsPassed` is the INTERSECTION, minus anything that ever abstained —
- *     a guard passed the attempt only if it passed every evaluation;
- *   - `evaluation` ANDs per guard: the raw reading is `true` only if it read
- *     `true` before every byte.
- *
- * Disjointness (`guardsPassed` ∩ `guardsAbstained` = ∅) holds attempt-wide.
- * `previous` is null on the first keystroke.
- */
-export function mergeAttemptEvidence(
-	previous: AttemptEvidence | null,
-	outcome: GuardOutcome,
-): AttemptEvidence {
-	const guardsAbstained =
-		previous === null
-			? [...outcome.abstained]
-			: [...new Set([...previous.guardsAbstained, ...outcome.abstained])];
-	const guardsPassed = (
-		previous === null
-			? [...outcome.passed]
-			: previous.guardsPassed.filter((guard) => outcome.passed.includes(guard))
-	).filter((guard) => !guardsAbstained.includes(guard));
-	const evaluation =
-		previous === null
-			? { ...outcome.evaluation }
-			: (Object.fromEntries(
-					(Object.keys(outcome.evaluation) as AnswerGuardName[]).map(
-						(guard) => [
-							guard,
-							previous.evaluation[guard] && outcome.evaluation[guard],
-						],
-					),
-				) as GuardEvaluation);
-	return { guardsPassed, guardsAbstained, evaluation };
-}
-
-/** A source that throws or answers `null` counts as FALSE. Never "probably fine". */
-async function readGuardSource(
-	name: AnswerGuardName,
-	deps: AnswerDeps,
-	read: () => Promise<GuardSourceResult>,
-): Promise<boolean> {
-	try {
-		const value = await read();
-		if (value === null) {
-			deps.log({
-				event: "companion.guard.indeterminate",
-				guard: name,
-				result: false,
-			});
-			return false;
-		}
-		return value;
-	} catch (error) {
-		deps.log({
-			event: "companion.guard.error",
-			guard: name,
-			result: false,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return false;
-	}
-}
-
-/**
- * The reader for a `veto_only` guard, which has DIFFERENT null semantics from
- * every other class and therefore cannot share `readGuardSource`.
- *
- * `GUARD_CLASSES` defines veto_only as "Absence is a sound veto; presence is
- * never evidence". Only an AFFIRMATIVE `false` — the source was read and the
- * thing is genuinely absent — may veto. `null` means the source could not be
- * read at all, which is not absence and therefore not a veto.
- *
- * Running a veto_only guard through `readGuardSource` collapses `null` to
- * `false` and turns it into a MANDATORY POSITIVE: with no marker reader wired,
- * guard 6 would fail 100% of answers with `guard_failed{askq_marker}` — a
- * refusal indistinguishable, to the client, from a question that went stale.
- * That is the fail-fast rule inverted: silent, and wrong in a way that looks
- * routine.
- */
-async function readVetoGuardSource(
-	name: AnswerGuardName,
-	deps: AnswerDeps,
-	read: () => Promise<GuardSourceResult>,
-): Promise<boolean> {
-	try {
-		const value = await read();
-		if (value === null) {
-			deps.log({
-				event: "companion.guard.unreadable_no_veto",
-				guard: name,
-				result: true,
-			});
-			return true;
-		}
-		return value;
-	} catch (error) {
-		// A source that THREW is also "could not read", not "absent".
-		deps.log({
-			event: "companion.guard.error",
-			guard: name,
-			result: true,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return true;
-	}
-}
-
-/**
- * (GUARD4-ABSTAIN) The reader for a guard in `ABSTAINING_GUARDS`, which needs
- * the RAW tri-state rather than `readGuardSource`'s collapse to `false`.
- *
- * "Could not read" and "read, and it is clear" are the same outcome for such a
- * guard — neither refuses — but they are not the same DIAGNOSIS, and the abstain
- * event says which one happened. Collapsing them first would throw that away at
- * the only place it is cheap to keep.
- */
-async function readAbstainingGuardSource(
-	name: AnswerGuardName,
-	deps: AnswerDeps,
-	read: () => Promise<GuardSourceResult>,
-): Promise<GuardSourceResult> {
-	try {
-		return await read();
-	} catch (error) {
-		deps.log({
-			event: "companion.guard.error",
-			guard: name,
-			result: null,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
-	}
-}
-
-/**
- * §11.3 — all six guards, evaluated inside the caller's critical section.
- *
- * Order is load-bearing FIRST and short-circuiting. That is the mechanism by
- * which a forgeable source can never appear on a permitting path: if guard 1 or
- * guard 5 fails, the forgeable sources are not even read.
- *
- * `screen` is passed in rather than fetched, so the caller can prove the same
- * snapshot backed the decision and the write.
- */
-export async function evaluateGuards(
-	deps: AnswerDeps,
-	input: {
-		question: PendingQuestion;
-		screen: string;
-		expectation: ScreenExpectation;
-		requireOptionIndex: number | null;
-	},
-): Promise<GuardOutcome> {
-	const evaluation: GuardEvaluation = {
-		transcript: false,
-		screen: false,
-		binding: false,
-		permission_axis: false,
-		session: false,
-		askq_marker: false,
-	};
-	const passed: AnswerGuardName[] = [];
-	/** (GUARD4-ABSTAIN) Guards carried on a non-positive reading. */
-	const abstained: AnswerGuardName[] = [];
-	/**
-	 * Every step through the stack is checked against `GUARD_EVALUATION_ORDER`, so
-	 * the classification's ordering rule is enforced against what this function
-	 * ACTUALLY does rather than against the shape of the source below.
-	 *
-	 * (GUARD4-ABSTAIN) The position is its OWN counter and no longer
-	 * `passed.length`. An abstaining guard advances the stack without joining
-	 * `passed` — it did not pass, and `guardsPassed` is the durable audit answer
-	 * to "what permitted this write" — so deriving position from that array would
-	 * throw the self-check off by one for every guard after it.
-	 */
-	let position = 0;
-	const at = (guard: AnswerGuardName): void => {
-		if (GUARD_EVALUATION_ORDER[position] !== guard) {
-			throw new Error(
-				`(COMPANION-BRIDGE) guard stack self-check: reached ${guard} at position ${position}, where GUARD_EVALUATION_ORDER requires ${String(GUARD_EVALUATION_ORDER[position])}`,
-			);
-		}
-	};
-	const advance = (guard: AnswerGuardName): void => {
-		at(guard);
-		position += 1;
-		passed.push(guard);
-	};
-	/**
-	 * (GUARD4-ABSTAIN) Walk past a guard WITHOUT recording it as passed. The two
-	 * arrays are disjoint by construction, so a durable row can never say a guard
-	 * both permitted the write and read false.
-	 */
-	const abstain = (guard: AnswerGuardName): void => {
-		at(guard);
-		position += 1;
-		abstained.push(guard);
-	};
-	const fail = (
-		guard: AnswerGuardName,
-		screenMatch: PickerScreenMatch | null,
-	) => {
-		at(guard);
-		return {
-			evaluation,
-			passed,
-			abstained,
-			failed: guard,
-			screenMatch,
-		} satisfies GuardOutcome;
-	};
-
-	// --- guard 1: the tool call has not already been answered (LOAD-BEARING) ---
-	const alreadyAnswered = await readGuardSource(
-		"transcript",
-		deps,
-		async () => {
-			const exists = await deps.toolResultExists({
-				terminalId: input.question.terminalId,
-				sessionId: input.question.sessionId,
-				toolUseId: input.question.toolUseId,
-			});
-			// An unreadable transcript is `null` -> false -> guard fails. Inverting
-			// here would turn "cannot check" into "no result yet", which is the
-			// exact mistake this stack exists to avoid.
-			return exists === null ? null : !exists;
-		},
-	);
-	evaluation.transcript = alreadyAnswered;
-	if (!alreadyAnswered) return fail("transcript", null);
-	advance("transcript");
-
-	// --- guard 5: the picker is on screen showing THIS question (LOAD-BEARING) ---
-	const screenMatch = evaluateScreenGuard({
-		screen: input.screen,
-		question: input.question,
-		expectation: input.expectation,
-		requireOptionIndex: input.requireOptionIndex,
-	});
-	evaluation.screen = screenMatch.ok;
-	if (!screenMatch.ok) return fail("screen", screenMatch);
-	advance("screen");
-
-	// Everything below is either forgeable or merely supporting. It can only
-	// REFUSE from here; the two guards that can permit have already passed.
-
-	// --- guard 3: the session is alive (supporting) ---
-	const sessionOk = await readGuardSource("session", deps, () =>
-		deps.sessionActive(input.question.terminalId),
-	);
-	evaluation.session = sessionOk;
-	if (!sessionOk) return fail("session", screenMatch);
-	advance("session");
-
-	// --- guard 2: the agent<->session binding still matches (FORGEABLE) ---
-	const bindingOk = await readGuardSource("binding", deps, async () => {
-		const binding = await deps.agentBinding(input.question.terminalId);
-		if (binding === null) return null;
-		if (!binding.bound) return false;
-		if (binding.kind !== "claude") return false;
-		// A /resume or a restart mints a new agent session; the captured question
-		// belongs to the old one and its tool_use_id can no longer be answered.
-		if (binding.agentSessionId === null) return null;
-		return binding.agentSessionId === input.question.sessionId;
-	});
-	evaluation.binding = bindingOk;
-	if (!bindingOk) return fail("binding", screenMatch);
-	advance("binding");
-
-	// --- guard 4: the permission axis is still latched (FORGEABLE, ABSTAINS) ---
-	const permissionAxis = await readAbstainingGuardSource(
-		"permission_axis",
-		deps,
-		() => deps.permissionAxisLatched(input.question.terminalId),
-	);
-	// The RAW reading, never written up to `true`. The ledger's `guards` column is
-	// evidence about what was observed, and an abstain must not be able to forge a
-	// record of a latch that was not there.
-	evaluation.permission_axis = permissionAxis === true;
-	if (permissionAxis === true) {
-		advance("permission_axis");
-	} else {
-		// (GUARD4-ABSTAIN) TWO conditions, both checked here rather than inferred
-		// from the fact that guard 4 runs fourth:
-		//
-		//  1. every load-bearing guard actually passed, read back off `evaluation`,
-		//     so a reordering makes the axis refuse again rather than quietly
-		//     abstain on a stack that has proved less than it claims;
-		//  2. this guard is on the abstain list, which `assertGuardClassification`
-		//     holds to its own rules at module load.
-		//
-		// There is deliberately NO expectation-form condition. The axis used to
-		// keep its refusal on weak `same_prompt` keystrokes (the free-text tail) to
-		// catch a desk Escape mid-sequence — but the latch is overwritten by ANY
-		// later hook event, so on a busy terminal it reads clear while the picker
-		// is verifiably still up, and it vetoed 2/2 legitimate free-text answers
-		// mid-write, aborting between the editor-open digit and the submit and
-		// leaving a half-open editor behind. A forgeable latch whose false-veto
-		// aborts a proven sequence partway is strictly worse than completing the
-		// proven sequence: the write window is sub-second, the per-keystroke
-		// load-bearing guards (transcript + screen) still run before every byte,
-		// and the operator has one seat. The axis is evidence in the ledger now,
-		// never a veto.
-		const loadBearingPassed = LOAD_BEARING_GUARDS.every(
-			(guard) => evaluation[guard],
-		);
-		if (!loadBearingPassed || !ABSTAINING_GUARDS.includes("permission_axis")) {
-			return fail("permission_axis", screenMatch);
-		}
-		deps.log({
-			event: "companion.guard.abstain",
-			guard: "permission_axis",
-			guardClass: GUARD_CLASSES.permission_axis,
-			// The two readings an abstain covers, kept apart: a latch the next hook
-			// event overwrote, versus a store this process could not read at all.
-			reading: permissionAxis === null ? "unreadable" : "clear",
-			loadBearing: [...LOAD_BEARING_GUARDS],
-			expectation: input.expectation.kind,
-			questionId: input.question.questionId,
-			terminalId: input.question.terminalId,
-		});
-		abstain("permission_axis");
-	}
-
-	// --- guard 6: the .askq marker still exists (VETO ONLY) ---
-	// Presence is NOT evidence — markers leak. Only its absence is used, and only
-	// to refuse. An unreadable marker directory also refuses.
-	const markerPresent = await readVetoGuardSource("askq_marker", deps, () =>
-		deps.askqMarkerExists({
-			terminalId: input.question.terminalId,
-			agentId: input.question.agentId,
-			agentType: input.question.agentType,
-		}),
-	);
-	evaluation.askq_marker = markerPresent;
-	if (!markerPresent) return fail("askq_marker", screenMatch);
-	advance("askq_marker");
-
-	return { evaluation, passed, abstained, failed: null, screenMatch };
-}
-
-// ---------------------------------------------------------------------------
-// errors
-// ---------------------------------------------------------------------------
 
 /** The sealed codes this module is allowed to emit. A closed set, per §10. */
 type SealedCode =
@@ -2632,7 +730,6 @@ async function requireHostTerminal(
 function requirePendingAnswerQuestion(
 	deps: AnswerDeps,
 	request: Pick<AnswerRequest, "questionId" | "fingerprint">,
-	requireTerminalCurrent = false,
 ): PendingQuestion {
 	const question = deps.questions.get(request.questionId);
 	if (question === null) {
@@ -2660,10 +757,17 @@ function requirePendingAnswerQuestion(
 			"fingerprint no longer matches; the question moved on",
 		);
 	}
+	return question;
+}
+
+function requireCurrentPendingAnswerQuestion(
+	deps: AnswerDeps,
+	request: Pick<AnswerRequest, "questionId" | "fingerprint">,
+): PendingQuestion {
+	const question = requirePendingAnswerQuestion(deps, request);
 	if (
-		requireTerminalCurrent &&
 		deps.questions.byHostTerminal(question.hostTerminalId)?.questionId !==
-			question.questionId
+		question.questionId
 	) {
 		throw sealed(
 			410,
@@ -2687,7 +791,7 @@ export async function handleAnswer(
 	ctx: SealedRequestContext,
 	request: AnswerRequest,
 ): Promise<AnswerResponse> {
-	// Intake, before the ledger claim and every guard: a refused or fenced
+	// Intake, before the ledger claim and every refusal: a refused or fenced
 	// answer must show an arrival line next to its refusal, not silence. Item
 	// KINDS only — free-text bodies never reach a log.
 	deps.log({
@@ -2818,15 +922,11 @@ export async function handleAnswer(
 			throw error;
 		}
 
-		// 9. Refuse plain shells and non-Claude agents EXPLICITLY. This reads a
-		//    forgeable source, which is sound here because it can only cause a
-		//    refusal — a forged binding cannot make us write.
-
-		// (ANSWER-GUARDLESS) The captured question already owns the terminal target.
-		// Do not re-check the mutable hook-fed agent binding before writing.
-		// (ANSWER-GUARDLESS) The capture already resolved and stored the host.db
-		// terminal/workspace pair. Do not route it back through the read-side liveness
-		// filter: a daemon snapshot may be stale while the PTY write still succeeds.
+		// 9. (ANSWER-GUARDLESS) The captured question already owns the terminal
+		//    target, and the capture already resolved and stored the host.db
+		//    terminal/workspace pair. Do not re-check the mutable hook-fed agent
+		//    binding, and do not route the pair back through the read-side liveness
+		//    filter: a daemon snapshot may be stale while the PTY write succeeds.
 		const host: HostTerminalRef = {
 			hostTerminalId: question.hostTerminalId,
 			hostWorkspaceId: question.hostWorkspaceId,
@@ -2901,10 +1001,10 @@ export async function handleAnswer(
 			questionId: request.questionId,
 			terminalId: question.terminalId,
 			payloadHash,
-			// (GUARD4-ABSTAIN) Null until the stack has actually run. The three sites
-			// below that HAVE a guard evaluation override it with the real list; the
-			// ones that do not are lines written before or instead of the stack, and
-			// `[]` there would read as "nothing abstained" rather than "never asked".
+			// (ANSWER-GUARDLESS) No guard stack runs, so no audit line can claim a
+			// guard evaluation. The default is `null` — "never asked" — and the sites
+			// that write `[]` do so because the record type they feed cannot express
+			// the difference. `[]` is never a claim that a guard abstained.
 			guardsAbstained: null as AnswerGuardName[] | null,
 		};
 
@@ -2968,7 +1068,7 @@ export async function handleAnswer(
 					// desk answer or superseding capture cannot turn this answer into composer
 					// text or an answer to the replacement picker. This is question identity,
 					// not screen/transcript/session evidence.
-					requirePendingAnswerQuestion(deps, request, true);
+					requireCurrentPendingAnswerQuestion(deps, request);
 					return injectSequence(deps, {
 						question,
 						host,
@@ -3218,7 +1318,7 @@ type InjectionResult =
 			reason: string;
 			abortedAt: number;
 			written: number;
-			writeOutcome: "not_written" | "unknown";
+			writeOutcome: AcknowledgedInputFailureKind;
 	  };
 
 /**
@@ -3262,7 +1362,7 @@ export async function injectSequence(
 	const abort = (
 		reason: string,
 		index: number,
-		writeOutcome: "not_written" | "unknown",
+		writeOutcome: AcknowledgedInputFailureKind,
 	): InjectionResult => ({
 		kind: "unconfirmed",
 		reason,
@@ -3271,68 +1371,32 @@ export async function injectSequence(
 		writeOutcome,
 	});
 
-	if (!acknowledgedInputSupported) {
-		if (keystrokes.length === 0) {
-			return abort("missing keystroke sequence", 0, "not_written");
-		}
-		if (deps.now() >= deadlineMs) {
-			return abort("sequence deadline exceeded", 0, "not_written");
-		}
-		const extension = deps.leases.extend(leaseId, deps.now());
-		if (!extension.ok) {
-			deps.log({
-				event: "companion.answer.lease_lost",
-				questionId: question.questionId,
-				leaseId,
-				reason: extension.reason,
-				keystrokeIndex: 0,
-			});
-			return abort(`lease ${extension.reason}`, 0, "not_written");
-		}
-
-		let result: RawWriteResult;
-		try {
-			result = await writer.write({
-				terminalId: host.hostTerminalId,
-				workspaceId: host.hostWorkspaceId,
-				data: keystrokes.map((keystroke) => keystroke.data).join(""),
-			});
-		} catch (error) {
-			deps.log({
-				event: "companion.answer.write_threw",
-				questionId: question.questionId,
-				terminalId: question.terminalId,
-				keystrokeIndex: 0,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return abort("legacy sequence write threw", 0, "unknown");
-		}
-		if ("error" in result) {
-			deps.log({
-				event: "companion.answer.legacy_sequence_unconfirmed",
-				questionId: question.questionId,
-				terminalId: question.terminalId,
-				keystrokesQueued: keystrokes.length,
-				writeOutcome: result.writeOutcome,
-				error: result.error,
-			});
-			return abort(
-				`legacy daemon sequence outcome: ${result.error}`,
-				keystrokes.length,
-				result.writeOutcome,
-			);
-		}
-		written = keystrokes.length;
-		return { kind: "confirmed" };
+	const frames = acknowledgedInputSupported
+		? keystrokes.map((keystroke, index) => ({
+				data: keystroke.data,
+				acknowledgedKeystrokes: 1,
+				abortAt: index,
+			}))
+		: keystrokes.length === 0
+			? []
+			: [
+					{
+						data: keystrokes.map((keystroke) => keystroke.data).join(""),
+						acknowledgedKeystrokes: keystrokes.length,
+						abortAt: keystrokes.length,
+					},
+				];
+	if (frames.length === 0) {
+		return abort("missing keystroke sequence", 0, "not_written");
 	}
 
-	for (let index = 0; index < keystrokes.length; index += 1) {
-		const keystroke = keystrokes[index];
-		if (keystroke === undefined) {
-			return abort("missing keystroke", index, "not_written");
+	for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
+		const frame = frames[frameIndex];
+		if (frame === undefined) {
+			return abort("missing input frame", frameIndex, "not_written");
 		}
 		if (deps.now() >= deadlineMs) {
-			return abort("sequence deadline exceeded", index, "not_written");
+			return abort("sequence deadline exceeded", frame.abortAt, "not_written");
 		}
 
 		const extension = deps.leases.extend(leaseId, deps.now());
@@ -3342,9 +1406,9 @@ export async function injectSequence(
 				questionId: question.questionId,
 				leaseId,
 				reason: extension.reason,
-				keystrokeIndex: index,
+				frameIndex,
 			});
-			return abort(`lease ${extension.reason}`, index, "not_written");
+			return abort(`lease ${extension.reason}`, frame.abortAt, "not_written");
 		}
 
 		let result: RawWriteResult;
@@ -3352,17 +1416,17 @@ export async function injectSequence(
 			result = await writer.write({
 				terminalId: host.hostTerminalId,
 				workspaceId: host.hostWorkspaceId,
-				data: keystroke.data,
+				data: frame.data,
 			});
 		} catch (error) {
 			deps.log({
 				event: "companion.answer.write_threw",
 				questionId: question.questionId,
 				terminalId: question.terminalId,
-				keystrokeIndex: index,
+				frameIndex,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			return abort("pty write threw", index, "unknown");
+			return abort("pty write threw", frame.abortAt, "unknown");
 		}
 
 		if ("error" in result) {
@@ -3370,19 +1434,19 @@ export async function injectSequence(
 				event: "companion.answer.write_refused",
 				questionId: question.questionId,
 				terminalId: question.terminalId,
-				keystrokeIndex: index,
+				frameIndex,
 				written,
 				writeOutcome: result.writeOutcome,
 				error: result.error,
 			});
 			return abort(
 				`pty write refused: ${result.error}`,
-				index,
+				frame.abortAt,
 				result.writeOutcome,
 			);
 		}
 
-		written += 1;
+		written += frame.acknowledgedKeystrokes;
 	}
 
 	return { kind: "confirmed" };
@@ -3899,8 +1963,8 @@ async function writeMessageInLock(
  * A bracketed paste is inert against the AskUserQuestion picker — it does not
  * echo it — so satisfying both is the composer identifying itself by behaviour.
  *
- * THE NEEDLE IS CLIENT-CHOSEN, so on its own it is exactly as parameterisable as
- * guard 5's capture-derived anchors were, and it needed the same two remedies:
+ * THE NEEDLE IS CLIENT-CHOSEN, so on its own it is parameterisable, and it
+ * needed two remedies:
  *  - a FLOOR on its length (`MESSAGE_ECHO_MIN_ANCHOR_CHARS`); a three-character
  *    message matches a picker's own option label or row number;
  *  - a BEFORE/AFTER differential; a needle already visible in `beforeScreen` is
@@ -3994,12 +2058,10 @@ async function awaitComposerEcho(
 }
 
 /**
- * The permission axis, read WITHOUT `readGuardSource`'s null collapse.
+ * The permission axis, read so that "could not read" stays `null`.
  *
- * `readGuardSource` turns "could not read" into `false`. On the guard stack that
- * is correct — a guard that cannot be evaluated must not permit. On the message
- * path it is exactly backwards: `false` there means "no picker", so collapsing a
- * failed read into it would turn an unreadable source into a PERMISSION to write
+ * A collapse of `null` into `false` would be exactly backwards here: `false`
+ * means "no picker", so an unreadable source would become a PERMISSION to write
  * the trailing `\r`. So `null` survives, and each of the two callers states for
  * itself what it does with it — one refuses the send outright, the other
  * withholds the submit and reports `unconfirmed`.
@@ -4102,7 +2164,7 @@ function assertMessageText(text: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The `/v1/message` picker guard, run inside the terminal lock.
+ * The `/v1/message` picker check, run inside the terminal lock.
  *
  * Throws `409 picker_open` if ANYTHING suggests a question is on screen. It
  * never returns "probably fine": an unreadable source is a refusal here, because
@@ -4168,7 +2230,7 @@ async function assertNoPickerOnScreen(
 	}
 
 	// An UNREADABLE permission axis is a refusal here, not a pass — which is why
-	// this reads through `readPermissionAxis` and not `readGuardSource`.
+	// `readPermissionAxis` keeps `null` distinct from `false`.
 	const permissionLatched = await readPermissionAxis(deps, terminalId);
 	if (permissionLatched !== false) {
 		throw sealed(
@@ -4202,7 +2264,7 @@ async function assertNoPickerOnScreen(
 	// agrees, because the store is the side that can be wrong. An anchor too
 	// weak to search for proves nothing either way, so it refuses too.
 	for (const item of known.questions) {
-		const match = matchPromptStillOnScreen({ screen, item });
+		const match = matchPromptOnScreen({ screen, item });
 		// `anchor_absent` is the ONLY outcome that rules the retired question out —
 		// it is the one that positively demonstrates the prompt is not rendered.
 		// Everything else is inconclusive and inconclusive is a refusal here:

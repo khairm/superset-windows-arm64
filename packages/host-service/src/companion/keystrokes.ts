@@ -76,6 +76,7 @@
  * one walk to the desk. A guess costs them an irreversible wrong answer.
  */
 
+import type { AcknowledgedInputFailureKind } from "../terminal/DaemonClient";
 import type { AnswerItem, QuestionItem } from "./types";
 
 /**
@@ -1724,7 +1725,7 @@ export type RawWriteResult =
 	| {
 			error: string;
 			/** Whether the failed acknowledgement still leaves a possible PTY write. */
-			writeOutcome: "not_written" | "unknown";
+			writeOutcome: AcknowledgedInputFailureKind;
 	  };
 
 export const RAW_PTY_WRITER_KIND = "companion-raw-pty-ack-v1" as const;

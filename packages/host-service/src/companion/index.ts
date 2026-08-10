@@ -21,10 +21,7 @@
  * observations as eligibility gates.
  */
 
-import { access } from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import hostServicePackageJson from "@superset/host-service/package.json" with {
 	type: "json",
 };
@@ -189,8 +186,8 @@ const MAINTENANCE_DRAIN_POLL_MS = 50;
 /**
  * The `AgentLifecycleEventType` member that means "the agent is blocked waiting
  * for the user". `mapEventType` has already normalised host.db's
- * `terminal_agent_bindings.last_event_type` to this vocabulary, so guard 4 is a
- * string compare and not a heuristic.
+ * `terminal_agent_bindings.last_event_type` to this vocabulary, so
+ * `permissionAxisLatched` is a string compare and not a heuristic.
  */
 const PERMISSION_REQUEST_EVENT_TYPE = "PermissionRequest";
 /** UUIDv4, lowercase, hyphenated (§0.1). */
@@ -260,8 +257,8 @@ export interface CompanionBridgeOptions {
 	 */
 	organizationId: string;
 	/**
-	 * Handed in explicitly rather than imported as a module global, so the answer
-	 * guards read the SAME live store the hook receiver writes. A second
+	 * Handed in explicitly rather than imported as a module global, so the
+	 * binding adapters read the SAME live store the hook receiver writes. A second
 	 * `new TerminalAgentStore(...)` would look correct and serve a stale
 	 * in-memory `byTerminal` map.
 	 */
@@ -673,10 +670,10 @@ export function createCompanionBridge(
 			// the fence: the question store is memory-only and empty at this point,
 			// so the row's own persisted transcript is the only thing that can say
 			// whether it was answered while the host-service was down — or whether
-			// it still exists at all. Same machinery as guard 1, three-way: only
-			// `resolved` and `gone` retire the entry, and `gone` is corroborated
-			// against the projects root before it counts. Everything else means
-			// "cannot check", and the buzz stands.
+			// it still exists at all. Three-way, like the question store's own
+			// transcript verification: only `resolved` and `gone` retire the entry,
+			// and `gone` is corroborated against the projects root before it counts.
+			// Everything else means "cannot check", and the buzz stands.
 			verifyOrphanResolved: ({ transcriptPath, toolUseId }) =>
 				readOrphanTranscriptVerdict({ transcriptPath, toolUseId }),
 			onFault: (fault) => {
@@ -1964,7 +1961,7 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 		async snapshotScreen(terminalId: TerminalId): Promise<string> {
 			const host = await resolveHostTerminal(terminalId);
 			if (host === null) {
-				// Guard 5 must never pass on an empty screen.
+				// The picker check must never pass on an empty screen.
 				throw new Error(
 					`${LOG_PREFIX} cannot resolve terminal ${terminalId} — refusing to snapshot`,
 				);
@@ -1975,10 +1972,10 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			// 0 — for the NORMAL buffer that is the viewport PLUS up to 1 000 lines
 			// of scrollback. Claude Code renders its conversation inline in the
 			// normal buffer (it is not an alt-screen TUI), so every earlier render of
-			// every earlier picker is in that text, and guard 5's whitespace-stripped
+			// every earlier picker is in that text, and the whitespace-stripped
 			// matcher would confirm "the picker is on screen" against one the user
-			// closed minutes ago while the viewport shows a composer. A bare digit
-			// then lands in that composer.
+			// closed minutes ago while the viewport shows a composer, refusing a
+			// message that was perfectly safe to send.
 			//
 			// `maxLines` has to be the live row count, and the row count only comes
 			// back on a snapshot — so the first call asks for ONE line purely to read
@@ -1997,7 +1994,7 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			}
 			if (!Number.isInteger(probe.rows) || probe.rows <= 0) {
 				throw new Error(
-					`${LOG_PREFIX} terminal ${terminalId} reported ${probe.rows} rows — refusing to bound the guard-5 snapshot on it`,
+					`${LOG_PREFIX} terminal ${terminalId} reported ${probe.rows} rows — refusing to bound the viewport snapshot on it`,
 				);
 			}
 			const result = await snapshotSession({
@@ -2025,28 +2022,8 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 
 		resolveHostTerminal,
 
-		// Positive-only transcript observation for reconciliation and diagnostics.
-		// (TRANSCRIPT-PATH-DERIVED) keeps the path host.db-derived rather than trusting
-		// the localhost hook. Match the requested tool call exactly; a different
-		// current question cannot provide settlement evidence for this one. Answer
-		// injection deliberately does not call this adapter.
-		async toolResultExists({
-			terminalId,
-			toolUseId,
-		}): Promise<GuardSourceResult> {
-			const question = deps.questions.byTerminal(terminalId);
-			if (question === null) return null;
-			if (question.toolUseId !== toolUseId) {
-				// The store no longer holds the question being answered. That is not
-				// "no tool_result exists"; it is "cannot check", which is a refusal.
-				return null;
-			}
-			const verdict = await deps.questions.verifyResolvedInTranscript(question);
-			if (verdict === "unreadable") return null;
-			return verdict === "resolved";
-		},
-
-		// GUARD 2, FORGEABLE — never load-bearing.
+		// FORGEABLE, and used only by `/v1/message`. `(ANSWER-GUARDLESS)` answer
+		// injection deliberately never calls this adapter.
 		async agentBinding(
 			terminalId: TerminalId,
 		): Promise<TerminalAgentInfo | null> {
@@ -2059,7 +2036,7 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 				//
 				// This used to read `definitionId` alone, and on this machine that
 				// column is NULL on every persisted binding — the notify hook does not
-				// supply it — so guard 9 answered `unknown` for healthy Claude
+				// supply it — so this answered `unknown` for healthy Claude
 				// terminals and `/v1/answer` refused three consecutive attempts on one
 				// live question with "unsupported agent kind: unknown", while
 				// `/v1/tree` rendered the same terminal as Claude from `agent_id`.
@@ -2071,20 +2048,20 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			};
 		},
 
-		// GUARD 3, supporting.
+		// `/v1/message` only. `null` when the wire handle cannot be resolved.
 		async sessionActive(terminalId: TerminalId): Promise<GuardSourceResult> {
 			const hostTerminalId = hostTerminalIdOf(terminalId);
 			if (hostTerminalId === null) return null;
 			return isLiveTerminalSession(hostTerminalId);
 		},
 
-		// GUARD 4, FORGEABLE. The permission axis this guard needs is
-		// `TerminalAgentBinding.lastEventType`, written by the same hook receiver
-		// and hydrated from host.db's `terminal_agent_bindings` — the SAME store
-		// guard 2 reads, in this process. (An earlier revision returned `null` here
-		// on the grounds that the axis "lives in renderer storage the bridge cannot
-		// reach". It does not; the renderer's dot has its own copy.) `null` when
-		// there is no binding at all, which is a refusal.
+		// FORGEABLE, and used only to keep `/v1/message` off an open picker. The
+		// axis is `TerminalAgentBinding.lastEventType`, written by the same hook
+		// receiver and hydrated from host.db's `terminal_agent_bindings` — the SAME
+		// store `agentBinding` reads, in this process. (An earlier revision
+		// returned `null` here on the grounds that the axis "lives in renderer
+		// storage the bridge cannot reach". It does not; the renderer's dot has its
+		// own copy.) `null` when there is no binding at all, which is a refusal.
 		async permissionAxisLatched(
 			terminalId: TerminalId,
 		): Promise<GuardSourceResult> {
@@ -2095,95 +2072,10 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			return binding.lastEventType === PERMISSION_REQUEST_EVENT_TYPE;
 		},
 
-		// GUARD 6, VETO ONLY: absence is a sound veto, presence proves nothing.
-		//
-		// (ASKQ-MARKER-READ) `~/.superset/agent-subagent-running/<hostTerminalId>.askq/`
-		// is a DIRECTORY of per-owner "an AskUserQuestion is pending" markers,
-		// written by `superset-notify.py` at PreToolUse:AskUserQuestion and removed
-		// by the raising agent's own answer, its SubagentStop, the main turn
-		// boundary, an API abort, or a watcher-detected interrupt. Several of those
-		// clears do NOT depend on the PostToolUse hook surviving — which is exactly
-		// the case guard 6 exists for on this ARM64 box, where emulated msys2 has
-		// killed hooks mid-flight.
-		//
-		// `homedir()`, deliberately NOT `resolveSupersetHome()`: both writers
-		// (`pane-map-hook.ts`'s embedded Python and `agent-jsonl-watcher.ts`)
-		// hardcode the home directory, so honouring `SUPERSET_HOME_DIR` here would
-		// read a directory nothing ever writes and turn every answer into a veto.
-		//
-		// Returns `null` (unreadable, no veto) when the owner key cannot be
-		// computed or the host id cannot be resolved. It NEVER reports `false` on a
-		// guess: a wrong `false` is a refused answer the user cannot distinguish
-		// from a stale question.
-		async askqMarkerExists({
-			terminalId,
-			agentId,
-		}): Promise<GuardSourceResult> {
-			const hostTerminalId = hostTerminalIdOf(terminalId);
-			if (hostTerminalId === null) return null;
-			if (!SAFE_MARKER_SEGMENT.test(hostTerminalId)) return null;
-			const owner = askqOwnerKey(agentId);
-			if (owner === null) return null;
-			try {
-				// `fs/promises`, matching the rule `read-api.ts`'s `resolveTranscript`
-				// already states: no synchronous fs on a request path. This runs in
-				// the pty-writer process, once per guard pass and therefore once per
-				// keystroke, and blocking fs here is the documented footgun that
-				// starves the renderer's `superset-app://` loader.
-				//
-				// EVERY failure is `false`, exactly as `existsSync` behaved — it
-				// swallows fs errors and reports absent. Guard 6 is a veto, so
-				// "absent" is the RESTRICTIVE reading; turning a permission error
-				// into `null` here would quietly drop a veto, which is not an
-				// efficiency change.
-				return await access(
-					join(
-						homedir(),
-						".superset",
-						"agent-subagent-running",
-						`${hostTerminalId}.askq`,
-						owner,
-					),
-				).then(
-					() => true,
-					() => false,
-				);
-			} catch (error) {
-				deps.logger.warn("askq marker read failed", { error });
-				return null;
-			}
-		},
-
 		log(event: Record<string, unknown>): void {
 			deps.logger.info("answer", event);
 		},
 	};
-}
-
-/**
- * (ASKQ-MARKER-READ) A path segment we are willing to build. The writers
- * validate host terminal ids with exactly this pattern before touching the
- * filesystem; matching it here is what keeps a hook-supplied id from becoming a
- * traversal.
- */
-const SAFE_MARKER_SEGMENT = /^[A-Za-z0-9_-]+$/;
-
-/**
- * (ASKQ-MARKER-READ) The raising agent's marker filename: its SANITIZED
- * `agent_id` (alphanumerics, `-` and `_` kept, everything else stripped — the
- * same reduction `superset-notify.py` applies), or `_main` for a main-loop
- * question.
- *
- * `null` when a non-empty `agentId` sanitizes away to nothing: the owner key is
- * then unknowable, and answering about the WRONG owner would be worse than
- * admitting we cannot read it. Two concurrent questions on one terminal (main
- * plus a subagent) have independent markers by design, so keying this wrong
- * would veto a live question or miss a dead one.
- */
-function askqOwnerKey(agentId: string | null): string | null {
-	if (agentId === null || agentId.length === 0) return "_main";
-	const sanitized = agentId.replace(/[^A-Za-z0-9_-]/g, "");
-	return sanitized.length > 0 ? sanitized : null;
 }
 
 /**

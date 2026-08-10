@@ -771,6 +771,22 @@ function deriveProjectKind(
 	return workspaces.every((w) => w.branch === NON_GIT_BRANCH) ? "plain" : "git";
 }
 
+/**
+ * Curated ordinary threads stay out of both `/v1/tree` and its counts. A live
+ * question is the exception: curation also holds its push, so filtering it out
+ * would erase every phone/watch discovery path.
+ *
+ * `/v1/tree` and the badge counts share this predicate so the badge can never
+ * disagree with the screen behind it.
+ */
+function terminalPiercesCuration(
+	visible: ReadonlyMap<string, HostWorkspaceRow>,
+	workspaceId: string,
+	pending: PendingQuestion | null,
+): boolean {
+	return visible.has(workspaceId) || pending !== null;
+}
+
 /** §7.2. `includeIdle` is explicit on every request; there is no server-side default. */
 export async function handleTree(
 	deps: ReadDeps,
@@ -818,10 +834,8 @@ export async function handleTree(
 	for (const row of terminals) {
 		if (row.originWorkspaceId === null) continue;
 		const pending = deps.questions.byHostTerminal(row.id);
-		// Curated ordinary threads stay out of both the list and its counts. A live
-		// question is the exception: curation also holds its push, so filtering it
-		// here would erase every phone/watch discovery path.
-		if (!visible.has(row.originWorkspaceId) && pending === null) continue;
+		if (!terminalPiercesCuration(visible, row.originWorkspaceId, pending))
+			continue;
 		const binding = bindings.get(row.id);
 
 		const status = deriveSessionStatus(pending, binding);
@@ -895,7 +909,6 @@ export async function handleTree(
 		else kindRows.push(row);
 
 		const all = terminalsByWorkspace.get(row.id) ?? [];
-		if (!visible.has(row.id) && all.length === 0) continue;
 		const status = rollup(all.map((t) => t.status));
 		const shown = includeIdle ? all : all.filter((t) => t.status !== "idle");
 		// A workspace with nothing to show is dropped UNCONDITIONALLY. Emptiness
@@ -1407,9 +1420,8 @@ function countStatuses(deps: ReadDeps, nowMs: EpochMs): StatusCounts {
 	for (const row of listLiveTerminals(deps.db, deps.liveness)) {
 		if (row.originWorkspaceId === null) continue;
 		const pending = deps.questions.byHostTerminal(row.id);
-		if (!visible.has(row.originWorkspaceId) && pending === null) continue;
-		// The SAME derivation and pending-question curation escape `/v1/tree`
-		// reports, so the badge can never disagree with the screen behind it.
+		if (!terminalPiercesCuration(visible, row.originWorkspaceId, pending))
+			continue;
 		tallyStatus(counts, deriveSessionStatus(pending, bindings.get(row.id)));
 	}
 	return counts;

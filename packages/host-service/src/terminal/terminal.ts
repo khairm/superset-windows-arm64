@@ -36,6 +36,7 @@ import { sweepAgentBindingsAfterDaemonLoss } from "../terminal-agents/daemon-los
 import { markTerminalAgentBindingEnded } from "../terminal-agents/persistence.ts";
 import {
 	AcknowledgedInputError,
+	type AcknowledgedInputFailureKind,
 	DaemonClient,
 	type Signal as DaemonSignal,
 } from "./DaemonClient/index.ts";
@@ -938,6 +939,30 @@ export async function listWorkspaceTerminalSessions(
 	return merged;
 }
 
+/**
+ * The three checks every write path owes a caller before it touches a pty: the
+ * session is process-local, it belongs to the workspace the caller named, and it
+ * has not exited.
+ *
+ * `absentError` is the caller's, because the two paths mean different things by
+ * a missing session: an ordinary write simply did not find one, while an
+ * acknowledged write is reporting that `prepareAcknowledgedInputSession` did not
+ * stick — and the companion answer path surfaces that text to a phone.
+ */
+function writableSession(
+	terminalId: string,
+	workspaceId: string,
+	absentError = "Terminal session not found",
+): TerminalSession | { error: string } {
+	const session = sessions.get(terminalId);
+	if (!session) return { error: absentError };
+	if (session.workspaceId !== workspaceId) {
+		return { error: "Terminal session does not belong to this workspace" };
+	}
+	if (session.exited) return { error: "Terminal session has exited" };
+	return session;
+}
+
 export function writeInputToSession({
 	terminalId,
 	workspaceId,
@@ -947,16 +972,8 @@ export function writeInputToSession({
 	workspaceId: string;
 	data: string;
 }): { success: true } | { error: string } {
-	const session = sessions.get(terminalId);
-	if (!session) {
-		return { error: "Terminal session not found" };
-	}
-	if (session.workspaceId !== workspaceId) {
-		return { error: "Terminal session does not belong to this workspace" };
-	}
-	if (session.exited) {
-		return { error: "Terminal session has exited" };
-	}
+	const session = writableSession(terminalId, workspaceId);
+	if ("error" in session) return session;
 
 	session.pty.write(data);
 	return { success: true };
@@ -972,12 +989,10 @@ export async function prepareAcknowledgedInputSession({
 	terminalId,
 	workspaceId,
 	db,
-	eventBus,
 }: {
 	terminalId: string;
 	workspaceId: string;
 	db: HostDb;
-	eventBus?: EventBus;
 }): Promise<
 	{ success: true; acknowledgedInputSupported: boolean } | { error: string }
 > {
@@ -986,7 +1001,6 @@ export async function prepareAcknowledgedInputSession({
 			terminalId,
 			workspaceId,
 			db,
-			eventBus,
 		});
 		if ("error" in session) return session;
 		if (session.exited) return { error: "Terminal session has exited" };
@@ -1018,26 +1032,16 @@ export async function writeAcknowledgedInputToSession({
 	workspaceId: string;
 	data: string;
 }): Promise<
-	{ success: true } | { error: string; writeOutcome: "not_written" | "unknown" }
+	| { success: true }
+	| { error: string; writeOutcome: AcknowledgedInputFailureKind }
 > {
-	const session = sessions.get(terminalId);
-	if (!session) {
-		return {
-			error: "Terminal session not prepared",
-			writeOutcome: "not_written",
-		};
-	}
-	if (session.workspaceId !== workspaceId) {
-		return {
-			error: "Terminal session does not belong to this workspace",
-			writeOutcome: "not_written",
-		};
-	}
-	if (session.exited) {
-		return {
-			error: "Terminal session has exited",
-			writeOutcome: "not_written",
-		};
+	const session = writableSession(
+		terminalId,
+		workspaceId,
+		"Terminal session not prepared",
+	);
+	if ("error" in session) {
+		return { ...session, writeOutcome: "not_written" };
 	}
 
 	try {

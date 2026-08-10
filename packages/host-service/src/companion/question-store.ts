@@ -582,7 +582,14 @@ export interface PendingQuestion {
 	agentKind: QuestionAgentKind;
 	/**
 	 * SUBAGENT id when a subagent asked; `null` on the main loop. Never sent to a
-	 * client. Guard 6 needs it to compute the per-owner `.askq` marker key.
+	 * client.
+	 *
+	 * (ANSWER-GUARDLESS) NOTHING reads it today — its only consumer was the
+	 * retired `.askq` marker guard, which used it to compute the per-owner marker
+	 * key. It is still validated and stored rather than dropped because the hook
+	 * payload carries it and the capture boundary validates every field it
+	 * accepts; it is the raising agent's identity, which is the fact any future
+	 * per-owner reconciliation would need.
 	 */
 	agentId: string | null;
 }
