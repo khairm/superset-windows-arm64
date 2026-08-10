@@ -26,10 +26,11 @@ import type {
 } from "../../types";
 // The project tree itself is still built INLINE below (computedGroups): the
 // extracted builder has no notion of the fork's Snoozed / Archived / Recycle
-// Bin buckets or the just-returned highlight. Only upstream's pinned helpers
-// are shared from it.
+// Bin buckets or the just-returned highlight. Only upstream's pinned and
+// session helpers are shared from it.
 import {
 	buildDashboardSidebarPinnedWorkspaces,
+	buildDashboardSidebarSessionWorkspaces,
 	partitionSidebarWorkspacesByPinned,
 } from "./buildDashboardSidebarProjects";
 import {
@@ -233,6 +234,7 @@ export function useDashboardSidebarData() {
 					githubOwner: project.repoOwner,
 					githubRepoName: project.repoName,
 					iconUrl: resolveProjectIconUrl(project),
+					color: project.color,
 					createdAt: new Date(project.createdAt),
 					updatedAt: new Date(project.updatedAt),
 					isCollapsed: row.isCollapsed,
@@ -525,7 +527,13 @@ export function useDashboardSidebarData() {
 	const rawLocalMainWorkspaces = useMemo(
 		() =>
 			hostWorkspaces
-				.filter((workspace) => workspace.type === "main")
+				.filter(
+					(
+						workspace,
+					): workspace is (typeof hostWorkspaces)[number] & {
+						projectId: string;
+					} => workspace.type === "main" && workspace.projectId !== null,
+				)
 				.map((workspace) => ({
 					id: workspace.id,
 					projectId: workspace.projectId,
@@ -582,7 +590,10 @@ export function useDashboardSidebarData() {
 				hosts,
 				machineId,
 				relayUrl,
-				workspaces: visibleSidebarWorkspaces,
+				// Sessions (null projectId) have no remote and never carry PRs.
+				workspaces: visibleSidebarWorkspaces.filter(
+					(workspace) => workspace.projectId !== null,
+				),
 				fallbackOrganizationId: knownHostsOrgId,
 			}),
 		[
@@ -677,6 +688,19 @@ export function useDashboardSidebarData() {
 		[visibleSidebarWorkspaces],
 	);
 
+	// Unpinned sessions render in the top-level Sessions section; pinned
+	// sessions stay in Pinned like any other row.
+	const { sessionRows, projectRows } = useMemo(() => {
+		const sessions: typeof unpinnedRows = [];
+		const projectScoped: typeof unpinnedRows = [];
+		for (const row of unpinnedRows) {
+			(row.projectId === null ? sessions : projectScoped).push(row);
+		}
+		return { sessionRows: sessions, projectRows: projectScoped };
+	}, [unpinnedRows]);
+
+	// Inline builder (see the import note): project-scoped rows only — sessions
+	// go through upstream's session builder below.
 	const computedGroups = useMemo<DashboardSidebarProject[]>(() => {
 		const projectsById = new Map<
 			string,
@@ -728,7 +752,7 @@ export function useDashboardSidebarData() {
 			});
 		}
 
-		for (const workspace of unpinnedRows) {
+		for (const workspace of projectRows) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 
@@ -962,12 +986,23 @@ export function useDashboardSidebarData() {
 		pullRequestsByWorkspaceId,
 		sidebarProjects,
 		sidebarSections,
-		unpinnedRows,
+		projectRows,
 		snoozedSidebarWorkspaces,
 		archivedSidebarWorkspaces,
 		deletedSidebarWorkspaces,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
+
+	const computedSessionWorkspaces = useMemo<DashboardSidebarWorkspace[]>(
+		() =>
+			buildDashboardSidebarSessionWorkspaces({
+				sessionSidebarWorkspaces: sessionRows,
+				machineId,
+				pullRequestsByWorkspaceId,
+			}),
+		[machineId, pullRequestsByWorkspaceId, sessionRows],
+	);
+	const sessionWorkspaces = useJsonStable(computedSessionWorkspaces);
 
 	const computedPinnedWorkspaces = useMemo<DashboardSidebarPinnedWorkspace[]>(
 		() =>
@@ -984,6 +1019,7 @@ export function useDashboardSidebarData() {
 	return {
 		groups,
 		pinnedWorkspaces,
+		sessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	};

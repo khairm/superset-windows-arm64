@@ -157,6 +157,7 @@ export function DashboardSidebarProjectSection({
 						projectId={project.id}
 						projectName={project.name}
 						iconUrl={project.iconUrl}
+						projectColor={project.color}
 						isCollapsed={project.isCollapsed}
 						totalWorkspaceCount={totalWorkspaceCount}
 						projectChildren={project.children}
@@ -197,6 +198,7 @@ export function DashboardSidebarProjectSection({
 				<DashboardSidebarProjectRow
 					projectName={project.name}
 					iconUrl={project.iconUrl}
+					projectColor={project.color}
 					isCollapsed={project.isCollapsed}
 					isRenaming={isRenaming}
 					renameValue={renameValue}

@@ -57,7 +57,8 @@ function compareProjectTopLevelItems(
 
 function getProjectTopLevelItems(
 	collections: ProjectTopLevelCollections,
-	projectId: string,
+	// Null scopes to the Sessions section (project-less workspaces).
+	projectId: string | null,
 	options: { excludeWorkspaceId?: string; excludeSectionId?: string } = {},
 ): ProjectTopLevelItem[] {
 	return [
@@ -99,7 +100,7 @@ function getFirstSectionIndex(items: ProjectTopLevelItem[]): number {
  */
 function writeProjectTopLevelOrder(
 	collections: ProjectTopLevelCollections,
-	projectId: string,
+	projectId: string | null,
 	items: ProjectTopLevelItem[],
 ): void {
 	items.forEach((item, index) => {
@@ -148,10 +149,12 @@ function ensureSidebarWorkspaceRecord(
 		"v2SidebarSections" | "v2WorkspaceLocalState"
 	>,
 	workspaceId: string,
-	projectId: string,
+	// Null places the workspace in the Sessions section.
+	projectId: string | null,
 	// (KANBAN HOST SOURCE) resolved by the caller from the host-served lists;
-	// the Electric mirror lacks post-migration rows.
-	workspaceType: string | null,
+	// the Electric mirror lacks post-migration rows. Omitted where the caller
+	// has already established there is no existing row to classify.
+	workspaceType: string | null = null,
 ): void {
 	const existing = collections.v2WorkspaceLocalState.get(workspaceId);
 	// Already placed — don't resurrect into active. An active row, a snoozed row,
@@ -227,8 +230,12 @@ export function useDashboardSidebarState() {
 	);
 
 	const ensureWorkspaceInSidebar = useCallback(
-		(workspaceId: string, projectId: string) => {
-			ensureSidebarProjectRecord(collections, projectId);
+		(workspaceId: string, projectId: string | null) => {
+			// Sessions (null projectId) have no project placement row — the
+			// Sessions section renders unconditionally.
+			if (projectId !== null) {
+				ensureSidebarProjectRecord(collections, projectId);
+			}
 			ensureSidebarWorkspaceRecord(
 				collections,
 				workspaceId,
@@ -315,7 +322,7 @@ export function useDashboardSidebarState() {
 
 	const reorderProjectChildren = useCallback(
 		(
-			projectId: string,
+			projectId: string | null,
 			orderedItems: Array<{ type: "workspace" | "section"; id: string }>,
 		) => {
 			orderedItems.forEach((item, index) => {
@@ -342,7 +349,7 @@ export function useDashboardSidebarState() {
 	const moveWorkspaceToSectionAtIndex = useCallback(
 		(
 			workspaceId: string,
-			projectId: string,
+			projectId: string | null,
 			sectionId: string,
 			index: number,
 		) => {
@@ -434,7 +441,11 @@ export function useDashboardSidebarState() {
 	);
 
 	const moveWorkspaceToSection = useCallback(
-		(workspaceId: string, projectId: string, sectionId: string | null) => {
+		(
+			workspaceId: string,
+			projectId: string | null,
+			sectionId: string | null,
+		) => {
 			const existing = collections.v2WorkspaceLocalState.get(workspaceId);
 			if (!existing) return;
 
@@ -516,13 +527,16 @@ export function useDashboardSidebarState() {
 	);
 
 	const setWorkspacePinned = useCallback(
-		(workspaceId: string, projectId: string, pinned: boolean) => {
+		(workspaceId: string, projectId: string | null, pinned: boolean) => {
 			const existing = collections.v2WorkspaceLocalState.get(workspaceId);
 			if (!existing) {
 				if (!pinned) return;
 				// Auto-included local main workspaces have no local-state row yet;
-				// pinning is an explicit placement, so create one first.
-				ensureSidebarProjectRecord(collections, projectId);
+				// pinning is an explicit placement, so create one first. Sessions
+				// (null projectId) have no project placement row.
+				if (projectId !== null) {
+					ensureSidebarProjectRecord(collections, projectId);
+				}
 				ensureSidebarWorkspaceRecord(collections, workspaceId, projectId);
 			}
 			// Strictly greater than every existing pin so same-millisecond pins
@@ -557,7 +571,7 @@ export function useDashboardSidebarState() {
 	);
 
 	const hideWorkspaceInSidebar = useCallback(
-		(workspaceId: string, projectId: string) => {
+		(workspaceId: string, projectId: string | null) => {
 			tombstoneSidebarWorkspaceRecord(
 				collections,
 				workspaceId,

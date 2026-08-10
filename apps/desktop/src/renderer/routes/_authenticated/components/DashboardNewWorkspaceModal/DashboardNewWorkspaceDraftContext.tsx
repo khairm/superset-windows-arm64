@@ -55,6 +55,7 @@ export function useDashboardNewWorkspaceDraft() {
 	const draft = useNewWorkspaceDraftStore<NewWorkspaceDraft>(
 		useShallow((store) => ({
 			selectedProjectId: store.selectedProjectId,
+			isSession: store.isSession,
 			hostId: store.hostId,
 			prompt: store.prompt,
 			baseBranch: store.baseBranch,
@@ -63,6 +64,7 @@ export function useDashboardNewWorkspaceDraft() {
 			workspaceNameEdited: store.workspaceNameEdited,
 			branchName: store.branchName,
 			branchNameEdited: store.branchNameEdited,
+			branchNameFromProvider: store.branchNameFromProvider,
 			linkedIssues: store.linkedIssues,
 			linkedPR: store.linkedPR,
 			selectedAgentId: store.selectedAgentId,

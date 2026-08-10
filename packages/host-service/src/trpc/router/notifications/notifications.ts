@@ -1,8 +1,9 @@
 import type { AgentIdentity } from "@superset/shared/agent-identity";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { terminalSessions } from "../../../db/schema";
+import { terminalSessions, workspaces } from "../../../db/schema";
 import { mapEventType } from "../../../events";
+import type { HostServiceContext } from "../../../types";
 import { publicProcedure, queryProcedure, router } from "../../index";
 import {
 	type AgentStatusSnapshot,
@@ -116,14 +117,45 @@ function reportUnknownTerminal(detail: {
 	);
 }
 
+// Tasks already nudged to "started" this process. `Start` fires on every
+// agent turn and tool use, so gate the cloud call to once per task per
+// process — `task.start` is idempotent and forward-only server-side, so a
+// duplicate after a restart is harmless.
+const startedTaskIds = new Set<string>();
+
+function markLinkedTaskStarted(
+	ctx: HostServiceContext,
+	workspaceId: string,
+): void {
+	const workspace = ctx.db.query.workspaces
+		.findFirst({
+			where: eq(workspaces.id, workspaceId),
+			columns: { taskId: true },
+		})
+		.sync();
+	const taskId = workspace?.taskId;
+	if (!taskId || startedTaskIds.has(taskId)) return;
+	startedTaskIds.add(taskId);
+	void ctx.api.task.start.mutate({ id: taskId }).catch((err) => {
+		// Let a later Start event retry — calls are event-driven (one per
+		// agent turn/tool use at most), so a cloud outage can't tight-loop.
+		startedTaskIds.delete(taskId);
+		console.warn(
+			`[notifications.hook] failed to mark task ${taskId} as started:`,
+			err,
+		);
+	});
+}
+
 export const notificationsRouter = router({
 	/**
 	 * Agent lifecycle hook. The shell hook POSTs here; we normalize, resolve
 	 * the terminal's workspace, and fan out over the WS event bus.
 	 *
-	 * Intentionally unauthenticated: a caller can only trigger a chime and a
-	 * sidebar indicator. Reusing the host-service PSK would leak it into every
-	 * agent shell's env for zero practical gain.
+	 * Intentionally unauthenticated: a caller can only trigger a chime, a
+	 * sidebar indicator, and the idempotent forward-only "linked task →
+	 * In Progress" nudge for a real workspace. Reusing the host-service PSK
+	 * would leak it into every agent shell's env for zero practical gain.
 	 *
 	 * (COMPANION-CAPTURE) That threat model now also covers a forged question:
 	 * anything on localhost can POST a `companionQuestion` and make a phone
@@ -261,6 +293,12 @@ export const notificationsRouter = router({
 			workspaceId: terminalSession.originWorkspaceId,
 			occurredAt,
 		});
+
+		// An agent began working in this workspace — nudge the linked task
+		// to In Progress.
+		if (eventType === "Start") {
+			markLinkedTaskStarted(ctx, terminalSession.originWorkspaceId);
+		}
 
 		return { success: true, ignored: false as const };
 	}),

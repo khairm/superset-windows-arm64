@@ -1,5 +1,4 @@
 import { mkdirSync, rmSync } from "node:fs";
-import { runWithPostCheckoutHookTolerance } from "@superset/shared/git-hook-tolerance";
 import { generateFriendlyBranchName } from "@superset/shared/workspace-launch";
 import { TRPCError } from "@trpc/server";
 import type { z } from "zod";
@@ -31,6 +30,10 @@ import { startCommandTerminal } from "./shared/command-terminal";
 import { enablePushAutoSetupRemote } from "./shared/git-config";
 import type { requireLocalProject } from "./shared/local-project";
 import { startSetupTerminalIfPresent } from "./shared/setup-terminal";
+import {
+	addWorktreeWithSparseCheckout,
+	parseSparseCheckoutPaths,
+} from "./shared/sparse-checkout";
 import type { GitClient } from "./shared/types";
 import { normalizeWorktreePath } from "./shared/worktree-list";
 import { safeResolveWorktreePath } from "./shared/worktree-paths";
@@ -102,7 +105,11 @@ export async function createMultiRepoWorkspaceFlow(args: {
 		const composerPrompt =
 			input.agents?.[0]?.prompt?.trim() || input.namingPrompt?.trim() || "";
 		const aiNames = composerPrompt
-			? await generateWorkspaceNamesFromPrompt(composerPrompt).catch((err) => {
+			? await generateWorkspaceNamesFromPrompt(
+					composerPrompt,
+					undefined,
+					localProject.namingInstructions,
+				).catch((err) => {
 					console.warn("[workspaces.create:multi-repo] AI naming failed", err);
 					return null;
 				})
@@ -320,6 +327,13 @@ async function runCreate(args: {
 	);
 	mkdirSync(containerPath, { recursive: true });
 
+	// Cone-mode sparse checkout is a project-level setting, so every member
+	// worktree in the container gets the same folder list (empty = full
+	// checkout). Mirrors the single-repo create path in workspaces.ts.
+	const sparsePaths = parseSparseCheckoutPaths(
+		localProject.sparseCheckoutPaths,
+	);
+
 	const created: Array<{ git: GitClient; worktreePath: string }> = [];
 	const rollbackAll = async () => {
 		for (const item of [...created].reverse()) {
@@ -376,30 +390,40 @@ async function runCreate(args: {
 				// worktree fully in place. Rolling back on that would tear down every
 				// member's worktree and abort a resume that actually succeeded, so
 				// the on-disk state is the ground truth — same contract as
-				// `addBranchWorktree` on the fresh-create path below.
-				await runWithPostCheckoutHookTolerance({
-					context: `Worktree created at ${workTreePath}`,
-					run: async () => {
-						await member.git.raw(["worktree", "add", workTreePath, branch]);
-					},
-					didSucceed: async () => {
-						if (!(await findWorktreeAtPath(member.git, workTreePath, branch))) {
-							return false;
-						}
-						try {
-							// The worktree list can report a branch for a half-created
-							// worktree; require a resolvable HEAD in the worktree itself.
-							await member.git.raw([
-								"-C",
-								workTreePath,
-								"rev-parse",
-								"--verify",
-								"HEAD",
-							]);
-							return true;
-						} catch {
-							return false;
-						}
+				// `addBranchWorktree` on the fresh-create path below. The tolerance
+				// is handed to addWorktreeWithSparseCheckout so it wraps whichever
+				// command actually checks out (the plain add, or the sparse path's
+				// explicit `checkout`), exactly like upstream's single-repo
+				// adopt-local-branch path.
+				await addWorktreeWithSparseCheckout({
+					git: member.git,
+					worktreeArgs: [workTreePath, branch],
+					worktreePath: workTreePath,
+					sparsePaths,
+					logPrefix: "[workspaces.create:multi-repo]",
+					hookTolerance: {
+						context: `Worktree created at ${workTreePath}`,
+						didSucceed: async () => {
+							if (
+								!(await findWorktreeAtPath(member.git, workTreePath, branch))
+							) {
+								return false;
+							}
+							try {
+								// The worktree list can report a branch for a half-created
+								// worktree; require a resolvable HEAD in the worktree itself.
+								await member.git.raw([
+									"-C",
+									workTreePath,
+									"rev-parse",
+									"--verify",
+									"HEAD",
+								]);
+								return true;
+							} catch {
+								return false;
+							}
+						},
 					},
 				});
 				created.push({ git: member.git, worktreePath: workTreePath });
@@ -423,6 +447,7 @@ async function runCreate(args: {
 				git: member.git,
 				plan: { branch, startPoint, usedExistingBranch: false },
 				worktreePath: workTreePath,
+				sparsePaths,
 			});
 			created.push({ git: member.git, worktreePath: workTreePath });
 			await enablePushAutoSetupRemote(
