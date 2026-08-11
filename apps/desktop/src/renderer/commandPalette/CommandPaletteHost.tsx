@@ -7,6 +7,7 @@ import { registerAllModules } from "./modules";
 import { checkResourcesCommand } from "./modules/resources/commands";
 import { CommandPalette } from "./ui/CommandPalette/CommandPalette";
 import { DeleteWorkspaceMount } from "./ui/DeleteWorkspaceMount/DeleteWorkspaceMount";
+import { DestroyWorkspaceMount } from "./ui/DestroyWorkspaceMount/DestroyWorkspaceMount";
 import { FolderImportMount } from "./ui/FolderImportMount/FolderImportMount";
 import { RemoveFromSidebarMount } from "./ui/RemoveFromSidebarMount/RemoveFromSidebarMount";
 import { SetPreferredOpenInAppMount } from "./ui/SetPreferredOpenInAppMount/SetPreferredOpenInAppMount";
@@ -22,6 +23,7 @@ export function CommandPaletteHost({ children }: { children?: ReactNode }) {
 			<CommandPaletteTrigger />
 			<CommandPalette />
 			<DeleteWorkspaceMount />
+			<DestroyWorkspaceMount />
 			<RemoveFromSidebarMount />
 			<SetPreferredOpenInAppMount />
 			<FolderImportMount />

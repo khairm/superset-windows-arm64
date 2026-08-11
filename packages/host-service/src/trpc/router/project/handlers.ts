@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { projects } from "../../../db/schema";
 import { emitProjectChanged } from "../../../projects/local-project-store";
 import {
@@ -25,6 +25,20 @@ import {
 	resolveNonGitFolder,
 } from "./utils/resolve-repo";
 
+// (PATH-CI-DEDUPE) Mirror of the predicate in `project.ts` — kept local
+// because `project.ts` imports this module, so importing it back would close
+// a cycle. Windows/macOS filesystems are case-insensitive, so the same folder
+// can arrive under a different casing; SQLite TEXT equality is BINARY, which
+// would miss the existing `projects.repoPath` row and mint a duplicate.
+const REPO_PATHS_CASE_INSENSITIVE =
+	process.platform === "win32" || process.platform === "darwin";
+
+function repoPathMatches(path: string) {
+	return REPO_PATHS_CASE_INSENSITIVE
+		? sql`lower(${projects.repoPath}) = lower(${path})`
+		: eq(projects.repoPath, path);
+}
+
 function dirNameForEmpty(name: string): string {
 	const slug = name
 		.trim()
@@ -45,6 +59,10 @@ export interface CreateResult {
 	/** null for multi-repo projects — they have NO main workspace by design;
 	 *  the renderer's finalize step already branches on null (project-only). */
 	mainWorkspaceId: string | null;
+	/** False when an existing local project row for the same repo path was
+	 * reused instead of inserting a new one (importLocal only). Callers use
+	 * this to skip side effects that would clobber user customizations. */
+	created: boolean;
 }
 
 /**
@@ -90,6 +108,7 @@ async function persistFromResolved(
 			projectId,
 			repoPath: args.resolved.repoPath,
 			mainWorkspaceId: mainWorkspace?.id ?? null,
+			created: true,
 		};
 	} catch (err) {
 		if (localProjectInserted) {
@@ -155,6 +174,32 @@ export async function createFromImportLocal(
 		args.repoPath,
 		args.initIfNeeded ?? false,
 	);
+
+	// Idempotency guard: importing a repo that is already a project on this
+	// device returns the existing project instead of minting a duplicate
+	// row. Deliberately leaves the row untouched (no rename, no repo-field
+	// refresh) — the user may have customized it in v2.
+	// (PATH-CI-DEDUPE) Matched case-insensitively on win32/darwin, like every
+	// other repoPath collision check — a case-only folder rename would
+	// otherwise miss this row under SQLite's BINARY equality and mint the
+	// duplicate project this guard exists to prevent.
+	const existing = ctx.db.query.projects
+		.findFirst({ where: repoPathMatches(resolved.repoPath) })
+		.sync();
+	if (existing) {
+		const mainWorkspace = await ensureMainWorkspaceStrict(
+			ctx,
+			existing.id,
+			resolved.repoPath,
+		);
+		return {
+			projectId: existing.id,
+			repoPath: resolved.repoPath,
+			mainWorkspaceId: mainWorkspace.id,
+			created: false,
+		};
+	}
+
 	return persistFromResolved(ctx, {
 		name: args.name,
 		resolved,

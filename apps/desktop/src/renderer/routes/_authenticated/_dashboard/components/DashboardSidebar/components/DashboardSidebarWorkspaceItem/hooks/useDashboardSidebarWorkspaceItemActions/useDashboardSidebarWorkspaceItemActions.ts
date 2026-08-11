@@ -25,6 +25,7 @@ import {
 	type SnoozeDuration,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import { useDestroyWorkspaceIntent } from "renderer/stores/destroy-workspace-intent";
 import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
 
@@ -69,7 +70,6 @@ export function useDashboardSidebarWorkspaceItemActions({
 		createSection,
 		deleteWorkspace,
 		moveWorkspaceToSection,
-		removeWorkspaceFromSidebar,
 		restoreWorkspace,
 		setWorkspacePinned,
 		snoozeWorkspace,
@@ -79,7 +79,6 @@ export function useDashboardSidebarWorkspaceItemActions({
 
 	const [isRenaming, setIsRenaming] = useState(false);
 	const [renameValue, setRenameValue] = useState(workspaceName);
-	const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
 	// (KANBAN) When the kanban view is showing, sidebar selection opens the
 	// workspace INSIDE the collapse-split (board rail stays) instead of
@@ -131,8 +130,23 @@ export function useDashboardSidebarWorkspaceItemActions({
 		workspaceActions.renameWorkspace(workspaceId, trimmed);
 	};
 
-	const handleDeleted = () => {
-		removeWorkspaceFromSidebar(workspaceId);
+	// (RECYCLE-BIN) In-bin "Delete permanently" — the only path into upstream's
+	// real git destroy. Requested through the intent store so the dialog is
+	// rendered by the globally-mounted DestroyWorkspaceMount instead of under
+	// this row: the destroy tombstones the host workspace at step 0, the bin
+	// row (a local record with no host record) immediately drops out of
+	// rawSidebarWorkspaces, and a row-local dialog would unmount mid-destroy —
+	// silently swallowing the teardown-failure pane and its force-retry
+	// ("skipTeardown") offer. The mount drops the local sidebar record when the
+	// destroy settles.
+	const handleDeletePermanently = () => {
+		// Mains are archive-only and never enter the bin; the row-local dialog
+		// used to be gated the same way (it was simply never mounted for one).
+		if (isMainWorkspace) return;
+		useDestroyWorkspaceIntent.getState().request({
+			workspaceId,
+			workspaceName: workspaceName || branch,
+		});
 	};
 
 	const handleRemoveFromSidebar = () => {
@@ -165,7 +179,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 	// (RECYCLE-BIN) The default-mode Delete is now a SILENT soft-delete — no
 	// dialog, no toast — moving the thread to the project's Recycle Bin. The real
 	// git destroy lives behind "Delete permanently" inside the bin (the existing
-	// destroy dialog, opened via setIsDeleteDialogOpen).
+	// destroy dialog, requested via handleDeletePermanently).
 	const handleDelete = () => {
 		deleteWorkspace(workspaceId, projectId);
 	};
@@ -301,7 +315,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleCopyBranchName,
 		handleCreateSection,
 		handleDelete,
-		handleDeleted,
+		handleDeletePermanently,
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
@@ -313,12 +327,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleUnarchive,
 		handleUnsnooze,
 		isActive,
-		isDeleteDialogOpen,
 		isRenaming,
 		isUnread,
 		moveWorkspaceToSection,
 		renameValue,
-		setIsDeleteDialogOpen,
 		setRenameValue,
 		startRename,
 		submitRename,

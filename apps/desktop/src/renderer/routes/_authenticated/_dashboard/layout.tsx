@@ -11,14 +11,13 @@ import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useHotkey } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
-import { useNavigateAwayFromWorkspace } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useNavigateAwayFromWorkspace";
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
-import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSidebar";
 import { DeleteWorkspaceDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
+import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
 import { useOpenNewWorkspaceModal } from "renderer/stores/new-workspace-modal";
 import {
 	COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
@@ -34,12 +33,13 @@ export const Route = createFileRoute("/_authenticated/_dashboard")({
 	component: DashboardLayout,
 });
 
-// Only the legacy (non-v2-cloud) WorkspaceSidebar still opens a destroy dialog
-// here. The v2 sidebar's close-workspace is a SILENT soft-delete (Recycle Bin) —
-// the v2 destroy dialog is reachable ONLY from in-bin "Delete permanently" /
-// "Empty Recycle Bin", never from this layout.
+/**
+ * v1 only — v2 deletes go through the globally-mounted DeleteWorkspaceMount
+ * (see delete-workspace-intent store), which in this fork is a SILENT
+ * soft-delete into the project's Recycle Bin. Only the legacy
+ * (non-v2-cloud) WorkspaceSidebar still opens a destroy dialog here.
+ */
 type DeleteTarget = {
-	version: "v1";
 	workspaceId: string;
 	workspaceName: string;
 	workspaceType: "worktree" | "branch";
@@ -50,8 +50,6 @@ function DashboardLayout() {
 	const openNewWorkspaceModal = useOpenNewWorkspaceModal();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const { workspaces: hostWorkspaces } = useHostWorkspaces();
-	const { deleteWorkspace } = useDashboardSidebarState();
-	const { navigateAwayFromWorkspace } = useNavigateAwayFromWorkspace();
 	useDevSeedV2Sidebar();
 	// Get current workspace from route to pre-select project in new workspace modal
 	const matchRoute = useMatchRoute();
@@ -131,7 +129,6 @@ function DashboardLayout() {
 					workspaceId: currentWorkspaceId,
 					workspaceName: currentWorkspace.name,
 					workspaceType: currentWorkspace.type,
-					version: "v1",
 				});
 				return;
 			}
@@ -141,12 +138,16 @@ function DashboardLayout() {
 				currentV2Workspace &&
 				currentV2Workspace.type !== "main"
 			) {
-				// (RECYCLE-BIN) Close-workspace is now a SILENT soft-delete: move the
-				// thread to its project's Recycle Bin and navigate off the route. The
-				// real git destroy lives only behind in-bin "Delete permanently". Mains
-				// never reach here (deleteWorkspace would no-op them anyway).
-				deleteWorkspace(currentV2WorkspaceId, currentV2Workspace.projectId);
-				navigateAwayFromWorkspace(currentV2WorkspaceId);
+				// (RECYCLE-BIN) Close-workspace routes through the globally-mounted
+				// DeleteWorkspaceMount like every other v2 delete entry point — and
+				// that mount is a SILENT soft-delete here: it moves the thread to its
+				// project's Recycle Bin and navigates off the route. The real git
+				// destroy lives only behind in-bin "Delete permanently". Mains never
+				// reach here (deleteWorkspace would no-op them anyway).
+				useDeleteWorkspaceIntent.getState().request({
+					workspaceId: currentV2WorkspaceId,
+					workspaceName: currentV2Workspace.name || currentV2Workspace.branch,
+				});
 			}
 		},
 		{
@@ -248,7 +249,7 @@ function DashboardLayout() {
 			</div>
 			<div id="workspace-right-sidebar-slot" className="flex h-full shrink-0" />
 			<AddRepositoryModals />
-			{deleteTarget?.version === "v1" && (
+			{deleteTarget && (
 				<DeleteWorkspaceDialog
 					workspaceId={deleteTarget.workspaceId}
 					workspaceName={deleteTarget.workspaceName}

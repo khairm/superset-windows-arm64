@@ -20,7 +20,6 @@ import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-r
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
 import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
-import { DashboardSidebarDeleteDialog } from "../DashboardSidebarDeleteDialog";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
 import {
@@ -93,7 +92,7 @@ export function DashboardSidebarWorkspaceItem({
 		handleCopyBranchName,
 		handleCreateSection,
 		handleDelete,
-		handleDeleted,
+		handleDeletePermanently,
 		handleArchive,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
@@ -105,12 +104,10 @@ export function DashboardSidebarWorkspaceItem({
 		handleUnarchive,
 		handleUnsnooze,
 		isActive,
-		isDeleteDialogOpen,
 		isUnread,
 		isRenaming,
 		moveWorkspaceToSection,
 		renameValue,
-		setIsDeleteDialogOpen,
 		setRenameValue,
 		startRename,
 		submitRename,
@@ -292,9 +289,7 @@ export function DashboardSidebarWorkspaceItem({
 							}
 							onRestore={sectionState === "deleted" ? handleRestore : undefined}
 							onDeletePermanently={
-								sectionState === "deleted"
-									? () => setIsDeleteDialogOpen(true)
-									: undefined
+								sectionState === "deleted" ? handleDeletePermanently : undefined
 							}
 							onToggleUnread={handleToggleUnread}
 							onClearStatus={handleClearStatus}
@@ -309,15 +304,6 @@ export function DashboardSidebarWorkspaceItem({
 					)}
 				</div>
 
-				{!isPending && !isMainWorkspace && (
-					<DashboardSidebarDeleteDialog
-						workspaceId={id}
-						workspaceName={name || branch}
-						open={isDeleteDialogOpen}
-						onOpenChange={setIsDeleteDialogOpen}
-						onDeleted={handleDeleted}
-					/>
-				)}
 				{renameBranchTarget && (
 					<RenameBranchDialog
 						workspaceId={id}
@@ -368,9 +354,7 @@ export function DashboardSidebarWorkspaceItem({
 					// normal (non-bin) non-main row — it moves the thread to the Recycle
 					// Bin instead of opening the destroy dialog. The dialog is reserved
 					// for in-bin "Delete permanently" (sectionState === "deleted").
-					sectionState === "deleted"
-						? () => setIsDeleteDialogOpen(true)
-						: handleDelete
+					sectionState === "deleted" ? handleDeletePermanently : handleDelete
 				}
 				sectionState={sectionState}
 				onRestoreClick={
@@ -428,9 +412,7 @@ export function DashboardSidebarWorkspaceItem({
 						}
 						onRestore={sectionState === "deleted" ? handleRestore : undefined}
 						onDeletePermanently={
-							sectionState === "deleted"
-								? () => setIsDeleteDialogOpen(true)
-								: undefined
+							sectionState === "deleted" ? handleDeletePermanently : undefined
 						}
 						onToggleUnread={handleToggleUnread}
 						onClearStatus={handleClearStatus}
@@ -445,15 +427,6 @@ export function DashboardSidebarWorkspaceItem({
 				)}
 			</div>
 
-			{!isPending && !isMainWorkspace && (
-				<DashboardSidebarDeleteDialog
-					workspaceId={id}
-					workspaceName={name || branch}
-					open={isDeleteDialogOpen}
-					onOpenChange={setIsDeleteDialogOpen}
-					onDeleted={handleDeleted}
-				/>
-			)}
 			{renameBranchTarget && (
 				<RenameBranchDialog
 					workspaceId={id}

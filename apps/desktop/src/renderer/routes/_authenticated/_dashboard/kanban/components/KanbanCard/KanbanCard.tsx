@@ -14,7 +14,6 @@ import { Input } from "@superset/ui/input";
 import { cn } from "@superset/ui/utils";
 import { useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
-import { DashboardSidebarDeleteDialog } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarDeleteDialog";
 import {
 	computeSnoozeUntil,
 	KANBAN_COMPLETED_COLUMN_ID,
@@ -24,6 +23,7 @@ import {
 	getStatusTooltip,
 	StatusIndicator,
 } from "renderer/screens/main/components/StatusIndicator";
+import { useDestroyWorkspaceIntent } from "renderer/stores/destroy-workspace-intent";
 import { useV2WorkspaceDisplayStatus } from "renderer/stores/v2-notifications";
 import type { UseKanbanActionsResult } from "../../hooks/useKanbanActions";
 import type { KanbanCardView } from "../../types";
@@ -75,7 +75,6 @@ export function KanbanCard({
 	// is only enabled for unbound cards (where they're equal), but this keeps the
 	// draft on the live value if that gate ever changes.
 	const [titleDraft, setTitleDraft] = useState(view.title);
-	const [deleteOpen, setDeleteOpen] = useState(false);
 
 	// Frozen records never drag: outside Completed they'd be a bound card with
 	// no live branch, which the reconcile prunes — there is nowhere to drop one.
@@ -315,7 +314,18 @@ export function KanbanCard({
 					{workspace ? (
 						<ContextMenuItem
 							variant="destructive"
-							onSelect={() => setDeleteOpen(true)}
+							// (KANBAN-HOST-SOURCE) The destroy dialog CANNOT be mounted
+							// under this card: the card renders from the host workspace
+							// row, which the archive-first destroy tombstones at step 0 —
+							// the card unmounts the moment the destroy starts, and with it
+							// would go the teardown-failure force-retry pane. Request it
+							// from the globally-mounted DestroyWorkspaceMount instead.
+							onSelect={() =>
+								useDestroyWorkspaceIntent.getState().request({
+									workspaceId: workspace.id,
+									workspaceName: workspace.name,
+								})
+							}
 						>
 							Delete permanently…
 						</ContextMenuItem>
@@ -421,15 +431,6 @@ export function KanbanCard({
 						Unarchive
 					</ContextMenuItem>
 				</ContextMenuContent>
-			) : null}
-
-			{workspace && !isMain ? (
-				<DashboardSidebarDeleteDialog
-					workspaceId={workspace.id}
-					workspaceName={workspace.name}
-					open={deleteOpen}
-					onOpenChange={setDeleteOpen}
-				/>
 			) : null}
 		</ContextMenu>
 	);
