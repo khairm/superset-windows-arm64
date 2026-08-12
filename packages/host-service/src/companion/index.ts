@@ -2071,6 +2071,7 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 			markRemoteAnsweredAndPublish(deps, questionId, resolvedBy, deliveredAtMs),
 		audit: deps.audit,
 		now: (): EpochMs => Date.now(),
+		delay: sleep,
 		bridgeStartedMs: deps.bridgeStartedMs,
 
 		resolveHostTerminal,

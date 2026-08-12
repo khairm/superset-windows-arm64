@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import {
+	ANSWER_INTER_FRAME_DELAY_MS,
 	type AnswerDeps,
 	assertAnswerDeps,
 	type HostTerminalRef,
 	handleAnswer,
 	injectSequence,
 	ledgerRecordToResponse,
-	SEQUENCE_DEADLINE_MS,
+	SEQUENCE_EXECUTION_ALLOWANCE_MS,
 } from "./answer";
 import type { AttemptLedger, LedgerRecord } from "./attempt-ledger";
 import { ROUTES } from "./http";
@@ -94,6 +95,7 @@ function stubDeps(overrides: Partial<AnswerDeps> = {}): AnswerDeps {
 		now: () => 1_000,
 		leases: testLeases(() => ({ ok: true as const, lease: LEASE })),
 		nudgeRepaint: () => ({ success: true }),
+		delay: async () => {},
 		log: () => {},
 		...overrides,
 	} as unknown as AnswerDeps;
@@ -260,6 +262,7 @@ function answerHarness(
 		markRemoteAnsweredAndPublish: questions.markRemoteAnswered,
 		audit: { append: async () => {}, prune: async () => 0 },
 		now: () => now++,
+		delay: async () => {},
 		log: (event: Record<string, unknown>) => events.push(event),
 	} as unknown as AnswerDeps;
 	const request = {
@@ -324,6 +327,7 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 				}),
 				writeFramed: async () => ({ success: true as const }),
 				snapshotScreen: async () => "",
+				delay: async () => {},
 			} as unknown as AnswerDeps),
 		).toThrow("nudgeRepaint");
 	});
@@ -462,6 +466,204 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 	});
 });
 
+describe("(ANSWER-FRAME-PACING) deterministic v3 injection", () => {
+	const fourFrames: Keystroke[] = [
+		{
+			kind: "select_digit",
+			data: "1",
+			questionIndex: 0,
+			optionIndex: 0,
+			expect: { kind: "item_picker", itemIndex: 0 },
+			submits: false,
+		},
+		{
+			kind: "select_digit",
+			data: "2",
+			questionIndex: 1,
+			optionIndex: 1,
+			expect: { kind: "item_picker", itemIndex: 1 },
+			submits: false,
+		},
+		{
+			kind: "select_digit",
+			data: "3",
+			questionIndex: 2,
+			optionIndex: 2,
+			expect: { kind: "item_picker", itemIndex: 2 },
+			submits: false,
+		},
+		{
+			kind: "submit_return",
+			data: "\r",
+			questionIndex: 2,
+			optionIndex: null,
+			expect: { kind: "same_prompt", itemIndex: 2 },
+			submits: true,
+		},
+	];
+
+	it("waits exactly 500ms after each non-final v3 frame, then renews immediately before the next write", async () => {
+		const events: string[] = [];
+		const deps = stubDeps({
+			delay: async (ms) => {
+				events.push(`delay:${ms}`);
+			},
+			leases: testLeases(() => {
+				events.push("extend");
+				return { ok: true as const, lease: LEASE };
+			}),
+		});
+		const writer = testWriter((data) => {
+			events.push(`write:${JSON.stringify(data)}`);
+			return { success: true };
+		});
+
+		const result = await injectSequence(deps, {
+			question: QUESTION,
+			host: HOST,
+			keystrokes: fourFrames,
+			leaseId: LEASE.leaseId,
+			acknowledgedInputSupported: true,
+			writer,
+		});
+
+		expect(result).toEqual({ kind: "confirmed" });
+		expect(events).toEqual([
+			"extend",
+			'write:"1"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			"extend",
+			'write:"2"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			"extend",
+			'write:"3"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			"extend",
+			'write:"\\r"',
+		]);
+	});
+
+	it("does not pace the single complete protocol-v2 legacy frame", async () => {
+		const events: string[] = [];
+		const deps = stubDeps({
+			delay: async (ms) => {
+				events.push(`delay:${ms}`);
+			},
+			leases: testLeases(() => {
+				events.push("extend");
+				return { ok: true as const, lease: LEASE };
+			}),
+		});
+		const writer = testWriter((data) => {
+			events.push(`write:${JSON.stringify(data)}`);
+			return { error: "v2 is unacknowledged", writeOutcome: "unknown" };
+		});
+
+		expect(
+			await injectSequence(deps, {
+				question: QUESTION,
+				host: HOST,
+				keystrokes: fourFrames,
+				leaseId: LEASE.leaseId,
+				acknowledgedInputSupported: false,
+				writer,
+			}),
+		).toMatchObject({ kind: "unconfirmed", written: 0, abortedAt: 4 });
+		expect(events).toEqual(["extend", 'write:"123\\r"']);
+	});
+
+	it("checks the dynamic deadline after a wait and before renewing or writing", async () => {
+		let now = 0;
+		const events: string[] = [];
+		const deps = stubDeps({
+			now: () => now,
+			delay: async (ms) => {
+				events.push(`delay:${ms}`);
+				now = SEQUENCE_EXECUTION_ALLOWANCE_MS + ms;
+			},
+			leases: testLeases(() => {
+				events.push("extend");
+				return { ok: true as const, lease: LEASE };
+			}),
+		});
+		const writer = testWriter((data) => {
+			events.push(`write:${JSON.stringify(data)}`);
+			return { success: true };
+		});
+
+		expect(await run(writer, deps)).toMatchObject({
+			kind: "unconfirmed",
+			reason: "sequence deadline exceeded",
+			written: 1,
+			abortedAt: 1,
+		});
+		expect(events).toEqual([
+			"extend",
+			'write:"1"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+		]);
+	});
+
+	it("fails loud when the required pacing timer rejects instead of bursting the remainder", async () => {
+		const events: string[] = [];
+		const deps = stubDeps({
+			delay: async (ms) => {
+				events.push(`delay:${ms}`);
+				throw new Error("timer unavailable");
+			},
+			leases: testLeases(() => {
+				events.push("extend");
+				return { ok: true as const, lease: LEASE };
+			}),
+		});
+		const writer = testWriter((data) => {
+			events.push(`write:${JSON.stringify(data)}`);
+			return { success: true };
+		});
+
+		await expect(run(writer, deps)).rejects.toThrow("timer unavailable");
+		expect(events).toEqual([
+			"extend",
+			'write:"1"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+		]);
+	});
+
+	it("stops on a lease failure immediately after the inter-frame wait", async () => {
+		const events: string[] = [];
+		let extensions = 0;
+		const deps = stubDeps({
+			delay: async (ms) => {
+				events.push(`delay:${ms}`);
+			},
+			leases: testLeases(() => {
+				extensions += 1;
+				events.push("extend");
+				return extensions === 1
+					? { ok: true as const, lease: LEASE }
+					: { ok: false as const, reason: "expired" as const };
+			}),
+		});
+		const writer = testWriter((data) => {
+			events.push(`write:${JSON.stringify(data)}`);
+			return { success: true };
+		});
+
+		expect(await run(writer, deps)).toMatchObject({
+			kind: "unconfirmed",
+			reason: "lease expired",
+			written: 1,
+			abortedAt: 1,
+		});
+		expect(events).toEqual([
+			"extend",
+			'write:"1"',
+			`delay:${ANSWER_INTER_FRAME_DELAY_MS}`,
+			"extend",
+		]);
+	});
+});
+
 describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 	it("confirms successful writes without consulting transcript, screen, session, binding, permission, or marker sources", async () => {
 		let now = 1_000;
@@ -477,10 +679,7 @@ describe("(ANSWER-GUARDLESS) direct PTY injection", () => {
 			now: () => now++,
 			leases: testLeases(() => ({
 				ok: true as const,
-				lease: {
-					...LEASE,
-					expiresAtMs: now + SEQUENCE_DEADLINE_MS,
-				},
+				lease: { ...LEASE, expiresAtMs: now + 15_000 },
 			})),
 			snapshotScreen: forbidden,
 			sessionActive: forbidden,

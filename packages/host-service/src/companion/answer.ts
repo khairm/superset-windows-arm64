@@ -77,6 +77,11 @@ import {
 /**
  * How long a request will wait for the per-terminal lock. On expiry NOTHING has
  * been written — the critical section never ran — and the client is told so.
+ *
+ * `(ANSWER-FRAME-PACING)` deliberately holds this lock across every settling
+ * delay so no second answer or `/v1/message` can interleave bytes. A competing
+ * request may therefore time out while a long answer is still being delivered;
+ * it must not queue past its own answer-wide lease and later type stale input.
  */
 export const LOCK_WAIT_TIMEOUT_MS = 5_000;
 
@@ -84,10 +89,24 @@ export const LOCK_WAIT_TIMEOUT_MS = 5_000;
 export const SCREEN_ADVANCE_POLL_MS = 25;
 
 /**
- * Hard ceiling on one keystroke sequence. Bounds how long the terminal lock can
- * be held, and keeps the sequence inside the answer lease's TTL.
+ * (ANSWER-FRAME-PACING) Fixed inter-frame settling time proven against a real
+ * Claude Code 2.1.228 N=4 picker. Daemon write acknowledgements report only that
+ * the PTY accepted a frame; they arrive before the TUI advances to the next item.
+ * Protocol-v3 therefore waits this long after every acknowledged non-final frame.
+ *
+ * The boundary failure mode is not a stall — it is a silently submitted wrong
+ * answer set. In the fixed-gap N=4 sweep, a 250 ms run misattributed every answer
+ * one question over with no error, while 500 ms passed 3/3 with the exact expected
+ * tool result. The fixed delay reads no TUI state, so it also works with the
+ * renderer absent, the display off, or Windows locked.
  */
-export const SEQUENCE_DEADLINE_MS = 10_000;
+export const ANSWER_INTER_FRAME_DELAY_MS = 500;
+
+/**
+ * Unpaced execution allowance for one sequence. Pacing is added dynamically for
+ * every legal inter-frame gap; it must not consume this allowance.
+ */
+export const SEQUENCE_EXECUTION_ALLOWANCE_MS = 10_000;
 
 /** PROTOCOL §7.5 — a message body is 1..8 192 chars. */
 export const MESSAGE_MAX_CHARS = 8_192;
@@ -251,6 +270,12 @@ export interface AnswerDeps {
 	audit: AuditLog;
 	now(): EpochMs;
 	/**
+	 * (ANSWER-FRAME-PACING) Deterministic delay between acknowledged protocol-v3
+	 * frames. Production wires the ordinary timer; tests inject a controllable
+	 * implementation so ordering and exact waits are asserted without wall time.
+	 */
+	delay(ms: DurationMs): Promise<void>;
+	/**
 	 * When THIS bridge lifetime began — the same value `HeartbeatResponse`
 	 * carries (§6.3). `/v1/answer/status` reports it so a client can tell "no
 	 * record because it never arrived" from "no record because this bridge is
@@ -310,6 +335,11 @@ export function assertAnswerDeps(deps: AnswerDeps): void {
 	if (typeof deps.nudgeRepaint !== "function") {
 		throw new Error(
 			"(COMPANION-BRIDGE) answer deps: nudgeRepaint must be wired for post-answer redraw",
+		);
+	}
+	if (typeof deps.delay !== "function") {
+		throw new Error(
+			"(COMPANION-BRIDGE) answer deps: delay must be wired for protocol-v3 inter-frame pacing",
 		);
 	}
 	if (typeof deps.writeFramed !== "function") {
@@ -1397,11 +1427,13 @@ type InjectionResult =
  * display, or the Windows interactive login session, so display-off and locked
  * desktops behave exactly like an unlocked desktop.
  *
- * PTY input is an ordered byte stream. We therefore write the already-encoded
- * sequence in order and confirm immediately after the daemon acknowledges every
- * `pty.write`. The old mirror-advance wait could downgrade a successful write to
- * `unconfirmed` merely because the renderer had not repainted; that is explicitly
- * not an outcome check.
+ * PTY input is an ordered byte stream, but an acknowledged `pty.write` only says
+ * that the PTY accepted the frame; it does not say Claude's picker has advanced.
+ * `(ANSWER-FRAME-PACING)` therefore keeps protocol-v3 keystrokes discrete and
+ * waits a fixed, deterministic interval after every acknowledged non-final frame.
+ * The wait is not an observation and cannot veto or downgrade anything. Protocol
+ * v2 remains one complete legacy frame with no pacing and an honest `unconfirmed`
+ * outcome because that daemon cannot acknowledge input.
  */
 export async function injectSequence(
 	deps: AnswerDeps,
@@ -1422,7 +1454,13 @@ export async function injectSequence(
 		acknowledgedInputSupported,
 		writer,
 	} = input;
-	const deadlineMs = deps.now() + SEQUENCE_DEADLINE_MS;
+	const interFrameWaits = acknowledgedInputSupported
+		? Math.max(0, keystrokes.length - 1)
+		: 0;
+	const deadlineMs =
+		deps.now() +
+		SEQUENCE_EXECUTION_ALLOWANCE_MS +
+		interFrameWaits * ANSWER_INTER_FRAME_DELAY_MS;
 	let written = 0;
 
 	const abort = (
@@ -1461,11 +1499,13 @@ export async function injectSequence(
 		if (frame === undefined) {
 			return abort("missing input frame", frameIndex, "not_written");
 		}
-		if (deps.now() >= deadlineMs) {
+
+		const nowMs = deps.now();
+		if (nowMs >= deadlineMs) {
 			return abort("sequence deadline exceeded", frame.abortAt, "not_written");
 		}
 
-		const extension = deps.leases.extend(leaseId, deps.now());
+		const extension = deps.leases.extend(leaseId, nowMs);
 		if (!extension.ok) {
 			deps.log({
 				event: "companion.answer.lease_lost",
@@ -1513,6 +1553,13 @@ export async function injectSequence(
 		}
 
 		written += frame.acknowledgedKeystrokes;
+
+		// Sleep only AFTER an acknowledged non-final v3 write. On the next loop the
+		// deadline is checked, then the lease is renewed immediately before writing.
+		// No screen, renderer, transcript, display, lock or agent state is consulted.
+		if (acknowledgedInputSupported && frameIndex < frames.length - 1) {
+			await deps.delay(ANSWER_INTER_FRAME_DELAY_MS);
+		}
 	}
 
 	return { kind: "confirmed" };
