@@ -3538,3 +3538,7 @@ Biome also flagged an unsorted-import error the prior agent introduced in `answe
 4. **Six exported tunables have no external consumer** (`LOCK_WAIT_TIMEOUT_MS`, `MESSAGE_ECHO_*`, etc.). Pre-existing, unrelated to the guard removal.</result>
 <usage><subagent_tokens>235644</subagent_tokens><tool_uses>146</tool_uses><duration_ms>2623628</duration_ms></usage>
 </task-notification>
+
+---
+
+ok installed and PC restarted do whatever e2e testing you need to do
