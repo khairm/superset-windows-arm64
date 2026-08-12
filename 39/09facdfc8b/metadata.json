@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "3909facdfc8b",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/answer-guardless.test.ts",
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/attempt-ledger.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/question-lifecycle.test.ts",
+    "packages/host-service/src/companion/question-store.ts",
+    "packages/host-service/src/companion/types.ts",
+    "packages/host-service/src/db/schema.ts",
+    "packages/host-service/src/terminal/terminal.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/39/09facdfc8b/0/metadata.json",
+      "transcript": "/39/09facdfc8b/0/full.jsonl",
+      "content_hash": "/39/09facdfc8b/0/content_hash.txt",
+      "prompt": "/39/09facdfc8b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4534219,
+    "cache_creation_tokens": 20678905,
+    "cache_read_tokens": 1068281223,
+    "output_tokens": 2164173,
+    "api_call_count": 3445
+  }
+}
