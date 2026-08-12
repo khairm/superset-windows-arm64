@@ -189,6 +189,12 @@ export interface AnswerDeps {
 	 */
 	writeInput: RawWriteFn;
 	/**
+	 * Best-effort repaint after an acknowledged answer. This asks the running TUI
+	 * to redraw from its own state; it is never an answer precondition or outcome
+	 * check, and failure may only be logged.
+	 */
+	nudgeRepaint(input: HostTerminalRef): { success: true } | { error: string };
+	/**
 	 * Paste-framed write, for `/v1/message` ONLY. Deliberately a different shape
 	 * (async, `{text, submit}`) so it cannot be swapped with `writeInput`. Never
 	 * reachable from the injector.
@@ -290,6 +296,11 @@ function rawWriterFor(deps: AnswerDeps): RawPtyWriter {
  */
 export function assertAnswerDeps(deps: AnswerDeps): void {
 	rawWriterFor(deps);
+	if (typeof deps.nudgeRepaint !== "function") {
+		throw new Error(
+			"(COMPANION-BRIDGE) answer deps: nudgeRepaint must be wired for post-answer redraw",
+		);
+	}
 	if (typeof deps.writeFramed !== "function") {
 		throw new Error(
 			"(COMPANION-BRIDGE) answer deps: writeFramed must be writeFramedInputToSession — /v1/message needs paste framing",
@@ -858,7 +869,7 @@ export async function handleAnswer(
 		// (ANSWER-INFLIGHT) The sequence for this very requestId is still typing.
 		// Reporting `unconfirmed` here — which the client treats as terminal — for a
 		// write about to confirm was the original sin this whole area is fixing.
-		if (previous.status === "in_flight") {
+		if (previous.status === "claimed" || previous.status === "in_flight") {
 			throw sealed(
 				409,
 				"lease_held",
@@ -1069,6 +1080,40 @@ export async function handleAnswer(
 					// text or an answer to the replacement picker. This is question identity,
 					// not screen/transcript/session evidence.
 					requireCurrentPendingAnswerQuestion(deps, request);
+					let durableFence: LedgerRecord | null;
+					try {
+						durableFence = deps.ledger.beginWrite(
+							request.requestId,
+							lease.leaseId,
+						);
+					} catch (error) {
+						deps.log({
+							event: "companion.answer.begin_write_failed",
+							requestId: request.requestId,
+							questionId: request.questionId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						throw sealed(
+							503,
+							"internal",
+							"the durable write fence could not be established; nothing was written — submit a new request to retry",
+						);
+					}
+					if (durableFence !== null) {
+						throw sealed(
+							409,
+							"already_resolved",
+							durableFence.status === "confirmed"
+								? "an answer for this question was already delivered; it will not be typed again"
+								: "an answer for this question may already have been delivered; it will not be typed again",
+							{
+								resolvedBy: null,
+								resolvedAtMs: durableFence.resolvedAtMs,
+								outcome:
+									durableFence.status === "confirmed" ? "answered" : "unknown",
+							},
+						);
+					}
 					return injectSequence(deps, {
 						question,
 						host,
@@ -1082,23 +1127,6 @@ export async function handleAnswer(
 
 			if (result.kind === "confirmed") {
 				const resolvedAtMs = deps.now();
-				const recorded = deps.questions.resolve(
-					request.questionId,
-					{ deviceLabel: ctx.device.label, surface: request.surface },
-					resolvedAtMs,
-				);
-				if (!recorded) {
-					// The record left `pending` while the sequence ran — the hook
-					// superseded or settled it. The keystrokes still landed and the audit
-					// entry below still carries the true provenance; what we must NOT do
-					// is stamp this device onto a record it did not resolve.
-					deps.log({
-						event: "companion.answer.resolve_skipped",
-						questionId: request.questionId,
-						terminalId: question.terminalId,
-						state: question.state,
-					});
-				}
 				const record: AnswerAttemptRecord = {
 					...baseAttempt,
 					status: "confirmed",
@@ -1131,6 +1159,26 @@ export async function handleAnswer(
 						failureCode: null,
 					});
 					return recordToResponse(unconfirmed);
+				}
+				// Only after the durable confirmed row exists may positive PostToolUse or
+				// transcript settlement inherit this device provenance. Neither this mark
+				// nor the repaint below changes the confirmed wire outcome.
+				deps.questions.markRemoteAnswered(
+					request.questionId,
+					{
+						deviceLabel: ctx.device.label,
+						surface: request.surface,
+					},
+					resolvedAtMs,
+				);
+				const repaint = deps.nudgeRepaint(host);
+				if ("error" in repaint) {
+					deps.log({
+						event: "companion.answer.repaint_failed",
+						questionId: request.questionId,
+						terminalId: question.terminalId,
+						error: repaint.error,
+					});
 				}
 				await appendAnswerAudit(deps, {
 					...baseAudit,
@@ -1289,7 +1337,8 @@ export async function handleAnswer(
 		// replay can say why. Anything else is a fault of unknown extent — it could
 		// have escaped after bytes moved — so it degrades to `unconfirmed` rather than
 		// to a `failed` that would assert nothing was typed.
-		if (deps.ledger.get(request.requestId)?.status === "in_flight") {
+		const durableStatus = deps.ledger.get(request.requestId)?.status;
+		if (durableStatus === "claimed" || durableStatus === "in_flight") {
 			deps.ledger.recordOutcome({
 				requestId: request.requestId,
 				...(error instanceof SealedError
@@ -1574,6 +1623,15 @@ function toWireOutcome(resolved: StatusOutcome): AnswerStatusOutcome {
 	}
 	if (resolved.record.status === "closed_not_received") {
 		return { kind: "not_received" };
+	}
+	if (resolved.record.status === "claimed") {
+		return {
+			kind: "known",
+			status: "in_flight",
+			questionId: resolved.record.questionId as QuestionId | null,
+			resolvedAtMs: null,
+			failureCode: null,
+		};
 	}
 	return {
 		kind: "known",

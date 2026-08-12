@@ -158,22 +158,15 @@ export const notificationsRouter = router({
 	 * would leak it into every agent shell's env for zero practical gain.
 	 *
 	 * (COMPANION-CAPTURE) That threat model now also covers a forged question:
-	 * anything on localhost can POST a `companionQuestion` and make a phone
-	 * display text it wrote. It CANNOT make the bridge type anything into a
-	 * terminal — PROTOCOL.md §11.3 keeps the load-bearing answer guards on the
-	 * transcript (guard 1) and a live screen snapshot (guard 5), both outside
-	 * this endpoint's reach, precisely because this endpoint is unauthenticated.
-	 * A forged capture therefore fails guard 1/5 and writes nothing. Do not
-	 * promote anything sourced here into an answer precondition.
-	 *
-	 * "Outside this endpoint's reach" is mechanical, not aspirational, and both
-	 * mechanisms were once missing. Guard 1 reads a transcript path DERIVED from
-	 * host.db rather than the `transcriptPath` sent here, and requires the
-	 * matching `tool_use` block to be positively observed; guard 5 enforces a
-	 * minimum anchor length and a contiguous ascending row band, so the `header`
-	 * and `label` strings sent here cannot be shrunk into a substring test any
-	 * screen satisfies. Weakening either puts this endpoint back on the
-	 * permitting path.
+	 * anything on localhost can POST a `companionQuestion` and make a paired
+	 * device display text it wrote. The sink validates the capture shape and
+	 * derives its terminal/workspace/transcript identities from host.db rather
+	 * than trusting caller claims. The guardless answer path intentionally does
+	 * not turn transcript, screen, renderer, binding, marker or liveness reads
+	 * into write vetoes; pairing, sealed authenticated transport, exact current
+	 * question/fingerprint arbitration, semantic answer validation, the answer
+	 * lease, terminal lock and durable request fence remain the write boundary.
+	 * Do not reintroduce mutable desktop observations as answer preconditions.
 	 */
 	hook: publicProcedure.input(hookInput).mutation(async ({ ctx, input }) => {
 		const eventType = mapEventType(input.eventType);

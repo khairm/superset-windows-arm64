@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type AnswerDeps,
+	assertAnswerDeps,
+	type HostTerminalRef,
+	handleAnswer,
 	injectSequence,
 	ledgerRecordToResponse,
 	SEQUENCE_DEADLINE_MS,
 } from "./answer";
-import type { LedgerRecord } from "./attempt-ledger";
+import type { AttemptLedger, LedgerRecord } from "./attempt-ledger";
 import { ROUTES } from "./http";
 import {
 	createRawPtyWriter,
@@ -14,10 +17,11 @@ import {
 	type RawWriteInput,
 	type RawWriteResult,
 } from "./keystrokes";
-import { createLeaseRegistry } from "./lease";
-import type { PendingQuestion } from "./question-store";
+import { createLeaseRegistry, createTerminalLockRegistry } from "./lease";
+import type { PendingQuestion, QuestionStore } from "./question-store";
 import type {
 	AnswerLease,
+	AnswerRequest,
 	DeviceId,
 	Fingerprint,
 	LeaseId,
@@ -32,6 +36,7 @@ const QUESTION = {
 	askedAtMs: 1,
 	resolvedAtMs: null,
 	resolvedBy: null,
+	remoteAnswer: null,
 	toolUseId: "toolu_guardless",
 	sessionId: "session-guardless",
 	terminalId: "wire-terminal" as TerminalId,
@@ -88,6 +93,7 @@ function stubDeps(overrides: Partial<AnswerDeps> = {}): AnswerDeps {
 	return {
 		now: () => 1_000,
 		leases: testLeases(() => ({ ok: true as const, lease: LEASE })),
+		nudgeRepaint: () => ({ success: true }),
 		log: () => {},
 		...overrides,
 	} as unknown as AnswerDeps;
@@ -120,6 +126,164 @@ function run(
 	});
 }
 
+function memoryLedger(): AttemptLedger {
+	const records = new Map<string, LedgerRecord>();
+	return {
+		currentEpoch: () => "epoch-guardless",
+		claimForAnswer: (claim) => {
+			const previous = records.get(claim.requestId);
+			if (previous !== undefined) return { kind: "replay", record: previous };
+			records.set(
+				claim.requestId,
+				ledgerRow({
+					requestId: claim.requestId,
+					status: "claimed",
+					questionId: claim.questionId,
+					deviceId: claim.deviceId,
+					surface: claim.surface,
+					leaseId: null,
+					startedAtMs: claim.startedAtMs,
+					createdAtMs: claim.startedAtMs,
+					resolvedAtMs: null,
+				}),
+			);
+			return { kind: "claimed", coverageEpoch: "epoch-guardless" };
+		},
+		beginWrite: (requestId, leaseId) => {
+			const current = records.get(requestId);
+			if (current?.status !== "claimed") throw new Error("missing claim");
+			for (const record of records.values()) {
+				if (
+					record.requestId !== requestId &&
+					record.questionId === current.questionId &&
+					(record.status === "in_flight" ||
+						record.status === "confirmed" ||
+						record.status === "unconfirmed")
+				) {
+					return record;
+				}
+			}
+			records.set(requestId, {
+				...current,
+				status: "in_flight",
+				leaseId,
+			});
+			return null;
+		},
+		recordOutcome: (outcome) => {
+			const current = records.get(outcome.requestId);
+			if (current?.status !== "claimed" && current?.status !== "in_flight")
+				return;
+			records.set(outcome.requestId, {
+				...current,
+				...outcome,
+				guardsPassed: [...outcome.guardsPassed],
+			});
+		},
+		get: (requestId) => records.get(requestId) ?? null,
+		resolveStatus: () => ({ kind: "unconfirmed", why: "unused in this test" }),
+		rotateEpoch: () => "epoch-rotated",
+	};
+}
+
+function answerHarness(
+	options: {
+		repaint?: AnswerDeps["nudgeRepaint"];
+		onWrite?: (data: string, question: PendingQuestion) => void;
+	} = {},
+) {
+	let now = 10_000;
+	let writes = 0;
+	const events: Record<string, unknown>[] = [];
+	const question: PendingQuestion = {
+		...QUESTION,
+		questionId: "AAAAAAAAAAAAAAAAAAAAAA" as QuestionId,
+		fingerprint: "AQEBAQEBAQEBAQEBAQEBAQ" as Fingerprint,
+		questions: [
+			{
+				index: 0,
+				header: "Pick one",
+				question: "Which?",
+				multiSelect: false,
+				options: [{ index: 0, label: "A", description: "" }],
+				freeTextOption: null,
+			},
+		],
+	};
+	const questions = {
+		get: (questionId: QuestionId) =>
+			questionId === question.questionId ? question : null,
+		byHostTerminal: (hostTerminalId: string) =>
+			hostTerminalId === question.hostTerminalId && question.state === "pending"
+				? question
+				: null,
+		markRemoteAnswered: (
+			questionId: QuestionId,
+			resolvedBy: PendingQuestion["resolvedBy"],
+			deliveredAtMs: number,
+		) => {
+			if (questionId !== question.questionId || resolvedBy === null)
+				return false;
+			question.remoteAnswer = { resolvedBy, deliveredAtMs };
+			if (question.state === "resolved") {
+				question.resolvedBy = resolvedBy;
+				question.resolvedAtMs = deliveredAtMs;
+			}
+			return true;
+		},
+		markStale: () => {
+			question.state = "stale";
+		},
+	} as unknown as QuestionStore;
+	const writeInput = Object.assign(
+		async (input: RawWriteInput) => {
+			writes += 1;
+			options.onWrite?.(input.data, question);
+			return { success: true as const };
+		},
+		{
+			writerKind: RAW_PTY_WRITER_KIND,
+			prepare: async () => ({
+				success: true as const,
+				acknowledgedInputSupported: true,
+			}),
+		},
+	);
+	const deps = {
+		writeInput,
+		nudgeRepaint: options.repaint ?? (() => ({ success: true as const })),
+		locks: createTerminalLockRegistry(),
+		leases: createLeaseRegistry(),
+		ledger: memoryLedger(),
+		questions,
+		audit: { append: async () => {}, prune: async () => 0 },
+		now: () => now++,
+		log: (event: Record<string, unknown>) => events.push(event),
+	} as unknown as AnswerDeps;
+	const request = {
+		questionId: question.questionId,
+		fingerprint: question.fingerprint,
+		requestId: "00000000-0000-4000-8000-000000000001",
+		answers: [{ questionIndex: 0, kind: "select", optionIndex: 0 }],
+		surface: "phone",
+	} satisfies AnswerRequest;
+	const ctx = {
+		device: {
+			deviceId: "device-guardless" as DeviceId,
+			label: "phone",
+			writeEnabled: true,
+		},
+	} as unknown as Parameters<typeof handleAnswer>[1];
+	return {
+		deps,
+		ctx,
+		request,
+		question,
+		events,
+		writeCount: () => writes,
+	};
+}
+
 describe("(ANSWER-GUARDLESS) answer boundary", () => {
 	const request = {
 		questionId: "A".repeat(22),
@@ -140,6 +304,134 @@ describe("(ANSWER-GUARDLESS) answer boundary", () => {
 				confirmedBiometric: "yes",
 			}),
 		).toThrow();
+	});
+});
+
+describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
+	it("requires the non-vetoing repaint adapter at startup", () => {
+		expect(() =>
+			// Only the adapter under test matters; the raw writer marker is validated
+			// before this dependency check.
+			assertAnswerDeps({
+				writeInput: Object.assign(async () => ({ success: true as const }), {
+					writerKind: RAW_PTY_WRITER_KIND,
+					prepare: async () => ({
+						success: true as const,
+						acknowledgedInputSupported: true,
+					}),
+				}),
+				writeFramed: async () => ({ success: true as const }),
+				snapshotScreen: async () => "",
+			} as unknown as AnswerDeps),
+		).toThrow("nudgeRepaint");
+	});
+
+	it("durably confirms, keeps discovery pending, records provenance, and repaints", async () => {
+		const repaints: HostTerminalRef[] = [];
+		const harness = answerHarness({
+			repaint: (host) => {
+				repaints.push(host);
+				return { success: true };
+			},
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.question.state).toBe("pending");
+		expect(harness.question.remoteAnswer).toEqual({
+			resolvedBy: { deviceLabel: "phone", surface: "phone" },
+			deliveredAtMs: response.resolvedAtMs,
+		});
+		expect(repaints).toEqual([HOST]);
+		expect(harness.writeCount()).toBe(1);
+	});
+
+	it("does not downgrade a durable confirmation when repaint fails", async () => {
+		const harness = answerHarness({
+			repaint: () => ({ error: "resize failed" }),
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.events).toContainEqual(
+			expect.objectContaining({
+				event: "companion.answer.repaint_failed",
+				error: "resize failed",
+			}),
+		);
+	});
+
+	it("does not let a pre-write claim fence the request that wins the answer lease", async () => {
+		const harness = answerHarness();
+		const competingRequest = {
+			...harness.request,
+			requestId: "00000000-0000-4000-8000-000000000099",
+		};
+		harness.deps.ledger.claimForAnswer({
+			requestId: competingRequest.requestId,
+			questionId: competingRequest.questionId,
+			deviceId: harness.ctx.device.deviceId,
+			surface: competingRequest.surface,
+			startedAtMs: 9_999,
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.writeCount()).toBe(1);
+	});
+
+	it("never retypes a durable delivery under a fresh request id", async () => {
+		const harness = answerHarness();
+		await handleAnswer(harness.deps, harness.ctx, harness.request);
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, {
+				...harness.request,
+				requestId: "00000000-0000-4000-8000-000000000002",
+			}),
+		).rejects.toMatchObject({
+			statusCode: 409,
+			body: { code: "already_resolved" },
+		});
+		expect(harness.writeCount()).toBe(1);
+	});
+
+	it("keeps phone provenance when positive settlement wins the marking race", async () => {
+		const harness = answerHarness({
+			onWrite: (_data, question) => {
+				question.state = "resolved";
+				question.resolvedBy = { deviceLabel: null, surface: "desktop" };
+				question.resolvedAtMs = 9_999;
+			},
+		});
+
+		const response = await handleAnswer(
+			harness.deps,
+			harness.ctx,
+			harness.request,
+		);
+
+		expect(response.status).toBe("confirmed");
+		expect(harness.question.resolvedBy).toEqual({
+			deviceLabel: "phone",
+			surface: "phone",
+		});
+		expect(harness.question.resolvedAtMs).toBe(response.resolvedAtMs);
 	});
 });
 

@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../db";
-import { projects, terminalSessions, workspaces } from "../db/schema";
+import {
+	answerAttempts,
+	projects,
+	terminalSessions,
+	workspaces,
+} from "../db/schema";
+import { createAttemptLedger } from "./attempt-ledger";
 import {
 	CaptureRejectedError,
 	createQuestionStore,
@@ -70,6 +76,84 @@ function resolver(
 		...overrides,
 	};
 }
+
+describe("(ANSWER-LEDGER) question write fence against real SQL", () => {
+	const dir = mkdtempSync(join(tmpdir(), "companion-answer-ledger-"));
+	const db = createDb(
+		join(dir, "host.db"),
+		join(import.meta.dirname, "..", "..", "drizzle"),
+	);
+	db.$client.pragma("synchronous = FULL");
+	const ledger = createAttemptLedger({ db, log: () => {}, now: () => NOW });
+
+	afterAll(() => {
+		db.$client.close();
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("lets a pre-write claim race without fencing the winner", () => {
+		ledger.claimForAnswer({
+			requestId: "00000000-0000-4000-8000-000000000010",
+			questionId: "q-race",
+			deviceId: "device-a",
+			surface: "phone",
+			startedAtMs: NOW,
+		});
+		ledger.claimForAnswer({
+			requestId: "00000000-0000-4000-8000-000000000011",
+			questionId: "q-race",
+			deviceId: "device-b",
+			surface: "watch",
+			startedAtMs: NOW + 1,
+		});
+
+		expect(
+			ledger.beginWrite("00000000-0000-4000-8000-000000000010", "lease-a"),
+		).toBeNull();
+		expect(
+			ledger.beginWrite("00000000-0000-4000-8000-000000000011", "lease-b"),
+		).toMatchObject({ status: "in_flight", questionId: "q-race" });
+	});
+
+	it("keeps proven zero-write outcomes non-fencing", () => {
+		ledger.recordOutcome({
+			requestId: "00000000-0000-4000-8000-000000000011",
+			status: "failed",
+			resolvedAtMs: null,
+			failureCode: "lease_held",
+			guardsPassed: [],
+			leaseId: null,
+		});
+		ledger.recordOutcome({
+			requestId: "00000000-0000-4000-8000-000000000010",
+			status: "failed",
+			resolvedAtMs: null,
+			failureCode: "internal",
+			guardsPassed: [],
+			leaseId: "lease-a",
+		});
+		ledger.claimForAnswer({
+			requestId: "00000000-0000-4000-8000-000000000012",
+			questionId: "q-race",
+			deviceId: "device-c",
+			surface: "phone",
+			startedAtMs: NOW + 2,
+		});
+
+		expect(
+			ledger.beginWrite("00000000-0000-4000-8000-000000000012", "lease-c"),
+		).toBeNull();
+		expect(
+			db
+				.select({ status: answerAttempts.status })
+				.from(answerAttempts)
+				.all()
+				.map((row) => row.status),
+		).toContain("in_flight");
+	});
+});
 
 // ---------------------------------------------------------------------------
 // (CAPTURE-BOUNDED) the capture gate — read-api's `resolveActiveTerminal`
@@ -200,6 +284,117 @@ function requireFirstPendingId(store: QuestionStore) {
 	if (first === undefined) throw new Error("expected one pending question");
 	return first.questionId;
 }
+
+describe("positive question settlement", () => {
+	it("keeps an acknowledged remote answer pending until the exact PostToolUse arrives", () => {
+		const settled: string[] = [];
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: (question) => settled.push(question.questionId),
+		});
+		const question = store.capture(captureInput());
+
+		expect(
+			store.markRemoteAnswered(
+				question.questionId,
+				{
+					deviceLabel: "phone",
+					surface: "phone",
+				},
+				NOW - 1,
+			),
+		).toBe(true);
+		expect(store.get(question.questionId)?.state).toBe("pending");
+		expect(store.listPending()).toHaveLength(1);
+		expect(settled).toEqual([]);
+
+		store.asCaptureSink().resolve({
+			hostTerminalId: question.hostTerminalId,
+			toolUseId: question.toolUseId,
+			resolvedAtMs: NOW,
+		});
+
+		expect(store.get(question.questionId)?.state).toBe("resolved");
+		expect(store.get(question.questionId)?.resolvedBy).toEqual({
+			deviceLabel: "phone",
+			surface: "phone",
+		});
+		expect(store.get(question.questionId)?.resolvedAtMs).toBe(NOW - 1);
+		expect(settled).toEqual([question.questionId]);
+	});
+
+	it("preserves remote provenance when PostToolUse wins the marking race", () => {
+		const settled: string[] = [];
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: (question) => settled.push(question.questionId),
+		});
+		const question = store.capture(captureInput());
+
+		store.asCaptureSink().resolve({
+			hostTerminalId: question.hostTerminalId,
+			toolUseId: question.toolUseId,
+			resolvedAtMs: NOW,
+		});
+		expect(
+			store.markRemoteAnswered(
+				question.questionId,
+				{ deviceLabel: "phone", surface: "phone" },
+				NOW - 1,
+			),
+		).toBe(true);
+
+		expect(store.get(question.questionId)?.state).toBe("resolved");
+		expect(store.get(question.questionId)?.resolvedBy).toEqual({
+			deviceLabel: "phone",
+			surface: "phone",
+		});
+		expect(store.get(question.questionId)?.resolvedAtMs).toBe(NOW - 1);
+		expect(settled).toEqual([question.questionId]);
+	});
+
+	it("returns false when a confirmed answer outlives its in-memory question", () => {
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
+		});
+		expect(
+			store.markRemoteAnswered(
+				"unknown-question",
+				{ deviceLabel: "phone", surface: "phone" },
+				NOW,
+			),
+		).toBe(false);
+	});
+
+	it("does not settle remote provenance on a mismatched PostToolUse", () => {
+		const store = createQuestionStore({
+			source: resolver(),
+			liveness: { isProvablyGone: () => false },
+			onSettled: () => {},
+		});
+		const question = store.capture(captureInput());
+		store.markRemoteAnswered(
+			question.questionId,
+			{
+				deviceLabel: "watch",
+				surface: "watch",
+			},
+			NOW - 1,
+		);
+
+		store.asCaptureSink().resolve({
+			hostTerminalId: question.hostTerminalId,
+			toolUseId: "different-tool",
+			resolvedAtMs: NOW,
+		});
+
+		expect(store.get(question.questionId)?.state).toBe("pending");
+	});
+});
 
 describe("transcript reconciliation cache", () => {
 	it("retries an unreadable transcript even when its stat identity is unchanged", async () => {

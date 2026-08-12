@@ -554,6 +554,15 @@ export interface PendingQuestion {
 	askedAtMs: number;
 	resolvedAtMs: number | null;
 	resolvedBy: ResolvedBy | null;
+	/**
+	 * A device answer whose PTY writes are durably confirmed but whose exact
+	 * AskUserQuestion completion has not necessarily arrived yet. Never sent to a
+	 * client. It fences a second request while the question remains discoverable.
+	 */
+	remoteAnswer: {
+		resolvedBy: ResolvedBy;
+		deliveredAtMs: number;
+	} | null;
 	/** Never sent to a client. */
 	toolUseId: string;
 	/** Never sent to a client. */
@@ -753,6 +762,17 @@ export interface QuestionStore {
 		questionId: QuestionId,
 		resolvedBy: ResolvedBy,
 		atMs: number,
+	): boolean;
+	/**
+	 * Records durable remote delivery without settling or hiding a pending question.
+	 * If exact positive settlement won the race, amends that resolved record's
+	 * provenance instead; a matching tool result proves which delivered answer it
+	 * consumed, while durable delivery proves who supplied it.
+	 */
+	markRemoteAnswered(
+		questionId: QuestionId,
+		resolvedBy: ResolvedBy,
+		deliveredAtMs: number,
 	): boolean;
 	markStale(questionId: QuestionId, reason: string): void;
 	/**
@@ -1811,6 +1831,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 				askedAtMs: input.askedAtMs,
 				resolvedAtMs: null,
 				resolvedBy: null,
+				remoteAnswer: null,
 				toolUseId: input.toolUseId,
 				sessionId: input.sessionId,
 				terminalId,
@@ -1934,9 +1955,21 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 			// `pendingByHostTerminal`, and re-labelling it `resolved` with a device's
 			// provenance records an answer that device never gave.
 			if (question.state !== "pending") return false;
-			question.resolvedAtMs = atMs;
-			question.resolvedBy = resolvedBy;
+			question.resolvedAtMs = question.remoteAnswer?.deliveredAtMs ?? atMs;
+			question.resolvedBy = question.remoteAnswer?.resolvedBy ?? resolvedBy;
 			settle(question, "resolved");
+			return true;
+		},
+
+		markRemoteAnswered(questionId, resolvedBy, deliveredAtMs) {
+			const question = byId.get(questionId);
+			if (question === undefined) return false;
+			if (question.state === "stale") return false;
+			question.remoteAnswer = { resolvedBy, deliveredAtMs };
+			if (question.state === "resolved") {
+				question.resolvedBy = resolvedBy;
+				question.resolvedAtMs = deliveredAtMs;
+			}
 			return true;
 		},
 

@@ -1378,19 +1378,64 @@ function deliverOutput(session: TerminalSession, bytes: Uint8Array) {
  * program itself can faithfully redraw (the v1 terminal-host's proven
  * recipe; never synthesize screen content the tracker may not have — #6290).
  */
-function nudgeRepaint(session: TerminalSession) {
-	if (!isCurrentLiveSession(session)) return;
+function nudgeRepaint(
+	session: TerminalSession,
+): { success: true } | { error: string } {
+	if (!isCurrentLiveSession(session)) {
+		return { error: "Terminal session is not live" };
+	}
 	const { cols, rows } = session;
 	// Shrink by a row, growing instead when already at the minimum.
 	const toggledRows = rows > MIN_TERMINAL_ROWS ? rows - 1 : rows + 1;
 	const generation = session.resizeGeneration;
-	session.pty.resize(cols, toggledRows);
+	try {
+		session.pty.resize(cols, toggledRows);
+	} catch (error) {
+		return {
+			error:
+				error instanceof Error
+					? error.message
+					: "Terminal repaint nudge failed",
+		};
+	}
 	setTimeout(() => {
 		// A real client resize landed mid-nudge; it owns the dims now.
 		if (!isCurrentLiveSession(session)) return;
 		if (session.resizeGeneration !== generation) return;
-		session.pty.resize(cols, rows);
+		try {
+			session.pty.resize(cols, rows);
+		} catch (error) {
+			console.warn(
+				"[terminal] failed to restore PTY dimensions after repaint nudge",
+				{
+					terminalId: session.terminalId,
+					error,
+				},
+			);
+		}
 	}, REPAINT_NUDGE_RESTORE_MS);
+	return { success: true };
+}
+
+/**
+ * Best-effort repaint for a live companion answer target.
+ *
+ * A daemon-side input acknowledgement proves that the bytes reached the PTY,
+ * but a renderer can still hold the frame from before Claude consumed them.
+ * Toggling the PTY dimensions asks the running program to redraw from its own
+ * state. Failure is diagnostic only: input has already landed and callers must
+ * never turn a repaint problem into an answer refusal or downgrade.
+ */
+export function nudgeTerminalSessionRepaint({
+	terminalId,
+	workspaceId,
+}: {
+	terminalId: string;
+	workspaceId: string;
+}): { success: true } | { error: string } {
+	const session = writableSession(terminalId, workspaceId);
+	if ("error" in session) return session;
+	return nudgeRepaint(session);
 }
 
 /** False once the session exited or was disposed/replaced in the map —

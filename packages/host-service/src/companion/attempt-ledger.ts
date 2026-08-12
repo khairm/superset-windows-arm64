@@ -30,8 +30,9 @@
  *
  *   existing row          | /v1/answer                 | /v1/answer/status
  *   ----------------------|----------------------------|-------------------------
- *   absent                | CAS to `in_flight`, type   | CAS to tombstone, report
- *                         |                            | "never received"
+ *   absent                | CAS to `claimed`           | CAS to tombstone, report
+ *                         | promote under terminal lock | "never received"
+ *   `claimed`             | idempotent replay          | report in-flight
  *   `in_flight`/outcome   | idempotent replay          | report that status
  *   `closed_not_received` | REFUSE TO TYPE, forever    | report "never received"
  *
@@ -64,12 +65,12 @@
  * WHAT THIS DELIBERATELY DOES NOT DO
  * ---------------------------------------------------------------------------
  * It does not decide what the CLIENT renders. It returns discriminated outcomes
- * and the honest-state discipline stays where it was: the five statuses mean
+ * and the honest-state discipline stays where it was: the six statuses mean
  * exactly what §11.5 says, nothing collapses into a vague "sent", and a state
  * this module cannot prove is never reported as terminal.
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { AnswerAttemptStatus, HostDb } from "../db";
 import { answerAttempts, answerCoverageEpoch } from "../db";
 import { LOG_PREFIX } from "./config";
@@ -92,6 +93,12 @@ const COVERAGE_EPOCH_BYTES = 16;
 
 /** The single-row epoch table's only key. */
 const EPOCH_ROW_ID = 1;
+
+const QUESTION_FENCE_STATUSES = [
+	"in_flight",
+	"confirmed",
+	"unconfirmed",
+] as const satisfies readonly AnswerAttemptStatus[];
 
 /**
  * Every failure code the ledger may PERSIST, and the set the read boundary
@@ -157,7 +164,7 @@ export interface LedgerRecord {
 
 /** What `claimForAnswer` decided. Exhaustive on purpose. */
 export type ClaimOutcome =
-	/** This request now owns an `in_flight` row. It MAY type. */
+	/** This request now owns a pre-write `claimed` row. It MUST promote before typing. */
 	| { kind: "claimed"; coverageEpoch: string }
 	/** A row already existed: §11.4 replay. Return its recorded outcome, type nothing. */
 	| { kind: "replay"; record: LedgerRecord }
@@ -194,17 +201,24 @@ export interface AttemptLedger {
 		startedAtMs: EpochMs;
 	}): ClaimOutcome;
 	/**
+	 * Atomically promotes this request's non-fencing `claimed` row to `in_flight`,
+	 * but only when no other request already fences the question. Called inside the
+	 * per-terminal lock immediately before the first possible PTY write.
+	 */
+	beginWrite(requestId: RequestId, leaseId: string): LedgerRecord | null;
+	/**
 	 * Records the outcome of an attempt THIS process claimed.
 	 *
-	 * Only ever advances an `in_flight` row. It cannot overwrite a tombstone — that
-	 * is the fence — and, because nothing deletes rows, the row it advances is
-	 * necessarily the one this process claimed: there is no way for a successor to
-	 * hold the same requestId, so the ABA where a late outcome lands on someone
-	 * else's claim cannot occur.
+	 * Advances either a pre-write `claimed` row (for a proven refusal/failure) or an
+	 * `in_flight` row (after a write may have started). It cannot overwrite a
+	 * tombstone or terminal outcome.
 	 */
 	recordOutcome(outcome: {
 		requestId: RequestId;
-		status: Exclude<AnswerAttemptStatus, "in_flight" | "closed_not_received">;
+		status: Exclude<
+			AnswerAttemptStatus,
+			"claimed" | "in_flight" | "closed_not_received"
+		>;
 		resolvedAtMs: EpochMs | null;
 		failureCode: LedgerFailureCode | null;
 		guardsPassed: readonly AnswerGuardName[];
@@ -364,6 +378,18 @@ export function createAttemptLedger(options: {
 	 * that leaves a claim behind cannot outlive one restart even if a future edit
 	 * reintroduces one.
 	 */
+	const abandonedClaims = db
+		.update(answerAttempts)
+		.set({ status: "failed", failureCode: "internal" })
+		.where(eq(answerAttempts.status, "claimed"))
+		.run();
+	if (abandonedClaims.changes > 0) {
+		log({
+			event: "companion.answer.ledger_rehydrated_claimed",
+			count: abandonedClaims.changes,
+			why: "pre-write claims from a dead process provably wrote nothing and no longer fence their questions",
+		});
+	}
 	const rehydrated = db
 		.update(answerAttempts)
 		.set({ status: "unconfirmed" })
@@ -462,6 +488,7 @@ export function createAttemptLedger(options: {
 		};
 		const status = row.status;
 		if (
+			status !== "claimed" &&
 			status !== "in_flight" &&
 			status !== "confirmed" &&
 			status !== "failed" &&
@@ -495,12 +522,15 @@ export function createAttemptLedger(options: {
 		// AND carries an outcome is two contradictory claims, and the dangerous half
 		// is the one a status read repeats verbatim.
 		if (
-			status === "in_flight" &&
+			(status === "claimed" || status === "in_flight") &&
 			(row.resolvedAtMs !== null || row.failureCode !== null)
 		) {
 			return reject(
-				"an in_flight attempt already carries an outcome; it cannot both be mid-flight and resolved",
+				`a ${status} attempt already carries an outcome; it cannot be unresolved and resolved at once`,
 			);
+		}
+		if (status === "claimed" && row.leaseId !== null) {
+			return reject("a pre-write claimed attempt already carries a lease id");
 		}
 		// MEMBERSHIP, not just presence. The schema commit claimed "the runtime check
 		// lives at the read boundary" and this is the half that was missing: a
@@ -555,11 +585,9 @@ export function createAttemptLedger(options: {
 				"an attempt row is missing fields only a tombstone may omit",
 			);
 		}
-		// `leaseId` is deliberately NOT in that list. The claim is made BEFORE the
-		// answer-wide lease is acquired — it has to be, or a status read could still
-		// see "absent" for an answer already admitted — so an `in_flight` row
-		// legitimately has no lease yet. It is filled in when the outcome is
-		// recorded, by which time the lease has been held and released.
+		// `leaseId` is deliberately NOT required for every non-tombstone status. A
+		// pre-write `claimed` row has none; promotion fills it immediately before the
+		// first possible PTY write. Old durable rows may also predate that distinction.
 		let guardsPassed: AnswerGuardName[];
 		try {
 			const parsed: unknown = JSON.parse(row.guardsPassedJson);
@@ -655,7 +683,7 @@ export function createAttemptLedger(options: {
 						leaseId: null,
 						startedAtMs: claim.startedAtMs,
 						createdAtMs: claim.startedAtMs,
-						status: "in_flight",
+						status: "claimed",
 						resolvedAtMs: null,
 						failureCode: null,
 						guardsPassedJson: "[]",
@@ -690,6 +718,72 @@ export function createAttemptLedger(options: {
 			});
 		},
 
+		beginWrite(requestId, leaseId) {
+			assertDurable("before promoting an answer claim to a possible write");
+			return db.transaction((tx): LedgerRecord | null => {
+				const inner: Queryable = tx;
+				const row = selectRow(inner, requestId);
+				if (row === undefined) {
+					throw new Error(
+						`${LOG_PREFIX} answer ledger: the claimed request ${requestId} disappeared before its write. Refusing to type.`,
+					);
+				}
+				const record = validate(row);
+				if (record === null) {
+					throw new Error(
+						`${LOG_PREFIX} answer ledger: the claimed request ${requestId} became unreadable before its write. Refusing to type.`,
+					);
+				}
+				if (record.status !== "claimed") {
+					throw new Error(
+						`${LOG_PREFIX} answer ledger: request ${requestId} is ${record.status}, not a pre-write claim. Refusing to type.`,
+					);
+				}
+				if (record.questionId === null) {
+					throw new Error(
+						`${LOG_PREFIX} answer ledger: claimed request ${requestId} has no question id. Refusing to type.`,
+					);
+				}
+				const [fenceRow] = inner
+					.select()
+					.from(answerAttempts)
+					.where(
+						and(
+							eq(answerAttempts.questionId, record.questionId),
+							ne(answerAttempts.requestId, requestId),
+							inArray(answerAttempts.status, QUESTION_FENCE_STATUSES),
+						),
+					)
+					.limit(1)
+					.all();
+				if (fenceRow !== undefined) {
+					const fence = validate(fenceRow);
+					if (fence === null) {
+						throw new Error(
+							`${LOG_PREFIX} answer ledger: question ${record.questionId} has an unreadable durable fence. Refusing to type.`,
+						);
+					}
+					return fence;
+				}
+				const promoted = inner
+					.update(answerAttempts)
+					.set({ status: "in_flight", leaseId })
+					.where(
+						and(
+							eq(answerAttempts.requestId, requestId),
+							eq(answerAttempts.status, "claimed"),
+						),
+					)
+					.run();
+				if (promoted.changes !== 1) {
+					throw new Error(
+						`${LOG_PREFIX} answer ledger: request ${requestId} lost its claimed state before promotion. Refusing to type.`,
+					);
+				}
+				return null;
+			});
+		},
+
 		recordOutcome(outcome) {
 			const updated = db
 				.update(answerAttempts)
@@ -700,14 +794,16 @@ export function createAttemptLedger(options: {
 					guardsPassedJson: JSON.stringify(outcome.guardsPassed),
 					leaseId: outcome.leaseId,
 				})
-				// ONLY an `in_flight` row, which is the one this process claimed. The
-				// predicate is the safety property, not an optimisation: without it an
-				// outcome could overwrite a tombstone and erase the fence, or revive a
-				// row that was never there to begin with.
+				// ONLY this process's unresolved `claimed`/`in_flight` row. The predicate
+				// is the safety property, not an optimisation: without it an outcome could
+				// overwrite a tombstone or terminal result and erase its fence.
 				.where(
 					and(
 						eq(answerAttempts.requestId, outcome.requestId),
-						eq(answerAttempts.status, "in_flight"),
+						or(
+							eq(answerAttempts.status, "claimed"),
+							eq(answerAttempts.status, "in_flight"),
+						),
 					),
 				)
 				.run();
@@ -720,7 +816,7 @@ export function createAttemptLedger(options: {
 					event: "companion.answer.ledger_outcome_orphaned",
 					requestId: outcome.requestId,
 					status: outcome.status,
-					why: "no in_flight row was there to advance — it was fenced or already resolved",
+					why: "no claimed or in_flight row was there to advance — it was fenced or already resolved",
 				});
 			}
 		},

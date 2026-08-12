@@ -1050,7 +1050,7 @@ export type AnswerStatusOutcome =
 	 */
 	| {
 			kind: "known";
-			status: "in_flight" | "confirmed" | "failed" | "unconfirmed";
+			status: "claimed" | "in_flight" | "confirmed" | "failed" | "unconfirmed";
 			questionId: QuestionId | null;
 			resolvedAtMs: EpochMs | null;
 			failureCode: AttemptFailureCode | null;

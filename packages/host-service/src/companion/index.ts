@@ -32,6 +32,7 @@ import * as hostDbSchema from "../db/schema";
 import { getDaemonClient } from "../terminal/daemon-client-singleton";
 import {
 	isLiveTerminalSession,
+	nudgeTerminalSessionRepaint,
 	prepareAcknowledgedInputSession,
 	snapshotSession,
 	writeAcknowledgedInputToSession,
@@ -1235,18 +1236,13 @@ export function createCompanionBridge(
 				},
 			});
 			current.pairing = handle;
-			// The QR URI, in the host-service log, ON PURPOSE.
-			//
-			// It carries the single-use pairing code in its FRAGMENT. That fragment
-			// is never sent to an origin (§4.2) but it IS a secret for the next
-			// 120 s, so this is a deliberate trade: until a desktop surface renders
-			// the QR, the log is the only place a human can read the URI, and a
-			// pairing window nobody can see is a feature nobody can use. The code
-			// dies with the window — it is single-use, and `close()` zeroes it.
-			logger.warn(
-				"pairing window OPEN for 120s — scan this, it contains a single-use code",
-				{ qrUri: handle.qrUri, expiresAtMs: handle.expiresAtMs },
-			);
+			// The QR URI carries the single-use pairing code and belongs only in the
+			// authenticated desktop dialog. Diagnostics receive the non-secret window
+			// reference, never the URI or any material from its fragment.
+			logger.warn("pairing window OPEN for 120s", {
+				pairingRef: handle.pairingRef,
+				expiresAtMs: handle.expiresAtMs,
+			});
 			return handle;
 		},
 		async closePairing(): Promise<boolean> {
@@ -1949,6 +1945,11 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 
 	return {
 		writeInput,
+		nudgeRepaint: ({ hostTerminalId, hostWorkspaceId }) =>
+			nudgeTerminalSessionRepaint({
+				terminalId: hostTerminalId,
+				workspaceId: hostWorkspaceId,
+			}),
 		async writeFramed({ terminalId, workspaceId, text, submit }) {
 			return writeFramedInputToSession({
 				terminalId,

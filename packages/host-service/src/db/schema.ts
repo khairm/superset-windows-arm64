@@ -310,8 +310,10 @@ export const workspaceCloudDeletes = sqliteTable("workspace_cloud_deletes", {
  * can hold, not the other way round. A companion-side union imported into this
  * file would let a wire-shape change silently widen what is on disk.
  *
- * The first four are carried over verbatim from the JSON attempt file this
- * replaces and mean exactly what §11.5 says they mean. `unknown` is deliberately
+ * The four terminal attempt outcomes are carried over verbatim from the JSON
+ * attempt file and mean exactly what §11.5 says they mean. `claimed` is the
+ * pre-write request fence and `closed_not_received` is the status-read tombstone.
+ * `unknown` is deliberately
  * absent: it is the WIRE's degrade-to member for a status the reader does not
  * recognise, and a record the bridge itself wrote always knows which real
  * outcome it is in.
@@ -325,6 +327,8 @@ export const workspaceCloudDeletes = sqliteTable("workspace_cloud_deletes", {
  * relies on it.
  */
 export const answerAttemptStatuses = [
+	/** Request-id claimed, but no PTY write can have started yet. */
+	"claimed",
 	"in_flight",
 	"confirmed",
 	"failed",
@@ -340,8 +344,8 @@ export type AnswerAttemptStatus = (typeof answerAttemptStatuses)[number];
  * WHY THIS IS A TABLE AND NOT THE `answer-attempts.json` IT REPLACES. The JSON
  * store was durable, and durability was never the missing piece. What it could
  * not do is DECIDE: `handleAnswer` read the record, spent ~195 lines and several
- * awaits evaluating guards and taking a lock, and only then durably wrote
- * `in_flight`. A status read landing in that window saw no record and reported
+ * awaits evaluating guards and taking a lock, and only then durably wrote any
+ * claim. A status read landing in that window saw no record and reported
  * "it was not sent" — and then the answer it had just contradicted went on to
  * type itself into the terminal. Absence cannot prove that nothing WILL be
  * typed, because that is a claim about the future, and no amount of durable
