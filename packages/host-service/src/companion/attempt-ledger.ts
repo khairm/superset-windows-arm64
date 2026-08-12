@@ -83,6 +83,7 @@ import {
 import type {
 	AnswerGuardName,
 	EpochMs,
+	ErrorCode,
 	RequestId,
 	SealedErrorCode,
 } from "./types";
@@ -130,6 +131,15 @@ const LEDGER_FAILURE_CODES = [
 
 /** A code the ledger can store, narrowed from §10's sealed set. */
 export type LedgerFailureCode = (typeof LEDGER_FAILURE_CODES)[number];
+
+function isLedgerFailureCode(code: string): code is LedgerFailureCode {
+	return (LEDGER_FAILURE_CODES as readonly string[]).includes(code);
+}
+
+/** Narrows a sealed transport error to the subset the durable ledger accepts. */
+export function toLedgerFailureCode(code: ErrorCode): LedgerFailureCode {
+	return isLedgerFailureCode(code) ? code : "internal";
+}
 
 /**
  * The query surface this module uses, which BOTH the database and a transaction
@@ -540,10 +550,7 @@ export function createAttemptLedger(options: {
 		// an unknown code safely, so it was bounded — but "bounded by the other side's
 		// tolerance" is not the same as validated, and this boundary exists to reject
 		// exactly this.
-		if (
-			row.failureCode !== null &&
-			!(LEDGER_FAILURE_CODES as readonly string[]).includes(row.failureCode)
-		) {
+		if (row.failureCode !== null && !isLedgerFailureCode(row.failureCode)) {
 			return reject(
 				`failureCode ${JSON.stringify(row.failureCode)} is not a code this bridge writes`,
 			);

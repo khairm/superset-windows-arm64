@@ -20,10 +20,11 @@
  */
 
 import type { AcknowledgedInputFailureKind } from "../terminal/DaemonClient";
-import type {
-	AttemptLedger,
-	LedgerRecord,
-	StatusOutcome,
+import {
+	type AttemptLedger,
+	type LedgerRecord,
+	type StatusOutcome,
+	toLedgerFailureCode,
 } from "./attempt-ledger";
 import { type AuditLog, hashJsonPayload } from "./audit";
 import { ANSWER_ATTEMPT_RETENTION_MS } from "./config";
@@ -55,7 +56,6 @@ import {
 	type AnswerStatusOutcome,
 	type AnswerStatusRequest,
 	type AnswerStatusResponse,
-	type AttemptFailureCode,
 	type AuditEntry,
 	type DurationMs,
 	type EpochMs,
@@ -64,6 +64,7 @@ import {
 	type QuestionId,
 	type QuestionItem,
 	type RequestId,
+	type ResolvedBy,
 	SealedError,
 	type SealedRequestContext,
 	type TerminalId,
@@ -237,6 +238,16 @@ export interface AnswerDeps {
 	ledger: AttemptLedger;
 	messageAttempts: MessageAttemptStore;
 	questions: QuestionStore;
+	/**
+	 * Records remote provenance and publishes any corrective resolution frame.
+	 * This is post-write bookkeeping: failure is logged and never changes a
+	 * durable answer outcome.
+	 */
+	markRemoteAnsweredAndPublish(
+		questionId: QuestionId,
+		resolvedBy: ResolvedBy,
+		deliveredAtMs: EpochMs,
+	): void;
 	audit: AuditLog;
 	now(): EpochMs;
 	/**
@@ -1163,7 +1174,7 @@ export async function handleAnswer(
 				// Only after the durable confirmed row exists may positive PostToolUse or
 				// transcript settlement inherit this device provenance. Neither this mark
 				// nor the repaint below changes the confirmed wire outcome.
-				deps.questions.markRemoteAnswered(
+				deps.markRemoteAnsweredAndPublish(
 					request.questionId,
 					{
 						deviceLabel: ctx.device.label,
@@ -1294,10 +1305,10 @@ export async function handleAnswer(
 					"the terminal was busy; nothing was written",
 				);
 			}
-			// (ANSWER-INFLIGHT) An unexpected throw from inside the critical section.
-			// The `in_flight` record MUST NOT be left behind — the client would poll it
-			// forever — and it must not be downgraded to "never sent" either, because
-			// bytes may already have landed. Unknown outcome, stated as such.
+			// (ANSWER-INFLIGHT) Classify from the durable transition, not catch depth.
+			// A still-`claimed` row proves `beginWrite` never ran, so zero bytes landed
+			// and the request may fail without fencing. Once `in_flight`, bytes may have
+			// landed; preserve the duplicate fence and state the outcome as unknown.
 			deps.log({
 				event: "companion.answer.internal_error",
 				questionId: request.questionId,
@@ -1305,11 +1316,15 @@ export async function handleAnswer(
 				leaseId: lease.leaseId,
 				error: error instanceof Error ? error.message : String(error),
 			});
+			const durableStatus = deps.ledger.get(request.requestId)?.status;
+			const outcome =
+				durableStatus === "claimed"
+					? ({ status: "failed", failureCode: "internal" } as const)
+					: ({ status: "unconfirmed", failureCode: null } as const);
 			await recordOutcome(deps, {
 				...baseAttempt,
-				status: "unconfirmed",
+				...outcome,
 				resolvedAtMs: null,
-				failureCode: null,
 				guardsPassed: [],
 				guardsAbstained: [],
 			});
@@ -1318,8 +1333,8 @@ export async function handleAnswer(
 				tsMs: deps.now(),
 				guards: null,
 				guardsAbstained: null,
-				outcome: "unconfirmed",
-				failureCode: null,
+				outcome: outcome.status,
+				failureCode: outcome.failureCode,
 			});
 			throw error;
 		} finally {
@@ -1333,23 +1348,25 @@ export async function handleAnswer(
 		// records its own outcome, so this is the last chance to stop it claiming
 		// forever that keystrokes are landing.
 		//
-		// A SealedError is a REFUSAL with a known reason, recorded verbatim so §11.4's
-		// replay can say why. Anything else is a fault of unknown extent — it could
-		// have escaped after bytes moved — so it degrades to `unconfirmed` rather than
-		// to a `failed` that would assert nothing was typed.
-		const durableStatus = deps.ledger.get(request.requestId)?.status;
-		if (durableStatus === "claimed" || durableStatus === "in_flight") {
+		// A still-`claimed` row proves the write transition never happened and records
+		// `failed/internal`. An `in_flight` SealedError is a known refusal, narrowed to
+		// the ledger's durable code set for §11.4 replay. Any other `in_flight` fault
+		// remains `unconfirmed`, because bytes may already have moved.
+		const durable = deps.ledger.get(request.requestId);
+		if (durable?.status === "claimed" || durable?.status === "in_flight") {
+			const preWrite = durable.status === "claimed";
 			deps.ledger.recordOutcome({
 				requestId: request.requestId,
-				...(error instanceof SealedError
-					? {
-							status: "failed" as const,
-							failureCode: error.body.code as AttemptFailureCode,
-						}
-					: { status: "unconfirmed" as const, failureCode: null }),
+				status:
+					preWrite || error instanceof SealedError ? "failed" : "unconfirmed",
+				failureCode: preWrite
+					? "internal"
+					: error instanceof SealedError
+						? toLedgerFailureCode(error.body.code)
+						: null,
 				resolvedAtMs: null,
 				guardsPassed: [],
-				leaseId: null,
+				leaseId: durable.leaseId,
 			});
 		}
 		throw error;

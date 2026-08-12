@@ -154,6 +154,7 @@ import type {
 	Capability,
 	DeviceRecord,
 	EpochMs,
+	EventFrame,
 	PanicMode,
 	PanicRequest,
 	PanicResponse,
@@ -720,14 +721,11 @@ export function createCompanionBridge(
 				if (question.state === "resolved") {
 					const { resolvedAtMs, resolvedBy } = question;
 					if (resolvedAtMs === null || resolvedBy === null) return;
-					events.publish({
-						t: "question.resolved",
-						d: {
-							questionId,
-							resolvedAtMs: resolvedAtMs as EpochMs,
-							resolvedBy,
-							outcome: "unknown",
-						},
+					publishQuestionResolved(events, {
+						questionId,
+						resolvedAtMs: resolvedAtMs as EpochMs,
+						resolvedBy,
+						outcome: "unknown",
 					});
 					return;
 				}
@@ -798,6 +796,7 @@ export function createCompanionBridge(
 			hostDb,
 			liveness,
 			questions,
+			events,
 			leases,
 			locks,
 			ledger,
@@ -1426,6 +1425,14 @@ export interface CurationGateDeps {
 	logger: Pick<BridgeLogger, "info" | "error">;
 }
 
+/** Publishes one resolved-question frame without duplicating its wire shape. */
+function publishQuestionResolved(
+	events: EventStreamServer,
+	data: Extract<EventFrame, { t: "question.resolved" }>["d"],
+): void {
+	events.publish({ t: "question.resolved", d: data });
+}
+
 /**
  * Wraps the store's capture sink with the effects that must fire exactly when
  * custody changes.
@@ -1441,7 +1448,7 @@ export interface CurationGateDeps {
  * loud 500 in the notify hook's log. The dot work already happened by then, so
  * the agent-status broadcast is unaffected.
  */
-function createNotifyingCaptureSink(
+export function createNotifyingCaptureSink(
 	deps: NotifyingSinkDeps,
 ): QuestionCaptureSink {
 	return {
@@ -1484,17 +1491,59 @@ function createNotifyingCaptureSink(
 			// settled this record, and `settle()` retracted the notification on the
 			// way out. This wrapper is left with the one effect that genuinely
 			// belongs to the DESK route — the frame naming who answered.
-			deps.events.publish({
-				t: "question.resolved",
-				d: {
-					questionId: before.questionId,
-					resolvedAtMs,
-					resolvedBy,
-					outcome: "answered",
-				},
+			publishQuestionResolved(deps.events, {
+				questionId: before.questionId,
+				resolvedAtMs,
+				resolvedBy,
+				outcome: "answered",
 			});
 		},
 	};
+}
+
+interface RemoteAnswerPublisherDeps {
+	questions: QuestionStore;
+	events: EventStreamServer;
+	logger: BridgeLogger;
+}
+
+/**
+ * Records phone/watch provenance and republishes only when positive settlement
+ * won the race. Pending records are published later by the capture sink's
+ * `resolve`; an already-resolved record needs this corrective frame now.
+ *
+ * This post-write bookkeeping never throws into the confirmed answer path.
+ */
+export function markRemoteAnsweredAndPublish(
+	deps: RemoteAnswerPublisherDeps,
+	questionId: QuestionId,
+	resolvedBy: NonNullable<PendingQuestion["resolvedBy"]>,
+	deliveredAtMs: EpochMs,
+): void {
+	try {
+		const wasResolved = deps.questions.get(questionId)?.state === "resolved";
+		if (
+			!deps.questions.markRemoteAnswered(
+				questionId,
+				resolvedBy,
+				deliveredAtMs,
+			) ||
+			!wasResolved
+		) {
+			return;
+		}
+		publishQuestionResolved(deps.events, {
+			questionId,
+			resolvedAtMs: deliveredAtMs,
+			resolvedBy,
+			outcome: "answered",
+		});
+	} catch (error) {
+		deps.logger.error("could not record remote answer provenance", {
+			questionId,
+			error,
+		});
+	}
 }
 
 /**
@@ -1891,6 +1940,7 @@ interface AnswerAdapterDeps {
 	/** (BRIDGE-LIVENESS) Gates the wire-handle reverse lookup. */
 	liveness: TerminalLiveness;
 	questions: QuestionStore;
+	events: EventStreamServer;
 	leases: LeaseRegistry;
 	locks: TerminalLockRegistry;
 	ledger: AttemptLedger;
@@ -2017,6 +2067,8 @@ function createAnswerDeps(deps: AnswerAdapterDeps): AnswerDeps {
 		ledger: deps.ledger,
 		messageAttempts: deps.messageAttempts,
 		questions: deps.questions,
+		markRemoteAnsweredAndPublish: (questionId, resolvedBy, deliveredAtMs) =>
+			markRemoteAnsweredAndPublish(deps, questionId, resolvedBy, deliveredAtMs),
 		audit: deps.audit,
 		now: (): EpochMs => Date.now(),
 		bridgeStartedMs: deps.bridgeStartedMs,

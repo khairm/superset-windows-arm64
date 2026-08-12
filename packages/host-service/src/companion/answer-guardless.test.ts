@@ -190,6 +190,7 @@ function answerHarness(
 	options: {
 		repaint?: AnswerDeps["nudgeRepaint"];
 		onWrite?: (data: string, question: PendingQuestion) => void;
+		lockRun?: AnswerDeps["locks"]["runExclusive"];
 	} = {},
 ) {
 	let now = 10_000;
@@ -249,13 +250,16 @@ function answerHarness(
 			}),
 		},
 	);
+	const locks = createTerminalLockRegistry();
+	if (options.lockRun !== undefined) locks.runExclusive = options.lockRun;
 	const deps = {
 		writeInput,
 		nudgeRepaint: options.repaint ?? (() => ({ success: true as const })),
-		locks: createTerminalLockRegistry(),
+		locks,
 		leases: createLeaseRegistry(),
 		ledger: memoryLedger(),
 		questions,
+		markRemoteAnsweredAndPublish: questions.markRemoteAnswered,
 		audit: { append: async () => {}, prune: async () => 0 },
 		now: () => now++,
 		log: (event: Record<string, unknown>) => events.push(event),
@@ -345,7 +349,7 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 		expect(harness.question.state).toBe("pending");
 		expect(harness.question.remoteAnswer).toEqual({
 			resolvedBy: { deviceLabel: "phone", surface: "phone" },
-			deliveredAtMs: response.resolvedAtMs,
+			deliveredAtMs: response.resolvedAtMs as number,
 		});
 		expect(repaints).toEqual([HOST]);
 		expect(harness.writeCount()).toBe(1);
@@ -369,6 +373,29 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 				error: "resize failed",
 			}),
 		);
+	});
+
+	it("records a lock infrastructure failure as proven zero-write and non-fencing", async () => {
+		const harness = answerHarness({
+			lockRun: async () => {
+				throw new Error("lock infrastructure failed");
+			},
+		});
+
+		await expect(
+			handleAnswer(harness.deps, harness.ctx, harness.request),
+		).rejects.toThrow("lock infrastructure failed");
+		expect(harness.deps.ledger.get(harness.request.requestId)).toMatchObject({
+			status: "failed",
+			failureCode: "internal",
+		});
+
+		harness.deps.locks.runExclusive = createTerminalLockRegistry().runExclusive;
+		const retry = await handleAnswer(harness.deps, harness.ctx, {
+			...harness.request,
+			requestId: "00000000-0000-4000-8000-000000000003",
+		});
+		expect(retry.status).toBe("confirmed");
 	});
 
 	it("does not let a pre-write claim fence the request that wins the answer lease", async () => {

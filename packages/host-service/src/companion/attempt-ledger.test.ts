@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../db";
-import { createAttemptLedger } from "./attempt-ledger";
+import { createAttemptLedger, toLedgerFailureCode } from "./attempt-ledger";
 
 const roots: string[] = [];
 const openDbs = new Set<ReturnType<typeof createDb>>();
@@ -49,6 +49,14 @@ afterEach(() => {
 			}
 		}
 	}
+});
+
+describe("AttemptLedger failure-code boundary", () => {
+	it("maps transport-only sealed codes to a valid durable internal failure", () => {
+		expect(toLedgerFailureCode("access_denied")).toBe("internal");
+		expect(toLedgerFailureCode("session_expired")).toBe("internal");
+		expect(toLedgerFailureCode("write_disabled")).toBe("write_disabled");
+	});
 });
 
 describe("AttemptLedger question fence", () => {
