@@ -190,7 +190,7 @@ function answerHarness(
 	options: {
 		repaint?: AnswerDeps["nudgeRepaint"];
 		onWrite?: (data: string, question: PendingQuestion) => void;
-		lockRun?: AnswerDeps["locks"]["runExclusive"];
+		locks?: AnswerDeps["locks"];
 	} = {},
 ) {
 	let now = 10_000;
@@ -250,12 +250,10 @@ function answerHarness(
 			}),
 		},
 	);
-	const locks = createTerminalLockRegistry();
-	if (options.lockRun !== undefined) locks.runExclusive = options.lockRun;
 	const deps = {
 		writeInput,
 		nudgeRepaint: options.repaint ?? (() => ({ success: true as const })),
-		locks,
+		locks: options.locks ?? createTerminalLockRegistry(),
 		leases: createLeaseRegistry(),
 		ledger: memoryLedger(),
 		questions,
@@ -377,8 +375,10 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 
 	it("records a lock infrastructure failure as proven zero-write and non-fencing", async () => {
 		const harness = answerHarness({
-			lockRun: async () => {
-				throw new Error("lock infrastructure failed");
+			locks: {
+				runExclusive: async () => {
+					throw new Error("lock infrastructure failed");
+				},
 			},
 		});
 
@@ -390,7 +390,7 @@ describe("(ANSWER-GUARDLESS) post-answer settlement and repaint", () => {
 			failureCode: "internal",
 		});
 
-		harness.deps.locks.runExclusive = createTerminalLockRegistry().runExclusive;
+		harness.deps.locks = createTerminalLockRegistry();
 		const retry = await handleAnswer(harness.deps, harness.ctx, {
 			...harness.request,
 			requestId: "00000000-0000-4000-8000-000000000003",
