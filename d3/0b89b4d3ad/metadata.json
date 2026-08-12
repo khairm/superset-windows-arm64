@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "d30b89b4d3ad",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/host-service/src/companion/answer-guardless.test.ts",
+    "packages/host-service/src/companion/answer.ts",
+    "packages/host-service/src/companion/attempt-ledger.test.ts",
+    "packages/host-service/src/companion/attempt-ledger.ts",
+    "packages/host-service/src/companion/index.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d3/0b89b4d3ad/0/metadata.json",
+      "transcript": "/d3/0b89b4d3ad/0/full.jsonl",
+      "content_hash": "/d3/0b89b4d3ad/0/content_hash.txt",
+      "prompt": "/d3/0b89b4d3ad/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4773161,
+    "cache_creation_tokens": 20678905,
+    "cache_read_tokens": 1075220871,
+    "output_tokens": 2167701,
+    "api_call_count": 3477
+  }
+}
