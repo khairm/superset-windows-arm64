@@ -1,0 +1,74 @@
+Make sure you use Opus sub-agents to do all your work. They are effectively free. Parallelize them as much as possible. Have Fable and Sol, and Opus agents review any production code work or plans. There are architect agents for plan reviewing and code review agents for code reviewing. Save your context Any finished agents remove them to keep statusbar clean
+
+A recent update to Superset looks like it added this concept of sessions. [Image #1] This is useful for short-term stuff that's being done, not connected to git, and I am starting to use it. I need it to have the archive and snooze functionality. I don't want it on the Kanban board. Use askuser tool to go through any questions with me.
+
+---
+
+<task-notification>
+<task-id>af1903df1b19f2004</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\30065850-2472-4b23-9844-946b8f0192bf\tasks\af1903df1b19f2004.output</output-file>
+<status>completed</status>
+<summary>Agent "Trace kanban + host-service snooze" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## (A) Kanban
+
+**Model: dual-source, not a mirror of sidebarState.**
+
+`C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\kanban\hooks\useKanbanActions\useKanbanActions.ts`
+
+Every mutator branches on `card.workspaceId`:
+- **Bound card** (id = `workspace:&lt;wsId&gt;`, `kanbanBoundCardId`) → delegates to `useDashboardSidebarState`: `snoozeWorkspace`, `unsnoozeWorkspace`, `archiveWorkspace`, `unarchiveWorkspaces`, `deleteWorkspace`, `restoreWorkspace`, `completeWorkspace`. Writes land on `v2WorkspaceLocalState[wsId].sidebarState`. `ensureBoundRow()` seeds the local-state row first if absent.
+- **Unbound (Queued) card** → stamps its OWN `snoozeUntil` / `snoozeLaunchId` / `archivedAt` / `deletedAt` on the `v2KanbanCards` row.
+
+So the card row DOES carry `snoozeUntil`/`snoozeLaunchId`/`archivedAt`/`deletedAt`/`completedAt` columns (`dashboardSidebarLocal/schema.ts` `kanbanCardSchema` L603-652, defaults L696-705), but for bound cards those fields stay `null` and are never read — the workspace sidebarState is the single source of truth.
+
+**Sync direction: one-way, sidebarState → kanban view.** No writeback of card snooze/archive into sidebarState. `useKanbanData.ts` L571+ reads each bound card's bucket via `getWorkspaceSidebarBucket(local?.sidebarState, now, workspace.type)` and maps it into `KanbanCardBucket`; unbound cards use local `queuedCardBucket()` (L96-101). The `"completed"` bucket is the ONE exception with two-way healing (L~440-520: card-column placement is the intent signal and re-stamps/clears `sidebarState.completedAt`), snooze/archive have no such heal.
+
+`KanbanReconciler.tsx` (`_dashboard\components\KanbanReconciler\KanbanReconciler.tsx`) just mounts `useKanbanData()` at dashboard level so the reconcile runs off-route. It is unrelated to the sidebar mirror.
+
+**Helper reuse — all reused, nothing duplicated:**
+- `useKanbanActions.ts` imports `APP_LAUNCH_ID`, `getNextTabOrder`, `KANBAN_*_COLUMN_ID`, `kanbanBoundCardId`
+- `useKanbanData.ts` imports `getWorkspaceSidebarBucket`, `isWorkspaceSnoozed`, `isWithinRecycleBinWindow`, `APP_LAUNCH_ID`
+- `KanbanCard.tsx` imports `SNOOZE_PRESET_OPTIONS`, `computeSnoozeUntil`
+
+All from `...\providers\CollectionsProvider\dashboardSidebarLocal\sidebarVisibility.ts`. Note: `isWorkspaceSnoozed(card, now)` works on a kanban card because the source type is structural (`SidebarWorkspaceStateFields`) and card field names match exactly.
+
+**`formatSnoozeRemaining` is NOT used by kanban** — only by `useDashboardSidebarData.ts:860`. Kanban shows no remaining-time label.
+
+**Snooze submenu: TWO copies, no shared component.**
+- `...\DashboardSidebar\...\DashboardSidebarWorkspaceContextMenu\DashboardSidebarWorkspaceContextMenu.tsx:118`
+- `...\kanban\components\KanbanCard\KanbanCard.tsx:387`
+
+Both map `SNOOZE_PRESET_OPTIONS` into their own `ContextMenuSub`/`ContextMenuSubContent`. Shared data, duplicated JSX. Sidebar also has a custom "N hours" inline field; kanban's copy has presets only. Sidebar calls `computeSnoozeUntil(duration)` inside `useDashboardSidebarWorkspaceItemActions.ts:164`; kanban calls it inline in the JSX (KanbanCard.tsx:395), special-casing `"next-launch"` at the call site instead.
+
+Auto-unsnooze: kanban runs its own 60s ticker for UNBOUND cards only (`useKanbanData.ts` ~L555-569); bound cards rely on the sidebar ticker.
+
+Sections: `KanbanColumn.tsx` L284-328 renders `KanbanStateSection` "Snoozed"/"Archived" with per-column persisted flags `snoozedCollapsed`/`archivedCollapsed`/`showSnoozed`/`showArchived` (set via `actions.setColumnSectionFlag`).
+
+## (B) host-service
+
+**Fields (device-local SQLite `host.db`), `packages\host-service\src\db\schema.ts`:**
+- `sidebarWorkspaceState` (L727+): `archivedAt` L752, `snoozeUntil` L754, `snoozeLaunchId`, `completedAt`, `deletedAt`, `pinnedAt`, `isHidden`, `sectionId`, `tabOrder`
+- `sidebarProjectState` L786, `sidebarMirrorMeta` L813 (`appLaunchId`, `lastFullSyncAtMs`, `organizationId`, `contentHash` L846)
+- Separate/unrelated: `workspaces.archivedAt` + `workspaces.archiveReason` (`"merged" | "deleted"`) L246-252 — that's git/PR reconcile (`src\runtime\archived-workspace-reconcile.ts`), NOT user snooze/archive.
+
+**Migrations:**
+- `packages\host-service\drizzle\0017_dark_hedge_knight.sql` — created all three mirror tables including `archived_at`, `snooze_until`, `snooze_launch_id`
+- `packages\host-service\drizzle\0019_small_black_queen.sql` — `ALTER TABLE sidebar_mirror_meta ADD content_hash text`
+- `packages\host-service\drizzle\0020_overrated_dreaming_celestial.sql` — `workspaces.archived_at` + `archive_reason` (different feature)
+- `0017_nappy_satana.sql` / `0018_greedy_sauron.sql` are unrelated (agent resume args, push fence)
+
+**Writer: yes, exclusively the renderer.** `apps\desktop\src\renderer\routes\_authenticated\components\AgentHooks\hooks\useSidebarMirrorSync\useSidebarMirrorSync.ts` — note the path is `_authenticated\components\AgentHooks\...`, not `AgentHooks\hooks\...`. `buildMirrorSnapshot(localStateRows, sidebarProjectRows)` (L240) reads ONLY `collections.v2WorkspaceLocalState` (L454) and `collections.v2SidebarProjects` (L475) via `useLiveQuery`, normalizes every field (`toEpochMs`/`toNullableId`/`toTabOrder`, fail-toward-null), and pushes to `sidebarMirror.sync`. 1s trailing debounce (`SYNC_DEBOUNCE_MS`), 5min heartbeat (`MIRROR_HEARTBEAT_MS = 300_000`), unbounded retry capped at 5min, serialized single in-flight push. `APP_LAUNCH_ID` is sent in meta, not in the snapshot signature — a launch-id change forces a push.
+
+**Server never writes these tables.** `sidebar-mirror.ts` `replaceMirror()` is delete-all-then-insert inside one `db.transaction`, meta row written last. No per-row delete verb by design. `computeContentHash` gates the `publishCompanionMirrorChanged` event so heartbeats don't churn client caches.
+
+**Reader:** `packages\host-service\src\companion\sidebar-filter.ts` — `createSidebarCuration()` + `classifyWorkspace()`, which reproduces `getWorkspaceSidebarBucket` order exactly: deleted → completed → archived (`archivedAt != null || (isHidden &amp;&amp; type !== "main")`) → snoozed (`snoozeLaunchId === meta.appLaunchId`, else `snoozeUntil &gt; nowMs`) → hidden → show. `SidebarVerdict` union L100-107. Fails open via `passThroughCuration` on: no meta row, age &gt; `MIRROR_MAX_AGE_MS = 1_200_000` (20min = 4 heartbeats), negative age, or org mismatch.
+
+Consumers: `companion\read-api.ts` (raw SQL SELECT at L238; `visibleWorkspaces` L718-722, `/v1/tree` build L818+) and `companion\index.ts` (`createIsCuratedOffProbe` push gate ~L1590-1690, cached per `config.ts` L215-222). Curation gates listing/push only, never answer resolution.
+
+**Answers to the two questions:**
+1. **Snooze/archive IS persisted to a DB — `host.db`, which is device-local.** Nothing goes to cloud/Postgres. The renderer's own source of truth is localStorage (`v2WorkspaceLocalState`), and `host.db` holds a disposable, self-healing projection whose only purpose is letting the companion/phone bridge filter what it lists.
+2. **Kanban card snooze/archive is NOT mirrored at all.** `packages\host-service\src` has zero kanban code (the 2 grep hits are prose in comments). `buildMirrorSnapshot` never touches `v2KanbanCards`. Consequence: an unbound Queued card that is snoozed/archived/binned is invisible to host-service; a bound card is covered incidentally because its state lives in `v2WorkspaceLocalState`.</result>
+<usage><subagent_tokens>91358</subagent_tokens><tool_uses>30</tool_uses><duration_ms>181758</duration_ms></usage>
+</task-notification>

@@ -1,0 +1,162 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "300658502472",
+  "session_id": "30065850-2472-4b23-9844-946b8f0192bf",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-13T20:14:38.3224684Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/hooks/useV2UserPreferences/useV2UserPreferences.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/DashboardSidebarSessionsSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/components/DashboardSidebarSessionsContextMenu/DashboardSidebarSessionsContextMenu.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/components/DashboardSidebarSessionsContextMenu/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarStateSection/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/buildDashboardSidebarProjects.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/buildDashboardSidebarProjects.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/isKanbanEligibleWorkspace.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/isKanbanEligibleWorkspace.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts",
+    "packages/host-service/package.json",
+    "packages/host-service/src/companion/read-api.ts",
+    "packages/host-service/src/companion/session-answer.test.ts",
+    "packages/host-service/src/companion/session-project.test.ts",
+    "packages/host-service/src/companion/session-project.ts",
+    "packages/host-service/src/companion/session-tree.test.ts",
+    "packages/host-service/src/companion/sidebar-filter.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "65a0af403772",
+  "token_usage": {
+    "input_tokens": 1438641,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 31276672,
+    "output_tokens": 30685,
+    "api_call_count": 265
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-call_NmH2Pnmni6aBpZRqaZTFixvr",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 264,
+        "end": 265,
+        "entry_ids": [
+          "a7eb87ce-3101-4703-a7a3-696ea1403fd3"
+        ],
+        "tool_use_id": "call_NmH2Pnmni6aBpZRqaZTFixvr"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_NmH2Pnmni6aBpZRqaZTFixvr"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-call_HQbUopLVJeLt1cMwKhTlM6jc",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1051,
+        "end": 1052,
+        "entry_ids": [
+          "c2090e9f-ba6e-4d4e-8eda-de9a80bbc7af"
+        ],
+        "tool_use_id": "call_HQbUopLVJeLt1cMwKhTlM6jc"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_HQbUopLVJeLt1cMwKhTlM6jc"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-13T20:14:37.4160708Z",
+    "agent_lines": 1888,
+    "agent_removed": 250,
+    "human_added": 0,
+    "human_modified": 252,
+    "human_removed": 0,
+    "total_committed": 2140,
+    "total_lines_changed": 2390,
+    "agent_percentage": 89.4560669456067,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

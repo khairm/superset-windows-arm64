@@ -1,0 +1,54 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "300658502472",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/hooks/useV2UserPreferences/useV2UserPreferences.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/DashboardSidebar.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/DashboardSidebarProjectSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarProjectSection/components/DashboardSidebarStateSection/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/DashboardSidebarSessionsSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/components/DashboardSidebarSessionsContextMenu/DashboardSidebarSessionsContextMenu.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSessionsSection/components/DashboardSidebarSessionsContextMenu/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarStateSection/DashboardSidebarStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarStateSection/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/buildDashboardSidebarProjects.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/buildDashboardSidebarProjects.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/useDashboardSidebarData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanData/useKanbanData.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/isKanbanEligibleWorkspace.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/isKanbanEligibleWorkspace/isKanbanEligibleWorkspace.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState/useDashboardSidebarState.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema.ts",
+    "packages/host-service/package.json",
+    "packages/host-service/src/companion/read-api.ts",
+    "packages/host-service/src/companion/session-answer.test.ts",
+    "packages/host-service/src/companion/session-project.test.ts",
+    "packages/host-service/src/companion/session-project.ts",
+    "packages/host-service/src/companion/session-tree.test.ts",
+    "packages/host-service/src/companion/sidebar-filter.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/30/0658502472/0/metadata.json",
+      "transcript": "/30/0658502472/0/full.jsonl",
+      "content_hash": "/30/0658502472/0/content_hash.txt",
+      "prompt": "/30/0658502472/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1438641,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 31276672,
+    "output_tokens": 30685,
+    "api_call_count": 265
+  }
+}
