@@ -412,6 +412,17 @@ export const v2UserPreferencesSchema = z.object({
 	rightSidebarWidth: z.number().default(340),
 	deleteLocalBranch: z.boolean().default(false),
 	showPresetsBar: z.boolean().default(true),
+	/**
+	 * (SESSION-LIFECYCLE) Reveal/collapse flags for the top-level Snoozed
+	 * Sessions / Archived Sessions subsections. Sessions have no project row, so
+	 * the per-project equivalents on `dashboardSidebarProjectSchema` have nowhere
+	 * to live — these ride the fixed-size preferences singleton instead (bounded:
+	 * four booleans, no per-entity cardinality).
+	 */
+	showSnoozedSessions: z.boolean().default(false),
+	showArchivedSessions: z.boolean().default(false),
+	snoozedSessionsCollapsed: z.boolean().default(false),
+	archivedSessionsCollapsed: z.boolean().default(false),
 	// Built-in (synthetic, app-shipped) presets the user hid from the preset
 	// bar. Synthetic presets have no v2TerminalPresets row, so visibility can't
 	// live on the row's pinnedToBar like user presets. Pruned against
@@ -440,6 +451,10 @@ export const DEFAULT_V2_USER_PREFERENCES: V2UserPreferencesRow = {
 	rightSidebarWidth: 340,
 	deleteLocalBranch: false,
 	showPresetsBar: true,
+	showSnoozedSessions: false,
+	showArchivedSessions: false,
+	snoozedSessionsCollapsed: false,
+	archivedSessionsCollapsed: false,
 	hiddenBuiltinPresetIds: [],
 };
 
@@ -478,6 +493,49 @@ export function healWorkspaceLocalState(raw: unknown): WorkspaceLocalStateRow {
 			...sidebar,
 		} as WorkspaceLocalStateRow["sidebarState"],
 	} as WorkspaceLocalStateRow;
+}
+
+/**
+ * (SESSION-LIFECYCLE) The persisted reveal/collapse flags for the top-level
+ * Snoozed Sessions / Archived Sessions subsections — the session-scoped
+ * counterpart of `ProjectSectionFlag`.
+ */
+export const SESSION_SECTION_FLAGS = [
+	"showSnoozedSessions",
+	"showArchivedSessions",
+	"snoozedSessionsCollapsed",
+	"archivedSessionsCollapsed",
+] as const;
+
+export type SessionSectionFlag = (typeof SESSION_SECTION_FLAGS)[number];
+
+/**
+ * (SESSION-LIFECYCLE) Read-time boundary check for the session section flags. A
+ * stored non-boolean is corruption, not a shape we support: report it loudly
+ * and fall back to the default rather than letting a truthy string silently
+ * reveal a section. Never throws — a throw here takes down the whole collection
+ * load (see healWorkspaceLocalState's "parser must never throw" test).
+ */
+function healSessionSectionFlags(
+	raw: Record<string, unknown>,
+): Pick<V2UserPreferencesRow, SessionSectionFlag> {
+	const healed = {} as Record<SessionSectionFlag, boolean>;
+	for (const flag of SESSION_SECTION_FLAGS) {
+		const value = raw[flag];
+		if (typeof value === "boolean") {
+			healed[flag] = value;
+			continue;
+		}
+		// Absent is normal (row written before the flag existed); anything else
+		// present is corruption and gets reported.
+		if (value !== undefined) {
+			console.error(
+				`[healV2UserPreferences] ${flag} is ${typeof value}, expected boolean — falling back to the default`,
+			);
+		}
+		healed[flag] = DEFAULT_V2_USER_PREFERENCES[flag];
+	}
+	return healed;
 }
 
 /**
@@ -524,6 +582,7 @@ export function healV2UserPreferences(raw: unknown): V2UserPreferencesRow {
 		).filter((id) =>
 			(KNOWN_BUILTIN_PRESET_IDS as readonly string[]).includes(id),
 		),
+		...healSessionSectionFlags(r as Record<string, unknown>),
 	};
 }
 

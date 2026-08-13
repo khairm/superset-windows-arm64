@@ -36,6 +36,10 @@
 			"types": "./src/terminal/env.ts",
 			"default": "./src/terminal/env.ts"
 		},
+		"./session-project": {
+			"types": "./src/companion/session-project.ts",
+			"default": "./src/companion/session-project.ts"
+		},
 		"./settings": {
 			"types": "./src/trpc/router/settings/index.ts",
 			"default": "./src/trpc/router/settings/index.ts"

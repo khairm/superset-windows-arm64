@@ -6,6 +6,7 @@ import {
 	DEFAULT_V2_USER_PREFERENCES,
 	type LinkAction,
 	type LinkTierMap,
+	type SessionSectionFlag,
 	V2_USER_PREFERENCES_ID,
 	type V2UserPreferencesRow,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
@@ -25,6 +26,9 @@ export interface V2UserPreferencesApi {
 	setShowPresetsBar: (next: boolean | ((prev: boolean) => boolean)) => void;
 	toggleShowPresetsBar: () => void;
 	setBuiltinPresetHidden: (presetId: string, hidden: boolean) => void;
+	/** (SESSION-LIFECYCLE) Session-scoped twin of `setProjectSectionFlag`. */
+	setSessionSectionFlag: (flag: SessionSectionFlag, value: boolean) => void;
+	toggleSessionSectionFlag: (flag: SessionSectionFlag) => void;
 }
 
 export function useV2UserPreferences(): V2UserPreferencesApi {
@@ -201,6 +205,41 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		setShowPresetsBar((prev) => !prev);
 	}, [setShowPresetsBar]);
 
+	// (SESSION-LIFECYCLE) Reveal/collapse state for the Snoozed Sessions and
+	// Archived Sessions subsections. Mirrors setProjectSectionFlag, but the
+	// Sessions section has no project row to hang the flags off, so they live on
+	// the preferences singleton.
+	const setSessionSectionFlag = useCallback(
+		(flag: SessionSectionFlag, value: boolean) => {
+			const existing = collections.v2UserPreferences.get(
+				V2_USER_PREFERENCES_ID,
+			);
+			if (!existing) {
+				collections.v2UserPreferences.insert({
+					...DEFAULT_V2_USER_PREFERENCES,
+					[flag]: value,
+				});
+				return;
+			}
+			collections.v2UserPreferences.update(V2_USER_PREFERENCES_ID, (draft) => {
+				draft[flag] = value;
+			});
+		},
+		[collections],
+	);
+
+	// Reads the collection (not the live-query snapshot) at write time so
+	// back-to-back toggles can't act on a stale value.
+	const toggleSessionSectionFlag = useCallback(
+		(flag: SessionSectionFlag) => {
+			const current =
+				collections.v2UserPreferences.get(V2_USER_PREFERENCES_ID)?.[flag] ??
+				DEFAULT_V2_USER_PREFERENCES[flag];
+			setSessionSectionFlag(flag, !current);
+		},
+		[collections, setSessionSectionFlag],
+	);
+
 	const setBuiltinPresetHidden = useCallback(
 		(presetId: string, hidden: boolean) => {
 			const existing = collections.v2UserPreferences.get(
@@ -244,5 +283,7 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		setShowPresetsBar,
 		toggleShowPresetsBar,
 		setBuiltinPresetHidden,
+		setSessionSectionFlag,
+		toggleSessionSectionFlag,
 	};
 }

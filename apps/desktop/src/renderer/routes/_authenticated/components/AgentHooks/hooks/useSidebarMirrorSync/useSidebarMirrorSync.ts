@@ -1,3 +1,4 @@
+import { SESSIONS_PROJECT_ID } from "@superset/host-service/session-project";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -253,15 +254,22 @@ export function buildMirrorSnapshot(
 			// `undefined` at runtime, so this must be a null check and never a
 			// `.length` one.
 			const workspaceId = toNullableId(row.workspaceId);
-			const projectId = toNullableId(row.projectId);
-			// A row with no identity, or whose placement project is missing, cannot
-			// be mirrored: the column is NOT NULL on the far side, and a placement
-			// of "nowhere" is not a statement the mirror can make. Dropping it means
-			// the consumer sees no opinion and shows the thread — the safe direction.
-			if (workspaceId === null || projectId === null) {
+			// A row with no identity cannot be mirrored at all. Dropping it means
+			// the consumer sees no opinion and shows the thread — the safe
+			// direction.
+			if (workspaceId === null) {
 				droppedRows += 1;
 				return null;
 			}
+			// (SESSIONS-PROJECT) A session workspace has no project — it is inserted
+			// with `project_id = NULL` — so its sidebar row carries no placement and
+			// the whole row used to be DROPPED here as unplaceable. The mirror then
+			// held no opinion about it and the bridge showed a session the user had
+			// snoozed, archived or binned. A missing placement maps onto the
+			// synthetic Sessions project instead: that is where the sidebar itself
+			// groups the row, and the far column is NOT NULL, so it is also the only
+			// shape the row can be sent in.
+			const projectId = toNullableId(row.projectId) ?? SESSIONS_PROJECT_ID;
 			return {
 				workspaceId,
 				projectId,

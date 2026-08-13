@@ -1,3 +1,4 @@
+import { formatSnoozeRemaining } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import type { WorkspaceTransactionSnapshot } from "renderer/stores/workspace-creates";
 import { getV2WorkspaceDisplayName } from "renderer/utils/getV2WorkspaceDisplayName";
 import type {
@@ -193,6 +194,112 @@ export function buildDashboardSidebarSessionWorkspaces({
 				pullRequestsByWorkspaceId,
 			),
 		);
+}
+
+/**
+ * (SESSION-LIFECYCLE) Splits rows into project-less "session" rows and
+ * project-scoped rows. Used for the active lane and for each inactive
+ * (snoozed / archived) bucket, so a session lands in the top-level Sessions
+ * subsections and never inside a project group. The return types narrow
+ * `projectId` on both sides, so callers can't accidentally look a session up in
+ * the project map (which silently misses) or treat a branch as a session.
+ */
+export function partitionSidebarWorkspacesBySession<
+	Workspace extends { projectId: string | null },
+>(
+	workspaces: readonly Workspace[],
+): {
+	sessions: Array<Workspace & { projectId: null }>;
+	projectScoped: Array<Workspace & { projectId: string }>;
+} {
+	const sessions: Array<Workspace & { projectId: null }> = [];
+	const projectScoped: Array<Workspace & { projectId: string }> = [];
+	for (const workspace of workspaces) {
+		if (workspace.projectId === null) {
+			sessions.push(workspace as Workspace & { projectId: null });
+			continue;
+		}
+		projectScoped.push(workspace as Workspace & { projectId: string });
+	}
+	return { sessions, projectScoped };
+}
+
+/**
+ * (SESSION-LIFECYCLE) A session row in the snoozed or archived bucket. Carries
+ * the lifecycle timestamps the subsections sort by and label from.
+ */
+export interface SidebarInactiveWorkspaceInput extends SidebarWorkspaceInput {
+	snoozeUntil: number | null;
+	snoozeLaunchId: string | null;
+	archivedAt: number | null;
+}
+
+export type SidebarSessionLifecycleVariant = "snoozed" | "archived";
+
+/**
+ * (SESSION-LIFECYCLE) Decorates the Snoozed Sessions / Archived Sessions
+ * subsection rows. Sort order matches the project-scoped subsections exactly:
+ * snoozed by soonest wake first (an "until next launch" snooze has no deadline,
+ * so it sorts last), archived by most-recently-archived first.
+ *
+ * A snoozed/archived row never renders in the Pinned section and carries no
+ * repo identity, so pin state, PRs and every project-derived affordance are
+ * off — same as {@link buildDashboardSidebarSessionWorkspaces}.
+ */
+export function buildDashboardSidebarInactiveSessionWorkspaces({
+	sessionSidebarWorkspaces,
+	variant,
+	machineId,
+	nowMs,
+}: {
+	sessionSidebarWorkspaces: SidebarInactiveWorkspaceInput[];
+	variant: SidebarSessionLifecycleVariant;
+	machineId: string;
+	nowMs: number;
+}): DashboardSidebarWorkspace[] {
+	const rows = sessionSidebarWorkspaces.flatMap(
+		(workspace): DashboardSidebarWorkspace[] => {
+			// A project-scoped row here means the caller mis-partitioned: it belongs
+			// under its project's subsection, and rendering it under Sessions would
+			// silently duplicate it. Refuse it loudly rather than showing it twice.
+			if (workspace.projectId !== null) {
+				console.error(
+					`[buildDashboardSidebarInactiveSessionWorkspaces] dropping ${workspace.id}: expected a session (null projectId), got project ${workspace.projectId}`,
+				);
+				return [];
+			}
+			return [
+				{
+					...decorateSidebarWorkspace(
+						workspace,
+						{ githubOwner: null, githubRepoName: null },
+						machineId,
+						// A row outside the active lane never polls PRs.
+						new Map(),
+					),
+					isPinned: false,
+					snoozeUntil: workspace.snoozeUntil,
+					snoozeLaunchId: workspace.snoozeLaunchId,
+					archivedAt: workspace.archivedAt,
+					snoozeRemainingLabel: formatSnoozeRemaining(
+						workspace.snoozeUntil,
+						workspace.snoozeLaunchId,
+						nowMs,
+					),
+				},
+			];
+		},
+	);
+
+	return variant === "snoozed"
+		? rows.sort(
+				(left, right) =>
+					(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
+					(right.snoozeUntil ?? Number.MAX_SAFE_INTEGER),
+			)
+		: rows.sort(
+				(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
+			);
 }
 
 export interface BuildDashboardSidebarProjectsParams {

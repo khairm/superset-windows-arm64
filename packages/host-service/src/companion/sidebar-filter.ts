@@ -52,6 +52,8 @@
  * toward showing, guards fail toward refusing, and they are different code.
  */
 
+import { isSessionsProjectId, placementProjectId } from "./session-project";
+
 /** `sidebar_workspace_state`, as read. Field names match the schema's camelCase. */
 export interface SidebarWorkspaceMirrorRow {
 	workspaceId: string;
@@ -109,8 +111,16 @@ export type SidebarVerdict =
 export interface WorkspaceCurationInput {
 	/** `workspaces.id`. */
 	id: string;
-	/** `workspaces.project_id` — the fallback when the mirror has no placement. */
-	projectId: string;
+	/**
+	 * `workspaces.project_id` — the fallback when the mirror has no placement.
+	 *
+	 * (SESSIONS-PROJECT) NULLABLE, because the column is: a session workspace is
+	 * inserted with `project_id = NULL`. Typing it `string` made every consumer
+	 * read that NULL as a project id matching no `sidebar_project_state` row,
+	 * which the membership rule then reports as "the user took this repo off
+	 * their sidebar" — hiding every session on the machine.
+	 */
+	projectId: string | null;
 	/** `workspaces.type`; a hidden `main` is merely hidden, a hidden branch is archived. */
 	type: string;
 }
@@ -237,7 +247,7 @@ function passThroughCuration(lastSyncAgeMs: number | null): SidebarCuration {
 	return {
 		enabled: false,
 		lastSyncAgeMs,
-		effectiveProjectId: (workspace) => workspace.projectId,
+		effectiveProjectId: (workspace) => placementProjectId(workspace.projectId),
 		workspaceVerdict: () => "show",
 		projectVerdict: () => "show",
 		// (EMIT-OPTIONAL-FIELDS) NOT `false`. This curation has no opinion about
@@ -309,7 +319,22 @@ export function createSidebarCuration(
 	}
 
 	const placementOf = (workspace: WorkspaceCurationInput): string =>
-		workspaceById.get(workspace.id)?.projectId ?? workspace.projectId;
+		workspaceById.get(workspace.id)?.projectId ??
+		placementProjectId(workspace.projectId);
+
+	/**
+	 * (SESSIONS-PROJECT) Project membership, with the ONE exemption the mirror
+	 * cannot express. The synthetic Sessions project is not a `projects` row and
+	 * the renderer has no `v2SidebarProjects` row to mirror for it, so the
+	 * PROJECT-absence rule — "no row means the user took this repo off their
+	 * sidebar" — would read a project that CANNOT have a row as one the user
+	 * removed, and hide every session on the machine, a blocked one included.
+	 * Membership of the synthetic project is therefore a constant. The rows
+	 * PLACED under it are still curated one at a time, so a snoozed, archived or
+	 * binned session hides exactly like any other thread.
+	 */
+	const isInSidebar = (projectId: string): boolean =>
+		projectIds.has(projectId) || isSessionsProjectId(projectId);
 
 	return {
 		enabled: true,
@@ -321,7 +346,7 @@ export function createSidebarCuration(
 			// is also what reproduces `isAutoIncludedLocalMainWorkspace` — a `main`
 			// workspace with NO row is auto-included exactly when its project is
 			// placed, which is precisely what this check asks.
-			if (!projectIds.has(placementOf(workspace))) {
+			if (!isInSidebar(placementOf(workspace))) {
 				return "project_not_in_sidebar";
 			}
 			const row = workspaceById.get(workspace.id);
@@ -330,7 +355,7 @@ export function createSidebarCuration(
 			return classifyWorkspace(row, workspace.type, meta.appLaunchId, nowMs);
 		},
 		projectVerdict(projectId) {
-			return projectIds.has(projectId) ? "show" : "project_not_in_sidebar";
+			return isInSidebar(projectId) ? "show" : "project_not_in_sidebar";
 		},
 		workspacePinned(workspaceId) {
 			return workspaceById.get(workspaceId)?.pinnedAt != null;

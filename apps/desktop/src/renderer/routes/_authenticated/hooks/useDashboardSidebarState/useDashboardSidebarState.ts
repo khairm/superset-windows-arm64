@@ -707,8 +707,11 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
+	/** Bulk "Unsnooze all" for one sidebar lane. (SESSION-LIFECYCLE) Sessions
+	 * pass `null` — their local-state rows carry a null projectId, so the same
+	 * filter covers the top-level Snoozed Sessions subsection. */
 	const unsnoozeAllInProject = useCallback(
-		(projectId: string) => {
+		(projectId: string | null) => {
 			for (const workspace of collections.v2WorkspaceLocalState.state.values()) {
 				if (workspace.sidebarState.projectId !== projectId) continue;
 				if (

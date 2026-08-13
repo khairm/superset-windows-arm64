@@ -124,6 +124,8 @@ export function DashboardSidebar({
 		groups,
 		pinnedWorkspaces,
 		sessionWorkspaces,
+		snoozedSessionWorkspaces,
+		archivedSessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	} = useDashboardSidebarData();
@@ -440,6 +442,8 @@ export function DashboardSidebar({
 									)}
 									<DashboardSidebarSessionsSection
 										sessionWorkspaces={sessionWorkspaces}
+										snoozedSessionWorkspaces={snoozedSessionWorkspaces}
+										archivedSessionWorkspaces={archivedSessionWorkspaces}
 										isCollapsed={isCollapsed}
 										rowsHidden={!isCollapsed && workspacesListCollapsed}
 										workspaceShortcutLabels={workspaceShortcutLabels}

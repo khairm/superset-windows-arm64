@@ -32,6 +32,7 @@ import {
 } from "../../utils/completedFilter";
 import { deadlineGroupKey } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
+import { isKanbanEligibleWorkspace } from "../../utils/isKanbanEligibleWorkspace";
 
 const TICK_INTERVAL_MS = 60_000;
 const STARTER_COLUMN_NAME = "In Progress";
@@ -335,7 +336,7 @@ export function useKanbanData(): UseKanbanDataResult {
 				.reduce((max, c) => Math.max(max, c.tabOrder), 0) + 1;
 		for (const branch of workspaceRows as SelectV2Workspace[]) {
 			// Project removed from the sidebar → none of its branches get cards.
-			if (!sidebarProjectIds.has(branch.projectId)) continue;
+			if (!isKanbanEligibleWorkspace(branch, sidebarProjectIds)) continue;
 			const local = localStateByWorkspace.get(branch.id);
 			const bucket = getWorkspaceSidebarBucket(
 				local?.sidebarState ?? {},
@@ -440,7 +441,7 @@ export function useKanbanData(): UseKanbanDataResult {
 			}
 			// While a project is removed from the sidebar its local-state rows are
 			// deliberately deleted — don't resurrect them from here.
-			if (!sidebarProjectIds.has(ws.projectId)) continue;
+			if (!isKanbanEligibleWorkspace(ws, sidebarProjectIds)) continue;
 			const local = localStateByWorkspace.get(card.workspaceId);
 			const bucket = getWorkspaceSidebarBucket(
 				local?.sidebarState ?? {},
@@ -623,7 +624,8 @@ export function useKanbanData(): UseKanbanDataResult {
 					} else {
 						// HIDE (never delete) cards of projects removed from the sidebar —
 						// re-adding the project restores them with column/deadline intact.
-						if (!sidebarProjectIds.has(workspace.projectId)) continue;
+						if (!isKanbanEligibleWorkspace(workspace, sidebarProjectIds))
+							continue;
 						projectName = projectNameById.get(workspace.projectId) ?? null;
 						const local = localStateByWorkspace.get(workspace.id);
 						const wsBucket = getWorkspaceSidebarBucket(

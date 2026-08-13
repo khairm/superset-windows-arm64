@@ -1,9 +1,13 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { APP_LAUNCH_ID } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import {
+	buildDashboardSidebarInactiveSessionWorkspaces,
 	buildDashboardSidebarPinnedWorkspaces,
 	buildDashboardSidebarProjects,
 	buildDashboardSidebarSessionWorkspaces,
 	partitionSidebarWorkspacesByPinned,
+	partitionSidebarWorkspacesBySession,
+	type SidebarInactiveWorkspaceInput,
 	type SidebarProjectInput,
 	type SidebarSectionInput,
 	type SidebarWorkspaceInput,
@@ -277,5 +281,128 @@ describe("sessions (null projectId)", () => {
 		expect(rows.map((row) => row.id)).toEqual(["pinned-session"]);
 		expect(rows[0].projectName).toBeNull();
 		expect(rows[0].projectIconUrl).toBeNull();
+	});
+});
+
+// (SESSION-LIFECYCLE) A snoozed / archived session has no project row to hang
+// off, so it renders in its own top-level subsection. These assert the bucket
+// rows carry the same ordering and badge semantics as the project-scoped ones.
+describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
+	const NOW = 1_000_000_000;
+
+	function makeInactiveSession(
+		overrides: Partial<SidebarInactiveWorkspaceInput> = {},
+	): SidebarInactiveWorkspaceInput {
+		return {
+			...makeWorkspace({ projectId: null, type: "session" }),
+			snoozeUntil: null,
+			snoozeLaunchId: null,
+			archivedAt: null,
+			...overrides,
+		};
+	}
+
+	it("splits session rows from project-scoped rows", () => {
+		const { sessions, projectScoped } = partitionSidebarWorkspacesBySession([
+			makeWorkspace({ id: "session-1", projectId: null, type: "session" }),
+			makeWorkspace({ id: "workspace-1" }),
+			makeWorkspace({ id: "session-2", projectId: null, type: "session" }),
+		]);
+
+		expect(sessions.map((row) => row.id)).toEqual(["session-1", "session-2"]);
+		expect(projectScoped.map((row) => row.id)).toEqual(["workspace-1"]);
+	});
+
+	it("orders snoozed sessions by soonest wake, with next-launch snoozes last", () => {
+		const rows = buildDashboardSidebarInactiveSessionWorkspaces({
+			sessionSidebarWorkspaces: [
+				makeInactiveSession({
+					id: "launch",
+					snoozeLaunchId: APP_LAUNCH_ID,
+				}),
+				makeInactiveSession({ id: "later", snoozeUntil: NOW + 90_000_000 }),
+				makeInactiveSession({ id: "sooner", snoozeUntil: NOW + 60_000 }),
+			],
+			variant: "snoozed",
+			machineId: MACHINE_ID,
+			nowMs: NOW,
+		});
+
+		expect(rows.map((row) => row.id)).toEqual(["sooner", "later", "launch"]);
+	});
+
+	it("labels remaining snooze time from the passed tick", () => {
+		const [soon, launch] = buildDashboardSidebarInactiveSessionWorkspaces({
+			sessionSidebarWorkspaces: [
+				makeInactiveSession({ id: "soon", snoozeUntil: NOW + 3 * 3_600_000 }),
+				makeInactiveSession({ id: "launch", snoozeLaunchId: APP_LAUNCH_ID }),
+			],
+			variant: "snoozed",
+			machineId: MACHINE_ID,
+			nowMs: NOW,
+		});
+
+		expect(soon.snoozeRemainingLabel).toBe("3h");
+		expect(launch.snoozeRemainingLabel).toBe("launch");
+	});
+
+	it("orders archived sessions most-recently-archived first", () => {
+		const rows = buildDashboardSidebarInactiveSessionWorkspaces({
+			sessionSidebarWorkspaces: [
+				makeInactiveSession({ id: "old", archivedAt: NOW - 5_000 }),
+				makeInactiveSession({ id: "newest", archivedAt: NOW }),
+				makeInactiveSession({ id: "middle", archivedAt: NOW - 1_000 }),
+			],
+			variant: "archived",
+			machineId: MACHINE_ID,
+			nowMs: NOW,
+		});
+
+		expect(rows.map((row) => row.id)).toEqual(["newest", "middle", "old"]);
+	});
+
+	it("strips repo affordances, PRs and pin state from an inactive session row", () => {
+		const [row] = buildDashboardSidebarInactiveSessionWorkspaces({
+			// A pinned session that gets archived leaves the Pinned section, so the
+			// row it produces must never claim to be pinned.
+			sessionSidebarWorkspaces: [
+				makeInactiveSession({ archivedAt: NOW, pinnedAt: 1000 }),
+			],
+			variant: "archived",
+			machineId: MACHINE_ID,
+			nowMs: NOW,
+		});
+
+		expect(row.projectId).toBeNull();
+		expect(row.repoUrl).toBeNull();
+		expect(row.branchExistsOnRemote).toBe(false);
+		expect(row.pullRequest).toBeNull();
+		expect(row.isPinned).toBe(false);
+		expect(row.archivedAt).toBe(NOW);
+	});
+
+	it("refuses a project-scoped row loudly instead of duplicating it under Sessions", () => {
+		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const rows = buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: [
+					makeInactiveSession({ id: "session-1", archivedAt: NOW }),
+					makeInactiveSession({
+						id: "branch-1",
+						projectId: "project-1",
+						type: "worktree",
+						archivedAt: NOW,
+					}),
+				],
+				variant: "archived",
+				machineId: MACHINE_ID,
+				nowMs: NOW,
+			});
+
+			expect(rows.map((row) => row.id)).toEqual(["session-1"]);
+			expect(errorSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 });

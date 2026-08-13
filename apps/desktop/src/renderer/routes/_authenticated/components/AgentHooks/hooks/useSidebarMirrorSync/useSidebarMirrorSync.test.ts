@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SESSIONS_PROJECT_ID } from "@superset/host-service/session-project";
 import {
 	buildMirrorSnapshot,
 	createMirrorPushLoop,
@@ -65,13 +66,14 @@ describe("buildMirrorSnapshot", () => {
 		expect(snapshot.droppedRows).toBe(1);
 	});
 
-	test("DROPS a row whose placement project is missing — 'nowhere' is not a statement the mirror can make", () => {
+	test("(SESSIONS-PROJECT) MIRRORS a row with no placement under the synthetic Sessions project — a session workspace has no project_id, and dropping it left the bridge with no opinion about a session the user had curated", () => {
 		const snapshot = buildMirrorSnapshot(
 			[localStateRow({ projectId: null })],
 			[projectRow()],
 		);
-		expect(snapshot.workspaces).toEqual([]);
-		expect(snapshot.droppedRows).toBe(1);
+		expect(snapshot.workspaces).toHaveLength(1);
+		expect(snapshot.workspaces[0]?.projectId).toBe(SESSIONS_PROJECT_ID);
+		expect(snapshot.droppedRows).toBe(0);
 	});
 
 	test("sends a corrupt timestamp as ABSENT and counts it, rather than mirroring a hiding field it cannot trust", () => {

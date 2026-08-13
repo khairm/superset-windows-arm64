@@ -15,13 +15,17 @@ import { useEffect, useMemo, useState } from "react";
 import { LuChevronRight, LuTrash2 } from "react-icons/lu";
 import { useRecycleBinRetention } from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
 import { isWithinRecycleBinWindow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import type { DashboardSidebarWorkspace } from "../../../../types";
-import { DashboardSidebarWorkspaceItem } from "../../../DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem";
+import type { DashboardSidebarWorkspace } from "../../types";
+import { DashboardSidebarWorkspaceItem } from "../DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem";
 
 type StateSectionVariant = "snoozed" | "archived" | "deleted";
 
 interface DashboardSidebarStateSectionProps {
 	variant: StateSectionVariant;
+	/** (SESSION-LIFECYCLE) Overrides the header title so the top-level session
+	 * subsections can read "Snoozed Sessions" / "Archived Sessions" while sharing
+	 * this component's behaviour with the per-project ones. */
+	title?: string;
 	workspaces: DashboardSidebarWorkspace[];
 	collapsed: boolean;
 	onToggleCollapsed: () => void;
@@ -56,6 +60,10 @@ const COPY = {
  * renders when the project has it revealed; right-clicking the header hides it
  * again, bulk-restores, or (Recycle Bin only) permanently empties.
  *
+ * (SESSION-LIFECYCLE) Also drives the two top-level session subsections, which
+ * pass `title` and their own reveal/collapse state; behaviour is otherwise
+ * identical so sessions and project threads stay in lockstep.
+ *
  * (RECYCLE-BIN) The Recycle Bin applies the device-local retention window as a
  * DISPLAY filter: by default it shows only items deleted within the last N days
  * (older ones are kept but collapsed behind a per-bin "Show all" toggle, with an
@@ -63,6 +71,7 @@ const COPY = {
  */
 export function DashboardSidebarStateSection({
 	variant,
+	title,
 	workspaces,
 	collapsed,
 	onToggleCollapsed,
@@ -120,7 +129,9 @@ export function DashboardSidebarStateSection({
 								)}
 							/>
 							{isDeleted && <LuTrash2 className="size-3 shrink-0 opacity-70" />}
-							<span className="truncate font-medium">{copy.title}</span>
+							<span className="truncate font-medium">
+								{title ?? copy.title}
+							</span>
 							<span className="shrink-0 text-[10px] tabular-nums opacity-70">
 								({workspaces.length})
 							</span>

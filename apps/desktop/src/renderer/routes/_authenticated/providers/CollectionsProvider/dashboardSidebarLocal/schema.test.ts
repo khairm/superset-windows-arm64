@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { WorkspaceState } from "@superset/panes";
 import {
 	DEFAULT_V2_USER_PREFERENCES,
@@ -121,6 +121,52 @@ describe("healV2UserPreferences", () => {
 		const healed = healV2UserPreferences({ urlLinks: customized });
 
 		expect(healed.urlLinks).toEqual(customized);
+	});
+
+	// (SESSION-LIFECYCLE) The Snoozed/Archived Sessions reveal + collapse flags
+	// live here because a session has no project row to hang them off.
+	describe("session section flags (SESSION-LIFECYCLE)", () => {
+		it("defaults every flag to hidden/expanded on a row written before they existed", () => {
+			const healed = healV2UserPreferences({ rightSidebarOpen: false });
+
+			expect(healed.showSnoozedSessions).toBe(false);
+			expect(healed.showArchivedSessions).toBe(false);
+			expect(healed.snoozedSessionsCollapsed).toBe(false);
+			expect(healed.archivedSessionsCollapsed).toBe(false);
+		});
+
+		it("preserves stored booleans", () => {
+			const healed = healV2UserPreferences({
+				showSnoozedSessions: true,
+				archivedSessionsCollapsed: true,
+			});
+
+			expect(healed.showSnoozedSessions).toBe(true);
+			expect(healed.archivedSessionsCollapsed).toBe(true);
+			expect(healed.showArchivedSessions).toBe(false);
+		});
+
+		it("rejects a non-boolean loudly and falls back to the default", () => {
+			const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+			try {
+				// A truthy string must not silently reveal a section.
+				const healed = healV2UserPreferences({
+					showSnoozedSessions: "true",
+					snoozedSessionsCollapsed: 1,
+				});
+
+				expect(healed.showSnoozedSessions).toBe(false);
+				expect(healed.snoozedSessionsCollapsed).toBe(false);
+				expect(errorSpy).toHaveBeenCalledTimes(2);
+			} finally {
+				errorSpy.mockRestore();
+			}
+		});
+
+		it("never throws on corrupt input (parser must never throw)", () => {
+			expect(() => healV2UserPreferences("garbage")).not.toThrow();
+			expect(() => healV2UserPreferences(null)).not.toThrow();
+		});
 	});
 });
 

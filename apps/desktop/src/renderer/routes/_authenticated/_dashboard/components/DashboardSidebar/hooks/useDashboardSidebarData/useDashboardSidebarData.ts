@@ -29,9 +29,11 @@ import type {
 // Bin buckets or the just-returned highlight. Only upstream's pinned and
 // session helpers are shared from it.
 import {
+	buildDashboardSidebarInactiveSessionWorkspaces,
 	buildDashboardSidebarPinnedWorkspaces,
 	buildDashboardSidebarSessionWorkspaces,
 	partitionSidebarWorkspacesByPinned,
+	partitionSidebarWorkspacesBySession,
 } from "./buildDashboardSidebarProjects";
 import {
 	derivePullRequestQueryTargets,
@@ -690,14 +692,26 @@ export function useDashboardSidebarData() {
 
 	// Unpinned sessions render in the top-level Sessions section; pinned
 	// sessions stay in Pinned like any other row.
-	const { sessionRows, projectRows } = useMemo(() => {
-		const sessions: typeof unpinnedRows = [];
-		const projectScoped: typeof unpinnedRows = [];
-		for (const row of unpinnedRows) {
-			(row.projectId === null ? sessions : projectScoped).push(row);
-		}
-		return { sessionRows: sessions, projectRows: projectScoped };
-	}, [unpinnedRows]);
+	const { sessions: sessionRows, projectScoped: projectRows } = useMemo(
+		() => partitionSidebarWorkspacesBySession(unpinnedRows),
+		[unpinnedRows],
+	);
+
+	// (SESSION-LIFECYCLE) A snoozed / archived session has no project row to hang
+	// off, so it is split out here and rendered in the top-level Snoozed Sessions
+	// / Archived Sessions subsections. The project-scoped remainder feeds the
+	// per-project subsections below.
+	const { sessions: sessionSnoozedRows, projectScoped: projectSnoozedRows } =
+		useMemo(
+			() => partitionSidebarWorkspacesBySession(snoozedSidebarWorkspaces),
+			[snoozedSidebarWorkspaces],
+		);
+
+	const { sessions: sessionArchivedRows, projectScoped: projectArchivedRows } =
+		useMemo(
+			() => partitionSidebarWorkspacesBySession(archivedSidebarWorkspaces),
+			[archivedSidebarWorkspaces],
+		);
 
 	// Inline builder (see the import note): project-scoped rows only — sessions
 	// go through upstream's session builder below.
@@ -865,7 +879,7 @@ export function useDashboardSidebarData() {
 			};
 		};
 
-		for (const workspace of snoozedSidebarWorkspaces) {
+		for (const workspace of projectSnoozedRows) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 			project.snoozedWorkspaces.push(
@@ -873,7 +887,7 @@ export function useDashboardSidebarData() {
 			);
 		}
 
-		for (const workspace of archivedSidebarWorkspaces) {
+		for (const workspace of projectArchivedRows) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 			project.archivedWorkspaces.push(
@@ -987,8 +1001,8 @@ export function useDashboardSidebarData() {
 		sidebarProjects,
 		sidebarSections,
 		projectRows,
-		snoozedSidebarWorkspaces,
-		archivedSidebarWorkspaces,
+		projectSnoozedRows,
+		projectArchivedRows,
 		deletedSidebarWorkspaces,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
@@ -1003,6 +1017,39 @@ export function useDashboardSidebarData() {
 		[machineId, pullRequestsByWorkspaceId, sessionRows],
 	);
 	const sessionWorkspaces = useJsonStable(computedSessionWorkspaces);
+
+	// (SESSION-LIFECYCLE) Rows for the top-level Snoozed Sessions / Archived
+	// Sessions subsections. `nowMs` is the same coarse tick that expires snoozes,
+	// so the remaining-time badge counts down with it.
+	const computedSnoozedSessionWorkspaces = useMemo<DashboardSidebarWorkspace[]>(
+		() =>
+			buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: sessionSnoozedRows,
+				variant: "snoozed",
+				machineId,
+				nowMs,
+			}),
+		[machineId, nowMs, sessionSnoozedRows],
+	);
+	const snoozedSessionWorkspaces = useJsonStable(
+		computedSnoozedSessionWorkspaces,
+	);
+
+	const computedArchivedSessionWorkspaces = useMemo<
+		DashboardSidebarWorkspace[]
+	>(
+		() =>
+			buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: sessionArchivedRows,
+				variant: "archived",
+				machineId,
+				nowMs,
+			}),
+		[machineId, nowMs, sessionArchivedRows],
+	);
+	const archivedSessionWorkspaces = useJsonStable(
+		computedArchivedSessionWorkspaces,
+	);
 
 	const computedPinnedWorkspaces = useMemo<DashboardSidebarPinnedWorkspace[]>(
 		() =>
@@ -1020,6 +1067,8 @@ export function useDashboardSidebarData() {
 		groups,
 		pinnedWorkspaces,
 		sessionWorkspaces,
+		snoozedSessionWorkspaces,
+		archivedSessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	};

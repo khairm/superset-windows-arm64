@@ -80,6 +80,11 @@ import {
 	readTranscriptWindow,
 } from "./question-store";
 import {
+	placementProjectId,
+	SESSIONS_PROJECT_ID,
+	SESSIONS_PROJECT_NAME,
+} from "./session-project";
+import {
 	createSidebarCuration,
 	type SidebarCuration,
 	type SidebarMirrorMetaRow,
@@ -131,7 +136,13 @@ export interface HostProjectRow {
 
 export interface HostWorkspaceRow {
 	id: string;
-	projectId: string;
+	/**
+	 * (SESSIONS-PROJECT) NULLABLE, because `workspaces.project_id` is: a session
+	 * workspace (`type = "session"`, its worktree under `~/.superset/sessions`)
+	 * has no repo. `placementProjectId` maps that NULL onto the synthetic
+	 * Sessions group; nothing else in this module may invent a project for it.
+	 */
+	projectId: string | null;
 	name: string;
 	branch: string;
 	worktreePath: string;
@@ -146,6 +157,14 @@ export interface HostTerminalRow {
 	createdAt: number;
 	lastAttachedAt: number | null;
 	endedAt: number | null;
+}
+
+/** What `QuestionSourceResolver` answers with — the rows that own a terminal. */
+export interface TerminalSource {
+	hostProjectId: string;
+	hostWorkspaceId: string;
+	/** `terminal_agent_bindings.agent_id`, or null when the terminal is unbound. */
+	agentId: string | null;
 }
 
 export interface HostBindingRow {
@@ -175,6 +194,39 @@ export interface HostDbReader extends QuestionSourceResolver {
 	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
 	readSidebarMirror(): SidebarMirrorSnapshot;
 	close(): void;
+}
+
+/**
+ * (SESSIONS-PROJECT) One row of the terminal → workspace → project join, with
+ * the NULL project mapped onto the synthetic Sessions group.
+ *
+ * The join itself already SUCCEEDS for a session: `origin_workspace_id` names a
+ * real `workspaces` row (that is what makes attach, adoption and the answer
+ * path work on a session at all). What it hands back is `project_id = NULL`,
+ * and the consumer of this — `resolveSource`, which every `/v1/question` build
+ * and therefore every phone/watch ANSWER goes through — mints
+ * `deriveHandle("project", hostProjectId)` from it. A NULL there is not a
+ * missing row it can report; it is a crash on the answer path for a question
+ * the bridge captured perfectly well.
+ *
+ * Exported for the tests that pin exactly that: a session question resolves to
+ * a real workspace id (never invented) under the synthetic project id.
+ */
+export function toTerminalSource(row: unknown): TerminalSource | null {
+	if (row === undefined || row === null) return null;
+	const source = row as {
+		hostProjectId: string | null;
+		hostWorkspaceId: string;
+		agentId: string | null;
+	};
+	return {
+		// The workspace id is passed through UNTOUCHED: it is the id adoption,
+		// the terminal lock and the pty write all key on, and inventing one would
+		// break every one of them.
+		hostWorkspaceId: source.hostWorkspaceId,
+		hostProjectId: placementProjectId(source.hostProjectId),
+		agentId: source.agentId,
+	};
 }
 
 /**
@@ -252,22 +304,9 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 			(terminalByIdStmt.get(id) as HostTerminalRow | undefined) ?? null,
 		findBinding: (id) =>
 			(bindingByTerminalStmt.get(id) as HostBindingRow | undefined) ?? null,
-		resolveTerminal: (id) =>
-			(terminalSourceStmt.get(id) as
-				| {
-						hostProjectId: string;
-						hostWorkspaceId: string;
-						agentId: string | null;
-				  }
-				| undefined) ?? null,
+		resolveTerminal: (id) => toTerminalSource(terminalSourceStmt.get(id)),
 		resolveActiveTerminal: (id) =>
-			(activeTerminalSourceStmt.get(id) as
-				| {
-						hostProjectId: string;
-						hostWorkspaceId: string;
-						agentId: string | null;
-				  }
-				| undefined) ?? null,
+			toTerminalSource(activeTerminalSourceStmt.get(id)),
 		// (QUESTION-EXPIRY) The row's newest known instant, for the liveness
 		// activity grace. Deliberately the UNRESTRICTED row lookup: the terminal
 		// this has to rescue is the one created seconds ago, which the daemon
@@ -903,9 +942,13 @@ export async function handleTree(
 	const workspaceRowsByOwningProject = new Map<string, HostWorkspaceRow[]>();
 	for (const row of allWorkspaces) {
 		const placement = curation.effectiveProjectId(row);
-		const kindRows = workspaceRowsByOwningProject.get(row.projectId);
+		// (SESSIONS-PROJECT) A session owns no project, so its kind rows are filed
+		// under the synthetic id. Nothing reads them — the synthetic group reports
+		// `unknown` — but the key must be a string for the map to hold it.
+		const owningProject = placementProjectId(row.projectId);
+		const kindRows = workspaceRowsByOwningProject.get(owningProject);
 		if (kindRows === undefined)
-			workspaceRowsByOwningProject.set(row.projectId, [row]);
+			workspaceRowsByOwningProject.set(owningProject, [row]);
 		else kindRows.push(row);
 
 		const all = terminalsByWorkspace.get(row.id) ?? [];
@@ -987,6 +1030,34 @@ export async function handleTree(
 			...(projectPinned === null ? {} : { pinned: projectPinned }),
 		});
 	}
+	// (SESSIONS-PROJECT) The synthetic group, emitted only when it has rows. It
+	// is built AFTER the real projects and from the same placement map, so a
+	// session dragged under a real repo groups there instead — placement is
+	// curation, and the synthetic id is only the fallback for a workspace that
+	// has no project at all.
+	const sessionWorkspaces = workspacesByProject.get(SESSIONS_PROJECT_ID) ?? [];
+	if (sessionWorkspaces.length > 0) {
+		sessionWorkspaces.sort(
+			(a, b) =>
+				STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
+				(b.lastActivityMs ?? 0) - (a.lastActivityMs ?? 0),
+		);
+		outProjects.push({
+			projectId: deriveHandle(
+				"project",
+				SESSIONS_PROJECT_ID,
+			) as unknown as ProjectId,
+			name: SESSIONS_PROJECT_NAME,
+			// Deliberately `unknown`, even with `tree.read`: kind is a fact about a
+			// REPOSITORY and this group is not one. `plain` or `git` would be an
+			// invented claim about a project that does not exist in host.db.
+			kind: PROJECT_KIND_UNKNOWN,
+			workspaces: sessionWorkspaces,
+			// No `pinned`: the synthetic project can never have a
+			// `sidebar_project_state` row, so the bridge has no opinion to report.
+		});
+	}
+
 	outProjects.sort((a, b) => {
 		const aStatus = rollup(a.workspaces.map((w) => w.status));
 		const bStatus = rollup(b.workspaces.map((w) => w.status));
