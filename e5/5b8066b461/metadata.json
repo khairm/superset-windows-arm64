@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "e55b8066b461",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.ts",
+    "packages/host-service/src/companion/push.ts",
+    "packages/host-service/src/companion/types.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e5/5b8066b461/0/metadata.json",
+      "transcript": "/e5/5b8066b461/0/full.jsonl",
+      "content_hash": "/e5/5b8066b461/0/content_hash.txt",
+      "prompt": "/e5/5b8066b461/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4368595,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 127180032,
+    "output_tokens": 136296,
+    "api_call_count": 956
+  }
+}
