@@ -18,12 +18,19 @@ fs.writeFileSync(scriptPath, NOTIFY_SCRIPT);
 type Post = { eventType: string; lifecycleOutcome?: string };
 
 const posts: Post[] = [];
+/**
+ * Every producer id the host-service saw, in arrival order. Kept OUT of `Post`
+ * so the exact-shape assertions above stay readable — the id is random per
+ * invocation, so it can only be asserted as a set/shape anyway.
+ */
+const lifecycleEventIds: string[] = [];
 const sink = Bun.serve({
 	port: 0,
 	async fetch(request) {
 		const body = (await request.json()) as {
 			json?: {
 				eventType?: string;
+				companionLifecycleEventId?: string;
 				companionLifecycleOutcome?: string;
 			};
 		};
@@ -31,6 +38,8 @@ const sink = Bun.serve({
 			eventType: body.json?.eventType ?? "",
 			lifecycleOutcome: body.json?.companionLifecycleOutcome,
 		});
+		const eventId = body.json?.companionLifecycleEventId;
+		if (typeof eventId === "string") lifecycleEventIds.push(eventId);
 		return Response.json({ result: { data: { json: { success: true } } } });
 	},
 });
@@ -46,6 +55,7 @@ const TERMINAL_ID = "terminal-deferred-failure";
 
 beforeEach(() => {
 	posts.length = 0;
+	lifecycleEventIds.length = 0;
 	home = fs.mkdtempSync(path.join(root, "home-"));
 	// A per-test session id keeps the codex-job glob (which also scans the OS
 	// temp dir) from ever matching a real job on the developer's machine.
@@ -301,5 +311,44 @@ describe("superset-notify deferred StopFailure", () => {
 			(await hook({ hook_event_name: "Stop", background_tasks: [] }))
 				?.eventType,
 		).toBe("Failed");
+	});
+});
+
+// (COMPANION-LIFECYCLE-ALERTS) The producer id is the host's duplicate-DELIVERY
+// guard: it must be fresh per hook invocation. A seed derived from the payload
+// was not — Claude hook payloads carry no timestamp and a Stop payload carries
+// no tool_use_id, so every Stop in one session produced an identical id and the
+// host dropped every alert after the first as a duplicate.
+describe("superset-notify lifecycle producer id", () => {
+	const ID_SHAPE = /^[A-Za-z0-9_-]{22}$/;
+
+	it("mints a fresh valid id for every same-session lifecycle event", async () => {
+		// Three identical Start/Stop turns in ONE session: the collision case.
+		for (let turn = 0; turn < 3; turn++) {
+			expect(await hook({ hook_event_name: "UserPromptSubmit" })).toEqual({
+				eventType: "Start",
+				lifecycleOutcome: "progress",
+			});
+			expect(
+				await hook({ hook_event_name: "Stop", background_tasks: [] }),
+			).toEqual({ eventType: "Stop", lifecycleOutcome: "ready" });
+		}
+
+		expect(lifecycleEventIds).toHaveLength(6);
+		for (const id of lifecycleEventIds) {
+			expect(id).toMatch(ID_SHAPE);
+		}
+		expect(new Set(lifecycleEventIds).size).toBe(6);
+	});
+
+	it("mints a fresh id even for byte-identical repeats of one event", async () => {
+		// Same event name, same session, no distinguishing payload field at all.
+		await hook({ hook_event_name: "Stop", background_tasks: [] });
+		await hook({ hook_event_name: "Stop", background_tasks: [] });
+
+		expect(lifecycleEventIds).toHaveLength(2);
+		expect(lifecycleEventIds[0]).toMatch(ID_SHAPE);
+		expect(lifecycleEventIds[1]).toMatch(ID_SHAPE);
+		expect(lifecycleEventIds[0]).not.toBe(lifecycleEventIds[1]);
 	});
 });

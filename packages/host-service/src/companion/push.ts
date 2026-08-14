@@ -286,7 +286,7 @@ export class PushAuthError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * §13.1 / §13.2 — the closed key set PER VERSION, keyed by `v`.
+ * §13.1 / §13.4 — the closed key set PER VERSION, keyed by `v`.
  *
  * (LIFECYCLE-ALERT) Two shapes, never one widened shape. v1 carries `n` (how
  * many questions are pending) and v2 does not, because a lifecycle alert is not
@@ -497,7 +497,7 @@ export function buildRetractPushData(input: {
 }
 
 /**
- * (LIFECYCLE-ALERT) §13.2 — `k: "g"` a work-cycle ended cleanly and there is
+ * (LIFECYCLE-ALERT) §13.4 — `k: "g"` a work-cycle ended cleanly and there is
  * something to review; `k: "e"` the terminal agent itself failed.
  *
  * THERE IS NO RETRACTION FOR THESE AND THAT IS DELIBERATE. A question retraction
@@ -1121,13 +1121,22 @@ export interface PushSender {
 	 */
 	retract(questionId: QuestionId): Promise<void>;
 	/**
-	 * (LIFECYCLE-ALERT) §13.2 — deliver ONE lifecycle alert now.
+	 * (LIFECYCLE-ALERT) §13.4 — deliver ONE lifecycle alert now.
 	 *
 	 * Deliberately DUMB: it takes an already-decided alert and puts it on the
 	 * wire. Every judgement — is a work-cycle armed, did the agent fail, is the
 	 * user at the desk, is this thread still on their sidebar, has this exact
 	 * alert already gone out — belongs to `lifecycle-alerts.ts`, which owns the
-	 * cycle state machine and its durable fence. This method exists so that the
+	 * cycle state machine. That state is PROCESS-LOCAL and BOUNDED, not durable
+	 * like the question path's fence: held alerts, the alert-id set and the
+	 * bounded window of already-applied producer ids live in memory, expire with
+	 * the six-hour alert TTL, and are retried in place with capped exponential
+	 * backoff. A host-service restart therefore drops whatever was still held —
+	 * accepted, because an alert is a fact about an instant that has passed and
+	 * the next work cycle raises a fresh one, whereas a pending question outlives
+	 * a restart and must not.
+	 *
+	 * This method exists so that the
 	 * OAuth token cache, the bounded retry/backoff, the dead-token pruning and
 	 * the fatal-fault surface are shared with the question path rather than
 	 * reimplemented beside it: two independent FCM clients in one process is two

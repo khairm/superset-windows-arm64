@@ -391,7 +391,6 @@ retried once with the fields stripped so a dot is never lost.
 """
 import base64
 import datetime
-import hashlib
 import json
 import os
 import pathlib
@@ -2369,27 +2368,22 @@ def main():
         })
         return
 
-    # (COMPANION-LIFECYCLE-ALERTS) Stable, content-free producer identity for
-    # this hook event. The lifecycle manager derives the USER-VISIBLE alert id
-    # from the armed work cycle and alert kind, so this value is not an alert
-    # identity; it is the sink's duplicate-delivery guard, and the manager keeps
-    # a bounded window of the ones it has already applied. Note that the retry
-    # below deliberately re-POSTs WITHOUT the companion fields, so that path
-    # never re-delivers one of these. Only hook-originated events carry it;
+    # (COMPANION-LIFECYCLE-ALERTS) Content-free producer identity, FRESH PER HOOK
+    # INVOCATION. The lifecycle manager derives the USER-VISIBLE alert id from the
+    # armed work cycle and alert kind, so this value is not an alert identity; it
+    # is the sink's duplicate-DELIVERY guard, matched against a bounded window of
+    # ids it has already applied.
+    # It MUST therefore be unique per invocation. A derived seed is not: Claude
+    # hook payloads carry no timestamp, and a Stop payload carries no tool_use_id,
+    # so every Stop in one session hashed to the SAME id and the host discarded
+    # every alert after the first as a duplicate. 16 bytes of os.urandom ->
+    # 22 base64url chars, exactly the id shape the receiver validates.
+    # The retry below deliberately re-POSTs WITHOUT the companion fields, so that
+    # path never re-delivers one of these. Only hook-originated events carry it;
     # administrative status clears never pass through this producer.
-    # NOTE: the separator is written \\x00 (not \\0) because this script is a JS
-    # template literal — a bare \\0 there emits a real NUL byte into the
-    # generated .py, which python refuses to parse ("source code cannot contain
-    # null bytes") and the whole hook stops running.
-    lifecycle_seed = (
-        terminal_id + "\\x00" + session_id + "\\x00" + event + "\\x00"
-        + str(payload.get("hook_event_name", "")) + "\\x00"
-        + str(payload.get("timestamp", "")) + "\\x00"
-        + str(payload.get("tool_use_id", ""))
-    ).encode("utf-8")
-    lifecycle_event_id = base64.urlsafe_b64encode(
-        hashlib.sha256(lifecycle_seed).digest()[:16]
-    ).decode("ascii").rstrip("=")
+    lifecycle_event_id = (
+        base64.urlsafe_b64encode(os.urandom(16)).decode("ascii").rstrip("=")
+    )
     lifecycle_outcome = None
     if event == "SessionEnd":
         lifecycle_outcome = "session-end"

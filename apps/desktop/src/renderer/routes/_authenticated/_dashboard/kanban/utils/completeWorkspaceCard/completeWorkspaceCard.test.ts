@@ -8,7 +8,9 @@ import {
 	buildCompletedWorkspaceCard,
 	buildFrozenCompletedCardPatch,
 	type CompletableWorkspace,
+	canDropCardIntoCompleted,
 	canMarkWorkspaceCompleted,
+	classifyBoundCardWorkspace,
 	classifyWorkspaceCompletion,
 } from "./completeWorkspaceCard";
 
@@ -121,6 +123,94 @@ describe("classifyWorkspaceCompletion", () => {
 				canFreezeCard: false,
 			});
 		}
+	});
+});
+
+describe("classifyBoundCardWorkspace", () => {
+	const classify = (
+		workspacePresent: boolean,
+		authoritative: boolean,
+		hostId: string | null = "host-1",
+	) =>
+		classifyBoundCardWorkspace({
+			workspacePresent,
+			hostId,
+			isAbsenceAuthoritative: (id) => {
+				expect(id).toBe(hostId);
+				return authoritative;
+			},
+		});
+
+	test("a served workspace is present — authority is never consulted", () => {
+		expect(
+			classifyBoundCardWorkspace({
+				workspacePresent: true,
+				hostId: "host-1",
+				isAbsenceAuthoritative: () => {
+					throw new Error("authority must not be consulted for a live row");
+				},
+			}),
+		).toBe("present");
+	});
+
+	test("a missing workspace is gone only once its host proved absence", () => {
+		expect(classify(false, true)).toBe("gone");
+		expect(classify(false, false)).toBe("unproven");
+	});
+
+	test("an ownerless card asks the same predicate with a null host", () => {
+		expect(classify(false, false, null)).toBe("unproven");
+		expect(classify(false, true, null)).toBe("gone");
+	});
+});
+
+describe("canDropCardIntoCompleted", () => {
+	const drop = ({
+		cardIsBound = true,
+		workspaceType = "worktree" as string | null,
+		hostId = "host-1" as string | null,
+		authoritative = true,
+	} = {}) =>
+		canDropCardIntoCompleted({
+			cardIsBound,
+			workspaceType,
+			hostId,
+			isAbsenceAuthoritative: () => authoritative,
+		});
+
+	test("a live eligible worktree completes normally", () => {
+		expect(drop()).toBe(true);
+	});
+
+	test("a main is never completable, served or hidden by an outage", () => {
+		expect(drop({ workspaceType: "main" })).toBe(false);
+		expect(drop({ workspaceType: "main", authoritative: false })).toBe(false);
+	});
+
+	// The regression: during a host outage every bound card looks workspace-less,
+	// including a live main. Freezing one would complete a live workspace.
+	test("a bound card is rejected while its absence is unproven", () => {
+		expect(drop({ workspaceType: null, authoritative: false })).toBe(false);
+		expect(
+			drop({ workspaceType: null, hostId: null, authoritative: false }),
+		).toBe(false);
+	});
+
+	test("a bound card whose host proved the absence freezes as a record", () => {
+		expect(drop({ workspaceType: null, authoritative: true })).toBe(true);
+	});
+
+	test("an unbound task never consults host authority", () => {
+		expect(
+			canDropCardIntoCompleted({
+				cardIsBound: false,
+				workspaceType: null,
+				hostId: null,
+				isAbsenceAuthoritative: () => {
+					throw new Error("unbound tasks have no owning host");
+				},
+			}),
+		).toBe(true);
 	});
 });
 

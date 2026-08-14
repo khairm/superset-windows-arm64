@@ -94,6 +94,56 @@ export function classifyWorkspaceCompletion<
 	return { ok: true, workspace, projectId: workspace.projectId };
 }
 
+/** `present` = the host list still serves the workspace; `gone` = its owning
+ * host proved the absence; `unproven` = it is missing but nobody authoritative
+ * said so (host offline/errored) — the state in which nothing destructive may
+ * happen. */
+export type BoundCardWorkspacePresence = "present" | "gone" | "unproven";
+
+// (KANBAN-HOST-SOURCE) The single absence-authority verdict for a bound card.
+// A workspace missing from the host-served lists proves nothing while its
+// owning host is unjudgeable, so a live workspace — including a main — must
+// never be completed or frozen during a host outage. Both the drag check and
+// the freeze fallback read this.
+export function classifyBoundCardWorkspace({
+	workspacePresent,
+	hostId,
+	isAbsenceAuthoritative,
+}: {
+	workspacePresent: boolean;
+	hostId: string | null;
+	isAbsenceAuthoritative: (hostId: string | null | undefined) => boolean;
+}): BoundCardWorkspacePresence {
+	if (workspacePresent) return "present";
+	return isAbsenceAuthoritative(hostId) ? "gone" : "unproven";
+}
+
+// (KANBAN COMPLETED) The Completed-column drop rule. A main is never
+// completable, and a bound card may only be dragged in while its workspace is
+// either served (a live worktree, completed for real) or provably gone (frozen
+// record) — never while a host outage merely hides it.
+export function canDropCardIntoCompleted({
+	cardIsBound,
+	workspaceType,
+	hostId,
+	isAbsenceAuthoritative,
+}: {
+	cardIsBound: boolean;
+	workspaceType: string | null | undefined;
+	hostId: string | null;
+	isAbsenceAuthoritative: (hostId: string | null | undefined) => boolean;
+}): boolean {
+	if (workspaceType === "main") return false;
+	if (!cardIsBound) return true;
+	return (
+		classifyBoundCardWorkspace({
+			workspacePresent: workspaceType != null,
+			hostId,
+			isAbsenceAuthoritative,
+		}) !== "unproven"
+	);
+}
+
 // (KANBAN-MARK-COMPLETED) The freeze patch for a card with no live workspace
 // behind it. Completing is terminal for an UNBOUND (Queued) task's own hide
 // states, so they clear. A BOUND card's snooze/archive live on the sidebar row

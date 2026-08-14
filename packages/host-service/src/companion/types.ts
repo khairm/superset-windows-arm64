@@ -1335,7 +1335,7 @@ export interface PushDataV1 {
 }
 
 /**
- * (LIFECYCLE-ALERT) §13.2 — the host/desktop LIFECYCLE alert, and a SEPARATE
+ * (LIFECYCLE-ALERT) §13.4 — the host/desktop LIFECYCLE alert, and a SEPARATE
  * closed key set from v1. Coordinated with the Android client: it switches on
  * `v` FIRST, so the two versions are independent shapes rather than v1 with
  * optional extras, and `n` — meaningless for an alert that is not about a count

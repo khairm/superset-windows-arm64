@@ -11,7 +11,11 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
-import { buildFrozenCompletedCardPatch } from "../../utils/completeWorkspaceCard";
+import {
+	buildFrozenCompletedCardPatch,
+	canDropCardIntoCompleted,
+	classifyBoundCardWorkspace,
+} from "../../utils/completeWorkspaceCard";
 import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
 import { useCompleteWorkspaceCard } from "../useCompleteWorkspaceCard";
 
@@ -215,15 +219,14 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// main rows must always be reachable). Unbound cards complete directly
 			// — completing a task is NOT a promote (no branch gets created).
 			if (toColumnId === KANBAN_COMPLETED_COLUMN_ID) {
-				if (workspaceType === "main") return "reject";
-				if (
-					card.workspaceId &&
-					workspaceType == null &&
-					!isAbsenceAuthoritative(card.hostId)
-				) {
-					return "reject";
-				}
-				return "ok";
+				return canDropCardIntoCompleted({
+					cardIsBound: card.workspaceId != null,
+					workspaceType,
+					hostId: card.hostId,
+					isAbsenceAuthoritative,
+				})
+					? "ok"
+					: "reject";
 			}
 			if (card.workspaceId) {
 				// A bound (branch) card can never enter the unbound-only Queue.
@@ -700,8 +703,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// project-less) must never land in Completed, even if a caller bypassed
 			// canDropCard.
 			if (
-				hostWorkspaceById.has(card.workspaceId) ||
-				!isAbsenceAuthoritative(card.hostId)
+				classifyBoundCardWorkspace({
+					workspacePresent: hostWorkspaceById.has(card.workspaceId),
+					hostId: card.hostId,
+					isAbsenceAuthoritative,
+				}) !== "gone"
 			) {
 				return;
 			}
@@ -753,8 +759,11 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// and its completed record would be destroyed with no undo.
 			if (
 				card.workspaceId &&
-				(!isAbsenceAuthoritative(card.hostId) ||
-					hostWorkspaceById.has(card.workspaceId))
+				classifyBoundCardWorkspace({
+					workspacePresent: hostWorkspaceById.has(card.workspaceId),
+					hostId: card.hostId,
+					isAbsenceAuthoritative,
+				}) !== "gone"
 			) {
 				return;
 			}
