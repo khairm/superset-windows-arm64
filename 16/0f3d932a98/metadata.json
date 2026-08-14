@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "160f3d932a98",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "AGENTS.md",
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/KanbanStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard/useCompleteWorkspaceCard.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/notificationContent.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/notificationContent.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.test.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.ts",
+    "packages/host-service/src/companion/lifecycle-push.test.ts",
+    "packages/host-service/src/companion/push.ts",
+    "packages/host-service/src/companion/sidebar-filter.ts",
+    "packages/host-service/src/companion/types.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.test.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.ts",
+    "packages/host-service/src/trpc/router/notifications/index.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/0f3d932a98/0/metadata.json",
+      "transcript": "/16/0f3d932a98/0/full.jsonl",
+      "content_hash": "/16/0f3d932a98/0/content_hash.txt",
+      "prompt": "/16/0f3d932a98/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4284739,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 119096576,
+    "output_tokens": 125717,
+    "api_call_count": 886
+  }
+}

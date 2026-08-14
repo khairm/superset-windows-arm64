@@ -1,0 +1,264 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "160f3d932a98",
+  "session_id": "30065850-2472-4b23-9844-946b8f0192bf",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-14T08:14:04.144657Z",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "save_step_count": 11,
+  "files_touched": [
+    "AGENTS.md",
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/DashboardSidebarWorkspaceItem.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarWorkspaceContextMenu/DashboardSidebarWorkspaceContextMenu.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/components/KanbanStateSection/KanbanStateSection.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard/useCompleteWorkspaceCard.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/hooks/useKanbanActions/useKanbanActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/completeWorkspaceCard.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/kanban/utils/completeWorkspaceCard/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/notificationContent.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/notificationContent.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.test.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.ts",
+    "packages/host-service/src/companion/lifecycle-push.test.ts",
+    "packages/host-service/src/companion/push.ts",
+    "packages/host-service/src/companion/sidebar-filter.ts",
+    "packages/host-service/src/companion/types.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.test.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.ts",
+    "packages/host-service/src/trpc/router/notifications/index.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "65a0af403772",
+  "token_usage": {
+    "input_tokens": 4284739,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 119096576,
+    "output_tokens": 125717,
+    "api_call_count": 886
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-call_NmH2Pnmni6aBpZRqaZTFixvr",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 264,
+        "end": 265,
+        "entry_ids": [
+          "a7eb87ce-3101-4703-a7a3-696ea1403fd3"
+        ],
+        "tool_use_id": "call_NmH2Pnmni6aBpZRqaZTFixvr"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_NmH2Pnmni6aBpZRqaZTFixvr"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-call_HQbUopLVJeLt1cMwKhTlM6jc",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1051,
+        "end": 1052,
+        "entry_ids": [
+          "c2090e9f-ba6e-4d4e-8eda-de9a80bbc7af"
+        ],
+        "tool_use_id": "call_HQbUopLVJeLt1cMwKhTlM6jc"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_HQbUopLVJeLt1cMwKhTlM6jc"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-call_wHpHnt5QuPmrQukGPpnuy0Hx",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1977,
+        "end": 1978,
+        "entry_ids": [
+          "c1f3d7c9-d06f-4a64-97ee-80056c61a96a"
+        ],
+        "tool_use_id": "call_wHpHnt5QuPmrQukGPpnuy0Hx"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_wHpHnt5QuPmrQukGPpnuy0Hx"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-call_dGfPhhqasiX1ce7BYIsJ4JT9",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "65a0af403772",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 2643,
+        "end": 2644,
+        "entry_ids": [
+          "a35980e3-db6b-4c60-8808-8071dc70c117"
+        ],
+        "tool_use_id": "call_dGfPhhqasiX1ce7BYIsJ4JT9"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "call_dGfPhhqasiX1ce7BYIsJ4JT9"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 14
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-14T08:14:03.7769476Z",
+    "agent_lines": 2722,
+    "agent_removed": 128,
+    "human_added": 55,
+    "human_modified": 582,
+    "human_removed": 0,
+    "total_committed": 3359,
+    "total_lines_changed": 3487,
+    "agent_percentage": 81.73214797820476,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
