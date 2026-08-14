@@ -41,6 +41,7 @@ import {
 import type { TerminalAgentStore } from "../terminal-agents";
 import {
 	getCompanionQuestionSink,
+	setCompanionLifecycleSink,
 	setCompanionQuestionSink,
 } from "../trpc/router/notifications";
 import { createAccessValidator } from "./access-jwt";
@@ -108,6 +109,10 @@ import {
 	type LeaseRegistry,
 	type TerminalLockRegistry,
 } from "./lease";
+import {
+	createLifecycleAlertManager,
+	createLifecycleCurationProbe,
+} from "./lifecycle-alerts";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
 import { openPairingWindow, type PairingWindowHandle } from "./pairing";
@@ -149,7 +154,7 @@ import {
 	setCompanionMirrorChangeSink,
 	setCompanionPresenceStore,
 } from "./registry";
-import { createSidebarCuration } from "./sidebar-filter";
+import { workspaceSidebarVerdict } from "./sidebar-filter";
 import type {
 	Capability,
 	DeviceRecord,
@@ -686,6 +691,29 @@ export function createCompanionBridge(
 		// route that reaches the store exists until the capture sink is registered
 		// and the HTTP listener binds, both of which are below.
 		settleTarget.push = push;
+		const lifecycleAlerts = createLifecycleAlertManager({
+			presence,
+			push,
+			workspaceHandle: (hostWorkspaceId): WorkspaceId =>
+				deriveHandle("workspace", hostWorkspaceId),
+			// (LIFECYCLE-CURATION-CACHE) The probe owns the cache, the throw-fires-
+			// anyway rule and the log-on-transition discipline that being asked once
+			// per two-second sweep for six hours requires.
+			isCuratedOff: createLifecycleCurationProbe({
+				db: hostDb,
+				organizationId: options.organizationId,
+				logger,
+			}),
+			logger,
+		});
+		setCompanionLifecycleSink(lifecycleAlerts);
+		unwind.push({
+			what: "lifecycle alert sink",
+			close: async () => {
+				setCompanionLifecycleSink(null);
+				lifecycleAlerts.stop();
+			},
+		});
 		/**
 		 * (TREE-FRESHNESS-GSEQ) Mint the frame that matches how a record actually
 		 * settled, reading the state back from the store rather than assuming it.
@@ -1591,15 +1619,12 @@ export function isCuratedOffSidebar(
 	question: PendingQuestion,
 ): boolean {
 	try {
-		const curation = createSidebarCuration(
-			deps.db.readSidebarMirror(),
-			Date.now(),
-			deps.organizationId,
-		);
-		if (!curation.enabled) return false;
-		const workspace = deps.db.findWorkspace(question.hostWorkspaceId);
-		if (workspace === null) return false;
-		const verdict = curation.workspaceVerdict(workspace);
+		const verdict = workspaceSidebarVerdict({
+			snapshot: deps.db.readSidebarMirror(),
+			nowMs: Date.now(),
+			organizationId: deps.organizationId,
+			workspace: deps.db.findWorkspace(question.hostWorkspaceId),
+		});
 		if (verdict === "show") return false;
 		deps.logger.info(
 			"holding a push: the user has taken this thread off their sidebar, and the tree the notification would open does not contain it. It will fire on the first sweep after that changes",

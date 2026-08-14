@@ -307,7 +307,9 @@ if __name__ == "__main__":
     main()
 `;
 
-const NOTIFY_SCRIPT = `#!/usr/bin/env python3
+// Exported for `pane-map-hook.test.ts`, which runs this exact source through a
+// real python3 so the dot/lifecycle decisions are tested as shipped.
+export const NOTIFY_SCRIPT = `#!/usr/bin/env python3
 """Superset Claude agent-status notify hook.
 
 Installed by agent-jsonl-watcher/pane-map-hook.ts. POSTs each Claude lifecycle
@@ -326,10 +328,17 @@ unmapped event is a silent no-op, exactly like notify.sh):
                                  (yellow; red-respecting in the renderer);
                                  shell-only -> BackgroundRunning (blue)
   SessionEnd                  -> Stop             (review / green; clears state)
-  StopFailure(main loop)      -> Stop + clears state, UNLESS a codex-companion
+  StopFailure(main loop)      -> Failed + clears state, UNLESS a codex-companion
                                  job for this session is still alive ->
                                  SubagentActive (BF: codex runs on its OWN API;
-                                 a Claude rate-limit abort does not stop it)
+                                 a Claude rate-limit abort does not stop it).
+                                 (DEFERRED-FAILURE) that hold PARKS the failure
+                                 in a .pendingfailure marker: the next turn-end
+                                 with no hold left (Stop, SubagentStop, or a
+                                 later StopFailure) emits Failed instead of
+                                 green, and ONLY a new prompt supersedes it —
+                                 so a LATER successful turn is never marked
+                                 failed, and the abort is never swallowed
   StopFailure(in a subagent)  -> (STOPFAIL-SUBAGENT) self-scoped: drops only that
                                  fork's markers, never the shared session state /
                                  the main question guard; the central red guard
@@ -380,7 +389,9 @@ when it is answered at the desk. Both fields are optional and additive; the
 dot decision above never reads them, and a rejected companion payload is
 retried once with the fields stripped so a dot is never lost.
 """
+import base64
 import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -551,6 +562,26 @@ def _bgactive_marker_path(terminal_id):
         / ".superset"
         / "agent-subagent-running"
         / (terminal_id + ".bgactive")
+    )
+
+
+def _pending_failure_path(terminal_id):
+    # (DEFERRED-FAILURE) records "a MAIN-loop StopFailure was DEFERRED because a
+    # codex companion was still working". The abort is real, but announcing it
+    # immediately would drop the companion's yellow hold, so the Failed dot is
+    # parked here and released by the FIRST later turn-end that finds no hold
+    # left — a Stop, the companion's own SubagentStop, or a later StopFailure.
+    # EVERY one of those emits Failed instead of green, so an abort is never
+    # swallowed by the cycle that carried it. ONLY a new prompt supersedes it
+    # (UserPromptSubmit — typed or an auto-resume re-send), which is what stops
+    # a LATER successful turn from being marked Failed; a fresh session /
+    # SessionEnd also drop it as lifecycle boundaries. Consumed exactly once,
+    # wherever it is released.
+    return (
+        pathlib.Path.home()
+        / ".superset"
+        / "agent-subagent-running"
+        / (terminal_id + ".pendingfailure")
     )
 
 
@@ -1588,6 +1619,7 @@ def _decide_event_type_inner(
     agentbg_marker = _agentbg_marker_path(terminal_id)
     shellbg_marker = _shellbg_marker_path(terminal_id)
     bgactive_marker = _bgactive_marker_path(terminal_id)
+    pending_failure_marker = _pending_failure_path(terminal_id)
     askq_dir = _askq_dir(terminal_id)
 
     def _reason(text):
@@ -1660,6 +1692,7 @@ def _decide_event_type_inner(
     if event == "SessionStart":
         if source != "compact":
             _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) fresh session / terminalId reuse -> drop stale question guards
+            _remove(pending_failure_marker)  # (DEFERRED-FAILURE) a parked abort belongs to the session that died, not this one
             return None
         was_trigger = _read_text(compact_marker)
         if not was_trigger:
@@ -1758,6 +1791,13 @@ def _decide_event_type_inner(
                 tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
                 _reason("BLUE: live shell background remainder" + tag + " (SubagentStop)" + _skip_suffix(cx_skip))
                 return "BackgroundRunning"  # only live background shells remain -> blue
+            if pending_failure_marker.exists():
+                # (DEFERRED-FAILURE) the held companion finished INSIDE the
+                # aborted cycle: this is the release, not a fresh clean turn.
+                # Greening here would silently swallow the API abort.
+                _remove(pending_failure_marker)
+                _reason("FAILED: deferred StopFailure released after final hold (SubagentStop)" + _skip_suffix(cx_skip))
+                return "Failed"
             if stale_bg:
                 _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (SubagentStop)" + _skip_suffix(cx_skip))
             else:
@@ -1767,6 +1807,11 @@ def _decide_event_type_inner(
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers
         _remove(compact_marker)  # any earlier compaction is over/irrelevant
+        # (DEFERRED-FAILURE) a new prompt — typed OR an auto-resume re-send after
+        # the API abort — opens a NEW work cycle. The previous cycle's parked
+        # StopFailure is history from here on; leaving it would make THIS cycle's
+        # clean Stop announce a false Failed.
+        _remove(pending_failure_marker)
         _remove(askq_dir / "_main")  # (UNTAGGED-BG-RED) new main prompt -> main question moot (subagent owners persist)
         _reap_askq(askq_dir, bg_ids)  # drop dead subagent owners; central guard holds for any LIVE one
         return "Start"  # central guard downgrades to SubagentActive if a subagent owner remains
@@ -1816,6 +1861,10 @@ def _decide_event_type_inner(
             tag = " [bg-agents idle >" + str(_BG_STALE_SECONDS) + "s reaped]" if stale_bg else ""
             _reason("BLUE: live shell background remainder" + tag + " (Stop)" + _skip_suffix(cx_skip))
             return "BackgroundRunning"  # turn ended; only live background shells remain -> blue
+        if pending_failure_marker.exists():
+            _remove(pending_failure_marker)
+            _reason("FAILED: deferred StopFailure released after final hold" + _skip_suffix(cx_skip))
+            return "Failed"
         if stale_bg:
             _reason("GREEN: bg-agents idle >" + str(_BG_STALE_SECONDS) + "s, stale-reaped (Stop)" + _skip_suffix(cx_skip))
         else:
@@ -1854,6 +1903,12 @@ def _decide_event_type_inner(
             if _codex_job_active(session_id, cx, cx_skip):
                 _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (StopFailure/subagent)")
                 return "SubagentActive"
+            if pending_failure_marker.exists():
+                # (DEFERRED-FAILURE) same release as the SubagentStop path — a
+                # green here would swallow the parked main-loop abort.
+                _remove(pending_failure_marker)
+                _reason("FAILED: deferred StopFailure released after final hold (StopFailure/subagent)" + _skip_suffix(cx_skip))
+                return "Failed"
             _reason("GREEN: subagent StopFailure, last fork done + main stopped" + _skip_suffix(cx_skip))
             return "Stop"  # central guard re-holds if a question owner (incl _main) remains
         # (AX)/(BF)/(API-ABORT-RELEASE) A MAIN Claude API/rate-limit abort kills
@@ -1879,10 +1934,19 @@ def _decide_event_type_inner(
         cx = []
         cx_skip = []
         if _codex_job_active(session_id, cx, cx_skip):
+            _touch(pending_failure_marker)
+            # (DEFERRED-FAILURE) the main loop HAS stopped — with a failure —
+            # while delegated work continues, which is exactly what .mainstopped
+            # records. Stamp it (the _remove above assumed an unconditional
+            # green) so the companion's own SubagentStop can finalize this cycle
+            # and RELEASE the parked failure. Without it that SubagentStop hits
+            # the "main still working" no-op and the abort is never announced.
+            _touch(sentinel)
             _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (StopFailure)")
             return "SubagentActive"  # codex on its own API survives the abort
-        _reason("GREEN: no active holds (StopFailure)" + _skip_suffix(cx_skip))
-        return "Stop"
+        _remove(pending_failure_marker)
+        _reason("FAILED: no active holds (StopFailure)" + _skip_suffix(cx_skip))
+        return "Failed"
     if event == "SessionEnd":
         # Session is ending — the dot context goes away, so a still-running
         # codex job does not hold the dot here; just clear state and green.
@@ -1893,6 +1957,7 @@ def _decide_event_type_inner(
         _remove(shellbg_marker)
         _remove(bgactive_marker)  # (BG-STALE) session over -> clear the timer
         _remove(_teamstate_path(terminal_id))  # (TEAMMATE-IDLE) ledger cache is per-session state
+        _remove(pending_failure_marker)
         _clear_dir(askq_dir)  # (UNTAGGED-BG-RED) session over -> drop all pending-question guards
         return "Stop"
     if event == "Notification":
@@ -2304,6 +2369,49 @@ def main():
         })
         return
 
+    # (COMPANION-LIFECYCLE-ALERTS) Stable, content-free producer identity for
+    # this hook event. The lifecycle manager derives the USER-VISIBLE alert id
+    # from the armed work cycle and alert kind, so this value is not an alert
+    # identity; it is the sink's duplicate-delivery guard, and the manager keeps
+    # a bounded window of the ones it has already applied. Note that the retry
+    # below deliberately re-POSTs WITHOUT the companion fields, so that path
+    # never re-delivers one of these. Only hook-originated events carry it;
+    # administrative status clears never pass through this producer.
+    # NOTE: the separator is written \\x00 (not \\0) because this script is a JS
+    # template literal — a bare \\0 there emits a real NUL byte into the
+    # generated .py, which python refuses to parse ("source code cannot contain
+    # null bytes") and the whole hook stops running.
+    lifecycle_seed = (
+        terminal_id + "\\x00" + session_id + "\\x00" + event + "\\x00"
+        + str(payload.get("hook_event_name", "")) + "\\x00"
+        + str(payload.get("timestamp", "")) + "\\x00"
+        + str(payload.get("tool_use_id", ""))
+    ).encode("utf-8")
+    lifecycle_event_id = base64.urlsafe_b64encode(
+        hashlib.sha256(lifecycle_seed).digest()[:16]
+    ).decode("ascii").rstrip("=")
+    lifecycle_outcome = None
+    if event == "SessionEnd":
+        lifecycle_outcome = "session-end"
+    elif event == "StopFailure" and not sub_agent_id:
+        # sub_agent_id is the sanitized STRING above — empty for the main loop,
+        # never None — so this must be a truthiness test.
+        # (DEFERRED-FAILURE) a companion hold PARKS the failure instead of
+        # announcing it, and the later release posts eventType "Failed". The
+        # central red guard can UPGRADE that hold from "SubagentActive" to
+        # "Start" (this abort removed the last open question), so both working
+        # results mean "held" — otherwise the companion would alert "failed"
+        # here AND again at the release instead of exactly once.
+        lifecycle_outcome = (
+            "hold" if event_type in ("SubagentActive", "Start") else "failed"
+        )
+    elif event_type == "Failed":
+        lifecycle_outcome = "failed"
+    elif event_type == "Start":
+        lifecycle_outcome = "progress"
+    elif event_type == "Stop" and event in ("Stop", "SubagentStop"):
+        lifecycle_outcome = "ready"
+
     # (COMPANION-CAPTURE) additive fields; absent for every event that is not
     # an AskUserQuestion open/close, and absent whenever the payload did not
     # carry the documented shape (see _companion_log).
@@ -2312,6 +2420,9 @@ def main():
         "eventType": event_type,
         "agent": {"agentId": agent_id, "sessionId": session_id},
     }
+    if lifecycle_outcome is not None:
+        payload_json["companionLifecycleEventId"] = lifecycle_event_id
+        payload_json["companionLifecycleOutcome"] = lifecycle_outcome
     companion_question = _companion_question(payload, event, tool, session_id)
     if companion_question is not None:
         payload_json["companionQuestion"] = companion_question
@@ -2323,6 +2434,7 @@ def main():
     has_companion = (
         "companionQuestion" in payload_json
         or "companionQuestionResolved" in payload_json
+        or "companionLifecycleEventId" in payload_json
     )
 
     try:
@@ -2345,6 +2457,8 @@ def main():
         if has_companion:
             payload_json.pop("companionQuestion", None)
             payload_json.pop("companionQuestionResolved", None)
+            payload_json.pop("companionLifecycleEventId", None)
+            payload_json.pop("companionLifecycleOutcome", None)
             try:
                 status, response_body = _post_hook(
                     url, json.dumps({"json": payload_json}).encode("utf-8")

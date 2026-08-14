@@ -1319,7 +1319,7 @@ export interface RateLimitDecision {
  * here. Every value must match /^[A-Za-z0-9_-]{1,43}$/, which no natural-language
  * string satisfies; the bridge asserts that at runtime and THROWS on violation.
  */
-export interface PushData {
+export interface PushDataV1 {
 	/** payload version, `"1"`. */
 	v: "1";
 	/** `"q"` = question pending, `"r"` = retract. */
@@ -1333,6 +1333,45 @@ export interface PushData {
 	/** expiry, 13 digits. */
 	x: string;
 }
+
+/**
+ * (LIFECYCLE-ALERT) §13.2 — the host/desktop LIFECYCLE alert, and a SEPARATE
+ * closed key set from v1. Coordinated with the Android client: it switches on
+ * `v` FIRST, so the two versions are independent shapes rather than v1 with
+ * optional extras, and `n` — meaningless for an alert that is not about a count
+ * of questions — is ABSENT rather than stubbed. A stubbed field is a field a
+ * later reader has to guess the meaning of.
+ *
+ * V1 IS FROZEN. Every already-installed client parses v1 exactly as written
+ * above, so nothing in this block may relax, widen or reorder anything there;
+ * `assertPushDataSafe` enforces the two key sets separately for exactly that
+ * reason.
+ *
+ * The privacy constraint is identical and is not weakened by the new kind: `i`
+ * is a derived opaque alert id, `w` is the same derived workspace handle v1
+ * carries, and there is no field that could hold a name, a path, or an error
+ * message. What failed, in which repo, on which branch, is knowable only by
+ * opening the app.
+ */
+export interface PushDataV2 {
+	/** payload version, `"2"`. */
+	v: "2";
+	/** `"g"` = a work-cycle ended cleanly (ready for review), `"e"` = the terminal agent failed. */
+	k: "g" | "e";
+	/** lifecycle alert id, 22 chars, opaque and deterministic. */
+	i: string;
+	/** workspaceId, 22 chars, opaque — the same handle v1 carries. */
+	w: WorkspaceId;
+	/** expiry, 13 digits. */
+	x: string;
+}
+
+/**
+ * Everything that may cross the FCM boundary. A union, not a widened interface:
+ * the version discriminates and each member is closed, so no edit can add a key
+ * to one shape without declaring which version it belongs to.
+ */
+export type PushData = PushDataV1 | PushDataV2;
 
 /** Data-only. `message.notification` MUST be absent (§13.1). */
 export interface PushEnvelope {

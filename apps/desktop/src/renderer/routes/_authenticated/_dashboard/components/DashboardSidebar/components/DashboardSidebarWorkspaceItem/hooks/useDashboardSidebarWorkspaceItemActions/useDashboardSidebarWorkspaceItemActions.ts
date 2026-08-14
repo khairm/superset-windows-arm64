@@ -18,6 +18,7 @@ import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unava
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
 import { DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
+import { useCompleteWorkspaceCard } from "renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
 import {
@@ -65,6 +66,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 		clearManualUnread(workspaceId);
 		markWorkspaceTerminalsSeen();
 	};
+	const completeWorkspaceCard = useCompleteWorkspaceCard();
 	const {
 		archiveWorkspace,
 		createSection,
@@ -170,6 +172,15 @@ export function useDashboardSidebarWorkspaceItemActions({
 
 	const handleArchive = () => {
 		archiveWorkspace(workspaceId);
+	};
+
+	const handleMarkCompleted = () => {
+		const result = completeWorkspaceCard(workspaceId);
+		if (!result.ok) {
+			toast.error("Couldn't mark worktree completed", {
+				description: result.reason,
+			});
+		}
 	};
 
 	const handleUnarchive = () => {
@@ -317,6 +328,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 		handleDelete,
 		handleDeletePermanently,
 		handleArchive,
+		handleMarkCompleted,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
 		handleRemovePullRequest,

@@ -3,8 +3,8 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@superset/ui/collapsible";
-import { LuChevronRight } from "react-icons/lu";
 import type { ReactNode } from "react";
+import { LuChevronRight } from "react-icons/lu";
 
 interface KanbanStateSectionProps {
 	title: string;

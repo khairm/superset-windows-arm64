@@ -1,4 +1,12 @@
 export type {
+	CompanionLifecycleEvent,
+	CompanionLifecycleSink,
+} from "./companion-lifecycle-sink";
+export {
+	getCompanionLifecycleSink,
+	setCompanionLifecycleSink,
+} from "./companion-lifecycle-sink";
+export type {
 	CompanionQuestionCapture,
 	CompanionQuestionResolution,
 	CompanionQuestionSink,

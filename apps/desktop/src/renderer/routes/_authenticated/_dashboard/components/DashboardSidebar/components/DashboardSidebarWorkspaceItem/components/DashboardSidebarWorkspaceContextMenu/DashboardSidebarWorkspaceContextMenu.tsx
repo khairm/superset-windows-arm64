@@ -17,6 +17,7 @@ import {
 	LuArrowRightLeft,
 	LuArrowUp,
 	LuBellOff,
+	LuCircleCheck,
 	LuClock,
 	LuCopy,
 	LuEye,
@@ -86,6 +87,7 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onUnsnooze: () => void;
 	onArchive: () => void;
 	onUnarchive: () => void;
+	onMarkCompleted?: () => void;
 	onClearStatus: () => void;
 	onRemovePullRequest: () => void;
 	children: React.ReactNode;
@@ -177,6 +179,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onUnsnooze,
 	onArchive,
 	onUnarchive,
+	onMarkCompleted,
 	onClearStatus,
 	onRemovePullRequest,
 	children,
@@ -387,6 +390,12 @@ export function DashboardSidebarWorkspaceContextMenu({
 							</>
 						) : (
 							<>
+								{onMarkCompleted && (
+									<ContextMenuItem onSelect={onMarkCompleted}>
+										<LuCircleCheck className="size-4 mr-2" />
+										Mark completed
+									</ContextMenuItem>
+								)}
 								<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
 								<ContextMenuItem onSelect={onArchive}>
 									<LuArchive className="size-4 mr-2" />

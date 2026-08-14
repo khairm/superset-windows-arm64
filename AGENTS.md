@@ -84,7 +84,8 @@ In brief:
   pane header, sidebar row + agent chips, rollup, kanban card) derive from one
   per-source primitive with independent latched axes; hook-driven via
   `superset-notify.py` POSTs with self-healing markers and persistence across
-  renderer reloads.
+  renderer reloads; companion phone/watch alerts cover blocked questions,
+  ready-for-review, and terminal-agent failures.
 - **Auto-resume** — after an API failure, idle Claude terminals re-send
   automatically (bounded retries/budget, default-on, away-detection).
 - **Recycle Bin** — every delete entry point soft-deletes (30-day display
@@ -105,8 +106,9 @@ In brief:
   bash.
 - **Kanban board** — device-local board of every sidebar project's branches +
   Queued and final Completed columns, custom columns, deadlines, per-column
-  date filters, promote-to-branch drag, frozen completed records, append-only
-  daily JSON backups under `~/.superset/backups/kanban/`.
+  date filters, promote-to-branch drag, sidebar Mark completed for active
+  worktrees, frozen completed records, append-only daily JSON backups under
+  `~/.superset/backups/kanban/`.
 
 ## Live footguns (do NOT repeat)
 

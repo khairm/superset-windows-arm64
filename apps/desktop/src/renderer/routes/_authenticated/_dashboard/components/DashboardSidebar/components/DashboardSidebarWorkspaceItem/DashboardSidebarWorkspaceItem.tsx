@@ -10,6 +10,7 @@ import {
 import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import {
 	getHighestPriorityDisplayStatus,
@@ -17,6 +18,7 @@ import {
 	useV2WorkspaceTabChips,
 } from "renderer/stores/v2-notifications";
 import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-row";
+import { canMarkWorkspaceCompleted } from "../../../../kanban/utils/completeWorkspaceCard";
 import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
 import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
@@ -69,6 +71,15 @@ export function DashboardSidebarWorkspaceItem({
 		pullRequest,
 	} = workspace;
 	const isMainWorkspace = workspace.type === "main";
+	const collections = useCollections();
+	const projectIsInSidebar =
+		projectId !== null &&
+		collections.v2SidebarProjects.get(projectId) !== undefined;
+	const canMarkCompleted = canMarkWorkspaceCompleted(
+		workspace,
+		sectionState,
+		projectIsInSidebar,
+	);
 	// (AY) Display status merges the agent rollup with the shell-running blue
 	// fallback (agent wins). Drives the workspace-icon dot.
 	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
@@ -94,6 +105,7 @@ export function DashboardSidebarWorkspaceItem({
 		handleDelete,
 		handleDeletePermanently,
 		handleArchive,
+		handleMarkCompleted,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
 		handleRemovePullRequest,
@@ -298,6 +310,9 @@ export function DashboardSidebarWorkspaceItem({
 							onUnsnooze={handleUnsnooze}
 							onArchive={handleArchive}
 							onUnarchive={handleUnarchive}
+							onMarkCompleted={
+								canMarkCompleted ? handleMarkCompleted : undefined
+							}
 						>
 							{content}
 						</DashboardSidebarWorkspaceContextMenu>

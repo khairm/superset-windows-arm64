@@ -9,6 +9,10 @@ import {
 	type AgentStatusSnapshot,
 	buildAgentStatusSnapshot,
 } from "./agent-status-snapshot";
+import {
+	companionLifecycleFields,
+	forwardCompanionLifecycle,
+} from "./companion-lifecycle-sink";
 // (COMPANION-CAPTURE) (COMPANION-CAPTURE-HOOK) fork-only seam. Every line of
 // companion behaviour lives in companion-question-sink.ts; this file only wires
 // it. (COMPANION-CAPTURE-HOOK) appears ONLY in this file: (COMPANION-CAPTURE) is
@@ -38,7 +42,8 @@ const hookInput = z
 		eventType: z.string().optional(),
 		agent: agentIdentityInput,
 	})
-	.extend(companionHookFields);
+	.extend(companionHookFields)
+	.extend(companionLifecycleFields);
 
 function trimOrUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
@@ -256,6 +261,10 @@ export const notificationsRouter = router({
 
 		const agent = normalizeAgentIdentity(input.agent);
 		const occurredAt = Date.now();
+		// The persisted binding is the source of truth for whether this hook is a
+		// genuine active-to-terminal transition. Capture it before recordEvent
+		// replaces its last-event fields below.
+		const previousBinding = ctx.terminalAgentStore.get(input.terminalId);
 
 		ctx.eventBus.broadcastAgentLifecycle({
 			workspaceId: terminalSession.originWorkspaceId,
@@ -285,6 +294,15 @@ export const notificationsRouter = router({
 			terminalId: input.terminalId,
 			workspaceId: terminalSession.originWorkspaceId,
 			occurredAt,
+		});
+		forwardCompanionLifecycle({
+			payload: input,
+			eventType,
+			terminalId: input.terminalId,
+			workspaceId: terminalSession.originWorkspaceId,
+			occurredAtMs: occurredAt,
+			previousEventType: previousBinding?.lastEventType ?? null,
+			previousEventAtMs: previousBinding?.lastEventAt ?? null,
 		});
 
 		// An agent began working in this workspace — nudge the linked task

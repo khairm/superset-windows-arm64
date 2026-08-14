@@ -19,6 +19,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Window controls | native `titleBarOverlay` is the sole min/max/close set on Windows | `titleBarOverlay` |
 | Windows behaviour fixes | child-process patch, cmd.exe fallback, force-foreground, watchdog, WebGL recovery, fast startup | `windows-child-process` |
 | Agent status dots (Claude + Codex) | per-terminal dot + workspace rollup; host-service POST + JSONL watcher | `pane-map-hook`, `StatusIndicator` |
+| Companion lifecycle alerts | phone + custom watch receive distinct ready-for-review and terminal-agent-failure notifications; ready fires once per real work cycle, tool/subagent/admin failures are excluded, and presence/sidebar curation match blocked-agent push behavior | `(COMPANION-LIFECYCLE-ALERTS)` |
 | Claude Stop unhooked from notify.sh | upstream's raw Stop passthrough must never race superset-notify.py (it wiped the blue dot + yellow-hold) | `CLAUDE-STOP-UNHOOKED` |
 | Compaction shows working | Claude context compaction (manual /compact + auto) drives the yellow dot via PreCompact / SessionStart(source=compact) | `(COMPACT-YELLOW)` |
 | Team/workflow work shows working | background_tasks[] entry types split the post-turn dot: agent-type work (teammate/subagent/workflow) holds yellow; shell-only goes blue | `(TEAM-YELLOW)` |
@@ -46,7 +47,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
 | Kanban host-served workspace source | every fork surface that needs the workspace universe (kanban seed/prune/render, bound-card actions, collapse-split, recycle-bin destroy URL, sidebar snooze/archive fallbacks, is-local gate) reads the host-served lists (`useHostWorkspaces`), NEVER the Electric `v2Workspaces` mirror — upstream's offline-first migration stopped writing new rows to the cloud table, so Electric reads silently miss every post-migration branch | `(KANBAN-HOST-SOURCE)` |
-| Kanban Completed column | fixed FINAL column: dropping a card stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID` |
+| Kanban Completed column | fixed FINAL column: dropping a card or choosing Mark completed on an active non-main worktree stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID`, `(KANBAN-MARK-COMPLETED)` |
 | Kanban append-only backup | daily write-once JSON snapshot of the board; code can never delete/overwrite one | `writeKanbanBackup` |
 | Kanban sidebar button toggles | sidebar Kanban press: anywhere → full-screen board; part-screen split → full-screen (closing then reopens that workspace full size); full-screen → close back to the remembered previous page (fallback Workspaces list) | `(KANBAN-TOGGLE)` |
 | Subagent tool events never stomp the red | a PostToolUse whose payload carries `agent_id` (ran inside a subagent) maps to the red-respecting SubagentActive — background agents' tool completions must not clear a pending AskUserQuestion/permission red; only a main-loop completion does. SubagentStart likewise | `(SUBTOOL-RED)` |
@@ -249,4 +250,6 @@ togglePinProject	apps/desktop/src/renderer
 (MIRROR-SYNC-CANCEL-RACE)	apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks
 (BUS-RESYNC)	apps/desktop/src/renderer
 (DISPOSE-LIMBO)	packages/host-service/src/terminal/terminal.ts
+(COMPANION-LIFECYCLE-ALERTS)	apps/desktop/src/main
+(KANBAN-MARK-COMPLETED)	apps/desktop/src/renderer
 ```

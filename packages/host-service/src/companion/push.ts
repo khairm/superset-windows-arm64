@@ -232,6 +232,20 @@ const FCM_TOKEN_PATTERN = /^[A-Za-z0-9_:.-]{32,4096}$/;
 const APP_VERSION_PATTERN = new RegExp(
 	`^[A-Za-z0-9_.+-]{1,${MAX_APP_VERSION_CHARS}}$`,
 );
+/**
+ * (LIFECYCLE-ALERT) The EXACT identity shape a lifecycle alert carries: a
+ * generated 22-character opaque base64url id. That is what `lifecycleAlertId`
+ * mints (a truncated SHA-256 digest) and what `deriveHandle` mints for a
+ * workspace handle — the two are produced differently, and the 22-character
+ * base64url form is the property they share and the only one asserted here.
+ *
+ * Stricter than `PUSH_VALUE_PATTERN` on purpose. That one is the last-line leak
+ * guard at the FCM boundary and admits anything opaque up to 43 chars; this one
+ * is the boundary contract of `buildLifecyclePushData`, where the only correct
+ * values are those two generated identities. Anything else is a caller bug and
+ * must throw at the call site that introduced it.
+ */
+const LIFECYCLE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
 const LOG = "[companion/push]";
 
@@ -271,7 +285,25 @@ export class PushAuthError extends Error {
 // §13.1 — the payload, and the runtime assertions that make a text leak throw
 // ---------------------------------------------------------------------------
 
-const PUSH_DATA_KEYS = ["v", "k", "i", "w", "n", "x"] as const;
+/**
+ * §13.1 / §13.2 — the closed key set PER VERSION, keyed by `v`.
+ *
+ * (LIFECYCLE-ALERT) Two shapes, never one widened shape. v1 carries `n` (how
+ * many questions are pending) and v2 does not, because a lifecycle alert is not
+ * about a count of anything; making `n` optional across both would have turned
+ * two exact contracts into one vague one that neither the Android client nor
+ * this assertion could check. `v` is read first and decides which set applies,
+ * so v1 stays FROZEN as every already-installed client parses it.
+ */
+const PUSH_DATA_KEYS_BY_VERSION: Readonly<Record<string, readonly string[]>> = {
+	"1": ["v", "k", "i", "w", "n", "x"],
+	"2": ["v", "k", "i", "w", "x"],
+};
+/** The kinds each version may carry. Same reasoning: closed, per version. */
+const PUSH_KINDS_BY_VERSION: Readonly<Record<string, readonly string[]>> = {
+	"1": ["q", "r"],
+	"2": ["g", "e"],
+};
 const PUSH_ENVELOPE_KEYS = ["token", "android", "data"] as const;
 const PUSH_ANDROID_KEYS = ["priority", "ttl", "collapse_key"] as const;
 
@@ -298,26 +330,49 @@ function assertClosedKeySet(
 
 /**
  * §13.1 runtime assertions, each a THROW, never a log-and-continue:
- *  - the `data` key set is EXACTLY {v,k,i,w,n,x} — an unexpected key is a bug;
+ *  - `data.v` names a version this build knows, and the `data` key set is
+ *    EXACTLY that version's — an unexpected key is a bug;
  *  - every value matches /^[A-Za-z0-9_-]{1,43}$/, which no natural-language
  *    string satisfies, so a leak cannot be introduced by a later edit without
  *    failing immediately;
  *  - serialised `data` <= 160 bytes (and the whole message <= Google's 4096);
  *  - `message.notification` is absent — enforced by a CLOSED envelope key set,
  *    which also rules out `apns`, `webpush` and `fcm_options`;
- *  - `collapse_key` is the questionId, so a retraction replaces an
- *    original push that is still queued undelivered at FCM (§13.3).
+ *  - `collapse_key` is the questionId (v1) or the alert id (v2), so a retraction
+ *    replaces an original push that is still queued undelivered at FCM (§13.3),
+ *    and two alerts about the same thing can never both stand.
  */
 export function assertPushDataSafe(
 	data: PushData,
 	envelope: PushEnvelope,
 ): void {
-	assertClosedKeySet(data, PUSH_DATA_KEYS, "push data");
+	// `v` is read BEFORE the key-set check, because it is what SELECTS the key
+	// set. An unknown version cannot be validated at all and must never be sent:
+	// the client would not know how to read it either.
+	// `data.v` is declared as `"1" | "2"`, but this is the boundary that must hold
+	// for a value the type system only THINKS it knows — read it through `unknown`
+	// rather than casting the union to an index-signature type it is not.
+	const version: unknown = data.v;
+	if (typeof version !== "string") {
+		throw new PushConfigError(
+			`push data.v must be a string, got ${typeof version}`,
+		);
+	}
+	const dataKeys = PUSH_DATA_KEYS_BY_VERSION[version];
+	const kinds = PUSH_KINDS_BY_VERSION[version];
+	if (dataKeys === undefined || kinds === undefined) {
+		throw new PushConfigError(
+			`push data.v is "${version}", which this build has no closed key set for — refusing to send`,
+		);
+	}
+
+	assertClosedKeySet(data, dataKeys, `push data (v${version})`);
 	assertClosedKeySet(envelope, PUSH_ENVELOPE_KEYS, "push envelope");
 	assertClosedKeySet(envelope.android, PUSH_ANDROID_KEYS, "push android block");
 
-	for (const key of PUSH_DATA_KEYS) {
-		const value: unknown = data[key];
+	const record = data as unknown as Record<string, unknown>;
+	for (const key of dataKeys) {
+		const value: unknown = record[key];
 		if (typeof value !== "string") {
 			throw new PushConfigError(
 				`push data.${key} must be a string, got ${typeof value}`,
@@ -332,11 +387,10 @@ export function assertPushDataSafe(
 		}
 	}
 
-	if (data.v !== "1") {
-		throw new PushConfigError(`push data.v must be "1"`);
-	}
-	if (data.k !== "q" && data.k !== "r") {
-		throw new PushConfigError(`push data.k must be "q" or "r"`);
+	if (!kinds.includes(data.k)) {
+		throw new PushConfigError(
+			`push data.k must be one of ${kinds.map((kind) => `"${kind}"`).join(" or ")} for v${version}`,
+		);
 	}
 
 	const serialisedData = JSON.stringify(data);
@@ -364,7 +418,7 @@ export function assertPushDataSafe(
 	}
 	if (envelope.android.collapse_key !== data.i) {
 		throw new PushConfigError(
-			"push collapse_key must be the questionId so a retraction replaces the original",
+			"push collapse_key must be data.i (the questionId on v1, the alert id on v2) so a later message about the same subject replaces the original",
 		);
 	}
 	if (envelope.token.length === 0) {
@@ -439,6 +493,72 @@ export function buildRetractPushData(input: {
 		w: input.workspaceId,
 		n: "0",
 		x: String(input.nowMs + RETRACT_TTL_MS),
+	};
+}
+
+/**
+ * (LIFECYCLE-ALERT) §13.2 — `k: "g"` a work-cycle ended cleanly and there is
+ * something to review; `k: "e"` the terminal agent itself failed.
+ *
+ * THERE IS NO RETRACTION FOR THESE AND THAT IS DELIBERATE. A question retraction
+ * exists because a notification must never outlive its SUBJECT: the question
+ * stops being answerable, so the buzz about it becomes a lie. A lifecycle alert
+ * has no such subject — "this turn ended" and "this agent failed" are facts
+ * about an instant that already happened, and they do not stop being true
+ * because the user later opened the app. `x` bounds how long the client will
+ * still render one, which is the whole of the freshness contract here.
+ *
+ * Every field is validated at this boundary rather than at the send: a bad
+ * expiry or an id that could carry text must throw at the call site that
+ * introduced it, not hours later from inside a timer.
+ *
+ * THE IDS ARE CHECKED HERE, NOT DOWNSTREAM, and that is the whole point of the
+ * paragraph above. `assertPushDataSafe` does catch a text-carrying id, but only
+ * once a device envelope is built — so a malformed id reached the caller as a
+ * throw from inside a broadcast, and on an install with NO registered device
+ * `broadcast` returns before any envelope exists and the same id was never
+ * rejected at all. Both ids are generated 22-character opaque base64url
+ * identifiers, so the exact shape is knowable right here.
+ */
+export function buildLifecyclePushData(input: {
+	alertId: string;
+	workspaceId: WorkspaceId;
+	kind: "g" | "e";
+	expiresAtMs: number;
+}): PushData {
+	if (input.kind !== "g" && input.kind !== "e") {
+		throw new PushConfigError(
+			`lifecycle alert kind must be "g" or "e", got ${String(input.kind)}`,
+		);
+	}
+	// The value is NOT echoed, for the same reason `assertPushDataSafe` does not
+	// echo one: if this is firing, the value is exactly the thing that must not
+	// leave the process.
+	if (
+		typeof input.alertId !== "string" ||
+		!LIFECYCLE_ID_PATTERN.test(input.alertId)
+	) {
+		throw new PushConfigError(
+			"lifecycle alertId must be 22 base64url characters — refusing to build (possible text leak)",
+		);
+	}
+	if (
+		typeof input.workspaceId !== "string" ||
+		!LIFECYCLE_ID_PATTERN.test(input.workspaceId)
+	) {
+		throw new PushConfigError(
+			"lifecycle workspaceId must be 22 base64url characters — refusing to build (possible text leak)",
+		);
+	}
+	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
+		throw new PushConfigError("expiresAtMs must be a positive integer");
+	}
+	return {
+		v: "2",
+		k: input.kind,
+		i: input.alertId,
+		w: input.workspaceId,
+		x: String(input.expiresAtMs),
 	};
 }
 
@@ -1001,6 +1121,38 @@ export interface PushSender {
 	 */
 	retract(questionId: QuestionId): Promise<void>;
 	/**
+	 * (LIFECYCLE-ALERT) §13.2 — deliver ONE lifecycle alert now.
+	 *
+	 * Deliberately DUMB: it takes an already-decided alert and puts it on the
+	 * wire. Every judgement — is a work-cycle armed, did the agent fail, is the
+	 * user at the desk, is this thread still on their sidebar, has this exact
+	 * alert already gone out — belongs to `lifecycle-alerts.ts`, which owns the
+	 * cycle state machine and its durable fence. This method exists so that the
+	 * OAuth token cache, the bounded retry/backoff, the dead-token pruning and
+	 * the fatal-fault surface are shared with the question path rather than
+	 * reimplemented beside it: two independent FCM clients in one process is two
+	 * places for "the watch went silent" to hide.
+	 *
+	 * Awaited, so the caller can order its own bookkeeping around delivery. It is
+	 * queued on the same per-id chain the question path uses, so two alerts with
+	 * the same id can never overlap or land out of order.
+	 *
+	 * (LIFECYCLE-ALERT-RETRY) IT REJECTS unless at least one registered device
+	 * accepted the alert. That is the one push in this module whose caller can act
+	 * on a failure — the alert is still held, and still valid until its TTL — so
+	 * the failure is handed to it rather than logged and dropped. Every device
+	 * refusing REJECTS, and so does having no registered device at all: pairing
+	 * and token rotation happen inside the six hours the alert stays valid, so
+	 * "nobody to send to" is a reason to keep holding. Only a deliberate cancel
+	 * (shutdown) resolves without a delivery.
+	 */
+	sendLifecycleAlert(input: {
+		alertId: string;
+		workspaceId: WorkspaceId;
+		kind: "g" | "e";
+		expiresAtMs: number;
+	}): Promise<void>;
+	/**
 	 * The current fatal fault, or null. Non-null means push is DOWN and the user
 	 * must be told: a silent watch reads as "no questions", which is the one
 	 * state they must never be wrong about.
@@ -1186,6 +1338,30 @@ interface SendToken {
 	cancelled: boolean;
 }
 
+/**
+ * (LIFECYCLE-ALERT-RETRY) What one device's send did. A push used to be
+ * fire-and-forget end to end — every failure path logged and returned `void` —
+ * which was fine while the only caller was the question scheduler, whose entry
+ * is already committed to the `sent` set before the send starts. It is NOT fine
+ * for a lifecycle alert: that caller holds the alert and can try again inside
+ * its TTL, and it can only do that if a failure reaches it instead of being
+ * swallowed here.
+ *
+ * `cancelled` is deliberately NOT a failure: the send was abandoned on purpose
+ * (a retraction queued behind it, or shutdown), so there is nothing to retry.
+ */
+type DeliveryResult = "delivered" | "cancelled" | "failed";
+
+/**
+ * `no-devices` is NOT a success. Nothing was delivered, and the set of
+ * registered devices is not fixed: a phone can pair, or re-register a rotated
+ * token, at any point inside the six hours a lifecycle alert stays valid. A
+ * caller that holds the alert must be told "not delivered" so it keeps holding;
+ * only `cancelled` (a deliberate abandon, or shutdown) is terminal without a
+ * delivery. It is kept distinct from `failed` so the reason is nameable.
+ */
+type BroadcastResult = "delivered" | "cancelled" | "failed" | "no-devices";
+
 export function createPushSender(deps: PushSenderDeps): PushSender {
 	const now = deps.now ?? (() => Date.now());
 	if (
@@ -1214,11 +1390,16 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	/** Questions a push actually went out for — the retraction's precondition. */
 	const sent = new Map<QuestionId, SentRecord>();
 	/**
-	 * (PUSH-PRESENCE) One promise chain per questionId, so a send and its own
+	 * (PUSH-PRESENCE) One promise chain per id, so a send and its own
 	 * retraction can never overlap or land out of order. Entries are dropped when
 	 * the chain drains, so this cannot grow with traffic.
+	 *
+	 * (LIFECYCLE-ALERT) Keyed by `string` rather than `QuestionId` because
+	 * lifecycle alerts share it. The key is an ORDERING token and nothing reads
+	 * meaning out of it; the two id spaces are derived from different labels and
+	 * cannot collide.
 	 */
-	const chains = new Map<QuestionId, Promise<void>>();
+	const chains = new Map<string, Promise<void>>();
 	/** The cancel token of the send currently on each question's chain. */
 	const sendTokens = new Map<QuestionId, SendToken>();
 	/**
@@ -1315,13 +1496,13 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 		device: DeviceRecord,
 		data: PushData,
 		cancel: SendToken | null,
-	): Promise<void> {
+	): Promise<DeliveryResult> {
 		const token = device.fcmToken;
-		if (token === null) return;
+		if (token === null) return "failed";
 		const envelope = buildEnvelope(token, data);
 
 		for (let attempt = 1; attempt <= FCM_SEND_MAX_ATTEMPTS; attempt++) {
-			if (stopped) return;
+			if (stopped) return "cancelled";
 			// (PUSH-PRESENCE) A retraction is waiting behind this send on the same
 			// chain. Abandoning the remaining retries is not a lost push: whatever
 			// FCM already accepted is exactly what the retraction is about to
@@ -1331,7 +1512,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				console.log(
 					`${LOG} abandoning in-flight send for questionId=${data.i} — a retraction is queued behind it`,
 				);
-				return;
+				return "cancelled";
 			}
 
 			let accessToken: string;
@@ -1341,18 +1522,18 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			} catch (error) {
 				if (error instanceof PushAuthError) {
 					raiseFault("auth", error.message);
-					return;
+					return "failed";
 				}
 				if (error instanceof PushConfigError) {
 					raiseFault("config", error.message);
-					return;
+					return "failed";
 				}
 				// Transient token failure (network, 5xx). Back off and retry.
 				if (attempt === FCM_SEND_MAX_ATTEMPTS) {
 					console.error(
 						`${LOG} giving up minting an access token after ${attempt} attempts: ${error instanceof Error ? error.message : "unknown"}`,
 					);
-					return;
+					return "failed";
 				}
 				await sleep(backoffDelayMs(attempt), {
 					signal: abort.signal,
@@ -1368,7 +1549,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					console.log(`${LOG} push recovered — auth fault cleared`);
 					fault = null;
 				}
-				return;
+				return "delivered";
 			}
 
 			if (outcome.kind === "token_dead") {
@@ -1377,7 +1558,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					`${LOG} pruning dead FCM token deviceId=${device.deviceId} errorCode=${outcome.errorCode} — device must re-register`,
 				);
 				await deps.devices.setFcmToken(device.deviceId, null, now());
-				return;
+				return "failed";
 			}
 
 			if (outcome.kind === "auth_fault") {
@@ -1388,14 +1569,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					continue;
 				}
 				raiseFault("auth", `FCM rejected the credential: ${outcome.errorCode}`);
-				return;
+				return "failed";
 			}
 
 			if (attempt === FCM_SEND_MAX_ATTEMPTS) {
 				console.error(
 					`${LOG} push failed after ${attempt} attempts deviceId=${device.deviceId} errorCode=${outcome.errorCode}`,
 				);
-				return;
+				return "failed";
 			}
 			// `unref: true` on every backoff here: a pending retry must never by
 			// itself hold host-service open, exactly like the sweep timer.
@@ -1404,20 +1585,28 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				unref: true,
 			});
 		}
+		return "failed";
 	}
 
 	async function broadcast(
 		data: PushData,
 		cancel: SendToken | null,
-	): Promise<void> {
+	): Promise<BroadcastResult> {
 		const devices = await targets();
 		if (devices.length === 0) {
 			console.log(
-				`${LOG} no registered device with a live token — nothing to ${data.k === "q" ? "push" : "retract"}`,
+				`${LOG} no registered device with a live token — skipping push kind ${data.k}`,
 			);
-			return;
+			return "no-devices";
 		}
-		await Promise.all(devices.map((device) => deliver(device, data, cancel)));
+		const results = await Promise.all(
+			devices.map((device) => deliver(device, data, cancel)),
+		);
+		// One handset that took it is a delivered notification. Only a broadcast
+		// where NOBODY took it is a failure the caller could act on.
+		if (results.includes("delivered")) return "delivered";
+		if (results.every((result) => result === "cancelled")) return "cancelled";
+		return "failed";
 	}
 
 	/**
@@ -1427,26 +1616,40 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	 * Serialising per QUESTION is strictly stronger than the per-(questionId,
 	 * device) ordering that is actually required — a broadcast fans out to every
 	 * device inside one job — and it is the version whose correctness is obvious.
-	 * A failure is logged and does NOT poison the chain: the next operation for
-	 * the same question must still run, and the most likely next operation after a
-	 * failed send is the retraction.
+	 *
+	 * THE CHAIN ITSELF NEVER CARRIES A REJECTION. A failure must not poison it:
+	 * the next operation for the same id still has to run, and the most likely
+	 * next operation after a failed send is the retraction. The returned promise
+	 * is a different matter — it rejects, so a caller that owns retry can see the
+	 * failure. Callers that do not (`enqueue`) get it logged and swallowed.
 	 */
+	function enqueueOrdered(
+		id: string,
+		work: () => Promise<void>,
+	): Promise<void> {
+		const previous = chains.get(id) ?? Promise.resolve();
+		const attempt = previous.then(work, work);
+		const settled = attempt
+			.catch(() => {
+				// Observed here so an unawaited failure is never an unhandled rejection;
+				// the caller's copy is what carries the error onwards.
+			})
+			.finally(() => {
+				if (chains.get(id) === settled) chains.delete(id);
+			});
+		chains.set(id, settled);
+		return attempt;
+	}
+
+	/** `enqueueOrdered`, with the failure logged and swallowed. */
 	function enqueue(
-		questionId: QuestionId,
+		id: string,
 		what: string,
 		work: () => Promise<void>,
 	): Promise<void> {
-		const previous = chains.get(questionId) ?? Promise.resolve();
-		const next = previous
-			.then(work, work)
-			.catch((error: unknown) => {
-				console.error(`${LOG} ${what} failed questionId=${questionId}`, error);
-			})
-			.finally(() => {
-				if (chains.get(questionId) === next) chains.delete(questionId);
-			});
-		chains.set(questionId, next);
-		return next;
+		return enqueueOrdered(id, work).catch((error: unknown) => {
+			console.error(`${LOG} ${what} failed id=${id}`, error);
+		});
 	}
 
 	function ensureSweeping(): void {
@@ -1702,8 +1905,10 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			sendTokens.delete(questionId);
 		}
 		console.log(`${LOG} retracting questionId=${questionId}`);
-		return enqueue(questionId, "retraction", () =>
-			broadcast(
+		return enqueue(questionId, "retraction", async () => {
+			// The retraction's own outcome is not acted on: there is no held state to
+			// return it to, and the client sweeps on foreground anyway.
+			await broadcast(
 				buildRetractPushData({
 					questionId,
 					// The workspaceId we actually pushed with, so the client matches
@@ -1712,8 +1917,8 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					nowMs: now(),
 				}),
 				null,
-			),
-		);
+			);
+		});
 	}
 
 	/**
@@ -1993,6 +2198,43 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			if (!hadSent) forget(questionId);
 			stopSweepingIfIdle();
 			await sendRetraction(questionId);
+		},
+
+		sendLifecycleAlert(input) {
+			if (stopped) {
+				throw new PushConfigError("push sender is stopped");
+			}
+			// Built (and therefore validated) HERE, at the call that introduced the
+			// values, so a bad expiry or an id that could carry text throws to the
+			// caller instead of surfacing later from inside a broadcast.
+			const data = buildLifecyclePushData(input);
+			console.log(
+				`${LOG} sending lifecycle alert id=${input.alertId} kind=${input.kind}`,
+			);
+			// No cancel token: a lifecycle alert has no retraction to make room for
+			// (see `buildLifecyclePushData`), so there is nothing that could need to
+			// abandon an in-flight send.
+			//
+			// (LIFECYCLE-ALERT-RETRY) `enqueueOrdered`, not `enqueue`: a broadcast
+			// that reached no handset must REJECT so the lifecycle manager can put
+			// the alert back on hold and try again inside its TTL. Swallowing it here
+			// is what made an undelivered alert indistinguishable from a delivered
+			// one. NO REGISTERED DEVICE REJECTS TOO — a phone that pairs an hour
+			// from now is inside the alert's six-hour life, so "nobody to send to"
+			// is a reason to keep holding, not a reason to call it done.
+			return enqueueOrdered(input.alertId, async () => {
+				const result = await broadcast(data, null);
+				if (result === "failed") {
+					throw new Error(
+						`FCM refused the lifecycle alert on every registered device (id=${input.alertId} kind=${input.kind})`,
+					);
+				}
+				if (result === "no-devices") {
+					throw new Error(
+						`no registered device with a live token for the lifecycle alert (id=${input.alertId} kind=${input.kind})`,
+					);
+				}
+			});
 		},
 
 		getFault() {

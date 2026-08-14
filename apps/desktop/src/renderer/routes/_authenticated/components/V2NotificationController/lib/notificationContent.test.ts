@@ -43,6 +43,21 @@ describe("getV2NativeNotificationContent", () => {
 		});
 	});
 
+	it("uses error copy for a terminal-agent failure", () => {
+		expect(
+			getV2NativeNotificationContent({
+				workspaceName: "Improve notifications",
+				payload: payload({
+					eventType: "Failed",
+					agent: { agentId: "claude" },
+				}),
+			}),
+		).toMatchObject({
+			title: "Claude - Error",
+			body: "Improve notifications",
+		});
+	});
+
 	it("falls back to generic labels", () => {
 		expect(
 			getV2NativeNotificationContent({

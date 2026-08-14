@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from "react";
-import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
@@ -12,9 +11,9 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { applyKanbanCardPatch } from "../../utils/applyKanbanCardPatch";
-import { buildCompletedContext } from "../../utils/completedFilter";
+import { buildFrozenCompletedCardPatch } from "../../utils/completeWorkspaceCard";
 import { getColumnDeleteTarget } from "../../utils/computeColumnDeleteTargets";
-import { deriveCardTitle } from "../../utils/deriveCardTitle";
+import { useCompleteWorkspaceCard } from "../useCompleteWorkspaceCard";
 
 export type CardDropKind = "ok" | "promote" | "reject";
 
@@ -116,7 +115,6 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	const collections = useCollections();
 	const {
 		archiveWorkspace,
-		completeWorkspace,
 		deleteWorkspace,
 		restoreWorkspace,
 		snoozeWorkspace,
@@ -129,12 +127,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	// Projects are fully local now — sourced from the host fan-out
 	// (useHostProjects), keyed by projectKey which equals a workspace's
 	// projectId. Upstream retired the `v2Projects` Electric collection.
-	const { projects: hostProjects } = useHostProjects();
-	const projectNameById = useMemo(() => {
-		const map = new Map<string, string>();
-		for (const p of hostProjects) map.set(p.projectKey, p.name);
-		return map;
-	}, [hostProjects]);
+	const completeWorkspaceCard = useCompleteWorkspaceCard();
 
 	// (KANBAN HOST SOURCE) Workspace lookups go to the host-served lists, not
 	// the dead Electric mirror (see useKanbanData).
@@ -222,7 +215,15 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// main rows must always be reachable). Unbound cards complete directly
 			// — completing a task is NOT a promote (no branch gets created).
 			if (toColumnId === KANBAN_COMPLETED_COLUMN_ID) {
-				return workspaceType === "main" ? "reject" : "ok";
+				if (workspaceType === "main") return "reject";
+				if (
+					card.workspaceId &&
+					workspaceType == null &&
+					!isAbsenceAuthoritative(card.hostId)
+				) {
+					return "reject";
+				}
+				return "ok";
 			}
 			if (card.workspaceId) {
 				// A bound (branch) card can never enter the unbound-only Queue.
@@ -231,7 +232,7 @@ export function useKanbanActions(): UseKanbanActionsResult {
 			// An unbound (Queued) card leaving the Queue must bind to a branch.
 			return toQueue ? "ok" : "promote";
 		},
-		[],
+		[isAbsenceAuthoritative],
 	);
 
 	const applyCardOrder = useCallback(
@@ -669,57 +670,48 @@ export function useKanbanActions(): UseKanbanActionsResult {
 	// the CARD's column, so a crash between the two transactions self-repairs in
 	// the direction the user dragged.
 
-	const completeCard = useCallback(
-		(card: KanbanCardRow) => {
-			if (!collections.v2KanbanCards.get(card.id)) return;
-			const completedAt = Date.now();
-			if (card.workspaceId) {
-				const ws = hostWorkspaceById.get(card.workspaceId);
-				// Main workspaces are never completable (canDropCard rejects the
-				// drop; this keeps any other caller honest).
-				if (ws?.type === "main") return;
-				const projectName = ws
-					? (projectNameById.get(ws.projectId) ?? null)
-					: null;
-				collections.v2KanbanCards.update(card.id, (draft) => {
-					draft.columnId = KANBAN_COMPLETED_COLUMN_ID;
-					draft.tabOrder = 0; // unused there — Completed is date-sorted
-					draft.deadlineTabOrder = null;
-					draft.completedAt = completedAt;
-					if (ws) {
-						// Snapshot title + context NOW so the record stays meaningful
-						// if the branch is later deleted (frozen record).
-						draft.title = deriveCardTitle(ws);
-						draft.completedContext = buildCompletedContext(
-							projectName,
-							ws.branch,
-						);
-					}
-				});
-				if (ws) {
-					ensureBoundRow(card.workspaceId);
-					completeWorkspace(card.workspaceId, completedAt);
-				}
-				return;
-			}
-			collections.v2KanbanCards.update(card.id, (draft) => {
-				draft.columnId = KANBAN_COMPLETED_COLUMN_ID;
-				draft.tabOrder = 0;
-				draft.deadlineTabOrder = null;
-				draft.completedAt = completedAt;
-				// Completing is terminal for the hide states — a completed task is
-				// neither snoozed nor archived.
-				draft.snoozeUntil = null;
-				draft.snoozeLaunchId = null;
-				draft.archivedAt = null;
+	// (KANBAN-MARK-COMPLETED) Stamp a card into Completed with no live workspace
+	// behind it: an unbound (Queued) task, or a bound card whose workspace is
+	// gone (a frozen record). A bound card's snooze/archive belong to the sidebar
+	// row it was frozen from and are preserved verbatim.
+	const freezeCompletedCard = useCallback(
+		(cardId: string) => {
+			const current = collections.v2KanbanCards.get(cardId);
+			if (!current) return;
+			const patch = buildFrozenCompletedCardPatch(current, Date.now());
+			collections.v2KanbanCards.update(cardId, (draft) => {
+				Object.assign(draft, patch);
 			});
 		},
+		[collections],
+	);
+
+	const completeCard = useCallback(
+		(card: KanbanCardRow) => {
+			if (!card.workspaceId) {
+				freezeCompletedCard(card.id);
+				return;
+			}
+
+			const result = completeWorkspaceCard(card.workspaceId, card.id);
+			if (result.ok || !result.canFreezeCard) return;
+			// Hard backstop: only a card whose workspace is genuinely gone may
+			// freeze. A live-but-ineligible workspace (main, any non-worktree,
+			// project-less) must never land in Completed, even if a caller bypassed
+			// canDropCard.
+			if (
+				hostWorkspaceById.has(card.workspaceId) ||
+				!isAbsenceAuthoritative(card.hostId)
+			) {
+				return;
+			}
+			freezeCompletedCard(card.id);
+		},
 		[
-			collections,
-			completeWorkspace,
-			ensureBoundRow,
-			projectNameById,
+			completeWorkspaceCard,
+			freezeCompletedCard,
 			hostWorkspaceById,
+			isAbsenceAuthoritative,
 		],
 	);
 

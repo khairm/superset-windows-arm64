@@ -125,6 +125,25 @@ export interface WorkspaceCurationInput {
 	type: string;
 }
 
+export interface WorkspaceSidebarVerdictInput {
+	snapshot: SidebarMirrorSnapshot;
+	nowMs: number;
+	organizationId: string;
+	workspace: WorkspaceCurationInput | null;
+}
+
+export function workspaceSidebarVerdict(
+	input: WorkspaceSidebarVerdictInput,
+): SidebarVerdict {
+	const curation = createSidebarCuration(
+		input.snapshot,
+		input.nowMs,
+		input.organizationId,
+	);
+	if (!curation.enabled || input.workspace === null) return "show";
+	return curation.workspaceVerdict(input.workspace);
+}
+
 export interface SidebarCuration {
 	/**
 	 * False when the mirror is not evidence about this machine's sidebar right

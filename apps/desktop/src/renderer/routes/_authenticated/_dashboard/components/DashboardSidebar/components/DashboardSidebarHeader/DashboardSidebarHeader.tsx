@@ -11,7 +11,13 @@ import { useMatchRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useRef } from "react";
 import { GoGitPullRequest } from "react-icons/go";
 import { HiOutlineClipboardDocumentList } from "react-icons/hi2";
-import { LuClock, LuColumns3, LuLayers, LuPlus, LuSearch } from "react-icons/lu";
+import {
+	LuClock,
+	LuColumns3,
+	LuLayers,
+	LuPlus,
+	LuSearch,
+} from "react-icons/lu";
 import {
 	VscFolderOpened,
 	VscGithubAlt,
