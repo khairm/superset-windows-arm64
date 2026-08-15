@@ -43,6 +43,7 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
   `scripts/check-feature-markers.mjs` (standalone marker gate),
   `scripts/ci-repair.sh` (build-repair engine),
+  `scripts/ai-run.sh` ((AI-UNAVAILABLE) classification + shared Claude CLI wrapper),
   `scripts/check-override-consistency.mjs`, `scripts/resolve-release-age.mjs`,
   companion native packages `github.com/khairm/libsql-windows-arm64` +
   `github.com/khairm/tokenizers-windows-arm64`.

@@ -42,6 +42,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Merge semantic review gate | every nightly upstream merge — clean or conflicted — is reviewed by Opus against this manifest BEFORE it may commit/build/publish: a cleanly-merging upstream hunk that semantically breaks a fork feature (the v1.14.2 sidebar-projection incident) is caught here, not in production. Review is fresh after every adaptation and fails closed: no parsable verdict, a final BREAKAGE verdict, or a review run that modified the tree all hard-abort with the baseline untouched | `(MERGE-SEMANTIC-GATE)` |
 | Nightly proactive port + bounded adaptation | after conflict resolution, Opus compares the old/new upstream tag trees against fork-owned files and surgically ports cleanly-merging API refactors before the gates; semantic BREAKAGE findings then drive at most two repair rounds, each followed by ReferenceError + marker gates and a fresh review. This closes the desktop-v1.16.0 class where upstream removed collections/exports used only by fork files, so git produced no conflict for the resolver to see | `(MERGE-ADAPT)` |
 | Self-repairing build | a failed ARM64 build attempt triggers a bounded Opus 5 repair loop (max 3 attempts / 2 repairs): the repair agent reads the failed job's log, fixes the checked-out tree (scripts/, .github/actions/, source — all take effect the NEXT attempt of the SAME run), and pushes to the repair branch; every deterministic gate re-runs on the repaired sha. Repairs can never change the app version or touch FEATURES.md; workflow-YAML fixes need `WORKFLOW_PUSH_TOKEN` and land next run | `(BUILD-REPAIR)` |
+| AI-unavailable is not a merge/build verdict | every Claude CLI call in the nightly merge and the build-repair loop runs through one shared wrapper (`scripts/ai-run.sh`) that captures the exit code and output: a CLI that never reached the model (weekly/session usage cap, dead credential, 126/127, silent nonzero) aborts loud as `(AI-UNAVAILABLE)` instead of being reported as an unresolvable merge or an unrepairable build, and transient conditions (429/5xx/connection) retry in place with 30s/60s backoff first. output is only classified when the CLI exits nonzero AND the log is small, so agent prose can't trip it | `(AI-UNAVAILABLE)` |
 | Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
 | Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
@@ -146,6 +147,8 @@ writeKanbanBackup	apps/desktop/src
 (KANBAN-HOST-SOURCE)	apps/desktop/src/renderer
 (BUILD-REPAIR)	scripts
 (BUILD-REPAIR)	.github
+(AI-UNAVAILABLE)	scripts/ai-run.sh
+(AI-UNAVAILABLE)	.github/workflows
 (SUBTOOL-RED)	apps/desktop/src/main
 (ASYNC-TOOL-RED)	apps/desktop/src/main
 (UNTAGGED-BG-RED)	apps/desktop/src/main
