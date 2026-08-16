@@ -17,6 +17,9 @@ interface DashboardSidebarSessionsSectionProps {
 	/** (SESSION-LIFECYCLE) Rows for the Archived Sessions subsection, most
 	 * recently archived first. */
 	archivedSessionWorkspaces?: DashboardSidebarWorkspace[];
+	/** (RECYCLE-BIN-SESSIONS) Rows for the session Recycle Bin, most recently
+	 * deleted first. */
+	deletedSessionWorkspaces?: DashboardSidebarWorkspace[];
 	isCollapsed?: boolean;
 	/** The workspaces-list collapse toggle hides rows; the header stays. */
 	rowsHidden?: boolean;
@@ -33,13 +36,16 @@ interface DashboardSidebarSessionsSectionProps {
  *
  * (SESSION-LIFECYCLE) A snoozed or archived session leaves the active list and
  * moves into the matching subsection below, which the header's right-click menu
- * reveals or hides. Sessions never reach the Kanban board: every card is bound
- * to a sidebar project, and a session has none.
+ * reveals or hides. (RECYCLE-BIN-SESSIONS) A soft-deleted session lands in the
+ * Recycle Bin subsection the same way — the only surface it renders on.
+ * Sessions never reach the Kanban board: every card is bound to a sidebar
+ * project, and a session has none.
  */
 export function DashboardSidebarSessionsSection({
 	sessionWorkspaces,
 	snoozedSessionWorkspaces = [],
 	archivedSessionWorkspaces = [],
+	deletedSessionWorkspaces = [],
 	isCollapsed = false,
 	rowsHidden = false,
 	workspaceShortcutLabels,
@@ -48,7 +54,7 @@ export function DashboardSidebarSessionsSection({
 	const openNewSessionModal = useOpenNewSessionModal();
 	const { preferences, setSessionSectionFlag, toggleSessionSectionFlag } =
 		useV2UserPreferences();
-	const { unsnoozeAllInProject, unarchiveWorkspaces } =
+	const { restoreWorkspace, unsnoozeAllInProject, unarchiveWorkspaces } =
 		useDashboardSidebarState();
 
 	if (isCollapsed) {
@@ -69,10 +75,10 @@ export function DashboardSidebarSessionsSection({
 		);
 	}
 
-	// One config entry per subsection keeps the two reveal blocks in sync, the
+	// One config entry per subsection keeps the reveal blocks in sync, the
 	// same way DashboardSidebarProjectSection drives its own state sections.
 	const stateSections: Array<{
-		variant: "snoozed" | "archived";
+		variant: "snoozed" | "archived" | "deleted";
 		title: string;
 		show: boolean;
 		workspaces: DashboardSidebarWorkspace[];
@@ -106,6 +112,23 @@ export function DashboardSidebarSessionsSection({
 					archivedSessionWorkspaces.map((workspace) => workspace.id),
 				),
 		},
+		{
+			// (RECYCLE-BIN-SESSIONS) Restore returns a soft-deleted session to the
+			// ACTIVE lane, exactly like the per-project bin. Permanent destroy stays
+			// per-row ("Delete permanently") inside the bin.
+			variant: "deleted",
+			title: "Recycle Bin",
+			show: preferences.showDeletedSessions,
+			workspaces: deletedSessionWorkspaces,
+			collapsed: preferences.deletedSessionsCollapsed,
+			collapsedFlag: "deletedSessionsCollapsed",
+			showFlag: "showDeletedSessions",
+			onRestoreAll: () => {
+				for (const workspace of deletedSessionWorkspaces) {
+					restoreWorkspace(workspace.id);
+				}
+			},
+		},
 	];
 
 	return (
@@ -113,10 +136,12 @@ export function DashboardSidebarSessionsSection({
 			<DashboardSidebarSessionsContextMenu
 				showSnoozed={preferences.showSnoozedSessions}
 				showArchived={preferences.showArchivedSessions}
+				showDeleted={preferences.showDeletedSessions}
 				onToggleSnoozed={() => toggleSessionSectionFlag("showSnoozedSessions")}
 				onToggleArchived={() =>
 					toggleSessionSectionFlag("showArchivedSessions")
 				}
+				onToggleDeleted={() => toggleSessionSectionFlag("showDeletedSessions")}
 			>
 				{/* Header styled to match the Projects header below it. */}
 				<div className="flex min-h-8 w-full shrink-0 items-center gap-1.5 py-1.5 pl-4 pr-2 text-[10px] font-semibold uppercase tracking-[0.075em] text-muted-foreground">

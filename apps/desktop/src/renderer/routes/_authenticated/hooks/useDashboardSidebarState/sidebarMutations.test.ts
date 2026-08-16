@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
 	removeProjectFromSidebarState,
+	resolveSidebarRowProjectId,
 	type SidebarWorkspaceRow,
 	tombstoneSidebarWorkspaceRecord,
 } from "./sidebarMutations";
@@ -314,5 +315,44 @@ describe("tombstoneSidebarWorkspaceRecord", () => {
 		expect(row?.sidebarState.sectionId).toBeNull();
 		expect(row?.sidebarState.pinnedAt).toBeNull();
 		expect(cleaned).toEqual(["ws-1"]);
+	});
+});
+
+// (RECYCLE-BIN-SESSIONS) A session's projectId is legitimately null, so every
+// lifecycle insert path (soft delete, snooze) has to tell "caller says
+// project-less" apart from "caller said nothing". Collapsing the two (a `??`)
+// is what made deleting or snoozing a session with no local-state row fail.
+describe("resolveSidebarRowProjectId", () => {
+	it("honours an EXPLICIT null so a session soft-deletes / snoozes", () => {
+		expect(resolveSidebarRowProjectId(null, null)).toBeNull();
+	});
+
+	it("keeps an explicit null even when the host record has a project", () => {
+		expect(resolveSidebarRowProjectId(null, "proj-1")).toBeNull();
+	});
+
+	it("falls back to the host record when the caller passed nothing", () => {
+		expect(resolveSidebarRowProjectId(undefined, "proj-1")).toBe("proj-1");
+		expect(resolveSidebarRowProjectId(undefined, null)).toBeNull();
+	});
+
+	it("prefers the caller's projectId over the host record", () => {
+		expect(resolveSidebarRowProjectId("proj-2", "proj-1")).toBe("proj-2");
+	});
+
+	it("lets a project-less row snooze instead of refusing it", () => {
+		// The old `!resolvedProjectId` guard in snoozeWorkspace treated null as
+		// unresolvable and returned early, so a session with no local-state row
+		// silently never snoozed. Null is now a resolved answer, not a failure.
+		expect(resolveSidebarRowProjectId(null, null)).toBeNull();
+		expect(resolveSidebarRowProjectId(undefined, null)).toBeNull();
+	});
+
+	it("lets a project-less row archive instead of refusing it", () => {
+		// archiveWorkspace had the same collapsing guard, and
+		// RemoveFromSidebarMount already feeds it `string | null` — so "Remove
+		// from Sidebar" on a session with no local-state row silently did nothing.
+		expect(resolveSidebarRowProjectId(null, null)).toBeNull();
+		expect(resolveSidebarRowProjectId(null, "proj-1")).toBeNull();
 	});
 });

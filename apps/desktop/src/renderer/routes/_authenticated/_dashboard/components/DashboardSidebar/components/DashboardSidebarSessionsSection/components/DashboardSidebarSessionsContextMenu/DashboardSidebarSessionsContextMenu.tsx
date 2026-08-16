@@ -4,27 +4,33 @@ import {
 	ContextMenuItem,
 	ContextMenuTrigger,
 } from "@superset/ui/context-menu";
-import { LuArchive, LuClock } from "react-icons/lu";
+import { LuArchive, LuClock, LuTrash2 } from "react-icons/lu";
 
 interface DashboardSidebarSessionsContextMenuProps {
 	showSnoozed: boolean;
 	showArchived: boolean;
+	/** (RECYCLE-BIN-SESSIONS) Reveal state of the session Recycle Bin. */
+	showDeleted: boolean;
 	onToggleSnoozed: () => void;
 	onToggleArchived: () => void;
+	onToggleDeleted: () => void;
 	children: React.ReactNode;
 }
 
 /**
  * (SESSION-LIFECYCLE) Right-click menu on the Sessions header. Mirrors the
  * project row's reveal toggles — the only way to show or hide the Snoozed
- * Sessions / Archived Sessions subsections — so a snoozed or archived session
- * is reachable exactly the way a snoozed or archived project thread is.
+ * Sessions / Archived Sessions / (RECYCLE-BIN-SESSIONS) Recycle Bin
+ * subsections — so a snoozed, archived or soft-deleted session is reachable
+ * exactly the way a snoozed, archived or deleted project thread is.
  */
 export function DashboardSidebarSessionsContextMenu({
 	showSnoozed,
 	showArchived,
+	showDeleted,
 	onToggleSnoozed,
 	onToggleArchived,
+	onToggleDeleted,
 	children,
 }: DashboardSidebarSessionsContextMenuProps) {
 	return (
@@ -38,6 +44,10 @@ export function DashboardSidebarSessionsContextMenu({
 				<ContextMenuItem onSelect={onToggleArchived}>
 					<LuArchive className="size-4 mr-2" />
 					{showArchived ? "Hide archived" : "Show archived"}
+				</ContextMenuItem>
+				<ContextMenuItem onSelect={onToggleDeleted}>
+					<LuTrash2 className="size-4 mr-2" />
+					{showDeleted ? "Hide Recycle Bin" : "Show Recycle Bin"}
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>

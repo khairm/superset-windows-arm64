@@ -25,6 +25,21 @@ export function createEmptyPaneLayout(): WorkspaceState<unknown> {
 type CleanupPaneRuntimes = (rows: PaneLifecycleRow[]) => void;
 
 /**
+ * (RECYCLE-BIN-SESSIONS) The projectId a lifecycle mutation stamps on a
+ * local-state row it has to insert (soft delete, snooze). An EXPLICIT null means
+ * "this row is a project-less session" and MUST be honoured — the host record's
+ * projectId is consulted only when the caller passed nothing at all. A `??` here
+ * would collapse the two cases and refuse to act on a session (its explicit null
+ * would look unresolved).
+ */
+export function resolveSidebarRowProjectId(
+	explicitProjectId: string | null | undefined,
+	hostProjectId: string | null,
+): string | null {
+	return explicitProjectId !== undefined ? explicitProjectId : hostProjectId;
+}
+
+/**
  * Hides a single workspace while keeping its project in the sidebar, by leaving
  * a hidden "tombstone" row rather than deleting it. A local `main` workspace
  * with no local-state row is re-surfaced by the gated auto-include path, so
