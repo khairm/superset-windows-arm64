@@ -440,6 +440,16 @@ export async function resyncAgentStatusFromHost({
 		const sourceKey = getV2NotificationSourceKey(source);
 		const preState = useV2NotificationStore.getState();
 		const preEntry = preState.sources[sourceKey];
+		// (ONE-BUZZ-UNTIL-READ) Read BEFORE the replay and put back after it. The
+		// replay routes host rows through the live status path, so a row whose
+		// last event is a turn-end writes a `review` axis — and would therefore
+		// MINT an outstanding record for a finish this machine never saw arrive.
+		// The record is meant to mean "a device is holding this one"; a
+		// re-derivation of the past is not evidence of that, and the
+		// pending-permission row is the case that proves it (the replay greens it,
+		// the host never minted an alert for it, and the permission is re-latched
+		// a few lines below).
+		const preOutstanding = preState.outstandingReadyAt[row.terminalId] ?? null;
 
 		// A live event that landed while the snapshot was in flight — the user
 		// answering the question this row still calls pending, or a fresh
@@ -465,6 +475,9 @@ export async function resyncAgentStatusFromHost({
 			terminalId: row.terminalId,
 			occurredAt: row.lastEventAt,
 		});
+		useV2NotificationStore
+			.getState()
+			.restoreOutstandingReady(row.terminalId, preOutstanding);
 		result.applied++;
 
 		// (DOT-PERSIST) The dot store and `terminalSeenAt` both live in
@@ -596,7 +609,25 @@ export async function resyncAgentStatusFromHost({
 		// rows past the cap starved forever. A report the host did NOT consume is
 		// recorded under a much shorter cooldown, because a failure is not a
 		// repair and must not suppress the retry for half an hour.
-		if (wouldRaiseReview) {
+		//
+		// (ONE-BUZZ-UNTIL-READ) THE SECOND SHAPE OF THE SAME LOST REPORT. A finish
+		// can be outstanding on the phone while this row's last event is a `Start`
+		// — the agent went back to work, which clears the green here and changes
+		// nothing on the handset. `wouldRaiseReview` is false for that row, so the
+		// repair above would never look at it, yet the durable evidence of a read
+		// is just as good: an outstanding record the seen mark already covers.
+		// The record's own instant is the subject, never `row.lastEventAt` — that
+		// has since moved on to an event no alert was ever minted for.
+		const outstandingAt = state.outstandingReadyAt[row.terminalId];
+		const repairSeenThroughAt = wouldRaiseReview
+			? row.lastEventAt
+			: outstandingAt !== undefined &&
+					!seedColdStart &&
+					seenAt !== undefined &&
+					seenAt >= outstandingAt
+				? outstandingAt
+				: null;
+		if (repairSeenThroughAt !== null) {
 			const repairKey = `${hostUrl}:${row.terminalId}`;
 			if (isInRepairCooldown(repairKey, nowMonotonicMs)) {
 				result.seenRepairsSkipped++;
@@ -608,9 +639,18 @@ export async function resyncAgentStatusFromHost({
 				void reportTerminalSeen({
 					workspaceId: row.originWorkspaceId,
 					terminalId: row.terminalId,
-					seenThroughAt: row.lastEventAt,
+					seenThroughAt: repairSeenThroughAt,
 				}).then((accepted) => {
 					recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
+					// Only a consumed report retires the record, and only up to the
+					// generation that was acknowledged — a finish that landed while
+					// this repair was in flight keeps its own. A dropped one stays
+					// standing for the next epoch, under the shorter retry cooldown.
+					if (accepted) {
+						useV2NotificationStore
+							.getState()
+							.clearOutstandingReady(row.terminalId, repairSeenThroughAt);
+					}
 				});
 			} else {
 				result.seenRepairsDeferred++;

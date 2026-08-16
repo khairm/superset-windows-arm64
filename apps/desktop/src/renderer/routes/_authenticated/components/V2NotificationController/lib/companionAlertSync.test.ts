@@ -83,12 +83,16 @@ mock.module("renderer/lib/host-service-client", () => ({
 
 const {
 	forgetAlertContextSyncsForHost,
+	markTerminalSeenAndReportRead,
 	queueAlertContextSync,
 	registerWorkspaceHost,
 	releaseAlertContextSync,
 	reportTerminalSeen,
 	unregisterWorkspaceHost,
 } = await import("./companionAlertSync");
+const { useV2NotificationStore } = await import(
+	"renderer/stores/v2-notifications"
+);
 
 // --- helpers ----------------------------------------------------------------
 
@@ -473,5 +477,187 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 				seenThroughAt: 1_000,
 			}),
 		).resolves.toBe(true);
+	});
+});
+
+/**
+ * (ONE-BUZZ-UNTIL-READ) THE SCENARIO THIS EXISTS FOR, end to end through the
+ * real store:
+ *
+ *   1. the agent finishes while the user is away — green dot, `g` on the phone;
+ *   2. the agent starts working again — the dot goes yellow, and the phone is
+ *      still showing the finish from step 1;
+ *   3. the user opens that chat.
+ *
+ * Step 3 is a read. Before the outstanding record there was no green left to
+ * clear at step 3, so nothing was reported and the notification sat there until
+ * its TTL expired.
+ */
+describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
+	const TERMINAL = "terminal-1";
+	const source = { type: "terminal", id: TERMINAL } as const;
+
+	beforeEach(() => {
+		useV2NotificationStore.setState({
+			sources: {},
+			terminalSeenAt: {},
+			outstandingReadyAt: {},
+		});
+		registerWorkspaceHost(WORKSPACE, HOST);
+	});
+
+	function finish(at: number): void {
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(source, WORKSPACE, { set: ["review"], clear: [] }, at);
+	}
+
+	function startsWorking(at: number): void {
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(
+				source,
+				WORKSPACE,
+				{ set: ["working"], clear: ["permission", "review"] },
+				at,
+			);
+	}
+
+	it("reports the OUTSTANDING finish when the chat is already running again", async () => {
+		finish(5_000);
+		startsWorking(6_000);
+		expect(
+			useV2NotificationStore.getState().sources["terminal:terminal-1"]?.status,
+		).toBe("working");
+
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+
+		// The subject is the FINISH's instant — the one the alert id hashed — not
+		// the binding's `lastEventAt`, which has moved on to the `Start`.
+		expect(seenCalls).toHaveLength(1);
+		expect(seenCalls[0]).toMatchObject({
+			terminalId: TERMINAL,
+			seenThroughAt: 5_000,
+		});
+		// Consumed, so the record is retired and a second focus is silent.
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
+		).toBeUndefined();
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(1);
+	});
+
+	it("prefers the LIVE green over the record when the dot is still up", async () => {
+		finish(5_000);
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 7_000,
+		});
+		await settle();
+		expect(seenCalls[0]).toMatchObject({ seenThroughAt: 5_000 });
+	});
+
+	it("keeps the record when no host consumed the report", async () => {
+		autoAcceptSeen = false;
+		finish(5_000);
+		startsWorking(6_000);
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(1);
+		// Still outstanding: the resync sweep is what retries it.
+		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
+			5_000,
+		);
+	});
+
+	it("reports NOTHING for a terminal with no green and no record", async () => {
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(0);
+		// It still recorded the seen mark — the report is what is gated.
+		expect(useV2NotificationStore.getState().terminalSeenAt[TERMINAL]).toBe(
+			6_000,
+		);
+	});
+
+	it("reports nothing for a red — a permission is not a finish", async () => {
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(
+				source,
+				WORKSPACE,
+				{ set: ["permission"], clear: [] },
+				5_000,
+			);
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(0);
+	});
+
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The in-flight race. The report is a round trip and
+	 * the agent keeps working during it, so a newer finish can land before the
+	 * older read is acknowledged. Clearing unconditionally on that
+	 * acknowledgement would delete the NEWER record, and the newer notification
+	 * would then have no evidence left to retract it.
+	 */
+	it("keeps a finish that lands while an older report is in flight", async () => {
+		autoAcceptSeen = null; // hold the mutation open
+		finish(5_000);
+		startsWorking(6_000);
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 6_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(1);
+
+		// B finishes while A's report is still open.
+		finish(7_000);
+		seenCalls[0]?.resolve(true);
+		await settle();
+
+		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
+			7_000,
+		);
+
+		// And B is still reportable: opening the chat again names B, not A.
+		autoAcceptSeen = true;
+		startsWorking(8_000);
+		markTerminalSeenAndReportRead({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			lastEventAt: 8_000,
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(2);
+		expect(seenCalls[1]).toMatchObject({ seenThroughAt: 7_000 });
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
+		).toBeUndefined();
 	});
 });

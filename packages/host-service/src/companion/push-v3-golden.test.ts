@@ -26,10 +26,17 @@ import {
 	buildQuestionPushData,
 } from "./push";
 import type { PushAlertContext } from "./push-context";
-import type { QuestionId, WorkspaceId } from "./types";
+import type { PushData, QuestionId, WorkspaceId } from "./types";
 
 /** Verbatim from `PushV3Test.kt`'s companion object. */
 const EXPIRY = 1_800_000_000_000;
+/**
+ * (ONE-BUZZ-UNTIL-READ) The outcome instant carried as `gx` — the same instant
+ * the deterministic alert id hashes, which is how the phone tells a genuinely
+ * newer finish from a replay of one it already showed. Verbatim from the Kotlin
+ * fixture; change both or neither.
+ */
+const OUTCOME_AT_MS = 1_799_999_100_000;
 const EVENT_ID = "e1234567890123456789ab";
 const QUESTION_ID = "q1234567890123456789ab" as QuestionId;
 const WORKSPACE_ID = "w1234567890123456789ab" as WorkspaceId;
@@ -53,6 +60,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				kind: "g",
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -63,6 +72,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			w: WORKSPACE_ID,
 			x: String(EXPIRY),
 			t: TERMINAL_ID,
+			gx: String(OUTCOME_AT_MS),
 			pn: PROJECT,
 			wn: WORKSPACE,
 			tn: TAB,
@@ -76,6 +86,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				kind: "e",
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -126,6 +138,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				nowMs: EXPIRY - RETRACT_TTL_MS,
 			}),
 		).toEqual({
@@ -135,6 +148,7 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			w: WORKSPACE_ID,
 			x: String(EXPIRY),
 			t: TERMINAL_ID,
+			gx: String(OUTCOME_AT_MS),
 		});
 	});
 
@@ -146,13 +160,22 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			alertId: EVENT_ID,
 			workspaceId: WORKSPACE_ID,
 			kind: "g",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
-		for (const key of ["t", "pn", "wn", "tn", "tc"]) {
+		for (const key of ["pn", "wn", "tn", "tc"]) {
 			expect(key in unnamed).toBe(true);
 			expect((unnamed as unknown as Record<string, string>)[key]).toBe("");
 		}
+		// (ONE-BUZZ-UNTIL-READ) `t` and `gx` are NOT context keys — they are the
+		// notification's identity and come off the alert row, so a context that
+		// resolved to nothing cannot cost them.
+		expect(unnamed).toMatchObject({
+			t: TERMINAL_ID,
+			gx: String(OUTCOME_AT_MS),
+		});
 	});
 
 	it("never emits a name the phone would have to degrade", () => {
@@ -166,6 +189,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			alertId: EVENT_ID,
 			workspaceId: WORKSPACE_ID,
 			kind: "g",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
 			expiresAtMs: EXPIRY,
 			context: {
 				...CONTEXT,
@@ -188,6 +213,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 			alertId: EVENT_ID,
 			workspaceId: WORKSPACE_ID,
 			kind: "g",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
 			expiresAtMs: EXPIRY,
 			context: {
 				...CONTEXT,
@@ -215,6 +242,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				kind: "g",
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -222,6 +251,8 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				kind: "e",
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				expiresAtMs: EXPIRY,
 				context: CONTEXT,
 			}),
@@ -229,11 +260,114 @@ describe("(ALERT-CONTEXT-NAMES) shared v3 golden vectors", () => {
 				alertId: EVENT_ID,
 				workspaceId: WORKSPACE_ID,
 				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: OUTCOME_AT_MS,
 				nowMs: EXPIRY - RETRACT_TTL_MS,
 			}),
 		];
 		for (const frame of frames) {
 			expect(buildEnvelope("token", frame).android.collapse_key).toBe(frame.i);
 		}
+	});
+});
+
+/**
+ * (ONE-BUZZ-UNTIL-READ) The REFUSAL vectors, mirrored from `PushV3Test.kt`.
+ *
+ * `g` and `e` no longer share a key set: a ready alert carries `gx` and an error
+ * never does. The phone refuses both directions of that difference, so the host
+ * has to be unable to mint either shape — otherwise a frame the host considers
+ * fine is silently dropped on arrival and the alert simply never appears.
+ */
+describe("(ONE-BUZZ-UNTIL-READ) shared v3 refusal vectors", () => {
+	function ready(): Record<string, string> {
+		return buildLifecyclePushData({
+			alertId: EVENT_ID,
+			workspaceId: WORKSPACE_ID,
+			kind: "g",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
+			expiresAtMs: EXPIRY,
+			context: CONTEXT,
+		}) as unknown as Record<string, string>;
+	}
+
+	it("refuses a ready alert with no `t` — nothing to replace in place", () => {
+		const { t: _dropped, ...withoutHandle } = ready();
+		expect(() =>
+			buildEnvelope("token", withoutHandle as unknown as PushData),
+		).toThrow(/key set is not closed/);
+	});
+
+	it("refuses a ready alert with no `gx` — nothing to order it by", () => {
+		const { gx: _dropped, ...withoutOutcome } = ready();
+		expect(() =>
+			buildEnvelope("token", withoutOutcome as unknown as PushData),
+		).toThrow(/key set is not closed/);
+	});
+
+	it("refuses an error alert CARRYING `gx` — that key is the ready set's", () => {
+		const error = buildLifecyclePushData({
+			alertId: EVENT_ID,
+			workspaceId: WORKSPACE_ID,
+			kind: "e",
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
+			expiresAtMs: EXPIRY,
+			context: CONTEXT,
+		});
+		expect(() =>
+			buildEnvelope("token", {
+				...error,
+				gx: String(OUTCOME_AT_MS),
+			} as unknown as PushData),
+		).toThrow(/key set is not closed/);
+	});
+
+	it("refuses a retraction with no `gx` — it would cancel whatever is showing", () => {
+		const retract = buildLifecycleRetractPushData({
+			alertId: EVENT_ID,
+			workspaceId: WORKSPACE_ID,
+			terminalHandle: TERMINAL_ID,
+			outcomeAtMs: OUTCOME_AT_MS,
+			nowMs: EXPIRY - RETRACT_TTL_MS,
+		}) as unknown as Record<string, string>;
+		const { gx: _dropped, ...withoutOutcome } = retract;
+		expect(() =>
+			buildEnvelope("token", withoutOutcome as unknown as PushData),
+		).toThrow(/key set is not closed/);
+	});
+
+	it("refuses to MINT a ready alert missing either identity, ahead of the wire", () => {
+		expect(() =>
+			buildLifecyclePushData({
+				alertId: EVENT_ID,
+				workspaceId: WORKSPACE_ID,
+				kind: "g",
+				terminalHandle: "",
+				outcomeAtMs: OUTCOME_AT_MS,
+				expiresAtMs: EXPIRY,
+				context: CONTEXT,
+			}),
+		).toThrow(/requires a 22-character terminal handle/);
+		expect(() =>
+			buildLifecyclePushData({
+				alertId: EVENT_ID,
+				workspaceId: WORKSPACE_ID,
+				kind: "g",
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: 0,
+				expiresAtMs: EXPIRY,
+				context: CONTEXT,
+			}),
+		).toThrow(/requires the outcome instant/);
+		expect(() =>
+			buildLifecycleRetractPushData({
+				alertId: EVENT_ID,
+				workspaceId: WORKSPACE_ID,
+				terminalHandle: TERMINAL_ID,
+				outcomeAtMs: 0,
+				nowMs: EXPIRY - RETRACT_TTL_MS,
+			}),
+		).toThrow(/requires the outcome instant it cancels/);
 	});
 });

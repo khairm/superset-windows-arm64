@@ -248,6 +248,7 @@ describe("(ALERT-CONTEXT-NAMES) sendLifecycleRetraction is best effort", () => {
 				alertId: "a".repeat(22),
 				workspaceId: HANDLE,
 				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 1_700_000_000_000,
 			});
 		} finally {
 			sender.stop();
@@ -262,6 +263,7 @@ describe("(ALERT-CONTEXT-NAMES) sendLifecycleRetraction is best effort", () => {
 					alertId: "not an alert id",
 					workspaceId: HANDLE,
 					terminalHandle: TERMINAL_HANDLE,
+					outcomeAtMs: 1_700_000_000_000,
 				}),
 			).toThrow(/22 base64url/);
 		} finally {
