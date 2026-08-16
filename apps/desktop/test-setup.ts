@@ -104,31 +104,61 @@ if (typeof globalThis.window !== "undefined") {
 	};
 }
 
+/**
+ * A working in-memory `Storage`. Both web storages need one and neither can
+ * use the real thing here: zustand's `persist` middleware resolves its storage
+ * once at module load and writes on every `setState`, so a missing or
+ * non-functional one throws on the first mutation of any persisted store.
+ */
+function createMockStorage(): Storage {
+	const backing = new Map<string, string>();
+	return {
+		get length() {
+			return backing.size;
+		},
+		clear: () => backing.clear(),
+		getItem: (key: string) => backing.get(key) ?? null,
+		key: (index: number) => Array.from(backing.keys())[index] ?? null,
+		removeItem: (key: string) => {
+			backing.delete(key);
+		},
+		setItem: (key: string, value: string) => {
+			backing.set(key, String(value));
+		},
+	};
+}
+
 // localStorage: renderer stores persisted with zustand's `persist` middleware
 // write to it on every setState, and zustand resolves the storage once at
 // module load. Install a working mock unconditionally (some environments expose
 // a present-but-nonfunctional `localStorage`, so a `typeof === "undefined"`
 // guard is not enough) and before any store module is imported.
-const localStorageBacking = new Map<string, string>();
-const mockLocalStorage: Storage = {
-	get length() {
-		return localStorageBacking.size;
-	},
-	clear: () => localStorageBacking.clear(),
-	getItem: (key: string) => localStorageBacking.get(key) ?? null,
-	key: (index: number) => Array.from(localStorageBacking.keys())[index] ?? null,
-	removeItem: (key: string) => {
-		localStorageBacking.delete(key);
-	},
-	setItem: (key: string, value: string) => {
-		localStorageBacking.set(key, String(value));
-	},
-};
+const mockLocalStorage = createMockStorage();
 Object.defineProperty(globalThis, "localStorage", {
 	value: mockLocalStorage,
 	writable: true,
 	configurable: true,
 });
+
+// sessionStorage: the v2-notification dot store persists to
+// `window.sessionStorage` on purpose (it survives an in-place reload and dies
+// with the app), and nothing here provided one — so zustand's persist
+// middleware threw `storage.setItem is not a function` on the first setState
+// and every test in that file failed for a reason that had nothing to do with
+// what it was testing. Installed on BOTH `globalThis` and the `window` stub,
+// because the store reads it through `window`.
+const mockSessionStorage = createMockStorage();
+Object.defineProperty(globalThis, "sessionStorage", {
+	value: mockSessionStorage,
+	writable: true,
+	configurable: true,
+});
+if (typeof globalThis.window !== "undefined") {
+	(globalThis.window as Record<string, unknown>).sessionStorage =
+		mockSessionStorage;
+	(globalThis.window as Record<string, unknown>).localStorage =
+		mockLocalStorage;
+}
 
 // =============================================================================
 // Electron Preload Mocks (exposed via contextBridge in real app)

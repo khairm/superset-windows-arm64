@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { markTerminalSeenAndReportRead } from "renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync";
 import {
 	getV2NotificationSourceKey,
 	getV2NotificationSourcesForPane,
@@ -93,15 +94,22 @@ export function useV2WorkspaceIsUnread(workspaceId: string): boolean {
  */
 export function useMarkWorkspaceTerminalsSeen(workspaceId: string): () => void {
 	const bindings = useTerminalAgentBindings(workspaceId);
-	const markTerminalSeen = useV2NotificationStore(
-		(state) => state.markTerminalSeen,
-	);
 	return useCallback(() => {
-		// Host-clock only: "seen through the binding's last event".
+		// (ALERT-CONTEXT-NAMES) THE SECOND USER-INTENT SITE. "Mark read" is the
+		// user saying they have dealt with the thread, so the phone's
+		// ready-for-review notifications for it come down — but only for the
+		// terminals that actually HAD a green dot. This callback walks every
+		// binding in the workspace, and reporting the ones that were already read
+		// would put a retraction on the wire per idle terminal per click. The
+		// helper owns that rule and the stamp ordering behind it.
 		for (const binding of bindings.values()) {
-			markTerminalSeen(binding.terminalId, binding.lastEventAt);
+			markTerminalSeenAndReportRead({
+				workspaceId,
+				terminalId: binding.terminalId,
+				lastEventAt: binding.lastEventAt,
+			});
 		}
-	}, [bindings, markTerminalSeen]);
+	}, [bindings, workspaceId]);
 }
 
 /**

@@ -829,6 +829,7 @@ function pushHarness(options: {
 		fence: fence.fence,
 		fireVerdict: options.fireVerdict ?? (() => "fire"),
 		isCuratedOff,
+		resolveAlertContext: null,
 		verifyOrphanResolved: options.verifyOrphanResolved ?? null,
 		now: options.now,
 		onFault: () => {},
@@ -929,6 +930,7 @@ describe("(PUSH-CURATION-GATE) the fire-time hold", () => {
 				// Exactly what the probe answers when the mirror ages out or belongs to
 				// another org: curation is not in force, so nothing is held.
 				isCuratedOff: () => state.enabled,
+				resolveAlertContext: null,
 				verifyOrphanResolved: null,
 				onFault: () => {},
 			});
@@ -1214,6 +1216,7 @@ function restartedSender(options: {
 			organizationId: ORG,
 			logger: { info: () => {}, warn: () => {}, error: () => {} },
 		}),
+		resolveAlertContext: null,
 		verifyOrphanResolved: options.verifyOrphanResolved ?? null,
 		onFault: () => {},
 		...(options.now === undefined ? {} : { now: options.now }),
@@ -1484,6 +1487,11 @@ function treeDeps(fixture: TreeFixture): ReadDeps {
 		listActiveTerminals: () => fixture.terminals,
 		listBindings: () => fixture.bindings,
 		findWorkspace: (id) => fixture.workspaces.find((w) => w.id === id) ?? null,
+		findProject: (id) => fixture.projects.find((p) => p.id === id) ?? null,
+		listTerminalIdsForWorkspace: (workspaceId) =>
+			fixture.terminals
+				.filter((t) => t.originWorkspaceId === workspaceId)
+				.map((t) => t.id),
 		findBinding: (id) =>
 			fixture.bindings.find((b) => b.terminalId === id) ?? null,
 		findTerminal: (id) => fixture.terminals.find((t) => t.id === id) ?? null,

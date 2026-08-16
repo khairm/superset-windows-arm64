@@ -284,6 +284,34 @@ export const PUSH_GONE_CORROBORATION_MS = 60_000;
  */
 export const ORPHAN_VERIFY_DEADLINE_MS = 30_000;
 export const PUSH_DATA_HARD_CAP_BYTES = 160;
+/**
+ * (ALERT-CONTEXT-NAMES) The v3 `data` cap, and the reason it is a SEPARATE
+ * constant rather than a raised `PUSH_DATA_HARD_CAP_BYTES`.
+ *
+ * 160 bytes is not a transport limit — FCM's own ceiling is 4096 — it is a LEAK
+ * TRIPWIRE. Nothing opaque can approach it, so a v1/v2 payload that suddenly
+ * grew is a payload carrying something it should not, and the assertion fires
+ * before the message leaves the process. Raising that one number to fit three
+ * plaintext names would have retired the tripwire for the two versions whose
+ * whole contract is "no free text, ever".
+ *
+ * So v1 and v2 keep 160 unchanged and v3 — the ONLY version permitted to carry
+ * names, and only project/workspace/tab names (see the waiver at the head of
+ * `push.ts`) — gets its own budget: three 256-byte names plus the opaque ids
+ * and a little JSON overhead, rounded to 2048 and still a quarter of Google's
+ * limit. A v3 payload over 2048 bytes is carrying something no name explains.
+ */
+export const PUSH_DATA_HARD_CAP_BYTES_V3 = 2048;
+/**
+ * (ALERT-CONTEXT-NAMES) UTF-8 BYTE budget for ONE name field (`pn`/`wn`/`tn`).
+ *
+ * Bytes and not characters, because the wire is bytes and the phone measures
+ * the same way (`toByteArray(Charsets.UTF_8).size`): a 64-character budget
+ * counted in UTF-16 units is 256 bytes of emoji and a silently overlong frame.
+ * Sized so all three together cannot reach the v3 data cap even at their
+ * maximum.
+ */
+export const PUSH_NAME_MAX_BYTES = 256;
 /** No natural-language string can satisfy this — that is the point (§13.1). */
 export const PUSH_VALUE_PATTERN = /^[A-Za-z0-9_-]{1,43}$/;
 export const FCM_PROJECT_ID = "metal-complex-352812";

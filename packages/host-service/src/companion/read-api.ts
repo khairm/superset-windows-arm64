@@ -189,6 +189,20 @@ export interface HostDbReader extends QuestionSourceResolver {
 	listActiveTerminals(): HostTerminalRow[];
 	listBindings(): HostBindingRow[];
 	findWorkspace(hostWorkspaceId: string): HostWorkspaceRow | null;
+	/**
+	 * (ALERT-CONTEXT-NAMES) One project by id, for the alert path's per-send
+	 * name lookup. `listProjects` remains the tree's bulk read.
+	 */
+	findProject(projectId: string): HostProjectRow | null;
+	/**
+	 * (ALERT-CONTEXT-NAMES) Every terminal id host.db places in one workspace.
+	 *
+	 * One statement for a whole snapshot's relationship check, rather than a
+	 * point lookup per terminal: the renderer syncs a workspace's entire tab
+	 * context at once, so the per-terminal form ran N queries to answer one
+	 * question about one workspace.
+	 */
+	listTerminalIdsForWorkspace(hostWorkspaceId: string): string[];
 	findBinding(hostTerminalId: string): HostBindingRow | null;
 	findTerminal(hostTerminalId: string): HostTerminalRow | null;
 	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
@@ -250,6 +264,25 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 	const projectsStmt = db.prepare(
 		"SELECT id, name, repo_path AS repoPath, worktree_base_dir AS worktreeBaseDir FROM projects",
 	);
+	/**
+	 * (ALERT-CONTEXT-NAMES) One project by id. The alert path needs exactly one
+	 * name per send and was scanning the whole `listProjects()` result to find
+	 * it, which is a full table read plus a linear search on a path that runs
+	 * per notification and per retry.
+	 */
+	const projectByIdStmt = db.prepare(
+		"SELECT id, name, repo_path AS repoPath, worktree_base_dir AS worktreeBaseDir FROM projects WHERE id = ?",
+	);
+	/**
+	 * (ALERT-CONTEXT-NAMES) Terminal ids of one workspace. Deliberately NOT
+	 * restricted to `status = 'active'`: the caller is validating a renderer's
+	 * claim about where a terminal LIVES, and a pane the user still has open on
+	 * a terminal the daemon has since ended is exactly the case whose tab title
+	 * must keep working.
+	 */
+	const terminalIdsByWorkspaceStmt = db.prepare(
+		"SELECT id FROM terminal_sessions WHERE origin_workspace_id = ?",
+	);
 	const workspacesStmt = db.prepare(
 		"SELECT id, project_id AS projectId, name, branch, worktree_path AS worktreePath, type, created_at AS createdAt FROM workspaces",
 	);
@@ -300,6 +333,12 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 		listBindings: () => bindingsStmt.all() as HostBindingRow[],
 		findWorkspace: (id) =>
 			(workspaceByIdStmt.get(id) as HostWorkspaceRow | undefined) ?? null,
+		findProject: (id) =>
+			(projectByIdStmt.get(id) as HostProjectRow | undefined) ?? null,
+		listTerminalIdsForWorkspace: (hostWorkspaceId) =>
+			(terminalIdsByWorkspaceStmt.all(hostWorkspaceId) as { id: string }[]).map(
+				(row) => row.id,
+			),
 		findTerminal: (id) =>
 			(terminalByIdStmt.get(id) as HostTerminalRow | undefined) ?? null,
 		findBinding: (id) =>

@@ -276,4 +276,66 @@ describe("v2 notification store", () => {
 			).toBe("review");
 		});
 	});
+
+	/**
+	 * (ALERT-CONTEXT-NAMES) The boolean is what decides whether a companion
+	 * retraction goes on the wire. It has to mean exactly "a green dot went
+	 * away" — not "a seen mark was recorded", which happens on every focus
+	 * change and would retract phone notifications for chats nobody opened.
+	 */
+	describe("(ALERT-CONTEXT-NAMES) markTerminalSeen reports what it removed", () => {
+		const seenSource = { type: "terminal", id: "terminal-1" } as const;
+
+		beforeEach(() => {
+			useV2NotificationStore.setState({ sources: {}, terminalSeenAt: {} });
+		});
+
+		it("returns true when it actually dropped a review entry", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(true);
+			expect(
+				useV2NotificationStore.getState().sources["terminal:terminal-1"],
+			).toBeUndefined();
+		});
+
+		it("returns false when there was nothing green to clear", () => {
+			const store = useV2NotificationStore.getState();
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(false);
+			// It still recorded the seen mark: the return value is about the DOT,
+			// not about whether the call did anything at all.
+			expect(
+				useV2NotificationStore.getState().terminalSeenAt["terminal-1"],
+			).toBe(100);
+		});
+
+		it("returns false for a source that is red or yellow, not green", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(false);
+		});
+
+		it("returns false on the SECOND call — one green, one retraction", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(true);
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(false);
+			expect(store.markTerminalSeen("terminal-1", 200)).toBe(false);
+		});
+	});
 });

@@ -8,7 +8,9 @@ import {
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
 import type { HostNotificationWorkspaceState } from "../components/HostNotificationSubscriber";
+import { reportTerminalSeen } from "./companionAlertSync";
 import { markV2AgentLifecycleTargetSeen } from "./lifecycleEvents";
+import { resolveV2AgentStatusTransition } from "./statusTransitions";
 
 /**
  * (BUS-RESYNC) Reconcile the agent-status dots against the host's durable
@@ -44,6 +46,14 @@ interface ResyncResult {
 	cleared: number;
 	seededSeen: number;
 	/**
+	 * (ALERT-CONTEXT-NAMES) Companion retractions re-sent by the restart repair
+	 * path: how many went, how many were skipped as recently repaired, and how
+	 * many the per-epoch cap deferred to a later epoch.
+	 */
+	seenRepairsSent: number;
+	seenRepairsSkipped: number;
+	seenRepairsDeferred: number;
+	/**
 	 * (GHOST-TERMINAL) Terminals the host has no session row for at all. Their
 	 * axes are left untouched — see the sweep.
 	 */
@@ -53,6 +63,126 @@ interface ResyncResult {
 	skippedNewerLocal: number;
 	/** The result arrived after its connection epoch ended; nothing was applied. */
 	discarded: boolean;
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) How many companion retractions ONE resync epoch may
+ * re-send through the restart repair path.
+ *
+ * The repair is idempotent, not free: each report is a tRPC mutation. A machine
+ * reconnecting with a long backlog of already-read terminals would otherwise
+ * turn a single socket open into a burst of them. Ten covers the realistic case
+ * (a handful of chats read while the bus was down) and turns the pathological
+ * one into a bounded trickle across epochs.
+ */
+const MAX_SEEN_REPAIRS_PER_RESYNC = 10;
+
+/**
+ * How long a REPAIRED terminal stays out of the batch.
+ *
+ * This is what makes the cap ROTATE instead of starve. Without it every epoch
+ * spent its whole budget on the same first ten rows and everything past them
+ * was never repaired at all. Skipping the recently-repaired lets each epoch
+ * move on to rows it has not covered yet, and the window is long enough that an
+ * epoch storm (a flapping socket) cannot re-send the same report over and over.
+ */
+const REPAIR_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * How long a FAILED attempt stays out of the batch - far shorter, because it is
+ * not a repair.
+ *
+ * A report the host did not consume (`accepted: false` while its bridge is
+ * still registering) or one the transport dropped has changed nothing. Filing
+ * it under the 30-minute repair cooldown would label a failure as a success and
+ * suppress the retry for half an hour. It still needs SOME cooldown, or a
+ * reconnect storm against a host with no bridge would re-send it every epoch; a
+ * minute keeps the rotation moving without that.
+ */
+const REPAIR_RETRY_COOLDOWN_MS = 60 * 1000;
+
+/** Hard ceiling on the cooldown map, independent of age. */
+const MAX_REPAIR_COOLDOWN_ENTRIES = 512;
+
+/**
+ * The clock every elapsed measurement in this file uses. Monotonic within the
+ * process, which is what the cooldowns and the session boundary both need.
+ */
+function nowMonotonic(): number {
+	return typeof performance !== "undefined" &&
+		typeof performance.now === "function"
+		? performance.now()
+		: Date.now();
+}
+
+/**
+ * `${hostUrl}:${terminalId}` -> the monotonic instant it may be attempted
+ * again. One number rather than `{at, cooldownMs}`: nothing reads the parts
+ * separately, and the comparison is what every caller actually wants.
+ */
+const repairCooldowns = new Map<string, number>();
+
+function isInRepairCooldown(key: string, nowMs: number): boolean {
+	const retryEligibleAtMs = repairCooldowns.get(key);
+	if (retryEligibleAtMs === undefined) return false;
+	// A backwards clock reading FAILS TOWARD REPAIRING: `performance.now()` is
+	// monotonic within a process, but the map outlives individual resyncs and a
+	// deadline further off than the longest cooldown can only mean something is
+	// wrong. A duplicate report is harmless; a suppressed one is not.
+	const remainingMs = retryEligibleAtMs - nowMs;
+	return remainingMs > 0 && remainingMs <= REPAIR_COOLDOWN_MS;
+}
+
+/**
+ * Record an attempt. `accepted` decides which cooldown applies — a failure must
+ * never be filed as a repair.
+ *
+ * Bounded twice: expired entries are dropped first, and whatever survives is
+ * trimmed OLDEST-FIRST to the hard cap. Age pruning alone was not a bound —
+ * 513 fresh entries all stayed.
+ */
+function recordRepairAttempt(
+	key: string,
+	nowMs: number,
+	accepted: boolean,
+): void {
+	repairCooldowns.set(
+		key,
+		nowMs + (accepted ? REPAIR_COOLDOWN_MS : REPAIR_RETRY_COOLDOWN_MS),
+	);
+	if (repairCooldowns.size <= MAX_REPAIR_COOLDOWN_ENTRIES) return;
+	for (const [entry, retryEligibleAtMs] of repairCooldowns) {
+		if (retryEligibleAtMs <= nowMs) repairCooldowns.delete(entry);
+	}
+	// Insertion-ordered, so this drops the least recently recorded first. An
+	// evicted entry costs at most one duplicate report, which the host absorbs.
+	for (const entry of repairCooldowns.keys()) {
+		if (repairCooldowns.size <= MAX_REPAIR_COOLDOWN_ENTRIES) break;
+		repairCooldowns.delete(entry);
+	}
+}
+
+/** Test seam: the cooldown map outlives a resync by design. */
+export function __resetRepairCooldownsForTest(): void {
+	repairCooldowns.clear();
+}
+
+/**
+ * Test seam: WHICH cooldown a recorded attempt got, classified rather than
+ * measured.
+ *
+ * The map stores a deadline, and a deadline minus a clock reading the test does
+ * not share is not a duration it can assert on. The only distinction that
+ * matters is the one the branch makes — a repair suppresses for far longer than
+ * a failed attempt — so it is reported directly.
+ */
+export function __peekRepairOutcomeForTest(
+	key: string,
+): "repaired" | "failed" | null {
+	const retryEligibleAtMs = repairCooldowns.get(key);
+	if (retryEligibleAtMs === undefined) return null;
+	const remainingMs = retryEligibleAtMs - nowMonotonic();
+	return remainingMs > REPAIR_RETRY_COOLDOWN_MS ? "repaired" : "failed";
 }
 
 type AgentStatusSnapshotRow =
@@ -276,6 +406,9 @@ export async function resyncAgentStatusFromHost({
 		unknownPermission: 0,
 		cleared: 0,
 		seededSeen: 0,
+		seenRepairsSent: 0,
+		seenRepairsSkipped: 0,
+		seenRepairsDeferred: 0,
 		ghostsSkipped: 0,
 		skippedUnknownWorkspace: 0,
 		skippedAlreadySeen: 0,
@@ -290,6 +423,10 @@ export async function resyncAgentStatusFromHost({
 	}
 
 	const liveTerminalIds = new Set<string>();
+	// One reading for the whole pass — the repair cooldown is about epochs, not
+	// about the microseconds between rows. Monotonic, like every other elapsed
+	// measurement in this file.
+	const nowMonotonicMs = nowMonotonic();
 
 	for (const row of rows) {
 		liveTerminalIds.add(row.terminalId);
@@ -364,13 +501,120 @@ export async function resyncAgentStatusFromHost({
 
 		const state = useV2NotificationStore.getState();
 		const seenAt = state.terminalSeenAt[row.terminalId];
-		if (
-			seenAt !== undefined &&
-			seenAt >= row.lastEventAt &&
-			state.sources[sourceKey]?.status === "review"
-		) {
+		// The user has read at least as far as this row's last event. Durable
+		// (sessionStorage) and independent of anything the replay just wrote.
+		const alreadyReadThrough =
+			seenAt !== undefined && seenAt >= row.lastEventAt;
+		// (ALERT-CONTEXT-NAMES) WOULD this row raise a green if nothing suppressed
+		// it? Asked of the PURE resolver rather than read off the store, because
+		// the store's answer is not the same question.
+		//
+		// `markV2AgentLifecycleTargetSeen` routes the replay through
+		// `targetVisible`, and a turn-end on a VISIBLE target clears the source
+		// instead of setting `review` (`statusTransitions.ts`). So for the single
+		// most common shape of this bug — the user cleared the dot, the mutation
+		// was lost, and they are still sitting on that pane when the socket
+		// reconnects — the replayed source is never `review`, and an eligibility
+		// test that read the store found nothing to repair in exactly the case the
+		// repair exists for. Asking the resolver with `targetVisible: false` gets
+		// the unconditioned fact: "this row's last event is a turn-end that ends
+		// in review".
+		//
+		// COMPUTED ONLY WHEN IT CAN MATTER. Most rows in a resync are not
+		// candidates at all — no seen mark, or a cold-start seed — and resolving a
+		// transition for every one of them is a per-row allocation on the reconnect
+		// path for an answer nothing reads.
+		//
+		// THE PENDING-PERMISSION CASE IS FED IN, not assumed away. A turn-end that
+		// arrives while a permission is still pending resolves to a CLEAR rather
+		// than a green (`wasAwaitingPermission`), and passing an empty `statuses`
+		// map would have hidden that and called it eligible. The host's snapshot
+		// already carries the fact, so it is supplied as a synthetic entry.
+		// `pendingPermission === null` means the host could not read its marker
+		// directory: unknown is not "no question", but it is also not evidence of
+		// one, and the safe direction here is the one that can only cost a
+		// harmless repeat — the host refuses to broadcast when it can prove no
+		// alert existed.
+		const repairCandidate = alreadyReadThrough && !seedColdStart;
+		const wouldRaiseReview =
+			repairCandidate &&
+			resolveV2AgentStatusTransition({
+				workspaceId: row.originWorkspaceId,
+				payload: {
+					eventType: row.lastEventType,
+					terminalId: row.terminalId,
+					occurredAt: row.lastEventAt,
+				},
+				statuses:
+					row.pendingPermission === true
+						? {
+								[sourceKey]: {
+									workspaceId: row.originWorkspaceId,
+									status: "permission" as const,
+								},
+							}
+						: {},
+				targetVisible: false,
+			}).axes?.set.includes("review") === true;
+		if (alreadyReadThrough && state.sources[sourceKey]?.status === "review") {
 			state.clearSourceAttention(source, row.originWorkspaceId);
 			result.skippedAlreadySeen++;
+		}
+
+		// (ALERT-CONTEXT-NAMES) THE RESTART REPAIR PATH, and the ONLY place other
+		// than the two user-intent sites that may report a chat as read.
+		//
+		// The user reads a chat, the phone's notification is retracted, and then
+		// the host-service restarts — which drops every alert row while the
+		// notification is long gone. Nothing is wrong yet. But the reverse also
+		// happens: the desktop was closed or the bus was dead when the alert went
+		// out, the user opened the chat, and the mutation never reached a host
+		// that was not there to hear it. The persisted seen mark is the durable
+		// record of that read, so a resync that finds a green the user has already
+		// read re-sends it.
+		//
+		// ELIGIBILITY IS THE DURABLE PAIR, not the post-replay store entry: a row
+		// whose last event WOULD raise a green, plus a seen mark that covers it.
+		// See `wouldRaiseReview` for why reading the store answered the wrong
+		// question for the commonest case.
+		//
+		// NOT seeded state: `seedColdStart` writes a seen mark for every idle
+		// terminal on a cold start, and reporting those would mass-retract on
+		// every desktop launch.
+		//
+		// SAFE TO REPEAT, and that is what makes this a repair rather than a
+		// second source of truth: the retraction is idempotent on both ends — the
+		// host keeps a `retracted` tombstone per alert id, refuses to broadcast at
+		// all when it can prove no alert ever existed, and a phone with no
+		// matching notification drops the frame.
+		//
+		// BOUNDED AND ROTATING. Every report is a tRPC mutation, so a workspace
+		// set that reconnects with a long backlog of long-read terminals must not
+		// turn one socket open into a burst of them. The cap bounds one epoch; the
+		// cooldown makes the NEXT epoch pick up where this one stopped instead of
+		// re-spending the whole budget on the same first ten rows — without it,
+		// rows past the cap starved forever. A report the host did NOT consume is
+		// recorded under a much shorter cooldown, because a failure is not a
+		// repair and must not suppress the retry for half an hour.
+		if (wouldRaiseReview) {
+			const repairKey = `${hostUrl}:${row.terminalId}`;
+			if (isInRepairCooldown(repairKey, nowMonotonicMs)) {
+				result.seenRepairsSkipped++;
+			} else if (result.seenRepairsSent < MAX_SEEN_REPAIRS_PER_RESYNC) {
+				result.seenRepairsSent++;
+				// Fire-and-forget on the resync's own timeline — the reconciliation
+				// below must not wait on a network round trip — but the cooldown is
+				// only written once the answer is known.
+				void reportTerminalSeen({
+					workspaceId: row.originWorkspaceId,
+					terminalId: row.terminalId,
+					seenThroughAt: row.lastEventAt,
+				}).then((accepted) => {
+					recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
+				});
+			} else {
+				result.seenRepairsDeferred++;
+			}
 		}
 
 		if (row.pendingPermission === null) {

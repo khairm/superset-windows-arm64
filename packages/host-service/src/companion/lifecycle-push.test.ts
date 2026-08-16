@@ -9,20 +9,28 @@ import {
 } from "./push";
 import type { WorkspaceId } from "./types";
 
-describe("lifecycle push v2", () => {
-	it("builds the exact content-free v2 shape", () => {
+describe("lifecycle push v3", () => {
+	it("builds the exact content-free shape when there is no context", () => {
 		const data = buildLifecyclePushData({
 			alertId: "a".repeat(22),
 			workspaceId: "w".repeat(22) as never,
 			kind: "e",
 			expiresAtMs: 1_700_000_000_000,
+			context: null,
 		});
+		// (ALERT-CONTEXT-NAMES) v3, and every context key present but EMPTY. The
+		// shape is what changed; "carries nothing it was not given" did not.
 		expect(data).toEqual({
-			v: "2",
+			v: "3",
 			k: "e",
 			i: "a".repeat(22),
 			w: "w".repeat(22),
 			x: "1700000000000",
+			t: "",
+			pn: "",
+			wn: "",
+			tn: "",
+			tc: "",
 		});
 		const envelope = {
 			token: "token",
@@ -42,6 +50,7 @@ describe("lifecycle push v2", () => {
 			workspaceId: "w".repeat(22) as never,
 			kind: "e",
 			expiresAtMs: 1_700_000_000_000,
+			context: null,
 		});
 		const leaked = { ...data, i: "agent finished with error" };
 		const envelope = {
@@ -66,6 +75,7 @@ describe("lifecycle push v2", () => {
 				workspaceId: "w".repeat(22) as never,
 				kind: "e",
 				expiresAtMs: 1_700_000_000_000,
+				context: null,
 			}),
 		).toThrow(PushConfigError);
 		for (const alertId of ["", "a".repeat(21), "a".repeat(23), "a+b/c=d"]) {
@@ -75,6 +85,7 @@ describe("lifecycle push v2", () => {
 					workspaceId: "w".repeat(22) as never,
 					kind: "g",
 					expiresAtMs: 1_700_000_000_000,
+					context: null,
 				}),
 			).toThrow(PushConfigError);
 		}
@@ -88,6 +99,7 @@ describe("lifecycle push v2", () => {
 					workspaceId: workspaceId as never,
 					kind: "g",
 					expiresAtMs: 1_700_000_000_000,
+					context: null,
 				}),
 			).toThrow(PushConfigError);
 		}
@@ -100,6 +112,7 @@ describe("lifecycle push v2", () => {
 				workspaceId: "w".repeat(22) as never,
 				kind: "e",
 				expiresAtMs: 1_700_000_000_000,
+				context: null,
 			}),
 		).toThrow(/^(?!.*agent finished with error).*$/);
 	});
@@ -134,6 +147,7 @@ describe("(LIFECYCLE-ALERT-RETRY) sendLifecycleAlert delivery outcome", () => {
 			fence: null,
 			fireVerdict: () => "fire",
 			isCuratedOff: () => false,
+			resolveAlertContext: null,
 			verifyOrphanResolved: null,
 			onFault: () => {},
 			now: () => 1_700_000_000_000,
@@ -145,6 +159,7 @@ describe("(LIFECYCLE-ALERT-RETRY) sendLifecycleAlert delivery outcome", () => {
 					workspaceId: "w".repeat(22) as WorkspaceId,
 					kind: "g",
 					expiresAtMs: 1_700_000_100_000,
+					context: null,
 				}),
 			).rejects.toThrow(/no registered device/);
 		} finally {

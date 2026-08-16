@@ -70,6 +70,54 @@ class TerminalRuntimeRegistryImpl {
 	 * User-configurable via settings.setTerminalParkedRuntimeCap. (SUPER-1545)
 	 */
 	private parkedRuntimeCap = DEFAULT_TERMINAL_PARKED_RUNTIME_CAP;
+	/**
+	 * (ALERT-CONTEXT-NAMES) Observers of ENTRY CREATION, notified with the exact
+	 * `(terminalId, instanceId)` pair whenever a runtime entry first appears.
+	 *
+	 * A consumer that wants to react to a terminal it does not yet own has only
+	 * two options: poll, or create the entry itself to attach a listener — and
+	 * creating it is precisely the shadow-entry defect `hasInstance` exists to
+	 * prevent. This is the read-only third option. It carries no runtime and no
+	 * title, only the fact that the pair is now addressable.
+	 */
+	private instanceListeners = new Set<
+		(terminalId: string, instanceId: string) => void
+	>();
+
+	/**
+	 * Fires when a runtime entry is CREATED for an exact pair. Returns its own
+	 * teardown. Never creates anything itself.
+	 *
+	 * Why this has to exist: the pane that owns a terminal mounts its runtime in
+	 * an effect, and effects run child-last — so a component rendered ABOVE the
+	 * router (the notification subscriber) reconciles its listeners on the same
+	 * commit, before the pane's effect has created anything. Its `hasInstance`
+	 * check is correctly false, it skips the pair, and nothing in the layout
+	 * changes afterwards to bring it back. Without a creation signal the skip is
+	 * permanent for the lifetime of that pane.
+	 */
+	onInstanceRegistered(
+		listener: (terminalId: string, instanceId: string) => void,
+	): () => void {
+		this.instanceListeners.add(listener);
+		return () => {
+			this.instanceListeners.delete(listener);
+		};
+	}
+
+	private notifyInstanceRegistered(terminalId: string, instanceId: string) {
+		for (const listener of this.instanceListeners) {
+			try {
+				listener(terminalId, instanceId);
+			} catch (error) {
+				// An observer must never be able to break terminal creation.
+				console.error(
+					"[terminal-runtime-registry] instance-registered listener threw",
+					error,
+				);
+			}
+		}
+	}
 
 	setParkedRuntimeCap(cap: number) {
 		const normalized = normalizeParkedRuntimeCap(cap);
@@ -112,6 +160,9 @@ class TerminalRuntimeRegistryImpl {
 			this.entryKeysByTerminalId.set(terminalId, keys);
 		}
 		keys.add(key);
+		// Announced AFTER the entry is fully registered, so an observer that
+		// immediately calls `hasInstance`/`onTitleChange` for this pair sees it.
+		this.notifyInstanceRegistered(terminalId, instanceId);
 		return entry;
 	}
 
@@ -587,6 +638,27 @@ class TerminalRuntimeRegistryImpl {
 
 	has(terminalId: string): boolean {
 		return this.entryKeysByTerminalId.has(terminalId);
+	}
+
+	/**
+	 * (ALERT-CONTEXT-NAMES) Does the EXACT (terminalId, instanceId) runtime
+	 * exist — without creating one?
+	 *
+	 * `has` above answers "any instance of this terminal", which is not the same
+	 * question and is dangerous to confuse with it: V2 mounts a terminal under
+	 * its PANE id (`TerminalPane` passes `pane.id` as the instance), so the
+	 * default `(terminalId, terminalId)` entry usually does NOT exist. A caller
+	 * that checked `has` and then subscribed without an instance id got
+	 * `getOrCreateEntry` to MINT that default entry — a second, empty, runtime
+	 * -less shadow of a live terminal. Two things then broke at once: the
+	 * listener was attached to an entry no title event can ever reach, and
+	 * `getPrimaryEntry` began preferring the empty shadow, so `getTitle` for
+	 * that terminal started answering `undefined` for everyone.
+	 *
+	 * Read-only by construction — there is no `getOrCreate` on this path.
+	 */
+	hasInstance(terminalId: string, instanceId: string): boolean {
+		return this.entries.has(this.getEntryKey(terminalId, instanceId));
 	}
 
 	getConnectionState(terminalId: string, instanceId?: string): ConnectionState {

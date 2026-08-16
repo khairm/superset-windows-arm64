@@ -112,6 +112,7 @@ import {
 import {
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
+	type LifecycleSeenInput,
 } from "./lifecycle-alerts";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
@@ -127,6 +128,12 @@ import {
 	type PushFireVerdict,
 	type PushSender,
 } from "./push";
+import {
+	type AlertContextSnapshotInput,
+	type AlertContextSyncResult,
+	createAlertContextRegistry,
+	type PushAlertContext,
+} from "./push-context";
 import { createPushFence, type PushFence } from "./push-fence";
 import {
 	createQuestionStore,
@@ -147,13 +154,22 @@ import {
 } from "./read-api";
 import {
 	type CompanionMirrorChange,
+	clearCompanionAlertContextSink,
 	clearCompanionBridge,
+	clearCompanionLifecycleSeenSink,
 	clearCompanionMirrorChangeSink,
 	clearCompanionPresenceStore,
+	setCompanionAlertContextSink,
 	setCompanionBridge,
+	setCompanionLifecycleSeenSink,
 	setCompanionMirrorChangeSink,
 	setCompanionPresenceStore,
 } from "./registry";
+import {
+	isSessionsProjectId,
+	placementProjectId,
+	SESSIONS_PROJECT_NAME,
+} from "./session-project";
 import { workspaceSidebarVerdict } from "./sidebar-filter";
 import type {
 	Capability,
@@ -645,6 +661,93 @@ export function createCompanionBridge(
 		});
 		// Writes through the bridge's OWN synchronous = FULL connection
 		// (COMPANION-DB-FULL) — never the shared handle, which runs at NORMAL.
+		/**
+		 * (ALERT-CONTEXT-NAMES) The renderer's tab-title snapshots, and the one
+		 * function that turns raw host ids into the three names an alert says.
+		 *
+		 * Built BEFORE the push sender, which consumes it, for the same reason the
+		 * presence store is built before it: the ordering is STATED rather than
+		 * left resting on a closure over a `const` further down.
+		 *
+		 * The registry is owned HERE rather than by either consumer, because both
+		 * consumers need the same answer — a question push and a lifecycle alert
+		 * about the same terminal must name the same tab, and two caches would be
+		 * two chances to disagree.
+		 */
+		const alertContexts = createAlertContextRegistry({ db: hostDb, logger });
+		const syncAlertContexts: (
+			input: AlertContextSnapshotInput,
+		) => AlertContextSyncResult = (input) => alertContexts.sync(input);
+		setCompanionAlertContextSink(syncAlertContexts);
+		unwind.push({
+			what: "alert context registry",
+			close: async () => {
+				clearCompanionAlertContextSink(syncAlertContexts);
+				// Nothing may survive a bridge that is no longer running: the next
+				// bridge's renderer re-syncs on its first resync epoch.
+				alertContexts.clear();
+			},
+		});
+		/**
+		 * Resolve project + workspace off host.db and the tab off the registry.
+		 *
+		 * NEVER THROWS, and every field degrades independently. A workspace row
+		 * that has been deleted, a project that cannot be read, a terminal with no
+		 * snapshot — each costs exactly its own field, and the phone renders its
+		 * generic wording for whatever is missing rather than being denied the
+		 * alert. NO NAME IS EVER LOGGED, here or downstream.
+		 *
+		 * (SESSIONS-PROJECT) A session workspace has `project_id = NULL` and would
+		 * otherwise resolve to no project name at all, dropping a whole class of
+		 * threads into generic mode. The synthetic "Sessions" label is the
+		 * authoritative answer for exactly that case.
+		 */
+		function resolveAlertContext(input: {
+			hostTerminalId: string | null;
+			hostWorkspaceId: string | null;
+		}): PushAlertContext | null {
+			const { hostTerminalId, hostWorkspaceId } = input;
+			if (hostWorkspaceId === null || hostWorkspaceId.length === 0) return null;
+			let workspaceName = "";
+			let projectName = "";
+			try {
+				const workspace = hostDb.findWorkspace(hostWorkspaceId);
+				if (workspace !== null) {
+					workspaceName = workspace.name;
+					const placement = placementProjectId(workspace.projectId);
+					projectName = isSessionsProjectId(placement)
+						? SESSIONS_PROJECT_NAME
+						: (hostDb.findProject(placement)?.name ?? "");
+				}
+			} catch (error) {
+				logger.error(
+					"could not read workspace/project names for a companion alert; it will use generic wording",
+					{ hostWorkspaceId, error },
+				);
+			}
+
+			let tabTitle = "";
+			let tabCount: number | null = null;
+			if (hostTerminalId !== null && hostTerminalId.length > 0) {
+				const tab = alertContexts.lookup(hostWorkspaceId, hostTerminalId);
+				if (tab !== null) {
+					tabTitle = tab.tabTitle;
+					tabCount = tab.tabCount;
+				}
+			}
+
+			return {
+				terminalHandle:
+					hostTerminalId !== null && hostTerminalId.length > 0
+						? deriveHandle("terminal", hostTerminalId)
+						: "",
+				projectName,
+				workspaceName,
+				tabTitle,
+				tabCount,
+			};
+		}
+
 		const pushFence = createPushFence({
 			db: companionDb,
 			log: (event) => logger.info("push fence", event),
@@ -681,6 +784,7 @@ export function createCompanionBridge(
 			// transcript verification: only `resolved` and `gone` retire the entry,
 			// and `gone` is corroborated against the projects root before it counts.
 			// Everything else means "cannot check", and the buzz stands.
+			resolveAlertContext,
 			verifyOrphanResolved: ({ transcriptPath, toolUseId }) =>
 				readOrphanTranscriptVerdict({ transcriptPath, toolUseId }),
 			onFault: (fault) => {
@@ -696,6 +800,9 @@ export function createCompanionBridge(
 			push,
 			workspaceHandle: (hostWorkspaceId): WorkspaceId =>
 				deriveHandle("workspace", hostWorkspaceId),
+			terminalHandle: (hostTerminalId): string =>
+				deriveHandle("terminal", hostTerminalId),
+			resolveContext: resolveAlertContext,
 			// (LIFECYCLE-CURATION-CACHE) The probe owns the cache, the throw-fires-
 			// anyway rule and the log-on-transition discipline that being asked once
 			// per two-second sweep for six hours requires.
@@ -713,6 +820,67 @@ export function createCompanionBridge(
 				setCompanionLifecycleSink(null);
 				lifecycleAlerts.stop();
 			},
+		});
+		/**
+		 * (ALERT-CONTEXT-NAMES) The desktop's "the user read this chat" signal.
+		 *
+		 * Registered separately from the lifecycle sink above, and it must stay
+		 * that way: that sink is the HOOK stream — one validated producer, its own
+		 * idempotency window — and threading a renderer-originated seen mark
+		 * through it would make a user's click indistinguishable from an agent
+		 * event in the one place that decides whether an alert is minted.
+		 *
+		 * THE RELATIONSHIP IS RE-DERIVED FROM host.db, exactly as the tab-context
+		 * registry does before it accepts a snapshot. The renderer is local and
+		 * authenticated, but "authenticated" is not "correct": a stale layout row
+		 * or a terminal re-parented since the mark would otherwise let one
+		 * workspace's read retract another workspace's notification, which is the
+		 * one thing a retraction must never do. A mismatch drops the signal with
+		 * an ID-ONLY log — the failure is diagnosable and no name goes near it.
+		 */
+		const lifecycleSeen = (input: LifecycleSeenInput): boolean => {
+			// `true` means THE BRIDGE RECEIVED IT, which is the only thing the
+			// renderer's `accepted` has ever meant — a signal this bridge then drops
+			// on its own evidence (below) is still a signal that reached a running
+			// bridge, and reporting it as unconsumed would have the resync retry a
+			// terminal host.db has already said does not belong to that workspace.
+			let placed = false;
+			try {
+				const row = hostDb.findTerminal(input.hostTerminalId);
+				placed =
+					row !== null && row.originWorkspaceId === input.hostWorkspaceId;
+			} catch (error) {
+				// Uncertain is NOT permission here, unlike the alert path's fail-open
+				// rules: the cost of dropping this is one notification staying up a
+				// little longer, while the cost of acting on it wrongly is retracting
+				// an alert about a chat the user has not read.
+				logger.error(
+					"could not revalidate a lifecycle seen signal against host.db; dropping it",
+					{
+						hostTerminalId: input.hostTerminalId,
+						hostWorkspaceId: input.hostWorkspaceId,
+						error,
+					},
+				);
+				return true;
+			}
+			if (!placed) {
+				logger.info(
+					"dropping a lifecycle seen signal for a terminal host.db does not place in that workspace",
+					{
+						hostTerminalId: input.hostTerminalId,
+						hostWorkspaceId: input.hostWorkspaceId,
+					},
+				);
+				return true;
+			}
+			lifecycleAlerts.markLifecycleSeen(input);
+			return true;
+		};
+		setCompanionLifecycleSeenSink(lifecycleSeen);
+		unwind.push({
+			what: "lifecycle seen sink",
+			close: async () => clearCompanionLifecycleSeenSink(lifecycleSeen),
 		});
 		/**
 		 * (TREE-FRESHNESS-GSEQ) Mint the frame that matches how a record actually
@@ -1777,9 +1945,17 @@ export function armPush(
 			questionCount: question.questions.length,
 			expiresAtMs: question.askedAtMs + PUSH_QUESTION_EXPIRY_MS,
 			// (PUSH-ARMED-ORPHAN) Persisted with the fence row so a restart can
-			// judge this push instead of discarding it. None of it goes to FCM.
+			// judge this push instead of discarding it.
 			// `transcriptPath` is `""` when host.db could not derive one, which the
 			// fence stores as null — "cannot check", never "resolved".
+			//
+			// (ALERT-CONTEXT-NAMES) The two host ids are ALSO read at fire time to
+			// resolve the names the notification carries, so "none of it goes to
+			// FCM" — which this comment used to say — is no longer true of them.
+			// What still holds is the rule that matters: the ids themselves never
+			// cross the wire. They are looked up locally, and only the resulting
+			// project/workspace/tab names travel, under the waiver at the head of
+			// `push.ts`. `transcriptPath` and `toolUseId` remain purely local.
 			hostTerminalId: question.hostTerminalId,
 			hostWorkspaceId: question.hostWorkspaceId,
 			transcriptPath: question.transcriptPath,

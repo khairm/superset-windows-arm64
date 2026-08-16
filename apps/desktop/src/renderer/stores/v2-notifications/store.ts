@@ -137,7 +137,14 @@ export interface V2NotificationState {
 	// Marks a terminal seen (monotonic, host clock) AND clears the fork review
 	// axis for that terminal, so the binding-model per-pane focus-clear also
 	// clears the store's green dot.
-	markTerminalSeen: (terminalId: string, at: number) => void;
+	//
+	// (ALERT-CONTEXT-NAMES) RETURNS WHETHER IT ACTUALLY REMOVED A `review`
+	// ENTRY. The companion retraction hangs off that exact fact and off nothing
+	// else: "the green dot went away" is the evidence that the ready-for-review
+	// notification on the phone is stale, while a seen mark that bumped only the
+	// timestamp — the common case, since these fire on every focus change — is
+	// evidence of nothing at all and must not put a `c` frame on the wire.
+	markTerminalSeen: (terminalId: string, at: number) => boolean;
 	pruneTerminalSeen: (terminalId: string) => void;
 	// (AY) Separate shell-running axis (see V2ShellRunningEntry). Keyed by
 	// terminalId. Never merged into `sources`.
@@ -248,12 +255,14 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					});
 				},
 				markTerminalSeen: (terminalId, at) => {
+					// (ALERT-CONTEXT-NAMES) Captured from inside the updater and read
+					// after it, because zustand's `set` is synchronous — the flag is
+					// decided by the same pass that decides the state, so the two can
+					// never disagree about whether a review entry was actually dropped.
+					let removedReview = false;
 					set((state) => {
 						const prev = state.terminalSeenAt[terminalId];
-						// Monotonic: a late event must not roll the seen mark back.
 						const bumpSeen = prev === undefined || prev < at;
-						// Bridge to the fork store: clearing "seen" also clears the
-						// terminal's review (green) axis, matching clearSourceAttention.
 						const sourceKey = getV2NotificationSourceKey(
 							getV2TerminalNotificationSource(terminalId),
 						);
@@ -262,6 +271,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						if (entry && entry.status === "review") {
 							const { [sourceKey]: _removed, ...rest } = state.sources;
 							sources = rest;
+							removedReview = true;
 						}
 						if (!bumpSeen && sources === state.sources) return state;
 						const next: Partial<V2NotificationState> = {};
@@ -273,6 +283,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						if (sources !== state.sources) next.sources = sources;
 						return next;
 					});
+					return removedReview;
 				},
 				pruneTerminalSeen: (terminalId) => {
 					set((state) => {

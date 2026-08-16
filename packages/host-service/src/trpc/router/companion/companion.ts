@@ -57,9 +57,17 @@ import {
 	resolveProvenVersionStatus,
 } from "../../../companion/proven-version";
 import {
+	ALERT_CONTEXT_MAX_TAB_COUNT,
+	ALERT_CONTEXT_MAX_TERMINALS_PER_WORKSPACE,
+	ALERT_CONTEXT_MAX_TITLE_CHARS,
+	type AlertContextSyncOutcome,
+} from "../../../companion/push-context";
+import {
 	type CompanionBridgeStatus,
 	getCompanionBridge,
 	readCompanionBridgeStatus,
+	recordCompanionAlertContexts,
+	recordCompanionLifecycleSeen,
 	recordCompanionPresenceBeacon,
 } from "../../../companion/registry";
 import { protectedProcedure, router } from "../../index";
@@ -220,6 +228,45 @@ export interface CompanionGateStatus {
 	pickerContract: ProvenVersionStatus;
 }
 
+/**
+ * (ALERT-CONTEXT-NAMES) One workspace's tab context, validated at the boundary.
+ *
+ * Every bound is stated here rather than trusted from the renderer, and the
+ * caps are the registry's own constants rather than second copies of them:
+ * `limits.ts`'s lesson is that a literal duplicated at a boundary drifts from
+ * the thing it is supposed to describe.
+ *
+ * `tabTitle` is OPTIONAL and nullable because "no title resolved" is an
+ * ordinary answer — a terminal whose program has set none, a pane the renderer
+ * cannot name — and turning it into a 400 would cost the whole snapshot, and
+ * therefore every OTHER tab's title, over one unnameable pane.
+ */
+const alertContextsInput = z.object({
+	workspaceId: z.string().min(1).max(128),
+	tabCount: z.number().int().min(0).max(ALERT_CONTEXT_MAX_TAB_COUNT),
+	terminals: z
+		.array(
+			z.object({
+				terminalId: z.string().min(1).max(128),
+				tabTitle: z.string().max(ALERT_CONTEXT_MAX_TITLE_CHARS).nullish(),
+			}),
+		)
+		.max(ALERT_CONTEXT_MAX_TERMINALS_PER_WORKSPACE),
+});
+
+/**
+ * (ALERT-CONTEXT-NAMES) "The user read this chat." `seenThroughAt` is the
+ * binding's `lastEventAt` — the HOST's clock, never the renderer's — because it
+ * is hashed into the alert id the retraction has to name. A renderer timestamp
+ * would miss by whatever the two clocks disagree by, which across a relay is
+ * routinely seconds, and a missed id retracts nothing.
+ */
+const lifecycleSeenInput = z.object({
+	workspaceId: z.string().min(1).max(128),
+	terminalId: z.string().min(1).max(128),
+	seenThroughAt: z.number().int().positive(),
+});
+
 export const companionRouter = router({
 	/**
 	 * Whether the feature is on, and whether it actually came up. A UI must be
@@ -278,6 +325,75 @@ export const companionRouter = router({
 		.input(presenceBeaconInput)
 		.mutation(({ input }): { accepted: boolean } => {
 			return { accepted: recordCompanionPresenceBeacon(input) };
+		}),
+
+	/**
+	 * (ALERT-CONTEXT-NAMES) One hydrated workspace's tab context, from the
+	 * renderer — the only process that knows what a tab is called.
+	 *
+	 * DESKTOP-ONLY BY CONSTRUCTION, like everything else on this router: it sits
+	 * behind `protectedProcedure`, and nothing on the phone's sealed path can
+	 * reach it. That matters more here than for the reads beside it, because this
+	 * is the one input that decides what TEXT a notification carries.
+	 *
+	 * Like `gate` and `presenceBeacon`, it NEVER throws for the off states. It is
+	 * driven by ordinary UI events on every machine, and bridge-off is the normal
+	 * state for most of them: `accepted: false` is the answer, not an error.
+	 */
+	syncAlertContexts: protectedProcedure.input(alertContextsInput).mutation(
+		({
+			input,
+		}): {
+			accepted: boolean;
+			outcome: AlertContextSyncOutcome | null;
+			terminals: number;
+		} => {
+			// APPLIED SYNCHRONOUSLY, and that is the whole ordering story: the
+			// registry's replace does no I/O and never yields, so two snapshots for
+			// one workspace cannot interleave and the one whose handler runs second
+			// is the one that stands. An earlier revision queued these on a
+			// per-workspace promise chain, which bought nothing over that and only
+			// added a map to keep bounded.
+			const applied = recordCompanionAlertContexts({
+				hostWorkspaceId: input.workspaceId,
+				tabCount: input.tabCount,
+				terminals: input.terminals.map((terminal) => ({
+					terminalId: terminal.terminalId,
+					tabTitle: terminal.tabTitle ?? null,
+				})),
+			});
+			return {
+				accepted: applied !== null,
+				outcome: applied?.outcome ?? null,
+				terminals: applied?.terminals ?? 0,
+			};
+		},
+	),
+
+	/**
+	 * (ALERT-CONTEXT-NAMES) The user opened the chat on the desktop, so the
+	 * ready-for-review notification on their phone and watch is stale.
+	 *
+	 * Fired ONLY from the two user-intent sites in the renderer (focus-clear and
+	 * the sidebar mark-read), never from the store's resync seeding — a cold
+	 * start that seeded seen marks for every idle terminal would otherwise
+	 * mass-retract on every desktop launch. The renderer owns that rule; this is
+	 * the boundary that validates the shape.
+	 *
+	 * Also never throws for the off states, and for the same reason: the dot has
+	 * already cleared locally by the time this runs, and a failed retraction must
+	 * not present to the user as a failed mark-read.
+	 */
+	markLifecycleSeen: protectedProcedure
+		.input(lifecycleSeenInput)
+		.mutation(({ input }): { accepted: boolean } => {
+			return {
+				accepted: recordCompanionLifecycleSeen({
+					hostTerminalId: input.terminalId,
+					hostWorkspaceId: input.workspaceId,
+					seenThroughAt: input.seenThroughAt,
+				}),
+			};
 		}),
 
 	/**

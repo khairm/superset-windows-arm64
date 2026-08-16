@@ -83,6 +83,11 @@ function treeDeps(fixture: TreeFixture): ReadDeps {
 		listActiveTerminals: () => fixture.terminals,
 		listBindings: () => fixture.bindings,
 		findWorkspace: (id) => fixture.workspaces.find((w) => w.id === id) ?? null,
+		findProject: (id) => fixture.projects.find((p) => p.id === id) ?? null,
+		listTerminalIdsForWorkspace: (workspaceId) =>
+			fixture.terminals
+				.filter((t) => t.originWorkspaceId === workspaceId)
+				.map((t) => t.id),
 		findBinding: (id) =>
 			fixture.bindings.find((b) => b.terminalId === id) ?? null,
 		findTerminal: (id) => fixture.terminals.find((t) => t.id === id) ?? null,

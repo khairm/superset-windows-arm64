@@ -1367,11 +1367,100 @@ export interface PushDataV2 {
 }
 
 /**
+ * (ALERT-CONTEXT-NAMES) §13.5 — v3, the version that NAMES THE CHAT.
+ *
+ * THE PRIVACY RULE MOVED, IT DID NOT DISSOLVE. Three fields — `pn` (project),
+ * `wn` (workspace), `tn` (tab) — carry PLAINTEXT names under an explicit owner
+ * waiver recorded 2026-08-16. Nothing else changed: question text, option text,
+ * file paths, branch names, error messages and every other free string remain
+ * BANNED, and `assertPushDataSafe` still throws on any key outside the exempt
+ * three that fails the opaque-id pattern. See the doctrine at the head of
+ * `push.ts` for the waiver's exact scope.
+ *
+ * CLOSED PER (VERSION, KIND), and EVERY KEY IS ALWAYS PRESENT. `""` is how a
+ * context field says "absent" — an optional key would turn one exact contract
+ * into a family of shapes that neither `assertClosedKeySet` here nor the
+ * phone's closed-set parser could check, which is the same argument that made
+ * v1 and v2 separate shapes rather than one widened one.
+ *
+ * v1 AND v2 ARE FROZEN. Every already-installed client parses them exactly as
+ * written above; v3 is additive and coexists.
+ */
+export interface PushDataV3Question {
+	/** payload version, `"3"`. */
+	v: "3";
+	/** `"q"` = a question is pending and nobody has dealt with it. */
+	k: "q";
+	/** questionId, 22 chars, opaque. */
+	i: QuestionId;
+	/** workspaceId, 22 chars, opaque. */
+	w: WorkspaceId;
+	/** number of questions in the prompt, `"1"`..`"99"`. */
+	n: string;
+	/** expiry, 13 digits. */
+	x: string;
+	/**
+	 * Terminal handle, 22 chars opaque, or `""`. Empty is a REAL case rather
+	 * than a defect: a fence row written before this feature carries a null
+	 * terminal id, and a reconstructed push must still be able to buzz.
+	 */
+	t: string;
+	/** Project name, plaintext UTF-8, <= `PUSH_NAME_MAX_BYTES`, or `""`. */
+	pn: string;
+	/** Workspace name, plaintext UTF-8, <= `PUSH_NAME_MAX_BYTES`, or `""`. */
+	wn: string;
+	/** Tab title, plaintext UTF-8, <= `PUSH_NAME_MAX_BYTES`, or `""`. */
+	tn: string;
+	/** How many tabs the workspace has: decimal digits, or `""` when unknown. */
+	tc: string;
+}
+
+/** (ALERT-CONTEXT-NAMES) §13.5 — the named lifecycle alert. No `n`, as in v2. */
+export interface PushDataV3Lifecycle {
+	v: "3";
+	/** `"g"` = a work cycle ended cleanly, `"e"` = the terminal agent failed. */
+	k: "g" | "e";
+	/** lifecycle alert id, 22 chars, opaque and deterministic. */
+	i: string;
+	w: WorkspaceId;
+	x: string;
+	t: string;
+	pn: string;
+	wn: string;
+	tn: string;
+	tc: string;
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) §13.5 — `k: "c"`, retract a lifecycle alert.
+ *
+ * NO NAMES, and that is a contract rather than an omission: a retraction names
+ * a notification the phone is already holding, so every name it could carry is
+ * a name the phone already has. Sending them again would widen the waiver's
+ * blast radius for nothing.
+ */
+export interface PushDataV3LifecycleRetract {
+	v: "3";
+	k: "c";
+	/** The alert id being retracted — the same `i` its `g`/`e` carried. */
+	i: string;
+	w: WorkspaceId;
+	/** The RETRACTION's own expiry (see `RETRACT_TTL_MS`), 13 digits. */
+	x: string;
+	t: string;
+}
+
+/**
  * Everything that may cross the FCM boundary. A union, not a widened interface:
  * the version discriminates and each member is closed, so no edit can add a key
  * to one shape without declaring which version it belongs to.
  */
-export type PushData = PushDataV1 | PushDataV2;
+export type PushData =
+	| PushDataV1
+	| PushDataV2
+	| PushDataV3Question
+	| PushDataV3Lifecycle
+	| PushDataV3LifecycleRetract;
 
 /** Data-only. `message.notification` MUST be absent (§13.1). */
 export interface PushEnvelope {

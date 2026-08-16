@@ -158,7 +158,9 @@ export function V2NotificationController() {
 			if (!data?.workspaceId || !data.terminalId) {
 				ndots({
 					event: "electron_agent_lifecycle_drop",
-					reason: !data?.workspaceId ? "missing-workspaceId" : "missing-terminalId",
+					reason: !data?.workspaceId
+						? "missing-workspaceId"
+						: "missing-terminalId",
 					eventId,
 					sessionId: data?.sessionId,
 					terminalId: data?.terminalId,

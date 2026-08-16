@@ -1,17 +1,35 @@
 /**
  * (COMPANION-BRIDGE) — FCM push: registration, the delayed timer, retraction (§7.6, §13).
  *
- * HARD CONSTRAINT OF THE FORMAT: no question text, no option text, no workspace
- * name, no branch name, no project name, no file path and no free text of any
- * kind may EVER appear in an FCM message. Google is not in the trust boundary.
- * This is not a guideline — `assertPushDataSafe` THROWS, it never logs and
- * continues.
+ * HARD CONSTRAINT OF THE FORMAT, AS AMENDED 2026-08-16. No question text, no
+ * option text, no branch name, no file path, no error message and no free text
+ * of any kind may EVER appear in an FCM message. Google is not in the trust
+ * boundary. This is not a guideline — `assertPushDataSafe` THROWS, it never logs
+ * and continues.
+ *
+ * (ALERT-CONTEXT-NAMES) THE ONE EXEMPTION, AND ITS EXACT SCOPE. On 2026-08-16
+ * the owner waived Google-visibility for THREE names and no others: the PROJECT
+ * name, the WORKSPACE name and the TAB title, carried plaintext in the v3 keys
+ * `pn`, `wn` and `tn`. The waiver was recorded twice — verbatim ("i dont care if
+ * google sees it") and re-confirmed through an explicit question — and it is a
+ * decision about USEFULNESS: an alert that cannot say WHICH chat finished is an
+ * alert the user has to open the laptop to act on, which is the whole thing the
+ * companion exists to avoid. The notification must also be self-contained, so
+ * the names travel with it rather than being fetched from a PC that may be
+ * asleep when it lands.
+ *
+ * NOTHING ELSE MOVED. The exempt list is exactly {pn, wn, tn}, it is pinned by
+ * a test that enumerates it, and every other key on every version still has to
+ * match the opaque-id pattern or the send throws. v1 and v2 are FROZEN and
+ * carry no names at all; only v3 may. A later edit that wants a fourth name
+ * changes this paragraph, that test, and the owner's mind — in that order.
  *
  * The message is data-only. `message.notification` must be absent: setting it
- * would have Android render text supplied through Google's infrastructure,
- * breaking the constraint by construction. `assertPushDataSafe` enforces a
- * CLOSED key set on the envelope as well as on `data`, so no later edit can add
- * an `apns`/`webpush`/`notification` block carrying text without failing.
+ * would have Android render text supplied through Google's infrastructure —
+ * text this process never chose — so the constraint holds by construction.
+ * `assertPushDataSafe` enforces a CLOSED key set on the envelope as well as on
+ * `data`, so no later edit can add an `apns`/`webpush`/`notification` block
+ * carrying text without failing.
  *
  * PRESENCE IS THE FEATURE, AND IT REPLACED A DELAY. A red does not wait three
  * minutes any more; it pushes IMMEDIATELY when the user is away and NEVER while
@@ -124,15 +142,19 @@ import {
 	FCM_PROJECT_ID,
 	ORPHAN_VERIFY_DEADLINE_MS,
 	PUSH_DATA_HARD_CAP_BYTES,
+	PUSH_DATA_HARD_CAP_BYTES_V3,
 	PUSH_GONE_CORROBORATION_MS,
+	PUSH_NAME_MAX_BYTES,
 	PUSH_TTL_MS,
 	PUSH_VALUE_PATTERN,
 	RETRACT_TTL_MS,
 } from "./config";
 import { base64UrlEncode, sleep } from "./crypto";
 import type { DeviceStore } from "./device-store";
+import { findUnpairedSurrogate } from "./keystrokes";
 import { MAX_APP_VERSION_CHARS } from "./limits";
 import type { PresenceStore, PresenceVerdict } from "./presence";
+import type { PushAlertContext } from "./push-context";
 import type { PushFence, PushFenceRecord } from "./push-fence";
 import type { OrphanTranscriptVerdict } from "./question-store";
 import type {
@@ -286,7 +308,7 @@ export class PushAuthError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
- * §13.1 / §13.4 — the closed key set PER VERSION, keyed by `v`.
+ * §13.1 / §13.4 / §13.5 — the closed key set PER (VERSION, KIND).
  *
  * (LIFECYCLE-ALERT) Two shapes, never one widened shape. v1 carries `n` (how
  * many questions are pending) and v2 does not, because a lifecycle alert is not
@@ -294,18 +316,170 @@ export class PushAuthError extends Error {
  * two exact contracts into one vague one that neither the Android client nor
  * this assertion could check. `v` is read first and decides which set applies,
  * so v1 stays FROZEN as every already-installed client parses it.
+ *
+ * (ALERT-CONTEXT-NAMES) v3 needed a second axis. Its three kinds are not one
+ * shape: an alert carries names, a retraction carries none (the phone already
+ * holds them), and a question additionally carries `n`. Keying by version alone
+ * would have forced the union of all three onto every kind and made `n` and the
+ * name fields meaningless-but-present on a retraction — exactly the vagueness
+ * the per-version split was introduced to end. v1 and v2 keep their single
+ * per-version set, expressed here as every kind mapping to the same array, so
+ * NOTHING about their validation changed.
  */
-const PUSH_DATA_KEYS_BY_VERSION: Readonly<Record<string, readonly string[]>> = {
-	"1": ["v", "k", "i", "w", "n", "x"],
-	"2": ["v", "k", "i", "w", "x"],
+const PUSH_DATA_KEYS_BY_VERSION_KIND: Readonly<
+	Record<string, Readonly<Record<string, readonly string[]>>>
+> = {
+	"1": {
+		q: ["v", "k", "i", "w", "n", "x"],
+		r: ["v", "k", "i", "w", "n", "x"],
+	},
+	"2": {
+		g: ["v", "k", "i", "w", "x"],
+		e: ["v", "k", "i", "w", "x"],
+	},
+	"3": {
+		q: ["v", "k", "i", "w", "n", "x", "t", "pn", "wn", "tn", "tc"],
+		g: ["v", "k", "i", "w", "x", "t", "pn", "wn", "tn", "tc"],
+		e: ["v", "k", "i", "w", "x", "t", "pn", "wn", "tn", "tc"],
+		c: ["v", "k", "i", "w", "x", "t"],
+	},
 };
-/** The kinds each version may carry. Same reasoning: closed, per version. */
-const PUSH_KINDS_BY_VERSION: Readonly<Record<string, readonly string[]>> = {
-	"1": ["q", "r"],
-	"2": ["g", "e"],
+
+/**
+ * (ALERT-CONTEXT-NAMES) What each key's VALUE may be.
+ *
+ *  - `opaque` — the original rule: `/^[A-Za-z0-9_-]{1,43}$/`, which no
+ *    natural-language string satisfies. Everything on v1 and v2 is this, and
+ *    that is why those two versions cannot leak text by construction.
+ *  - `opaque-or-empty` — the same, plus `""` for "absent". v3 keys only.
+ *  - `digits-or-empty` — a decimal count, or `""`. `tc` only.
+ *  - `name` — THE EXEMPTION. Plaintext UTF-8, bounded in BYTES, free of
+ *    controls and line separators. `pn`/`wn`/`tn` only, and this list is
+ *    enumerated by a test so widening it is a deliberate, visible act.
+ *
+ * ONE TABLE, NOT ONE PER VERSION. A key means the same thing wherever it
+ * appears — `i` is an opaque id on every version, `n` a count on both that
+ * carry it — so a per-version table was three copies of one fact, and the only
+ * thing it could express that this cannot is a key whose rule CHANGES between
+ * versions, which would be a redefinition rather than a version. What actually
+ * keeps v1 and v2 free of names is not this table but
+ * `PUSH_DATA_KEYS_BY_VERSION_KIND`: `pn`/`wn`/`tn` are not in their key sets, so
+ * a v1 frame carrying one is refused as an unexpected key before any value rule
+ * is consulted.
+ */
+type PushValueRule = "opaque" | "opaque-or-empty" | "digits-or-empty" | "name";
+
+const PUSH_VALUE_RULES: Readonly<Record<string, PushValueRule>> = {
+	v: "opaque",
+	k: "opaque",
+	i: "opaque",
+	w: "opaque",
+	n: "opaque",
+	x: "opaque",
+	t: "opaque-or-empty",
+	pn: "name",
+	wn: "name",
+	tn: "name",
+	tc: "digits-or-empty",
 };
+
+/**
+ * (ALERT-CONTEXT-NAMES) The ONLY keys any version may carry plaintext in.
+ *
+ * Exported and enumerated by a test on purpose: this list IS the blast radius
+ * of the 2026-08-16 waiver, and a fourth entry appearing in it must fail a test
+ * rather than ship quietly.
+ */
+export const PUSH_NAME_EXEMPT_KEYS: readonly string[] = ["pn", "wn", "tn"];
+
+/** Per-version `data` byte cap. v1/v2 keep the 160-byte leak tripwire intact. */
+const PUSH_DATA_CAP_BY_VERSION: Readonly<Record<string, number>> = {
+	"1": PUSH_DATA_HARD_CAP_BYTES,
+	"2": PUSH_DATA_HARD_CAP_BYTES,
+	"3": PUSH_DATA_HARD_CAP_BYTES_V3,
+};
+
+const DIGITS_PATTERN = /^[0-9]+$/;
+/**
+ * C0 (incl. every newline), DEL + C1, and the two Unicode line/paragraph
+ * separators. Android renders U+2028 as a line break inside a notification
+ * title, so a tab title containing one would silently restructure the layout.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+const FORBIDDEN_NAME_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+
+const ELLIPSIS = "…";
+const ELLIPSIS_BYTES = Buffer.byteLength(ELLIPSIS, "utf8");
+
 const PUSH_ENVELOPE_KEYS = ["token", "android", "data"] as const;
 const PUSH_ANDROID_KEYS = ["priority", "ttl", "collapse_key"] as const;
+
+/**
+ * (ALERT-CONTEXT-NAMES) Make ANY string safe to put in `pn`/`wn`/`tn`.
+ *
+ * TOTAL BY CONSTRUCTION — it takes `unknown`, it never throws, and there is no
+ * input for which it has no answer. That is a requirement rather than a
+ * convenience: this runs on the send path of an alert about a blocked or
+ * finished agent, and a name that could fail a send would let a workspace
+ * called something unexpected silence the notification entirely. Anything it
+ * cannot use becomes `""`, which the phone reads as "no context" and answers
+ * with its generic strings.
+ *
+ * BYTES, NOT CHARACTERS, AND CODE POINTS, NOT UNITS. The budget is UTF-8 bytes
+ * because that is what the wire and the phone both measure; the truncation
+ * walks CODE POINTS because `slice` on a JS string cuts UTF-16 units and can
+ * split a surrogate pair, producing a lone surrogate that is not valid UTF-8 at
+ * all — an emoji in a tab title is not exotic. Three bytes are reserved for the
+ * ellipsis so a truncated name is visibly truncated and still inside budget.
+ *
+ * A LONE SURROGATE DEGRADES THE WHOLE FIELD, IT IS NOT STRIPPED OUT, and that
+ * asymmetry with the control characters above is not an inconsistency — it is
+ * the phone's rule, copied. `AlertContext.name()` refuses a name containing one
+ * outright (`isRenderable`), so a host that stripped the half and sent the rest
+ * would send a name the phone accepts while the two ends disagree about what
+ * the name IS. Matching the stricter side means the two implementations can
+ * never render different text for the same input. Control characters are
+ * different only because the host strips them BEFORE sending, so the phone
+ * never sees a name containing one.
+ *
+ * The well-formedness test is `findUnpairedSurrogate` from `keystrokes.ts`,
+ * shared rather than re-derived: its own doc forbids a second drifting copy,
+ * and it already encodes the exact unit-by-unit walk this needs.
+ *
+ * It never logs. Not the input, not the output, not a length: this function
+ * exists at the boundary where a value stops being private, and a diagnostic
+ * that echoed one would defeat every other rule in this module.
+ */
+export function sanitizePushName(value: unknown): string {
+	if (typeof value !== "string" || value.length === 0) return "";
+	// Checked on the RAW value, before anything is stripped or truncated, for
+	// the same reason the phone checks the raw value it received: the defect is
+	// a property of the string as it stands, and later edits could only hide it.
+	if (findUnpairedSurrogate(value) !== null) return "";
+
+	let stripped = "";
+	for (const codePoint of value) {
+		if (FORBIDDEN_NAME_CHARS.test(codePoint)) continue;
+		stripped += codePoint;
+	}
+	const trimmed = stripped.trim();
+	if (trimmed.length === 0) return "";
+	if (Buffer.byteLength(trimmed, "utf8") <= PUSH_NAME_MAX_BYTES) return trimmed;
+
+	const budget = PUSH_NAME_MAX_BYTES - ELLIPSIS_BYTES;
+	let kept = "";
+	let used = 0;
+	for (const codePoint of trimmed) {
+		const size = Buffer.byteLength(codePoint, "utf8");
+		if (used + size > budget) break;
+		kept += codePoint;
+		used += size;
+	}
+	// A name that is entirely one over-long code point still has to say
+	// something, and the ellipsis alone is inside budget.
+	const head = kept.trimEnd();
+	return head.length === 0 ? ELLIPSIS : `${head}${ELLIPSIS}`;
+}
 
 function assertClosedKeySet(
 	value: object,
@@ -329,18 +503,44 @@ function assertClosedKeySet(
 }
 
 /**
+ * Does one value satisfy its rule? The VALUE IS NEVER RETURNED OR ECHOED — the
+ * caller only learns yes or no, because when the answer is no the value is
+ * exactly the thing that must not leave the process.
+ */
+function valueSatisfiesRule(value: string, rule: PushValueRule): boolean {
+	switch (rule) {
+		case "opaque":
+			return PUSH_VALUE_PATTERN.test(value);
+		case "opaque-or-empty":
+			return value.length === 0 || PUSH_VALUE_PATTERN.test(value);
+		case "digits-or-empty":
+			return value.length === 0 || DIGITS_PATTERN.test(value);
+		case "name":
+			return (
+				!FORBIDDEN_NAME_CHARS.test(value) &&
+				Buffer.byteLength(value, "utf8") <= PUSH_NAME_MAX_BYTES
+			);
+	}
+}
+
+/**
  * §13.1 runtime assertions, each a THROW, never a log-and-continue:
- *  - `data.v` names a version this build knows, and the `data` key set is
- *    EXACTLY that version's — an unexpected key is a bug;
- *  - every value matches /^[A-Za-z0-9_-]{1,43}$/, which no natural-language
- *    string satisfies, so a leak cannot be introduced by a later edit without
- *    failing immediately;
- *  - serialised `data` <= 160 bytes (and the whole message <= Google's 4096);
+ *  - `data.v` names a version this build knows AND `data.k` a kind that version
+ *    may carry, and the `data` key set is EXACTLY that (version, kind)'s — an
+ *    unexpected key is a bug;
+ *  - every value satisfies its version's rule for that key: opaque by default,
+ *    which no natural-language string satisfies, so a leak cannot be introduced
+ *    by a later edit without failing immediately. (ALERT-CONTEXT-NAMES) The
+ *    three exempt v3 name keys are bounded in BYTES and refused any control
+ *    character instead — see `PUSH_NAME_EXEMPT_KEYS` and the doctrine above;
+ *  - serialised `data` is inside its VERSION's cap (v1/v2 160 bytes, the leak
+ *    tripwire; v3 2048), and the whole message inside Google's 4096;
  *  - `message.notification` is absent — enforced by a CLOSED envelope key set,
  *    which also rules out `apns`, `webpush` and `fcm_options`;
- *  - `collapse_key` is the questionId (v1) or the alert id (v2), so a retraction
- *    replaces an original push that is still queued undelivered at FCM (§13.3),
- *    and two alerts about the same thing can never both stand.
+ *  - `collapse_key` is `data.i` — the questionId on a question, the alert id on
+ *    a lifecycle alert — so a retraction replaces an original push that is still
+ *    queued undelivered at FCM (§13.3), and two messages about the same subject
+ *    can never both stand.
  */
 export function assertPushDataSafe(
 	data: PushData,
@@ -349,8 +549,8 @@ export function assertPushDataSafe(
 	// `v` is read BEFORE the key-set check, because it is what SELECTS the key
 	// set. An unknown version cannot be validated at all and must never be sent:
 	// the client would not know how to read it either.
-	// `data.v` is declared as `"1" | "2"`, but this is the boundary that must hold
-	// for a value the type system only THINKS it knows — read it through `unknown`
+	// `data.v` is a declared union, but this is the boundary that must hold for a
+	// value the type system only THINKS it knows — read it through `unknown`
 	// rather than casting the union to an index-signature type it is not.
 	const version: unknown = data.v;
 	if (typeof version !== "string") {
@@ -358,15 +558,25 @@ export function assertPushDataSafe(
 			`push data.v must be a string, got ${typeof version}`,
 		);
 	}
-	const dataKeys = PUSH_DATA_KEYS_BY_VERSION[version];
-	const kinds = PUSH_KINDS_BY_VERSION[version];
-	if (dataKeys === undefined || kinds === undefined) {
+	const keysByKind = PUSH_DATA_KEYS_BY_VERSION_KIND[version];
+	const cap = PUSH_DATA_CAP_BY_VERSION[version];
+	if (keysByKind === undefined || cap === undefined) {
 		throw new PushConfigError(
 			`push data.v is "${version}", which this build has no closed key set for — refusing to send`,
 		);
 	}
+	// (ALERT-CONTEXT-NAMES) `k` selects the key set on v3, so it is read second
+	// and before anything else — an unknown kind has no shape to check against.
+	const kind: unknown = data.k;
+	const kinds = Object.keys(keysByKind).sort();
+	if (typeof kind !== "string" || keysByKind[kind] === undefined) {
+		throw new PushConfigError(
+			`push data.k must be one of ${kinds.map((k) => `"${k}"`).join(" or ")} for v${version}`,
+		);
+	}
+	const dataKeys = keysByKind[kind];
 
-	assertClosedKeySet(data, dataKeys, `push data (v${version})`);
+	assertClosedKeySet(data, dataKeys, `push data (v${version} k=${kind})`);
 	assertClosedKeySet(envelope, PUSH_ENVELOPE_KEYS, "push envelope");
 	assertClosedKeySet(envelope.android, PUSH_ANDROID_KEYS, "push android block");
 
@@ -378,26 +588,33 @@ export function assertPushDataSafe(
 				`push data.${key} must be a string, got ${typeof value}`,
 			);
 		}
-		if (!PUSH_VALUE_PATTERN.test(value)) {
+		const rule = PUSH_VALUE_RULES[key];
+		if (rule === undefined) {
+			throw new PushConfigError(
+				`push data.${key} has no value rule — refusing to send`,
+			);
+		}
+		if (rule === "name" && !PUSH_NAME_EXEMPT_KEYS.includes(key)) {
+			// Belt and braces on the waiver's blast radius: a key can only be
+			// plaintext if BOTH tables agree it may be.
+			throw new PushConfigError(
+				`push data.${key} claims the plaintext-name rule but is not in the exempt key set — refusing to send`,
+			);
+		}
+		if (!valueSatisfiesRule(value, rule)) {
 			// The value is NOT echoed: if the assertion is firing, the value is
 			// exactly the thing that must not leave the process.
 			throw new PushConfigError(
-				`push data.${key} does not match the opaque-id pattern — refusing to send (possible text leak)`,
+				`push data.${key} does not satisfy the "${rule}" rule for v${version} — refusing to send (possible text leak)`,
 			);
 		}
 	}
 
-	if (!kinds.includes(data.k)) {
-		throw new PushConfigError(
-			`push data.k must be one of ${kinds.map((kind) => `"${kind}"`).join(" or ")} for v${version}`,
-		);
-	}
-
 	const serialisedData = JSON.stringify(data);
 	const dataBytes = Buffer.byteLength(serialisedData, "utf8");
-	if (dataBytes > PUSH_DATA_HARD_CAP_BYTES) {
+	if (dataBytes > cap) {
 		throw new PushConfigError(
-			`push data is ${dataBytes} bytes, cap is ${PUSH_DATA_HARD_CAP_BYTES}`,
+			`push data is ${dataBytes} bytes, cap is ${cap} on v${version}`,
 		);
 	}
 
@@ -418,7 +635,7 @@ export function assertPushDataSafe(
 	}
 	if (envelope.android.collapse_key !== data.i) {
 		throw new PushConfigError(
-			"push collapse_key must be data.i (the questionId on v1, the alert id on v2) so a later message about the same subject replaces the original",
+			"push collapse_key must be data.i (the questionId on a question, the alert id on a lifecycle alert) so a later message about the same subject replaces the original",
 		);
 	}
 	if (envelope.token.length === 0) {
@@ -426,12 +643,43 @@ export function assertPushDataSafe(
 	}
 }
 
-function buildEnvelope(token: string, data: PushData): PushEnvelope {
+/**
+ * (ALERT-CONTEXT-NAMES) Is this frame a RETRACTION? Read off the frame itself
+ * rather than passed in beside it, so a caller cannot get the pairing wrong.
+ */
+function isRetractionFrame(data: PushData): boolean {
+	return data.k === "r" || data.k === "c";
+}
+
+/**
+ * (RETRACT-TTL) The FCM envelope's own TTL, per message.
+ *
+ * It used to be `PUSH_TTL_MS` (15 min) for everything, and for an ALERT that is
+ * right: a "somebody is blocked" buzz that arrives an hour late is noise about a
+ * moment that has passed. A RETRACTION is the exact opposite kind of message and
+ * had been inheriting the alert's number, which is a latent hole the question
+ * path had carried since it shipped: a handset off the network, in Doze, or
+ * powered down for more than fifteen minutes never received the frame at all,
+ * and the notification it was sent to clear survived on the device. `x` inside
+ * the payload was already 24 h for exactly that reason (`RETRACT_TTL_MS`) — the
+ * ENVELOPE now agrees with it, so FCM keeps trying for as long as the frame is
+ * still meaningful.
+ */
+function envelopeTtlMs(data: PushData): number {
+	return isRetractionFrame(data) ? RETRACT_TTL_MS : PUSH_TTL_MS;
+}
+
+/**
+ * The FCM message this process will actually send, asserted before it exists as
+ * a value a caller could hold. Exported so the TTL choice — the one part of the
+ * envelope that differs per message — is assertable without a network.
+ */
+export function buildEnvelope(token: string, data: PushData): PushEnvelope {
 	const envelope: PushEnvelope = {
 		token,
 		android: {
 			priority: "high",
-			ttl: `${Math.floor(PUSH_TTL_MS / 1000)}s`,
+			ttl: `${Math.floor(envelopeTtlMs(data) / 1000)}s`,
 			collapse_key: data.i,
 		},
 		data,
@@ -440,12 +688,73 @@ function buildEnvelope(token: string, data: PushData): PushEnvelope {
 	return envelope;
 }
 
-/** §13.1 — `k: "q"`, a question is pending and nobody has dealt with it. */
+/**
+ * (ALERT-CONTEXT-NAMES) The four context keys every v3 ALERT carries, derived
+ * once so the question builder and the lifecycle builder cannot disagree about
+ * what "absent" looks like.
+ *
+ * TOTAL. A missing context, a malformed handle and an unusable name all resolve
+ * to `""` rather than to a throw. The alert is the product; the names are a
+ * courtesy, and a courtesy may never be able to cancel the product.
+ */
+function contextKeys(context: PushAlertContext | null): {
+	t: string;
+	pn: string;
+	wn: string;
+	tn: string;
+	tc: string;
+} {
+	if (context === null || context === undefined) {
+		return { t: "", pn: "", wn: "", tn: "", tc: "" };
+	}
+	const tabCount = context.tabCount;
+	return {
+		t: sanitizeTerminalHandle(context.terminalHandle),
+		pn: sanitizePushName(context.projectName),
+		wn: sanitizePushName(context.workspaceName),
+		tn: sanitizePushName(context.tabTitle),
+		tc:
+			typeof tabCount === "number" &&
+			Number.isInteger(tabCount) &&
+			tabCount >= 0 &&
+			tabCount <= 9_999
+				? String(tabCount)
+				: "",
+	};
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) A terminal handle, or `""`.
+ *
+ * TOTAL, like the name sanitiser beside it and for the same reason: `t` is
+ * addressing information for a watch dismissal, not the alert itself, so a
+ * handle this process cannot vouch for costs the frame its `t` and nothing
+ * more. The shape is the generated 22-character opaque id — anything else is
+ * either absent or a caller bug, and both answer `""`.
+ */
+function sanitizeTerminalHandle(handle: unknown): string {
+	return typeof handle === "string" && LIFECYCLE_ID_PATTERN.test(handle)
+		? handle
+		: "";
+}
+
+/**
+ * §13.1 / §13.5 — `k: "q"`, a question is pending and nobody has dealt with it.
+ *
+ * (ALERT-CONTEXT-NAMES) EMITS v3, and stays a SEPARATE builder from the
+ * lifecycle one. They share the same context keys and nothing else: a question
+ * carries `n`, a lifecycle alert never does, and folding them together would
+ * reintroduce exactly the "one vague contract" the per-version split exists to
+ * prevent. The retraction for a question is still v1 `r` — see
+ * `buildRetractPushData`, which is FROZEN.
+ */
 export function buildQuestionPushData(input: {
 	questionId: QuestionId;
 	workspaceId: WorkspaceId;
 	questionCount: number;
 	expiresAtMs: number;
+	/** `null` when nothing could be resolved. Never a reason to fail the send. */
+	context: PushAlertContext | null;
 }): PushData {
 	if (
 		!Number.isInteger(input.questionCount) ||
@@ -459,13 +768,19 @@ export function buildQuestionPushData(input: {
 	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
 		throw new PushConfigError("expiresAtMs must be a positive integer");
 	}
+	const { t, pn, wn, tn, tc } = contextKeys(input.context);
 	return {
-		v: "1",
+		v: "3",
 		k: "q",
 		i: input.questionId,
 		w: input.workspaceId,
 		n: String(input.questionCount),
 		x: String(input.expiresAtMs),
+		t,
+		pn,
+		wn,
+		tn,
+		tc,
 	};
 }
 
@@ -473,10 +788,17 @@ export function buildQuestionPushData(input: {
  * §13.3 — `k: "r"`, cancel the notification; a notification must never outlive
  * its subject.
  *
+ * v1, AND FROZEN THERE. (ALERT-CONTEXT-NAMES) moved the question ALERT to v3
+ * and deliberately left its retraction where it was: the phone matches a
+ * retraction to a notification by `i` alone, every already-installed client
+ * parses this exact shape, and a retraction carries no context worth versioning
+ * — the notification it cancels already holds the names.
+ *
  * (RETRACT-TTL) `x` is the frame's OWN expiry, not the question's. The client
  * checks `isExpired(now)` before it looks at `k`, so stamping `nowMs` here made
  * every retraction expired on arrival and the notification it named survived on
- * the handset. See `RETRACT_TTL_MS` for why the window is a day.
+ * the handset. See `RETRACT_TTL_MS` for why the window is a day — and
+ * `envelopeTtlMs` for the FCM-side half of the same fix.
  */
 export function buildRetractPushData(input: {
 	questionId: QuestionId;
@@ -497,16 +819,20 @@ export function buildRetractPushData(input: {
 }
 
 /**
- * (LIFECYCLE-ALERT) §13.4 — `k: "g"` a work-cycle ended cleanly and there is
- * something to review; `k: "e"` the terminal agent itself failed.
+ * (LIFECYCLE-ALERT) §13.4 / §13.5 — `k: "g"` a work-cycle ended cleanly and
+ * there is something to review; `k: "e"` the terminal agent itself failed.
  *
- * THERE IS NO RETRACTION FOR THESE AND THAT IS DELIBERATE. A question retraction
- * exists because a notification must never outlive its SUBJECT: the question
- * stops being answerable, so the buzz about it becomes a lie. A lifecycle alert
- * has no such subject — "this turn ended" and "this agent failed" are facts
- * about an instant that already happened, and they do not stop being true
- * because the user later opened the app. `x` bounds how long the client will
- * still render one, which is the whole of the freshness contract here.
+ * (ALERT-CONTEXT-NAMES) THESE DO RETRACT NOW, and the paragraph that used to
+ * stand here saying they never would has been deleted rather than worked
+ * around. The argument it made — a lifecycle alert reports an instant that
+ * already happened, so it cannot stop being true — was answered by the owner on
+ * 2026-08-16 with the thing the argument leaves out: the user READ the chat.
+ * The green dot clearing on the desktop is precisely the fact that makes the
+ * buzz on the wrist stale, and a notification the user has already acted on is
+ * noise of exactly the kind that gets a watch muted. `buildLifecycleRetractPushData`
+ * is the frame; `lifecycle-alerts.ts` owns when it is sent. `x` still bounds how
+ * long the client will render an alert, which remains the freshness contract for
+ * an alert nobody retracts.
  *
  * Every field is validated at this boundary rather than at the send: a bad
  * expiry or an id that could carry text must throw at the call site that
@@ -525,41 +851,85 @@ export function buildLifecyclePushData(input: {
 	workspaceId: WorkspaceId;
 	kind: "g" | "e";
 	expiresAtMs: number;
+	/** `null` when nothing could be resolved. Never a reason to fail the send. */
+	context: PushAlertContext | null;
 }): PushData {
 	if (input.kind !== "g" && input.kind !== "e") {
 		throw new PushConfigError(
 			`lifecycle alert kind must be "g" or "e", got ${String(input.kind)}`,
 		);
 	}
-	// The value is NOT echoed, for the same reason `assertPushDataSafe` does not
-	// echo one: if this is firing, the value is exactly the thing that must not
-	// leave the process.
-	if (
-		typeof input.alertId !== "string" ||
-		!LIFECYCLE_ID_PATTERN.test(input.alertId)
-	) {
+	assertLifecycleIdentity(input.alertId, input.workspaceId);
+	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
+		throw new PushConfigError("expiresAtMs must be a positive integer");
+	}
+	const { t, pn, wn, tn, tc } = contextKeys(input.context);
+	return {
+		v: "3",
+		k: input.kind,
+		i: input.alertId,
+		w: input.workspaceId,
+		x: String(input.expiresAtMs),
+		t,
+		pn,
+		wn,
+		tn,
+		tc,
+	};
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) §13.5 — `k: "c"`, take a lifecycle alert back off the
+ * phone and the watch.
+ *
+ * NO NAMES BY CONTRACT. The notification being cancelled already carries them,
+ * so re-sending them would widen the waiver for no gain. It carries `t` because
+ * the watch dismissal is addressed per terminal, and `x` is the FRAME's own
+ * expiry (`RETRACT_TTL_MS`), never the alert's: the client checks `isExpired`
+ * before it switches on `k`, so a retraction stamped `now` is discarded on
+ * arrival and the notification it named survives — the same trap `k: "r"` fell
+ * into once already.
+ */
+export function buildLifecycleRetractPushData(input: {
+	alertId: string;
+	workspaceId: WorkspaceId;
+	terminalHandle: string;
+	nowMs: number;
+}): PushData {
+	assertLifecycleIdentity(input.alertId, input.workspaceId);
+	if (!Number.isInteger(input.nowMs) || input.nowMs <= 0) {
+		throw new PushConfigError("nowMs must be a positive integer");
+	}
+	return {
+		v: "3",
+		k: "c",
+		i: input.alertId,
+		w: input.workspaceId,
+		x: String(input.nowMs + RETRACT_TTL_MS),
+		t: sanitizeTerminalHandle(input.terminalHandle),
+	};
+}
+
+/**
+ * The two generated 22-char identities every lifecycle frame carries. The
+ * values are NOT echoed, for the same reason `assertPushDataSafe` does not echo
+ * one: if this is firing, the value is exactly the thing that must not leave
+ * the process.
+ */
+function assertLifecycleIdentity(alertId: string, workspaceId: string): void {
+	if (typeof alertId !== "string" || !LIFECYCLE_ID_PATTERN.test(alertId)) {
 		throw new PushConfigError(
 			"lifecycle alertId must be 22 base64url characters — refusing to build (possible text leak)",
 		);
 	}
 	if (
-		typeof input.workspaceId !== "string" ||
-		!LIFECYCLE_ID_PATTERN.test(input.workspaceId)
+		typeof workspaceId !== "string" ||
+		!LIFECYCLE_ID_PATTERN.test(workspaceId)
 	) {
 		throw new PushConfigError(
 			"lifecycle workspaceId must be 22 base64url characters — refusing to build (possible text leak)",
 		);
 	}
-	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
-		throw new PushConfigError("expiresAtMs must be a positive integer");
-	}
-	return {
-		v: "2",
-		k: input.kind,
-		i: input.alertId,
-		w: input.workspaceId,
-		x: String(input.expiresAtMs),
-	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1530,33 @@ export interface PushSender {
 		workspaceId: WorkspaceId;
 		kind: "g" | "e";
 		expiresAtMs: number;
+		/**
+		 * (ALERT-CONTEXT-NAMES) Resolved by the CALLER, immediately before this
+		 * call, and never cached in the held alert. A retry a quarter of an hour
+		 * later re-resolves, so a workspace renamed in the meantime buzzes with
+		 * its new name.
+		 */
+		context: PushAlertContext | null;
+	}): Promise<void>;
+	/**
+	 * (ALERT-CONTEXT-NAMES) §13.5 — take a lifecycle alert back off the devices.
+	 *
+	 * BEST EFFORT, AND DELIBERATELY UNLIKE `sendLifecycleAlert`. That one rejects
+	 * so its caller can hold the alert and try again; this one resolves whatever
+	 * happens, because there is nothing useful for a caller to do with a failed
+	 * retraction: the alert it names is already on the phone, the frame's own
+	 * 24 h TTL means FCM keeps trying long after this returns, and the client's
+	 * `x` check plus its foreground sweep are the backstops. Failing loudly here
+	 * would turn "the buzz stayed on the watch a bit longer" into an error path
+	 * the lifecycle manager would have to invent a retry policy for.
+	 *
+	 * Queued on the SAME per-id chain as the alert it retracts, so it can never
+	 * be overtaken by the send it is cancelling.
+	 */
+	sendLifecycleRetraction(input: {
+		alertId: string;
+		workspaceId: WorkspaceId;
+		terminalHandle: string;
 	}): Promise<void>;
 	/**
 	 * The current fatal fault, or null. Non-null means push is DOWN and the user
@@ -1291,6 +1688,29 @@ export interface PushSenderDeps {
 	 * broken" instead of degrading to silence.
 	 */
 	onFault(fault: PushFault): void;
+	/**
+	 * (ALERT-CONTEXT-NAMES) Which project, workspace and tab is this question
+	 * about? Asked AT FIRE TIME, never at arm time.
+	 *
+	 * A question can be held for six hours, and in that time a workspace can be
+	 * renamed, a tab retitled and a terminal moved. Resolving at arm time would
+	 * have buzzed with whatever the names were when the agent got stuck; asking
+	 * here means the notification describes the world the user is walking back
+	 * into.
+	 *
+	 * MUST NOT THROW and must never be a reason not to send: it is called from
+	 * the same synchronous accounting block that commits the entry to the `sent`
+	 * set, so a throw would lose a buzz for a blocked agent. `null` is a
+	 * first-class answer meaning "no context" — the phone then uses its generic
+	 * strings — and `null` for the dep itself disables the feature entirely,
+	 * required rather than optional so a composition root states that choice.
+	 */
+	resolveAlertContext:
+		| ((input: {
+				hostTerminalId: string | null;
+				hostWorkspaceId: string | null;
+		  }) => PushAlertContext | null)
+		| null;
 	/** Injectable for tests. Wall clock. */
 	now?: () => number;
 }
@@ -1301,6 +1721,21 @@ interface ArmedQuestion {
 	questionCount: number;
 	expiresAtMs: number;
 	armedAtWallMs: number;
+	/**
+	 * (ALERT-CONTEXT-NAMES) The RAW host ids this push was armed for, retained so
+	 * the fire path can resolve names for it.
+	 *
+	 * They were dropped on the way in until now: `workspaceId` above is the
+	 * DERIVED opaque handle, which is all the wire needs and exactly the wrong
+	 * thing to look a name up with. The fence has persisted both since
+	 * `(PUSH-ARMED-ORPHAN)` — reconstruction simply threw them away — so a push
+	 * held across a restart names its chat just as well as a fresh one.
+	 *
+	 * `null` means "cannot resolve", never "no context": a pre-upgrade fence row
+	 * has no terminal id, and the alert still goes out with `t: ""`.
+	 */
+	hostTerminalId: string | null;
+	hostWorkspaceId: string | null;
 	/**
 	 * (PUSH-ARMED-ORPHAN) True for an entry rebuilt from the fence at
 	 * construction — every one of them, because `QuestionStore` is memory-only
@@ -1694,6 +2129,44 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 	}
 
 	/**
+	 * (ALERT-CONTEXT-NAMES) Ask the resolver, and never let it break a send.
+	 *
+	 * The resolver reads host.db and a process-local cache; both can throw (a
+	 * locked database, a reader that lost its file) and neither has any business
+	 * deciding whether a blocked agent gets a notification. Anything it cannot
+	 * answer becomes `null`, the frame carries `""` for every context key, and the
+	 * phone renders the wording it used before this feature existed.
+	 *
+	 * KEPT HERE even though the composition root also wraps its own reads: this
+	 * runs inside the synchronous accounting block that commits an entry to the
+	 * `sent` set, so a throw would cost the BUZZ rather than the name, and the
+	 * dep is an injection point any caller can supply. Depending on every future
+	 * caller to be total is exactly the kind of unenforced convention this guard
+	 * is cheap insurance against — see the "still fires when the resolver THROWS"
+	 * test.
+	 *
+	 * THE FAILURE IS LOGGED WITHOUT ITS SUBJECT. The ids are diagnostic; the names
+	 * are the private part and never appear in a log line, an error message or a
+	 * thrown message anywhere in this feature.
+	 */
+	function resolveContextSafely(input: {
+		hostTerminalId: string | null;
+		hostWorkspaceId: string | null;
+	}): PushAlertContext | null {
+		const resolve = deps.resolveAlertContext;
+		if (resolve === null) return null;
+		try {
+			return resolve(input);
+		} catch (error) {
+			console.error(
+				`${LOG} could not resolve alert context; the notification will use its generic wording`,
+				error,
+			);
+			return null;
+		}
+	}
+
+	/**
 	 * (PUSH-PRESENCE) THE PRESENCE DECISION. Everything else in this module
 	 * serves these fifteen lines.
 	 *
@@ -1828,6 +2301,14 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 					workspaceId: entry.workspaceId,
 					questionCount: entry.questionCount,
 					expiresAtMs: entry.expiresAtMs,
+					// (ALERT-CONTEXT-NAMES) Resolved HERE, at the due point, and never
+					// allowed to break the send: this whole block is the synchronous
+					// accounting that commits the entry to `sent`, so a throw would be a
+					// buzz silently lost for a blocked agent.
+					context: resolveContextSafely({
+						hostTerminalId: entry.hostTerminalId,
+						hostWorkspaceId: entry.hostWorkspaceId,
+					}),
 				}),
 			});
 			// Recorded BEFORE the send: a retraction for a push that failed is
@@ -1983,6 +2464,11 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				questionCount: record.questionCount,
 				expiresAtMs: record.expiresAtMs,
 				armedAtWallMs: record.armedAtMs,
+				// (ALERT-CONTEXT-NAMES) The fence has carried these since
+				// `(PUSH-ARMED-ORPHAN)`; reconstruction used to drop them, which left a
+				// push held across a restart unable to name its chat.
+				hostTerminalId: record.hostTerminalId,
+				hostWorkspaceId: record.hostWorkspaceId,
 				storeOrphaned: true,
 			});
 		}
@@ -2150,7 +2636,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 			if (sent.has(input.questionId)) return;
 			// Validate the payload NOW, at the call site that introduced it — a bad
 			// questionCount or a text leak must not surface later, from a timer.
-			buildQuestionPushData(input);
+			buildQuestionPushData({ ...input, context: null });
 
 			armed.set(input.questionId, {
 				questionId: input.questionId,
@@ -2158,6 +2644,8 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				questionCount: input.questionCount,
 				expiresAtMs: input.expiresAtMs,
 				armedAtWallMs: nowMs,
+				hostTerminalId: input.hostTerminalId,
+				hostWorkspaceId: input.hostWorkspaceId,
 				storeOrphaned: false,
 			});
 			try {
@@ -2243,6 +2731,27 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 						`no registered device with a live token for the lifecycle alert (id=${input.alertId} kind=${input.kind})`,
 					);
 				}
+			});
+		},
+
+		sendLifecycleRetraction(input) {
+			if (stopped) return Promise.resolve();
+			// Built OUTSIDE the queued job, like the alert path: a malformed id must
+			// throw at the call site that introduced it rather than from inside a
+			// chain nobody is awaiting.
+			const data = buildLifecycleRetractPushData({
+				alertId: input.alertId,
+				workspaceId: input.workspaceId,
+				terminalHandle: input.terminalHandle,
+				nowMs: now(),
+			});
+			console.log(`${LOG} retracting lifecycle alert id=${input.alertId}`);
+			// `enqueue`, not `enqueueOrdered`: the failure is logged and swallowed
+			// because no caller can act on it — see `sendLifecycleRetraction` on the
+			// interface. Same chain key as the alert, so the retraction cannot
+			// overtake the send it cancels.
+			return enqueue(input.alertId, "lifecycle retraction", async () => {
+				await broadcast(data, null);
 			});
 		},
 

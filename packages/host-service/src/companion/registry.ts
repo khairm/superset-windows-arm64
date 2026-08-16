@@ -24,7 +24,12 @@
 
 import { isCompanionBridgeEnabled, LOG_PREFIX } from "./config";
 import type { CompanionBridge } from "./index";
+import type { LifecycleSeenInput } from "./lifecycle-alerts";
 import type { PresenceBeaconInput, PresenceStore } from "./presence";
+import type {
+	AlertContextSnapshotInput,
+	AlertContextSyncResult,
+} from "./push-context";
 
 let current: CompanionBridge | null = null;
 
@@ -210,4 +215,114 @@ export function publishCompanionMirrorChanged(
 		);
 		return false;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// (ALERT-CONTEXT-NAMES) tab context, and the seen signal
+// ---------------------------------------------------------------------------
+
+/**
+ * One published-sink slot: register, identity-checked clear, and a call that
+ * cannot throw into its caller.
+ *
+ * The two desktop-only writes this feature adds are published SEPARATELY from
+ * the bridge for the same reason the presence store is. Both arrive from a
+ * renderer that has no idea whether a companion bridge is running on this
+ * machine, on ordinary UI events (a layout change, the user opening a chat);
+ * routing them through `requireBridge()` would turn the normal "no bridge here"
+ * state into a stream of errors on a path the user triggers by clicking around.
+ * So each answers "nobody consumed it" and the caller reports that plainly.
+ *
+ * They share this factory because the three rules are identical for both and
+ * were previously written out twice:
+ *
+ *  - REGISTERING OVER a live, different sink is a programming error, not a race
+ *    to smooth over — two bridges in one process would disagree about who owns
+ *    the renderer's state.
+ *  - CLEARING is identity-checked, so a stopping bridge cannot unpublish the
+ *    sink its replacement has already installed.
+ *  - CALLING never throws into the caller. Both callers are renderer mutations
+ *    whose real work has already happened locally; a sink that throws must not
+ *    turn a successful UI action into a failed one.
+ *
+ * The presence and bridge slots above are deliberately NOT folded in: they have
+ * their own semantics (a bridge slot that must not be replaced at all, a
+ * presence store with a `record` method rather than a call) and collapsing
+ * three different things into one shape would cost more than it saves.
+ */
+function createSinkSlot<Input, Result>(options: {
+	/** Names the slot in the "already registered" error. */
+	what: string;
+	/** What a call answers when nothing is registered, or the sink threw. */
+	whenAbsent: Result;
+	/** Logged when the sink throws. Says what the user loses, not a stack. */
+	onThrowMessage: string;
+}) {
+	let sink: ((input: Input) => Result) | null = null;
+	return {
+		set(next: (input: Input) => Result): void {
+			if (sink !== null && sink !== next) {
+				throw new Error(
+					`${LOG_PREFIX} a companion ${options.what} sink is already registered; ` +
+						"clear it before registering another",
+				);
+			}
+			sink = next;
+		},
+		clear(previous: (input: Input) => Result): void {
+			if (sink === previous) sink = null;
+		},
+		call(input: Input): Result {
+			const current = sink;
+			if (current === null) return options.whenAbsent;
+			try {
+				return current(input);
+			} catch (error) {
+				console.error(`${LOG_PREFIX} ${options.onThrowMessage}`, error);
+				return options.whenAbsent;
+			}
+		},
+	};
+}
+
+const alertContextSlot = createSinkSlot<
+	AlertContextSnapshotInput,
+	AlertContextSyncResult | null
+>({
+	what: "alert-context",
+	whenAbsent: null,
+	onThrowMessage:
+		"the alert-context sink threw; companion alerts will name no tab until the next sync",
+});
+
+export const setCompanionAlertContextSink = alertContextSlot.set;
+export const clearCompanionAlertContextSink = alertContextSlot.clear;
+
+/**
+ * Apply one workspace's tab-context snapshot. `null` means nothing consumed it,
+ * which is the normal state on a machine with no companion bridge.
+ */
+export function recordCompanionAlertContexts(
+	input: AlertContextSnapshotInput,
+): AlertContextSyncResult | null {
+	return alertContextSlot.call(input);
+}
+
+const lifecycleSeenSlot = createSinkSlot<LifecycleSeenInput, boolean>({
+	what: "lifecycle-seen",
+	whenAbsent: false,
+	onThrowMessage:
+		"the lifecycle-seen sink threw; a phone notification may outlive the chat the user just read",
+});
+
+export const setCompanionLifecycleSeenSink = lifecycleSeenSlot.set;
+export const clearCompanionLifecycleSeenSink = lifecycleSeenSlot.clear;
+
+/**
+ * The user read a chat on the desktop. Returns whether anything consumed it.
+ */
+export function recordCompanionLifecycleSeen(
+	input: LifecycleSeenInput,
+): boolean {
+	return lifecycleSeenSlot.call(input);
 }
