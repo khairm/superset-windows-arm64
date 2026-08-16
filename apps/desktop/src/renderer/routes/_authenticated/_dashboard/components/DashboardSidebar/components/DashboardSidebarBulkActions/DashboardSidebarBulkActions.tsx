@@ -14,14 +14,13 @@ import {
 	LuUngroup,
 	LuX,
 } from "react-icons/lu";
-import { useBulkWorkspaceDeleteDialog } from "../../hooks/useBulkWorkspaceDeleteDialog";
 import { useBulkWorkspaceMoveActions } from "../../hooks/useBulkWorkspaceMoveActions";
+import { useBulkWorkspaceSoftDelete } from "../../hooks/useBulkWorkspaceSoftDelete";
 import { useDashboardSidebarSelection } from "../../providers/DashboardSidebarSelectionProvider";
 import type {
 	DashboardSidebarProject,
 	DashboardSidebarWorkspace,
 } from "../../types";
-import { DashboardSidebarBulkDeleteDialog } from "../DashboardSidebarBulkDeleteDialog";
 
 interface DashboardSidebarBulkActionsProps {
 	projects: DashboardSidebarProject[];
@@ -73,7 +72,7 @@ export function DashboardSidebarBulkActions({
 		sectionIdByWorkspaceId,
 	});
 
-	const { deleteDialogProps, openDeleteDialog } = useBulkWorkspaceDeleteDialog({
+	const { softDeleteSelection } = useBulkWorkspaceSoftDelete({
 		selectedWorkspaces,
 		onDeleted: removeSelectedWorkspaces,
 	});
@@ -175,7 +174,7 @@ export function DashboardSidebarBulkActions({
 						<TooltipTrigger asChild>
 							<button
 								type="button"
-								onClick={openDeleteDialog}
+								onClick={softDeleteSelection}
 								className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
 								aria-label="Delete selected workspaces"
 							>
@@ -186,8 +185,6 @@ export function DashboardSidebarBulkActions({
 					</Tooltip>
 				</div>
 			)}
-
-			<DashboardSidebarBulkDeleteDialog {...deleteDialogProps} />
 		</>
 	);
 }

@@ -126,6 +126,7 @@ export function DashboardSidebar({
 		sessionWorkspaces,
 		snoozedSessionWorkspaces,
 		archivedSessionWorkspaces,
+		deletedSessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	} = useDashboardSidebarData();
@@ -444,6 +445,7 @@ export function DashboardSidebar({
 										sessionWorkspaces={sessionWorkspaces}
 										snoozedSessionWorkspaces={snoozedSessionWorkspaces}
 										archivedSessionWorkspaces={archivedSessionWorkspaces}
+										deletedSessionWorkspaces={deletedSessionWorkspaces}
 										isCollapsed={isCollapsed}
 										rowsHidden={!isCollapsed && workspacesListCollapsed}
 										workspaceShortcutLabels={workspaceShortcutLabels}

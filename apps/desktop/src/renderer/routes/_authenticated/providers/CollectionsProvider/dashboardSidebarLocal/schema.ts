@@ -417,12 +417,19 @@ export const v2UserPreferencesSchema = z.object({
 	 * Sessions / Archived Sessions subsections. Sessions have no project row, so
 	 * the per-project equivalents on `dashboardSidebarProjectSchema` have nowhere
 	 * to live — these ride the fixed-size preferences singleton instead (bounded:
-	 * four booleans, no per-entity cardinality).
+	 * six booleans, no per-entity cardinality).
 	 */
 	showSnoozedSessions: z.boolean().default(false),
 	showArchivedSessions: z.boolean().default(false),
 	snoozedSessionsCollapsed: z.boolean().default(false),
 	archivedSessionsCollapsed: z.boolean().default(false),
+	/**
+	 * (RECYCLE-BIN-SESSIONS) Reveal/collapse flags for the top-level session
+	 * Recycle Bin. Hidden by default, exactly like the per-project
+	 * `showDeleted` / `deletedCollapsed` flags on `dashboardSidebarProjectSchema`.
+	 */
+	showDeletedSessions: z.boolean().default(false),
+	deletedSessionsCollapsed: z.boolean().default(false),
 	// Built-in (synthetic, app-shipped) presets the user hid from the preset
 	// bar. Synthetic presets have no v2TerminalPresets row, so visibility can't
 	// live on the row's pinnedToBar like user presets. Pruned against
@@ -455,6 +462,8 @@ export const DEFAULT_V2_USER_PREFERENCES: V2UserPreferencesRow = {
 	showArchivedSessions: false,
 	snoozedSessionsCollapsed: false,
 	archivedSessionsCollapsed: false,
+	showDeletedSessions: false,
+	deletedSessionsCollapsed: false,
 	hiddenBuiltinPresetIds: [],
 };
 
@@ -505,6 +514,8 @@ export const SESSION_SECTION_FLAGS = [
 	"showArchivedSessions",
 	"snoozedSessionsCollapsed",
 	"archivedSessionsCollapsed",
+	"showDeletedSessions",
+	"deletedSessionsCollapsed",
 ] as const;
 
 export type SessionSectionFlag = (typeof SESSION_SECTION_FLAGS)[number];

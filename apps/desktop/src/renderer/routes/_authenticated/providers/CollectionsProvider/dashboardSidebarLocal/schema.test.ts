@@ -133,6 +133,9 @@ describe("healV2UserPreferences", () => {
 			expect(healed.showArchivedSessions).toBe(false);
 			expect(healed.snoozedSessionsCollapsed).toBe(false);
 			expect(healed.archivedSessionsCollapsed).toBe(false);
+			// (RECYCLE-BIN-SESSIONS) The bin is opt-in like the other two lanes.
+			expect(healed.showDeletedSessions).toBe(false);
+			expect(healed.deletedSessionsCollapsed).toBe(false);
 		});
 
 		it("preserves stored booleans", () => {

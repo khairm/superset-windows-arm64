@@ -21,6 +21,7 @@ import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
 import {
 	createEmptyPaneLayout,
 	removeProjectFromSidebarState,
+	resolveSidebarRowProjectId,
 	tombstoneSidebarWorkspaceRecord,
 } from "./sidebarMutations";
 
@@ -601,7 +602,10 @@ export function useDashboardSidebarState() {
 	// back exactly as it was.
 
 	const archiveWorkspace = useCallback(
-		(workspaceId: string, projectId?: string) => {
+		// (RECYCLE-BIN-SESSIONS) Same contract as deleteWorkspace / snoozeWorkspace:
+		// an EXPLICIT null projectId is a session, omitting it falls back to the
+		// host record. `RemoveFromSidebarMount` already passes `string | null`.
+		(workspaceId: string, projectId?: string | null) => {
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
 				// An auto-included main workspace (shown in the sidebar without an
 				// explicit local-state row) has nothing to update yet. Insert a row
@@ -609,18 +613,21 @@ export function useDashboardSidebarState() {
 				// effect — a master card can be archived but never hard-removed.
 				// Prefer the caller's projectId (the remove intent / row already
 				// carries it); fall back to the workspace record.
-				const resolvedProjectId =
-					projectId ??
-					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-						?.projectId;
-				if (!resolvedProjectId) {
+				const hostWorkspace =
+					hostWorkspaces.find((candidate) => candidate.id === workspaceId) ??
+					null;
+				if (projectId === undefined && hostWorkspace === null) {
 					// Fail loud rather than silently dropping the archive — nothing else
 					// can recover an un-archived master card from here.
 					console.error(
-						`[archiveWorkspace] cannot archive ${workspaceId}: no local-state row and projectId unresolvable`,
+						`[archiveWorkspace] cannot archive ${workspaceId}: no local-state row, no host record and no projectId passed`,
 					);
 					return;
 				}
+				const resolvedProjectId = resolveSidebarRowProjectId(
+					projectId,
+					hostWorkspace?.projectId ?? null,
+				);
 				collections.v2WorkspaceLocalState.insert({
 					workspaceId,
 					createdAt: new Date(),
@@ -646,25 +653,32 @@ export function useDashboardSidebarState() {
 	);
 
 	const snoozeWorkspace = useCallback(
+		// (RECYCLE-BIN-SESSIONS) Same contract as deleteWorkspace: an EXPLICIT null
+		// projectId is a session, omitting it falls back to the host record.
 		(
 			workspaceId: string,
 			until: number | "next-launch",
-			projectId?: string,
+			projectId?: string | null,
 		) => {
 			// (SNOOZE-MAIN) An auto-included local MAIN workspace has no local-state
 			// row, so the update below used to silently no-op — Snooze on a master
 			// row did nothing. Mirror archiveWorkspace: insert a pre-snoozed row.
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
-				const resolvedProjectId =
-					projectId ??
-					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-						?.projectId;
-				if (!resolvedProjectId) {
+				const hostWorkspace =
+					hostWorkspaces.find((candidate) => candidate.id === workspaceId) ??
+					null;
+				if (projectId === undefined && hostWorkspace === null) {
+					// Nothing to stamp the row with and nothing to read it from — fail
+					// loud rather than silently dropping the snooze.
 					console.error(
-						`[snoozeWorkspace] cannot snooze ${workspaceId}: no local-state row and projectId unresolvable`,
+						`[snoozeWorkspace] cannot snooze ${workspaceId}: no local-state row, no host record and no projectId passed`,
 					);
 					return;
 				}
+				const resolvedProjectId = resolveSidebarRowProjectId(
+					projectId,
+					hostWorkspace?.projectId ?? null,
+				);
 				collections.v2WorkspaceLocalState.insert({
 					workspaceId,
 					createdAt: new Date(),
@@ -757,7 +771,14 @@ export function useDashboardSidebarState() {
 	// git destroy is relocated to "Delete permanently" inside the bin.
 
 	const deleteWorkspace = useCallback(
-		(workspaceId: string, projectId?: string) => {
+		// (RECYCLE-BIN-SESSIONS) `projectId` is `string | null | undefined`: a
+		// session row passes an EXPLICIT null (it has no project), omitting it
+		// falls back to the host record.
+		//
+		// Returns whether the row was actually soft-deleted. BOTH refusals below
+		// (unresolvable type, main workspace) return false so a bulk caller can
+		// keep a refused row selected instead of reporting it as deleted.
+		(workspaceId: string, projectId?: string | null): boolean => {
 			// A repo's main workspace can never be soft-deleted — mains stay
 			// archive-only (MASTER-ARCHIVE-ONLY). Resolve the type from the
 			// host-owned workspace record FIRST (source of truth since v1.14's
@@ -765,37 +786,32 @@ export function useDashboardSidebarState() {
 			// unresolvable type FAILS LOUD instead of proceeding — the old
 			// cache-only check failed OPEN on a cold cache and could soft-delete
 			// a master.
-			const workspaceType =
-				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-					?.type ?? null;
-			if (workspaceType == null) {
+			const hostWorkspace =
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId) ??
+				null;
+			const workspaceType = hostWorkspace?.type ?? null;
+			if (hostWorkspace === null || workspaceType == null) {
 				console.error(
 					`[deleteWorkspace] refusing to delete ${workspaceId}: workspace type unresolvable (host lists miss) — mains are archive-only, so an unknown type must not be deleted`,
 				);
-				return;
+				return false;
 			}
 			if (workspaceType === "main") {
 				console.warn(
 					`[deleteWorkspace] refusing to delete main workspace ${workspaceId} — mains are archive-only`,
 				);
-				return;
+				return false;
 			}
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
 				// An auto-included workspace with no explicit local-state row yet:
 				// insert a row that is already soft-deleted (mirrors archiveWorkspace's
-				// insert path). Prefer the caller's projectId; fall back to the record.
-				const resolvedProjectId =
-					projectId ??
-					hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-						?.projectId;
-				if (!resolvedProjectId) {
-					// Fail loud rather than silently dropping the delete — nothing else
-					// can recover the row from here.
-					console.error(
-						`[deleteWorkspace] cannot delete ${workspaceId}: no local-state row and projectId unresolvable`,
-					);
-					return;
-				}
+				// insert path). Prefer the caller's projectId — including an explicit
+				// null for a session — and fall back to the host record otherwise.
+				// The record is guaranteed here: an unresolvable one returned above.
+				const resolvedProjectId = resolveSidebarRowProjectId(
+					projectId,
+					hostWorkspace.projectId,
+				);
 				collections.v2WorkspaceLocalState.insert({
 					workspaceId,
 					createdAt: new Date(),
@@ -812,7 +828,7 @@ export function useDashboardSidebarState() {
 					},
 					paneLayout: createEmptyPaneLayout(),
 				});
-				return;
+				return true;
 			}
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				draft.sidebarState.deletedAt = Date.now();
@@ -824,6 +840,7 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.snoozeLaunchId = null;
 				draft.sidebarState.completedAt = null;
 			});
+			return true;
 		},
 		[collections, hostWorkspaces],
 	);

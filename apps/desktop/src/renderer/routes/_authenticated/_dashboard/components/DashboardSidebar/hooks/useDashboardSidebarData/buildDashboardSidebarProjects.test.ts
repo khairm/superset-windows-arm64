@@ -1,5 +1,8 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { APP_LAUNCH_ID } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import {
+	APP_LAUNCH_ID,
+	isWithinRecycleBinWindow,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import {
 	buildDashboardSidebarInactiveSessionWorkspaces,
 	buildDashboardSidebarPinnedWorkspaces,
@@ -298,6 +301,7 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 			snoozeUntil: null,
 			snoozeLaunchId: null,
 			archivedAt: null,
+			deletedAt: null,
 			...overrides,
 		};
 	}
@@ -404,5 +408,64 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 		} finally {
 			errorSpy.mockRestore();
 		}
+	});
+
+	// (RECYCLE-BIN-SESSIONS) A soft-deleted session has no project bin to land
+	// in. Before the deleted bucket was partitioned by session-ness these rows
+	// were dropped entirely — the project-tree loop skipped them and nothing
+	// else rendered them, so the X on a session was an unrecoverable vanish.
+	describe("session Recycle Bin (RECYCLE-BIN-SESSIONS)", () => {
+		it("splits soft-deleted session rows from project-scoped deleted rows", () => {
+			const { sessions, projectScoped } = partitionSidebarWorkspacesBySession([
+				makeInactiveSession({ id: "deleted-session", deletedAt: NOW }),
+				makeWorkspace({ id: "deleted-branch" }),
+			]);
+
+			expect(sessions.map((row) => row.id)).toEqual(["deleted-session"]);
+			expect(projectScoped.map((row) => row.id)).toEqual(["deleted-branch"]);
+		});
+
+		it("orders the bin most-recently-deleted first and carries deletedAt", () => {
+			const rows = buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: [
+					makeInactiveSession({ id: "old", deletedAt: NOW - 5_000 }),
+					makeInactiveSession({ id: "newest", deletedAt: NOW }),
+					makeInactiveSession({ id: "middle", deletedAt: NOW - 1_000 }),
+				],
+				variant: "deleted",
+				machineId: MACHINE_ID,
+				nowMs: NOW,
+			});
+
+			expect(rows.map((row) => row.id)).toEqual(["newest", "middle", "old"]);
+			expect(rows[0].deletedAt).toBe(NOW);
+			expect(rows[0].isPinned).toBe(false);
+			expect(rows[0].projectId).toBeNull();
+		});
+
+		it("keeps rows older than the retention window in the bin, outside the display filter", () => {
+			const retentionDays = 30;
+			const dayMs = 24 * 3_600_000;
+			const rows = buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: [
+					makeInactiveSession({ id: "recent", deletedAt: NOW - dayMs }),
+					makeInactiveSession({ id: "ancient", deletedAt: NOW - 31 * dayMs }),
+				],
+				variant: "deleted",
+				machineId: MACHINE_ID,
+				nowMs: NOW,
+			});
+
+			// Nothing is ever dropped — retention is a DISPLAY filter the section
+			// applies over the full bin (and drives its "N hidden by filter" footer).
+			expect(rows.map((row) => row.id)).toEqual(["recent", "ancient"]);
+			expect(
+				rows
+					.filter((row) =>
+						isWithinRecycleBinWindow(row.deletedAt, retentionDays, NOW),
+					)
+					.map((row) => row.id),
+			).toEqual(["recent"]);
+		});
 	});
 });

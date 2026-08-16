@@ -41,14 +41,29 @@ export function buildBulkResult<T>({
 	};
 }
 
+/**
+ * (RECYCLE-BIN) Outcome of the remote `delete_workspace` tool's soft delete.
+ * Discriminated so a refusal always carries a reason the agent can report back
+ * — a silently-dropped delete would look like a success to the caller.
+ */
+export type SoftDeleteWorkspaceOutcome =
+	| { ok: true }
+	| { ok: false; reason: string };
+
 // Available mutations and queries passed to tool handlers
 export interface ToolContext {
 	// Mutations
 	createWorktree: ReturnType<typeof electronTrpc.workspaces.create.useMutation>;
 	setActive: ReturnType<typeof electronTrpc.workspaces.setActive.useMutation>;
-	deleteWorkspace: ReturnType<
-		typeof electronTrpc.workspaces.delete.useMutation
-	>;
+	/**
+	 * (RECYCLE-BIN) Moves a workspace to the Recycle Bin — the SAME soft delete
+	 * the sidebar's own Delete performs (deletedAt tombstone; worktree, branch
+	 * and terminals untouched; Restore returns it). The remote tool deliberately
+	 * has NO handle on the physical `workspaces.delete` mutation: permanent
+	 * destroy is reachable only from inside the bin, and a remote agent must not
+	 * be able to bypass that. Mains are refused (MASTER-ARCHIVE-ONLY).
+	 */
+	softDeleteWorkspace: (workspaceId: string) => SoftDeleteWorkspaceOutcome;
 	updateWorkspace: ReturnType<
 		typeof electronTrpc.workspaces.update.useMutation
 	>;

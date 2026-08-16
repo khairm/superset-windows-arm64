@@ -225,25 +225,30 @@ export function partitionSidebarWorkspacesBySession<
 }
 
 /**
- * (SESSION-LIFECYCLE) A session row in the snoozed or archived bucket. Carries
- * the lifecycle timestamps the subsections sort by and label from.
+ * (SESSION-LIFECYCLE) A session row in the snoozed, archived or (RECYCLE-BIN)
+ * soft-deleted bucket. Carries the lifecycle timestamps the subsections sort by
+ * and label from.
  */
 export interface SidebarInactiveWorkspaceInput extends SidebarWorkspaceInput {
 	snoozeUntil: number | null;
 	snoozeLaunchId: string | null;
 	archivedAt: number | null;
+	/** (RECYCLE-BIN-SESSIONS) Sorts the session Recycle Bin and feeds the
+	 * section's retention-window display filter. */
+	deletedAt: number | null;
 }
 
-export type SidebarSessionLifecycleVariant = "snoozed" | "archived";
+export type SidebarSessionLifecycleVariant = "snoozed" | "archived" | "deleted";
 
 /**
- * (SESSION-LIFECYCLE) Decorates the Snoozed Sessions / Archived Sessions
- * subsection rows. Sort order matches the project-scoped subsections exactly:
- * snoozed by soonest wake first (an "until next launch" snooze has no deadline,
- * so it sorts last), archived by most-recently-archived first.
+ * (SESSION-LIFECYCLE) Decorates the Snoozed Sessions / Archived Sessions /
+ * (RECYCLE-BIN-SESSIONS) Recycle Bin subsection rows. Sort order matches the
+ * project-scoped subsections exactly: snoozed by soonest wake first (an "until
+ * next launch" snooze has no deadline, so it sorts last), archived by
+ * most-recently-archived first, deleted by most-recently-deleted first.
  *
- * A snoozed/archived row never renders in the Pinned section and carries no
- * repo identity, so pin state, PRs and every project-derived affordance are
+ * A snoozed/archived/deleted row never renders in the Pinned section and carries
+ * no repo identity, so pin state, PRs and every project-derived affordance are
  * off — same as {@link buildDashboardSidebarSessionWorkspaces}.
  */
 export function buildDashboardSidebarInactiveSessionWorkspaces({
@@ -281,6 +286,7 @@ export function buildDashboardSidebarInactiveSessionWorkspaces({
 					snoozeUntil: workspace.snoozeUntil,
 					snoozeLaunchId: workspace.snoozeLaunchId,
 					archivedAt: workspace.archivedAt,
+					deletedAt: workspace.deletedAt,
 					snoozeRemainingLabel: formatSnoozeRemaining(
 						workspace.snoozeUntil,
 						workspace.snoozeLaunchId,
@@ -291,15 +297,23 @@ export function buildDashboardSidebarInactiveSessionWorkspaces({
 		},
 	);
 
-	return variant === "snoozed"
-		? rows.sort(
-				(left, right) =>
-					(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
-					(right.snoozeUntil ?? Number.MAX_SAFE_INTEGER),
-			)
-		: rows.sort(
-				(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
-			);
+	if (variant === "snoozed") {
+		return rows.sort(
+			(left, right) =>
+				(left.snoozeUntil ?? Number.MAX_SAFE_INTEGER) -
+				(right.snoozeUntil ?? Number.MAX_SAFE_INTEGER),
+		);
+	}
+	if (variant === "archived") {
+		return rows.sort(
+			(left, right) => (right.archivedAt ?? 0) - (left.archivedAt ?? 0),
+		);
+	}
+	// (RECYCLE-BIN-SESSIONS) most-recently-deleted first, matching the
+	// per-project bin.
+	return rows.sort(
+		(left, right) => (right.deletedAt ?? 0) - (left.deletedAt ?? 0),
+	);
 }
 
 export interface BuildDashboardSidebarProjectsParams {

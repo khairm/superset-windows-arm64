@@ -713,6 +713,17 @@ export function useDashboardSidebarData() {
 			[archivedSidebarWorkspaces],
 		);
 
+	// (RECYCLE-BIN-SESSIONS) Same split for the soft-deleted bucket: a deleted
+	// session has no project bin to land in, so it feeds the top-level Recycle
+	// Bin subsection under Sessions while project-scoped rows keep feeding the
+	// per-project bins below. Before this split a deleted session fell into a
+	// void — the project loop skipped it and no other surface rendered it.
+	const { sessions: sessionDeletedRows, projectScoped: projectDeletedRows } =
+		useMemo(
+			() => partitionSidebarWorkspacesBySession(deletedSidebarWorkspaces),
+			[deletedSidebarWorkspaces],
+		);
+
 	// Inline builder (see the import note): project-scoped rows only — sessions
 	// go through upstream's session builder below.
 	const computedGroups = useMemo<DashboardSidebarProject[]>(() => {
@@ -895,7 +906,7 @@ export function useDashboardSidebarData() {
 			);
 		}
 
-		for (const workspace of deletedSidebarWorkspaces) {
+		for (const workspace of projectDeletedRows) {
 			const project = projectsById.get(workspace.projectId);
 			if (!project) continue;
 			project.deletedWorkspaces.push(
@@ -1003,7 +1014,7 @@ export function useDashboardSidebarData() {
 		projectRows,
 		projectSnoozedRows,
 		projectArchivedRows,
-		deletedSidebarWorkspaces,
+		projectDeletedRows,
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
 
@@ -1051,6 +1062,23 @@ export function useDashboardSidebarData() {
 		computedArchivedSessionWorkspaces,
 	);
 
+	// (RECYCLE-BIN-SESSIONS) Rows for the top-level session Recycle Bin,
+	// most-recently-deleted first. The section itself applies the retention
+	// display window.
+	const computedDeletedSessionWorkspaces = useMemo<DashboardSidebarWorkspace[]>(
+		() =>
+			buildDashboardSidebarInactiveSessionWorkspaces({
+				sessionSidebarWorkspaces: sessionDeletedRows,
+				variant: "deleted",
+				machineId,
+				nowMs,
+			}),
+		[machineId, nowMs, sessionDeletedRows],
+	);
+	const deletedSessionWorkspaces = useJsonStable(
+		computedDeletedSessionWorkspaces,
+	);
+
 	const computedPinnedWorkspaces = useMemo<DashboardSidebarPinnedWorkspace[]>(
 		() =>
 			buildDashboardSidebarPinnedWorkspaces({
@@ -1069,6 +1097,7 @@ export function useDashboardSidebarData() {
 		sessionWorkspaces,
 		snoozedSessionWorkspaces,
 		archivedSessionWorkspaces,
+		deletedSessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	};

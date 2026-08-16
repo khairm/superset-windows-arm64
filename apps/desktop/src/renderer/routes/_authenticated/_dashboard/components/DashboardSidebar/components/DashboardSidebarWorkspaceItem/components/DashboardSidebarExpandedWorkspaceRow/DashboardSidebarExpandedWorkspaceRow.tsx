@@ -23,8 +23,8 @@ import type {
 	DashboardSidebarWorkspace,
 	DashboardSidebarWorkspacePullRequest,
 } from "../../../../types";
-import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarWorkspaceDiffStats";
 import { DashboardSidebarWorkspaceDetails } from "../DashboardSidebarWorkspaceDetails/DashboardSidebarWorkspaceDetails";
+import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarWorkspaceDiffStats";
 import { DashboardSidebarWorkspaceIcon } from "../DashboardSidebarWorkspaceIcon";
 import { DashboardSidebarWorkspaceChips } from "./components/DashboardSidebarWorkspaceChips";
 

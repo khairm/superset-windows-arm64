@@ -6,9 +6,10 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useCreateWorkspace } from "renderer/react-query/workspaces/useCreateWorkspace";
-import { useDeleteWorkspace } from "renderer/react-query/workspaces/useDeleteWorkspace";
 import { useUpdateWorkspace } from "renderer/react-query/workspaces/useUpdateWorkspace";
+import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/CollectionsProvider";
+import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { executeTool, type ToolContext } from "./tools";
 
 const COMMAND_PERSIST_RETRY_MS = 1_000;
@@ -41,7 +42,6 @@ export function useCommandWatcher() {
 
 	const createWorktree = useCreateWorkspace({ skipNavigation: true });
 	const setActive = electronTrpc.workspaces.setActive.useMutation();
-	const deleteWorkspace = useDeleteWorkspace();
 	const updateWorkspace = useUpdateWorkspace();
 	const terminalCreateOrAttach =
 		electronTrpc.terminal.createOrAttach.useMutation();
@@ -77,11 +77,47 @@ export function useCommandWatcher() {
 		return match ? match[1] : null;
 	}, []);
 
+	// (RECYCLE-BIN) The remote delete_workspace tool soft-deletes through the
+	// exact same sidebar mutation the local Delete uses — the host-served
+	// workspace list (KANBAN-HOST-SOURCE) resolves the row's type and project so
+	// a main can be refused with a reason instead of destroyed, and no physical
+	// destroy mutation is reachable from a tool at all.
+	const { workspaces: hostWorkspaces } = useHostWorkspaces();
+	const { deleteWorkspace: softDeleteSidebarWorkspace } =
+		useDashboardSidebarState();
+	const softDeleteWorkspace = useCallback<ToolContext["softDeleteWorkspace"]>(
+		(workspaceId) => {
+			const hostWorkspace =
+				hostWorkspaces.find((candidate) => candidate.id === workspaceId) ??
+				null;
+			if (!hostWorkspace) {
+				return {
+					ok: false,
+					reason: `Workspace ${workspaceId} was not found on this device`,
+				};
+			}
+			if (hostWorkspace.type === "main") {
+				return {
+					ok: false,
+					reason: `Workspace ${workspaceId} is a main workspace — mains are archive-only and can never be deleted`,
+				};
+			}
+			if (!softDeleteSidebarWorkspace(workspaceId, hostWorkspace.projectId)) {
+				return {
+					ok: false,
+					reason: `Workspace ${workspaceId} could not be moved to the Recycle Bin`,
+				};
+			}
+			return { ok: true };
+		},
+		[hostWorkspaces, softDeleteSidebarWorkspace],
+	);
+
 	const toolContext: ToolContext = useMemo(
 		() => ({
 			createWorktree,
 			setActive,
-			deleteWorkspace,
+			softDeleteWorkspace,
 			updateWorkspace,
 			terminalCreateOrAttach,
 			terminalWrite,
@@ -95,7 +131,7 @@ export function useCommandWatcher() {
 		[
 			createWorktree,
 			setActive,
-			deleteWorkspace,
+			softDeleteWorkspace,
 			updateWorkspace,
 			terminalCreateOrAttach,
 			terminalWrite,

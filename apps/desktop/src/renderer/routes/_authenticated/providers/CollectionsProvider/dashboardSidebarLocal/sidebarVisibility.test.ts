@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
 	getWorkspaceSidebarBucket,
+	isWithinRecycleBinWindow,
 	isWorkspaceArchived,
 } from "./sidebarVisibility";
 
@@ -50,5 +51,39 @@ describe("getWorkspaceSidebarBucket — master cards archive, never hard-hide", 
 				"branch",
 			),
 		).toBe("completed");
+	});
+});
+
+// (RECYCLE-BIN-SESSIONS) A session row is classified exactly like a project
+// thread — the bucket reader never looks at projectId — and the retention
+// window is a pure display filter over whatever the bin holds.
+describe("soft-deleted rows and the retention display window", () => {
+	const NOW = 1_000_000_000;
+	const DAY_MS = 24 * 3_600_000;
+
+	it("buckets a soft-deleted session as 'deleted', ahead of every other lane", () => {
+		expect(
+			getWorkspaceSidebarBucket(
+				{
+					isHidden: true,
+					deletedAt: NOW,
+					archivedAt: NOW,
+					completedAt: NOW,
+					snoozeUntil: NOW + DAY_MS,
+				},
+				NOW,
+				"session",
+			),
+		).toBe("deleted");
+	});
+
+	it("shows items deleted within the last 30 days and hides older ones", () => {
+		expect(isWithinRecycleBinWindow(NOW - DAY_MS, 30, NOW)).toBe(true);
+		expect(isWithinRecycleBinWindow(NOW - 30 * DAY_MS, 30, NOW)).toBe(true);
+		expect(isWithinRecycleBinWindow(NOW - 31 * DAY_MS, 30, NOW)).toBe(false);
+	});
+
+	it("always shows a row with no deletedAt rather than filtering it away", () => {
+		expect(isWithinRecycleBinWindow(null, 30, NOW)).toBe(true);
 	});
 });
