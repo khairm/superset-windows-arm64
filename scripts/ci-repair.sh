@@ -57,6 +57,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/ai-run.sh"
 # that "fixed" a type error by widening a refusal or coercing an unreadable
 # guard's `null` to `true` would pass every deterministic gate and ship.
 #
+# scripts/ai-streak.sh is in the list for the sibling reason: the build never
+# runs it, but it decides whether an (AI-UNAVAILABLE) nightly concludes green
+# and when a persistent outage escalates. An agent that "fixed" a failure by
+# widening that would silence the nightly instead of repairing it.
+#
 # The trailing `*` is load-bearing. serve.ts imports "./companion", and both TS
 # and esbuild resolve a sibling FILE `companion.ts` ahead of `companion/index.ts`
 # — so without the wildcard an agent could shadow the entire frozen directory
@@ -70,6 +75,7 @@ FROZEN_GATE_PATHS=(
   scripts/materialize-native-closure.sh
   scripts/ci-repair.sh
   scripts/ai-run.sh
+  scripts/ai-streak.sh
   packages/host-service/src/companion*
 )
 # One release version across the repo (bun run check:versions invariant).
@@ -161,7 +167,10 @@ Rules:
 When done, stop. Output a one-paragraph summary of the root cause and your fix."
 
     # Pessimistic rc FIRST: the AI-unavailable path aborts mid-call, so the
-    # record has to be on disk before the call, not after it.
+    # record has to be on disk before the call, not after it. This channel —
+    # not ai-run.sh's sentinel — is what the push step adjudicates on: a step
+    # killed mid-agent leaves no sentinel, and this build must fail CLOSED in
+    # exactly that case.
     echo "$AI_UNAVAILABLE_EXIT" > "$STATE_DIR/claude-rc"
     # Both the install and the run classify into the SAME path, inside ONE
     # subshell: die_ai_unavailable exits, and exiting this step outright would
@@ -203,8 +212,14 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
     # reasoning about it and no semantic review covers this loop. Refuse here,
     # BEFORE `git add -A`, so a partially-edited tree can never be committed,
     # pushed, built and released off the back of an infrastructure outage.
+    # The VERDICT comes from claude-rc (pessimistic: written 99 before the call,
+    # so a killed step still fails closed); the REASON, when the abort was a
+    # real classified outage, comes from ai-run.sh's sentinel, which survives
+    # across steps of this job in AI_TMPDIR. Reason is decoration here, never
+    # the decision.
     if [ "$(cat "$STATE_DIR/claude-rc" 2>/dev/null || echo 0)" -eq "$AI_UNAVAILABLE_EXIT" ]; then
-      echo "::error::(BUILD-REPAIR) (AI-UNAVAILABLE) the repair agent's CLI never reached the model — this build is UNJUDGED, not unrepairable. Nothing committed or pushed (any partial edit is discarded with the runner). Recovery: re-run the build once the CLI is available again. Failing loud."
+      AI_REASON=$(ai_unavailable_reason || true)
+      echo "::error::(BUILD-REPAIR) (AI-UNAVAILABLE) the repair agent's CLI never reached the model — this build is UNJUDGED, not unrepairable.${AI_REASON:+ CLI reason: ${AI_REASON}.} Nothing committed or pushed (any partial edit is discarded with the runner). Recovery: re-run the build once the CLI is available again. Failing loud."
       exit 1
     fi
 

@@ -42,10 +42,14 @@ AI_SOFT_RE='rate[ _-]?limit|temporarily limiting|not your usage limit|overloaded
 # Service Unavailable", "401 Unauthorized from the registry") — a build log is
 # untrusted input, so that quoting can also be induced deliberately. Residual
 # risk, accepted and unavoidable without structured output: a SHORT prose reply
-# that happens to quote a signature is still misread as infrastructure. That
-# fails CLOSED (a loud, honest "CLI unavailable" abort, no bad merge or build
-# shipped), and a nonzero exit with only a line or two of output is
-# overwhelmingly a CLI diagnostic rather than a model answer.
+# that happens to quote a signature is still misread as infrastructure. In the
+# BUILD that fails closed (a loud, honest "CLI unavailable" abort, no bad merge
+# or build shipped). In the NIGHTLY it no longer does: the misread abort is
+# converted to a green no-op (scripts/ai-streak.sh), so the cost of a misread is
+# a silently skipped night rather than a bad ship — bounded by the
+# consecutive-night streak threshold (7), which turns a persistent misread into
+# a RED run. A nonzero exit with only a line or two of output is overwhelmingly
+# a CLI diagnostic rather than a model answer.
 AI_LOG_MAX_LINES=20
 AI_LOG_MAX_BYTES=2048
 
@@ -53,6 +57,61 @@ AI_LOG_MAX_BYTES=2048
 # reached the model" from any exit code the CLI itself produces. Nonzero, so a
 # caller that does NOT special-case it (the nightly merge) still hard-aborts.
 AI_UNAVAILABLE_EXIT=99
+
+# Where this file and its consumers keep per-run scratch (logs, sentinel,
+# marker). One definition, so nothing re-derives the fallback chain.
+AI_TMPDIR="${AI_TMPDIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
+
+# (AI-UNAVAILABLE) Two pieces of PROVENANCE, both produced here, both read only
+# through the helpers below — a consumer never needs to know they are files.
+#
+#   sentinel  "this abort was declared by die_ai_unavailable". The exit code
+#             alone proves nothing: it is whatever the last command produced,
+#             and a consumer's script runs plenty of commands we do not own — a
+#             merge-phase AI pass can edit a fork-owned script that later runs
+#             bare under `set -e` (scripts/check-override-consistency.mjs is not
+#             in FROZEN_GATE_PATHS, which only gates BUILD repairs), and any of
+#             them exiting 99 would otherwise be read as an AI outage and
+#             green-washed. Armed (cleared) at the START of every AI attempt, so
+#             a later attempt never inherits an earlier one's proof.
+#   marker    "the CLI provably reached the model at least once this run".
+#             CUMULATIVE, never cleared by a later attempt: a quota abort at
+#             23:00 does not un-prove that the model answered at 22:00. Its
+#             consumer (the nightly streak) uses it to decide whether a
+#             non-outage exit is evidence the outage ENDED — recovery has to be
+#             proven exactly like the outage itself, or one unrelated flake
+#             during a dead-credential week would zero the escalation counter.
+AI_UNAVAILABLE_SENTINEL="${AI_UNAVAILABLE_SENTINEL:-$AI_TMPDIR/ai-unavailable}"
+AI_REACHED_MODEL_MARKER="${AI_REACHED_MODEL_MARKER:-$AI_TMPDIR/ai-reached-model}"
+
+# True when THIS run's abort was declared by die_ai_unavailable.
+ai_unavailable_proven() { [ -s "$AI_UNAVAILABLE_SENTINEL" ]; }
+
+# The CLI line that proved it ("during <label>: <line>"), or nothing.
+ai_unavailable_reason() { [ -s "$AI_UNAVAILABLE_SENTINEL" ] && head -1 "$AI_UNAVAILABLE_SENTINEL"; }
+
+# True when the CLI reached the model at least once during this run.
+ai_model_reached() { [ -e "$AI_REACHED_MODEL_MARKER" ]; }
+
+# Record that proof. Called from every run_claude branch that IS evidence the
+# model answered — a clean run, and a nonzero exit whose log is too large to be
+# a transport diagnosis (this file's own definition of "the model ran and
+# produced prose"). Both count: a night the model answered and the work still
+# failed is not a blocked night, and treating it as one would escalate before
+# the threshold's worth of genuinely consecutive outages.
+ai_note_model_reached() {
+  : > "$AI_REACHED_MODEL_MARKER" 2>/dev/null && return 0
+  echo "::warning::(AI-UNAVAILABLE) could not record the reached-model marker ${AI_REACHED_MODEL_MARKER} — a consumer may keep an outage streak that this run actually ended."
+}
+
+# TWO PROVENANCE CHANNELS, deliberately not merged. The sentinel above is
+# OPTIMISTIC and PROVEN: it exists only when this run really did abort on an AI
+# outage, and it is what lets the nightly turn that abort green. The build
+# repair loop keeps its own PESSIMISTIC channel instead ($STATE_DIR/claude-rc,
+# written 99 BEFORE the call and overwritten with the real code after): a
+# killed or timed-out step leaves no sentinel, and the build must fail closed
+# in exactly that case — an unjudged tree is never committed. Fail-closed for
+# shipping code, proven-only for going green.
 
 # What kind of run is being aborted, and how the operator recovers. Consumers
 # override before calling; the defaults describe the nightly merge.
@@ -70,9 +129,23 @@ fi
 
 die_ai_unavailable() {
   # $1 = call-site label, $2 = the CLI line that proved it
-  echo "::error::(AI-UNAVAILABLE) Claude CLI unavailable during $1 (\"$2\") — not a ${AI_RUN_CONTEXT} failure; ${AI_RUN_RECOVERY}"
+  # Plain text, deliberately NOT ::error::. In the nightly this abort can now
+  # conclude GREEN, and a red annotation on a green run is a contradiction the
+  # log reader has to resolve. The CONSUMER owns the annotation level: the
+  # nightly emits ::notice:: below the streak threshold and ::error:: at it,
+  # and the build-repair push step emits its own ::error:: (quoting
+  # ai_unavailable_reason).
+  echo "(AI-UNAVAILABLE) Claude CLI unavailable during $1 (\"$2\") — not a ${AI_RUN_CONTEXT} failure; ${AI_RUN_RECOVERY}"
+  if ! printf 'during %s: %s\n' "$1" "$2" > "$AI_UNAVAILABLE_SENTINEL" 2>/dev/null; then
+    echo "::warning::(AI-UNAVAILABLE) could not write the provenance sentinel ${AI_UNAVAILABLE_SENTINEL} — a consumer that requires it will treat this abort as an ordinary failure (loud, not silent)."
+  fi
   exit "$AI_UNAVAILABLE_EXIT"
 }
+
+# Start of an AI attempt: last attempt's abort proof must not outlive it (the
+# build-repair loop runs several rounds inside ONE job, sharing AI_TMPDIR). The
+# reached-model marker is deliberately NOT cleared — see its definition.
+ai_arm_attempt() { rm -f "$AI_UNAVAILABLE_SENTINEL"; }
 
 ai_backoff() {
   local s=$((30 * $1))
@@ -85,6 +158,7 @@ ai_backoff() {
 # install is an AI-unavailable condition like any other — never a verdict about
 # the merge or the build.
 ensure_claude() {
+  ai_arm_attempt
   command -v claude >/dev/null 2>&1 && return 0
   npm install -g @anthropic-ai/claude-code \
     || die_ai_unavailable "claude CLI install" "npm install -g @anthropic-ai/claude-code failed"
@@ -101,7 +175,8 @@ ensure_claude() {
 run_claude() {
   local label="$1" prompt="$2" log rc hit try lines bytes errexit_was_on=0
   case $- in *e*) errexit_was_on=1 ;; esac
-  log="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/claude-${label}.log"
+  ai_arm_attempt
+  log="$AI_TMPDIR/claude-${label}.log"
   for ((try = 1; try <= AI_RUN_MAX_TRIES; try++)); do
     set +e
     claude --dangerously-skip-permissions --model claude-opus-5 --effort high -p "$prompt" 2>&1 | tee "$log"
@@ -110,8 +185,11 @@ run_claude() {
     # The CLI reached the model and succeeded: the log is model prose, never a
     # diagnosis. Return without looking at it — this repo's own source
     # discusses these very phrases, and an agent narrating "please run /login"
-    # after a good run must not abort anything.
+    # after a good run must not abort anything. Record the proof: a consumer
+    # deciding whether an outage has ENDED needs evidence, not the absence of
+    # evidence.
     if [ "$rc" -eq 0 ]; then
+      ai_note_model_reached
       return 0
     fi
     # The CLI itself never executed (missing from PATH after a failed install,
@@ -129,6 +207,7 @@ run_claude() {
     read -r lines bytes < <(wc -lc < "$log")
     if [ "$lines" -gt "$AI_LOG_MAX_LINES" ] || [ "$bytes" -gt "$AI_LOG_MAX_BYTES" ]; then
       echo "claude exited $rc after producing ${lines} lines / ${bytes} bytes — model output, not an infrastructure signature; treating as a real attempt."
+      ai_note_model_reached
       return "$rc"
     fi
     hit=$(grep -m1 -iE "$AI_HARD_RE" "$log" || true)

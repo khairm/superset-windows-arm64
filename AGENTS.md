@@ -38,12 +38,20 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   to the BUILT sha; ANY unrepaired failure hard-aborts with the baseline
   untouched → fix locally with the maintainer and re-baseline. A
   `rehearse=true` dispatch replays a night's merge half with zero side effects.
+  A night blocked ONLY by a PROVEN `(AI-UNAVAILABLE)` abort (declared by the
+  wrapper, never an exit code alone) merged, built and published nothing, so it
+  concludes GREEN (no email) as a loud no-op with build/advance skipped — until
+  `AI_UNAVAILABLE_STREAK_THRESHOLD` (7, owned by the script) consecutive blocked
+  NIGHTS, which fails RED. Same-day re-runs count once, and only a night where
+  the CLI provably reached the model clears the streak.
 - **Key files.** `FEATURES.md` (feature manifest + fenced `markers` block the
   gates parse), `.fork/upstream-baseline.txt`,
   `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
   `scripts/check-feature-markers.mjs` (standalone marker gate),
   `scripts/ci-repair.sh` (build-repair engine),
   `scripts/ai-run.sh` ((AI-UNAVAILABLE) classification + shared Claude CLI wrapper),
+  `scripts/ai-streak.sh` ((AI-UNAVAILABLE) green no-op + consecutive-blocked-night
+  escalation),
   `scripts/check-override-consistency.mjs`, `scripts/resolve-release-age.mjs`,
   companion native packages `github.com/khairm/libsql-windows-arm64` +
   `github.com/khairm/tokenizers-windows-arm64`.

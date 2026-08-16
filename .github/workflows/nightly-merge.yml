@@ -15,6 +15,16 @@ name: Nightly upstream merge
 # unrepaired breakage, lost marker, build failure) hard-aborts and leaves the
 # baseline untouched -> recovery loop.
 #
+# EXCEPTION: a run blocked ONLY because the Claude CLI never reached the model
+# (usage cap, dead credential, transport) merged, built and published NOTHING,
+# so it concludes GREEN as an (AI-UNAVAILABLE) no-op — loud ::notice:: + step
+# summary, baseline untouched, build/advance skipped — and GitHub therefore does
+# not email a quota week. The abort must be PROVEN by the AI wrapper, not just
+# by exit code 99, and the streak clears only on a night the CLI provably
+# reached the model. AI_UNAVAILABLE_STREAK_THRESHOLD consecutive blocked
+# NIGHTS (same-day re-runs count once) is no longer routine and fails RED.
+# See scripts/ai-streak.sh.
+#
 # AI cost scales with the UPSTREAM delta per release, NOT with how large the fork
 # grows. The build is deterministic but SELF-REPAIRING: a failed attempt goes to
 # a bounded (BUILD-REPAIR) Opus 5 loop (max 2 repairs / 3 attempts) that pushes
@@ -110,18 +120,13 @@ jobs:
           git config user.name "superset-arm64-bot"
           git config user.email "actions@users.noreply.github.com"
 
-          # --- shared Claude CLI wrapper (scripts/ai-run.sh) -------------------
-          # Sourced ONCE, before the merge: the classifier that decides tonight's
-          # aborts is our pre-merge one, so an upstream edit to it cannot change
-          # them. `claude … || true` used to discard both exit code and output,
-          # so a quota-exhausted account burned every retry in seconds and the
-          # run blamed the merge (2026-08-13/14 nightlies). See the script header.
-          source scripts/ai-run.sh # (AI-UNAVAILABLE)
-          # One guarded install covers every AI pass below: they all run in THIS
-          # step's single shell (the REFERR loop used to reinstall per attempt).
-          ensure_claude
-
           # --- validate dispatch inputs at the boundary ------------------------
+          # FIRST, before the AI wrapper and before the (AI-UNAVAILABLE) trap is
+          # armed: a garbage dispatch input is a caller error that must fail
+          # loud every time. If this ran after ensure_claude, a quota outage
+          # during the install would convert the whole run — including the
+          # unreported bad input — into a green no-op, and the operator would
+          # never learn their dispatch was malformed.
           FORCE="${FORCE_TAG:-}"
           REHEARSE="${REHEARSE:-}"
           REHEARSE_BASE="${REHEARSE_BASE:-}"
@@ -138,6 +143,25 @@ jobs:
             echo "REHEARSAL: replaying from historical base $REHEARSE_SHA"
             git checkout -q "$REHEARSE_SHA"
           fi
+
+          # --- shared Claude CLI wrapper (scripts/ai-run.sh) -------------------
+          # Sourced ONCE, before the merge: the classifier that decides tonight's
+          # aborts is our pre-merge one, so an upstream edit to it cannot change
+          # them. `claude … || true` used to discard both exit code and output,
+          # so a quota-exhausted account burned every retry in seconds and the
+          # run blamed the merge (2026-08-13/14 nightlies). See the script header.
+          source scripts/ai-run.sh # (AI-UNAVAILABLE)
+          # (AI-UNAVAILABLE) This EXIT trap turns a PROVEN CLI outage — and only
+          # that — into a green no-op, and escalates a run of blocked nights to
+          # RED. Rationale, storage and the threshold live in the script header.
+          # Armed BEFORE ensure_claude: installing the CLI is itself an AI pass.
+          # Override the threshold with AI_UNAVAILABLE_STREAK_THRESHOLD.
+          source scripts/ai-streak.sh # (AI-UNAVAILABLE)
+          AI_STREAK_DRY_RUN="$REHEARSE" # validated above; the script owns the name
+          ai_streak_install_trap
+          # One guarded install covers every AI pass below: they all run in THIS
+          # step's single shell (the REFERR loop used to reinstall per attempt).
+          ensure_claude
 
           # --- detect the upstream tag to merge --------------------------------
           git remote add upstream https://github.com/superset-sh/superset.git 2>/dev/null || true
@@ -637,6 +661,8 @@ jobs:
 
   build:
     needs: merge
+    # false = one of the three no-ops: already at baseline, a rehearsal, or an
+    # (AI-UNAVAILABLE) night that merged, built and published nothing.
     if: needs.merge.outputs.should_build == 'true'
     # FOOTGUN: never add continue-on-error to THIS job — advance's implicit
     # success() gate reads this job's real result; continue-on-error would
