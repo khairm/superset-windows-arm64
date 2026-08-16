@@ -104,6 +104,16 @@ function seenThrough(terminalId: string, at: number): void {
 	}));
 }
 
+/**
+ * (ONE-BUZZ-UNTIL-READ) A finish this machine saw go green and has not yet had
+ * a host confirm as read — the phone is still showing it.
+ */
+function outstandingReady(terminalId: string, at: number): void {
+	useV2NotificationStore.setState((state) => ({
+		outstandingReadyAt: { ...state.outstandingReadyAt, [terminalId]: at },
+	}));
+}
+
 const settle = async () => {
 	for (let i = 0; i < 6; i++) await Promise.resolve();
 };
@@ -120,6 +130,7 @@ beforeEach(() => {
 	useV2NotificationStore.setState({
 		sources: {},
 		terminalSeenAt: {},
+		outstandingReadyAt: {},
 		shellRunningTerminals: {},
 		backgroundRunningTerminals: {},
 	});
@@ -169,6 +180,24 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 		expect(seenCalls).toHaveLength(0);
 	});
 
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The replay paints a green for this row, but a
+	 * re-derivation of the past is not evidence that a device is holding a
+	 * notification — and inventing a record here would make the NEXT resync
+	 * report a read for it.
+	 */
+	it("does not invent an outstanding record out of its own replay", async () => {
+		seenThrough("terminal-1", 4_999);
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		const state = useV2NotificationStore.getState();
+		expect(state.sources["terminal:terminal-1"]?.status).toBe("review");
+		expect(state.outstandingReadyAt["terminal-1"]).toBeUndefined();
+	});
+
 	it("does not repair a terminal with no seen mark at all", async () => {
 		await resyncAgentStatusFromHost({
 			hostUrl: HOST,
@@ -176,6 +205,64 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — eligibility", () => 
 		});
 		await settle();
 		expect(seenCalls).toHaveLength(0);
+	});
+
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The row's last event is a `Start`: nothing about it
+	 * would raise a green, so the eligibility test above never looks at it — yet
+	 * the phone is still holding the finish from before it, and the seen mark
+	 * says the user read the chat. The outstanding record is the only thing that
+	 * knows which finish that was.
+	 */
+	it("repairs an OUTSTANDING finish whose row has moved on to a Start", async () => {
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
+		outstandingReady("terminal-1", 5_000);
+		seenThrough("terminal-1", 6_000);
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-1",
+				// The FINISH's instant, not the `Start` the row now rests on.
+				seenThroughAt: 5_000,
+			},
+		]);
+		expect(result?.seenRepairsSent).toBe(1);
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+		).toBeUndefined();
+	});
+
+	it("does not repair an outstanding finish the user has not read past", async () => {
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
+		outstandingReady("terminal-1", 5_000);
+		seenThrough("terminal-1", 4_000);
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(0);
+	});
+
+	it("keeps an outstanding record no host consumed", async () => {
+		acceptSeen = false;
+		snapshotRows = [row({ lastEventType: "Start", lastEventAt: 6_000 })];
+		outstandingReady("terminal-1", 5_000);
+		seenThrough("terminal-1", 6_000);
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(1);
+		expect(
+			useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+		).toBe(5_000);
 	});
 
 	it("does not repair an event that would never have raised a green", async () => {

@@ -339,9 +339,9 @@ const PUSH_DATA_KEYS_BY_VERSION_KIND: Readonly<
 	},
 	"3": {
 		q: ["v", "k", "i", "w", "n", "x", "t", "pn", "wn", "tn", "tc"],
-		g: ["v", "k", "i", "w", "x", "t", "pn", "wn", "tn", "tc"],
+		g: ["v", "k", "i", "w", "x", "gx", "t", "pn", "wn", "tn", "tc"],
 		e: ["v", "k", "i", "w", "x", "t", "pn", "wn", "tn", "tc"],
-		c: ["v", "k", "i", "w", "x", "t"],
+		c: ["v", "k", "i", "w", "x", "gx", "t"],
 	},
 };
 
@@ -367,7 +367,12 @@ const PUSH_DATA_KEYS_BY_VERSION_KIND: Readonly<
  * a v1 frame carrying one is refused as an unexpected key before any value rule
  * is consulted.
  */
-type PushValueRule = "opaque" | "opaque-or-empty" | "digits-or-empty" | "name";
+type PushValueRule =
+	| "opaque"
+	| "opaque-or-empty"
+	| "digits"
+	| "digits-or-empty"
+	| "name";
 
 const PUSH_VALUE_RULES: Readonly<Record<string, PushValueRule>> = {
 	v: "opaque",
@@ -377,10 +382,31 @@ const PUSH_VALUE_RULES: Readonly<Record<string, PushValueRule>> = {
 	n: "opaque",
 	x: "opaque",
 	t: "opaque-or-empty",
+	gx: "digits",
 	pn: "name",
 	wn: "name",
 	tn: "name",
 	tc: "digits-or-empty",
+};
+
+/**
+ * (ONE-BUZZ-UNTIL-READ) The one place a KIND is stricter than its key's general
+ * rule.
+ *
+ * A ready alert's `t` is not optional the way a question's is: the phone keys
+ * ready notifications BY TERMINAL so a later finish replaces the standing card
+ * in place, and a `g` with `t: ""` is a card that can never be replaced. That
+ * is the exact failure `(ONE-BUZZ-UNTIL-READ)` exists to prevent, so it is
+ * refused at the boundary rather than degraded.
+ *
+ * An override table rather than a per-version one: this is a single deliberate
+ * exception, and spelling it out is clearer than three near-identical copies of
+ * every other key.
+ */
+const PUSH_VALUE_RULE_OVERRIDES: Readonly<
+	Record<string, Readonly<Record<string, PushValueRule>>>
+> = {
+	g: { t: "opaque" },
 };
 
 /**
@@ -513,6 +539,8 @@ function valueSatisfiesRule(value: string, rule: PushValueRule): boolean {
 			return PUSH_VALUE_PATTERN.test(value);
 		case "opaque-or-empty":
 			return value.length === 0 || PUSH_VALUE_PATTERN.test(value);
+		case "digits":
+			return DIGITS_PATTERN.test(value);
 		case "digits-or-empty":
 			return value.length === 0 || DIGITS_PATTERN.test(value);
 		case "name":
@@ -588,7 +616,8 @@ export function assertPushDataSafe(
 				`push data.${key} must be a string, got ${typeof value}`,
 			);
 		}
-		const rule = PUSH_VALUE_RULES[key];
+		const rule =
+			PUSH_VALUE_RULE_OVERRIDES[kind]?.[key] ?? PUSH_VALUE_RULES[key];
 		if (rule === undefined) {
 			throw new PushConfigError(
 				`push data.${key} has no value rule — refusing to send`,
@@ -689,27 +718,34 @@ export function buildEnvelope(token: string, data: PushData): PushEnvelope {
 }
 
 /**
- * (ALERT-CONTEXT-NAMES) The four context keys every v3 ALERT carries, derived
- * once so the question builder and the lifecycle builder cannot disagree about
- * what "absent" looks like.
+ * (ALERT-CONTEXT-NAMES) The NAME keys every v3 alert carries, derived once so
+ * the question builder and the lifecycle builders cannot disagree about what
+ * "absent" looks like.
  *
- * TOTAL. A missing context, a malformed handle and an unusable name all resolve
- * to `""` rather than to a throw. The alert is the product; the names are a
- * courtesy, and a courtesy may never be able to cancel the product.
+ * TOTAL. A missing context and an unusable name both resolve to `""` rather
+ * than to a throw. The alert is the product; the names are a courtesy, and a
+ * courtesy may never be able to cancel the product.
+ *
+ * (ONE-BUZZ-UNTIL-READ) `t` IS NOT IN HERE ANY MORE. The terminal handle used
+ * to ride along with the names, which meant a context resolution that failed —
+ * a deleted workspace row, a locked db — silently degraded the handle to `""`
+ * along with them. For a ready alert that is not a cosmetic loss: `t` is the
+ * notification's identity on the phone, and a `g` without it can never be
+ * replaced in place. The handle is now derived from the alert's own terminal id
+ * by each lifecycle builder's caller and passed explicitly, so it cannot share
+ * a failure mode with the names.
  */
-function contextKeys(context: PushAlertContext | null): {
-	t: string;
+function contextNameKeys(context: PushAlertContext | null): {
 	pn: string;
 	wn: string;
 	tn: string;
 	tc: string;
 } {
 	if (context === null || context === undefined) {
-		return { t: "", pn: "", wn: "", tn: "", tc: "" };
+		return { pn: "", wn: "", tn: "", tc: "" };
 	}
 	const tabCount = context.tabCount;
 	return {
-		t: sanitizeTerminalHandle(context.terminalHandle),
 		pn: sanitizePushName(context.projectName),
 		wn: sanitizePushName(context.workspaceName),
 		tn: sanitizePushName(context.tabTitle),
@@ -768,7 +804,7 @@ export function buildQuestionPushData(input: {
 	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
 		throw new PushConfigError("expiresAtMs must be a positive integer");
 	}
-	const { t, pn, wn, tn, tc } = contextKeys(input.context);
+	const { pn, wn, tn, tc } = contextNameKeys(input.context);
 	return {
 		v: "3",
 		k: "q",
@@ -776,7 +812,9 @@ export function buildQuestionPushData(input: {
 		w: input.workspaceId,
 		n: String(input.questionCount),
 		x: String(input.expiresAtMs),
-		t,
+		// A question's handle stays OPTIONAL: it is a deep-link hint, not the
+		// notification's identity, and a pre-upgrade fence row genuinely has none.
+		t: sanitizeTerminalHandle(input.context?.terminalHandle),
 		pn,
 		wn,
 		tn,
@@ -851,6 +889,18 @@ export function buildLifecyclePushData(input: {
 	workspaceId: WorkspaceId;
 	kind: "g" | "e";
 	expiresAtMs: number;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The terminal handle, derived from the ALERT ROW's
+	 * own terminal id — never read out of `context`. REQUIRED and non-empty for
+	 * a ready alert (it is the notification's identity on the phone); optional
+	 * for an error, which is never replaced in place.
+	 */
+	terminalHandle: string;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The outcome event's instant — the same one the alert
+	 * id hashes. Required for `g`, ignored for `e`.
+	 */
+	outcomeAtMs: number;
 	/** `null` when nothing could be resolved. Never a reason to fail the send. */
 	context: PushAlertContext | null;
 }): PushData {
@@ -863,18 +913,43 @@ export function buildLifecyclePushData(input: {
 	if (!Number.isInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
 		throw new PushConfigError("expiresAtMs must be a positive integer");
 	}
-	const { t, pn, wn, tn, tc } = contextKeys(input.context);
+	const names = contextNameKeys(input.context);
+	const handle = sanitizeTerminalHandle(input.terminalHandle);
+
+	if (input.kind === "e") {
+		return {
+			v: "3",
+			k: "e",
+			i: input.alertId,
+			w: input.workspaceId,
+			x: String(input.expiresAtMs),
+			t: handle,
+			...names,
+		};
+	}
+
+	// (ONE-BUZZ-UNTIL-READ) A ready alert without a handle is one the phone can
+	// never replace in place, which is the whole mechanism. The value is NOT
+	// echoed, for the same reason no other id is.
+	if (handle.length === 0) {
+		throw new PushConfigError(
+			"a ready lifecycle alert requires a 22-character terminal handle — refusing to build a notification the phone could never replace",
+		);
+	}
+	if (!Number.isInteger(input.outcomeAtMs) || input.outcomeAtMs <= 0) {
+		throw new PushConfigError(
+			"a ready lifecycle alert requires the outcome instant it was minted from (gx)",
+		);
+	}
 	return {
 		v: "3",
-		k: input.kind,
+		k: "g",
 		i: input.alertId,
 		w: input.workspaceId,
 		x: String(input.expiresAtMs),
-		t,
-		pn,
-		wn,
-		tn,
-		tc,
+		gx: String(input.outcomeAtMs),
+		t: handle,
+		...names,
 	};
 }
 
@@ -894,11 +969,22 @@ export function buildLifecycleRetractPushData(input: {
 	alertId: string;
 	workspaceId: WorkspaceId;
 	terminalHandle: string;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The retired alert's outcome instant, or — on the
+	 * blind restart path, where no row survives to read one off — the instant
+	 * the user read through. Either way it names the finish being cancelled.
+	 */
+	outcomeAtMs: number;
 	nowMs: number;
 }): PushData {
 	assertLifecycleIdentity(input.alertId, input.workspaceId);
 	if (!Number.isInteger(input.nowMs) || input.nowMs <= 0) {
 		throw new PushConfigError("nowMs must be a positive integer");
+	}
+	if (!Number.isInteger(input.outcomeAtMs) || input.outcomeAtMs <= 0) {
+		throw new PushConfigError(
+			"a lifecycle retraction requires the outcome instant it cancels (gx)",
+		);
 	}
 	return {
 		v: "3",
@@ -906,6 +992,7 @@ export function buildLifecycleRetractPushData(input: {
 		i: input.alertId,
 		w: input.workspaceId,
 		x: String(input.nowMs + RETRACT_TTL_MS),
+		gx: String(input.outcomeAtMs),
 		t: sanitizeTerminalHandle(input.terminalHandle),
 	};
 }
@@ -1531,6 +1618,14 @@ export interface PushSender {
 		kind: "g" | "e";
 		expiresAtMs: number;
 		/**
+		 * (ONE-BUZZ-UNTIL-READ) Derived from the alert row's own terminal id, so
+		 * a failed context resolution can cost the NAMES without ever costing the
+		 * handle a ready notification is addressed by.
+		 */
+		terminalHandle: string;
+		/** The outcome instant the alert id was hashed from. */
+		outcomeAtMs: number;
+		/**
 		 * (ALERT-CONTEXT-NAMES) Resolved by the CALLER, immediately before this
 		 * call, and never cached in the held alert. A retry a quarter of an hour
 		 * later re-resolves, so a workspace renamed in the meantime buzzes with
@@ -1557,6 +1652,8 @@ export interface PushSender {
 		alertId: string;
 		workspaceId: WorkspaceId;
 		terminalHandle: string;
+		/** The outcome instant this retraction cancels. */
+		outcomeAtMs: number;
 	}): Promise<void>;
 	/**
 	 * The current fatal fault, or null. Non-null means push is DOWN and the user
@@ -2743,6 +2840,7 @@ export function createPushSender(deps: PushSenderDeps): PushSender {
 				alertId: input.alertId,
 				workspaceId: input.workspaceId,
 				terminalHandle: input.terminalHandle,
+				outcomeAtMs: input.outcomeAtMs,
 				nowMs: now(),
 			});
 			console.log(`${LOG} retracting lifecycle alert id=${input.alertId}`);

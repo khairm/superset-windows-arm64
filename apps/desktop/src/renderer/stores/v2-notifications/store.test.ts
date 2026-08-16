@@ -338,4 +338,181 @@ describe("v2 notification store", () => {
 			expect(store.markTerminalSeen("terminal-1", 200)).toBe(false);
 		});
 	});
+
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The outstanding-ready record. The green dot is a
+	 * transient — the agent starting work again deletes it — while the phone's
+	 * notification survives until something retracts it. This record is what
+	 * remembers, across that gap, WHICH finish is still on a device.
+	 */
+	describe("(ONE-BUZZ-UNTIL-READ) outstandingReadyAt", () => {
+		const seenSource = { type: "terminal", id: "terminal-1" } as const;
+
+		beforeEach(() => {
+			useV2NotificationStore.setState({
+				sources: {},
+				terminalSeenAt: {},
+				outstandingReadyAt: {},
+			});
+		});
+
+		it("records the instant a review axis was SET", () => {
+			useV2NotificationStore
+				.getState()
+				.applySourceAxes(
+					seenSource,
+					"workspace-1",
+					{ set: ["review"], clear: [] },
+					100,
+				);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBe(100);
+		});
+
+		it("SURVIVES the agent going back to work", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["working"], clear: ["permission", "review"] },
+				200,
+			);
+			const state = useV2NotificationStore.getState();
+			// The dot is gone; the notification on the phone is not.
+			expect(state.sources["terminal:terminal-1"]?.status).toBe("working");
+			expect(state.outstandingReadyAt["terminal-1"]).toBe(100);
+		});
+
+		it("survives the seen mark that clears the dot", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			expect(store.markTerminalSeen("terminal-1", 100)).toBe(true);
+			// Only a report a HOST consumed retires it — `markTerminalSeen` has no
+			// idea whether the mutation landed.
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBe(100);
+		});
+
+		it("is superseded by a newer finish, never regressed by an older one", () => {
+			const store = useV2NotificationStore.getState();
+			for (const at of [100, 300, 200]) {
+				store.applySourceAxes(
+					seenSource,
+					"workspace-1",
+					{ set: ["review"], clear: [] },
+					at,
+				);
+			}
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBe(300);
+		});
+
+		it("is not written by a red or a yellow", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["working"], clear: [] },
+				200,
+			);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBeUndefined();
+		});
+
+		it("is dropped by an explicit clear and by the terminal going away", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			store.clearOutstandingReady("terminal-1", 100);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBeUndefined();
+
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				300,
+			);
+			store.markTerminalSeen("terminal-1", 300);
+			store.pruneTerminalSeen("terminal-1");
+			const state = useV2NotificationStore.getState();
+			expect(state.outstandingReadyAt["terminal-1"]).toBeUndefined();
+			expect(state.terminalSeenAt["terminal-1"]).toBeUndefined();
+		});
+
+		/**
+		 * (ONE-BUZZ-UNTIL-READ) COMPARE-AND-CLEAR. A report is a network round
+		 * trip, and the agent does not stop working during it: finish B can land
+		 * while the read of finish A is still in the air. Clearing on A's
+		 * acknowledgement would throw away B's only evidence — the next `Start`
+		 * then clears B's green and opening the chat would report nothing, so B's
+		 * card sits on the phone until it expires.
+		 */
+		it("keeps a NEWER record when an older report is acknowledged", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			// Finish B lands while A's report is in flight.
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				200,
+			);
+			store.clearOutstandingReady("terminal-1", 100);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBe(200);
+
+			// B's own report retires it.
+			store.clearOutstandingReady("terminal-1", 200);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBeUndefined();
+		});
+
+		it("clears when the acknowledgement covers more than the record", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				seenSource,
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			store.clearOutstandingReady("terminal-1", 5_000);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBeUndefined();
+		});
+	});
 });

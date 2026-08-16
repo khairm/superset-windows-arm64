@@ -32,6 +32,7 @@ const ALERT = "a".repeat(22);
 const TERMINAL = "t".repeat(22);
 const TOKEN = "device-token";
 const EXPIRY = 1_700_000_000_000;
+const OUTCOME = 1_699_999_999_000;
 
 function context(overrides: Partial<PushAlertContext> = {}): PushAlertContext {
 	return {
@@ -70,11 +71,13 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
 		expect(Object.keys(data).sort()).toEqual(
-			["i", "k", "pn", "t", "tc", "tn", "v", "w", "wn", "x"].sort(),
+			["gx", "i", "k", "pn", "t", "tc", "tn", "v", "w", "wn", "x"].sort(),
 		);
 		expect(data).toMatchObject({
 			v: "3",
@@ -92,10 +95,11 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			nowMs: EXPIRY,
 		});
 		expect(Object.keys(data).sort()).toEqual(
-			["i", "k", "t", "v", "w", "x"].sort(),
+			["gx", "i", "k", "t", "v", "w", "x"].sort(),
 		);
 		for (const key of PUSH_NAME_EXEMPT_KEYS) {
 			expect(key in data).toBe(false);
@@ -107,6 +111,7 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			nowMs: EXPIRY,
 		});
 		const smuggled = { ...data, pn: "a project" } as unknown as PushData;
@@ -130,6 +135,8 @@ describe("(ALERT-CONTEXT-NAMES) v3 key sets are closed per (version, kind)", () 
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
@@ -199,6 +206,8 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
@@ -212,6 +221,8 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: context(),
 		});
@@ -232,6 +243,8 @@ describe("(ALERT-CONTEXT-NAMES) the plaintext exemption", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: context({
 				projectName: huge,
@@ -371,11 +384,76 @@ describe("(ALERT-CONTEXT-NAMES) context never fails a send", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "e",
+			terminalHandle: "not a handle",
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
-			context: context({ terminalHandle: "not a handle" }),
+			context: context(),
 		});
 		expect(data).toMatchObject({ t: "" });
 		expect(() => buildEnvelope(TOKEN, data)).not.toThrow();
+	});
+
+	// (ONE-BUZZ-UNTIL-READ) The handle is the notification's identity on the
+	// phone, so it is read off the alert row, not off the context. A context
+	// that resolved to nothing costs names — never the identity.
+	it("keeps the row's handle when the context resolved to nothing", () => {
+		const data = buildLifecyclePushData({
+			alertId: ALERT,
+			workspaceId: WORKSPACE,
+			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
+			expiresAtMs: EXPIRY,
+			context: null,
+		});
+		expect(data).toMatchObject({
+			t: TERMINAL,
+			gx: String(OUTCOME),
+			pn: "",
+			wn: "",
+			tn: "",
+		});
+	});
+
+	it("ignores a terminal handle smuggled in through the context", () => {
+		const data = buildLifecyclePushData({
+			alertId: ALERT,
+			workspaceId: WORKSPACE,
+			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
+			expiresAtMs: EXPIRY,
+			context: context({ terminalHandle: "z".repeat(22) }),
+		});
+		expect(data).toMatchObject({ t: TERMINAL });
+	});
+
+	it("refuses a ready alert with no handle to replace in place", () => {
+		expect(() =>
+			buildLifecyclePushData({
+				alertId: ALERT,
+				workspaceId: WORKSPACE,
+				kind: "g",
+				terminalHandle: "not a handle",
+				outcomeAtMs: OUTCOME,
+				expiresAtMs: EXPIRY,
+				context: context(),
+			}),
+		).toThrow(/requires a 22-character terminal handle/);
+	});
+
+	it("refuses a ready alert with no outcome instant", () => {
+		expect(() =>
+			buildLifecyclePushData({
+				alertId: ALERT,
+				workspaceId: WORKSPACE,
+				kind: "g",
+				terminalHandle: TERMINAL,
+				outcomeAtMs: 0,
+				expiresAtMs: EXPIRY,
+				context: context(),
+			}),
+		).toThrow(/requires the outcome instant/);
 	});
 
 	it('drops an implausible tab count to `""`', () => {
@@ -414,6 +492,8 @@ describe("(RETRACT-TTL) the FCM envelope TTL is per message", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			kind: "g",
+			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			expiresAtMs: EXPIRY,
 			context: null,
 		});
@@ -441,6 +521,7 @@ describe("(RETRACT-TTL) the FCM envelope TTL is per message", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			nowMs: EXPIRY,
 		});
 		expect(buildEnvelope(TOKEN, retract).android.ttl).toBe(
@@ -454,6 +535,7 @@ describe("(RETRACT-TTL) the FCM envelope TTL is per message", () => {
 			alertId: ALERT,
 			workspaceId: WORKSPACE,
 			terminalHandle: TERMINAL,
+			outcomeAtMs: OUTCOME,
 			nowMs: EXPIRY,
 		});
 		expect(buildEnvelope(TOKEN, retract).android.collapse_key).toBe(ALERT);

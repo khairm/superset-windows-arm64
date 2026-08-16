@@ -146,6 +146,35 @@ export interface V2NotificationState {
 	// evidence of nothing at all and must not put a `c` frame on the wire.
 	markTerminalSeen: (terminalId: string, at: number) => boolean;
 	pruneTerminalSeen: (terminalId: string) => void;
+	// (ONE-BUZZ-UNTIL-READ) terminalId → the `occurredAt` of the newest ready
+	// event this machine has seen turn the dot green and has NOT yet reported as
+	// read to the host.
+	//
+	// WHY THE GREEN DOT IS NOT ENOUGH ON ITS OWN. The dot is cleared by things
+	// that are not a read: the very next `Start` in that terminal clears
+	// `review`, and the phone still holds the notification for the finish before
+	// it. So "the user opened a chat that is running again" has to report a read
+	// too, and by then there is no review entry left to name — this record is
+	// what remembers WHICH finish is outstanding. It is the host's clock (the
+	// same instant the alert id hashes), never this machine's.
+	outstandingReadyAt: Record<string, number>;
+	// Called once a read has actually been CONSUMED by a host (`accepted:true`),
+	// carrying the generation that host acknowledged. COMPARE-AND-CLEAR: the
+	// record is removed only when it is the one that was reported, because a
+	// newer finish can land while an older report is still in flight and an
+	// unconditional delete would throw away the newer notification's only
+	// evidence — leaving it stuck on the phone until it expires. A dropped
+	// report leaves the record standing so the resync repairs it.
+	clearOutstandingReady: (
+		terminalId: string,
+		acknowledgedThroughAt: number,
+	) => void;
+	// Puts a record back exactly as it was (or removes it, for `null`). ONLY for
+	// the resync, which replays host rows through the live status path: that
+	// replay must not INVENT an outstanding finish, because a re-derived green
+	// is this machine's guess about the past, not evidence a device is holding a
+	// notification. Never call it to express a real change.
+	restoreOutstandingReady: (terminalId: string, at: number | null) => void;
 	// (AY) Separate shell-running axis (see V2ShellRunningEntry). Keyed by
 	// terminalId. Never merged into `sources`.
 	shellRunningTerminals: Record<string, V2ShellRunningEntry>;
@@ -287,10 +316,54 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 				},
 				pruneTerminalSeen: (terminalId) => {
 					set((state) => {
-						if (!(terminalId in state.terminalSeenAt)) return state;
-						const { [terminalId]: _removed, ...terminalSeenAt } =
-							state.terminalSeenAt;
-						return { terminalSeenAt };
+						const hasSeen = terminalId in state.terminalSeenAt;
+						const hasOutstanding = terminalId in state.outstandingReadyAt;
+						if (!hasSeen && !hasOutstanding) return state;
+						const next: Partial<V2NotificationState> = {};
+						if (hasSeen) {
+							const { [terminalId]: _removed, ...terminalSeenAt } =
+								state.terminalSeenAt;
+							next.terminalSeenAt = terminalSeenAt;
+						}
+						// (ONE-BUZZ-UNTIL-READ) The terminal is gone: nobody can read it
+						// now, and its lifetime is the only thing bounding this map.
+						if (hasOutstanding) {
+							const { [terminalId]: _dropped, ...outstandingReadyAt } =
+								state.outstandingReadyAt;
+							next.outstandingReadyAt = outstandingReadyAt;
+						}
+						return next;
+					});
+				},
+				outstandingReadyAt: {},
+				clearOutstandingReady: (terminalId, acknowledgedThroughAt) => {
+					set((state) => {
+						const current = state.outstandingReadyAt[terminalId];
+						if (current === undefined) return state;
+						// A finish NEWER than the one the host acknowledged arrived while
+						// the report was in flight. Its notification is on the phone and
+						// nobody has reported it read, so the record has to survive.
+						if (current > acknowledgedThroughAt) return state;
+						const { [terminalId]: _removed, ...outstandingReadyAt } =
+							state.outstandingReadyAt;
+						return { outstandingReadyAt };
+					});
+				},
+				restoreOutstandingReady: (terminalId, at) => {
+					set((state) => {
+						const current = state.outstandingReadyAt[terminalId];
+						if (current === (at ?? undefined)) return state;
+						if (at === null) {
+							const { [terminalId]: _removed, ...outstandingReadyAt } =
+								state.outstandingReadyAt;
+							return { outstandingReadyAt };
+						}
+						return {
+							outstandingReadyAt: {
+								...state.outstandingReadyAt,
+								[terminalId]: at,
+							},
+						};
 					});
 				},
 				shellRunningTerminals: {},
@@ -413,17 +486,41 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 											true as const,
 									}
 								: state.agentTerminals;
+						// (ONE-BUZZ-UNTIL-READ) A `review` SET is the moment a finish
+						// became outstanding on this machine. Recorded on the SET rather
+						// than derived from `status` because a red latched on top still
+						// leaves the phone holding the ready notification, and recorded
+						// here rather than read back off `sources` later because the very
+						// next `Start` deletes that entry while the notification lives on.
+						// A newer finish supersedes an older unreported one: the phone
+						// only ever shows the latest, so only the latest can be read.
+						let outstandingReadyAt = state.outstandingReadyAt;
+						if (
+							sourceKey.startsWith(TERMINAL_SOURCE_PREFIX) &&
+							ops.set.includes("review")
+						) {
+							const terminalId = sourceKey.slice(TERMINAL_SOURCE_PREFIX.length);
+							const previous = state.outstandingReadyAt[terminalId];
+							if (previous === undefined || previous < occurredAt) {
+								outstandingReadyAt = {
+									...state.outstandingReadyAt,
+									[terminalId]: occurredAt,
+								};
+							}
+						}
 						if (status === null) {
 							if (!state.sources[sourceKey]) {
-								return agentTerminals === state.agentTerminals
+								return agentTerminals === state.agentTerminals &&
+									outstandingReadyAt === state.outstandingReadyAt
 									? state
-									: { agentTerminals };
+									: { agentTerminals, outstandingReadyAt };
 							}
 							const { [sourceKey]: _removed, ...sources } = state.sources;
-							return { sources, agentTerminals };
+							return { sources, agentTerminals, outstandingReadyAt };
 						}
 						return {
 							agentTerminals,
+							outstandingReadyAt,
 							sources: {
 								...state.sources,
 								[sourceKey]: {
@@ -651,6 +748,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					backgroundRunningTerminals: state.backgroundRunningTerminals,
 					manualUnread: state.manualUnread,
 					terminalSeenAt: state.terminalSeenAt,
+					outstandingReadyAt: state.outstandingReadyAt,
 					agentTerminals: state.agentTerminals,
 				}),
 			},

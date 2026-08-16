@@ -50,6 +50,44 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 	return trimmed ? trimmed : undefined;
 }
 
+/**
+ * (ONE-BUZZ-UNTIL-READ) The instant this hook event happened, forced to be
+ * STRICTLY INCREASING per terminal.
+ *
+ * `Date.now()` is not monotonic: an NTP correction can step the wall clock
+ * BACKWARDS, and every lifecycle fact this host records is stamped from it —
+ * the binding's `lastEventAt`, the deterministic alert id, the `gx` generation
+ * on `g` and `c`, and the boundary `markLifecycleSeen` compares a read
+ * against. A backstep therefore does not merely mis-date a row, it INVERTS an
+ * ordering three separate mechanisms trust:
+ *
+ *  - the phone shows the newer generation and drops the older, so a finish
+ *    stamped behind its predecessor is rejected as stale and never buzzes;
+ *  - a later `c` computed from the read cannot name the card that IS showing,
+ *    so the notification cannot be retracted at all;
+ *  - the renderer sees the report accepted and drops its outstanding record,
+ *    which is the evidence the resync repair would have used.
+ *
+ * The anchor is the terminal's own last event, which is persisted with the
+ * binding and reloaded on start, so the property survives a host restart
+ * without a schema change — the same state the deterministic-id path already
+ * depends on. Per terminal rather than global: two terminals' streams are
+ * independent, and one busy agent must not push another's stamps into the
+ * future.
+ *
+ * Forward jumps are honoured as-is. Only the backstep is corrected, by the
+ * smallest amount that keeps the order intact.
+ */
+export function nextLifecycleInstantMs(
+	nowMs: number,
+	previousEventAtMs: number | null | undefined,
+): number {
+	if (previousEventAtMs === null || previousEventAtMs === undefined) {
+		return nowMs;
+	}
+	return nowMs > previousEventAtMs ? nowMs : previousEventAtMs + 1;
+}
+
 function normalizeAgentIdentity(
 	agent: z.infer<typeof agentIdentityInput>,
 ): AgentIdentity | undefined {
@@ -260,11 +298,16 @@ export const notificationsRouter = router({
 		}
 
 		const agent = normalizeAgentIdentity(input.agent);
-		const occurredAt = Date.now();
 		// The persisted binding is the source of truth for whether this hook is a
 		// genuine active-to-terminal transition. Capture it before recordEvent
-		// replaces its last-event fields below.
+		// replaces its last-event fields below — and, since it carries this
+		// terminal's last instant, it is also the anchor the monotonic stamp
+		// below is derived from.
 		const previousBinding = ctx.terminalAgentStore.get(input.terminalId);
+		const occurredAt = nextLifecycleInstantMs(
+			Date.now(),
+			previousBinding?.lastEventAt,
+		);
 
 		ctx.eventBus.broadcastAgentLifecycle({
 			workspaceId: terminalSession.originWorkspaceId,

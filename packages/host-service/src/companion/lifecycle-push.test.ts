@@ -16,6 +16,10 @@ describe("lifecycle push v3", () => {
 			workspaceId: "w".repeat(22) as never,
 			kind: "e",
 			expiresAtMs: 1_700_000_000_000,
+			// An error alert is never replaced in place, so an unresolvable handle
+			// costs it nothing — unlike a ready alert, which refuses to build.
+			terminalHandle: "",
+			outcomeAtMs: 1_700_000_000_000,
 			context: null,
 		});
 		// (ALERT-CONTEXT-NAMES) v3, and every context key present but EMPTY. The
@@ -50,6 +54,8 @@ describe("lifecycle push v3", () => {
 			workspaceId: "w".repeat(22) as never,
 			kind: "e",
 			expiresAtMs: 1_700_000_000_000,
+			terminalHandle: "t".repeat(22),
+			outcomeAtMs: 1_700_000_000_000,
 			context: null,
 		});
 		const leaked = { ...data, i: "agent finished with error" };
@@ -75,6 +81,8 @@ describe("lifecycle push v3", () => {
 				workspaceId: "w".repeat(22) as never,
 				kind: "e",
 				expiresAtMs: 1_700_000_000_000,
+				terminalHandle: "t".repeat(22),
+				outcomeAtMs: 1_700_000_000_000,
 				context: null,
 			}),
 		).toThrow(PushConfigError);
@@ -85,6 +93,8 @@ describe("lifecycle push v3", () => {
 					workspaceId: "w".repeat(22) as never,
 					kind: "g",
 					expiresAtMs: 1_700_000_000_000,
+					terminalHandle: "t".repeat(22),
+					outcomeAtMs: 1_700_000_000_000,
 					context: null,
 				}),
 			).toThrow(PushConfigError);
@@ -99,6 +109,8 @@ describe("lifecycle push v3", () => {
 					workspaceId: workspaceId as never,
 					kind: "g",
 					expiresAtMs: 1_700_000_000_000,
+					terminalHandle: "t".repeat(22),
+					outcomeAtMs: 1_700_000_000_000,
 					context: null,
 				}),
 			).toThrow(PushConfigError);
@@ -112,6 +124,8 @@ describe("lifecycle push v3", () => {
 				workspaceId: "w".repeat(22) as never,
 				kind: "e",
 				expiresAtMs: 1_700_000_000_000,
+				terminalHandle: "t".repeat(22),
+				outcomeAtMs: 1_700_000_000_000,
 				context: null,
 			}),
 		).toThrow(/^(?!.*agent finished with error).*$/);
@@ -159,6 +173,8 @@ describe("(LIFECYCLE-ALERT-RETRY) sendLifecycleAlert delivery outcome", () => {
 					workspaceId: "w".repeat(22) as WorkspaceId,
 					kind: "g",
 					expiresAtMs: 1_700_000_100_000,
+					terminalHandle: "t".repeat(22),
+					outcomeAtMs: 1_700_000_000_000,
 					context: null,
 				}),
 			).rejects.toThrow(/no registered device/);

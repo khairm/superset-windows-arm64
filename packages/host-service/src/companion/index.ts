@@ -803,6 +803,16 @@ export function createCompanionBridge(
 			terminalHandle: (hostTerminalId): string =>
 				deriveHandle("terminal", hostTerminalId),
 			resolveContext: resolveAlertContext,
+			// (ONE-BUZZ-UNTIL-READ) The proof epoch, read ONCE here at bridge
+			// start: every terminal's last recorded lifecycle instant, including
+			// ended sessions, straight off host.db. It is what stops a restart
+			// inside a wall-clock backstep from "proving" that an alert the
+			// PREVIOUS process sent never existed — see `proofEpochs`.
+			proofEpochs: () =>
+				hostDb.listBindings().map((binding) => ({
+					hostTerminalId: binding.terminalId,
+					lastEventAtMs: binding.lastEventAt,
+				})),
 			// (LIFECYCLE-CURATION-CACHE) The probe owns the cache, the throw-fires-
 			// anyway rule and the log-on-transition discipline that being asked once
 			// per two-second sweep for six hours requires.

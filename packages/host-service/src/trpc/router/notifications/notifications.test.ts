@@ -3,7 +3,7 @@ import type { AgentIdentity } from "@superset/shared/agent-identity";
 import type { AgentLifecycleEventType } from "../../../events";
 import { TerminalAgentStore } from "../../../terminal-agents";
 import type { HostServiceContext } from "../../../types";
-import { notificationsRouter } from "./notifications";
+import { nextLifecycleInstantMs, notificationsRouter } from "./notifications";
 
 interface BroadcastedAgentLifecycleEvent {
 	workspaceId: string;
@@ -313,5 +313,99 @@ describe("notificationsRouter.hook", () => {
 
 		const broadcast = broadcastAgentLifecycle.mock.calls[0]?.[0];
 		expect(broadcast?.agent).toBeUndefined();
+	});
+});
+
+/**
+ * (ONE-BUZZ-UNTIL-READ) Every lifecycle fact this host records is stamped from
+ * one instant: the binding's `lastEventAt`, the deterministic alert id, the
+ * `gx` generation on the wire, and the boundary a read is compared against. A
+ * wall clock that steps BACKWARDS (an ordinary NTP correction) would invert
+ * that ordering, and a finish stamped behind its predecessor is one the phone
+ * rejects as stale, the host cannot retract, and the renderer believes was
+ * reported — a card stuck on the handset until its TTL.
+ */
+describe("(ONE-BUZZ-UNTIL-READ) lifecycle instants are monotonic per terminal", () => {
+	it("advances by one when the clock steps back", () => {
+		expect(nextLifecycleInstantMs(4_000, 5_000)).toBe(5_001);
+		expect(nextLifecycleInstantMs(5_000, 5_000)).toBe(5_001);
+	});
+
+	it("honours the wall clock when it has moved forward", () => {
+		expect(nextLifecycleInstantMs(6_000, 5_000)).toBe(6_000);
+		// A big forward jump is real time, not a correction to undo.
+		expect(nextLifecycleInstantMs(9_000_000, 5_000)).toBe(9_000_000);
+	});
+
+	it("takes the clock as-is for a terminal with no history", () => {
+		expect(nextLifecycleInstantMs(5_000, undefined)).toBe(5_000);
+		expect(nextLifecycleInstantMs(5_000, null)).toBe(5_000);
+	});
+
+	it("keeps two finishes ordered across a step-back, per terminal", async () => {
+		const { ctx, broadcastAgentLifecycle } = createContext("workspace-1");
+		const caller = notificationsRouter.createCaller(ctx);
+		const realNow = Date.now;
+		try {
+			Date.now = () => 5_000;
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude-code" },
+			});
+			// NTP steps the wall clock back a second between two finishes.
+			Date.now = () => 4_000;
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude-code" },
+			});
+			// A DIFFERENT terminal's stream is independent — one busy agent must
+			// not push another terminal's stamps into the future.
+			await caller.hook({
+				terminalId: "terminal-2",
+				eventType: "Stop",
+				agent: { agentId: "claude-code" },
+			});
+		} finally {
+			Date.now = realNow;
+		}
+
+		const instants = broadcastAgentLifecycle.mock.calls.map(
+			(call) => call[0].occurredAt,
+		);
+		expect(instants[0]).toBe(5_000);
+		// The second finish is a NEW generation, so its instant must be greater —
+		// by the smallest amount that keeps the order intact.
+		expect(instants[1]).toBe(5_001);
+		expect(instants[2]).toBe(4_000);
+	});
+
+	it("carries the same instant to the binding and the companion sink", async () => {
+		const { ctx, broadcastAgentLifecycle, terminalAgentStore } =
+			createContext("workspace-1");
+		const caller = notificationsRouter.createCaller(ctx);
+		const realNow = Date.now;
+		try {
+			Date.now = () => 5_000;
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude-code" },
+			});
+			Date.now = () => 1_000;
+			await caller.hook({
+				terminalId: "terminal-1",
+				eventType: "Stop",
+				agent: { agentId: "claude-code" },
+			});
+		} finally {
+			Date.now = realNow;
+		}
+
+		// The binding is the anchor the next stamp is derived from, so it has to
+		// carry the corrected instant rather than the raw clock reading.
+		expect(terminalAgentStore.get("terminal-1")?.lastEventAt).toBe(5_001);
+		expect(broadcastAgentLifecycle.mock.calls[1]?.[0].occurredAt).toBe(5_001);
 	});
 });

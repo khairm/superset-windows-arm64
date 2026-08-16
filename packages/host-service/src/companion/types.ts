@@ -1416,14 +1416,59 @@ export interface PushDataV3Question {
 }
 
 /** (ALERT-CONTEXT-NAMES) §13.5 — the named lifecycle alert. No `n`, as in v2. */
-export interface PushDataV3Lifecycle {
+/**
+ * (ALERT-CONTEXT-NAMES) §13.5 — the named READY alert. No `n`, as in v2.
+ */
+export interface PushDataV3Ready {
 	v: "3";
-	/** `"g"` = a work cycle ended cleanly, `"e"` = the terminal agent failed. */
-	k: "g" | "e";
+	/** `"g"` = a work cycle ended cleanly and there is something to review. */
+	k: "g";
 	/** lifecycle alert id, 22 chars, opaque and deterministic. */
 	i: string;
 	w: WorkspaceId;
 	x: string;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) Terminal handle, 22 chars opaque - REQUIRED and
+	 * never empty on a ready alert, unlike every other kind.
+	 *
+	 * It is the notification's IDENTITY on the phone: ready alerts are keyed by
+	 * terminal so a later finish REPLACES the standing card in place instead of
+	 * stacking a second one. A `g` with no handle could not be replaced and
+	 * would reintroduce the sixteen-notification night this rule exists to fix,
+	 * so an absent handle is a build-time throw rather than a degraded field.
+	 */
+	t: string;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The outcome event's instant, 13 digits - the SAME
+	 * instant the deterministic alert id hashes.
+	 *
+	 * The phone needs it to tell a REPLACEMENT from a duplicate: two `g` frames
+	 * for one terminal are the same conversation, and the one with the newer
+	 * `gx` is the one to show. It is also what a later `c` names, so a
+	 * retraction can be matched to the exact finish it cancels rather than to
+	 * whatever happens to be on screen.
+	 */
+	gx: string;
+	pn: string;
+	wn: string;
+	tn: string;
+	tc: string;
+}
+
+/**
+ * (ALERT-CONTEXT-NAMES) §13.5 — the named ERROR alert.
+ *
+ * Deliberately given NEITHER `gx` NOR a required `t`: `(ONE-BUZZ-UNTIL-READ)`
+ * is a rule about ready alerts, and an error is never replaced in place or
+ * folded into a later one. Its shape is exactly what it was.
+ */
+export interface PushDataV3Error {
+	v: "3";
+	k: "e";
+	i: string;
+	w: WorkspaceId;
+	x: string;
+	/** Terminal handle, or `""`. */
 	t: string;
 	pn: string;
 	wn: string;
@@ -1448,6 +1493,12 @@ export interface PushDataV3LifecycleRetract {
 	/** The RETRACTION's own expiry (see `RETRACT_TTL_MS`), 13 digits. */
 	x: string;
 	t: string;
+	/**
+	 * (ONE-BUZZ-UNTIL-READ) The retired alert's outcome instant — or, on the
+	 * blind restart path, the instant the user read through. Lets the phone
+	 * cancel the exact finish this names instead of whatever card is showing.
+	 */
+	gx: string;
 }
 
 /**
@@ -1459,9 +1510,9 @@ export type PushData =
 	| PushDataV1
 	| PushDataV2
 	| PushDataV3Question
-	| PushDataV3Lifecycle
+	| PushDataV3Ready
+	| PushDataV3Error
 	| PushDataV3LifecycleRetract;
-
 /** Data-only. `message.notification` MUST be absent (§13.1). */
 export interface PushEnvelope {
 	token: string;

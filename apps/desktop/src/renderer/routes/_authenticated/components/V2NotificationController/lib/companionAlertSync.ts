@@ -358,6 +358,14 @@ export function unregisterWorkspaceHost(
  *    alert at all (a `SessionStart` moves it while the hook leaves the
  *    lifecycle outcome null), so hashing that would name nothing.
  *
+ * (ONE-BUZZ-UNTIL-READ) A CLEARED GREEN IS NOT THE ONLY EVIDENCE OF A READ.
+ * The dot is also cleared by the agent starting work again, and the phone goes
+ * on holding the notification for the finish before that — that is the whole
+ * point of the standing state on the host. So when the store has an
+ * OUTSTANDING ready record for this terminal, opening the chat is a read even
+ * though there is no green left to clear, and the record's instant (not the
+ * binding's) is what the retraction names.
+ *
  * Returns whether a green dot was cleared, for callers that count.
  */
 export function markTerminalSeenAndReportRead({
@@ -377,27 +385,42 @@ export function markTerminalSeenAndReportRead({
 		];
 	const reviewAt =
 		reviewEntry?.status === "review" ? reviewEntry.occurredAt : null;
+	const outstandingAt = store.outstandingReadyAt[terminalId] ?? null;
 
 	const clearedReview = store.markTerminalSeen(terminalId, lastEventAt);
-	if (!clearedReview || reviewAt === null) return clearedReview;
+	// The live green wins when there is one — it and the outstanding record name
+	// the same finish, and the entry is the fresher of the two by construction.
+	const seenThroughAt = reviewAt ?? outstandingAt;
+	if (seenThroughAt === null) return clearedReview;
+	if (!clearedReview && outstandingAt === null) return clearedReview;
 
 	void reportTerminalSeen({
 		workspaceId,
 		terminalId,
-		seenThroughAt: reviewAt,
+		seenThroughAt,
+	}).then((accepted) => {
+		// Only a report a host actually consumed retires the record, and only the
+		// generation that was reported: a newer finish that landed while this was
+		// in flight keeps its own record. A dropped report leaves it standing so
+		// the resync sweep can try again.
+		if (accepted) {
+			useV2NotificationStore
+				.getState()
+				.clearOutstandingReady(terminalId, seenThroughAt);
+		}
 	});
-	return true;
+	return clearedReview;
 }
 
 /**
  * The user read a chat. Tell its host so the phone and watch drop the
  * ready-for-review notification.
  *
- * CALLED ONLY WHEN A `review` ENTRY WAS ACTUALLY REMOVED — that is the caller's
- * responsibility and `markTerminalSeen`'s boolean is how they know. A seen mark
- * that merely bumped a timestamp is not evidence the user read anything, and
- * the resync's cold-start seeding does exactly that for every idle terminal on
- * every desktop launch.
+ * CALLED ONLY ON REAL EVIDENCE OF A READ — a `review` entry that was actually
+ * removed, or an OUTSTANDING ready record for a terminal the user just opened.
+ * That is the caller's responsibility. A seen mark that merely bumped a
+ * timestamp is not evidence the user read anything, and the resync's cold-start
+ * seeding does exactly that for every idle terminal on every desktop launch.
  *
  * `seenThroughAt` is the HOST's clock (the review entry's `occurredAt`), never
  * this machine's: it is hashed into the alert id the retraction has to name.
