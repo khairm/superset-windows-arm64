@@ -1,0 +1,55 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "acff99cc387a",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 27,
+  "files_touched": [
+    ".github/actions/arm64-build/action.yml",
+    ".github/workflows/build-arm64.yml",
+    ".gitignore",
+    "AGENTS.md",
+    "FEATURES.md",
+    "apps/desktop/electron-builder.ts",
+    "apps/desktop/electron.vite.config.ts",
+    "apps/desktop/src/lib/electron-app/factories/app/setup.ts",
+    "apps/desktop/src/main/index.ts",
+    "apps/desktop/src/main/lib/auto-updater.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence-core.test.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence-core.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence.ts",
+    "apps/desktop/src/main/lib/egress-fence/index.ts",
+    "apps/desktop/src/main/lib/menu.ts",
+    "apps/desktop/src/main/lib/tray/index.ts",
+    "apps/desktop/src/main/network-logger/index.ts",
+    "apps/desktop/src/main/network-logger/policy.test.ts",
+    "apps/desktop/src/main/network-logger/policy.ts",
+    "apps/desktop/src/main/windows/main.ts",
+    "apps/desktop/src/renderer/commandPalette/modules/actions/commands.tsx",
+    "apps/desktop/src/renderer/hooks/useDesktopNotices/useDesktopNotices.ts",
+    "apps/desktop/src/renderer/index.html",
+    "apps/desktop/src/shared/auto-update.ts",
+    "apps/desktop/vite/telemetry-key-ban.test.ts",
+    "apps/desktop/vite/telemetry-key-ban.ts",
+    "packages/cli/src/lib/analytics.test.ts",
+    "packages/cli/src/lib/analytics.ts",
+    "scripts/check-cloud-severance.mjs",
+    "scripts/ci-repair.sh",
+    "scripts/cloud-severance-allowlist.tsv"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ac/ff99cc387a/0/metadata.json",
+      "transcript": "/ac/ff99cc387a/0/full.jsonl",
+      "content_hash": "/ac/ff99cc387a/0/content_hash.txt",
+      "prompt": "/ac/ff99cc387a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8316204,
+    "cache_creation_tokens": 25529911,
+    "cache_read_tokens": 1287508375,
+    "output_tokens": 2571874,
+    "api_call_count": 4266
+  }
+}
