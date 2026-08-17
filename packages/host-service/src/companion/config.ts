@@ -7,7 +7,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,170 @@ export const HKDF_LABEL_SEAL_C2S = "sc/v1 seal c2s";
 export const HKDF_LABEL_SEAL_S2C = "sc/v1 seal s2c";
 export const HKDF_LABEL_SEAL_EVT = "sc/v1 seal evt ";
 export const PAIRING_TRANSCRIPT_PREFIX = "sc/v1";
+
+// --- §4 remote code pairing (REMOTE-CODE-PAIRING) ---------------------------
+
+/**
+ * (REMOTE-CODE-PAIRING) The additive second way in, for a network that blocks
+ * phone -> PC LAN traffic and therefore makes the QR flow physically impossible.
+ *
+ * IT IS NOT THE §4.4 EXCHANGE, AND THAT IS THE POINT. An earlier revision reused
+ * the QR flow's X25519 kex with `IKM = Z || pairingCode`, substituting 8 typed
+ * digits for the QR's 256 random bits. That is sound against a PASSIVE observer
+ * and unsound against anyone who can speak to the endpoint or record the hop:
+ * `pPub`, `dPub` and `pairSalt` all travel in cleartext (Cloudflare terminates
+ * the TLS), and an attacker who completes one kex of its own holds `Z` and can
+ * then test all 10^8 codes OFFLINE, at whatever rate its hardware allows,
+ * against the `macPhone` it captured. Every online bound in the world — one
+ * window, 120 s, three strikes — buys nothing once the check has left the wire.
+ *
+ * So the remote flow is SRP-6a (RFC 5054, 3072-bit group, SHA-256), where the
+ * desktop is the server and the phone is the client. The property that buys is
+ * exactly the one the 8-digit code needs: the transcript is NOT an offline
+ * oracle. `A`, `B` and `pairSalt` together do not let anyone test a candidate
+ * code without running a FRESH ONLINE exchange for each guess — so the bounds
+ * below become the whole attack surface rather than a speed bump in front of a
+ * local brute force:
+ *
+ *   the endpoint answers a bodyless 404 unless a window is open; ONE window at a
+ *   time process-wide across both kinds; opened only by the person at the
+ *   desktop; 120 s; single use; three bad MACs burn it; five confirms per
+ *   window; per-source request caps. At most three guesses out of 10^8 per
+ *   window a human deliberately opened.
+ *
+ * The code itself is STILL never transmitted — it is the SRP password, typed
+ * into the phone's own derivation exactly as the QR is scanned into one — and
+ * neither is anything offline-checkable derived from it: not `x`, not the
+ * verifier `v`, not any other function of the digits.
+ *
+ * DOMAIN SEPARATION. Every label below is wholly `v3-srp`. The retired
+ * `v2-remote` strings are DELETED rather than kept alongside: leaving them in
+ * the build would leave a second, weaker key schedule that a downgraded or
+ * confused client could still reach, which is the exact failure this replacement
+ * exists to remove. The QR/LAN flow's `sc/v1` labels are untouched, byte for
+ * byte, with golden vectors pinning them.
+ */
+export const PAIRING_REMOTE_CODE_DIGITS = 8;
+/**
+ * The remote hop's wire version, on BOTH `/v1/pair/*` steps. There is no v1
+ * remote client to keep working — the scheme it spoke has been deleted, not
+ * deprecated — so a `v` of anything else is refused outright with
+ * `pair_version_unsupported` and there is no negotiation and no fallback. The
+ * QR/LAN hop stays at 1 forever.
+ */
+export const PAIRING_REMOTE_WIRE_VERSION = 2;
+/**
+ * SRP's identity `I`. Fixed, ASCII, and never transmitted: there is exactly one
+ * "account" here — this pairing window — so the identity's only job is domain
+ * separation inside `x = H(salt || H(I || ':' || P))`.
+ */
+export const PAIRING_SRP_IDENTITY = "sc/v3 remote-pair";
+export const PAIRING_REMOTE_HKDF_SALT_PREFIX =
+	"superset-companion/pair/v3-srp";
+export const PAIRING_REMOTE_TRANSCRIPT_PREFIX = "sc/v3-srp";
+/** Trailing space is load-bearing: `pid || deviceId` raw bytes follow it. */
+export const HKDF_LABEL_REMOTE_DEVICE = "sc/v3-srp device ";
+export const HKDF_LABEL_REMOTE_CONFIRM_PHONE = "sc/v3-srp confirm-phone";
+export const HKDF_LABEL_REMOTE_CONFIRM_DESKTOP = "sc/v3-srp confirm-desktop";
+
+/**
+ * (REMOTE-CODE-PAIRING) How long a burned remote window is REMEMBERED, so the
+ * phone can be told "that code is burned, ask for a new one" instead of the
+ * bare 404 that a never-opened window produces. A memo carries the pairing
+ * reference and nothing else — never the code, which is zeroed at the burn.
+ */
+export const PAIRING_REMOTE_BURN_MEMO_MS = 60_000;
+
+/**
+ * (REMOTE-CODE-PAIRING) The three unsealed paths the remote flow serves, and
+ * the ONLY paths reachable on the public pairing host. They are the paths the
+ * phone POSTs to and `/v1/pair/confirm` is bound into the step-4 AAD, so the two
+ * can never drift.
+ *
+ * THREE MESSAGES, NOT TWO, and the reason is SRP's shape rather than ours: the
+ * phone cannot compute `A` until it has the salt (`A` depends on `a` alone, but
+ * every mature SRP client — Bouncy Castle's `SRP6Client.generateClientCredentials`
+ * included — derives `x` and `A` in one call that takes the salt), so a two-step
+ * flow forces the client to either subclass its SRP library or send `A` before
+ * it has been told the salt. `begin` exists so the wire runs in the order a
+ * stock client already works in.
+ */
+export const REMOTE_PAIR_PATH_BEGIN = "/v1/pair/begin";
+export const REMOTE_PAIR_PATH_KEX = "/v1/pair/kex";
+export const REMOTE_PAIR_PATH_CONFIRM = "/v1/pair/confirm";
+
+/**
+ * (REMOTE-CODE-PAIRING) The PUBLIC hostname the three pairing paths are served
+ * on, and nothing else is.
+ *
+ * A single label under the same zone, so it is covered by the existing wildcard
+ * certificate and needs no new TLS material.
+ *
+ * WHY THERE IS NO ACCESS TOKEN IN FRONT OF IT. The caller is a phone that is not
+ * paired yet and therefore holds no credential — obtaining one is the entire
+ * point of the exchange. The previous answer was a SECOND Cloudflare Access
+ * application whose service-token client id AND secret shipped inside the APK,
+ * which is a credential published to every copy of the app and therefore not a
+ * security boundary; it was a speed bump that had to be maintained, rotated and
+ * reasoned about as though it were one. With SRP-6a the PAKE *is* the boundary:
+ * an unauthenticated caller that does not know the 8 digits cannot derive
+ * anything, cannot test a guess offline, and gets at most three online guesses
+ * per window a human deliberately opened. So the token is gone and the host is
+ * public.
+ *
+ * WHAT THAT COSTS, STATED PLAINLY: anyone on the internet can now reach these
+ * three paths and consume request budget. They answer a bodyless 404 unless a
+ * window is open, and the per-source caps keyed on `CF-Connecting-IP` bound what
+ * one source can spend, but a distributed flood can still make the desktop do
+ * work. That is a DoS exposure and it is accepted — the alternative was a
+ * published secret pretending to prevent it.
+ */
+export const PAIRING_PUBLIC_HOST = "pair-superset.khaira.family";
+/** The host every OTHER route is served on. Derived so the two cannot drift. */
+export const BRIDGE_PUBLIC_HOST = new URL(PUBLIC_ORIGIN).host;
+
+/**
+ * (REMOTE-CODE-PAIRING) THE two-host invariant, asserted at module load.
+ *
+ * Everything about the split rests on these two names being different: the host
+ * gate routes on equality, and `loadPublicPairHost` accepts only the pairing
+ * name. If a future edit pointed `PUBLIC_ORIGIN` at the pairing host — or moved
+ * pairing onto the main host — the unauthenticated pairing paths would land
+ * inside the Access-protected surface. Checked ONCE, here, where both names are
+ * defined, rather than re-derived as a special case in the loader: a process
+ * that cannot serve the split safely must not start at all.
+ */
+if (PAIRING_PUBLIC_HOST === BRIDGE_PUBLIC_HOST) {
+	throw new Error(
+		`[companion-bridge] the public pairing host and the main bridge host are both ${PAIRING_PUBLIC_HOST}. The pairing paths are UNAUTHENTICATED by design and must be served on their own hostname; serving them on the main host would place an unauthenticated surface inside the Access-protected one.`,
+	);
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) Per-source ceilings for the remote hop, mirroring the
+ * LAN listener's `MAX_KEX_PER_SOURCE` / `MAX_KEX_SOURCES` shape: exceeding one
+ * refuses THAT source and only that source, so junk can never rate-limit the
+ * real phone out of its own window.
+ */
+export const REMOTE_PAIR_REQUESTS_PER_SOURCE = 32;
+export const REMOTE_PAIR_MAX_SOURCES = 32;
+
+/**
+ * (REMOTE-CODE-PAIRING) The MONOTONE aggregate ceiling: how many `/v1/pair/*`
+ * requests one window will admit in total, across every source, ever.
+ *
+ * The per-source table above evicts its oldest bucket to stay bounded, which
+ * REFUNDS the evicted source's allowance — deliberately, so a flood cannot lock
+ * the real phone out, but it means the product of the two numbers is not an
+ * aggregate bound. This one is: it is never decremented, never evicted and never
+ * reset while the window lives, and it is charged before the body is read, so it
+ * bounds body reads and JSON parses as well as handler work. The value is the
+ * product the two numbers above would have given if nothing were ever refunded,
+ * which keeps the documented bound true without keeping a bucket per address. A
+ * real pairing spends three requests.
+ */
+export const REMOTE_PAIR_MAX_REQUESTS_PER_WINDOW =
+	REMOTE_PAIR_REQUESTS_PER_SOURCE * REMOTE_PAIR_MAX_SOURCES;
 
 // --- §6 protocol -----------------------------------------------------------
 
@@ -340,6 +504,19 @@ export interface CompanionPaths {
 	audit: string;
 	fcmServiceAccount: string;
 	cloudflareAccess: string;
+	/**
+	 * (REMOTE-CODE-PAIRING) The enable gate for remote code pairing: the public
+	 * pairing host this build will serve `/v1/pair/*` on.
+	 *
+	 * Absent = remote code pairing is off, and the three paths do not exist on any
+	 * host. That is a supported state, not a failure: the QR/LAN flow is
+	 * unaffected and `openRemotePairing` refuses with a message naming this file.
+	 *
+	 * It replaced `cloudflare-access-pairing.json`, whose job was to front the
+	 * pairing paths with a service token shipped inside the APK. See
+	 * `PAIRING_PUBLIC_HOST` for why that token is gone.
+	 */
+	publicPairHost: string;
 }
 
 /**
@@ -402,6 +579,7 @@ export function resolveCompanionPaths(
 		audit: join(root, "audit"),
 		fcmServiceAccount: join(root, "fcm-service-account.json"),
 		cloudflareAccess: join(root, "cloudflare-access.json"),
+		publicPairHost: join(root, "public-pair-host.json"),
 	};
 }
 
@@ -634,6 +812,37 @@ export function loadAccessServiceToken(paths: CompanionPaths): {
 }
 
 /**
+ * (REMOTE-CODE-PAIRING) The public pairing host this build will serve
+ * `/v1/pair/*` on, or `null` when the user has not enabled remote pairing.
+ *
+ * ABSENT IS A SUPPORTED STATE, and it is the DEFAULT. `null` means the three
+ * pairing paths exist on no host at all: the pair host is not routed, the main
+ * host still 404s those paths, and `openRemotePairing` refuses with a message
+ * naming this file. Nothing about the QR/LAN flow changes.
+ *
+ * PRESENT BUT WRONG IS NOT. A file that names anything other than
+ * `PAIRING_PUBLIC_HOST` throws at start-up — including one that names the MAIN
+ * host, which `requireEqual` refuses like any other wrong name because the two
+ * hosts are asserted to differ at module load. The file names the audited host
+ * rather than being a bare on/off flag precisely so that drift is caught here.
+ *
+ * It is a FILE and not a compile-time flag because it is the operator's
+ * statement that the DNS record and tunnel ingress for that hostname actually
+ * exist. Routing a host nobody has provisioned would be a feature that silently
+ * does nothing.
+ */
+export function loadPublicPairHost(paths: CompanionPaths): string | null {
+	const raw = readJsonFileIfPresent(paths.publicPairHost);
+	if (raw === null) return null;
+
+	const file = paths.publicPairHost;
+	const host = requireString(raw, "host", file);
+	requireEqual(host, PAIRING_PUBLIC_HOST, "host", file);
+
+	return host;
+}
+
+/**
  * Validates the FCM service account WITHOUT surfacing its private key. push.ts
  * takes a PATH and does its own signing; this exists so a missing or wrong-project
  * key fails at start-up instead of 180 s later, silently, on the first push.
@@ -697,6 +906,20 @@ function readJsonFile(file: string): Record<string, unknown> {
 		throw new Error(`${LOG_PREFIX} ${file} must contain a JSON object`);
 	}
 	return parsed as Record<string, unknown>;
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) The same reader, for a file whose ABSENCE is a legal
+ * answer.
+ *
+ * ONLY absence. An unreadable-but-present file, a bad JSON document or a
+ * non-object still throws exactly as `readJsonFile` does: "the feature is off"
+ * and "the feature is misconfigured" are different facts and collapsing the
+ * second into the first is how a typo turns into a silently disabled endpoint.
+ */
+function readJsonFileIfPresent(file: string): Record<string, unknown> | null {
+	if (!existsSync(file)) return null;
+	return readJsonFile(file);
 }
 
 function requireString(

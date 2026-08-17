@@ -13,9 +13,11 @@
  * the phone's path can reach it.
  *
  * WITHOUT THIS ROUTER THE FEATURE IS UNREACHABLE. `createCompanionBridge`
- * returns a handle whose `openPairing` opens the single 120 s LAN window — the
- * only way any device can ever pair — and whose `disableWrites` /
- * `revokeAllDevices` are the desktop panic switch. The mount seam in `serve.ts`
+ * returns a handle whose `openPairing` / `openRemotePairing` open the single
+ * 120 s window — QR over the LAN, or an 8-digit code over the tunnel
+ * `(REMOTE-CODE-PAIRING)`, and those are the only two ways any device can ever
+ * pair — and whose `disableWrites` / `revokeAllDevices` are the desktop panic
+ * switch. The mount seam in `serve.ts`
  * has nowhere to keep that handle (upstream's `serve()` callback is
  * synchronous), so it publishes it to `companion/registry` and this router is
  * what reads it back.
@@ -51,7 +53,10 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import type { CompanionBridge } from "../../../companion";
 import { PANIC_REASON_MAX_CHARS } from "../../../companion/limits";
-import type { PairingWindowHandle } from "../../../companion/pairing";
+import type {
+	PairingKind,
+	PairingWindowHandleBase,
+} from "../../../companion/pairing";
 import {
 	type ProvenVersionStatus,
 	resolveProvenVersionStatus,
@@ -136,6 +141,12 @@ function requireBridge(): CompanionBridge {
  * not have to provoke the `qrUri` getter's 410 to read it; this query is what
  * finally surfaces it.
  *
+ * (REMOTE-CODE-PAIRING) `pairingKind` says WHICH way in the window was opened,
+ * so a dialog showing a typed code and a dialog showing a QR cannot read each
+ * other's verdict. The dialog can switch modes while a window is open, and
+ * without this a verdict about the window it just replaced would render as a
+ * verdict about the one on screen.
+ *
  * HONEST LIMIT — `closed` is a bare boolean. The bridge closes a window early
  * on a successful pairing, on three bad MACs burning the code (§4.7), and on an
  * unexpected 500 inside the exchange, and the handle does not say which. So
@@ -152,11 +163,11 @@ function requireBridge(): CompanionBridge {
 export type CompanionPairingState =
 	/** No window opened through this router is live. Never a failure by itself. */
 	| { kind: "none" }
-	| { kind: "open"; expiresAtMs: number }
+	| { kind: "open"; pairingKind: PairingKind; expiresAtMs: number }
 	/** Ended BEFORE its deadline: a device finished, or the code was burned. */
-	| { kind: "closed-early"; expiresAtMs: number }
+	| { kind: "closed-early"; pairingKind: PairingKind; expiresAtMs: number }
 	/** Ran out the clock with nothing having consumed it. */
-	| { kind: "expired"; expiresAtMs: number };
+	| { kind: "expired"; pairingKind: PairingKind; expiresAtMs: number };
 
 interface TrackedPairingWindow {
 	/**
@@ -165,7 +176,7 @@ interface TrackedPairingWindow {
 	 * one that replaced it — the same reason `clearCompanionBridge` checks.
 	 */
 	readonly bridge: CompanionBridge;
-	readonly handle: PairingWindowHandle;
+	readonly handle: PairingWindowHandleBase;
 	/**
 	 * `Date.now()` at the FIRST read that saw `handle.closed`, latched.
 	 *
@@ -415,8 +426,9 @@ export const companionRouter = router({
 
 		const { handle } = tracked;
 		const expiresAtMs = handle.expiresAtMs;
+		const pairingKind = handle.kind;
 		if (!handle.closed) {
-			return { kind: "open", expiresAtMs };
+			return { kind: "open", pairingKind, expiresAtMs };
 		}
 
 		if (tracked.observedClosedAtMs === null) {
@@ -425,6 +437,7 @@ export const companionRouter = router({
 		return {
 			kind:
 				tracked.observedClosedAtMs < expiresAtMs ? "closed-early" : "expired",
+			pairingKind,
 			expiresAtMs,
 		};
 	}),
@@ -447,6 +460,27 @@ export const companionRouter = router({
 			// window that never existed would be read as a window that ended.
 			trackedPairingWindow = { bridge, handle, observedClosedAtMs: null };
 			return { qrUri: handle.qrUri, expiresAtMs: handle.expiresAtMs };
+		},
+	),
+
+	/**
+	 * (REMOTE-CODE-PAIRING) Opens the same single 120 s window in CODE mode and
+	 * returns the 8 digits for the user to read off the screen and type into the
+	 * phone. Works from any network — nothing in this flow needs the phone to
+	 * reach this machine's LAN address.
+	 *
+	 * The digits are returned over this AUTHENTICATED LOCAL channel and are not
+	 * part of any response that leaves the machine. Errors are deliberately not
+	 * remapped: "a window is already open" and "the pairing Access application is
+	 * not configured" are different problems with different remedies, and the
+	 * second one's message names the file to create.
+	 */
+	openRemotePairing: protectedProcedure.mutation(
+		async (): Promise<{ code: string; expiresAtMs: number }> => {
+			const bridge = requireBridge();
+			const handle = await bridge.openRemotePairing();
+			trackedPairingWindow = { bridge, handle, observedClosedAtMs: null };
+			return { code: handle.code, expiresAtMs: handle.expiresAtMs };
 		},
 	),
 

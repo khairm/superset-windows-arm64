@@ -71,7 +71,9 @@ import {
 	LOG_PREFIX,
 	loadAccessServiceToken,
 	loadFcmServiceAccountMeta,
+	loadPublicPairHost,
 	NONCE_CACHE_COMPACT_INTERVAL_MS,
+	PAIRING_PUBLIC_HOST,
 	PUSH_QUESTION_EXPIRY_MS,
 	resolveCompanionPaths,
 } from "./config";
@@ -116,7 +118,17 @@ import {
 } from "./lifecycle-alerts";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
-import { openPairingWindow, type PairingWindowHandle } from "./pairing";
+import {
+	openPairingWindow,
+	// Aliased: the bridge method below has the same name, and a method name is
+	// not a binding, so an unaliased import would read as recursion to everyone
+	// who has not memorised that rule.
+	openRemotePairing as openRemotePairingWindow,
+	type PairingDeps,
+	type PairingWindowHandle,
+	type PairingWindowHandleBase,
+	type RemotePairingWindowHandle,
+} from "./pairing";
 import { createPresenceStore, type PresenceStore } from "./presence";
 import {
 	logProvenVersionStatus,
@@ -230,6 +242,17 @@ export interface CompanionBridge {
 	/** Opens the single 120 s LAN pairing window and returns the QR URI. */
 	openPairing(): Promise<PairingWindowHandle>;
 	/**
+	 * (REMOTE-CODE-PAIRING) Opens the SAME single 120 s window in code mode and
+	 * returns the 8 digits to show the user. Works from any network, because
+	 * nothing about it needs the phone to reach this machine's LAN address.
+	 *
+	 * Throws — with the remedy in the message — when the pairing-scoped
+	 * Cloudflare Access application is not configured on this machine. There is
+	 * no degraded path: without that application the phone's requests never reach
+	 * the bridge at all.
+	 */
+	openRemotePairing(): Promise<RemotePairingWindowHandle>;
+	/**
 	 * Closes the pairing window early. Without this the user who dismissed the QR
 	 * has no way to take the 0.0.0.0:47611 listener down before its 120 s are up,
 	 * and `openPairing`'s "close it before opening another" refusal is an
@@ -332,7 +355,22 @@ interface BridgeState {
 	push: PushSender;
 	events: EventStreamServer;
 	http: BridgeHttpServer;
-	pairing: PairingWindowHandle | null;
+	/**
+	 * The open pairing window of EITHER kind — QR or code. There is one slot
+	 * because `pairing.ts` allows one window process-wide.
+	 */
+	pairing: PairingWindowHandleBase | null;
+	/**
+	 * (REMOTE-CODE-PAIRING) The public pairing host, read ONCE at start and
+	 * captured here, or `null` when remote pairing is not enabled.
+	 *
+	 * Captured rather than re-read per call so `openRemotePairing` refuses on
+	 * exactly the same fact the HTTP listener was BUILT with. Re-reading would let
+	 * the desktop open a code window that `/v1/pair/*` cannot serve, because the
+	 * host gate those routes sit behind was fixed at construction — a window the
+	 * user would watch count down while the phone got 404s.
+	 */
+	publicPairHost: string | null;
 	/**
 	 * The SAME array `startInner` built, not a copy: steps appended after `state`
 	 * was assigned (the maintenance timers) land here too.
@@ -431,9 +469,18 @@ export function createCompanionBridge(
 		await ensureCompanionDirs(paths);
 		const accessClientId = loadAccessServiceToken(paths).clientId;
 		const fcm = loadFcmServiceAccountMeta(paths);
+		// (REMOTE-CODE-PAIRING) Absent = the code flow is off and the QR flow is
+		// untouched; PRESENT BUT WRONG throws right here, at start, rather than at
+		// the moment a user is standing in front of a countdown.
+		const publicPairHost = loadPublicPairHost(paths);
 		logger.info("config validated", {
 			accessClientId,
 			fcmProject: fcm.projectId,
+			// A hostname, and a public one by design — the pairing paths are
+			// unauthenticated and their security rests on the SRP exchange, not on
+			// the host being secret. There is nothing here to redact.
+			publicPairHost,
+			remotePairing: publicPairHost === null ? "off (not configured)" : "on",
 		});
 
 		// (PORT-BEFORE-STATE) Take the one exclusive resource FIRST, before any
@@ -1052,6 +1099,10 @@ export function createCompanionBridge(
 		//    silently-moved bridge presents as "phone says offline".
 		const http = createBridgeHttpServer({
 			accessValidator: createAccessValidator(),
+			// (REMOTE-CODE-PAIRING) The public host the three unauthenticated pairing
+			// paths are served on, or `null` when the operator has not enabled remote
+			// pairing — in which case those paths exist on no hostname at all.
+			publicPairHost,
 			devices: deviceStore,
 			keys: keyStore,
 			nonceCache,
@@ -1236,6 +1287,7 @@ export function createCompanionBridge(
 			events,
 			http,
 			pairing: null,
+			publicPairHost,
 			teardown: unwind,
 		};
 		unwind.push({
@@ -1362,89 +1414,60 @@ export function createCompanionBridge(
 		stop,
 		async openPairing(): Promise<PairingWindowHandle> {
 			const current = requireState();
-			// `closed`, not `expiresAtMs`: the window is SINGLE USE and closes the
-			// moment a device pairs, long before it expires. Comparing clocks here
-			// would refuse every pairing after the first for the rest of the 120 s,
-			// and remembering the handle without checking anything at all — which
-			// this did — refused every pairing after the first FOREVER, because
-			// nothing ever cleared the field. `pairing.ts` clears its own
-			// process-wide guard in `close()`; this is the mirror of that.
-			if (current.pairing !== null && !current.pairing.closed) {
-				throw new Error(
-					`${LOG_PREFIX} a pairing window is already open — close it before opening another`,
-				);
+			// The "one window at a time" rule is enforced by `pairing.ts`, which owns
+			// the process-wide slot and refuses with the message the user sees. This
+			// used to re-check a remembered handle here as well; the two could
+			// disagree (a window that had expired in `pairing.ts` still looked open
+			// here) and keeping them in sync was manual.
+			//
+			// A REJECTED OPEN MUST NOT FORGET THE LIVE ONE. Clearing this field
+			// before the authoritative call meant a refused second open left the
+			// window that caused the refusal unreachable from here — `closePairing`
+			// answered "nothing was open" and the user could not dismiss it before
+			// its 120 s were up. Only a handle that is already closed is dropped
+			// eagerly, so `pairingState` never reports a stale one; the live handle
+			// is replaced only by a successful open.
+			if (current.pairing?.closed) {
+				current.pairing = null;
 			}
-			current.pairing = null;
-			const handle = await openPairingWindow({
-				// Read at the last possible moment and never held by this module.
-				loadAccessToken: async () =>
-					loadAccessServiceToken(resolveCompanionPaths()),
-				onPaired: async (input) => {
-					// UNIQUENESS BEFORE KEY MATERIAL. §4.8 requires a new deviceId on
-					// every pairing and `deviceStore.create` is the guard that enforces
-					// it — but it used to run AFTER the key was already on disk. A
-					// client that submitted an already-registered deviceId therefore
-					// destroyed the live device's K_dev and only then got refused: the
-					// surviving record still pointed at that keyRef, so the working
-					// phone failed its GCM tag on every request and could not even open
-					// the sealed explanation. `keyStore.put` now mints its own random
-					// keyRef so a collision is unrepresentable, and this check makes the
-					// refusal happen before anything is written at all.
-					const existing = await current.deviceStore.get(input.deviceId);
-					if (existing !== null) {
-						throw new Error(
-							`${LOG_PREFIX} refusing to pair: deviceId ${input.deviceId} is already registered — §4.8 requires a NEW deviceId per pairing`,
-						);
-					}
-					const keyRef = await current.keyStore.put(
-						input.deviceId,
-						input.deviceKey,
-					);
-					let record: DeviceRecord;
-					try {
-						record = await current.deviceStore.create({
-							deviceId: input.deviceId,
-							label: input.label,
-							surface: input.surface,
-							keyRef,
-							pairedAtMs: Date.now(),
-						});
-					} catch (error) {
-						// Nothing references this key now, and leaving it would be an
-						// orphaned K_dev on disk forever.
-						await current.keyStore.destroy(keyRef).catch(() => undefined);
-						throw error;
-					}
-					await current.audit.append({
-						tsMs: Date.now(),
-						kind: "pair",
-						deviceId: record.deviceId,
-						surface: record.surface,
-						requestId: `pair:${record.deviceId}`,
-						leaseId: null,
-						questionId: null,
-						terminalId: null,
-						guards: null,
-						guardsAbstained: null,
-						payloadHash: hashJsonPayload({
-							deviceId: record.deviceId,
-							label: record.label,
-							surface: record.surface,
-						}),
-						outcome: "confirmed",
-						failureCode: null,
-					});
-					logger.info("paired device", {
-						deviceId: record.deviceId,
-						surface: record.surface,
-					});
-				},
-			});
+			const handle = await openPairingWindow(pairingDeps(current, logger));
 			current.pairing = handle;
 			// The QR URI carries the single-use pairing code and belongs only in the
 			// authenticated desktop dialog. Diagnostics receive the non-secret window
 			// reference, never the URI or any material from its fragment.
 			logger.warn("pairing window OPEN for 120s", {
+				pairingRef: handle.pairingRef,
+				expiresAtMs: handle.expiresAtMs,
+			});
+			return handle;
+		},
+		/**
+		 * (REMOTE-CODE-PAIRING) Opens the same single window in CODE mode.
+		 *
+		 * Refuses LOUDLY, and with the remedy in the message, when the public
+		 * pairing host is not configured: the alternative is a dialog counting an
+		 * 8-digit code down while every request from the phone reaches a host that
+		 * serves nothing, which is indistinguishable from a broken phone.
+		 */
+		async openRemotePairing(): Promise<RemotePairingWindowHandle> {
+			const current = requireState();
+			if (current.publicPairHost === null) {
+				throw new Error(
+					`${LOG_PREFIX} pairing by code is not enabled on this machine. It needs a public pairing hostname (${PAIRING_PUBLIC_HOST}) pointed at this tunnel and declared to the bridge by ${current.paths.publicPairHost} ({"host": "${PAIRING_PUBLIC_HOST}"}). Create the DNS record and tunnel ingress, write that file, restart the host-service, and use the QR code in the meantime.`,
+				);
+			}
+			// Same slot, same rule as `openPairing`, enforced in the same one place —
+			// including "a refused open leaves the live handle alone".
+			if (current.pairing?.closed) {
+				current.pairing = null;
+			}
+			const handle = await openRemotePairingWindow(
+				pairingDeps(current, logger),
+			);
+			current.pairing = handle;
+			// (PAIR-REF-ONLY) The reference and the deadline. NEVER the code — 8
+			// digits in a log file is a code somebody can simply type.
+			logger.warn("code pairing window OPEN for 120s", {
 				pairingRef: handle.pairingRef,
 				expiresAtMs: handle.expiresAtMs,
 			});
@@ -1484,6 +1507,84 @@ export function createCompanionBridge(
 			// still set while subsystems close, and during a failed start it is not
 			// set at all; only the phase is true in both directions.
 			return phase === "running";
+		},
+	};
+}
+
+/**
+ * What a pairing window — QR or code — is allowed to do to this bridge, in ONE
+ * place.
+ *
+ * (REMOTE-CODE-PAIRING) It is one place because the two flows differ ONLY in how
+ * the code reaches the phone. Everything that happens once a device confirms —
+ * the uniqueness check, the key write, the device record, the audit line — is
+ * identical, and a second copy of it would be a second place for the §4.8
+ * uniqueness rule to be forgotten.
+ */
+function pairingDeps(current: BridgeState, logger: BridgeLogger): PairingDeps {
+	return {
+		// Read at the last possible moment and never held by this module.
+		loadAccessToken: async () =>
+			loadAccessServiceToken(resolveCompanionPaths()),
+		onPaired: async (input) => {
+			// UNIQUENESS BEFORE KEY MATERIAL. §4.8 requires a new deviceId on
+			// every pairing and `deviceStore.create` is the guard that enforces
+			// it — but it used to run AFTER the key was already on disk. A
+			// client that submitted an already-registered deviceId therefore
+			// destroyed the live device's K_dev and only then got refused: the
+			// surviving record still pointed at that keyRef, so the working
+			// phone failed its GCM tag on every request and could not even open
+			// the sealed explanation. `keyStore.put` now mints its own random
+			// keyRef so a collision is unrepresentable, and this check makes the
+			// refusal happen before anything is written at all.
+			const existing = await current.deviceStore.get(input.deviceId);
+			if (existing !== null) {
+				throw new Error(
+					`${LOG_PREFIX} refusing to pair: deviceId ${input.deviceId} is already registered — §4.8 requires a NEW deviceId per pairing`,
+				);
+			}
+			const keyRef = await current.keyStore.put(
+				input.deviceId,
+				input.deviceKey,
+			);
+			let record: DeviceRecord;
+			try {
+				record = await current.deviceStore.create({
+					deviceId: input.deviceId,
+					label: input.label,
+					surface: input.surface,
+					keyRef,
+					pairedAtMs: Date.now(),
+				});
+			} catch (error) {
+				// Nothing references this key now, and leaving it would be an
+				// orphaned K_dev on disk forever.
+				await current.keyStore.destroy(keyRef).catch(() => undefined);
+				throw error;
+			}
+			await current.audit.append({
+				tsMs: Date.now(),
+				kind: "pair",
+				deviceId: record.deviceId,
+				surface: record.surface,
+				requestId: `pair:${record.deviceId}`,
+				leaseId: null,
+				questionId: null,
+				terminalId: null,
+				guards: null,
+				guardsAbstained: null,
+				payloadHash: hashJsonPayload({
+					deviceId: record.deviceId,
+					label: record.label,
+					surface: record.surface,
+				}),
+				outcome: "confirmed",
+				failureCode: null,
+			});
+			logger.info("paired device", {
+				deviceId: record.deviceId,
+				surface: record.surface,
+			});
 		},
 	};
 }

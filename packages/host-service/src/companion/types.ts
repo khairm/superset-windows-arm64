@@ -307,6 +307,56 @@ export interface PairKexRequest {
 	protocol: ProtocolRange;
 }
 
+/**
+ * (REMOTE-CODE-PAIRING) step 0 on the REMOTE hop: phone -> desktop,
+ * `POST /v1/pair/begin`, cleartext JSON inside TLS.
+ *
+ * WHY THE REMOTE FLOW HAS A STEP THE LAN FLOW DOES NOT. SRP's client derives `x`
+ * and `A` together from the salt, so the phone cannot produce `A` until the
+ * desktop has told it `pairSalt`. `begin` is that message: it introduces the
+ * device and its metadata and comes back with `pid` and the salt, after which
+ * `kex` carries the `A` a stock SRP client has by then computed. Splitting it
+ * this way is what lets the phone use its SRP library unmodified.
+ *
+ * There is no code here, and nothing derived from one. Any offline-checkable
+ * function of 8 digits on a hop where Cloudflare terminates the TLS is 10^8
+ * guesses somebody can run on their own hardware.
+ */
+export interface RemotePairBeginRequest {
+	v: 2;
+	deviceId: DeviceId;
+	label: string;
+	surface: Surface;
+	appVersion: string;
+	protocol: ProtocolRange;
+}
+
+/** (REMOTE-CODE-PAIRING) step 0 response. Idempotent for a known deviceId. */
+export interface RemotePairBeginResponse {
+	v: 2;
+	pid: PairingId;
+	/** 16 bytes. The SRP salt, and the HKDF-Extract salt's suffix. */
+	pairSalt: Base64Url;
+	serverTimeMs: EpochMs;
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) step 1 on the REMOTE hop: `POST /v1/pair/kex`.
+ *
+ * `A` is the SRP client public value and reveals nothing about the code. The
+ * candidate this belongs to was created by `begin`, so a `kex` for a deviceId
+ * with no live candidate is refused rather than treated as an introduction —
+ * which is what keeps the expensive modular exponentiation behind both the
+ * per-source charge and a candidate the caller had to establish first.
+ */
+export interface RemotePairKexRequest {
+	v: 2;
+	pid: PairingId;
+	deviceId: DeviceId;
+	/** `PAD(A)`: EXACTLY 384 bytes (the 3072-bit modulus's width), base64url. */
+	A: Base64Url;
+}
+
 /** step 2: desktop -> phone, 200, cleartext JSON. */
 export interface PairKexResponse {
 	v: 1;
@@ -318,12 +368,40 @@ export interface PairKexResponse {
 	serverTimeMs: EpochMs;
 }
 
+/**
+ * (REMOTE-CODE-PAIRING) step 1 response.
+ *
+ * `B` is minted from a `b` drawn FRESH for this candidate, exactly once. Re-POSTing
+ * the identical `A` returns this same `B` from the candidate rather than minting
+ * another; a DIFFERENT `A` is refused and the first one stands. So the phone
+ * keeps the `B` it first received and never expects it to rotate.
+ */
+export interface RemotePairKexResponse {
+	v: 2;
+	/** `PAD(B)`: EXACTLY 384 bytes, base64url. */
+	B: Base64Url;
+	serverTimeMs: EpochMs;
+}
+
 /** step 3b: phone -> desktop, `POST /pair/confirm`, cleartext JSON. */
 export interface PairConfirmRequest {
 	v: 1;
 	pid: PairingId;
 	deviceId: DeviceId;
 	/** HMAC-SHA256(K_conf_p, transcript), 32 bytes. Compared in CONSTANT TIME. */
+	macPhone: Base64Url;
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) step 3b on the REMOTE hop. Same shape as the LAN
+ * confirm; the version is what keeps a client that speaks one flow from being
+ * half-admitted to the other.
+ */
+export interface RemotePairConfirmRequest {
+	v: 2;
+	pid: PairingId;
+	deviceId: DeviceId;
+	/** HMAC-SHA256(K_conf_p, the 825-byte SRP transcript), 32 bytes. */
 	macPhone: Base64Url;
 }
 
@@ -360,16 +438,78 @@ export type PairingErrorCode =
 	| "pair_host_not_private"
 	| "pair_window_closed"
 	| "pair_rate_limited"
+	/**
+	 * (REMOTE-CODE-PAIRING) Remote-flow only. The typed code was wrong — which on
+	 * this flow is what a failed `macPhone` MEANS, since the code is the only
+	 * secret in the schedule. Distinct from `pair_bad_mac` so the phone can say
+	 * "check the digits" on one flow and "scan again" on the other; the QR flow's
+	 * codes are untouched.
+	 */
+	| "pair_code_wrong"
+	/** (REMOTE-CODE-PAIRING) Three wrong codes burned the window. Ask for a new one. */
+	| "pair_code_burned"
+	/**
+	 * (REMOTE-CODE-PAIRING) Remote-flow only. The SRP client public value `A` was
+	 * missing, the wrong width, or degenerate (`0 mod N`, `1`, `N-1`, `>= N`), or
+	 * the derived `u` was zero — so no key agreement happened at all. NAMED rather
+	 * than folded into `unknown` because it is the one refusal on this hop that is
+	 * not about the code: a phone told "wrong code" here would have the user
+	 * retyping correct digits forever.
+	 */
+	| "pair_bad_key_agreement"
+	/**
+	 * (REMOTE-CODE-PAIRING) Remote-flow only, `400`. This desktop has no candidate
+	 * for that deviceId, so the phone must repeat `begin` — the window itself may
+	 * well still be open and usable.
+	 *
+	 * (PAIR-EVICTION-HONEST) It exists because the alternative was a lie. A remote
+	 * candidate can legitimately vanish mid-flow: `evictOldestKexSessions` drops the
+	 * oldest candidate rather than refusing a newcomer, so a flood arriving inside
+	 * the phone's `begin` -> `kex` gap can displace it. Folded into `pair_wrong_peer`
+	 * that told the user "something else answered instead of the desktop" — an
+	 * attack sentence for a case where nothing substituted itself and the fix is
+	 * "start again". `pair_wrong_peer` now means only what it says: a deviceId that
+	 * EXISTS and is being rewritten. The absent candidate is its own proof that
+	 * `begin` must be repeated, so nothing tombstones anything to say so.
+	 *
+	 * Returned from BOTH `/v1/pair/kex` and `/v1/pair/confirm`, because eviction can
+	 * land in either gap, and only after the window, wire version, source and `pid`
+	 * have all checked out — a wrong `pid` or a wrong source is not this.
+	 *
+	 * The phone's recovery is USER-INITIATED: a fresh `begin` with a fresh deviceId
+	 * and a fresh `a`. Deliberately NOT an automatic retry at any bound — `begin` is
+	 * unauthenticated, so a phone that silently re-begins on this code is an
+	 * amplifier pointed at the public pairing host, and it cannot help at all when
+	 * the window is genuinely gone. Confirm is never re-sent.
+	 *
+	 * The BODY is the contract, not the status: the phone keys on this code alone and
+	 * never on the `400`, because a public edge can emit a 4xx of its own and must
+	 * not be able to tell a user their code is still good and talk them into
+	 * resubmitting into a window that is not there. So this code must always travel
+	 * as `{"code":"pair_unknown_candidate"}` — a body the phone's parser cannot read
+	 * degrades it to a generic "nothing was stored".
+	 *
+	 * Like every other candidate-less refusal this spends nothing: no confirm
+	 * attempt, no MAC strike.
+	 *
+	 * LAN/QR keeps `pair_wrong_peer` for the same situation, byte-for-byte — v1 is
+	 * frozen and its phone builds have no mapping for this code.
+	 */
+	| "pair_unknown_candidate"
 	| "unknown";
 
-/** Ephemeral, in-memory-only state of the single open pairing window (§4.2). */
+/**
+ * Ephemeral, in-memory-only state shared by BOTH kinds of pairing window (§4.2).
+ *
+ * The secret-bearing members are deliberately NOT here, because the two flows
+ * hold different secrets and neither may ever be serialised: the QR window keeps
+ * a 32-byte `pairingCode` and an X25519 key pair, the remote window keeps an
+ * 8-digit code and its SRP verifier. `pairing.ts` extends this per kind.
+ */
 export interface PairingWindowState {
 	pid: PairingId;
-	/** 32 raw bytes. Zeroed on close. NEVER rendered, logged, or persisted. */
-	pairingCode: Uint8Array;
-	/** 16 raw bytes. */
+	/** 16 raw bytes. Public on the wire; the SRP salt on the remote flow. */
 	pairSalt: Uint8Array;
-	dPub: Uint8Array;
 	openedAtMs: EpochMs;
 	expiresAtMs: EpochMs;
 	/** 3 bad MACs burn the window. */

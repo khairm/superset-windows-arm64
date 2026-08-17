@@ -10,15 +10,18 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LuLoaderCircle } from "react-icons/lu";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { ModeToggle } from "./components/ModeToggle";
 import { QrCode } from "./components/QrCode";
+import { PAIRING_MODES, type PairingMode } from "./pairing-modes";
 
 interface PairDeviceDialogProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	/**
-	 * The LOCAL host-service. Pairing is a same-machine, same-LAN act — the QR
-	 * advertises the private address of whichever machine runs the bridge — so a
-	 * relayed host would hand out a QR the phone cannot reach.
+	 * The LOCAL host-service. Pairing is an act performed AT the machine — the QR
+	 * advertises the private address of whichever machine runs the bridge, and the
+	 * typed code is minted by that machine's bridge — so a relayed host would hand
+	 * out a credential for the wrong computer.
 	 */
 	hostUrl: string;
 }
@@ -27,48 +30,84 @@ interface PairDeviceDialogProps {
  * (COMPANION-PAIRING-UI) The desktop half of §4 pairing: the phone tells the
  * user to "open Superset and choose 'Pair a device'", and this is that.
  *
- * THE URI IS A SECRET. Its fragment carries the 256-bit pairing code, which is
- * the only thing standing between an active LAN attacker and a paired device
- * (§4.7). It therefore lives in ONE place — `phase.qrUri` inside the flow
- * component below — and that component is unmounted the moment the dialog
- * closes, so the value has no path to a store, to disk, or to a later render.
- * It is never logged, never put in an attribute, and never drawn as text: a
- * screenshot of a QR is a screenshot of a code that expires in 120 seconds,
- * while a screenshot of the string is a code someone can retype.
+ * TWO WAYS IN, and the second one exists because the first has a hard
+ * prerequisite the user's network may simply refuse:
+ *
+ *  - QR (§4.1-4.8). The phone scans, and the exchange happens on the LAN.
+ *    Requires the phone to be able to reach this machine's private address.
+ *  - CODE `(REMOTE-CODE-PAIRING)` (§4.9). The desktop shows 8 digits, the user
+ *    types them into the phone, and the SAME exchange happens over the tunnel.
+ *    Works from anywhere, including a network that blocks phone -> PC traffic
+ *    and therefore makes the QR flow impossible.
+ *
+ * THE SECRET IS THE SAME SECRET IN BOTH MODES. The QR URI's fragment carries a
+ * 256-bit code and the code mode carries 8 digits, and both are the only thing
+ * standing between an attacker and a paired device (§4.7 / §4.9). They live in
+ * ONE place — `phase.secret` inside the flow component below — and that
+ * component is unmounted the moment the dialog closes, so the value has no path
+ * to a store, to disk, or to a later render. Neither is ever logged or put in an
+ * attribute. The QR is never drawn as text (a screenshot of a QR is a screenshot
+ * of something that expires in 120 seconds, while a screenshot of the string is
+ * a code someone can retype); the 8 digits ARE drawn as text, because the user
+ * has to read them, and they are correspondingly shorter-lived in every other
+ * respect — never selectable, never copied anywhere, gone with the dialog.
  */
 export function PairDeviceDialog({
 	open,
 	onOpenChange,
 	hostUrl,
 }: PairDeviceDialogProps) {
+	/**
+	 * Which way in. Lives HERE rather than in the flow so the description can
+	 * change with it — and it is not a secret, unlike everything the flow holds.
+	 */
+	const [mode, setMode] = useState<PairingMode>("qr");
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-md">
 				<DialogHeader>
 					<DialogTitle>Pair a device</DialogTitle>
 					<DialogDescription>
-						Open Superset Companion on your phone, choose Pair this phone, and
-						scan this code. Both devices must be on the same Wi-Fi — the
-						exchange never leaves your network.
+						{PAIRING_MODES[mode].description}
 					</DialogDescription>
 				</DialogHeader>
-				{/* Unmounting is what destroys the pairing code; do not hoist this. */}
+				<ModeToggle mode={mode} onModeChange={setMode} />
+				{/* Unmounting is what destroys the pairing secret; do not hoist this.
+				    Keyed on the mode so switching starts a clean flow rather than
+				    leaving the previous mode's countdown running underneath. */}
 				{open && (
-					<PairingFlow hostUrl={hostUrl} onClose={() => onOpenChange(false)} />
+					<PairingFlow
+						key={mode}
+						mode={mode}
+						hostUrl={hostUrl}
+						onClose={() => onOpenChange(false)}
+					/>
 				)}
 			</DialogContent>
 		</Dialog>
 	);
 }
 
+/**
+ * The one live secret, in the one shape the renderer ever holds it in.
+ *
+ * A union, so a QR render cannot accidentally be handed a code (or the reverse)
+ * and silently draw nothing. It carries NO mode tag: `PairingFlow` is keyed on
+ * the mode and remounts when it changes, so the mode is already a prop of the
+ * only component that holds this, and a second copy could only ever disagree
+ * with it. The two members are told apart structurally.
+ */
+type PairingSecret = { qrUri: string } | { code: string };
+
 type PairingPhase =
 	| { kind: "opening" }
-	| { kind: "open"; qrUri: string; expiresAtMs: number }
+	| { kind: "open"; secret: PairingSecret; expiresAtMs: number }
 	/**
-	 * The countdown reached zero, so the code is dead and the QR is dropped —
-	 * but the OUTCOME is the host-service's to state, not ours. A local clock
-	 * saying "120 s elapsed" cannot tell an expiry from a pairing that landed a
-	 * moment before it, which is exactly the bug this phase exists to stop.
+	 * The countdown reached zero, so the secret is dead and dropped — but the
+	 * OUTCOME is the host-service's to state, not ours. A local clock saying
+	 * "120 s elapsed" cannot tell an expiry from a pairing that landed a moment
+	 * before it, which is exactly the bug this phase exists to stop.
 	 */
 	| { kind: "closing"; expiresAtMs: number }
 	| { kind: "closed-early" }
@@ -85,11 +124,12 @@ type PairingPhase =
 const PAIRING_STATE_POLL_MS = 1_000;
 
 /**
- * The bridge allows ONE pairing window per process, so two overlapping window
- * operations can produce a close that lands after a later open and silently
- * takes the new window down. Chaining every call removes that by construction:
- * a close started when the dialog closed always finishes before the open of a
- * dialog the user reopened a moment later.
+ * The bridge allows ONE pairing window per process — of EITHER kind — so two
+ * overlapping window operations can produce a close that lands after a later
+ * open and silently takes the new window down. Chaining every call removes that
+ * by construction: a close started when the dialog closed (or when the user
+ * switched modes) always finishes before the open of the window that replaces
+ * it.
  */
 let pairingOperations: Promise<unknown> = Promise.resolve();
 
@@ -107,17 +147,29 @@ function describe(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/** `12345678` -> `1234-5678`. Presentation only; the digits are what is typed. */
+function groupCode(code: string): string {
+	const half = Math.ceil(code.length / 2);
+	return `${code.slice(0, half)}-${code.slice(half)}`;
+}
+
 function PairingFlow({
+	mode,
 	hostUrl,
 	onClose,
 }: {
+	mode: PairingMode;
 	hostUrl: string;
 	onClose: () => void;
 }) {
 	const [phase, setPhase] = useState<PairingPhase>({ kind: "opening" });
-	const [remainingMs, setRemainingMs] = useState(0);
+	// QUANTIZED, not raw milliseconds. The tick has to stay fast so the window can
+	// close promptly, but the only thing rendered is whole seconds — storing the raw
+	// remainder re-rendered the dialog (QR included) four times per displayed second
+	// with identical output. An unchanged integer makes React bail out instead.
+	const [secondsLeft, setSecondsLeft] = useState(0);
 	// Guards against a response landing after unmount, which would both set state
-	// on a dead component and resurrect a pairing code we just discarded.
+	// on a dead component and resurrect a pairing secret we just discarded.
 	const mounted = useRef(true);
 
 	useEffect(() => {
@@ -127,9 +179,9 @@ function PairingFlow({
 		};
 	}, []);
 
-	// `useCallback` keyed on `hostUrl` alone, matching the mount effect below:
-	// a fresh identity every render would make that effect re-run and open a
-	// second window the first one still holds.
+	// `useCallback` keyed on `hostUrl` and `mode` alone, matching the mount effect
+	// below: a fresh identity every render would make that effect re-run and open
+	// a second window the first one still holds.
 	const openWindow = useCallback((): void => {
 		setPhase({ kind: "opening" });
 		void serialize(async () => {
@@ -139,15 +191,31 @@ function PairingFlow({
 			// a window the server has not finished retiring and be refused as
 			// "already open". Closing something already closed is a stated no-op.
 			await client.companion.closePairing.mutate();
-			return client.companion.openPairing.mutate();
+			if (mode === "code") {
+				const handle = await client.companion.openRemotePairing.mutate();
+				return {
+					secret: { code: handle.code },
+					expiresAtMs: handle.expiresAtMs,
+				};
+			}
+			const handle = await client.companion.openPairing.mutate();
+			return {
+				secret: { qrUri: handle.qrUri },
+				expiresAtMs: handle.expiresAtMs,
+			};
 		}).then(
-			(handle) => {
+			(opened) => {
 				if (!mounted.current) return;
-				setRemainingMs(handle.expiresAtMs - Date.now());
+				// Seeded here so the first paint already shows the real countdown
+				// rather than 0 for one tick, in the same quantized whole seconds the
+				// tick uses.
+				setSecondsLeft(
+					Math.max(0, Math.ceil((opened.expiresAtMs - Date.now()) / 1000)),
+				);
 				setPhase({
 					kind: "open",
-					qrUri: handle.qrUri,
-					expiresAtMs: handle.expiresAtMs,
+					secret: opened.secret,
+					expiresAtMs: opened.expiresAtMs,
 				});
 			},
 			(error: unknown) => {
@@ -159,12 +227,11 @@ function PairingFlow({
 				});
 			},
 		);
-	}, [hostUrl]);
+	}, [hostUrl, mode]);
 
-	// Opens on mount, and takes the LAN listener down on unmount — the user who
-	// dismissed the QR should not leave 0.0.0.0:47611 accepting pairing attempts
-	// for the rest of the window. Keyed on `hostUrl` alone: re-running this for
-	// any other reason would open a second window the first one still holds.
+	// Opens on mount, and takes the window down on unmount — the user who
+	// dismissed the dialog should not leave 0.0.0.0:47611 accepting pairing
+	// attempts, or a live code answering `/v1/pair/*`, for the rest of the window.
 	useEffect(() => {
 		openWindow();
 		return () => {
@@ -186,12 +253,14 @@ function PairingFlow({
 		if (expiresAtMs === null) return;
 		const tick = (): void => {
 			const left = expiresAtMs - Date.now();
-			setRemainingMs(left);
+			setSecondsLeft(Math.max(0, Math.ceil(left / 1000)));
 			// Hands over to the server rather than declaring the outcome: at this
-			// instant the code is certainly dead, and which way it died is a fact
+			// instant the secret is certainly dead, and which way it died is a fact
 			// only the bridge holds.
 			if (left <= 0) setPhase({ kind: "closing", expiresAtMs });
 		};
+		// Still 250 ms: the DISPLAY only needs 1 Hz, but the handover above must not
+		// wait up to a second after the window has actually expired.
 		const timer = setInterval(tick, 250);
 		tick();
 		return () => clearInterval(timer);
@@ -228,7 +297,7 @@ function PairingFlow({
 						if (state.kind === "none") {
 							// We are holding a window the host-service does not have. The
 							// only ways here are a bridge restart or a close from outside
-							// this dialog; both mean the code on screen is dead, and saying
+							// this dialog; both mean the secret on screen is dead, and saying
 							// so is better than counting down against nothing.
 							setPhase({
 								kind: "failed",
@@ -239,8 +308,10 @@ function PairingFlow({
 							return;
 						}
 						// A verdict about a window that is not the one on screen (a stale
-						// response that crossed a reopen) decides nothing here.
+						// response that crossed a reopen, or the window the OTHER mode
+						// just replaced) decides nothing here.
 						if (state.expiresAtMs !== trackedExpiresAtMs) return;
+						if (state.pairingKind !== PAIRING_MODES[mode].pairingKind) return;
 						if (state.kind === "open") return;
 						setPhase(
 							state.kind === "closed-early"
@@ -268,7 +339,7 @@ function PairingFlow({
 			cancelled = true;
 			clearInterval(timer);
 		};
-	}, [trackedExpiresAtMs, hostUrl]);
+	}, [trackedExpiresAtMs, hostUrl, mode]);
 
 	if (phase.kind === "opening") {
 		return (
@@ -340,8 +411,8 @@ function PairingFlow({
 					<p className="text-sm font-medium">This code has expired.</p>
 					<p className="mt-1 text-sm text-muted-foreground">
 						A pairing window lasts 120 seconds and works once. If your phone
-						finished scanning in time it will say so on its own screen —
-						otherwise show a new code and try again.
+						finished in time it will say so on its own screen — otherwise show a
+						new code and try again.
 					</p>
 				</div>
 				<DialogFooter>
@@ -356,20 +427,32 @@ function PairingFlow({
 		);
 	}
 
-	const secondsLeft = Math.max(0, Math.ceil(remainingMs / 1000));
 	const minutes = Math.floor(secondsLeft / 60);
 	const seconds = secondsLeft % 60;
 
 	return (
 		<>
 			<div className="flex flex-col items-center gap-3 py-2">
-				<div className="rounded-lg bg-white p-3">
-					<QrCode
-						value={phase.qrUri}
-						label="Pairing QR code for Superset Companion"
-						className="size-56"
-					/>
-				</div>
+				{"qrUri" in phase.secret ? (
+					<div className="rounded-lg bg-white p-3">
+						<QrCode
+							value={phase.secret.qrUri}
+							label="Pairing QR code for Superset Companion"
+							className="size-56"
+						/>
+					</div>
+				) : (
+					<div className="flex flex-col items-center gap-2 py-6">
+						{/* Read aloud and typed, never copied: no `select-text` here, and
+						    the grouping is presentation — the phone takes the 8 digits. */}
+						<p className="text-4xl font-semibold tabular-nums tracking-[0.2em]">
+							{groupCode(phase.secret.code)}
+						</p>
+						<p className="text-xs text-muted-foreground">
+							Type this into Superset Companion on your phone.
+						</p>
+					</div>
+				)}
 				<p
 					className="text-sm tabular-nums text-muted-foreground"
 					aria-live="polite"

@@ -22,9 +22,10 @@ import {
  * user. Offering "Pair a device" in either case would open a dialog that can
  * only fail, so the row states the reason instead.
  *
- * Local host only. The QR advertises the private LAN address of the machine
- * running the bridge, so pairing against a relayed host would produce a code
- * the phone cannot reach.
+ * Local host only. The dialog talks to the bridge on THIS machine — the QR
+ * advertises its private LAN address and the typed code is minted by its
+ * pairing window — so pairing against a relayed host would produce a credential
+ * for the wrong computer.
  */
 export function CompanionPairingSetting() {
 	const status = useCompanionStatus();
@@ -33,7 +34,11 @@ export function CompanionPairingSetting() {
 
 	const explanation = describeCompanionStatus(
 		status,
-		"Show a QR code your phone can scan. The window lasts 120 seconds, works once, and never leaves your Wi-Fi.",
+		// (REMOTE-CODE-PAIRING) Both ways in are named here, because the whole
+		// point of the code mode is that the user reaches for it when the QR mode
+		// cannot work on their network — and they will not reach for something the
+		// row never mentioned.
+		"Scan a QR code on the same Wi-Fi, or type an 8-digit code that works from anywhere. Either way the window lasts 120 seconds and works once.",
 	);
 	const canPair = activeHostUrl !== null && status.data?.running === true;
 

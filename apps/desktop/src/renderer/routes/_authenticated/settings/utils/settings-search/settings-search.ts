@@ -1070,7 +1070,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 		section: "experimental",
 		title: "Pair a device",
 		description:
-			"Show a QR code that pairs a phone or watch with this desktop over your Wi-Fi",
+			"Pair a phone or watch with this desktop — scan a QR code on your Wi-Fi, or type an 8-digit code from anywhere",
 		keywords: [
 			"experimental",
 			"companion",
@@ -1085,6 +1085,11 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"scan",
 			"mobile",
 			"bridge",
+			// (REMOTE-CODE-PAIRING) the second way in — a user whose network blocks
+			// the LAN hop searches for the words they were told to look for.
+			"code",
+			"8-digit",
+			"remote",
 		],
 	},
 	{

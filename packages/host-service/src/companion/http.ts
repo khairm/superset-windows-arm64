@@ -31,8 +31,22 @@
  * lives entirely in ws.ts, which imports nothing from answer.ts, read-api.ts or
  * push.ts — the socket has no reachable path to a desktop write, structurally,
  * not by convention (§1.3).
+ *
+ * (REMOTE-CODE-PAIRING) THREE PATHS DO NOT FOLLOW THE PIPELINE ABOVE, and
+ * cannot: `/v1/pair/begin`, `/v1/pair/kex` and `/v1/pair/confirm` are how a phone
+ * that has NO device key obtains one. They are unsealed by necessity and they
+ * carry NO Access credential at all — an earlier design gave them a second,
+ * pairing-scoped Access identity, which was removed because a token shipped
+ * inside a published APK is public by construction and was never a boundary. The
+ * PAKE is the boundary. What replaces the credential is HOST isolation: these
+ * three paths are served ONLY on the dedicated public pairing host and only by
+ * POST, they are a bare 404 on the main host, every other path is a bare 404 on
+ * the pairing host, and they answer a bare 404 anyway unless the person at the
+ * desktop has a code window open. See `handleRemotePairRequest` and
+ * `classifyRequestHost`.
  */
 
+import net from "node:net";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
@@ -41,6 +55,7 @@ import type { AccessValidator } from "./access-jwt";
 import {
 	BRIDGE_HOST,
 	BRIDGE_PORT,
+	BRIDGE_PUBLIC_HOST,
 	ENVELOPE_HEADER_BYTES,
 	FRESHNESS_WINDOW_MS,
 	GCM_TAG_BYTES,
@@ -49,6 +64,9 @@ import {
 	PANIC_PER_MIN,
 	PING_PER_MIN,
 	PREAUTH_PER_MIN,
+	REMOTE_PAIR_PATH_BEGIN,
+	REMOTE_PAIR_PATH_CONFIRM,
+	REMOTE_PAIR_PATH_KEX,
 	SESSION_TTL_MS,
 } from "./config";
 import type { ReplayCache } from "./crypto";
@@ -74,6 +92,13 @@ import {
 	PANIC_REASON_MAX_CHARS,
 	WIRE_ID_CHARS,
 } from "./limits";
+import {
+	currentRemotePairing,
+	MAX_PAIR_BODY_BYTES,
+	PairingError,
+	type RemotePairingEndpoint,
+	remoteWindowWasBurned,
+} from "./pairing";
 import type {
 	AnswerRequest,
 	AnswerResponse,
@@ -93,6 +118,7 @@ import type {
 	MessageRequest,
 	MessageResponse,
 	OperationClass,
+	PairingErrorCode,
 	PanicRequest,
 	PanicResponse,
 	ParsedEnvelope,
@@ -103,6 +129,9 @@ import type {
 	RateLimitDecision,
 	RegisterRequest,
 	RegisterResponse,
+	RemotePairBeginRequest,
+	RemotePairConfirmRequest,
+	RemotePairKexRequest,
 	SealedPath,
 	SealedRequestContext,
 	SealedResult,
@@ -511,6 +540,383 @@ function cleartextResponse(error: CleartextError, nowMs: number): Response {
 		serverTimeMs: nowMs,
 		retryAfterMs: error.retryAfterMs,
 	});
+}
+
+// ---------------------------------------------------------------------------
+// (REMOTE-CODE-PAIRING) §4.9 — the three unsealed pairing paths, and the
+// two-host split that isolates them
+// ---------------------------------------------------------------------------
+
+/** The only paths the public pairing host serves. See `handleRemotePairRequest`. */
+export const REMOTE_PAIR_PATHS = [
+	REMOTE_PAIR_PATH_BEGIN,
+	REMOTE_PAIR_PATH_KEX,
+	REMOTE_PAIR_PATH_CONFIRM,
+] as const;
+
+export type RemotePairPath = (typeof REMOTE_PAIR_PATHS)[number];
+
+export function isRemotePairPath(path: string): path is RemotePairPath {
+	return (REMOTE_PAIR_PATHS as readonly string[]).includes(path);
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) Which hostname a request arrived for, and therefore
+ * which surface it is allowed to reach.
+ *
+ * `"pair"`  — the public pairing host. Exactly three paths, POST only, no Access
+ *             JWT, nothing else in the whole application reachable.
+ * `"main"`  — the tunnelled bridge host. Everything it always served, and the
+ *             three pairing paths explicitly 404.
+ * `"unknown"` — anything else, including a missing `Host`. 404.
+ */
+export type RequestHostKind = "pair" | "main" | "unknown";
+
+/** Lowercased once at module load; the gate compares against it per request. */
+const BRIDGE_PUBLIC_HOST_LOWER = BRIDGE_PUBLIC_HOST.toLowerCase();
+
+/**
+ * Normalises a `Host` header to a bare lowercase hostname.
+ *
+ * The port is dropped (the tunnel and a direct loopback request disagree about
+ * it and neither disagreement is meaningful), the root label's trailing dot is
+ * dropped (`example.com.` and `example.com` are the same name), and an IPv6
+ * literal's brackets are kept so a `[::1]:47610` cannot be mistaken for a
+ * hostname with a port.
+ */
+function normaliseHostHeader(value: string | null): string | null {
+	if (value === null) return null;
+	const trimmed = value.trim().toLowerCase();
+	if (trimmed.length === 0) return null;
+	// A duplicated Host header is a request smuggling shape, not a hostname.
+	if (trimmed.includes(",")) return null;
+	const withoutPort = trimmed.startsWith("[")
+		? trimmed.slice(0, trimmed.indexOf("]") + 1)
+		: (trimmed.split(":")[0] ?? "");
+	const withoutRootDot = withoutPort.endsWith(".")
+		? withoutPort.slice(0, -1)
+		: withoutPort;
+	return withoutRootDot.length === 0 ? null : withoutRootDot;
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) The route isolation gate, decided BEFORE a body is read.
+ *
+ * TWO HOSTS, AND THE SPLIT IS THE SECURITY BOUNDARY. The pairing paths are
+ * unauthenticated by design — the caller is a phone that has no credential yet —
+ * so they are served on their own public hostname and NOTHING else is served
+ * there. Every other route keeps its Cloudflare Access JWT and is served only on
+ * the main host, which additionally 404s the pairing paths. Neither host can be
+ * used to reach the other's surface, in either direction.
+ *
+ * UNKNOWN OR MISSING HOST IS 404, with no exception. There is no loopback health
+ * or startup probe that needs one: nothing in this repository makes an HTTP
+ * request to the bridge's own port. The one thing that touches the port directly
+ * — `(PORT-BEFORE-STATE)` in `index.ts` — is a bare socket `listen`, not a
+ * request, so it never reaches this gate. `/v1/ping` exists but is an Access-
+ * validated endpoint for the PHONE, not a local probe. An exemption here would
+ * be an unauthenticated bypass that answers to any `Host` a caller invents.
+ *
+ * `publicPairHost` is `null` when the operator has not enabled remote pairing,
+ * and then the pair host classifies as `"unknown"` — so the three paths exist on
+ * no hostname at all. Fail closed by absence, not by a flag somebody has to
+ * remember to check.
+ */
+/**
+ * `publicPairHost` MUST already be lowercase — `loadPublicPairHost` accepts only
+ * an exact match against the audited constant, and the listener lowercases once
+ * at construction, so nothing reaches here needing a per-request normalisation.
+ */
+export function classifyRequestHost(
+	hostHeader: string | null,
+	publicPairHost: string | null,
+): RequestHostKind {
+	const host = normaliseHostHeader(hostHeader);
+	if (host === null) return "unknown";
+	if (publicPairHost !== null && host === publicPairHost) return "pair";
+	if (host === BRIDGE_PUBLIC_HOST_LOWER) return "main";
+	return "unknown";
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) What the listener does with a request, decided from the
+ * `Host` header, the method and the path ALONE — no body, no headers beyond
+ * `Host`, no I/O.
+ *
+ * A PURE FUNCTION because route isolation is the security boundary now that the
+ * pairing paths have no token in front of them, and a boundary that can only be
+ * exercised by standing up the whole application is a boundary nobody tests
+ * exhaustively. Every cell of the host x method x path matrix is a call to this.
+ * The middleware in `createBridgeHttpServer` is a six-line adapter over it and
+ * contains no decisions of its own.
+ */
+export type HostRouteVerdict =
+	| { kind: "pair"; path: RemotePairPath }
+	| { kind: "main" }
+	| { kind: "not-found" };
+
+export function routeByHost(input: {
+	hostHeader: string | null;
+	method: string;
+	path: string;
+	publicPairHost: string | null;
+}): HostRouteVerdict {
+	const host = classifyRequestHost(input.hostHeader, input.publicPairHost);
+
+	if (host === "pair") {
+		// The pairing host serves EXACTLY these three, EXACTLY by POST. Everything
+		// else there — `/v1/ping`, a sealed path, a GET of a pairing path, the
+		// WebSocket upgrade — is a bare 404, so the host reveals nothing about what
+		// else this process runs.
+		if (input.method !== "POST" || !isRemotePairPath(input.path)) {
+			return { kind: "not-found" };
+		}
+		return { kind: "pair", path: input.path };
+	}
+
+	if (host === "main") {
+		// Explicit, rather than relying on the pairing paths being unregistered:
+		// the main host must never serve an unauthenticated surface, and a future
+		// `app.post` on one of these paths would otherwise quietly make it do so.
+		if (isRemotePairPath(input.path)) return { kind: "not-found" };
+		return { kind: "main" };
+	}
+
+	return { kind: "not-found" };
+}
+
+export interface RemotePairRouteDeps {
+	logger: BridgeLogger;
+	/**
+	 * Test seams. Production passes neither and gets the live module state.
+	 *
+	 * There is deliberately no clock here. The pairing hop's only time-dependent
+	 * answers — the 120 s window and the 60 s burn memo — are owned by
+	 * `pairing.ts`, and the one thing that used to need a timestamp on this side
+	 * was the sealed protocol's `serverTimeMs`, which a pairing response must not
+	 * carry.
+	 */
+	lookup?: () => RemotePairingEndpoint | null;
+	burned?: () => boolean;
+}
+
+/**
+ * EVERY JSON answer the pairing hop gives, success or refusal, built here.
+ *
+ * One constructor because `no-store` is not decoration: a cached pairing answer
+ * is a replayed pairing answer, and the way that rule dies is a second response
+ * shape somewhere else that forgets the header. There is nowhere else to forget
+ * it.
+ */
+function pairingJsonResponse(statusCode: number, body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status: statusCode,
+		headers: {
+			"content-type": "application/json; charset=utf-8",
+			"cache-control": "no-store",
+		},
+	});
+}
+
+/** The pairing hop's own error shape — `{ code }`, exactly as `pairing.ts` writes it. */
+function pairingErrorResponse(
+	statusCode: number,
+	code: PairingErrorCode,
+): Response {
+	return pairingJsonResponse(statusCode, { code });
+}
+
+/** Byte-identical to the catch-all's answer for an unknown path. */
+function notFound(): Response {
+	return new Response(null, { status: 404 });
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) Who is asking, for the per-source cap.
+ *
+ * `cf-connecting-ip` is the only honest answer here. The socket's peer is always
+ * cloudflared on loopback, so the transport-level address identifies nothing;
+ * Cloudflare sets this header on every request it proxies and a client cannot
+ * forge it through the tunnel. Its ABSENCE is refused rather than defaulted: a
+ * request we cannot attribute is a request we cannot throttle, and giving the
+ * unattributable request an exemption hands a flooder the exemption.
+ *
+ * EXACTLY ONE VALUE, and it has to look like an address. `Headers.get` joins
+ * repeated headers with a comma, so a comma here means either two headers or a
+ * forwarded-for style list — both are a caller trying to choose which bucket it
+ * spends, and both are refused rather than parsed. This is the ONLY identity the
+ * pairing host has now that there is no Access token in front of it, so it is
+ * checked before the body is read and before any crypto runs.
+ */
+function remotePairSourceKey(request: Request): string | null {
+	const value = request.headers.get("cf-connecting-ip");
+	if (value === null) return null;
+	const trimmed = value.trim();
+	if (trimmed.length === 0 || trimmed.includes(",")) return null;
+	return isIpLiteral(trimmed) ? trimmed : null;
+}
+
+/** An IPv4 or IPv6 literal, and nothing else — never a hostname. */
+function isIpLiteral(value: string): boolean {
+	if (net.isIP(value) !== 0) return true;
+	// Cloudflare does not bracket the value, but a proxy in front of it might.
+	if (value.startsWith("[") && value.endsWith("]")) {
+		return net.isIP(value.slice(1, -1)) === 6;
+	}
+	return false;
+}
+
+/**
+ * (REMOTE-CODE-PAIRING) The three pairing paths, on the PUBLIC pairing host and
+ * deliberately OUTSIDE `handleSealed`.
+ *
+ * They have to be unsealed AND unauthenticated: the caller is a phone that is
+ * not paired yet and therefore holds no device key — that is what it is here to
+ * obtain. Everything that would normally be enforced by the envelope or by
+ * Access is enforced by the gates below instead, in this order, and every one of
+ * them runs BEFORE the body is read:
+ *
+ *  1. HOST. `classifyRequestHost` has already decided this request arrived for
+ *     the pairing host and named one of exactly three paths with POST. Nothing
+ *     else on this bridge is reachable there, and these paths are reachable
+ *     nowhere else.
+ *  2. SOURCE. A single well-formed `CF-Connecting-IP`, or refused. It is the
+ *     only identity this surface has.
+ *  3. A WINDOW MUST BE OPEN. With no remote window the answer is a bare 404,
+ *     byte-identical to the catch-all's answer for a path that does not exist.
+ *     Outside a window a human deliberately opened, this surface is not
+ *     discoverable at all — and answering that 404 allocates nothing.
+ *  4. RATE. The open window's own bounded per-source table, charged exactly once
+ *     per request, here. Deliberately NOT the bridge's pre-auth buckets: those
+ *     are keyed on authenticated Access client ids, and feeding them arbitrary
+ *     public IPs would hand an internet-wide scanner a table to grow.
+ *  5. SIZE. 4 KiB, checked before the body is read.
+ *
+ * The pairing module owns everything after that — the code, the verifier, the
+ * key schedule, the burn counter, the single use. This function moves bytes and
+ * enforces the transport's own rules; it can reach neither the code nor the
+ * verifier.
+ *
+ * ACCEPTED LIMITATION: with no token in front of it, anyone on the internet can
+ * spend budget here. The 404-without-a-window answer means an idle desktop does
+ * almost no work, and `kex` — the only step that costs a modular exponentiation
+ * — is charged before it validates `A` and derives at most once per candidate.
+ * A distributed flood can still make this process busy. That is the price of
+ * removing a credential that was published in every copy of the APK.
+ */
+export async function handleRemotePairRequest(
+	path: RemotePairPath,
+	request: Request,
+	deps: RemotePairRouteDeps,
+): Promise<Response> {
+	try {
+		// 2. Identity, such as it is, and before anything is read.
+		const sourceKey = remotePairSourceKey(request);
+		if (sourceKey === null) {
+			deps.logger.warn(
+				"[companion] remote pairing request with no single valid source address",
+				{ path },
+			);
+			return pairingErrorResponse(400, "unknown");
+		}
+
+		// 3. A window, or nothing to see. A BURNED window is the one case that
+		//    answers with a code instead: the user who mistyped three times is told
+		//    why, for one minute, and an attacker who burned it learns nothing it
+		//    did not already know.
+		//
+		//    NOTHING IS ALLOCATED ON THIS PATH when no window is open — no bucket,
+		//    no map entry, no timer. An idle desktop answering an internet-wide
+		//    scan does a hostname comparison and a null check.
+		const endpoint = (deps.lookup ?? currentRemotePairing)();
+		if (endpoint === null) {
+			if ((deps.burned ?? remoteWindowWasBurned)()) {
+				return pairingErrorResponse(403, "pair_code_burned");
+			}
+			return notFound();
+		}
+
+		// 4. Rate, keyed on that source and charged against THIS WINDOW — once,
+		//    here, before the body is read. The window's own bounded table is the
+		//    whole ceiling; the bridge's authenticated pre-auth buckets are keyed
+		//    on Access client ids and must not be fed arbitrary public IPs, which
+		//    is a table an internet-wide scanner would otherwise get to grow.
+		const steps = endpoint.admit(sourceKey);
+
+		// 5. Bounded read, then parse.
+		const wire = await readBoundedBody(request, MAX_PAIR_BODY_BYTES);
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(
+				new TextDecoder("utf-8", { fatal: true }).decode(wire),
+			);
+		} catch {
+			return pairingErrorResponse(400, "unknown");
+		}
+		if (typeof parsed !== "object" || parsed === null) {
+			return pairingErrorResponse(400, "unknown");
+		}
+
+		if (path === REMOTE_PAIR_PATH_BEGIN) {
+			return pairingJsonResponse(
+				200,
+				steps.begin(parsed as RemotePairBeginRequest),
+			);
+		}
+		if (path === REMOTE_PAIR_PATH_KEX) {
+			return pairingJsonResponse(
+				200,
+				steps.kex(parsed as RemotePairKexRequest),
+			);
+		}
+
+		const result = await steps.confirm(parsed as RemotePairConfirmRequest);
+		deps.logger.info("[companion] remote pairing completed", {
+			pairingRef: endpoint.pairingRef,
+			deviceId: result.deviceId,
+			surface: result.surface,
+		});
+		// The sealed step-4 envelope, verbatim and uncopied: `sealPairedResponse`
+		// builds this buffer for this response and keeps no reference to it, and
+		// nothing zeroes it afterwards — the plaintext and the send key are what
+		// get wiped there. It is the ONLY copy of the key material the phone will
+		// ever receive.
+		return new Response(result.sealedBody, {
+			status: 200,
+			headers: {
+				"content-type": "application/octet-stream",
+				"cache-control": "no-store",
+			},
+		});
+	} catch (error) {
+		if (error instanceof PairingError) {
+			// `error.code` is a closed enum and `error.message` is that same enum —
+			// there is no path by which the typed code reaches the wire.
+			return pairingErrorResponse(error.statusCode, error.code);
+		}
+		if (error instanceof CleartextError) {
+			// The bounded read is SHARED with the sealed protocol, so an oversized or
+			// undeclared-length body arrives here as that protocol's error — a
+			// `body_too_large` / `envelope_invalid` code, a `serverTimeMs`, a
+			// `retryAfterMs`, and no `cache-control`. None of that belongs on this
+			// host: the pairing client parses a closed set of pairing codes, and a
+			// sealed-protocol code from an unauthenticated surface is both
+			// unparseable to it and a free hint about the surface it did not reach.
+			// The STATUS is kept (413 is still 413) and the body is re-stated in the
+			// pairing shape, `no-store` included.
+			deps.logger.warn("[companion] remote pairing body refused", {
+				path,
+				statusCode: error.statusCode,
+				code: error.code,
+			});
+			return pairingErrorResponse(error.statusCode, "unknown");
+		}
+		// Never swallow an unexpected failure, and never leak its text: the
+		// operator sees it, the caller sees a generic refusal. The pairing code is
+		// not reachable from here, and `pairing.ts` never puts it in an error.
+		deps.logger.error("[companion] remote pairing failed", { path, error });
+		return pairingErrorResponse(500, "unknown");
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,10 +1479,38 @@ export interface BridgeHttpServer {
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	readonly startedAtMs: number;
+	/**
+	 * (REMOTE-CODE-PAIRING) TEST SEAM — the ASSEMBLED application, with no listener
+	 * bound and no port taken.
+	 *
+	 * It exists because route isolation became a security boundary the moment the
+	 * pairing paths lost the Access token in front of them, and the thing that
+	 * enforces it is the ORDER of the registrations in `createBridgeHttpServer`:
+	 * the host/method/path gate is registered first and every Access-guarded route
+	 * after it. That ordering cannot be observed from `routeByHost` alone — a
+	 * refactor that left the gate correct but registered it second would pass the
+	 * unit matrix and ship a bridge answering pairing requests on the main host.
+	 * Reaching the real routes is the only way to prove it, and binding a real
+	 * port in a test is not.
+	 *
+	 * Production never calls this; it calls `start()`.
+	 */
+	fetch(request: Request): Promise<Response> | Response;
 }
 
 export interface BridgeHttpServerDeps {
 	accessValidator: AccessValidator;
+	/**
+	 * (REMOTE-CODE-PAIRING) The PUBLIC hostname the three unauthenticated pairing
+	 * paths are served on, or `null` when remote pairing is not enabled. `null`
+	 * makes those paths exist on no host at all and changes nothing else.
+	 *
+	 * REQUIRED, not optional: a composition root that forgets it would silently
+	 * ship a bridge whose remote pairing surface is missing, and "the phone says
+	 * it cannot pair" is exactly the failure this feature exists to end. Passing
+	 * `null` is a decision; omitting the field is not available.
+	 */
+	publicPairHost: string | null;
 	devices: DeviceStore;
 	keys: KeyStore;
 	nonceCache: ReplayCache;
@@ -1146,10 +1580,45 @@ export function createBridgeHttpServer(
 	}
 	wssOptions.handleProtocols = selectCompanionSubprotocol;
 
+	// -- (REMOTE-CODE-PAIRING) route isolation, FIRST and before any body is read
+	//
+	// REGISTERED BEFORE EVERY ROUTE ON PURPOSE. Hono matches handlers in
+	// registration order, so a gate added after `/v1/ping` would not run for it.
+	// This one runs for every request the listener accepts, including the
+	// WebSocket upgrade.
+	//
+	// The three pairing paths are NOT registered as routes anywhere. They are
+	// served only from inside this gate, only when the request arrived for the
+	// public pairing host, and only for POST. That makes the isolation structural
+	// rather than a matter of every future route remembering to check: on the main
+	// host they fall through to the catch-all 404 like any unknown path, and on
+	// the pairing host nothing except those three exists at all.
+	// Lowercased ONCE, at construction: the gate runs for every request and a
+	// `toLowerCase()` per request buys nothing — the value is fixed for the
+	// lifetime of the listener.
+	const publicPairHost = deps.publicPairHost?.toLowerCase() ?? null;
+	app.use("*", async (c, next) => {
+		const verdict = routeByHost({
+			hostHeader: c.req.header("host") ?? null,
+			method: c.req.method,
+			// `c.req.path` is Hono's already-parsed pathname. Building a `URL` per
+			// request to recover it allocates a parser for a string Hono has.
+			path: c.req.path,
+			publicPairHost,
+		});
+		if (verdict.kind === "not-found") return c.body(null, 404);
+		if (verdict.kind === "main") return next();
+		return handleRemotePairRequest(verdict.path, c.req.raw, {
+			logger: deps.logger,
+		});
+	});
+
 	// -- §7.1 GET /v1/ping — the only unsealed endpoint ----------------------
 	app.get("/v1/ping", async (c) => {
 		const nowMs = now();
 		try {
+			// The MAIN token, exactly as before. Every path on this bridge except
+			// `/v1/pair/*` validates against this validator and no other.
 			const claims = await deps.accessValidator.validate(headersOf(c.req.raw));
 			const decision = rateLimiter.ping(claims.common_name, nowMs);
 			if (!decision.allowed) {
@@ -1574,6 +2043,7 @@ export function createBridgeHttpServer(
 
 	return {
 		startedAtMs,
+		fetch: (request: Request) => app.fetch(request),
 		async start() {
 			if (server) throw new Error("(COMPANION-BRIDGE) server already started");
 			server = await listenOrFail(app, deps.logger);
