@@ -3,6 +3,7 @@ import {
 	type DesktopNotice,
 	desktopVersionResponseSchema,
 	filterApplicableNotices,
+	forkVisibleNotices,
 	type NoticeClientContext,
 } from "./desktop-notices";
 
@@ -139,31 +140,74 @@ describe("filterApplicableNotices", () => {
 });
 
 /**
+ * (NO-REMOTE-UPDATE-GATE): `minimumVersion` and `message` reach no notice and no
+ * version comparison. Upstream synthesized an unclosable `blocking` notice from
+ * them whenever the app was below the server's minimum — unsatisfiable in this
+ * fork — and compared the raw remote string with `semver.lt`, which throws on
+ * anything that is not strict semver.
+ */
+describe("forkVisibleNotices", () => {
+	function payload(overrides: Record<string, unknown> = {}) {
+		return desktopVersionResponseSchema.parse({
+			minimumVersion: "99.0.0",
+			message: "Please update to the latest version to continue.",
+			notices: [],
+			...overrides,
+		});
+	}
+
+	for (const minimumVersion of ["latest", "1.15", "", "v1.2.3.4"]) {
+		test(`a non-semver minimumVersion (${JSON.stringify(minimumVersion)}) neither throws nor yields a notice`, () => {
+			expect(
+				forkVisibleNotices(payload({ minimumVersion }), makeCtx()),
+			).toEqual([]);
+		});
+	}
+
+	test("an app below the server minimum gets no synthesized notice at all", () => {
+		// the app under test is 1.14.2 and can never reach 99.0.0
+		expect(forkVisibleNotices(payload(), makeCtx())).toEqual([]);
+	});
+
+	test("`message` never becomes a notice body", () => {
+		const notices = forkVisibleNotices(
+			payload({
+				message: "Superset needs an update to keep syncing your workspaces.",
+				notices: [makeNotice({ id: "served" })],
+			}),
+			makeCtx(),
+		);
+		// non-vacuous: the served notice comes through, the server's message does not
+		expect(notices.map((n) => n.id)).toEqual(["served"]);
+	});
+
+	test("served notices still come through, downgraded to dismissible warnings", () => {
+		const notices = forkVisibleNotices(
+			payload({
+				notices: [makeNotice({ severity: "blocking", dismissible: false })],
+			}),
+			makeCtx(),
+		);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]?.severity).toBe("warning");
+		expect(notices[0]?.dismissible).toBe(true);
+	});
+});
+
+/**
  * (NO-REMOTE-UPDATE-GATE): no data returned by `GET /api/desktop/version` may
  * produce a surface the user cannot get out of.
  *
- * Driven through the real pipeline — the response schema, then the shared filter
- * — over one deliberately hostile payload, and asserted over the WHOLE output
- * set rather than against any particular notice, render site or severity value:
- * upstream reshapes those freely, and what the fork actually needs is that
- * nothing coming back from the server can brick the app.
+ * Driven through the real pipeline — the response schema, then
+ * `forkVisibleNotices` — over one deliberately hostile payload, and asserted
+ * over the WHOLE output set rather than against any particular notice, render
+ * site or severity value: upstream reshapes those freely, and what the fork
+ * actually needs is that nothing coming back from the server can brick the app.
  */
 describe("no remote payload can produce an unclosable surface", () => {
-	/** Mirrors the legacy `minimumVersion` notice `useDesktopNotices` synthesizes
-	 * (pushed in before filtering) when the app is below the server's minimum. */
-	function minimumVersionNotice(message: string): DesktopNotice {
-		return {
-			id: "minimum-version",
-			severity: "blocking",
-			trigger: "immediate",
-			body: message,
-			cta: { label: "Install & restart", action: "install-update" },
-			dismissible: false,
-		};
-	}
-
 	const HOSTILE_PAYLOAD = {
-		// the app under test is 1.14.2, so this demands a version it can never reach
+		// the app under test is 1.14.2, so this demands a version it can never
+		// reach — the fork reads neither this nor `message`
 		minimumVersion: "99.0.0",
 		message: "Superset needs an update to keep syncing your workspaces.",
 		notices: [
@@ -199,20 +243,18 @@ describe("no remote payload can produce an unclosable surface", () => {
 		],
 	};
 
-	/** The production path: parse the payload, add the synthesized
-	 * minimum-version notice, filter. */
+	/** The production path: parse the payload, then filter it. */
 	function visible(ctx: NoticeClientContext = makeCtx()): DesktopNotice[] {
-		const parsed = desktopVersionResponseSchema.parse(HOSTILE_PAYLOAD);
-		return filterApplicableNotices(
-			[...parsed.notices, minimumVersionNotice(parsed.message)],
+		return forkVisibleNotices(
+			desktopVersionResponseSchema.parse(HOSTILE_PAYLOAD),
 			ctx,
 		);
 	}
 
 	test("every notice it yields is dismissible and not blocking", () => {
 		const notices = visible();
-		// non-vacuous: all three served notices plus the synthesized one get through
-		expect(notices).toHaveLength(4);
+		// non-vacuous: all three served notices get through
+		expect(notices).toHaveLength(3);
 		for (const notice of notices) {
 			expect(notice.severity).not.toBe("blocking");
 			expect(notice.dismissible).toBe(true);
@@ -221,7 +263,7 @@ describe("no remote payload can produce an unclosable surface", () => {
 
 	test("dismissing them is permanent — a later poll of the same payload shows none", () => {
 		const dismissed = new Set(visible().map((n) => n.id));
-		expect(dismissed.size).toBe(4);
+		expect(dismissed.size).toBe(3);
 		expect(
 			visible(makeCtx({ isDismissed: (id) => dismissed.has(id) })),
 		).toEqual([]);
@@ -230,7 +272,7 @@ describe("no remote payload can produce an unclosable surface", () => {
 	test("dismissing one leaves the rest, still all dismissible", () => {
 		const rest = visible(makeCtx({ isDismissed: (id) => id === "gate" }));
 		expect(rest.map((n) => n.id)).not.toContain("gate");
-		expect(rest).toHaveLength(3);
+		expect(rest).toHaveLength(2);
 		for (const notice of rest) {
 			expect(notice.severity).not.toBe("blocking");
 			expect(notice.dismissible).toBe(true);

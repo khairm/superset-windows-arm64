@@ -5,6 +5,10 @@ import { z } from "zod";
  * Wire format for server-driven desktop notices, returned by
  * `GET /api/desktop/version` alongside the legacy `minimumVersion` gate.
  * See plans/done/20260720-remote-version-notices.md.
+ *
+ * (NO-REMOTE-UPDATE-GATE): `minimumVersion` and `message` are still parsed
+ * because the server still sends them, but nothing in this fork reads them —
+ * see `forkVisibleNotices`.
  */
 
 const desktopNoticeSchema = z.object({
@@ -34,6 +38,9 @@ export const desktopVersionResponseSchema = z.object({
 	// older servers don't return this field
 	notices: z.array(desktopNoticeSchema).default([]),
 });
+export type DesktopVersionResponse = z.infer<
+	typeof desktopVersionResponseSchema
+>;
 
 const SEVERITY_RANK: Record<DesktopNotice["severity"], number> = {
 	blocking: 2,
@@ -94,8 +101,7 @@ function noticeApplies(
  * Every notice therefore becomes at most `warning` and always dismissible.
  * Downgrading BEFORE the applicability check is the point: `noticeApplies`
  * consults the dismissals store only for a dismissible notice, so this is what
- * makes a dismissal permanent for a notice the server authored as unclosable —
- * including the synthesized `minimumVersion` one.
+ * makes a dismissal permanent for a notice the server authored as unclosable.
  */
 export function forkSafeNotice(notice: DesktopNotice): DesktopNotice {
 	return {
@@ -109,9 +115,8 @@ export function forkSafeNotice(notice: DesktopNotice): DesktopNotice {
  * Applicable notices, highest severity first.
  *
  * (NO-REMOTE-UPDATE-GATE): this is the fork's single choke point — every notice
- * the renderer can show reaches it, remote ones and the legacy
- * `minimumVersion`-synthesized one alike, so the invariant lives here rather
- * than at a caller or a render site that a new one could bypass.
+ * the renderer can show reaches it, so the invariant lives here rather than at
+ * a caller or a render site that a new one could bypass.
  */
 export function filterApplicableNotices(
 	notices: DesktopNotice[],
@@ -121,4 +126,28 @@ export function filterApplicableNotices(
 		.map(forkSafeNotice)
 		.filter((n) => noticeApplies(n, ctx))
 		.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+}
+
+/**
+ * (NO-REMOTE-UPDATE-GATE) — the only way the fork turns a
+ * `GET /api/desktop/version` payload into notices.
+ *
+ * `data.notices` is the whole input: `minimumVersion` and `message` are read by
+ * NOTHING. Upstream synthesized an unclosable `blocking` notice whenever the app
+ * was below the server's minimum, which this fork can never satisfy (its
+ * releases are fork-owned and its updater does not track upstream), so the
+ * notice was pure brick. Not reading the field also removes a crash: the schema
+ * types `minimumVersion` as a plain string, and `semver.lt` THROWS on anything
+ * that is not strict semver ("1.15", "latest", ""). Upstream's comparison ran
+ * inside a render-time `useMemo` under the root route, so one such value took
+ * out the whole window and every reload after it.
+ *
+ * Keep this the funnel: with no version comparison against remote data left,
+ * the throw is impossible rather than merely handled.
+ */
+export function forkVisibleNotices(
+	data: DesktopVersionResponse,
+	ctx: NoticeClientContext,
+): DesktopNotice[] {
+	return filterApplicableNotices(data.notices, ctx);
 }

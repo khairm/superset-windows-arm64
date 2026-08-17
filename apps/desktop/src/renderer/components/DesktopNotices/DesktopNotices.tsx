@@ -15,11 +15,11 @@ import { NoticeDialog } from "./components/NoticeDialog";
  * fork. That branch is gone and the component is DELETED from the fork, so no
  * severity has a full-screen surface to reach. `filterApplicableNotices` owns
  * the invariant, which makes the `forkSafeNotice` call below redundant TODAY;
- * it is kept because it is the layer that still holds if a refactor moves the
- * legacy `minimumVersion` synthesis to AFTER filtering, and because
- * `NoticeDialog` is itself unclosable when handed `dismissible: false`. A merge
- * that re-adds a severity branch or re-imports `UpdateRequiredPage` must delete
- * it again.
+ * it is kept because it is the layer that still holds if a refactor adds a
+ * notice source that reaches this surface without passing the shared filter,
+ * and because `NoticeDialog` is itself unclosable when handed
+ * `dismissible: false`. A merge that re-adds a severity branch or re-imports
+ * `UpdateRequiredPage` must delete it again.
  */
 export function DesktopNoticesGate({ children }: { children: ReactNode }) {
 	const { current, dismiss } = useDesktopNotices();

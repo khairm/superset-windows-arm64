@@ -2,7 +2,7 @@
 
 Show a popup in the desktop app **without shipping a release**. Rows in the `desktop_notices` table are served by `GET /api/desktop/version` and rendered by `DesktopNoticesGate`. The app polls every 30 minutes and on window focus; API failures fail open (no notice).
 
-> **Fork override `(NO-REMOTE-UPDATE-GATE)`** — in this Windows ARM64 fork nothing this API returns can render a surface the user cannot close. `filterApplicableNotices` (packages/shared/src/desktop-notices.ts) rewrites every notice — remote and the legacy `minimumVersion`-synthesized one alike — to at most `warning` and always `dismissible`, before the dismissal check, so dismissing one is permanent. The full-screen `UpdateRequiredPage` is deleted from the fork, and the dialog honours only `open-url` CTAs. So every row below renders as one dismissible dialog, and nothing a server sends can block the app or offer to install upstream's build over this one. See FEATURES.md.
+> **Fork override `(NO-REMOTE-UPDATE-GATE)`** — in this Windows ARM64 fork nothing this API returns can render a surface the user cannot close. `filterApplicableNotices` (packages/shared/src/desktop-notices.ts) rewrites every notice to at most `warning` and always `dismissible`, before the dismissal check, so dismissing one is permanent, and `forkVisibleNotices` is the renderer's only way in — it reads `notices` only, so the legacy `minimumVersion`/`message` pair produces no notice and no version comparison at all. The full-screen `UpdateRequiredPage` is deleted from the fork, and the dialog honours only `open-url` CTAs. So every row below renders as one dismissible dialog, and nothing a server sends can block the app or offer to install upstream's build over this one. See FEATURES.md.
 
 ## Authoring model
 

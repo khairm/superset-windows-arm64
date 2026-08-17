@@ -1,7 +1,7 @@
 import {
 	type DesktopNotice,
 	desktopVersionResponseSchema,
-	filterApplicableNotices,
+	forkVisibleNotices,
 } from "@superset/shared/desktop-notices";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo } from "react";
@@ -9,13 +9,9 @@ import { env } from "renderer/env.renderer";
 import { useAppVersionHistoryStore } from "renderer/stores/app-version-history";
 import { useDesktopNoticeDismissalsStore } from "renderer/stores/desktop-notice-dismissals";
 import { useDesktopNoticePreviewStore } from "renderer/stores/desktop-notice-preview";
-import { lt, prerelease } from "semver";
+import { prerelease } from "semver";
 
 const REFETCH_INTERVAL_MS = 30 * 60 * 1000;
-
-/** Synthesized from the legacy `minimumVersion` field so old constant bumps
- * flow through the same notice surface. */
-const MINIMUM_VERSION_NOTICE_ID = "minimum-version";
 
 function getChannel(version: string): "stable" | "canary" {
 	return prerelease(version)?.length ? "canary" : "stable";
@@ -79,24 +75,11 @@ export function useDesktopNotices(): UseDesktopNoticesResult {
 		if (!data) return [];
 		const appVersion = window.App.appVersion;
 
-		const notices: DesktopNotice[] = [...data.notices];
-		if (lt(appVersion, data.minimumVersion)) {
-			notices.push({
-				id: MINIMUM_VERSION_NOTICE_ID,
-				severity: "blocking",
-				trigger: "immediate",
-				body: data.message,
-				cta: { label: "Install & restart", action: "install-update" },
-				dismissible: false,
-			});
-		}
-
-		// (NO-REMOTE-UPDATE-GATE): the synthesized notice above is authored
-		// unclosable exactly like upstream, and is pushed in BEFORE filtering on
-		// purpose — `filterApplicableNotices` is where the fork downgrades it to a
-		// dismissible warning, so this stays a plain server-shaped notice and no
-		// new caller here can opt out of the invariant.
-		return filterApplicableNotices(notices, {
+		// (NO-REMOTE-UPDATE-GATE): `forkVisibleNotices` is the whole translation
+		// from payload to notices. It reads `data.notices` only — never
+		// `minimumVersion`/`message` — so this hook holds no version comparison
+		// against remote data and cannot synthesize a notice of its own.
+		return forkVisibleNotices(data, {
 			appVersion,
 			platform: window.App.platform,
 			channel: getChannel(appVersion),
