@@ -42,7 +42,20 @@ export async function makeAppSetup(
 	});
 
 	app.on("web-contents-created", (_, contents) => {
-		if (contents.getType() === "webview") return;
+		if (contents.getType() === "webview") {
+			// (CLOUD-SEVERANCE-P1) Deny popups from browser-pane webviews from the
+			// INSTANT they exist. browser-manager.ts installs the real handler (deny
+			// + a new-window emit) only when the pane registers, which is several
+			// async hops later (webview dom-ready -> tRPC browser.register). Browser
+			// panes set `allowpopups`, so a site whose inline script calls
+			// window.open during first parse won a real BrowserWindow on the
+			// persist:superset partition before any handler existed — user browsing
+			// in an app-chrome window, and traffic the egress fence would have
+			// classified as the app's own. The pane handler replaces this one later;
+			// until then the answer is simply no.
+			contents.setWindowOpenHandler(() => ({ action: "deny" as const }));
+			return;
+		}
 		contents.on("will-navigate", (event, url) => {
 			// Always prevent in-app navigation for external URLs
 			if (url.startsWith("http://") || url.startsWith("https://")) {

@@ -17,9 +17,16 @@ import {
 	htmlEnvTransformPlugin,
 	stripCrossOriginPlugin,
 } from "./vite/helpers";
+import { assertNoTelemetryKeys } from "./vite/telemetry-key-ban";
 
 // override: true ensures .env values take precedence over inherited env vars
 config({ path: resolve(__dirname, "../../.env"), override: true, quiet: true });
+
+// (CLOUD-SEVERANCE-P1) Must run IMMEDIATELY after the dotenv load and before any
+// `define` block reads process.env: the .env is the last place a telemetry key
+// can enter the build, and every sink below (the two sentryVitePlugin blocks,
+// the POSTHOG/SENTRY defines) reads it. Throws — never force-empties.
+assertNoTelemetryKeys(process.env);
 
 const DEV_SERVER_PORT = Number(process.env.DESKTOP_VITE_PORT);
 

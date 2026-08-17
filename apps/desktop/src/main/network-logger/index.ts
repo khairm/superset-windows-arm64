@@ -1,20 +1,50 @@
 import fs from "node:fs";
 import path from "node:path";
 import { app, session } from "electron";
+import {
+	CAPTURE_MODE,
+	CURRENT_FILE,
+	DISABLED_MESSAGE,
+	isNetworkLoggingEnabled,
+	MAX_FILE_BYTES,
+	MAX_RETAINED_SESSIONS,
+	NETWORK_LOG_ENV,
+	purgeNetworkLogs,
+	SESSION_PREFIX,
+	SESSION_SUFFIX,
+} from "./policy";
 
 const PARTITION = "persist:superset";
-const CURRENT_FILE = "current.json";
-const SESSION_PREFIX = "session-";
-const SESSION_SUFFIX = ".json";
-const MAX_FILE_BYTES = 1024 * 1024 * 1024;
-const MAX_RETAINED_SESSIONS = 3;
 
 let started = false;
+let purged = false;
 
 function logsDir(): string {
 	const dir = path.join(app.getPath("userData"), "network-logs");
 	fs.mkdirSync(dir, { recursive: true });
 	return dir;
+}
+
+/**
+ * (NETLOG-OFF) Everything already on disk was written in the `includeSensitive`
+ * mode, so it is deleted at boot whether or not logging is enabled this run.
+ * Never creates the directory — if it is absent there is nothing to purge.
+ */
+function purgeSensitiveLogsOnce(): void {
+	if (purged) return;
+	purged = true;
+	const dir = path.join(app.getPath("userData"), "network-logs");
+	const { removed, failed } = purgeNetworkLogs(dir, {
+		exists: (d) => fs.existsSync(d),
+		readdir: (d) => fs.readdirSync(d),
+		unlink: (f) => fs.unlinkSync(f),
+		join: (d, name) => path.join(d, name),
+	});
+	if (removed > 0 || failed > 0) {
+		console.log(
+			`[network-logger] purged ${removed} pre-existing log file(s)${failed > 0 ? `, ${failed} could not be removed (in use)` : ""}`,
+		);
+	}
 }
 
 function archivePreviousSession(): void {
@@ -77,17 +107,30 @@ function pruneOldSessions(): void {
 	}
 }
 
+/**
+ * (NETLOG-OFF) The gate lives HERE rather than at the call site in main/index.ts:
+ * that boot sequence churns on every upstream merge, so a kill placed there is
+ * one conflict resolution away from disappearing. Same reasoning as
+ * FORK_AUTO_UPDATE_DISABLED inside auto-updater.ts.
+ */
 export async function startNetworkLogger(): Promise<void> {
 	if (started) return;
+	purgeSensitiveLogsOnce();
+	if (!isNetworkLoggingEnabled(process.env)) {
+		console.log(DISABLED_MESSAGE);
+		return;
+	}
 	archivePreviousSession();
 	pruneOldSessions();
 	const logPath = path.join(logsDir(), CURRENT_FILE);
 	await session.fromPartition(PARTITION).netLog.startLogging(logPath, {
-		captureMode: "includeSensitive",
+		captureMode: CAPTURE_MODE,
 		maxFileSize: MAX_FILE_BYTES,
 	});
 	started = true;
-	console.log("[network-logger] recording to", logPath);
+	console.log(
+		`[network-logger] recording to ${logPath} (captureMode=${CAPTURE_MODE}, enabled by ${NETWORK_LOG_ENV}). This file contains full request URLs — delete it when you are done.`,
+	);
 }
 
 export async function stopNetworkLogger(): Promise<void> {

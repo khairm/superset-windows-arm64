@@ -34,6 +34,7 @@ import { isUpdateReadyToInstall, setupAutoUpdater } from "./lib/auto-updater";
 import { installBundledCliShim } from "./lib/bundled-cli";
 import { resolveDevWorkspaceName } from "./lib/dev-workspace-name";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
+import { installEgressFence } from "./lib/egress-fence";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
 import { getHostServiceCoordinator } from "./lib/host-service-coordinator";
 import { localDb } from "./lib/local-db";
@@ -396,6 +397,11 @@ if (!gotTheLock) {
 		log.info("[boot] awaiting app.whenReady +" + bootMs() + "ms");
 		await app.whenReady();
 		log.info("[boot] app.whenReady resolved +" + bootMs() + "ms");
+		// (CLOUD-SEVERANCE-P1) First thing after whenReady, before any protocol
+		// handler or window exists: install the LOG-ONLY egress fence so no
+		// session request can slip past unobserved. MainWindow() throws if this
+		// did not run.
+		installEgressFence();
 		try {
 			session
 				.fromPartition("persist:superset")
@@ -440,10 +446,15 @@ if (!gotTheLock) {
 
 		// On Windows, the custom superset-app:// protocol origin is not recognized by
 		// the API server's CORS policy. Bypass CORS for API requests by modifying headers.
+		// (CLOUD-SEVERANCE-P1) The posthog.com / sentry.io / app.outlit.ai patterns
+		// are gone — no telemetry key or DSN is baked, so nothing should be talking
+		// to them and a shim that smoothed the way is exactly what we are severing.
+		// api.superset.sh STAYS: sign-in still needs it on Windows until the
+		// sign-in/data-plane phase.
 		if (PLATFORM.IS_WINDOWS) {
 			const appSession = session.fromPartition("persist:superset");
 			appSession.webRequest.onBeforeSendHeaders(
-				{ urls: ["https://api.superset.sh/*", "https://*.posthog.com/*", "https://*.sentry.io/*", "https://app.outlit.ai/*"] },
+				{ urls: ["https://api.superset.sh/*"] },
 				(details, callback) => {
 					if (details.requestHeaders.Origin === "superset-app://app") {
 						delete details.requestHeaders.Origin;

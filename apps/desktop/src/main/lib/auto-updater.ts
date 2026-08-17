@@ -51,13 +51,36 @@ function isPrereleaseBuild(): boolean {
 const IS_PRERELEASE = isPrereleaseBuild();
 const IS_AUTO_UPDATE_PLATFORM = PLATFORM.IS_MAC || PLATFORM.IS_LINUX;
 
-// Use explicit feed URLs to ensure we always fetch platform-specific manifests
-// (for example latest-mac.yml and latest-linux.yml) from the correct release.
-// - Stable: fetches from /releases/latest/download/ (latest non-prerelease)
-// - Canary: fetches from /releases/download/desktop-canary/ (rolling canary tag)
+// (CLOUD-SEVERANCE-P1) Auto-update is dead on this fork, unconditionally.
+//
+// Until now it was held off only by IS_AUTO_UPDATE_PLATFORM above — one upstream
+// line flip away from pointing our Windows ARM64 users at UPSTREAM's releases,
+// which would replace this build with an x64 upstream one. The kill
+// therefore lives HERE, inside the module that owns the updater, rather than at
+// the call sites in main/index.ts: call sites churn on every upstream merge, and
+// a merge that re-adds one must not silently re-arm the updater.
+//
+// Our releases are published by CI with `gh` and installed by the user, so
+// nothing is lost. Keep this constant name — it is a FEATURES.md marker.
+//
+// Annotated `boolean` on purpose: as a literal `true` type, TypeScript narrows
+// every guard below it and reports the whole rest of each function as
+// unreachable code. Keeping the wider type preserves the upstream bodies (and
+// their diffs) untouched while the guards still return first at runtime.
+const FORK_AUTO_UPDATE_DISABLED: boolean = true;
+
+// Where a user gets a newer build now that the updater is off: RELEASES_URL in
+// shared/auto-update.ts, repointed to the fork. The menu, tray and command
+// palette all open it instead of calling into a checker that returns
+// immediately.
+
+// Points at the FORK's releases, not upstream's. setFeedURL is unreachable while
+// FORK_AUTO_UPDATE_DISABLED holds, but the string still lands in the packaged
+// main bundle, and `superset-sh/superset/releases` appearing there is exactly
+// what check-cloud-severance.mjs treats as an upstream-flip tripwire.
 const UPDATE_FEED_URL = IS_PRERELEASE
-	? "https://github.com/superset-sh/superset/releases/download/desktop-canary"
-	: "https://github.com/superset-sh/superset/releases/latest/download";
+	? "https://github.com/khairm/superset-windows-arm64/releases/download/desktop-canary"
+	: "https://github.com/khairm/superset-windows-arm64/releases/latest/download";
 
 export type { AutoUpdateStatusEvent } from "shared/auto-update";
 
@@ -200,6 +223,7 @@ export function dismissUpdate(): void {
 }
 
 export function checkForUpdates(): void {
+	if (FORK_AUTO_UPDATE_DISABLED) return;
 	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
 		return;
 	}
@@ -220,6 +244,7 @@ export function checkForUpdates(): void {
 }
 
 export function checkForUpdatesInteractive(): void {
+	if (FORK_AUTO_UPDATE_DISABLED) return;
 	if (env.NODE_ENV === "development") {
 		dialog.showMessageBox({
 			type: "info",
@@ -332,6 +357,12 @@ export function simulateError(): void {
 }
 
 export function setupAutoUpdater(): void {
+	if (FORK_AUTO_UPDATE_DISABLED) {
+		log.info(
+			"[auto-updater] (CLOUD-SEVERANCE-P1) auto-update disabled on this fork; no feed registered, no checks scheduled",
+		);
+		return;
+	}
 	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
 		return;
 	}

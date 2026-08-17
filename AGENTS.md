@@ -61,6 +61,12 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 - **Whole feature set or fail loud** — every `FEATURES.md` marker survives a
   merge or the run aborts; never ship a partial fork.
 - **v2-only, forever** — the v2 cloud/host-service stack is pinned on; never v1.
+- **No phone-home to upstream (phase 1)** — upstream's telemetry, auto-update
+  and desktop-notice channels are deliberately SEVERED as of cloud severance
+  phase 1 (`(CLOUD-SEVERANCE-P1)`, `(EGRESS-FENCE)`): dead PostHog/Sentry keys,
+  a no-op CLI analytics call, a disabled updater and a notices poll that fetches
+  nothing are the intended state, not breakage to repair. Sign-in, Electric and
+  the api.superset.sh data plane are still live and are phase 2/3.
 - **One version, ever** — exactly one Release per upstream version, tagged
   `desktop-v<version>`, rebuilt in place; no betas/prereleases.
 - **No build-time type/test gate except `(REFERR-GATE)`** — the tree carries

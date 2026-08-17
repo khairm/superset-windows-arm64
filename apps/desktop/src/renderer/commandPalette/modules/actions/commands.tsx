@@ -12,7 +12,6 @@ import {
 	PaletteIcon,
 	PanelLeftIcon,
 	PanelRightIcon,
-	RefreshCwIcon,
 	TriangleAlertIcon,
 	XIcon,
 } from "lucide-react";
@@ -23,6 +22,7 @@ import { useDesktopNoticePreviewStore } from "renderer/stores/desktop-notice-pre
 import { useRightSidebarToggleIntent } from "renderer/stores/right-sidebar-toggle-intent";
 import { SYSTEM_THEME_ID, useThemeStore } from "renderer/stores/theme/store";
 import { useWorkspaceSidebarStore } from "renderer/stores/workspace-sidebar-state";
+import { RELEASES_URL } from "shared/auto-update";
 import type { Command, CommandProvider } from "../../core/types";
 import { ThemeFrame } from "../../ui/ThemeFrame/ThemeFrame";
 import { checkResourcesCommand } from "../resources/commands";
@@ -161,18 +161,23 @@ export const actionsProvider: CommandProvider = {
 				run: (ctx) => ctx.navigate("/settings/keyboard"),
 			},
 			{
+				// (CLOUD-SEVERANCE-P1) Was "Check for updates" →
+				// autoUpdate.checkInteractive, which now early-returns before it
+				// can even raise a dialog, so the command did nothing at all.
+				// Same treatment as the menu and tray entries: open the FORK's
+				// releases page rather than leave a silent dead command.
 				id: "actions.checkUpdates",
-				title: "Check for updates",
+				title: "Download Latest Release",
 				section: "actions",
-				icon: RefreshCwIcon,
-				keywords: ["update", "upgrade"],
+				icon: DownloadIcon,
+				keywords: ["update", "upgrade", "release", "download"],
 				run: async () => {
 					try {
-						await electronTrpcClient.autoUpdate.checkInteractive.mutate();
+						await electronTrpcClient.external.openUrl.mutate(RELEASES_URL);
 					} catch (error) {
 						const message =
 							error instanceof Error ? error.message : String(error);
-						toast.error(`Failed to check for updates: ${message}`);
+						toast.error(`Failed to open releases page: ${message}`);
 					}
 				},
 			},

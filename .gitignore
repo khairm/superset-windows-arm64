@@ -100,3 +100,8 @@ plans/local/
 
 # Local scratch (Windows ARM64 fork maintenance)
 tmp/
+
+# (CLOUD-SEVERANCE-P1) Build-time proof that the severance gate ran, written by
+# scripts/check-cloud-severance.mjs and consumed by the build workflow in the
+# same job. Per-build output, never committed.
+.fork/cloud-severance-stamp.json

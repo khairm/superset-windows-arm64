@@ -98,11 +98,92 @@ jobs:
         id: sha
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Build, verify, publish
+      - name: Build, package, verify
         uses: ./.github/actions/arm64-build
         with:
-          publish: ${{ inputs.publish }}
           gh-token: ${{ github.token }}
+      # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
+      # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
+      # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the
+      # composite action and scripts/, but it cannot touch these lines for this
+      # run. The composite action runs the gate too, for fast feedback; THIS is
+      # the step that decides, and it is deliberately not skippable — no `if:`,
+      # no `continue-on-error`, and the run block below must stay a bare
+      # invocation (no `|| true`, no `echo`) or it stops enforcing anything.
+      #
+      # The gate must both EXIT 0 and leave a stamp proving which tree it
+      # validated and how many assertions actually executed. The stale stamp is
+      # deleted first so a stamp forged by a repair-added step earlier in the
+      # job cannot satisfy this check.
+      - name: Enforce cloud severance (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BUILT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Everything before this step in the job runs from the REPAIRABLE
+          # composite action, and a step can persist state to $GITHUB_PATH and
+          # $GITHUB_ENV that later steps inherit. So this frozen step must not
+          # inherit an interpreter or its options from that state: NODE_OPTIONS
+          # can inject --require, NODE_PATH can redirect module resolution, and
+          # a poisoned PATH can shadow `node` itself.
+          unset NODE_OPTIONS NODE_PATH
+          NODE_BIN=""
+          for candidate in \
+            "/c/Program Files/nodejs/node.exe" \
+            "$RUNNER_TOOL_CACHE"/node/*/arm64/node.exe \
+            "$RUNNER_TOOL_CACHE"/node/*/x64/node.exe
+          do
+            if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+          done
+          if [ -z "$NODE_BIN" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) no node found at a trusted absolute path — refusing to resolve node from PATH, which an earlier repairable step can poison."
+            exit 1
+          fi
+          echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
+          rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-cloud-severance.mjs
+          "$NODE_BIN" -e "
+            const fs = require('fs');
+            const p = '.fork/cloud-severance-stamp.json';
+            if (!fs.existsSync(p)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              process.exit(1);
+            }
+            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const want = process.env.BUILT_SHA;
+            if (s.sha !== want) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              process.exit(1);
+            }
+            if (s.mode !== 'full') {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+              process.exit(1);
+            }
+            // Exact number of assertions a real packaged build executes. The
+            // gate FAILS if packaging did not run, so this is a floor no
+            // partial run can reach: --allow-unpackaged stamps mode=partial
+            // and is rejected above, and a skipped packaging step never gets
+            // this far. Raise it when the gate grows.
+            const MIN = 11;
+            if (!(s.assertionsPassed >= MIN)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+              process.exit(1);
+            }
+            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
+          "
+      # Publishing moved OUT of the composite action so that it sits AFTER the
+      # frozen enforcement step above. It used to be the action's last step,
+      # which meant a repair that neutered the action's own severance check
+      # would have published the Release before anything frozen could object.
+      # Now a failed enforcement simply means this step never runs.
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/publish-arm64-release.sh
       - name: Mark attempt green
         id: done
         shell: bash
@@ -180,11 +261,92 @@ jobs:
         id: sha
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Build, verify, publish
+      - name: Build, package, verify
         uses: ./.github/actions/arm64-build
         with:
-          publish: ${{ inputs.publish }}
           gh-token: ${{ github.token }}
+      # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
+      # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
+      # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the
+      # composite action and scripts/, but it cannot touch these lines for this
+      # run. The composite action runs the gate too, for fast feedback; THIS is
+      # the step that decides, and it is deliberately not skippable — no `if:`,
+      # no `continue-on-error`, and the run block below must stay a bare
+      # invocation (no `|| true`, no `echo`) or it stops enforcing anything.
+      #
+      # The gate must both EXIT 0 and leave a stamp proving which tree it
+      # validated and how many assertions actually executed. The stale stamp is
+      # deleted first so a stamp forged by a repair-added step earlier in the
+      # job cannot satisfy this check.
+      - name: Enforce cloud severance (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BUILT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Everything before this step in the job runs from the REPAIRABLE
+          # composite action, and a step can persist state to $GITHUB_PATH and
+          # $GITHUB_ENV that later steps inherit. So this frozen step must not
+          # inherit an interpreter or its options from that state: NODE_OPTIONS
+          # can inject --require, NODE_PATH can redirect module resolution, and
+          # a poisoned PATH can shadow `node` itself.
+          unset NODE_OPTIONS NODE_PATH
+          NODE_BIN=""
+          for candidate in \
+            "/c/Program Files/nodejs/node.exe" \
+            "$RUNNER_TOOL_CACHE"/node/*/arm64/node.exe \
+            "$RUNNER_TOOL_CACHE"/node/*/x64/node.exe
+          do
+            if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+          done
+          if [ -z "$NODE_BIN" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) no node found at a trusted absolute path — refusing to resolve node from PATH, which an earlier repairable step can poison."
+            exit 1
+          fi
+          echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
+          rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-cloud-severance.mjs
+          "$NODE_BIN" -e "
+            const fs = require('fs');
+            const p = '.fork/cloud-severance-stamp.json';
+            if (!fs.existsSync(p)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              process.exit(1);
+            }
+            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const want = process.env.BUILT_SHA;
+            if (s.sha !== want) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              process.exit(1);
+            }
+            if (s.mode !== 'full') {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+              process.exit(1);
+            }
+            // Exact number of assertions a real packaged build executes. The
+            // gate FAILS if packaging did not run, so this is a floor no
+            // partial run can reach: --allow-unpackaged stamps mode=partial
+            // and is rejected above, and a skipped packaging step never gets
+            // this far. Raise it when the gate grows.
+            const MIN = 11;
+            if (!(s.assertionsPassed >= MIN)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+              process.exit(1);
+            }
+            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
+          "
+      # Publishing moved OUT of the composite action so that it sits AFTER the
+      # frozen enforcement step above. It used to be the action's last step,
+      # which meant a repair that neutered the action's own severance check
+      # would have published the Release before anything frozen could object.
+      # Now a failed enforcement simply means this step never runs.
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/publish-arm64-release.sh
       - name: Mark attempt green
         id: done
         shell: bash
@@ -259,11 +421,92 @@ jobs:
         id: sha
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Build, verify, publish
+      - name: Build, package, verify
         uses: ./.github/actions/arm64-build
         with:
-          publish: ${{ inputs.publish }}
           gh-token: ${{ github.token }}
+      # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
+      # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
+      # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the
+      # composite action and scripts/, but it cannot touch these lines for this
+      # run. The composite action runs the gate too, for fast feedback; THIS is
+      # the step that decides, and it is deliberately not skippable — no `if:`,
+      # no `continue-on-error`, and the run block below must stay a bare
+      # invocation (no `|| true`, no `echo`) or it stops enforcing anything.
+      #
+      # The gate must both EXIT 0 and leave a stamp proving which tree it
+      # validated and how many assertions actually executed. The stale stamp is
+      # deleted first so a stamp forged by a repair-added step earlier in the
+      # job cannot satisfy this check.
+      - name: Enforce cloud severance (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BUILT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Everything before this step in the job runs from the REPAIRABLE
+          # composite action, and a step can persist state to $GITHUB_PATH and
+          # $GITHUB_ENV that later steps inherit. So this frozen step must not
+          # inherit an interpreter or its options from that state: NODE_OPTIONS
+          # can inject --require, NODE_PATH can redirect module resolution, and
+          # a poisoned PATH can shadow `node` itself.
+          unset NODE_OPTIONS NODE_PATH
+          NODE_BIN=""
+          for candidate in \
+            "/c/Program Files/nodejs/node.exe" \
+            "$RUNNER_TOOL_CACHE"/node/*/arm64/node.exe \
+            "$RUNNER_TOOL_CACHE"/node/*/x64/node.exe
+          do
+            if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+          done
+          if [ -z "$NODE_BIN" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) no node found at a trusted absolute path — refusing to resolve node from PATH, which an earlier repairable step can poison."
+            exit 1
+          fi
+          echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
+          rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-cloud-severance.mjs
+          "$NODE_BIN" -e "
+            const fs = require('fs');
+            const p = '.fork/cloud-severance-stamp.json';
+            if (!fs.existsSync(p)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              process.exit(1);
+            }
+            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const want = process.env.BUILT_SHA;
+            if (s.sha !== want) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              process.exit(1);
+            }
+            if (s.mode !== 'full') {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+              process.exit(1);
+            }
+            // Exact number of assertions a real packaged build executes. The
+            // gate FAILS if packaging did not run, so this is a floor no
+            // partial run can reach: --allow-unpackaged stamps mode=partial
+            // and is rejected above, and a skipped packaging step never gets
+            // this far. Raise it when the gate grows.
+            const MIN = 11;
+            if (!(s.assertionsPassed >= MIN)) {
+              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+              process.exit(1);
+            }
+            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
+          "
+      # Publishing moved OUT of the composite action so that it sits AFTER the
+      # frozen enforcement step above. It used to be the action's last step,
+      # which meant a repair that neutered the action's own severance check
+      # would have published the Release before anything frozen could object.
+      # Now a failed enforcement simply means this step never runs.
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/publish-arm64-release.sh
       - name: Mark attempt green
         id: done
         shell: bash

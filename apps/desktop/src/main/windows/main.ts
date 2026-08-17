@@ -24,6 +24,11 @@ import {
 import { appState } from "../lib/app-state";
 import { browserManager } from "../lib/browser/browser-manager";
 import { attachEditContextMenu } from "../lib/edit-context-menu";
+import {
+	assertEgressFenceInstalled,
+	registerAppWebContents,
+	unregisterAppWebContents,
+} from "../lib/egress-fence/egress-fence-core";
 import { createApplicationMenu } from "../lib/menu";
 import { playNotificationSound } from "../lib/notification-sound";
 import { NotificationManager } from "../lib/notifications/notification-manager";
@@ -101,6 +106,10 @@ app.on("child-process-gone", (_event, details) => {
 
 export async function MainWindow() {
 	log.info("[boot] MainWindow() entered +" + Math.round(process.uptime() * 1000) + "ms");
+	// (EGRESS-FENCE) Runtime proof, not a comment: this window is what generates
+	// renderer traffic, so if the fence was not installed in the boot path we
+	// would silently lose every early request. Throw instead.
+	assertEgressFenceInstalled();
 	const savedWindowState = loadWindowState();
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 	let persistedZoomLevel = savedWindowState?.zoomLevel;
@@ -137,8 +146,20 @@ export async function MainWindow() {
 		},
 	});
 
-	createApplicationMenu();
+	// (EGRESS-FENCE) This webContents is the app's own chrome. The fence logs an
+	// origin only for registered ids, so that a popup a browsed site manages to
+	// open — also type "window", also on persist:superset — is treated as
+	// unattributed browsing rather than app egress.
+	// The id is captured NOW: reading window.webContents.id during teardown can
+	// throw "Object has been destroyed", and that throw would escape the event
+	// handler.
+	const appWebContentsId = window.webContents.id;
+	registerAppWebContents(appWebContentsId);
+	window.webContents.once("destroyed", () => {
+		unregisterAppWebContents(appWebContentsId);
+	});
 
+	createApplicationMenu();
 	attachEditContextMenu(window.webContents);
 
 	currentWindow = window;

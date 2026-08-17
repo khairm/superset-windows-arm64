@@ -1,0 +1,21 @@
+# (CLOUD-SEVERANCE-P1) Egress allowlist — the ONLY hosts this fork may talk to
+# beyond the cloud endpoints a later phase still has to remove.
+#
+# Format, one entry per line: <literal hostname><TAB><justification>
+# Comments start with '#'. Read by scripts/check-cloud-severance.mjs, and frozen
+# alongside it (scripts/ci-repair.sh FROZEN_GATE_PATHS) so a build-repair agent
+# cannot widen it to make a failure go away.
+#
+# NOT listed, deliberately: the user's companion tunnel host. It is RUNTIME
+# configuration and is never baked into an artifact, so a tunnel hostname
+# appearing in a build is a real bug, not an expected entry.
+#
+# Also not listed: api.superset.sh, electric, streams and relay hosts. Those are
+# still baked in phase 1 (sign-in and the data plane), which is exactly why the
+# artifact assertions in the gate are phase-scoped rather than a blanket
+# cloud-hostname scan.
+127.0.0.1	loopback — host-service HTTP/tRPC, terminal host, pty-daemon
+localhost	loopback by name — same local services
+0.0.0.0	loopback bind address for local listeners
+fcm.googleapis.com	companion push delivery (phone/watch alerts)
+oauth2.googleapis.com	service-account token exchange for FCM

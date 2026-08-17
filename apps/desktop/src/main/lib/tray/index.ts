@@ -5,18 +5,19 @@ import {
 	Menu,
 	type MenuItemConstructorOptions,
 	nativeImage,
+	shell,
 	Tray,
 } from "electron";
 import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
 import { env } from "main/env.main";
 import { focusMainWindow, quitApp } from "main/index";
-import { checkForUpdatesInteractive } from "main/lib/auto-updater";
 import {
 	getHostServiceCoordinator,
 	type HostServiceStatusEvent,
 } from "main/lib/host-service-coordinator";
 import { menuEmitter } from "main/lib/menu-events";
 import { confirmAndQuitCompletely } from "main/lib/quit-completely";
+import { RELEASES_URL } from "shared/auto-update";
 
 /** Must have "Template" suffix for macOS dark/light mode support */
 const TRAY_ICON_FILENAME = "iconTemplate.png";
@@ -225,9 +226,11 @@ async function updateTrayMenu(): Promise<void> {
 			click: openSettings,
 		},
 		{
-			label: "Check for Updates",
+			// (CLOUD-SEVERANCE-P1) Was "Check for Updates" → the now-permanent
+			// no-op checkForUpdatesInteractive(). Opens the FORK's releases page.
+			label: "Download Latest Release",
 			click: () => {
-				checkForUpdatesInteractive();
+				void shell.openExternal(RELEASES_URL);
 			},
 		},
 		{ type: "separator" },

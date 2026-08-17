@@ -2,8 +2,8 @@ import { COMPANY } from "@superset/shared/constants";
 import { app, BrowserWindow, Menu, shell } from "electron";
 import { env } from "main/env.main";
 import { resetTerminalStateDev } from "main/lib/terminal/dev-reset";
+import { RELEASES_URL } from "shared/auto-update";
 import {
-	checkForUpdatesInteractive,
 	simulateDownloading,
 	simulateError,
 	simulateUpdateReady,
@@ -203,9 +203,15 @@ export function createApplicationMenu() {
 					},
 				},
 				{
-					label: "Check for Updates...",
+					// (CLOUD-SEVERANCE-P1) Was "Check for Updates..." →
+					// checkForUpdatesInteractive(), which is now a permanent no-op.
+					// Relabelled rather than removed: users look for an update entry
+					// here, and a silent dead menu item is worse than none. This
+					// opens the FORK's releases page, which is where a newer build
+					// actually comes from.
+					label: "Download Latest Release...",
 					click: () => {
-						checkForUpdatesInteractive();
+						void shell.openExternal(RELEASES_URL);
 					},
 				},
 				{ type: "separator" },

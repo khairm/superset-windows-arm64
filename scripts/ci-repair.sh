@@ -67,9 +67,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/ai-run.sh"
 # — so without the wildcard an agent could shadow the entire frozen directory
 # with an unfrozen sibling: frozen-path diff empty, marker gate still green
 # (the tokens sit untouched in the directory nothing now imports).
+# scripts/check-cloud-severance.mjs is in the list for the same reason as the
+# other gates, and its allowlist with it: the gate exists to prove this fork
+# does not phone home, and its allowlist is the one file that can widen what
+# counts as acceptable egress. An agent that "fixed" a failing build by adding a
+# host to the allowlist, or by loosening a pattern, would ship the exact thing
+# the gate was written to stop.
 FROZEN_GATE_PATHS=(
   scripts/check-dangerous-diagnostics.mjs
   scripts/check-feature-markers.mjs
+  scripts/check-cloud-severance.mjs
+  scripts/cloud-severance-allowlist.tsv
   scripts/verify-renderer-guards.sh
   scripts/verify-packaged-natives.sh
   scripts/materialize-native-closure.sh
@@ -161,6 +169,7 @@ Rules:
 - Only edit .github/workflows/*.yml if the root cause is genuinely in the workflow definition; such a fix takes effect NEXT run only (this run's workflow graph is frozen), so if you do that, ALSO mitigate within the repo files if at all possible.
 - NEVER change the version field of any package.json (desktop/host-service/cli versions are release-locked).
 - NEVER weaken, remove, or rename any feature marker tracked in FEATURES.md.
+- NEVER remove, rename, comment out or weaken the cloud-severance gate step in .github/actions/arm64-build/action.yml, and never pass it --no-artifacts. That gate proves this fork does not phone home to upstream; a build that cannot satisfy it must fail, not skip it. The rest of that file is yours to fix.
 - Respect the fork's live footguns listed in AGENTS.md (no sync fs at startup, screenReaderMode stays false, WS_NO_BUFFER_UTIL, pipeline-free hook templates).
 - You have NO git credentials in this step by design. Do NOT run git commit, git push, or any other git state-changing command; leave your edits in the working tree — a separate validated step commits and pushes.
 - If the log shows an infrastructure-only failure (runner outage, network flake, rate limit) with NOTHING to fix in the repo, create the file .fork/repair-retry-only (content: one line explaining why) and change nothing else — the harness will retry the build as-is.
@@ -267,6 +276,86 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
       # agent-edited) working-tree copy of the checker.
       git show "$BASE_SHA:scripts/check-feature-markers.mjs" > "$STATE_DIR/check-feature-markers.mjs"
       node "$STATE_DIR/check-feature-markers.mjs"
+      # (CLOUD-SEVERANCE-P1) Belt-and-braces. The step that actually ENFORCES
+      # severance lives in .github/workflows/build-arm64.yml, which GitHub
+      # freezes for the whole run, so a mid-run repair cannot reach it and the
+      # gate cannot be skipped for THIS build. These checks close the rest:
+      #
+      #  - a presence grep is not enough. `|| true`, `continue-on-error: true`,
+      #    `if: ${{ false }}`, wrapping the command in `echo`, or adding a
+      #    second weakened copy all leave the string present on a non-comment
+      #    line. So instead the severance STEP BLOCK must be byte-identical to
+      #    the trusted pre-repair blob — that admits none of those shapes, while
+      #    leaving every OTHER step in the file freely repairable.
+      #  - the block is located by the INVOCATION LINE, not by the step's name.
+      #    A name is cosmetic and can be changed without touching what runs;
+      #    anchoring on `node scripts/check-cloud-severance.mjs` means the thing
+      #    we find is the thing that executes. (A pure rename fails closed
+      #    either way — it is still a byte difference — but the anchor should
+      #    not be the renameable part.) The name is kept only as a SECONDARY
+      #    signal so a rename reports itself clearly instead of as a generic
+      #    diff.
+      #  - the workflow block is checked the same way, because a workflow edit
+      #    lands on the NEXT run: without this, a repair could quietly delete
+      #    the frozen enforcement and a later night would build unguarded.
+      # `[.]` not `\.` — the anchor is passed to awk via -v, where a backslash
+      # escape is consumed by the string literal (awk warns and falls back to a
+      # plain `.`, which would also match any character). The interpreter is NOT
+      # part of the anchor: the frozen workflow step resolves node to a trusted
+      # absolute path ("$NODE_BIN"), so anchoring on `node ` would miss it.
+      SEVERANCE_ANCHOR='scripts/check-cloud-severance[.]mjs'
+      # Print every step block whose body contains the anchor. Blocks start at a
+      # `- name:` line; the buffer is flushed when the next one begins.
+      extract_severance_blocks() { # $1 = file
+        awk -v anchor="$SEVERANCE_ANCHOR" '
+          /^[[:space:]]*- name: / {
+            if (buf ~ anchor) printf "%s", buf
+            buf = ""
+          }
+          { buf = buf $0 "\n" }
+          END { if (buf ~ anchor) printf "%s", buf }
+        ' "$1"
+      }
+      assert_severance_step_unchanged() { # $1 = path, $2 = expected name substring, $3 = label
+        local base_copy head_block base_block
+        base_copy="$STATE_DIR/$(echo "$1" | tr '/' '_').base"
+        if ! git show "$BASE_SHA:$1" > "$base_copy" 2>/dev/null; then
+          echo "::error::(BUILD-REPAIR) cannot read $1 from the pre-repair sha — refusing to validate blind."
+          exit 1
+        fi
+        base_block=$(extract_severance_blocks "$base_copy")
+        head_block=$(extract_severance_blocks "$1")
+        if [ -z "$base_block" ]; then
+          echo "::error::(BUILD-REPAIR) no cloud-severance invocation found in the PRE-repair $1 — the freeze check cannot be trusted. Failing loud."
+          exit 1
+        fi
+        if [ -z "$head_block" ]; then
+          echo "::error::(BUILD-REPAIR) repair removed the cloud-severance invocation from $1 ($3) — forbidden. Failing loud."
+          exit 1
+        fi
+        # Secondary signal only: identity below would catch a rename anyway,
+        # but naming it makes the failure self-explanatory.
+        if ! printf '%s\n' "$head_block" | grep -qF -- "$2"; then
+          echo "::error::(BUILD-REPAIR) the cloud-severance step in $1 was RENAMED (expected a step named '$2') — forbidden. Failing loud."
+          exit 1
+        fi
+        if [ "$base_block" != "$head_block" ]; then
+          echo "::error::(BUILD-REPAIR) repair modified the $3 step in $1 — forbidden (that step is how severance is enforced). Diff:"
+          diff <(printf '%s\n' "$base_block") <(printf '%s\n' "$head_block") || true
+          exit 1
+        fi
+      }
+      assert_severance_step_unchanged ".github/actions/arm64-build/action.yml" \
+        "Verify cloud severance" "cloud-severance verify"
+      assert_severance_step_unchanged ".github/workflows/build-arm64.yml" \
+        "Enforce cloud severance" "cloud-severance enforcement"
+      # Exactly one invocation, so a second weakened copy cannot shadow it.
+      SEVERANCE_COUNT=$(grep -cE '^[^#]*node[[:space:]]+scripts/check-cloud-severance\.mjs' \
+        .github/actions/arm64-build/action.yml || true)
+      if [ "$SEVERANCE_COUNT" != "1" ]; then
+        echo "::error::(BUILD-REPAIR) expected exactly 1 cloud-severance invocation in the build action, found $SEVERANCE_COUNT — forbidden. Failing loud."
+        exit 1
+      fi
       if ! git diff --quiet "$BASE_SHA" HEAD -- .github/workflows; then
         if [ "${HAS_WORKFLOW_PAT:-false}" != "true" ]; then
           echo "::error::(BUILD-REPAIR) repair touches .github/workflows but no WORKFLOW_PUSH_TOKEN secret is configured — GITHUB_TOKEN cannot push workflow changes (platform limit). Add a fine-grained PAT with Contents+Workflows write as WORKFLOW_PUSH_TOKEN, or fix manually."

@@ -24,4 +24,11 @@ export interface AutoUpdateStatusEvent {
 	progress?: AutoUpdateProgress;
 }
 
-export const RELEASES_URL = "https://github.com/superset-sh/superset/releases";
+// (CLOUD-SEVERANCE-P1) Points at the FORK's releases, not upstream's. This is
+// the single releases URL for the whole app — the menu, the tray and the command
+// palette all open it now that the updater is permanently disabled. It was
+// upstream's superset-sh URL and currently has no other consumer, which is
+// exactly why it is repointed rather than left: a merge that starts using it
+// would otherwise silently send our Windows ARM64 users to upstream's x64 build.
+export const RELEASES_URL =
+	"https://github.com/khairm/superset-windows-arm64/releases";

@@ -34,12 +34,18 @@ const config: Configuration = {
 	// This enables proper channel-based auto-updates following electron-builder conventions
 	generateUpdatesFilesForAllChannels: true,
 
-	// Generate latest-mac.yml for auto-update (workflow handles actual upload)
-	publish: {
-		provider: "github",
-		owner: "superset-sh",
-		repo: "superset",
-	},
+	// (CLOUD-SEVERANCE-P1) No publish provider, so electron-builder bakes NO
+	// app-update.yml into the package.
+	//
+	// Upstream published to owner `superset-sh` / repo `superset`, and even with
+	// `--publish never` (which is how CI invokes electron-builder) that config is
+	// still written into the packaged resources as app-update.yml — a file naming
+	// upstream's repo as this build's update source. Chosen over repointing it at
+	// khairm/superset-windows-arm64 because the updater is hard-disabled anyway
+	// (FORK_AUTO_UPDATE_DISABLED): a manifest for an updater that never runs is
+	// dead config that a future upstream change could re-arm. Our releases are
+	// created by CI with `gh`, which never reads this block.
+	publish: null,
 
 	// Directories
 	directories: {

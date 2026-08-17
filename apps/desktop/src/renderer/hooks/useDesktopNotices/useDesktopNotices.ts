@@ -1,6 +1,6 @@
 import {
 	type DesktopNotice,
-	desktopVersionResponseSchema,
+	type DesktopVersionResponse,
 	forkVisibleNotices,
 } from "@superset/shared/desktop-notices";
 import { useQuery } from "@tanstack/react-query";
@@ -11,7 +11,22 @@ import { useDesktopNoticeDismissalsStore } from "renderer/stores/desktop-notice-
 import { useDesktopNoticePreviewStore } from "renderer/stores/desktop-notice-preview";
 import { prerelease } from "semver";
 
-const REFETCH_INTERVAL_MS = 30 * 60 * 1000;
+// (CLOUD-SEVERANCE-P1) The poll is OFF on this fork: nothing fetches
+// `GET /api/desktop/version` any more, so no upstream-authored notice can reach
+// this app at all. The empty payload below stands in for the response.
+//
+// The pipeline behind it is deliberately KEPT WHOLE — `forkVisibleNotices`, the
+// downgrade/filter choke point, NoticeDialog and the dev command-palette preview
+// path all still work, and (NO-REMOTE-UPDATE-GATE) still pins every one of those
+// files. Deleting the pipeline would have failed the marker gate and broken the
+// nightly merge; it also keeps the dev preview (the only remaining way to see a
+// notice) functional, and leaves one small diff to revert if the poll ever comes
+// back against a fork-owned endpoint.
+const NO_REMOTE_PAYLOAD: DesktopVersionResponse = {
+	minimumVersion: "",
+	message: "",
+	notices: [],
+};
 
 function getChannel(version: string): "stable" | "canary" {
 	return prerelease(version)?.length ? "canary" : "stable";
@@ -54,21 +69,12 @@ export function useDesktopNotices(): UseDesktopNoticesResult {
 		[preview, setPreview, storeDismiss],
 	);
 
-	// Fails open: any fetch/parse error just means no notices this cycle.
+	// No network request, so there is nothing to refetch: the interval,
+	// focus-refetch and reconnect-refetch churn are gone with the fetch.
 	const { data } = useQuery({
 		queryKey: ["desktop-notices"],
-		queryFn: async () => {
-			const response = await fetch(
-				`${env.NEXT_PUBLIC_API_URL}/api/desktop/version`,
-			);
-			if (!response.ok) {
-				throw new Error(`desktop version check failed: ${response.status}`);
-			}
-			return desktopVersionResponseSchema.parse(await response.json());
-		},
-		refetchInterval: REFETCH_INTERVAL_MS,
-		refetchOnWindowFocus: true,
-		refetchOnReconnect: true,
+		queryFn: async () => NO_REMOTE_PAYLOAD,
+		staleTime: Number.POSITIVE_INFINITY,
 	});
 
 	const applicable = useMemo(() => {

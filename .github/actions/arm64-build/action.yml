@@ -1,16 +1,15 @@
 name: ARM64 build steps
 description: >
-  All build/package/verify/publish steps for the Windows ARM64 installer.
+  All build/package/verify steps for the Windows ARM64 installer. Publishing is
+  deliberately NOT here: it lives in .github/workflows/build-arm64.yml, after
+  the frozen cloud-severance enforcement step, so a repaired build cannot ship a
+  Release before that gate has passed.
   Lives under .github/actions (NOT .github/workflows) deliberately: this file
   is part of the checked-out tree, so the (BUILD-REPAIR) AI loop can fix it
   mid-run and the next attempt picks the fix up — workflow YAML is frozen once
   a run starts and GITHUB_TOKEN cannot push it. Keep every step here a thin
   shim over scripts/ where possible.
 inputs:
-  publish:
-    description: "'true' to publish the desktop-v<version> Release"
-    required: false
-    default: 'false'
   gh-token:
     description: token for gh release download/create + tag push
     required: true
@@ -125,10 +124,17 @@ runs:
       working-directory: apps/desktop
       run: bash ../../scripts/verify-packaged-natives.sh
 
-    - name: Publish GitHub Release
+    # (CLOUD-SEVERANCE-P1) Runs LAST of the verify steps: it is the only gate
+    # that needs both the compiled bundles (dist/) and the packaged output
+    # (release/, for app-update.yml). Deliberately invoked WITHOUT
+    # --no-artifacts — that flag is for local source-only runs, and in CI the
+    # artifact assertions are the point.
+    #
+    # This copy is for FAST FEEDBACK only. The step that actually decides is
+    # "Enforce cloud severance" in .github/workflows/build-arm64.yml, which is
+    # frozen for the whole run and therefore out of reach of a mid-run repair —
+    # and which runs BEFORE the release is published. Publishing deliberately
+    # no longer lives in this composite action for exactly that reason.
+    - name: Verify cloud severance (telemetry / update channels)
       shell: bash
-      env:
-        PUBLISH: ${{ inputs.publish }}
-        GH_TOKEN: ${{ inputs.gh-token }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-      run: bash scripts/publish-arm64-release.sh
+      run: node scripts/check-cloud-severance.mjs
