@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "9bbd94c3aad9",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/docs/DESKTOP_NOTICES.md",
+    "apps/desktop/src/renderer/components/DesktopNotices/DesktopNotices.tsx",
+    "apps/desktop/src/renderer/hooks/useDesktopNotices/useDesktopNotices.ts",
+    "packages/shared/src/desktop-notices.test.ts",
+    "packages/shared/src/desktop-notices.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9b/bd94c3aad9/0/metadata.json",
+      "transcript": "/9b/bd94c3aad9/0/full.jsonl",
+      "content_hash": "/9b/bd94c3aad9/0/content_hash.txt",
+      "prompt": "/9b/bd94c3aad9/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8316036,
+    "cache_creation_tokens": 25392706,
+    "cache_read_tokens": 1240435072,
+    "output_tokens": 2511822,
+    "api_call_count": 4182
+  }
+}
