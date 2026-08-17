@@ -7,9 +7,7 @@ import {
 	DialogTitle,
 } from "@superset/ui/dialog";
 import { MarkdownRenderer } from "renderer/components/MarkdownRenderer";
-import { useAutoUpdateStatus } from "renderer/components/UpdatesPill/useAutoUpdateStatus";
 import { electronTrpc } from "renderer/lib/electron-trpc";
-import { AUTO_UPDATE_STATUS } from "shared/auto-update";
 
 interface NoticeDialogProps {
 	notice: DesktopNotice;
@@ -19,24 +17,19 @@ interface NoticeDialogProps {
 /** Soft (warning/info) server-driven notice: a markdown body plus optional CTA. */
 export function NoticeDialog({ notice, onDismiss }: NoticeDialogProps) {
 	const openUrl = electronTrpc.external.openUrl.useMutation();
-	const install = electronTrpc.autoUpdate.install.useMutation();
-	const check = electronTrpc.autoUpdate.check.useMutation();
-	const updateEvent = useAutoUpdateStatus();
 
 	const handleOpenChange = (open: boolean) => {
 		if (!open && notice.dismissible) onDismiss(notice.id);
 	};
 
+	// (NO-REMOTE-UPDATE-GATE): only `open-url` is honoured. An `install-update`
+	// CTA drives the auto-updater, whose feed is upstream's releases, so a server
+	// could offer to replace this fork's build with upstream's from inside an
+	// ordinary notice. Such a CTA renders no button at all rather than a dead one.
+	const cta = notice.cta?.action === "open-url" ? notice.cta : null;
+
 	const runCta = () => {
-		const cta = notice.cta;
-		if (!cta) return;
-		if (cta.action === "open-url") {
-			if (cta.url) openUrl.mutate(cta.url);
-		} else if (updateEvent?.status === AUTO_UPDATE_STATUS.READY) {
-			install.mutate();
-		} else {
-			check.mutate();
-		}
+		if (cta?.url) openUrl.mutate(cta.url);
 		if (notice.dismissible) onDismiss(notice.id);
 	};
 
@@ -56,7 +49,7 @@ export function NoticeDialog({ notice, onDismiss }: NoticeDialogProps) {
 						// images bleed edge-to-edge (cover-style); a leading image also bleeds to the top
 						className="h-auto overflow-visible text-[13px] [&_article]:max-w-none [&_article]:p-0 [&_article>*:first-child]:mt-0 [&_article>*:first-child_img]:-mt-5 [&_img]:-mx-5 [&_img]:w-[calc(100%+2.5rem)] [&_img]:max-w-none [&_img]:max-h-52 [&_img]:object-cover"
 					/>
-					{(notice.dismissible || notice.cta) && (
+					{(notice.dismissible || cta) && (
 						<DialogFooter className="mt-4 flex-row justify-end gap-2">
 							{notice.dismissible && (
 								<Button
@@ -67,9 +60,9 @@ export function NoticeDialog({ notice, onDismiss }: NoticeDialogProps) {
 									Dismiss
 								</Button>
 							)}
-							{notice.cta && (
+							{cta && (
 								<Button size="sm" onClick={runCta}>
-									{notice.cta.label}
+									{cta.label}
 								</Button>
 							)}
 						</DialogFooter>

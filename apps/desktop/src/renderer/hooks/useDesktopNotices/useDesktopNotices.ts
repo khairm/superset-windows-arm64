@@ -37,6 +37,10 @@ export function useDesktopNotices(): UseDesktopNoticesResult {
 	// Dev-only forced preview (command palette). Inert in production.
 	const previewNotice = useDesktopNoticePreviewStore((s) => s.preview);
 	const setPreview = useDesktopNoticePreviewStore((s) => s.setPreview);
+	// Dev-only forced preview (command palette). Inert in production, and NOT
+	// remote data: (NO-REMOTE-UPDATE-GATE) is scoped to what
+	// `GET /api/desktop/version` returns, so a preview is handed on as authored
+	// and the surface it lands on is what guards it.
 	const preview = env.NODE_ENV === "development" ? previewNotice : null;
 
 	useEffect(() => {
@@ -87,6 +91,11 @@ export function useDesktopNotices(): UseDesktopNoticesResult {
 			});
 		}
 
+		// (NO-REMOTE-UPDATE-GATE): the synthesized notice above is authored
+		// unclosable exactly like upstream, and is pushed in BEFORE filtering on
+		// purpose — `filterApplicableNotices` is where the fork downgrades it to a
+		// dismissible warning, so this stays a plain server-shaped notice and no
+		// new caller here can opt out of the invariant.
 		return filterApplicableNotices(notices, {
 			appVersion,
 			platform: window.App.platform,

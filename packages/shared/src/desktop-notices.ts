@@ -79,12 +79,46 @@ function noticeApplies(
 	return true;
 }
 
-/** Applicable notices, highest severity first. */
+/**
+ * (NO-REMOTE-UPDATE-GATE) — permanent fork override.
+ *
+ * Nothing the notice API returns may produce a surface the user cannot get out
+ * of. Upstream has two: a `blocking` notice replaces the whole window with a
+ * forced-update page whose only actions are "Check for Update" (which can never
+ * satisfy an upstream minimum — this fork's releases are fork-owned and its
+ * updater does not track upstream) and "Download Manually" (which installs
+ * UPSTREAM's build over the fork); and ANY notice with `dismissible: false`
+ * renders as a modal with no close button, no Escape and no outside-click. So a
+ * `warning` is just as good a brick as a `blocking` one.
+ *
+ * Every notice therefore becomes at most `warning` and always dismissible.
+ * Downgrading BEFORE the applicability check is the point: `noticeApplies`
+ * consults the dismissals store only for a dismissible notice, so this is what
+ * makes a dismissal permanent for a notice the server authored as unclosable —
+ * including the synthesized `minimumVersion` one.
+ */
+export function forkSafeNotice(notice: DesktopNotice): DesktopNotice {
+	return {
+		...notice,
+		severity: notice.severity === "blocking" ? "warning" : notice.severity,
+		dismissible: true,
+	};
+}
+
+/**
+ * Applicable notices, highest severity first.
+ *
+ * (NO-REMOTE-UPDATE-GATE): this is the fork's single choke point — every notice
+ * the renderer can show reaches it, remote ones and the legacy
+ * `minimumVersion`-synthesized one alike, so the invariant lives here rather
+ * than at a caller or a render site that a new one could bypass.
+ */
 export function filterApplicableNotices(
 	notices: DesktopNotice[],
 	ctx: NoticeClientContext,
 ): DesktopNotice[] {
 	return notices
+		.map(forkSafeNotice)
 		.filter((n) => noticeApplies(n, ctx))
 		.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
 }

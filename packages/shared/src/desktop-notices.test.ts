@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	type DesktopNotice,
+	desktopVersionResponseSchema,
 	filterApplicableNotices,
 	type NoticeClientContext,
 } from "./desktop-notices";
@@ -86,7 +87,11 @@ describe("filterApplicableNotices", () => {
 		).toHaveLength(1);
 	});
 
-	test("dismissal hides dismissible notices only", () => {
+	// (NO-REMOTE-UPDATE-GATE) inverts upstream's second case: the filter makes
+	// every notice dismissible, so a recorded dismissal hides one the server
+	// authored unclosable too — which is what makes dismissing the synthesized
+	// minimum-version notice stick instead of it returning on the next poll.
+	test("a recorded dismissal hides any notice, including one authored unclosable", () => {
 		const dismissed = makeCtx({ isDismissed: () => true });
 		expect(filterApplicableNotices([makeNotice()], dismissed)).toHaveLength(0);
 		expect(
@@ -94,10 +99,10 @@ describe("filterApplicableNotices", () => {
 				[makeNotice({ severity: "blocking", dismissible: false })],
 				dismissed,
 			),
-		).toHaveLength(1);
+		).toHaveLength(0);
 	});
 
-	test("orders by severity, blocking first", () => {
+	test("orders by severity, most severe first", () => {
 		const result = filterApplicableNotices(
 			[
 				makeNotice({ id: "a", severity: "info" }),
@@ -130,5 +135,105 @@ describe("filterApplicableNotices", () => {
 				makeCtx({ appVersion: "not-a-version" }),
 			),
 		).toHaveLength(0);
+	});
+});
+
+/**
+ * (NO-REMOTE-UPDATE-GATE): no data returned by `GET /api/desktop/version` may
+ * produce a surface the user cannot get out of.
+ *
+ * Driven through the real pipeline — the response schema, then the shared filter
+ * — over one deliberately hostile payload, and asserted over the WHOLE output
+ * set rather than against any particular notice, render site or severity value:
+ * upstream reshapes those freely, and what the fork actually needs is that
+ * nothing coming back from the server can brick the app.
+ */
+describe("no remote payload can produce an unclosable surface", () => {
+	/** Mirrors the legacy `minimumVersion` notice `useDesktopNotices` synthesizes
+	 * (pushed in before filtering) when the app is below the server's minimum. */
+	function minimumVersionNotice(message: string): DesktopNotice {
+		return {
+			id: "minimum-version",
+			severity: "blocking",
+			trigger: "immediate",
+			body: message,
+			cta: { label: "Install & restart", action: "install-update" },
+			dismissible: false,
+		};
+	}
+
+	const HOSTILE_PAYLOAD = {
+		// the app under test is 1.14.2, so this demands a version it can never reach
+		minimumVersion: "99.0.0",
+		message: "Superset needs an update to keep syncing your workspaces.",
+		notices: [
+			{
+				id: "gate",
+				severity: "blocking",
+				trigger: "immediate",
+				body: "This version depends on a background sync service that is being retired.",
+				cta: { label: "Install & restart", action: "install-update" },
+				dismissible: false,
+			},
+			{
+				// the quieter brick: an unclosable modal needs no `blocking` severity
+				id: "quiet-brick",
+				severity: "warning",
+				trigger: "immediate",
+				body: "Heads up",
+				cta: { label: "Update now", action: "install-update" },
+				dismissible: false,
+			},
+			{
+				id: "announcement",
+				severity: "info",
+				trigger: "immediate",
+				body: "What changed",
+				cta: {
+					label: "Read the changelog",
+					action: "open-url",
+					url: "https://superset.sh/changelog",
+				},
+				dismissible: true,
+			},
+		],
+	};
+
+	/** The production path: parse the payload, add the synthesized
+	 * minimum-version notice, filter. */
+	function visible(ctx: NoticeClientContext = makeCtx()): DesktopNotice[] {
+		const parsed = desktopVersionResponseSchema.parse(HOSTILE_PAYLOAD);
+		return filterApplicableNotices(
+			[...parsed.notices, minimumVersionNotice(parsed.message)],
+			ctx,
+		);
+	}
+
+	test("every notice it yields is dismissible and not blocking", () => {
+		const notices = visible();
+		// non-vacuous: all three served notices plus the synthesized one get through
+		expect(notices).toHaveLength(4);
+		for (const notice of notices) {
+			expect(notice.severity).not.toBe("blocking");
+			expect(notice.dismissible).toBe(true);
+		}
+	});
+
+	test("dismissing them is permanent — a later poll of the same payload shows none", () => {
+		const dismissed = new Set(visible().map((n) => n.id));
+		expect(dismissed.size).toBe(4);
+		expect(
+			visible(makeCtx({ isDismissed: (id) => dismissed.has(id) })),
+		).toEqual([]);
+	});
+
+	test("dismissing one leaves the rest, still all dismissible", () => {
+		const rest = visible(makeCtx({ isDismissed: (id) => id === "gate" }));
+		expect(rest.map((n) => n.id)).not.toContain("gate");
+		expect(rest).toHaveLength(3);
+		for (const notice of rest) {
+			expect(notice.severity).not.toBe("blocking");
+			expect(notice.dismissible).toBe(true);
+		}
 	});
 });

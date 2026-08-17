@@ -49,11 +49,13 @@ const PREVIEW_NOTICES = {
 		cta: { label: "Update now", action: "install-update" },
 		dismissible: true,
 	},
+	// (NO-REMOTE-UPDATE-GATE): a served `blocking` notice is downgraded to a
+	// dismissible warning with no install CTA, so this previews that, not a gate.
 	blocking: {
 		id: "preview.blocking",
 		severity: "blocking",
 		trigger: "immediate",
-		body: "This is a preview of the blocking forced-update page. Press Esc to exit the preview.",
+		body: "This is a preview of a server `blocking` notice. The fork downgrades it to a dismissible warning — there is no forced-update page.",
 		cta: { label: "Install & restart", action: "install-update" },
 		dismissible: false,
 	},
@@ -227,7 +229,7 @@ export const actionsProvider: CommandProvider = {
 				},
 				{
 					id: "dev.previewNoticeBlocking",
-					title: "Preview notice: blocking (update required)",
+					title: "Preview notice: blocking (downgraded to a warning)",
 					section: "dev",
 					icon: OctagonAlertIcon,
 					keywords: PREVIEW_KEYWORDS,
