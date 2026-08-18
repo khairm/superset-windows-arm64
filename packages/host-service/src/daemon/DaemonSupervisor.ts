@@ -15,7 +15,10 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	collectWindowsSignalTargets,
 	isPositiveInteger,
+	readProcessTableAsync,
+	signalProcessTargets,
 	signalProcessTreeAndGroups,
 } from "@superset/pty-daemon/process-tree";
 import {
@@ -1520,14 +1523,57 @@ function terminatePidOnly(pid: number, signal: NodeJS.Signals): void {
 	}
 }
 
+/**
+ * (WIN-PROCESS-TREE) Signal the daemon's whole process tree.
+ *
+ * POSIX keeps the synchronous tree+group signal. Windows has no `ps` and no
+ * process groups, so the synchronous helper can only ever reach the root pid
+ * there, orphaning every shell the daemon owns; this path is already async, so
+ * it takes a real snapshot and walks ppid instead. A failed snapshot falls
+ * back to the root pid alone — the same degenerate behaviour as before, never
+ * a no-op.
+ *
+ * Pid reuse, stated accurately because the safety argument differs per caller:
+ * the SPAWNED-instance callers (stop() on an instance we started, spawn-failure
+ * cleanup) are genuinely safe — libuv holds the Windows process handle open
+ * until exit even after unref, and Windows will not recycle a pid while a
+ * handle to it is open, so the walk cannot land on a stranger. The others have
+ * NO such handle: killAdoptedDaemon by definition never spawned the process,
+ * stop() on an ADOPTED instance likewise, and killStaleDaemonForDev reads a pid
+ * from a manifest. For those, a pid that died and was recycled inside the
+ * health-poll gap plus the enumeration window can be signalled by mistake —
+ * HEAD had the same exposure for the root pid alone, and walking the tree
+ * widens it to that stranger's children. Narrow, but real: the honest fix is to
+ * record a start time at spawn/adopt in the manifest and anchor this walk with
+ * it, the way TreeKiller anchors its own.
+ */
+async function signalDaemonTree(
+	pid: number,
+	signal: NodeJS.Signals,
+): Promise<void> {
+	if (!IS_WINDOWS) {
+		signalProcessTreeAndGroups(pid, signal);
+		return;
+	}
+	const table = await readProcessTableAsync();
+	if (table === null) {
+		terminatePidOnly(pid, signal);
+		return;
+	}
+	signalProcessTargets(
+		collectWindowsSignalTargets(pid, { table, includeRoot: true }),
+		signal,
+	);
+}
+
 async function terminateProcessTreeAndGroups(
 	pid: number,
 	signal: NodeJS.Signals,
 ): Promise<void> {
 	if (!isPositiveInteger(pid)) return;
-	signalProcessTreeAndGroups(pid, signal);
+	await signalDaemonTree(pid, signal);
 	if (await waitForPidExit(pid, DAEMON_TERMINATE_TIMEOUT_MS)) return;
-	signalProcessTreeAndGroups(pid, "SIGKILL");
+	await signalDaemonTree(pid, "SIGKILL");
 	await waitForPidExit(pid, DAEMON_TERMINATE_TIMEOUT_MS);
 }
 

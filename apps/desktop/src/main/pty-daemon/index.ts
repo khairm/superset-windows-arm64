@@ -34,6 +34,7 @@ import {
 	clearSnapshot,
 	DAEMON_PACKAGE_VERSION,
 	drainPendingKills,
+	installCrashGuard,
 	readSnapshot,
 	Server,
 } from "@superset/pty-daemon";
@@ -68,6 +69,10 @@ function parseFreshArgs(argv: string[]): CliArgs {
 }
 
 async function main(): Promise<void> {
+	// (DAEMON-UNCAUGHT-GUARD) Mirrors packages/pty-daemon/src/main.ts: install
+	// before anything can throw, so one faulting session cannot take every
+	// other session's shell down with it.
+	installCrashGuard();
 	if (process.argv.includes("--handoff")) {
 		await runHandoffReceiver();
 		return;

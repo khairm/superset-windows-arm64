@@ -17,6 +17,7 @@
 
 import * as os from "node:os";
 import packageJson from "../package.json" with { type: "json" };
+import { installCrashGuard } from "./crash-guard.ts";
 import { drainPendingKills } from "./Pty/index.ts";
 import type { HandoffMessage } from "./protocol/index.ts";
 import { Server } from "./Server/index.ts";
@@ -53,6 +54,9 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 async function main(): Promise<void> {
+	// (DAEMON-UNCAUGHT-GUARD) Before anything can throw: one faulting session
+	// must never take every other session's shell down with it.
+	installCrashGuard();
 	// Mode signal goes through argv, NOT env. Bundlers (Bun, esbuild via
 	// electron-vite) statically inline `process.env.<KEY>` references at
 	// build time and constant-fold the comparison — bracket notation

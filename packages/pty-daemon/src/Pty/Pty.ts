@@ -4,9 +4,15 @@ import * as tty from "node:tty";
 import * as nodePty from "node-pty";
 import {
 	collectProcessSignalTargets,
+	collectWindowsLatchedTargets,
+	collectWindowsSignalTargets,
 	getProcessGroupAndTty,
+	getProcessStartTime,
+	IS_WINDOWS,
+	PROCESS_TABLE_READER_NAME,
 	type ProcessInfo,
 	type ProcessSignalError,
+	type ProcessSignalTarget,
 	readProcessTable,
 	readProcessTableAsync,
 	signalProcessTargets,
@@ -14,7 +20,7 @@ import {
 import type { SessionMeta } from "../protocol/index.ts";
 
 const KILL_ESCALATION_TIMEOUT_MS = 1000;
-const SUPPORTS_FD_HANDOFF = process.platform !== "win32";
+const SUPPORTS_FD_HANDOFF = !IS_WINDOWS;
 /**
  * Verify-round backoff after the SIGKILL escalation. The long tail exists
  * for loaded machines: a SIGHUP-trapping shell that only gets scheduled
@@ -71,6 +77,22 @@ export async function drainPendingKills(timeoutMs: number): Promise<void> {
 class TreeKiller {
 	private ttyName: string | null = null;
 	private readonly knownPgids = new Set<number>();
+	/**
+	 * (WIN-PROCESS-TREE) Windows counterpart of the pgid/tty coordinates:
+	 * the root's start time, captured while it was provably alive, is what
+	 * lets a later ppid walk prove the pid is still OUR shell and not a
+	 * recycled one.
+	 */
+	private rootStartedAt: number | null = null;
+	/** In-flight start-time read, so the settling retry can't double-spawn. */
+	private startTimeCapture: Promise<void> | null = null;
+	/**
+	 * (WIN-PROCESS-TREE) Descendants seen by an earlier Windows pass, pid →
+	 * start time. The ppid walk goes blind the moment the root row leaves the
+	 * snapshot; these keep the stragglers reachable (and the start time keeps
+	 * a recycled pid out).
+	 */
+	private readonly windowsDescendants = new Map<number, number>();
 	private killChain: Promise<void> | null = null;
 	private readonly rootPid: number;
 	private readonly isRootAlive: () => boolean;
@@ -95,6 +117,22 @@ class TreeKiller {
 	 * by every volley from its own table. Async — session-open path.
 	 */
 	async captureIdentity(): Promise<void> {
+		if (IS_WINDOWS) {
+			// A start time never changes, so a successful capture is final and
+			// the settling retry costs nothing. A capture that is still in
+			// flight is awaited rather than duplicated — the enumeration is a
+			// ~0.5s process spawn. A capture that resolved null (process gone,
+			// enumerator failed) stays retryable.
+			if (this.rootStartedAt !== null) return;
+			if (this.startTimeCapture) return this.startTimeCapture;
+			const capture = getProcessStartTime(this.rootPid).then((started) => {
+				this.rootStartedAt = started;
+			});
+			this.startTimeCapture = capture;
+			await capture;
+			if (this.startTimeCapture === capture) this.startTimeCapture = null;
+			return;
+		}
 		const { pgid, tty } = await getProcessGroupAndTty(this.rootPid);
 		if (tty !== null) this.ttyName = tty;
 		if (pgid !== null) this.knownPgids.add(pgid);
@@ -103,8 +141,24 @@ class TreeKiller {
 	kill(signal: NodeJS.Signals): void {
 		this.volley(signal);
 		this.signalRoot(signal);
-		if (signal === "SIGKILL" || this.killChain) return;
-		const chain = registerPendingKill(this.runEscalation());
+		if (this.killChain) return;
+		if (IS_WINDOWS) {
+			// (WIN-PROCESS-TREE) On POSIX a SIGKILL request is already complete
+			// when the synchronous volley returns, so it needs no chain. Windows
+			// cannot enumerate synchronously, so the ENTIRE descendant reap
+			// lives in the chain and a SIGKILL request must start one too —
+			// with no grace delay, because the caller asked for the hard kill.
+			this.startEscalation(
+				signal === "SIGKILL" ? 0 : KILL_ESCALATION_TIMEOUT_MS,
+			);
+			return;
+		}
+		if (signal === "SIGKILL") return;
+		this.startEscalation(KILL_ESCALATION_TIMEOUT_MS);
+	}
+
+	private startEscalation(initialDelayMs: number): void {
+		const chain = registerPendingKill(this.runEscalation(initialDelayMs));
 		this.killChain = chain;
 		// Reset when done so a retried close can escalate again.
 		void chain.then(() => {
@@ -123,6 +177,7 @@ class TreeKiller {
 		signal: NodeJS.Signals,
 		table?: ProcessInfo[],
 	): { survivors: boolean } {
+		if (IS_WINDOWS) return this.volleyWindows(signal, table);
 		const psTable = table ?? readProcessTable();
 		const rootRow = psTable.find((r) => r.pid === this.rootPid);
 		if (rootRow) {
@@ -147,8 +202,97 @@ class TreeKiller {
 		return { survivors: targets.some((t) => t.target === "pid") };
 	}
 
-	private async runEscalation(): Promise<void> {
-		await delay(KILL_ESCALATION_TIMEOUT_MS);
+	/**
+	 * (WIN-PROCESS-TREE) The Windows pass: a pid-reuse-guarded ppid walk over
+	 * a snapshot, terminating root and descendants directly (TerminateProcess
+	 * — Windows has no signals and no process groups to signal).
+	 *
+	 * Without a snapshot there is nothing safe to do: enumerating
+	 * synchronously would freeze the daemon's only event loop. The pass
+	 * reports survivors UNKNOWN (true) rather than clean, so the escalation
+	 * chain that owns the async snapshots never stops on this pass's word.
+	 */
+	private volleyWindows(
+		signal: NodeJS.Signals,
+		table?: ProcessInfo[],
+	): { survivors: boolean } {
+		if (!table) return { survivors: true };
+		const targets = this.windowsTargets(table, {
+			// The root is included so later rounds can terminate the shell
+			// directly — the conpty close is a one-shot (see
+			// (WIN-PTY-KILL-NOSIGNAL)), so signalRoot cannot repeat it.
+			includeRoot: true,
+		});
+		this.latchWindowsDescendants(targets, table);
+		signalProcessTargets(targets, signal, logProcessSignalError);
+		return { survivors: targets.length > 0 };
+	}
+
+	/**
+	 * The walk from the root, plus everything an earlier pass already found.
+	 *
+	 * The root is targeted ONLY with identity proof. When no start time was
+	 * ever captured (both attempts failed, or a kill raced the ~0.5s capture)
+	 * the walk cannot tell our shell from whatever else now holds that pid, and
+	 * a direct TerminateProcess on a stranger is far worse than a missed kill —
+	 * the conpty close in signalRoot is still the root's real kill path, and it
+	 * acts on a handle rather than a pid, so it cannot hit the wrong process.
+	 */
+	private windowsTargets(
+		table: ProcessInfo[],
+		options: { includeRoot: boolean },
+	): ProcessSignalTarget[] {
+		const walked = collectWindowsSignalTargets(this.rootPid, {
+			table,
+			rootStartedAt: this.rootStartedAt,
+			includeRoot: options.includeRoot && this.rootStartedAt !== null,
+		});
+		const latched = collectWindowsLatchedTargets(
+			this.windowsDescendants,
+			table,
+		);
+		const seen = new Set(walked.map((t) => t.id));
+		for (const target of latched) {
+			if (target.id === this.rootPid) continue;
+			if (seen.has(target.id)) continue;
+			seen.add(target.id);
+			walked.push(target);
+		}
+		return walked;
+	}
+
+	/**
+	 * Remember this pass's descendants with their start times, so the next
+	 * round can still reach them once the root row is gone.
+	 */
+	private latchWindowsDescendants(
+		targets: ProcessSignalTarget[],
+		table: ProcessInfo[],
+	): void {
+		for (const target of targets) {
+			if (target.id === this.rootPid) continue;
+			const startedAt = table.find((r) => r.pid === target.id)?.startedAt;
+			if (startedAt == null) continue;
+			this.windowsDescendants.set(target.id, startedAt);
+		}
+	}
+
+	/** Survivors of the final snapshot, root excluded (reported separately). */
+	private collectLeftovers(table: ProcessInfo[]): ProcessSignalTarget[] {
+		if (IS_WINDOWS) {
+			return this.windowsTargets(table, { includeRoot: false });
+		}
+		const finalRootRow = table.find((r) => r.pid === this.rootPid);
+		return collectProcessSignalTargets(this.rootPid, {
+			includeRoot: false,
+			ttyName: finalRootRow ? this.ttyName : null,
+			knownPgids: this.knownPgids,
+			table,
+		}).filter((t) => t.target === "pid");
+	}
+
+	private async runEscalation(initialDelayMs: number): Promise<void> {
+		if (initialDelayMs > 0) await delay(initialDelayMs);
 		for (let round = 0; ; round++) {
 			const table = await readProcessTableAsync();
 			const rootAlive = this.isRootAlive();
@@ -156,8 +300,9 @@ class TreeKiller {
 				const { survivors } = this.volley("SIGKILL", table);
 				if (!survivors && !rootAlive) return;
 			}
-			// A null table means ps failed — state unknown; keep the root kill
-			// and burn a round rather than concluding the kill is complete.
+			// A null table means the enumerator failed — state unknown; keep
+			// the root kill and burn a round rather than concluding the kill
+			// is complete.
 			if (rootAlive) this.signalRoot("SIGKILL");
 			const nextDelay = KILL_VERIFY_DELAYS_MS[round];
 			if (nextDelay === undefined) break;
@@ -168,17 +313,11 @@ class TreeKiller {
 		const finalTable = await readProcessTableAsync();
 		if (finalTable === null) {
 			process.stderr.write(
-				`[pty-daemon] kill escalation for pid ${this.rootPid}: final ps failed, survivor state unknown\n`,
+				`[pty-daemon] kill escalation for pid ${this.rootPid}: final ${PROCESS_TABLE_READER_NAME} failed, survivor state unknown\n`,
 			);
 			return;
 		}
-		const finalRootRow = finalTable.find((r) => r.pid === this.rootPid);
-		const leftovers = collectProcessSignalTargets(this.rootPid, {
-			includeRoot: false,
-			ttyName: finalRootRow ? this.ttyName : null,
-			knownPgids: this.knownPgids,
-			table: finalTable,
-		}).filter((t) => t.target === "pid");
+		const leftovers = this.collectLeftovers(finalTable);
 		if (leftovers.length > 0 || this.isRootAlive()) {
 			process.stderr.write(
 				`[pty-daemon] kill escalation for pid ${this.rootPid} left survivors: ` +
@@ -248,6 +387,8 @@ class NodePtyAdapter implements Pty {
 		null;
 	private exitCallbacks: PtyOnExit[] = [];
 	private disposed = false;
+	/** (WIN-PTY-KILL-NOSIGNAL) The Windows conpty close is a one-shot. */
+	private conptyKilled = false;
 
 	constructor(term: nodePty.IPty, meta: SessionMeta) {
 		this.term = term;
@@ -258,7 +399,7 @@ class NodePtyAdapter implements Pty {
 			() => !this.exited,
 			(sig) => {
 				try {
-					this.term.kill(sig);
+					this.killTerm(sig);
 				} catch {
 					// PTY root may have already exited; detached targets still matter.
 				}
@@ -281,6 +422,45 @@ class NodePtyAdapter implements Pty {
 		});
 	}
 
+	/**
+	 * (WIN-PTY-KILL-NOSIGNAL) Every node-pty kill on a live session goes
+	 * through here (the only other one is the raw-term cleanup in spawn(),
+	 * which has no adapter yet and repeats the same rule).
+	 *
+	 * node-pty's Windows terminal has no signals: `kill(signal)` THROWS
+	 * `Signals not supported on windows.` for ANY truthy argument, and it
+	 * throws from inside a deferred queue that the conpty agent drains from a
+	 * socket 'data' event. Before the terminal is ready that throw lands on
+	 * node-pty's own stack, not the caller's — uncatchable, so it killed the
+	 * whole daemon and every unrelated session with it (the owner's
+	 * pty-daemon.log carried two uncaught-exception dumps of exactly that
+	 * stack). Windows therefore always takes the no-argument path, which
+	 * closes the conpty and terminates its console process list.
+	 *
+	 * POSIX keeps its signal untouched: UnixTerminal.kill is a real
+	 * `process.kill(pid, signal || 'SIGHUP')` and the SIGHUP-then-SIGKILL
+	 * escalation depends on the distinction.
+	 */
+	private killTerm(signal: NodeJS.Signals): void {
+		if (!IS_WINDOWS) {
+			this.term.kill(signal);
+			return;
+		}
+		this.killConptyOnce();
+	}
+
+	/**
+	 * The Windows kill is a CLOSE, not a repeatable signal: a second
+	 * `_agent.kill()` disposes the conout worker twice and calls the native
+	 * kill on a freed pty handle from inside a promise — an unhandled
+	 * rejection, i.e. another dead daemon. Fire it at most once.
+	 */
+	private killConptyOnce(): void {
+		if (this.conptyKilled) return;
+		this.conptyKilled = true;
+		this.term.kill();
+	}
+
 	dispose(_options?: DisposeOptions): void {
 		if (this.disposed) return;
 		this.disposed = true;
@@ -288,9 +468,15 @@ class NodePtyAdapter implements Pty {
 		// a detached descendant that ignored SIGHUP is still alive; the kill
 		// chain's later snapshots are what find and reap those survivors.
 		try {
-			// UnixTerminal.destroy() closes the read socket/master fd and its
-			// write stream. node-pty omits destroy() from IPty's public typings.
-			(this.term as unknown as { destroy(): void }).destroy();
+			if (IS_WINDOWS) {
+				// WindowsTerminal.destroy() IS kill() (deferred, no argument),
+				// so it goes through the same one-shot guard.
+				this.killConptyOnce();
+			} else {
+				// UnixTerminal.destroy() closes the read socket/master fd and its
+				// write stream. node-pty omits destroy() from IPty's public typings.
+				(this.term as unknown as { destroy(): void }).destroy();
+			}
 		} catch {
 			// node-pty may already have torn the socket down on its exit path.
 		}
@@ -439,14 +625,24 @@ export function spawn({ meta }: SpawnOptions): Pty {
 			adapter.dispose();
 		} else {
 			try {
-				term.kill("SIGKILL");
+				// (WIN-PTY-KILL-NOSIGNAL) No adapter exists yet, so this is the
+				// one node-pty kill outside NodePtyAdapter.killTerm — same rule:
+				// Windows takes the no-argument (conpty close) path, POSIX keeps
+				// its signal.
+				if (IS_WINDOWS) term.kill();
+				else term.kill("SIGKILL");
 			} catch {
 				// Continue with raw descriptor disposal.
 			}
-			try {
-				(term as unknown as { destroy(): void }).destroy();
-			} catch {
-				// Preserve the original construction error.
+			// On Windows destroy() is that same deferred no-argument kill, and
+			// running it twice double-frees the pty handle from inside a
+			// promise — the kill above already did destroy()'s only work there.
+			if (!IS_WINDOWS) {
+				try {
+					(term as unknown as { destroy(): void }).destroy();
+				} catch {
+					// Preserve the original construction error.
+				}
 			}
 		}
 		throw err;
