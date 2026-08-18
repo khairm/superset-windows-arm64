@@ -314,6 +314,301 @@ describe("superset-notify deferred StopFailure", () => {
 	});
 });
 
+// (TEAM-ENTRY-BIND) A teammate background_tasks entry carries only
+// {id, type, status, description}, and the description is the spawn prompt's
+// first ~50 characters. Leads template that preamble, so the (TEAM-ENTRY-MATCH)
+// prefix join collapses every teammate a session ever spawned into one bucket
+// and the "every matching name is idle" rule becomes unsatisfiable — which is
+// how a lead latched yellow for 27 minutes with one teammate that had already
+// finished (live 2026-08-18, terminal e05d0634, entry tbo5b8zl8: the teammate
+// idled at 14:50:35Z, the turn-end Stop fired 6s later with the ledger already
+// reading idle, and seven unrelated same-preamble names kept the entry).
+describe("superset-notify teammate entry binding", () => {
+	// Exactly the shape that broke: 50 characters of identical boilerplate, so
+	// every teammate in the session shares one description.
+	const PREAMBLE = "Repo: C:\\Users\\khair\\.superset\\worktrees\\648ba672-";
+
+	let transcript = "";
+
+	beforeEach(() => {
+		transcript = path.join(home, "lead.jsonl");
+		fs.writeFileSync(transcript, "");
+	});
+
+	function append(content: unknown): void {
+		fs.appendFileSync(
+			transcript,
+			`${JSON.stringify({ message: { content, role: "assistant" } })}\n`,
+		);
+	}
+
+	/** A named non-fork Agent spawn, as the lead transcript records it. */
+	function spawnTyped(name: string, subagentType: string): void {
+		append([
+			{
+				id: `tu-${name}`,
+				input: {
+					name,
+					prompt: `${PREAMBLE} work assigned to ${name}`,
+					subagent_type: subagentType,
+				},
+				name: "Agent",
+				type: "tool_use",
+			},
+		]);
+	}
+
+	function spawn(name: string): void {
+		spawnTyped(name, "claude");
+	}
+
+	/** The per-terminal ledger cache the hook maintains. */
+	function teamStateFile(): string {
+		return path.join(
+			home,
+			".superset",
+			"agent-subagent-running",
+			`${TERMINAL_ID}.teamstate.json`,
+		);
+	}
+
+	function say(text: string): void {
+		append([{ text, type: "text" }]);
+	}
+
+	function reports(name: string): void {
+		say(`<agent-message from="${name}">here is my report</agent-message>`);
+	}
+
+	function idles(name: string): void {
+		say(
+			`<teammate-message teammate_id="${name}">{"type":"idle_notification"}</teammate-message>`,
+		);
+	}
+
+	function entry(id: string): Record<string, unknown> {
+		return {
+			description: `${PREAMBLE}...`,
+			id,
+			status: "running",
+			type: "teammate",
+		};
+	}
+
+	/** One turn end carrying the running teammate set. */
+	function stop(...ids: string[]): Promise<Post | undefined> {
+		return hook({
+			background_tasks: ids.map(entry),
+			hook_event_name: "Stop",
+			transcript_path: transcript,
+		});
+	}
+
+	it("greens the lead when its last teammate idles, despite same-preamble names stuck active", async () => {
+		// Three earlier teammates whose last transcript trace is a report, never an
+		// idle_notification: the ledger pins them "active" forever, and every one of
+		// them shares the running entry's description.
+		for (const name of ["fix-planner", "ops-ship-march", "browser-probe"]) {
+			spawn(name);
+			reports(name);
+		}
+		expect((await stop("tOLD1", "tOLD2", "tOLD3"))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		// Those three finish (their entries leave the payload) and one new teammate
+		// starts. Its entry is bound to it because it is the only new id and the
+		// only spawn since the last snapshot.
+		spawn("grapey-fix");
+		expect((await stop("tbo5b8zl8"))?.eventType).toBe("SubagentActive");
+
+		// The last teammate idles. This is the transition that was being missed.
+		idles("grapey-fix");
+		expect(await stop("tbo5b8zl8")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("stays yellow when one of two running teammates finishes and the other is still working", async () => {
+		spawn("first");
+		expect((await stop("tA"))?.eventType).toBe("SubagentActive");
+		spawn("second");
+		expect((await stop("tA", "tB"))?.eventType).toBe("SubagentActive");
+
+		// One down, one still running: the dot must NOT green.
+		idles("first");
+		expect((await stop("tA", "tB"))?.eventType).toBe("SubagentActive");
+
+		// Only once the second idles too does the lead green.
+		idles("second");
+		expect(await stop("tA", "tB")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps an unbindable entry yellow rather than narrowing onto the wrong name", async () => {
+		// An earlier teammate that is still working and shares the preamble.
+		spawn("other");
+		reports("other");
+		expect((await stop("tOTHER"))?.eventType).toBe("SubagentActive");
+
+		// Now TWO new entries appear where only one spawn was observed — the second
+		// was created by something the lead transcript never saw (a workflow
+		// spawning its own teammate). No assignment of two entries to one spawn is
+		// trustworthy, so neither is bound and the prefix rule governs both.
+		spawn("known");
+		expect((await stop("tKNOWN", "tFOREIGN"))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		// Had either entry been narrowed onto "known", idling it would green the
+		// lead while the foreign teammate is still running.
+		idles("known");
+		expect((await stop("tKNOWN", "tFOREIGN"))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("treats a teammate that reports and idles in one delivered blob as idle", async () => {
+		// Both tags arrive in a single injected text block. The pre-v4 ledger
+		// scanned every teammate-message first and every agent-message second, so
+		// the report won on tag KIND rather than position and the name latched
+		// active forever.
+		spawn("chatty");
+		expect((await stop("tC"))?.eventType).toBe("SubagentActive");
+
+		say(
+			`<agent-message from="chatty">final report</agent-message>` +
+				`<teammate-message teammate_id="chatty">{"type":"idle_notification"}</teammate-message>`,
+		);
+		expect(await stop("tC")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("re-asserts yellow when a bound teammate is woken again after idling", async () => {
+		spawn("worker");
+		idles("worker");
+		expect(await stop("tW")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		say(
+			`<agent-message from="worker">picking the task back up</agent-message>`,
+		);
+		expect((await stop("tW"))?.eventType).toBe("SubagentActive");
+	});
+
+	it("keeps the incident's older entries yellow when the final Stop still lists them", async () => {
+		// Same replay as the headline incident, except the harness keeps
+		// reporting the finished teammates' entries as "running" — the very
+		// premise this whole feature exists for. Nothing proves those three are
+		// finished, so their entries must hold the lead yellow even though the
+		// one teammate that idled releases its own entry.
+		for (const name of ["fix-planner", "ops-ship-march", "browser-probe"]) {
+			spawn(name);
+			reports(name);
+		}
+		expect((await stop("tOLD1", "tOLD2", "tOLD3"))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		spawn("grapey-fix");
+		expect(
+			(await stop("tOLD1", "tOLD2", "tOLD3", "tbo5b8zl8"))?.eventType,
+		).toBe("SubagentActive");
+
+		idles("grapey-fix");
+		expect(
+			(await stop("tOLD1", "tOLD2", "tOLD3", "tbo5b8zl8"))?.eventType,
+		).toBe("SubagentActive");
+	});
+
+	it("expires a spawn that produced no entry instead of folding it into a later binding", async () => {
+		spawn("anchor");
+		expect((await stop("tA"))?.eventType).toBe("SubagentActive");
+
+		// A teammate that finished inside its own turn: no entry ever appears
+		// for it, so the spawn is never consumed by a binding. It must not
+		// survive its ledger run — as a stale pending it would join the NEXT
+		// entry's batch and, never having idle-notified, hold that entry
+		// yellow for the rest of the session.
+		spawn("vanisher");
+		expect((await stop("tA"))?.eventType).toBe("SubagentActive");
+
+		spawn("worker");
+		expect((await stop("tA", "tW"))?.eventType).toBe("SubagentActive");
+
+		idles("anchor");
+		idles("worker");
+		expect(await stop("tA", "tW")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps a never-idling subagent-type spawn out of the binding batch", async () => {
+		spawn("anchor");
+		expect((await stop("tA"))?.eventType).toBe("SubagentActive");
+
+		// One burst spawns a general-purpose agent (finishes via a tool result,
+		// never idle-notifies, so its ledger state stays "active" forever) and a
+		// real teammate. Only the teammate may become a binding candidate.
+		spawnTyped("probe", "general-purpose");
+		spawn("worker");
+		expect((await stop("tA", "tW"))?.eventType).toBe("SubagentActive");
+
+		idles("anchor");
+		idles("worker");
+		expect(await stop("tA", "tW")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("never binds an entry id that has been listed before", async () => {
+		spawn("solo");
+		expect((await stop("tS"))?.eventType).toBe("SubagentActive");
+
+		// tS drops out of one snapshot (an unrelated entry is all that is
+		// listed), then the harness lists it again. It is NOT new work.
+		expect((await stop("tX"))?.eventType).toBe("SubagentActive");
+
+		spawn("later");
+		expect((await stop("tS"))?.eventType).toBe("SubagentActive");
+
+		idles("later");
+		// Binding the re-listed tS to the newer spawn would drop it here while
+		// "solo" — the teammate it actually belongs to — is still working.
+		expect((await stop("tS"))?.eventType).toBe("SubagentActive");
+	});
+
+	it("degrades to a coarse keep-everything binding when the ledger cache is lost", async () => {
+		spawn("early");
+		expect((await stop("tE"))?.eventType).toBe("SubagentActive");
+		spawn("late");
+		expect((await stop("tE", "tL"))?.eventType).toBe("SubagentActive");
+
+		idles("early");
+		fs.rmSync(teamStateFile());
+
+		// The rescan sees the whole spawn history at once, so both entries bind
+		// to both names: no narrowing at all, and the still-active "late" holds
+		// both. Coarse, never a false green.
+		expect((await stop("tE", "tL"))?.eventType).toBe("SubagentActive");
+
+		idles("late");
+		expect(await stop("tE", "tL")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+});
+
 // (COMPANION-LIFECYCLE-ALERTS) The producer id is the host's duplicate-DELIVERY
 // guard: it must be fresh per hook invocation. A seed derived from the payload
 // was not — Claude hook payloads carry no timestamp and a Stop payload carries

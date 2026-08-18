@@ -995,6 +995,14 @@ def _split_background(bg_tasks):
 # dies WITHOUT ever reporting stays "active" and keeps its own hold: from
 # the logs that case is indistinguishable from a long think, so it is
 # deliberately left to (BG-STALE).
+#
+# (TEAM-ENTRY-BIND) The prefix match ALONE proved unsatisfiable too: the
+# description is only the prompt's first ~50 chars, and a lead that templates a
+# preamble ("Repo: <path>", "You are reviewing ...") makes every teammate it ever
+# spawned collide into ONE bucket, so a single running entry inherits every
+# poisoned "active" name in the session. See _team_bind_entries: entry ids are
+# now bound to the spawns they first appeared alongside, which narrows the bucket
+# causally instead of by string.
 
 
 def _team_norm(text):
@@ -1004,6 +1012,19 @@ def _team_norm(text):
     # file is a TS template literal and single backslashes in regex escapes
     # would be silently swallowed).
     return " ".join(str(text or "").split())
+
+
+def _team_set_state(state, name, val):
+    # Write one ledger entry, mirroring a " [hash]"-suffixed duplicate name onto
+    # its base key so the base tracks the LATEST same-named instance instead of
+    # latching a stale idle.
+    if not name:
+        return
+    state[name] = val
+    if " [" in name:
+        base = name.split(" [")[0].strip()
+        if base:
+            state[base] = val
 
 
 def _team_scan_text(state, text):
@@ -1017,45 +1038,41 @@ def _team_scan_text(state, text):
     # Accepted narrow risk (review 2026-07-22): same name + identical prompt
     # head + the OLD instance silently working when the new one idles can
     # false-green the old entry until its next message re-actives the base.
-    i = 0
+    #
+    # (TEAM-ENTRY-BIND) Scanned in DOCUMENT ORDER across BOTH tag kinds. The
+    # original two-pass scan ran every teammate-message first and every
+    # agent-message second, so within one delivered blob an agent-message always
+    # won regardless of position: a teammate that reported (agent-message) and
+    # then idled (idle_notification teammate-message) in the same blob latched
+    # "active" forever, which is one of the ways the all-idle predicate became
+    # unsatisfiable. Later evidence must win, so the later TAG must win.
     tag = '<teammate-message teammate_id="'
-    while True:
-        i = text.find(tag, i)
-        if i < 0:
-            break
-        j = i + len(tag)
-        k = text.find('"', j)
-        if k < 0:
-            break
-        name = text[j:k]
-        end = text.find("</teammate-message>", k)
-        body = text[k:end] if end > 0 else text[k:]
-        if name:
-            val = "idle" if '"idle_notification"' in body else "active"
-            state[name] = val
-            if " [" in name:
-                base = name.split(" [")[0].strip()
-                if base:
-                    state[base] = val
-        i = k
-    a = 0
     tag2 = '<agent-message from="'
+    pos = 0
     while True:
-        a = text.find(tag2, a)
-        if a < 0:
+        i = text.find(tag, pos)
+        a = text.find(tag2, pos)
+        if i < 0 and a < 0:
             break
-        b = a + len(tag2)
-        c = text.find('"', b)
-        if c < 0:
-            break
-        sender = text[b:c]
-        if sender:
-            state[sender] = "active"
-            if " [" in sender:
-                base = sender.split(" [")[0].strip()
-                if base:
-                    state[base] = "active"
-        a = c
+        if a < 0 or (i >= 0 and i < a):
+            j = i + len(tag)
+            k = text.find('"', j)
+            if k < 0:
+                break
+            name = text[j:k]
+            end = text.find("</teammate-message>", k)
+            body = text[k:end] if end > 0 else text[k:]
+            _team_set_state(
+                state, name, "idle" if '"idle_notification"' in body else "active"
+            )
+            pos = k
+        else:
+            b = a + len(tag2)
+            c = text.find('"', b)
+            if c < 0:
+                break
+            _team_set_state(state, text[b:c], "active")
+            pos = c
 
 
 def _team_scan_completion(state, fork_tools, text):
@@ -1080,7 +1097,39 @@ def _team_scan_completion(state, fork_tools, text):
         state.pop(name, None)
 
 
-def _team_scan_record(state, fork_tools, prompts, obj):
+def _team_teammate_spawn(subagent_type):
+    # (TEAM-ENTRY-BIND) True if a named non-fork Agent spawn of this
+    # subagent_type can produce a teammate-type background_tasks entry, i.e.
+    # whether it is worth remembering as a binding candidate. Plain subagent
+    # types never do: they finish via a tool result / task-notification and
+    # never idle-notify, so their name stays "active" in the ledger for the
+    # whole session. Folding one into a binding batch pins the bound entry
+    # yellow forever -- the exact stuck yellow this binding exists to clear
+    # (live 2026-08-18: a "general-purpose" name was active across an entire
+    # session while every real teammate had idled).
+    # The two error directions are deliberately asymmetric: a poison type
+    # MISSING from this list only WIDENS a batch (more names must be idle =
+    # safe yellow), while a real teammate type wrongly listed here only costs
+    # narrowing power -- its entry finds no binding, falls back to the prompt
+    # prefix bucket and is KEPT. So the list stays short and names only types
+    # that are read-only/utility subagents by definition.
+    t = str(subagent_type or "").strip().lower()
+    if not t:
+        return True
+    if ":" in t:
+        # plugin/skill-provided agent type (e.g. "codex:codex-rescue")
+        return False
+    return t not in (
+        "general-purpose",
+        "explore",
+        "sol",
+        "statusline-setup",
+        "output-style-setup",
+        "project-structure-validator",
+    )
+
+
+def _team_scan_record(state, fork_tools, prompts, spawns, obj):
     # One JSONL transcript record -> ledger updates. Spawning a non-fork Agent
     # with a name or waking it via SendMessage marks it active; the spawn also
     # records a normalized prompt prefix so (TEAM-ENTRY-MATCH) can map a
@@ -1126,6 +1175,16 @@ def _team_scan_record(state, fork_tools, prompts, obj):
                 elif n:
                     state[n] = "active"
                     prompts[n] = _team_norm(inp.get("prompt"))[:160]
+                    # (TEAM-ENTRY-BIND) remember the spawn so THIS ledger run's
+                    # turn-end snapshot can bind the background_tasks entry id
+                    # that appears with it to this name. Only types that can
+                    # actually produce a teammate entry are remembered (see
+                    # _team_teammate_spawn) and unconsumed pendings expire with
+                    # the run that observed them (see _team_ledger) -- a
+                    # never-idling name that survived into a later batch kept
+                    # its entry yellow forever.
+                    if _team_teammate_spawn(inp.get("subagent_type")):
+                        spawns.append(n)
                     # A non-fork spawn RECLAIMS the name: purge any fork
                     # tool-use mappings still pointing at it, else the
                     # SendMessage fork-guard below would ignore wakes of this
@@ -1142,30 +1201,37 @@ def _team_scan_record(state, fork_tools, prompts, obj):
                     state[n] = "active"
 
 
-def _team_ledger(transcript_path, terminal_id):
-    # Incrementally parse the lead transcript into (state, prompts): name ->
-    # "active"|"idle" plus name -> normalized spawn-prompt prefix. Consumes
-    # only bytes appended since the cached offset (the first call pays one
-    # full read; transcripts are append-only, surviving /compact). Cache
-    # schema v3 (adds prompts) — an older cache fails the version check and
-    # forces one full rescan, self-healing already-poisoned ledgers. Never
-    # raises; every failure path returns None (keep every hold).
+def _team_ledger(transcript_path, terminal_id, entry_ids):
+    # Incrementally parse the lead transcript into (state, prompts, entry_names):
+    # name -> "active"|"idle", name -> normalized spawn-prompt prefix, and
+    # (TEAM-ENTRY-BIND) background_tasks entry id -> the candidate spawn name(s)
+    # that entry appeared with. Consumes only bytes appended since the cached
+    # offset (the first call pays one full read; transcripts are append-only,
+    # surviving /compact). Cache schema v5 (adds seenIds, drops the pending
+    # spawn carry-over) — an older cache fails the version check and forces one
+    # full rescan, self-healing ledgers poisoned by the pre-v4 scan-order bug.
+    # Never raises; every failure path returns None (keep every hold).
     if not transcript_path or not terminal_id:
         return None
     cache_file = _teamstate_path(terminal_id)
     state = {}
     fork_tools = {}
     prompts = {}
+    spawns = []
+    entry_names = {}
+    seen_ids = []
     offset = 0
     try:
         rec = json.loads(cache_file.read_text(encoding="utf-8"))
         if (
             isinstance(rec, dict)
-            and rec.get("version") == 3
+            and rec.get("version") == 5
             and rec.get("path") == transcript_path
             and isinstance(rec.get("state"), dict)
             and isinstance(rec.get("forkTools"), dict)
             and isinstance(rec.get("prompts"), dict)
+            and isinstance(rec.get("seenIds"), list)
+            and isinstance(rec.get("entryNames"), dict)
         ):
             offset = int(rec.get("offset") or 0)
             for k, v in rec["state"].items():
@@ -1174,10 +1240,18 @@ def _team_ledger(transcript_path, terminal_id):
                 fork_tools[str(k)] = str(v)
             for k, v in rec["prompts"].items():
                 prompts[str(k)] = str(v)
+            for v in rec["seenIds"]:
+                seen_ids.append(str(v))
+            for k, v in rec["entryNames"].items():
+                if isinstance(v, list):
+                    entry_names[str(k)] = [str(x) for x in v]
     except Exception:
         state = {}
         fork_tools = {}
         prompts = {}
+        spawns = []
+        entry_names = {}
+        seen_ids = []
         offset = 0
     try:
         with open(transcript_path, "rb") as h:
@@ -1188,6 +1262,9 @@ def _team_ledger(transcript_path, terminal_id):
                 state = {}
                 fork_tools = {}
                 prompts = {}
+                spawns = []
+                entry_names = {}
+                seen_ids = []
             h.seek(offset)
             data = h.read()
     except Exception:
@@ -1202,42 +1279,131 @@ def _team_ledger(transcript_path, terminal_id):
             except Exception:
                 continue
             if isinstance(obj, dict):
-                _team_scan_record(state, fork_tools, prompts, obj)
+                _team_scan_record(state, fork_tools, prompts, spawns, obj)
         offset = offset + nl + 1
+    entry_names, seen_ids = _team_bind_entries(
+        entry_names, seen_ids, entry_ids, spawns
+    )
+    # (TEAM-ENTRY-BIND) Unconsumed pendings EXPIRE with the run that observed
+    # them: the pending list is never carried into the cache. A spawn whose entry
+    # did not show up in THIS snapshot (a type that produces no teammate entry, or
+    # a teammate that finished inside the turn) would otherwise sit in the list
+    # for the rest of the session and fold wholesale into the next entry's
+    # batch, where one never-idling name holds that entry yellow forever. The
+    # only cost is narrowing power, and an unbound entry falls back to the
+    # prompt prefix bucket and is KEPT.
     try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(
             json.dumps({
-                "version": 3,
+                "version": 5,
                 "path": transcript_path,
                 "offset": offset,
                 "state": state,
                 "forkTools": fork_tools,
                 "prompts": prompts,
+                "seenIds": seen_ids,
+                "entryNames": entry_names,
             }),
             encoding="utf-8",
         )
     except Exception:
         pass
-    return (state, prompts)
+    return (state, prompts, entry_names)
 
 
-def _team_entry_droppable(entry, state, prompts):
-    # (TEAM-ENTRY-MATCH) True only on POSITIVE proof for THIS entry: its
-    # description (spawn-prompt head, "..."-truncated) matches at least one
-    # recorded spawn prompt AND every matching name's last ledger event is an
-    # idle_notification. Identical prompt prefixes across teammates simply
-    # widen the match set — then ALL of them must be idle. Too-short or
-    # unmatched descriptions never drop (the safe yellow direction).
+def _team_bind_entries(entry_names, seen_ids, entry_ids, spawns):
+    # (TEAM-ENTRY-BIND) Bind each FIRST-SEEN running teammate entry id to the
+    # spawn name(s) it appeared alongside, forget bindings for ids that have left
+    # the running set, and return the updated (bindings, seen ids).
+    #
+    # Why this exists: a teammate entry carries ONLY {id, type, status,
+    # description}, and the description is the spawn prompt's first ~50 chars.
+    # Leads template that preamble (live 2026-08-18: every teammate in a session
+    # described as "Repo: C:...worktrees/<uuid>-" — exactly 50 chars of
+    # boilerplate), so the (TEAM-ENTRY-MATCH) prefix join maps ONE running entry
+    # onto EVERY teammate the session ever spawned. The all-matching-names-idle
+    # rule is then unsatisfiable the moment any one of them is stuck "active",
+    # and the lead's yellow can never be released: the single running teammate
+    # idled at 14:50:35Z, the turn-end Stop fired 6s later with the correct
+    # ledger state, and seven unrelated names (three last heard from 19-26h
+    # earlier) kept the entry.
+    #
+    # The entry id is stable for the entry's lifetime and appears nowhere else on
+    # disk, so no exact join exists — but an id that has NEVER been listed before
+    # and IS listed now was created by the spawns observed in between. That is a
+    # causal link, not a string guess. One new id + one new spawn binds exactly;
+    # any other shape binds the id to the whole candidate batch, which only
+    # narrows the prefix bucket rather than identifying within it (still
+    # requiring every candidate idle).
+    #
+    # Narrowing is what makes a drop EASIER, so every input to it is kept
+    # deliberately conservative: only teammate-capable spawn types are
+    # candidates, pendings never outlive their run, and an id is bindable only
+    # once. A wrong binding CAN still false-green (that is the residual risk of
+    # binding at all) — it cannot be waved away by "it only narrows".
+    live = set(entry_ids)
+    bound = {}
+    for k, v in entry_names.items():
+        if k in live:
+            bound[k] = v
+    # An id counts as NEW only the FIRST time it is ever observed. An id that
+    # was listed before — bound or not, and whether or not it left the running
+    # set in between — was NOT created by the spawns parsed since the previous
+    # snapshot, and binding it to them is how live work gets false-greened: the
+    # harness re-lists a resumed teammate, and an entry the count guard once
+    # declined must not become bindable later just because the guard now
+    # passes. Both maps stay bounded: bindings prune to the live set, and the
+    # seen list keeps only a tail of the ids that have left it.
+    seen = set(seen_ids)
+    new_ids = [i for i in entry_ids if i and i not in bound and i not in seen]
+    # More new entries than observed spawns means at least one of them was
+    # created by something other than a lead Agent tool-use (a workflow spawning
+    # its own teammate), so no assignment is trustworthy — leave them all
+    # unbound and let the prefix rule keep them. This is the only shape where a
+    # binding could NARROW onto the wrong name and false-green live work.
+    if new_ids and spawns and len(new_ids) <= len(spawns):
+        candidates = list(spawns)
+        for i in new_ids:
+            bound[i] = candidates
+    stale = [i for i in seen_ids if i and i not in live]
+    return bound, stale[-192:] + [i for i in entry_ids if i]
+
+
+
+def _team_entry_candidates(entry, prompts, entry_names):
+    # (TEAM-ENTRY-MATCH)(TEAM-ENTRY-BIND) The ledger names that could be THIS
+    # entry. Start from the prompt-prefix bucket, then narrow it to the names
+    # causally bound to this entry id at the snapshot where it first appeared.
+    # The binding only ever REMOVES candidates and an empty intersection falls
+    # back to the full bucket, so it can never make a drop HARDER to justify —
+    # but removing candidates is exactly what makes a drop possible, so a wrong
+    # binding can still drop a running entry. _team_bind_entries is where that
+    # risk is contained.
     desc = str(entry.get("description") or "")
     if desc.endswith("..."):
         desc = desc[: len(desc) - 3]
     prefix = _team_norm(desc)
     if len(prefix) < 12:
-        return False
+        return []
     names = []
     for name, p in prompts.items():
         if p and p.startswith(prefix):
             names.append(name)
+    bound = entry_names.get(str(entry.get("id") or ""))
+    if bound:
+        narrowed = [n for n in names if n in bound]
+        if narrowed:
+            return narrowed
+    return names
+
+
+def _team_entry_droppable(entry, state, prompts, entry_names):
+    # True only on POSITIVE proof for THIS entry: it has at least one candidate
+    # name (see _team_entry_candidates) and every candidate's last ledger event
+    # is an idle_notification. Too-short or unmatched descriptions never drop
+    # (the safe yellow direction).
+    names = _team_entry_candidates(entry, prompts, entry_names)
     if not names:
         return False
     for name in names:
@@ -1246,11 +1412,12 @@ def _team_entry_droppable(entry, state, prompts):
     return True
 
 
-def _team_debug_entry(terminal_id, entry, state, prompts, droppable):
+def _team_debug_entry(terminal_id, entry, state, prompts, entry_names, droppable):
     # (TEAM-KEPT-DEBUG) One JSONL line per teammate bg entry per decision:
     # the raw entry shape, its normalized match prefix, which ledger names
-    # prefix-match it and their states, and the drop verdict — so a stuck
-    # yellow names its culprit directly instead of an opaque "kept N".
+    # prefix-match it and their states, the (TEAM-ENTRY-BIND) narrowing, and the
+    # drop verdict — so a stuck yellow names its culprit directly instead of an
+    # opaque "kept N".
     # Best-effort: never raises (caller wraps too).
     desc = str(entry.get("description") or "")
     stripped = desc[: len(desc) - 3] if desc.endswith("...") else desc
@@ -1259,6 +1426,8 @@ def _team_debug_entry(terminal_id, entry, state, prompts, droppable):
     for name, p in prompts.items():
         if p and p.startswith(prefix):
             matches.append(name + "=" + str(state.get(name)))
+    bound = entry_names.get(str(entry.get("id") or "")) or []
+    candidates = _team_entry_candidates(entry, prompts, entry_names)
     if droppable:
         reason = "dropped"
     elif len(prefix) < 12:
@@ -1289,6 +1458,8 @@ def _team_debug_entry(terminal_id, entry, state, prompts, droppable):
         "prefix_len": len(prefix),
         "prefix": prefix[:220],
         "matches": matches,
+        "bound": [str(x) for x in bound],
+        "candidates": [n + "=" + str(state.get(n)) for n in candidates],
         "ledger_state": {str(k): str(v) for k, v in state.items()},
         "entry": {str(k): str(v)[:300] for k, v in entry.items()},
     }
@@ -1305,6 +1476,7 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
     if not isinstance(bg_tasks, list) or not bg_tasks:
         return bg_tasks
     has_teammate = False
+    entry_ids = []
     for t in bg_tasks:
         if (
             isinstance(t, dict)
@@ -1312,16 +1484,16 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
             and str(t.get("type") or "") == "teammate"
         ):
             has_teammate = True
-            break
+            entry_ids.append(str(t.get("id") or ""))
     if not has_teammate:
         return bg_tasks
     try:
-        ledger = _team_ledger(transcript_path, terminal_id)
+        ledger = _team_ledger(transcript_path, terminal_id, entry_ids)
     except Exception:
         return bg_tasks
     if ledger is None:
         return bg_tasks
-    state, prompts = ledger
+    state, prompts, entry_names = ledger
     out = []
     dropped = 0
     kept = 0
@@ -1333,11 +1505,11 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
         ):
             droppable = False
             try:
-                droppable = _team_entry_droppable(t, state, prompts)
+                droppable = _team_entry_droppable(t, state, prompts, entry_names)
             except Exception:
                 droppable = False
             try:
-                _team_debug_entry(terminal_id, t, state, prompts, droppable)
+                _team_debug_entry(terminal_id, t, state, prompts, entry_names, droppable)
             except Exception:
                 pass
             if droppable:

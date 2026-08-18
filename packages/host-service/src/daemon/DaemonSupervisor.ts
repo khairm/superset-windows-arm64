@@ -42,6 +42,14 @@ import {
 	removePtyDaemonManifest,
 	writePtyDaemonManifest,
 } from "./manifest.ts";
+import {
+	ensurePtyRuntimeSidecar,
+	invalidatePtyRuntimeSidecar,
+	isPtyRuntimeSidecarSupported,
+	type ReadyPtyRuntime,
+	recordPtyRuntimeDaemon,
+	schedulePtyRuntimeGc,
+} from "./pty-runtime/index.ts";
 
 interface DaemonInstance {
 	pid: number;
@@ -1155,17 +1163,39 @@ export class DaemonSupervisor {
 			);
 		}
 
+		// (PTY-RUNTIME-SIDECAR) Windows cannot replace the file backing a
+		// running process image, so while the detached daemon runs the app's
+		// exe out of $INSTDIR — mapping conpty.node from app.asar.unpacked and
+		// inheriting a cwd in there too — the installer has no choice but to
+		// kill it, and every live shell dies with it. Relocate the whole daemon
+		// runtime out of the install directory before the first spawn.
+		const sidecar = isPtyRuntimeSidecarSupported()
+			? await ensurePtyRuntimeSidecar(this.opts.scriptPath)
+			: null;
+		if (sidecar && !sidecar.ok) {
+			// Loud, never silent: falling back still gives the user terminals,
+			// but it takes away the property they asked for, and believing you
+			// are protected when you are not is the worse failure.
+			console.error(
+				`[pty-daemon:${organizationId}] (PTY-RUNTIME-SIDECAR) could not relocate the daemon runtime out of the install directory: ${sidecar.reason}. Falling back to spawning from the install directory — TERMINAL SESSIONS WILL NOT SURVIVE THE NEXT APP INSTALL.`,
+			);
+			logEvent("pty_daemon_runtime_sidecar_unavailable", {
+				organizationId,
+				reason: sidecar.reason,
+			});
+		}
+		let runtime: ReadyPtyRuntime | null = sidecar?.ok ? sidecar : null;
+		if (runtime) {
+			console.log(
+				`[pty-daemon:${organizationId}] (PTY-RUNTIME-SIDECAR) runtime ${runtime.key} ${runtime.reused ? "reused" : "materialised"} at ${runtime.root}`,
+			);
+		}
+
 		// Dev: pipe daemon stdout/stderr through host-service so log lines
 		// flow up to the developer's `bun dev` terminal. Production:
 		// hard-back stdio with the rotating log file so the detached
 		// daemon survives host-service teardown without losing logs.
 		const isDev = process.env.NODE_ENV === "development";
-		const logFd = isDev ? -1 : openRotatingLogFd(logPath, MAX_DAEMON_LOG_BYTES);
-		const stdio: childProcess.StdioOptions = isDev
-			? ["ignore", "pipe", "pipe"]
-			: logFd >= 0
-				? ["ignore", logFd, logFd]
-				: ["ignore", "ignore", "ignore"];
 
 		const childEnv = {
 			...(process.env as Record<string, string>),
@@ -1177,91 +1207,176 @@ export class DaemonSupervisor {
 			ELECTRON_RUN_AS_NODE: "1",
 		};
 
-		console.log(
-			`[pty-daemon:${organizationId}] spawning ${this.opts.scriptPath} → ${socketPath} (log: ${logPath})`,
-		);
+		type LaunchOutcome =
+			| {
+					ok: true;
+					child: ReturnType<typeof childProcess.spawn>;
+					childPid: number;
+			  }
+			| { ok: false; reason: string };
 
-		let child: ReturnType<typeof childProcess.spawn>;
-		try {
-			// Prod: detached so PTYs survive host-service restarts via socket
-			// adoption. Dev: attached as defense-in-depth in case serve.ts's
-			// dev shutdown doesn't fire (e.g. host-service crash).
-			// Raise RLIMIT_NOFILE before exec: macOS's 256 soft default starves a
-			// daemon hosting many worktrees' PTYs and surfaces as node-pty
-			// "posix_spawnp failed" (EMFILE). The raised limit is inherited by
-			// handoff successors the daemon spawns from itself.
-			const isWindows = process.platform === "win32";
-			const command = isWindows ? process.execPath : "/bin/sh";
-			const commandArgs = isWindows
-				? [this.opts.scriptPath, `--socket=${socketPath}`]
-				: [
-						"-c",
-						'ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true; exec "$@"',
-						"sh",
-						process.execPath,
-						this.opts.scriptPath,
-						`--socket=${socketPath}`,
-					];
-			child = childProcess.spawn(command, commandArgs, {
-				detached: !isDev,
-				stdio,
-				env: childEnv,
-				windowsHide: true,
-			});
-		} finally {
-			if (logFd >= 0) {
-				try {
-					fs.closeSync(logFd);
-				} catch {
-					// best-effort
+		// One attempt at getting a daemon up and answering on its socket.
+		// Separated out so a relocated runtime that cannot actually spawn can be
+		// discarded and the install-directory fallback tried: the sidecar's own
+		// invariant is that a failure never leaves the user with zero terminals,
+		// and a runtime whose exe has been quarantined out from under a surviving
+		// `.ready` marker would otherwise fail every spawn forever.
+		const launch = async (
+			from: ReadyPtyRuntime | null,
+		): Promise<LaunchOutcome> => {
+			const logFd = isDev
+				? -1
+				: openRotatingLogFd(logPath, MAX_DAEMON_LOG_BYTES);
+			const stdio: childProcess.StdioOptions = isDev
+				? ["ignore", "pipe", "pipe"]
+				: logFd >= 0
+					? ["ignore", logFd, logFd]
+					: ["ignore", "ignore", "ignore"];
+
+			console.log(
+				`[pty-daemon:${organizationId}] spawning ${from?.scriptPath ?? this.opts.scriptPath} → ${socketPath} (log: ${logPath})`,
+			);
+
+			let child: ReturnType<typeof childProcess.spawn>;
+			try {
+				// Prod: detached so PTYs survive host-service restarts via socket
+				// adoption. Dev: attached as defense-in-depth in case serve.ts's
+				// dev shutdown doesn't fire (e.g. host-service crash).
+				// Raise RLIMIT_NOFILE before exec: macOS's 256 soft default starves a
+				// daemon hosting many worktrees' PTYs and surfaces as node-pty
+				// "posix_spawnp failed" (EMFILE). The raised limit is inherited by
+				// handoff successors the daemon spawns from itself.
+				const isWindows = process.platform === "win32";
+				const command = isWindows
+					? (from?.exePath ?? process.execPath)
+					: "/bin/sh";
+				const commandArgs = isWindows
+					? [from?.scriptPath ?? this.opts.scriptPath, `--socket=${socketPath}`]
+					: [
+							"-c",
+							'ulimit -n 1048576 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true; exec "$@"',
+							"sh",
+							process.execPath,
+							this.opts.scriptPath,
+							`--socket=${socketPath}`,
+						];
+				child = childProcess.spawn(command, commandArgs, {
+					detached: !isDev,
+					stdio,
+					env: childEnv,
+					// Without this the daemon inherits host-service's cwd, which sits
+					// inside $INSTDIR — a directory handle there is on its own enough
+					// to make the installer kill us. Undefined keeps the inherited cwd
+					// everywhere the sidecar does not apply.
+					cwd: from?.root,
+					windowsHide: true,
+				});
+			} finally {
+				if (logFd >= 0) {
+					try {
+						fs.closeSync(logFd);
+					} catch {
+						// best-effort
+					}
 				}
 			}
-		}
 
-		const childPid = child.pid;
-		if (!childPid) {
-			throw new Error(`[pty-daemon:${organizationId}] failed to spawn`);
-		}
-
-		// Dev: fan daemon stdout/stderr up to host-service stdout (which
-		// itself flows up to `bun dev`). Production stdio is backed by the
-		// rotating log file already (logFd above), so no fan-out needed.
-		if (isDev && child.stdout && child.stderr) {
-			const tag = `[ptyd:${organizationId.slice(0, 8)}]`;
-			pipeWithPrefix(child.stdout, process.stdout, tag);
-			pipeWithPrefix(child.stderr, process.stderr, tag);
-		}
-
-		let earlyExitCode: number | null = null;
-		let earlyExitSignal: NodeJS.Signals | null = null;
-		child.once("exit", (code, signal) => {
-			earlyExitCode = code;
-			earlyExitSignal = signal;
-		});
-
-		const ready = await waitForSocket(socketPath, SOCKET_READY_TIMEOUT_MS);
-		if (!ready) {
-			await terminateProcessTreeAndGroups(childPid, "SIGTERM");
-			let logTail = "";
-			try {
-				const buf = fs.readFileSync(logPath, "utf-8");
-				logTail = buf.slice(-2000);
-			} catch {
-				logTail = "(no log file written)";
-			}
-			logEvent("pty_daemon_spawn_failed", {
-				organizationId,
-				reason: "socket-not-ready",
-				timeoutMs: SOCKET_READY_TIMEOUT_MS,
-				earlyExitCode,
-				earlyExitSignal,
+			// Node reports a spawn failure asynchronously, and an unhandled
+			// "error" on a child process is an uncaughtException — not something
+			// this promise would ever see. The sidecar makes ENOENT a realistic
+			// input, so the real reason has to be captured and surfaced instead of
+			// a reason-free "failed to spawn". Held in an object because control
+			// flow analysis cannot see through the callback.
+			const spawnFailure: { reason: string | null } = { reason: null };
+			child.once("error", (err) => {
+				spawnFailure.reason = err.message;
 			});
-			throw new Error(
-				`[pty-daemon:${organizationId}] socket did not become ready within ${SOCKET_READY_TIMEOUT_MS}ms (childPid=${childPid}, earlyExit=${earlyExitCode ?? earlyExitSignal ?? "still alive"}). Log tail:\n${logTail}`,
+
+			const childPid = child.pid;
+			if (!childPid) {
+				// Let the "error" event land before reporting, so the message names
+				// the cause rather than the symptom.
+				await new Promise((resolve) => setImmediate(resolve));
+				return {
+					ok: false,
+					reason: `failed to spawn: ${spawnFailure.reason ?? "no pid and no error reported"}`,
+				};
+			}
+			// Claim the runtime before anything else can sweep it. Written as early
+			// as we have a pid so a host-service crash mid-startup still leaves the
+			// daemon's runtime protected.
+			if (from) recordPtyRuntimeDaemon(from.key, childPid);
+
+			// Dev: fan daemon stdout/stderr up to host-service stdout (which
+			// itself flows up to `bun dev`). Production stdio is backed by the
+			// rotating log file already (logFd above), so no fan-out needed.
+			if (isDev && child.stdout && child.stderr) {
+				const tag = `[ptyd:${organizationId.slice(0, 8)}]`;
+				pipeWithPrefix(child.stdout, process.stdout, tag);
+				pipeWithPrefix(child.stderr, process.stderr, tag);
+			}
+
+			const early: {
+				code: number | null;
+				signal: NodeJS.Signals | null;
+			} = { code: null, signal: null };
+			child.once("exit", (code, signal) => {
+				early.code = code;
+				early.signal = signal;
+			});
+
+			const ready = await waitForSocket(socketPath, SOCKET_READY_TIMEOUT_MS);
+			if (!ready) {
+				await terminateProcessTreeAndGroups(childPid, "SIGTERM");
+				let logTail = "";
+				try {
+					const buf = fs.readFileSync(logPath, "utf-8");
+					logTail = buf.slice(-2000);
+				} catch {
+					logTail = "(no log file written)";
+				}
+				logEvent("pty_daemon_spawn_failed", {
+					organizationId,
+					reason: "socket-not-ready",
+					timeoutMs: SOCKET_READY_TIMEOUT_MS,
+					earlyExitCode: early.code,
+					earlyExitSignal: early.signal,
+					fromSidecarRuntime: from?.key ?? null,
+				});
+				return {
+					ok: false,
+					reason: `socket did not become ready within ${SOCKET_READY_TIMEOUT_MS}ms (childPid=${childPid}, earlyExit=${early.code ?? early.signal ?? "still alive"}). Log tail:\n${logTail}`,
+				};
+			}
+			return { ok: true, child, childPid };
+		};
+
+		let outcome = await launch(runtime);
+		if (!outcome.ok && runtime) {
+			// The runtime smoke-tested clean when it was built, so whatever broke
+			// happened after: never trust it again, and say so as loudly as the
+			// materialisation failure above — the user is losing the same property.
+			console.error(
+				`[pty-daemon:${organizationId}] (PTY-RUNTIME-SIDECAR) the relocated runtime ${runtime.key} at ${runtime.root} could not start a daemon: ${outcome.reason}. Discarding it and retrying from the install directory — TERMINAL SESSIONS WILL NOT SURVIVE THE NEXT APP INSTALL.`,
 			);
+			logEvent("pty_daemon_runtime_sidecar_spawn_failed", {
+				organizationId,
+				key: runtime.key,
+				reason: outcome.reason,
+			});
+			await invalidatePtyRuntimeSidecar(runtime.key);
+			runtime = null;
+			outcome = await launch(null);
 		}
+		if (!outcome.ok) {
+			throw new Error(`[pty-daemon:${organizationId}] ${outcome.reason}`);
+		}
+		const { child, childPid } = outcome;
 
 		if (!isDev) child.unref();
+		// Only once this daemon is up and its ref recorded: reclaiming a runtime
+		// is the one operation here that can destroy a working install.
+		if (runtime) schedulePtyRuntimeGc(runtime.key);
 		child.on("exit", (code) => {
 			console.log(`[pty-daemon:${organizationId}] exited with code ${code}`);
 			const current = this.instances.get(organizationId);
