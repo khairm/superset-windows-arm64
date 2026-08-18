@@ -124,10 +124,27 @@ function readArtifacts(dir) {
  * guaranteed to be installed, and a gate that needs `npm i` to work is a gate
  * that gets skipped.
  *
- * Layout (Chromium Pickle): u32 = 4, u32 payloadSize, u32 jsonLen, the header
- * JSON, then the file data region based at 8 + payloadSize. Each file entry
- * carries a byte offset into that region; entries pulled out by `asarUnpack`
- * are flagged `unpacked` and live in the sibling <archive>.unpacked tree.
+ * Layout: TWO NESTED Chromium Pickles, 16 bytes of preamble in total, and the
+ * nesting is the thing that is easy to get wrong:
+ *
+ *   [0]  u32 = 4              payload length of the outer "size" pickle
+ *   [4]  u32 headerSize       the value that pickle carries
+ *   [8]  u32                  payload length of the inner "header" pickle
+ *   [12] u32 jsonLen          length of the header STRING (a field of that payload)
+ *   [16] the header JSON
+ *
+ * So the JSON starts at 16, NOT at 12: byte 12 is the string's own length
+ * field, sitting inside the inner pickle's payload. Reading from 12 prepends
+ * four binary bytes to the JSON and JSON.parse throws, which is not a loud
+ * "bad archive" — openAsarsOrFail turns it into an empty archive list and
+ * every downstream assertion then fails as vacuous. That is exactly what
+ * happened, so keep these offsets exact.
+ *
+ * The file data region is based at 8 + headerSize; each file entry carries a
+ * byte offset into it. Entries pulled out by `asarUnpack` are flagged
+ * `unpacked`, carry no offset, and live in the sibling <archive>.unpacked tree
+ * — which therefore has to be present on disk next to the archive, or those
+ * entries cannot be read at all.
  *
  * Reading entries rather than grepping the archive as one blob is what lets
  * the packaged assertions keep real per-entry paths, so the two path-scoped
@@ -146,15 +163,21 @@ function readAsar(asarPath) {
 			`${asarPath}: pickle header is ${buf.readUInt32LE(0)}, expected 4 — not an asar archive`,
 		);
 	}
-	const payloadSize = buf.readUInt32LE(4);
-	const jsonLen = buf.readUInt32LE(8);
-	if (payloadSize < jsonLen + 4 || 12 + jsonLen > buf.length) {
+	const headerSize = buf.readUInt32LE(4);
+	const headerPayloadSize = buf.readUInt32LE(8);
+	const jsonLen = buf.readUInt32LE(12);
+	if (
+		headerSize < headerPayloadSize + 4 ||
+		headerPayloadSize < jsonLen + 4 ||
+		16 + jsonLen > buf.length ||
+		8 + headerSize > buf.length
+	) {
 		throw new Error(
-			`${asarPath}: asar header is self-inconsistent (payload ${payloadSize}, json ${jsonLen}, file ${buf.length})`,
+			`${asarPath}: asar header is self-inconsistent (headerSize ${headerSize}, header payload ${headerPayloadSize}, json ${jsonLen}, file ${buf.length})`,
 		);
 	}
-	const header = JSON.parse(buf.toString("utf8", 12, 12 + jsonLen));
-	const dataBase = 8 + payloadSize;
+	const header = JSON.parse(buf.toString("utf8", 16, 16 + jsonLen));
+	const dataBase = 8 + headerSize;
 	const entries = [];
 	const walkNode = (node, prefix) => {
 		for (const [name, child] of Object.entries(node?.files ?? {})) {
@@ -233,7 +256,15 @@ function assertAsarSetClean(archives, scope) {
 			artifacts.push({
 				path: `${archive.path}!${entry.rel}`,
 				rel: `${archiveRel}!/${entry.rel}`,
-				text: bytes.toString("utf8"),
+				// Decoded on demand, never stored. The app.asar this fork ships
+				// holds ~46k scannable entries totalling ~490 MB; materialising
+				// every one of them as a string alongside the archive buffer
+				// already resident is a needless OOM risk on a runner. `bytes` is
+				// a zero-copy subarray of that buffer, so the getter costs a
+				// decode per assertion and keeps exactly one string alive.
+				get text() {
+					return bytes.toString("utf8");
+				},
 			});
 		}
 	}
@@ -744,7 +775,17 @@ if (noArtifacts) {
 				.map((name) => join(releaseRoot, name))
 				.filter((p) => statSync(p).isFile());
 			const sevenZip = resolveSevenZip();
-			if (installers.length === 0) {
+			if (installers.length === 0 && allowUnpackaged) {
+				// release/ exists but packaging stopped after the unpacked dir —
+				// the normal state of a local `compile + pack --dir` run. That is
+				// exactly what --allow-unpackaged exists for, so skip rather than
+				// fail; the run is still stamped mode=partial, which the build
+				// workflow rejects, so this can never become a CI bypass.
+				skippedAnAssertion = true;
+				console.log(
+					`  note  no installer .exe in ${relative(repoRoot, releaseRoot).replace(/\\/g, "/")} and --allow-unpackaged given — every published-installer assertion is SKIPPED. This run is stamped mode=partial and the build workflow will reject it.`,
+				);
+			} else if (installers.length === 0) {
 				fail(
 					`no installer .exe found in ${relative(repoRoot, releaseRoot).replace(/\\/g, "/")} — that file is the ONLY thing publish-arm64-release.sh uploads, so without it this gate cannot vouch for anything a user installs. Refusing to pass.`,
 				);
@@ -815,12 +856,37 @@ if (noArtifacts) {
 								);
 								continue;
 							}
-							const wanted = inner.filter(
-								(entry) =>
-									/(^|[\\/])app\.asar$/i.test(entry) ||
-									/(^|[\\/])app-update\.yml$/i.test(entry),
+							const asarEntries = inner.filter((entry) =>
+								/(^|[\\/])app\.asar$/i.test(entry),
 							);
-							if (!wanted.some((entry) => /app\.asar$/i.test(entry))) {
+							const manifestEntries = inner.filter((entry) =>
+								/(^|[\\/])app-update\.yml$/i.test(entry),
+							);
+							// The asar is NOT the whole app. `asarUnpack` lifts
+							// entries out of the archive onto disk beside it, and
+							// this fork ships hundreds of scannable files that way
+							// (native-module JS: better-sqlite3, node-pty, koffi,
+							// agent-browser, …). readAsar reports them as `unpacked`
+							// and asarEntryBytes resolves them from
+							// <archive>.unpacked, so extracting app.asar ALONE puts
+							// every one of them into assertAsarSetClean's
+							// `unreadable` list and the scan fails as unproven.
+							// That failure is correct — a partial extraction proves
+							// nothing — so the extraction is completed here rather
+							// than the check relaxed.
+							//
+							// Filtered by the SAME SCANNABLE regex the scan applies,
+							// so the two cannot drift, and the native binaries (the
+							// bulk of that tree) stay on the shelf. Anything this
+							// filter misses is still caught: it becomes an unreadable
+							// entry, not a silently skipped one.
+							const unpackedEntries = inner.filter(
+								(entry) =>
+									/(^|[\\/])app\.asar\.unpacked[\\/]/i.test(entry) &&
+									SCANNABLE.test(entry) &&
+									!entry.endsWith(".map"),
+							);
+							if (asarEntries.length === 0) {
 								fail(
 									`the payload of ${installerRel} contains no resources/app.asar — the installer scan would pass vacuously. Refusing to pass.`,
 								);
@@ -828,10 +894,28 @@ if (noArtifacts) {
 							}
 							const outDir = join(stage, "app");
 							mkdirSync(outDir, { recursive: true });
+							// Passed as a 7-Zip list file: hundreds of entries go
+							// straight past the Windows command-line length limit,
+							// and a silently truncated extraction is precisely the
+							// failure this block exists to avoid.
+							const listPath = join(stage, "extract-list.txt");
+							const wanted = [
+								...asarEntries,
+								...manifestEntries,
+								...unpackedEntries,
+							];
+							writeFileSync(listPath, `${wanted.join("\n")}\n`, "utf8");
 							try {
 								execFileSync(
 									sevenZip,
-									["x", "-y", `-o${outDir}`, payloadPath, ...wanted],
+									[
+										"x",
+										"-y",
+										"-scsUTF-8",
+										`-o${outDir}`,
+										payloadPath,
+										`@${listPath}`,
+									],
 									{ stdio: "ignore" },
 								);
 							} catch (error) {
@@ -840,18 +924,25 @@ if (noArtifacts) {
 								);
 								continue;
 							}
-							for (const entry of wanted) {
+							for (const entry of asarEntries) {
 								const onDisk = join(outDir, ...entry.split(/[\\/]/));
-								if (!existsSync(onDisk)) continue;
-								if (/app\.asar$/i.test(entry)) {
-									if (statSync(onDisk).size === 0) {
-										fail(
-											`app.asar extracted from ${installerRel} is empty — refusing to conclude anything from it.`,
-										);
-										continue;
-									}
-									extractedAsars.push(onDisk);
-								} else {
+								if (!existsSync(onDisk)) {
+									fail(
+										`${entry} is listed in the payload of ${installerRel} but the extraction did not produce it — refusing to conclude anything from a partial extraction.`,
+									);
+									continue;
+								}
+								if (statSync(onDisk).size === 0) {
+									fail(
+										`app.asar extracted from ${installerRel} is empty — refusing to conclude anything from it.`,
+									);
+									continue;
+								}
+								extractedAsars.push(onDisk);
+							}
+							for (const entry of manifestEntries) {
+								const onDisk = join(outDir, ...entry.split(/[\\/]/));
+								if (existsSync(onDisk)) {
 									updateManifests.push({ path: onDisk, from: installerRel });
 								}
 							}

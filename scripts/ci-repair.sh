@@ -217,7 +217,22 @@ case "$MODE" in
     FAILED_STEPS=$(jq -r '[.jobs[] | select(.status=="completed") | select(.name|test("build-attempt"))] | sort_by(.started_at) | last | [.steps[]? | select(.conclusion=="failure") | .name] | join("; ")' "$JOBS_JSON")
     [ -n "$FAILED_JOB_ID" ] || { echo "::error::(BUILD-REPAIR) no completed build-attempt job found in run $RUN_ID — nothing to repair"; exit 1; }
     # Job-log route is /actions/jobs/<id>/logs (NOT nested under the run).
-    gh api "repos/$REPO/actions/jobs/$FAILED_JOB_ID/logs" > "$STATE_DIR/build-failure-full.log" || {
+    #
+    # gh >= 2.84 refuses to emit a response containing terminal escape
+    # sequences unless --allow-escape-sequences is passed, and a build log
+    # ALWAYS contains them (every coloured compiler line). Without the flag
+    # this exits non-zero and the whole repair loop dies before the agent ever
+    # reads the failure — observed on run 32175828565, where the collect step
+    # failed with "the response contains terminal escape sequences" and
+    # attempts 2 and 3 were skipped. The flag does not exist on older gh, so it
+    # is probed rather than assumed: hardcoding it would break the loop on any
+    # runner image that has not rolled forward yet.
+    GH_ESCAPE_FLAG=""
+    if gh api --help 2>&1 | grep -q -- "--allow-escape-sequences"; then
+      GH_ESCAPE_FLAG="--allow-escape-sequences"
+    fi
+    # shellcheck disable=SC2086 # deliberately unquoted: empty means "no flag"
+    gh api $GH_ESCAPE_FLAG "repos/$REPO/actions/jobs/$FAILED_JOB_ID/logs" > "$STATE_DIR/build-failure-full.log" || {
       echo "::error::(BUILD-REPAIR) could not download logs for failed job $FAILED_JOB_ID"; exit 1; }
     # Bound what the agent reads: errors first, then the tail for context.
     {
