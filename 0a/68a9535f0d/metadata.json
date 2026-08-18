@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0a68a9535f0d",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 24,
+  "files_touched": [
+    ".github/workflows/build-arm64.yml",
+    "scripts/check-cloud-severance.mjs",
+    "scripts/ci-repair.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0a/68a9535f0d/0/metadata.json",
+      "transcript": "/0a/68a9535f0d/0/full.jsonl",
+      "content_hash": "/0a/68a9535f0d/0/content_hash.txt",
+      "prompt": "/0a/68a9535f0d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8316480,
+    "cache_creation_tokens": 28445986,
+    "cache_read_tokens": 1321185228,
+    "output_tokens": 2714163,
+    "api_call_count": 4407
+  }
+}
