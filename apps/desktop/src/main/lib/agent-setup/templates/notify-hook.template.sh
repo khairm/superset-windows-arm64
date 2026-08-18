@@ -36,6 +36,14 @@ json_field() {
   fi
 }
 
+# Claude Code (and forks sharing its hook schema) set agent_id only when the
+# hook fires inside a subagent (Task tool). Subagent activity must not drive
+# terminal-level agent status or notifications — only the main loop counts.
+# (HOOK-FORK-DIET) extracted with the builtin json_field helper — upstream's
+# echo|grep|grep|tr pipeline would re-add four forks to EVERY hook invocation.
+json_field "agent_id" "$INPUT"; SUBAGENT_ID="$JSON_FIELD"
+[ -n "$SUBAGENT_ID" ] && exit 0
+
 json_field "session_id" "$INPUT"; HOOK_SESSION_ID="$JSON_FIELD"
 if [ -z "$HOOK_SESSION_ID" ]; then
   # Grok's envelope is camelCase.

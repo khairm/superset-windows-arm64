@@ -8,7 +8,7 @@ import {
 	disposeSessionAndWait,
 	disposeSessionsByWorkspaceId,
 	disposeSessionsByWorktreePath,
-	listWorkspaceTerminalSessions,
+	listLiveTerminalSessions,
 	parseThemeType,
 	sessionHasRunningProcess,
 	snapshotSession,
@@ -18,20 +18,7 @@ import {
 } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
-
-function toTerminalIoError(message: string): TRPCError {
-	if (message.includes("belong")) {
-		return new TRPCError({ code: "FORBIDDEN", message });
-	}
-	if (
-		message.includes("not found") ||
-		message.includes("not active") ||
-		message.includes("exited")
-	) {
-		return new TRPCError({ code: "NOT_FOUND", message });
-	}
-	return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message });
-}
+import { toTerminalSessionError } from "./errors";
 
 const createSessionInputSchema = z.object({
 	workspaceId: z.string(),
@@ -64,10 +51,7 @@ async function createTerminalSessionFromInput({
 	});
 
 	if ("error" in result) {
-		throw new TRPCError({
-			code: "INTERNAL_SERVER_ERROR",
-			message: result.error,
-		});
+		throw toTerminalSessionError(result);
 	}
 
 	return {
@@ -135,34 +119,19 @@ export const terminalRouter = router({
 		)
 		.mutation(createTerminalSessionFromInput),
 
-	listSessions: protectedProcedure
+	list: protectedProcedure
 		.input(
-			z.object({
-				workspaceId: z.string(),
-			}),
+			z
+				.object({
+					workspaceId: z.string().optional(),
+				})
+				.optional(),
 		)
 		.query(async ({ ctx, input }) => ({
-			sessions: await listWorkspaceTerminalSessions(ctx.db, input.workspaceId),
-		})),
-
-	countBackgroundSessions: protectedProcedure
-		.input(
-			z.object({
-				workspaceId: z.string(),
-				attachedTerminalIds: z.array(z.string()).default([]),
+			sessions: await listLiveTerminalSessions(ctx.db, {
+				workspaceId: input?.workspaceId,
 			}),
-		)
-		.query(async ({ ctx, input }) => {
-			const sessions = await listWorkspaceTerminalSessions(
-				ctx.db,
-				input.workspaceId,
-			);
-			const attached = new Set(input.attachedTerminalIds);
-			return {
-				count: sessions.filter((session) => !attached.has(session.terminalId))
-					.length,
-			};
-		}),
+		})),
 
 	hasRunningProcess: protectedProcedure
 		.input(
@@ -186,10 +155,7 @@ export const terminalRouter = router({
 		.mutation(({ input }) => {
 			const result = writeInputToSession(input);
 			if ("error" in result) {
-				throw new TRPCError({
-					code: "NOT_FOUND",
-					message: result.error,
-				});
+				throw toTerminalSessionError(result);
 			}
 			return { success: true as const };
 		}),
@@ -251,7 +217,7 @@ export const terminalRouter = router({
 				eventBus: ctx.eventBus,
 			});
 			if ("error" in result) {
-				throw toTerminalIoError(result.error);
+				throw toTerminalSessionError(result);
 			}
 			return { terminalId: input.terminalId, submitted: input.submit };
 		}),
@@ -273,7 +239,7 @@ export const terminalRouter = router({
 				eventBus: ctx.eventBus,
 			});
 			if ("error" in result) {
-				throw toTerminalIoError(result.error);
+				throw toTerminalSessionError(result);
 			}
 			const { success: _success, ...snapshot } = result;
 			return { terminalId: input.terminalId, ...snapshot };

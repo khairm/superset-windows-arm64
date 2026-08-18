@@ -21,6 +21,7 @@ import {
 	SETTING_ITEM_ID,
 	type SettingItemId,
 } from "../../../utils/settings-search";
+import { GithubStarRow } from "./components/GithubStarRow";
 
 interface BehaviorSettingsProps {
 	visibleItems?: SettingItemId[] | null;
@@ -46,6 +47,10 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 	);
 	const showRecycleBinRetention = isItemVisible(
 		SETTING_ITEM_ID.BEHAVIOR_RECYCLE_BIN_RETENTION,
+		visibleItems,
+	);
+	const showStarGithub = isItemVisible(
+		SETTING_ITEM_ID.BEHAVIOR_STAR_GITHUB,
 		visibleItems,
 	);
 
@@ -331,6 +336,8 @@ export function BehaviorSettings({ visibleItems }: BehaviorSettingsProps) {
 						</Select>
 					</div>
 				)}
+
+				{showStarGithub && <GithubStarRow searchQuery={searchQuery} />}
 			</div>
 		</div>
 	);

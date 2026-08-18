@@ -160,7 +160,6 @@ export function DashboardSidebarProjectSection({
 						projectColor={project.color}
 						isCollapsed={project.isCollapsed}
 						totalWorkspaceCount={totalWorkspaceCount}
-						projectChildren={project.children}
 						workspaceShortcutLabels={workspaceShortcutLabels}
 						onWorkspaceHover={onWorkspaceHover}
 						onToggleCollapse={() => onToggleCollapse(project.id)}
@@ -225,7 +224,6 @@ export function DashboardSidebarProjectSection({
 						<DashboardSidebarExpandedProjectContent
 							projectId={project.id}
 							isCollapsed={project.isCollapsed}
-							projectChildren={project.children}
 							workspaceShortcutLabels={workspaceShortcutLabels}
 							onWorkspaceHover={onWorkspaceHover}
 							onDeleteSection={deleteSection}

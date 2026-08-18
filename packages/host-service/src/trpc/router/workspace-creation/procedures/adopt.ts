@@ -8,7 +8,10 @@ import {
 	getWorktreeBranchAtPath,
 	listWorktreeBranches,
 } from "../shared/branch-search";
-import { requireLocalProject } from "../shared/local-project";
+import {
+	requireLocalProject,
+	requireProjectRepoPath,
+} from "../shared/local-project";
 import type { TerminalDescriptor } from "../shared/types";
 
 /**
@@ -22,18 +25,19 @@ export const adopt = protectedProcedure
 	.input(adoptInputSchema)
 	.mutation(async ({ ctx, input }) => {
 		const localProject = requireLocalProject(ctx, input.projectId);
+		const repoPath = requireProjectRepoPath(localProject);
 
 		// (NON-GIT WORKSPACE) Adoption pulls an existing git worktree into a
 		// workspace row. A non-git project folder has no worktrees to adopt —
 		// fail loud before touching git.
-		if (!(await isGitRepo(localProject.repoPath))) {
+		if (!(await isGitRepo(repoPath))) {
 			throw new TRPCError({
 				code: "BAD_REQUEST",
 				message: "Cannot adopt a worktree in a non-git workspace.",
 			});
 		}
 
-		await ensureMainWorkspace(ctx, input.projectId, localProject.repoPath);
+		await ensureMainWorkspace(ctx, input.projectId, repoPath);
 
 		let branch = input.branch.trim();
 		if (!branch) {
@@ -43,7 +47,7 @@ export const adopt = protectedProcedure
 			});
 		}
 
-		const git = await ctx.git(localProject.repoPath);
+		const git = await ctx.git(repoPath);
 
 		let worktreePath: string;
 		if (input.worktreePath) {

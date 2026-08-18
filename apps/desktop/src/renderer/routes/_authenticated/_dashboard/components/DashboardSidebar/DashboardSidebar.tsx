@@ -1,19 +1,6 @@
+import { useDndMonitor } from "@dnd-kit/core";
 import {
-	closestCenter,
-	DndContext,
-	type DragEndEvent,
-	DragOverlay,
-	KeyboardSensor,
-	MeasuringStrategy,
-	MouseSensor,
-	TouchSensor,
-	useSensor,
-	useSensors,
-} from "@dnd-kit/core";
-import {
-	arrayMove,
 	SortableContext,
-	sortableKeyboardCoordinates,
 	useSortable,
 	verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
@@ -23,17 +10,17 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
 import { HiringBanner } from "renderer/components/HiringBanner";
 import { NotificationBusPill } from "renderer/components/NotificationBusPill";
+import { StarNagCard } from "renderer/components/StarNagCard";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { OrganizationDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/OrganizationDropdown";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
-import { useSidebarWorkspacesCollapseStore } from "renderer/stores/sidebar-workspaces-collapse";
+import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { DashboardSidebarBulkActions } from "./components/DashboardSidebarBulkActions";
 import { DashboardSidebarHeader } from "./components/DashboardSidebarHeader";
 import { DashboardSidebarHoverCardOverlay } from "./components/DashboardSidebarHoverCardOverlay";
@@ -46,9 +33,15 @@ import { DashboardSidebarWorkspacesHeader } from "./components/DashboardSidebarW
 import { V2SetupScriptCard } from "./components/V2SetupScriptCard";
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
+import { useDashboardSidebarDnd } from "./hooks/useSidebarDnd";
+import { DashboardSidebarDndProvider } from "./providers/DashboardSidebarDndProvider";
 import { DashboardSidebarHoverProvider } from "./providers/DashboardSidebarHoverProvider";
 import { DashboardSidebarPortsProvider } from "./providers/DashboardSidebarPortsProvider";
 import { DashboardSidebarSelectionProvider } from "./providers/DashboardSidebarSelectionProvider";
+import {
+	DashboardSidebarWorkspaceStatusProvider,
+	type SidebarStatusWorkspaceRef,
+} from "./providers/DashboardSidebarWorkspaceStatusProvider";
 import type { DashboardSidebarProject } from "./types";
 import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
 
@@ -68,10 +61,35 @@ function getProjectTierRank(project: DashboardSidebarProject): number {
 	return getProjectChildrenWorkspaces(project.children).length > 0 ? 1 : 2;
 }
 
+/**
+ * (HOVER-FREEZE) Bridges the sidebar's single DndContext back out to the order
+ * freeze. The geometry probe below covers a pointer drag over the list, but not
+ * a keyboard drag (no pointermove at all) nor a pointer that wanders off the
+ * list mid-drag — and a re-sort under an in-flight drag moves dnd-kit's indices
+ * out from under it. Rendered inside DashboardSidebarDndProvider; renders
+ * nothing.
+ */
+function SidebarDragFreezeMonitor({
+	onDragActiveChange,
+	onSnapshotOrder,
+}: {
+	onDragActiveChange: (active: boolean) => void;
+	onSnapshotOrder: () => void;
+}) {
+	useDndMonitor({
+		onDragStart: () => {
+			onSnapshotOrder();
+			onDragActiveChange(true);
+		},
+		onDragEnd: () => onDragActiveChange(false),
+		onDragCancel: () => onDragActiveChange(false),
+	});
+	return null;
+}
+
 interface SortableProjectWrapperProps {
 	project: DashboardSidebarProject;
 	isCollapsed: boolean;
-	isDraggingProject: boolean;
 	workspaceShortcutLabels: Map<string, string>;
 	onWorkspaceHover: (workspaceId: string) => void | Promise<void>;
 	onToggleCollapse: (projectId: string) => void;
@@ -80,7 +98,6 @@ interface SortableProjectWrapperProps {
 const SortableProjectWrapper = memo(function SortableProjectWrapper({
 	project,
 	isCollapsed,
-	isDraggingProject,
 	workspaceShortcutLabels,
 	onWorkspaceHover,
 	onToggleCollapse,
@@ -93,16 +110,14 @@ const SortableProjectWrapper = memo(function SortableProjectWrapper({
 		transition,
 		isDragging,
 	} = useSortable({ id: project.id });
+	const { activeType } = useDashboardSidebarDnd();
+	const isDraggingProject = activeType === "project";
 
-	return (
-		<div
-			ref={setNodeRef}
-			style={{
-				transform: CSS.Translate.toString(transform),
-				transition,
-				opacity: isDragging ? 0.5 : undefined,
-			}}
-		>
+	// useSortable re-renders this wrapper on every pointer move of any drag in
+	// the sidebar's DndContext; the project section subtree is expensive, so
+	// keep it referentially stable while only the wrapper transform changes.
+	const section = useMemo(
+		() => (
 			<DashboardSidebarProjectSection
 				project={project}
 				isSidebarCollapsed={isCollapsed}
@@ -113,6 +128,29 @@ const SortableProjectWrapper = memo(function SortableProjectWrapper({
 				dragHandleListeners={listeners}
 				dragHandleAttributes={attributes}
 			/>
+		),
+		[
+			project,
+			isCollapsed,
+			isDraggingProject,
+			workspaceShortcutLabels,
+			onWorkspaceHover,
+			onToggleCollapse,
+			listeners,
+			attributes,
+		],
+	);
+
+	return (
+		<div
+			ref={setNodeRef}
+			style={{
+				transform: CSS.Translate.toString(transform),
+				transition,
+				opacity: isDragging ? 0.5 : undefined,
+			}}
+		>
+			{section}
 		</div>
 	);
 });
@@ -139,22 +177,9 @@ export function DashboardSidebar({
 	const inlineWorkspacePortsEnabled = useInlineWorkspacePortsEnabled();
 	const v2RouteMatch = matchRoute({ to: "/v2-workspace/$workspaceId" });
 	const activeV2WorkspaceId = v2RouteMatch ? v2RouteMatch.workspaceId : null;
-	const workspacesListCollapsed = useSidebarWorkspacesCollapseStore(
-		(s) => s.isCollapsed,
+	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
+		(s) => s.collapsed.workspaces,
 	);
-
-	const sensors = useSensors(
-		useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-		useSensor(TouchSensor, {
-			activationConstraint: { delay: 200, tolerance: 5 },
-		}),
-		useSensor(KeyboardSensor, {
-			coordinateGetter: sortableKeyboardCoordinates,
-		}),
-	);
-
-	const [activeProject, setActiveProject] =
-		useState<DashboardSidebarProject | null>(null);
 
 	// Local project order — syncs from groups, updated on drag end
 	const [projectOrder, setProjectOrder] = useState(() =>
@@ -289,8 +314,17 @@ export function DashboardSidebar({
 		};
 	}, []);
 
-	// Freeze also spans an active drag (the pointer can wander off the list).
-	const orderFrozen = isPointerOverList || activeProject != null;
+	// Freeze also spans an active drag (the pointer can wander off the list, and
+	// a keyboard drag never moves it at all) — see SidebarDragFreezeMonitor.
+	const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
+	// A drag that starts without the geometry probe having fired must snapshot
+	// NOW, or the freeze renders a stale order from an earlier hover.
+	const snapshotFrozenOrder = useCallback(() => {
+		if (!isPointerOverListRef.current) {
+			frozenOrderRef.current = orderedIdsRef.current;
+		}
+	}, []);
+	const orderFrozen = isPointerOverList || isDraggingSidebar;
 	const displayGroups = useMemo(() => {
 		if (!orderFrozen) return orderedGroups;
 		const byId = new Map(orderedGroups.map((g) => [g.id, g]));
@@ -308,6 +342,12 @@ export function DashboardSidebar({
 		() => displayGroups.map((g) => g.id),
 		[displayGroups],
 	);
+	// Read by the drop handler, which runs inside the shared DndContext and so
+	// must not close over a render-captured order.
+	const displayIdsRef = useRef<string[]>(displayIds);
+	displayIdsRef.current = displayIds;
+	const displayGroupsRef = useRef<DashboardSidebarProject[]>(displayGroups);
+	displayGroupsRef.current = displayGroups;
 
 	// Shortcut numbering follows the RENDERED (tiered + hover-frozen) order so a
 	// label never points at a different row than the one on screen.
@@ -332,6 +372,25 @@ export function DashboardSidebar({
 			),
 		[orderedGroups],
 	);
+
+	// Every workspace the sidebar can render (pinned, sessions, project rows) —
+	// the status provider fans out bindings queries and event subscriptions for
+	// these once, instead of per row.
+	const statusWorkspaces = useMemo<SidebarStatusWorkspaceRef[]>(() => {
+		const byId = new Map<string, SidebarStatusWorkspaceRef>();
+		for (const workspace of pinnedWorkspaces) {
+			byId.set(workspace.id, { id: workspace.id, hostId: workspace.hostId });
+		}
+		for (const workspace of sessionWorkspaces) {
+			byId.set(workspace.id, { id: workspace.id, hostId: workspace.hostId });
+		}
+		for (const project of orderedGroups) {
+			for (const workspace of getProjectChildrenWorkspaces(project.children)) {
+				byId.set(workspace.id, { id: workspace.id, hostId: workspace.hostId });
+			}
+		}
+		return [...byId.values()];
+	}, [pinnedWorkspaces, sessionWorkspaces, orderedGroups]);
 
 	// Resolve the full project object for the active workspace from the id above
 	// (used by the footer / view-in-place logic).
@@ -375,23 +434,33 @@ export function DashboardSidebar({
 		reorderProjects(nextOrder);
 	}, [groups, reorderProjects]);
 
-	const handleDragEnd = useCallback(
-		({ active, over }: DragEndEvent) => {
-			setActiveProject(null);
-			if (!over || active.id === over.id) return;
-			const activeId = String(active.id);
-			const overId = String(over.id);
-			// Reorder in the RENDERED (possibly hover-frozen) order so indices
-			// match the drag.
-			const oldIndex = displayIds.indexOf(activeId);
-			const newIndex = displayIds.indexOf(overId);
-			if (oldIndex === -1 || newIndex === -1) return;
+	// (ACTIVE-FIRST) (HOVER-FREEZE) dnd-kit hands back the whole display order
+	// after a project move, so reconstruct the single move it made: exactly one
+	// row travels, every other shifts by one, so the largest displacement names
+	// it. Two fork rules then still apply on top of upstream's shared DnD.
+	const handleReorderProjects = useCallback(
+		(reordered: string[]) => {
+			const previous = displayIdsRef.current;
+			let movedId: string | null = null;
+			let oldIndex = -1;
+			let maxShift = 0;
+			for (const [index, id] of previous.entries()) {
+				const shift = Math.abs(reordered.indexOf(id) - index);
+				if (shift > maxShift) {
+					maxShift = shift;
+					movedId = id;
+					oldIndex = index;
+				}
+			}
+			if (movedId === null) return;
+			const newIndex = reordered.indexOf(movedId);
+			if (newIndex === -1) return;
 			// A row can't be dragged OUT of its tier: ignore a drop whose target is
-			// in a different pinned/active/idle tier (otherwise the re-partition would
-			// silently shuffle the row's within-tier position). Only same-tier
-			// reorders persist.
-			const activeGroup = displayGroups[oldIndex];
-			const overGroup = displayGroups[newIndex];
+			// in a different pinned/active/idle tier (otherwise the re-partition
+			// would silently shuffle the row's within-tier position). Only
+			// same-tier reorders persist.
+			const activeGroup = displayGroupsRef.current[oldIndex];
+			const overGroup = displayGroupsRef.current[newIndex];
 			if (
 				activeGroup &&
 				overGroup &&
@@ -401,21 +470,22 @@ export function DashboardSidebar({
 			}
 			// Visual: the user's drop becomes the frozen view (no snap-back while
 			// the pointer is still over the list).
-			frozenOrderRef.current = arrayMove(displayIds, oldIndex, newIndex);
-			// Persisted: apply the SINGLE move (activeId next to overId) to the
-			// LIVE order — order changes that landed underneath during the freeze
-			// (e.g. a tier-transition move-to-top) survive instead of being
+			frozenOrderRef.current = reordered;
+			// Persisted: apply the SINGLE move (movedId next to its drop target) to
+			// the LIVE order — order changes that landed underneath during the
+			// freeze (e.g. a tier-transition move-to-top) survive instead of being
 			// wholesale overwritten by the stale frozen arrangement. The 3-tier
 			// partition re-applies on render so the same-tier reorder sticks.
-			const liveOrder = orderedIds.filter((id) => id !== activeId);
-			const overLiveIndex = liveOrder.indexOf(overId);
+			const overId = previous[newIndex];
+			const liveOrder = orderedIdsRef.current.filter((id) => id !== movedId);
+			const overLiveIndex = overId === undefined ? -1 : liveOrder.indexOf(overId);
 			if (overLiveIndex === -1) return;
 			const insertAt = newIndex > oldIndex ? overLiveIndex + 1 : overLiveIndex;
-			liveOrder.splice(insertAt, 0, activeId);
+			liveOrder.splice(insertAt, 0, movedId);
 			setProjectOrder(liveOrder);
 			reorderProjects(liveOrder);
 		},
-		[displayGroups, displayIds, orderedIds, reorderProjects],
+		[reorderProjects],
 	);
 
 	return (
@@ -424,156 +494,134 @@ export function DashboardSidebar({
 		>
 			<DashboardSidebarSectionRenameProvider>
 				<DashboardSidebarHoverProvider>
-					<DashboardSidebarPortsProvider enabled={!isCollapsed}>
-						<DashboardSidebarHoverCardOverlay>
-							<div className="flex h-full flex-col border-r border-border bg-muted/45 dark:bg-muted/35">
-								<DashboardSidebarHeader isCollapsed={isCollapsed} />
-
-								<OverflowFadeContainer
-									ref={listRef}
-									fadeEdges={["top", "bottom"]}
-									className="flex-1 overflow-y-auto hide-scrollbar"
+					<DashboardSidebarWorkspaceStatusProvider
+						workspaces={statusWorkspaces}
+						activeWorkspaceId={activeV2WorkspaceId}
+					>
+						<DashboardSidebarPortsProvider enabled={!isCollapsed}>
+							<DashboardSidebarHoverCardOverlay>
+								<DashboardSidebarDndProvider
+									// (HOVER-FREEZE) The DnD order must be the RENDERED
+									// (tiered + frozen) one, or drag indices point at rows
+									// that are not where the user sees them.
+									projects={displayGroups}
+									pinnedWorkspaces={pinnedWorkspaces}
+									sessionWorkspaces={sessionWorkspaces}
+									isSidebarCollapsed={isCollapsed}
+									workspaceShortcutLabels={workspaceShortcutLabels}
+									onReorderProjects={handleReorderProjects}
 								>
-									{(isCollapsed || !workspacesListCollapsed) && (
-										<DashboardSidebarPinnedSection
-											pinnedWorkspaces={pinnedWorkspaces}
-											isCollapsed={isCollapsed}
-											onWorkspaceHover={refreshWorkspacePullRequest}
-										/>
-									)}
-									<DashboardSidebarSessionsSection
-										sessionWorkspaces={sessionWorkspaces}
-										snoozedSessionWorkspaces={snoozedSessionWorkspaces}
-										archivedSessionWorkspaces={archivedSessionWorkspaces}
-										deletedSessionWorkspaces={deletedSessionWorkspaces}
-										isCollapsed={isCollapsed}
-										rowsHidden={!isCollapsed && workspacesListCollapsed}
-										workspaceShortcutLabels={workspaceShortcutLabels}
-										onWorkspaceHover={refreshWorkspacePullRequest}
+									<SidebarDragFreezeMonitor
+										onDragActiveChange={setIsDraggingSidebar}
+										onSnapshotOrder={snapshotFrozenOrder}
 									/>
-									{!isCollapsed && (
-										<DashboardSidebarBulkActions projects={orderedGroups}>
-											<DashboardSidebarWorkspacesHeader />
-										</DashboardSidebarBulkActions>
-									)}
-									{(isCollapsed || !workspacesListCollapsed) && (
-										<DndContext
-											sensors={sensors}
-											collisionDetection={closestCenter}
-											measuring={{
-												droppable: { strategy: MeasuringStrategy.Always },
-											}}
-											onDragStart={({ active }) => {
-												// A drag freezes the order via activeProject. If the
-												// pointer-geometry freeze isn't already active (keyboard
-												// drag), snapshot NOW so the freeze can't render a stale
-												// order from an earlier hover.
-												if (!isPointerOverListRef.current) {
-													frozenOrderRef.current = orderedIdsRef.current;
-												}
-												const project = groups.find((p) => p.id === active.id);
-												setActiveProject(project ?? null);
-											}}
-											onDragEnd={handleDragEnd}
-											onDragCancel={() => setActiveProject(null)}
+									<div className="flex h-full flex-col border-r border-border bg-muted/45 dark:bg-muted/35">
+										<DashboardSidebarHeader isCollapsed={isCollapsed} />
+
+										<OverflowFadeContainer
+											ref={listRef}
+											fadeEdges={["top", "bottom"]}
+											className="flex-1 overflow-y-auto hide-scrollbar"
 										>
-											<SortableContext
-												items={displayIds}
-												strategy={verticalListSortingStrategy}
-											>
-												{displayGroups.map((project) => (
-													<SortableProjectWrapper
-														key={project.id}
-														project={project}
-														isCollapsed={isCollapsed}
-														isDraggingProject={activeProject != null}
-														workspaceShortcutLabels={workspaceShortcutLabels}
-														onWorkspaceHover={refreshWorkspacePullRequest}
-														onToggleCollapse={toggleProjectCollapsed}
-													/>
-												))}
-											</SortableContext>
-
-											{createPortal(
-												<DragOverlay dropAnimation={null}>
-													{activeProject && (
-														// Transparent on purpose: the sidebar surface comes from
-														// window vibrancy, so any opaque bg renders as a solid
-														// slab. Sortable siblings make room, so the row floats
-														// over empty sidebar, not over other rows.
-														<div>
-															<DashboardSidebarProjectSection
-																project={activeProject}
-																isSidebarCollapsed={isCollapsed}
-																isDraggingProject
-																workspaceShortcutLabels={
-																	workspaceShortcutLabels
-																}
-																onWorkspaceHover={() => {}}
-																onToggleCollapse={() => {}}
-															/>
-														</div>
-													)}
-												</DragOverlay>,
-												document.body,
+											{(isCollapsed || !workspacesListCollapsed) && (
+												<DashboardSidebarPinnedSection
+													pinnedWorkspaces={pinnedWorkspaces}
+													isCollapsed={isCollapsed}
+													onWorkspaceHover={refreshWorkspacePullRequest}
+												/>
 											)}
-										</DndContext>
-									)}
-								</OverflowFadeContainer>
-								{!isCollapsed && !inlineWorkspacePortsEnabled && (
-									<DashboardSidebarPortsList />
-								)}
-								{!isCollapsed && activeV2Project && activeHostUrl && (
-									<V2SetupScriptCard
-										hostUrl={activeHostUrl}
-										projectId={activeV2Project.id}
-										projectName={activeV2Project.name}
-									/>
-								)}
-								<HiringBanner surface="v2" isCollapsed={isCollapsed} />
-								<div
-									className={cn(
-										isCollapsed
-											? "flex flex-col items-center gap-2 py-2"
-											: "flex items-center gap-1 p-2",
-									)}
-								>
-									{isCollapsed ? (
-										<OrganizationDropdown variant="collapsed" />
-									) : (
-										<div className="min-w-0 flex-1">
-											<OrganizationDropdown variant="expanded" />
-										</div>
-									)}
+											<DashboardSidebarSessionsSection
+												sessionWorkspaces={sessionWorkspaces}
+												snoozedSessionWorkspaces={snoozedSessionWorkspaces}
+												archivedSessionWorkspaces={archivedSessionWorkspaces}
+												deletedSessionWorkspaces={deletedSessionWorkspaces}
+												isCollapsed={isCollapsed}
+												rowsHidden={!isCollapsed && workspacesListCollapsed}
+												workspaceShortcutLabels={workspaceShortcutLabels}
+												onWorkspaceHover={refreshWorkspacePullRequest}
+											/>
+											{!isCollapsed && (
+												<DashboardSidebarBulkActions projects={orderedGroups}>
+													<DashboardSidebarWorkspacesHeader />
+												</DashboardSidebarBulkActions>
+											)}
+											{(isCollapsed || !workspacesListCollapsed) && (
+												<SortableContext
+													items={displayIds}
+													strategy={verticalListSortingStrategy}
+												>
+													{displayGroups.map((project) => (
+														<SortableProjectWrapper
+															key={project.id}
+															project={project}
+															isCollapsed={isCollapsed}
+															workspaceShortcutLabels={workspaceShortcutLabels}
+															onWorkspaceHover={refreshWorkspacePullRequest}
+															onToggleCollapse={toggleProjectCollapsed}
+														/>
+													))}
+												</SortableContext>
+											)}
+										</OverflowFadeContainer>
+										{!isCollapsed && !inlineWorkspacePortsEnabled && (
+											<DashboardSidebarPortsList />
+										)}
+										{!isCollapsed && activeV2Project && activeHostUrl && (
+											<V2SetupScriptCard
+												hostUrl={activeHostUrl}
+												projectId={activeV2Project.id}
+												projectName={activeV2Project.name}
+											/>
+										)}
+										<HiringBanner surface="v2" isCollapsed={isCollapsed} />
+										<StarNagCard isCollapsed={isCollapsed} />
+										<div
+											className={cn(
+												isCollapsed
+													? "flex flex-col items-center gap-2 py-2"
+													: "flex items-center gap-1 p-2",
+											)}
+										>
+											{isCollapsed ? (
+												<OrganizationDropdown variant="collapsed" />
+											) : (
+												<div className="min-w-0 flex-1">
+													<OrganizationDropdown variant="expanded" />
+												</div>
+											)}
 
-									<NotificationBusPill isCollapsed={isCollapsed} />
-									<UpdatesPill isCollapsed={isCollapsed} />
-									<Tooltip delayDuration={300}>
-										<TooltipTrigger asChild>
-											<button
-												type="button"
-												aria-label="Settings"
-												onClick={() => navigate({ to: "/settings/account" })}
-												className={cn(
-													"flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
-													isSettingsOpen
-														? "bg-fill-selected text-muted-foreground"
-														: "text-muted-foreground hover:bg-fill-hover",
-												)}
-											>
-												<HiOutlineCog6Tooth className="size-3.5" />
-											</button>
-										</TooltipTrigger>
-										<TooltipContent side={isCollapsed ? "right" : "top"}>
-											{settingsHotkey !== "Unassigned"
-												? `Settings (${settingsHotkey})`
-												: "Settings"}
-										</TooltipContent>
-									</Tooltip>
-								</div>
-							</div>
-						</DashboardSidebarHoverCardOverlay>
-					</DashboardSidebarPortsProvider>
+											<NotificationBusPill isCollapsed={isCollapsed} />
+											<UpdatesPill isCollapsed={isCollapsed} />
+											<Tooltip delayDuration={300}>
+												<TooltipTrigger asChild>
+													<button
+														type="button"
+														aria-label="Settings"
+														onClick={() =>
+															navigate({ to: "/settings/account" })
+														}
+														className={cn(
+															"flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
+															isSettingsOpen
+																? "bg-fill-selected text-muted-foreground"
+																: "text-muted-foreground hover:bg-fill-hover",
+														)}
+													>
+														<HiOutlineCog6Tooth className="size-3.5" />
+													</button>
+												</TooltipTrigger>
+												<TooltipContent side={isCollapsed ? "right" : "top"}>
+													{settingsHotkey !== "Unassigned"
+														? `Settings (${settingsHotkey})`
+														: "Settings"}
+												</TooltipContent>
+											</Tooltip>
+										</div>
+									</div>
+								</DashboardSidebarDndProvider>
+							</DashboardSidebarHoverCardOverlay>
+						</DashboardSidebarPortsProvider>
+					</DashboardSidebarWorkspaceStatusProvider>
 				</DashboardSidebarHoverProvider>
 			</DashboardSidebarSectionRenameProvider>
 		</DashboardSidebarSelectionProvider>

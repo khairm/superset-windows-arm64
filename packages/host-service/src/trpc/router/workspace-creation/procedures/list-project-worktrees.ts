@@ -3,7 +3,10 @@ import { z } from "zod";
 import { workspaces } from "../../../../db/schema";
 import { isGitRepo } from "../../../../runtime/git/non-git";
 import { protectedProcedure } from "../../../index";
-import { requireLocalProject } from "../shared/local-project";
+import {
+	requireLocalProject,
+	requireProjectRepoPath,
+} from "../shared/local-project";
 import {
 	listGitWorktrees,
 	normalizeWorktreePath,
@@ -21,10 +24,11 @@ export const listProjectWorktrees = protectedProcedure
 	.input(z.object({ projectId: z.string() }))
 	.query(async ({ ctx, input }) => {
 		const localProject = requireLocalProject(ctx, input.projectId);
+		const repoPath = requireProjectRepoPath(localProject);
 
 		// (NON-GIT WORKSPACE) A non-git project has no git worktrees to list —
 		// return an empty set before touching git.
-		if (!(await isGitRepo(localProject.repoPath))) {
+		if (!(await isGitRepo(repoPath))) {
 			return {
 				worktrees: [] as {
 					branch: string;
@@ -35,7 +39,7 @@ export const listProjectWorktrees = protectedProcedure
 			};
 		}
 
-		const git = await ctx.git(localProject.repoPath);
+		const git = await ctx.git(repoPath);
 		const records = await listGitWorktrees(git);
 
 		// Tracking key is (projectId, branch) — same as searchBranches — but

@@ -15,6 +15,10 @@
 		"./automation-dispatch": {
 			"types": "./src/router/automation/dispatch.ts",
 			"default": "./src/router/automation/dispatch.ts"
+		},
+		"./insight-registry": {
+			"types": "./src/router/analytics/insight-registry.ts",
+			"default": "./src/router/analytics/insight-registry.ts"
 		}
 	},
 	"scripts": {
@@ -36,7 +40,7 @@
 		"@vercel/kv": "3.0.0",
 		"drizzle-orm": "0.45.2",
 		"posthog-node": "5.28.8",
-		"resend": "4.8.0",
+		"resend": "6.18.0",
 		"superjson": "2.2.6",
 		"zod": "4.4.3"
 	},

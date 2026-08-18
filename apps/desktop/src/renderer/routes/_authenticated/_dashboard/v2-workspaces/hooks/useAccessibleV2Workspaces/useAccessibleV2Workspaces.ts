@@ -1,5 +1,4 @@
 import type { CheckItem } from "@superset/local-db";
-import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -8,8 +7,10 @@ import { resolveProjectIconUrl } from "renderer/hooks/host-projects/resolveProje
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { deriveTerminalAgentStatus } from "renderer/hooks/host-service/useTerminalAgentStatuses";
 import { useHostWorkspacesSource } from "renderer/hooks/host-workspaces/useHostWorkspaces";
+import { useHostsPresence } from "renderer/hooks/useHostsPresence";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { authClient } from "renderer/lib/auth-client";
+import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { derivePullRequestQueryTargets } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
 import {
@@ -241,24 +242,28 @@ export function useAccessibleV2Workspaces(
 	const { workspaces: hostWorkspaces, isReady } =
 		deviceFilter === undefined ? fanoutSource : scopedSource;
 
-	const { data: hostRows = [] } = useLiveQuery(
-		(q) =>
-			q.from({ hosts: collections.v2Hosts }).select(({ hosts }) => ({
-				organizationId: hosts.organizationId,
-				machineId: hosts.machineId,
-				name: hosts.name,
-				isOnline: hosts.isOnline,
-			})),
-		[collections],
+	const { data: rawHostRows = [] } = cloudTrpc.v2Host.list.useQuery(undefined, {
+		refetchInterval: 30_000,
+	});
+	const presence = useHostsPresence(rawHostRows);
+	const hostRows = useMemo(
+		() =>
+			presence
+				? rawHostRows.map((host) => ({
+						...host,
+						isOnline: presence.get(host.machineId) ?? host.isOnline,
+					}))
+				: rawHostRows,
+		[rawHostRows, presence],
 	);
 
-	const { data: userHostRows = [] } = useLiveQuery(
-		(q) =>
-			q
-				.from({ userHosts: collections.v2UsersHosts })
-				.where(({ userHosts }) => eq(userHosts.userId, currentUserId ?? ""))
-				.select(({ userHosts }) => ({ hostId: userHosts.hostId })),
-		[collections, currentUserId],
+	const { data: hostMemberRows = [] } = cloudTrpc.v2Host.listMembers.useQuery(
+		undefined,
+		{},
+	);
+	const userHostRows = useMemo(
+		() => hostMemberRows.filter((row) => row.userId === currentUserId),
+		[hostMemberRows, currentUserId],
 	);
 
 	// Projects are fully local — the host fan-out is the identity source.
@@ -292,24 +297,19 @@ export function useAccessibleV2Workspaces(
 		[collections],
 	);
 
-	const { data: repoRows = [] } = useLiveQuery(
-		(q) =>
-			q.from({ repos: collections.githubRepositories }).select(({ repos }) => ({
-				id: repos.id,
-				owner: repos.owner,
-				name: repos.name,
-			})),
-		[collections],
-	);
+	const { data: repoRows = [] } =
+		cloudTrpc.integration.github.listRepositories.useQuery(
+			{ organizationId: activeOrganizationId ?? "" },
+			{ enabled: !!activeOrganizationId },
+		);
 
-	const { data: creatorRows = [] } = useLiveQuery(
-		(q) =>
-			q.from({ creators: collections.users }).select(({ creators }) => ({
-				id: creators.id,
-				name: creators.name,
-				image: creators.image,
-			})),
-		[collections],
+	const { data: memberRows = [] } = cloudTrpc.organization.listMembers.useQuery(
+		undefined,
+		{},
+	);
+	const creatorRows = useMemo(
+		() => memberRows.map((member) => member.user),
+		[memberRows],
 	);
 
 	// Reproduces the former Electric join: workspaces scoped to the active org,
@@ -318,7 +318,6 @@ export function useAccessibleV2Workspaces(
 	const rows = useMemo(() => {
 		if (activeOrganizationId == null || currentUserId == null) return [];
 		const hostsById = new Map(hostRows.map((host) => [host.machineId, host]));
-		const accessibleHostIds = new Set(userHostRows.map((row) => row.hostId));
 		const projectsById = new Map(
 			hostProjects.map((project) => [project.projectKey, project]),
 		);
@@ -370,16 +369,9 @@ export function useAccessibleV2Workspaces(
 		};
 		return hostWorkspaces.flatMap((workspace): AccessibleRowDraft[] => {
 			if (workspace.organizationId !== activeOrganizationId) return [];
-			const host = hostsById.get(workspace.hostId);
 			// A host-served row is its own proof of existence and access — the
-			// host answered this caller's credentials. Only cloud-fallback rows
-			// need the v2Hosts/v2UsersHosts gate; stale or unsynced cloud host
-			// tables must not hide live host data.
-			if (
-				workspace.source !== "host" &&
-				(!host || !accessibleHostIds.has(workspace.hostId))
-			)
-				return [];
+			// host answered this caller's credentials.
+			const host = hostsById.get(workspace.hostId);
 			// Session workspaces (null projectId) skip the project join and
 			// group under the "Sessions" pseudo-project.
 			if (workspace.projectId === null) {
@@ -481,7 +473,6 @@ export function useAccessibleV2Workspaces(
 		machineId,
 		hostWorkspaces,
 		hostRows,
-		userHostRows,
 		hostProjects,
 		sidebarStateRows,
 		sidebarProjectRows,

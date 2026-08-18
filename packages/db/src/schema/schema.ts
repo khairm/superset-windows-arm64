@@ -24,7 +24,6 @@ import {
 	desktopNoticeCtaActionValues,
 	desktopNoticeSeverityValues,
 	desktopNoticeTriggerValues,
-	deviceTypeValues,
 	integrationProviderValues,
 	taskPriorityValues,
 	taskStatusEnumValues,
@@ -43,7 +42,6 @@ export const integrationProvider = pgEnum(
 	"integration_provider",
 	integrationProviderValues,
 );
-export const deviceType = pgEnum("device_type", deviceTypeValues);
 export const commandStatus = pgEnum("command_status", commandStatusValues);
 export const v2ClientType = pgEnum("v2_client_type", v2ClientTypeValues);
 export const v2UsersHostRole = pgEnum(
@@ -275,41 +273,6 @@ export type SelectSubscription = typeof subscriptions.$inferSelect;
 // Device presence — v1 concept. Tracks per-(user, machine) presence for
 // MCP ownership verification. Untouched by the v2 host consolidation; will
 // be retired when v1 is removed.
-export const devicePresence = pgTable(
-	"device_presence",
-	{
-		id: uuid().primaryKey().defaultRandom(),
-		userId: uuid("user_id")
-			.notNull()
-			.references(() => users.id, { onDelete: "cascade" }),
-		organizationId: uuid("organization_id")
-			.notNull()
-			.references(() => organizations.id, { onDelete: "cascade" }),
-		deviceId: text("device_id").notNull(),
-		deviceName: text("device_name").notNull(),
-		deviceType: deviceType("device_type").notNull(),
-		lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
-			.notNull()
-			.defaultNow(),
-		createdAt: timestamp("created_at", { withTimezone: true })
-			.notNull()
-			.defaultNow(),
-	},
-	(table) => [
-		index("device_presence_user_org_idx").on(
-			table.userId,
-			table.organizationId,
-		),
-		uniqueIndex("device_presence_user_device_idx").on(
-			table.userId,
-			table.deviceId,
-		),
-		index("device_presence_last_seen_idx").on(table.lastSeenAt),
-	],
-);
-
-export type InsertDevicePresence = typeof devicePresence.$inferInsert;
-export type SelectDevicePresence = typeof devicePresence.$inferSelect;
 
 // Agent commands - synced via Electric SQL to executors
 export const agentCommands = pgTable(
@@ -550,9 +513,9 @@ export const v2Workspaces = pgTable(
 		organizationId: uuid("organization_id")
 			.notNull()
 			.references(() => organizations.id, { onDelete: "cascade" }),
-		projectId: uuid("project_id")
-			.notNull()
-			.references(() => v2Projects.id, { onDelete: "cascade" }),
+		// FK dropped ahead of the v2_projects table removal; the column stays
+		// as a bare uuid, same shape as automations.v2_project_id (0062).
+		projectId: uuid("project_id").notNull(),
 		hostId: text("host_id").notNull(),
 		name: text().notNull(),
 		branch: text().notNull(),
@@ -589,66 +552,6 @@ export const v2Workspaces = pgTable(
 
 export type InsertV2Workspace = typeof v2Workspaces.$inferInsert;
 export type SelectV2Workspace = typeof v2Workspaces.$inferSelect;
-
-export const secrets = pgTable(
-	"secrets",
-	{
-		id: uuid().primaryKey().defaultRandom(),
-		organizationId: uuid("organization_id")
-			.notNull()
-			.references(() => organizations.id, { onDelete: "cascade" }),
-		projectId: uuid("project_id")
-			.notNull()
-			.references(() => projects.id, { onDelete: "cascade" }),
-		key: text().notNull(),
-		encryptedValue: text("encrypted_value").notNull(),
-		sensitive: boolean().notNull().default(false),
-		createdByUserId: uuid("created_by_user_id").references(() => users.id, {
-			onDelete: "set null",
-		}),
-		createdAt: timestamp("created_at").notNull().defaultNow(),
-		updatedAt: timestamp("updated_at")
-			.notNull()
-			.defaultNow()
-			.$onUpdate(() => new Date()),
-	},
-	(table) => [
-		unique("secrets_project_key_unique").on(table.projectId, table.key),
-		index("secrets_project_id_idx").on(table.projectId),
-		index("secrets_organization_id_idx").on(table.organizationId),
-	],
-);
-
-export type InsertSecret = typeof secrets.$inferInsert;
-export type SelectSecret = typeof secrets.$inferSelect;
-
-export const sandboxImages = pgTable(
-	"sandbox_images",
-	{
-		id: uuid().primaryKey().defaultRandom(),
-		organizationId: uuid("organization_id")
-			.notNull()
-			.references(() => organizations.id, { onDelete: "cascade" }),
-		projectId: uuid("project_id")
-			.notNull()
-			.references(() => projects.id, { onDelete: "cascade" }),
-		setupCommands: jsonb("setup_commands").$type<string[]>().default([]),
-		baseImage: text("base_image"),
-		systemPackages: jsonb("system_packages").$type<string[]>().default([]),
-		createdAt: timestamp("created_at").notNull().defaultNow(),
-		updatedAt: timestamp("updated_at")
-			.notNull()
-			.defaultNow()
-			.$onUpdate(() => new Date()),
-	},
-	(table) => [
-		unique("sandbox_images_project_unique").on(table.projectId),
-		index("sandbox_images_organization_id_idx").on(table.organizationId),
-	],
-);
-
-export type InsertSandboxImage = typeof sandboxImages.$inferInsert;
-export type SelectSandboxImage = typeof sandboxImages.$inferSelect;
 
 export const workspaces = pgTable(
 	"workspaces",
@@ -695,9 +598,7 @@ export const chatSessions = pgTable(
 		workspaceId: uuid("workspace_id").references(() => workspaces.id, {
 			onDelete: "set null",
 		}),
-		v2WorkspaceId: uuid("v2_workspace_id").references(() => v2Workspaces.id, {
-			onDelete: "set null",
-		}),
+		v2WorkspaceId: uuid("v2_workspace_id"),
 		title: text(),
 		lastActiveAt: timestamp("last_active_at").notNull().defaultNow(),
 		createdAt: timestamp("created_at").notNull().defaultNow(),

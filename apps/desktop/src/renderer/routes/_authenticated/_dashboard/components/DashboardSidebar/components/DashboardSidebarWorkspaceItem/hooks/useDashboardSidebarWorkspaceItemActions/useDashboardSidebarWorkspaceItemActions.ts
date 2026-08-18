@@ -7,10 +7,6 @@ import {
 } from "@tanstack/react-router";
 import { useState } from "react";
 import { getTerminalAgentBindingsQueryKey } from "renderer/hooks/host-service/useTerminalAgentBindings";
-import {
-	useMarkWorkspaceTerminalsSeen,
-	useV2WorkspaceIsUnread,
-} from "renderer/hooks/host-service/useV2NotificationStatus";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -18,9 +14,11 @@ import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unava
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { useDashboardSidebarSectionRename } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarSectionRenameContext";
 import { DASHBOARD_SIDEBAR_PULL_REQUEST_QUERY_KEY_PREFIX } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useDashboardSidebarData/derivePullRequestQueryTargets";
+import { useSidebarWorkspaceStatus } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarWorkspaceStatusProvider";
 import { useCompleteWorkspaceCard } from "renderer/routes/_authenticated/_dashboard/kanban/hooks/useCompleteWorkspaceCard";
+import { markTerminalSeenAndReportRead } from "renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
-import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+import { useOptimisticActions } from "renderer/routes/_authenticated/hooks/useOptimisticActions";
 import {
 	computeSnoozeUntil,
 	type SnoozeDuration,
@@ -53,18 +51,31 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const hostService = useLocalHostService();
 	const { activeHostUrl } = hostService;
 	const { copyToClipboard } = useCopyToClipboard();
-	const { v2Workspaces: workspaceActions } = useOptimisticCollectionActions();
+	const { v2Workspaces: workspaceActions } = useOptimisticActions();
 	const { requestSectionRename } = useDashboardSidebarSectionRename();
 	const setManualUnread = useV2NotificationStore((s) => s.setManualUnread);
 	const clearManualUnread = useV2NotificationStore((s) => s.clearManualUnread);
-	const markWorkspaceTerminalsSeen = useMarkWorkspaceTerminalsSeen(workspaceId);
-	const isUnread = useV2WorkspaceIsUnread(workspaceId);
+	const { bindings, isUnread } = useSidebarWorkspaceStatus(workspaceId);
 	const workspaceHostUrl = useWorkspaceHostUrl(workspaceId);
 	const queryClient = useQueryClient();
 
 	const clearWorkspaceAttention = () => {
 		clearManualUnread(workspaceId);
-		markWorkspaceTerminalsSeen();
+		// (ALERT-CONTEXT-NAMES) THE SECOND USER-INTENT SITE. "Mark read" is the
+		// user saying they have dealt with the thread, so the phone's
+		// ready-for-review notifications for it come down too — but only for the
+		// terminals that actually HAD a green dot, or a retraction goes on the
+		// wire per idle terminal per click. The helper owns that rule and the
+		// stamp ordering behind it, and it marks the terminal seen itself, so it
+		// REPLACES the provider's plain mark rather than following it. Bindings
+		// come from the status store, so this costs no extra query per row.
+		for (const binding of bindings.values()) {
+			markTerminalSeenAndReportRead({
+				workspaceId,
+				terminalId: binding.terminalId,
+				lastEventAt: binding.lastEventAt,
+			});
+		}
 	};
 	const completeWorkspaceCard = useCompleteWorkspaceCard();
 	const {

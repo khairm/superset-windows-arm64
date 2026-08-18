@@ -18,7 +18,7 @@ import {
 } from "react-icons/lu";
 import { useBulkWorkspaceMoveActions } from "../../../../hooks/useBulkWorkspaceMoveActions";
 import { useBulkWorkspaceSoftDelete } from "../../../../hooks/useBulkWorkspaceSoftDelete";
-import { useDashboardSidebarHover } from "../../../../providers/DashboardSidebarHoverProvider";
+import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarSelection } from "../../../../providers/DashboardSidebarSelectionProvider";
 import { useWorkspaceBulkMenuScope } from "../WorkspaceBulkMenuScope";
 
@@ -30,7 +30,7 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 	children,
 }: DashboardSidebarWorkspaceBulkContextMenuProps) {
 	const scope = useWorkspaceBulkMenuScope();
-	const { setContextMenuOpen } = useDashboardSidebarHover();
+	const { setContextMenuOpen } = useDashboardSidebarHoverActions();
 	const { clearSelection, removeSelectedWorkspaces } =
 		useDashboardSidebarSelection();
 	const {

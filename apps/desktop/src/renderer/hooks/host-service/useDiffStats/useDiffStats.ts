@@ -10,6 +10,13 @@ export interface DiffStats {
 	deletions: number;
 }
 
+export function getDiffStatsQueryKey(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	return ["diff-stats", hostUrl, workspaceId] as const;
+}
+
 export function useDiffStats(
 	workspaceId: string,
 	options?: { enabled?: boolean },
@@ -23,7 +30,7 @@ export function useDiffStats(
 	const isGitRepo = useIsGitRepo(workspaceId);
 	const queryClient = useQueryClient();
 	const queryKey = useMemo(
-		() => ["diff-stats", hostUrl, workspaceId] as const,
+		() => getDiffStatsQueryKey(hostUrl, workspaceId),
 		[hostUrl, workspaceId],
 	);
 	// Skip the per-row git.getStatus RPC when the row is parked in a

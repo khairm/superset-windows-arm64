@@ -14,6 +14,7 @@ import { createConfigRouter } from "./config";
 import { createDeviceRouter } from "./device";
 import { createExternalRouter } from "./external";
 import { createFilesystemRouter } from "./filesystem";
+import { createGithubStarRouter } from "./github-star";
 import { createHostServiceCoordinatorRouter } from "./host-service-coordinator";
 import { createKeyboardLayoutRouter } from "./keyboardLayout";
 import { createMenuRouter } from "./menu";
@@ -54,6 +55,7 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		resourceMetrics: createResourceMetricsRouter(),
 		menu: createMenuRouter(),
 		external: createExternalRouter(),
+		githubStar: createGithubStarRouter(),
 		settings: createSettingsRouter(),
 		system: createSystemRouter(),
 		config: createConfigRouter(),

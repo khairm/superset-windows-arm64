@@ -69,7 +69,7 @@ export function SoftwareApplicationJsonLd() {
 		"@context": "https://schema.org",
 		"@type": "SoftwareApplication",
 		name: COMPANY.NAME,
-		operatingSystem: "macOS, Windows, Linux",
+		operatingSystem: "macOS",
 		applicationCategory: "DeveloperApplication",
 		applicationSubCategory: "Developer Tools",
 		offers: {
@@ -214,7 +214,7 @@ export function HomeWebPageJsonLd() {
 		"@type": "WebPage",
 		"@id": COMPANY.MARKETING_URL,
 		url: COMPANY.MARKETING_URL,
-		name: `${COMPANY.NAME} — Run 100+ parallel coding agents on your machine`,
+		name: `${COMPANY.NAME}: Run 100+ parallel coding agents on your machine`,
 		isPartOf: {
 			"@type": "WebSite",
 			name: COMPANY.NAME,

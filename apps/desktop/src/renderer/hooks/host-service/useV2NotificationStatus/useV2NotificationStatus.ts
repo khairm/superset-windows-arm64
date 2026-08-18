@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { markTerminalSeenAndReportRead } from "renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync";
+import { useEffect, useMemo, useState } from "react";
 import {
 	getV2NotificationSourceKey,
 	getV2NotificationSourcesForPane,
@@ -12,10 +11,7 @@ import {
 	type ActivePaneStatus,
 	getHighestPriorityStatus,
 } from "shared/tabs-types";
-import {
-	type TerminalAgentBinding,
-	useTerminalAgentBindings,
-} from "../useTerminalAgentBindings";
+import type { TerminalAgentBinding } from "../useTerminalAgentBindings";
 import {
 	deriveTerminalAgentStatus,
 	useTerminalAgentStatuses,
@@ -62,62 +58,12 @@ export function useV2PaneNotificationStatus(
 	);
 }
 
-export function useV2WorkspaceNotificationStatus(
-	workspaceId: string,
-): ActivePaneStatus | null {
-	const statuses = useTerminalAgentStatuses(workspaceId);
-	const manualUnread = useV2NotificationStore((state) =>
-		Boolean(state.manualUnread[workspaceId]),
-	);
-	return getHighestPriorityStatus([
-		manualUnread ? "review" : undefined,
-		...statuses.values(),
-	]);
-}
-
-export function useV2WorkspaceIsUnread(workspaceId: string): boolean {
-	const statuses = useTerminalAgentStatuses(workspaceId);
-	const manualUnread = useV2NotificationStore((state) =>
-		Boolean(state.manualUnread[workspaceId]),
-	);
-	if (manualUnread) return true;
-	for (const status of statuses.values()) {
-		if (status === "review" || status === "failed") return true;
-	}
-	return false;
-}
-
-/**
- * Returns a callback that marks every terminal with a live agent binding in
- * the workspace as seen, clearing derived `review` statuses. Used by the
- * sidebar "mark read" / "clear status" actions.
- */
-export function useMarkWorkspaceTerminalsSeen(workspaceId: string): () => void {
-	const bindings = useTerminalAgentBindings(workspaceId);
-	return useCallback(() => {
-		// (ALERT-CONTEXT-NAMES) THE SECOND USER-INTENT SITE. "Mark read" is the
-		// user saying they have dealt with the thread, so the phone's
-		// ready-for-review notifications for it come down — but only for the
-		// terminals that actually HAD a green dot. This callback walks every
-		// binding in the workspace, and reporting the ones that were already read
-		// would put a retraction on the wire per idle terminal per click. The
-		// helper owns that rule and the stamp ordering behind it.
-		for (const binding of bindings.values()) {
-			markTerminalSeenAndReportRead({
-				workspaceId,
-				terminalId: binding.terminalId,
-				lastEventAt: binding.lastEventAt,
-			});
-		}
-	}, [bindings, workspaceId]);
-}
-
 /**
  * Number of distinct workspaces needing attention (any derived terminal
  * status other than `working`, or a manual unread mark). Drives the OS dock
- * badge. Aggregates over the bindings queries already mounted by sidebar
- * rows via the react-query cache; workspaces with no observed bindings
- * query contribute only their manual unread mark.
+ * badge. Aggregates over the bindings queries already mounted by the
+ * sidebar's workspace status provider via the react-query cache; workspaces
+ * with no observed bindings query contribute only their manual unread mark.
  */
 export function useV2AttentionWorkspaceCount(): number {
 	const queryClient = useQueryClient();
@@ -129,6 +75,12 @@ export function useV2AttentionWorkspaceCount(): number {
 
 	useEffect(() => {
 		return queryClient.getQueryCache().subscribe((event) => {
+			// `added` fires synchronously inside the render that first builds a
+			// query — setState there is a render-phase update. Data-bearing
+			// events (`updated`/`removed`) are the only ones that move the count.
+			if (event.type !== "updated" && event.type !== "removed") {
+				return;
+			}
 			if (event.query.queryKey[0] === "terminal-agent-bindings") {
 				setCacheVersion((version) => version + 1);
 			}

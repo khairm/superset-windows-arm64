@@ -7,9 +7,8 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { useDiffStats } from "renderer/hooks/host-service/useDiffStats";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
-import { useOptimisticCollectionActions } from "renderer/routes/_authenticated/hooks/useOptimisticCollectionActions";
+import { useOptimisticActions } from "renderer/routes/_authenticated/hooks/useOptimisticActions";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import {
@@ -19,8 +18,12 @@ import {
 } from "renderer/stores/v2-notifications";
 import { useWorkspaceAgentsRowEnabled } from "renderer/stores/workspace-agents-row";
 import { canMarkWorkspaceCompleted } from "../../../../kanban/utils/completeWorkspaceCard";
-import { useDashboardSidebarHover } from "../../providers/DashboardSidebarHoverProvider";
+import {
+	useDashboardSidebarHoverActions,
+	useDashboardSidebarIsHovered,
+} from "../../providers/DashboardSidebarHoverProvider";
 import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
+import { useSidebarWorkspaceStatus } from "../../providers/DashboardSidebarWorkspaceStatusProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
@@ -33,7 +36,7 @@ import { useDashboardSidebarWorkspaceItemActions } from "./hooks/useDashboardSid
 
 interface DashboardSidebarWorkspaceItemProps {
 	workspace: DashboardSidebarWorkspace;
-	onHoverCardOpen?: () => void;
+	onHoverCardOpen?: (workspaceId: string) => void | Promise<void>;
 	shortcutLabel?: string;
 	isCollapsed?: boolean;
 	isInSection?: boolean;
@@ -81,8 +84,12 @@ export function DashboardSidebarWorkspaceItem({
 		projectIsInSidebar,
 	);
 	// (AY) Display status merges the agent rollup with the shell-running blue
-	// fallback (agent wins). Drives the workspace-icon dot.
+	// fallback (agent wins). Drives the workspace-icon dot, and stays the fork's
+	// own rollup rather than the shared store's terminal-only `status`.
 	const workspaceStatus = useV2WorkspaceDisplayStatus(id);
+	// Line counts come from the sidebar's shared status store, which upstream
+	// moved off the per-row git query (it is populated for the active row only).
+	const { diffStats } = useSidebarWorkspaceStatus(id);
 	// (NON-GIT WORKSPACE) flag the icon once we positively know it is non-git.
 	const isNonGit = !useIsGitRepo(id, pendingTransaction?.type !== "insert");
 	const tabChips = useV2WorkspaceTabChips(id);
@@ -132,13 +139,7 @@ export function DashboardSidebarWorkspaceItem({
 		isPinned: workspace.isPinned,
 	});
 
-	// Only the active workspace row shows line counts, so skip the per-item
-	// git status query everywhere else. Snoozed/archived rows live in a
-	// collapsible section and stay skipped too (A6: avoid a reveal-time RPC
-	// storm when a large section is revealed).
-	const diffStats = useDiffStats(id, { enabled: isActive && !sectionState });
-
-	const { v2Workspaces: v2WorkspaceActions } = useOptimisticCollectionActions();
+	const { v2Workspaces: v2WorkspaceActions } = useOptimisticActions();
 	const [renameBranchTarget, setRenameBranchTarget] = useState<string | null>(
 		null,
 	);
@@ -148,11 +149,10 @@ export function DashboardSidebarWorkspaceItem({
 	const isPending = pendingTransaction?.type === "insert";
 
 	const {
-		hoveredId: hoverHoveredId,
 		requestOpen: hoverRequestOpen,
 		requestClose: hoverRequestClose,
 		syncIfHovered: hoverSyncIfHovered,
-	} = useDashboardSidebarHover();
+	} = useDashboardSidebarHoverActions();
 	const rowRef = useRef<HTMLDivElement>(null);
 	const hoverEligible = !isPending;
 	const hoverPayload = useMemo(
@@ -178,10 +178,12 @@ export function DashboardSidebarWorkspaceItem({
 		[hoverEligible, hoverRequestClose, id],
 	);
 
-	const isHovered = hoverHoveredId === id;
+	const isHovered = useDashboardSidebarIsHovered(id);
 	useEffect(() => {
-		if (isHovered && hostType === "local-device") onHoverCardOpen?.();
-	}, [isHovered, hostType, onHoverCardOpen]);
+		// Fires on the committed hover only (hoveredId set after OPEN_DELAY or an
+		// open-card switch), never on transient row mouseenter.
+		if (isHovered && hostType === "local-device") void onHoverCardOpen?.(id);
+	}, [isHovered, hostType, onHoverCardOpen, id]);
 	useEffect(() => {
 		if (!isHovered) return;
 		hoverSyncIfHovered(id, hoverPayload);

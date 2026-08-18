@@ -18,7 +18,14 @@ interface DeletedWorkspace {
 }
 
 /**
- * (RECYCLE-BIN) `delete_workspace` is a SOFT delete, exactly like the sidebar's
+ * (RECYCLE-BIN) Upstream deleted the command watcher that used to dispatch this
+ * tool when it dropped Electric sync, so nothing mounts it today. The soft-delete
+ * contract below is kept — with its test — because it is the fork's standing
+ * answer for any future remote delete entry point: the previous one shipped a
+ * PHYSICAL destroy, and re-deriving that from scratch is how the bin gets
+ * bypassed a second time.
+ *
+ * `delete_workspace` is a SOFT delete, exactly like the sidebar's
  * own Delete: each workspace moves to its Recycle Bin (worktree, branch and
  * terminals untouched) and Restore brings it back. It used to call the legacy
  * PHYSICAL delete — killing terminals, removing the worktree from disk and

@@ -12,7 +12,10 @@ import {
 	markRefetchRemote,
 	shouldRefetchRemote,
 } from "../shared/branch-search";
-import { findLocalProject } from "../shared/local-project";
+import {
+	findLocalProject,
+	requireProjectRepoPath,
+} from "../shared/local-project";
 import type { BranchRow } from "../shared/types";
 
 type BranchAccum = {
@@ -37,9 +40,11 @@ export const searchBranches = protectedProcedure
 			};
 		}
 
+		const repoPath = requireProjectRepoPath(localProject);
+
 		// (NON-GIT WORKSPACE) A non-git project has no branches to search —
 		// return the same empty page as a missing project before touching git.
-		if (!(await isGitRepo(localProject.repoPath))) {
+		if (!(await isGitRepo(repoPath))) {
 			return {
 				defaultBranch: null as string | null,
 				items: [] as BranchRow[],
@@ -47,7 +52,7 @@ export const searchBranches = protectedProcedure
 			};
 		}
 
-		const git = await ctx.git(localProject.repoPath);
+		const git = await ctx.git(repoPath);
 
 		// Honor `refresh` only if TTL elapsed — prevents thrashing `git fetch`
 		// on every keystroke when the client tags first-page requests.

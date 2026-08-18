@@ -6,4 +6,8 @@ export type {
 	Signal,
 	SubscribeCallbacks,
 } from "./DaemonClient.ts";
-export { AcknowledgedInputError, DaemonClient } from "./DaemonClient.ts";
+export {
+	AcknowledgedInputError,
+	DaemonClient,
+	DaemonUnavailableError,
+} from "./DaemonClient.ts";

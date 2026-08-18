@@ -1,10 +1,8 @@
 import { router } from "../index";
-import { acpSessionsRouter } from "./acp-sessions";
 import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
 import { authRouter } from "./auth";
 import { chatRouter } from "./chat";
-import { cloudRouter } from "./cloud";
 // (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
 // This token is registered in FEATURES.md against THIS file, not against the
 // companion/ directory — a marker satisfied only by fork-only files cannot
@@ -38,7 +36,6 @@ import { workspaceCreationRouter } from "./workspace-creation";
 import { workspacesRouter } from "./workspaces";
 
 export const appRouter = router({
-	acpSessions: acpSessionsRouter,
 	agents: agentsRouter,
 	attachments: attachmentsRouter,
 	auth: authRouter,
@@ -51,7 +48,6 @@ export const appRouter = router({
 	filesystem: filesystemRouter,
 	git: gitRouter,
 	github: githubRouter,
-	cloud: cloudRouter,
 	issues: issuesRouter,
 	notifications: notificationsRouter,
 	pullRequests: pullRequestsRouter,

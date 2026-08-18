@@ -40,7 +40,7 @@ import {
 	SNOOZE_PRESET_OPTIONS,
 	type SnoozeDuration,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import { useDashboardSidebarHover } from "../../../../providers/DashboardSidebarHoverProvider";
+import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { useDashboardSidebarPortKill } from "../../../DashboardSidebarPortsList/hooks/useDashboardSidebarPortKill";
 
@@ -185,7 +185,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 	children,
 }: DashboardSidebarWorkspaceContextMenuProps) {
 	const collections = useCollections();
-	const { setContextMenuOpen } = useDashboardSidebarHover();
+	const { setContextMenuOpen } = useDashboardSidebarHoverActions();
 	const isSectioned = sectionState !== undefined;
 	// Group actions mutate placement (sectionId/tabOrder). They need a project
 	// (sessions have none) and a row that actually renders its placement — a

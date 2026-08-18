@@ -79,7 +79,7 @@ export const PERSISTED_KEY_REGISTRY: ReadonlyArray<
 		["workspace-sidebar-store"],
 	],
 	[
-		"src/renderer/stores/sidebar-workspaces-collapse.ts",
+		"src/renderer/stores/sidebar-sections-collapse.ts",
 		["sidebar-workspaces-collapse"],
 	],
 	["src/renderer/stores/v2-local-override.ts", ["v2-local-override-v2"]],
@@ -98,6 +98,7 @@ export const PERSISTED_KEY_REGISTRY: ReadonlyArray<
 		["v2-available-banner-v1"],
 	],
 	["src/renderer/stores/hiring-banner/store.ts", ["hiring-banner-v1"]],
+	["src/renderer/stores/star-nag/store.ts", ["star-nag-v1"]],
 	[
 		"src/renderer/stores/terminal-close-confirm/store.ts",
 		["terminal-close-confirm-v1"],

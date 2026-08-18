@@ -56,6 +56,8 @@ import {
 } from "./lib/terminal-host/client";
 import { disposeTray, initTray } from "./lib/tray";
 import { startNetworkLogger, stopNetworkLogger } from "./network-logger";
+import { sweepNetworkLogs } from "./network-logger-sweep";
+import { isNetworkLoggingEnabled } from "./network-logger/policy";
 import { MainWindow } from "./windows/main";
 
 console.log("[main] Local database ready:", !!localDb);
@@ -257,6 +259,9 @@ app.on("before-quit", async (event) => {
 	}
 
 	isQuitting = true;
+	// (NETLOG-OFF) Flush the opt-in netlog before the rest of the shutdown; a
+	// no-op on every run that never started it, which is the default.
+	await stopNetworkLogger();
 	await runQuitCleanup({
 		isDev,
 		forceFullCleanup,
@@ -266,7 +271,6 @@ app.on("before-quit", async (event) => {
 		disposeTerminalHostClient,
 		shutdownPersistence: shutdownTanstackDbPersistence,
 		disposeTray,
-		stopNetworkLogger,
 		forceExit: (code) => app.exit(code),
 	});
 });
@@ -303,10 +307,9 @@ if (process.env.NODE_ENV === "development") {
 		signalHandled = true;
 		console.log(`[main] Received ${signal}, quitting...`);
 		getHostServiceCoordinator().stopAll();
-		void Promise.allSettled([
-			teardownTerminalHost(),
-			stopNetworkLogger(),
-		]).finally(() => app.exit(0));
+		void Promise.allSettled([teardownTerminalHost()]).finally(() =>
+			app.exit(0),
+		);
 	};
 
 	process.on("SIGTERM", () => handleTerminationSignal("SIGTERM"));
@@ -511,12 +514,21 @@ if (!gotTheLock) {
 		log.info("[boot] step initAppState done +" + bootMs() + "ms");
 		initTanstackDbPersistence();
 
-		try {
-			log.info("[boot] step startNetworkLogger start +" + bootMs() + "ms");
-			await startNetworkLogger();
-			log.info("[boot] step startNetworkLogger done +" + bootMs() + "ms");
-		} catch (error) {
-			console.error("[main] Failed to start network logger:", error);
+		// (NETLOG-OFF) Upstream deleted its netlog writer outright and now only
+		// reclaims the stranded directory. The fork keeps the writer as a
+		// maintainer-only diagnostic, so take upstream's sweep on every run
+		// except the one that was explicitly asked to record. The gate that
+		// actually decides still lives inside startNetworkLogger().
+		if (isNetworkLoggingEnabled(process.env)) {
+			try {
+				log.info("[boot] step startNetworkLogger start +" + bootMs() + "ms");
+				await startNetworkLogger();
+				log.info("[boot] step startNetworkLogger done +" + bootMs() + "ms");
+			} catch (error) {
+				console.error("[main] Failed to start network logger:", error);
+			}
+		} else {
+			sweepNetworkLogs();
 		}
 
 		log.info("[boot] step loadWebviewBrowserExtension start +" + bootMs() + "ms");

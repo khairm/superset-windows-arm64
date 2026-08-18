@@ -259,7 +259,6 @@ export function V2ProjectSettings({
 							projectName={project.name}
 							currentPath={hostProject?.repoPath ?? null}
 							repoCloneUrl={project.repoUrl}
-							hostId={targetHostId ?? null}
 							hostUrl={targetHostUrl}
 							hostName={targetHostName}
 							isRemoteTarget={isRemoteTarget}

@@ -145,7 +145,7 @@ export function usePaneRegistry({
 				} else {
 					toast.success("Terminal session killed");
 				}
-				void workspaceTrpcUtils.terminal.listSessions.invalidate({
+				void workspaceTrpcUtils.terminal.list.invalidate({
 					workspaceId,
 				});
 			},
@@ -169,7 +169,7 @@ export function usePaneRegistry({
 						reason: "reason" in result ? result.reason : undefined,
 					});
 				}
-				void workspaceTrpcUtils.terminal.listSessions.invalidate({
+				void workspaceTrpcUtils.terminal.list.invalidate({
 					workspaceId,
 				});
 			},

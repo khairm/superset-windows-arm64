@@ -1,12 +1,11 @@
 import { getEventBus } from "@superset/workspace-client";
-import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { getHostServiceWsToken } from "renderer/lib/host-service-auth";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
-import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import {
 	applyWorkspaceChangedEvent,
@@ -69,25 +68,23 @@ export interface UseHostWorkspacesResult {
 
 /**
  * The workspace read path: `workspace.list` per host (local direct, remote
- * via relay), merged, live-updated from each host's `workspace:changed`
+ * via relay), merged and live-updated from each host's `workspace:changed`
  * events, with last-seen lists persisted per host to IndexedDB so remote
- * machines still render offline.
+ * machines still render offline. A host that has neither answered nor got a
+ * snapshot contributes nothing.
  *
  * Unscoped (`scopedHostId` omitted): fans out to every known host — runs
  * once inside HostWorkspacesProvider; consumers read the shared result via
- * that provider's useHostWorkspaces. Cloud rows from the still-synced
- * Electric collection fill in only for hosts that served nothing (pre-R1
- * builds, no snapshot) — that fallback disappears in R3.
+ * that provider's useHostWorkspaces.
  *
- * Scoped (`scopedHostId` a machine id): a single host, no fan-out and no
- * cloud fallback — an unreachable host shows its snapshot or nothing, never
- * stale cloud rows. Query keys are shared with the provider, so a scoped
- * call where the provider is mounted fetches the host once, not twice.
- * Passing null resolves no target and runs nothing (stays !isReady).
+ * Scoped (`scopedHostId` a machine id): a single host, no fan-out. Query
+ * keys are shared with the provider, so a scoped call where the provider is
+ * mounted fetches the host once, not twice. Passing null resolves no target
+ * and runs nothing (stays !isReady).
  *
  * `includeArchived` additionally fetches archived tombstones (soft-deleted
- * workspaces) under a separate query key — the shared live cache and its
- * snapshots never see archived rows. Tombstones append after live rows with
+ * workspaces) under a separate query key — the shared live cache never sees
+ * archived rows. Tombstones append after live rows with
  * `archivedAt`/`archiveReason` set.
  */
 export function useHostWorkspacesSource(
@@ -95,7 +92,6 @@ export function useHostWorkspacesSource(
 	options?: { includeArchived?: boolean },
 ): UseHostWorkspacesResult {
 	const includeArchived = options?.includeArchived ?? false;
-	const collections = useCollections();
 	const queryClient = useQueryClient();
 	const { activeHostUrl, machineId } = useLocalHostService();
 	const relayUrl = useRelayUrl();
@@ -105,22 +101,21 @@ export function useHostWorkspacesSource(
 		organizationId: knownHostsOrgId,
 		settled: knownHostsSettled,
 	} = useKnownHosts();
-	// (KANBAN-HOST-SOURCE) Absence authority below needs to know the hosts
-	// collection is HYDRATED — `useKnownHosts` deliberately hides readiness
-	// because it can serve a persisted snapshot, so read the collection's own
-	// `isReady` here. An unhydrated `[]` must never claim "no other hosts".
-	const { isReady: hostsReady } = useLiveQuery(
-		(q) =>
-			q.from({ hosts: collections.v2Hosts }).select(({ hosts }) => ({
-				machineId: hosts.machineId,
-			})),
-		[collections],
-	);
-
-	const { data: cloudRows = [] } = useLiveQuery(
-		(q) => q.from({ workspaces: collections.v2Workspaces }),
-		[collections],
-	);
+	// (KANBAN-HOST-SOURCE) Absence authority below needs to know the host list
+	// is HYDRATED from its LIVE source — `useKnownHosts` only exposes
+	// `settled`, which an IndexedDB snapshot alone satisfies. Upstream moved
+	// the host list off the Electric `v2Hosts` collection onto the cloud
+	// `v2Host.list` query, so read that query here (same query key, so
+	// react-query shares the one fetch) and apply the same org-consistency
+	// test `useKnownHosts` uses for its own live readiness: the key carries no
+	// org, so right after a switch a non-empty response with no row for the
+	// active org is a foreign read, not an answer. An unhydrated `[]` must
+	// never claim "no other hosts".
+	const { data: hostRows } = cloudTrpc.v2Host.list.useQuery();
+	const hostsReady =
+		hostRows !== undefined &&
+		(hostRows.length === 0 ||
+			hostRows.some((host) => host.organizationId === knownHostsOrgId));
 
 	const targets = useMemo(() => {
 		const all = deriveHostWorkspacesQueryTargets({
@@ -241,7 +236,7 @@ export function useHostWorkspacesSource(
 	});
 
 	// Live updates: each reachable host's workspace:changed patches its own
-	// cached list (and the snapshot) without a refetch.
+	// cached list without a refetch.
 	useEffect(() => {
 		const cleanups: Array<() => void> = [];
 		for (const target of targets) {
@@ -311,7 +306,6 @@ export function useHostWorkspacesSource(
 					reachable: live !== undefined && !query?.isError,
 				};
 			}),
-			cloudRows: scopedHostId === undefined ? cloudRows : [],
 		});
 		if (!includeArchived) return merged;
 		// Tombstones append after live rows; consumers dedupe by id, so a row
@@ -327,32 +321,19 @@ export function useHostWorkspacesSource(
 					// react-query retains prior data across a failed refetch —
 					// don't report a host as answering when it did not.
 					hostReachable: !query?.isError,
-					source: "host" as const,
 				}));
 		});
 		return [...merged, ...archived];
-	}, [
-		targets,
-		queries,
-		snapshots,
-		cloudRows,
-		scopedHostId,
-		includeArchived,
-		archivedQueries,
-	]);
+	}, [targets, queries, includeArchived, archivedQueries, snapshots]);
 
-	// Readiness reflects host-query settlement only. The Electric collection
-	// is a fallback merge, NOT a gate: an Electric collection can stay
-	// !isReady indefinitely on an offline cold start (it serves persisted
-	// rows without reaching ready), so gating on cloudReady would hang the
-	// empty state forever for a genuinely-empty local host while offline.
-	// A scoped host that hasn't resolved to a target yet is still loading.
-	// Known-hosts settlement IS a gate, though: targets derive from it, and
-	// before it settles the fan-out covers only the local host — every query
-	// answering then means "the hosts we know of answered", not "every host
-	// answered". Reporting ready off that would flash not-found for remote
-	// workspaces right after an org switch (offline stays fine: a prior
-	// session's snapshot settles it without Electric).
+	// Readiness reflects host-query settlement only. A scoped host that
+	// hasn't resolved to a target yet is still loading. Known-hosts
+	// settlement IS a gate: targets derive from it, and before it settles
+	// the fan-out covers only the local host — every query answering then
+	// means "the hosts we know of answered", not "every host answered".
+	// Reporting ready off that would flash not-found for remote workspaces
+	// right after an org switch (offline stays fine: a prior session's
+	// snapshot settles the host without a live answer).
 	const isReady =
 		knownHostsSettled &&
 		(scopedHostId === undefined || targets.length > 0) &&
