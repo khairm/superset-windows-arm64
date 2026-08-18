@@ -20,8 +20,18 @@
  *   node scripts/check-cloud-severance.mjs --no-artifacts     # source/env checks only
  *
  * Only a `full` run can satisfy CI: the enforcing step in
- * .github/workflows/build-arm64.yml requires mode=full and a minimum assertion
- * count, so neither convenience flag can stand in for a real gate run.
+ * .github/workflows/build-arm64.yml requires mode=full and an EXACT assertion
+ * count, so neither convenience flag can stand in for a real gate run. That
+ * count is duplicated in three frozen enforcement steps — grow the assertions
+ * here and all three must be updated in lockstep or the build refuses to
+ * publish.
+ *
+ * Content assertions run twice: once over apps/desktop/dist (packaging's
+ * input) and once over the packaged release/*-unpacked/resources/*.asar
+ * (what actually ships). The second set exists because everything between
+ * packaging and this gate in .github/actions/arm64-build/action.yml is
+ * repairable, so a scrub of dist/ after packaging must not be able to buy a
+ * green gate over a dirty artifact.
  *
  * With artifacts missing and no --no-artifacts flag, this FAILS LOUD rather
  * than skipping: a gate that silently passes when it cannot see the thing it
@@ -32,13 +42,15 @@ import { execFileSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bump when a later phase widens the assertions below. */
@@ -104,6 +116,272 @@ function readArtifacts(dir) {
 		rel: relative(repoRoot, path).replace(/\\/g, "/"),
 		text: readFileSync(path, "utf8"),
 	}));
+}
+
+/**
+ * Minimal ASAR reader. No dependency by design: this gate has to run from a
+ * bare `node scripts/check-cloud-severance.mjs` on a runner where nothing is
+ * guaranteed to be installed, and a gate that needs `npm i` to work is a gate
+ * that gets skipped.
+ *
+ * Layout (Chromium Pickle): u32 = 4, u32 payloadSize, u32 jsonLen, the header
+ * JSON, then the file data region based at 8 + payloadSize. Each file entry
+ * carries a byte offset into that region; entries pulled out by `asarUnpack`
+ * are flagged `unpacked` and live in the sibling <archive>.unpacked tree.
+ *
+ * Reading entries rather than grepping the archive as one blob is what lets
+ * the packaged assertions keep real per-entry paths, so the two path-scoped
+ * ones (main bundle, renderer HTML) stay scoped instead of degrading into
+ * archive-wide scans that could never pass.
+ */
+function readAsar(asarPath) {
+	const buf = readFileSync(asarPath);
+	if (buf.length < 16) {
+		throw new Error(
+			`${asarPath} is ${buf.length} byte(s) — too small to be an asar archive`,
+		);
+	}
+	if (buf.readUInt32LE(0) !== 4) {
+		throw new Error(
+			`${asarPath}: pickle header is ${buf.readUInt32LE(0)}, expected 4 — not an asar archive`,
+		);
+	}
+	const payloadSize = buf.readUInt32LE(4);
+	const jsonLen = buf.readUInt32LE(8);
+	if (payloadSize < jsonLen + 4 || 12 + jsonLen > buf.length) {
+		throw new Error(
+			`${asarPath}: asar header is self-inconsistent (payload ${payloadSize}, json ${jsonLen}, file ${buf.length})`,
+		);
+	}
+	const header = JSON.parse(buf.toString("utf8", 12, 12 + jsonLen));
+	const dataBase = 8 + payloadSize;
+	const entries = [];
+	const walkNode = (node, prefix) => {
+		for (const [name, child] of Object.entries(node?.files ?? {})) {
+			const rel = prefix ? `${prefix}/${name}` : name;
+			if (child?.files) {
+				walkNode(child, rel);
+			} else {
+				entries.push({
+					rel,
+					size: Number(child?.size ?? 0),
+					offset: child?.offset === undefined ? null : Number(child.offset),
+					unpacked: child?.unpacked === true,
+				});
+			}
+		}
+	};
+	walkNode(header, "");
+	return { path: asarPath, buf, dataBase, entries };
+}
+
+/** Raw bytes of one asar entry, or null when they cannot be located. */
+function asarEntryBytes(archive, entry) {
+	if (entry.unpacked) {
+		const external = join(`${archive.path}.unpacked`, ...entry.rel.split("/"));
+		return existsSync(external) ? readFileSync(external) : null;
+	}
+	if (entry.offset === null || !Number.isFinite(entry.offset)) return null;
+	const start = archive.dataBase + entry.offset;
+	const end = start + entry.size;
+	if (start < 0 || end > archive.buf.length) return null;
+	return archive.buf.subarray(start, end);
+}
+
+/**
+ * Open every path as an asar, reporting (not swallowing) the ones that will not
+ * parse. A returned short list still feeds assertAsarSetClean, whose empty-set
+ * rule then refuses to pass vacuously.
+ */
+function openAsarsOrFail(paths) {
+	const archives = [];
+	for (const path of paths) {
+		try {
+			archives.push(readAsar(path));
+		} catch (error) {
+			fail(
+				`cannot read archive ${relative(repoRoot, path).replace(/\\/g, "/")}: ${error.message} — refusing to conclude anything about the shipped bytes.`,
+			);
+		}
+	}
+	return archives;
+}
+
+/**
+ * The eight content assertions, run over a set of already-opened asar archives.
+ *
+ * Shared deliberately between the packaged-artifact scan and the extracted
+ * installer scan. They are the SAME property asserted about two different
+ * points in the chain (dist -> app.asar -> NSIS .exe), and if they were
+ * written out twice they would drift the first time one was updated.
+ *
+ * @param archives result of readAsar(), one per archive
+ * @param scope human name of the artifact being scanned, used in every label
+ */
+function assertAsarSetClean(archives, scope) {
+	const artifacts = [];
+	const unreadable = [];
+	for (const archive of archives) {
+		const archiveRel = relative(repoRoot, archive.path).replace(/\\/g, "/");
+		for (const entry of archive.entries) {
+			if (!SCANNABLE.test(entry.rel) || entry.rel.endsWith(".map")) continue;
+			const bytes = asarEntryBytes(archive, entry);
+			if (bytes === null) {
+				unreadable.push(`${archiveRel}!/${entry.rel}`);
+				continue;
+			}
+			artifacts.push({
+				path: `${archive.path}!${entry.rel}`,
+				rel: `${archiveRel}!/${entry.rel}`,
+				text: bytes.toString("utf8"),
+			});
+		}
+	}
+	if (unreadable.length > 0) {
+		fail(
+			`${unreadable.length} scannable entr(y/ies) inside ${scope} could not be read — a scan that silently skips entries proves nothing:\n    ${unreadable.join("\n    ")}`,
+		);
+	}
+
+	// Path-scoped mirrors of the dist/main and dist/renderer scans. Inside the
+	// asar the app tree keeps its `dist/` prefix (the electron-builder `files`
+	// filter copies dist/**/* with no `to`).
+	//
+	// Scoping is why these read asar ENTRIES instead of byte-grepping the
+	// archive as one blob: `superset-sh/superset/releases` is legitimately
+	// present in the bundled CLI binary (packages/cli/src/commands/update
+	// downloads its own releases from there), so an archive-wide scan for it
+	// could never pass. Confirmed: 2 occurrences in dist/resources/bin.
+	const mainArtifacts = artifacts.filter((a) =>
+		/(^|\/)dist\/main\//.test(a.rel),
+	);
+	const rendererHtml = artifacts.filter(
+		(a) => /(^|\/)dist\/renderer\//.test(a.rel) && a.rel.endsWith(".html"),
+	);
+
+	assertAbsent(
+		`outlit.ai absent from ${scope}`,
+		artifacts,
+		/outlit\.ai/,
+		"the CORS shim entry for it must stay deleted in the SHIPPED bytes, not just in dist/",
+	);
+	assertAbsent(
+		`upstream releases URL absent from ${scope} main bundle`,
+		mainArtifacts,
+		/superset-sh\/superset\/releases/,
+		"the auto-updater feed must never point at upstream's releases in the SHIPPED bytes",
+	);
+	assertAbsent(
+		`PostHog project key absent from ${scope}`,
+		artifacts,
+		/phc_[A-Za-z0-9]{20,}/,
+		"a PostHog project key is baked into the SHIPPED bytes",
+	);
+	assertAbsent(
+		`Sentry DSN absent from ${scope}`,
+		artifacts,
+		/https:\/\/[0-9a-f]{16,}@[A-Za-z0-9.-]*ingest\.[A-Za-z0-9.-]*sentry\.io/,
+		"a Sentry DSN is baked into the SHIPPED bytes",
+	);
+	assertAbsent(
+		`CSP in ${scope} grants no PostHog/Sentry origin`,
+		rendererHtml,
+		/posthog\.com|sentry\.io|sentry-ipc:/,
+		"the SHIPPED index.html's Content-Security-Policy still allows a telemetry host",
+	);
+	assertAbsent(
+		`CORS shim in ${scope} carries no telemetry URL patterns`,
+		mainArtifacts,
+		/\*\.posthog\.com\/\*|\*\.sentry\.io\/\*|app\.outlit\.ai/,
+		"the SHIPPED Windows CORS shim still smooths the way for a telemetry host",
+	);
+	assertAbsent(
+		`desktop-notices endpoint absent from ${scope}`,
+		artifacts,
+		/\/api\/desktop\/version/,
+		"the SHIPPED bytes fetch the desktop-notices endpoint again — the phase-1 poll-off has regressed",
+	);
+
+	// The bundled CLI is a compiled bun binary, so the text scans above skip it
+	// (same reason assertion 8 exists for dist/). Scan the copy inside the
+	// archive.
+	const packagedCli = [];
+	for (const archive of archives) {
+		for (const entry of archive.entries) {
+			if (/(^|\/)dist\/resources\/bin\//.test(entry.rel)) {
+				packagedCli.push({ archive, entry });
+			}
+		}
+	}
+	if (packagedCli.length === 0) {
+		fail(
+			`no bundled CLI binary found inside ${scope} (expected entries under dist/resources/bin/) — the CLI analytics scan would pass vacuously. Refusing to pass.`,
+		);
+	} else {
+		const needles = ["analytics.captureEvent", "cli_command_invoked"];
+		const hits = [];
+		for (const { archive, entry } of packagedCli) {
+			const bytes = asarEntryBytes(archive, entry);
+			if (bytes === null) {
+				hits.push(`${entry.rel} (UNREADABLE inside the archive)`);
+				continue;
+			}
+			for (const needle of needles) {
+				if (bytes.includes(Buffer.from(needle, "utf8"))) {
+					hits.push(`${entry.rel} (${needle})`);
+				}
+			}
+		}
+		if (hits.length > 0) {
+			fail(
+				`CLI inside ${scope} still carries analytics call sites:\n    ${hits.join("\n    ")}`,
+			);
+		} else {
+			ok(
+				`CLI inside ${scope} carries no analytics route (${packagedCli.length} archive entry/entries scanned)`,
+			);
+		}
+	}
+}
+
+/**
+ * Locate a usable 7-Zip. Resolved by absolute path first: the enforcing step
+ * pins PATH, and a gate that silently used whatever `7z` an earlier repairable
+ * step put on the PATH would be extracting the installer with an
+ * attacker-supplied extractor.
+ */
+function resolveSevenZip() {
+	const candidates = [
+		"C:/Program Files/7-Zip/7z.exe",
+		"C:/Program Files (x86)/7-Zip/7z.exe",
+		"/usr/bin/7z",
+		"/usr/local/bin/7z",
+		"/usr/bin/7zz",
+		"7z",
+		"7za",
+	];
+	for (const candidate of candidates) {
+		try {
+			execFileSync(candidate, ["i"], { stdio: "ignore" });
+			return candidate;
+		} catch {
+			// not this one
+		}
+	}
+	return null;
+}
+
+/** `7z l -slt` entry paths, in archive order. */
+function sevenZipList(sevenZip, archive) {
+	const out = execFileSync(sevenZip, ["l", "-slt", "-ba", archive], {
+		encoding: "utf8",
+		maxBuffer: 1 << 28,
+	});
+	return out
+		.split(/\r?\n/)
+		.filter((line) => line.startsWith("Path = "))
+		.map((line) => line.slice("Path = ".length).trim())
+		.filter(Boolean);
 }
 
 /**
@@ -207,7 +485,7 @@ if (noArtifacts) {
 		"\n  SKIPPED (--no-artifacts): every artifact assertion below. This mode is for source-only local runs; CI must run the gate WITHOUT this flag, after the build.",
 	);
 	console.log(
-		"  Skipped: outlit.ai absence, upstream releases URL absence, app-update.yml, telemetry secret shapes, CSP contents, CORS shim contents.",
+		"  Skipped: outlit.ai absence, upstream releases URL absence, app-update.yml, telemetry secret shapes, CSP contents, CORS shim contents, and every packaged-app.asar assertion.",
 	);
 } else {
 	if (!existsSync(distRoot)) {
@@ -337,19 +615,21 @@ if (noArtifacts) {
 
 	// 9. No packaged app-update.yml may name upstream.
 	//
-	//    With `publish: null` in electron-builder.ts the CORRECT result is ZERO
-	//    manifests: app-builder-lib writes app-update.yml only when the resolved
-	//    publish config is non-null (out/publish/PublishManager.js — `if
-	//    (publishConfig != null)` guards the write). So "0 found" is the expected
-	//    healthy state and must NOT be treated as a failure.
+	//    ZERO manifests is the CORRECT result for this fork, not a failure.
+	//    app-builder-lib writes app-update.yml only when the resolved publish
+	//    config is non-null (out/publish/PublishManager.js: `if (publishConfig
+	//    != null)`), and electron-builder.ts sets `publish: null`. Failing on
+	//    "none found" would therefore fail every healthy build.
 	//
-	//    But "found nothing" must still not be able to pass VACUOUSLY, which it
-	//    would if release/ existed while containing no packaging output at all
-	//    (a packaging step that silently produced nothing, or wrote elsewhere).
-	//    Two guards close that without inverting the invariant: the packaged
-	//    output must actually exist, and the manifest search covers dist/ as well
-	//    as release/, so a manifest that moved out of the packaged tree is still
-	//    caught rather than quietly missed.
+	//    The real risk is the other one: concluding "none found" WITHOUT having
+	//    looked where the manifest would actually be. So the absence is only
+	//    accepted once the packaged RESOURCES DIRECTORY has been located —
+	//    `getResourcesDir(appOutDir)` is `<appOutDir>/resources` and appOutDir is
+	//    `release/<platform><arch>-unpacked` (platformPackager.js), i.e. exactly
+	//    `release/*-unpacked/resources`. If that directory cannot be found the
+	//    layout changed and this assertion proves nothing, so it FAILS LOUD
+	//    rather than reporting a clean zero. dist/ is swept too, so a manifest
+	//    emitted outside the packaged tree is still caught.
 	if (existsSync(releaseRoot)) {
 		const findFiles = (dir, predicate, out = []) => {
 			for (const entry of readdirSync(dir)) {
@@ -359,13 +639,23 @@ if (noArtifacts) {
 			}
 			return out;
 		};
+		const findPackagedResourceDirs = (dir, out = []) => {
+			for (const entry of readdirSync(dir)) {
+				const full = join(dir, entry);
+				if (!statSync(full).isDirectory()) continue;
+				if (entry === "resources" && /-unpacked$/.test(basename(dir))) {
+					out.push(full);
+				}
+				findPackagedResourceDirs(full, out);
+			}
+			return out;
+		};
 
-		// Positive control: prove we scanned a real package before concluding
-		// anything from an absence.
-		const packagedFiles = findFiles(releaseRoot, () => true);
-		if (packagedFiles.length === 0) {
+		// Positive control: prove we looked in the place the manifest would be.
+		const resourceDirs = findPackagedResourceDirs(releaseRoot);
+		if (resourceDirs.length === 0) {
 			fail(
-				`packaging output directory ${relative(repoRoot, releaseRoot).replace(/\\/g, "/")} exists but is EMPTY — the app-update.yml scan would conclude "none found" without having inspected a package. Refusing to pass vacuously.`,
+				`no packaged resources directory found under ${relative(repoRoot, releaseRoot).replace(/\\/g, "/")} (expected release/*-unpacked/resources, where electron-builder writes app-update.yml) — either packaging produced nothing or its layout changed, so "no app-update.yml found" would prove nothing. Refusing to pass vacuously.`,
 			);
 		} else {
 			const manifests = [
@@ -385,14 +675,227 @@ if (noArtifacts) {
 				);
 			} else {
 				ok(
-					`no app-update.yml names superset-sh (${manifests.length} manifest(s) across ${packagedFiles.length} packaged file(s); publish:null means 0 is expected)`,
+					`no app-update.yml names superset-sh (${manifests.length} found; looked inside ${resourceDirs.length} packaged resources dir(s): ${resourceDirs.map((d) => relative(repoRoot, d).replace(/\\/g, "/")).join(", ")}; publish:null means 0 is expected)`,
 				);
+			}
+
+			// 10. (CLOUD-SEVERANCE-P1) Scan the PACKAGED archive, not just
+			//     packaging's input.
+			//
+			//     Assertions 1-8 above all read apps/desktop/dist, which is
+			//     electron-builder's INPUT. In
+			//     .github/actions/arm64-build/action.yml the packaging step runs
+			//     BEFORE this gate and every step between them is repairable, so
+			//     a step inserted after packaging could scrub the offending
+			//     strings out of dist/ (a sed over dist/**/*.js contains no
+			//     reference to this script, so the freeze checks in
+			//     scripts/ci-repair.sh never see it) and leave the packaged
+			//     app.asar untouched.
+			//
+			//     SCREENREADER-GUARD-DRIFT rule still applies: nothing here names
+			//     a chunk. The archives are discovered from the packaged
+			//     resources dirs located above, and each assertion refuses to
+			//     pass on an empty set.
+			const asarPaths = resourceDirs.flatMap((dir) =>
+				readdirSync(dir)
+					.map((name) => join(dir, name))
+					.filter((p) => p.endsWith(".asar") && statSync(p).isFile()),
+			);
+			if (asarPaths.length === 0) {
+				fail(
+					`no .asar archive found in the packaged resources dir(s) ${resourceDirs
+						.map((d) => relative(repoRoot, d).replace(/\\/g, "/"))
+						.join(", ")} — the packaged-artifact assertions would pass vacuously. Refusing to pass.`,
+				);
+			} else {
+				assertAsarSetClean(
+					openAsarsOrFail(asarPaths),
+					"the packaged app.asar",
+				);
+			}
+
+			// 11. (CLOUD-SEVERANCE-P1) THE PUBLISHED ARTIFACT.
+			//
+			//     This is the load-bearing scan and the others are corroboration.
+			//     scripts/publish-arm64-release.sh uploads exactly one file — the
+			//     NSIS installer from apps/desktop/release/*arm64*.exe — so the
+			//     chain is dist/ -> app.asar -> installer .exe, and a repair can
+			//     insert a scrub step after ANY link:
+			//
+			//       (a) scrub dist/ after packaging  -> asar and .exe stay dirty
+			//           -> assertion 10 catches it.
+			//       (b) scrub the unpacked app.asar after the .exe was built
+			//           -> asar clean, .exe still dirty -> assertion 10 CANNOT
+			//           see it, because the .exe already embedded the old bytes.
+			//
+			//     Only scanning the .exe closes (b). A raw byte scan of the .exe
+			//     is useless — the NSIS payload is LZMA-compressed — so it is
+			//     extracted: .exe -> $PLUGINSDIR/app-<arch>.7z -> resources/.
+			//     The payload name is arch-specific (app-arm64.7z here, not
+			//     app-64.7z; see app-builder-lib templates/nsis/include/
+			//     extractAppPackage.nsh), so it is located by listing rather than
+			//     guessed, and `store` compression yields .zip instead of .7z.
+			const installers = readdirSync(releaseRoot)
+				.filter(
+					(name) =>
+						name.toLowerCase().endsWith(".exe") &&
+						!name.toLowerCase().includes("blockmap"),
+				)
+				.map((name) => join(releaseRoot, name))
+				.filter((p) => statSync(p).isFile());
+			const sevenZip = resolveSevenZip();
+			if (installers.length === 0) {
+				fail(
+					`no installer .exe found in ${relative(repoRoot, releaseRoot).replace(/\\/g, "/")} — that file is the ONLY thing publish-arm64-release.sh uploads, so without it this gate cannot vouch for anything a user installs. Refusing to pass.`,
+				);
+			} else if (sevenZip === null) {
+				fail(
+					"no usable 7-Zip found (looked for C:/Program Files/7-Zip/7z.exe, the x86 path, /usr/bin/7z, /usr/local/bin/7z, /usr/bin/7zz, then 7z/7za on PATH) — the installer payload is LZMA-compressed and cannot be scanned without it. Refusing to pass rather than skipping the only assertion that covers the published artifact.",
+				);
+			} else {
+				const scratch = mkdtempSync(join(tmpdir(), "cloud-severance-"));
+				try {
+					const extractedAsars = [];
+					const updateManifests = [];
+					for (const installer of installers) {
+						const installerRel = relative(repoRoot, installer).replace(
+							/\\/g,
+							"/",
+						);
+						const stage = join(scratch, basename(installer));
+						mkdirSync(stage, { recursive: true });
+
+						let payloadNames;
+						try {
+							payloadNames = sevenZipList(sevenZip, installer).filter((entry) =>
+								/(^|[\\/])app-[^\\/]*\.(7z|zip)$/i.test(entry),
+							);
+						} catch (error) {
+							fail(
+								`could not list ${installerRel} with 7-Zip: ${error.message} — refusing to conclude anything about the published installer.`,
+							);
+							continue;
+						}
+						if (payloadNames.length === 0) {
+							fail(
+								`${installerRel} contains no $PLUGINSDIR/app-<arch>.7z payload — either it is not an electron-builder NSIS installer or its layout changed, so scanning it would prove nothing. Refusing to pass.`,
+							);
+							continue;
+						}
+
+						for (const payloadName of payloadNames) {
+							const payloadDir = join(stage, "payload");
+							mkdirSync(payloadDir, { recursive: true });
+							try {
+								execFileSync(
+									sevenZip,
+									["e", "-y", `-o${payloadDir}`, installer, payloadName],
+									{ stdio: "ignore" },
+								);
+							} catch (error) {
+								fail(
+									`could not extract ${payloadName} from ${installerRel}: ${error.message}. Refusing to pass.`,
+								);
+								continue;
+							}
+							const payloadPath = join(payloadDir, basename(payloadName));
+							if (!existsSync(payloadPath) || statSync(payloadPath).size === 0) {
+								fail(
+									`extracting ${payloadName} from ${installerRel} produced nothing — refusing to conclude the installer is clean from an empty extraction.`,
+								);
+								continue;
+							}
+
+							let inner;
+							try {
+								inner = sevenZipList(sevenZip, payloadPath);
+							} catch (error) {
+								fail(
+									`could not list the payload ${payloadName} of ${installerRel}: ${error.message}. Refusing to pass.`,
+								);
+								continue;
+							}
+							const wanted = inner.filter(
+								(entry) =>
+									/(^|[\\/])app\.asar$/i.test(entry) ||
+									/(^|[\\/])app-update\.yml$/i.test(entry),
+							);
+							if (!wanted.some((entry) => /app\.asar$/i.test(entry))) {
+								fail(
+									`the payload of ${installerRel} contains no resources/app.asar — the installer scan would pass vacuously. Refusing to pass.`,
+								);
+								continue;
+							}
+							const outDir = join(stage, "app");
+							mkdirSync(outDir, { recursive: true });
+							try {
+								execFileSync(
+									sevenZip,
+									["x", "-y", `-o${outDir}`, payloadPath, ...wanted],
+									{ stdio: "ignore" },
+								);
+							} catch (error) {
+								fail(
+									`could not extract the app payload of ${installerRel}: ${error.message}. Refusing to pass.`,
+								);
+								continue;
+							}
+							for (const entry of wanted) {
+								const onDisk = join(outDir, ...entry.split(/[\\/]/));
+								if (!existsSync(onDisk)) continue;
+								if (/app\.asar$/i.test(entry)) {
+									if (statSync(onDisk).size === 0) {
+										fail(
+											`app.asar extracted from ${installerRel} is empty — refusing to conclude anything from it.`,
+										);
+										continue;
+									}
+									extractedAsars.push(onDisk);
+								} else {
+									updateManifests.push({ path: onDisk, from: installerRel });
+								}
+							}
+						}
+					}
+
+					if (extractedAsars.length === 0) {
+						fail(
+							"no app.asar could be extracted from any installer — the published-artifact assertions would pass vacuously. Refusing to pass.",
+						);
+					} else {
+						assertAsarSetClean(
+							openAsarsOrFail(extractedAsars),
+							"the extracted installer payload",
+						);
+					}
+
+					// Mirror of assertion 9 over the artifact that ships. Zero
+					// manifests is the expected result (publish: null), and it is
+					// only meaningful because the payload listing above proved we
+					// looked inside a real installer.
+					const offenders = updateManifests.filter((manifest) =>
+						readFileSync(manifest.path, "utf8").includes("superset-sh"),
+					);
+					if (offenders.length > 0) {
+						fail(
+							`app-update.yml inside the published installer names superset-sh:\n    ${offenders
+								.map((manifest) => manifest.from)
+								.join("\n    ")}`,
+						);
+					} else {
+						ok(
+							`no app-update.yml inside the published installer names superset-sh (${updateManifests.length} found across ${installers.length} installer(s); publish:null means 0 is expected)`,
+						);
+					}
+				} finally {
+					rmSync(scratch, { recursive: true, force: true });
+				}
 			}
 		}
 	} else if (allowUnpackaged) {
 		skippedAnAssertion = true;
 		console.log(
-			"  note  apps/desktop/release absent and --allow-unpackaged given — app-update.yml assertion SKIPPED. This run is stamped mode=partial and the build workflow will reject it.",
+			"  note  apps/desktop/release absent and --allow-unpackaged given — the app-update.yml assertion AND every packaged-app.asar assertion are SKIPPED. This run is stamped mode=partial and the build workflow will reject it.",
 		);
 	} else {
 		// Same fail-vacuously rule as every other assertion here. A missing

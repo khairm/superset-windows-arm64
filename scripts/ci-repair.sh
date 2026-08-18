@@ -73,7 +73,36 @@ source "$(dirname "${BASH_SOURCE[0]}")/ai-run.sh"
 # counts as acceptable egress. An agent that "fixed" a failing build by adding a
 # host to the allowlist, or by loosening a pattern, would ship the exact thing
 # the gate was written to stop.
+#
+# .claude and .mcp.json are frozen because they are EXECUTION config, not
+# documentation: .claude/settings.json can declare PreToolUse hooks and
+# .mcp.json can declare servers that launch on agent start. Both are TRACKED
+# here, so a repair that edits one rides onto the candidate branch and the NEXT
+# night's repair agent — running in the job that holds PUSH_TOKEN — executes it
+# on its first tool call. Freezing makes that loud; the untracked droppings the
+# CLI itself writes under .claude/ are swept before `git add -A` instead, so a
+# healthy repair never trips this.
+# .github/workflows is frozen OUTRIGHT, and that is the strongest rule here.
+# A workflow edit cannot help THIS run — GitHub freezes the graph when the run
+# starts — but the repair commit rides the candidate branch and the nightly
+# advance pushes it to main with the workflow-scoped PAT, so it GOVERNS THE
+# NEXT RUN. A hostile edit therefore survives one night and then decides what
+# the enforcement steps, the publish step and the permissions blocks are,
+# defeating every other protection in this file one night later.
+#
+# Pinning a SUBSET was considered and rejected: the enforcement job mappings
+# plus the permissions blocks still leave `on:`, `env:`, `concurrency:` and
+# especially `defaults: run: shell:` editable, and changing the default shell
+# reaches inside the very steps the subset was pinning. Any "pin these parts"
+# rule is a membership list, and a membership list is exactly what a hostile
+# repair goes around. Whole-file freezing has no such gap.
+#
+# Cost (accepted, same posture as the gate scripts): a genuine workflow bug is
+# NOT self-repairable. That costs little, because a workflow fix never applied
+# to the failing run anyway — the agent was always required to mitigate inside
+# repo files, which stay repairable.
 FROZEN_GATE_PATHS=(
+  .github/workflows
   scripts/check-dangerous-diagnostics.mjs
   scripts/check-feature-markers.mjs
   scripts/check-cloud-severance.mjs
@@ -85,6 +114,8 @@ FROZEN_GATE_PATHS=(
   scripts/ai-run.sh
   scripts/ai-streak.sh
   packages/host-service/src/companion*
+  .claude
+  .mcp.json
 )
 # One release version across the repo (bun run check:versions invariant).
 VERSIONED_PKGS=(apps/desktop packages/host-service packages/cli)
@@ -97,6 +128,57 @@ read_versions() {
   printf '%s' "$out"
 }
 
+# (CI-INTEGRITY) Base side of the version freeze, read from git objects at a
+# sha the runner recorded before the agent ran. $STATE_DIR/base-versions is
+# NOT usable for this: it lives under $RUNNER_TEMP, which the repair agent has
+# shell access to, so a hostile repair could bump a version AND rewrite that
+# file to match. Since a version bump lets publish-arm64-release.sh delete and
+# recreate a Release under a different tag, this comparison has to be anchored
+# in something the agent cannot reach. Errors go to stderr so they survive the
+# command substitution the caller reads this through.
+read_versions_at() { # $1 = git sha
+  local sha="$1" out="" p json ver
+  for p in "${VERSIONED_PKGS[@]}"; do
+    json=$(git show "$sha:$p/package.json" 2>/dev/null) || {
+      echo "::error::(BUILD-REPAIR) cannot read $p/package.json at the pre-repair sha $sha — refusing to validate the version freeze blind. Failing loud." >&2
+      exit 1
+    }
+    ver=$(printf '%s' "$json" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d});process.stdin.on("end",()=>{const v=JSON.parse(s).version;if(typeof v!=="string"||!v)process.exit(1);process.stdout.write(v)})') || {
+      echo "::error::(BUILD-REPAIR) $p/package.json at the pre-repair sha $sha has no usable version field — refusing to validate the version freeze blind. Failing loud." >&2
+      exit 1
+    }
+    out+="$p=$ver "
+  done
+  printf '%s' "$out"
+}
+
+# (CI-INTEGRITY) The push step holds a write credential and runs immediately
+# after the credential-less agent step, which has unrestricted shell access and
+# can append to $GITHUB_PATH. The calling workflow step pins PATH to the system
+# directories before invoking this script; this re-verifies the resolution from
+# inside, so the guarantee does not depend on the caller remembering to. Every
+# tool the push path shells out to must resolve inside a system directory —
+# anything else may be agent-supplied. Fail loud, never fall back.
+require_trusted_tools() {
+  local tool resolved bad=0
+  for tool in "$@"; do
+    resolved=$(command -v "$tool" 2>/dev/null || true)
+    if [ -z "$resolved" ]; then
+      echo "::error::(BUILD-REPAIR) required tool '$tool' does not resolve on PATH ($PATH) — refusing to continue with a write credential in this shell."
+      bad=1
+      continue
+    fi
+    case "$resolved" in
+      /usr/local/sbin/* | /usr/local/bin/* | /usr/sbin/* | /usr/bin/* | /sbin/* | /bin/*) ;;
+      *)
+        echo "::error::(BUILD-REPAIR) '$tool' resolves to $resolved, outside the trusted system directories. The repair agent can prepend a directory to \$GITHUB_PATH, so a tool resolved from anywhere else may be agent-supplied. Refusing to continue."
+        bad=1
+        ;;
+    esac
+  done
+  [ "$bad" -eq 0 ] || exit 1
+}
+
 case "$MODE" in
   collect)
     : "${REPO:?}" "${RUN_ID:?}" "${GH_TOKEN:?}" "${REPAIR_BRANCH:?}"
@@ -105,7 +187,10 @@ case "$MODE" in
       || { echo "::error::(BUILD-REPAIR) invalid repair branch name '$REPAIR_BRANCH'"; exit 1; }
     HEAD_SHA=$(git rev-parse HEAD)
     printf '%s\n' "$HEAD_SHA" > "$STATE_DIR/base-sha"
-    read_versions > "$STATE_DIR/base-versions"
+    # No base-versions file is written on purpose: the push step re-reads the
+    # base versions from git objects (read_versions_at), so a copy under
+    # $RUNNER_TEMP would be an agent-writable file that merely LOOKS like a
+    # security anchor. Nothing else consumed it.
 
     if [ -z "${EXPECTED_SHA:-}" ]; then
       # Attempt died before its "Record built sha" step — nothing for an agent
@@ -166,7 +251,7 @@ Rules:
 - Make the MINIMAL fix that makes the build pass while preserving every fork feature. Fix root causes, not symptoms; never delete or stub out functionality to make a step pass.
 - Prefer fixing files under scripts/, .github/actions/, source code, or configs — these take effect in the NEXT build attempt of THIS run.
 - These paths are FROZEN and any edit fails the repair: ${FROZEN_LIST}. packages/host-service/src/companion is the companion bridge (pairing, crypto, edge validation, and the only raw-keystroke-into-a-live-pty path in this repo), frozen at the same stakes. If the root cause is genuinely inside one of them, do NOT edit them — write your diagnosis to .fork/repair-diagnosis.md and stop; the run will fail loud for the maintainer.
-- Only edit .github/workflows/*.yml if the root cause is genuinely in the workflow definition; such a fix takes effect NEXT run only (this run's workflow graph is frozen), so if you do that, ALSO mitigate within the repo files if at all possible.
+- NEVER edit .github/workflows/*.yml. That directory is FROZEN and any edit fails the repair. A workflow change could never fix THIS run anyway (GitHub freezes the workflow graph when a run starts), and a repair commit carrying one would be advanced to main and would govern the NEXT run. If the root cause is genuinely in the workflow definition, mitigate inside .github/actions/ or scripts/ if you can, and otherwise write your diagnosis to .fork/repair-diagnosis.md and stop so the maintainer can fix it by hand.
 - NEVER change the version field of any package.json (desktop/host-service/cli versions are release-locked).
 - NEVER weaken, remove, or rename any feature marker tracked in FEATURES.md.
 - NEVER remove, rename, comment out or weaken the cloud-severance gate step in .github/actions/arm64-build/action.yml, and never pass it --no-artifacts. That gate proves this fork does not phone home to upstream; a build that cannot satisfy it must fail, not skip it. The rest of that file is yours to fix.
@@ -200,14 +285,43 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
     ;;
 
   push)
+    # TRUSTED_BASE_SHA is REQUIRED, not preferred. The old code fell back to
+    # $STATE_DIR/base-sha when it was empty, which is fail-OPEN: that file lives
+    # under $RUNNER_TEMP, which the agent step can rewrite — so any caller that
+    # forgot to pass it would have validated every freeze (versions,
+    # FEATURES.md, frozen gates, severance steps) against a base the agent
+    # chose. Asserted here, with the other required env, before this step does
+    # anything at all.
     : "${REPO:?}" "${RUN_ID:?}" "${ROUND:?}" "${REPAIR_BRANCH:?}" "${PUSH_TOKEN:?}"
-    BASE_SHA=$(cat "$STATE_DIR/base-sha")
-    VERSIONS_BEFORE=$(cat "$STATE_DIR/base-versions")
+    : "${TRUSTED_BASE_SHA:?(BUILD-REPAIR) TRUSTED_BASE_SHA is required — it is the only pre-agent sha this step can trust, because the on-disk base-sha under RUNNER_TEMP is agent-writable. The calling workflow step must set it from the runner-owned Record pre-repair sha step output. Refusing to validate against an untrusted base.}"
+    require_trusted_tools git node python3 base64 diff grep sed cat head tr
+    # (CI-INTEGRITY) TRUSTED_BASE_SHA is recorded by the FROZEN workflow before
+    # the AI step runs, and is also the blob this very script was extracted
+    # from (asserted present at the top of this mode). A disagreement with the
+    # on-disk state file is treated as evidence of tampering — or of an agent
+    # that committed, which it is told never to do — rather than silently
+    # picking one.
+    STATE_BASE_SHA=$(cat "$STATE_DIR/base-sha")
+    if [ "$TRUSTED_BASE_SHA" != "$STATE_BASE_SHA" ]; then
+      echo "::error::(BUILD-REPAIR) pre-repair sha disagreement — workflow recorded $TRUSTED_BASE_SHA but $STATE_DIR/base-sha says $STATE_BASE_SHA. Refusing to validate against an uncertain base."
+      exit 1
+    fi
+    BASE_SHA="$TRUSTED_BASE_SHA"
+    # SECURITY: base versions come from the git objects at $BASE_SHA (which IS
+    # $TRUSTED_BASE_SHA whenever the workflow supplies it — the disagreement
+    # check above makes any other value fatal), never from $STATE_DIR.
+    VERSIONS_BEFORE=$(read_versions_at "$BASE_SHA")
     git config user.name "superset-fork-ci"
     git config user.email "ci@users.noreply.github.com"
 
-    # Local agent-session droppings must never ride onto the branch.
-    rm -rf .claude/settings.local.json 2>/dev/null || true
+    # Local agent-session droppings must never ride onto the branch. Sweep the
+    # whole UNTRACKED side of .claude/ (settings.local.json, lock files, any
+    # hooks/ the agent invented), not just one filename — anything the agent
+    # newly writes there is agent-start-time executable config for the NEXT
+    # repair round. Tracked files under .claude/ are deliberately left alone:
+    # .claude is in FROZEN_GATE_PATHS, so a MODIFIED tracked one fails loud
+    # below instead of being silently reverted.
+    git clean -fdxq -- .claude 2>/dev/null || true
     # A diagnosis file means the root cause is inside a FROZEN gate file —
     # by design not self-repairable. Surface it and fail loud.
     if [ -f .fork/repair-diagnosis.md ]; then
@@ -268,7 +382,7 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
       # The gate scripts the next attempt will execute are FROZEN — an edited
       # gate is how a repair would neuter its own judge.
       if ! git diff --quiet "$BASE_SHA" HEAD -- "${FROZEN_GATE_PATHS[@]}"; then
-        echo "::error::(BUILD-REPAIR) repair edited a frozen gate script — forbidden:"
+        echo "::error::(BUILD-REPAIR) repair edited a FROZEN path — forbidden:"
         git diff --name-only "$BASE_SHA" HEAD -- "${FROZEN_GATE_PATHS[@]}"
         exit 1
       fi
@@ -284,64 +398,207 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
       #  - a presence grep is not enough. `|| true`, `continue-on-error: true`,
       #    `if: ${{ false }}`, wrapping the command in `echo`, or adding a
       #    second weakened copy all leave the string present on a non-comment
-      #    line. So instead the severance STEP BLOCK must be byte-identical to
-      #    the trusted pre-repair blob — that admits none of those shapes, while
-      #    leaving every OTHER step in the file freely repairable.
-      #  - the block is located by the INVOCATION LINE, not by the step's name.
-      #    A name is cosmetic and can be changed without touching what runs;
-      #    anchoring on `node scripts/check-cloud-severance.mjs` means the thing
-      #    we find is the thing that executes. (A pure rename fails closed
-      #    either way — it is still a byte difference — but the anchor should
-      #    not be the renameable part.) The name is kept only as a SECONDARY
-      #    signal so a rename reports itself clearly instead of as a generic
-      #    diff.
-      #  - the workflow block is checked the same way, because a workflow edit
+      #    line. So the severance STEP must be IDENTICAL to the trusted
+      #    pre-repair blob, while every OTHER step stays freely repairable.
+      #  - comparison is YAML-AWARE, not line-based. A line-based block reader
+      #    treats any `- name:`-shaped line as a step boundary, including one
+      #    embedded inside another step's `run: |` block scalar — so a repair
+      #    could delete the real step and hide a look-alike inside a string.
+      #    Parsing means a step is a step: text inside a `run` scalar is just
+      #    the value of that key and can never masquerade as a step.
+      #  - the step is located by its INVOCATION, not its name. A name is
+      #    cosmetic; anchoring on the script path means the thing we find is the
+      #    thing that executes. The name is still checked, as a secondary signal
+      #    so a rename reports itself clearly instead of as a generic diff.
+      #  - the BASE side is read from a git blob at the pre-repair sha, never
+      #    from the working tree the agent just edited.
+      #  - the workflow file is checked the same way, because a workflow edit
       #    lands on the NEXT run: without this, a repair could quietly delete
       #    the frozen enforcement and a later night would build unguarded.
-      # `[.]` not `\.` — the anchor is passed to awk via -v, where a backslash
-      # escape is consumed by the string literal (awk warns and falls back to a
-      # plain `.`, which would also match any character). The interpreter is NOT
-      # part of the anchor: the frozen workflow step resolves node to a trusted
-      # absolute path ("$NODE_BIN"), so anchoring on `node ` would miss it.
-      SEVERANCE_ANCHOR='scripts/check-cloud-severance[.]mjs'
-      # Print every step block whose body contains the anchor. Blocks start at a
-      # `- name:` line; the buffer is flushed when the next one begins.
-      extract_severance_blocks() { # $1 = file
-        awk -v anchor="$SEVERANCE_ANCHOR" '
-          /^[[:space:]]*- name: / {
-            if (buf ~ anchor) printf "%s", buf
-            buf = ""
-          }
-          { buf = buf $0 "\n" }
-          END { if (buf ~ anchor) printf "%s", buf }
-        ' "$1"
+      SEVERANCE_ANCHOR='scripts/check-cloud-severance.mjs'
+      # Emit canonical JSON for every STEP whose parsed content mentions the
+      # anchor. Fails loud (exit 3) if the YAML parser is unavailable rather
+      # than degrading to a weaker text check — a hostile agent that could
+      # remove the parser would otherwise choose the weaker path for us.
+      extract_severance_steps() { # $1 = file, $2 = anchor
+        python3 - "$1" "$2" <<'PYEOF'
+import json
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("PYYAML_MISSING\n")
+    sys.exit(3)
+
+
+class NoDuplicateKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate mapping keys.
+
+    PyYAML resolves duplicates last-wins without complaint, so a step rewritten
+    as {run: EVIL, ..., run: <original>} would compare EQUAL to the base copy.
+    The Actions runner happens to reject duplicate keys today, but that makes
+    this gate's integrity depend on someone else's parser. Fail loud here.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "found duplicate key %r" % (key,),
+                        key_node.start_mark,
+                    )
+                seen.add(key)
+            except TypeError:
+                pass  # unhashable key — super() rejects it below
+        return super().construct_mapping(node, deep=deep)
+
+
+path, anchor = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    try:
+        doc = yaml.load(fh, Loader=NoDuplicateKeyLoader)
+    except yaml.YAMLError as exc:
+        sys.stderr.write("YAML_PARSE_REJECTED: %s\n" % exc)
+        sys.exit(4)
+
+# A step "publishes" if it can create a Release. Anchored on the invocation
+# rather than the step name, for the same reason the gate anchor is.
+PUBLISH_ANCHORS = (
+    "scripts/publish-arm64-release.sh",
+    "gh release create",
+    "gh release upload",
+)
+
+steps = []
+violations = []
+
+
+def serialize(step):
+    return json.dumps(step, sort_keys=True, default=str)
+
+
+def collect(container, job_name):
+    """Key every hit by WHERE it was found, not just by what it contains.
+
+    The three enforcement steps in build-arm64.yml are byte-identical, so a
+    FLAT list of parsed dicts serialises the same whether they sit one per
+    build-attempt job or all three sit in build-attempt-1. Without the job and
+    index, deleting the copy in build-attempt-3 and adding a duplicate
+    elsewhere compares EQUAL to the base — and on a night where attempts 1 and
+    2 fail, attempt 3 would build and publish with no gate in its job at all.
+
+    Cost of the index, accepted deliberately: inserting any step ahead of a
+    severance step shifts its index and fails the repair. That direction is
+    closed (a rejected repair, not an unguarded release) and the maintainer
+    re-bases the freeze by hand.
+    """
+    for index, step in enumerate(container or []):
+        if anchor in serialize(step):
+            steps.append({"job": job_name, "index": index, "step": step})
+
+
+def check_placement(container, job_name):
+    """Structural placement, independent of the byte freeze.
+
+    Every job that can publish must run exactly one enforcement step BEFORE it
+    publishes. This is what catches relocations the serialisation cannot see —
+    moving the enforcement step after the publish step inside one job leaves
+    the step SET untouched.
+    """
+    container = container or []
+    publishers = [
+        i
+        for i, step in enumerate(container)
+        if any(a in serialize(step) for a in PUBLISH_ANCHORS)
+    ]
+    if not publishers:
+        return
+    gates = [i for i, step in enumerate(container) if anchor in serialize(step)]
+    if len(gates) != 1:
+        violations.append(
+            "job '%s' has %d publishing step(s) but %d cloud-severance step(s) "
+            "(expected exactly 1)" % (job_name, len(publishers), len(gates))
+        )
+        return
+    if gates[0] > min(publishers):
+        violations.append(
+            "job '%s' runs its cloud-severance step at index %d, AFTER its first "
+            "publishing step at index %d — the gate cannot refuse a Release that "
+            "already went out" % (job_name, gates[0], min(publishers))
+        )
+
+
+if isinstance(doc, dict):
+    runs = doc.get("runs")
+    if isinstance(runs, dict):
+        collect(runs.get("steps"), "runs")
+        check_placement(runs.get("steps"), "runs")
+    jobs = doc.get("jobs")
+    if isinstance(jobs, dict):
+        for job_name, job in jobs.items():
+            if isinstance(job, dict):
+                collect(job.get("steps"), str(job_name))
+                check_placement(job.get("steps"), str(job_name))
+
+if violations:
+    sys.stderr.write("PLACEMENT_VIOLATION\n")
+    for violation in violations:
+        sys.stderr.write("    %s\n" % violation)
+    sys.exit(5)
+
+print(json.dumps(steps, sort_keys=True, indent=2, default=str))
+PYEOF
       }
       assert_severance_step_unchanged() { # $1 = path, $2 = expected name substring, $3 = label
-        local base_copy head_block base_block
+        local base_copy base_steps head_steps rc
         base_copy="$STATE_DIR/$(echo "$1" | tr '/' '_').base"
         if ! git show "$BASE_SHA:$1" > "$base_copy" 2>/dev/null; then
           echo "::error::(BUILD-REPAIR) cannot read $1 from the pre-repair sha — refusing to validate blind."
           exit 1
         fi
-        base_block=$(extract_severance_blocks "$base_copy")
-        head_block=$(extract_severance_blocks "$1")
-        if [ -z "$base_block" ]; then
-          echo "::error::(BUILD-REPAIR) no cloud-severance invocation found in the PRE-repair $1 — the freeze check cannot be trusted. Failing loud."
+        rc=0
+        base_steps=$(extract_severance_steps "$base_copy" "$SEVERANCE_ANCHOR") || rc=$?
+        if [ "$rc" -eq 5 ]; then
+          echo "::error::(BUILD-REPAIR) $1 at the PRE-repair sha already violates cloud-severance placement (see PLACEMENT_VIOLATION above) — a freeze check anchored on a base that is already unguarded proves nothing. Failing loud for the maintainer."
           exit 1
         fi
-        if [ -z "$head_block" ]; then
-          echo "::error::(BUILD-REPAIR) repair removed the cloud-severance invocation from $1 ($3) — forbidden. Failing loud."
+        if [ "$rc" -ne 0 ]; then
+          echo "::error::(BUILD-REPAIR) could not parse $1 at the pre-repair sha (python3 + PyYAML required to validate the severance step). Failing loud rather than validating weakly."
           exit 1
         fi
-        # Secondary signal only: identity below would catch a rename anyway,
-        # but naming it makes the failure self-explanatory.
-        if ! printf '%s\n' "$head_block" | grep -qF -- "$2"; then
+        rc=0
+        head_steps=$(extract_severance_steps "$1" "$SEVERANCE_ANCHOR") || rc=$?
+        if [ "$rc" -eq 5 ]; then
+          echo "::error::(BUILD-REPAIR) repair left $1 with a publishing job that is not guarded by exactly one cloud-severance step running before it (see PLACEMENT_VIOLATION above) — forbidden. Failing loud."
+          exit 1
+        fi
+        if [ "$rc" -ne 0 ]; then
+          echo "::error::(BUILD-REPAIR) could not parse the repaired $1 — a repair must leave it valid YAML with no duplicate mapping keys (see the parser message above). Failing loud."
+          exit 1
+        fi
+        if [ "$base_steps" = "[]" ]; then
+          echo "::error::(BUILD-REPAIR) no cloud-severance step found in the PRE-repair $1 — the freeze check cannot be trusted. Failing loud."
+          exit 1
+        fi
+        if [ "$head_steps" = "[]" ]; then
+          echo "::error::(BUILD-REPAIR) repair removed the cloud-severance step from $1 ($3) — forbidden. Failing loud."
+          exit 1
+        fi
+        # Secondary signal only: identity below catches a rename anyway, but
+        # naming it makes the failure self-explanatory.
+        if ! printf '%s\n' "$head_steps" | grep -qF -- "$2"; then
           echo "::error::(BUILD-REPAIR) the cloud-severance step in $1 was RENAMED (expected a step named '$2') — forbidden. Failing loud."
           exit 1
         fi
-        if [ "$base_block" != "$head_block" ]; then
+        if [ "$base_steps" != "$head_steps" ]; then
           echo "::error::(BUILD-REPAIR) repair modified the $3 step in $1 — forbidden (that step is how severance is enforced). Diff:"
-          diff <(printf '%s\n' "$base_block") <(printf '%s\n' "$head_block") || true
+          diff <(printf '%s\n' "$base_steps") <(printf '%s\n' "$head_steps") || true
           exit 1
         fi
       }
@@ -349,20 +606,22 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
         "Verify cloud severance" "cloud-severance verify"
       assert_severance_step_unchanged ".github/workflows/build-arm64.yml" \
         "Enforce cloud severance" "cloud-severance enforcement"
-      # Exactly one invocation, so a second weakened copy cannot shadow it.
-      SEVERANCE_COUNT=$(grep -cE '^[^#]*node[[:space:]]+scripts/check-cloud-severance\.mjs' \
+      # Exactly one invocation in the build action, so a second weakened copy
+      # cannot shadow it. Interpreter-agnostic for the same reason the anchor
+      # is: what matters is the script being invoked, not how node is spelled.
+      SEVERANCE_COUNT=$(grep -cF -- "$SEVERANCE_ANCHOR" \
         .github/actions/arm64-build/action.yml || true)
       if [ "$SEVERANCE_COUNT" != "1" ]; then
         echo "::error::(BUILD-REPAIR) expected exactly 1 cloud-severance invocation in the build action, found $SEVERANCE_COUNT — forbidden. Failing loud."
         exit 1
       fi
-      if ! git diff --quiet "$BASE_SHA" HEAD -- .github/workflows; then
-        if [ "${HAS_WORKFLOW_PAT:-false}" != "true" ]; then
-          echo "::error::(BUILD-REPAIR) repair touches .github/workflows but no WORKFLOW_PUSH_TOKEN secret is configured — GITHUB_TOKEN cannot push workflow changes (platform limit). Add a fine-grained PAT with Contents+Workflows write as WORKFLOW_PUSH_TOKEN, or fix manually."
-          exit 1
-        fi
-        echo "(BUILD-REPAIR) repair includes .github/workflows changes — pushing with the workflow-scoped PAT; they take effect NEXT run."
-      fi
+      # (CI-INTEGRITY) There is deliberately NO "workflow edits are allowed if a
+      # PAT is configured" branch here any more. Permitting them was the
+      # induction break: the edit could not affect this run, but the commit rode
+      # the candidate branch, the nightly advance pushed it to main with the
+      # workflow-scoped PAT, and it governed the NEXT run. .github/workflows is
+      # now in FROZEN_GATE_PATHS, so any such edit has already failed loud
+      # above, before this point, with the offending files named.
       # Plain fast-forward push with an ephemeral header credential (the
       # checkout ran with persist-credentials:false so the agent step had
       # none; header keeps the token out of argv/error strings). The nightly

@@ -119,15 +119,53 @@ jobs:
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
+          # (CI-INTEGRITY) Step-level `env:` has the HIGHEST precedence in the
+          # runner's env layering — it is applied after anything an earlier step
+          # wrote to $GITHUB_ENV. Pinning these to empty here is the only real
+          # PREVENTION available, because bash sources $BASH_ENV before the
+          # first line of the run block below: a repairable step that put
+          # BASH_ENV=<path> into $GITHUB_ENV would otherwise get its own code
+          # executed inside this frozen step's shell, where a bare `exit 0`
+          # ends the gate before it starts. NODE_OPTIONS is already in the
+          # runner's own _setEnvBlockList; BASH_ENV, ENV and NODE_PATH are not,
+          # which is why the one variable that was handled was the one that
+          # could not have been set anyway.
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
         run: |
           set -euo pipefail
+          # Belt and braces behind the step-level pinning above. Reaching this
+          # line with BASH_ENV/ENV non-empty would mean the precedence
+          # assumption failed AND foreign code already ran in this shell, so it
+          # is reported as tampering rather than quietly cleaned up. (An
+          # attacker whose sourced file exits 0 is never seen here at all —
+          # prevention is the env block, this is detection.)
+          if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) BASH_ENV/ENV is set on entry to the frozen enforcement step (BASH_ENV='${BASH_ENV:-}' ENV='${ENV:-}'). Bash sources that file before this step's first line, so an earlier repairable step tried to run code inside the gate's own shell. Treating this as tampering. Refusing to publish."
+            exit 1
+          fi
           # Everything before this step in the job runs from the REPAIRABLE
           # composite action, and a step can persist state to $GITHUB_PATH and
           # $GITHUB_ENV that later steps inherit. So this frozen step must not
           # inherit an interpreter or its options from that state: NODE_OPTIONS
           # can inject --require, NODE_PATH can redirect module resolution, and
           # a poisoned PATH can shadow `node` itself.
-          unset NODE_OPTIONS NODE_PATH
+          unset BASH_ENV ENV NODE_OPTIONS NODE_PATH
+          # Fixed absolute PATH. $GITHUB_PATH prepends whatever an earlier
+          # repairable step asked for, and that would otherwise decide what
+          # `rm` means here and what `git` and `7z` mean inside the gate (it
+          # shells out to git for the sha it stamps, and to 7-Zip to extract
+          # the published installer). No fallback to the inherited PATH:
+          # a missing tool fails loud instead.
+          export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/mingw64/bin:/c/Program Files/Git/bin:/c/Program Files/Git/cmd:/c/Program Files/7-Zip:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem"
+          for tool in git rm; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::(CLOUD-SEVERANCE-P1) '$tool' does not resolve on the pinned PATH ($PATH) — refusing to fall back to the inherited PATH, which an earlier repairable step can poison. Fix the pinned PATH in this frozen step."
+              exit 1
+            }
+          done
           NODE_BIN=""
           for candidate in \
             "/c/Program Files/nodejs/node.exe" \
@@ -143,35 +181,74 @@ jobs:
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
           "$NODE_BIN" scripts/check-cloud-severance.mjs
-          "$NODE_BIN" -e "
-            const fs = require('fs');
-            const p = '.fork/cloud-severance-stamp.json';
+          # The verifier below is passed to node as a SINGLE-quoted shell
+          # argument, and it therefore uses double quotes internally and
+          # contains no apostrophe anywhere — not even in a comment.
+          #
+          # This is not style. It was written as a DOUBLE-quoted argument with
+          # single-quoted JS inside, and one explanatory comment contained the
+          # phrase "exactly the expected assertion set ran" — whose quotes
+          # closed the shell string. Bash then word-split the remainder into
+          # argv, node executed only the fragment before it, and exited 0. The
+          # sha and mode checks happened to sit before that point and survived;
+          # the assertion-count check sat after it and NEVER RAN. A gate whose
+          # verifier can be silently truncated by punctuation is not a gate.
+          #
+          # So: keep the prose out here in shell comments where quoting cannot
+          # bite, keep the JS quote-free, and — because neither rule is
+          # self-enforcing — make the verifier PROVE it reached its own last
+          # line. The marker check below is what makes a future recurrence
+          # loud instead of silent.
+          #
+          # EXPECTED = 28 = 11 source/dist assertions + 8 over the PACKAGED
+          # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
+          # + 1 app-update.yml check inside that installer. The installer set is
+          # the load-bearing one: the .exe is the only file
+          # publish-arm64-release.sh uploads, and a repair could scrub the
+          # unpacked asar AFTER the .exe was built from it.
+          #
+          # LOCKSTEP: that constant is duplicated in all THREE enforcement steps
+          # in this file (build-attempt-1/2/3). Growing the gate means updating
+          # every copy in the same commit; a partial update makes the attempts
+          # disagree and the ones left behind refuse to publish. Deliberate --
+          # the count is the only thing proving the gate that ran is the gate
+          # this file vouches for. Equality, not a floor: fewer means the gate
+          # was weakened, more means it grew without this frozen check being
+          # updated, and an unreviewed assertion set is not the one this check
+          # vouches for.
+          VERIFY_OUT=$("$NODE_BIN" -e '
+            const fs = require("fs");
+            const p = ".fork/cloud-severance-stamp.json";
             if (!fs.existsSync(p)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.");
               process.exit(1);
             }
-            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const s = JSON.parse(fs.readFileSync(p, "utf8"));
             const want = process.env.BUILT_SHA;
             if (s.sha !== want) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp validated sha " + s.sha + " but this job built " + want + ". Refusing to publish.");
               process.exit(1);
             }
-            if (s.mode !== 'full') {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+            if (s.mode !== "full") {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            // Exact number of assertions a real packaged build executes. The
-            // gate FAILS if packaging did not run, so this is a floor no
-            // partial run can reach: --allow-unpackaged stamps mode=partial
-            // and is rejected above, and a skipped packaging step never gets
-            // this far. Raise it when the gate grows.
-            const MIN = 11;
-            if (!(s.assertionsPassed >= MIN)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+            const EXPECTED = 28;
+            if (s.assertionsPassed !== EXPECTED) {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);
             }
-            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
-          "
+            console.log("(CLOUD-SEVERANCE-P1) stamp verified: sha=" + s.sha + " assertions=" + s.assertionsPassed + " mode=" + s.mode);
+            console.log("STAMP-VERIFIER-REACHED-END");
+          ')
+          printf '%s\n' "$VERIFY_OUT"
+          case "$VERIFY_OUT" in
+            *STAMP-VERIFIER-REACHED-END*) ;;
+            *)
+              echo "::error::(CLOUD-SEVERANCE-P1) the stamp verifier exited 0 without printing its end-of-script marker, so it did not run to completion — most likely its script was truncated by a quoting change and node executed only a fragment. Every check after the truncation point silently did not happen. Refusing to publish."
+              exit 1
+              ;;
+          esac
       # Publishing moved OUT of the composite action so that it sits AFTER the
       # frozen enforcement step above. It used to be the action's last step,
       # which meant a repair that neutered the action's own severance check
@@ -211,6 +288,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # (CI-INTEGRITY) Recorded BEFORE the AI step, as a step OUTPUT rather than
+      # a file: the runner owns step outputs, so an agent with shell access
+      # cannot rewrite this the way it could a path under the workspace or
+      # $RUNNER_TEMP. It anchors both the trusted validator extracted below and
+      # every base-vs-head comparison that validator makes.
+      - name: Record pre-repair sha (frozen)
+        id: prerepair
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Collect failure evidence
         shell: bash
         env:
@@ -237,7 +323,57 @@ jobs:
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
           PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
-        run: bash scripts/ci-repair.sh push
+          TRUSTED_BASE_SHA: ${{ steps.prerepair.outputs.sha }}
+          # (CI-INTEGRITY) This step holds PUSH_TOKEN and runs immediately after
+          # the agent step, which has unrestricted shell access. Pinning the
+          # interpreter env at step level (highest precedence, applied after
+          # $GITHUB_ENV) is what stops the agent from having its own code
+          # sourced into this shell via BASH_ENV before the first line below —
+          # a shell that could push arbitrary content, write repaired=true to
+          # $GITHUB_OUTPUT, exit 0, and exfiltrate the PAT. Pinning the
+          # validator's BYTES (below) is worthless if the environment those
+          # bytes execute in is attacker-controlled.
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        # (CI-INTEGRITY) Run the PRE-AGENT copy of the validator, not the one in
+        # the working tree the agent just edited. ci-repair.sh is a frozen path,
+        # but the check that enforces that freeze lives INSIDE ci-repair.sh — so
+        # an agent that rewrote it would have been judged by its own rewrite.
+        # Extracting the blob at the recorded pre-repair sha makes the executing
+        # bytes trusted; the freeze check then still fails the repair for having
+        # touched the file. ai-run.sh comes too because ci-repair.sh sources it
+        # relative to its own location.
+        run: |
+          set -euo pipefail
+          # Detection behind the step-level env pinning above; see B2 note there
+          # for why prevention has to happen before this shell starts.
+          if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+            echo "::error::(CI-INTEGRITY) BASH_ENV/ENV is set on entry to the validate+push step (BASH_ENV='${BASH_ENV:-}' ENV='${ENV:-}') — bash sources that file before this step's first line, so the credential-less agent step tried to run code inside the shell that holds PUSH_TOKEN. Treating this as tampering. Refusing to push."
+            exit 1
+          fi
+          unset BASH_ENV ENV NODE_OPTIONS NODE_PATH
+          # Fixed absolute PATH. The agent can write $GITHUB_PATH, and every
+          # tool this step and the trusted validator depend on — git, node,
+          # python3, base64, diff, grep — would otherwise be attacker-resolved
+          # inside a shell holding the workflow-scoped PAT. No fallback: a tool
+          # missing from the pinned PATH fails loud (closed) rather than
+          # silently resolving through the inherited one. This shadows
+          # setup-node's tool-cache node; the system node is sufficient here and
+          # $RUNNER_TOOL_CACHE is agent-writable, so it is deliberately not used.
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          for tool in bash git node python3 base64 diff grep sed; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::(CI-INTEGRITY) '$tool' does not resolve on the pinned PATH ($PATH) — refusing to fall back to the inherited PATH, which the agent step can poison. Add its directory to the pinned PATH in this frozen step."
+              exit 1
+            }
+          done
+          TRUSTED_DIR="$RUNNER_TEMP/ci-repair-trusted-$ROUND"
+          rm -rf "$TRUSTED_DIR" && mkdir -p "$TRUSTED_DIR"
+          /usr/bin/git show "$TRUSTED_BASE_SHA:scripts/ci-repair.sh" > "$TRUSTED_DIR/ci-repair.sh"
+          /usr/bin/git show "$TRUSTED_BASE_SHA:scripts/ai-run.sh"    > "$TRUSTED_DIR/ai-run.sh"
+          /bin/bash "$TRUSTED_DIR/ci-repair.sh" push
 
   build-attempt-2:
     needs: [build-attempt-1, repair-1]
@@ -282,15 +418,53 @@ jobs:
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
+          # (CI-INTEGRITY) Step-level `env:` has the HIGHEST precedence in the
+          # runner's env layering — it is applied after anything an earlier step
+          # wrote to $GITHUB_ENV. Pinning these to empty here is the only real
+          # PREVENTION available, because bash sources $BASH_ENV before the
+          # first line of the run block below: a repairable step that put
+          # BASH_ENV=<path> into $GITHUB_ENV would otherwise get its own code
+          # executed inside this frozen step's shell, where a bare `exit 0`
+          # ends the gate before it starts. NODE_OPTIONS is already in the
+          # runner's own _setEnvBlockList; BASH_ENV, ENV and NODE_PATH are not,
+          # which is why the one variable that was handled was the one that
+          # could not have been set anyway.
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
         run: |
           set -euo pipefail
+          # Belt and braces behind the step-level pinning above. Reaching this
+          # line with BASH_ENV/ENV non-empty would mean the precedence
+          # assumption failed AND foreign code already ran in this shell, so it
+          # is reported as tampering rather than quietly cleaned up. (An
+          # attacker whose sourced file exits 0 is never seen here at all —
+          # prevention is the env block, this is detection.)
+          if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) BASH_ENV/ENV is set on entry to the frozen enforcement step (BASH_ENV='${BASH_ENV:-}' ENV='${ENV:-}'). Bash sources that file before this step's first line, so an earlier repairable step tried to run code inside the gate's own shell. Treating this as tampering. Refusing to publish."
+            exit 1
+          fi
           # Everything before this step in the job runs from the REPAIRABLE
           # composite action, and a step can persist state to $GITHUB_PATH and
           # $GITHUB_ENV that later steps inherit. So this frozen step must not
           # inherit an interpreter or its options from that state: NODE_OPTIONS
           # can inject --require, NODE_PATH can redirect module resolution, and
           # a poisoned PATH can shadow `node` itself.
-          unset NODE_OPTIONS NODE_PATH
+          unset BASH_ENV ENV NODE_OPTIONS NODE_PATH
+          # Fixed absolute PATH. $GITHUB_PATH prepends whatever an earlier
+          # repairable step asked for, and that would otherwise decide what
+          # `rm` means here and what `git` and `7z` mean inside the gate (it
+          # shells out to git for the sha it stamps, and to 7-Zip to extract
+          # the published installer). No fallback to the inherited PATH:
+          # a missing tool fails loud instead.
+          export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/mingw64/bin:/c/Program Files/Git/bin:/c/Program Files/Git/cmd:/c/Program Files/7-Zip:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem"
+          for tool in git rm; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::(CLOUD-SEVERANCE-P1) '$tool' does not resolve on the pinned PATH ($PATH) — refusing to fall back to the inherited PATH, which an earlier repairable step can poison. Fix the pinned PATH in this frozen step."
+              exit 1
+            }
+          done
           NODE_BIN=""
           for candidate in \
             "/c/Program Files/nodejs/node.exe" \
@@ -306,35 +480,74 @@ jobs:
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
           "$NODE_BIN" scripts/check-cloud-severance.mjs
-          "$NODE_BIN" -e "
-            const fs = require('fs');
-            const p = '.fork/cloud-severance-stamp.json';
+          # The verifier below is passed to node as a SINGLE-quoted shell
+          # argument, and it therefore uses double quotes internally and
+          # contains no apostrophe anywhere — not even in a comment.
+          #
+          # This is not style. It was written as a DOUBLE-quoted argument with
+          # single-quoted JS inside, and one explanatory comment contained the
+          # phrase "exactly the expected assertion set ran" — whose quotes
+          # closed the shell string. Bash then word-split the remainder into
+          # argv, node executed only the fragment before it, and exited 0. The
+          # sha and mode checks happened to sit before that point and survived;
+          # the assertion-count check sat after it and NEVER RAN. A gate whose
+          # verifier can be silently truncated by punctuation is not a gate.
+          #
+          # So: keep the prose out here in shell comments where quoting cannot
+          # bite, keep the JS quote-free, and — because neither rule is
+          # self-enforcing — make the verifier PROVE it reached its own last
+          # line. The marker check below is what makes a future recurrence
+          # loud instead of silent.
+          #
+          # EXPECTED = 28 = 11 source/dist assertions + 8 over the PACKAGED
+          # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
+          # + 1 app-update.yml check inside that installer. The installer set is
+          # the load-bearing one: the .exe is the only file
+          # publish-arm64-release.sh uploads, and a repair could scrub the
+          # unpacked asar AFTER the .exe was built from it.
+          #
+          # LOCKSTEP: that constant is duplicated in all THREE enforcement steps
+          # in this file (build-attempt-1/2/3). Growing the gate means updating
+          # every copy in the same commit; a partial update makes the attempts
+          # disagree and the ones left behind refuse to publish. Deliberate --
+          # the count is the only thing proving the gate that ran is the gate
+          # this file vouches for. Equality, not a floor: fewer means the gate
+          # was weakened, more means it grew without this frozen check being
+          # updated, and an unreviewed assertion set is not the one this check
+          # vouches for.
+          VERIFY_OUT=$("$NODE_BIN" -e '
+            const fs = require("fs");
+            const p = ".fork/cloud-severance-stamp.json";
             if (!fs.existsSync(p)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.");
               process.exit(1);
             }
-            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const s = JSON.parse(fs.readFileSync(p, "utf8"));
             const want = process.env.BUILT_SHA;
             if (s.sha !== want) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp validated sha " + s.sha + " but this job built " + want + ". Refusing to publish.");
               process.exit(1);
             }
-            if (s.mode !== 'full') {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+            if (s.mode !== "full") {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            // Exact number of assertions a real packaged build executes. The
-            // gate FAILS if packaging did not run, so this is a floor no
-            // partial run can reach: --allow-unpackaged stamps mode=partial
-            // and is rejected above, and a skipped packaging step never gets
-            // this far. Raise it when the gate grows.
-            const MIN = 11;
-            if (!(s.assertionsPassed >= MIN)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+            const EXPECTED = 28;
+            if (s.assertionsPassed !== EXPECTED) {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);
             }
-            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
-          "
+            console.log("(CLOUD-SEVERANCE-P1) stamp verified: sha=" + s.sha + " assertions=" + s.assertionsPassed + " mode=" + s.mode);
+            console.log("STAMP-VERIFIER-REACHED-END");
+          ')
+          printf '%s\n' "$VERIFY_OUT"
+          case "$VERIFY_OUT" in
+            *STAMP-VERIFIER-REACHED-END*) ;;
+            *)
+              echo "::error::(CLOUD-SEVERANCE-P1) the stamp verifier exited 0 without printing its end-of-script marker, so it did not run to completion — most likely its script was truncated by a quoting change and node executed only a fragment. Every check after the truncation point silently did not happen. Refusing to publish."
+              exit 1
+              ;;
+          esac
       # Publishing moved OUT of the composite action so that it sits AFTER the
       # frozen enforcement step above. It used to be the action's last step,
       # which meant a repair that neutered the action's own severance check
@@ -371,6 +584,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # (CI-INTEGRITY) Recorded BEFORE the AI step, as a step OUTPUT rather than
+      # a file: the runner owns step outputs, so an agent with shell access
+      # cannot rewrite this the way it could a path under the workspace or
+      # $RUNNER_TEMP. It anchors both the trusted validator extracted below and
+      # every base-vs-head comparison that validator makes.
+      - name: Record pre-repair sha (frozen)
+        id: prerepair
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Collect failure evidence
         shell: bash
         env:
@@ -397,7 +619,57 @@ jobs:
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
           PUSH_TOKEN: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' && secrets.WORKFLOW_PUSH_TOKEN || github.token }}
           HAS_WORKFLOW_PAT: ${{ secrets.WORKFLOW_PUSH_TOKEN != '' }}
-        run: bash scripts/ci-repair.sh push
+          TRUSTED_BASE_SHA: ${{ steps.prerepair.outputs.sha }}
+          # (CI-INTEGRITY) This step holds PUSH_TOKEN and runs immediately after
+          # the agent step, which has unrestricted shell access. Pinning the
+          # interpreter env at step level (highest precedence, applied after
+          # $GITHUB_ENV) is what stops the agent from having its own code
+          # sourced into this shell via BASH_ENV before the first line below —
+          # a shell that could push arbitrary content, write repaired=true to
+          # $GITHUB_OUTPUT, exit 0, and exfiltrate the PAT. Pinning the
+          # validator's BYTES (below) is worthless if the environment those
+          # bytes execute in is attacker-controlled.
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        # (CI-INTEGRITY) Run the PRE-AGENT copy of the validator, not the one in
+        # the working tree the agent just edited. ci-repair.sh is a frozen path,
+        # but the check that enforces that freeze lives INSIDE ci-repair.sh — so
+        # an agent that rewrote it would have been judged by its own rewrite.
+        # Extracting the blob at the recorded pre-repair sha makes the executing
+        # bytes trusted; the freeze check then still fails the repair for having
+        # touched the file. ai-run.sh comes too because ci-repair.sh sources it
+        # relative to its own location.
+        run: |
+          set -euo pipefail
+          # Detection behind the step-level env pinning above; see B2 note there
+          # for why prevention has to happen before this shell starts.
+          if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+            echo "::error::(CI-INTEGRITY) BASH_ENV/ENV is set on entry to the validate+push step (BASH_ENV='${BASH_ENV:-}' ENV='${ENV:-}') — bash sources that file before this step's first line, so the credential-less agent step tried to run code inside the shell that holds PUSH_TOKEN. Treating this as tampering. Refusing to push."
+            exit 1
+          fi
+          unset BASH_ENV ENV NODE_OPTIONS NODE_PATH
+          # Fixed absolute PATH. The agent can write $GITHUB_PATH, and every
+          # tool this step and the trusted validator depend on — git, node,
+          # python3, base64, diff, grep — would otherwise be attacker-resolved
+          # inside a shell holding the workflow-scoped PAT. No fallback: a tool
+          # missing from the pinned PATH fails loud (closed) rather than
+          # silently resolving through the inherited one. This shadows
+          # setup-node's tool-cache node; the system node is sufficient here and
+          # $RUNNER_TOOL_CACHE is agent-writable, so it is deliberately not used.
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          for tool in bash git node python3 base64 diff grep sed; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::(CI-INTEGRITY) '$tool' does not resolve on the pinned PATH ($PATH) — refusing to fall back to the inherited PATH, which the agent step can poison. Add its directory to the pinned PATH in this frozen step."
+              exit 1
+            }
+          done
+          TRUSTED_DIR="$RUNNER_TEMP/ci-repair-trusted-$ROUND"
+          rm -rf "$TRUSTED_DIR" && mkdir -p "$TRUSTED_DIR"
+          /usr/bin/git show "$TRUSTED_BASE_SHA:scripts/ci-repair.sh" > "$TRUSTED_DIR/ci-repair.sh"
+          /usr/bin/git show "$TRUSTED_BASE_SHA:scripts/ai-run.sh"    > "$TRUSTED_DIR/ai-run.sh"
+          /bin/bash "$TRUSTED_DIR/ci-repair.sh" push
 
   build-attempt-3:
     needs: [repair-2]
@@ -442,15 +714,53 @@ jobs:
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
+          # (CI-INTEGRITY) Step-level `env:` has the HIGHEST precedence in the
+          # runner's env layering — it is applied after anything an earlier step
+          # wrote to $GITHUB_ENV. Pinning these to empty here is the only real
+          # PREVENTION available, because bash sources $BASH_ENV before the
+          # first line of the run block below: a repairable step that put
+          # BASH_ENV=<path> into $GITHUB_ENV would otherwise get its own code
+          # executed inside this frozen step's shell, where a bare `exit 0`
+          # ends the gate before it starts. NODE_OPTIONS is already in the
+          # runner's own _setEnvBlockList; BASH_ENV, ENV and NODE_PATH are not,
+          # which is why the one variable that was handled was the one that
+          # could not have been set anyway.
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
         run: |
           set -euo pipefail
+          # Belt and braces behind the step-level pinning above. Reaching this
+          # line with BASH_ENV/ENV non-empty would mean the precedence
+          # assumption failed AND foreign code already ran in this shell, so it
+          # is reported as tampering rather than quietly cleaned up. (An
+          # attacker whose sourced file exits 0 is never seen here at all —
+          # prevention is the env block, this is detection.)
+          if [ -n "${BASH_ENV:-}" ] || [ -n "${ENV:-}" ]; then
+            echo "::error::(CLOUD-SEVERANCE-P1) BASH_ENV/ENV is set on entry to the frozen enforcement step (BASH_ENV='${BASH_ENV:-}' ENV='${ENV:-}'). Bash sources that file before this step's first line, so an earlier repairable step tried to run code inside the gate's own shell. Treating this as tampering. Refusing to publish."
+            exit 1
+          fi
           # Everything before this step in the job runs from the REPAIRABLE
           # composite action, and a step can persist state to $GITHUB_PATH and
           # $GITHUB_ENV that later steps inherit. So this frozen step must not
           # inherit an interpreter or its options from that state: NODE_OPTIONS
           # can inject --require, NODE_PATH can redirect module resolution, and
           # a poisoned PATH can shadow `node` itself.
-          unset NODE_OPTIONS NODE_PATH
+          unset BASH_ENV ENV NODE_OPTIONS NODE_PATH
+          # Fixed absolute PATH. $GITHUB_PATH prepends whatever an earlier
+          # repairable step asked for, and that would otherwise decide what
+          # `rm` means here and what `git` and `7z` mean inside the gate (it
+          # shells out to git for the sha it stamps, and to 7-Zip to extract
+          # the published installer). No fallback to the inherited PATH:
+          # a missing tool fails loud instead.
+          export PATH="/c/Program Files/Git/usr/bin:/c/Program Files/Git/mingw64/bin:/c/Program Files/Git/bin:/c/Program Files/Git/cmd:/c/Program Files/7-Zip:/c/Windows/System32:/c/Windows:/c/Windows/System32/Wbem"
+          for tool in git rm; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              echo "::error::(CLOUD-SEVERANCE-P1) '$tool' does not resolve on the pinned PATH ($PATH) — refusing to fall back to the inherited PATH, which an earlier repairable step can poison. Fix the pinned PATH in this frozen step."
+              exit 1
+            }
+          done
           NODE_BIN=""
           for candidate in \
             "/c/Program Files/nodejs/node.exe" \
@@ -466,35 +776,74 @@ jobs:
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
           "$NODE_BIN" scripts/check-cloud-severance.mjs
-          "$NODE_BIN" -e "
-            const fs = require('fs');
-            const p = '.fork/cloud-severance-stamp.json';
+          # The verifier below is passed to node as a SINGLE-quoted shell
+          # argument, and it therefore uses double quotes internally and
+          # contains no apostrophe anywhere — not even in a comment.
+          #
+          # This is not style. It was written as a DOUBLE-quoted argument with
+          # single-quoted JS inside, and one explanatory comment contained the
+          # phrase "exactly the expected assertion set ran" — whose quotes
+          # closed the shell string. Bash then word-split the remainder into
+          # argv, node executed only the fragment before it, and exited 0. The
+          # sha and mode checks happened to sit before that point and survived;
+          # the assertion-count check sat after it and NEVER RAN. A gate whose
+          # verifier can be silently truncated by punctuation is not a gate.
+          #
+          # So: keep the prose out here in shell comments where quoting cannot
+          # bite, keep the JS quote-free, and — because neither rule is
+          # self-enforcing — make the verifier PROVE it reached its own last
+          # line. The marker check below is what makes a future recurrence
+          # loud instead of silent.
+          #
+          # EXPECTED = 28 = 11 source/dist assertions + 8 over the PACKAGED
+          # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
+          # + 1 app-update.yml check inside that installer. The installer set is
+          # the load-bearing one: the .exe is the only file
+          # publish-arm64-release.sh uploads, and a repair could scrub the
+          # unpacked asar AFTER the .exe was built from it.
+          #
+          # LOCKSTEP: that constant is duplicated in all THREE enforcement steps
+          # in this file (build-attempt-1/2/3). Growing the gate means updating
+          # every copy in the same commit; a partial update makes the attempts
+          # disagree and the ones left behind refuse to publish. Deliberate --
+          # the count is the only thing proving the gate that ran is the gate
+          # this file vouches for. Equality, not a floor: fewer means the gate
+          # was weakened, more means it grew without this frozen check being
+          # updated, and an unreviewed assertion set is not the one this check
+          # vouches for.
+          VERIFY_OUT=$("$NODE_BIN" -e '
+            const fs = require("fs");
+            const p = ".fork/cloud-severance-stamp.json";
             if (!fs.existsSync(p)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) gate exited 0 but wrote no stamp — it did not really run. Refusing to publish.");
               process.exit(1);
             }
-            const s = JSON.parse(fs.readFileSync(p, 'utf8'));
+            const s = JSON.parse(fs.readFileSync(p, "utf8"));
             const want = process.env.BUILT_SHA;
             if (s.sha !== want) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp validated sha ' + s.sha + ' but this job built ' + want + '. Refusing to publish.');
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp validated sha " + s.sha + " but this job built " + want + ". Refusing to publish.");
               process.exit(1);
             }
-            if (s.mode !== 'full') {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp mode is ' + s.mode + ', not full — the artifact assertions were skipped. Refusing to publish.');
+            if (s.mode !== "full") {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            // Exact number of assertions a real packaged build executes. The
-            // gate FAILS if packaging did not run, so this is a floor no
-            // partial run can reach: --allow-unpackaged stamps mode=partial
-            // and is rejected above, and a skipped packaging step never gets
-            // this far. Raise it when the gate grows.
-            const MIN = 11;
-            if (!(s.assertionsPassed >= MIN)) {
-              console.error('::error::(CLOUD-SEVERANCE-P1) stamp reports only ' + s.assertionsPassed + ' assertions, expected at least ' + MIN + ' — the gate was weakened. Refusing to publish.');
+            const EXPECTED = 28;
+            if (s.assertionsPassed !== EXPECTED) {
+              console.error("::error::(CLOUD-SEVERANCE-P1) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);
             }
-            console.log('(CLOUD-SEVERANCE-P1) stamp verified: sha=' + s.sha + ' assertions=' + s.assertionsPassed + ' mode=' + s.mode);
-          "
+            console.log("(CLOUD-SEVERANCE-P1) stamp verified: sha=" + s.sha + " assertions=" + s.assertionsPassed + " mode=" + s.mode);
+            console.log("STAMP-VERIFIER-REACHED-END");
+          ')
+          printf '%s\n' "$VERIFY_OUT"
+          case "$VERIFY_OUT" in
+            *STAMP-VERIFIER-REACHED-END*) ;;
+            *)
+              echo "::error::(CLOUD-SEVERANCE-P1) the stamp verifier exited 0 without printing its end-of-script marker, so it did not run to completion — most likely its script was truncated by a quoting change and node executed only a fragment. Every check after the truncation point silently did not happen. Refusing to publish."
+              exit 1
+              ;;
+          esac
       # Publishing moved OUT of the composite action so that it sits AFTER the
       # frozen enforcement step above. It used to be the action's last step,
       # which meant a repair that neutered the action's own severance check
