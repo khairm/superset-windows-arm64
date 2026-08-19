@@ -200,10 +200,11 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 21 pre-release assertions (measured by a local
+          # --allow-unpackaged run) + 1 app-update.yml check + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
+          # pre-release figure grew from 10 to 21 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is
@@ -503,10 +504,11 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 21 pre-release assertions (measured by a local
+          # --allow-unpackaged run) + 1 app-update.yml check + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
+          # pre-release figure grew from 10 to 21 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is
@@ -803,10 +805,11 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 21 pre-release assertions (measured by a local
+          # --allow-unpackaged run) + 1 app-update.yml check + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
+          # pre-release figure grew from 10 to 21 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is

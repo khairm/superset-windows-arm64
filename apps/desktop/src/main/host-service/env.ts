@@ -27,6 +27,20 @@ export const env = createEnv({
 			}),
 		BROWSER_BRIDGE_URL: z.string().url().optional(),
 		BROWSER_BRIDGE_SECRET: z.string().min(1).optional(),
+		/**
+		 * (CLOUD-SEVERANCE-P2) Refused for the same reason as its twin in
+		 * packages/host-service/src/env.ts: "sandbox" disables host
+		 * authentication for an edge this fork does not have. The coordinator
+		 * already strips it from the child environment; this is the backstop
+		 * for a child started any other way.
+		 */
+		SUPERSET_HOST_RUN_MODE: z
+			.enum(["local", "sandbox"])
+			.default("local")
+			.refine((value) => value !== "sandbox", {
+				message:
+					"SUPERSET_HOST_RUN_MODE=sandbox disables host authentication and is refused by this fork (see FEATURES.md, (CLOUD-SEVERANCE-P2)).",
+			}),
 	},
 	runtimeEnv: process.env,
 	emptyStringAsUndefined: true,

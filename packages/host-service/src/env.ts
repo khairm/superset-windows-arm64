@@ -43,16 +43,30 @@ export const env = createEnv({
 		BROWSER_BRIDGE_URL: z.string().url().optional(),
 		BROWSER_BRIDGE_SECRET: z.string().min(1).optional(),
 		/**
-		 * "sandbox" when running inside a cloud sandbox. A sandbox is reached
-		 * directly at its provider preview URL, so it must not register as a
-		 * host or hold a relay socket — that would put it in the device picker
-		 * and keep it awake against the provider's wake-on-inbound sleep.
+		 * (CLOUD-SEVERANCE-P2) "sandbox" is REFUSED, and this is a security
+		 * refusal rather than a tidying one.
 		 *
-		 * (CLOUD-SEVERANCE-P2) Neither branch of this can register or hold a
-		 * relay socket here: there is no cloud to register with, and RELAY_URL
-		 * is refused above whatever the mode says.
+		 * Upstream's sandbox mode swaps the PSK host-auth provider for
+		 * `EdgeGuardedHostAuthProvider`, whose `validate()` returns true for
+		 * every request. That is sound where upstream runs it — a cloud
+		 * sandbox sits behind a provider preview whose edge turns unauthorised
+		 * callers away, and its own docblock is honest that "a sandbox whose
+		 * preview is ever made public is open". This fork HAS no edge. Here the
+		 * same flag would mean a host-service that accepts any request that
+		 * reaches it, on a server bound to every interface, with terminal
+		 * creation among the things it accepts.
+		 *
+		 * Nothing in this fork sets it. It is refused anyway because it can
+		 * arrive from a shell profile or a copied systemd unit, and because the
+		 * cost of being wrong is arbitrary command execution from the LAN.
 		 */
-		SUPERSET_HOST_RUN_MODE: z.enum(["local", "sandbox"]).default("local"),
+		SUPERSET_HOST_RUN_MODE: z
+			.enum(["local", "sandbox"])
+			.default("local")
+			.refine((value) => value !== "sandbox", {
+				message:
+					"SUPERSET_HOST_RUN_MODE=sandbox disables host authentication and is refused by this fork, which has no edge to authenticate for (see FEATURES.md, (CLOUD-SEVERANCE-P2)).",
+			}),
 	},
 	runtimeEnv: process.env,
 	emptyStringAsUndefined: true,

@@ -7,10 +7,7 @@ import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
 import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
-import {
-	EdgeGuardedHostAuthProvider,
-	PskHostAuthProvider,
-} from "./providers/host-auth";
+import { PskHostAuthProvider } from "./providers/host-auth";
 import { provisionAgentIntegrations } from "./runtime/agent-provisioning";
 import { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
 import { applyLoginShellEnvToProcess } from "./runtime/login-shell-env";
@@ -67,10 +64,12 @@ async function main(): Promise<void> {
 			},
 			providers: {
 				auth: authProvider,
-				hostAuth:
-					env.SUPERSET_HOST_RUN_MODE === "sandbox"
-						? new EdgeGuardedHostAuthProvider()
-						: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+				// (CLOUD-SEVERANCE-P2) Always the PSK. Upstream's sandbox branch
+				// installs a provider that accepts everything, on the promise of
+				// an edge that does not exist here; the env schema refuses that
+				// mode outright, and this reads the secret rather than the flag
+				// so no future flag can reach an unauthenticated provider.
+				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
 				credentials: new LocalGitCredentialProvider(),
 			},
 		});

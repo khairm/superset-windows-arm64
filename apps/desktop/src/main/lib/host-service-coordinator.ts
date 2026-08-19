@@ -913,6 +913,16 @@ export class HostServiceCoordinator extends EventEmitter {
 			delete childEnv.RELAY_URL;
 		}
 
+		// (CLOUD-SEVERANCE-P2) Never let an inherited SUPERSET_HOST_RUN_MODE
+		// reach the child. Upstream's "sandbox" value replaces PSK host auth
+		// with a provider that accepts every request, on the promise of a cloud
+		// edge that does not exist here, and this process merges the user's
+		// shell environment into the child — so a variable set for anything
+		// else could otherwise unauthenticate the host-service that owns their
+		// terminals. Stripped here as well as refused in both env schemas: the
+		// producer is the only place that can stop it arriving at all.
+		delete childEnv.SUPERSET_HOST_RUN_MODE;
+
 		// Same enforce-after-merge for the browser bridge: when this process has
 		// no bridge, strip any inherited BROWSER_BRIDGE_* so the child can't
 		// connect to a stale/unintended bridge from the shell env.

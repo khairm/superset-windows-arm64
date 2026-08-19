@@ -179,7 +179,7 @@ writeInputIfIdleSession	packages/host-service/src
 useAutoResumeActivity	apps/desktop/src/renderer
 AutoResumeController	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
-agent-wrappers	apps/desktop/src/main
+agent-wrappers	packages/agent-setup/src
 (HOOK-FORK-DIET)	packages/agent-setup
 (MASTER-ARCHIVE-ONLY)	apps/desktop/src/renderer
 (RECYCLE-BIN)	apps/desktop/src/renderer
