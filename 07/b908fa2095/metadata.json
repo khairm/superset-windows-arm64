@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "07b908fa2095",
+  "strategy": "manual-commit",
+  "branch": "cloud-severance-p2",
+  "checkpoints_count": 19,
+  "files_touched": [
+    ".github/workflows/build-arm64.yml",
+    "FEATURES.md",
+    "apps/desktop/electron.vite.config.ts",
+    "apps/desktop/src/main/index.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence-core.test.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence-core.ts",
+    "apps/desktop/src/main/lib/egress-fence/egress-fence.ts",
+    "apps/desktop/src/renderer/index.html",
+    "scripts/check-cloud-severance.mjs",
+    "scripts/ci-repair.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/07/b908fa2095/0/metadata.json",
+      "transcript": "/07/b908fa2095/0/full.jsonl",
+      "content_hash": "/07/b908fa2095/0/content_hash.txt",
+      "prompt": "/07/b908fa2095/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8317106,
+    "cache_creation_tokens": 30290978,
+    "cache_read_tokens": 1482233075,
+    "output_tokens": 2951619,
+    "api_call_count": 4729
+  }
+}
