@@ -1,0 +1,93 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "58ab0797bfc1",
+  "session_id": "f339f5e3-1159-42a5-b296-eea4f5eacc7c",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-19T23:44:18.8070547Z",
+  "branch": "cloud-severance-p2",
+  "checkpoints_count": 2,
+  "save_step_count": 3,
+  "files_touched": [
+    "apps/desktop/src/main/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceForm/components/DevicePicker/DevicePicker.tsx",
+    "packages/host-service/src/providers/host-auth/EdgeGuardedHostAuthProvider/EdgeGuardedHostAuthProvider.ts",
+    "packages/host-service/src/providers/host-auth/EdgeGuardedHostAuthProvider/index.ts",
+    "packages/host-service/src/providers/host-auth/index.ts",
+    "packages/host-service/src/terminal/env.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "76345a0ed2c9",
+  "token_usage": {
+    "input_tokens": 2954,
+    "cache_creation_tokens": 3000659,
+    "cache_read_tokens": 158221445,
+    "output_tokens": 288037,
+    "api_call_count": 426
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01AEspcgogc4Nt3vux5t8xaA",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "76345a0ed2c9",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1273,
+        "end": 1274,
+        "entry_ids": [
+          "ddb290fa-39bb-4e10-8e50-f0405d0b3d70"
+        ],
+        "tool_use_id": "toolu_01AEspcgogc4Nt3vux5t8xaA"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01AEspcgogc4Nt3vux5t8xaA"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 23
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-19T23:44:18.7071766Z",
+    "agent_lines": 0,
+    "agent_removed": 41,
+    "human_added": 23,
+    "human_modified": 869,
+    "human_removed": 0,
+    "total_committed": 890,
+    "total_lines_changed": 943,
+    "agent_percentage": 4.3478260869565215,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "58ab0797bfc1",
+  "strategy": "manual-commit",
+  "branch": "cloud-severance-p2",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "apps/desktop/src/main/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceForm/components/DevicePicker/DevicePicker.tsx",
+    "packages/host-service/src/providers/host-auth/EdgeGuardedHostAuthProvider/EdgeGuardedHostAuthProvider.ts",
+    "packages/host-service/src/providers/host-auth/EdgeGuardedHostAuthProvider/index.ts",
+    "packages/host-service/src/providers/host-auth/index.ts",
+    "packages/host-service/src/terminal/env.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/58/ab0797bfc1/0/metadata.json",
+      "transcript": "/58/ab0797bfc1/0/full.jsonl",
+      "content_hash": "/58/ab0797bfc1/0/content_hash.txt",
+      "prompt": "/58/ab0797bfc1/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2954,
+    "cache_creation_tokens": 3000659,
+    "cache_read_tokens": 158221445,
+    "output_tokens": 288037,
+    "api_call_count": 426
+  }
+}
