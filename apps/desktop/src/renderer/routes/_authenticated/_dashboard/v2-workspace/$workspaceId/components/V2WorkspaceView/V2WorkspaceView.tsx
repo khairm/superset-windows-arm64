@@ -57,7 +57,6 @@ import { WorkspaceSidebar } from "../WorkspaceSidebar";
 export interface WorkspaceSearch {
 	tabId?: string;
 	terminalId?: string;
-	chatSessionId?: string;
 	focusRequestId?: string;
 	openUrl?: string;
 	openUrlTarget?: V2WorkspaceUrlOpenTarget;
@@ -110,7 +109,6 @@ export function V2WorkspaceView(search: V2WorkspaceViewProps) {
 function V2WorkspaceCenter({
 	tabId,
 	terminalId,
-	chatSessionId,
 	focusRequestId,
 	openUrl,
 	openUrlTarget,
@@ -153,7 +151,6 @@ function V2WorkspaceCenter({
 		paneLayoutReady: isLayoutReady,
 		tabId,
 		terminalId,
-		chatSessionId,
 		focusRequestId,
 	});
 	useConsumeOpenUrlRequest({
@@ -190,7 +187,6 @@ function V2WorkspaceCenter({
 	const {
 		openDiffPane,
 		addTerminalTab,
-		addChatTab,
 		addBrowserTab,
 		openCommentPane,
 	} = useWorkspacePaneOpeners({
@@ -338,7 +334,6 @@ function V2WorkspaceCenter({
 							renderAddTabMenu={() => (
 								<AddTabMenu
 									onAddTerminal={addTerminalTab}
-									onAddChat={addChatTab}
 									onAddBrowser={addBrowserTab}
 									showPresetsBar={showPresetsBar}
 									onToggleShowPresetsBar={setShowPresetsBar}
@@ -384,7 +379,6 @@ function V2WorkspaceCenter({
 							renderEmptyState={() => (
 								<WorkspaceEmptyState
 									onOpenBrowser={addBrowserTab}
-									onOpenChat={addChatTab}
 									onOpenQuickOpen={handleQuickOpen}
 									onOpenTerminal={addTerminalTab}
 								/>

@@ -23,7 +23,6 @@ export const Route = createFileRoute(
 	validateSearch: (raw: Record<string, unknown>): WorkspaceSearch => ({
 		tabId: parseNonEmptyString(raw.tabId),
 		terminalId: parseNonEmptyString(raw.terminalId),
-		chatSessionId: parseNonEmptyString(raw.chatSessionId),
 		focusRequestId: parseNonEmptyString(raw.focusRequestId),
 		openUrl: parseNonEmptyString(raw.openUrl),
 		openUrlTarget: parseOpenUrlTarget(raw.openUrlTarget),

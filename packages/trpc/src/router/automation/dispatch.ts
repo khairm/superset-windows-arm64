@@ -1,6 +1,7 @@
 import { mintUserJwt } from "@superset/auth/server";
 import { dbWs } from "@superset/db/client";
 import {
+	automationEvents,
 	automationRuns,
 	automations,
 	type SelectAutomation,
@@ -14,13 +15,12 @@ import {
 	sanitizeBranchNameWithMaxLength,
 	slugifyForBranch,
 } from "@superset/shared/workspace-launch";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { fetchRelayPresence } from "../../lib/relay-presence";
 import { RelayDispatchError, relayMutation } from "./relay-client";
+import { promptWithTriggerContext } from "./triggerContext";
 
-type AgentRunResult =
-	| { kind: "terminal"; sessionId: string; label: string }
-	| { kind: "chat"; sessionId: string; label: string };
+type AgentRunResult = { kind: "terminal"; sessionId: string; label: string };
 
 export type DispatchOutcome =
 	| { status: "dispatched"; runId: string }
@@ -28,11 +28,39 @@ export type DispatchOutcome =
 	| { status: "dispatch_failed"; runId: string | null; error: string }
 	| { status: "conflict" };
 
-export interface DispatchOptions {
-	automation: SelectAutomation;
-	scheduledFor: Date;
+/**
+ * Only what dispatch actually reads. Deliberately excludes the schedule
+ * columns, which live on the automation's trigger.
+ */
+export type DispatchableAutomation = Pick<
+	SelectAutomation,
+	| "id"
+	| "name"
+	| "organizationId"
+	| "ownerUserId"
+	| "agent"
+	| "prompt"
+	| "targetHostId"
+	| "v2ProjectId"
+	| "v2WorkspaceId"
+>;
+
+/**
+ * What caused this run: a schedule with a due minute (and the schedule trigger
+ * that was due, when the caller knows it), or a matched event.
+ */
+export type DispatchCause =
+	| { scheduledFor: Date; triggerId?: string; trigger?: null }
+	| {
+			scheduledFor?: null;
+			triggerId?: null;
+			trigger: { triggerId: string; eventId: string };
+	  };
+
+export type DispatchOptions = {
+	automation: DispatchableAutomation;
 	relayUrl: string;
-}
+} & DispatchCause;
 
 /**
  * Run one automation: resolve host, (maybe) create a workspace, start the
@@ -44,12 +72,13 @@ export interface DispatchOptions {
 export async function dispatchAutomation(
 	opts: DispatchOptions,
 ): Promise<DispatchOutcome> {
-	const { automation, scheduledFor, relayUrl } = opts;
+	const { automation, relayUrl } = opts;
+	const cause = runCause(opts);
 
 	const candidates = await resolveCandidateHosts(automation);
 	if (candidates.length === 0) {
 		const error = "no host available";
-		const inserted = await recordSkipped(automation, scheduledFor, null, error);
+		const inserted = await recordSkipped(automation, cause, null, error);
 		return { status: "skipped_offline", runId: inserted?.id ?? null, error };
 	}
 
@@ -58,7 +87,7 @@ export async function dispatchAutomation(
 		const error = "target host offline";
 		const inserted = await recordSkipped(
 			automation,
-			scheduledFor,
+			cause,
 			candidates[0]?.machineId ?? null,
 			error,
 		);
@@ -71,13 +100,11 @@ export async function dispatchAutomation(
 			automationId: automation.id,
 			organizationId: automation.organizationId,
 			title: automation.name,
-			scheduledFor,
+			...cause,
 			hostId: host.machineId,
 			status: "dispatching",
 		})
-		.onConflictDoNothing({
-			target: [automationRuns.automationId, automationRuns.scheduledFor],
-		})
+		.onConflictDoNothing(runDedupTarget(cause))
 		.returning();
 
 	if (!run) return { status: "conflict" };
@@ -116,6 +143,32 @@ export async function dispatchAutomation(
 			return created.workspaceId;
 		};
 
+		const event = cause.eventId
+			? ((await dbWs.query.automationEvents.findFirst({
+					where: eq(automationEvents.id, cause.eventId),
+					columns: {
+						provider: true,
+						eventType: true,
+						title: true,
+						url: true,
+						actorLogin: true,
+						ref: true,
+						repositoryId: true,
+						payload: true,
+						receivedAt: true,
+					},
+				})) ?? null)
+			: null;
+		const prompt = promptWithTriggerContext(
+			automation.prompt,
+			{
+				automationId: automation.id,
+				triggerId: cause.triggerId,
+				scheduledFor: cause.scheduledFor,
+			},
+			event,
+		);
+
 		const runAgent = (targetWorkspaceId: string) =>
 			runAgentOnHost({
 				relayUrl,
@@ -123,7 +176,7 @@ export async function dispatchAutomation(
 				jwt,
 				workspaceId: targetWorkspaceId,
 				agent: automation.agent,
-				prompt: automation.prompt,
+				prompt,
 			});
 
 		workspaceId = automation.v2WorkspaceId ?? (await createFreshWorkspace());
@@ -165,8 +218,8 @@ export async function dispatchAutomation(
 			.set({
 				status: "dispatched",
 				sessionKind: result.kind,
-				chatSessionId: result.kind === "chat" ? result.sessionId : null,
-				terminalSessionId: result.kind === "terminal" ? result.sessionId : null,
+				chatSessionId: null,
+				terminalSessionId: result.sessionId,
 				v2WorkspaceId: workspaceId,
 				dispatchedAt: new Date(),
 			})
@@ -188,7 +241,7 @@ export async function dispatchAutomation(
 }
 
 async function resolveCandidateHosts(
-	automation: SelectAutomation,
+	automation: DispatchableAutomation,
 ): Promise<Array<typeof v2Hosts.$inferSelect>> {
 	if (automation.targetHostId) {
 		const [host] = await dbWs
@@ -239,7 +292,7 @@ async function resolveCandidateHosts(
  * candidate wins, preserving the updatedAt ordering.
  */
 async function pickOnlineHost(
-	automation: SelectAutomation,
+	automation: DispatchableAutomation,
 	relayUrl: string,
 	candidates: Array<typeof v2Hosts.$inferSelect>,
 ): Promise<typeof v2Hosts.$inferSelect | null> {
@@ -265,9 +318,50 @@ async function pickOnlineHost(
 	);
 }
 
+/** The run row columns that identify the cause, in either shape. */
+type RunCause = {
+	scheduledFor: Date | null;
+	triggerId: string | null;
+	eventId: string | null;
+};
+
+function runCause(opts: DispatchCause): RunCause {
+	if (opts.trigger) {
+		return {
+			scheduledFor: null,
+			triggerId: opts.trigger.triggerId,
+			eventId: opts.trigger.eventId,
+		};
+	}
+	return {
+		scheduledFor: opts.scheduledFor,
+		triggerId: opts.triggerId ?? null,
+		eventId: null,
+	};
+}
+
+/**
+ * The partial unique index a run of this shape can collide on:
+ * automation_runs_schedule_dedup_idx for scheduled runs,
+ * automation_runs_event_dedup_idx for event runs. Postgres only matches
+ * ON CONFLICT against an index whose predicate the target clause repeats,
+ * so the two shapes need different targets, not one that names both.
+ */
+function runDedupTarget(cause: RunCause) {
+	return cause.eventId !== null
+		? {
+				target: [automationRuns.triggerId, automationRuns.eventId],
+				where: sql`${automationRuns.eventId} IS NOT NULL`,
+			}
+		: {
+				target: [automationRuns.automationId, automationRuns.scheduledFor],
+				where: sql`${automationRuns.scheduledFor} IS NOT NULL`,
+			};
+}
+
 async function recordSkipped(
-	automation: SelectAutomation,
-	scheduledFor: Date,
+	automation: DispatchableAutomation,
+	cause: RunCause,
 	hostId: string | null,
 	error: string,
 ): Promise<{ id: string } | undefined> {
@@ -277,14 +371,12 @@ async function recordSkipped(
 			automationId: automation.id,
 			organizationId: automation.organizationId,
 			title: automation.name,
-			scheduledFor,
+			...cause,
 			hostId,
 			status: "skipped_offline",
 			error,
 		})
-		.onConflictDoNothing({
-			target: [automationRuns.automationId, automationRuns.scheduledFor],
-		})
+		.onConflictDoNothing(runDedupTarget(cause))
 		.returning({ id: automationRuns.id });
 	return row;
 }
@@ -294,7 +386,7 @@ async function createWorkspaceOnHost(args: {
 	hostId: string;
 	jwt: string;
 	projectId: string | null;
-	automation: SelectAutomation;
+	automation: DispatchableAutomation;
 	runId: string;
 }): Promise<{ workspaceId: string }> {
 	// Session automation: no project, no branch. The host allocates a managed

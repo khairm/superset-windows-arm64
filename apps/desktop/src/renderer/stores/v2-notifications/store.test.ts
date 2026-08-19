@@ -22,6 +22,8 @@ const secondTerminalPane = {
 	kind: "terminal",
 	data: { terminalId: "terminal-2" },
 };
+// Upstream retired the chat pane kind, but the store still folds a chat
+// source into the shared dot primitive, so the path stays covered.
 const chatPane = {
 	id: "pane-3",
 	kind: "chat",
@@ -35,7 +37,6 @@ const tab = {
 	panes: {
 		"pane-1": terminalPane,
 		"pane-2": secondTerminalPane,
-		"pane-3": chatPane,
 	},
 };
 
@@ -48,13 +49,9 @@ describe("v2 notification store", () => {
 		expect(getV2NotificationSourcesForPane(terminalPane)).toEqual([
 			{ type: "terminal", id: "terminal-1" },
 		]);
-		expect(getV2NotificationSourcesForPane(chatPane)).toEqual([
-			{ type: "chat", id: "session-1" },
-		]);
 		expect(getV2NotificationSourcesForTab(tab)).toEqual([
 			{ type: "terminal", id: "terminal-1" },
 			{ type: "terminal", id: "terminal-2" },
-			{ type: "chat", id: "session-1" },
 		]);
 	});
 

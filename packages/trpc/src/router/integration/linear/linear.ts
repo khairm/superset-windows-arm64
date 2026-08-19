@@ -1,3 +1,4 @@
+import type { LinearClient } from "@linear/sdk";
 import { db, dbWs } from "@superset/db/client";
 import {
 	integrationConnections,
@@ -12,6 +13,83 @@ import { z } from "zod";
 import { protectedProcedure } from "../../../trpc";
 import { verifyOrgAdmin, verifyOrgMembership } from "../utils";
 import { callLinear } from "./refresh";
+
+type Named = { id: string; name: string };
+type TeamScoped = Named & { team: { key: string } | null };
+type Page<T> = {
+	nodes: T[];
+	pageInfo: { hasNextPage: boolean; endCursor: string | null };
+};
+
+const PAGE_INFO = "pageInfo { hasNextPage endCursor }";
+const TRIGGER_OPTION_CONNECTIONS = {
+	teams: `teams(first: 250, after: $after) { nodes { id name } ${PAGE_INFO} }`,
+	projects: `projects(first: 250, after: $after) { nodes { id name } ${PAGE_INFO} }`,
+	issueLabels: `issueLabels(first: 250, after: $after) { nodes { id name team { key } } ${PAGE_INFO} }`,
+	workflowStates: `workflowStates(first: 250, after: $after) { nodes { id name team { key } } ${PAGE_INFO} }`,
+} as const;
+type ConnectionName = keyof typeof TRIGGER_OPTION_CONNECTIONS;
+type TriggerOptionsQuery = {
+	teams: Page<Named>;
+	projects: Page<Named>;
+	issueLabels: Page<TeamScoped>;
+	workflowStates: Page<TeamScoped>;
+};
+
+// A workspace can outgrow one page (250, Linear's cap) of labels or states.
+// The common case is still one round trip: only a connection that reports
+// more pages is followed, on its own. Bounded so a misbehaving API cannot
+// keep the request open forever.
+const MAX_PAGES = 20;
+
+async function fetchAllTriggerOptions(
+	client: LinearClient,
+): Promise<TriggerOptionsQuery> {
+	const query = (names: ConnectionName[]) =>
+		`query TriggerOptions($after: String) { ${names
+			.map((n) => TRIGGER_OPTION_CONNECTIONS[n])
+			.join(" ")} }`;
+	const request = (names: ConnectionName[], after: string | null) =>
+		client.client.request<
+			Partial<TriggerOptionsQuery>,
+			{ after: string | null }
+		>(query(names), { after });
+
+	const names = Object.keys(TRIGGER_OPTION_CONNECTIONS) as ConnectionName[];
+	const result = (await request(names, null)) as TriggerOptionsQuery;
+	for (const name of names) {
+		const all: Array<Named | TeamScoped> = result[name].nodes;
+		let { pageInfo } = result[name];
+		for (let i = 1; i < MAX_PAGES && pageInfo.hasNextPage; i++) {
+			const next = (await request([name], pageInfo.endCursor))[name];
+			if (!next) break;
+			all.push(...next.nodes);
+			pageInfo = next.pageInfo;
+		}
+	}
+	return result;
+}
+
+const MAX_PEOPLE = 1000;
+
+async function fetchAllPeople(
+	client: LinearClient,
+): Promise<Array<{ id: string; label: string }>> {
+	const people: Array<{ id: string; label: string }> = [];
+	let page = await client.users({
+		first: 250,
+		filter: { active: { eq: true } },
+	});
+	while (true) {
+		for (const user of page.nodes) {
+			if (user.active === false) continue;
+			people.push({ id: user.id, label: user.displayName || user.name });
+		}
+		if (!page.pageInfo.hasNextPage || people.length >= MAX_PEOPLE) break;
+		page = await page.fetchNext();
+	}
+	return people;
+}
 
 export const linearRouter = {
 	getConnection: protectedProcedure
@@ -133,6 +211,61 @@ export const linearRouter = {
 			);
 			if (!teams) return [];
 			return teams.nodes.map((t) => ({ id: t.id, name: t.name, key: t.key }));
+		}),
+
+	/**
+	 * Everything a Linear trigger sentence can pick from. Ids throughout: a
+	 * team key or state name can be renamed, the id cannot.
+	 */
+	getTriggerOptions: protectedProcedure
+		.input(z.object({ organizationId: z.uuid() }))
+		.query(async ({ ctx, input }) => {
+			await verifyOrgMembership(ctx.session.user.id, input.organizationId);
+			const result = await callLinear(
+				input.organizationId,
+				fetchAllTriggerOptions,
+			);
+			if (!result) return { teams: [], projects: [], labels: [], statuses: [] };
+
+			// Workflow states and labels repeat their names across teams, so the
+			// team key is part of the label rather than a separate column.
+			const withTeam = (name: string, team: { key: string } | null) =>
+				team ? `${name} · ${team.key}` : name;
+			const byLabel = (options: Array<{ id: string; label: string }>) =>
+				options.sort((a, b) => a.label.localeCompare(b.label));
+			return {
+				teams: byLabel(
+					result.teams.nodes.map((t) => ({ id: t.id, label: t.name })),
+				),
+				projects: byLabel(
+					result.projects.nodes.map((p) => ({ id: p.id, label: p.name })),
+				),
+				labels: byLabel(
+					result.issueLabels.nodes.map((l) => ({
+						id: l.id,
+						label: withTeam(l.name, l.team),
+					})),
+				),
+				statuses: byLabel(
+					result.workflowStates.nodes.map((s) => ({
+						id: s.id,
+						label: withTeam(s.name, s.team),
+					})),
+				),
+			};
+		}),
+
+	/**
+	 * The workspace's active members, keyed by Linear user id — what a
+	 * webhook's `assigneeId` and actor id carry.
+	 */
+	listPeople: protectedProcedure
+		.input(z.object({ organizationId: z.uuid() }))
+		.query(async ({ ctx, input }) => {
+			await verifyOrgMembership(ctx.session.user.id, input.organizationId);
+			const people = await callLinear(input.organizationId, fetchAllPeople);
+			if (!people) return [];
+			return people.sort((a, b) => a.label.localeCompare(b.label));
 		}),
 
 	updateConfig: protectedProcedure

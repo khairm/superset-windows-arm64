@@ -18,7 +18,7 @@ import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import { deleteLocalWorkspace } from "../../../workspaces/local-workspace-store";
-import { protectedProcedure, router } from "../../index";
+import { machineOnlyProcedure, protectedProcedure, router } from "../../index";
 import { removeMultiRepoProjectArtifacts } from "../workspace-cleanup/multi-repo-cleanup";
 import {
 	normalizeSparseCheckoutPaths,
@@ -549,7 +549,7 @@ export const projectRouter = router({
 			return { isGitRepo: gitRoot !== null, gitRoot };
 		}),
 
-	create: protectedProcedure
+	create: machineOnlyProcedure
 		.input(
 			z.object({
 				name: z.string().min(1),
@@ -672,7 +672,7 @@ export const projectRouter = router({
 		)
 		.mutation(({ ctx, input }) => removeMultiRepoMember(ctx, input)),
 
-	setup: protectedProcedure
+	setup: machineOnlyProcedure
 		.input(
 			z.object({
 				projectId: z.string().uuid(),
@@ -873,7 +873,7 @@ export const projectRouter = router({
 	 * not a side-effect of project removal. Returns repoPath so a future
 	 * UI can offer an explicit "delete files too" follow-up.
 	 */
-	remove: protectedProcedure
+	remove: machineOnlyProcedure
 		.input(z.object({ projectId: z.string().uuid() }))
 		.mutation(async ({ ctx, input }) => {
 			const localProject = ctx.db.query.projects

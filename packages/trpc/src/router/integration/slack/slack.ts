@@ -1,10 +1,12 @@
 import { db } from "@superset/db/client";
 import { integrationConnections } from "@superset/db/schema";
 import type { TRPCRouterRecord } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { protectedProcedure } from "../../../trpc";
 import { verifyOrgAdmin, verifyOrgMembership } from "../utils";
+import { listSlackChannels } from "./list-channels";
+import { listSlackPeople } from "./list-people";
 
 export const slackRouter = {
 	getConnection: protectedProcedure
@@ -31,6 +33,47 @@ export const slackRouter = {
 				externalOrgName: connection.externalOrgName,
 				connectedAt: connection.createdAt,
 			};
+		}),
+
+	/** Channels the trigger editor can scope a Slack trigger to. */
+	listChannels: protectedProcedure
+		.input(z.object({ organizationId: z.uuid() }))
+		.query(async ({ ctx, input }) => {
+			await verifyOrgMembership(ctx.session.user.id, input.organizationId);
+
+			const connection = await db.query.integrationConnections.findFirst({
+				where: and(
+					eq(integrationConnections.organizationId, input.organizationId),
+					eq(integrationConnections.provider, "slack"),
+					isNull(integrationConnections.disconnectedAt),
+				),
+				columns: { accessToken: true },
+			});
+			if (!connection) return [];
+
+			return listSlackChannels(connection.accessToken);
+		}),
+
+	/**
+	 * The connected workspace's members, keyed by Slack user id — what the
+	 * matcher compares an event's `user` against.
+	 */
+	listPeople: protectedProcedure
+		.input(z.object({ organizationId: z.uuid() }))
+		.query(async ({ ctx, input }) => {
+			await verifyOrgMembership(ctx.session.user.id, input.organizationId);
+
+			const connection = await db.query.integrationConnections.findFirst({
+				where: and(
+					eq(integrationConnections.organizationId, input.organizationId),
+					eq(integrationConnections.provider, "slack"),
+					isNull(integrationConnections.disconnectedAt),
+				),
+				columns: { accessToken: true },
+			});
+			if (!connection) return [];
+
+			return listSlackPeople(connection.accessToken);
 		}),
 
 	disconnect: protectedProcedure

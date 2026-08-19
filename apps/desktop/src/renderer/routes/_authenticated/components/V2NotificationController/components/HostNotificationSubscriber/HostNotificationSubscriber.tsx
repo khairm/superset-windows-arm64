@@ -3,13 +3,10 @@ import type {
 	AgentLifecyclePayload,
 	TerminalLifecyclePayload,
 } from "@superset/workspace-client";
-import { getEventBus } from "@superset/workspace-client";
 import { useEffect, useEffectEvent, useMemo, useRef } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
-import {
-	getHostServiceWsToken,
-	refreshHostServiceSecrets,
-} from "renderer/lib/host-service-auth";
+import { getHostEventBus } from "renderer/lib/host-event-bus";
+import { refreshHostServiceSecrets } from "renderer/lib/host-service-auth";
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
 import { useNotificationBusStatusStore } from "renderer/stores/notification-bus";
@@ -292,7 +289,7 @@ export function HostNotificationSubscriber({
 	});
 
 	useEffect(() => {
-		const bus = getEventBus(hostUrl, () => getHostServiceWsToken(hostUrl));
+		const bus = getHostEventBus(hostUrl);
 		const removeAgentListener = bus.on(
 			"agent:lifecycle",
 			"*",
@@ -303,14 +300,17 @@ export function HostNotificationSubscriber({
 			"*",
 			handleTerminalLifecycle,
 		);
-		const removeConnectionListener = bus.onConnectionChange(
-			handleConnectionChange,
-		);
+		// (BUS-RESYNC) Upstream replaced the boolean open/closed observer with a
+		// four-state status; only the open/not-open edge matters here, so collapse
+		// it back to the boolean the resync handler is written against.
+		const removeConnectionListener = bus.subscribeConnectionStatus((status) => {
+			handleConnectionChange(status.state === "open");
+		});
 		const release = bus.retain();
 		// The socket is shared across all consumers of this host, so it may
 		// already be open — in which case no "open" event is coming and this
 		// mount would never reconcile.
-		if (bus.isConnected()) {
+		if (bus.getConnectionStatus().state === "open") {
 			handleConnectionChange(true);
 		} else {
 			// Register the bus as down NOW rather than waiting for a close event

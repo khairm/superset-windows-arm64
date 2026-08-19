@@ -37,6 +37,7 @@ const PRODUCT_LINKS: FooterLink[] = [
 	{ href: "/#how-it-works", label: "How it works" },
 	{ href: "/#features", label: "Features" },
 	{ href: "/#security", label: "Security" },
+	{ href: "/mcp-install", label: "MCP" },
 	{ href: "/marketplace", label: "Marketplace" },
 	{ href: "/compare", label: "Compare" },
 ];
@@ -52,6 +53,8 @@ const RESOURCE_LINKS: FooterLink[] = [
 	{ href: COMPANY.DOCS_URL, label: "Documentation", external: true },
 	{ href: "/pricing", label: "Pricing" },
 	{ href: "/blog", label: "Blog" },
+	{ href: "/parallel-coding-agents", label: "Parallel agents guide" },
+	{ href: "/agent-orchestration", label: "Orchestration guide" },
 	{ href: "/community", label: "Community" },
 	{ href: "/enterprise", label: "Enterprise" },
 	{ href: "/changelog", label: "Changelog" },

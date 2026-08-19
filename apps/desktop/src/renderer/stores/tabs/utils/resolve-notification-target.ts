@@ -21,8 +21,8 @@ function normalizeCwd(cwd: string): string {
 
 /**
  * Resolves notification target IDs by looking up missing values from state.
- * Priority: valid paneId > sessionId > cwd (terminal panes) > pane's tab
- * > event tabId > tab's workspace
+ * Priority: valid paneId > cwd (terminal panes) > pane's tab > event tabId
+ * > tab's workspace
  *
  * cwd lookup is the fallback path used by the Windows JSONL-watcher
  * (`patches/agent-jsonl-watcher.patch`) — Claude's session transcripts
@@ -36,13 +36,8 @@ export function resolveNotificationTarget(
 ): ResolvedTarget | null {
 	if (!ids) return null;
 
-	const { paneId, sessionId, tabId, workspaceId, cwd } = ids;
+	const { paneId, tabId, workspaceId, cwd } = ids;
 
-	const paneIdFromSession = sessionId
-		? Object.entries(state.panes).find(
-				([_paneId, pane]) => pane.chat?.sessionId === sessionId,
-			)?.[0]
-		: undefined;
 	const paneIdFromCwd = cwd
 		? (() => {
 				// Only resolve via cwd when EXACTLY one terminal pane
@@ -64,9 +59,6 @@ export function resolveNotificationTarget(
 		: undefined;
 	const resolvedPaneId =
 		(paneId && state.panes[paneId] ? paneId : undefined) ??
-		(paneIdFromSession && state.panes[paneIdFromSession]
-			? paneIdFromSession
-			: undefined) ??
 		(paneIdFromCwd && state.panes[paneIdFromCwd]
 			? paneIdFromCwd
 			: undefined);

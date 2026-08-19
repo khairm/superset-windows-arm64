@@ -1,18 +1,19 @@
-import { getEventBus } from "@superset/workspace-client";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
-import { getHostServiceWsToken } from "renderer/lib/host-service-auth";
+import { getHostEventBus } from "renderer/lib/host-event-bus";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
+import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
 import {
 	applyWorkspaceChangedEvent,
 	deriveHostWorkspacesQueryTargets,
 	getHostWorkspacesQueryKey,
 	type HostWorkspaceItem,
 	type HostWorkspaceRow,
+	isEventBusReopen,
 	loadHostWorkspacesSnapshot,
 	mergeHostWorkspaces,
 	saveHostWorkspacesSnapshot,
@@ -26,6 +27,13 @@ export interface HostWorkspacesCacheOps {
 	/** Resolve the URL to reach the host owning `hostId` (null = unreachable). */
 	resolveHostUrl: (hostId: string) => string | null;
 	/**
+	 * Whether `hostId` is a cloud sandbox. Callers that hold a socket per host
+	 * ask this before subscribing: the provider counts a held connection as
+	 * activity, so a background subscription keeps a sandbox's VM awake for as
+	 * long as the app is open. Connect to a sandbox only while it is in view.
+	 */
+	isSandboxHost: (hostId: string) => boolean;
+	/**
 	 * Optimistically upsert a row into a host's cached list. The host's
 	 * `workspace:changed` broadcast (or the next refetch) converges the
 	 * cache onto the real row.
@@ -35,6 +43,16 @@ export interface HostWorkspacesCacheOps {
 	removeWorkspace: (hostId: string, workspaceId: string) => void;
 	/** Rollback hammer: refetch a host's list after a failed write. */
 	invalidateHost: (hostId: string) => void;
+	/** True once at least one host resolved to a reachable URL. */
+	hasLiveTargets: boolean;
+	/**
+	 * Force-refetch every reachable host's live list; resolves when all
+	 * settle (success or error). The workspace route's miss verdict awaits
+	 * this so "not found" is never declared from data older than the request
+	 * — the mirror converges through fire-and-forget events plus a slow
+	 * fallback refetch, so a just-created row can trail its own deep link.
+	 */
+	refetchAll: () => Promise<void>;
 }
 
 export interface UseHostWorkspacesResult {
@@ -63,6 +81,13 @@ export interface UseHostWorkspacesResult {
 	 * global `isAuthoritative`.
 	 */
 	isAbsenceAuthoritative: (hostId: string | null | undefined) => boolean;
+	/**
+	 * The org's host list itself is trustworthy (useKnownHosts settled) —
+	 * weaker than isReady: it does not wait for any host's list to answer, so
+	 * one unreachable host cannot hold it. Until this is true the fan-out may
+	 * cover only the local host.
+	 */
+	hostsSettled: boolean;
 	cache: HostWorkspacesCacheOps;
 }
 
@@ -116,6 +141,7 @@ export function useHostWorkspacesSource(
 		hostRows !== undefined &&
 		(hostRows.length === 0 ||
 			hostRows.some((host) => host.organizationId === knownHostsOrgId));
+	const { targets: sandboxes, isReady: sandboxesReady } = useSandboxAccess();
 
 	const targets = useMemo(() => {
 		const all = deriveHostWorkspacesQueryTargets({
@@ -124,6 +150,7 @@ export function useHostWorkspacesSource(
 			machineId,
 			relayUrl,
 			fallbackOrganizationId: knownHostsOrgId,
+			sandboxes,
 		});
 		return scopedHostId === undefined
 			? all
@@ -134,6 +161,7 @@ export function useHostWorkspacesSource(
 		knownHostsOrgId,
 		machineId,
 		relayUrl,
+		sandboxes,
 		scopedHostId,
 	]);
 
@@ -193,13 +221,20 @@ export function useHostWorkspacesSource(
 			queryFn: async (): Promise<HostWorkspaceRow[]> => {
 				if (!target.hostUrl) return [];
 				const client = getHostServiceClientByUrl(target.hostUrl);
-				const rows =
+				const served =
 					(await client.workspace.list.query()) as HostWorkspaceRow[];
 				setLiveAnsweredHostIds((prev) =>
 					prev.has(target.machineId)
 						? prev
 						: new Set(prev).add(target.machineId),
 				);
+				// A sandbox reports the machine id of the container it happens to
+				// be running in, which addresses nothing from here. Restate it as
+				// the cloud workspace's id so every host-keyed lookup downstream
+				// (pull requests, agent status, diff stats) resolves.
+				const rows = target.isSandbox
+					? served.map((row) => ({ ...row, hostId: target.machineId }))
+					: served;
 				saveHostWorkspacesSnapshot(
 					target.organizationId,
 					target.machineId,
@@ -235,14 +270,26 @@ export function useHostWorkspacesSource(
 		})),
 	});
 
+	const busEverOpenedRef = useRef<Set<string>>(new Set());
+
 	// Live updates: each reachable host's workspace:changed patches its own
 	// cached list without a refetch.
+	//
+	// Not for sandboxes. The provider counts a held connection as activity, so
+	// subscribing here would keep every cloud workspace's VM awake for as long
+	// as the app is open — ten in the sidebar, ten warm machines, whether or not
+	// anyone is looking at them. And there is nothing to be gained: a sandbox
+	// holds exactly one workspace whose identity the cloud row owns; the only
+	// field read off its served row is the branch, which has a fallback and can
+	// only change while someone is inside it — when the open workspace's own
+	// subscribers hold a socket anyway. Sandboxes are polled, and connected to
+	// only while open.
 	useEffect(() => {
 		const cleanups: Array<() => void> = [];
 		for (const target of targets) {
-			if (!target.hostUrl) continue;
+			if (!target.hostUrl || target.isSandbox) continue;
 			const hostUrl = target.hostUrl;
-			const bus = getEventBus(hostUrl, () => getHostServiceWsToken(hostUrl));
+			const bus = getHostEventBus(hostUrl);
 			const removeListener = bus.on(
 				"workspace:changed",
 				"*",
@@ -284,9 +331,35 @@ export function useHostWorkspacesSource(
 					}
 				},
 			);
+			// Resync on reopen: events broadcast while the socket was down are
+			// lost (no replay), so every reopen is a potential gap. Invalidate
+			// all of this host's mirrors — workspaces, projects, ports share the
+			// "host-service" key prefix + machineId. Flap cost is bounded by the
+			// bus's own reconnect backoff (≥1s) and scoped to the one host.
+			// Whether this bus ever opened must survive effect re-runs: targets
+			// churn on presence flips, which correlate with outages — a re-run
+			// mid-outage that re-derived "never opened" from current state would
+			// silently skip the gap resync on the next reopen.
+			if (bus.getConnectionStatus().state === "open") {
+				busEverOpenedRef.current.add(hostUrl);
+			}
+			const removeStatusListener = bus.subscribeConnectionStatus((status) => {
+				const reopened = isEventBusReopen(
+					busEverOpenedRef.current.has(hostUrl),
+					status.state,
+				);
+				if (status.state === "open") busEverOpenedRef.current.add(hostUrl);
+				if (!reopened) return;
+				void queryClient.invalidateQueries({
+					predicate: (query) =>
+						query.queryKey[0] === "host-service" &&
+						query.queryKey.includes(target.machineId),
+				});
+			});
 			const releaseBus = bus.retain();
 			cleanups.push(() => {
 				removeListener();
+				removeStatusListener();
 				releaseBus();
 			});
 		}
@@ -336,6 +409,9 @@ export function useHostWorkspacesSource(
 	// snapshot settles the host without a live answer).
 	const isReady =
 		knownHostsSettled &&
+		// A cloud workspace is only addressable once its sandbox is brokered, so
+		// answering ready before that flashes not-found on every cloud open.
+		sandboxesReady &&
 		(scopedHostId === undefined || targets.length > 0) &&
 		queries.every(
 			(query, index) =>
@@ -386,6 +462,7 @@ export function useHostWorkspacesSource(
 			targets.find((target) => target.machineId === hostId);
 		return {
 			resolveHostUrl: (hostId) => targetFor(hostId)?.hostUrl ?? null,
+			isSandboxHost: (hostId) => targetFor(hostId)?.isSandbox === true,
 			upsertWorkspace: (row) => {
 				const target = targetFor(row.hostId);
 				if (!target) return;
@@ -417,12 +494,25 @@ export function useHostWorkspacesSource(
 					queryKey: getHostWorkspacesQueryKey(target),
 				});
 			},
+			hasLiveTargets: targets.some((target) => target.hostUrl !== null),
+			refetchAll: async () => {
+				await Promise.all(
+					targets
+						.filter((target) => target.hostUrl !== null)
+						.map((target) =>
+							queryClient.refetchQueries({
+								queryKey: getHostWorkspacesQueryKey(target),
+							}),
+						),
+				);
+			},
 		};
 	}, [targets, queryClient]);
 
 	return {
 		workspaces,
 		isReady,
+		hostsSettled: knownHostsSettled,
 		isAuthoritative,
 		isAbsenceAuthoritative,
 		cache,

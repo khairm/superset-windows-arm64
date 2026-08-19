@@ -1,9 +1,16 @@
 import { db } from "@superset/db/client";
 import { webhookEvents } from "@superset/db/schema";
 import { eq, sql } from "drizzle-orm";
-
 import { stripNullChars } from "@/lib/strip-null-chars";
+import { dispatchMatchingTriggers } from "./dispatchMatchingTriggers";
+import {
+	type GithubPayload,
+	qualifiedEventType,
+	recordGithubEvent,
+} from "./recordGithubEvent";
 import { webhooks } from "./webhooks";
+
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
 	const body = await request.text();
@@ -11,20 +18,25 @@ export async function POST(request: Request) {
 	const eventType = request.headers.get("x-github-event");
 	const deliveryId = request.headers.get("x-github-delivery");
 
+	// Verify signature BEFORE parsing or storing so unauthenticated bodies get
+	// no further. `verify` returns false on a mismatch and only throws when the
+	// signature is missing, so both outcomes have to be checked.
+	let signatureValid = false;
+	try {
+		signatureValid = await webhooks.verify(body, signature ?? "");
+	} catch (error) {
+		console.error("[github/webhook] Signature verification failed:", error);
+	}
+	if (!signatureValid) {
+		return Response.json({ error: "Invalid signature" }, { status: 401 });
+	}
+
 	let payload: unknown;
 	try {
 		payload = JSON.parse(body);
 	} catch {
 		console.error("[github/webhook] Invalid JSON payload");
 		return Response.json({ error: "Invalid JSON payload" }, { status: 400 });
-	}
-
-	// Verify signature BEFORE storing to prevent spam from unverified requests
-	try {
-		await webhooks.verify(body, signature ?? "");
-	} catch (error) {
-		console.error("[github/webhook] Signature verification failed:", error);
-		return Response.json({ error: "Invalid signature" }, { status: 401 });
 	}
 
 	// Store verified event with idempotent handling
@@ -75,6 +87,44 @@ export async function POST(request: Request) {
 			payload,
 			// biome-ignore lint/suspicious/noExplicitAny: GitHub webhook event types are complex unions
 		} as any);
+
+		// Recorded after processing and deliberately not inside the try above:
+		// nothing reads these rows yet, so a failure here must not fail a
+		// delivery GitHub would then retry.
+		try {
+			const recorded = await recordGithubEvent({
+				eventType: eventType ?? "unknown",
+				deliveryId: eventId,
+				payload,
+				webhookEventId: webhookEvent.id,
+			});
+			if (recorded.recorded) {
+				const result = await dispatchMatchingTriggers({
+					organizationId: recorded.organizationId,
+					eventId: recorded.eventId,
+					eventType: qualifiedEventType(
+						eventType ?? "unknown",
+						payload as GithubPayload,
+					),
+					repositoryId: recorded.repositoryId,
+					ref: recorded.ref,
+					payload: payload as GithubPayload,
+				});
+				if (result.matched > 0) {
+					console.log(
+						`[github/webhook] ${result.matched}/${result.considered} triggers matched:`,
+						eventId,
+					);
+				}
+			} else {
+				console.log(
+					`[github/webhook] Not recorded as automation event (${recorded.reason}):`,
+					eventId,
+				);
+			}
+		} catch (error) {
+			console.error("[github/webhook] recordGithubEvent failed:", error);
+		}
 
 		await db
 			.update(webhookEvents)

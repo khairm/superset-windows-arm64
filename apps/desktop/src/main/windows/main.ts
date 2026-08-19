@@ -136,6 +136,10 @@ export async function MainWindow() {
 		center: initialBounds.center,
 		movable: true,
 		resizable: true,
+		// macOS: deliver the first click on an unfocused window to the renderer
+		// (otherwise it only activates the window and pane focus needs a second
+		// click).
+		acceptFirstMouse: true,
 		alwaysOnTop: false,
 		autoHideMenuBar: true,
 		...(process.platform === "win32" ? { titleBarStyle: "hidden" as const, titleBarOverlay: { color: "#1f1f1f", symbolColor: "#e6e6e6", height: 36 } } : { frame: false, titleBarStyle: "hidden" as const, trafficLightPosition: { x: 16, y: 16 } }),

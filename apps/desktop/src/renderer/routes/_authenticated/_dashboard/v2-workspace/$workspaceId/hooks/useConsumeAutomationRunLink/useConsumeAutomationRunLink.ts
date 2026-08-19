@@ -1,9 +1,8 @@
 import type { WorkspaceStore } from "@superset/panes";
 import { workspaceTrpc } from "@superset/workspace-client";
-import { useEffect, useMemo, useRef } from "react";
-import { cloudTrpc } from "renderer/lib/cloud-trpc";
+import { useEffect, useRef } from "react";
 import type { StoreApi } from "zustand/vanilla";
-import type { ChatPaneData, PaneViewerData } from "../../types";
+import type { PaneViewerData } from "../../types";
 import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
 
 interface UseConsumeAutomationRunLinkArgs {
@@ -12,15 +11,14 @@ interface UseConsumeAutomationRunLinkArgs {
 	paneLayoutReady: boolean;
 	tabId: string | undefined;
 	terminalId: string | undefined;
-	chatSessionId: string | undefined;
 	focusRequestId: string | undefined;
 }
 
 /**
  * When the workspace is opened via a deep link from an automation run
- * (`?terminalId=...` or `?chatSessionId=...`), ensure the corresponding pane
- * is present and focused. The underlying session already exists on the
- * host-service from the dispatcher — we just re-adopt it in the pane store.
+ * (`?terminalId=...`), ensure the corresponding pane is present and focused.
+ * The underlying session already exists on the host-service from the
+ * dispatcher — we just re-adopt it in the pane store.
  */
 export function useConsumeAutomationRunLink({
 	store,
@@ -28,7 +26,6 @@ export function useConsumeAutomationRunLink({
 	paneLayoutReady,
 	tabId,
 	terminalId,
-	chatSessionId,
 	focusRequestId,
 }: UseConsumeAutomationRunLinkArgs): void {
 	const consumedRef = useRef<Set<string>>(new Set());
@@ -39,17 +36,6 @@ export function useConsumeAutomationRunLink({
 			refetchOnWindowFocus: false,
 		},
 	);
-	const { data: chatSessionRows = [], isPending: chatSessionsPending } =
-		cloudTrpc.chat.listSessions.useQuery(
-			{ sessionIds: chatSessionId != null ? [chatSessionId] : [] },
-			{ enabled: chatSessionId != null },
-		);
-	const chatSession = useMemo(
-		() =>
-			chatSessionRows.find((session) => session.id === chatSessionId) ?? null,
-		[chatSessionRows, chatSessionId],
-	);
-
 	useEffect(() => {
 		if (!paneLayoutReady) return;
 		consumeTabAutomationRunLink({
@@ -79,30 +65,6 @@ export function useConsumeAutomationRunLink({
 		focusRequestId,
 		terminalSessionsQuery.isSuccess,
 		terminalSessionsQuery.data,
-		workspaceId,
-		paneLayoutReady,
-	]);
-
-	useEffect(() => {
-		if (!paneLayoutReady) return;
-		consumeChatAutomationRunLink({
-			store,
-			workspaceId,
-			paneLayoutReady,
-			chatSessionId,
-			focusRequestId,
-			// Upstream's cloud query reports `isPending`; the helper's contract
-			// is still "the rows are settled".
-			chatSessionsReady: !chatSessionsPending,
-			chatSession,
-			consumedKeys: consumedRef.current,
-		});
-	}, [
-		store,
-		chatSessionId,
-		focusRequestId,
-		chatSession,
-		chatSessionsPending,
 		workspaceId,
 		paneLayoutReady,
 	]);
@@ -183,53 +145,12 @@ export function consumeTerminalAutomationRunLink({
 	return true;
 }
 
-export function consumeChatAutomationRunLink({
-	store,
-	workspaceId,
-	paneLayoutReady,
-	chatSessionId,
-	focusRequestId,
-	chatSessionsReady,
-	chatSession,
-	consumedKeys,
-}: AutomationRunLinkBaseArgs & {
-	workspaceId: string;
-	chatSessionId: string | undefined;
-	chatSessionsReady: boolean;
-	chatSession: { v2WorkspaceId: string | null } | null;
-}): boolean {
-	if (
-		!paneLayoutReady ||
-		!chatSessionId ||
-		!chatSessionsReady ||
-		!chatSession
-	) {
-		return false;
-	}
-	const key = getAutomationRunLinkConsumeKey({
-		type: "chat",
-		id: chatSessionId,
-		focusRequestId,
-	});
-	if (consumedKeys.has(key)) return false;
-	consumedKeys.add(key);
-	if (!chatSessionBelongsToWorkspace({ chatSession, workspaceId })) {
-		console.warn(
-			"[automation-run-link] Ignoring chat link for another workspace",
-			{ chatSessionId, workspaceId },
-		);
-		return true;
-	}
-	focusOrAddChatPane(store, chatSessionId);
-	return true;
-}
-
 export function getAutomationRunLinkConsumeKey({
 	type,
 	id,
 	focusRequestId,
 }: {
-	type: "terminal" | "chat" | "tab";
+	type: "terminal" | "tab";
 	id: string;
 	focusRequestId: string | undefined;
 }): string {
@@ -251,40 +172,4 @@ export function terminalSessionBelongsToWorkspace({
 		(session) =>
 			session.terminalId === terminalId && session.workspaceId === workspaceId,
 	);
-}
-
-export function chatSessionBelongsToWorkspace({
-	chatSession,
-	workspaceId,
-}: {
-	chatSession: { v2WorkspaceId: string | null } | null;
-	workspaceId: string;
-}): boolean {
-	return chatSession?.v2WorkspaceId === workspaceId;
-}
-
-function focusOrAddChatPane(
-	store: StoreApi<WorkspaceStore<PaneViewerData>>,
-	sessionId: string,
-): void {
-	const state = store.getState();
-	for (const tab of state.tabs) {
-		for (const pane of Object.values(tab.panes)) {
-			if (pane.kind !== "chat") continue;
-			const data = pane.data as ChatPaneData;
-			if (data.sessionId === sessionId) {
-				state.setActiveTab(tab.id);
-				state.setActivePane({ tabId: tab.id, paneId: pane.id });
-				return;
-			}
-		}
-	}
-	state.addTab({
-		panes: [
-			{
-				kind: "chat",
-				data: { sessionId } as PaneViewerData,
-			},
-		],
-	});
 }

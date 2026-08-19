@@ -22,6 +22,7 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { DashboardSidebarBulkActions } from "./components/DashboardSidebarBulkActions";
+import { DashboardSidebarCloudSection } from "./components/DashboardSidebarCloudSection";
 import { DashboardSidebarHeader } from "./components/DashboardSidebarHeader";
 import { DashboardSidebarHoverCardOverlay } from "./components/DashboardSidebarHoverCardOverlay";
 import { DashboardSidebarPinnedSection } from "./components/DashboardSidebarPinnedSection";
@@ -30,6 +31,7 @@ import { DashboardSidebarProjectSection } from "./components/DashboardSidebarPro
 import { DashboardSidebarSectionRenameProvider } from "./components/DashboardSidebarSectionRenameContext";
 import { DashboardSidebarSessionsSection } from "./components/DashboardSidebarSessionsSection";
 import { DashboardSidebarWorkspacesHeader } from "./components/DashboardSidebarWorkspacesHeader";
+import { SectionDragSpacer } from "./components/SectionDragSpacer";
 import { V2SetupScriptCard } from "./components/V2SetupScriptCard";
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
@@ -42,7 +44,10 @@ import {
 	DashboardSidebarWorkspaceStatusProvider,
 	type SidebarStatusWorkspaceRef,
 } from "./providers/DashboardSidebarWorkspaceStatusProvider";
-import type { DashboardSidebarProject } from "./types";
+import type {
+	DashboardSidebarProject,
+	DashboardSidebarWorkspace,
+} from "./types";
 import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
 
 interface DashboardSidebarProps {
@@ -356,22 +361,33 @@ export function DashboardSidebar({
 		sessionWorkspaces,
 	);
 
-	// Membership only — the tiered/frozen render order doesn't matter here.
-	const selectableWorkspaceIds = useMemo(
-		() =>
-			new Set(
-				orderedGroups.flatMap((project) =>
-					getProjectChildrenWorkspaces(project.children)
-						.filter(
-							(workspace) =>
-								workspace.type === "worktree" &&
-								workspace.pendingTransaction?.type !== "insert",
-						)
-						.map((workspace) => workspace.id),
-				),
-			),
-		[orderedGroups],
-	);
+	const selectableWorkspaceIds = useMemo(() => {
+		const ids = new Set<string>();
+		const addWorkspace = (workspace: DashboardSidebarWorkspace) => {
+			if (
+				workspace.type === "worktree" &&
+				workspace.pendingTransaction?.type !== "insert"
+			) {
+				ids.add(workspace.id);
+			}
+		};
+		for (const project of orderedGroups) {
+			for (const child of project.children) {
+				if (child.type === "workspace") {
+					addWorkspace(child.workspace);
+					continue;
+				}
+				// Members of collapsed groups are hidden and unclickable; keeping
+				// them selected would leave invisible rows armed for bulk actions
+				// (including Delete), so collapsing prunes them from the selection.
+				if (child.section.isCollapsed) continue;
+				for (const workspace of child.section.workspaces) {
+					addWorkspace(workspace);
+				}
+			}
+		}
+		return ids;
+	}, [orderedGroups]);
 
 	// Every workspace the sidebar can render (pinned, sessions, project rows) —
 	// the status provider fans out bindings queries and event subscriptions for
@@ -515,7 +531,7 @@ export function DashboardSidebar({
 										onDragActiveChange={setIsDraggingSidebar}
 										onSnapshotOrder={snapshotFrozenOrder}
 									/>
-									<div className="flex h-full flex-col border-r border-border bg-muted/45 dark:bg-muted/35">
+									<div className="flex h-full flex-col border-r border-border bg-sidebar dark:bg-muted/35">
 										<DashboardSidebarHeader isCollapsed={isCollapsed} />
 
 										<OverflowFadeContainer
@@ -530,6 +546,10 @@ export function DashboardSidebar({
 													onWorkspaceHover={refreshWorkspacePullRequest}
 												/>
 											)}
+											<DashboardSidebarCloudSection
+												isCollapsed={isCollapsed}
+												onWorkspaceHover={refreshWorkspacePullRequest}
+											/>
 											<DashboardSidebarSessionsSection
 												sessionWorkspaces={sessionWorkspaces}
 												snoozedSessionWorkspaces={snoozedSessionWorkspaces}
@@ -562,6 +582,7 @@ export function DashboardSidebar({
 													))}
 												</SortableContext>
 											)}
+											<SectionDragSpacer />
 										</OverflowFadeContainer>
 										{!isCollapsed && !inlineWorkspacePortsEnabled && (
 											<DashboardSidebarPortsList />

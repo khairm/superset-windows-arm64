@@ -1,15 +1,18 @@
 import { buildHostRoutingKey } from "@superset/shared/host-routing";
 import { useQueryClient } from "@tanstack/react-query";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { CloudOff, Plus, SquareTerminal } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ActivityIndicator,
 	Keyboard,
 	LayoutAnimation,
 	Pressable,
+	StyleSheet,
 	View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Icon } from "@/components/ui/icon";
 import { Text } from "@/components/ui/text";
 import { useWorkspaceHost } from "@/hooks/useWorkspaceHost";
 import {
@@ -20,8 +23,12 @@ import {
 	getHostTerminalsQueryKey,
 	useHostTerminals,
 } from "@/screens/(authenticated)/(home)/home/hooks/useHostTerminals";
+import type { GlassComposerHandle } from "@/screens/(authenticated)/components/GlassComposer";
 import { PressableScale } from "@/screens/(authenticated)/components/PressableScale";
+import { useAppReviewPrompt } from "@/screens/(authenticated)/hooks/useAppReviewPrompt";
 import { useTerminalSeenStore } from "@/screens/(authenticated)/stores/terminalSeenStore";
+import { useTerminalTabOrderStore } from "@/screens/(authenticated)/stores/terminalTabOrderStore";
+import { PullRequestsButton } from "../components/PullRequestsButton";
 import {
 	TerminalComposer,
 	type TerminalQuickKey,
@@ -33,7 +40,9 @@ import {
 	TerminalWebView,
 	type TerminalWebViewHandle,
 } from "../components/TerminalWebView";
-import { useWorkspaceChangeset } from "../hooks/useWorkspaceChangeset";
+import { useWorkspacePullRequests } from "../hooks/useWorkspacePullRequest";
+import { orderTerminalRows } from "../utils/orderTerminalRows";
+import { WorkspacePlaceholder } from "./components/WorkspacePlaceholder";
 
 const headerOptions = {
 	headerShown: true,
@@ -63,17 +72,22 @@ export function WorkspaceScreen() {
 
 	const { workspace, host, isResolving } = useWorkspaceHost(id ?? null);
 	const { terminalsByWorkspace, isReady } = useHostTerminals(host);
-	const changeset = useWorkspaceChangeset(id ?? null);
+	const pullRequests = useWorkspacePullRequests(id ?? null);
 
-	// Tabs hold creation order — the hook's activity sort is right for home
-	// rows but makes tabs swap places under the user whenever relative
-	// activity changes.
+	// Tabs hold the arrangement the user dragged in the sessions sheet, falling
+	// back to creation order — the hook's activity sort is right for home rows
+	// but makes tabs swap places under the user whenever relative activity
+	// changes.
+	const savedOrder = useTerminalTabOrderStore((state) =>
+		id ? state.orderByWorkspace[id] : undefined,
+	);
 	const rows = useMemo(
 		() =>
-			(id ? (terminalsByWorkspace.get(id) ?? []) : [])
-				.slice()
-				.sort((a, b) => a.createdAt - b.createdAt),
-		[terminalsByWorkspace, id],
+			orderTerminalRows(
+				id ? (terminalsByWorkspace.get(id) ?? []) : [],
+				savedOrder,
+			),
+		[terminalsByWorkspace, id, savedOrder],
 	);
 
 	// Active tab: the deep-linked ?tab= until the user switches, else the
@@ -101,18 +115,27 @@ export function WorkspaceScreen() {
 		if (params.tab) setPickedTerminalId(params.tab);
 	}, [params.tab]);
 
+	// Pin whatever ended up active, including the implicit first row: without
+	// this, reordering in the sessions sheet moves a different row into first
+	// place and the terminal you're watching switches out from under you.
+	useEffect(() => {
+		if (activeTerminalId) setPickedTerminalId(activeTerminalId);
+	}, [activeTerminalId]);
+
 	// Port of desktop's useClearActivePaneAttention: viewing the tab clears
 	// its `review` state by advancing the seen mark to the binding's last
 	// event (host clock — never the device clock).
 	const markTerminalSeen = useTerminalSeenStore(
 		(state) => state.markTerminalSeen,
 	);
+	const requestAppReview = useAppReviewPrompt();
 	const activeRow = rows.find((row) => row.terminalId === activeTerminalId);
 	useEffect(() => {
 		if (activeRow?.attention !== "review") return;
 		if (activeRow.lastEventAt === null) return;
 		markTerminalSeen(activeRow.terminalId, activeRow.lastEventAt);
-	}, [activeRow, markTerminalSeen]);
+		requestAppReview("session_completed");
+	}, [activeRow, markTerminalSeen, requestAppReview]);
 
 	const invalidateTerminals = useCallback(() => {
 		if (!host) return;
@@ -121,9 +144,26 @@ export function WorkspaceScreen() {
 		});
 	}, [host, queryClient]);
 
+	const [refreshing, setRefreshing] = useState(false);
+	const onRefresh = useCallback(async () => {
+		setRefreshing(true);
+		await queryClient
+			.refetchQueries({ queryKey: ["host-service", "workspaces", "list"] })
+			.catch(() => {});
+		invalidateTerminals();
+		void queryClient.invalidateQueries({ queryKey: ["cloud"] });
+		setRefreshing(false);
+	}, [queryClient, invalidateTerminals]);
+
 	const openAddMenu = useCallback(() => {
 		router.push(`/(authenticated)/workspace/${id}/new-session`);
 	}, [router, id]);
+
+	const openSessions = useCallback(() => {
+		router.push(
+			`/(authenticated)/workspace/${id}/sessions?active=${activeTerminalId ?? ""}`,
+		);
+	}, [router, id, activeTerminalId]);
 
 	const killTerminal = useCallback(
 		(terminalId: string) => {
@@ -141,6 +181,8 @@ export function WorkspaceScreen() {
 		useState<TerminalConnectionState>("connecting");
 	const [composerHeight, setComposerHeight] = useState(0);
 	const [keyboardHeight, setKeyboardHeight] = useState(0);
+	const [composerActive, setComposerActive] = useState(false);
+	const composerRef = useRef<GlassComposerHandle>(null);
 
 	useEffect(() => {
 		const show = Keyboard.addListener("keyboardWillShow", (event) => {
@@ -174,20 +216,40 @@ export function WorkspaceScreen() {
 		[invalidateTerminals],
 	);
 
-	const handleSubmit = useCallback((text: string) => {
-		const framed = text.includes("\n")
-			? `\u001b[200~${text}\u001b[201~\r`
-			: `${text}\r`;
-		terminalRef.current?.sendInput(framed);
-	}, []);
+	// Submits go through the host's terminal.send instead of the attached
+	// stream. An Enter written together with the text arrives in the same read,
+	// and a TUI agent takes that burst for a paste — the message lands in the
+	// draft with a newline appended instead of being submitted (#6284). The host
+	// separates and delays the Enter, and frames the text as a bracketed paste
+	// only when the running program actually has that mode on.
+	const handleSubmit = useCallback(
+		async (text: string) => {
+			if (!hostUrl || !activeTerminalId || !id) {
+				throw new Error("Terminal is not connected");
+			}
+			await getHostServiceClientByUrl(hostUrl).terminal.send.mutate({
+				terminalId: activeTerminalId,
+				workspaceId: id,
+				text,
+			});
+		},
+		[hostUrl, activeTerminalId, id],
+	);
 
 	const handleQuickKey = useCallback((key: TerminalQuickKey) => {
 		if (key.data) terminalRef.current?.sendInput(key.data);
 	}, []);
 
 	const banner = STATE_BANNERS[connectionState];
-	const hasChanges = changeset.files.length > 0;
 	const showComposer = activeTerminalId !== null && routingKey !== null;
+
+	const attachmentTarget = useMemo(
+		() =>
+			id && hostUrl && workspace?.worktreePath
+				? { workspaceId: id, hostUrl, worktreePath: workspace.worktreePath }
+				: null,
+		[id, hostUrl, workspace],
+	);
 
 	return (
 		<View className="bg-background flex-1">
@@ -209,17 +271,6 @@ export function WorkspaceScreen() {
 						</View>
 					</PressableScale>
 				</Stack.Title>
-				{hasChanges ? (
-					<Stack.Toolbar placement="right">
-						<Stack.Toolbar.Button
-							icon="plus.forwardslash.minus"
-							accessibilityLabel="Review changes"
-							onPress={() =>
-								router.push(`/(authenticated)/workspace/${id}/diff`)
-							}
-						/>
-					</Stack.Toolbar>
-				) : null}
 			</Stack.Screen>
 
 			<TerminalTabs
@@ -227,6 +278,7 @@ export function WorkspaceScreen() {
 				activeTerminalId={activeTerminalId}
 				onSelect={setPickedTerminalId}
 				onAdd={openAddMenu}
+				onManage={openSessions}
 				onClose={killTerminal}
 			/>
 
@@ -255,39 +307,60 @@ export function WorkspaceScreen() {
 				}}
 			>
 				{activeTerminalId && routingKey && id ? (
-					<TerminalWebView
-						ref={terminalRef}
-						workspaceId={id}
-						terminalId={activeTerminalId}
-						routingKey={routingKey}
-						onStateChange={setConnectionState}
-						onControl={handleControl}
-					/>
+					<>
+						<TerminalWebView
+							ref={terminalRef}
+							workspaceId={id}
+							terminalId={activeTerminalId}
+							routingKey={routingKey}
+							onStateChange={setConnectionState}
+							onControl={handleControl}
+						/>
+						{/* Tap-outside-to-dismiss, the terminal's answer to the home
+						    composer's backdrop. Transparent, not a scrim: the point of
+						    typing here is watching the output above. */}
+						{composerActive ? (
+							<Pressable
+								accessibilityLabel="Dismiss keyboard"
+								onPress={() => composerRef.current?.blur()}
+								style={StyleSheet.absoluteFill}
+							/>
+						) : null}
+					</>
 				) : isResolving || (!isReady && host) ? (
 					<Centered>
 						<ActivityIndicator />
 					</Centered>
 				) : !host ? (
-					<Centered>
-						<Text className="text-muted-foreground px-8 text-center text-sm">
-							The host that owns this workspace is offline.
-						</Text>
-					</Centered>
+					<WorkspacePlaceholder
+						body="It will reconnect on its own once the machine is back. Pull to check again."
+						icon={CloudOff}
+						onRefresh={onRefresh}
+						refreshing={refreshing}
+						title="This workspace's host is offline"
+					/>
 				) : (
-					<Centered>
-						<Text className="text-muted-foreground text-sm">
-							No sessions yet.
-						</Text>
-						<Pressable onPress={openAddMenu} className="mt-3 active:opacity-60">
-							<Text className="text-foreground text-sm font-medium">
-								Start one +
-							</Text>
-						</Pressable>
-					</Centered>
+					<WorkspacePlaceholder
+						action={
+							<Pressable
+								accessibilityRole="button"
+								className="bg-secondary h-[38px] flex-row items-center justify-center gap-1.5 rounded-md px-5 active:opacity-80"
+								onPress={openAddMenu}
+							>
+								<Icon as={Plus} className="text-foreground size-4" />
+								<Text className="font-medium text-[15px]">Start a session</Text>
+							</Pressable>
+						}
+						body="Start an agent or a terminal to begin working in this workspace."
+						icon={SquareTerminal}
+						onRefresh={onRefresh}
+						refreshing={refreshing}
+						title="No sessions yet"
+					/>
 				)}
 			</View>
 
-			{showComposer ? (
+			{showComposer || pullRequests.length > 0 ? (
 				<View
 					className="absolute inset-x-0"
 					style={{ bottom: composerBottom }}
@@ -295,10 +368,40 @@ export function WorkspaceScreen() {
 						setComposerHeight(event.nativeEvent.layout.height)
 					}
 				>
-					<TerminalComposer
-						onSubmit={handleSubmit}
-						onQuickKey={handleQuickKey}
-					/>
+					{pullRequests.length > 0 ? (
+						<View className="px-4 pb-2">
+							<PullRequestsButton
+								onPress={() =>
+									pullRequests.length > 1
+										? router.push({
+												pathname: "/workspace/[id]/pull-requests",
+												params: { id },
+											})
+										: router.push({
+												pathname:
+													"/workspace/[id]/pull-request/[pullRequestId]",
+												params: {
+													id,
+													pullRequestId: String(
+														pullRequests[0]?.prNumber ?? "",
+													),
+												},
+											})
+								}
+								pullRequests={pullRequests}
+							/>
+						</View>
+					) : null}
+					{showComposer ? (
+						<TerminalComposer
+							allowAttachments={activeRow?.agentId != null}
+							attachmentTarget={attachmentTarget}
+							onActiveChange={setComposerActive}
+							onQuickKey={handleQuickKey}
+							onSubmit={handleSubmit}
+							ref={composerRef}
+						/>
+					) : null}
 				</View>
 			) : null}
 		</View>

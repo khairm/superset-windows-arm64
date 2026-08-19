@@ -7,7 +7,7 @@ import {
 	type MultiRepoConfig,
 } from "../../../runtime/git/multi-repo";
 import type { HostServiceContext } from "../../../types";
-import { buildTerminalAgentLaunch, isChatAgent } from "../agents";
+import { buildTerminalAgentLaunch } from "../agents";
 import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import {
@@ -157,18 +157,13 @@ async function finishCreate(args: {
 	// Wait-for-setup gate, mirroring the single-repo tail in workspaces.ts: a
 	// lone terminal agent is chained behind the setup commands in the setup
 	// terminal (`setup && agent`) so it starts only after setup succeeds, and
-	// no second terminal is created. Chat agents and multi-agent launches keep
-	// the parallel path. If the command can't be built (unknown agent, missing
-	// attachment) fall back to parallel dispatch, which surfaces the error in
-	// the agents result.
+	// no second terminal is created. Multi-agent launches keep the parallel
+	// path. If the command can't be built (unknown agent, missing attachment)
+	// fall back to parallel dispatch, which surfaces the error in the agents
+	// result.
 	let chainAgent: { fullCommand: string; label: string } | null = null;
 	const soleLaunch = sugarLaunches.length === 1 ? sugarLaunches[0] : null;
-	if (
-		!alreadyExists &&
-		input.waitForSetupBeforeAgents &&
-		soleLaunch &&
-		!isChatAgent(soleLaunch.agent)
-	) {
+	if (!alreadyExists && input.waitForSetupBeforeAgents && soleLaunch) {
 		try {
 			chainAgent = buildTerminalAgentLaunch(ctx.db, {
 				workspaceId: workspaceRow.id,
