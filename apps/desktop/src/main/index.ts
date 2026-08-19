@@ -3,6 +3,11 @@ import log from "electron-log/main";
 import { installWindowsChildProcessPatch } from "./lib/windows-child-process-patch";
 installWindowsChildProcessPatch();
 import { pathToFileURL } from "node:url";
+import {
+	setAgentSetupTemplatesDir,
+	setupAgentIntegrations,
+	writeSharedDisabledAgentIds,
+} from "@superset/agent-setup";
 import { settings } from "@superset/local-db";
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import {
@@ -24,10 +29,10 @@ import {
 	PROTOCOL_SCHEME,
 } from "shared/constants";
 import { LOCAL_AUTH_TOKEN_PLACEHOLDER } from "shared/local-identity";
-import { setupAgentIntegrations } from "./lib/agent-setup";
 import { initAppState } from "./lib/app-state";
 import { requestAppleEventsAccess } from "./lib/apple-events-permission";
 import { isUpdateReadyToInstall, setupAutoUpdater } from "./lib/auto-updater";
+import { startBrowserBridge } from "./lib/browser/browser-bridge";
 import { installBundledCliShim } from "./lib/bundled-cli";
 import { resolveDevWorkspaceName } from "./lib/dev-workspace-name";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
@@ -497,6 +502,15 @@ if (!gotTheLock) {
 		log.info("[boot] step reconcileDaemonSessions done +" + bootMs() + "ms");
 		prewarmTerminalRuntime();
 
+		// Must be listening before any host-service spawns: the child learns the
+		// bridge endpoint/secret from its env, so a late bridge means browser
+		// control stays dark until the next respawn.
+		try {
+			await startBrowserBridge();
+		} catch (error) {
+			console.error("[main] Failed to start browser bridge:", error);
+		}
+
 		const hostServiceCoordinator = getHostServiceCoordinator();
 		// (CLOUD-SEVERANCE-P2) The host-service — and therefore every terminal —
 		// used to exist only while a cloud session did: no stored token meant no
@@ -566,8 +580,14 @@ if (!gotTheLock) {
 		// the token store would kill every running terminal as a side effect.
 
 		try {
+			// The vite build copies @superset/agent-setup's templates (plus the
+			// bundled Claude plugin) next to this bundle; see vite/helpers.ts.
+			setAgentSetupTemplatesDir(path.join(__dirname, "templates"));
 			const disabledAgentHooks =
 				localDb.select().from(settings).get()?.disabledAgentHooks ?? [];
+			// Mirror the disable list so CLI-launched host-services on this
+			// machine honor it instead of re-provisioning disabled agents.
+			writeSharedDisabledAgentIds(disabledAgentHooks);
 			setupAgentIntegrations({ disabledAgentIds: disabledAgentHooks });
 		} catch (error) {
 			console.error("[main] Failed to set up agent integrations:", error);

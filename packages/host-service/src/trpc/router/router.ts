@@ -2,7 +2,7 @@ import { router } from "../index";
 import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
 import { authRouter } from "./auth";
-import { chatRouter } from "./chat";
+import { browserRouter } from "./browser/browser";
 // (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
 // This token is registered in FEATURES.md against THIS file, not against the
 // companion/ directory — a marker satisfied only by fork-only files cannot
@@ -30,6 +30,7 @@ import { settingsRouter } from "./settings";
 import { sidebarMirrorRouter } from "./sidebar-mirror";
 import { terminalRouter } from "./terminal";
 import { terminalAgentsRouter } from "./terminal-agents";
+import { usageRouter } from "./usage";
 import { workspaceRouter } from "./workspace";
 import { workspaceCleanupRouter } from "./workspace-cleanup";
 import { workspaceCreationRouter } from "./workspace-creation";
@@ -39,9 +40,9 @@ export const appRouter = router({
 	agents: agentsRouter,
 	attachments: attachmentsRouter,
 	auth: authRouter,
+	browser: browserRouter,
 	health: healthRouter,
 	host: hostRouter,
-	chat: chatRouter,
 	// (COMPANION-ROUTER-MOUNT) fork-only.
 	companion: companionRouter,
 	config: configRouter,
@@ -58,6 +59,7 @@ export const appRouter = router({
 	sidebarMirror: sidebarMirrorRouter,
 	terminal: terminalRouter,
 	terminalAgents: terminalAgentsRouter,
+	usage: usageRouter,
 	workspace: workspaceRouter,
 	workspaces: workspacesRouter,
 	workspaceCleanup: workspaceCleanupRouter,

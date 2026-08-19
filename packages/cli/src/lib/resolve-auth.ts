@@ -51,14 +51,20 @@ export async function resolveAuth(
 		authSource = "local";
 	}
 
-	// The organization is whatever this machine decided, not whatever a stale
-	// config.json remembers from a cloud session.
-	const organizationId = resolveLocalOrganizationId() ?? config.organizationId;
+	// SUPERSET_ORGANIZATION_ID overrides for this invocation (headless/CI, and
+	// dev where the CLI must target a specific local org), mirroring how
+	// SUPERSET_API_KEY overrides the stored credential. Not persisted.
+	//
+	// (CLOUD-SEVERANCE-P2) Below that override, the machine's recorded local
+	// decision beats config.json: the stored id is a leftover from a cloud
+	// session and can name an organization this machine never had data for,
+	// while the decision file names the one holding its host.db.
+	const organizationId =
+		process.env.SUPERSET_ORGANIZATION_ID?.trim() ||
+		resolveLocalOrganizationId() ||
+		config.organizationId;
+	const resolvedConfig: SupersetConfig = { ...config, organizationId };
+
 	const api = createApiClient({ bearer, organizationId });
-	return {
-		config: { ...config, organizationId },
-		api,
-		bearer,
-		authSource,
-	};
+	return { config: resolvedConfig, api, bearer, authSource };
 }

@@ -20,10 +20,17 @@ import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { toTerminalSessionError } from "./errors";
 
-const createSessionInputSchema = z.object({
+export const createSessionInputSchema = z.object({
 	workspaceId: z.string(),
 	terminalId: z.string().optional(),
-	initialCommand: z.string().trim().min(1).optional(),
+	// An empty or whitespace-only command means "open a shell with no initial
+	// command" (e.g. a preset with no command), so normalize it to absent
+	// instead of rejecting. `launchSession` still requires a non-empty command.
+	initialCommand: z
+		.string()
+		.trim()
+		.optional()
+		.transform((value) => (value ? value : undefined)),
 	cwd: z.string().optional(),
 	themeType: z.string().optional(),
 	cols: z.number().int().positive().optional(),
@@ -320,8 +327,14 @@ export const terminalRouter = router({
 			//    already defunct — every read hides it via the session-liveness
 			//    join, and `deleteDefunct` collects it. Nothing to gain by racing
 			//    that, and the strict rule is easier to keep true.
+			//
+			// The binding ends as "disposed", not "terminal-exited": a session
+			// the user deliberately killed must never become a resume candidate,
+			// or auto-resume resurrects it at the next pane mount. The SIGHUP
+			// death-gasp / pty-exit stamps that land during the kill are
+			// overwritten by this one, which runs after the dispose settles.
 			if (result.dbDisposition === "disposed") {
-				ctx.terminalAgentStore.markTerminalExited(input.terminalId);
+				ctx.terminalAgentStore.markTerminalDisposed(input.terminalId);
 			}
 
 			if (result.dbDisposition === "superseded") {

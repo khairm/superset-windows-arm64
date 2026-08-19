@@ -25,6 +25,8 @@ export const env = createEnv({
 				message:
 					"RELAY_URL is set but this fork has no relay (see FEATURES.md, (CLOUD-SEVERANCE-P2)). Unset it.",
 			}),
+		BROWSER_BRIDGE_URL: z.string().url().optional(),
+		BROWSER_BRIDGE_SECRET: z.string().min(1).optional(),
 	},
 	runtimeEnv: process.env,
 	emptyStringAsUndefined: true,

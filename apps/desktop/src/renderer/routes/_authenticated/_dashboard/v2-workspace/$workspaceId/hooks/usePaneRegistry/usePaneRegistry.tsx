@@ -524,19 +524,18 @@ export function usePaneRegistry({
 						d.key === "close-pane" ? { ...d, label: "Close Browser" } : d,
 					),
 			},
-			// (CLOUD-SEVERANCE-P2) There is no `chat` renderer. That pane was the
-			// Superset-hosted agent — every session was created on the cloud chat
-			// service and every message went through it — so it is gone for good.
-			// A saved layout that still names it falls through to the registry's
+			// (CLOUD-SEVERANCE-P2) There is no `chat` renderer — v1.23.0 deleted the
+			// hosted chat pane upstream, which is where we had already got to. A
+			// saved layout still naming it falls through to the registry's
 			// "Unknown pane kind" placeholder, which the user can close.
 			//
 			// `chat-v3` below is the OTHER chat stack and is not the same thing: it
 			// drives the agent CLIs already installed on this machine and stores
-			// sessions in local SQLite. Upstream hid it behind a PostHog flag that
-			// phase 1 pinned false; here it is off by default behind a user setting.
-			// Registered conditionally rather than rendered-and-hidden, so with the
-			// setting off nothing — hotkey, tab menu, or restored layout — can put
-			// one on screen.
+			// sessions in local SQLite. Upstream still gates it on a PostHog flag,
+			// which phase 1 pinned false forever; here it is a user setting,
+			// default off. Registered conditionally rather than rendered-and-hidden,
+			// so with the setting off nothing — hotkey, tab menu, or restored
+			// layout — can put one on screen.
 			...(isLocalChatEnabled
 				? {
 						"chat-v3": {

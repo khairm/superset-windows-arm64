@@ -61,9 +61,13 @@ export function useWorkspaceHotkeys({
 		await addTerminalTab();
 	});
 
-	// (CLOUD-SEVERANCE-P2) NEW_CHAT and SPLIT_WITH_CHAT are unbound here — the
-	// chat pane is gone, and a hotkey that opens a pane no registry can render
-	// would leave an empty rectangle the user cannot explain.
+	// (CLOUD-SEVERANCE-P2) NEW_CHAT and SPLIT_WITH_CHAT stay unbound. The cloud
+	// chat pane they opened is gone, and the local one that replaced it is
+	// deliberately not promoted: its single entry point is the tab menu, and
+	// only when the user has switched it on. A hotkey would fire whether or not
+	// the registry has a `chat-v3` renderer, leaving an empty rectangle the user
+	// cannot explain.
+
 
 	useHotkey("NEW_BROWSER", () => {
 		store.getState().addTab({

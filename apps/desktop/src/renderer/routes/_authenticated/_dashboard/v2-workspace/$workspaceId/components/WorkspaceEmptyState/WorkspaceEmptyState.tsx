@@ -9,9 +9,13 @@ import supersetEmptyStateWordmark from "renderer/screens/main/components/Workspa
 import { EmptyTabActionButton } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/components/EmptyTabActionButton";
 import { useTheme } from "renderer/stores/theme";
 
-// (CLOUD-SEVERANCE-P2) "Open Chat" is not offered on the empty state. An
-// empty workspace is exactly where a dead action does the most damage — it is
-// the first thing a new user clicks.
+// (CLOUD-SEVERANCE-P2) No chat tile here, and this is a deliberate divergence
+// from upstream rather than a merge that lost something: v1.23.0 offers an
+// "Open Chat v3" tile on this screen and the fork drops it on every merge.
+// The local chat pane is opt-in and unpromoted — its one entry point is the tab
+// menu, and only once the user has switched it on. An empty workspace is the
+// first thing a new user clicks, so it advertises terminal, browser and search
+// and nothing that is switched off.
 interface WorkspaceEmptyStateProps {
 	onOpenBrowser: () => void;
 	onOpenQuickOpen: () => void;

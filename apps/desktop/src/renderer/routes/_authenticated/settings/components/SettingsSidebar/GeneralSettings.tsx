@@ -133,6 +133,9 @@ const SECTION_GROUPS: SectionGroup[] = [
 	{
 		label: "System",
 		items: [
+			// (CLOUD-SEVERANCE-P2) No Security row. v1.23.0 relabels it "Remote
+			// Workspaces", which is exactly what this fork does not have — its one
+			// switch exposes the host service over the severed relay.
 			{
 				id: "/settings/permissions",
 				section: "permissions",

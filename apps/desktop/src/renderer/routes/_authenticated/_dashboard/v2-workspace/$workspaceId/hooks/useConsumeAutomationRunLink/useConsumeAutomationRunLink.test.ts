@@ -212,5 +212,4 @@ describe("automation run link ownership checks", () => {
 			}),
 		).toBe(false);
 	});
-
 });

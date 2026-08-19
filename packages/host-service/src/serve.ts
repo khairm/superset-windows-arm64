@@ -7,8 +7,13 @@ import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
 import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
-import { PskHostAuthProvider } from "./providers/host-auth";
-import { LocalModelProvider } from "./providers/model-providers";
+import {
+	EdgeGuardedHostAuthProvider,
+	PskHostAuthProvider,
+} from "./providers/host-auth";
+import { provisionAgentIntegrations } from "./runtime/agent-provisioning";
+import { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
+import { applyLoginShellEnvToProcess } from "./runtime/login-shell-env";
 import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 import { captureFatalStartupError, initSentry } from "./sentry";
 import { startTerminalBaseEnvResolution } from "./terminal/env";
@@ -26,6 +31,12 @@ async function main(): Promise<void> {
 	// snapshot; every other request path is unaffected.
 	startTerminalBaseEnvResolution();
 
+	// Standalone entry only: the desktop already merges the login-shell PATH
+	// into hosts it spawns. Fire-and-forget for the same reason as the base-env
+	// resolution above; git/gh calls racing the probe just see the launcher env
+	// once, same as before this merge existed.
+	void applyLoginShellEnvToProcess();
+
 	// Fire-and-track: kick off pty-daemon spawn-or-adopt without blocking
 	// host-service startup. Terminal request handlers `await
 	// waitForDaemonReady(orgId)` before using the supervisor's socket path,
@@ -33,6 +44,11 @@ async function main(): Promise<void> {
 	// Non-terminal requests (workspaces, git, chat) are unaffected if the
 	// daemon takes time to come up or fails entirely.
 	startDaemonBootstrap(env.ORGANIZATION_ID);
+
+	// Standalone entry only: the desktop provisions these itself for hosts it
+	// spawns (with its per-agent disable settings); this covers CLI/systemd
+	// launches, which previously had no notify hooks or shell wrappers (#6254).
+	provisionAgentIntegrations();
 
 	// (CLOUD-SEVERANCE-P2) No JWT exchange, no config-file token source — both
 	// were network calls to api.superset.sh, and nothing consumes their headers
@@ -47,12 +63,15 @@ async function main(): Promise<void> {
 				cloudApiUrl: env.SUPERSET_API_URL,
 				migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
 				allowedOrigins: env.CORS_ORIGINS ?? [],
+				browserBridge: resolveBrowserBridgeFromEnv(env),
 			},
 			providers: {
 				auth: authProvider,
-				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+				hostAuth:
+					env.SUPERSET_HOST_RUN_MODE === "sandbox"
+						? new EdgeGuardedHostAuthProvider()
+						: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
 				credentials: new LocalGitCredentialProvider(),
-				modelResolver: new LocalModelProvider(),
 			},
 		});
 
@@ -120,9 +139,10 @@ async function main(): Promise<void> {
 			terminalAgentStore,
 		});
 
-		// (CLOUD-SEVERANCE-P2) No relay dial. The refusal for a RELAY_URL that
-		// arrives anyway lives in the env schema, which is parsed at import —
-		// early enough to actually stop this process, unlike a throw in here.
+		// (CLOUD-SEVERANCE-P2) No relay dial, in either run mode. The refusal
+		// for a RELAY_URL that arrives anyway lives in the env schema, parsed
+		// at import — early enough to actually stop this process, unlike a
+		// throw in here.
 	});
 	installUpgradeSocketGuard(server);
 	injectWebSocket(server);

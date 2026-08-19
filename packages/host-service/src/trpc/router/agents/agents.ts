@@ -19,6 +19,7 @@ import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { resolveAttachmentPath } from "../attachments/storage";
 import { toTerminalSessionError } from "../terminal/errors";
+import { resolveDefaultAccountEnv } from "../usage/default-account";
 
 interface ResolvedHostAgentConfig {
 	id: string;
@@ -194,15 +195,13 @@ export interface AgentRunInput {
 	resumeSessionId?: string;
 }
 
-// (CLOUD-SEVERANCE-P2) The `chat` variant is retained but unreachable:
-// `runChatAgent` refuses instead of creating a session, so nothing produces it
-// any more. Kept in the union because the desktop's workspace-create path
-// mirrors this shape structurally, and narrowing it here only moves the dead
-// branch into a type error there.
-export type AgentRunResult =
-	| { kind: "terminal"; sessionId: string; label: string }
-	| { kind: "chat"; sessionId: string; label: string };
+export type AgentRunResult = {
+	kind: "terminal";
+	sessionId: string;
+	label: string;
+};
 
+// (CLOUD-SEVERANCE-P2) Kept only to recognise the id and refuse it by name.
 const SUPERSET_AGENT_ID = "superset";
 const SUPERSET_AGENT_LABEL = "Superset";
 
@@ -268,14 +267,6 @@ export function validateAgentLaunchEffort(
 	input: Pick<AgentRunInput, "agent" | "effort">,
 ): void {
 	if (!input.effort) return;
-	if (input.agent === SUPERSET_AGENT_ID) {
-		validateAgentEffortSelection(
-			SUPERSET_AGENT_ID,
-			SUPERSET_AGENT_LABEL,
-			input.effort,
-		);
-		return;
-	}
 
 	const config = resolveHostAgentConfig(db, input.agent);
 	if (!config) {
@@ -287,26 +278,6 @@ export function validateAgentLaunchEffort(
 	validateAgentEffortSelection(config.presetId, config.label, input.effort);
 }
 
-/**
- * (CLOUD-SEVERANCE-P2) The `superset` agent ran as a cloud chat session: the
- * session was created on `api.superset.sh` and every message went through it.
- * Both ends are gone — the API client rejects, and the desktop no longer has a
- * chat pane to attach the session to.
- *
- * It refuses instead of quietly doing nothing because this is reachable
- * without any UI at all: `superset agents create --agent superset` from the
- * CLI, and automation dispatch. A launch that "succeeded" and then produced no
- * terminal, no pane and no output would look like the app had lost the work.
- */
-function runChatAgent(label: string): never {
-	throw new TRPCError({
-		code: "FORBIDDEN",
-		message:
-			`${label} is unavailable in this build. It ran as a hosted chat ` +
-			"session against the Superset cloud, which this fork does not talk " +
-			"to. Use a terminal agent (claude, codex, …) instead.",
-	});
-}
 
 /**
  * Resolve a terminal agent launch to the shell command that runs it, without
@@ -353,8 +324,11 @@ export function buildTerminalAgentLaunch(
 		{ resumeSessionId: input.resumeSessionId },
 	);
 	const modelEnv = buildAgentModelEnv(config.presetId, input.model);
+	// Host-default provider account (Usage tab switcher). Per-agent env wins,
+	// so a "Claude (work)" agent with its own CLAUDE_CONFIG_DIR stays pinned.
+	const accountEnv = resolveDefaultAccountEnv(db, config.presetId);
 	return {
-		fullCommand: `${envOverlayPrefix({ ...config.env, ...modelEnv })}${command}`,
+		fullCommand: `${envOverlayPrefix({ ...accountEnv, ...config.env, ...modelEnv })}${command}`,
 		label: config.label,
 	};
 }
@@ -385,11 +359,6 @@ async function runTerminalAgent(
 	};
 }
 
-/** Sugar agents that run as chat sessions rather than terminal commands. */
-export function isChatAgent(agent: string): boolean {
-	return agent === SUPERSET_AGENT_ID;
-}
-
 export async function runAgentInWorkspace(
 	ctx: HostServiceContext,
 	input: AgentRunInput,
@@ -405,26 +374,21 @@ export async function runAgentInWorkspace(
 			message: `Workspace ${input.workspaceId} not found on this host — it may have been deleted.`,
 		});
 	}
+	// (CLOUD-SEVERANCE-P2) v1.23.0 deleted the hosted chat agent upstream, so
+	// `superset` would now fall through to the terminal path and come back as
+	// "No host agent config matching 'superset' — … this host's agents were
+	// reset. Re-select an agent." True, but it sends the user looking for a
+	// reset that would not bring it back. Automations pinned to `superset`
+	// before severance still dispatch this id, so the refusal names the real
+	// reason and points somewhere that works.
 	if (input.agent === SUPERSET_AGENT_ID) {
-		validateAgentEffortSelection(
-			SUPERSET_AGENT_ID,
-			SUPERSET_AGENT_LABEL,
-			input.effort,
-		);
-		if (input.resumeSessionId !== undefined) {
-			// Chat sessions restore through the chat runtime, not a relaunch.
-			throw new TRPCError({
-				code: "BAD_REQUEST",
-				message: `${SUPERSET_AGENT_LABEL} does not support resuming a session by id. Omit resumeSessionId to start a new session.`,
-			});
-		}
-		if (input.prompt.length === 0) {
-			throw new TRPCError({
-				code: "BAD_REQUEST",
-				message: `${SUPERSET_AGENT_LABEL} requires a prompt to start a session.`,
-			});
-		}
-		return runChatAgent(SUPERSET_AGENT_LABEL);
+		throw new TRPCError({
+			code: "FORBIDDEN",
+			message:
+				`${SUPERSET_AGENT_LABEL} is unavailable in this build. It ran as a ` +
+				"hosted chat session against the Superset cloud, which this fork " +
+				"does not talk to. Use a terminal agent (claude, codex, …) instead.",
+		});
 	}
 	return runTerminalAgent(ctx, input);
 }
@@ -435,9 +399,8 @@ export const agentsRouter = router({
 			z.object({
 				workspaceId: z.string().uuid(),
 				agent: z.string().min(1),
-				// Optional for terminal agents: an empty prompt launches the bare
-				// agent (the builder drops promptArgs). Chat agents still require
-				// one — enforced in runAgentInWorkspace where the branch is known.
+				// Optional: an empty prompt launches the bare agent (the builder
+				// drops promptArgs).
 				prompt: z.string().default(""),
 				attachmentIds: z.array(z.string().uuid()).optional(),
 				model: z.string().min(1).optional(),

@@ -27,7 +27,11 @@
         attachments and previews. The cloud API, the Electric proxy, the relay and
         its two failover targets are gone — and so is the bare `ws: wss:` pair that
         used to sit here, which allowed a WebSocket to ANY host on the internet and
-        would have made removing the named relay entries purely cosmetic.
+        would have made removing the named relay entries purely cosmetic. Upstream's
+        cloud-sandbox preview origin is not here either: a sandbox is reached
+        through the cloud this fork does not talk to. Its hostname is spelled
+        out in the gate rather than here, because a comment naming an origin
+        ships in the bundle and would satisfy the very check that hunts for it.
       - img-src 'self' data: blob: https: http:: Allow images from any source (needed for favicons, browser pane webview content, and file attachment previews)
       - media-src 'self' data: blob:: Allow <video>/<audio> from blob + data URIs (file preview); without this, media falls back to default-src 'self' and blob video won't play
       - font-src 'self': Allow fonts from same origin

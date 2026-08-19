@@ -285,6 +285,10 @@ export const actionsProvider: CommandProvider = {
 					section: "dev",
 					icon: StarIcon,
 					keywords: ["star", "github", "nag", "dev", "preview", "test"],
+					// A dynamic import here would only defer this file's own module —
+					// AnimatedStarButton (and framer-motion) is already statically
+					// imported by StarNagCard, which DashboardSidebar/WorkspaceSidebar
+					// import unconditionally, so it's already in the eager bundle.
 					run: () => previewStarNagOnboardingToast(),
 				},
 				{
@@ -299,6 +303,7 @@ export const actionsProvider: CommandProvider = {
 							STAR_NAG_INITIAL_THRESHOLD;
 						useStarNagStore.setState({
 							completed: false,
+							completedAt: null,
 							workspacesCreatedSinceBaseline: threshold,
 							nextThreshold: threshold,
 							deferredUntil: null,

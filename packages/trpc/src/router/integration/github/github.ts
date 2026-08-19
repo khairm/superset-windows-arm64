@@ -12,6 +12,7 @@ import { z } from "zod";
 import { env } from "../../../env";
 import { protectedProcedure } from "../../../trpc";
 import { verifyOrgAdmin, verifyOrgMembership } from "../utils";
+import { listGithubPeople } from "./people";
 
 const qstash = new Client({ token: env.QSTASH_TOKEN });
 
@@ -94,6 +95,13 @@ export const githubRouter = {
 			}
 
 			return { success: true };
+		}),
+
+	listPeople: protectedProcedure
+		.input(z.object({ organizationId: z.string().uuid() }))
+		.query(async ({ ctx, input }) => {
+			await verifyOrgMembership(ctx.session.user.id, input.organizationId);
+			return listGithubPeople(input.organizationId);
 		}),
 
 	listRepositories: protectedProcedure

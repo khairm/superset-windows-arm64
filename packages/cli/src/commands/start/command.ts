@@ -16,8 +16,9 @@ export default command({
 	run: async ({ ctx, options, signal }) => {
 		// (CLOUD-SEVERANCE-P2) Standalone-CLI path only (the desktop-bundled
 		// binary refuses to start a host service at all). The organization is
-		// the one this machine resolved for itself; --org can no longer pick a
-		// different cloud organization because there are none to pick from.
+		// the one this machine resolved for itself — `--org` and
+		// SUPERSET_ORGANIZATION_ID are honoured upstream of here, in
+		// resolveAuth, since there is no cloud list to pick from.
 		const organization = {
 			id: requireLocalOrganizationId(ctx.config.organizationId),
 			name: "this machine",

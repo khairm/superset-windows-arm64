@@ -55,6 +55,10 @@ const LAST_RUN_META: Record<
 	dispatching: { dot: "bg-amber-500", label: "creating" },
 	skipped_offline: { dot: "bg-red-500", label: "failed", failed: true },
 	dispatch_failed: { dot: "bg-red-500", label: "failed", failed: true },
+	// Neither created a workspace, so neither is `failed` — that flag offers to
+	// open one.
+	debounced: { dot: "bg-slate-400", label: "superseded" },
+	rejected: { dot: "bg-amber-500", label: "blocked" },
 };
 
 function compactUntil(at: number, now: Date): string {
@@ -90,7 +94,10 @@ export function AutomationRow({
 	onDelete,
 }: AutomationRowProps) {
 	const navigate = useNavigate();
-	const scheduleLabel = describeSchedule(automation.rrule);
+	// No rrule means the automation is driven by events rather than a clock.
+	const scheduleLabel = automation.rrule
+		? describeSchedule(automation.rrule)
+		: "Event triggered";
 
 	const openDetail = () =>
 		navigate({
@@ -111,7 +118,6 @@ export function AutomationRow({
 			params: { workspaceId: lastRun.v2WorkspaceId },
 			search: {
 				terminalId: lastRun.terminalSessionId ?? undefined,
-				chatSessionId: lastRun.chatSessionId ?? undefined,
 			},
 		});
 	};
@@ -197,7 +203,7 @@ export function AutomationRow({
 							automation.enabled && automation.nextRunAt
 								? `Next run ${formatDateTimeInTimezone(
 										new Date(automation.nextRunAt),
-										automation.timezone,
+										automation.timezone ?? "UTC",
 									)}`
 								: undefined
 						}

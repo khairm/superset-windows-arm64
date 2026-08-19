@@ -118,7 +118,7 @@ bun-windows-arm64	apps/desktop/scripts
 titleBarOverlay	apps/desktop/src/main
 windows-child-process	apps/desktop/src/main
 pane-map-hook	apps/desktop/src/main
-CLAUDE-STOP-UNHOOKED	apps/desktop/src/main
+CLAUDE-STOP-UNHOOKED	packages/agent-setup/src
 (COMPACT-YELLOW)	apps/desktop/src/main
 (TEAM-YELLOW)	apps/desktop/src/main
 _codex_job_active	apps/desktop/src/main
@@ -180,7 +180,7 @@ useAutoResumeActivity	apps/desktop/src/renderer
 AutoResumeController	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
 agent-wrappers	apps/desktop/src/main
-(HOOK-FORK-DIET)	apps/desktop/src/main
+(HOOK-FORK-DIET)	packages/agent-setup
 (MASTER-ARCHIVE-ONLY)	apps/desktop/src/renderer
 (RECYCLE-BIN)	apps/desktop/src/renderer
 (RECYCLE-BIN)	apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useCommandWatcher/tools

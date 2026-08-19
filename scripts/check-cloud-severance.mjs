@@ -680,6 +680,10 @@ if (noArtifacts) {
 		["electric-proxy.avi-6ac.workers.dev", "the Electric sync proxy"],
 		["streams.superset.sh", "the streams endpoint"],
 		["superset-stream.fly.dev", "the streams fallback endpoint"],
+		// Added by upstream v1.23.0's cloud workspace sandboxes, which a browser
+		// reaches directly at the provider's preview domain. Listed here because
+		// upstream re-adds it to the CSP on every release that touches it.
+		["preview.bl.run", "the cloud sandbox preview domain"],
 	];
 	for (const [host, what] of CLOUD_ORIGINS) {
 		assertAbsent(

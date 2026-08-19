@@ -1,7 +1,8 @@
 "use client";
 
-import { FaGithub, FaSlack } from "react-icons/fa";
-import { SiLinear } from "react-icons/si";
+import { BsMicrosoftTeams } from "react-icons/bs";
+import { FaGithub, FaGoogle, FaSlack } from "react-icons/fa";
+import { SiLinear, SiNotion, SiSentry } from "react-icons/si";
 import {
 	IntegrationCard,
 	type IntegrationCardProps,
@@ -31,6 +32,38 @@ const integrations: IntegrationCardProps[] = [
 		category: "Communication",
 		accentColor: "#4A154B",
 		icon: <FaSlack className="size-8" />,
+	},
+	{
+		id: "notion",
+		name: "Notion",
+		description: "Run automations on data source and comment activity.",
+		category: "Knowledge",
+		accentColor: "#5F5E5B",
+		icon: <SiNotion className="size-8" />,
+	},
+	{
+		id: "microsoft-teams",
+		name: "Microsoft Teams",
+		description: "Trigger automations from Teams channel messages.",
+		category: "Communication",
+		accentColor: "#5B5FC7",
+		icon: <BsMicrosoftTeams className="size-8" />,
+	},
+	{
+		id: "sentry",
+		name: "Sentry",
+		description: "Run automations when Sentry issues change.",
+		category: "Monitoring",
+		accentColor: "#362D59",
+		icon: <SiSentry className="size-8" />,
+	},
+	{
+		id: "google",
+		name: "Google",
+		description: "Trigger automations from Google Calendar and Gmail.",
+		category: "Productivity",
+		accentColor: "#4285F4",
+		icon: <FaGoogle className="size-8" />,
 	},
 ];
 

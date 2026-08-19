@@ -15,13 +15,18 @@ import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { navigateToV2Workspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import type { AccessibleV2Workspace } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
-import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
 
 export interface V2WorkspaceActions {
 	/** Navigate to the workspace (paywall-gated for remote hosts). */
 	open: () => void;
 	addToSidebar: () => void;
 	removeFromSidebar: () => void;
+	/**
+	 * (RECYCLE-BIN) Despite the name this opens NO destroy dialog — every
+	 * delete entry point soft-deletes to the project's Recycle Bin. Kept
+	 * under the upstream name so both surfaces (list row, board card) keep
+	 * calling the same action.
+	 */
 	openDeleteDialog: () => void;
 }
 
@@ -45,8 +50,13 @@ export function V2WorkspaceContextMenu({
 }: V2WorkspaceContextMenuProps) {
 	const navigate = useNavigate();
 	const { gateFeature } = usePaywall();
-	const { ensureWorkspaceInSidebar, hideWorkspaceInSidebar } =
-		useDashboardSidebarState();
+	const {
+		ensureWorkspaceInSidebar,
+		hideWorkspaceInSidebar,
+		archiveWorkspace,
+		deleteWorkspace,
+		unarchiveWorkspace,
+	} = useDashboardSidebarState();
 	const { copyToClipboard } = useCopyToClipboard();
 	const isMainWorkspace = workspace.type === "main";
 
@@ -60,8 +70,15 @@ export function V2WorkspaceContextMenu({
 	}, [gateFeature, navigate, workspace.hostType, workspace.id]);
 
 	const addToSidebar = useCallback(() => {
-		const add = () =>
-			ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
+		const add = () => {
+			// An archived thread is already in the sidebar's data — restore it
+			// instead of re-inserting (ensureWorkspaceInSidebar no-ops on it).
+			if (workspace.isArchived) {
+				unarchiveWorkspace(workspace.id);
+			} else {
+				ensureWorkspaceInSidebar(workspace.id, workspace.projectId);
+			}
+		};
 		if (workspace.hostType === "local-device") {
 			add();
 			return;
@@ -69,9 +86,11 @@ export function V2WorkspaceContextMenu({
 		gateFeature(GATED_FEATURES.REMOTE_WORKSPACES, add);
 	}, [
 		ensureWorkspaceInSidebar,
+		unarchiveWorkspace,
 		gateFeature,
 		workspace.hostType,
 		workspace.id,
+		workspace.isArchived,
 		workspace.projectId,
 	]);
 
@@ -82,13 +101,22 @@ export function V2WorkspaceContextMenu({
 		// an extra render cycle of latency. The list view is never a workspace
 		// route, so there's no active workspace to navigate away from.
 		//
-		// Always hide (keep the row with isHidden) rather than delete: the
-		// auto-add-local-workspaces hook treats a missing v2WorkspaceLocalState
-		// row as never-seen and would re-pin it. The tombstone row preserves the
-		// unpin intent.
-		hideWorkspaceInSidebar(workspace.id, workspace.projectId);
+		if (isMainWorkspace) {
+			// (MASTER-ARCHIVE-ONLY) Master / non-git master cards ARCHIVE
+			// (recoverable under the project's Archived section) — they can
+			// never be hard-removed/hidden.
+			archiveWorkspace(workspace.id, workspace.projectId);
+		} else {
+			// Always hide (keep the row with isHidden) rather than delete: the
+			// auto-add-local-workspaces hook treats a missing v2WorkspaceLocalState
+			// row as never-seen and would re-pin it. The tombstone row preserves the
+			// unpin intent.
+			hideWorkspaceInSidebar(workspace.id, workspace.projectId);
+		}
 	}, [
 		isCurrentRoute,
+		isMainWorkspace,
+		archiveWorkspace,
 		hideWorkspaceInSidebar,
 		workspace.id,
 		workspace.projectId,
@@ -105,15 +133,15 @@ export function V2WorkspaceContextMenu({
 		}
 	}, [copyToClipboard, workspace.branch]);
 
-	// Globally-mounted dialog (DeleteWorkspaceMount): archive-first
-	// tombstoning drops this row the moment the destroy starts, which
-	// would unmount a row-local dialog mid-flight.
+	// (RECYCLE-BIN) The trash affordance is a SILENT soft-delete — it moves the
+	// thread to its project's Recycle Bin (deletedAt + isHidden) instead of
+	// opening the destroy dialog. The real git destroy is reachable ONLY from
+	// in-bin "Delete permanently" / "Empty Recycle Bin". Mains never reach here
+	// (the affordance only renders for non-main rows; deleteWorkspace refuses a
+	// main anyway).
 	const openDeleteDialog = useCallback(() => {
-		useDeleteWorkspaceIntent.getState().request({
-			workspaceId: workspace.id,
-			workspaceName: workspace.name || workspace.branch,
-		});
-	}, [workspace.id, workspace.name, workspace.branch]);
+		deleteWorkspace(workspace.id, workspace.projectId);
+	}, [deleteWorkspace, workspace.id, workspace.projectId]);
 
 	return (
 		<ContextMenu>
@@ -152,6 +180,8 @@ export function V2WorkspaceContextMenu({
 				{!isMainWorkspace ? (
 					<>
 						<ContextMenuSeparator />
+						{/* (RECYCLE-BIN) Silent soft-delete to the project's Recycle Bin —
+						    not a destroy dialog. */}
 						<ContextMenuItem
 							onSelect={openDeleteDialog}
 							className="text-destructive focus:text-destructive"

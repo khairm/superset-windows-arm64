@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { NodeWebSocket } from "@hono/node-ws";
+import { resolveSupersetHomeDir } from "@superset/agent-setup/paths";
 import { hasRunningForegroundProcess } from "@superset/pty-daemon/process-tree";
 import { CURRENT_PROTOCOL_VERSION } from "@superset/pty-daemon/protocol";
 import {
@@ -39,6 +40,7 @@ import type { EventBus } from "../events/index.ts";
 import { portManager } from "../ports/port-manager.ts";
 import { sweepAgentBindingsAfterDaemonLoss } from "../terminal-agents/daemon-loss-sweep.ts";
 import { markTerminalAgentBindingEnded } from "../terminal-agents/persistence.ts";
+import { resolveDefaultAccountTerminalEnv } from "../trpc/router/usage/default-account.ts";
 import {
 	AcknowledgedInputError,
 	type AcknowledgedInputFailureKind,
@@ -579,6 +581,15 @@ interface TerminalSession {
 	modeTracker: ModeTracker;
 
 	/**
+	 * Resolves once the daemon's post-adoption ring-buffer replay has
+	 * quiesced (immediately for non-adopted sessions). Attach paths await it
+	 * before delivering to a socket, so the mode preamble is built from a
+	 * tracker that has actually seen the program's mode bytes and replayed
+	 * bytes never broadcast to a just-attached client.
+	 */
+	adoptionReplaySettled: Promise<void>;
+
+	/**
 	 * Stream identity for seq-aware clients. Fresh per TerminalSession object
 	 * (create, adopt, respawn) — a client anchored to a different epoch has an
 	 * unknowable position (the byte counter restarted) and gets a reanchor.
@@ -674,14 +685,12 @@ async function resolveAttachSessionOnce({
 	themeType,
 	db,
 	eventBus,
-	replayOnAdoption,
 }: {
 	terminalId: string;
 	workspaceId: string;
 	themeType?: "dark" | "light";
 	db: HostDb;
 	eventBus?: EventBus;
-	replayOnAdoption: boolean;
 }): Promise<
 	TerminalSession | { error: string; code?: "session-gone"; transient?: boolean }
 > {
@@ -734,8 +743,6 @@ async function resolveAttachSessionOnce({
 			db,
 			eventBus,
 			adoptOnly: true,
-			// Renderer passes `?replay=0` on reconnect; see replayOnAdoption.
-			replayOnAdoption,
 		});
 		if (!("error" in adopted)) {
 			const live = sessions.get(terminalId);
@@ -1353,7 +1360,7 @@ async function getOrAdoptSession({
 			});
 			if ("error" in adopted) return adopted;
 
-			await waitForAdoptionReplay(adopted);
+			await adopted.adoptionReplaySettled;
 			return adopted;
 		})();
 		adoptionsInFlight.set(terminalId, attempt);
@@ -3023,13 +3030,6 @@ interface CreateTerminalSessionOptions {
 	/** Only recover an already-live daemon session; never spawn a new PTY. */
 	adoptOnly?: boolean;
 	/**
-	 * Replay the daemon's ring buffer on subscribe. Default true. Pass false
-	 * when the renderer's xterm already has the scrollback — replaying then
-	 * doubles the visible output. Tradeoff: bytes the PTY produced during
-	 * the WS-down window are dropped (sub-second on a daemon swap).
-	 */
-	replayOnAdoption?: boolean;
-	/**
 	 * Deliver a "session restored" separator ahead of the first replay. Set on
 	 * the cold-restore respawn path, where the renderer paints stale scrollback
 	 * above a brand-new shell.
@@ -3083,7 +3083,6 @@ export async function createTerminalSessionInternal({
 	cols: requestedCols,
 	rows: requestedRows,
 	adoptOnly = false,
-	replayOnAdoption = true,
 	restoredNotice = false,
 }: CreateTerminalSessionOptions): Promise<
 	// (DISPOSE-LIMBO) `code: "session-gone"` rides alongside upstream's kinded
@@ -3185,25 +3184,35 @@ export async function createTerminalSessionInternal({
 	// wait for it here before the first PTY needs the snapshot.
 	await waitForTerminalBaseEnv();
 	const baseEnv = getTerminalBaseEnv();
-	const supersetHomeDir = process.env.SUPERSET_HOME_DIR || "";
-	const shell = await resolveLaunchShell(baseEnv);
+	// Fallback matters for hosts not spawned by the desktop (CLI/systemd):
+	// without it the wrapper paths, hook guard env, and shell bootstrap all
+	// silently disable (#6254).
+	const supersetHomeDir = resolveSupersetHomeDir();
+	const shell = resolveLaunchShell(baseEnv);
 	const shellArgs = getShellLaunchArgs({ shell, supersetHomeDir });
-	const ptyEnv = buildV2TerminalEnv({
-		baseEnv,
-		shell,
-		supersetHomeDir,
-		themeType,
-		cwd,
-		terminalId,
-		workspaceId,
-		workspacePath: workspace.worktreePath,
-		rootPath,
-		supersetEnv:
-			process.env.NODE_ENV === "development" ? "development" : "production",
-		agentHookPort: process.env.SUPERSET_AGENT_HOOK_PORT || "",
-		agentHookVersion: process.env.SUPERSET_AGENT_HOOK_VERSION || "",
-		hostAgentHookUrl: getHostAgentHookUrl(),
-	});
+	const ptyEnv = {
+		...buildV2TerminalEnv({
+			baseEnv,
+			shell,
+			supersetHomeDir,
+			organizationId: process.env.ORGANIZATION_ID || "",
+			themeType,
+			cwd,
+			terminalId,
+			workspaceId,
+			workspacePath: workspace.worktreePath,
+			rootPath,
+			supersetEnv:
+				process.env.NODE_ENV === "development" ? "development" : "production",
+			agentHookPort: process.env.SUPERSET_AGENT_HOOK_PORT || "",
+			agentHookVersion: process.env.SUPERSET_AGENT_HOOK_VERSION || "",
+			hostAgentHookUrl: getHostAgentHookUrl(),
+		}),
+		// Usage-tab default account: provider CLIs typed or preset-launched in
+		// this terminal run on the selected login. Baked at spawn — existing
+		// terminals keep the account they started with.
+		...resolveDefaultAccountTerminalEnv(db),
+	};
 
 	let daemon: DaemonClient;
 	try {
@@ -3499,6 +3508,7 @@ export async function createTerminalSessionInternal({
 		launchShellName: basename(shell),
 		portHintDecoder: new StringDecoder("utf8"),
 		modeTracker: createModeTracker(cols, rows),
+		adoptionReplaySettled: Promise.resolve(),
 		epoch: randomBytes(8).toString("hex"),
 		outputSeq: 0,
 		retained: [],
@@ -3528,13 +3538,14 @@ export async function createTerminalSessionInternal({
 		);
 	}
 
-	// daemon.subscribe throws on a second replay-subscribe for an id another
-	// (unserialized) creator just subscribed — e.g. POST /terminal/sessions
-	// racing a WS respawn. Without rollback the throw would strand THIS
-	// half-built session (unsubscribeDaemon still null) in the map: attaches
-	// would bind sockets to it and the pane would be permanently output-dead.
-	// Restore the overwritten winner (or clear the entry) and rethrow. The
-	// daemon PTY is intentionally NOT killed — the racing winner shares it.
+	// daemon.subscribe warns (and joins the live stream) on a second
+	// replay-subscribe for an id another (unserialized) creator just subscribed
+	// — e.g. POST /terminal/sessions racing a WS respawn. Should it ever throw
+	// again, rollback keeps THIS half-built session (unsubscribeDaemon still
+	// null) out of the map: attaches would otherwise bind sockets to it and the
+	// pane would be permanently output-dead. Restore the overwritten winner (or
+	// clear the entry) and rethrow. The daemon PTY is intentionally NOT killed —
+	// the racing winner shares it.
 	try {
 		session.unsubscribeDaemon = subscribeSessionToDaemon();
 	} catch (error) {
@@ -3549,9 +3560,17 @@ export async function createTerminalSessionInternal({
 	}
 
 	function subscribeSessionToDaemon() {
+		// Always request the daemon's ring on subscribe: it is the only way to
+		// rebuild the mode tracker after adoption (a tracker that never sees the
+		// program's `?25l`/`?1004h`/kitty bytes builds wrong preambles and
+		// disables host-side focus forwarding). Whether the replayed BYTES reach
+		// any client is decided per-attach: seq clients are protected by
+		// reanchor/anchor accounting, legacy `?replay=0` clients get the FIFO
+		// dropped at attach. Fresh (non-adopted) sessions have an empty ring, so
+		// replay is a no-op there.
 		return daemon.subscribe(
 			terminalId,
-			{ replay: replayOnAdoption },
+			{ replay: true },
 			{
 				onOutput(chunk) {
 					// Bytes flow daemon → host → xterm without UTF-8 decoding;
@@ -3715,6 +3734,12 @@ export async function createTerminalSessionInternal({
 		);
 	}
 
+	// The ring replay lands asynchronously after subscribe; attach paths
+	// await this so the first preamble reflects the rebuilt tracker.
+	if (isAdopted) {
+		session.adoptionReplaySettled = waitForAdoptionReplay(session);
+	}
+
 	if (initialCommand) {
 		queueInitialCommand(session, initialCommand);
 	}
@@ -3875,6 +3900,14 @@ export function registerWorkspaceTerminalRoute({
 
 				sendMessage(ws, { type: "title", title: session.title });
 				if (seqRequest.kind === "legacy") {
+					// Pre-seq contract: `?replay=0` means "my xterm already has
+					// the scrollback". Adoption now always pulls the daemon ring
+					// (the mode tracker needs it), so drop the FIFO here instead
+					// of double-painting this client.
+					if (c.req.query("replay") === "0") {
+						session.buffer.length = 0;
+						session.bufferBytes = 0;
+					}
 					replayBuffer(session, ws);
 				} else {
 					sendSeqAttach(session, ws, seqRequest);
@@ -3983,13 +4016,6 @@ export function registerWorkspaceTerminalRoute({
 					themeType: requestedThemeType,
 					db,
 					eventBus,
-					// Only a client with an empty xterm wants the daemon ring
-					// dumped at it. Anchored/reanchor clients keep their own
-					// (better) copy; legacy clients signal via `?replay=0`.
-					replayOnAdoption:
-						seqRequest.kind === "legacy"
-							? c.req.query("replay") !== "0"
-							: seqRequest.kind === "new",
 				});
 			};
 
@@ -4027,6 +4053,12 @@ export function registerWorkspaceTerminalRoute({
 							ws.close(transient ? 1013 : 1011, toWsCloseReason(session.error));
 							return;
 						}
+						// A just-adopted session may still be receiving the daemon's
+						// ring replay: wait for it to quiesce so the mode preamble
+						// reflects the program's real state and the replayed bytes
+						// don't broadcast to this socket. Resolved immediately in
+						// every other case.
+						await session.adoptionReplaySettled;
 						if (ws.readyState !== SOCKET_OPEN) return;
 						attachSocketToSession(session, ws);
 					})().catch((error) => {

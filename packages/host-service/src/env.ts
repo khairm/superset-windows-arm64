@@ -38,6 +38,21 @@ export const env = createEnv({
 				message:
 					"RELAY_URL is set but this fork has no relay (see FEATURES.md, (CLOUD-SEVERANCE-P2)). Unset it.",
 			}),
+		// Loopback control surface for the desktop's in-app browser panes. Only
+		// set when a desktop app spawned this host; absent on standalone hosts.
+		BROWSER_BRIDGE_URL: z.string().url().optional(),
+		BROWSER_BRIDGE_SECRET: z.string().min(1).optional(),
+		/**
+		 * "sandbox" when running inside a cloud sandbox. A sandbox is reached
+		 * directly at its provider preview URL, so it must not register as a
+		 * host or hold a relay socket — that would put it in the device picker
+		 * and keep it awake against the provider's wake-on-inbound sleep.
+		 *
+		 * (CLOUD-SEVERANCE-P2) Neither branch of this can register or hold a
+		 * relay socket here: there is no cloud to register with, and RELAY_URL
+		 * is refused above whatever the mode says.
+		 */
+		SUPERSET_HOST_RUN_MODE: z.enum(["local", "sandbox"]).default("local"),
 	},
 	runtimeEnv: process.env,
 	emptyStringAsUndefined: true,

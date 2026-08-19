@@ -15,15 +15,10 @@ interface UseConsumeAutomationRunLinkArgs {
 }
 
 /**
- * When the workspace is opened via a deep link (`?tabId=...` or
- * `?terminalId=...`), ensure the corresponding pane is present and focused.
- * The underlying session already exists on the host-service — we just re-adopt
- * it in the pane store.
- *
- * (CLOUD-SEVERANCE-P2) `?chatSessionId=` used to be the third form. Resolving
- * it needed `cloudTrpc.chat.listSessions` to confirm the session belonged to
- * this workspace, and it opened a chat pane at the end — both gone. A link
- * carrying one now falls through and the workspace simply opens.
+ * When the workspace is opened via a deep link from an automation run
+ * (`?terminalId=...`), ensure the corresponding pane is present and focused.
+ * The underlying session already exists on the host-service from the
+ * dispatcher — we just re-adopt it in the pane store.
  */
 export function useConsumeAutomationRunLink({
 	store,
@@ -73,7 +68,6 @@ export function useConsumeAutomationRunLink({
 		workspaceId,
 		paneLayoutReady,
 	]);
-
 }
 
 interface AutomationRunLinkBaseArgs {
@@ -179,4 +173,3 @@ export function terminalSessionBelongsToWorkspace({
 			session.terminalId === terminalId && session.workspaceId === workspaceId,
 	);
 }
-

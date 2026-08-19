@@ -10,7 +10,13 @@ import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useRef } from "react";
 import { GoGitPullRequest } from "react-icons/go";
-import { LuColumns3, LuLayers, LuPlus, LuSearch } from "react-icons/lu";
+import {
+	LuColumns3,
+	LuGauge,
+	LuLayers,
+	LuPlus,
+	LuSearch,
+} from "react-icons/lu";
 import {
 	VscFolderOpened,
 	VscGithubAlt,
@@ -30,6 +36,10 @@ import {
 	pullRequestsSearchFromFilters,
 	usePullRequestsFilterStore,
 } from "renderer/routes/_authenticated/_dashboard/pull-requests/stores/pullRequestsFilterStore";
+import {
+	getUsageLastSection,
+	usageSectionPath,
+} from "renderer/routes/_authenticated/_dashboard/usage/utils/usageLastSection";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { STROKE_WIDTH_THICK } from "renderer/screens/main/components/WorkspaceSidebar/constants";
 import {
@@ -128,6 +138,10 @@ export function DashboardSidebarHeader({
 		fuzzy: true,
 	});
 	const isKanbanOpen = !!matchRoute({ to: "/kanban", fuzzy: true });
+	// (USAGE) New in v1.23.0 and kept: it reads token and machine-resource
+	// figures from the LOCAL host-service (`usage.history`, `usage.quota`),
+	// not from the cloud.
+	const isUsageOpen = !!matchRoute({ to: "/usage", fuzzy: true });
 
 	const {
 		search: lastPullRequestsSearch,
@@ -174,6 +188,12 @@ export function DashboardSidebarHeader({
 			return;
 		}
 		navigate({ to: "/v2-workspaces" });
+	};
+
+	const handleUsageClick = () => {
+		// Reopen whichever Usage section (token / machine resources) was
+		// visited last.
+		navigate({ to: usageSectionPath(getUsageLastSection()) });
 	};
 
 	// (CLOUD-SEVERANCE-P2) Ungated. Pull requests come from GitHub through the
@@ -290,6 +310,8 @@ export function DashboardSidebarHeader({
 							<button
 								type="button"
 								onClick={handleKanbanClick}
+								aria-label="Kanban"
+								aria-current={isKanbanOpen ? "page" : undefined}
 								className={cn(
 									"flex size-7 items-center justify-center rounded-md transition-colors",
 									isKanbanOpen
@@ -301,6 +323,26 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">Kanban</TooltipContent>
+					</Tooltip>
+
+					<Tooltip delayDuration={300}>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								onClick={handleUsageClick}
+								aria-label="Usage"
+								aria-current={isUsageOpen ? "page" : undefined}
+								className={cn(
+									"flex size-7 items-center justify-center rounded-md transition-colors",
+									isUsageOpen
+										? "bg-fill-selected text-muted-foreground"
+										: "text-muted-foreground hover:bg-fill-hover",
+								)}
+							>
+								<LuGauge className="size-3.5" strokeWidth={1.5} />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="right">Usage</TooltipContent>
 					</Tooltip>
 
 					<DropdownMenu>
@@ -450,6 +492,8 @@ export function DashboardSidebarHeader({
 			<button
 				type="button"
 				onClick={handleKanbanClick}
+				aria-label="Kanban"
+				aria-current={isKanbanOpen ? "page" : undefined}
 				className={cn(
 					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium transition-colors",
 					isKanbanOpen
@@ -462,6 +506,25 @@ export function DashboardSidebarHeader({
 					strokeWidth={1.5}
 				/>
 				<span className="flex-1 text-left">Kanban</span>
+			</button>
+
+			<button
+				type="button"
+				onClick={handleUsageClick}
+				aria-label="Usage"
+				aria-current={isUsageOpen ? "page" : undefined}
+				className={cn(
+					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium transition-colors",
+					isUsageOpen
+						? "bg-fill-selected text-foreground"
+						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
+				)}
+			>
+				<LuGauge
+					className="size-3.5 shrink-0 text-muted-foreground"
+					strokeWidth={1.5}
+				/>
+				<span className="flex-1 text-left">Usage</span>
 			</button>
 		</div>
 	);

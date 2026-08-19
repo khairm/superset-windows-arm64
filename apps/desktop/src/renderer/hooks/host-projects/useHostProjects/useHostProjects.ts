@@ -1,10 +1,10 @@
-import { getEventBus } from "@superset/workspace-client";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { env } from "renderer/env.renderer";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { getHostServiceWsToken } from "renderer/lib/host-service-auth";
+import { getHostEventBus } from "renderer/lib/host-event-bus";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
@@ -127,7 +127,7 @@ export function useHostProjects(): UseHostProjectsResult {
 		for (const target of targets) {
 			if (!target.hostUrl) continue;
 			const hostUrl = target.hostUrl;
-			const bus = getEventBus(hostUrl, () => getHostServiceWsToken(hostUrl));
+			const bus = getHostEventBus(hostUrl);
 			const removeListener = bus.on(
 				"project:changed",
 				"*",

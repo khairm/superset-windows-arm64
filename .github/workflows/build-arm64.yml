@@ -200,10 +200,10 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 38 = 21 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 21 with (CLOUD-SEVERANCE-P2): 7 cloud-origin
+          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is
@@ -237,7 +237,7 @@ jobs:
               console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            const EXPECTED = 38;
+            const EXPECTED = 39;
             if (s.assertionsPassed !== EXPECTED) {
               console.error("::error::(CLOUD-SEVERANCE-P2) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);
@@ -503,10 +503,10 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 38 = 21 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 21 with (CLOUD-SEVERANCE-P2): 7 cloud-origin
+          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is
@@ -540,7 +540,7 @@ jobs:
               console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            const EXPECTED = 38;
+            const EXPECTED = 39;
             if (s.assertionsPassed !== EXPECTED) {
               console.error("::error::(CLOUD-SEVERANCE-P2) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);
@@ -803,10 +803,10 @@ jobs:
           # line. The marker check below is what makes a future recurrence
           # loud instead of silent.
           #
-          # EXPECTED = 38 = 21 source/dist assertions + 8 over the PACKAGED
+          # EXPECTED = 39 = 22 source/dist assertions + 8 over the PACKAGED
           # app.asar + 8 over the asar EXTRACTED FROM THE PUBLISHED INSTALLER
           # + 1 app-update.yml check inside that installer. The source/dist
-          # figure grew from 11 to 21 with (CLOUD-SEVERANCE-P2): 7 cloud-origin
+          # figure grew from 11 to 22 with (CLOUD-SEVERANCE-P2): 8 cloud-origin
           # absence checks, better-auth's HTTP routes, the POSITIVE
           # egress-fence FENCE-BLOCK marker check, and the CSP websocket-scope
           # check. The installer set is
@@ -840,7 +840,7 @@ jobs:
               console.error("::error::(CLOUD-SEVERANCE-P1) stamp mode is " + s.mode + ", not full — the artifact assertions were skipped. Refusing to publish.");
               process.exit(1);
             }
-            const EXPECTED = 38;
+            const EXPECTED = 39;
             if (s.assertionsPassed !== EXPECTED) {
               console.error("::error::(CLOUD-SEVERANCE-P2) stamp reports " + s.assertionsPassed + " assertions, expected exactly " + EXPECTED + " — either the gate was weakened, or it grew and the EXPECTED constant was not updated in ALL THREE enforcement steps of this workflow in lockstep. Refusing to publish.");
               process.exit(1);

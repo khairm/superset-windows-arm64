@@ -58,12 +58,6 @@ import { WorkspaceSidebar } from "../WorkspaceSidebar";
 export interface WorkspaceSearch {
 	tabId?: string;
 	terminalId?: string;
-	/**
-	 * (CLOUD-SEVERANCE-P2) Still parsed, deliberately ignored. Saved locations
-	 * and old notification links carry it; the chat pane it used to open no
-	 * longer exists, so the workspace just opens.
-	 */
-	chatSessionId?: string;
 	focusRequestId?: string;
 	openUrl?: string;
 	openUrlTarget?: V2WorkspaceUrlOpenTarget;
@@ -344,7 +338,14 @@ function V2WorkspaceCenter({
 							renderAddTabMenu={() => (
 								<AddTabMenu
 									onAddTerminal={addTerminalTab}
-									onAddChat={isLocalChatEnabled ? addChatV3Tab : undefined}
+									// (CLOUD-SEVERANCE-P2) Upstream leaves `onAddChatV3`
+									// unpassed, so chat-v3 has no way in even with its flag
+									// on. This is the fork's single entry point to the local
+									// chat pane, and it appears only once the user switches
+									// it on in Experimental settings.
+									onAddChatV3={
+										isLocalChatEnabled ? addChatV3Tab : undefined
+									}
 									onAddBrowser={addBrowserTab}
 									showPresetsBar={showPresetsBar}
 									onToggleShowPresetsBar={setShowPresetsBar}
