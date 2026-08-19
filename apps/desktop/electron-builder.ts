@@ -113,6 +113,22 @@ const config: Configuration = {
 		// before building (required for Bun 1.3+ isolated installs).
 		...packagedNodeModuleCopies,
 		"!**/.DS_Store",
+		// (CLOUD-SEVERANCE-P1) @blaxel/core hardcodes ITS OWN Sentry DSN in
+		// dist/{cjs,esm,cjs-browser,esm-browser}/common/settings.js, so shipping the
+		// package bakes a live third-party crash-reporting endpoint into app.asar.
+		//
+		// It is a dependency of @superset/trpc, reachable only from the cloud-side
+		// routers (lib/blaxel — sandbox provisioning), which run in the api deploy.
+		// Every desktop/host-service import of @superset/trpc is `import type`, so
+		// nothing in the packaged app ever require()s it: electron-builder only
+		// copies it because it walks the workspace production dependency tree. A
+		// negation string here is the exclusion channel electron-builder applies to
+		// that walk (getNodeModuleFileMatcher collects only "!"-prefixed patterns).
+		//
+		// Scope-wide rather than @blaxel/core so a future sibling package can't
+		// re-introduce the DSN. Drop this only if the desktop runtime ever gains a
+		// real (non-type) import of @blaxel/*, and then sever the DSN some other way.
+		"!**/node_modules/@blaxel/**",
 	],
 
 	// Rebuild native modules for Electron's Node.js version
