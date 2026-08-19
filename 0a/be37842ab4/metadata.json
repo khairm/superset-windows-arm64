@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0abe37842ab4",
+  "strategy": "manual-commit",
+  "branch": "cloud-severance-p2",
+  "checkpoints_count": 19,
+  "files_touched": [
+    ".github/workflows/build-arm64.yml",
+    "AGENTS.md",
+    "apps/desktop/electron-builder.ts",
+    "apps/desktop/src/main/windows/main.ts",
+    "apps/desktop/src/renderer/commandPalette/modules/actions/commands.tsx",
+    "apps/desktop/src/renderer/index.html",
+    "packages/cli/scripts/build-dist-linux-docker.sh",
+    "packages/host-service/src/daemon/DaemonSupervisor.test.ts",
+    "packages/host-service/src/daemon/DaemonSupervisor.ts",
+    "packages/host-service/src/db/schema.ts",
+    "packages/host-service/src/terminal/DaemonClient/DaemonClient.ts",
+    "packages/host-service/src/terminal/terminal.ts",
+    "packages/host-service/src/trpc/router/router.ts",
+    "packages/pty-daemon/src/process-tree.test.ts",
+    "packages/pty-daemon/src/process-tree.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0a/be37842ab4/0/metadata.json",
+      "transcript": "/0a/be37842ab4/0/full.jsonl",
+      "content_hash": "/0a/be37842ab4/0/content_hash.txt",
+      "prompt": "/0a/be37842ab4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8317106,
+    "cache_creation_tokens": 30290978,
+    "cache_read_tokens": 1482233075,
+    "output_tokens": 2951619,
+    "api_call_count": 4729
+  }
+}
