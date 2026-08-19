@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "f0cc66a76e1e",
+  "strategy": "manual-commit",
+  "branch": "cloud-severance-p2",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/host-service-coordinator.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f0/cc66a76e1e/0/metadata.json",
+      "transcript": "/f0/cc66a76e1e/0/full.jsonl",
+      "content_hash": "/f0/cc66a76e1e/0/content_hash.txt",
+      "prompt": "/f0/cc66a76e1e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2924,
+    "cache_creation_tokens": 2985652,
+    "cache_read_tokens": 148554611,
+    "output_tokens": 278570,
+    "api_call_count": 411
+  }
+}
