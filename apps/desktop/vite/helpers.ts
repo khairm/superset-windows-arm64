@@ -105,22 +105,22 @@ export function htmlEnvTransformPlugin(): Plugin {
 			return html
 				.replace(
 					/%NEXT_PUBLIC_API_URL%/g,
-					process.env.NEXT_PUBLIC_API_URL || "https://api.superset.sh",
+					process.env.NEXT_PUBLIC_API_URL || "https://api.cloud-severed.invalid",
 				)
 				.replace(
 					/%NEXT_PUBLIC_ELECTRIC_URL%/g,
 					new URL(
 						process.env.NEXT_PUBLIC_ELECTRIC_URL ||
-							"https://electric-proxy.avi-6ac.workers.dev",
+							"https://electric.cloud-severed.invalid",
 					).origin,
 				)
 				.replace(
 					/%NEXT_PUBLIC_STREAMS_URL%/g,
-					process.env.NEXT_PUBLIC_STREAMS_URL || "https://streams.superset.sh",
+					process.env.NEXT_PUBLIC_STREAMS_URL || "https://streams.cloud-severed.invalid",
 				)
 				.replace(
 					/%RELAY_URL%/g,
-					process.env.RELAY_URL || "https://relay.superset.sh",
+					process.env.RELAY_URL || "https://relay.cloud-severed.invalid",
 				);
 		},
 	};

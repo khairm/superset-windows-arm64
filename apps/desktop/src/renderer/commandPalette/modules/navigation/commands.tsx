@@ -1,5 +1,6 @@
 import { BookOpenIcon, HistoryIcon, SettingsIcon } from "lucide-react";
 import { LuLayers } from "react-icons/lu";
+import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import type { Command, CommandProvider } from "../../core/types";
 import { RecentlyViewedFrame } from "../../ui/RecentlyViewed/RecentlyViewedFrame";
 import { WorkspaceListFrame } from "../../ui/WorkspaceList";
@@ -16,7 +17,9 @@ export const navigationProvider: CommandProvider = {
 				icon: SettingsIcon,
 				hotkeyId: "OPEN_SETTINGS",
 				children: settingsTabCommands,
-				run: (ctx) => ctx.navigate("/settings/account"),
+				// (CLOUD-SEVERANCE-P2) Account is severed; Appearance is the fork's
+				// first settings page.
+				run: (ctx) => ctx.navigate(DEFAULT_SETTINGS_ROUTE),
 			},
 			{
 				id: "nav.recentlyViewed",

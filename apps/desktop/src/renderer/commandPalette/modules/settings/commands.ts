@@ -2,23 +2,16 @@ import {
 	BeakerIcon,
 	BellIcon,
 	BookmarkIcon,
-	BuildingIcon,
 	CpuIcon,
-	CreditCardIcon,
 	FileTextIcon,
 	FolderIcon,
 	GitBranchIcon,
 	KeyboardIcon,
-	KeyRoundIcon,
-	LinkIcon,
 	type LucideIcon,
 	PaletteIcon,
-	ServerIcon,
 	ShieldIcon,
 	SlidersIcon,
 	TerminalIcon,
-	UserIcon,
-	UsersIcon,
 	WrenchIcon,
 } from "lucide-react";
 import type { Command } from "../../core/types";
@@ -31,13 +24,11 @@ interface SettingsTab {
 	keywords?: string[];
 }
 
+// (CLOUD-SEVERANCE-P2) Account, Integrations, Organization, Teams, Hosts,
+// Billing, API keys and Security are absent on purpose — those pages have no
+// data source left, and the palette is the one place a user can reach a
+// settings page without seeing it in the sidebar first.
 const TABS: SettingsTab[] = [
-	{
-		id: "account",
-		title: "Account",
-		path: "/settings/account",
-		icon: UserIcon,
-	},
 	{
 		id: "appearance",
 		title: "Appearance",
@@ -72,19 +63,6 @@ const TABS: SettingsTab[] = [
 		icon: BeakerIcon,
 	},
 	{
-		id: "integrations",
-		title: "Integrations",
-		path: "/settings/integrations",
-		icon: LinkIcon,
-	},
-	{
-		id: "organization",
-		title: "Organization",
-		path: "/settings/organization",
-		icon: BuildingIcon,
-	},
-	{ id: "teams", title: "Teams", path: "/settings/teams", icon: UsersIcon },
-	{
 		id: "keyboard",
 		title: "Keyboard shortcuts",
 		path: "/settings/keyboard",
@@ -98,7 +76,6 @@ const TABS: SettingsTab[] = [
 		path: "/settings/permissions",
 		icon: ShieldIcon,
 	},
-	{ id: "hosts", title: "Hosts", path: "/settings/hosts", icon: ServerIcon },
 	{
 		id: "projects",
 		title: "Projects",
@@ -111,31 +88,12 @@ const TABS: SettingsTab[] = [
 		path: "/settings/ringtones",
 		icon: BellIcon,
 	},
-	{
-		id: "billing",
-		title: "Billing",
-		path: "/settings/billing",
-		icon: CreditCardIcon,
-	},
-	{
-		id: "security",
-		title: "Security",
-		path: "/settings/security",
-		icon: KeyRoundIcon,
-	},
 	{ id: "agents", title: "Agents", path: "/settings/agents", icon: WrenchIcon },
 	{
 		id: "presets",
 		title: "Presets",
 		path: "/settings/presets",
 		icon: FileTextIcon,
-	},
-	{
-		id: "api-keys",
-		title: "API keys",
-		path: "/settings/api-keys",
-		icon: KeyRoundIcon,
-		keywords: ["token"],
 	},
 ];
 

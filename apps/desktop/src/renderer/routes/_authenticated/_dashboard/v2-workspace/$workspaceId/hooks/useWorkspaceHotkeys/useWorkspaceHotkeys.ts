@@ -14,7 +14,6 @@ import { useRightSidebarToggleIntent } from "renderer/stores/right-sidebar-toggl
 import type { StoreApi } from "zustand";
 import type {
 	BrowserPaneData,
-	ChatPaneData,
 	DiffPaneData,
 	PaneViewerData,
 	TerminalPaneData,
@@ -62,11 +61,9 @@ export function useWorkspaceHotkeys({
 		await addTerminalTab();
 	});
 
-	useHotkey("NEW_CHAT", () => {
-		store.getState().addTab({
-			panes: [{ kind: "chat", data: { sessionId: null } as ChatPaneData }],
-		});
-	});
+	// (CLOUD-SEVERANCE-P2) NEW_CHAT and SPLIT_WITH_CHAT are unbound here — the
+	// chat pane is gone, and a hotkey that opens a pane no registry can render
+	// would leave an empty rectangle the user cannot explain.
 
 	useHotkey("NEW_BROWSER", () => {
 		store.getState().addTab({
@@ -273,21 +270,6 @@ export function useWorkspaceHotkeys({
 					terminalId: launcher.mint(),
 					createOnAttach: true,
 				} as TerminalPaneData,
-			},
-		});
-	});
-
-	useHotkey("SPLIT_WITH_CHAT", () => {
-		const state = store.getState();
-		const active = state.getActivePane();
-		if (!active) return;
-		state.splitPane({
-			tabId: active.tabId,
-			paneId: active.pane.id,
-			position: "right",
-			newPane: {
-				kind: "chat",
-				data: { sessionId: null } as ChatPaneData,
 			},
 		});
 	});

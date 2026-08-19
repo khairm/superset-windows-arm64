@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { env } from "renderer/env.renderer";
 import { useHostsPresence } from "renderer/hooks/useHostsPresence";
-import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
-import { MOCK_ORG_ID } from "shared/constants";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import {
 	type KnownHostRow,
 	loadKnownHostsSnapshot,
@@ -37,10 +35,9 @@ export function useKnownHosts(): {
 	 */
 	settled: boolean;
 } {
-	const { data: session } = authClient.useSession();
-	const organizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: (session?.session?.activeOrganizationId ?? null);
+	// (CLOUD-SEVERANCE-P2) Frozen local organization — never null, so every
+	// org-scoped read below is authoritative from the first render.
+	const organizationId = useActiveOrganizationId();
 
 	// Presence drives the fan-out targets the sidebar polls while the window is
 	// backgrounded, so this refresh has to keep running there too.

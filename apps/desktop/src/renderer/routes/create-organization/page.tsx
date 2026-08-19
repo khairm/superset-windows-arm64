@@ -12,17 +12,31 @@ import {
 } from "@superset/ui/form";
 import { Input } from "@superset/ui/input";
 import { toast } from "@superset/ui/sonner";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { Redirect } from "renderer/components/Redirect";
+import { CLOUD_SEVERED_FALLBACK_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useSignOut } from "renderer/hooks/useSignOut";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { authClient } from "renderer/lib/auth-client";
 import { z } from "zod";
 
+/**
+ * (CLOUD-SEVERANCE-P2) There is exactly one organization and it was adopted
+ * from this machine's own host database, not minted. Creating a second one
+ * would post to a server that isn't there, and succeeding at it would be worse
+ * than failing: the org id keys the host database, so a new one would orphan
+ * every workspace, terminal and paired companion on this disk.
+ *
+ * The form below stays for the nightly merge; this route sits outside
+ * `_authenticated`, so it carries its own guard rather than the layout's.
+ */
 export const Route = createFileRoute("/create-organization/")({
+	beforeLoad: () => {
+		throw redirect({ to: CLOUD_SEVERED_FALLBACK_ROUTE, replace: true });
+	},
 	component: CreateOrganization,
 });
 

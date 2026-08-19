@@ -1,27 +1,15 @@
 import type { AppRouter } from "@superset/trpc";
-import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
-import { env } from "renderer/env.renderer";
-import superjson from "superjson";
-import { getAuthToken } from "./auth-client";
+import { createTRPCProxyClient } from "@trpc/client";
+import { cloudSeveredLink } from "./cloud-severed-link";
 
 /**
- * Imperative tRPC client for the API server (bearer-token auth). For
- * component data fetching use the `cloudTrpc` React Query hooks instead.
+ * (CLOUD-SEVERANCE-P2) The imperative cloud client, severed.
+ *
+ * Same wall as the React client — see cloud-severed-link.ts. Kept as an export
+ * rather than deleted because upstream call sites across the renderer import
+ * it, and a choke point here costs one file per nightly merge where deleting
+ * them all would cost ninety.
  */
 export const apiTrpcClient = createTRPCProxyClient<AppRouter>({
-	links: [
-		httpBatchLink({
-			url: `${env.NEXT_PUBLIC_API_URL}/api/trpc`,
-			transformer: superjson,
-			headers: () => {
-				const token = getAuthToken();
-				return {
-					...(token ? { Authorization: `Bearer ${token}` } : {}),
-					...(window.App?.appVersion
-						? { "x-superset-client": `desktop/${window.App.appVersion}` }
-						: {}),
-				};
-			},
-		}),
-	],
+	links: [cloudSeveredLink],
 });

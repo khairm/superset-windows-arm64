@@ -1,20 +1,18 @@
-import { useQuery } from "@tanstack/react-query";
-import { env } from "renderer/env.renderer";
-import { apiTrpcClient } from "renderer/lib/api-trpc-client";
-
 /**
- * Relay base URL for client-side WS opens (terminal, eventBus).
+ * (CLOUD-SEVERANCE-P2) The relay base URL, severed.
  *
- * Comes from the API so this client and the host-service it talks to always
- * agree: resolving it separately on each side let them land on different
- * relays, which surfaces as a host that looks permanently offline.
+ * Upstream asked the cloud API for this so the desktop and the host-service
+ * would agree on which relay to use for REMOTE hosts. There are no remote
+ * hosts here — the only host is loopback — so every consumer of this value
+ * feeds it into a code path that is now unreachable.
+ *
+ * It returns an unroutable scheme rather than an empty string or a loopback
+ * address on purpose: if some path ever does dial it, the attempt fails
+ * immediately and visibly instead of quietly hitting something real.
  */
+
+export const SEVERED_RELAY_URL = "superset-severed://relay";
+
 export function useRelayUrl(): string {
-	const { data } = useQuery({
-		queryKey: ["relay-endpoint"],
-		queryFn: () => apiTrpcClient.host.relayEndpoint.query(),
-		staleTime: 5 * 60 * 1000,
-		retry: 3,
-	});
-	return data?.url ?? env.RELAY_URL;
+	return SEVERED_RELAY_URL;
 }

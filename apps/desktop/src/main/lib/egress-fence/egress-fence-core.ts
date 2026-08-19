@@ -254,3 +254,86 @@ export function assertEgressFenceInstalled(): void {
 export function resetEgressFenceInstalledForTests(): void {
 	fenceInstalled = false;
 }
+
+// --- (CLOUD-SEVERANCE-P2) (FENCE-BLOCK): the decision --------------------
+
+/**
+ * Schemes that never leave this machine, plus the app's own protocol.
+ * `superset-app:` is how the renderer loads itself; `devtools:`/`file:` are
+ * tooling; `blob:`/`data:` are in-memory.
+ */
+const LOCAL_SCHEMES = new Set([
+	"superset-app:",
+	// The fork's other two protocols, registered beside superset-app: in the
+	// boot path. No request on them has ever been observed reaching this
+	// listener, but omitting them while listing their sibling would mean the
+	// day one does, the app silently loses its bundled fonts or file icons.
+	"superset-font:",
+	"superset-icon:",
+	"devtools:",
+	"file:",
+	"blob:",
+	"data:",
+	"chrome-extension:",
+]);
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * Resource types allowed to reach a remote origin from the app renderer.
+ *
+ * This carve-out is not a loophole, it is the difference between a fence and a
+ * broken feature: the browser pane's URL suggestions render `<img
+ * src={faviconUrl}>` in the APP renderer rather than inside the webview, so
+ * blocking cross-origin images would silently strip every favicon from a
+ * feature the user still has. Images cannot exfiltrate a response — the
+ * renderer gets pixels, not data it can read — and the CSP already permits
+ * exactly this with `img-src https: http:`.
+ */
+const REMOTE_ALLOWED_RESOURCE_TYPES = new Set(["image"]);
+
+export interface FenceDecisionInput {
+	url: string;
+	resourceType: string;
+	initiator: InitiatorClass;
+}
+
+/**
+ * Should this request be cancelled?
+ *
+ * THE RULE: only requests positively attributed to the APP's own renderer are
+ * ever blocked. Two exemptions carry the design:
+ *
+ *   - `webview` — the browser panes. The user's browsing is not this fork's
+ *     business, and blocking it would break a feature that has nothing to do
+ *     with Superset's cloud.
+ *   - `unknown` — traffic with no resolvable webContents. This is NOT laziness:
+ *     a site in a browser pane that registers a service worker fetches with no
+ *     webContentsId at all, and a destroyed webview's in-flight requests land
+ *     here too. Blocking "unknown" would break arbitrary PWAs the user visits
+ *     while catching nothing — every process that could still phone home (main,
+ *     the host-service, the CLI, agent CLIs, the pty-daemon) bypasses this
+ *     listener entirely and is covered by the build-time gate instead.
+ */
+export function shouldBlockEgress(input: FenceDecisionInput): boolean {
+	if (input.initiator !== "app-renderer") return false;
+
+	// The overwhelming majority of app-renderer traffic is the renderer loading
+	// itself over superset-app://, and this runs on every request — so answer
+	// that case before paying for a URL parse.
+	if (input.url.startsWith("superset-app://")) return false;
+
+	let parsed: URL;
+	try {
+		parsed = new URL(input.url);
+	} catch {
+		// An app-renderer request whose URL will not parse cannot be shown to be
+		// local, and the app has no legitimate use for one.
+		return true;
+	}
+
+	if (LOCAL_SCHEMES.has(parsed.protocol)) return false;
+	if (LOOPBACK_HOSTS.has(parsed.hostname)) return false;
+
+	return !REMOTE_ALLOWED_RESOURCE_TYPES.has(input.resourceType);
+}

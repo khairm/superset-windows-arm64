@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
 	type SettingsSection,
@@ -26,8 +27,11 @@ export const Route = createFileRoute("/_authenticated/settings")({
 	component: SettingsLayout,
 });
 
+// (CLOUD-SEVERANCE-P2) The cloud sections (account, organization, teams,
+// integrations, billing, apikeys, hosts) are gone from this list because search
+// uses it to pick where to jump when the current section has no matches — a
+// severed target there would fling the user out of Settings entirely.
 const SECTION_ORDER: SettingsSection[] = [
-	"account",
 	"appearance",
 	"ringtones",
 	"keyboard",
@@ -36,21 +40,12 @@ const SECTION_ORDER: SettingsSection[] = [
 	"terminal",
 	"links",
 	"models",
-	"organization",
-	"teams",
 	"project",
-	"integrations",
-	"billing",
-	"apikeys",
 	"permissions",
-	"hosts",
 	"experimental",
 ];
 
 function getSectionFromPath(pathname: string): SettingsSection | null {
-	if (pathname.includes("/settings/account")) return "account";
-	if (pathname.includes("/settings/organization")) return "organization";
-	if (pathname.includes("/settings/teams")) return "teams";
 	if (pathname.includes("/settings/appearance")) return "appearance";
 	if (pathname.includes("/settings/ringtones")) return "ringtones";
 	if (pathname.includes("/settings/keyboard")) return "keyboard";
@@ -60,21 +55,13 @@ function getSectionFromPath(pathname: string): SettingsSection | null {
 	if (pathname.includes("/settings/links")) return "links";
 	if (pathname.includes("/settings/models")) return "models";
 	if (pathname.includes("/settings/experimental")) return "experimental";
-	if (pathname.includes("/settings/integrations")) return "integrations";
 	if (pathname.includes("/settings/permissions")) return "permissions";
-	if (pathname.includes("/settings/hosts")) return "hosts";
 	if (pathname.includes("/settings/project")) return "project";
 	return null;
 }
 
 function getPathFromSection(section: SettingsSection): string {
 	switch (section) {
-		case "account":
-			return "/settings/account";
-		case "organization":
-			return "/settings/organization";
-		case "teams":
-			return "/settings/teams";
 		case "appearance":
 			return "/settings/appearance";
 		case "ringtones":
@@ -93,16 +80,12 @@ function getPathFromSection(section: SettingsSection): string {
 			return "/settings/models";
 		case "experimental":
 			return "/settings/experimental";
-		case "integrations":
-			return "/settings/integrations";
 		case "permissions":
 			return "/settings/permissions";
-		case "hosts":
-			return "/settings/hosts";
 		case "project":
 			return "/settings/projects";
 		default:
-			return "/settings/account";
+			return DEFAULT_SETTINGS_ROUTE;
 	}
 }
 
@@ -129,7 +112,6 @@ function SettingsLayout() {
 		if (!currentSection) return;
 
 		if (currentSection === "project") return;
-		if (currentSection === "hosts") return;
 
 		const matchCounts = getMatchCountBySection(normalizedSearchQuery);
 		const currentHasMatches = (matchCounts[currentSection] ?? 0) > 0;
@@ -164,7 +146,6 @@ function SettingsLayout() {
 
 	const usesInnerSidebar =
 		location.pathname.startsWith("/settings/projects") ||
-		location.pathname.startsWith("/settings/hosts") ||
 		location.pathname.startsWith("/settings/agents");
 
 	return (

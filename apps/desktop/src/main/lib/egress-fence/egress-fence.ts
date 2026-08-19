@@ -8,10 +8,15 @@ import {
 	type InitiatorClass,
 	isAppOwnedWebContents,
 	markEgressFenceInstalled,
+	shouldBlockEgress,
+	toOrigin,
+	UNPARSEABLE_ORIGIN,
 } from "./egress-fence-core";
 
 /**
- * (EGRESS-FENCE) LOG-ONLY egress observer for the app's Electron session.
+ * (EGRESS-FENCE) (FENCE-BLOCK) BLOCKING egress fence for the app's Electron
+ * session. Phase 1 shipped this as log-only to prove the allowlist was complete
+ * before anything started cancelling; (CLOUD-SEVERANCE-P2) turns it on.
  *
  * WHAT THIS CAN AND CANNOT SEE — read before trusting it as a severance proof.
  * It observes `session.fromPartition("persist:superset")` webRequests ONLY:
@@ -95,19 +100,37 @@ export function installEgressFence(): void {
 	session
 		.fromPartition(PARTITION)
 		.webRequest.onBeforeRequest((details, callback) => {
+			let cancel = false;
 			try {
+				const initiator = classify(details.webContentsId);
 				activeCore.record({
 					url: details.url,
 					method: details.method,
 					resourceType: details.resourceType,
-					initiator: classify(details.webContentsId),
+					initiator,
 				});
+				cancel = shouldBlockEgress({
+					url: details.url,
+					resourceType: details.resourceType,
+					initiator,
+				});
+				if (cancel) {
+					// Origin only, never the full URL: a blocked request is exactly
+					// the kind that might carry a token or a pairing secret.
+					log.warn(
+						`[egress-fence] (FENCE-BLOCK) BLOCKED ${details.resourceType} to ${
+							toOrigin(details.url) ?? UNPARSEABLE_ORIGIN
+						}`,
+					);
+				}
 			} catch (error) {
-				// Observation must never break the request it is observing.
-				log.warn("[egress-fence] failed to record a request:", error);
+				// A fault in the fence must not break the app. Failing OPEN is the
+				// right side to fail on here: the build-time gate, not this
+				// listener, is what proves the cloud is unreachable.
+				log.warn("[egress-fence] failed to evaluate a request:", error);
+				cancel = false;
 			}
-			// LOG ONLY, by design for this phase.
-			callback({ cancel: false });
+			callback({ cancel });
 		});
 
 	const interval = setInterval(() => flush(activeCore), FLUSH_INTERVAL_MS);
@@ -115,7 +138,12 @@ export function installEgressFence(): void {
 
 	markEgressFenceInstalled();
 	log.info(
-		`[egress-fence] installed on ${PARTITION} (LOG ONLY — cancels nothing; origins only, never full URLs)`,
+		// The literal "(FENCE-BLOCK)" is load-bearing, not decoration: the
+		// build gate asserts it is PRESENT in the shipped main bundle, because
+		// a fence quietly reverted to log-only produces bytes otherwise
+		// identical to a blocking one. It lives in a runtime string because
+		// comments do not survive the bundler.
+		`[egress-fence] (FENCE-BLOCK) installed on ${PARTITION} — BLOCKING app-renderer egress to non-loopback origins; webview + unattributed traffic exempt; origins only, never full URLs`,
 	);
 }
 

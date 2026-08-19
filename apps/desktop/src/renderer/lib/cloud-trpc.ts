@@ -1,10 +1,7 @@
 import type { AppRouter } from "@superset/trpc";
-import { httpBatchStreamLink } from "@trpc/client";
 import { createTRPCReact } from "@trpc/react-query";
 import { createContext } from "react";
-import { env } from "renderer/env.renderer";
-import superjson from "superjson";
-import { getAuthToken } from "./auth-client";
+import { cloudSeveredLink } from "./cloud-severed-link";
 
 // Dedicated context — the library default is shared across all
 // createTRPCReact clients; without this, cloudTrpc.Provider shadows
@@ -47,14 +44,6 @@ export const CLOUD_TRPC_ROUTER_ROOTS = [
 ] as const;
 
 export const cloudTrpcClient = cloudTrpc.createClient({
-	links: [
-		httpBatchStreamLink({
-			url: `${env.NEXT_PUBLIC_API_URL}/api/trpc`,
-			transformer: superjson,
-			headers: () => {
-				const token = getAuthToken();
-				return token ? { Authorization: `Bearer ${token}` } : {};
-			},
-		}),
-	],
+	// (CLOUD-SEVERANCE-P2) No HTTP transport. See cloud-severed-link.ts.
+	links: [cloudSeveredLink],
 });

@@ -4,6 +4,7 @@ import { installWindowsChildProcessPatch } from "./lib/windows-child-process-pat
 installWindowsChildProcessPatch();
 import { pathToFileURL } from "node:url";
 import { settings } from "@superset/local-db";
+import { getHostId, getHostName } from "@superset/shared/host-info";
 import {
 	app,
 	BrowserWindow,
@@ -14,12 +15,7 @@ import {
 	session,
 } from "electron";
 import { makeAppSetup } from "lib/electron-app/factories/app/setup";
-import {
-	authEvents,
-	handleAuthCallback,
-	loadToken,
-	parseAuthDeepLink,
-} from "lib/trpc/routers/auth/utils/auth-functions";
+import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
 import { applyShellEnvToProcess } from "lib/trpc/routers/workspaces/utils/shell-env";
 import { env as mainEnv } from "main/env.main";
 import {
@@ -27,6 +23,7 @@ import {
 	PLATFORM,
 	PROTOCOL_SCHEME,
 } from "shared/constants";
+import { LOCAL_AUTH_TOKEN_PLACEHOLDER } from "shared/local-identity";
 import { setupAgentIntegrations } from "./lib/agent-setup";
 import { initAppState } from "./lib/app-state";
 import { requestAppleEventsAccess } from "./lib/apple-events-permission";
@@ -38,6 +35,7 @@ import { installEgressFence } from "./lib/egress-fence";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
 import { getHostServiceCoordinator } from "./lib/host-service-coordinator";
 import { localDb } from "./lib/local-db";
+import { resolveLocalOrgId } from "./lib/local-identity/local-org";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
 import {
 	initTanstackDbPersistence,
@@ -87,30 +85,11 @@ if (process.defaultApp) {
 }
 
 async function processDeepLink(url: string): Promise<void> {
-	const authLink = parseAuthDeepLink(url);
-	if (authLink.type !== "not-auth") {
-		// Never log the auth URL: it contains the desktop session token.
-		console.log("[main] Processing auth deep link");
-		const result =
-			authLink.type === "valid"
-				? await handleAuthCallback(authLink.params)
-				: {
-						success: false as const,
-						error: "The sign-in link was incomplete. Please try again.",
-					};
-		if (result.success) {
-			focusMainWindow();
-		} else {
-			console.error("[main] Auth deep link failed:", result.error);
-			focusMainWindow();
-			dialog.showErrorBox(
-				"Sign-in failed",
-				result.error ??
-					"Superset could not complete sign-in. Please try again.",
-			);
-		}
-		return;
-	}
+	// (CLOUD-SEVERANCE-P2) The auth branch is gone. `superset://auth-callback`
+	// links carried a session token from a browser into this process; with no
+	// cloud to issue one, the only thing honouring them could still do is let
+	// an arbitrary link rewrite the identity the host-service runs under.
+	// Unrecognised links fall through to navigation, which is inert.
 
 	console.log("[main] Processing deep link:", url);
 
@@ -392,7 +371,9 @@ if (!gotTheLock) {
 			const now = Date.now();
 			const drift = now - __anLagLast - 1000;
 			if (drift > 1500) {
-				log.error("[boot] event-loop BLOCKED for ~" + drift + "ms +" + bootMs() + "ms");
+				log.error(
+					"[boot] event-loop BLOCKED for ~" + drift + "ms +" + bootMs() + "ms",
+				);
 			}
 			__anLagLast = now;
 		}, 1000);
@@ -405,15 +386,8 @@ if (!gotTheLock) {
 		// session request can slip past unobserved. MainWindow() throws if this
 		// did not run.
 		installEgressFence();
-		try {
-			session
-				.fromPartition("persist:superset")
-				.resolveProxy("https://api.superset.sh")
-				.then((p) => log.info("[boot] resolveProxy=" + p + " +" + bootMs() + "ms"))
-				.catch(() => {});
-		} catch (_e) {
-			/* never let the probe break startup */
-		}
+		// (CLOUD-SEVERANCE-P2) The boot-time proxy warm-up probe is gone along
+		// with the host it was resolving a route to.
 		registerWithMacOSNotificationCenter();
 		requestAppleEventsAccess();
 		requestLocalNetworkAccess();
@@ -447,34 +421,12 @@ if (!gotTheLock) {
 			.fromPartition("persist:superset")
 			.protocol.handle("superset-app", appProtocolHandler);
 
-		// On Windows, the custom superset-app:// protocol origin is not recognized by
-		// the API server's CORS policy. Bypass CORS for API requests by modifying headers.
-		// (CLOUD-SEVERANCE-P1) The posthog.com / sentry.io / app.outlit.ai patterns
-		// are gone — no telemetry key or DSN is baked, so nothing should be talking
-		// to them and a shim that smoothed the way is exactly what we are severing.
-		// api.superset.sh STAYS: sign-in still needs it on Windows until the
-		// sign-in/data-plane phase.
-		if (PLATFORM.IS_WINDOWS) {
-			const appSession = session.fromPartition("persist:superset");
-			appSession.webRequest.onBeforeSendHeaders(
-				{ urls: ["https://api.superset.sh/*"] },
-				(details, callback) => {
-					if (details.requestHeaders.Origin === "superset-app://app") {
-						delete details.requestHeaders.Origin;
-					}
-					callback({ requestHeaders: details.requestHeaders });
-				},
-			);
-			appSession.webRequest.onHeadersReceived(
-				{ urls: ["https://api.superset.sh/*"] },
-				(details, callback) => {
-					const headers = details.responseHeaders ?? {};
-					headers["access-control-allow-origin"] = ["superset-app://app"];
-					headers["access-control-allow-credentials"] = ["true"];
-					callback({ responseHeaders: headers });
-				},
-			);
-		}
+		// (CLOUD-SEVERANCE-P2) The Windows CORS shim is DELETED. It existed so
+		// the superset-app:// origin could reach api.superset.sh, whose CORS
+		// policy did not recognise it. Phase 1 stripped the shim's telemetry
+		// patterns but kept the API one because sign-in still needed it —
+		// nothing signs in now, and a shim that smooths the path to a severed
+		// host is the last thing that should outlive it.
 
 		// Serve system fonts (e.g. SF Mono on macOS) via custom protocol
 		// so the renderer can use @font-face with font-src 'self' CSP
@@ -531,9 +483,13 @@ if (!gotTheLock) {
 			sweepNetworkLogs();
 		}
 
-		log.info("[boot] step loadWebviewBrowserExtension start +" + bootMs() + "ms");
+		log.info(
+			"[boot] step loadWebviewBrowserExtension start +" + bootMs() + "ms",
+		);
 		await loadWebviewBrowserExtension();
-		log.info("[boot] step loadWebviewBrowserExtension done +" + bootMs() + "ms");
+		log.info(
+			"[boot] step loadWebviewBrowserExtension done +" + bootMs() + "ms",
+		);
 
 		// Must happen before renderer restore runs
 		log.info("[boot] step reconcileDaemonSessions start +" + bootMs() + "ms");
@@ -542,27 +498,58 @@ if (!gotTheLock) {
 		prewarmTerminalRuntime();
 
 		const hostServiceCoordinator = getHostServiceCoordinator();
-		hostServiceCoordinator.setConfigProvider(async () => {
-			const { token } = await loadToken();
-			if (!token) return null;
-			return { authToken: token, cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL };
-		});
+		// (CLOUD-SEVERANCE-P2) The host-service — and therefore every terminal —
+		// used to exist only while a cloud session did: no stored token meant no
+		// config, no reconcile, no host. That coupling is what turned an expired
+		// session into "sign in with Google again before you can open a shell".
+		// The organization is now resolved from what is on this disk, once and
+		// permanently (see local-org.ts), and the cloud token is whatever is left
+		// over — a placeholder when there is none, because the host-service's env
+		// schema requires a non-empty value and nothing local ever authenticates
+		// with it.
+		// The resolver refuses to guess when it cannot tell which organization
+		// owns this machine's data. That refusal has to REACH the user: thrown
+		// from here it would land in the boot IIFE, which has no catch, and the
+		// process-level handler only writes to a log — so the app would simply
+		// never open a window and look dead, with the one instruction that fixes
+		// it (write the id into fork-local-org.json) buried in a file nobody has
+		// been told to read.
+		let localOrganizationId: string;
+		try {
+			localOrganizationId = (
+				await resolveLocalOrgId(async () => (await loadToken()).organizationIds)
+			).organizationId;
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			log.error("[boot] local organization resolution failed:", detail);
+			dialog.showErrorBox("Superset cannot start", detail);
+			app.exit(1);
+			return;
+		}
+		// The renderer process inherits this environment, which is how the
+		// preload bridge can hand the id to the first render synchronously.
+		// Set before any window is created.
+		process.env.FORK_LOCAL_ORG_ID = localOrganizationId;
+		// The synthetic host row the renderer serves in place of the cloud host
+		// registry has to name THIS machine with the same id the coordinator and
+		// the host-service use, or every host-keyed row would belong to a host
+		// nothing can reach.
+		process.env.FORK_LOCAL_MACHINE_ID = getHostId();
+		process.env.FORK_LOCAL_HOST_NAME = getHostName();
+		// The stored token is deliberately NOT read here. Nothing authenticates
+		// with it any more — the host-service's cloud client is severed and its
+		// local callers use the coordinator's PSK — so reading it would buy a
+		// value no one checks at the cost of a ~400ms synchronous key
+		// derivation on the path that starts the user's terminals.
+		hostServiceCoordinator.setConfigProvider(async () => ({
+			authToken: LOCAL_AUTH_TOKEN_PLACEHOLDER,
+			cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL,
+		}));
 
-		// The authenticated session's cached membership is the source of truth.
-		// Host data on disk can outlive membership and must never resurrect an
-		// obsolete service. This cache keeps subsequent launches offline-capable.
-		let authGeneration = 0;
-		const reconcileHostServices = async (providedAuth?: {
-			token: string;
-			organizationIds: string[];
-		}) => {
-			const generation = authGeneration;
+		const reconcileHostServices = async () => {
 			try {
-				const storedAuth = providedAuth ?? (await loadToken());
-				if (generation !== authGeneration) return;
-				if (!storedAuth.token || !storedAuth.organizationIds) return;
-				await hostServiceCoordinator.reconcile(storedAuth.organizationIds, {
-					authToken: storedAuth.token,
+				await hostServiceCoordinator.reconcile([localOrganizationId], {
+					authToken: LOCAL_AUTH_TOKEN_PLACEHOLDER,
 					cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL,
 				});
 			} catch (error) {
@@ -570,23 +557,13 @@ if (!gotTheLock) {
 			}
 		};
 		void reconcileHostServices();
-		// A new token can belong to a different account. Stop immediately and wait
-		// for that account's session membership before starting anything.
-		authEvents.on("token-saved", () => {
-			authGeneration++;
-			hostServiceCoordinator.stopAll();
-		});
-		authEvents.on("token-cleared", () => {
-			authGeneration++;
-			hostServiceCoordinator.stopAll();
-		});
-		authEvents.on(
-			"organization-ids-saved",
-			(data: { token: string; organizationIds: string[] }) => {
-				authGeneration++;
-				void reconcileHostServices(data);
-			},
-		);
+		// (CLOUD-SEVERANCE-P2) Upstream tore every host-service down whenever the
+		// stored token changed, because a new token could belong to a different
+		// account whose workspaces must not be served by the previous account's
+		// host. There is no account here any more: the organization is frozen on
+		// disk and no token change can move it. Keeping those listeners would be
+		// actively dangerous rather than merely dead — anything that could write
+		// the token store would kill every running terminal as a side effect.
 
 		try {
 			const disabledAgentHooks =
@@ -602,11 +579,10 @@ if (!gotTheLock) {
 		}
 
 		if (IS_DEV) {
-			hostServiceCoordinator.enableDevReload(async () => {
-				const { token } = await loadToken();
-				if (!token) return null;
-				return { authToken: token, cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL };
-			});
+			hostServiceCoordinator.enableDevReload(async () => ({
+				authToken: LOCAL_AUTH_TOKEN_PLACEHOLDER,
+				cloudApiUrl: mainEnv.NEXT_PUBLIC_API_URL,
+			}));
 		}
 
 		log.info("[boot] step makeAppSetup (MainWindow) start +" + bootMs() + "ms");

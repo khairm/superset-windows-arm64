@@ -63,6 +63,8 @@ export const SETTING_ITEM_ID = {
 		"experimental-wait-for-setup-before-agent",
 	// (COMPANION-PAIRING-SEARCH)
 	EXPERIMENTAL_COMPANION_PAIRING: "experimental-companion-pairing",
+	// (CLOUD-SEVERANCE-P2)
+	EXPERIMENTAL_LOCAL_CHAT: "experimental-local-chat",
 
 	INTEGRATIONS_LINEAR: "integrations-linear",
 	INTEGRATIONS_GITHUB: "integrations-github",
@@ -186,6 +188,8 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.EXPERIMENTAL_WAIT_FOR_SETUP_BEFORE_AGENT]: "shared",
 	// (COMPANION-PAIRING-SEARCH) the companion bridge is a v2 host-service feature.
 	[SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING]: "v2",
+	// (CLOUD-SEVERANCE-P2) the local chat pane only exists in the v2 workspace.
+	[SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT]: "v2",
 
 	[SETTING_ITEM_ID.INTEGRATIONS_LINEAR]: "shared",
 	[SETTING_ITEM_ID.INTEGRATIONS_GITHUB]: "shared",
@@ -221,10 +225,38 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.HOST_DELETE]: "shared",
 };
 
+/**
+ * (CLOUD-SEVERANCE-P2) Settings sections whose every row is cloud: seats and
+ * invoices, org and team membership, API tokens, third-party integrations, the
+ * account profile with its sign-out, and remote host management. None of them
+ * has anything to read or write any more.
+ *
+ * The gate lives here rather than in the sidebar because three surfaces read
+ * this same table — the section list, the settings search index, and the
+ * per-row visibility check inside each page. Hiding a section in only the
+ * first would leave its rows findable by search, which is a worse dead end
+ * than the nav row was.
+ */
+const CLOUD_SEVERED_SECTIONS = new Set<SettingsSection>([
+	"account",
+	"apikeys",
+	"billing",
+	"hosts",
+	"integrations",
+	"organization",
+	"teams",
+	// Its only row is the relay exposure switch, and the relay is severed.
+	// Note this does NOT touch the `permissions` section, whose rows carry
+	// "security" as a keyword — those are the macOS grants and still work.
+	"security",
+]);
+
 export function isItemAllowedForVariant(
 	itemId: SettingItemId,
 	isV2: boolean,
 ): boolean {
+	const item = SETTINGS_ITEMS_BY_ID[itemId];
+	if (item && CLOUD_SEVERED_SECTIONS.has(item.section)) return false;
 	const variant = SETTING_ITEM_VARIANT[itemId];
 	if (variant === "shared") return true;
 	return isV2 ? variant === "v2" : variant === "v1";
@@ -1112,6 +1144,28 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"switch",
 		],
 	},
+	// (CLOUD-SEVERANCE-P2) Findable by searching "chat" — which is the word a
+	// user will reach for after noticing the cloud chat pane is gone.
+	{
+		id: SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT,
+		section: "experimental",
+		title: "Local chat pane",
+		description:
+			"Adds a Chat pane that drives the agent CLIs installed on this machine — sessions stay on this device",
+		keywords: [
+			"experimental",
+			"chat",
+			"local chat",
+			"pane",
+			"agent",
+			"cli",
+			"claude",
+			"codex",
+			"offline",
+			"toggle",
+			"switch",
+		],
+	},
 	// (COMPANION-PAIRING-SEARCH)
 	{
 		id: SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING,
@@ -1706,3 +1760,7 @@ export function getAllowedSectionsForVariant(
 	}
 	return sections;
 }
+
+/** Item lookup by id, used by the severance gate above. */
+const SETTINGS_ITEMS_BY_ID: Partial<Record<SettingItemId, SettingsItem>> =
+	Object.fromEntries(SETTINGS_ITEMS.map((item) => [item.id, item]));

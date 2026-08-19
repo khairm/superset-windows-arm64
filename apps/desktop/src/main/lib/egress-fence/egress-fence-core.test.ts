@@ -4,11 +4,13 @@ import {
 	classifyInitiator,
 	createEgressFenceCore,
 	DEFAULT_MAX_ENTRIES,
+	type FenceDecisionInput,
 	isAppOwnedWebContents,
 	markEgressFenceInstalled,
 	registerAppWebContents,
 	resetAppWebContentsForTests,
 	resetEgressFenceInstalledForTests,
+	shouldBlockEgress,
 	toOrigin,
 	UNPARSEABLE_ORIGIN,
 	unregisterAppWebContents,
@@ -327,5 +329,74 @@ describe("install proof", () => {
 		resetEgressFenceInstalledForTests();
 		markEgressFenceInstalled();
 		expect(() => assertEgressFenceInstalled()).not.toThrow();
+	});
+});
+
+describe("(FENCE-BLOCK) shouldBlockEgress", () => {
+	const remote = (
+		over: Partial<FenceDecisionInput> = {},
+	): FenceDecisionInput => ({
+		url: "https://api.superset.sh/api/trpc/thing",
+		resourceType: "xhr",
+		initiator: "app-renderer",
+		...over,
+	});
+
+	test("blocks app-renderer XHR to a remote origin", () => {
+		expect(shouldBlockEgress(remote())).toBe(true);
+	});
+
+	test("allows the app's own protocol and loopback", () => {
+		expect(
+			shouldBlockEgress(remote({ url: "superset-app://index.html" })),
+		).toBe(false);
+		expect(
+			shouldBlockEgress(remote({ url: "http://127.0.0.1:5173/health" })),
+		).toBe(false);
+		expect(
+			shouldBlockEgress(remote({ url: "ws://localhost:8080/terminal" })),
+		).toBe(false);
+	});
+
+	test("allows blob and data URLs (file previews, attachments)", () => {
+		expect(shouldBlockEgress(remote({ url: "blob:superset-app://x" }))).toBe(
+			false,
+		);
+		expect(shouldBlockEgress(remote({ url: "data:image/png;base64,AA" }))).toBe(
+			false,
+		);
+	});
+
+	test("allows a remote favicon — it renders in the app renderer", () => {
+		// Browser-pane URL suggestions use <img src> from the app renderer, not
+		// from the webview. Blocking images would strip every favicon.
+		expect(
+			shouldBlockEgress(
+				remote({
+					url: "https://example.com/favicon.ico",
+					resourceType: "image",
+				}),
+			),
+		).toBe(false);
+	});
+
+	test("never blocks the user's browsing", () => {
+		expect(
+			shouldBlockEgress(
+				remote({ url: "https://news.site", initiator: "webview" }),
+			),
+		).toBe(false);
+	});
+
+	test("never blocks unattributed traffic (service workers in browser panes)", () => {
+		expect(
+			shouldBlockEgress(
+				remote({ url: "https://pwa.site/api", initiator: "unknown" }),
+			),
+		).toBe(false);
+	});
+
+	test("blocks an app-renderer request whose URL will not parse", () => {
+		expect(shouldBlockEgress(remote({ url: "not a url" }))).toBe(true);
 	});
 });

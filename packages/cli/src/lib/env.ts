@@ -4,9 +4,15 @@
  * local dev can override these.
  */
 
+/**
+ * (CLOUD-SEVERANCE-P2) The cloud defaults point at `.invalid`, which DNS
+ * guarantees never resolves. Nothing should reach them — the API client is
+ * severed — so this is the second line of defence, not the first.
+ */
 export const env = {
-	RELAY_URL: process.env.RELAY_URL || "https://relay.superset.sh",
-	SUPERSET_API_URL: process.env.SUPERSET_API_URL || "https://api.superset.sh",
+	RELAY_URL: process.env.RELAY_URL || "https://relay.cloud-severed.invalid",
+	SUPERSET_API_URL:
+		process.env.SUPERSET_API_URL || "https://api.cloud-severed.invalid",
 	SUPERSET_WEB_URL: process.env.SUPERSET_WEB_URL || "https://app.superset.sh",
 	VERSION: process.env.SUPERSET_VERSION || "0.0.0-dev",
 };

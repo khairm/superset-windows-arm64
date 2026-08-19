@@ -10,6 +10,7 @@ import { useMemo, useState } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
+import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useHotkey } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
@@ -72,9 +73,10 @@ function DashboardLayout() {
 	const onV1WorkspaceRoute = currentWorkspaceMatch !== false;
 	const onV2WorkspaceRoute = v2WorkspaceMatch !== false;
 	const onNewWorkspaceRoute = matchRoute({ to: "/new-workspace" }) !== false;
+	// (CLOUD-SEVERANCE-P2) Automations and Tasks used to be part of this set;
+	// they are severed, so the only full-width dashboard views left are pull
+	// requests and the workspaces list.
 	const onDashboardViewRoute =
-		matchRoute({ to: "/automations", fuzzy: true }) !== false ||
-		matchRoute({ to: "/tasks", fuzzy: true }) !== false ||
 		matchRoute({ to: "/pull-requests", fuzzy: true }) !== false ||
 		matchRoute({ to: "/v2-workspaces", fuzzy: true }) !== false;
 	const versionMismatch =
@@ -108,7 +110,7 @@ function DashboardLayout() {
 	} = useWorkspaceSidebarStore();
 
 	// Global hotkeys for dashboard
-	useHotkey("OPEN_SETTINGS", () => navigate({ to: "/settings/account" }));
+	useHotkey("OPEN_SETTINGS", () => navigate({ to: DEFAULT_SETTINGS_ROUTE }));
 	useHotkey("SHOW_HOTKEYS", () => navigate({ to: "/settings/keyboard" }));
 	useHotkey("TOGGLE_WORKSPACE_SIDEBAR", () => {
 		if (!isWorkspaceSidebarOpen) {

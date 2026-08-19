@@ -20,6 +20,16 @@ const API = {
 	username: process.env.USER,
 	appVersion: __APP_VERSION__,
 	platform: process.platform,
+	/**
+	 * (CLOUD-SEVERANCE-P2) The frozen local organization id, resolved from disk
+	 * by main before any window exists and handed down through the environment
+	 * the renderer process inherited. Synchronous by design: every org-scoped
+	 * store reads it on the first render, and an id that arrived a tick later
+	 * would mount them all against nothing and then remount them.
+	 */
+	localOrganizationId: process.env.FORK_LOCAL_ORG_ID ?? null,
+	localMachineId: process.env.FORK_LOCAL_MACHINE_ID ?? null,
+	localHostName: process.env.FORK_LOCAL_HOST_NAME ?? null,
 };
 
 // Store mapping of user listeners to wrapped listeners for proper cleanup

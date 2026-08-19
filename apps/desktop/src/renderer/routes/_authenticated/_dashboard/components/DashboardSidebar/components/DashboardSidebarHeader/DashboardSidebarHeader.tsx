@@ -10,14 +10,7 @@ import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useRef } from "react";
 import { GoGitPullRequest } from "react-icons/go";
-import { HiOutlineClipboardDocumentList } from "react-icons/hi2";
-import {
-	LuClock,
-	LuColumns3,
-	LuLayers,
-	LuPlus,
-	LuSearch,
-} from "react-icons/lu";
+import { LuColumns3, LuLayers, LuPlus, LuSearch } from "react-icons/lu";
 import {
 	VscFolderOpened,
 	VscGithubAlt,
@@ -25,7 +18,6 @@ import {
 	VscNewFolder,
 } from "react-icons/vsc";
 import { useFrameStackStore } from "renderer/commandPalette";
-import { GATED_FEATURES, usePaywall } from "renderer/components/Paywall";
 import { SidebarKbdHint } from "renderer/components/SidebarKbdHint";
 import { ZoomStable } from "renderer/components/ZoomStable";
 import { useZoomFactor } from "renderer/hooks/useZoomFactor";
@@ -34,15 +26,10 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useFolderFirstImport } from "renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport";
 import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
-import { useFailedAutomations } from "renderer/routes/_authenticated/_dashboard/hooks/useFailedAutomations";
 import {
 	pullRequestsSearchFromFilters,
 	usePullRequestsFilterStore,
 } from "renderer/routes/_authenticated/_dashboard/pull-requests/stores/pullRequestsFilterStore";
-import {
-	tasksSearchFromFilters,
-	useTasksFilterStore,
-} from "renderer/routes/_authenticated/_dashboard/tasks/stores/tasks-filter-state";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { STROKE_WIDTH_THICK } from "renderer/screens/main/components/WorkspaceSidebar/constants";
 import {
@@ -119,7 +106,6 @@ export function DashboardSidebarHeader({
 	const isMac = platform === undefined || platform === "darwin";
 	const zoomFactor = useZoomFactor();
 	const matchRoute = useMatchRoute();
-	const { gateFeature } = usePaywall();
 	const isWorkspacesListOpen = !!matchRoute({ to: "/v2-workspaces" });
 	const v2WorkspaceMatch = matchRoute({
 		to: "/v2-workspace/$workspaceId",
@@ -134,24 +120,15 @@ export function DashboardSidebarHeader({
 					(workspace) => workspace.id === v2WorkspaceMatch.workspaceId,
 				)?.projectId ?? undefined)
 			: undefined;
-	const isTasksOpen = !!matchRoute({ to: "/tasks", fuzzy: true });
+	// (CLOUD-SEVERANCE-P2) The Tasks and Automations rows are gone, and with
+	// them the failed-automation badge poll — it read `cloudTrpc.automation`
+	// once a minute for a count that can no longer change.
 	const isPullRequestsOpen = !!matchRoute({
 		to: "/pull-requests",
 		fuzzy: true,
 	});
-	const isAutomationsOpen = !!matchRoute({ to: "/automations", fuzzy: true });
 	const isKanbanOpen = !!matchRoute({ to: "/kanban", fuzzy: true });
-	const { myFailedCount } = useFailedAutomations();
 
-	const {
-		tab: lastTab,
-		assignee: lastAssignee,
-		search: lastSearch,
-		typeTab: lastTypeTab,
-		projectFilters: lastProjectFilters,
-		linearProjectFilter: lastLinearProjectFilter,
-		includeClosedIssues: lastIncludeClosedIssues,
-	} = useTasksFilterStore();
 	const {
 		search: lastPullRequestsSearch,
 		projectFilters: lastPullRequestsProjectFilters,
@@ -162,10 +139,6 @@ export function DashboardSidebarHeader({
 
 	const handleWorkspacesClick = () => {
 		navigate({ to: "/v2-workspaces" });
-	};
-
-	const handleAutomationsClick = () => {
-		navigate({ to: "/automations" });
 	};
 
 	// (KANBAN) Ungated — this is the fork's local-only board, not the paywalled
@@ -203,35 +176,20 @@ export function DashboardSidebarHeader({
 		navigate({ to: "/v2-workspaces" });
 	};
 
-	const handleTasksClick = () => {
-		gateFeature(GATED_FEATURES.TASKS, () => {
-			navigate({
-				to: "/tasks",
-				search: tasksSearchFromFilters({
-					tab: lastTab,
-					assignee: lastAssignee,
-					search: lastSearch,
-					typeTab: lastTypeTab,
-					projectFilters: lastProjectFilters,
-					linearProjectFilter: lastLinearProjectFilter,
-					includeClosedIssues: lastIncludeClosedIssues,
-				}),
-			});
-		});
-	};
-
+	// (CLOUD-SEVERANCE-P2) Ungated. Pull requests come from GitHub through the
+	// local host-service, so there is nothing here to sell — and the upgrade
+	// dialog this used to raise is unmounted, which would have left the button
+	// doing nothing at all.
 	const handlePullRequestsClick = () => {
-		gateFeature(GATED_FEATURES.TASKS, () => {
-			navigate({
-				to: "/pull-requests",
-				search: pullRequestsSearchFromFilters({
-					search: lastPullRequestsSearch,
-					projectFilters: lastPullRequestsProjectFilters,
-					authorFilter: lastPullRequestsAuthorFilter,
-					reviewFilter: lastPullRequestsReviewFilter,
-					includeClosed: lastPullRequestsIncludeClosed,
-				}),
-			});
+		navigate({
+			to: "/pull-requests",
+			search: pullRequestsSearchFromFilters({
+				search: lastPullRequestsSearch,
+				projectFilters: lastPullRequestsProjectFilters,
+				authorFilter: lastPullRequestsAuthorFilter,
+				reviewFilter: lastPullRequestsReviewFilter,
+				includeClosed: lastPullRequestsIncludeClosed,
+			}),
 		});
 	};
 
@@ -305,59 +263,6 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">Workspaces</TooltipContent>
-					</Tooltip>
-
-					<Tooltip delayDuration={300}>
-						<TooltipTrigger asChild>
-							<button
-								type="button"
-								onClick={handleAutomationsClick}
-								aria-label={
-									myFailedCount > 0
-										? `Automations, ${myFailedCount} failing`
-										: "Automations"
-								}
-								className={cn(
-									"relative flex size-7 items-center justify-center rounded-md transition-colors",
-									isAutomationsOpen
-										? "bg-fill-selected text-muted-foreground"
-										: "text-muted-foreground hover:bg-fill-hover",
-								)}
-							>
-								<LuClock className="size-3.5" strokeWidth={1.5} />
-								{myFailedCount > 0 && (
-									<span
-										aria-hidden="true"
-										className="absolute right-1 top-1 size-1.5 rounded-full bg-red-500"
-									/>
-								)}
-							</button>
-						</TooltipTrigger>
-						<TooltipContent side="right">
-							{myFailedCount > 0
-								? `Automations (${myFailedCount} failing)`
-								: "Automations"}
-						</TooltipContent>
-					</Tooltip>
-
-					<Tooltip delayDuration={300}>
-						<TooltipTrigger asChild>
-							<button
-								type="button"
-								onClick={handleTasksClick}
-								aria-label="Tasks"
-								aria-current={isTasksOpen ? "page" : undefined}
-								className={cn(
-									"flex size-7 items-center justify-center rounded-md transition-colors",
-									isTasksOpen
-										? "bg-fill-selected text-muted-foreground"
-										: "text-muted-foreground hover:bg-fill-hover",
-								)}
-							>
-								<HiOutlineClipboardDocumentList className="size-3.5" />
-							</button>
-						</TooltipTrigger>
-						<TooltipContent side="right">Tasks</TooltipContent>
 					</Tooltip>
 
 					<Tooltip delayDuration={300}>
@@ -524,47 +429,6 @@ export function DashboardSidebarHeader({
 					strokeWidth={1.5}
 				/>
 				<span className="flex-1 text-left">Workspaces</span>
-			</button>
-
-			<button
-				type="button"
-				onClick={handleAutomationsClick}
-				className={cn(
-					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium transition-colors",
-					isAutomationsOpen
-						? "bg-fill-selected text-foreground"
-						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
-				)}
-			>
-				<LuClock
-					className="size-3.5 shrink-0 text-muted-foreground"
-					strokeWidth={1.5}
-				/>
-				<span className="flex-1 text-left">Automations</span>
-				{myFailedCount > 0 && (
-					<span
-						title={`${myFailedCount} of your automations failed their last run`}
-						className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-red-500/15 px-1 text-[10px] font-medium tabular-nums text-red-600 dark:text-red-400"
-					>
-						{myFailedCount > 9 ? "9+" : myFailedCount}
-					</span>
-				)}
-			</button>
-
-			<button
-				type="button"
-				onClick={handleTasksClick}
-				aria-label="Tasks"
-				aria-current={isTasksOpen ? "page" : undefined}
-				className={cn(
-					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium transition-colors",
-					isTasksOpen
-						? "bg-fill-selected text-foreground"
-						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
-				)}
-			>
-				<HiOutlineClipboardDocumentList className="size-3.5 shrink-0 text-muted-foreground" />
-				<span className="flex-1 text-left">Tasks</span>
 			</button>
 
 			<button

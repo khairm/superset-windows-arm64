@@ -11,8 +11,8 @@ import {
 import { env } from "renderer/env.renderer";
 import { authClient } from "renderer/lib/auth-client";
 import { CLOUD_TRPC_ROUTER_ROOTS } from "renderer/lib/cloud-trpc";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider/ElectronTRPCProvider";
-import { MOCK_ORG_ID } from "shared/constants";
 import {
 	evictInactiveOrgCollections,
 	getCollections,
@@ -56,11 +56,11 @@ export function preloadActiveOrganizationCollections(
 }
 
 export function CollectionsProvider({ children }: { children: ReactNode }) {
-	const { data: session, refetch: refetchSession } = authClient.useSession();
+	const { refetch: refetchSession } = authClient.useSession();
 	const [isSwitching, setIsSwitching] = useState(false);
-	const activeOrganizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: session?.session?.activeOrganizationId;
+	// (CLOUD-SEVERANCE-P2) Frozen local organization — the collection keys are
+	// suffixed with it, so it must be stable for the life of the process.
+	const activeOrganizationId = useActiveOrganizationId();
 
 	const switchOrganization = useCallback(
 		async (organizationId: string) => {

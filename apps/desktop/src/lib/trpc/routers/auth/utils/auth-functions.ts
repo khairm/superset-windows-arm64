@@ -1,15 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import {
 	SUPERSET_HOME_DIR,
 	SUPERSET_HOME_DIR_MODE,
 	SUPERSET_SENSITIVE_FILE_MODE,
 } from "main/lib/app-environment";
 import { lock } from "proper-lockfile";
-import { PROTOCOL_SCHEME } from "shared/constants";
-import { decrypt, encrypt } from "./crypto-storage";
+import { decrypt } from "./crypto-storage";
 
 interface StoredAuth {
 	token: string;
@@ -154,67 +152,19 @@ async function readStoredAuth(): Promise<StoredAuth | null> {
 	return inspected.storedAuth;
 }
 
-async function atomicWriteToken(
-	tokenFile: string,
-	contents: Buffer,
-): Promise<void> {
-	const parentDirectory = dirname(tokenFile);
-	await fs.mkdir(parentDirectory, {
-		recursive: true,
-		mode: SUPERSET_HOME_DIR_MODE,
-	});
-
-	const temporaryFile = join(
-		parentDirectory,
-		`.${basename(tokenFile)}.${process.pid}-${randomUUID()}.tmp`,
-	);
-	let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
-	try {
-		handle = await fs.open(temporaryFile, "wx", SUPERSET_SENSITIVE_FILE_MODE);
-		await handle.writeFile(contents);
-		await handle.sync();
-		await handle.close();
-		handle = null;
-		// chmod before the commit rename: the open() mode is masked by umask,
-		// and a failure here must leave the previous token intact.
-		await fs.chmod(temporaryFile, SUPERSET_SENSITIVE_FILE_MODE);
-		await fs.rename(temporaryFile, tokenFile);
-	} catch (error) {
-		await handle?.close().catch(() => {});
-		await fs.unlink(temporaryFile).catch(() => {});
-		throw error;
-	}
-}
-
-async function writeStoredAuth(storedAuth: StoredAuth): Promise<void> {
-	await atomicWriteToken(getTokenFile(), encrypt(JSON.stringify(storedAuth)));
-}
-
-export const stateStore = new Map<string, number>();
-let authWriteQueue: Promise<unknown> = Promise.resolve();
-
-function serializeAuthWrite<Result>(
-	operation: () => Promise<Result>,
-): Promise<Result> {
-	const lockedOperation = () => withAuthLock(operation);
-	const nextWrite = authWriteQueue.then(lockedOperation, lockedOperation);
-	authWriteQueue = nextWrite.then(
-		() => undefined,
-		() => undefined,
-	);
-	return nextWrite;
-}
-
 /**
- * Event emitter for auth-related events.
- * Used by tRPC subscription to notify renderer of token changes.
+ * (CLOUD-SEVERANCE-P2) Everything that WROTE this file is gone: the OAuth
+ * callback that saved a token, the sign-out that cleared it, the membership
+ * cache that appended organization ids, the deep-link parser that fed the
+ * callback, and the event emitter the renderer subscribed to. With no cloud
+ * there is nothing to store, and the store's only remaining influence is over
+ * which identity the host-service runs under — so it is read-only by
+ * construction rather than by convention.
  *
- * Events:
- * - "token-saved": { token, expiresAt } - New token saved (OAuth callback)
- * - "organization-ids-saved": { token, organizationIds } - Membership cached
- * - "token-cleared": (no data) - Token deleted (sign-out)
+ * The file itself is left alone rather than deleted. A pre-severance install
+ * still has one, and main reads its organization ids to break a tie when this
+ * machine holds more than one host database.
  */
-export const authEvents = new EventEmitter();
 
 /**
  * Load token from encrypted disk storage.
@@ -239,143 +189,5 @@ export async function loadToken(): Promise<LoadedAuth> {
 	} catch (error) {
 		console.error("[auth] Failed to inspect auth token storage", error);
 		return EMPTY_LOADED_AUTH;
-	}
-}
-
-/**
- * Persist token to encrypted disk storage and notify subscribers.
- */
-export async function saveToken({
-	token,
-	expiresAt,
-}: {
-	token: string;
-	expiresAt: string;
-}): Promise<void> {
-	await serializeAuthWrite(async () => {
-		// Moves unusable storage aside first: renaming onto a directory fails.
-		await readStoredAuth();
-		await writeStoredAuth({ token, expiresAt });
-		authEvents.emit("token-saved", { token, expiresAt });
-	});
-}
-
-export async function clearToken(): Promise<void> {
-	await serializeAuthWrite(async () => {
-		const tokenFile = getTokenFile();
-		const inspected = await inspectTokenStorage(tokenFile);
-		if (inspected.status === "valid") {
-			await fs.rm(tokenFile, { force: true });
-		} else if (inspected.status === "invalid") {
-			await quarantineInvalidTokenStorage(tokenFile, inspected.reason);
-		}
-		authEvents.emit("token-cleared");
-	});
-}
-
-/** Cache the last membership confirmed by the authenticated session. */
-export async function saveOrganizationIds({
-	token,
-	organizationIds,
-	expectedRevision,
-}: {
-	token: string;
-	organizationIds: string[];
-	expectedRevision: number;
-}): Promise<
-	| { status: "saved"; revision: number }
-	| { status: "conflict"; revision: number }
-	| { status: "token-mismatch"; revision: number }
-> {
-	return await serializeAuthWrite(async () => {
-		const storedAuth = await readStoredAuth();
-		if (!storedAuth || storedAuth.token !== token) {
-			return { status: "token-mismatch" as const, revision: 0 };
-		}
-
-		const currentRevision = storedAuth.organizationIdsRevision ?? 0;
-		if (expectedRevision !== currentRevision) {
-			return { status: "conflict" as const, revision: currentRevision };
-		}
-		if (currentRevision === Number.MAX_SAFE_INTEGER) {
-			throw new Error("Organization membership revision exhausted");
-		}
-
-		const normalizedIds = [...new Set(organizationIds)].sort();
-		const revision = currentRevision + 1;
-		await writeStoredAuth({
-			token: storedAuth.token,
-			expiresAt: storedAuth.expiresAt,
-			organizationIds: normalizedIds,
-			organizationIdsRevision: revision,
-		});
-		authEvents.emit("organization-ids-saved", {
-			token: storedAuth.token,
-			organizationIds: normalizedIds,
-		});
-		return { status: "saved" as const, revision };
-	});
-}
-
-/**
- * Handle OAuth callback from deep link.
- * Validates CSRF state and saves token.
- */
-export async function handleAuthCallback(params: {
-	token: string;
-	expiresAt: string;
-	state: string;
-}): Promise<{ success: boolean; error?: string }> {
-	const stateIssuedAt = stateStore.get(params.state);
-	if (stateIssuedAt === undefined) {
-		return { success: false, error: "Invalid or expired auth session" };
-	}
-	stateStore.delete(params.state);
-
-	try {
-		await saveToken({ token: params.token, expiresAt: params.expiresAt });
-	} catch (error) {
-		// Put the state back so the callback can be retried after a write failure.
-		stateStore.set(params.state, stateIssuedAt);
-		console.error("[auth] Failed to persist desktop auth token", error);
-		return {
-			success: false,
-			error: `Superset could not save your sign-in to ${getTokenFile()}. Your existing data was left untouched. Check the path and try again.`,
-		};
-	}
-
-	return { success: true };
-}
-
-export type ParsedAuthDeepLink =
-	| { type: "not-auth" }
-	| { type: "malformed" }
-	| {
-			type: "valid";
-			params: { token: string; expiresAt: string; state: string };
-	  };
-
-/**
- * Parse and validate auth deep link URL.
- *
- * Classifies by host/path before validating fields so a malformed auth
- * callback (which may still carry a token) is never treated as a plain
- * deep link and logged or navigated with.
- */
-export function parseAuthDeepLink(url: string): ParsedAuthDeepLink {
-	try {
-		const parsed = new URL(url);
-		if (parsed.protocol !== `${PROTOCOL_SCHEME}:`) return { type: "not-auth" };
-		if (parsed.host !== "auth" || parsed.pathname !== "/callback") {
-			return { type: "not-auth" };
-		}
-
-		const token = parsed.searchParams.get("token");
-		const expiresAt = parsed.searchParams.get("expiresAt");
-		const state = parsed.searchParams.get("state");
-		if (!token || !expiresAt || !state) return { type: "malformed" };
-		return { type: "valid", params: { token, expiresAt, state } };
-	} catch {
-		return { type: "not-auth" };
 	}
 }

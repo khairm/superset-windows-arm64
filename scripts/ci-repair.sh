@@ -114,6 +114,12 @@ FROZEN_GATE_PATHS=(
   scripts/ai-run.sh
   scripts/ai-streak.sh
   packages/host-service/src/companion*
+  # (CLOUD-SEVERANCE-P2) The fence's decision function is the one thing a
+  # build-time gate cannot re-derive from absence: a fence quietly reverted to
+  # log-only ships bytes indistinguishable from a blocking one, which is why
+  # the gate asserts its marker is PRESENT. Freezing the module keeps a repair
+  # agent from editing the very code that assertion is standing guard over.
+  apps/desktop/src/main/lib/egress-fence
   .claude
   .mcp.json
 )

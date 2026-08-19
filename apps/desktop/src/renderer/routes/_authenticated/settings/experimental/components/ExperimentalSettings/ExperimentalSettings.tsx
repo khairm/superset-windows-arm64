@@ -25,6 +25,7 @@ import {
 } from "../../../utils/settings-search";
 // (COMPANION-PAIRING-ENTRY) the seam that reaches the fork-only pairing surface.
 import { CompanionPairingSetting } from "./components/CompanionPairingSetting";
+import { LocalChatSetting } from "./components/LocalChatSetting";
 import { WaitForSetupBeforeAgentSetting } from "./components/WaitForSetupBeforeAgentSetting";
 
 interface ExperimentalSettingsProps {
@@ -58,6 +59,11 @@ export function ExperimentalSettings({
 	);
 	const showWaitForSetupBeforeAgent = isItemVisible(
 		SETTING_ITEM_ID.EXPERIMENTAL_WAIT_FOR_SETUP_BEFORE_AGENT,
+		visibleItems,
+	);
+	// (CLOUD-SEVERANCE-P2)
+	const showLocalChat = isItemVisible(
+		SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT,
 		visibleItems,
 	);
 	const isV2CloudEnabled = useIsV2CloudEnabled();
@@ -191,6 +197,8 @@ export function ExperimentalSettings({
 				{showWaitForSetupBeforeAgent && <WaitForSetupBeforeAgentSetting />}
 				{/* (COMPANION-PAIRING-ENTRY) */}
 				{showCompanionPairing && <CompanionPairingSetting />}
+				{/* (CLOUD-SEVERANCE-P2) the one chat surface that survived severance */}
+				{showLocalChat && <LocalChatSetting />}
 			</div>
 		</div>
 	);

@@ -3,50 +3,34 @@ import hostServicePackageJson from "@superset/host-service/package.json" with {
 	type: "json",
 };
 import { getHostId, getHostName } from "@superset/shared/host-info";
-import { TRPCError } from "@trpc/server";
-import type { ApiClient } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 
 // Auto-derived from this package's package.json so callers can report exactly
 // which bundled host-service build is currently serving requests.
 const HOST_SERVICE_VERSION: string = hostServicePackageJson.version;
 
-const ORGANIZATION_CACHE_TTL_MS = 60 * 60 * 1000;
-
-let cachedOrganization: {
-	data: { id: string; name: string; slug: string };
-	cachedAt: number;
-} | null = null;
-
-async function getOrganization(
-	api: ApiClient,
-	organizationId: string,
-): Promise<{ id: string; name: string; slug: string }> {
-	if (
-		cachedOrganization &&
-		cachedOrganization.data.id === organizationId &&
-		Date.now() - cachedOrganization.cachedAt < ORGANIZATION_CACHE_TTL_MS
-	) {
-		return cachedOrganization.data;
-	}
-
-	const organization = await api.organization.getByIdFromJwt.query({
-		id: organizationId,
-	});
-	if (!organization) {
-		throw new TRPCError({
-			code: "PRECONDITION_FAILED",
-			message: "Organization not found or not accessible from JWT",
-		});
-	}
-
-	cachedOrganization = { data: organization, cachedAt: Date.now() };
-	return organization;
+/**
+ * (CLOUD-SEVERANCE-P2) The organization, locally.
+ *
+ * Upstream asked the cloud for the organization behind the JWT and threw
+ * PRECONDITION_FAILED when it could not be resolved — one of the few cloud
+ * reads in this service that was not already wrapped in a catch, so a severed
+ * client would have turned `host.info` from "describes this machine" into a
+ * hard error. The id is the only part anything downstream uses; the name and
+ * slug are display text for a screen that no longer has a cloud organization
+ * to describe.
+ */
+function getOrganization(organizationId: string): {
+	id: string;
+	name: string;
+	slug: string;
+} {
+	return { id: organizationId, name: "Local", slug: "local" };
 }
 
 export const hostRouter = router({
 	info: protectedProcedure.query(async ({ ctx }) => {
-		const organization = await getOrganization(ctx.api, ctx.organizationId);
+		const organization = getOrganization(ctx.organizationId);
 
 		return {
 			hostId: getHostId(),

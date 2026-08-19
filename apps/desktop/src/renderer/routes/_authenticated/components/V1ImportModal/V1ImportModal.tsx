@@ -1,4 +1,5 @@
 import { Button } from "@superset/ui/button";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import {
 	Dialog,
 	DialogContent,
@@ -13,7 +14,6 @@ import {
 	useV1ImportModalStore,
 	V1_IMPORT_PAGE_ORDER,
 } from "renderer/stores/v1-import-modal";
-import { MOCK_ORG_ID } from "shared/constants";
 import { IntroPage } from "./components/IntroPage";
 import { StepProgress } from "./components/StepProgress";
 import { WelcomePage } from "./components/WelcomePage";
@@ -28,9 +28,8 @@ export function V1ImportModal() {
 	const close = useCloseV1ImportModal();
 	const { data: session } = authClient.useSession();
 	const { activeHostUrl } = useLocalHostService();
-	const organizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: (session?.session?.activeOrganizationId ?? null);
+	// (CLOUD-SEVERANCE-P2) Frozen local organization.
+	const organizationId = useActiveOrganizationId();
 
 	if (!organizationId) return null;
 

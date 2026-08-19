@@ -1,10 +1,10 @@
 import * as p from "@clack/prompts";
 import { boolean, CLIError, number, string } from "@superset/cli-framework";
 import { command } from "../../lib/command";
+import { requireLocalOrganizationId } from "../../lib/local-org";
 import { SUPERSET_CONFIG_PATH } from "../../lib/config";
 import { isProcessAlive, readManifest } from "../../lib/host/manifest";
 import { spawnHostService } from "../../lib/host/spawn";
-import { resolveOrganization } from "../../lib/resolve-org";
 
 export default command({
 	description: "Start the host service",
@@ -14,8 +14,14 @@ export default command({
 		org: string().desc("Organization to register under (id, slug, or name)"),
 	},
 	run: async ({ ctx, options, signal }) => {
-		const orgs = await ctx.api.user.myOrganizations.query();
-		const organization = await resolveOrganization(orgs, options.org);
+		// (CLOUD-SEVERANCE-P2) Standalone-CLI path only (the desktop-bundled
+		// binary refuses to start a host service at all). The organization is
+		// the one this machine resolved for itself; --org can no longer pick a
+		// different cloud organization because there are none to pick from.
+		const organization = {
+			id: requireLocalOrganizationId(ctx.config.organizationId),
+			name: "this machine",
+		};
 
 		const existing = readManifest(organization.id);
 		if (existing && isProcessAlive(existing.pid)) {

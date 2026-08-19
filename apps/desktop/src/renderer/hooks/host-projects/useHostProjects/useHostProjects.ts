@@ -4,11 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { env } from "renderer/env.renderer";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
-import { authClient } from "renderer/lib/auth-client";
 import { getHostServiceWsToken } from "renderer/lib/host-service-auth";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-import { MOCK_ORG_ID } from "shared/constants";
 import {
 	applyProjectChangedEvent,
 	deriveHostProjectsQueryTargets,
@@ -48,10 +47,8 @@ export function useHostProjects(): UseHostProjectsResult {
 	const queryClient = useQueryClient();
 	const { activeHostUrl, machineId } = useLocalHostService();
 	const relayUrl = useRelayUrl();
-	const { data: session } = authClient.useSession();
-	const fallbackOrganizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: (session?.session?.activeOrganizationId ?? null);
+	// (CLOUD-SEVERANCE-P2) Frozen local organization.
+	const fallbackOrganizationId = useActiveOrganizationId();
 
 	const { hosts, settled: knownHostsSettled } = useKnownHosts();
 

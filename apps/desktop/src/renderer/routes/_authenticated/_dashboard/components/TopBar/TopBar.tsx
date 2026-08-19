@@ -9,7 +9,6 @@ import { useWorkspaceSidebarStore } from "renderer/stores/workspace-sidebar-stat
 import { NavigationControls } from "../NavigationControls";
 import { SidebarToggle } from "../SidebarToggle";
 import { OpenInMenuButton } from "./components/OpenInMenuButton";
-import { OrganizationDropdown } from "./components/OrganizationDropdown";
 import { ResourceConsumption } from "./components/ResourceConsumption";
 import { RightSidebarToggle } from "./components/RightSidebarToggle";
 import { V2WorkspaceTitle } from "./components/V2WorkspaceTitle";
@@ -78,6 +77,10 @@ export function TopBar() {
 				)}
 			</div>
 
+			{/* (CLOUD-SEVERANCE-P2) No organization switcher here. It was already
+			    v1-only and this fork is pinned to v2, but it is also the last thing
+			    that should come back: it lists organizations from the cloud and its
+			    only working action would be a log-out that cannot happen. */}
 			<div className="flex items-center gap-3 h-full pr-4 shrink-0">
 				{!isOnline && (
 					<div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
@@ -92,7 +95,6 @@ export function TopBar() {
 						projectId={workspace.project?.id}
 					/>
 				) : null}
-				{!isV2CloudEnabled && <OrganizationDropdown />}
 				{isV2WorkspaceRoute && <RightSidebarToggle />}
 				{!isMac && <WindowControls />}
 			</div>

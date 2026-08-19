@@ -54,7 +54,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Bump when a later phase widens the assertions below. */
-const PHASE = 1;
+const PHASE = 2;
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(repoRoot, "apps/desktop/dist");
@@ -349,7 +349,12 @@ function assertAsarSetClean(archives, scope) {
 			`no bundled CLI binary found inside ${scope} (expected entries under dist/resources/bin/) — the CLI analytics scan would pass vacuously. Refusing to pass.`,
 		);
 	} else {
-		const needles = ["analytics.captureEvent", "cli_command_invoked"];
+		const needles = [
+			"analytics.captureEvent",
+			"cli_command_invoked",
+			"api.superset.sh",
+			"relay.superset.sh",
+		];
 		const hits = [];
 		for (const { archive, entry } of packagedCli) {
 			const bytes = asarEntryBytes(archive, entry);
@@ -608,9 +613,11 @@ if (noArtifacts) {
 	//    analytics route name instead, so the CLI channel is artifact-enforced
 	//    rather than only source-enforced.
 	//
-	//    `api.superset.sh` IS still present in this binary and that is correct:
-	//    the CLI's auth/resolveAuth chain legitimately targets it in phase 1.
-	//    Only the analytics route is asserted absent.
+	//    Phase 2 widens this: `api.superset.sh` was legitimate in this binary
+	//    while the CLI's auth chain targeted it, and is not any more — the CLI
+	//    resolves a local identity and its API client is severed. The binary is
+	//    the only place that can be proven, since the bundle scans cannot see
+	//    inside it.
 	const cliBinaries = existsSync(bundledCliPath)
 		? readdirSync(bundledCliPath)
 				.map((name) => join(bundledCliPath, name))
@@ -621,7 +628,12 @@ if (noArtifacts) {
 			`bundled CLI binary not found under ${relative(repoRoot, bundledCliPath).replace(/\\/g, "/")} — the CLI analytics scan would pass vacuously. Refusing to pass.`,
 		);
 	} else {
-		const needles = ["analytics.captureEvent", "cli_command_invoked"];
+		const needles = [
+			"analytics.captureEvent",
+			"cli_command_invoked",
+			"api.superset.sh",
+			"relay.superset.sh",
+		];
 		const cliHits = [];
 		for (const binary of cliBinaries) {
 			const bytes = readFileSync(binary);
@@ -641,6 +653,113 @@ if (noArtifacts) {
 			ok(
 				`bundled CLI carries no analytics route (${cliBinaries.length} binary/binaries scanned)`,
 			);
+		}
+	}
+
+	// --- (CLOUD-SEVERANCE-P2): the cloud itself ------------------------
+	//
+	// Phase 1 cut telemetry, updates and notices while api/relay/electric
+	// stayed legitimately baked. Phase 2 cuts those too, so the assertions
+	// below are what stop them coming back.
+	//
+	// EVERY ONE OF THESE IS AN ORIGIN, NEVER A WORD. `electric` appears in
+	// live fork identifiers (`clearElectricCache` is an IPC procedure name)
+	// and in dozens of comments; asserting the word would be a gate that can
+	// never go green, and this file is frozen against (BUILD-REPAIR) edits —
+	// a false positive here blocks nightlies until a human fixes it by hand.
+
+	// 10. No cloud origin may survive in any artifact. Six hosts, because the
+	//     app talked to more of them than "the API": the data plane, two relay
+	//     failover targets, the relay itself, the Electric proxy and the
+	//     streams endpoints.
+	const CLOUD_ORIGINS = [
+		["api.superset.sh", "the cloud data plane"],
+		["relay.superset.sh", "the relay"],
+		["relay-backup.superset.sh", "the relay's failover target"],
+		["superset-relay2.avi-6ac.workers.dev", "the v2 relay worker"],
+		["electric-proxy.avi-6ac.workers.dev", "the Electric sync proxy"],
+		["streams.superset.sh", "the streams endpoint"],
+		["superset-stream.fly.dev", "the streams fallback endpoint"],
+	];
+	for (const [host, what] of CLOUD_ORIGINS) {
+		assertAbsent(
+			`${host} absent from all artifacts`,
+			allArtifacts,
+			new RegExp(host.replace(/\./g, "\\.")),
+			`${what} is severed in phase 2 — something baked its hostname back in`,
+		);
+	}
+
+	// 11. better-auth's HTTP surface must be gone from the renderer. The
+	//     session client is a Proxy shim now; if this path reappears, some
+	//     call is talking to an auth server again.
+	assertAbsent(
+		"better-auth HTTP routes absent from all artifacts",
+		allArtifacts,
+		/\/api\/auth\/(desktop\/connect|sign-in|sign-up|get-session)/,
+		"the sign-in flow is deleted — a route like this means it came back",
+	);
+
+	// 12. POSITIVE assertion, and the only one of its kind in this gate.
+	//
+	//     Absence proves nothing about the fence: a fence reverted to log-only
+	//     ships bytes that differ from a blocking one only in what the callback
+	//     does with the decision. So this asserts the WIRING — that the request
+	//     callback still consults the decision function and still hands the
+	//     result to Electron's cancel callback.
+	//
+	//     An earlier version of this assertion looked for the `(FENCE-BLOCK)`
+	//     marker instead. That was worthless twice over: the main bundle is not
+	//     minified, so the marker matched the SOURCE COMMENT explaining it, and
+	//     even the two log strings would have survived changing `cancel =
+	//     shouldBlockEgress(...)` to `cancel = false`. A string in a log line is
+	//     not a behaviour. These two patterns are still only structural — no
+	//     artifact scan can prove semantics — but they are properties of the
+	//     code path rather than of its documentation, and the decision function
+	//     itself is covered by its unit tests and frozen in ci-repair.sh.
+	const fenceCallSites = mainArtifacts.filter((artifact) =>
+		/shouldBlockEgress\(/.test(artifact.text),
+	);
+	const fenceCancelSites = mainArtifacts.filter((artifact) =>
+		/callback\(\{\s*cancel/.test(artifact.text),
+	);
+	if (mainArtifacts.length === 0) {
+		fail(
+			"egress-fence wiring: main artifact set is EMPTY — the check would pass vacuously. Refusing to pass.",
+		);
+	} else if (fenceCallSites.length === 0 || fenceCancelSites.length === 0) {
+		fail(
+			`egress-fence wiring is ABSENT from the main bundle (shouldBlockEgress call: ${fenceCallSites.length}, cancel callback: ${fenceCancelSites.length}) — the fence has been reverted to log-only or its decision function was unhooked. Refusing to pass.`,
+		);
+	} else {
+		ok(
+			`egress-fence decision is wired into the request callback (${fenceCallSites.length} artifact(s))`,
+		);
+	}
+
+	// 13. The CSP must not carry a bare `ws:`/`wss:` token. Removing the named
+	//     relay entries from connect-src is cosmetic while these remain: they
+	//     permit a WebSocket to any host on the internet.
+	const cspHtml = rendererArtifacts.filter((a) => a.rel.endsWith(".html"));
+	if (cspHtml.length === 0) {
+		fail(
+			"CSP websocket scope: no renderer HTML found — the check would pass vacuously. Refusing to pass.",
+		);
+	} else {
+		// The token can sit anywhere in the directive, INCLUDING last — `wss:;`
+		// with no trailing space is the same wide-open grant as `wss: ` mid-list,
+		// and a regex that only matched the mid-list form would wave it through.
+		const wide = cspHtml.filter((a) =>
+			/connect-src[^;]*\sws{1,2}:(\s|;|"|')/.test(a.text),
+		);
+		if (wide.length > 0) {
+			fail(
+				`CSP connect-src still allows unscoped websockets in: ${wide
+					.map((a) => a.rel)
+					.join(", ")} — narrow it to loopback`,
+			);
+		} else {
+			ok(`CSP connect-src websockets are loopback-scoped (${cspHtml.length} document(s))`);
 		}
 	}
 

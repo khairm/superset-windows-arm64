@@ -7,15 +7,18 @@ interface UseV2AgentChoicesResult {
 	isFetched: boolean;
 }
 
-const SUPERSET_AGENT: AgentSelectAgent = {
-	id: "superset",
-	label: "Superset",
-	iconId: "superset",
-};
-
-// Superset chat isn't in the host's `host_agent_configs` table — it's
-// routed by id inside `runAgentInWorkspace`. Append after the host's
-// terminal rows so the user's preferred terminal agents stay on top.
+/**
+ * Every agent the user can launch, straight from the host's
+ * `host_agent_configs` table.
+ *
+ * (CLOUD-SEVERANCE-P2) The list used to end with a synthetic "Superset" row.
+ * That agent was never a host config — it was routed by id inside
+ * `runAgentInWorkspace` into a hosted chat session, which the host now refuses
+ * outright. Offering it in a picker would hand the user a launch that can only
+ * come back as an error. Filtered here rather than in the shared agent catalog:
+ * the catalog is upstream's and churns every release, this hook is the one
+ * thing every desktop picker reads.
+ */
 export function useV2AgentChoices(
 	hostUrl: string | null,
 ): UseV2AgentChoicesResult {
@@ -31,7 +34,7 @@ export function useV2AgentChoices(
 				presetId: config.presetId,
 			}),
 		);
-		return [...terminalAgents, SUPERSET_AGENT];
+		return terminalAgents;
 	}, [query.data]);
 
 	return { agents, isFetched: query.isFetched };

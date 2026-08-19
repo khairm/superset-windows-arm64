@@ -7,19 +7,22 @@ import {
 	useLocation,
 	useNavigate,
 } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { DndProvider } from "react-dnd";
 import { HiOutlineWifi } from "react-icons/hi2";
 import { NewWorkspaceModal } from "renderer/components/NewWorkspaceModal";
-import { Paywall } from "renderer/components/Paywall";
 import { Redirect } from "renderer/components/Redirect";
 import { env } from "renderer/env.renderer";
 import { useDelayElapsed } from "renderer/hooks/useDelayElapsed";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useOnlineStatus } from "renderer/hooks/useOnlineStatus";
 import { useSettingsExternalChangeListener } from "renderer/hooks/useSettingsExternalChangeListener";
-import { useSignOut } from "renderer/hooks/useSignOut";
 import { authClient, getAuthToken } from "renderer/lib/auth-client";
+import {
+	CLOUD_SEVERED_FALLBACK_ROUTE,
+	DEFAULT_SETTINGS_ROUTE,
+	isCloudSeveredRoute,
+} from "renderer/lib/cloud-severed-routes";
 import { dragDropManager } from "renderer/lib/dnd";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
@@ -28,7 +31,6 @@ import { InitGitDialog } from "renderer/react-query/projects/InitGitDialog";
 import { DaemonAutoUpdateFailureDialog } from "renderer/routes/_authenticated/components/DaemonAutoUpdateFailureDialog";
 import { DashboardNewWorkspaceModal } from "renderer/routes/_authenticated/components/DashboardNewWorkspaceModal";
 import { DiffThemeSync } from "renderer/routes/_authenticated/components/DiffThemeSync";
-import { PendingDeletionScreen } from "renderer/routes/_authenticated/components/PendingDeletionScreen";
 import {
 	V1AutoMigration,
 	V1MigrationContinuity,
@@ -44,7 +46,7 @@ import { useTabsStore } from "renderer/stores/tabs/store";
 import { useAgentHookListener } from "renderer/stores/tabs/useAgentHookListener";
 import { setPaneWorkspaceRunState } from "renderer/stores/tabs/workspace-run";
 import { useWorkspaceInitStore } from "renderer/stores/workspace-init";
-import { MOCK_ORG_ID, NOTIFICATION_EVENTS } from "shared/constants";
+import { NOTIFICATION_EVENTS } from "shared/constants";
 import { AgentHooks } from "./components/AgentHooks";
 import { DockBadgeController } from "./components/DockBadgeController";
 import { FileMenuListener } from "./components/FileMenuListener";
@@ -62,10 +64,9 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 const signInRedirect = <Redirect to="/sign-in" replace />;
-const createOrganizationRedirect = (
-	<Redirect to="/create-organization" replace />
+const cloudSeveredRedirect = (
+	<Redirect to={CLOUD_SEVERED_FALLBACK_ROUTE} replace />
 );
-const onboardingRedirect = <Redirect to="/onboarding" replace />;
 
 const SESSION_PENDING_TIMEOUT_MS = 15_000;
 
@@ -85,10 +86,8 @@ function AuthenticatedLayout() {
 	const shownWorkspaceInitWarningsRef = useRef(new Set<string>());
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 
-	const isSignedIn = env.SKIP_ENV_VALIDATION || !!session?.user;
-	const activeOrganizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: session?.session?.activeOrganizationId;
+	// (CLOUD-SEVERANCE-P2) There is no signed-out state to be in.
+	const isSignedIn = true;
 
 	const isAuthPending =
 		(isPending || (isRefetching && !session?.user && hasLocalToken)) &&
@@ -97,8 +96,6 @@ function AuthenticatedLayout() {
 		isAuthPending,
 		SESSION_PENDING_TIMEOUT_MS,
 	);
-	const signOut = useSignOut();
-	const [isSigningOut, setIsSigningOut] = useState(false);
 
 	useAgentHookListener();
 	useSettingsExternalChangeListener();
@@ -193,8 +190,13 @@ function AuthenticatedLayout() {
 	electronTrpc.menu.subscribe.useSubscription(undefined, {
 		onData: (event) => {
 			if (event.type === "open-settings") {
-				const section = event.data.section || "account";
-				navigate({ to: `/settings/${section}` as "/settings/account" });
+				// (CLOUD-SEVERANCE-P2) The bare "Settings…" menu item used to land on
+				// the account page, which is now one of the severed routes — it would
+				// bounce the user straight back out to their workspace.
+				const target = event.data.section
+					? `/settings/${event.data.section}`
+					: DEFAULT_SETTINGS_ROUTE;
+				navigate({ to: target as "/settings/appearance" });
 			} else if (event.type === "open-workspace") {
 				navigate({ to: `/workspace/${event.data.workspaceId}` });
 			}
@@ -218,26 +220,14 @@ function AuthenticatedLayout() {
 								Superset can't confirm your sign-in with the server.
 							</p>
 						</div>
-						<div className="flex gap-2">
-							<Button variant="outline" size="sm" onClick={() => refetch()}>
-								Retry
-							</Button>
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={isSigningOut}
-								onClick={async () => {
-									setIsSigningOut(true);
-									try {
-										await signOut();
-									} finally {
-										void navigate({ to: "/sign-in", replace: true });
-									}
-								}}
-							>
-								Sign out
-							</Button>
-						</div>
+						{/* (CLOUD-SEVERANCE-P2) Retry is the only way out of here now.
+						    The sign-out escape hatch existed to let a user re-authenticate
+						    against a server that was refusing them; there is no server and
+						    no second identity to return to, so the button could only strand
+						    them on a sign-in screen that redirects back here. */}
+						<Button variant="outline" size="sm" onClick={() => refetch()}>
+							Retry
+						</Button>
 					</>
 				)}
 			</div>
@@ -266,25 +256,18 @@ function AuthenticatedLayout() {
 		return signInRedirect;
 	}
 
-	if (session?.user?.deletionRequestedAt) {
-		return (
-			<PendingDeletionScreen
-				deletionRequestedAt={session.user.deletionRequestedAt}
-				onReactivated={() => void refetch()}
-			/>
-		);
-	}
-
-	if (!activeOrganizationId) {
-		return createOrganizationRedirect;
-	}
-
-	if (
-		session?.user &&
-		!session.user.onboardedAt &&
-		!location.pathname.startsWith("/onboarding")
-	) {
-		return onboardingRedirect;
+	// (CLOUD-SEVERANCE-P2) Account deletion, organization creation and the
+	// onboarding flow were all things the cloud asked this app to show. The
+	// local identity is never pending deletion, always has its organization and
+	// is always onboarded, so these three gates could only ever fire wrongly —
+	// and two of them pointed at routes that no longer render.
+	//
+	// This is the one place a severed route is stopped. Every entry point to
+	// them is gone, but a saved location or a deep link still arrives here, and
+	// it arrives as a render (not a route load) so the check lives in the
+	// component body where it sees every navigation.
+	if (isCloudSeveredRoute(location.pathname)) {
+		return cloudSeveredRedirect;
 	}
 
 	return (
@@ -323,7 +306,6 @@ function AuthenticatedLayout() {
 							)}
 							<InitGitDialog />
 							<TeardownLogsDialog />
-							<Paywall />
 						</WorkerPoolContextProvider>
 					</HostWorkspacesProvider>
 				</LocalHostServiceProvider>

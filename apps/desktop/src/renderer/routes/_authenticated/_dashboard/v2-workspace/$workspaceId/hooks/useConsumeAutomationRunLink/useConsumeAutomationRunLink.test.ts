@@ -2,8 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { createWorkspaceStore, type WorkspaceState } from "@superset/panes";
 import type { PaneViewerData } from "../../types";
 import {
-	chatSessionBelongsToWorkspace,
-	consumeChatAutomationRunLink,
 	consumeTabAutomationRunLink,
 	consumeTerminalAutomationRunLink,
 	getAutomationRunLinkConsumeKey,
@@ -47,13 +45,6 @@ describe("getAutomationRunLinkConsumeKey", () => {
 				focusRequestId: undefined,
 			}),
 		).toBe("terminal:terminal-1");
-		expect(
-			getAutomationRunLinkConsumeKey({
-				type: "chat",
-				id: "chat-1",
-				focusRequestId: undefined,
-			}),
-		).toBe("chat:chat-1");
 		expect(
 			getAutomationRunLinkConsumeKey({
 				type: "tab",
@@ -108,18 +99,6 @@ describe("automation run link effect bodies", () => {
 				terminalSessions: [
 					{ terminalId: "terminal-1", workspaceId: "workspace-1" },
 				],
-				consumedKeys,
-			}),
-		).toBe(false);
-		expect(
-			consumeChatAutomationRunLink({
-				store,
-				workspaceId: "workspace-1",
-				paneLayoutReady: false,
-				chatSessionId: "chat-1",
-				focusRequestId: "request-chat",
-				chatSessionsReady: true,
-				chatSession: { v2WorkspaceId: "workspace-1" },
 				consumedKeys,
 			}),
 		).toBe(false);
@@ -234,30 +213,4 @@ describe("automation run link ownership checks", () => {
 		).toBe(false);
 	});
 
-	it("accepts chat sessions only from the current v2 workspace", () => {
-		expect(
-			chatSessionBelongsToWorkspace({
-				chatSession: { v2WorkspaceId: "workspace-a" },
-				workspaceId: "workspace-a",
-			}),
-		).toBe(true);
-		expect(
-			chatSessionBelongsToWorkspace({
-				chatSession: { v2WorkspaceId: "workspace-a" },
-				workspaceId: "workspace-b",
-			}),
-		).toBe(false);
-		expect(
-			chatSessionBelongsToWorkspace({
-				chatSession: null,
-				workspaceId: "workspace-a",
-			}),
-		).toBe(false);
-		expect(
-			chatSessionBelongsToWorkspace({
-				chatSession: { v2WorkspaceId: null },
-				workspaceId: "workspace-a",
-			}),
-		).toBe(false);
-	});
 });

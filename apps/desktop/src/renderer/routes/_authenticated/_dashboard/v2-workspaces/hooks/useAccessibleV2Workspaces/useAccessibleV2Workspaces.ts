@@ -1,4 +1,5 @@
 import type { CheckItem } from "@superset/local-db";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -28,7 +29,6 @@ import {
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
-import { MOCK_ORG_ID } from "shared/constants";
 import { type PaneStatus, pickHigherStatus } from "shared/tabs-types";
 
 export type V2WorkspaceHostType = "local-device" | "remote-device";
@@ -218,9 +218,8 @@ export function useAccessibleV2Workspaces(
 	const { machineId, activeHostUrl } = useLocalHostService();
 	const relayUrl = useRelayUrl();
 
-	const activeOrganizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: (session?.session?.activeOrganizationId ?? null);
+	// (CLOUD-SEVERANCE-P2) Frozen local organization and the one local user.
+	const activeOrganizationId = useActiveOrganizationId();
 	const currentUserId = session?.user?.id ?? null;
 
 	// With a device filter (the page), rows come from a single `workspace.list`

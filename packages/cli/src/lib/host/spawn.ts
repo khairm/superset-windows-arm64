@@ -15,7 +15,6 @@ import {
 	hostDbPath,
 	writeManifest,
 } from "./manifest";
-import { getRelayUrl } from "./relay-url";
 
 const HEALTH_POLL_INTERVAL_MS = 200;
 const HEALTH_POLL_TIMEOUT_MS = 10_000;
@@ -112,7 +111,6 @@ export async function spawnHostService(
 	const port = options.port ?? (await findFreePort());
 	const secret = randomBytes(32).toString("hex");
 	const migrationsFolder = resolveMigrationsFolder();
-	const relayUrl = await getRelayUrl(options.api);
 
 	// Daemon output goes to the same per-org host-service.log the desktop
 	// writes — with stdio ignored, a failed cloud registration was logged
@@ -138,7 +136,11 @@ export async function spawnHostService(
 				? { SUPERSET_AUTH_CONFIG_PATH: options.authConfigPath }
 				: {}),
 			SUPERSET_API_URL: env.SUPERSET_API_URL,
-			RELAY_URL: relayUrl,
+			// (CLOUD-SEVERANCE-P2) No RELAY_URL. Resolving one meant asking the
+			// severed API, falling back to the poisoned default, and handing the
+			// child a value its env schema refuses to start with — which would
+			// have made `superset start` fail every time rather than guard
+			// against anything.
 			PORT: String(port),
 			HOST_SERVICE_PORT: String(port),
 			HOST_SERVICE_SECRET: secret,

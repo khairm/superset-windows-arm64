@@ -10,10 +10,10 @@ export default defineConfig({
 	outfile: "./dist/superset",
 	define: {
 		"process.env.RELAY_URL": JSON.stringify(
-			process.env.RELAY_URL ?? "https://relay.superset.sh",
+			process.env.RELAY_URL ?? "https://relay.cloud-severed.invalid",
 		),
 		"process.env.SUPERSET_API_URL": JSON.stringify(
-			process.env.SUPERSET_API_URL ?? "https://api.superset.sh",
+			process.env.SUPERSET_API_URL ?? "https://api.cloud-severed.invalid",
 		),
 		"process.env.SUPERSET_WEB_URL": JSON.stringify(
 			process.env.SUPERSET_WEB_URL ?? "https://app.superset.sh",

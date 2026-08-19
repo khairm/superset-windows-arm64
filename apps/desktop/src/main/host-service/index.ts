@@ -12,7 +12,7 @@ import {
 	initSentry,
 	installProcessSafetyNet,
 	installUpgradeSocketGuard,
-	JwtApiAuthProvider,
+	SeveredApiAuthProvider,
 	LocalGitCredentialProvider,
 	LocalModelProvider,
 	PskHostAuthProvider,
@@ -23,8 +23,6 @@ import {
 	initTerminalBaseEnv,
 	resolveTerminalBaseEnv,
 } from "@superset/host-service/terminal-env";
-import { connectRelay } from "@superset/host-service/tunnel";
-import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
 import { writeManifest } from "main/lib/host-service-manifest";
 import { env } from "./env";
 
@@ -82,17 +80,10 @@ async function main(): Promise<void> {
 	const terminalBaseEnv = await resolveTerminalBaseEnv();
 	initTerminalBaseEnv(terminalBaseEnv);
 
-	const authProvider = new JwtApiAuthProvider({
-		// Read fresh from disk every time we need to mint a new JWT, so that
-		// re-logins in the desktop renderer (which rewrites auth-token.enc)
-		// are picked up without restarting the host-service child. Falls back
-		// to the boot-time token if the file is missing for any reason.
-		getSessionToken: async () => {
-			const { token } = await loadToken();
-			return token ?? env.AUTH_TOKEN;
-		},
-		apiUrl: env.SUPERSET_API_URL,
-	});
+	// (CLOUD-SEVERANCE-P2) Upstream re-read auth-token.enc on every JWT mint so
+	// a re-login in the renderer was picked up without a restart. There are no
+	// logins and no JWTs; nothing consumes these headers.
+	const authProvider = new SeveredApiAuthProvider();
 
 	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
 		createApp({
@@ -169,16 +160,9 @@ async function main(): Promise<void> {
 				}
 			}
 
-			if (env.RELAY_URL && env.ORGANIZATION_ID) {
-				void connectRelay({
-					api,
-					relayUrl: env.RELAY_URL,
-					localPort: info.port,
-					organizationId: env.ORGANIZATION_ID,
-					authProvider,
-					hostServiceSecret: env.HOST_SERVICE_SECRET,
-				});
-			}
+			// (CLOUD-SEVERANCE-P2) No relay dial. The refusal for a RELAY_URL
+			// that arrives anyway lives in the env schema, parsed at import —
+			// early enough to actually stop this process, unlike a throw here.
 		},
 	);
 	serverRef.current = server;

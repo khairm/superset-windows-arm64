@@ -7,15 +7,14 @@ import {
 	useMemo,
 	useRef,
 } from "react";
-import { env } from "renderer/env.renderer";
-import { authClient, useAuthToken } from "renderer/lib/auth-client";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
+import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
 	setClientMachineId,
 	setHostServiceSecret,
 } from "renderer/lib/host-service-auth";
 import type { HostServiceAvailabilityStatus } from "renderer/lib/host-service-unavailable";
-import { MOCK_ORG_ID } from "shared/constants";
 
 interface LocalHostServiceContextValue {
 	machineId: string;
@@ -33,7 +32,6 @@ interface LocalHostServiceContextValue {
 
 const LocalHostServiceContext =
 	createContext<LocalHostServiceContextValue | null>(null);
-const MOCK_ORGANIZATION_IDS = [MOCK_ORG_ID];
 
 export function LocalHostServiceProvider({
 	children,
@@ -41,99 +39,16 @@ export function LocalHostServiceProvider({
 	children: ReactNode;
 }) {
 	const utils = electronTrpc.useUtils();
-	const { data: session } = authClient.useSession();
 	const { data: activeOrganization } = authClient.useActiveOrganization();
-	const authToken = useAuthToken();
-	const { mutateAsync: persistOrganizationIds } =
-		electronTrpc.auth.persistOrganizationIds.useMutation({
-			networkMode: "always",
-			retry: 3,
-			onError: (error) => {
-				console.error(
-					"[host-service] failed to persist organization membership",
-					error,
-				);
-			},
-		});
 
-	const activeOrganizationId = env.SKIP_ENV_VALIDATION
-		? MOCK_ORG_ID
-		: (session?.session?.activeOrganizationId ?? null);
-	const organizationIds = env.SKIP_ENV_VALIDATION
-		? MOCK_ORGANIZATION_IDS
-		: session?.session?.organizationIds;
-	const sessionToken = session?.session?.token ?? null;
-	const organizationIdsJson = organizationIds
-		? JSON.stringify([...new Set(organizationIds)].sort())
-		: null;
-	const stableOrganizationIds = useMemo(() => {
-		if (organizationIdsJson === null) return null;
-		return JSON.parse(organizationIdsJson) as string[];
-	}, [organizationIdsJson]);
-	const membershipVersion =
-		authToken && organizationIdsJson
-			? JSON.stringify([authToken, organizationIdsJson])
-			: null;
-	const currentMembershipVersionRef = useRef(membershipVersion);
-	currentMembershipVersionRef.current = membershipVersion;
-	const membershipRevisionRef = useRef({ token: authToken, revision: 0 });
-	if (membershipRevisionRef.current.token !== authToken) {
-		membershipRevisionRef.current = { token: authToken, revision: 0 };
-	}
-	const lastPersistedMembershipRef = useRef<string | null>(null);
-
-	const persistMembership = useCallback(async (): Promise<void> => {
-		if (
-			!stableOrganizationIds ||
-			!authToken ||
-			!membershipVersion ||
-			lastPersistedMembershipRef.current === membershipVersion ||
-			(!env.SKIP_ENV_VALIDATION && sessionToken !== authToken)
-		) {
-			return;
-		}
-		try {
-			// Compare-and-swap against a main-process revision. A conflict teaches
-			// this renderer the current revision without allowing an older request
-			// to overwrite a newer membership snapshot.
-			for (let attempt = 0; attempt < 3; attempt++) {
-				const result = await persistOrganizationIds({
-					token: authToken,
-					organizationIds: stableOrganizationIds,
-					expectedRevision: membershipRevisionRef.current.revision,
-				});
-				if (membershipRevisionRef.current.token !== authToken) return;
-				if (result.status === "token-mismatch") return;
-				membershipRevisionRef.current.revision = Math.max(
-					membershipRevisionRef.current.revision,
-					result.revision,
-				);
-				if (result.status === "saved") {
-					if (currentMembershipVersionRef.current === membershipVersion) {
-						lastPersistedMembershipRef.current = membershipVersion;
-					}
-					return;
-				}
-				if (currentMembershipVersionRef.current !== membershipVersion) return;
-			}
-			console.error(
-				"[host-service] membership changed too frequently to persist",
-			);
-		} catch {
-			// The mutation logs after its bounded retries. A later host-readiness
-			// request calls this again so a transient IPC outage can still heal.
-		}
-	}, [
-		authToken,
-		membershipVersion,
-		persistOrganizationIds,
-		sessionToken,
-		stableOrganizationIds,
-	]);
-
-	useEffect(() => {
-		void persistMembership();
-	}, [persistMembership]);
+	// (CLOUD-SEVERANCE-P2) The frozen local organization. Upstream derived this
+	// from the cloud session and then pushed the membership back down to main
+	// through a compare-and-swap, because a session could change accounts
+	// mid-run and the host-service had to be told. Neither half survives: the
+	// organization is resolved from disk by main BEFORE this window exists, and
+	// nothing can change it while the app runs, so the renderer has nothing to
+	// teach the main process about who it is.
+	const activeOrganizationId = useActiveOrganizationId();
 
 	const { data: machineIdData } = electronTrpc.device.getMachineId.useQuery(
 		undefined,
@@ -165,7 +80,6 @@ export function LocalHostServiceProvider({
 		async (timeoutMs = 20_000): Promise<string | null> => {
 			const orgId = activeOrganizationId;
 			if (!orgId) return null;
-			await persistMembership();
 			// Resolve the live host URL if a port is up, else null. Swallows
 			// transient IPC/tRPC fetch failures so a poll error never rejects the
 			// nullable contract callers rely on.
@@ -196,7 +110,7 @@ export function LocalHostServiceProvider({
 			// trailing sleep, after the deadline elapsed.
 			return await tryGetHostUrl();
 		},
-		[activeOrganizationId, persistMembership, utils],
+		[activeOrganizationId, utils],
 	);
 
 	const activeOrganizationName = activeOrganization?.name ?? null;

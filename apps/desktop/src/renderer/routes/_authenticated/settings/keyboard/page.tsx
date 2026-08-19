@@ -102,6 +102,15 @@ export const Route = createFileRoute("/_authenticated/settings/keyboard/")({
 	component: KeyboardShortcutsPage,
 });
 
+/**
+ * (CLOUD-SEVERANCE-P2) Chat shortcuts are hidden rather than deleted. Their
+ * definitions still live in the hotkey registry because the legacy v1 workspace
+ * screens bind them, and those screens are unreachable in this fork but not
+ * worth the merge churn of editing. What matters is that this page — which IS
+ * reachable — stops advertising a key combination that opens nothing.
+ */
+const CLOUD_SEVERED_HOTKEY_IDS = new Set<string>(["NEW_CHAT", "SPLIT_WITH_CHAT"]);
+
 function getHotkeysByCategory(): Record<
 	HotkeyCategory,
 	Array<{ id: HotkeyId; label: string; description?: string }>
@@ -118,6 +127,7 @@ function getHotkeysByCategory(): Record<
 		Help: [],
 	};
 	for (const [id, hotkey] of Object.entries(HOTKEYS)) {
+		if (CLOUD_SEVERED_HOTKEY_IDS.has(id)) continue;
 		grouped[hotkey.category as HotkeyCategory].push({
 			id: id as HotkeyId,
 			label: hotkey.label,

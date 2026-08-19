@@ -6,7 +6,7 @@ import { TRPCError } from "@trpc/server";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { createApiClient } from "./api";
+import { createSeveredApiClient } from "./api";
 import { createChatV3Mount, registerChatV3Routes } from "./chat-v3";
 import { createDb, type HostDb } from "./db";
 import { EventBus, GitWatcher, registerEventBusRoute } from "./events";
@@ -89,9 +89,9 @@ export interface CreateAppResult {
 export function createApp(options: CreateAppOptions): CreateAppResult {
 	const { config, providers } = options;
 
-	const api =
-		options.api ??
-		createApiClient(config.cloudApiUrl, providers.auth, config.organizationId);
+	// (CLOUD-SEVERANCE-P2) No cloud client is ever constructed. `options.api` is
+	// still honoured because the test suite injects fakes through it.
+	const api = options.api ?? createSeveredApiClient();
 	const db = options.db ?? createDb(config.dbPath, config.migrationsFolder);
 	const git = createGitFactory(providers.credentials);
 	const github =

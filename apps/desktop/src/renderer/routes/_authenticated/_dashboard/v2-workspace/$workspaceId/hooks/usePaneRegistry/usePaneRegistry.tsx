@@ -4,13 +4,11 @@ import type {
 	RendererContext,
 	WorkspaceStore,
 } from "@superset/panes";
-import { FEATURE_FLAGS } from "@superset/shared/constants";
 import { alert } from "@superset/ui/atoms/Alert";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { Circle, GitCompareArrows, Globe, MessageSquare } from "lucide-react";
-import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useCallback, useMemo } from "react";
 import {
 	LuArrowDownToLine,
@@ -30,6 +28,7 @@ import { consumeTerminalBackgroundIntent } from "renderer/lib/terminal/terminal-
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { useLocalChatEnabled } from "renderer/stores/local-chat";
 import { getV2NotificationSourcesForPane } from "renderer/stores/v2-notifications";
 import type { StoreApi } from "zustand/vanilla";
 import { V2NotificationStatusIndicator } from "../../components/V2NotificationStatusIndicator";
@@ -39,7 +38,6 @@ import {
 } from "../../state/fileDocumentStore";
 import type {
 	BrowserPaneData,
-	ChatPaneData,
 	ChatV3PaneData,
 	CommentPaneData,
 	DevtoolsPaneData,
@@ -49,8 +47,6 @@ import type {
 } from "../../types";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 import { BrowserPane, BrowserPaneToolbar } from "./components/BrowserPane";
-import { ChatPane } from "./components/ChatPane";
-import { ChatPaneTitle } from "./components/ChatPane/components/ChatPaneTitle";
 import { ChatV3Pane } from "./components/ChatV3Pane";
 import { CommentPane } from "./components/CommentPane";
 import { CommentPaneHeaderExtras } from "./components/CommentPane/components/CommentPaneHeaderExtras";
@@ -122,7 +118,7 @@ export function usePaneRegistry({
 }: UsePaneRegistryOptions): PaneRegistry<PaneViewerData> {
 	const { workspace } = useWorkspace();
 	const workspaceId = workspace.id;
-	const isChatV3Enabled = useFeatureFlagEnabled(FEATURE_FLAGS.CHAT_V3) ?? false;
+	const isLocalChatEnabled = useLocalChatEnabled();
 	const runAgent = workspaceTrpc.agents.run.useMutation();
 	const collections = useCollections();
 	const clearShortcut = useHotkeyDisplay("CLEAR_TERMINAL").text;
@@ -528,38 +524,24 @@ export function usePaneRegistry({
 						d.key === "close-pane" ? { ...d, label: "Close Browser" } : d,
 					),
 			},
-			chat: {
-				getIcon: () => <MessageSquare className="size-3.5" />,
-				getTitle: () => "Chat",
-				renderTitle: (ctx: RendererContext<PaneViewerData>) => (
-					<ChatPaneTitle context={ctx} workspaceId={workspaceId} />
-				),
-				renderPane: (ctx: RendererContext<PaneViewerData>) => {
-					const data = ctx.pane.data as ChatPaneData;
-					return (
-						<ChatPane
-							workspaceId={workspaceId}
-							sessionId={data.sessionId}
-							onSessionIdChange={(id) =>
-								ctx.actions.updateData({ ...data, sessionId: id })
-							}
-							initialLaunchConfig={data.launchConfig ?? null}
-							onConsumeLaunchConfig={() =>
-								ctx.actions.updateData({ ...data, launchConfig: null })
-							}
-						/>
-					);
-				},
-				contextMenuActions: (_ctx, defaults) =>
-					defaults.map((d) =>
-						d.key === "close-pane" ? { ...d, label: "Close Chat" } : d,
-					),
-			},
-			...(isChatV3Enabled
+			// (CLOUD-SEVERANCE-P2) There is no `chat` renderer. That pane was the
+			// Superset-hosted agent — every session was created on the cloud chat
+			// service and every message went through it — so it is gone for good.
+			// A saved layout that still names it falls through to the registry's
+			// "Unknown pane kind" placeholder, which the user can close.
+			//
+			// `chat-v3` below is the OTHER chat stack and is not the same thing: it
+			// drives the agent CLIs already installed on this machine and stores
+			// sessions in local SQLite. Upstream hid it behind a PostHog flag that
+			// phase 1 pinned false; here it is off by default behind a user setting.
+			// Registered conditionally rather than rendered-and-hidden, so with the
+			// setting off nothing — hotkey, tab menu, or restored layout — can put
+			// one on screen.
+			...(isLocalChatEnabled
 				? {
 						"chat-v3": {
 							getIcon: () => <MessageSquare className="size-3.5" />,
-							getTitle: () => "Chat v3",
+							getTitle: () => "Chat",
 							renderPane: (ctx: RendererContext<PaneViewerData>) => {
 								const data = ctx.pane.data as ChatV3PaneData;
 								return (
@@ -628,7 +610,7 @@ export function usePaneRegistry({
 		}),
 		[
 			workspaceId,
-			isChatV3Enabled,
+			isLocalChatEnabled,
 			clearWorkspaceRunTerminal,
 			clearShortcut,
 			scrollToBottomShortcut,

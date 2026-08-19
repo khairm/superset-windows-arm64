@@ -117,6 +117,7 @@ export const PERSISTED_KEY_REGISTRY: ReadonlyArray<
 	],
 	["src/renderer/stores/workspace-agents-row.ts", ["workspace-agents-row"]],
 	["src/renderer/stores/inline-workspace-ports.ts", ["inline-workspace-ports"]],
+	["src/renderer/stores/local-chat.ts", ["local-chat"]],
 	["src/renderer/hotkeys/stores/hotkeyOverridesStore.ts", ["hotkey-overrides"]],
 	[
 		"src/renderer/hotkeys/stores/keyboardPreferencesStore.ts",

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
 	buildAgentEffortArgs,
 	buildAgentModelArgs,
@@ -195,6 +194,11 @@ export interface AgentRunInput {
 	resumeSessionId?: string;
 }
 
+// (CLOUD-SEVERANCE-P2) The `chat` variant is retained but unreachable:
+// `runChatAgent` refuses instead of creating a session, so nothing produces it
+// any more. Kept in the union because the desktop's workspace-create path
+// mirrors this shape structurally, and narrowing it here only moves the dead
+// branch into a type error there.
 export type AgentRunResult =
 	| { kind: "terminal"; sessionId: string; label: string }
 	| { kind: "chat"; sessionId: string; label: string };
@@ -283,62 +287,25 @@ export function validateAgentLaunchEffort(
 	validateAgentEffortSelection(config.presetId, config.label, input.effort);
 }
 
-async function resolveAttachmentsAsFiles(
-	attachmentIds: string[],
-): Promise<Array<{ data: string; mediaType: string; filename?: string }>> {
-	return attachmentIds.map((attachmentId) => {
-		const resolved = resolveAttachmentPath(attachmentId);
-		if (!resolved) {
-			throw new TRPCError({
-				code: "NOT_FOUND",
-				message: `Attachment not found: ${attachmentId}`,
-			});
-		}
-		const bytes = readFileSync(resolved.path);
-		const data = `data:${resolved.metadata.mediaType};base64,${bytes.toString("base64")}`;
-		return {
-			data,
-			mediaType: resolved.metadata.mediaType,
-			...(resolved.metadata.originalFilename
-				? { filename: resolved.metadata.originalFilename }
-				: {}),
-		};
+/**
+ * (CLOUD-SEVERANCE-P2) The `superset` agent ran as a cloud chat session: the
+ * session was created on `api.superset.sh` and every message went through it.
+ * Both ends are gone — the API client rejects, and the desktop no longer has a
+ * chat pane to attach the session to.
+ *
+ * It refuses instead of quietly doing nothing because this is reachable
+ * without any UI at all: `superset agents create --agent superset` from the
+ * CLI, and automation dispatch. A launch that "succeeded" and then produced no
+ * terminal, no pane and no output would look like the app had lost the work.
+ */
+function runChatAgent(label: string): never {
+	throw new TRPCError({
+		code: "FORBIDDEN",
+		message:
+			`${label} is unavailable in this build. It ran as a hosted chat ` +
+			"session against the Superset cloud, which this fork does not talk " +
+			"to. Use a terminal agent (claude, codex, …) instead.",
 	});
-}
-
-async function runChatAgent(
-	ctx: HostServiceContext,
-	input: AgentRunInput,
-	label: string,
-): Promise<AgentRunResult> {
-	const sessionId = crypto.randomUUID();
-	const files = await resolveAttachmentsAsFiles(input.attachmentIds ?? []);
-
-	await ctx.api.chat.createSession.mutate({
-		sessionId,
-		v2WorkspaceId: input.workspaceId,
-	});
-
-	// Errors surface via `getSnapshot.displayState.errorMessage` when a
-	// chat pane attaches.
-	void ctx.runtime.chat
-		.sendMessage({
-			sessionId,
-			workspaceId: input.workspaceId,
-			payload: {
-				content: input.prompt,
-				...(files.length > 0 ? { files } : {}),
-			},
-			...(input.model ? { metadata: { model: input.model } } : {}),
-		})
-		.catch((error) => {
-			console.error(
-				`[runChatAgent] sendMessage failed for ${sessionId}:`,
-				error,
-			);
-		});
-
-	return { kind: "chat", sessionId, label };
 }
 
 /**
@@ -457,7 +424,7 @@ export async function runAgentInWorkspace(
 				message: `${SUPERSET_AGENT_LABEL} requires a prompt to start a session.`,
 			});
 		}
-		return runChatAgent(ctx, input, SUPERSET_AGENT_LABEL);
+		return runChatAgent(SUPERSET_AGENT_LABEL);
 	}
 	return runTerminalAgent(ctx, input);
 }

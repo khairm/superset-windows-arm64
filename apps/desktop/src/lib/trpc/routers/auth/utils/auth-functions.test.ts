@@ -1,12 +1,16 @@
-import {
-	afterAll,
-	beforeEach,
-	describe,
-	expect,
-	mock,
-	spyOn,
-	test,
-} from "bun:test";
+/**
+ * (CLOUD-SEVERANCE-P2) The auth token store is READ-ONLY now.
+ *
+ * Upstream's suite here covered saving, clearing, membership compare-and-swap,
+ * the OAuth callback and deep-link parsing — all of which are deleted, because
+ * with no cloud the store's only remaining influence is over which identity the
+ * host-service runs under, and nothing should be able to change that at
+ * runtime. What is left to test is the reading path that survives: a
+ * pre-severance install still has this file, and main reads its organization
+ * ids to break a tie when the machine holds more than one host database.
+ */
+
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,23 +23,13 @@ process.env.SUPERSET_HOME_DIR = testSupersetHomeDir;
 const tokenFile = path.join(testSupersetHomeDir, "auth-token.enc");
 
 // Keep this unit test independent from suite-global host-info mocks. The
-// persistence behavior under test only needs a reversible storage boundary.
+// behaviour under test only needs a reversible storage boundary.
 mock.module("./crypto-storage", () => ({
 	encrypt: (plaintext: string) => Buffer.from(plaintext),
 	decrypt: (data: Buffer) => data.toString("utf8"),
 }));
 
-const {
-	authEvents,
-	clearToken,
-	handleAuthCallback,
-	loadToken,
-	parseAuthDeepLink,
-	saveOrganizationIds,
-	saveToken,
-	stateStore,
-} = await import("./auth-functions");
-const { PROTOCOL_SCHEME } = await import("shared/constants");
+const { loadToken } = await import("./auth-functions");
 
 /** Quarantining logs a warning by design; keep test output readable. */
 async function quietly<Result>(run: () => Promise<Result>): Promise<Result> {
@@ -45,6 +39,12 @@ async function quietly<Result>(run: () => Promise<Result>): Promise<Result> {
 	} finally {
 		warnSpy.mockRestore();
 	}
+}
+
+function writeStoredAuth(contents: unknown): void {
+	fs.writeFileSync(tokenFile, Buffer.from(JSON.stringify(contents)), {
+		mode: 0o600,
+	});
 }
 
 function quarantinedTokenPaths(): string[] {
@@ -63,7 +63,6 @@ beforeEach(() => {
 			force: true,
 		});
 	}
-	stateStore.clear();
 });
 
 afterAll(() => {
@@ -75,20 +74,20 @@ afterAll(() => {
 	}
 });
 
-describe("auth token storage", () => {
-	test("atomically stores credentials only in the test Superset home", async () => {
-		await saveToken({ token: "token", expiresAt: "2099-01-01" });
+describe("auth token storage (read-only)", () => {
+	test("reads a pre-severance token, including its organization ids", async () => {
+		writeStoredAuth({
+			token: "token",
+			expiresAt: "2099-01-01",
+			organizationIds: ["30e16b5a-e2af-4874-b126-acc7b3f17aa9"],
+			organizationIdsRevision: 3,
+		});
 
-		expect(fs.statSync(tokenFile).isFile()).toBe(true);
-		expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600);
-		expect(
-			fs.readdirSync(testSupersetHomeDir).some((name) => name.endsWith(".tmp")),
-		).toBe(false);
 		expect(await loadToken()).toEqual({
 			token: "token",
 			expiresAt: "2099-01-01",
-			organizationIds: null,
-			organizationIdsRevision: 0,
+			organizationIds: ["30e16b5a-e2af-4874-b126-acc7b3f17aa9"],
+			organizationIdsRevision: 3,
 		});
 	});
 
@@ -110,279 +109,30 @@ describe("auth token storage", () => {
 		}
 	});
 
-	test("quarantines a directory and preserves its contents before saving", async () => {
-		fs.mkdirSync(tokenFile);
-		fs.writeFileSync(path.join(tokenFile, "keep-me"), "important");
+	test("quarantines unusable storage instead of reading through it", async () => {
+		fs.writeFileSync(tokenFile, Buffer.from("not json at all"));
 
-		await quietly(() => saveToken({ token: "token", expiresAt: "2099-01-01" }));
-
-		expect(fs.statSync(tokenFile).isFile()).toBe(true);
-		const [quarantinedPath] = quarantinedTokenPaths();
-		expect(fs.statSync(quarantinedPath).isDirectory()).toBe(true);
-		expect(fs.readFileSync(path.join(quarantinedPath, "keep-me"), "utf8")).toBe(
-			"important",
-		);
-	});
-
-	test("quarantines corrupt token contents during load", async () => {
-		fs.writeFileSync(tokenFile, "not valid auth JSON");
-
-		const loadedToken = await quietly(() => loadToken());
-
-		expect(loadedToken).toEqual({
+		expect(await quietly(() => loadToken())).toEqual({
 			token: null,
 			expiresAt: null,
 			organizationIds: null,
 			organizationIdsRevision: 0,
 		});
-		expect(fs.existsSync(tokenFile)).toBe(false);
-		const [quarantinedPath] = quarantinedTokenPaths();
-		expect(fs.readFileSync(quarantinedPath, "utf8")).toBe(
-			"not valid auth JSON",
-		);
-	});
-
-	test("quarantines a symlink without modifying its target", async () => {
-		const targetFile = path.join(testSupersetHomeDir, "target-file");
-		fs.writeFileSync(targetFile, "do not touch");
-		fs.symlinkSync(targetFile, tokenFile);
-
-		await quietly(() => saveToken({ token: "token", expiresAt: "2099-01-01" }));
-
-		expect(fs.readFileSync(targetFile, "utf8")).toBe("do not touch");
-		expect(fs.statSync(tokenFile).isFile()).toBe(true);
-		const [quarantinedPath] = quarantinedTokenPaths();
-		expect(fs.lstatSync(quarantinedPath).isSymbolicLink()).toBe(true);
-	});
-
-	test("keeps auth state retryable when durable storage fails", async () => {
-		const state = "pending-state";
-		stateStore.set(state, Date.now());
-		const blockedHome = path.join(testSupersetHomeDir, "blocked-home");
-		fs.writeFileSync(blockedHome, "not a directory");
-		process.env.SUPERSET_HOME_DIR = blockedHome;
-		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-
-		try {
-			const failedResult = await handleAuthCallback({
-				token: "token",
-				expiresAt: "2099-01-01",
-				state,
-			});
-
-			expect(failedResult.success).toBe(false);
-			expect(stateStore.has(state)).toBe(true);
-		} finally {
-			errorSpy.mockRestore();
-			process.env.SUPERSET_HOME_DIR = testSupersetHomeDir;
-		}
-
-		fs.unlinkSync(blockedHome);
-		const retriedResult = await handleAuthCallback({
-			token: "token",
-			expiresAt: "2099-01-01",
-			state,
-		});
-
-		expect(retriedResult).toEqual({ success: true });
-		expect(stateStore.has(state)).toBe(false);
-	});
-
-	test("sign-out clears unusable storage from the token path before reporting success", async () => {
-		fs.writeFileSync(tokenFile, "corrupt credentials");
-		const tokenCleared = mock(() => {});
-		authEvents.once("token-cleared", tokenCleared);
-
-		try {
-			await quietly(() => clearToken());
-		} finally {
-			authEvents.off("token-cleared", tokenCleared);
-		}
-
-		expect(fs.existsSync(tokenFile)).toBe(false);
-		expect(fs.readFileSync(quarantinedTokenPaths()[0], "utf8")).toBe(
-			"corrupt credentials",
-		);
-		expect(tokenCleared).toHaveBeenCalledTimes(1);
-	});
-
-	test("does not report sign-out when the credential cannot be cleared", async () => {
-		const readOnlyHome = path.join(testSupersetHomeDir, "read-only-home");
-		fs.mkdirSync(readOnlyHome);
-		fs.writeFileSync(path.join(readOnlyHome, "auth-token.enc"), "corrupt");
-		fs.chmodSync(readOnlyHome, 0o500);
-		process.env.SUPERSET_HOME_DIR = readOnlyHome;
-		const tokenCleared = mock(() => {});
-		authEvents.once("token-cleared", tokenCleared);
-
-		try {
-			await expect(clearToken()).rejects.toThrow();
-			expect(tokenCleared).not.toHaveBeenCalled();
-		} finally {
-			authEvents.off("token-cleared", tokenCleared);
-			process.env.SUPERSET_HOME_DIR = testSupersetHomeDir;
-			fs.chmodSync(readOnlyHome, 0o700);
-		}
-	});
-});
-
-describe("cached organization membership", () => {
-	test("stores a normalized membership set alongside the encrypted token", async () => {
-		await saveToken({ token: "token", expiresAt: "2099-01-01" });
-		const membershipSaved = mock(() => {});
-		authEvents.once("organization-ids-saved", membershipSaved);
-
-		await saveOrganizationIds({
-			token: "token",
-			organizationIds: ["org-2", "org-1", "org-2"],
-			expectedRevision: 0,
-		});
-
-		expect(await loadToken()).toEqual({
-			token: "token",
-			expiresAt: "2099-01-01",
-			organizationIds: ["org-1", "org-2"],
-			organizationIdsRevision: 1,
-		});
-		expect(membershipSaved).toHaveBeenCalledWith({
-			token: "token",
-			organizationIds: ["org-1", "org-2"],
-		});
-	});
-
-	test("confirms unchanged membership for the current app process", async () => {
-		await saveToken({ token: "token", expiresAt: "2099-01-01" });
-		await saveOrganizationIds({
-			token: "token",
-			organizationIds: ["org-1", "org-2"],
-			expectedRevision: 0,
-		});
-		const membershipSaved = mock(() => {});
-		authEvents.once("organization-ids-saved", membershipSaved);
-
-		await saveOrganizationIds({
-			token: "token",
-			organizationIds: ["org-2", "org-1"],
-			expectedRevision: 1,
-		});
-
-		expect(membershipSaved).toHaveBeenCalledWith({
-			token: "token",
-			organizationIds: ["org-1", "org-2"],
-		});
-	});
-
-	test("clears cached membership when a different token is saved", async () => {
-		await saveToken({ token: "old-token", expiresAt: "2099-01-01" });
-		await saveOrganizationIds({
-			token: "old-token",
-			organizationIds: ["old-org"],
-			expectedRevision: 0,
-		});
-
-		await saveToken({ token: "new-token", expiresAt: "2099-02-01" });
-
-		expect(await loadToken()).toEqual({
-			token: "new-token",
-			expiresAt: "2099-02-01",
-			organizationIds: null,
-			organizationIdsRevision: 0,
-		});
-	});
-
-	test("ignores membership from a stale account session", async () => {
-		await saveToken({ token: "new-token", expiresAt: "2099-02-01" });
-
-		await saveOrganizationIds({
-			token: "old-token",
-			organizationIds: ["old-org"],
-			expectedRevision: 0,
-		});
-
-		expect(await loadToken()).toEqual({
-			token: "new-token",
-			expiresAt: "2099-02-01",
-			organizationIds: null,
-			organizationIdsRevision: 0,
-		});
-	});
-
-	test("does not let stale membership recreate auth after sign-out", async () => {
-		await saveToken({ token: "old-token", expiresAt: "2099-01-01" });
-		await clearToken();
-
-		await saveOrganizationIds({
-			token: "old-token",
-			organizationIds: ["old-org"],
-			expectedRevision: 0,
-		});
-
-		expect(await loadToken()).toEqual({
-			token: null,
-			expiresAt: null,
-			organizationIds: null,
-			organizationIdsRevision: 0,
-		});
-	});
-
-	test("ignores a delayed retry from an older membership snapshot", async () => {
-		await saveToken({ token: "token", expiresAt: "2099-01-01" });
-		await saveOrganizationIds({
-			token: "token",
-			organizationIds: ["current-org"],
-			expectedRevision: 0,
-		});
-
-		const result = await saveOrganizationIds({
-			token: "token",
-			organizationIds: ["removed-org"],
-			expectedRevision: 0,
-		});
-
-		expect(result).toEqual({ status: "conflict", revision: 1 });
-		expect(await loadToken()).toEqual({
-			token: "token",
-			expiresAt: "2099-01-01",
-			organizationIds: ["current-org"],
-			organizationIdsRevision: 1,
-		});
-	});
-
-	test("never attaches membership to unusable storage", async () => {
-		fs.mkdirSync(tokenFile);
-
-		const result = await quietly(() =>
-			saveOrganizationIds({
-				token: "token",
-				organizationIds: ["org-1"],
-				expectedRevision: 0,
-			}),
-		);
-
-		expect(result).toEqual({ status: "token-mismatch", revision: 0 });
 		expect(quarantinedTokenPaths()).toHaveLength(1);
 		expect(fs.existsSync(tokenFile)).toBe(false);
 	});
-});
 
-describe("parseAuthDeepLink", () => {
-	test("flags incomplete auth callbacks as malformed, not non-auth", () => {
-		expect(
-			parseAuthDeepLink(`${PROTOCOL_SCHEME}://auth/callback?token=secret`),
-		).toEqual({ type: "malformed" });
-	});
+	test("never writes: a read leaves the stored bytes untouched", async () => {
+		// The whole point of the severance is that this file cannot change
+		// underneath the host-service. A read must not rewrite it.
+		writeStoredAuth({ token: "token", expiresAt: "2099-01-01" });
+		const before = fs.readFileSync(tokenFile);
 
-	test("classifies non-auth links and complete callbacks", () => {
-		expect(parseAuthDeepLink(`${PROTOCOL_SCHEME}://tasks/my-slug`)).toEqual({
-			type: "not-auth",
-		});
+		await loadToken();
+
+		expect(fs.readFileSync(tokenFile)).toEqual(before);
 		expect(
-			parseAuthDeepLink(
-				`${PROTOCOL_SCHEME}://auth/callback?token=t&expiresAt=2099-01-01&state=s`,
-			),
-		).toEqual({
-			type: "valid",
-			params: { token: "t", expiresAt: "2099-01-01", state: "s" },
-		});
+			fs.readdirSync(testSupersetHomeDir).some((name) => name.endsWith(".tmp")),
+		).toBe(false);
 	});
 });

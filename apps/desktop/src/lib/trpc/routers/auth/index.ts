@@ -1,22 +1,23 @@
-import crypto from "node:crypto";
-import { AUTH_PROVIDERS } from "@superset/shared/constants";
+/**
+ * (CLOUD-SEVERANCE-P2) What is left of auth after the account is gone.
+ *
+ * Upstream's router opened a browser at `api.superset.sh/api/auth/desktop/
+ * connect`, took the token back through a deep link or a loopback callback,
+ * stored it, and tore every host-service down on sign-out. None of that
+ * survives: there is no account to sign into, and the procedures that WROTE
+ * the token store are deleted rather than no-op'd, because the store still
+ * feeds the host-service's env and anything able to write it could restart
+ * the user's terminals underneath them.
+ *
+ * `getStoredToken` stays as a read-only relic: the pre-severance token file may
+ * still exist on this machine, main reads it to break an organization tie, and
+ * the renderer's hydration path still asks for it. It answers honestly and
+ * changes nothing.
+ */
+
 import { getHostId, getHostName } from "@superset/shared/host-info";
-import { observable } from "@trpc/server/observable";
-import { shell } from "electron";
-import { env } from "main/env.main";
-import { getHostServiceCoordinator } from "main/lib/host-service-coordinator";
-import { PLATFORM, PROTOCOL_SCHEME } from "shared/constants";
-import { env as sharedEnv } from "shared/env.shared";
-import { z } from "zod";
 import { publicProcedure, router } from "../..";
-import {
-	authEvents,
-	clearToken,
-	loadToken,
-	saveOrganizationIds,
-	saveToken,
-	stateStore,
-} from "./utils/auth-functions";
+import { loadToken } from "./utils/auth-functions";
 
 export const createAuthRouter = () => {
 	return router({
@@ -26,105 +27,6 @@ export const createAuthRouter = () => {
 			deviceId: getHostId(),
 			deviceName: getHostName(),
 		})),
-
-		persistToken: publicProcedure
-			.input(
-				z.object({
-					token: z.string(),
-					expiresAt: z.string(),
-				}),
-			)
-			.mutation(async ({ input }) => {
-				await saveToken(input);
-				return { success: true };
-			}),
-
-		persistOrganizationIds: publicProcedure
-			.input(
-				z.object({
-					token: z.string(),
-					organizationIds: z.array(z.string()),
-					expectedRevision: z.number().int().nonnegative(),
-				}),
-			)
-			.mutation(async ({ input }) => {
-				return await saveOrganizationIds(input);
-			}),
-
-		/**
-		 * Subscribe to auth events. Only fires for actual changes:
-		 * - New authentication (OAuth callback) -> { token, expiresAt }
-		 * - Sign out -> null
-		 *
-		 * Does NOT emit on subscribe - use getStoredToken for initial hydration.
-		 */
-		onTokenChanged: publicProcedure.subscription(() => {
-			return observable<{ token: string; expiresAt: string } | null>((emit) => {
-				const handleSaved = (data: { token: string; expiresAt: string }) => {
-					emit.next(data);
-				};
-
-				const handleCleared = () => {
-					emit.next(null);
-				};
-
-				authEvents.on("token-saved", handleSaved);
-				authEvents.on("token-cleared", handleCleared);
-
-				return () => {
-					authEvents.off("token-saved", handleSaved);
-					authEvents.off("token-cleared", handleCleared);
-				};
-			});
-		}),
-
-		/**
-		 * Start OAuth sign-in flow.
-		 * Opens browser for OAuth, token delivered via deep link on macOS
-		 * or localhost callback on Linux (where deep links are unreliable).
-		 */
-		signIn: publicProcedure
-			.input(z.object({ provider: z.enum(AUTH_PROVIDERS) }))
-			.mutation(async ({ input }) => {
-				try {
-					const state = crypto.randomBytes(32).toString("base64url");
-					stateStore.set(state, Date.now());
-
-					// Clean up expired states (10 minutes)
-					const cutoff = Date.now() - 10 * 60 * 1000;
-					for (const [s, ts] of stateStore) {
-						if (ts < cutoff) stateStore.delete(s);
-					}
-
-					const connectUrl = new URL(
-						`${env.NEXT_PUBLIC_API_URL}/api/auth/desktop/connect`,
-					);
-					connectUrl.searchParams.set("provider", input.provider);
-					connectUrl.searchParams.set("state", state);
-					connectUrl.searchParams.set("protocol", PROTOCOL_SCHEME);
-					// Only send local_callback on Linux where deep links are unreliable
-					if (PLATFORM.IS_LINUX) {
-						connectUrl.searchParams.set(
-							"local_callback",
-							`http://127.0.0.1:${sharedEnv.DESKTOP_NOTIFICATIONS_PORT}/auth/callback`,
-						);
-					}
-					await shell.openExternal(connectUrl.toString());
-					return { success: true };
-				} catch (err) {
-					return {
-						success: false,
-						error:
-							err instanceof Error ? err.message : "Failed to open browser",
-					};
-				}
-			}),
-
-		signOut: publicProcedure.mutation(async () => {
-			getHostServiceCoordinator().stopAll();
-			await clearToken();
-			return { success: true };
-		}),
 	});
 };
 

@@ -15,16 +15,26 @@ const envSchema = z.object({
 	NODE_ENV: z
 		.enum(["development", "production", "test"])
 		.default("development"),
-	NEXT_PUBLIC_API_URL: z.url().default("https://api.superset.sh"),
+	/**
+	 * (CLOUD-SEVERANCE-P2) Every cloud default points at `.invalid`, a TLD the
+	 * DNS standard guarantees never resolves. The fields are kept rather than
+	 * deleted because upstream code still reads them and this fork carries
+	 * accepted type debt — a removed field would compile to `undefined` inside
+	 * a URL string and fail somewhere far from here. Nothing is enforced by
+	 * these values: the severed tRPC links are what make the calls impossible.
+	 * They exist so that if something ever does slip through, it dies in the
+	 * resolver instead of reaching a real host.
+	 */
+	NEXT_PUBLIC_API_URL: z.url().default("https://api.cloud-severed.invalid"),
 	NEXT_PUBLIC_WEB_URL: z.url().default("https://app.superset.sh"),
 	NEXT_PUBLIC_MARKETING_URL: z.url().default("https://superset.sh"),
 	NEXT_PUBLIC_ELECTRIC_URL: z
 		.url()
-		.default("https://electric-proxy.avi-6ac.workers.dev"),
+		.default("https://electric.cloud-severed.invalid"),
 	NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
 	NEXT_PUBLIC_POSTHOG_HOST: z.string().default("https://us.i.posthog.com"),
 	SENTRY_DSN_DESKTOP: z.string().optional(),
-	RELAY_URL: z.url().default("https://relay.superset.sh"),
+	RELAY_URL: z.url().default("https://relay.cloud-severed.invalid"),
 });
 
 /**

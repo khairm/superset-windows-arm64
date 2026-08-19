@@ -16,7 +16,7 @@ import { NotificationBusPill } from "renderer/components/NotificationBusPill";
 import { StarNagCard } from "renderer/components/StarNagCard";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
-import { OrganizationDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/OrganizationDropdown";
+import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
@@ -575,6 +575,12 @@ export function DashboardSidebar({
 										)}
 										<HiringBanner surface="v2" isCollapsed={isCollapsed} />
 										<StarNagCard isCollapsed={isCollapsed} />
+										{/* (CLOUD-SEVERANCE-P2) The organization menu used to
+										    anchor this footer: switch org, manage members, log
+										    out. All three are gone — there is one organization,
+										    it is this machine's, and nothing can be switched to
+										    or signed out of — so the footer is now just the
+										    status pills and Settings. */}
 										<div
 											className={cn(
 												isCollapsed
@@ -582,14 +588,6 @@ export function DashboardSidebar({
 													: "flex items-center gap-1 p-2",
 											)}
 										>
-											{isCollapsed ? (
-												<OrganizationDropdown variant="collapsed" />
-											) : (
-												<div className="min-w-0 flex-1">
-													<OrganizationDropdown variant="expanded" />
-												</div>
-											)}
-
 											<NotificationBusPill isCollapsed={isCollapsed} />
 											<UpdatesPill isCollapsed={isCollapsed} />
 											<Tooltip delayDuration={300}>
@@ -598,7 +596,7 @@ export function DashboardSidebar({
 														type="button"
 														aria-label="Settings"
 														onClick={() =>
-															navigate({ to: "/settings/account" })
+															navigate({ to: DEFAULT_SETTINGS_ROUTE })
 														}
 														className={cn(
 															"flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",

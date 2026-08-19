@@ -1,16 +1,11 @@
-import {
-	ArchiveIcon,
-	FileIcon,
-	LinkIcon,
-	PlusIcon,
-	Trash2Icon,
-} from "lucide-react";
+import { ArchiveIcon, FileIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
 import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
 import { useNewWorkspaceModalStore } from "renderer/stores/new-workspace-modal";
 import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
+// (CLOUD-SEVERANCE-P2) "Link task" is gone with the rest of Tasks: its picker
+// read `cloudTrpc.task.listPage`, so it could only ever open on an error.
 import type { Command, CommandProvider } from "../../core/types";
-import { LinkTaskFrame } from "../../ui/LinkTask/LinkTaskFrame";
 
 export const workspaceProvider: CommandProvider = {
 	id: "workspace",
@@ -40,14 +35,6 @@ export const workspaceProvider: CommandProvider = {
 					useQuickOpenStore.getState().openFor({
 						workspaceId: workspace.id,
 					}),
-			},
-			{
-				id: "workspace.linkTask",
-				title: "Link task",
-				section: "workspace",
-				icon: LinkIcon,
-				keywords: ["issue", "linear"],
-				renderFrame: () => <LinkTaskFrame workspaceId={workspace.id} />,
 			},
 		];
 

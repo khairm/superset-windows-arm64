@@ -13,6 +13,7 @@ import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/co
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
 import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
+import { useLocalChatEnabled } from "renderer/stores/local-chat";
 import { getV2NotificationSourcesForTab } from "renderer/stores/v2-notifications";
 import {
 	COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
@@ -57,6 +58,11 @@ import { WorkspaceSidebar } from "../WorkspaceSidebar";
 export interface WorkspaceSearch {
 	tabId?: string;
 	terminalId?: string;
+	/**
+	 * (CLOUD-SEVERANCE-P2) Still parsed, deliberately ignored. Saved locations
+	 * and old notification links carry it; the chat pane it used to open no
+	 * longer exists, so the workspace just opens.
+	 */
 	chatSessionId?: string;
 	focusRequestId?: string;
 	openUrl?: string;
@@ -110,7 +116,6 @@ export function V2WorkspaceView(search: V2WorkspaceViewProps) {
 function V2WorkspaceCenter({
 	tabId,
 	terminalId,
-	chatSessionId,
 	focusRequestId,
 	openUrl,
 	openUrlTarget,
@@ -130,6 +135,8 @@ function V2WorkspaceCenter({
 	const showPresetsBar = v2UserPreferences.showPresetsBar;
 	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
 	const { store, isLayoutReady } = useV2WorkspacePaneLayout();
+	// (CLOUD-SEVERANCE-P2) Off by default; see `stores/local-chat`.
+	const isLocalChatEnabled = useLocalChatEnabled();
 	useClearActivePaneAttention({ store });
 	const launcher = useV2TerminalLauncher();
 	const {
@@ -153,7 +160,6 @@ function V2WorkspaceCenter({
 		paneLayoutReady: isLayoutReady,
 		tabId,
 		terminalId,
-		chatSessionId,
 		focusRequestId,
 	});
 	useConsumeOpenUrlRequest({
@@ -190,7 +196,7 @@ function V2WorkspaceCenter({
 	const {
 		openDiffPane,
 		addTerminalTab,
-		addChatTab,
+		addChatV3Tab,
 		addBrowserTab,
 		openCommentPane,
 	} = useWorkspacePaneOpeners({
@@ -338,7 +344,7 @@ function V2WorkspaceCenter({
 							renderAddTabMenu={() => (
 								<AddTabMenu
 									onAddTerminal={addTerminalTab}
-									onAddChat={addChatTab}
+									onAddChat={isLocalChatEnabled ? addChatV3Tab : undefined}
 									onAddBrowser={addBrowserTab}
 									showPresetsBar={showPresetsBar}
 									onToggleShowPresetsBar={setShowPresetsBar}
@@ -384,7 +390,6 @@ function V2WorkspaceCenter({
 							renderEmptyState={() => (
 								<WorkspaceEmptyState
 									onOpenBrowser={addBrowserTab}
-									onOpenChat={addChatTab}
 									onOpenQuickOpen={handleQuickOpen}
 									onOpenTerminal={addTerminalTab}
 								/>

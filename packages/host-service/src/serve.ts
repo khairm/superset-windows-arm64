@@ -5,10 +5,7 @@ import { createApp } from "./app";
 import { startCompanionBridgeIfEnabled } from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
-import {
-	ConfigFileSessionTokenSource,
-	JwtApiAuthProvider,
-} from "./providers/auth";
+import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
 import { PskHostAuthProvider } from "./providers/host-auth";
 import { LocalModelProvider } from "./providers/model-providers";
@@ -16,7 +13,6 @@ import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 import { captureFatalStartupError, initSentry } from "./sentry";
 import { startTerminalBaseEnvResolution } from "./terminal/env";
 import { startTerminalReaper } from "./terminal/reaper";
-import { connectRelay } from "./tunnel";
 
 async function main(): Promise<void> {
 	initSentry({ organizationId: env.ORGANIZATION_ID });
@@ -38,21 +34,10 @@ async function main(): Promise<void> {
 	// daemon takes time to come up or fails entirely.
 	startDaemonBootstrap(env.ORGANIZATION_ID);
 
-	const configTokenSource = env.SUPERSET_AUTH_CONFIG_PATH
-		? new ConfigFileSessionTokenSource({
-				configPath: env.SUPERSET_AUTH_CONFIG_PATH,
-				apiUrl: env.SUPERSET_API_URL,
-			})
-		: null;
-	const authProvider = new JwtApiAuthProvider({
-		getSessionToken: configTokenSource
-			? () => configTokenSource.getSessionToken()
-			: async () => env.AUTH_TOKEN,
-		onInvalidateCache: configTokenSource
-			? () => configTokenSource.invalidateCache()
-			: undefined,
-		apiUrl: env.SUPERSET_API_URL,
-	});
+	// (CLOUD-SEVERANCE-P2) No JWT exchange, no config-file token source — both
+	// were network calls to api.superset.sh, and nothing consumes their headers
+	// any more.
+	const authProvider = new SeveredApiAuthProvider();
 
 	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
 		createApp({
@@ -135,16 +120,9 @@ async function main(): Promise<void> {
 			terminalAgentStore,
 		});
 
-		if (env.RELAY_URL) {
-			void connectRelay({
-				api,
-				relayUrl: env.RELAY_URL,
-				localPort: info.port,
-				organizationId: env.ORGANIZATION_ID,
-				authProvider,
-				hostServiceSecret: env.HOST_SERVICE_SECRET,
-			});
-		}
+		// (CLOUD-SEVERANCE-P2) No relay dial. The refusal for a RELAY_URL that
+		// arrives anyway lives in the env schema, which is parsed at import —
+		// early enough to actually stop this process, unlike a throw in here.
 	});
 	installUpgradeSocketGuard(server);
 	injectWebSocket(server);

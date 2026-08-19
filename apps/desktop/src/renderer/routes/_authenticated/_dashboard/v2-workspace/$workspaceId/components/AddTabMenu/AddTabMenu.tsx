@@ -7,10 +7,13 @@ import { BsTerminalPlus } from "react-icons/bs";
 import { TbMessageCirclePlus, TbWorld } from "react-icons/tb";
 import { HotkeyMenuShortcut } from "renderer/components/HotkeyMenuShortcut";
 
+// (CLOUD-SEVERANCE-P2) The cloud "Chat" entry is gone with its pane. `onAddChat`
+// is the LOCAL chat pane and is optional: the workspace only passes it when the
+// user has switched local chat on in Experimental settings, so by default this
+// menu offers exactly Terminal and Browser as it does today.
 interface AddTabMenuProps {
 	onAddTerminal: () => void;
-	onAddChat: () => void;
-	onAddChatV3?: (() => void) | undefined;
+	onAddChat?: (() => void) | undefined;
 	onAddBrowser: () => void;
 	showPresetsBar: boolean;
 	onToggleShowPresetsBar: (enabled: boolean) => void;
@@ -19,7 +22,6 @@ interface AddTabMenuProps {
 export function AddTabMenu({
 	onAddTerminal,
 	onAddChat,
-	onAddChatV3,
 	onAddBrowser,
 	showPresetsBar,
 	onToggleShowPresetsBar,
@@ -31,15 +33,10 @@ export function AddTabMenu({
 				<span>Terminal</span>
 				<HotkeyMenuShortcut hotkeyId="NEW_GROUP" />
 			</DropdownMenuItem>
-			<DropdownMenuItem className="gap-2" onClick={onAddChat}>
-				<TbMessageCirclePlus className="size-4" />
-				<span>Chat</span>
-				<HotkeyMenuShortcut hotkeyId="NEW_CHAT" />
-			</DropdownMenuItem>
-			{onAddChatV3 && (
-				<DropdownMenuItem className="gap-2" onClick={onAddChatV3}>
+			{onAddChat && (
+				<DropdownMenuItem className="gap-2" onClick={onAddChat}>
 					<TbMessageCirclePlus className="size-4" />
-					<span>Chat v3</span>
+					<span>Chat</span>
 				</DropdownMenuItem>
 			)}
 			<DropdownMenuItem className="gap-2" onClick={onAddBrowser}>

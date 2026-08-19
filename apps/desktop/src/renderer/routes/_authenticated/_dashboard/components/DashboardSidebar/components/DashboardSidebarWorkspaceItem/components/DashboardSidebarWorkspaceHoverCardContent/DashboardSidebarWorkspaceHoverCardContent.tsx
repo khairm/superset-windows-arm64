@@ -13,7 +13,6 @@ import { useHotkeyDisplay } from "renderer/hotkeys";
 import type { DashboardSidebarWorkspace } from "../../../../types";
 import { ChecksList } from "./components/ChecksList";
 import { ChecksSummary } from "./components/ChecksSummary";
-import { LinkedTaskSection } from "./components/LinkedTaskSection";
 import { PullRequestStatusBadge } from "./components/PullRequestStatusBadge";
 import { ReviewStatus } from "./components/ReviewStatus";
 
@@ -38,7 +37,6 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 		needsRebase,
 		behindCount,
 		createdAt,
-		taskId,
 	} = workspace;
 	const { keys: openPRDisplay } = useHotkeyDisplay("OPEN_PR");
 	const hasOpenPRShortcut = !(
@@ -105,8 +103,11 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 				</span>
 			</div>
 
-			{taskId && <LinkedTaskSection taskId={taskId} />}
-
+			{/* (CLOUD-SEVERANCE-P2) The linked-task row is gone: it fetched the
+			    task from the cloud and linked into /tasks, and both ends of that
+			    are severed. `workspace.taskId` survives on the row so a workspace
+			    imported before severance keeps its link for the day tasks come
+			    back locally. */}
 			{needsRebase && (
 				<div className="flex items-center gap-2 text-amber-500 text-xs bg-amber-500/10 px-2 py-1.5 rounded-md">
 					<LuTriangleAlert className="size-3.5 shrink-0" />

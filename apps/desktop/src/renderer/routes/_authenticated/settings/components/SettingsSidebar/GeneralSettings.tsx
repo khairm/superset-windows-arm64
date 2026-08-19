@@ -4,21 +4,13 @@ import { useMemo } from "react";
 import {
 	HiOutlineBeaker,
 	HiOutlineBell,
-	HiOutlineBuildingOffice2,
 	HiOutlineCommandLine,
-	HiOutlineComputerDesktop,
 	HiOutlineCpuChip,
-	HiOutlineCreditCard,
 	HiOutlineFolder,
-	HiOutlineKey,
 	HiOutlineLink,
-	HiOutlineLockClosed,
 	HiOutlinePaintBrush,
-	HiOutlinePuzzlePiece,
 	HiOutlineShieldCheck,
 	HiOutlineSparkles,
-	HiOutlineUser,
-	HiOutlineUserGroup,
 } from "react-icons/hi2";
 import { LuBrain, LuGitBranch, LuKeyboard } from "react-icons/lu";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
@@ -31,9 +23,6 @@ interface GeneralSettingsProps {
 }
 
 type SettingsRoute =
-	| "/settings/account"
-	| "/settings/organization"
-	| "/settings/teams"
 	| "/settings/appearance"
 	| "/settings/ringtones"
 	| "/settings/keyboard"
@@ -44,13 +33,8 @@ type SettingsRoute =
 	| "/settings/links"
 	| "/settings/models"
 	| "/settings/experimental"
-	| "/settings/integrations"
-	| "/settings/billing"
-	| "/settings/api-keys"
-	| "/settings/security"
 	| "/settings/permissions"
-	| "/settings/projects"
-	| "/settings/hosts";
+	| "/settings/projects";
 
 interface SectionItem {
 	id: SettingsRoute;
@@ -69,12 +53,6 @@ const SECTION_GROUPS: SectionGroup[] = [
 	{
 		label: "Personal",
 		items: [
-			{
-				id: "/settings/account",
-				section: "account",
-				label: "Account",
-				icon: <HiOutlineUser className="h-4 w-4" />,
-			},
 			{
 				id: "/settings/appearance",
 				section: "appearance",
@@ -137,61 +115,24 @@ const SECTION_GROUPS: SectionGroup[] = [
 		],
 	},
 	{
-		label: "Organization",
+		// (CLOUD-SEVERANCE-P2) What is left of the old "Organization" group is
+		// projects, which are local. Members, teams, hosts, integrations, billing
+		// and API keys all lived on the cloud API; `getAllowedSectionsForVariant`
+		// would drop these rows anyway, but leaving dead entries in the table would
+		// invite the next merge to re-link them.
+		label: "Projects",
 		items: [
-			{
-				id: "/settings/organization",
-				section: "organization",
-				label: "Organization",
-				icon: <HiOutlineBuildingOffice2 className="h-4 w-4" />,
-			},
-			{
-				id: "/settings/teams",
-				section: "teams",
-				label: "Teams",
-				icon: <HiOutlineUserGroup className="h-4 w-4" />,
-			},
 			{
 				id: "/settings/projects",
 				section: "project",
 				label: "Projects",
 				icon: <HiOutlineFolder className="h-4 w-4" />,
 			},
-			{
-				id: "/settings/hosts",
-				section: "hosts",
-				label: "Hosts",
-				icon: <HiOutlineComputerDesktop className="h-4 w-4" />,
-			},
-			{
-				id: "/settings/integrations",
-				section: "integrations",
-				label: "Integrations",
-				icon: <HiOutlinePuzzlePiece className="h-4 w-4" />,
-			},
-			{
-				id: "/settings/billing",
-				section: "billing",
-				label: "Billing",
-				icon: <HiOutlineCreditCard className="h-4 w-4" />,
-			},
-			{
-				id: "/settings/api-keys",
-				section: "apikeys",
-				label: "API Keys",
-				icon: <HiOutlineKey className="h-4 w-4" />,
-			},
 		],
 	},
 	{
 		label: "System",
 		items: [
-			{
-				id: "/settings/security",
-				section: "security",
-				label: "Security",
-				icon: <HiOutlineLockClosed className="h-4 w-4" />,
-			},
 			{
 				id: "/settings/permissions",
 				section: "permissions",

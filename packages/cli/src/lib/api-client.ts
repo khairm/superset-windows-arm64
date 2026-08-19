@@ -1,37 +1,46 @@
-import { ORGANIZATION_HEADER } from "@superset/shared/constants";
 import type { AppRouter } from "@superset/trpc";
 import type { TRPCClient } from "@trpc/client";
-import { createTRPCClient, httpBatchLink } from "@trpc/client";
-import SuperJSON from "superjson";
-import { getApiUrl } from "./config";
 
 export type ApiClient = TRPCClient<AppRouter>;
 
-export function createApiClient(opts: {
+/**
+ * (CLOUD-SEVERANCE-P2) The CLI's cloud client, severed.
+ *
+ * Commands that only ever needed this machine — `ws`, `terminals`, `agents`,
+ * `settings` — reach the local host-service directly and are unaffected.
+ * Commands that genuinely lived in the cloud (auth, billing, org/team
+ * management, cloud tasks) reject with the procedure named.
+ *
+ * Rejects, never throws synchronously: the same fire-and-forget call shape
+ * exists here as in the host-service.
+ */
+function severedRejection(path: string): Promise<never> {
+	return Promise.reject(
+		Object.assign(
+			new Error(
+				`CLOUD_SEVERED: ${path} — this fork has no cloud ` +
+					"(see FEATURES.md, (CLOUD-SEVERANCE-P2)).",
+			),
+			{ name: "CloudSeveredError" },
+		),
+	);
+}
+
+function severedNamespace(path: string): unknown {
+	return new Proxy(() => undefined, {
+		get(_target, property: string | symbol) {
+			if (typeof property === "symbol") return undefined;
+			return severedNamespace(`${path}.${String(property)}`);
+		},
+		apply() {
+			return severedRejection(path);
+		},
+	});
+}
+
+export function createApiClient(_opts: {
 	bearer: string;
 	organizationId?: string;
 }): ApiClient {
-	return createTRPCClient<AppRouter>({
-		links: [
-			httpBatchLink({
-				url: `${getApiUrl()}/api/trpc`,
-				transformer: SuperJSON,
-				headers() {
-					// better-auth's apiKey plugin reads `sk_live_…` from the
-					// x-api-key header. The Authorization: Bearer header is
-					// for OAuth/JWT tokens only — sending an api key there
-					// gets rejected as an invalid bearer.
-					const headers: Record<string, string> = opts.bearer.startsWith(
-						"sk_live_",
-					)
-						? { "x-api-key": opts.bearer }
-						: { Authorization: `Bearer ${opts.bearer}` };
-					if (opts.organizationId) {
-						headers[ORGANIZATION_HEADER] = opts.organizationId;
-					}
-					return headers;
-				},
-			}),
-		],
-	});
+	return severedNamespace("api") as ApiClient;
 }

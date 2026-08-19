@@ -1,4 +1,11 @@
-import { authClient } from "@superset/auth/client";
+// (CLOUD-SEVERANCE-P2) Repointed from `@superset/auth/client`. That module
+// builds a SECOND better-auth client against NEXT_PUBLIC_API_URL, and it is
+// the only thing in the desktop bundle that still emitted better-auth's HTTP
+// routes — which the severance build gate asserts are absent from every
+// artifact. This dialog is unreachable (Tasks is severed) but it still ships in
+// the chunk graph, so the import has to go, not just the screen.
+// The renderer's own severed shim answers useSession from the local identity.
+import { authClient } from "renderer/lib/auth-client";
 import type { TaskPriority } from "@superset/db/enums";
 import { Button } from "@superset/ui/button";
 import {

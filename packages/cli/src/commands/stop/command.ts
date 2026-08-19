@@ -1,5 +1,6 @@
 import { CLIError } from "@superset/cli-framework";
 import { command } from "../../lib/command";
+import { requireLocalOrganizationId } from "../../lib/local-org";
 import {
 	isProcessAlive,
 	readManifest,
@@ -9,9 +10,13 @@ import {
 export default command({
 	description: "Stop the host service daemon",
 	run: async ({ ctx }) => {
-		const organization = await ctx.api.user.myOrganization.query();
-		if (!organization)
-			throw new CLIError("No active organization", "Run: superset auth login");
+		// (CLOUD-SEVERANCE-P2) The organization is this machine's, resolved from
+		// disk — asking the cloud who we are is both impossible and pointless
+		// when the answer only ever names a local directory.
+		const organization = {
+			id: requireLocalOrganizationId(ctx.config.organizationId),
+			name: "this machine",
+		};
 
 		const manifest = readManifest(organization.id);
 		if (!manifest) {

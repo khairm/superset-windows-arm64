@@ -1,15 +1,34 @@
-import { apiKeyClient } from "@better-auth/api-key/client";
-import { stripeClient } from "@better-auth/stripe/client";
-import type { auth } from "@superset/auth/server";
-import {
-	customSessionClient,
-	jwtClient,
-	organizationClient,
-} from "better-auth/client/plugins";
-import { createAuthClient } from "better-auth/react";
+/**
+ * (CLOUD-SEVERANCE-P2) The severed auth client.
+ *
+ * Upstream's better-auth client talked to `api.superset.sh` for sessions,
+ * organizations, teams, billing and JWTs. There is no cloud any more, so this
+ * module answers the handful of questions the kept surfaces actually ask —
+ * "who am I", "which organization" — from local values, and refuses everything
+ * else loudly.
+ *
+ * WHY A PROXY AND NOT AN OBJECT LITERAL. Sixteen distinct members of this
+ * client are called across the renderer, and this fork ships with accepted type
+ * debt: `(REFERR-GATE)` fails the build only on cannot-find-NAME diagnostics,
+ * not on a property that is missing from an object. A literal that forgot one
+ * member would therefore compile, ship, and fail in the user's hands as
+ * "undefined is not a function". A Proxy cannot forget: anything not explicitly
+ * answered throws a named CLOUD_SEVERED error the moment it is touched, which
+ * is also what makes an upstream merge that adds a NEW cloud call visible
+ * instead of silent.
+ *
+ * The token/JWT accessors below are kept as real state rather than deleted:
+ * `host-service-auth.ts` reads them on every host-service request, and the
+ * local path (a per-process PSK) legitimately has no token to offer. They
+ * return null, which is the honest answer, and the PSK path is unaffected.
+ */
+
 import { useSyncExternalStore } from "react";
-import { env } from "renderer/env.renderer";
-import { decodeJwtExpiresAtMs } from "renderer/lib/jwt-expiry";
+import {
+	getLocalActiveOrganization,
+	getLocalSession,
+} from "renderer/lib/local-identity";
+import { cloudSeveredError } from "shared/local-identity";
 
 let authToken: string | null = null;
 const authTokenListeners = new Set<() => void>();
@@ -41,108 +60,115 @@ export function useAuthToken(): string | null {
 	);
 }
 
-let jwt: string | null = null;
-let jwtExpiresAtMs: number | null = null;
-let jwtGeneration = 0;
-let jwtRefreshInFlight: Promise<string | null> | null = null;
-
-// Refresh ahead of expiry so a token handed to a WS URL is still valid by the
-// time the relay verifies it.
-const JWT_REFRESH_LEEWAY_MS = 60_000;
-
-export function setJwt(token: string | null) {
-	jwt = token;
-	jwtGeneration++;
-	jwtExpiresAtMs = token ? decodeJwtExpiresAtMs(token) : null;
-}
-
-function jwtIsFresh(): boolean {
-	if (!jwt) return false;
-	if (jwtExpiresAtMs === null) return true;
-	return Date.now() < jwtExpiresAtMs - JWT_REFRESH_LEEWAY_MS;
+/**
+ * The relay JWT. Always null: the relay is severed, and the only other
+ * consumer — a LOCAL host-service request — authenticates with the
+ * coordinator's PSK and never falls back to this.
+ */
+export function setJwt(_token: string | null): void {
+	// Nothing mints a JWT any more. Kept as a no-op because upstream response
+	// hooks and sign-out paths call it.
 }
 
 export function getJwt(): string | null {
-	// Relay JWTs rotate hourly, but this cache only updates when some API
-	// response happens to carry `set-auth-jwt`. Sync callers (WS URL builders,
-	// reconnect loops) can't await a refresh, so kick one off in the background
-	// and let their next attempt pick up the fresh token.
-	if (jwt && !jwtIsFresh()) void ensureFreshJwt();
-	return jwt;
+	return null;
 }
 
-/**
- * Returns the cached JWT if it's still valid, otherwise mints a fresh one from
- * better-auth's `/token` endpoint (deduped across concurrent callers). Falls
- * back to the stale cached token if the refresh fails.
- */
 export async function ensureFreshJwt(): Promise<string | null> {
-	if (jwtIsFresh()) return jwt;
-	if (!jwtRefreshInFlight) {
-		const generationAtStart = jwtGeneration;
-		jwtRefreshInFlight = authClient
-			.$fetch<{ token?: string }>("/token")
-			.then((res) => {
-				const token = res.data?.token;
-				// Apply only if nothing (logout, a set-auth-jwt response header)
-				// replaced the cached token while this request was in flight.
-				if (
-					typeof token === "string" &&
-					token &&
-					jwtGeneration === generationAtStart
-				) {
-					setJwt(token);
-				}
-				return jwt;
-			})
-			.catch((err) => {
-				console.warn("[auth] JWT refresh failed:", err);
-				return jwt;
-			})
-			.finally(() => {
-				jwtRefreshInFlight = null;
-			});
-	}
-	return jwtRefreshInFlight;
+	return null;
 }
 
+/** What the shim answers locally. Everything else throws. */
+const LOCAL_MEMBERS: Record<string, unknown> = {
+	useSession: () => ({
+		data: getLocalSession(),
+		isPending: false,
+		isRefetching: false,
+		error: null,
+		refetch: () => undefined,
+	}),
+	useActiveOrganization: () => ({
+		data: getLocalActiveOrganization(),
+		isPending: false,
+		isRefetching: false,
+		error: null,
+		refetch: () => undefined,
+	}),
+	getSession: async () => ({ data: getLocalSession(), error: null }),
+	/**
+	 * Sign-out is reachable from nothing in this build, but a no-op that
+	 * resolves is the safe shape for a stray caller: the alternative — a
+	 * throw — would surface as an error toast on a button that, in a world
+	 * with no account, has nothing to do anyway.
+	 */
+	signOut: async () => ({ data: null, error: null }),
+};
+
 /**
- * Better Auth client for Electron desktop app.
- *
- * Bearer authentication configured via onRequest hook.
- * Server has bearer() plugin enabled to accept bearer tokens.
+ * The shim's type. The two answered hooks are typed PRECISELY — kept surfaces
+ * read `session.user.id` and find their own membership row in
+ * `organization.members`, and an `any` there would silently turn those into
+ * untyped code the moment the real client stopped providing the types. The
+ * index signature covers everything else, so upstream call sites for surfaces
+ * that no longer exist still compile until they are removed.
  */
-export const authClient = createAuthClient({
-	baseURL: env.NEXT_PUBLIC_API_URL,
-	plugins: [
-		organizationClient({
-			teams: { enabled: true },
-			schema: {
-				team: {
-					additionalFields: {
-						slug: { type: "string", input: true, required: true },
-					},
-				},
+type SeveredAuthClient = {
+	useSession: () => {
+		data: ReturnType<typeof getLocalSession>;
+		isPending: false;
+		isRefetching: false;
+		error: null;
+		refetch: (...args: unknown[]) => void;
+	};
+	useActiveOrganization: () => {
+		data: ReturnType<typeof getLocalActiveOrganization>;
+		isPending: false;
+		isRefetching: false;
+		error: null;
+		refetch: (...args: unknown[]) => void;
+	};
+	getSession: () => Promise<{
+		data: ReturnType<typeof getLocalSession>;
+		error: null;
+	}>;
+	signOut: (...args: unknown[]) => Promise<{ data: null; error: null }>;
+	// biome-ignore lint/suspicious/noExplicitAny: stands in for every cloud member that now throws
+} & Record<string, any>;
+
+/**
+ * Behaviourally a wall with two doors. Anything not answered above throws when
+ * called, naming the path it was reached through.
+ */
+export const authClient = new Proxy({} as Record<string, unknown>, {
+	get(_target, property: string | symbol) {
+		if (typeof property === "symbol") return undefined;
+		// Own properties only: `in` walks the prototype chain, so `toString`,
+		// `valueOf` and friends would resolve to Object.prototype instead of
+		// the wall, which is precisely the "a Proxy cannot forget" guarantee
+		// this shim exists to make.
+		if (Object.hasOwn(LOCAL_MEMBERS, property)) return LOCAL_MEMBERS[property];
+		// Nested namespaces (organization.setActive, subscription.upgrade,
+		// apiKey.delete …) refuse when CALLED, not when merely reached:
+		// destructuring or optional-chaining a namespace is not itself an
+		// attempt to use the cloud.
+		//
+		// They REJECT rather than throw, matching the other three severed
+		// clients. Every call site today awaits inside an async function, where
+		// the two are equivalent — but an upstream merge that adds a
+		// fire-and-forget `void authClient.x.y().catch(…)` would have its throw
+		// escape before the catch was attached, and an unhandled rejection is a
+		// far better failure than a crash on a surface that no longer exists.
+		return new Proxy(() => undefined, {
+			get(_inner, member: string | symbol) {
+				if (typeof member === "symbol") return undefined;
+				return () =>
+					Promise.reject(
+						cloudSeveredError(`authClient.${property}.${String(member)}`),
+					);
 			},
-		}),
-		customSessionClient<typeof auth>(),
-		stripeClient({ subscription: true }),
-		apiKeyClient(),
-		jwtClient(),
-	],
-	fetchOptions: {
-		credentials: "include",
-		onRequest: async (context) => {
-			const token = getAuthToken();
-			if (token) {
-				context.headers.set("Authorization", `Bearer ${token}`);
-			}
-		},
-		onResponse: async (context) => {
-			const token = context.response.headers.get("set-auth-jwt");
-			if (token) {
-				setJwt(token);
-			}
-		},
+			apply() {
+				return Promise.reject(cloudSeveredError(`authClient.${property}()`));
+			},
+		});
 	},
-});
+}) as unknown as SeveredAuthClient;

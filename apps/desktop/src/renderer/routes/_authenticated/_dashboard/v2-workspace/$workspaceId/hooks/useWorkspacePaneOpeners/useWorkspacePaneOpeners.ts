@@ -4,7 +4,6 @@ import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/provide
 import type { StoreApi } from "zustand/vanilla";
 import type {
 	BrowserPaneData,
-	ChatPaneData,
 	ChatV3PaneData,
 	CommentPaneData,
 	DiffFocusSide,
@@ -36,7 +35,6 @@ export function useWorkspacePaneOpeners({
 		changeKey?: string,
 	) => void;
 	addTerminalTab: () => Promise<void>;
-	addChatTab: () => void;
 	addChatV3Tab: () => void;
 	addBrowserTab: () => void;
 	openCommentPane: (comment: CommentPaneData) => void;
@@ -138,17 +136,10 @@ export function useWorkspacePaneOpeners({
 		}
 	}, [addBlankTerminalTab, executePreset, newTabPresets]);
 
-	const addChatTab = useCallback(() => {
-		store.getState().addTab({
-			panes: [
-				{
-					kind: "chat",
-					data: { sessionId: null } as ChatPaneData,
-				},
-			],
-		});
-	}, [store]);
-
+	// (CLOUD-SEVERANCE-P2) The cloud chat opener is gone with its pane. This
+	// one opens the LOCAL chat pane, and only reaches a caller when the user has
+	// switched it on — with the setting off, `usePaneRegistry` never registers
+	// `chat-v3`, so calling this would add a tab nothing can render.
 	const addChatV3Tab = useCallback(() => {
 		store.getState().addTab({
 			panes: [
@@ -203,7 +194,6 @@ export function useWorkspacePaneOpeners({
 	return {
 		openDiffPane,
 		addTerminalTab,
-		addChatTab,
 		addChatV3Tab,
 		addBrowserTab,
 		openCommentPane,
