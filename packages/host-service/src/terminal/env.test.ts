@@ -97,6 +97,12 @@ describe("stripTerminalRuntimeEnv", () => {
 		KEEP_ALIVE_AFTER_PARENT: "1",
 		SUPERSET_API_URL: "https://api.example.com",
 		DESKTOP_VITE_PORT: "5173",
+		// (CLOUD-SEVERANCE-P2) Whoever holds the bridge secret can drive the
+		// app's browser panes over CDP and read any signed-in site in one, and
+		// on Windows the terminal base env is a snapshot of this process's own
+		// environment — so a PTY is exactly where it must not appear.
+		BROWSER_BRIDGE_URL: "http://127.0.0.1:53219",
+		BROWSER_BRIDGE_SECRET: "bridge-secret",
 		// Node/app keys
 		NODE_ENV: "development",
 		NODE_OPTIONS: "--max-old-space-size=4096",

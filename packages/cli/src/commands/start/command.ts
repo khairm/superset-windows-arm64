@@ -1,10 +1,10 @@
 import * as p from "@clack/prompts";
 import { boolean, CLIError, number, string } from "@superset/cli-framework";
 import { command } from "../../lib/command";
-import { requireLocalOrganizationId } from "../../lib/local-org";
 import { SUPERSET_CONFIG_PATH } from "../../lib/config";
 import { isProcessAlive, readManifest } from "../../lib/host/manifest";
 import { spawnHostService } from "../../lib/host/spawn";
+import { requireLocalOrganizationId } from "../../lib/local-org";
 
 export default command({
 	description: "Start the host service",
@@ -15,10 +15,17 @@ export default command({
 	},
 	run: async ({ ctx, options, signal }) => {
 		// (CLOUD-SEVERANCE-P2) Standalone-CLI path only (the desktop-bundled
-		// binary refuses to start a host service at all). The organization is
-		// the one this machine resolved for itself — `--org` and
-		// SUPERSET_ORGANIZATION_ID are honoured upstream of here, in
-		// resolveAuth, since there is no cloud list to pick from.
+		// binary refuses to start a host service at all). There is exactly one
+		// organization — the one this machine resolved from its own disk — so
+		// there is no list for `--org` to pick from. It REFUSES rather than
+		// being ignored: a flag that silently does nothing is how someone ends
+		// up believing they started a host for a different organization.
+		if (options.org) {
+			throw new CLIError(
+				"--org is not available: this machine has exactly one local organization.",
+				"Set SUPERSET_ORGANIZATION_ID only if you need to point at a different local host database.",
+			);
+		}
 		const organization = {
 			id: requireLocalOrganizationId(ctx.config.organizationId),
 			name: "this machine",

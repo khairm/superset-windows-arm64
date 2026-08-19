@@ -93,17 +93,17 @@ export function DevicePicker({
 	disabled,
 }: DevicePickerProps) {
 	const { machineId } = useLocalHostService();
-	const cloudEnabled = useFeatureFlagEnabled(FEATURE_FLAGS.CLOUD_WORKSPACES);
 	const { currentDeviceName, localHostIsOnline, otherHosts } =
 		useWorkspaceHostOptions();
-	// A remembered cloud target outlives the flag that offers it, and the menu
-	// then has no cloud entry to point at what the trigger claims is selected.
-	// Undefined means the flags haven't resolved, which is not a "no".
+	// (CLOUD-SEVERANCE-P2) A cloud target remembered from before the severance
+	// has no menu entry to point at any more, so the trigger would claim a
+	// selection the list cannot show. Unconditional now: there is no flag left
+	// to wait on, and no state in which Cloud becomes selectable again.
 	useEffect(() => {
-		if (hostId === CLOUD_HOST_ID && cloudEnabled === false) {
+		if (hostId === CLOUD_HOST_ID) {
 			onSelectHostId(machineId);
 		}
-	}, [cloudEnabled, hostId, machineId, onSelectHostId]);
+	}, [hostId, machineId, onSelectHostId]);
 	const isLocal = hostId === null || hostId === machineId;
 	const selectedLabel = getSelectedLabel(
 		hostId,
@@ -143,13 +143,13 @@ export function DevicePicker({
 					{localOnline !== null && <OnlineDot online={localOnline} />}
 					{isLocal && <HiCheck className="size-4" />}
 				</DropdownMenuItem>
-				{cloudEnabled && (
-					<DropdownMenuItem onSelect={() => onSelectHostId(CLOUD_HOST_ID)}>
-						<HiOutlineCloud className="size-4" />
-						<span className="flex-1">Cloud</span>
-						{hostId === CLOUD_HOST_ID && <HiCheck className="size-4" />}
-					</DropdownMenuItem>
-				)}
+				{/* (CLOUD-SEVERANCE-P2) No Cloud entry. Creating a cloud workspace
+				    calls cloudWorkspace.create, which is severed, so the item
+				    could only ever produce an error — and every other severed
+				    surface in this fork is DELETED rather than left behind a
+				    feature flag that happens to be permanently unresolved. The
+				    effect below stays: it moves a remembered cloud selection
+				    back to this device. */}
 				{otherHosts.length > 0 && (
 					<>
 						<DropdownMenuSeparator />

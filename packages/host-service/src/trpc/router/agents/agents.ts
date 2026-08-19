@@ -278,7 +278,6 @@ export function validateAgentLaunchEffort(
 	validateAgentEffortSelection(config.presetId, config.label, input.effort);
 }
 
-
 /**
  * Resolve a terminal agent launch to the shell command that runs it, without
  * creating a terminal. Used by `runTerminalAgent` and by the workspace-create

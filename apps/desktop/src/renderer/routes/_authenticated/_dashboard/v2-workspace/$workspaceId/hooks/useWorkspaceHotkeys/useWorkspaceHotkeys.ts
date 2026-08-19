@@ -68,7 +68,6 @@ export function useWorkspaceHotkeys({
 	// the registry has a `chat-v3` renderer, leaving an empty rectangle the user
 	// cannot explain.
 
-
 	useHotkey("NEW_BROWSER", () => {
 		store.getState().addTab({
 			panes: [

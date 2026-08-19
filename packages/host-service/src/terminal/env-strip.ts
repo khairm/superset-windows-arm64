@@ -52,6 +52,24 @@ const SUPERSET_KEEP_KEYS = new Set([
 const SENSITIVE_AUTH_KEYS = new Set([
 	"OAUTH_REFRESH_TOKEN",
 	"SUPERSET_REFRESH_TOKEN",
+	/**
+	 * The browser bridge's endpoint and shared secret, added by upstream
+	 * v1.23.0 and stripped here from the moment they arrived.
+	 *
+	 * Whoever holds this secret can drive the app's browser panes over CDP:
+	 * navigate them, evaluate script in them, and read the DOM of any site the
+	 * user is signed into. The desktop puts both variables into the
+	 * host-service's environment, and on Windows the login-shell probe that
+	 * builds the terminal base environment falls back to a snapshot of exactly
+	 * that environment — so without this they reach every PTY, which is to say
+	 * every agent CLI and every command the user runs in a terminal.
+	 *
+	 * `HOST_SERVICE_SECRET` survives that same path only because it happens to
+	 * match the `HOST_` prefix rule. These two match nothing, so they are
+	 * named.
+	 */
+	"BROWSER_BRIDGE_URL",
+	"BROWSER_BRIDGE_SECRET",
 ]);
 
 export function stripTerminalRuntimeEnv(

@@ -12,10 +12,10 @@ import {
 	initSentry,
 	installProcessSafetyNet,
 	installUpgradeSocketGuard,
-	SeveredApiAuthProvider,
 	LocalGitCredentialProvider,
 	PskHostAuthProvider,
 	resolveBrowserBridgeFromEnv,
+	SeveredApiAuthProvider,
 	startCompanionBridgeIfEnabled,
 	startTerminalReaper,
 } from "@superset/host-service";

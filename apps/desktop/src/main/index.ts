@@ -1,7 +1,9 @@
 import path from "node:path";
 import log from "electron-log/main";
 import { installWindowsChildProcessPatch } from "./lib/windows-child-process-patch";
+
 installWindowsChildProcessPatch();
+
 import { pathToFileURL } from "node:url";
 import {
 	setAgentSetupTemplatesDir,
@@ -59,8 +61,8 @@ import {
 } from "./lib/terminal-host/client";
 import { disposeTray, initTray } from "./lib/tray";
 import { startNetworkLogger, stopNetworkLogger } from "./network-logger";
-import { sweepNetworkLogs } from "./network-logger-sweep";
 import { isNetworkLoggingEnabled } from "./network-logger/policy";
+import { sweepNetworkLogs } from "./network-logger-sweep";
 import { MainWindow } from "./windows/main";
 
 console.log("[main] Local database ready:", !!localDb);
@@ -221,7 +223,12 @@ app.on("before-quit", async (event) => {
 	if (isQuitting) return;
 
 	const isDev = process.env.NODE_ENV === "development";
-	if (!PLATFORM.IS_WINDOWS && !skipQuitConfirmation && !isDev && getConfirmOnQuitSetting()) {
+	if (
+		!PLATFORM.IS_WINDOWS &&
+		!skipQuitConfirmation &&
+		!isDev &&
+		getConfirmOnQuitSetting()
+	) {
 		event.preventDefault();
 
 		try {

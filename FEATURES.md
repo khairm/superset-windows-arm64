@@ -46,7 +46,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | AI-unavailable is not a merge/build verdict | every Claude CLI call in the nightly merge and the build-repair loop runs through one shared wrapper (`scripts/ai-run.sh`) that captures the exit code and output: a CLI that never reached the model (weekly/session usage cap, dead credential, 126/127, silent nonzero) is reported as `(AI-UNAVAILABLE)` instead of as an unresolvable merge or an unrepairable build, and transient conditions (429/5xx/connection) retry in place with 30s/60s backoff first. output is only classified when the CLI exits nonzero AND the log is small, so agent prose can't trip it. A nightly blocked ONLY by a PROVEN outage (the wrapper declared it — never an exit code alone) merged, built and published nothing, so it concludes GREEN as a loud no-op: GitHub emails on failure and a quota week must not mail every night. Consecutive blocked NIGHTS are counted and the run fails RED once the streak threshold is reached, so a dead credential can never go quiet forever; the count clears only when the CLI provably reached the model. Real merge/gate failures and failed builds stay RED either way, and a rehearsal writes nothing | `(AI-UNAVAILABLE)` |
 | Sidebar hover-freeze | rows never re-sort while the pointer is over the project list (order applies on leave) | `(HOVER-FREEZE)` |
 | Terminal links | plain click copies a URL/path, Ctrl/Cmd+click opens; `.html` paths open in Chrome (OS default fallback) | `useLinkClickHint`, `openHtmlInBrowser` |
-| Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `agent-wrappers` |
+| Agent-hook bash-wrap | Gemini/Cursor `.sh` hooks run via Git-for-Windows bash | `findWindowsGitBash` |
 | Kanban board | device-local board mirroring branches + Queued column | `v2KanbanCards`, `KANBAN_QUEUE_COLUMN_ID` |
 | Kanban host-served workspace source | every fork surface that needs the workspace universe (kanban seed/prune/render, bound-card actions, collapse-split, recycle-bin destroy URL, sidebar snooze/archive fallbacks, is-local gate) reads the host-served lists (`useHostWorkspaces`), NEVER the Electric `v2Workspaces` mirror — upstream's offline-first migration stopped writing new rows to the cloud table, so Electric reads silently miss every post-migration branch | `(KANBAN-HOST-SOURCE)` |
 | Kanban Completed column | fixed FINAL column: dropping a card or choosing Mark completed on an active non-main worktree stamps an editable completed date and hides the thread from the sidebar ENTIRELY (drag out un-completes/restores); per-column date filter (all / last calendar month / custom range) for work-done reports; completed cards survive branch deletion as frozen records; main cards can't complete | `KANBAN_COMPLETED_COLUMN_ID`, `(KANBAN-MARK-COMPLETED)` |
@@ -179,7 +179,7 @@ writeInputIfIdleSession	packages/host-service/src
 useAutoResumeActivity	apps/desktop/src/renderer
 AutoResumeController	apps/desktop/src/renderer
 applySourceAxes	apps/desktop/src/renderer
-agent-wrappers	packages/agent-setup/src
+findWindowsGitBash	packages/agent-setup/src
 (HOOK-FORK-DIET)	packages/agent-setup
 (MASTER-ARCHIVE-ONLY)	apps/desktop/src/renderer
 (RECYCLE-BIN)	apps/desktop/src/renderer
