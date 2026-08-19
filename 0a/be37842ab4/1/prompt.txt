@@ -1,0 +1,11 @@
+<task-notification>
+<task-id>b2x0acqyq</task-id>
+<tool-use-id>toolu_01KySDywHCUaEwW45GQVQotH</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\f339f5e3-1159-42a5-b296-eea4f5eacc7c\tasks\b2x0acqyq.output</output-file>
+<status>completed</status>
+<summary>Background command "Package the app to measure full gate count" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+why isnt the phone companion app vibrating and the watch app vibrating for notifications!? I'm getting silent ones
