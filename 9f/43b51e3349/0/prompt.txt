@@ -1,0 +1,747 @@
+<agent-message from="arch-design">
+# Blueprint: stuck red dot (MUST-1) + broken manual "Clear Status" (MUST-2)
+
+## Correction to the investigation report — MUST-1's mechanism is different
+
+The report's cause ("POST times out under host saturation; add retry/queue") is wrong, which changes the fix. Evidence from this machine:
+
+- Host `127.0.0.1:55331`: healthy until 03:00 today, then **zero** successful posts. Hourly: `02` = 786 ok / 0 err; `03` = 1 ok / 926 err; `04`-`12` = 0 ok / 3880 err. A cliff, not 32% loss.
+- `netstat -ano`: **55331 is not listening.** Live host is `48056` (pid 21352).
+- `~/.superset/host/30e16b5a-.../manifest.json` → `"endpoint":"http://127.0.0.1:48056"`, rewritten 03:01. One org, one manifest.
+- 6 terminals still POST to the dead 55331. All 6 have `terminal_sessions` rows in the **live** host's `host.db`; 2 are `status=active`.
+
+This is the known **frozen hook URL** bug — `C:\Users\khair\Code Projects\fork-superset-windows-arm64\plans\agent-hook-url-frozen-port.md`. The env var is baked into the PTY at creation; host-service restarted onto a new port; PTYs survive in the pty-daemon with the dead address.
+
+That plan's fix shipped **only to the shell templates**. `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\agent-setup\templates\notify-hook.template.sh:170-205` builds candidates from every `~/.superset/host/*/manifest.json`. The fork's Python hook, which owns every dot decision, was never ported: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:2430` reads the env var, `:2247-2253` posts to it, done.
+
+**Why the symptom is specifically a stuck red.** `~/.claude/settings.json` routes `PermissionRequest` → `notify.sh` (has failover) and every other event → `superset-notify.py` (does not). The red-**setter** still reaches the live host; the red-**clearer** (`pane-map-hook.ts:2152-2159`) is lost. Confirmed in `~/.superset/agent-dot-render.log`: `d3ce7c25` red 10:36:33, answer 10:55:38 logged `post-error`, cleared 11:13:02 (37 min). `72d85ab1` red 10:39:05, still red past 11:14. Control terminal `d603171b` on the live host flips `permission`↔`working` in seconds.
+
+The report's "SubagentActive flood" is a red herring — the flooded host runs 19,459 posted / 8 errors.
+
+## Clear-status trace: confirmed, with two refinements
+
+Your trace is correct on every line reference I checked. Two refinements:
+
+1. **`outstandingReadyAt` and the companion ready-alert are already handled today**, not missing. The hook-local `clearWorkspaceAttention` (`...\useDashboardSidebarWorkspaceItemActions.ts:62-79`) calls `markTerminalSeenAndReportRead` per binding (`...\V2NotificationController\lib\companionAlertSync.ts:390-412`), which bumps `terminalSeenAt`, reports read to the host, and clears `outstandingReadyAt` **on acceptance**. Green and its phone alert do come down. Only red/yellow/blue survive. Widening the store purge is still worth doing as belt-and-braces for the rejected-report case, but it is not the defect.
+2. **`shellRunningTerminals` genuinely needs clearing, for plain shells only.** The agent-terminal gate at `store.ts:971-974` suppresses shell-blue on agent terminals, so a stuck agent dot is unaffected. But `selectV2WorkspaceDisplayStatus:1183-1190` yields a status for open terminals with **no** source entry, so a plain shell's blue renders even after every source is purged.
+
+Also confirmed: `clearV2TerminalRunStatus` (`store.ts:812-826`) has exactly two references — its own definition and the barrel re-export at `...\stores\v2-notifications\index.ts:2`. Dead, and its doc comment falsely claims interrupt and pane close route through it.
+
+**Scope correction:** there is **one** Clear Status item, on sidebar workspace rows (`...\DashboardSidebarWorkspaceContextMenu.tsx:293-298`). No tab-level clear exists. The v1 `...\screens\main\...\WorkspaceListItem.tsx:223` drives the tabs store and is dead under the v2-only rule. The item *is* reachable when a red is stuck — its `hasStatus` gate reads `useV2WorkspaceDisplayStatus` (`store.ts:1196-1205`), the same store holding the latched red. The bug is the handler, not the gate.
+
+Two re-assertion vectors survive the click, both from the surviving marker:
+- `...\resyncAgentStatus.ts:678-685` re-applies `PermissionRequest` from `pendingPermission`, derived from the marker dir at `...\agent-status-snapshot.ts:127-167`. Forcing the binding to `Stop` cannot help — `pendingPermission` is deliberately independent of `lastEventType` (`agent-status-snapshot.ts:13-19`). The `pendingPermission === null` branch at `:660-677` re-applies only `preEntry.axes.permission`, so once the renderer clears locally it re-latches nothing; it is a hazard only while the local clear is missing.
+- The hook's central guard: while the marker exists, untagged tool completions return `SubagentActive` (`pane-map-hook.ts:2214-2216`), which clears nothing (`statusTransitions.ts:64-74`). The red is self-perpetuating.
+
+---
+
+## 1. Recommended approach
+
+### MUST-1 — port the manifest failover into the embedded Python hook
+
+Env URL first (unchanged fast path), then each `~/.superset/host/*/manifest.json` endpoint, stopping at the first response not containing `"ignored": true`.
+
+Alternatives and why each loses:
+- **Queue + retry in the hook** (report's proposal): retrying a permanently dead port never delivers, and a background drain process is the `(HOOK-FORK-DIET)` fork cascade this fork banned.
+- **Raise the 1.5 s timeout**: nothing is slow, the port is gone. Pure agent stall, zero delivery.
+- **Reduce the SubagentActive flood**: the flooded host has a 0.04% error rate.
+- **Marker-driven resync alone**: heals the dot but every other event from those terminals still vanishes.
+- **Stable socket / port pinning**: rejected at `plans\agent-hook-url-frozen-port.md:90-91`; reasons hold.
+
+Decisive advantage: `writeNotifyScriptIfChanged()` (`pane-map-hook.ts:2736`) rewrites the script every desktop start and Python re-reads it per fire, so **this heals the 6 already-orphaned live terminals on their next event** with no terminal restart.
+
+`(HOOK-FORK-DIET)` risk: **none.** That footgun is `.sh` templates forking subprocesses under emulated msys2. This is one Python process doing stdlib file reads and in-process `urlopen`.
+
+Cost: fast path unchanged. A dead env URL already costs 1.5 s (3 s when the companion retry fires, `:2623-2642`); drop the per-candidate timeout to **0.75 s** and the worst case halves while actually delivering.
+
+### MUST-2 — make the marker the thing manual clear deletes, and give the renderer the axis clear it never performed
+
+**Host half (authoritative).** New mutation `terminalAgents.dismissWorkspaceStatuses`: per terminal in scope, delete the `<terminalId>.askq` directory, force the binding to `Stop` via the existing `store.clearWorkspaceStatuses`, and settle any pending companion question via `markStale`.
+
+**Renderer half.** `handleClearStatus` awaits that mutation, then calls the already-existing, uncalled `useV2NotificationStore.clearWorkspaceStatuses(workspaceId)` (`store.ts:648-690`) — your name-collision finding.
+
+On sharing one path with the automatic answer-clear: **they cannot be one function**, because they differ on the only axis that matters — manual may drop a live red, automatic may not. What they share, and what removes the duplication that matters, is the **marker mutation and its path derivation**. The `.askq` path is built in three places today: the Python hook (`pane-map-hook.ts:602-629`), the Electron watcher (`agent-jsonl-watcher.ts:505-546`), and the host reader (`agent-status-snapshot.ts:127-138`). A fourth ad-hoc copy is exactly the parallel mechanism to avoid, so the new writer goes **in `agent-status-snapshot.ts`, sharing one path builder and one `SAFE_MARKER_SEGMENT` guard with the reader.** Full unification across Python/main/host needs a rewrite and is out of scope; I am not pretending otherwise.
+
+Host-side rather than Electron main because the marker lives on the machine the agent runs on — for a relay or remote host, main's `homedir()` is the wrong disk. The host also already holds the binding and the companion store, so one round trip does all three.
+
+`markStale` not `resolve`: `resolve` stamps answered-by provenance (`question-store.ts:757-761`) and nobody answered. `markStale` (`:1976-1991`) is terminal, non-provenance-bearing, and still routes through `settle()` → `onSettled` → `push.cancelPending` (`companion\index.ts:663-676`), so the phone notification retracts. Same retraction, honest record.
+
+**Deliberately not deleted: the run-dir subagent markers.** They do not re-assert red on resync — resync replays `lastEventType`, forced to `Stop`. They only shape the *next* hook decision, and a running subagent re-asserting yellow at its next event is correct. Deleting them would corrupt live subagent tracking.
+
+**Cross-window propagation by convergence, not broadcast.** Marker gone plus binding `Stop` means any other window's next resync converges to cleared. I considered broadcasting `Detached` (clears both axes at `statusTransitions.ts:51-62`, chime-exempt at `lifecycleEvents.ts:74-88`) — rejected, because `Detached` also means "session ended" (`map-event-type.ts:11`) and asserting it about a live agent is a lie told to fix a refresh delay.
+
+---
+
+## 2. Files to create/modify
+
+### MUST-1
+
+**`...\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts`** — embedded `NOTIFY_SCRIPT` (`:312`+):
+- New `_hook_candidate_urls(env_url)` near `_post_hook` (`:2238`): `[env_url]` + `<endpoint>/trpc/notifications.hook` per manifest glob, deduped, order-preserving. Root = `os.environ.get("SUPERSET_HOME_DIR")` or `Path.home()/".superset"`. Per-manifest failure skips and logs, never raises.
+- New `_deliver(candidates, body)`: POST each in order; return on the first body **not** containing `"ignored": true` / `"ignored":true`. Raise the last exception if all fail. Keying on *absence of `ignored:true`* rather than presence of `ignored:false` means an upstream body change degrades to "delivered to the first host that answered" instead of "probes forever". `notifications.ts:357` returns `ignored:false` on delivery; `:221-225`, `:275-279`, `:293-297` return `ignored:true` on drops.
+- `_post_hook:2253`: timeout `1.5` → `0.75`.
+- Call site `:2606-2649`: `_post_hook` → `_deliver`; log the delivering url in the `posted` record. The companion strip-and-retry at `:2623-2642` re-runs through `_deliver` with the same list.
+- Total-failure path `:2643-2648`: also emit one `_decision_log` line naming every candidate tried. Reuses the always-on rotating audit channel (`:415`).
+- **`_log` rotation** (`:401-412`): copy the rotate-at-1 MB idiom from `_decision_log:428-438`. Live file is **508,757,788 bytes**. MUST, not SHOULD — two lines, same function family, and an unbounded append inside the agent's hook window is itself latency.
+
+**`...\agent-jsonl-watcher\pane-map-hook.test.ts`** — new `describe("superset-notify endpoint resolution")`. Harness at `:12-97` already gives real Python, throwaway `HOME`, real `Bun.serve` sink. Cases: dead env URL → delivered via manifest; live env URL → manifests unprobed; wrong-org sink returning `ignored:true` → probing continues; all dead → `post-error` + a `dot-decisions.log` line. The existing sink at `:43` returns no `ignored` field, which counts as delivered under the predicate, so existing tests pass unchanged — the wrong-org case must return `ignored:true` explicitly.
+
+### MUST-2
+
+**`...\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts`** — extract the path builder inline at `:133-138` into `askqMarkerDir(terminalId)`, used by both the existing `hasPendingQuestionMarker` and a new `clearPendingQuestionMarkers(terminalId): Promise<boolean>` (`rm` recursive+force; `ENOENT` is success; any other error throws so the caller fails loud). Reader and writer share one derivation and one `SAFE_MARKER_SEGMENT` check (`:80`).
+
+**`...\packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts`** — new `dismissWorkspaceStatuses` mutation beside `clearWorkspaceStatuses` (`:277-287`), input `{workspaceId, terminalId?}`. Per terminal, in order: `clearPendingQuestionMarkers` → existing `ctx.terminalAgentStore.clearWorkspaceStatuses` → companion dismissal. Returns `{cleared, markersRemoved, questionsDismissed}` so the renderer can surface partial failure. A marker delete that throws fails the whole mutation loud — a green UI over a surviving marker is the exact bug being fixed. `clearWorkspaceStatuses` stays **unchanged**: `useTerminalInterruptClear.ts:46` depends on its non-red-dropping semantics.
+
+**`...\packages\host-service\src\trpc\router\notifications\companion-question-sink.ts`** — add `dismissByTerminal({hostTerminalId, reason})` to the `CompanionQuestionSink` interface (`:78-87`) and a `forwardCompanionDismissal(...)` mirroring `forwardCompanionCapture` (`:264-311`). No-op when no bridge is registered.
+
+**`...\packages\host-service\src\companion\index.ts`** — implement `dismissByTerminal` on the sink registered at `:1161`: `store.byHostTerminal(id)` then `store.markStale(id, reason)`. Both already on `QuestionStore` (`question-store.ts:749`, `:777`); no question-store change.
+
+**`...\useDashboardSidebarWorkspaceItemActions.ts`** — `handleClearStatus` (`:292-307`) calls `dismissWorkspaceStatuses`, and **on success** the store's `clearWorkspaceStatuses(workspaceId)` plus the existing `clearWorkspaceAttention()` and query invalidation. Host first, renderer second: a failed host call must not leave a cleared-looking UI the next resync un-clears. Existing `toast.error` at `:302-306` is the loud path.
+
+**`...\apps\desktop\src\renderer\stores\v2-notifications\store.ts`** — `clearWorkspaceStatuses` (`:648-690`) additionally clears `shellRunningTerminals` (for plain-shell blue, per the refinement above) and `outstandingReadyAt` for the workspace's terminals. Add the `ndots` mutation log line the sibling `clearWorkspaceAttention` writes at `:704-713`.
+
+**Dead code (same PR).** Delete `clearV2TerminalRunStatus` (`store.ts:812-826`) and its barrel re-export (`...\stores\v2-notifications\index.ts:2`). Zero callers; its doc comment at `:808-811` and `:827-829` falsely documents the interrupt and pane-close paths, which is actively misleading anyone debugging exactly this bug. Deleting beats fixing the comment: the correct behaviour it describes now lives in the dismiss path and in `useTerminalInterruptClear`.
+
+**Tests**: `...\stores\v2-notifications\store.test.ts` (all maps cleared); a router test for the host mutation (marker dir gone, binding `Stop`, `markStale` called, throw on undeletable marker).
+
+**`FEATURES.md`** — two feature rows plus markers, tab-separated per `:150-215`:
+```
+(HOOK-ENDPOINT-HEAL)	apps/desktop/src/main
+(HOOK-ENDPOINT-HEAL)	apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts
+(MANUAL-DISMISS)	packages/host-service/src
+(MANUAL-DISMISS)	apps/desktop/src/renderer
+```
+The test-pinned marker matters: without it a merge could take upstream's router and leave the dispatch untested — the reasoning already written at `notifications.ts:16-22` for `(COMPANION-CAPTURE-HOOK)`.
+
+### SHOULD (separable, user's call)
+
+**A. `resyncAgentStatus.ts:660-685`** — add the missing `else` for `pendingPermission === false`, clearing the permission axis via `applySourceAxes(..., {set:[], clear:["permission"]}, row.lastEventAt)`, shaped like `:664-676`. Today resync can only add red. Safety rests on the marker being the invariant; residual risk is a question opening between the host's `readdir` and the apply. **Verify the `preEntry.occurredAt > row.lastEventAt` fence at `:460-463` covers a mid-flight `PermissionRequest` before shipping.** If not, unsafe — do not ship.
+
+**B. `HostNotificationSubscriber.tsx:135-172`** — A only helps on reconnect: `runResync` fires on socket open or workspace-set growth. On a stable socket it never runs, which is today's stuck case. Add a bounded 60 s re-run reusing `runResync` and its generation guard.
+
+**C. `useTerminalInterruptClear.ts:40-58`** — same host-only defect you found: clears the binding, never the renderer's latched axes. Fix by clearing the terminal's own axes locally after the mutation resolves. **Do not point it at the new dismiss mutation** — an interrupt is not a dismissal and must keep no-drop-live-red semantics. Partly mitigated today: the watcher clears `_main` on a detected interrupt (`agent-jsonl-watcher.ts:1043-1044`).
+
+### Explicitly do not do
+
+**Leaked `.askq/_main` reap.** 24 leaked markers, oldest 2026-07-07. The no-reap policy is argued at `agent-status-snapshot.ts:104-122`: nothing host-side can prove a leak, and the mtime-vs-`startedAt` fence drops live reds in exactly the case it targets. Not an aggravator here — markers on both stuck terminals were correct throughout. MUST-2 gives the user a deliberate way to clear them, which is the right answer.
+
+---
+
+## 3. Data flow
+
+**MUST-1, today** — user answers → `PostToolUse` → `_remove(askq/_main)` **[local, succeeds]** → `"Start"` **[correct]** → POST `55331` **[dead, 1.5 s]** → `post-error` into a 508 MB file. Binding stays `PermissionRequest`; renderer stays red.
+
+**MUST-1, after** — … → `"Start"` → candidates `[55331/…, 48056/…]` → `_deliver` candidate 2 → `200 {"ignored":false}` → `notifications.ts:312` broadcast, `:320` binding persisted → `statusTransitions.ts:76-87` sets working, clears permission. Sub-second.
+
+**MUST-2, after** — right-click → Clear Status → `dismissWorkspaceStatuses` → per terminal: `rm -rf <terminalId>.askq` → binding `Stop` → `byHostTerminal` + `markStale` → `settle()` → `onSettled` → `push.cancelPending` (phone retracts). On resolve: `clearWorkspaceStatuses(workspaceId)` drops sources, background, shell, manual, outstanding-ready; `clearWorkspaceAttention()` marks seen and reports read; bindings query invalidated. Next resync reads `pendingPermission: false` and re-asserts nothing; the hook's central guard sees an empty dir and stops holding `SubagentActive`.
+
+Validation stays at the tRPC input boundary; ownership stays the DB read (`notifications.ts:256-261`); the `.askq` directory remains the single source of truth for red.
+
+---
+
+## 4. Build order
+
+1. `_log` rotation. Verify: suite green; shipped script rotates at 1 MB.
+2. `_hook_candidate_urls`, unused. Verify: candidate list over a temp `SUPERSET_HOME_DIR` with 0/1/2 manifests plus one malformed.
+3. `_deliver` + 0.75 s, wired into the call site and companion retry. Verify: four new cases; full `bun test apps/desktop/src/main/lib/agent-jsonl-watcher/`.
+4. Mutation check (matching `plans\agent-hook-url-frozen-port.md:116`): break the manifest glob, confirm exactly the failover tests fail, restore.
+5. **Live heal, no rebuild needed**: start the desktop so `writeNotifyScriptIfChanged` lands the script, answer a question in `72d85ab1` or `d3ce7c25`, watch `~/.superset/agent-dot-render.log` for `permission → working` within a second and a `posted` line naming `48056`.
+6. `clearPendingQuestionMarkers` + shared path builder. Verify: unit test incl. traversal-guard rejection.
+7. `dismissByTerminal` on sink and bridge. Verify: `markStale` fires, push retraction observed.
+8. `dismissWorkspaceStatuses`. Verify: marker gone, binding `Stop`, question stale, throw on undeletable marker.
+9. Renderer store widening + `handleClearStatus` + dead-code deletion. Verify: store test, then CDP per `.agents/skills/cdp-verification/SKILL.md` — stick a red, click Clear Status, confirm the dot dies and **survives a forced resync**.
+10. `FEATURES.md`; `node scripts/check-feature-markers.mjs`.
+11. SHOULD A (gated on the step-7 fence check in §2), then B, then C.
+12. `bun run typecheck`, `bun run lint`, `/simplify` before commit.
+
+---
+
+## 5. Risks and edge cases
+
+**MUST-1**
+- Multi-org double delivery impossible — a terminal id lives in one host's `terminal_sessions`; others answer `ignored:true`.
+- A stale manifest from a crashed host adds 0.75 s. Manifests are rewritten per start (`apps\desktop\src\main\host-service\index.ts:126-138`), one per org. Do not add a cache for a two-entry loop.
+- Predicate drift: if upstream ever returns a body containing literal `"ignored": true` for a delivered event, detection inverts. Covered by tests.
+- Ordering: `_deliver` must stay strictly after the marker mutations in `_decide_event_type` (`:2500-2513`) so markers survive total delivery failure.
+- `SUPERSET_HOME_DIR` honoured for the manifest glob, **not** for marker paths — the host reads markers at a hardcoded `homedir()` (`agent-status-snapshot.ts:133-138`), so unifying would silently break the resync. Comment it; do not "clean it up".
+
+**MUST-2**
+- **Dropping a live red is intended** and is the user's explicit decision. A genuinely blocked agent shows red again at its next hook event; between click and event the dot lies. This is why no automatic path may reuse it.
+- Marker delete racing a *new* owner mid-dismiss destroys that question's red. Bounded to milliseconds, self-heals at the next event. Do not add locking.
+- Partial failure across N terminals: fail loud on the first marker error and report which succeeded. Silent partial success is what produced this bug class.
+- Remote/relay hosts: markers deleted on the **host's** disk — the reason this is not in Electron main.
+- Other windows lag until their next resync: ≤60 s with SHOULD-B, until reconnect without it.
+- No schema change, no migration, no new persisted key (`partialize` at `store.ts:745-753` already covers the maps).
+- Three similarly-named functions (host `clearWorkspaceStatuses`, renderer `clearWorkspaceStatuses`, new `dismissWorkspaceStatuses`) is a real readability hazard — the name collision already caused this bug. Cross-reference all three in comments.
+
+---
+
+## 6. Out of scope
+
+- Events lost between 03:00 and the fix: gone. MUST-1 heals forward only.
+- Preventing the port from moving (pinning, stable socket) — rejected in the plan doc.
+- The `SubagentActive` volume — not a fault at 0.04% error.
+- The other three shell templates — already fixed.
+- Adding a **tab-level** Clear Status. None exists; the mutation takes an optional `terminalId` so it is cheap later, but the UI is a scope change.
+- The v1 `screens/main` context menu and tabs store.
+- Full unification of the four `.askq` path implementations across Python, Electron main, and host.
+- Surfacing "agent status unavailable" in the UI (`plans\agent-hook-url-frozen-port.md:138`).
+- Leaked-marker reaping and the `SUPERSET_AGENT_HOOK_PORT` cosmetic gap.
+</agent-message>
+
+---
+
+<agent-message from="arch-review-sol">
+Review verdict: the frozen-port diagnosis is correct, but MUST-2 is not safe or authoritative as written.
+
+BLOCKER 1: recursive marker deletion needs a path boundary the blueprint omits. The current reader rejects unsafe terminal ids before building the path at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:127-138. The existing mutation accepts any string at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts:277-285. Extracting only the path builder and calling rm({recursive:true}) on terminalId? permits ../ traversal into directories ending .askq. Put SAFE_MARKER_SEGMENT validation inside askqMarkerDir/clearPendingQuestionMarkers, validate at the zod boundary, and derive the workspace-wide terminal set from store bindings rather than raw input. Add traversal/refusal tests.
+
+BLOCKER 2: manual clear is not durable across resync. Host clear changes lastEventType to Stop but preserves lastEventAt at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal-agents\store.ts:179-199. Resync replays that Stop at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\resyncAgentStatus.ts:473-480, which recreates review/green, and removes it only when terminalSeenAt already covers the event at :515-575. The proposed renderer clear never records a seen watermark. Therefore reconnect, another window, and SHOULD-B’s timer reintroduce a dot. The dismiss result should return affected terminal ids plus host lastEventAt, and the renderer should mark each seen through that generation, or the host must expose/broadcast a durable dismissal generation. A broad local delete alone cannot be called authoritative.
+
+MAJOR: do not delete outstandingReadyAt in clearWorkspaceStatuses. This field is deliberately the only evidence needed to retract a ready alert after the green dot has already gone, per C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\v2-notifications\store.ts:149-177. It is cleared only after the host accepts the seen report at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\lib\companionAlertSync.ts:381-410. Unconditional removal strands phone/watch ready notifications. Manual clear should use markTerminalSeenAndReportRead for affected terminals, then compare-and-clear on acknowledgement.
+
+MAJOR: CompanionQuestionSink.dismissByTerminal -> questionStore.markStale retracts push through settle/cancelPending, but it does not publish question.stale or advance gseq. Existing hook resolution publishes a frame in createNotifyingCaptureSink at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\index.ts:1779-1806. Reconcile explicitly publishes settled questions because tree freshness depends on it at :970-997 and :1019-1041. The new dismiss path needs the same event publication with a manual-dismiss reason, or the paired UI can keep stale question state.
+
+MAJOR: _deliver’s success predicate should parse the tRPC envelope and require result.data.json.ignored === false, not accept every response lacking the text 'ignored: true'. The host’s only accepted result is explicit ignored:false at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\notifications.ts:312-357; ignored responses cover unknown terminal and wrong org at :263-297. Absence-based acceptance silently treats malformed/HTML/old responses as delivery, unlike notify.sh’s explicit ignored:false check at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\agent-setup\templates\notify-hook.template.sh:203-209. Also, 'raise last exception' is undefined when every candidate returns ignored:true and none throws. Define a delivery error carrying the last response and add an all-ignored test.
+
+MAJOR: SHOULD-B cannot call runResync periodically without changing its epoch/key guard. runResync returns immediately when syncedKeyRef equals the key at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\components\V2NotificationController\components\HostNotificationSubscriber\HostNotificationSubscriber.tsx:139-146. Current triggers are socket-open and workspace-key change at :265-289 and :428-430. A timer must have an explicit force path, reset the guard safely, prevent overlaps, and clean up. Also, if cross-window convergence is the chosen propagation mechanism, B is MUST, not optional. There is no terminal-store change listener wired to the event bus; clearWorkspaceStatuses only mutates/emit internally.
+
+MAJOR: SHOULD-C must preserve permission red. The existing dead helper clears the entire source, including permission, at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\v2-notifications\store.ts:808-826. Interrupt intentionally uses the non-marker-deleting host mutation at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\v2-workspace\$workspaceId\hooks\usePaneRegistry\components\TerminalPane\hooks\useTerminalInterruptClear\useTerminalInterruptClear.ts:21-57. If C means clearing all renderer axes, it creates the live-red drop the plan says it avoids. Clear working/review/background only, or first prove the askq marker is gone.
+
+MAJOR: the accepted marker-race statement is false for a newly raised question. The Python hook writes the askq owner before returning PermissionRequest at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:2137-2141. rm can race that write, delete the new marker, and the blocked AskUserQuestion emits no next hook event. User dismissal may intentionally drop the question that existed when they clicked, but it should not silently swallow a later generation. Fence dismissal against each binding/question generation or document this as a real live-red race, not self-healing.
+
+MINOR: candidate cost is unbounded by manifest count and can double on companion strip-and-retry. Terminals already carry SUPERSET_ORGANIZATION_ID at C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\env.ts:251-275, so prefer that org’s manifest before scanning the rest and impose a total budget. One stale manifest costing 0.75s is not the worst case.
+
+MINOR: tests are under-specified. Add rotation (>1 MB -> .1), all-ignored delivery, malformed response, unsafe terminal id, ENOENT vs non-ENOENT marker errors, selected-terminal/workspace isolation, partial failure behavior, markStale + push cancellation + question.stale frame, renderer seen/outstanding handling, resync after dismiss, cross-window/periodic convergence, and mutation failure leaving local dots unchanged. Current real-Python harness exists at C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.test.ts:7-97.
+
+Confirmed claims: _post_hook is env-URL-only with 1.5s timeout at pane-map-hook.ts:2238-2258; the only call and companion strip retry are :2606-2648; the live debug log is 486 MB and _log has no rotation at :401-412; host ignored semantics are as diagnosed; clearWorkspaceStatuses currently omits shellRunningTerminals while plain-shell blue is independently rendered at store.ts:1166-1190; the menu handler indeed calls host clear plus review-only local clear and never the renderer’s clearWorkspaceStatuses at useDashboardSidebarWorkspaceItemActions.ts:288-307; clearV2TerminalRunStatus has no callers beyond its barrel export.
+
+SHOULD-A gate is sound under current ordering. The host snapshots bindings before async marker reads at agent-status-snapshot.ts:201 onward; the hook writes the marker before posting PermissionRequest; and a PermissionRequest arriving after the captured row updates the local source timestamp, so the preEntry.occurredAt > row.lastEventAt fence at resyncAgentStatus.ts:460-463 protects it. Implement pendingPermission === false as an explicit permission-axis clear only, with a race test where a newer live PermissionRequest lands during resync.
+
+FEATURES.md needs both human-readable feature-table rows and duplicate machine marker lines for each required root. The machine format is one token plus one root per line at C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md:110-120.
+</agent-message>
+
+---
+
+<agent-message from="arch-review-fable">
+FABLE REVIEW — verdict: no BLOCKERs. Diagnosis-to-fix mapping correct and verified against code. 5 MAJORs (all fixable in-blueprint), several MINORs. SHOULD-A gate: I pre-verified it — it holds.
+
+DIAGNOSIS VERIFIED
+- Python hook has NO failover: single env URL read (pane-map-hook.ts:2430), _post_hook posts one URL, timeout 1.5s (:2238-2258), call sites :2607/:2629; zero "manifest" occurrences in the file. notify.sh failover confirmed at packages/agent-setup/templates/notify-hook.template.sh:170-214. Live manifest on disk confirmed (~/.superset/host/<org>/manifest.json with "endpoint"; format matches cli manifest.ts:17-31).
+- Bug 2 name-collision confirmed: useDashboardSidebarWorkspaceItemActions.ts:292-307 calls clearWorkspaceAttention (review-only, store.ts:691) + host terminalAgents.clearWorkspaceStatuses (terminal-agents.ts:277-286, force-Stop only, store.ts:187-200) — never renderer store clearWorkspaceStatuses (store.ts:648). No code path deletes .askq dirs; snapshot re-asserts red from marker (agent-status-snapshot.ts:127-167; no-reap policy :103-122 as blueprint cites). Log claims exact: agent-notify-hook.log is 509,127,651 bytes; _log (:401-412) has no rotation; _decision_log (:423-438) already has the 1MB pattern to copy. Test harness exists as claimed (pane-map-hook.test.ts: real python + Bun.serve, lines 12-27).
+
+MAJOR-1 (MUST-1 predicate). "First response NOT containing ignored:true" is the wrong polarity. notify.sh keys SUCCESS on positive `"ignored":false` (template :204-206), with any-2xx as fallback (:207-214). A reused port answering 200 with a foreign body contains no ignored:true → negative predicate declares delivered → event silently lost — exactly the failure class this feature exists to fix. Python isn't constrained to substring matching like sh: json.loads the body and require ignored===false. Also handles both spacings for free.
+
+MAJOR-2 (MUST-1 all-ignored path undefined). A ghost terminal (real precedent: agent-status-snapshot.ts:41-48 — EVERY hook POST returned ignored:true) gets ignored:true from every candidate on every event. "Raise last exception if all fail" has no exception then. As written it falls through undefined; worse, if treated as failure it triggers the companion strip-and-retry loop + post-error log on a healthy path, every event. Define: all candidates probed, ≥1 2xx, none accepted → delivered no-op (notify.sh parity), log once.
+
+MAJOR-3 (MUST-1 timeout halving). Drop the 1.5s→0.75s change. A dead loopback port fails with instant ECONNREFUSED — failover latency does not need a shorter timeout. Halving only bites a slow-but-live host (this is an emulated-msys2 ARM64 box under load): spurious failover, duplicate lifecycle/companion delivery, strip-and-retry churn. Keep 1.5s per candidate.
+
+MAJOR-4 (MUST-2 marker enumeration unspecified). The mutation must say WHERE the terminal list for marker deletion comes from. terminalAgentStore bindings are persistence-backed (store.ts:40-57) so they survive restart, but a binding-less terminal with a leaked marker re-asserts red the moment its binding revives — after the user explicitly dismissed. Enumerate terminal_sessions rows for the workspace (DB as source of truth) and rm each <terminalId>.askq. Carry the SAFE_MARKER_SEGMENT guard (agent-status-snapshot.ts:80,132) into the extracted askqMarkerDir — it's the traversal guard.
+
+MAJOR-5 (MUST-2 green resurrection after dismiss). Resync re-applies row.lastEventType (Stop) per row; review-raise is only suppressed when terminalSeenAt >= lastEventAt (resyncAgentStatus.ts:515-575). Dismiss forces Stop keeping lastEventAt, and renderer clear wipes the source entry, so any terminal whose pane wasn't visible comes back GREEN on next resync — within 60s if SHOULD-B ships. Clear Status would trade stuck-red for returning-green. Fix inside the design: on dismiss success also markTerminalSeen(terminalId, row.lastEventAt) for the affected terminals (renderer has the primitive; resync itself calls it at :509-511).
+
+SHOULD-A GATE: verified sound. Single loop 431-686 (brace-scanned), fence `continue` at :460-463 skips the pendingPermission block at :660-685; loop is synchronous so no mid-loop event interleave. Ship A — recommend mirroring the null-branch's workspaceId check (:664-666) in the else-branch. Note: WITHOUT A, the blueprint's cross-window "convergence" claim is weaker than stated — nothing clears the permission axis on pendingPermission=false except A itself; other windows rely on the Stop apply passing the strict-> fence (equal timestamps pass, so it likely converges, but that's the one convergence claim I could not fully prove). One more reason to ship A.
+
+VERIFIED CORRECT (no action)
+- Keeping existing clearWorkspaceStatuses mutation unchanged: right — useTerminalInterruptClear.ts:44-46 uses it; host mutation never touches markers so live reds survive interrupt.
+- Companion chain exact as claimed: sink module-global (companion-question-sink.ts:78-111), question-store byTerminal :1918 + markStale :1976-1991 → settle :1592-1609 → onSettled → push.cancelPending (companion/index.ts:664-678). markStale-not-resolve is correct (read-api.ts:439). Extension point: the wrapper at companion/index.ts:1161-1163 also needs dismissByTerminal; sink may be null (bridge not running) — mutation must treat that as questionsDismissed=0, not throw.
+- Renderer widening: store.ts:648-690 indeed misses shellRunningTerminals + outstandingReadyAt; blue fallback at :1183-1190 confirmed. clearV2TerminalRunStatus :812-827 confirmed dead (barrel re-export index.ts:2 only, zero callers, stale doc).
+- FEATURES.md gate: marker lines are token<TAB>root, grep -F per line (check-feature-markers.mjs); two lines for (MANUAL-DISMISS) with different roots is legal. Deliberate local FEATURES.md edits are allowed (only repairs are frozen).
+- MUST-1 latency: live env URL → single POST, unchanged. Codex is covered too — the same embedded Python scripts are registered into Codex's hooks.json (pane-map-hook.ts:2660-2668).
+
+MINOR
+- handleClearStatus reorder: today clearWorkspaceAttention runs even with host down; blueprint's all-after-mutation means host-down = zero visible effect + toast. Acceptable fail-loud, but it's a small behavior regression — decide explicitly.
+- Ghost/ignored terminals now probe every manifest on every event (notify.sh already does this); with 1-2 orgs it's one extra local POST — fine, worth a comment.
+- SHOULD-B must reset syncedKeyRef (HostNotificationSubscriber.tsx:139-143 dedupes on key) or the periodic tick no-ops; and B amplifies MAJOR-5 60x if that isn't fixed.
+- pane-map-hook.log (the OTHER _log, :93) is only 1.6MB — rotation there optional, not required.
+
+Bottom line: approve with the five MAJOR amendments — predicate polarity + all-ignored semantics, keep 1.5s, DB-sourced marker enumeration + guard, seen-stamp on dismiss. Ship SHOULD-A (gate verified) and SHOULD-C; SHOULD-B only after MAJOR-5 is addressed.
+</agent-message>
+
+---
+
+<agent-message from="arch-design">
+# FINAL IMPLEMENTATION SPEC — stuck red dot + manual "Clear Status"
+
+Scope approved: MUST-1, MUST-2, SHOULD-A, SHOULD-B, SHOULD-C. All consensus amendments adopted. One reviewer premise is factually wrong and I have the measurement; the resulting decision still goes the reviewers' way.
+
+---
+
+## 0. Disagreement resolved: keep 1.5 s. Fable's conclusion is right, its premise is wrong.
+
+Fable argued a dead loopback port gives instant ECONNREFUSED, so failover needs no shorter timeout. **Measured on this box just now:**
+
+```
+55331 (dead, was the host)  2043.6 ms  ConnectionRefusedError [WinError 10061]
+59999 (dead, never used)    2039.5 ms  ConnectionRefusedError [WinError 10061]
+48056 (live host)               0.6 ms  connected
+```
+
+A dead loopback port takes **~2040 ms** to refuse here, not microseconds. That is precisely why 5,099 of 5,103 logged failures read `<urlopen error timed out>` and only 3 read anything else — the 1.5 s deadline expires ~540 ms *before* Windows surfaces the RST. The hook has never once seen a refusal.
+
+**Decision: keep `timeout=1.5`.** My 0.75 s proposal is withdrawn, for reasons the measurement supplies rather than Fable's:
+
+- 1.5 s already caps the dead-port cost *below* the 2040 ms OS refusal, so shortening buys 750 ms, not 2 s. Small prize.
+- Against that: 0.6 ms live vs 750 ms budget looks like a huge margin, but I have **no p99 measurement of live-host response latency** on this emulated ARM64 box, and the healthy host's 8 errors in 19,459 posts prove slow responses exist. Trading an unmeasured correctness risk for 750 ms is a bad trade.
+- "Never worse than today" is the right bar for a fix. 1.5 s meets it exactly.
+
+Two bounds adopted from Sol instead:
+
+- **Total probe budget 4000 ms** across all candidates, checked before each attempt. Worst realistic case (2 candidates) = 3 s, inside budget; a pathological manifest set cannot turn one hook event into a 10 s stall. On budget exhaustion: stop, log, treat as undelivered.
+- **Org-first candidate ordering.** `SUPERSET_ORGANIZATION_ID` is set on the terminal env at `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal\env.ts:256-257`. Order = env URL, then that org's manifest, then remaining manifests. Keeps the common list at 2 and avoids foreign-org round trips.
+
+---
+
+## 1. Files to modify
+
+### MUST-1 — endpoint healing in the Python hook
+
+**`C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts`**, embedded `NOTIFY_SCRIPT` (`:312`+). Marker `(HOOK-ENDPOINT-HEAL)` on each new function.
+
+`_hook_candidate_urls(env_url)` — new, near `_post_hook` (`:2238`):
+- Root = `os.environ.get("SUPERSET_HOME_DIR")` or `Path.home()/".superset"`. **Manifest glob only** — marker paths keep `Path.home()`, because the host reads them at a hardcoded `homedir()` (`...\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:133-138`). Comment this; do not unify.
+- Order: `env_url`, then `<home>/host/<SUPERSET_ORGANIZATION_ID>/manifest.json`, then `<home>/host/*/manifest.json`. Dedupe preserving first position.
+- Endpoint → `<endpoint>/trpc/notifications.hook`. Per-manifest failure (missing, unreadable, bad JSON, no `endpoint`) skips that entry and logs; never raises.
+
+`_deliver(candidates, body)` — new. Per candidate, while `elapsed < 4.0`:
+- `_post_hook(url, body)` (timeout stays 1.5).
+- **Positive acceptance only.** `json.loads(response_body)`, then require `parsed["result"]["data"]["json"]["ignored"] is False`. Anything else — a `True`, a missing key, a non-dict, unparseable text, HTML from a foreign server on a recycled port — is **not** delivery. This matches notify.sh's positive check at `...\packages\agent-setup\templates\notify-hook.template.sh:204-206` and the envelope the route returns (`notifications.ts:312-357`; the test sink at `pane-map-hook.test.ts:43` returns exactly this shape).
+- Track `saw_2xx` separately for the all-ignored path.
+- Returns one of three outcomes: `("delivered", url, status, body)`, `("ignored-everywhere", None, None, None)` when every candidate was probed, at least one answered 2xx, and none accepted, or raises the last transport exception when nothing answered.
+
+**All-ignored is a delivered no-op** (amendment 2, notify.sh parity at `notify-hook.template.sh:212-214`). This is the ghost-terminal case the snapshot documents at `agent-status-snapshot.ts:41-48`. Emit exactly one `_log` line with `action: "ignored-everywhere"` and **return**. It must not trigger the companion strip-and-retry and must not log `post-error` — otherwise a wedged pane writes two error records per tool call forever.
+
+Call site `:2606-2649`:
+- `_post_hook` → `_deliver`; the `posted` record gains the delivering `url`.
+- Companion strip-and-retry (`:2623-2642`) fires **only** on the raise path, and re-posts to **the candidate list already computed**, not a fresh probe. If `_deliver` raised because nothing answered, a stripped body will not answer either — skip the retry and go straight to the failure log.
+- Failure path `:2643-2648`: keep the `post-error` line, and add one `_decision_log` line naming every candidate tried. `_decision_log` (`:415`) is always-on and already rotates at 1 MB.
+
+`_log` rotation (`:401-412`) — MUST. Copy the rotate-at-1 MB idiom from `_decision_log:428-438`. The live file is **508,757,788 bytes**.
+
+Codex is covered by the same script: `hookCommand()` / `notifyHookCommand()` at `pane-map-hook.ts:2660-2668` install one Python file for both agents. No separate Codex change.
+
+### MUST-2 — authoritative manual dismissal
+
+**`...\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts`** — marker `(MANUAL-DISMISS)`.
+
+Extract `askqMarkerDir(terminalId): string | null` from the inline construction at `:133-138`. **The `SAFE_MARKER_SEGMENT` test (`:80`) moves inside it** and returns `null` on failure, so no caller can build a path from an unvalidated id. `hasPendingQuestionMarker` uses it (a `null` means "definitively absent", its current `:132` behaviour).
+
+New `clearPendingQuestionMarkers(terminalId, dismissStartedAtMs): Promise<{removed: string[], survivors: string[]}>`:
+- `askqMarkerDir` → `null` ⇒ return empty/empty. Never `rm` from an id that failed the guard.
+- `readdir`; `ENOENT` ⇒ empty/empty (success). Any other read error ⇒ **throw** (loud; an unknown filesystem is not a successful dismissal).
+- **Per-owner mtime fence (amendment 8).** `stat` each owner; unlink only those with `mtimeMs <= dismissStartedAtMs`. A `stat` failure means the owner is **not** removed — unknown is not evidence, matching the safe direction the reader already takes at `:174-191`.
+- Unlink the owner files, not the directory, then `rmdir` only if empty.
+
+The fence is the honest answer to amendment 8, and it is better than documenting the race. `pane-map-hook.ts:2137-2141` writes the marker synchronously *before* returning `PermissionRequest`, so a question raised after the click has an mtime strictly greater than `dismissStartedAtMs` and **survives**. The semantics land exactly where they should: a dismissal clears what the user was looking at when they clicked, and nothing raised afterwards. Same wall clock, same process, NTFS mtime granularity ~100 ns.
+
+**`...\packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts`** — new `dismissWorkspaceStatuses`, marker `(MANUAL-DISMISS)`.
+
+- Input `z.object({ workspaceId: z.string().min(1), terminalId: z.string().min(1).optional() })`. Boundary validation per amendment 3; `SAFE_MARKER_SEGMENT` is enforced again inside the path builder.
+- **Terminal set derived server-side from the DB** (amendment 3): `terminalSessions` rows where `originWorkspaceId = workspaceId`, intersected with `terminalId` when supplied. Same DB-as-truth read the snapshot already performs at `agent-status-snapshot.ts:249-259`. This sweeps leaked markers of terminals with no live binding, which a bindings-derived set would miss.
+- `dismissStartedAtMs = Date.now()` captured once, before any deletion, and used as the fence for every terminal.
+- Per terminal, in order: `clearPendingQuestionMarkers` → existing `ctx.terminalAgentStore.clearWorkspaceStatuses(workspaceId, terminalId)` → companion dismissal.
+- Returns `{ dismissStartedAtMs, terminals: Array<{ terminalId, lastEventAt, markersRemoved: number, pendingAfter: boolean, questionDismissed: boolean }> }`. `lastEventAt` is the host-clock instant from the binding after the clear (amendment 4). `pendingAfter` is `survivors.length > 0`.
+- First marker error aborts the whole mutation loud, reporting which terminals completed. Silent partial success is the bug class being fixed.
+
+`clearWorkspaceStatuses` stays **unchanged** — `useTerminalInterruptClear.ts:46` depends on its non-red-dropping semantics.
+
+**`...\packages\host-service\src\trpc\router\notifications\companion-question-sink.ts`** — add to `CompanionQuestionSink` (`:78-87`):
+
+```ts
+dismissByTerminal(input: { hostTerminalId: string; reason: string }): boolean;
+```
+
+Plus `forwardCompanionDismissal(...)` mirroring `forwardCompanionCapture` (`:264-311`). **Sink null ⇒ return `false`, never throw** (amendment 5) — that is every build where the bridge is not running.
+
+**`...\packages\host-service\src\companion\index.ts`** — implement it on the `createNotifyingCaptureSink` wrapper registered at `:1161-1168`, beside the existing `capture` and `resolve` (`:1770-1806`):
+- `deps.questions.byHostTerminal(hostTerminalId)`; `null` ⇒ return `false`.
+- `deps.inner`/`questions.markStale(question.questionId, reason)` — terminal and provenance-free (`question-store.ts:1976-1991`). Not `resolve`: that stamps answered-by provenance (`:757-761`) and nobody answered. `markStale` routes through `settle()` → `onSettled` → `push.cancelPending` (`:663-676`), so the phone notification retracts.
+- **Publish the frame** (amendment 5): `events.publish({ t: "question.stale", d: { questionId, reason: QUESTION_STALE_MANUAL_DISMISS_REASON } })`, matching the reconcile path at `:985-990`. `QuestionStaleEventData` is `{questionId, reason: string}` (`types.ts:1352-1355`), so a new reason constant is a drop-in; add it beside `QUESTION_STALE_TERMINAL_GONE_REASON` (`question-store.ts:1483`). `events.publish` advances `gseq`, so paired phones refetch instead of holding stale question state.
+- Wrap the publish in the same never-throw guard the reconcile publisher uses (`index.ts:970-996`): a frame nobody can receive must not break the retraction beside it.
+
+**`...\apps\desktop\src\renderer\routes\_authenticated\_dashboard\components\DashboardSidebar\components\DashboardSidebarWorkspaceItem\hooks\useDashboardSidebarWorkspaceItemActions\useDashboardSidebarWorkspaceItemActions.ts`** — rewrite `handleClearStatus` (`:292-307`). Ordering decided explicitly (Fable MINOR):
+
+1. `clearWorkspaceAttention()` **first, unchanged**. Today this runs before the try block, so a host-down click still clears green and reports read. Moving it behind the mutation would regress that. Keep today's behaviour intact.
+2. `await dismissWorkspaceStatuses`.
+3. On success: `useV2NotificationStore.getState().clearWorkspaceStatuses(workspaceId)`, then per returned terminal `markTerminalSeenAndReportRead({ workspaceId, terminalId, lastEventAt })`.
+4. On failure: existing `toast.error` (`:302-306`). Green is already cleared; red and yellow stay. **This is the correct outcome, not a regression** — the marker survived, so a locally-dropped red would be re-raised by the next resync. Showing the user a red that is still真 beats a green that lies for 60 s.
+
+**Amendment 4 — durability.** Step 3's `markTerminalSeenAndReportRead` is what makes convergence provable. Forcing the binding to `Stop` while preserving `lastEventAt` means a later resync replays `Stop` → `review` for any terminal whose seen watermark does not cover `lastEventAt` (`...\resyncAgentStatus.ts:515-575`), and SHOULD-B would re-raise that green within 60 s. Marking seen through the host's own `lastEventAt` closes it, and it is the same primitive resync itself uses at `:509-511`.
+
+`markTerminalSeenAndReportRead` (`...\V2NotificationController\lib\companionAlertSync.ts:390-412`) is also the answer to **Sol's MAJOR on `outstandingReadyAt`**: it reports read and compare-and-clears the record **only on host ack**, exactly as the type doc requires (`store.ts:150-177`). One call satisfies both.
+
+**`...\apps\desktop\src\renderer\stores\v2-notifications\store.ts`** — `clearWorkspaceStatuses` (`:648-690`):
+- **Add** `shellRunningTerminals` purge for the workspace's terminals. The agent-terminal gate at `:971-974` suppresses shell-blue on agent terminals, but `selectV2WorkspaceDisplayStatus:1183-1190` yields a status for open terminals with no source entry, so a plain shell's blue survives a full source purge.
+- **Do NOT touch `outstandingReadyAt`** — reversing my earlier spec, per Sol. It is the retraction evidence for ready alerts and is cleared only by `clearOutstandingReady` on host ack (`:163-172`). Unconditional deletion strands a phone notification until expiry.
+- Add the `ndots` mutation log line the sibling `clearWorkspaceAttention` writes at `:704-713`.
+
+**Dead code, same PR.** Delete `clearV2TerminalRunStatus` (`store.ts:812-826`) and its barrel re-export (`...\stores\v2-notifications\index.ts:2`). Those are its only two references. Its doc comment at `:808-811` and `:827-829` claims interrupt and pane close route through it — false, and actively misleading anyone debugging this exact bug. Delete rather than correct: the behaviour it describes now lives in the dismiss path and in SHOULD-C.
+
+### SHOULD-A — resync can retract red
+
+**`...\V2NotificationController\lib\resyncAgentStatus.ts:660-685`.** Fable verified the gate: the `preEntry.occurredAt > row.lastEventAt` fence at `:460-463` covers a mid-flight `PermissionRequest` and the loop is synchronous. **Ship it.**
+
+Add the `else` branch for `pendingPermission === false`, mirroring the null-branch's `workspaceId` check at `:664-666`:
+
+```
+else if (preEntry?.axes.permission !== undefined
+      && preEntry.workspaceId === row.originWorkspaceId) {
+  applySourceAxes(source, row.originWorkspaceId,
+                  { set: [], clear: ["permission"] }, row.lastEventAt);
+  result.retractedPermission++;
+}
+```
+
+A also supplies the cross-window convergence proof for the permission axis that MUST-2 otherwise lacks: after a dismissal the marker is gone, so every other window's next snapshot reads `pendingPermission: false` and actively retracts. Without A, other windows converge on green/yellow but a stale red persists until reconnect.
+
+### SHOULD-B — periodic resync
+
+**`...\HostNotificationSubscriber\HostNotificationSubscriber.tsx:135-172`.** Ships only together with amendment 4 (which is in MUST-2), else it re-raises dismissed greens on a 60 s cadence.
+
+`runResync` early-returns on `syncedKeyRef.current === key` (`:141-143`), so a tick must clear that guard. Requirements (amendment 6):
+- `resyncInFlightRef` set before the call, cleared in both `.then` paths, so a slow snapshot cannot overlap the next tick.
+- The tick sets `syncedKeyRef.current = null` immediately before invoking `runResync`, and only when connected and not in flight.
+- 60_000 ms interval, created on connect and **cleared on disconnect and on unmount**, alongside the existing `retryTimerRef` cleanup.
+- The existing generation guard (`resyncGenerationRef`, `:145`) already discards a superseded reply; do not add a second mechanism.
+
+### SHOULD-C — interrupt clears the renderer too
+
+**`...\TerminalPane\hooks\useTerminalInterruptClear\useTerminalInterruptClear.ts:40-58`.** After the existing mutation resolves, clear that terminal's own axes locally.
+
+**Clear `working` and `review` and the background-running entry. Never `permission`** (amendment 7). An interrupt is an automatic path; dropping a live red there is the one thing forbidden. Ctrl+C does not answer a pending AskUserQuestion, and the watcher's `_main` clear on a detected interrupt (`...\agent-jsonl-watcher.ts:1043-1044`) is the only sanctioned red release on that path.
+
+Do **not** route this at `dismissWorkspaceStatuses`. Keep `clearWorkspaceStatuses`.
+
+### FEATURES.md
+
+Two human-readable rows in the feature table (`:15`+), and four machine lines in the fenced ```markers block (`:110-120`, format `<marker-token>\t<path-glob-root>`; two lines with different roots is legal):
+
+```
+(HOOK-ENDPOINT-HEAL)	apps/desktop/src/main
+(HOOK-ENDPOINT-HEAL)	apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts
+(MANUAL-DISMISS)	packages/host-service/src
+(MANUAL-DISMISS)	apps/desktop/src/renderer
+```
+
+The test-pinned line matters: without it a merge could take upstream's router and leave the dispatch untested while every gate stays green — the reasoning already written at `notifications.ts:16-22` for `(COMPANION-CAPTURE-HOOK)`.
+
+---
+
+## 2. Data flow
+
+**MUST-1, after.** Answer → `PostToolUse` → `_remove(askq/<owner>)` → `"Start"` → candidates `[55331/…, 48056/…]` → candidate 1 transport-fails at 1.5 s → candidate 2 → `200`, envelope parsed, `ignored === false` → accepted → `notifications.ts:312` broadcast, `:320` binding persisted → `statusTransitions.ts:76-87` sets working, clears permission.
+
+**MUST-2, after.** Right-click → Clear Status → local `clearWorkspaceAttention()` (green + read report) → `dismissWorkspaceStatuses`: `dismissStartedAtMs` captured; terminal set read from `terminalSessions`; per terminal, owners with `mtime <= dismissStartedAtMs` unlinked (newer ones survive) → binding forced `Stop` → `byHostTerminal` + `markStale` → `settle()` → `push.cancelPending` + `question.stale` frame (gseq advances, phone refetches) → returns per-terminal `{lastEventAt, pendingAfter}`. Renderer: `clearWorkspaceStatuses(workspaceId)` purges sources, background, shell, manual; `markTerminalSeenAndReportRead` per terminal through `lastEventAt`. Next resync reads `pendingPermission: false`, `lastEventType: "Stop"` covered by the seen watermark, and asserts nothing. The hook's central guard sees an empty dir and stops holding `SubagentActive` (`pane-map-hook.ts:2214-2216`).
+
+Validation at the tRPC boundary plus inside the path builder; ownership from the DB read; the `.askq` directory remains the single source of truth for red.
+
+---
+
+## 3. Build order
+
+1. `_log` rotation. Verify: suite green, shipped script rotates at 1 MB.
+2. `_hook_candidate_urls` (unused). Verify: 0/1/2 manifests, one malformed, org-first ordering, dedupe.
+3. `_deliver` with positive envelope parsing, all-ignored outcome, 4 s budget. Wire the call site and the constrained companion retry. Verify: full test list §5.
+4. Mutation check per `plans\agent-hook-url-frozen-port.md:116`: break the manifest glob, confirm only the failover tests fail, restore.
+5. **Live heal, no rebuild needed.** Start the desktop so `writeNotifyScriptIfChanged` (`pane-map-hook.ts:2736`) lands the script; answer a question in `72d85ab1` or `d3ce7c25`; expect `permission → working` in `~/.superset/agent-dot-render.log` within a second and a `posted` line naming `48056`.
+6. `askqMarkerDir` + `clearPendingQuestionMarkers` with the mtime fence.
+7. `dismissByTerminal` on sink and wrapper, with `question.stale` publish.
+8. `dismissWorkspaceStatuses`.
+9. Renderer: store widening, `handleClearStatus`, dead-code deletion.
+10. SHOULD-A.
+11. SHOULD-B (after A, so a tick converges rather than oscillates).
+12. SHOULD-C.
+13. FEATURES.md; `node scripts/check-feature-markers.mjs`.
+14. `bun run typecheck`, `bun run lint`, `/simplify`.
+
+---
+
+## 4. Risks
+
+- **Duplicate delivery** if a slow live host processes a request we abandoned and the next candidate also accepts. Two identical broadcasts: harmless on the dot axes, and the companion path is already protected — the retry re-sends the *same* `companionLifecycleEventId`, which the sink matches against its applied-id window (`pane-map-hook.ts:2543-2555`). Bounded further by keeping 1.5 s.
+- **Foreign server on a recycled port** answering 200 with arbitrary text: rejected by positive envelope parsing. This is the concrete reason the polarity flip matters.
+- **All-ignored** on a genuinely wedged pane: one log line per event, no error spam, no retry. Matches notify.sh.
+- **Marker fence residual**: a question whose marker write and our `stat` interleave inside one mtime tick. NTFS granularity ~100 ns against a multi-millisecond mutation; not a practical window. A `stat` failure never deletes.
+- **Dismissal is still allowed to drop a live red** — the reds that existed at click time. That is the user's explicit decision. The fence narrows it to exactly that set; it is no longer an unbounded race, and I am not claiming it self-heals.
+- **`pendingAfter: true`** means a newer question survived the dismissal. The renderer must not present that terminal as cleared; surface it rather than hide it.
+- **Total probe budget** could in principle truncate a legitimate multi-org probe. 4 s against two 1.5 s candidates leaves headroom; log on exhaustion.
+- **Host-down click**: green clears, red/yellow stay, toast fires. Deliberate, stated above.
+- **Three similarly-named functions** (host `clearWorkspaceStatuses`, renderer `clearWorkspaceStatuses`, new `dismissWorkspaceStatuses`). The collision already caused this bug — cross-reference all three in comments.
+- No schema change, no migration, no new persisted key (`partialize`, `store.ts:745-753`, already covers the maps).
+
+---
+
+## 5. Test list
+
+**Hook (`pane-map-hook.test.ts`, real Python + real sink, harness `:12-97`)**
+1. `_log` rotates past 1 MB, single `.log.1` backup.
+2. Dead env URL → delivered via manifest.
+3. Live env URL → manifests never probed.
+4. Wrong-org sink returns `ignored:true`, right-org returns `ignored:false` → probing continues, delivers to the right one.
+5. All candidates return `ignored:true` → `action: "ignored-everywhere"`, exactly one log line, no `post-error`, no companion retry.
+6. Malformed body (HTML, truncated JSON, `{}`, `{"result":{}}`) → **not** delivered; probing continues.
+7. All candidates transport-fail → `post-error` plus one `dot-decisions.log` line naming every candidate.
+8. Probe budget exhausted → stops, logs, no further attempts.
+9. Org-first ordering with two manifests present.
+10. Existing suite unchanged — note the sink at `:43` returns no `ignored` field, so it now counts as **not** delivered; update it to `{success:true, ignored:false}` or the existing tests will break. Flagging this because it is easy to miss.
+
+**Host**
+11. Unsafe terminal id (`../`, empty, unicode) → `askqMarkerDir` returns null, nothing unlinked, mutation still succeeds for valid siblings.
+12. `readdir` ENOENT → success; non-ENOENT → throws.
+13. mtime fence: owner older than `dismissStartedAtMs` removed; owner newer survives; `pendingAfter: true` reported.
+14. `stat` failure → owner retained.
+15. Workspace isolation: terminals of another workspace untouched.
+16. Terminal with a `terminal_sessions` row but no live binding → its leaked marker is still swept.
+17. Partial failure: first terminal throws → mutation fails, response names completed terminals.
+18. `markStale` fires, `push.cancelPending` called, `question.stale` frame published with the manual reason, gseq advanced.
+19. Sink null → `questionDismissed: false`, no throw.
+
+**Renderer**
+20. Store `clearWorkspaceStatuses` purges sources, background, shell, manual; leaves `outstandingReadyAt` intact.
+21. `handleClearStatus` on host failure → green cleared, red/yellow retained, toast shown, no store purge.
+22. `handleClearStatus` on success → axes gone, `markTerminalSeenAndReportRead` called per returned terminal with the host `lastEventAt`.
+23. Resync-after-dismiss: snapshot with `pendingPermission: false` and `lastEventType: "Stop"` raises neither red nor green.
+24. SHOULD-A: `pendingPermission: false` retracts a latched red; wrong-workspace `preEntry` does not; the `:460-463` fence still wins for a newer local `PermissionRequest`.
+25. SHOULD-B: tick resets the guard and runs; overlapping tick suppressed while in flight; interval cleared on disconnect and unmount.
+26. SHOULD-C: interrupt clears working/review/background and **leaves permission set**.
+27. Cross-window convergence: window B's next resync clears after window A dismisses.
+
+**End-to-end (CDP, `.agents/skills/cdp-verification/SKILL.md`)**
+28. Stick a red, click Clear Status, confirm the dot dies and **survives a forced resync**.
+
+---
+
+## 6. Unchanged from review consensus
+
+Existing `clearWorkspaceStatuses` mutation untouched; `markStale` not `resolve`; no `Detached` broadcast; no subagent run-dir deletion; no leaked-marker age reap (`agent-status-snapshot.ts:104-122`); log rotation as MUST; Codex covered by the same script.
+
+## 7. Out of scope
+
+Events lost between 03:00 and the fix. Port pinning / stable socket (rejected at `plans\agent-hook-url-frozen-port.md:90-91`). The `SubagentActive` volume. The three other shell templates. A tab-level Clear Status (none exists; the mutation takes an optional `terminalId` so it is cheap later). The v1 `screens/main` menu and tabs store. Unifying the four `.askq` path implementations across Python, Electron main and host. "Agent status unavailable" UI. `SUPERSET_AGENT_HOOK_PORT`.
+</agent-message>
+
+---
+
+<agent-message from="impl-hook">
+MUST-1 done. Only the two allowed files touched. Nothing committed.
+
+FILES
+- C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts
+- C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.test.ts
+
+WHAT CHANGED (all inside NOTIFY_SCRIPT, marker `(HOOK-ENDPOINT-HEAL)`)
+1. `_log` rotates at 1MB, single `.log.1` backup — same idiom as `_decision_log`.
+2. `import time` added.
+3. `_hook_candidate_urls(env_url)`: env URL, then `<root>/host/<SUPERSET_ORGANIZATION_ID>/manifest.json`, then `<root>/host/*/manifest.json` sorted; deduped first-position-wins. Root = `SUPERSET_HOME_DIR` or `Path.home()/".superset"`, glob only, with the comment that marker paths stay on `Path.home()` because the host reads them at a hardcoded `homedir()`. Per-manifest failure → skip + log line, never raises.
+4. `_hook_accepted(raw)`: positive-only `parsed["result"]["data"]["json"]["ignored"] is False`.
+5. `_deliver(candidates, body)`: per-request timeout unchanged at 1.5s, 4.0s total budget checked before each attempt. Returns `("delivered", url, status, body)` or `("ignored-everywhere", None, None, None)`; otherwise raises.
+6. Call site: `candidates` built after `_decide_event_type` (markers still mutate first), `posted` log gains `deliveredUrl`, ignored-everywhere emits exactly one log line and returns, failure path logs post-error plus one always-on `_decision_log` line naming every candidate.
+
+TESTS: 54 pass / 0 fail / 329 expect() in 25s (`bun test apps/desktop/src/main/lib/agent-jsonl-watcher/`). 45 pre-existing + 9 new covering (a) rotation, (b) dead env URL → manifest delivery, (c) live env URL → manifests unprobed, (d) ignored:true → keep probing → deliver to owner, (e) ignored-everywhere no-op, (f) HTML/truncated/{}/{"result":{}} rejected, (g) all-dead → post-error + one dot-decisions line, (h) budget exhaustion, (i) org-first ordering.
+
+MUTATION CHECK: broke the manifest glob → 5 failover tests failed, 49 passed, zero pre-existing failures. Restored. Second mutation (dropped the org-id direct path) → only the org-first test failed. Restored; suite green again.
+
+DEVIATIONS (all deliberate)
+- Trap (j) handled, plus one more the spec did not flag: the EXISTING `hook()` helper inherits `process.env`, and this suite runs inside Superset, so the real `SUPERSET_ORGANIZATION_ID` / `SUPERSET_HOME_DIR` would have pointed the new failover at the developer's LIVE hosts. Both are now blanked in that helper.
+- Logic split into `_hook_accepted` and `_undelivered` helpers rather than inline in `_deliver`. Structural only.
+- The raise still carries the last transport exception, with `superset_saw_2xx` / `superset_tried_urls` set on it (synthetic `RuntimeError` when nothing threw). That attribute is how the call site skips the companion retry when nothing answered.
+- `posted` keeps `"url"` = env URL and ADDS `"deliveredUrl"`, so the existing field does not silently change meaning.
+- `endpoint.rstrip("/")` before appending `/trpc/notifications.hook`. Hosts write no trailing slash, so behaviour is identical; it just cannot produce `//` or a near-duplicate candidate.
+- Spec did not define what happens if the companion strip-and-retry itself returns ignored-everywhere. Falling through to post-error would be wrong (the dot WAS delivered), so it logs `companion-rejected-dot-ignored-everywhere` and returns.
+- Budget test uses sinks that sleep 3s rather than dead ports, so the three 1.5s timeouts are deterministic on any OS instead of depending on how fast it refuses a connection.
+- Ran `bunx biome format --write` on the test file ONLY (biome rejected my multi-line `it(name, fn, timeout)` formatting). No repo-wide run.
+
+TWO THINGS FOR INTEGRATION
+- If `SUPERSET_HOST_AGENT_HOOK_URL` is empty/unset, `main()` still returns early at `skip-no-url` BEFORE candidates are built, so failover never runs for an env-less terminal. Left as-is (spec scoped the change to :2606-2649); say the word if you want the early return moved below the candidate build.
+- `_post_hook` truncates the response body at 500 chars before the acceptance parse. The real envelope is ~60 chars, so no false negative today, but a much larger success body would read as undelivered (cost: a duplicate POST plus a spurious post-error line, not a lost dot).
+</agent-message>
+
+---
+
+<agent-message from="impl-renderer">
+Renderer half of MUST-2 + SHOULD-A/B/C is done. No commits, no repo-wide formatter, FEATURES.md untouched. Only my listed files plus 3 justified extras (below).
+
+WHAT CHANGED
+
+1. C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\stores\v2-notifications\store.ts
+- clearWorkspaceStatuses now also purges shellRunningTerminals for the workspace (plain-shell blue rendered with no source entry), keeps outstandingReadyAt untouched, writes the ndots mutation line per source like clearWorkspaceAttention, marker (MANUAL-DISMISS).
+- Deleted dead clearV2TerminalRunStatus and its barrel re-export in stores\v2-notifications\index.ts. Grep confirmed zero callers before deleting (only the barrel).
+
+2. ...\DashboardSidebarWorkspaceItem\hooks\useDashboardSidebarWorkspaceItemActions\useDashboardSidebarWorkspaceItemActions.ts
+- handleClearStatus is now a 3-line binding over an exported, React-free `runClearWorkspaceStatuses({workspaceId, workspaceHostUrl, clearWorkspaceAttention, invalidateBindings})`. Order: clearWorkspaceAttention() first → await terminalAgents.dismissWorkspaceStatuses({workspaceId}) → renderer store clearWorkspaceStatuses(workspaceId) → markTerminalSeenAndReportRead per returned terminal → invalidateQueries. Failure keeps the existing toast and leaves red/yellow latched. pendingAfter terminals are skipped for the seen mark. Doc block cross-references the three similarly-named functions.
+
+3. ...\V2NotificationController\lib\resyncAgentStatus.ts (SHOULD-A)
+- Added the missing `else` for pendingPermission === false, with the same workspaceId fence as the null branch, clearing ["permission"] at row.lastEventAt. New ResyncResult counter `retractedPermission`. The :460-463 occurredAt fence is untouched.
+
+4. ...\HostNotificationSubscriber\HostNotificationSubscriber.tsx (SHOULD-B)
+- PERIODIC_RESYNC_MS = 60_000. resyncInFlightRef set before the request, cleared in a `.finally` (covers rejection too; finally re-throws so nothing gets quieter). runPeriodicResync effect event: returns early unless connected and not in flight, nulls syncedKeyRef, then runResync(workspacesKey). Interval armed on connect (cleared first so a duplicate open leaves one), cleared on disconnect and on unmount next to retryTimerRef. No second generation mechanism.
+
+5. ...\TerminalPane\hooks\useTerminalInterruptClear\useTerminalInterruptClear.ts (SHOULD-C)
+- Still calls the existing clearWorkspaceStatuses HOST mutation; after it resolves, exported `clearInterruptedTerminalAxes` clears that terminal's working + review axes and its background-running entry. Never permission. Passes the entry's own occurredAt into applySourceAxes instead of Date.now() so a surviving permission axis keeps its host-clock instant (the resync fence compares against it).
+
+TESTS (all new tests colocated, bun test)
+- store.test.ts +3: purge covers sources/background/shell/manual; outstandingReadyAt survives; other workspaces untouched. 25 pass.
+- useDashboardSidebarWorkspaceItemActions.test.ts (new) 5 pass: host failure → green cleared + toast + red/yellow latched + no purge + no invalidate; no-host path; success → axes gone, seen watermark = host lastEventAt per terminal, companion read reported and outstanding record retired; pendingAfter → not marked seen; null lastEventAt → not marked seen.
+- resyncAgentStatus.test.ts +5, 22 pass: retracts the latched red; wrong-workspace preEntry does not; occurredAt fence still wins for a newer local PermissionRequest; cross-window red convergence; dismissed workspace not resurrected.
+- HostNotificationSubscriber.test.tsx (new) 4 pass: tick re-asks every interval, overlap suppressed, stops on close and resumes on reconnect, stops on unmount. happy-dom + bun fake timers.
+- useTerminalInterruptClear.test.ts (new) 3 pass: clears working/review/background, leaves permission (and its occurredAt), leaves outstandingReadyAt.
+- My five files together: 58 pass / 0 fail.
+- Full `bun test src/renderer`: 1703 pass, 13 fail, 0 errors. Those 13 are the exact pre-existing failures I measured on the same tree with my new test files removed (launch-command, persisted-keys, V2ProjectSettings, formatDayLabel, etc.). Zero new failures.
+- `tsc --noEmit` in apps/desktop: 38 errors, none in any file I touched (pre-existing type debt). Biome check clean on everything I touched.
+
+DEVIATIONS / ASSUMPTIONS
+a) I exported `runClearWorkspaceStatuses` and `clearInterruptedTerminalAxes` from their hook files rather than testing the hooks through renderHook. There is no renderHook precedent anywhere in apps/desktop; the established pattern is testing named exports out of the hook file (e.g. useGithubStarAction.test.ts). Behaviour is unchanged, the hooks are thin bindings now.
+b) Your contract said lastEventAt matched the binding type; the host half has since landed with `lastEventAt: number | null` (null = marker swept off a terminal with no binding). I skip the seen mark for null and cover it with a test. tsc caught this, so the two halves now agree.
+c) Three files outside my list. resyncAgentStatus.test.ts: added the sibling exports (hostServiceQueryRetryDelay etc.) to its host-service-client mock — without them that file cannot run standalone at all, on HEAD too. useFileContent.test.ts and useFolderFirstImport.test.ts: both did `mock.module("react", () => ({ useMemo }))`, replacing React process-wide with no unmock, which killed every later file that touches React.createContext via posthog-js/react — including both of my new test files. Fixed by spreading the real module and overriding the one hook. Test-only, no product code; this is also why V2ProjectSettings and friends fail today, though those 13 still fail for their own reasons.
+d) Cross-window convergence (27) is red-only. A dismiss in window A takes down window B's red on B's next resync (tested). B's GREEN does not converge: the seen watermark is per-renderer sessionStorage and agentStatusSnapshot carries no read state. Pre-existing shape, out of scope, documented in the test.
+e) `applySourceAxes` marks a terminal as an agent terminal as a side effect. Both new call sites are already gated to agent terminals, so it is a no-op in practice.
+</agent-message>
+
+---
+
+<agent-message from="impl-host">
+MUST-2 host-service half complete. All 28 new tests pass; package typecheck clean (no new diagnostics).
+
+FILES CHANGED (all absolute, all additive except 9 deleted lines listed below)
+
+1. C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts
+   - New exported `askqMarkerDir(terminalId): string | null` with SAFE_MARKER_SEGMENT inside it.
+   - New exported `clearPendingQuestionMarkers(terminalId, dismissStartedAtMs)` → `{removed, survivors}`; `ClearedQuestionMarkers` interface exported.
+   - `hasPendingQuestionMarker` now calls `askqMarkerDir`; null → false (behaviour at old :132 preserved).
+   - Deletions: only the old inline `join(...)` + inline guard, and the `readdir, stat` import line (now `readdir, rmdir, stat, unlink`).
+
+2. C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\terminal-agents\terminal-agents.ts
+   - New exported `dismissWorkspaceStatuses(deps, input)` + `dismissWorkspaceStatusesRouter` procedure `dismissWorkspaceStatuses`.
+   - Existing `clearWorkspaceStatuses` mutation byte-identical (whole-file diff has zero `-` lines).
+
+3. C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\companion-question-sink.ts
+   - `dismissByTerminal` added to `CompanionQuestionSink`; new `forwardCompanionDismissal({terminalId, reason}): boolean`.
+
+4. C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\index.ts
+   - `dismissByTerminal` implemented on `createNotifyingCaptureSink`.
+
+5. C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\question-store.ts
+   - `QUESTION_STALE_MANUAL_DISMISS_REASON` constant only.
+
+NEW TESTS
+- C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\notifications\agent-status-dismiss.test.ts (18 pass)
+- C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\trpc\router\terminal-agents\dismiss-workspace-statuses.test.ts (10 pass)
+Covers spec items 11-19.
+
+TEST OUTPUT
+- Touched areas (`bun test src/trpc/router/notifications src/trpc/router/terminal-agents src/terminal-agents src/companion`): 562 pass, 1 fail. The one failure is `src/companion/remote-pairing.test.ts` "is a remote-only code" — it reads `pairing.ts` (unmodified by me, `git status` clean) and searches for `"\n}\n"`; the file has CRLF terminators so the search can never match on this checkout. Pre-existing, unrelated.
+- Full `bun test`: 1613 pass / 106 fail. All 106 are git-worktree / daemon / worker-pool / network integration suites plus the CRLF one; none mention dismiss, agent-status, companion, terminal-agents or question. Verified by baseline: I copied my 5 source files aside, `git checkout --` them, re-ran `test/integration/workspace-cleanup.integration.test.ts` → identical 6 pass / 11 fail, then restored (diffstat identical before and after). No other agent's files were touched.
+- `tsc --noEmit`: 16 diagnostic lines, same set as before my change; the only companion one is the pre-existing `curation-gates.test.ts` `remoteAnswer` fixture drift.
+- `biome check --write` run on my 7 files only, never repo-wide.
+
+DEVIATIONS (all deliberate)
+1. Core logic extracted as exported `dismissWorkspaceStatuses(deps, input)` with the router procedure as a thin wrapper — mirrors `resumeTerminalAgentSession` in the same file and is how the existing tests there drive it without a tRPC context.
+2. Touched a 5th file, `companion/question-store.ts`, for the constant. Spec D required it; it was not in the "touch only" list, so flagging. One added constant, nothing else.
+3. `createNotifyingCaptureSink`'s return type widened to `QuestionCaptureSink & Pick<CompanionQuestionSink, "dismissByTerminal">`. Forced: `CompanionQuestionSink` now requires the method, and the wrapper is what gets registered at index.ts:1161. `QuestionCaptureSink` itself is unchanged, so `asCaptureSink()` is unaffected.
+4. `forwardCompanionDismissal` never throws for ANY reason, not just a null sink: a throwing sink is caught, logged loud via console.error, and reported as `questionDismissed: false`. By the time it runs the markers are already deleted and the binding already cleared, so a companion fault must not turn a completed dismissal into a reported failure.
+5. `markStale` receives `input.reason`; the wire frame names `QUESTION_STALE_MANUAL_DISMISS_REASON`. The only caller passes that same constant, so log and wire agree — no drift against the constant's doc comment.
+6. `unlink` returning ENOENT counts as `removed`, not an error: something else reached the dismissal's intended end state first.
+7. `rmdir` failure is swallowed (best effort). The directory is a container; an empty one and an absent one both read as "no question", and a racing hook may legitimately have just recreated an owner.
+8. Test 18 asserts gseq with a REAL `createEventStreamServer` (its constructor touches none of its deps, so stubs are safe) and `currentGseq()`, rather than the repo's usual `{publish}` fake — gseq is asserted nowhere else in the codebase and I wanted the real counter.
+9. Tests redirect `homedir()` via `USERPROFILE`/`HOME` (verified bun honours both at call time) and restore in `afterEach`. The stat-failure case uses a dangling NTFS junction — readdir lists it, stat ENOENTs — which needs no elevation and is deterministic.
+
+NOT DONE (out of scope, as instructed): renderer wiring, FEATURES.md marker entry, no commit.
+</agent-message>
+
+---
+
+<agent-message from="cr-fable">
+Adversarial review of uncommitted diff. Verified every finding against code; ran all new/touched suites (all green: host-service dismiss 28/28, renderer 90, hook failover+subscriber 35, react-mock fixes 5/5). Findings:
+
+[BLOCKER] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\index.ts:1830 (dismissByTerminal) + terminal-agents.ts:229
+Defect: Companion dismissal is NOT fenced by dismissStartedAtMs — `dismissByTerminal` marks stale whatever question is pending at call time, including one raised AFTER the click.
+Failure: User clicks Clear Status at T0. Hook lands a new AskUserQuestion at T1>T0 (window = tRPC round trip + readdir/stat/unlink loop). `clearPendingQuestionMarkers` correctly keeps the T1 marker (survivor) — but `forwardCompanionDismissal` runs unconditionally afterward, `byHostTerminal` returns the NEW pending question, `markStale` settles it permanently. Phone alert retracted, `/v1/answer` → 410, question unanswerable from companion forever, while desk red legitimately re-asserts. Directly violates the "question raised after dismiss must survive" invariant and FEATURES.md's own claim ("a question raised after the click survives").
+Fix: Pass dismissStartedAtMs into dismissByTerminal; skip when `question.askedAtMs > dismissStartedAtMs` (PendingQuestion already carries askedAtMs). Also gate the call on `cleared.survivors.length === 0`.
+
+[MAJOR] apps\desktop\src\renderer\...\useDashboardSidebarWorkspaceItemActions.ts:138 (applyWorkspaceStatusDismissal)
+Defect: Renderer purge is workspace-wide and unfenced — `clearWorkspaceStatuses(workspaceId)` drops a red latched from a post-click question even when the host reports it `pendingAfter: true`; the flag only gates seen-marking, not the purge.
+Failure: New PermissionRequest broadcast latches red between click and mutation reply. Reply applies → purge wipes that red. The blocked agent fires no further hook, so the red stays hidden until the 60s periodic resync re-derives it from the surviving marker. Up to a minute of green-looking dot over a blocked question. Compounding hole server-side (terminal-agents.ts:198): an owner created between `readdir` and return is never listed → `pendingAfter: false` → terminal also marked seen.
+Fix: For terminals with `pendingAfter: true`, clear per-terminal axes except permission (reuse the axis-clear used by clearInterruptedTerminalAxes) instead of relying on the workspace-wide purge; or trigger an immediate resync after dismissal instead of waiting for the periodic tick.
+
+[MAJOR] apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:2837 (retry gate) + _deliver
+Defect: The companion strip-and-retry is dead code for its designed trigger: an HTTP 400 from the owning host raises urllib HTTPError inside `_deliver` (exception path — status never inspected), so `superset_saw_2xx` stays False and `has_companion and getattr(exc, "superset_saw_2xx", False)` skips the retry in the single-host case.
+Failure: Companion capture shape vs route schema drift (the exact scenario the retry was built for, per the comment at :2830) → every Stop carries companionLifecycleEventId → every Stop 400s → strip-retry never fires → binding never updated → yellow stuck; resync replays the stale binding so it never heals. Worse with a second org host: owner 400s, foreign host answers 200 `ignored:true` → `_deliver` returns "ignored-everywhere" → main() logs a benign delivered-no-op and returns, no retry, no post-error. Breaks the documented guarantee that a payload change "can degrade the companion feature but can NEVER move a dot". No test covers 400→strip-retry (existing assertions only check the retry does NOT fire).
+Fix: In `_deliver`, catch urllib.error.HTTPError separately and record a `saw_http_response` flag (and don't let an owner's 4xx be masked by a foreign host's 200-ignored); gate the strip-retry on "any candidate returned an HTTP response" rather than 2xx-with-unaccepted-body.
+
+Checked and clean: SAFE_MARKER_SEGMENT guard centralized inside askqMarkerDir, no client-derived paths (terminal set is DB-sourced, terminalId only intersects it); unlink-per-owner, no recursive rm; ENOENT-tolerant, other errors abort loudly with completed-list; host `clearWorkspaceStatuses` mutation + store method byte-unchanged; marker mutations strictly before delivery (candidates resolved at pane-map-hook.ts:2797, after _decide_event_type); positive acceptance (`ignored is False`) matches sh-template parity incl. SUPERSET_HOME_DIR/org-first ordering; malformed/foreign bodies never count as delivered; interrupt path clears working/review/background only, never permission; resync retract branch is positive-evidence (`pendingPermission === false`) + workspace + occurredAt fenced; outstandingReadyAt untouched by renderer purge (test-asserted); periodic-resync interval cleaned on disconnect/unmount with in-flight + generation guards; clearV2TerminalRunStatus had zero callers at HEAD; react-mock spreads strengthen (not weaken) the two test files; no subprocesses in hook Python, no sync fs on Electron main; lifecycle-id dedupe safe under multi-candidate probing (first acceptance stops the loop, retry strips the id); FEATURES.md markers parse — `scripts/check-feature-markers.mjs` passes all 241. Note: `packages/host-service/src/companion/remote-pairing.test.ts` "(PAIR-EVICTION-HONEST)" fails on this machine, but it is a source-scan test broken by CRLF checkout of unmodified pairing.ts — pre-existing, unrelated to this diff.
+
+Verdict: FIX-FIRST
+</agent-message>
+
+---
+
+<agent-message from="fix-renderer">
+All three fixes applied. Only my three files + their two colocated test files touched.
+
+FIX-1 (BLOCKER) — `apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts`
+Retraction branch gained a third conjunct: `row.lastEventType !== "PermissionRequest"`. While the host's own binding still says PermissionRequest, the absence of a marker is not evidence — a generic tool-permission red never had one. Both intended uses still fire (dismissal forces the binding to Stop; a delivered answer moves it to Start/Stop). Long comment records why the occurredAt fence can't cover it (T > T is false).
+
+FIX-2 (BLOCKER) — `.../DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts`
+`applyWorkspaceStatusDismissal` now re-latches the permission axis for every returned terminal with `pendingAfter: true`, via `applySourceAxes(set:["permission"])` at the host-returned `lastEventAt`, right after the workspace purge. Loop restructured: the `lastEventAt === null` skip moved to the top and now guards both branches — a pendingAfter with no binding is skipped rather than re-latched, because `applySourceAxes` would otherwise default to renderer `Date.now()` and plant a local-clock timestamp that the next resync's host-clock fence compares against. Documented. Added import of `getV2TerminalNotificationSource`.
+
+FIX-3 (MINOR) — `.../V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.tsx`
+Serialization moved into `runResync`. `resyncInFlightRef` (boolean) replaced by `resyncInFlightTokenRef: number | null` (holds the generation) plus `queuedResyncKeyRef: string | null`. Mid-flight callers queue the latest key and return; the `.finally` releases only if it still owns the token, then drains the queued key. `runPeriodicResync` keeps its check as pure suppression (a tick carries the same key, nothing to add). Disconnect and unmount clear both refs so an abandoned request can't release the gate under the epoch that replaced it, and so a reconnect resync doesn't wait out a dead socket's timeout. Existing generation guard and the 10s retry path unchanged.
+
+Tests
+- `resyncAgentStatus.test.ts`: +1 test — `pendingPermission:false` + `lastEventType:"PermissionRequest"` at the same instant → no retraction, red survives at 5_000. Existing `pendingPermission:false` + Stop retraction test unchanged and still passing. 23 pass / 0 fail.
+- `useDashboardSidebarWorkspaceItemActions.test.ts`: replaced the seen-mark-skip test with one asserting the red survives the whole dismissal flow (permission axis back at the host instant 6_000, status "permission", review axis and every other terminal's dot still purged, no seen mark, no companion report, outstandingReadyAt intact). +1 test for pendingAfter with null lastEventAt → no re-latch. 6 pass / 0 fail.
+- `HostNotificationSubscriber.test.tsx`: +2 tests — key change mid-flight defers to after settle (no overlap), and several mid-flight key changes collapse to one follow-up. Existing periodic-suppression test kept. 6 pass / 0 fail.
+
+Verification
+- Combined run over V2NotificationController + DashboardSidebarWorkspaceItem + stores/v2-notifications (12 files): 154 pass / 0 fail. Ran together deliberately, since `mock.module` is process-global here.
+- `tsc --noEmit` over apps/desktop: zero diagnostics naming any of the three files or their tests.
+- `biome check` on the six files: clean, no fixes applied.
+- No commits, no repo-wide formatter.
+
+Invariants held: interrupt path and the store's `clearWorkspaceStatuses` untouched; `outstandingReadyAt` untouched; the occurredAt fence at the top of the resync loop unchanged.
+
+Deviation: the "five files the previous implementer listed" weren't named in my brief, so instead of guessing I ran the three whole directories above. If that list included anything outside them, name it and I'll run it.
+</agent-message>
+
+---
+
+<agent-message from="clean-hook">
+All 11 items applied to the two hook files only. 60/60 tests pass, unmodified. Biome clean. Embedded script py_compiles. Feature-marker gate: 242/242 OK.
+
+Files:
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts
+C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.test.ts
+
+APPLIED
+
+P1 (behavior restoration). New manifest probe renamed `_manifest_pid_alive` (~:2342); sole caller in `_manifest_candidate_urls` updated. The (BF) codex `_pid_alive` (~:736) is no longer shadowed, so `_codex_job_active` gets its int() coercion, pid<=0 guard and GetExitCodeProcess/STILL_ACTIVE check back. Cross-reference comment on each naming the other and why semantics differ (manifest fails OPEN, codex leans "still active").
+
+P2. One `_rotate(log_path, backup_path)` (~:407) used by `_log` and `_decision_log`; `Path.replace` killed the exists/unlink dance. Rotation is checked once per process PER PATH via a module-level `_ROTATED` set — one mechanism covers both callers, so `_decision_log` adopted the same flag rather than keeping per-call (it writes at most a handful of lines per process). 14 duplicated lines -> 1 helper.
+
+P3-P7 (`_deliver` + main tail).
+- Promotion moved into `_deliver`: a disown sweep carrying an http_error now raises. Both duplicated blocks in main are gone, including the dead `retry_after or outcome[4]`.
+- `_HookOutcome = collections.namedtuple(..., kind/url/status/body/http_error)`; added `import collections`.
+- `_HookUndelivered(RuntimeError)` with real `saw_response` field and `__cause__`. A `from_sweep` classmethod keeps the old message rule (the transport exception's own str() when there is one) so the post-error / retry log fields are byte-identical.
+- `_hook_accepted`/`_hook_ignored` merged into tri-state `_hook_ignored_flag(raw)` -> True/False/None. One parse per response instead of two. No wrappers kept — `_deliver` compares `is False` / `is True` inline (only call site).
+- `saw_ignored` dropped, derived from `last_ignored_body is not None`.
+- `superset_tried_urls` dropped.
+
+Invariant care worth flagging: I ordered the promotion check INSIDE the `last_ignored_body is not None` branch, not before it. Putting it first would have changed the message on the no-disown-plus-400 path from "HTTP Error 400: Bad Request" to "HTTP 400 from <url>" — a real log-field change the tests would not have caught.
+
+P8-P11 (fast path).
+- `_HookCandidates` is a lazy, re-iterable candidate source: env URL yielded first, manifest tail enumerated only when a second candidate is pulled. Verified directly: after pulling candidate 1 the tail cache is still None, so an accepted first POST touches no disk at all.
+- Tail memoized at module level (`_MANIFEST_CANDIDATES`), so the companion retry sweep re-iterates for free.
+- Path-level `seen_paths` set: own-org manifest no longer parsed and probed twice.
+- Candidate URL built and deduped BEFORE the pid probe; verified env-URL==own-org yields one probe-free entry.
+- `_kernel32()` lazy module singleton replaces per-call `ctypes.WinDLL` + prototype declaration.
+- `tried` is now an in/out list owned by main and passed to both `_deliver` sweeps (deduped across them). It replaces `candidates` in all four log sites, since a lazy source has no full list to name. Budget-exhausted log drops `candidateUrls` and its message counts attempts rather than "X of Y" — the accepted logging change. The all-dead post-error and dot-decisions lines still name every candidate tried; that test passes unchanged.
+
+Test file: `hook()` gained an optional `envOverride` param (spread last, wins over defaults); `runHook` is now a 1-line delegate passing `SUPERSET_AGENT_WATCHER_DEBUG: "1"` plus the caller's env. ~37 duplicated lines removed. Safe because every runHook call site already sets its own SUPERSET_HOST_AGENT_HOOK_URL.
+
+SKIPPED / DEVIATIONS
+- No test assertions changed. Zero test edits were needed — the only test-file change is the harness merge above.
+- `_HookOutcome.http_error` is kept as specified but is now read by nobody: with the promotion inside `_deliver`, a returned ignored-everywhere always carries None, and main never reads it on the delivered path. It is a dead field. Flagging rather than removing, since the 5-field shape was specified explicitly. Say the word and I will drop it to 4 fields.
+- `_deliver`'s outer catch in main stays `except Exception` (not `except _HookUndelivered`) so an unexpected error still cannot crash the hook; the retry gate uses `isinstance(exc, _HookUndelivered) and exc.saw_response`.
+
+Final: 60 pass / 0 fail / 376 expect() calls across 2 files.
+</agent-message>

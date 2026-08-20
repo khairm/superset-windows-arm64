@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "9f43b51e3349",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 46,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/AddRepositoryModals/hooks/useFolderFirstImport/useFolderFirstImport.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/hooks/useDashboardSidebarWorkspaceItemActions/useDashboardSidebarWorkspaceItemActions.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useTerminalInterruptClear/useTerminalInterruptClear.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/TerminalPane/hooks/useTerminalInterruptClear/useTerminalInterruptClear.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.test.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/components/HostNotificationSubscriber/HostNotificationSubscriber.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts",
+    "apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/TabView/FileViewerPane/hooks/useFileContent/useFileContent.test.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/index.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/resetForTest.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/store.test.ts",
+    "apps/desktop/src/renderer/stores/v2-notifications/store.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/question-store.ts",
+    "packages/host-service/src/trpc/router/notifications/agent-status-dismiss.test.ts",
+    "packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-question-sink.ts",
+    "packages/host-service/src/trpc/router/terminal-agents/dismiss-workspace-statuses.test.ts",
+    "packages/host-service/src/trpc/router/terminal-agents/terminal-agents.ts",
+    "packages/host-service/test/helpers/askq-markers.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9f/43b51e3349/0/metadata.json",
+      "transcript": "/9f/43b51e3349/0/full.jsonl",
+      "content_hash": "/9f/43b51e3349/0/content_hash.txt",
+      "prompt": "/9f/43b51e3349/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 47911,
+    "cache_creation_tokens": 763611,
+    "cache_read_tokens": 12793335,
+    "output_tokens": 81857,
+    "api_call_count": 86
+  }
+}
