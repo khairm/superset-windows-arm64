@@ -102,6 +102,18 @@ export function tombstoneSidebarWorkspaceRecord(
  * page, project setup/import) still pulls a hidden main back to active.
  * Removing a project discards `defaultOpenInApp` (stored on the project row
  * and nowhere else); it resets to default on re-add.
+ *
+ * (MASTER-ALWAYS-ACTIVE) narrows how long a main stays tombstoned, and nothing
+ * else. Mains are still tombstoned here exactly as described above, and
+ * removing a project still removes them: the reconciler
+ * (`useSurfaceHiddenMainWorkspaces`) gates on the project's `v2SidebarProjects`
+ * row, which this function deletes, so its predicate is false the moment the
+ * project is gone. But re-ADDING the project puts that row back, and the
+ * reconciler then returns the project's master to the active lane on the next
+ * render. Re-adding a removed project resurrects its master — by design, and a
+ * deliberate exception to (REMOVE-STICKY), which still holds for every worktree
+ * and session. A master has no other surface to be recovered from, so the
+ * alternative is a row the user can never reach again.
  */
 export function removeProjectFromSidebarState(
 	collections: Pick<
@@ -125,6 +137,7 @@ export function removeProjectFromSidebarState(
 		}
 	}
 
+	// Also clears each row's pinnedAt, so no separate pin sweep is needed.
 	for (const workspaceId of tombstoneIds) {
 		tombstoneSidebarWorkspaceRecord(
 			collections,
@@ -132,21 +145,6 @@ export function removeProjectFromSidebarState(
 			projectId,
 			cleanupPaneRuntimes,
 		);
-	}
-
-	// Main workspaces keep their rows (see the doc comment above), but any pin
-	// must be cleared: a pinned row is excluded from the project tree, and with
-	// the project row gone the pinned section drops it too — leaving it fully
-	// invisible with no context menu to unpin it from.
-	for (const row of collections.v2WorkspaceLocalState.state.values()) {
-		if (
-			row.sidebarState.projectId === projectId &&
-			row.sidebarState.pinnedAt != null
-		) {
-			collections.v2WorkspaceLocalState.update(row.workspaceId, (draft) => {
-				draft.sidebarState.pinnedAt = null;
-			});
-		}
 	}
 
 	const sectionIds = Array.from(collections.v2SidebarSections.state.values())

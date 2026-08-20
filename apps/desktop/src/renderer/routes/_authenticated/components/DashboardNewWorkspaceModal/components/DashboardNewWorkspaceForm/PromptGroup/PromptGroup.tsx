@@ -44,8 +44,12 @@ import { useNewWorkspaceModalOpen } from "renderer/stores/new-workspace-modal";
 import { useNewWorkspacePromptContext } from "renderer/stores/new-workspace-prompt-context";
 import { useV2WorkspaceCreateDefaultsStore } from "renderer/stores/v2-workspace-create-defaults";
 import { useDashboardNewWorkspaceDraft } from "../../../DashboardNewWorkspaceDraftContext";
+import {
+	getMasterMissingAgentRefusal,
+	useMasterWorkspaceTarget,
+} from "../../../hooks/useMasterWorkspaceTarget";
 import { DevicePicker } from "../components/DevicePicker";
-import { CLOUD_HOST_ID } from "../components/DevicePicker/DevicePicker";
+import { CLOUD_HOST_ID } from "../components/DevicePicker/constants";
 import { useWorkspaceHostOptions } from "../components/DevicePicker/hooks/useWorkspaceHostOptions";
 import { AttachmentButtons } from "./components/AttachmentButtons";
 import { CompareBaseBranchPicker } from "./components/CompareBaseBranchPicker";
@@ -306,6 +310,19 @@ export function PromptGroup({
 		return attachments.files.filter((file) => idSet.has(file.id));
 	}, [attachments.files, fileIdsForCurrentHost]);
 
+	// ── Master mode (MASTER-PLUS-LAUNCH) ─────────────────────────────
+	// A resolved local NON-GIT single-repo project has nothing to branch: the
+	// agent runs in the project's own master workspace instead. Everything
+	// branch-shaped comes off the form and submit takes the master path.
+	const masterTarget = useMasterWorkspaceTarget(
+		draft.selectedProjectId,
+		draft.hostId ?? machineId,
+		selectedProject?.name ?? null,
+	);
+	const masterLabel =
+		masterTarget.mode === "master" ? masterTarget.masterLabel : null;
+	const isMasterMode = masterLabel !== null;
+
 	// Submit gating: surface preconditions inline next to the submit button
 	// instead of letting all three submit paths (button, Enter, Cmd+Enter)
 	// fall into a toast.
@@ -323,14 +340,36 @@ export function PromptGroup({
 		} else if (!activeHostUrl) {
 			return "Host service is not running";
 		}
+		// (MASTER-PLUS-LAUNCH) Checked LAST: a dead host is the more actionable
+		// thing to say, and master mode cannot resolve without one anyway.
+		if (masterTarget.mode === "loading") return "Checking project\u2026";
+		if (masterTarget.mode === "blocked") return masterTarget.reason;
+		// (MASTER-PLUS-LAUNCH) In master mode a prompt with no agent has nowhere
+		// to go \u2014 the one authored rule lives in `getMasterMissingAgentRefusal`,
+		// and the submit hook re-checks it there too.
+		if (isMasterMode && masterLabel) {
+			const refusal = getMasterMissingAgentRefusal({
+				hasAgent: selectedAgent !== "none",
+				prompt: draft.prompt,
+				hasAttachments: visibleFiles.length > 0,
+				masterLabel,
+			});
+			if (refusal) return refusal;
+		}
 		return null;
 	}, [
 		projectId,
 		draft.isSession,
 		draft.hostId,
+		draft.prompt,
 		machineId,
 		activeHostUrl,
 		otherHosts,
+		masterTarget,
+		isMasterMode,
+		masterLabel,
+		selectedAgent,
+		visibleFiles,
 	]);
 
 	// ── Linked-context prefetch ──────────────────────────────────────
@@ -349,6 +388,7 @@ export function PromptGroup({
 		effortSupport ? selectedEffort : null,
 		uploadAttachments,
 		promptContext,
+		masterTarget,
 	);
 	const handleSubmit = useCallback(() => {
 		if (needsSetup) {
@@ -403,65 +443,83 @@ export function PromptGroup({
 		<div className="p-3 space-y-2">
 			{/* Workspace name + branch name */}
 			<div className="flex items-center">
-				<Input
-					className="border-none bg-transparent dark:bg-transparent shadow-none text-base font-medium px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/40 min-w-0 flex-1"
-					placeholder="Workspace name (optional)"
-					value={workspaceName}
-					onChange={(e) =>
-						updateDraft({
-							workspaceName: e.target.value,
-							workspaceNameEdited: true,
-						})
-					}
-					onBlur={() => {
-						if (!workspaceName.trim())
-							updateDraft({ workspaceName: "", workspaceNameEdited: false });
-					}}
-				/>
-				<div className="shrink min-w-0 ml-auto max-w-[50%]">
-					<Input
-						className={cn(
-							"border-none bg-transparent dark:bg-transparent shadow-none text-xs font-mono text-muted-foreground/60 px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/30 focus:text-muted-foreground text-right placeholder:text-right overflow-hidden text-ellipsis",
-						)}
-						placeholder={branchPreview || "branch name"}
-						value={branchName}
-						onChange={(e) =>
-							updateDraft({
-								branchName: e.target.value.replace(/\s+/g, "-"),
-								branchNameEdited: true,
-								branchNameFromProvider: false,
-							})
-						}
-						onBlur={() => {
-							const sanitized = sanitizeUserBranchName(branchName.trim());
-							if (!sanitized)
+				{isMasterMode ? (
+					/* (MASTER-PLUS-LAUNCH) Nothing here is nameable: no workspace is
+					   created and no branch is cut, so the row states where the
+					   agent will actually run instead. AI naming has nothing to
+					   name either, which is why the gear goes with them. */
+					<span
+						data-testid="master-runs-in"
+						className="min-w-0 flex-1 truncate text-sm text-muted-foreground"
+					>
+						Runs in {masterLabel}
+					</span>
+				) : (
+					<>
+						<Input
+							className="border-none bg-transparent dark:bg-transparent shadow-none text-base font-medium px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/40 min-w-0 flex-1"
+							placeholder="Workspace name (optional)"
+							value={workspaceName}
+							onChange={(e) =>
 								updateDraft({
-									branchName: "",
-									branchNameEdited: false,
-									branchNameFromProvider: false,
-								});
-							else updateDraft({ branchName: sanitized });
-						}}
-					/>
-				</div>
-				{selectedProject && !needsSetup && (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon"
-								aria-label="Update naming instructions"
-								className="ml-2 size-6 shrink-0 text-muted-foreground"
-								onClick={handleGoToNamingInstructions}
-							>
-								<Settings2Icon className="size-3.5" />
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent>
-							Update naming instructions for {selectedProject.name}
-						</TooltipContent>
-					</Tooltip>
+									workspaceName: e.target.value,
+									workspaceNameEdited: true,
+								})
+							}
+							onBlur={() => {
+								if (!workspaceName.trim())
+									updateDraft({
+										workspaceName: "",
+										workspaceNameEdited: false,
+									});
+							}}
+						/>
+						<div className="shrink min-w-0 ml-auto max-w-[50%]">
+							<Input
+								className={cn(
+									"border-none bg-transparent dark:bg-transparent shadow-none text-xs font-mono text-muted-foreground/60 px-0 h-auto focus-visible:ring-0 placeholder:text-muted-foreground/30 focus:text-muted-foreground text-right placeholder:text-right overflow-hidden text-ellipsis",
+								)}
+								placeholder={branchPreview || "branch name"}
+								value={branchName}
+								onChange={(e) =>
+									updateDraft({
+										branchName: e.target.value.replace(/\s+/g, "-"),
+										branchNameEdited: true,
+										branchNameFromProvider: false,
+									})
+								}
+								onBlur={() => {
+									const sanitized = sanitizeUserBranchName(branchName.trim());
+									if (!sanitized)
+										updateDraft({
+											branchName: "",
+											branchNameEdited: false,
+											branchNameFromProvider: false,
+										});
+									else updateDraft({ branchName: sanitized });
+								}}
+							/>
+						</div>
+						{selectedProject && !needsSetup && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon"
+										aria-label="Update naming instructions"
+										className="ml-2 size-6 shrink-0 text-muted-foreground"
+										onClick={handleGoToNamingInstructions}
+									>
+										<Settings2Icon className="size-3.5" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>
+									Update naming instructions for {selectedProject.name}
+								</TooltipContent>
+							</Tooltip>
+						)}
+					</>
 				)}
 				<PromptHistoryCommand
 					onSelect={applyPrompt}
@@ -632,20 +690,25 @@ export function PromptGroup({
 									</PromptInputButton>
 								</GitHubIssueLinkCommand>
 							}
+							/* (MASTER-PLUS-LAUNCH) A PR checkout needs a branch to
+							   check out into; master mode has none, so the trigger
+							   goes rather than offering something submit refuses. */
 							prTrigger={
-								<PRLinkCommand
-									onSelect={setLinkedPR}
-									projectId={projectId}
-									hostId={hostId}
-									tooltipLabel="Link pull request"
-								>
-									<PromptInputButton
-										aria-label="Link pull request"
-										className={`${PILL_BUTTON_CLASS} w-[22px]`}
+								isMasterMode ? null : (
+									<PRLinkCommand
+										onSelect={setLinkedPR}
+										projectId={projectId}
+										hostId={hostId}
+										tooltipLabel="Link pull request"
 									>
-										<LuGitPullRequest className="size-3.5" />
-									</PromptInputButton>
-								</PRLinkCommand>
+										<PromptInputButton
+											aria-label="Link pull request"
+											className={`${PILL_BUTTON_CLASS} w-[22px]`}
+										>
+											<LuGitPullRequest className="size-3.5" />
+										</PromptInputButton>
+									</PRLinkCommand>
+								)
 							}
 						/>
 						<PromptInputSubmit
@@ -704,7 +767,8 @@ export function PromptGroup({
 								exit={{ opacity: 0, x: 8, filter: "blur(4px)" }}
 								transition={{ duration: 0.2, ease: "easeOut" }}
 							>
-								{!draft.isSession && (
+								{/* (MASTER-PLUS-LAUNCH) Nothing is branched off anything. */}
+								{!draft.isSession && !isMasterMode && (
 									<CompareBaseBranchPicker {...pickerProps} />
 								)}
 							</motion.div>

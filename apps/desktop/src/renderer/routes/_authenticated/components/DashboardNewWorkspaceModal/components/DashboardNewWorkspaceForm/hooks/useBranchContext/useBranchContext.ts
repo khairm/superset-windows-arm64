@@ -6,7 +6,7 @@ import { useHostUrl } from "renderer/hooks/host-service/useHostTargetUrl";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
-import { CLOUD_HOST_ID } from "../../components/DevicePicker/DevicePicker";
+import { CLOUD_HOST_ID } from "../../components/DevicePicker/constants";
 
 type SearchBranchesInput =
 	inferRouterInputs<AppRouter>["workspaceCreation"]["searchBranches"];

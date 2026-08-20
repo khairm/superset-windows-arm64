@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 
 /**
@@ -18,12 +19,16 @@ export function useProjectMainWorkspaceId(
 	hostId?: string | null,
 ): string | null {
 	const { workspaces } = useHostWorkspaces();
-	if (!projectId) return null;
-	const main = workspaces.find(
-		(w) =>
-			w.projectId === projectId &&
-			w.type === "main" &&
-			(hostId ? w.hostId === hostId : true),
-	);
-	return main?.id ?? null;
+	// Memoised: callers re-render on every keystroke of the new-workspace
+	// prompt, and this walks the whole workspace list.
+	return useMemo(() => {
+		if (!projectId) return null;
+		const main = workspaces.find(
+			(w) =>
+				w.projectId === projectId &&
+				w.type === "main" &&
+				(hostId ? w.hostId === hostId : true),
+		);
+		return main?.id ?? null;
+	}, [workspaces, projectId, hostId]);
 }

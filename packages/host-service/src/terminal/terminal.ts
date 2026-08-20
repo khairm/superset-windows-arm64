@@ -3744,6 +3744,26 @@ export async function createTerminalSessionInternal({
 		queueInitialCommand(session, initialCommand);
 	}
 
+	// (MASTER-PLUS-LAUNCH) Announce the session. Emitted HERE — last, after the
+	// `active` row is committed, the session is in the map and the daemon
+	// subscription is live — so every consumer that reacts by re-reading the
+	// terminal list finds it. Emitting it beside the row insert would announce a
+	// session that the subscribe rollback further up can still un-make.
+	//
+	// A create is otherwise SILENT on this channel: the OSC 133 scanner that
+	// produces command-start/command-end is never instrumented for cmd.exe (the
+	// fork's Windows fallback shell), so a session made after a workspace was
+	// already open — `agents.run`, the CLI — emitted nothing until it exited.
+	// Consumers of this channel are invalidate-only or eventType-guarded, so an
+	// extra event is cheap; the missing one was not.
+	eventBus?.broadcastTerminalLifecycle({
+		workspaceId,
+		terminalId,
+		eventType: "created",
+		adopted: isAdopted,
+		occurredAt: createdAt,
+	});
+
 	return session;
 }
 

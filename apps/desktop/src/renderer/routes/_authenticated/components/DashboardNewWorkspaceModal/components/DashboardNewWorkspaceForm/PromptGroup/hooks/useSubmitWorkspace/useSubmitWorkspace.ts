@@ -1,14 +1,20 @@
 import { toast } from "@superset/ui/sonner";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
+import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import type { NewWorkspacePromptContextApi } from "renderer/stores/new-workspace-prompt-context";
 import { usePromptHistoryStore } from "renderer/stores/prompt-history";
 import { useWorkspaceCreates } from "renderer/stores/workspace-creates";
 import { useDashboardNewWorkspaceDraft } from "../../../../../DashboardNewWorkspaceDraftContext";
-import { CLOUD_HOST_ID } from "../../../components/DevicePicker/DevicePicker";
+import {
+	getMasterMissingAgentRefusal,
+	type MasterWorkspaceTarget,
+} from "../../../../../hooks/useMasterWorkspaceTarget";
+import { CLOUD_HOST_ID } from "../../../components/DevicePicker/constants";
 import type { WorkspaceCreateAgent } from "../../types";
 import type { UseUploadAttachmentsApi } from "../useUploadAttachments";
 import { resolveNames } from "./resolveNames";
@@ -26,12 +32,30 @@ export function useSubmitWorkspace(
 	selectedEffort: string | null,
 	uploadAttachments: UseUploadAttachmentsApi,
 	promptContext: NewWorkspacePromptContextApi,
+	/**
+	 * (MASTER-PLUS-LAUNCH) What this submit should DO. Required, not optional:
+	 * a call site that never enters master mode passes `BRANCH_ONLY_TARGET`
+	 * explicitly, so no caller can silently inherit the wrong flow.
+	 */
+	masterTarget: MasterWorkspaceTarget,
 ) {
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
 	const { closeAndResetDraft, draft } = useDashboardNewWorkspaceDraft();
 	const { submit } = useWorkspaceCreates();
 	const { machineId } = useLocalHostService();
+	const { restoreWorkspace, ensureWorkspaceInSidebar } =
+		useDashboardSidebarState();
+	// (MASTER-PLUS-LAUNCH) Master submits are fire-and-navigate: nothing about
+	// the UI goes pending, so a second trigger would launch a second agent in
+	// the same workspace. Three paths can fire (the submit button, the prompt
+	// input, and the window-level Cmd/Ctrl+Enter listener), and by the time we
+	// reach the master branch we are already past `await awaitUploads()` — so
+	// the check and the set MUST stay adjacent, with no await between them, or
+	// two queued submits both pass it. Deliberately NOT released on the success
+	// path: the modal closes and unmounts this hook, and that unmount is what
+	// makes the next open a fresh submit.
+	const masterSubmitInFlight = useRef(false);
 	const createCloudWorkspace = cloudTrpc.cloudWorkspace.create.useMutation();
 	const utils = cloudTrpc.useUtils();
 	const { data: session } = authClient.useSession();
@@ -68,6 +92,135 @@ export function useSubmitWorkspace(
 					? `Attachment upload failed (${first.filename}): ${first.message}`
 					: `Attachment upload failed: ${first.message}`,
 			);
+			return;
+		}
+
+		// ── Master mode (MASTER-PLUS-LAUNCH) ─────────────────────────
+		// A resolved local NON-GIT single-repo project has no branches to create.
+		// Submit restores its master workspace to Active and launches the agent
+		// inside it, instead of going anywhere near `workspaces.create`.
+		if (masterTarget.mode === "master") {
+			const { mainWorkspaceId, hostUrl, masterLabel } = masterTarget;
+
+			// Everything below refuses SYNCHRONOUSLY and mutates nothing, so it
+			// all sits above the in-flight latch: a refused submit must leave the
+			// latch clear for the corrected one, and only the try/catch below has
+			// to put it back.
+			//
+			// Refused because a PR checkout needs a branch and master mode has
+			// none. Mirrors the session guard above.
+			if (draft.linkedPR !== null) {
+				toast.error("Checking out a PR requires a branch workspace");
+				return;
+			}
+
+			// Defensive: the resolver only produces a master target with an
+			// address, but the host can drop between that render and this click.
+			if (!hostUrl) {
+				toast.error("Host service is not running");
+				return;
+			}
+
+			// Deliberately NOT `hasAnyContext`: picking an agent and pressing
+			// send with an empty prompt must still launch the bare agent
+			// (`agents.run` defaults `prompt` to "").
+			const wantAgent = selectedAgent !== "none";
+
+			// The same rule the inline blocker in PromptGroup shows; re-checked
+			// here as thin defense, because this hook has three trigger paths and
+			// the blocker is only rendered guidance.
+			const missingAgentRefusal = getMasterMissingAgentRefusal({
+				hasAgent: wantAgent,
+				prompt: draft.prompt,
+				hasAttachments: attachmentIds.length > 0,
+				masterLabel,
+			});
+			if (missingAgentRefusal) {
+				toast.error(missingAgentRefusal);
+				return;
+			}
+
+			// Past every refusal, so the latch closes immediately before the work
+			// it protects — no await between this check and its set, or two
+			// queued submits both pass it.
+			if (masterSubmitInFlight.current) return;
+			masterSubmitInFlight.current = true;
+
+			try {
+				const finalPrompt = wantAgent
+					? await promptContext.build({
+							userPrompt: draft.prompt,
+							linkedPR: draft.linkedPR,
+							linkedIssues: draft.linkedIssues,
+							timeoutMs: 2000,
+						})
+					: null;
+
+				// Back to Active, and only once nothing above can still throw: a
+				// failed `build` must leave the master exactly where it was rather
+				// than surfacing it under a "Could not open the project workspace"
+				// toast. `restoreWorkspace` clears deletedAt / archivedAt /
+				// completedAt / snooze / isHidden in one go, so a master in ANY
+				// inactive bucket comes back — including a Recycle-Binned one, which
+				// unarchive+unsnooze left in the bin while the agent launched into
+				// it (`ensure` refuses to resurrect a "deleted" row, so nothing else
+				// would have surfaced it either). It safely no-ops for the row-less
+				// auto-included master; `ensure` is what inserts that row, and it is
+				// in turn a no-op for a row this call has just made active. A
+				// restored master comes back with its stale `sectionId`/`tabOrder` —
+				// identical to restoring it from the Archived section or the bin by
+				// hand, and accepted for the same reason. Still ahead of the
+				// navigate, so the row is Active before the workspace screen opens.
+				restoreWorkspace(mainWorkspaceId);
+				ensureWorkspaceInSidebar(mainWorkspaceId, projectId);
+
+				// History before the reset, close before the navigate — the draft
+				// is gone after either one.
+				const trimmedMasterPrompt = draft.prompt.trim();
+				if (trimmedMasterPrompt) {
+					usePromptHistoryStore.getState().recordPrompt(trimmedMasterPrompt);
+				}
+				closeAndResetDraft();
+
+				void navigate({
+					to: "/v2-workspace/$workspaceId",
+					params: { workspaceId: mainWorkspaceId },
+				}).catch((error) => {
+					console.error(
+						"[useSubmitWorkspace] failed to open master workspace",
+						error,
+					);
+				});
+
+				if (wantAgent) {
+					// Fire-and-navigate: the workspace screen is already up, and the
+					// terminal appears when the host answers.
+					void getHostServiceClientByUrl(hostUrl)
+						.agents.run.mutate({
+							workspaceId: mainWorkspaceId,
+							agent: selectedAgent,
+							prompt: finalPrompt ?? "",
+							attachmentIds:
+								attachmentIds.length > 0 ? attachmentIds : undefined,
+							model: selectedModel ?? undefined,
+							effort: selectedEffort ?? undefined,
+						})
+						.catch((error: unknown) => {
+							toast.error(
+								error instanceof Error
+									? error.message
+									: "Could not start the agent",
+							);
+						});
+				}
+			} catch (error) {
+				masterSubmitInFlight.current = false;
+				toast.error(
+					error instanceof Error
+						? error.message
+						: "Could not open the project workspace",
+				);
+			}
 			return;
 		}
 
@@ -245,7 +398,9 @@ export function useSubmitWorkspace(
 		closeAndResetDraft,
 		createCloudWorkspace,
 		draft,
+		ensureWorkspaceInSidebar,
 		isSession,
+		masterTarget,
 		matchRoute,
 		machineId,
 		navigate,
@@ -254,6 +409,7 @@ export function useSubmitWorkspace(
 		selectedAgent,
 		selectedModel,
 		selectedEffort,
+		restoreWorkspace,
 		submit,
 		uploadAttachments,
 		utils,

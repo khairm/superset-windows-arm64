@@ -189,10 +189,11 @@ describe("removeProjectFromSidebarState", () => {
 		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
 	});
 
-	it("clears the pin on a kept main-workspace row so it can't become an invisible orphan", () => {
-		// A pinned row is excluded from the project tree, and once the project
-		// record is deleted the pinned section drops it too — with the pin left
-		// set, the workspace would vanish with no context menu to unpin it.
+	it("tombstones a main-workspace row with its pin cleared", () => {
+		// Mains are tombstoned like every other row on project removal
+		// ((REMOVE-STICKY) tightening); the tombstone clears pinnedAt so the
+		// row can't linger as a pinned invisible orphan. The master's return
+		// path is (MASTER-ALWAYS-ACTIVE): re-adding the project resurfaces it.
 		const collections = makeCollections();
 		collections.v2WorkspaceLocalState.insert(
 			localStateRow("ws-main", "proj-1", { pinnedAt: 1753000000000 }),
@@ -212,8 +213,9 @@ describe("removeProjectFromSidebarState", () => {
 
 		const row = collections.v2WorkspaceLocalState.get("ws-main");
 		expect(row?.sidebarState.pinnedAt).toBeNull();
-		// Still not hidden — re-adding the project restores the main workspace.
-		expect(row?.sidebarState.isHidden).toBe(false);
+		// Tombstoned: hidden until (MASTER-ALWAYS-ACTIVE) resurfaces it when
+		// the project row returns to the sidebar.
+		expect(row?.sidebarState.isHidden).toBe(true);
 	});
 
 	it("leaves workspaces from other projects untouched", () => {

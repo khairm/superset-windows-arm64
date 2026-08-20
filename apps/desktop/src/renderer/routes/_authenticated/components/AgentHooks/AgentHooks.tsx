@@ -2,6 +2,7 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
 import { useDefaultV2TerminalPresets } from "./hooks/useDefaultV2TerminalPresets";
 import { usePlaceLocalWorktreesInSidebar } from "./hooks/usePlaceLocalWorktreesInSidebar";
 import { useSidebarMirrorSync } from "./hooks/useSidebarMirrorSync";
+import { useSurfaceHiddenMainWorkspaces } from "./hooks/useSurfaceHiddenMainWorkspaces";
 
 /**
  * Component that runs agent-related hooks requiring CollectionsProvider context.
@@ -12,6 +13,12 @@ export function AgentHooks() {
 	// config cache for Settings.
 	useDefaultV2TerminalPresets(activeHostUrl);
 	usePlaceLocalWorktreesInSidebar();
+	// (MASTER-ALWAYS-ACTIVE) Returns master workspaces stranded in the legacy
+	// "hidden" bucket (no active lane, no Archived section, no way back) to the
+	// active list. Runs AFTER placement so a main placed this pass is already
+	// row-backed, and BEFORE the mirror below so a launch's first push carries
+	// the repair instead of publishing the broken state first.
+	useSurfaceHiddenMainWorkspaces();
 	// (SIDEBAR-MIRROR) Publishes sidebar curation (membership, placement,
 	// soft-delete, archive, snooze, complete, hide, pin, order) into host.db so
 	// consumers outside the renderer stop reading the uncurated raw set. Mounted

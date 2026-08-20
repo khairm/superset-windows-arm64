@@ -38,6 +38,7 @@ export function usePlaceLocalWorktreesInSidebar(): void {
 					id: workspace.id,
 					projectId: workspace.projectId,
 					type: workspace.type,
+					hostId: workspace.hostId,
 				})),
 		[workspaces, machineId],
 	);

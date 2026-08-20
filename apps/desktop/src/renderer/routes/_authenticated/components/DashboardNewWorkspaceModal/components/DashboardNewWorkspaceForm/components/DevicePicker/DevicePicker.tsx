@@ -21,6 +21,7 @@ import {
 } from "react-icons/hi2";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { FormPickerTrigger } from "../../PromptGroup/components/FormPickerTrigger";
+import { CLOUD_HOST_ID } from "./constants";
 import {
 	useWorkspaceHostOptions,
 	type WorkspaceHostOption,
@@ -55,12 +56,6 @@ interface DevicePickerProps {
 	 */
 	disabled?: boolean;
 }
-
-/**
- * Sentinel host id for "run this in a cloud sandbox". Not a machine id: a
- * sandbox is created per workspace and has no host row to point at.
- */
-export const CLOUD_HOST_ID = "cloud";
 
 function getSelectedLabel(
 	hostId: string | null,

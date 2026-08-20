@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { selectWorktreesToPlace } from "./selectWorktreesToPlace";
 
+const MACHINE = "machine-1";
+
 describe("selectWorktreesToPlace", () => {
 	it("places worktrees that have no local-state row", () => {
 		const result = selectWorktreesToPlace(
-			[{ id: "wt-1", projectId: "p1", type: "worktree" }],
+			[{ id: "wt-1", projectId: "p1", type: "worktree", hostId: MACHINE }],
 			new Set(),
 		);
 
@@ -14,8 +16,8 @@ describe("selectWorktreesToPlace", () => {
 	it("never places main workspaces — they surface via the gated path", () => {
 		const result = selectWorktreesToPlace(
 			[
-				{ id: "main-1", projectId: "p1", type: "main" },
-				{ id: "wt-1", projectId: "p1", type: "worktree" },
+				{ id: "main-1", projectId: "p1", type: "main", hostId: MACHINE },
+				{ id: "wt-1", projectId: "p1", type: "worktree", hostId: MACHINE },
 			],
 			new Set(),
 		);
@@ -26,8 +28,8 @@ describe("selectWorktreesToPlace", () => {
 	it("skips worktrees that already have a row (placed, hidden, or removed)", () => {
 		const result = selectWorktreesToPlace(
 			[
-				{ id: "wt-seen", projectId: "p1", type: "worktree" },
-				{ id: "wt-new", projectId: "p1", type: "worktree" },
+				{ id: "wt-seen", projectId: "p1", type: "worktree", hostId: MACHINE },
+				{ id: "wt-new", projectId: "p1", type: "worktree", hostId: MACHINE },
 			],
 			new Set(["wt-seen"]),
 		);
@@ -37,7 +39,7 @@ describe("selectWorktreesToPlace", () => {
 
 	it("places session workspaces with no project (e.g. automation runs)", () => {
 		const result = selectWorktreesToPlace(
-			[{ id: "sess-1", projectId: null, type: "session" }],
+			[{ id: "sess-1", projectId: null, type: "session", hostId: MACHINE }],
 			new Set(),
 		);
 
@@ -47,8 +49,8 @@ describe("selectWorktreesToPlace", () => {
 	it("skips sessions that already have a row", () => {
 		const result = selectWorktreesToPlace(
 			[
-				{ id: "sess-seen", projectId: null, type: "session" },
-				{ id: "sess-new", projectId: null, type: "session" },
+				{ id: "sess-seen", projectId: null, type: "session", hostId: MACHINE },
+				{ id: "sess-new", projectId: null, type: "session", hostId: MACHINE },
 			],
 			new Set(["sess-seen"]),
 		);
@@ -58,7 +60,7 @@ describe("selectWorktreesToPlace", () => {
 
 	it("never places a worktree missing its project", () => {
 		const result = selectWorktreesToPlace(
-			[{ id: "wt-broken", projectId: null, type: "worktree" }],
+			[{ id: "wt-broken", projectId: null, type: "worktree", hostId: MACHINE }],
 			new Set(),
 		);
 

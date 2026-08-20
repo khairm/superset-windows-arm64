@@ -150,6 +150,12 @@ export function handleV2TerminalLifecycleEvent({
 }: {
 	payload: TerminalLifecyclePayload;
 }): void {
+	// (MASTER-PLUS-LAUNCH) A session opening is not a dot event. It MUST be
+	// handled explicitly: the tail of this function is the `exit` teardown and
+	// it is reached by fallthrough, so a "created" event left unnamed here
+	// would clear the agent source and prune the terminal registry for a
+	// terminal that just came up.
+	if (payload.eventType === "created") return;
 	const store = useV2NotificationStore.getState();
 	const workspaceId = resolveTerminalWorkspaceId(payload.terminalId);
 	// (AY) Command lifecycle drives the shell-running blue dot on a SEPARATE

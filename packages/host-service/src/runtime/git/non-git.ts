@@ -48,6 +48,9 @@ function normalizeKey(dirPath: string): string {
  * used by the non-git create path, the server-side git guards, and the
  * renderer-facing `git.isRepo` query. A non-repo, a missing directory, or git
  * not being on PATH all resolve to `false` (none is a usable git workspace).
+ *
+ * Callers that WRITE a durable decision off this answer must use
+ * `isGitRepoStrict` instead — see its comment.
  */
 export async function isGitRepo(dirPath: string): Promise<boolean> {
 	const key = normalizeKey(dirPath);
@@ -67,4 +70,24 @@ export async function isGitRepo(dirPath: string): Promise<boolean> {
 	}
 	cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
 	return value;
+}
+
+/**
+ * (MASTER-ALWAYS-ACTIVE) Tri-state git-ness: `true` = repo, `false` = PROVABLY
+ * not a repo, THROWS = the probe itself failed and the answer is unknown.
+ *
+ * `isGitRepo` collapses "provably not a repo" and "git blew up" into the same
+ * `false`, which is right for a read-only guard (neither is a usable git
+ * workspace) and WRONG for anything that writes the answer down. The boot
+ * sweep did exactly that: one broken git binary made every project on the
+ * machine read as non-git, and each existing git master had its stored branch
+ * rewritten to `NON_GIT_BRANCH`. A caller that mutates state needs to be able
+ * to tell "no" from "I could not find out" and skip the latter.
+ *
+ * Deliberately does NOT touch the shared TTL cache — reading it could hand
+ * back a `false` that a concurrent `isGitRepo` wrote after a FAILED probe,
+ * smuggling the exact ambiguity this function exists to remove back in.
+ */
+export async function isGitRepoStrict(dirPath: string): Promise<boolean> {
+	return createUserSimpleGit(dirPath).checkIsRepo();
 }

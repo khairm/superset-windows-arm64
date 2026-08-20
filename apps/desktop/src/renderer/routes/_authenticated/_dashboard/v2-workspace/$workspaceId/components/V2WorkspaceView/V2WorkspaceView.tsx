@@ -20,6 +20,7 @@ import {
 	useWorkspaceSidebarStore,
 } from "renderer/stores/workspace-sidebar-state";
 import { useWorkspace } from "../../../providers/WorkspaceProvider";
+import { useAutoAdoptBackgroundSessions } from "../../hooks/useAutoAdoptBackgroundSessions";
 import { useBrowserShellInteractionPassthrough } from "../../hooks/useBrowserShellInteractionPassthrough";
 import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
 import { useConsumeAutomationRunLink } from "../../hooks/useConsumeAutomationRunLink";
@@ -129,6 +130,12 @@ function V2WorkspaceCenter({
 	const showPresetsBar = v2UserPreferences.showPresetsBar;
 	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
 	const { store, isLayoutReady } = useV2WorkspacePaneLayout();
+	// (MASTER-PLUS-LAUNCH) NOT a duplicate — this is the ONLY mount of the
+	// auto-adopt hook. Upstream called it from `$workspaceId/page.tsx`
+	// (ebe0144bfb, PR #5740); the fork's kanban commit 066f6f2f77 extracted
+	// this center out of that page and dropped the call, so every session
+	// created outside the desktop (CLI, `agents.run`) lost its pane. Keep it.
+	useAutoAdoptBackgroundSessions({ store, workspaceId, isLayoutReady });
 	// (CLOUD-SEVERANCE-P2) Off by default; see `stores/local-chat`.
 	const isLocalChatEnabled = useLocalChatEnabled();
 	useClearActivePaneAttention({ store });

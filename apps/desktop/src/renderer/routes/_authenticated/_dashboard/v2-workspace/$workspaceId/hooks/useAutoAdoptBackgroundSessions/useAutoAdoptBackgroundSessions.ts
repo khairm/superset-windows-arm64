@@ -1,6 +1,7 @@
 import type { WorkspaceStore } from "@superset/panes";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useEffect } from "react";
+import { useWorkspaceEvent } from "renderer/hooks/host-service/useWorkspaceEvent";
 import { logStressEvent } from "renderer/lib/performance/stress-instrumentation";
 import { getTerminalBackgroundMarkerIdsKey } from "renderer/lib/terminal/terminal-background-intents";
 import type { StoreApi } from "zustand/vanilla";
@@ -47,6 +48,32 @@ export function useAutoAdoptBackgroundSessions({
 	// Don't act on a cached list still being refetched — it may name a session
 	// killed while the workspace was closed, which would adopt a ghost pane.
 	const isFetchingSessions = sessionsQuery.isFetching;
+
+	// (MASTER-PLUS-LAUNCH) The `isFetching` gate above only covers the
+	// mount-time race. A session created AFTER the list settles — the
+	// `agents.run` / CLI case — produces no query change at all, so without
+	// the host's lifecycle event it never gets a pane.
+	//
+	// The event that carries it is `terminal:lifecycle` / `created`, added on
+	// the host for exactly this: the pre-existing eventTypes are `exit` and the
+	// two OSC 133 command markers, and cmd.exe (this fork's Windows fallback
+	// shell) has no OSC 133 scanner at all — so on cmd a new session used to
+	// emit NOTHING until it died.
+	//
+	// `created` ONLY. The other eventTypes cannot add a session to the list, and
+	// the command markers fire on every shell command the user runs — refetching
+	// the whole list (a daemon RPC plus a re-render of every consumer) for each
+	// one is pure waste.
+	const utils = workspaceTrpc.useUtils();
+	useWorkspaceEvent(
+		"terminal:lifecycle",
+		workspaceId,
+		(payload) => {
+			if (payload.eventType !== "created") return;
+			void utils.terminal.list.invalidate({ workspaceId });
+		},
+		isLayoutReady,
+	);
 
 	useEffect(() => {
 		if (!isLayoutReady || !sessions || isFetchingSessions) return;

@@ -24,6 +24,36 @@ export function getVisibleSidebarWorkspaces<
 }
 
 /**
+ * The half of "this main belongs in the user's sidebar" that has nothing to do
+ * with local-state rows: it has a project, it lives on this machine, and that
+ * project is one the user added.
+ *
+ * Extracted because two callers need exactly this gate with OPPOSITE answers to
+ * the row question. `isAutoIncludedLocalMainWorkspace` wants the row-LESS mains
+ * (auto-included, never written to); `selectHiddenMainsToSurface` wants the
+ * row-BACKED ones (repairable). They must stay exact complements, so the shared
+ * conditions live here once rather than being written out twice.
+ */
+export function isLocalMainWorkspaceInSidebarScope<
+	Workspace extends { hostId: string; projectId: string | null },
+>(
+	workspace: Workspace,
+	{
+		sidebarProjectIds,
+		machineId,
+	}: {
+		sidebarProjectIds: ReadonlySet<string>;
+		machineId: string | null;
+	},
+): workspace is Workspace & { projectId: string } {
+	return (
+		workspace.projectId !== null &&
+		workspace.hostId === machineId &&
+		sidebarProjectIds.has(workspace.projectId)
+	);
+}
+
+/**
  * A `main` workspace is auto-included in the sidebar when the user hasn't
  * explicitly placed it (no local-state row), it lives on this machine, and its
  * project is one the user added to their sidebar. Shared by the sidebar tree
@@ -43,10 +73,11 @@ export function isAutoIncludedLocalMainWorkspace(
 	},
 ): boolean {
 	return (
-		workspace.projectId !== null &&
 		!localStateWorkspaceIds.has(workspace.id) &&
-		workspace.hostId === machineId &&
-		sidebarProjectIds.has(workspace.projectId)
+		isLocalMainWorkspaceInSidebarScope(workspace, {
+			sidebarProjectIds,
+			machineId,
+		})
 	);
 }
 

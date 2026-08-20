@@ -51,12 +51,13 @@ import { newWorkspaceAttachmentPaths } from "renderer/stores/new-workspace-attac
 import { useNewWorkspacePromptContext } from "renderer/stores/new-workspace-prompt-context";
 import { useV2WorkspaceCreateDefaultsStore } from "renderer/stores/v2-workspace-create-defaults";
 import { useDashboardNewWorkspaceDraft } from "../../DashboardNewWorkspaceDraftContext";
+import { BRANCH_ONLY_TARGET } from "../../hooks/useMasterWorkspaceTarget";
 import {
 	type PromptCardsVariant,
 	useNewWorkspacePromptCardsVariant,
 } from "../../hooks/useNewWorkspacePromptCardsVariant";
 import { DevicePicker } from "../DashboardNewWorkspaceForm/components/DevicePicker";
-import { CLOUD_HOST_ID } from "../DashboardNewWorkspaceForm/components/DevicePicker/DevicePicker";
+import { CLOUD_HOST_ID } from "../DashboardNewWorkspaceForm/components/DevicePicker/constants";
 import { useWorkspaceHostOptions } from "../DashboardNewWorkspaceForm/components/DevicePicker/hooks/useWorkspaceHostOptions";
 import { CompareBaseBranchPicker } from "../DashboardNewWorkspaceForm/PromptGroup/components/CompareBaseBranchPicker";
 import { GitHubIssueLinkCommand } from "../DashboardNewWorkspaceForm/PromptGroup/components/GitHubIssueLinkCommand";
@@ -503,6 +504,10 @@ export function NewWorkspaceScreen({
 		effortSupport ? selectedEffort : null,
 		uploadAttachments,
 		promptContext,
+		// (MASTER-PLUS-LAUNCH) This screen keeps the branch flow for every
+		// project, deliberately: a non-git submit here still gets the loud
+		// server rejection it gets today. Master mode is the modal's alone.
+		BRANCH_ONLY_TARGET,
 	);
 
 	const { otherHosts } = useWorkspaceHostOptions();

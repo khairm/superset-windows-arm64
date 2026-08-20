@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { getEventBus } from "./eventBus";
+import { getEventBus, type TerminalLifecyclePayload } from "./eventBus";
 
 // Real WS server standing in for a host-service event bus. Records upgrades
 // and client commands; `push` broadcasts a server event to connected clients.
@@ -133,6 +133,84 @@ describe("eventBus", () => {
 		// every active watch from state.
 		await waitFor(() => host.commands.length === 2, 8_000);
 		expect(host.commands[1]).toEqual({ type: "fs:watch", workspaceId: "ws-1" });
+	});
+
+	// (MASTER-PLUS-LAUNCH) The wire message is re-narrowed per eventType before
+	// it reaches a listener. `toTerminalLifecyclePayload`'s switch makes a
+	// missing arm a compile error, but the payload SHAPE per arm is a runtime
+	// claim only these assertions hold: a `created` that came through carrying
+	// command-start's fields would light the shell-running blue dot on every
+	// terminal creation. Assert each arm by name.
+	it("re-narrows every terminal:lifecycle eventType to its own payload", async () => {
+		const host = makeHostServer();
+		const bus = getEventBus(host.hostUrl, () => "tok");
+		const seen: TerminalLifecyclePayload[] = [];
+		cleanups.push(
+			bus.on("terminal:lifecycle", "ws-1", (_id, payload) => {
+				seen.push(payload);
+			}),
+		);
+		cleanups.push(() => host.server.stop(true));
+		await waitFor(() => host.clientCount() === 1);
+
+		host.push({
+			type: "terminal:lifecycle",
+			workspaceId: "ws-1",
+			terminalId: "t-1",
+			eventType: "created",
+			adopted: true,
+			occurredAt: 1,
+		});
+		host.push({
+			type: "terminal:lifecycle",
+			workspaceId: "ws-1",
+			terminalId: "t-1",
+			eventType: "command-start",
+			occurredAt: 2,
+		});
+		host.push({
+			type: "terminal:lifecycle",
+			workspaceId: "ws-1",
+			terminalId: "t-1",
+			eventType: "command-end",
+			exitCode: 0,
+			occurredAt: 3,
+		});
+		host.push({
+			type: "terminal:lifecycle",
+			workspaceId: "ws-1",
+			terminalId: "t-1",
+			eventType: "exit",
+			exitCode: 1,
+			signal: 0,
+			occurredAt: 4,
+		});
+
+		await waitFor(() => seen.length === 4);
+		expect(seen[0]).toEqual({
+			eventType: "created",
+			terminalId: "t-1",
+			adopted: true,
+			occurredAt: 1,
+		});
+		expect(seen[1]).toEqual({
+			eventType: "command-start",
+			terminalId: "t-1",
+			occurredAt: 2,
+		});
+		expect(seen[2]).toEqual({
+			eventType: "command-end",
+			terminalId: "t-1",
+			exitCode: 0,
+			occurredAt: 3,
+		});
+		expect(seen[3]).toEqual({
+			eventType: "exit",
+			terminalId: "t-1",
+			exitCode: 1,
+			signal: 0,
+			occurredAt: 4,
+		});
 	});
 
 	it("closes the connection when the last listener unsubscribes", async () => {

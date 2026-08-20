@@ -2,6 +2,7 @@ import type {
 	AgentLifecycleEventType,
 	ClientMessage,
 	ServerMessage,
+	TerminalLifecycleMessage,
 } from "@superset/host-service/events";
 import type { AgentIdentity } from "@superset/shared/agent-identity";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
@@ -41,6 +42,18 @@ export interface AgentLifecyclePayload {
 }
 
 export type TerminalLifecyclePayload =
+	| {
+			/**
+			 * (MASTER-PLUS-LAUNCH) A session was opened (or adopted) on the host.
+			 * The only lifecycle signal a brand-new session emits — see
+			 * `TerminalLifecycleMessage` in host-service for why.
+			 */
+			eventType: "created";
+			terminalId: string;
+			/** True when an already-running PTY was adopted rather than spawned. */
+			adopted: boolean;
+			occurredAt: number;
+	  }
 	| {
 			eventType: "exit";
 			terminalId: string;
@@ -214,6 +227,64 @@ function sendCommand(state: ConnectionState, message: ClientMessage): void {
 	}
 }
 
+/**
+ * Re-narrow the wire message per eventType so each payload carries only its
+ * own fields (created -> adopted; exit -> exitCode+signal+confirmed;
+ * command-end -> exitCode:number|null; command-start -> neither).
+ *
+ * A `switch` with a `never` default rather than a ternary chain: every
+ * eventType needs its OWN arm, and here the compiler says so. The chain this
+ * replaced ended in a catch-all `else` that read as command-start, so a new
+ * eventType added upstream without an arm was silently RELABELLED a command
+ * start — which would light the shell-running blue dot on every terminal
+ * creation. An eventType the types say cannot exist returns null and is
+ * dropped; a throw here would escape the socket's message handler.
+ */
+function toTerminalLifecyclePayload(
+	message: TerminalLifecycleMessage,
+): TerminalLifecyclePayload | null {
+	switch (message.eventType) {
+		case "created":
+			return {
+				eventType: "created",
+				terminalId: message.terminalId,
+				adopted: message.adopted,
+				occurredAt: message.occurredAt,
+			};
+		case "exit":
+			return {
+				eventType: "exit",
+				terminalId: message.terminalId,
+				exitCode: message.exitCode,
+				signal: message.signal,
+				// (DISPOSE-LIMBO) Forward the honesty flag. Dropping it here would
+				// re-tell every consumer that an unconfirmed close was a real exit.
+				...(message.confirmed !== undefined
+					? { confirmed: message.confirmed }
+					: {}),
+				occurredAt: message.occurredAt,
+			};
+		case "command-end":
+			return {
+				eventType: "command-end",
+				terminalId: message.terminalId,
+				exitCode: message.exitCode,
+				occurredAt: message.occurredAt,
+			};
+		case "command-start":
+			return {
+				eventType: "command-start",
+				terminalId: message.terminalId,
+				occurredAt: message.occurredAt,
+			};
+		default: {
+			const unhandled: never = message;
+			console.warn("[eventBus] unhandled terminal:lifecycle event", unhandled);
+			return null;
+		}
+	}
+}
+
 function handleMessage(state: ConnectionState, data: unknown): void {
 	let message: ServerMessage;
 	try {
@@ -274,40 +345,13 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 				},
 			);
 		} else if (message.type === "terminal:lifecycle") {
-			// Re-narrow the discriminated union per eventType so each payload
-			// carries only its own fields (exit -> exitCode+signal; command-end ->
-			// exitCode:number|null; command-start -> neither).
-			const payload: TerminalLifecyclePayload =
-				message.eventType === "exit"
-					? {
-							eventType: "exit",
-							terminalId: message.terminalId,
-							exitCode: message.exitCode,
-							signal: message.signal,
-							// (DISPOSE-LIMBO) Forward the honesty flag. Dropping it here
-							// would re-tell every consumer that an unconfirmed close was
-							// a real exit.
-							...(message.confirmed !== undefined
-								? { confirmed: message.confirmed }
-								: {}),
-							occurredAt: message.occurredAt,
-						}
-					: message.eventType === "command-end"
-						? {
-								eventType: "command-end",
-								terminalId: message.terminalId,
-								exitCode: message.exitCode,
-								occurredAt: message.occurredAt,
-							}
-						: {
-								eventType: "command-start",
-								terminalId: message.terminalId,
-								occurredAt: message.occurredAt,
-							};
-			(entry.callback as EventListener<"terminal:lifecycle">)(
-				message.workspaceId,
-				payload,
-			);
+			const payload = toTerminalLifecyclePayload(message);
+			if (payload) {
+				(entry.callback as EventListener<"terminal:lifecycle">)(
+					message.workspaceId,
+					payload,
+				);
+			}
 		} else if (message.type === "port:changed") {
 			(entry.callback as EventListener<"port:changed">)(message.workspaceId, {
 				eventType: message.eventType,

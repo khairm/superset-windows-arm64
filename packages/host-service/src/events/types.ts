@@ -37,12 +37,32 @@ export interface AgentLifecycleMessage {
 /**
  * Terminal process / command lifecycle, fanned out to renderer clients.
  *
+ * - "created": a terminal session was opened (or adopted) and its `active` row
+ *   is committed. (MASTER-PLUS-LAUNCH) This is the ONLY lifecycle event a
+ *   brand-new session emits: `command-start`/`command-end` come from an OSC 133
+ *   scanner that cmd.exe (this fork's supported Windows fallback) never feeds,
+ *   and `exit` is by definition too late. Without it a session minted by
+ *   `agents.run` or the CLI after a workspace was already open produced no
+ *   signal at all, so nothing could invalidate the terminal list and the
+ *   session never got a pane.
  * - "exit": the PTY process ended (existing behaviour).
  * - "command-start" / "command-end": a foreground command began / finished in
  *   the shell, detected from OSC 133 C/D markers (shell-running blue dot). These
  *   are NOT agent statuses — they drive a separate render-only axis.
  */
 export type TerminalLifecycleMessage =
+	| {
+			type: "terminal:lifecycle";
+			workspaceId: string;
+			terminalId: string;
+			eventType: "created";
+			/**
+			 * True when the session attached to a PTY that was already running
+			 * (host-service restart adoption) rather than spawning a new one.
+			 */
+			adopted: boolean;
+			occurredAt: number;
+	  }
 	| {
 			type: "terminal:lifecycle";
 			workspaceId: string;

@@ -1,8 +1,14 @@
+/**
+ * The workspace fields BOTH sidebar reconcilers select on. Shared so the two
+ * cannot drift into disagreeing about what a row is.
+ */
 export type LocalWorkspaceForPlacement = {
 	id: string;
 	/** Null for project-less "session" workspaces. */
 	projectId: string | null;
 	type: "main" | "worktree" | "session";
+	/** The host that owns the workspace; only this device's are reconciled. */
+	hostId: string;
 };
 
 /**

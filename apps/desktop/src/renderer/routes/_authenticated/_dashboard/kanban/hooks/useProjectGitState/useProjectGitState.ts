@@ -12,6 +12,15 @@ export interface ProjectGitState {
 	isGitRepo: boolean;
 	/** (MULTI-REPO WORKSPACE) True for a multi-repo project on the local host. */
 	isMultiRepo: boolean;
+	/**
+	 * (MASTER-PLUS-LAUNCH) True when the probe that is CURRENTLY in charge
+	 * failed. Additive: `isResolved` is untouched, so the kanban promote dialog
+	 * keeps failing closed on an errored probe. Callers that need to
+	 * distinguish "probe errored" from "probe still running" (the new-workspace
+	 * modal's master mode, which must fall back to the branch flow rather than
+	 * spin) read this instead.
+	 */
+	isError: boolean;
 }
 
 /**
@@ -30,14 +39,25 @@ export interface ProjectGitState {
 export function useProjectGitState(
 	projectId: string | null | undefined,
 	hostId?: string | null,
+	/**
+	 * (MASTER-PLUS-LAUNCH) Set false when the caller will discard the answer
+	 * anyway (the new-workspace modal pointed at a cloud sandbox or a remote
+	 * host), so neither probe goes on the wire. Kanban callers leave it alone.
+	 */
+	enabled = true,
 ): ProjectGitState {
 	const mainWorkspaceId = useProjectMainWorkspaceId(projectId || null, hostId);
 	const hostUrl = useWorkspaceHostUrl(mainWorkspaceId ?? "");
-	const enabled = Boolean(mainWorkspaceId) && Boolean(hostUrl);
+	const gitProbeEnabled =
+		enabled && Boolean(mainWorkspaceId) && Boolean(hostUrl);
 
-	const { data, isSuccess } = useQuery({
+	const {
+		data,
+		isSuccess,
+		isError: gitProbeErrored,
+	} = useQuery({
 		queryKey: ["is-git-repo", hostUrl, mainWorkspaceId],
-		enabled,
+		enabled: gitProbeEnabled,
 		queryFn: () => {
 			if (!hostUrl || !mainWorkspaceId) return null;
 			return getHostServiceClientByUrl(hostUrl).git.isRepo.query({
@@ -53,8 +73,12 @@ export function useProjectGitState(
 	// probe can't run — i.e. the project has no main workspace here.
 	const { activeHostUrl } = useLocalHostService();
 	const multiRepoEnabled =
-		Boolean(projectId) && Boolean(activeHostUrl) && !mainWorkspaceId;
-	const { data: multiRepoInfo, isSuccess: multiRepoResolved } = useQuery({
+		enabled && Boolean(projectId) && Boolean(activeHostUrl) && !mainWorkspaceId;
+	const {
+		data: multiRepoInfo,
+		isSuccess: multiRepoResolved,
+		isError: multiRepoProbeErrored,
+	} = useQuery({
 		queryKey: ["multi-repo-info", activeHostUrl, projectId],
 		enabled: multiRepoEnabled,
 		queryFn: () => {
@@ -67,6 +91,19 @@ export function useProjectGitState(
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 
+	// (MASTER-PLUS-LAUNCH) Only the ENABLED probe's error counts. TanStack keeps
+	// a query's `status: "error"` after it is disabled — it retains the last
+	// result rather than resetting — so OR-ing the two errors meant a single
+	// transient multi-repo failure before the main workspace hydrated stayed
+	// true forever, permanently forcing the modal into the branch flow for a
+	// project that had since resolved perfectly well. The two probes are
+	// mutually exclusive by construction (`multiRepoEnabled` requires
+	// `!mainWorkspaceId`), so exactly one of these can be live at a time; with
+	// neither enabled there is no probe to have failed.
+	const isError =
+		(gitProbeEnabled && gitProbeErrored) ||
+		(multiRepoEnabled && multiRepoProbeErrored);
+
 	if (multiRepoEnabled && multiRepoResolved && multiRepoInfo?.isMultiRepo) {
 		return {
 			mainWorkspaceId: null,
@@ -74,6 +111,7 @@ export function useProjectGitState(
 			// Branch-create target: the server fans the branch out per member.
 			isGitRepo: true,
 			isMultiRepo: true,
+			isError,
 		};
 	}
 
@@ -82,8 +120,9 @@ export function useProjectGitState(
 		// Resolved ONLY on success — a failed probe must NOT count as resolved
 		// (that would fall back to isGitRepo:true and re-enable branch-create for
 		// an unknown/non-git project). On error, Confirm stays disabled.
-		isResolved: enabled && isSuccess,
+		isResolved: gitProbeEnabled && isSuccess,
 		isGitRepo: data?.isGitRepo ?? true,
 		isMultiRepo: false,
+		isError,
 	};
 }
