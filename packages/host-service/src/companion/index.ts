@@ -113,6 +113,7 @@ import {
 	type TerminalLockRegistry,
 } from "./lease";
 import {
+	createFreshCurationRead,
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
 	type LifecycleSeenInput,
@@ -176,11 +177,15 @@ import {
 	clearCompanionLifecycleSeenSink,
 	clearCompanionMirrorChangeSink,
 	clearCompanionPresenceStore,
+	clearCompanionRelaunchBoundarySink,
+	clearCompanionTerminalGoneSink,
 	setCompanionAlertContextSink,
 	setCompanionBridge,
 	setCompanionLifecycleSeenSink,
 	setCompanionMirrorChangeSink,
 	setCompanionPresenceStore,
+	setCompanionRelaunchBoundarySink,
+	setCompanionTerminalGoneSink,
 } from "./registry";
 import {
 	isSessionsProjectId,
@@ -887,6 +892,14 @@ export function createCompanionBridge(
 				organizationId: options.organizationId,
 				logger,
 			}),
+			// (ALERT-RETIRE-ON-EXIT) The retirement walk's read, which must NOT be
+			// the cached probe above: a mirror write that un-snoozes a thread would
+			// see the stale hold and retract the alerts the user just brought back.
+			curatedOffAmong: createFreshCurationRead({
+				db: hostDb,
+				organizationId: options.organizationId,
+				logger,
+			}),
 			logger,
 		});
 		setCompanionLifecycleSink(lifecycleAlerts);
@@ -957,6 +970,67 @@ export function createCompanionBridge(
 		unwind.push({
 			what: "lifecycle seen sink",
 			close: async () => clearCompanionLifecycleSeenSink(lifecycleSeen),
+		});
+
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The terminal process died.
+		 *
+		 * NO host.db REVALIDATION, unlike the seen sink above, and the difference
+		 * is who is calling. That one carries a workspace claim from a RENDERER
+		 * and re-derives the relationship because a stale layout row could
+		 * otherwise let one workspace's read retract another's notification. This
+		 * one carries no claim at all — just "this terminal id is dead" — and it
+		 * comes from the host runtime's own event bus, which is the authority on
+		 * that. Asking host.db would also be asking it about a row the exit path
+		 * is in the middle of updating.
+		 */
+		const terminalGone = (input: { hostTerminalId: string }): boolean => {
+			lifecycleAlerts.retireTerminal(input.hostTerminalId);
+			return true;
+		};
+		setCompanionTerminalGoneSink(terminalGone);
+		unwind.push({
+			what: "terminal gone sink",
+			close: async () => clearCompanionTerminalGoneSink(terminalGone),
+		});
+
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched at this host-clock
+		 * instant, so every ready card about a finish before it is redundant.
+		 *
+		 * VALIDATED HERE RATHER THAN TRUSTED. The boundary is a number the
+		 * RENDERER derived (the host's own `hostNow`, less the renderer's elapsed
+		 * monotonic time), so a renderer with a broken clock, or a host whose
+		 * `hostNow` was wrong, can hand over something absurd. A boundary in the
+		 * FUTURE is the dangerous shape — it would retire every ready alert this
+		 * host holds, including finishes the user has never seen — so it is
+		 * refused with a log rather than clamped. `true` either way: the bridge
+		 * received it, which is all `accepted` has ever meant.
+		 */
+		const relaunchBoundary = (input: { boundaryMs: number }): boolean => {
+			const nowMs = Date.now();
+			if (
+				!Number.isInteger(input.boundaryMs) ||
+				input.boundaryMs <= 0 ||
+				input.boundaryMs > nowMs
+			) {
+				logger.error(
+					"refusing an out-of-range desktop relaunch boundary; stale ready notifications may survive this launch",
+					{ boundaryMs: input.boundaryMs, nowMs },
+				);
+				return true;
+			}
+			const retired = lifecycleAlerts.retireReadyBefore(input.boundaryMs);
+			logger.info("(ALERT-RETIRE-ON-EXIT) the desktop reported a relaunch", {
+				boundaryMs: input.boundaryMs,
+				retired,
+			});
+			return true;
+		};
+		setCompanionRelaunchBoundarySink(relaunchBoundary);
+		unwind.push({
+			what: "relaunch boundary sink",
+			close: async () => clearCompanionRelaunchBoundarySink(relaunchBoundary),
 		});
 		/**
 		 * (TREE-FRESHNESS-GSEQ) Mint the frame that matches how a record actually
@@ -1218,6 +1292,11 @@ export function createCompanionBridge(
 		 * Never throws into the mutation. The curation write has already committed
 		 * by the time this runs, and a freshness signal must not turn a successful
 		 * write into a failed tRPC call that the sidebar would then retry.
+		 *
+		 * (ALERT-RETIRE-ON-EXIT) IT NOW DOES TWO JOBS, in two independent
+		 * try/catch blocks: mint the freshness frame, and retire the live alerts
+		 * of any thread the user just put away. They share a trigger and nothing
+		 * else, so neither may take the other down.
 		 */
 		const mirrorChangeSink = (change: CompanionMirrorChange): void => {
 			try {
@@ -1232,6 +1311,26 @@ export function createCompanionBridge(
 			} catch (error) {
 				logger.error(
 					"could not publish tree.curation; the phone will fall back to its counts comparison for freshness",
+					{ error },
+				);
+			}
+
+			// (ALERT-RETIRE-ON-EXIT) The same write that moved `gseq` may have been
+			// the user putting a thread AWAY — snoozing, archiving or removing it.
+			// The push path already refuses to fire for a curated-off thread
+			// `(PUSH-CURATION-GATE)`, but a card already on the handset was minted
+			// before that decision and nothing took it back down.
+			//
+			// ITS OWN try/catch, AFTER and INDEPENDENT OF the publish above. The
+			// two are unrelated jobs sharing one trigger: a freshness frame that
+			// failed to mint must not cost the user a retraction, and a retraction
+			// walk that threw must not cost them a fresh tree. The manager logs
+			// what it retired, per workspace.
+			try {
+				lifecycleAlerts.retireCuratedOffAlerts();
+			} catch (error) {
+				logger.error(
+					"could not retire alerts for curated-off threads; a notification may outlive the user putting its thread away",
 					{ error },
 				);
 			}

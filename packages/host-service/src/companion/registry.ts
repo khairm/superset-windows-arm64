@@ -225,25 +225,27 @@ export function publishCompanionMirrorChanged(
  * One published-sink slot: register, identity-checked clear, and a call that
  * cannot throw into its caller.
  *
- * The two desktop-only writes this feature adds are published SEPARATELY from
- * the bridge for the same reason the presence store is. Both arrive from a
- * renderer that has no idea whether a companion bridge is running on this
- * machine, on ordinary UI events (a layout change, the user opening a chat);
- * routing them through `requireBridge()` would turn the normal "no bridge here"
- * state into a stream of errors on a path the user triggers by clicking around.
+ * The desktop-side writes this feature adds are published SEPARATELY from the
+ * bridge for the same reason the presence store is. They arrive from a renderer
+ * (or, for `terminal-gone`, from the host's own runtime) that has no idea
+ * whether a companion bridge is running on this machine, on ordinary events —
+ * a layout change, the user opening a chat, a pty exiting; routing them through
+ * `requireBridge()` would turn the normal "no bridge here" state into a stream
+ * of errors on paths the user triggers by clicking around.
  * So each answers "nobody consumed it" and the caller reports that plainly.
  *
- * They share this factory because the three rules are identical for both and
- * were previously written out twice:
+ * They share this factory because the three rules are identical for all of them
+ * and were previously written out per slot:
  *
  *  - REGISTERING OVER a live, different sink is a programming error, not a race
  *    to smooth over — two bridges in one process would disagree about who owns
  *    the renderer's state.
  *  - CLEARING is identity-checked, so a stopping bridge cannot unpublish the
  *    sink its replacement has already installed.
- *  - CALLING never throws into the caller. Both callers are renderer mutations
- *    whose real work has already happened locally; a sink that throws must not
- *    turn a successful UI action into a failed one.
+ *  - CALLING never throws into the caller. Every caller's real work has already
+ *    happened by the time the sink runs — the dot cleared, the layout changed,
+ *    the pty exited — so a sink that throws must not turn a successful action
+ *    into a failed one.
  *
  * The presence and bridge slots above are deliberately NOT folded in: they have
  * their own semantics (a bridge slot that must not be replaced at all, a
@@ -325,4 +327,66 @@ export function recordCompanionLifecycleSeen(
 	input: LifecycleSeenInput,
 ): boolean {
 	return lifecycleSeenSlot.call(input);
+}
+
+// ---------------------------------------------------------------------------
+// (ALERT-RETIRE-ON-EXIT) the two retirement signals the desktop side owns
+// ---------------------------------------------------------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) A terminal process died.
+ *
+ * Published like the seen sink and for the same reason, with ONE difference in
+ * where the caller sits: this one is the host runtime's own event bus, not a
+ * renderer mutation. That makes it the more important of the two to keep
+ * throw-proof — a companion sink that threw here would fail a PTY-exit
+ * broadcast and leave every renderer's pane state stuck on a terminal that no
+ * longer exists.
+ */
+const terminalGoneSlot = createSinkSlot<{ hostTerminalId: string }, boolean>({
+	what: "terminal-gone",
+	whenAbsent: false,
+	onThrowMessage:
+		"the terminal-gone sink threw; a phone notification may outlive the terminal it points at",
+});
+
+export const setCompanionTerminalGoneSink = terminalGoneSlot.set;
+export const clearCompanionTerminalGoneSink = terminalGoneSlot.clear;
+
+/**
+ * A terminal's pty is confirmed dead. Returns whether anything consumed it.
+ */
+export function recordCompanionTerminalGone(input: {
+	hostTerminalId: string;
+}): boolean {
+	return terminalGoneSlot.call(input);
+}
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) The desktop relaunched, and this is the host-clock
+ * instant it came up at.
+ *
+ * Reported once per host per cold start by the renderer's resync, which is the
+ * only thing that can put a desktop launch on a HOST's timeline (it derives the
+ * boundary from the host's own `hostNow` minus the renderer's elapsed monotonic
+ * time).
+ */
+const relaunchBoundarySlot = createSinkSlot<{ boundaryMs: number }, boolean>({
+	what: "relaunch-boundary",
+	whenAbsent: false,
+	onThrowMessage:
+		"the relaunch-boundary sink threw; ready notifications from before this launch may stay on the phone",
+});
+
+export const setCompanionRelaunchBoundarySink = relaunchBoundarySlot.set;
+export const clearCompanionRelaunchBoundarySink = relaunchBoundarySlot.clear;
+
+/**
+ * The desktop relaunched at `boundaryMs` (host clock). Returns whether anything
+ * consumed it.
+ */
+export function recordCompanionRelaunchBoundary(input: {
+	boundaryMs: number;
+}): boolean {
+	return relaunchBoundarySlot.call(input);
 }

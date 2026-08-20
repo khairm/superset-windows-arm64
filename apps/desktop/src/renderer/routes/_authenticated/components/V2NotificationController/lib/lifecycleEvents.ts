@@ -13,6 +13,7 @@ import {
 	useV2NotificationStore,
 	type V2NotificationSourceInput,
 } from "renderer/stores/v2-notifications";
+import { reportTerminalSeen } from "./companionAlertSync";
 import { getV2NativeNotificationContent } from "./notificationContent";
 import {
 	isV2NotificationTargetVisible,
@@ -63,11 +64,13 @@ export function handleV2AgentLifecycleEvent({
 		payload,
 		paneLayout,
 	});
-	updateV2AgentLifecycleStatus({
+	updatePaneStatus({
 		workspaceId,
 		payload,
 		paneLayout,
 		target,
+		// News, not history — so the visible-clear hop is allowed to fire.
+		fromReplay: false,
 	});
 
 	// Only Stop and PermissionRequest deserve sound. Start fires per-prompt
@@ -109,21 +112,32 @@ export function markV2AgentLifecycleTargetSeen({
 	workspaceId,
 	payload,
 	paneLayout,
+	fromReplay,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
 	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) Is this a RE-DERIVATION of history rather than news?
+	 *
+	 * The bus-resync replays each host binding through this same helper, so
+	 * without the flag the visible-clear hop below fires for events that already
+	 * happened — see the hop's own comment for what that costs. REQUIRED, not
+	 * defaulted: a new caller has to say which side of that line it is on.
+	 */
+	fromReplay: boolean;
 }): void {
 	const target = resolveV2NotificationTarget({
 		workspaceId,
 		payload,
 		paneLayout,
 	});
-	updateV2AgentLifecycleStatus({
+	updatePaneStatus({
 		workspaceId,
 		payload,
 		paneLayout,
 		target,
+		fromReplay,
 	});
 }
 
@@ -202,12 +216,19 @@ export function handleV2TerminalLifecycleEvent({
 	]);
 }
 
-function updatePaneStatus(
-	workspaceId: string,
-	payload: AgentLifecyclePayload,
-	target: V2NotificationTarget,
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
-): void {
+function updatePaneStatus({
+	workspaceId,
+	payload,
+	paneLayout,
+	target,
+	fromReplay,
+}: {
+	workspaceId: string;
+	payload: AgentLifecyclePayload;
+	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	target: V2NotificationTarget;
+	fromReplay: boolean;
+}): void {
 	const store = useV2NotificationStore.getState();
 	const targetVisible = isV2NotificationTargetVisible({
 		currentWorkspaceId: getCurrentWorkspaceId(),
@@ -276,6 +297,72 @@ function updatePaneStatus(
 	});
 
 	clearSources(workspaceId, transition.clearSources);
+
+	// (ALERT-RETIRE-ON-EXIT) THE VISIBLE-CLEAR HOP. A turn that ends while the
+	// user is LOOKING AT the pane never raises a green — `resolveV2AgentStatusTransition`
+	// answers `axes: null` and clears the source instead — so nothing downstream
+	// ever calls the mark-read helper, and the phone alert the host minted for
+	// that same finish stood until its six-hour TTL. Watching the agent finish
+	// on screen is the strongest evidence of a read there is.
+	//
+	// `payload.occurredAt` IS THE ALERT'S SUBJECT. The host hashes its alert id
+	// from the outcome event's own instant (notifications.ts computes it once
+	// and every frame about the alert carries it), so this is the one value that
+	// names the finish being cancelled. The binding's `lastEventAt` would not:
+	// it advances for events that raise no alert at all.
+	//
+	// MARKED SEEN LOCALLY TOO, not only reported. Without the local mark the
+	// next resync compares the binding against an absent seen record and
+	// re-raises the very green this cleared.
+	//
+	// NOT `markTerminalSeenAndReportRead`. Its guard refuses exactly this case —
+	// no review entry was ever created, so it has nothing it recognises as
+	// evidence and returns before reporting.
+	//
+	// NO DEBOUNCE. Idempotence is structural: the host keeps a retracted row per
+	// alert id until the TTL and a repeat is inert, and the local seen mark is
+	// monotonic.
+	//
+	// STOP AND FAILED ONLY. Those are the two outcomes that mint an alert;
+	// BackgroundRunning shares their transition but mints nothing, so reporting
+	// it would broadcast a retraction for a finish that never happened.
+	//
+	// LIVE EVENTS ONLY. The bus-resync replays every host binding through this
+	// same function with the binding's `lastEventAt` as `occurredAt`, and a
+	// replay is not a read: (a) `lastEventAt` advances for events that mint no
+	// alert, so the hop would broadcast a retraction naming an instant no alert
+	// id was ever hashed from — a blind claim that can evict a real one from the
+	// phone's fixed-size window; and (b) a relaunch replays `lastEventType:
+	// "Failed"` on every open agent tab, and error cards are meant to SURVIVE a
+	// relaunch until the user looks. The repair path in `resyncAgentStatus` is
+	// where a replay may report a read, off durable seen marks and never off the
+	// mere fact that the pane is on screen.
+	//
+	// PRESENCE, NOT LAYOUT. `targetVisible` only says the pane occupies the
+	// active tab; it is equally true with the screen locked, the window behind
+	// the browser, or the user out of the room — which is the feature's PRIMARY
+	// scenario (a turn finishing on the active pane while they are away) and the
+	// one where retracting the alert is both wrong and irreversible. The same
+	// predicate `shouldSuppress` uses for the chime is the presence test here.
+	if (
+		!fromReplay &&
+		(payload.eventType === "Stop" || payload.eventType === "Failed") &&
+		transition.axes === null &&
+		target.terminalId.length > 0 &&
+		targetVisible &&
+		// LAST, because it is the only one that costs anything: `document.hidden`
+		// and `hasFocus()` are DOM reads, and every predicate above is a field
+		// comparison that rules this event out for free.
+		isUserPresent()
+	) {
+		store.markTerminalSeen(target.terminalId, payload.occurredAt);
+		void reportTerminalSeen({
+			workspaceId,
+			terminalId: target.terminalId,
+			seenThroughAt: payload.occurredAt,
+		});
+	}
+
 	// (AGENT-SHELL-BLUE) EVERY agent lifecycle payload that resolves to a
 	// terminal proves an agent runs there — including axes-null events like
 	// Attached/SessionStart, which are precisely the first (and while the agent
@@ -351,20 +438,6 @@ function updatePaneStatus(
 	}
 }
 
-function updateV2AgentLifecycleStatus({
-	workspaceId,
-	payload,
-	paneLayout,
-	target,
-}: {
-	workspaceId: string;
-	payload: AgentLifecyclePayload;
-	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
-	target: V2NotificationTarget;
-}): void {
-	updatePaneStatus(workspaceId, payload, target, paneLayout);
-}
-
 function getCurrentWorkspaceId(): string | null {
 	try {
 		// Matches both `/workspace/<id>` and `/v2-workspace/<id>` route shapes.
@@ -375,12 +448,25 @@ function getCurrentWorkspaceId(): string | null {
 	}
 }
 
+/**
+ * Is the user actually AT the machine — window shown and focused?
+ *
+ * The chime's suppression test and the visible-clear hop ask the same question
+ * for opposite reasons (do not ring at someone who is watching; do not retract
+ * a phone alert for someone who is not), so they share one predicate rather
+ * than growing two that can drift apart.
+ */
+function isUserPresent(): boolean {
+	if (typeof document !== "undefined" && document.hidden) return false;
+	if (typeof window !== "undefined" && !document.hasFocus()) return false;
+	return true;
+}
+
 function shouldSuppress(
 	target: V2NotificationTarget,
 	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
 ): boolean {
-	if (typeof document !== "undefined" && document.hidden) return false;
-	if (typeof window !== "undefined" && !document.hasFocus()) return false;
+	if (!isUserPresent()) return false;
 
 	return isV2NotificationTargetVisible({
 		currentWorkspaceId: getCurrentWorkspaceId(),

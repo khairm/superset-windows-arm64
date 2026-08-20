@@ -6,6 +6,9 @@ import {
 	watchSingleFile,
 } from "@superset/workspace-fs/host";
 import type { Hono } from "hono";
+// (ALERT-RETIRE-ON-EXIT) fork-only. No cycle: `companion/registry` imports
+// `./index` for TYPES only, and never reaches back into the event bus.
+import { recordCompanionTerminalGone } from "../companion/registry.ts";
 import type { HostDb } from "../db/index.ts";
 import { portManager } from "../ports/port-manager.ts";
 import { getLabelsForWorkspace } from "../ports/static-ports.ts";
@@ -228,6 +231,21 @@ export class EventBus {
 		>,
 	): void {
 		this.broadcast({ type: "terminal:lifecycle", ...message });
+		// (ALERT-RETIRE-ON-EXIT) fork-only. A dead terminal takes its phone and
+		// watch cards down with it: tapping one opens a chat that no longer
+		// exists. This is the ONLY source for that — the hook stream cannot
+		// report an agent that was killed, crashed or had its window closed.
+		//
+		// UNCONFIRMED EXITS ARE IGNORED (DISPOSE-LIMBO): `confirmed: false` means
+		// the daemon never answered and the process may still be running, which
+		// is not evidence to retract anything on. Reading `confirmed` is safe
+		// only after `eventType` has narrowed the union to the exit variant.
+		//
+		// It never throws into the broadcast: `recordCompanionTerminalGone`
+		// swallows a sink fault and answers `false`.
+		if (message.eventType === "exit" && message.confirmed !== false) {
+			recordCompanionTerminalGone({ hostTerminalId: message.terminalId });
+		}
 	}
 
 	/**

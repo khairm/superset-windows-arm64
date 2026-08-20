@@ -74,6 +74,7 @@ import {
 	recordCompanionAlertContexts,
 	recordCompanionLifecycleSeen,
 	recordCompanionPresenceBeacon,
+	recordCompanionRelaunchBoundary,
 } from "../../../companion/registry";
 import { protectedProcedure, router } from "../../index";
 
@@ -278,6 +279,21 @@ const lifecycleSeenInput = z.object({
 	seenThroughAt: z.number().int().positive(),
 });
 
+/**
+ * (ALERT-RETIRE-ON-EXIT) The instant this desktop launch came up, on the HOST's
+ * clock.
+ *
+ * `.int()` IS SAFE HERE ONLY BECAUSE THE RENDERER FLOORS. The raw value it
+ * derives is fractional — `hostNow` minus a `performance.now()` delta — and an
+ * unfloored one would be refused at this boundary and silently lose the whole
+ * feature for that host. The floor lives at the call site, next to the
+ * subtraction that makes it fractional; this line is what makes forgetting it
+ * loud rather than quiet.
+ */
+const relaunchBoundaryInput = z.object({
+	boundaryMs: z.number().int().positive(),
+});
+
 export const companionRouter = router({
 	/**
 	 * Whether the feature is on, and whether it actually came up. A UI must be
@@ -403,6 +419,30 @@ export const companionRouter = router({
 					hostTerminalId: input.terminalId,
 					hostWorkspaceId: input.workspaceId,
 					seenThroughAt: input.seenThroughAt,
+				}),
+			};
+		}),
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched: take down the ready cards
+	 * for finishes that predate this launch.
+	 *
+	 * ONE REPORT PER HOST PER COLD START, latched in the renderer. It is not a
+	 * heartbeat and must not become one: the boundary it carries is the instant
+	 * THIS launch came up, so re-sending it after a reconnect would be a lie
+	 * about a launch that already happened, and re-sending it after a genuine
+	 * relaunch is exactly what a new latch does.
+	 *
+	 * Never throws for the off states, like `markLifecycleSeen` and for the same
+	 * reason: bridge-off is the normal state on most machines and this fires
+	 * unprompted on every launch. `accepted: false` is the answer, not an error.
+	 */
+	retireStaleReadyAlerts: protectedProcedure
+		.input(relaunchBoundaryInput)
+		.mutation(({ input }): { accepted: boolean } => {
+			return {
+				accepted: recordCompanionRelaunchBoundary({
+					boundaryMs: input.boundaryMs,
 				}),
 			};
 		}),

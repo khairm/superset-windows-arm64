@@ -195,6 +195,8 @@ export function V2NotificationController() {
 					occurredAt: Date.now(),
 				},
 				paneLayout: workspace.paneLayout,
+				// A live event off the Electron fallback, not a replay of history.
+				fromReplay: false,
 			});
 
 			// Statuses derive from host bindings, so the host must hear the

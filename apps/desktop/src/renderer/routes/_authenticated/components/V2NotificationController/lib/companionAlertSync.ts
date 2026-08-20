@@ -307,6 +307,40 @@ export function releaseAlertContextSync(workspaceId: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// the two reports, and the two rules they share
+// ---------------------------------------------------------------------------
+
+/**
+ * A host-clock instant this renderer may put on the wire.
+ *
+ * BOTH REPORTS CARRY ONE and both tRPC inputs are `.int().positive()`, so an
+ * unfloored or absurd value would come back as a tRPC ERROR — a rejected
+ * promise on two paths that must never produce one. Guarded here rather than
+ * trusted, and `isSafeInteger` rather than `isInteger` because a value past
+ * 2^53 has already lost the millisecond it is supposed to name.
+ */
+function isReportableInstant(value: number): boolean {
+	return Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Run one companion mutation and answer whether a BRIDGE ACTUALLY CONSUMED IT.
+ *
+ * Never rejects, which is the shared contract of everything below: a host that
+ * is down, a bridge that is off (the normal state on most machines) or a
+ * mutation that 500s are all `false`. The distinction matters to callers —
+ * `accepted: false` is the documented transient while a host's bridge finishes
+ * registering, and recording it as done would suppress the retry.
+ */
+function mutateAccepted(
+	mutate: () => Promise<{ accepted?: boolean } | undefined>,
+): Promise<boolean> {
+	return mutate()
+		.then((result) => result?.accepted === true)
+		.catch(() => false);
+}
+
+// ---------------------------------------------------------------------------
 // the seen signal
 // ---------------------------------------------------------------------------
 
@@ -443,26 +477,92 @@ export function reportTerminalSeen({
 }): Promise<boolean> {
 	const hostUrl = hostUrlByWorkspaceId.get(workspaceId);
 	if (hostUrl === undefined) return Promise.resolve(false);
-	if (!Number.isInteger(seenThroughAt) || seenThroughAt <= 0) {
-		return Promise.resolve(false);
-	}
-	return getHostServiceClientByUrl(hostUrl)
-		.companion.markLifecycleSeen.mutate({
+	if (!isReportableInstant(seenThroughAt)) return Promise.resolve(false);
+	// Silent on failure: the dot has already cleared locally, the frame's own
+	// 24 h TTL and the phone's foreground sweep are the backstops, and there is
+	// nothing the user could do with this.
+	return mutateAccepted(() =>
+		getHostServiceClientByUrl(hostUrl).companion.markLifecycleSeen.mutate({
 			workspaceId,
 			terminalId,
 			seenThroughAt,
-		})
-		.then((result) => {
-			const accepted = result?.accepted === true;
-			if (!accepted) {
-				log({ event: "seen_report_unconsumed", hostUrl, terminalId });
-			}
-			return accepted;
-		})
-		.catch(() => {
-			// Silent: the dot has already cleared locally, the frame's own 24 h TTL
-			// and the phone's foreground sweep are the backstops, and there is
-			// nothing the user could do with this.
-			return false;
-		});
+		}),
+	).then((accepted) => {
+		if (!accepted) {
+			log({ event: "seen_report_unconsumed", hostUrl, terminalId });
+		}
+		return accepted;
+	});
+}
+
+// ---------------------------------------------------------------------------
+// (ALERT-RETIRE-ON-EXIT) the relaunch boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) Hosts that have ACCEPTED this launch's boundary.
+ *
+ * NOT CLEARED BY `forgetAlertContextSyncsForHost`, and that is the one thing
+ * about this latch worth being careful with. A host reconnect is not a new
+ * desktop launch: the boundary would be the same instant, the retirement it
+ * asks for has already happened, and re-sending it on every flap would turn a
+ * once-per-launch signal into a repeating one. Only a genuine relaunch clears
+ * it, by ending the renderer process the Set lives in.
+ *
+ * Added ONLY on `accepted === true`. A host whose bridge was still registering
+ * answers `false`, and that report changed nothing — leaving it unlatched is
+ * what lets the next resync epoch try again.
+ */
+const relaunchBoundaryAcknowledgedHosts = new Set<string>();
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) Tell one host when this desktop launch came up, so it
+ * can take down the ready cards for finishes that predate it.
+ *
+ * KEYED BY HOST URL, not by workspace, unlike `reportTerminalSeen` beside it.
+ * The boundary is a fact about a (renderer, host) pair rather than about any
+ * one workspace, and the caller — the resync — already holds the host URL.
+ *
+ * SAME SILENT-ON-FAILURE CONTRACT as `reportTerminalSeen`: a host that is down,
+ * a bridge that is off (the normal state on most machines) or a mutation that
+ * 500s all resolve `false`. Nothing here may reject, and nothing may surface to
+ * the user — the desktop has already relaunched and shown them everything.
+ *
+ * THE LATCH IS CHECKED IN HERE, not by the caller. "Once per host per launch"
+ * is this function's own rule — the Set is private to it — and a caller that
+ * had to remember to ask first is a caller that can forget.
+ *
+ * The instant guard is the shared one — see `isReportableInstant`.
+ */
+export function reportRelaunchBoundary({
+	hostUrl,
+	boundaryMs,
+}: {
+	hostUrl: string;
+	boundaryMs: number;
+}): Promise<boolean> {
+	if (relaunchBoundaryAcknowledgedHosts.has(hostUrl)) {
+		return Promise.resolve(false);
+	}
+	if (!isReportableInstant(boundaryMs)) {
+		log({ event: "relaunch_boundary_refused", hostUrl });
+		return Promise.resolve(false);
+	}
+	return mutateAccepted(() =>
+		getHostServiceClientByUrl(hostUrl).companion.retireStaleReadyAlerts.mutate({
+			boundaryMs,
+		}),
+	).then((accepted) => {
+		if (accepted) {
+			relaunchBoundaryAcknowledgedHosts.add(hostUrl);
+		} else {
+			log({ event: "relaunch_boundary_unconsumed", hostUrl });
+		}
+		return accepted;
+	});
+}
+
+/** Test seam only: a fresh launch is a fresh renderer process in production. */
+export function resetRelaunchBoundaryLatchForTest(): void {
+	relaunchBoundaryAcknowledgedHosts.clear();
 }

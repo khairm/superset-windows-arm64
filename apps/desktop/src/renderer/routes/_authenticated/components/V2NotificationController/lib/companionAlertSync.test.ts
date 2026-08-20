@@ -32,11 +32,21 @@ interface SeenCall {
 	reject: (error: Error) => void;
 }
 
+interface RelaunchCall {
+	boundaryMs: number;
+	resolve: (accepted: boolean) => void;
+	reject: (error: Error) => void;
+}
+
 let syncCalls: SyncCall[] = [];
 let seenCalls: SeenCall[] = [];
+let relaunchCalls: RelaunchCall[] = [];
 /** When set, sync calls settle immediately with this acceptance. */
 let autoAcceptSync: boolean | null = true;
 let autoAcceptSeen: boolean | null = true;
+let autoAcceptRelaunch: boolean | null = true;
+/** When set, the relaunch mutation rejects instead of resolving. */
+let relaunchThrows = false;
 
 function makeClient() {
 	return {
@@ -73,6 +83,22 @@ function makeClient() {
 						if (autoAcceptSeen !== null) call.resolve(autoAcceptSeen);
 					}),
 			},
+			retireStaleReadyAlerts: {
+				mutate: (input: { boundaryMs: number }) =>
+					new Promise<{ accepted: boolean }>((resolve, reject) => {
+						const call: RelaunchCall = {
+							...input,
+							resolve: (accepted) => resolve({ accepted }),
+							reject,
+						};
+						relaunchCalls.push(call);
+						if (relaunchThrows) {
+							call.reject(new Error("host is down"));
+							return;
+						}
+						if (autoAcceptRelaunch !== null) call.resolve(autoAcceptRelaunch);
+					}),
+			},
 		},
 	};
 }
@@ -95,7 +121,9 @@ const {
 	queueAlertContextSync,
 	registerWorkspaceHost,
 	releaseAlertContextSync,
+	reportRelaunchBoundary,
 	reportTerminalSeen,
+	resetRelaunchBoundaryLatchForTest,
 	unregisterWorkspaceHost,
 } = await import("./companionAlertSync");
 const { useV2NotificationStore } = await import(
@@ -136,8 +164,12 @@ async function flush(): Promise<void> {
 beforeEach(() => {
 	syncCalls = [];
 	seenCalls = [];
+	relaunchCalls = [];
 	autoAcceptSync = true;
 	autoAcceptSeen = true;
+	autoAcceptRelaunch = true;
+	relaunchThrows = false;
+	resetRelaunchBoundaryLatchForTest();
 	releaseAlertContextSync(WORKSPACE);
 });
 
@@ -667,5 +699,107 @@ describe("(ONE-BUZZ-UNTIL-READ) markTerminalSeenAndReportRead", () => {
 		expect(
 			useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
 		).toBeUndefined();
+	});
+});
+
+// --- (ALERT-RETIRE-ON-EXIT) the relaunch boundary ---------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) The boundary is a ONCE-PER-LAUNCH statement, and the
+ * latch is what keeps it one. Everything here is about that latch: what sets
+ * it, what must not, and what a report the host refused leaves behind.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) reportRelaunchBoundary", () => {
+	it("sends the boundary and answers true on acceptance", async () => {
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(true);
+		expect(relaunchCalls).toHaveLength(1);
+		expect(relaunchCalls[0]?.boundaryMs).toBe(1_700_000_000_000);
+	});
+
+	it("says nothing a second time — the host already took this launch", async () => {
+		await reportRelaunchBoundary({
+			hostUrl: HOST,
+			boundaryMs: 1_700_000_000_000,
+		});
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(false);
+		expect(relaunchCalls).toHaveLength(1);
+	});
+
+	it("RETRIES after a host that refused it", async () => {
+		autoAcceptRelaunch = false;
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(false);
+
+		autoAcceptRelaunch = true;
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(true);
+		expect(relaunchCalls).toHaveLength(2);
+	});
+
+	it("never rejects when the transport throws, and retries after", async () => {
+		relaunchThrows = true;
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(false);
+
+		relaunchThrows = false;
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(true);
+		expect(relaunchCalls).toHaveLength(2);
+	});
+
+	it("refuses a non-integer boundary without touching the wire", async () => {
+		await expect(
+			reportRelaunchBoundary({
+				hostUrl: HOST,
+				boundaryMs: 1_700_000_000_000.7,
+			}),
+		).resolves.toBe(false);
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 0 }),
+		).resolves.toBe(false);
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: -1 }),
+		).resolves.toBe(false);
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: Number.NaN }),
+		).resolves.toBe(false);
+		await expect(
+			reportRelaunchBoundary({
+				hostUrl: HOST,
+				boundaryMs: Number.POSITIVE_INFINITY,
+			}),
+		).resolves.toBe(false);
+		expect(relaunchCalls).toHaveLength(0);
+		// And a refusal is not a latch: the real boundary still goes.
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_700_000_000_000 }),
+		).resolves.toBe(true);
+	});
+
+	it("latches PER HOST", async () => {
+		await reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_000 });
+		await expect(
+			reportRelaunchBoundary({ hostUrl: "http://host-b", boundaryMs: 1_000 }),
+		).resolves.toBe(true);
+		expect(relaunchCalls).toHaveLength(2);
+	});
+
+	it("survives a host RECONNECT — a reconnect is not a new launch", async () => {
+		await reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_000 });
+		// The reconnect repair drops the tab-context memory for this host. The
+		// launch boundary is NOT part of that memory: the app did not relaunch.
+		forgetAlertContextSyncsForHost(HOST);
+		await expect(
+			reportRelaunchBoundary({ hostUrl: HOST, boundaryMs: 1_000 }),
+		).resolves.toBe(false);
+		expect(relaunchCalls).toHaveLength(1);
 	});
 });

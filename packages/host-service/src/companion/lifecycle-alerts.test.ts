@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
+	type LifecycleAlertManager,
 	MAX_STATE_ENTRIES,
 } from "./lifecycle-alerts";
 import type { PushAlertContext } from "./push-context";
@@ -72,6 +73,10 @@ function setup(
 	let context: PushAlertContext | null = null;
 	/** Every context the manager asked for, in order — retry freshness proof. */
 	const contextCalls: Array<{ hostTerminalId: string }> = [];
+	/** (ALERT-RETIRE-ON-EXIT) What the injected curation read answers, per test. */
+	let curatedOff: (hostWorkspaceId: string) => boolean = () => false;
+	/** One entry per retirement walk: the workspaces it asked about, in order. */
+	const curationAsks: string[][] = [];
 	const manager = createLifecycleAlertManager({
 		presence: {
 			present: () => ({
@@ -123,6 +128,15 @@ function setup(
 						);
 					},
 		isCuratedOff: () => false,
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The fresh curation read, as a test seam. It
+		 * records what it was asked so a test can prove the walk asked ONCE for
+		 * the whole live set rather than once per workspace.
+		 */
+		curatedOffAmong: (hostWorkspaceIds) => {
+			curationAsks.push([...hostWorkspaceIds]);
+			return new Set(hostWorkspaceIds.filter((id) => curatedOff(id)));
+		},
 		logger: {
 			info: (message, fields) => infos.push({ message, fields }),
 			warn: () => {},
@@ -130,6 +144,7 @@ function setup(
 		},
 		now: () => now,
 	});
+	liveManagers.push(manager);
 	return {
 		manager,
 		sent,
@@ -144,8 +159,23 @@ function setup(
 		setFailSends: (value: boolean) => (failSends = value),
 		setGate: (value: Promise<void> | null) => (gate = value),
 		setContext: (value: PushAlertContext | null) => (context = value),
+		curationAsks,
+		setCuratedOff: (value: (hostWorkspaceId: string) => boolean) =>
+			(curatedOff = value),
 	};
 }
+
+/**
+ * Every manager a test made, stopped after it. A manager left running keeps a
+ * 2 s sweep timer alive for the rest of the file, and 34 hand-written `stop()`
+ * calls is 34 chances to forget one.
+ */
+const liveManagers: LifecycleAlertManager[] = [];
+
+afterEach(() => {
+	for (const manager of liveManagers) manager.stop();
+	liveManagers.length = 0;
+});
 
 function event(overrides: Record<string, unknown> = {}) {
 	return {
@@ -168,6 +198,24 @@ function cycle(armedAtMs: number, overrides: Record<string, unknown> = {}) {
 		event({
 			outcome: "ready",
 			eventType: "Stop",
+			occurredAtMs: armedAtMs + 1_000,
+			previousEventType: "Start",
+			previousEventAtMs: armedAtMs,
+			...overrides,
+		}),
+	];
+}
+
+/** One cycle that DIES: Start at `armedAtMs`, StopFailure after it. */
+function failedCycle(
+	armedAtMs: number,
+	overrides: Record<string, unknown> = {},
+) {
+	return [
+		event({ occurredAtMs: armedAtMs, ...overrides }),
+		event({
+			outcome: "failed",
+			eventType: "StopFailure",
 			occurredAtMs: armedAtMs + 1_000,
 			previousEventType: "Start",
 			previousEventAtMs: armedAtMs,
@@ -226,7 +274,6 @@ describe("lifecycle alerts", () => {
 			expect(bytes).toHaveLength(16);
 			expect(bytes.toString("base64url")).toBe(row.alertId);
 		}
-		state.manager.stop();
 	});
 
 	it("turns a deferred failure into error, never ready", async () => {
@@ -246,7 +293,6 @@ describe("lifecycle alerts", () => {
 		);
 		await tick();
 		expect(state.sent.map((row) => row.kind)).toEqual(["e"]);
-		state.manager.stop();
 	});
 
 	it("holds while present and releases after presence changes", async () => {
@@ -266,7 +312,6 @@ describe("lifecycle alerts", () => {
 		state.setPresent(false);
 		await sweep();
 		expect(state.sent).toHaveLength(1);
-		state.manager.stop();
 	});
 
 	it("cancels a held alert when the terminal starts working again", async () => {
@@ -300,7 +345,6 @@ describe("lifecycle alerts", () => {
 		);
 		await tick();
 		expect(state.sent).toHaveLength(1);
-		state.manager.stop();
 	});
 
 	it("cancels a held alert when the session ends", async () => {
@@ -319,7 +363,6 @@ describe("lifecycle alerts", () => {
 		state.setPresent(false);
 		await sweep();
 		expect(state.sent).toEqual([]);
-		state.manager.stop();
 	});
 
 	it("leaves another terminal's held alert alone", async () => {
@@ -331,7 +374,6 @@ describe("lifecycle alerts", () => {
 		state.setPresent(false);
 		await sweep();
 		expect(state.sent).toHaveLength(1);
-		state.manager.stop();
 	});
 
 	it("alerts on a failure that lands on a blocked terminal, but never a ready", async () => {
@@ -347,7 +389,6 @@ describe("lifecycle alerts", () => {
 		);
 		await tick();
 		expect(failed.sent.map((row) => row.kind)).toEqual(["e"]);
-		failed.manager.stop();
 
 		// Answering a prompt and ending the turn is not fresh completed work.
 		const ready = setup();
@@ -362,7 +403,6 @@ describe("lifecycle alerts", () => {
 		);
 		await tick();
 		expect(ready.sent).toEqual([]);
-		ready.manager.stop();
 	});
 
 	it("never sends the same alert twice when a sweep overlaps an in-flight send", async () => {
@@ -384,7 +424,6 @@ describe("lifecycle alerts", () => {
 		release();
 		await tick();
 		expect(state.sent).toHaveLength(1);
-		state.manager.stop();
 	});
 
 	it("holds a failed delivery and retries it inside the TTL", async () => {
@@ -408,7 +447,6 @@ describe("lifecycle alerts", () => {
 		await sweep();
 		expect(state.sent).toHaveLength(2);
 		expect(state.sent[0]?.alertId).toBe(state.sent[1]?.alertId ?? "");
-		state.manager.stop();
 	});
 
 	it("applies a re-delivered hook event exactly once", async () => {
@@ -436,7 +474,6 @@ describe("lifecycle alerts", () => {
 		expect(
 			state.infos.some((line) => line.message.includes("duplicate lifecycle")),
 		).toBe(true);
-		state.manager.stop();
 	});
 });
 
@@ -675,16 +712,7 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 		// the user has not seen is exactly what must not be quietly folded away —
 		// so `e` keeps the original behaviour.
 		const state = setup();
-		state.manager.record(event({ occurredAtMs: 1_000 }));
-		state.manager.record(
-			event({
-				outcome: "failed",
-				eventType: "StopFailure",
-				occurredAtMs: 2_000,
-				previousEventType: "Start",
-				previousEventAtMs: 1_000,
-			}),
-		);
+		for (const e of failedCycle(1_000)) state.manager.record(e);
 		await tick();
 		expect(state.sent[0]?.kind).toBe("e");
 
@@ -1284,18 +1312,15 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 		expect(state.errors.length).toBeGreaterThan(0);
 	});
 
-	it("does not touch an ERROR alert — reading a chat does not un-kill an agent", async () => {
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) USER DECISION, 2026-08-20, reversing the original
+	 * design (which this test used to pin the other way round). Reading the chat
+	 * is exactly how the user learns the agent died, so the error card must come
+	 * down with the ready one.
+	 */
+	it("retracts an ERROR alert the read covers — opening the chat IS finding out", async () => {
 		const state = setup();
-		state.manager.record(event({ occurredAtMs: 1_000 }));
-		state.manager.record(
-			event({
-				outcome: "failed",
-				eventType: "StopFailure",
-				occurredAtMs: 2_000,
-				previousEventType: "Start",
-				previousEventAtMs: 1_000,
-			}),
-		);
+		for (const e of failedCycle(1_000)) state.manager.record(e);
 		await tick();
 		expect(state.sent[0]?.kind).toBe("e");
 		state.manager.markLifecycleSeen({
@@ -1304,9 +1329,60 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
 			seenThroughAt: 2_000,
 		});
 		await tick();
-		// The `c` that went out names the `g` id, which nothing holds. The error
-		// notification stands.
-		expect(state.retracted).not.toContain(state.sent[0]?.alertId ?? "");
+		// The LIVE MAP answered, so the `e` row itself was retired — not the
+		// blind `g` hash, which nothing holds. Exactly one `c` went out.
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) An `e` retraction carries NO terminal handle. The
+	 * phone reads a `c` terminal-first, and ready cards are keyed by handle — so
+	 * an error retraction that named its terminal cancelled the unread STANDING
+	 * READY card for the same terminal. `gx` still rides along: the frame
+	 * builder requires a positive outcome instant, and an `e` row has one.
+	 */
+	it("sends an e retraction with an EMPTY handle and a real gx", async () => {
+		const state = setup();
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		state.manager.markLifecycleSeen({
+			hostTerminalId: "terminal-1",
+			hostWorkspaceId: "workspace-1",
+			seenThroughAt: 2_000,
+		});
+		await tick();
+		expect(state.retractions).toHaveLength(1);
+		expect(state.retractions[0]?.terminalHandle).toBe("");
+		expect(state.retractions[0]?.outcomeAtMs).toBe(2_000);
+	});
+
+	it("keeps the real handle on a g retraction", async () => {
+		const state = setup();
+		for (const step of cycle(1_000)) state.manager.record(step);
+		await tick();
+		state.manager.markLifecycleSeen({
+			hostTerminalId: "terminal-1",
+			hostWorkspaceId: "workspace-1",
+			seenThroughAt: 2_000,
+		});
+		await tick();
+		expect(state.retractions).toHaveLength(1);
+		expect(state.retractions[0]?.terminalHandle).toBe(TERMINAL_HANDLE);
+		expect(state.retractions[0]?.outcomeAtMs).toBe(2_000);
+	});
+
+	it("still falls back to the READY hash alone when nothing is held", async () => {
+		// The blind restart path stays `g`-only: hashing an `e` id too would
+		// double every blind broadcast on the path that must stay rarest.
+		const state = setup({ proofEpochs: null });
+		state.manager.markLifecycleSeen({
+			hostTerminalId: "terminal-1",
+			hostWorkspaceId: "workspace-1",
+			seenThroughAt: 2_000,
+		});
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(2_000)]);
+		expect(state.retractions[0]?.terminalHandle).toBe(TERMINAL_HANDLE);
 	});
 });
 
@@ -1595,4 +1671,430 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 		await tick();
 		expect(state.retracted).toHaveLength(1);
 	});
+});
+
+// ---------------------------------------------------------------------------
+// (ALERT-RETIRE-ON-EXIT) the three retirement triggers
+// ---------------------------------------------------------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) A notification must not outlive the thing it points
+ * at. Three ways the desktop can make one moot that the hook stream cannot
+ * report on its own: the terminal process died, the app relaunched, or the user
+ * took the thread off their sidebar.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) retireTerminal", () => {
+	it("deletes a HELD alert in silence", async () => {
+		const state = setup({ present: true });
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toEqual([]);
+
+		state.manager.retireTerminal("terminal-1");
+		state.setPresent(false);
+		await sweep();
+		// Never reached a device, so nothing to take down and nothing to send.
+		expect(state.sent).toEqual([]);
+		expect(state.retracted).toEqual([]);
+		expect(
+			state.infos.some((line) => line.message.includes("cancelled a held")),
+		).toBe(true);
+	});
+
+	it("retracts a SENDING alert the moment its delivery lands", async () => {
+		const state = setup();
+		let release = () => {};
+		state.setGate(
+			new Promise<void>((resolve) => {
+				release = () => resolve();
+			}),
+		);
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+		expect(state.retracted).toEqual([]);
+
+		state.manager.retireTerminal("terminal-1");
+		state.setGate(null);
+		release();
+		await tick();
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+
+	it("retracts a SENT alert once", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+
+		state.manager.retireTerminal("terminal-1");
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+
+	it("retracts a STANDING alert — the card is still on the handset", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		// A newer cycle leaves the delivered alert standing rather than retracted.
+		state.manager.record(event({ occurredAtMs: 3_000 }));
+		await tick();
+		expect(state.retracted).toEqual([]);
+
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: state.sent[0]?.alertId ?? "",
+				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 2_000,
+			},
+		]);
+	});
+
+	it("is inert against an already RETRACTED alert", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		state.manager.record(
+			event({ outcome: "session-end", occurredAtMs: 3_000 }),
+		);
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+	});
+
+	it("takes down the ERROR card too — a dead terminal opens nothing", async () => {
+		const state = setup();
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent[0]?.kind).toBe("e");
+
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+		// (ALERT-RETIRE-ON-EXIT) and with no handle, so it cannot cancel a ready
+		// card keyed by the same terminal.
+		expect(state.retractions[0]?.terminalHandle).toBe("");
+	});
+
+	it("leaves OTHER terminals alone", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		for (const e of cycle(1_000, { hostTerminalId: "terminal-2" })) {
+			state.manager.record(e);
+		}
+		await tick();
+		expect(state.sent).toHaveLength(2);
+
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+});
+
+describe("(ALERT-RETIRE-ON-EXIT) retireReadyBefore", () => {
+	it("is boundary-EXCLUSIVE: a finish stamped at the boundary survives", async () => {
+		const state = setup();
+		// Two finishes on two terminals: 2_000 and 4_000.
+		for (const e of cycle(1_000)) state.manager.record(e);
+		for (const e of cycle(3_000, { hostTerminalId: "terminal-2" })) {
+			state.manager.record(e);
+		}
+		await tick();
+		expect(state.sent).toHaveLength(2);
+
+		expect(state.manager.retireReadyBefore(4_000)).toBe(1);
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+
+	it("leaves ERROR alerts standing — a relaunch does not answer a crash", async () => {
+		const state = setup();
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent[0]?.kind).toBe("e");
+
+		expect(state.manager.retireReadyBefore(9_000)).toBe(0);
+		await tick();
+		expect(state.retracted).toEqual([]);
+	});
+
+	it("INCLUDES held alerts — the desktop seeded them as read", async () => {
+		const state = setup({ present: true });
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toEqual([]);
+
+		expect(state.manager.retireReadyBefore(9_000)).toBe(1);
+		state.setPresent(false);
+		await sweep();
+		// Deleted in silence: it never reached a device.
+		expect(state.sent).toEqual([]);
+		expect(state.retracted).toEqual([]);
+	});
+
+	it("retracts a STANDING alert and counts it once", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		state.manager.record(event({ occurredAtMs: 3_000 }));
+		await tick();
+		expect(state.retracted).toEqual([]);
+
+		expect(state.manager.retireReadyBefore(9_000)).toBe(1);
+		// A second relaunch report finds nothing left to do.
+		expect(state.manager.retireReadyBefore(9_000)).toBe(0);
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+});
+
+describe("(ALERT-RETIRE-ON-EXIT) retireCuratedOffAlerts", () => {
+	/** One delivered alert in `workspace-1`. */
+	async function oneLiveAlert() {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+		return state;
+	}
+
+	/** Two delivered alerts, one per workspace, on their own terminals. */
+	async function twoLiveWorkspaces() {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		for (const e of cycle(1_000, {
+			hostTerminalId: "terminal-2",
+			hostWorkspaceId: "workspace-2",
+		})) {
+			state.manager.record(e);
+		}
+		await tick();
+		expect(state.sent).toHaveLength(2);
+		return state;
+	}
+
+	it("retires the live alerts of a thread the user put away", async () => {
+		const state = await twoLiveWorkspaces();
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(2);
+		await tick();
+		expect(state.retracted).toHaveLength(2);
+	});
+
+	it("retires nothing while the thread is still on the sidebar", async () => {
+		const state = await twoLiveWorkspaces();
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		await tick();
+		expect(state.retracted).toEqual([]);
+	});
+
+	/**
+	 * The mirror sink fires on EVERY sidebar write — a pin, a rename, a reorder,
+	 * another workspace being snoozed — so a walk that finds a thread still put
+	 * away must be a no-op. It is, structurally: the first walk left every row
+	 * `retracted`, and the push path refuses to mint a new one for a curated-off
+	 * thread, so there is nothing live left to find.
+	 */
+	it("does not re-retract on later writes while the thread stays put away", async () => {
+		const state = await twoLiveWorkspaces();
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(2);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		await tick();
+		expect(state.retracted).toHaveLength(2);
+	});
+
+	it("is scoped to the workspace that is curated off", async () => {
+		const state = await twoLiveWorkspaces();
+		state.setCuratedOff((hostWorkspaceId) => hostWorkspaceId === "workspace-2");
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retracted).toEqual([state.sent[1]?.alertId ?? ""]);
+	});
+
+	it("PRESERVES held alerts — the claim path releases them when the snooze ends", async () => {
+		const state = setup({ present: true });
+		state.setCuratedOff(() => true);
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toEqual([]);
+
+		// Nothing is live, so the curation read is not even consulted.
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		expect(state.curationAsks).toEqual([]);
+
+		// And the held alert still fires when presence lapses.
+		state.setPresent(false);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	/**
+	 * ONE READ PER WALK, not one per workspace. Answering means reading the whole
+	 * sidebar mirror off host.db on the host-service's only thread and rebuilding
+	 * the curation from it, and the sink fires on every sidebar write.
+	 */
+	it("asks the fresh curation read ONCE, for the whole live set", async () => {
+		const state = await twoLiveWorkspaces();
+		state.manager.retireCuratedOffAlerts();
+		expect(state.curationAsks).toHaveLength(1);
+		expect([...(state.curationAsks[0] ?? [])].sort()).toEqual([
+			"workspace-1",
+			"workspace-2",
+		]);
+	});
+
+	it("retires nothing for a workspace the curation read could not judge", async () => {
+		const state = await twoLiveWorkspaces();
+		// Fail-closed is the read's own job: an unjudgeable workspace is simply
+		// absent from the set it answers with.
+		state.setCuratedOff((hostWorkspaceId) => hostWorkspaceId === "workspace-1");
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+
+	/**
+	 * THE SEQUENCE A FLIP TEST LOST, start to finish.
+	 *
+	 * Snooze expiry is PASSIVE: it writes nothing to the sidebar mirror, so no
+	 * walk runs when a snooze runs out. A verdict remembered from the first
+	 * snooze therefore survived into the second one, read as "no flip", and left
+	 * the re-fired card standing on a thread the user had just put away again.
+	 * The state test cannot lose it: it never remembers anything.
+	 */
+	it("retires the alert a passive snooze expiry let back through", async () => {
+		const state = await oneLiveAlert();
+
+		// The user snoozes the thread. The mirror write walks, and the card comes
+		// down.
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+
+		// The snooze expires on its own. NOTHING is written to the mirror, so
+		// there is no walk and this manager hears nothing at all.
+		state.setCuratedOff(() => false);
+
+		// The thread is back, and a second finish alerts the phone again.
+		state.setNow(20_000);
+		for (const e of cycle(20_000, { hostTerminalId: "terminal-2" })) {
+			state.manager.record(e);
+		}
+		await tick();
+		expect(state.sent).toHaveLength(2);
+
+		// The user snoozes it a second time. THIS is the retirement a remembered
+		// verdict used to skip.
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retracted).toHaveLength(2);
+		expect(state.retracted[1]).toBe(state.sent[1]?.alertId ?? "");
+	});
+
+	it("logs the workspace's OWN count, not the walk's running total", async () => {
+		const state = await twoLiveWorkspaces();
+		// A second alert in workspace-1 so the two workspaces differ: 2 and 1.
+		state.setNow(20_000);
+		for (const e of cycle(20_000, { hostTerminalId: "terminal-3" })) {
+			state.manager.record(e);
+		}
+		await tick();
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(3);
+		const lines = state.infos.filter((line) =>
+			line.message.includes("took a thread off their sidebar"),
+		);
+		expect(
+			lines.map((line) => [line.fields?.hostWorkspaceId, line.fields?.retired]),
+		).toEqual([
+			["workspace-1", 2],
+			["workspace-2", 1],
+		]);
+	});
+
+	it("takes down an ERROR card with no handle when its thread is put away", async () => {
+		const state = setup();
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent[0]?.kind).toBe("e");
+
+		state.setCuratedOff(() => true);
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: state.sent[0]?.alertId ?? "",
+				terminalHandle: "",
+				outcomeAtMs: 2_000,
+			},
+		]);
+	});
+});
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) The three new reasons are all LOUD and all rank above
+ * `new-cycle`, which is the only silent one. Pinned through behaviour rather
+ * than by reaching at the private helpers: a reason that silently stopped
+ * notifying the phone would strand a card for six hours with nothing to show
+ * for it.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) every new reason is loud and outranks new-cycle", () => {
+	type State = ReturnType<typeof setup>;
+	const drive: Array<[string, (state: State) => unknown]> = [
+		["terminal-gone", (state) => state.manager.retireTerminal("terminal-1")],
+		["desktop-relaunch", (state) => state.manager.retireReadyBefore(9_000)],
+		[
+			"curated-off",
+			(state) => {
+				state.setCuratedOff(() => true);
+				return state.manager.retireCuratedOffAlerts();
+			},
+		],
+	];
+
+	for (const [reason, retire] of drive) {
+		it(`${reason} retracts a delivered ready alert`, async () => {
+			const state = setup();
+			for (const e of cycle(1_000)) state.manager.record(e);
+			await tick();
+			retire(state);
+			await tick();
+			expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+		});
+
+		it(`${reason} upgrades a silent in-flight new-cycle retirement`, async () => {
+			// RANK. A new cycle flags the in-flight send silently; the loud reason
+			// arriving behind it must still take the notification down when the
+			// send lands, rather than being masked by the silent one.
+			const state = setup();
+			let release = () => {};
+			state.setGate(
+				new Promise<void>((resolve) => {
+					release = () => resolve();
+				}),
+			);
+			for (const e of cycle(1_000)) state.manager.record(e);
+			await tick();
+			expect(state.sent).toHaveLength(1);
+
+			state.manager.record(event({ occurredAtMs: 3_000 }));
+			retire(state);
+			state.setGate(null);
+			release();
+			await tick();
+			await tick();
+			expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+		});
+	}
 });

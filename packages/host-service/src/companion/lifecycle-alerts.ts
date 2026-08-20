@@ -2,11 +2,15 @@ import { createHash } from "node:crypto";
 import type { CompanionLifecycleEvent } from "../trpc/router/notifications";
 import { CURATION_RECHECK_MS } from "./config";
 import type { BridgeLogger } from "./http";
+import { errorClassName } from "./log-privacy";
 import type { PresenceStore } from "./presence";
 import type { PushSender } from "./push";
 import type { PushAlertContext } from "./push-context";
 import type { HostDbReader } from "./read-api";
-import { workspaceSidebarVerdict } from "./sidebar-filter";
+import {
+	createSidebarCuration,
+	workspaceSidebarVerdict,
+} from "./sidebar-filter";
 import type { WorkspaceId } from "./types";
 
 const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -52,9 +56,9 @@ type LifecycleAlertKind = "g" | "e";
  * (ONE-BUZZ-UNTIL-READ) Why an alert is being retired — which decides whether
  * the PHONE hears about it.
  *
- * A reason rather than a string, because exactly one of these three is silent
- * and getting that wrong is invisible from the host: the notification either
- * stacks up overnight or vanishes when it should have stayed.
+ * A reason rather than a string, because exactly ONE of them is silent and
+ * getting that wrong is invisible from the host: the notification either stacks
+ * up overnight or vanishes when it should have stayed.
  */
 type RetireReason =
 	/**
@@ -65,7 +69,37 @@ type RetireReason =
 	/** The session ended: there is no chat left to open, so clear the buzz. */
 	| { kind: "session-end" }
 	/** The user read the chat on the desktop. */
-	| { kind: "seen" };
+	| { kind: "seen" }
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The TERMINAL PROCESS died — the host runtime saw a
+	 * CONFIRMED pty exit.
+	 *
+	 * Distinct from `session-end`, which is an AGENT-level signal off the hook
+	 * stream: an agent can detach while its terminal lives on, and a terminal
+	 * can die with no hook ever firing (a crash, a window closed, a
+	 * `kill -9`). The second case is the one this reason exists for, and it was
+	 * the commonest way a notification outlived the thing it pointed at.
+	 */
+	| { kind: "terminal-gone" }
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The DESKTOP relaunched, so every alert about a
+	 * finish that predates this launch names a chat the user is about to look
+	 * at with fresh eyes.
+	 *
+	 * Scoped by a boundary instant the renderer reports once per cold start,
+	 * never "everything": a finish that landed AFTER the desktop came up is
+	 * still news the phone should keep.
+	 */
+	| { kind: "desktop-relaunch" }
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The user curated the thread OFF their sidebar
+	 * (snoozed, archived, or removed it).
+	 *
+	 * The push path already refuses to FIRE for a curated-off thread
+	 * `(PUSH-CURATION-GATE)`, but an alert already on the handset was minted
+	 * before the user made that decision and nothing took it back down.
+	 */
+	| { kind: "curated-off" };
 
 /**
  * (ONE-BUZZ-UNTIL-READ) Which reason wins when an alert is superseded twice
@@ -114,10 +148,18 @@ function upgradeRetireReason(
  *    and tapping it opens nothing, so it must come down.
  *  - `seen` — the user read it. That is the event that RESETS the cycle, so
  *    the next finish is allowed to buzz fresh.
+ *  - (ALERT-RETIRE-ON-EXIT) `terminal-gone` — the pty died. Same argument as
+ *    `session-end`, from the host runtime rather than the hook stream.
+ *  - (ALERT-RETIRE-ON-EXIT) `desktop-relaunch` — the user is back at the
+ *    machine and the app has restarted around them.
+ *  - (ALERT-RETIRE-ON-EXIT) `curated-off` — they took the thread off their
+ *    sidebar, which is a decision about the thread, not about this cycle.
  *
- * `e` ALERTS ARE UNCHANGED. An agent that died is not superseded by later work
- * on the same terminal in any useful sense, and an error the user has not seen
- * is exactly the thing that must not be quietly folded away.
+ * `e` ALERTS FIRE FOR EVERY REASON THERE IS, including `new-cycle`: an agent
+ * that died is not superseded by later work on the same terminal in any useful
+ * sense, so there is no silent case to fall into. What changed on 2026-08-20
+ * is which reasons can REACH an `e` at all — `seen` now does, see
+ * `findReadAlerts` — not how one is retired once it does.
  */
 function notifiesPhone(alert: HeldAlert, reason: RetireReason): boolean {
 	return !(alert.kind === "g" && reason.kind === "new-cycle");
@@ -188,6 +230,23 @@ interface HeldAlert {
 	supersededReason: RetireReason | null;
 }
 
+/**
+ * (ALERT-RETIRE-ON-EXIT) Is this alert ON a device, or on its way to one?
+ *
+ * The three states that answer yes are `sending` (in flight, and `markDelivered`
+ * will retract it the moment it lands), `sent` and `standing` (delivered, the
+ * second one silently superseded but still showing). The two that answer no are
+ * `held` — never left this process — and `retracted`, which is a spent row kept
+ * only so the same cycle cannot be re-minted.
+ */
+function isLiveAlert(alert: HeldAlert): boolean {
+	return (
+		alert.state === "sending" ||
+		alert.state === "sent" ||
+		alert.state === "standing"
+	);
+}
+
 export interface LifecycleSeenInput {
 	hostTerminalId: string;
 	hostWorkspaceId: string;
@@ -208,6 +267,34 @@ export interface LifecycleAlertManager {
 	 * ready-for-review alert back off their phone and watch.
 	 */
 	markLifecycleSeen(input: LifecycleSeenInput): void;
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The terminal process is GONE — a confirmed pty
+	 * exit, straight off the host runtime's own lifecycle broadcast.
+	 *
+	 * Retires EVERY alert for that terminal, `g` and `e` alike, for the reason
+	 * `session-end` retires them: tapping the notification opens a chat that no
+	 * longer exists. The hook stream cannot cover this on its own — a crashed
+	 * or killed agent never gets to POST its own ending.
+	 */
+	retireTerminal(hostTerminalId: string): void;
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched at `boundaryMs`: retire
+	 * every READY alert about a finish that predates it.
+	 *
+	 * Returns how many rows were retired, for the caller's log.
+	 */
+	retireReadyBefore(boundaryMs: number): number;
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The sidebar mirror changed: retire the live alerts
+	 * of every workspace the user is CURRENTLY curating off.
+	 *
+	 * Returns how many rows were retired, for the caller's log.
+	 */
+	retireCuratedOffAlerts(): number;
+
 	stop(): void;
 }
 
@@ -312,12 +399,87 @@ export function createLifecycleCurationProbe(deps: {
 	};
 }
 
+/**
+ * (ALERT-RETIRE-ON-EXIT) Which of these workspaces is the user curating OFF
+ * their sidebar right now — read fresh, once, for one retirement walk.
+ *
+ * THE SIBLING OF `createLifecycleCurationProbe`, AND DELIBERATELY NOT IT. That
+ * probe caches a `true` for 30 s `(LIFECYCLE-CURATION-CACHE)`, which is right
+ * for a sweep asking every two seconds and WRONG here: a mirror write that
+ * UN-snoozes a thread would read the stale hold and retract the alerts the user
+ * has just brought back. Nothing is cached here for the same reason.
+ *
+ * ONE READ PER WALK, not per workspace. Answering the question means reading
+ * the whole sidebar mirror off host.db on the host-service's only thread and
+ * rebuilding the curation from it, and asking per workspace did both N times
+ * for one sidebar write.
+ *
+ * FAIL CLOSED, which is the opposite of the send path's fail-open rule and for
+ * the mirror-image reason. There, an uncertain verdict costs at worst a
+ * notification the user did not need; here it would TAKE DOWN a notification
+ * they have never seen, and nothing re-raises a retracted alert. So an
+ * unreadable mirror answers "none of them", and a workspace whose own verdict
+ * throws is left out of the set.
+ *
+ * ERROR CLASS ONLY in the logs: this is handed workspace ids and a reader's
+ * message can carry a path.
+ */
+export function createFreshCurationRead(deps: {
+	db: HostDbReader;
+	organizationId: string;
+	logger: BridgeLogger;
+	now?: () => number;
+}): (hostWorkspaceIds: readonly string[]) => ReadonlySet<string> {
+	const now = deps.now ?? (() => Date.now());
+	return (hostWorkspaceIds) => {
+		const curatedOff = new Set<string>();
+		if (hostWorkspaceIds.length === 0) return curatedOff;
+		let curation: ReturnType<typeof createSidebarCuration>;
+		try {
+			curation = createSidebarCuration(
+				deps.db.readSidebarMirror(),
+				now(),
+				deps.organizationId,
+			);
+		} catch (error) {
+			deps.logger.error(
+				"could not read sidebar curation while retiring alerts; retiring none",
+				{ error: errorClassName(error) },
+			);
+			return curatedOff;
+		}
+		if (!curation.enabled) return curatedOff;
+		for (const hostWorkspaceId of hostWorkspaceIds) {
+			try {
+				const workspace = deps.db.findWorkspace(hostWorkspaceId);
+				if (workspace === null) continue;
+				if (curation.workspaceVerdict(workspace) !== "show") {
+					curatedOff.add(hostWorkspaceId);
+				}
+			} catch (error) {
+				deps.logger.error(
+					"could not read one workspace's sidebar curation while retiring alerts; retiring none for it",
+					{ hostWorkspaceId, error: errorClassName(error) },
+				);
+			}
+		}
+		return curatedOff;
+	};
+}
+
 export interface LifecycleAlertManagerDeps {
 	/** Only the verdict is ever asked for; beacons belong to the push path. */
 	presence: Pick<PresenceStore, "present">;
 	push: Pick<PushSender, "sendLifecycleAlert" | "sendLifecycleRetraction">;
 	workspaceHandle(hostWorkspaceId: string): WorkspaceId;
 	isCuratedOff(hostWorkspaceId: string): boolean;
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) Which of these workspaces the user is curating off
+	 * RIGHT NOW — a FRESH read, never the 30 s cache `isCuratedOff` sits behind.
+	 * See `createFreshCurationRead`, which is what this is wired to.
+	 */
+	curatedOffAmong(hostWorkspaceIds: readonly string[]): ReadonlySet<string>;
 
 	/**
 	 * (ALERT-CONTEXT-NAMES) Which project, workspace and tab is this alert about?
@@ -649,6 +811,19 @@ export function createLifecycleAlertManager(
 	 * happens (it cannot reject), and it queues on the alert's own chain so it
 	 * cannot overtake the send it cancels. The `.catch` is belt and braces
 	 * against a future contract change, never a swallowed decision.
+	 *
+	 * (ALERT-RETIRE-ON-EXIT) `t` IS EMPTY FOR AN `e`, and that is a correctness
+	 * fix rather than a tidy-up. The phone reads a retraction terminal-FIRST:
+	 * a `c` carrying a real terminal handle cancels whatever card that handle
+	 * keys, and ready cards are keyed by handle. So an error retraction that
+	 * carried its terminal's handle took down the STANDING READY card for the
+	 * same terminal — a card the user had never read. An `e` is not keyed by
+	 * handle on the phone (it is never replaced in place), so it loses nothing
+	 * by naming none: the alert id alone is what cancels it.
+	 *
+	 * `gx` IS UNCHANGED FOR BOTH KINDS. `buildLifecycleRetractPushData` requires
+	 * a positive outcome instant, and an `e` row has one — `mint` stamps
+	 * `outcomeAtMs` from the event for every kind.
 	 */
 	function fireRetraction(alert: HeldAlert, reason: string): void {
 		deps.logger.info("retracting a lifecycle alert", {
@@ -662,7 +837,8 @@ export function createLifecycleAlertManager(
 				.sendLifecycleRetraction({
 					alertId: alert.alertId,
 					workspaceId: alert.workspaceHandle,
-					terminalHandle: deps.terminalHandle(alert.hostTerminalId),
+					terminalHandle:
+						alert.kind === "g" ? deps.terminalHandle(alert.hostTerminalId) : "",
 					outcomeAtMs: alert.outcomeAtMs,
 				})
 				.catch((error: unknown) => {
@@ -876,10 +1052,28 @@ export function createLifecycleAlertManager(
 	 *    twenty nothings, not twenty retractions.
 	 */
 	function supersede(hostTerminalId: string, reason: RetireReason): void {
+		retireWhere((alert) => alert.hostTerminalId === hostTerminalId, reason);
+	}
+
+	/**
+	 * Retire every alert a predicate picks, over a SNAPSHOT of the table.
+	 *
+	 * The snapshot is the point: `retireAlert` writes to `alerts` as it goes
+	 * (deleting a held row, replacing a sent one), and iterating the live map
+	 * while it does that is unspecified. Returns how many rows it touched, for
+	 * the callers that report a count.
+	 */
+	function retireWhere(
+		predicate: (alert: HeldAlert) => boolean,
+		reason: RetireReason,
+	): number {
+		let retired = 0;
 		for (const alert of [...alerts.values()]) {
-			if (alert.hostTerminalId !== hostTerminalId) continue;
+			if (!predicate(alert)) continue;
 			retireAlert(alert, reason);
+			retired += 1;
 		}
+		return retired;
 	}
 
 	/**
@@ -992,8 +1186,15 @@ export function createLifecycleAlertManager(
 	}
 
 	/**
-	 * (ALERT-CONTEXT-NAMES) Every ready alert for this terminal that the read
+	 * (ALERT-CONTEXT-NAMES) Every alert for this terminal that the read
 	 * COVERS — this process's memory of what the user has just seen.
+	 *
+	 * (ALERT-RETIRE-ON-EXIT) BOTH KINDS, since 2026-08-20. It used to filter to
+	 * `g` on the argument that an agent which DIED is not undone by reading its
+	 * chat. The owner overrode that: opening the chat is exactly how you find
+	 * out an agent died, so a red card left standing on the wrist after that is
+	 * the phone nagging about something already dealt with. An `e` the read
+	 * covers is now retired like any other row.
 	 *
 	 * WHY THE RECOMPUTED ID IS NOT ENOUGH ON ITS OWN. `markLifecycleSeen` derives
 	 * the `g` id by hashing the instant the renderer says it read the chat
@@ -1041,7 +1242,6 @@ export function createLifecycleAlertManager(
 		const covered: HeldAlert[] = [];
 		for (const alert of alerts.values()) {
 			if (alert.hostTerminalId !== hostTerminalId) continue;
-			if (alert.kind !== "g") continue;
 			if (alert.outcomeAtMs > seenThroughAt) continue;
 			covered.push(alert);
 		}
@@ -1194,10 +1394,18 @@ export function createLifecycleAlertManager(
 			}
 			prune(now());
 
-			// ONLY `g`. "Ready for review" is the alert the green dot clearing is
-			// evidence about; an `e` reports an agent that DIED, which reading the
-			// chat does not undo, and which the user may well want to still see on
-			// their phone when they walk away from a desk they only glanced at.
+			// (ALERT-RETIRE-ON-EXIT) THE LIVE MAP COVERS BOTH KINDS. A read retires
+			// the `e` rows it covers as well as the `g` ones — USER DECISION,
+			// 2026-08-20, overriding the original design. The old rule kept an
+			// agent-died card on the wrist after the user had opened the very chat
+			// that tells them the agent died, which reads as a nag rather than a
+			// warning.
+			//
+			// THE BLIND FALLBACK BELOW STAYS READY-ONLY. It hashes an id from an
+			// instant nobody has confirmed raised an alert, so an `e` hash would
+			// DOUBLE the blind broadcasts on a path whose whole job is to be rare —
+			// and every bogus `c` the phone receives evicts a real claim from its
+			// 64-slot window (see the note in the proof branch below).
 			//
 			// THE LIVE MAP IS ASKED FIRST — see `findReadAlerts` for why the
 			// recomputed id alone would name a notification nobody holds whenever
@@ -1273,6 +1481,111 @@ export function createLifecycleAlertManager(
 				reason: { kind: "seen" },
 			});
 		},
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The pty died. Same retirement `session-end`
+		 * performs, from the other source of truth.
+		 *
+		 * BOTH KINDS, deliberately: a dead terminal takes its error card down as
+		 * well as its ready card, because neither one opens anything any more.
+		 * `supersede` walks every state, so a `held` row is deleted in silence, a
+		 * `sending` one is flagged for `markDelivered`, and a delivered one fires
+		 * its single `c`.
+		 */
+		retireTerminal(hostTerminalId) {
+			if (stopped) return;
+			supersede(hostTerminalId, { kind: "terminal-gone" });
+		},
+
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched at `boundaryMs`.
+		 *
+		 * READY ONLY. A `g` says "there is something here for you to look at",
+		 * and the user is now sitting in front of the app that shows it — the
+		 * card is redundant the moment the window opens. An `e` is a record that
+		 * something BROKE, which a relaunch does not answer, so error alerts
+		 * survive a restart and come down only on a read, a dead terminal or the
+		 * TTL.
+		 *
+		 * BOUNDARY-EXCLUSIVE (`<`, not `<=`), because the boundary is this
+		 * launch's own instant: a finish stamped exactly there is not "before the
+		 * launch".
+		 *
+		 * HELD ROWS ARE INCLUDED. The renderer reports this boundary once per
+		 * cold start, having already seeded its own seen marks for every idle
+		 * terminal at that instant — so a held alert about a pre-launch finish
+		 * would fire later about work the desktop has already written off. It is
+		 * deleted in silence, which is exactly right: it never reached a device.
+		 *
+		 * THE BOUNDARY IS TRUSTED HERE. It is range-checked by the one caller
+		 * that can judge it — the bridge sink, which alone knows the host clock
+		 * it has to be in the past of.
+		 */
+		retireReadyBefore(boundaryMs) {
+			if (stopped) return 0;
+			const retired = retireWhere(
+				(alert) =>
+					alert.kind === "g" &&
+					alert.state !== "retracted" &&
+					alert.outcomeAtMs < boundaryMs,
+				{ kind: "desktop-relaunch" },
+			);
+			if (retired > 0) {
+				deps.logger.info(
+					"(ALERT-RETIRE-ON-EXIT) the desktop relaunched; retired the ready alerts it predates",
+					{ boundaryMs, retired },
+				);
+			}
+			return retired;
+		},
+
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) The sidebar mirror changed. Retire the live
+		 * alerts of every workspace the user is curating off.
+		 *
+		 * A STATE TEST, NOT AN EDGE. Re-retiring on a later mirror write costs
+		 * nothing and cannot double-send: `retireAlert` moves a row to
+		 * `retracted` and every later pass over it is inert, and a workspace that
+		 * is still curated off has no way to acquire a NEW live alert — the push
+		 * path refuses to fire for it `(PUSH-CURATION-GATE)`. So the second walk
+		 * finds an empty live set for that workspace and does nothing at all.
+		 *
+		 * HELD-PRESERVING. A `held` alert is not on any device, and it is already
+		 * parked behind the claim path's own curation gate — which RELEASES it
+		 * when the snooze expires. Retiring it here would delete the very alert
+		 * that gate exists to deliver late.
+		 *
+		 * FAIL-CLOSED CURATION, read fresh and once — see
+		 * `createFreshCurationRead`. A workspace whose verdict could not be read
+		 * is simply not in the set, so an unknown verdict retires nothing.
+		 */
+		retireCuratedOffAlerts() {
+			if (stopped) return 0;
+			const live = [...alerts.values()].filter(isLiveAlert);
+			if (live.length === 0) return 0;
+			const curatedOff = deps.curatedOffAmong([
+				...new Set(live.map((alert) => alert.hostWorkspaceId)),
+			]);
+
+			let retired = 0;
+			for (const hostWorkspaceId of curatedOff) {
+				let retiredHere = 0;
+				for (const alert of live) {
+					if (alert.hostWorkspaceId !== hostWorkspaceId) continue;
+					retireAlert(alert, { kind: "curated-off" });
+					retiredHere += 1;
+				}
+				retired += retiredHere;
+				deps.logger.info(
+					"(ALERT-RETIRE-ON-EXIT) the user took a thread off their sidebar; retired its live alerts",
+					// This workspace's own count, not the walk's running total — the
+					// line names one workspace, so a cumulative number here read as
+					// "workspace-2 had three" when it had one.
+					{ hostWorkspaceId, retired: retiredHere },
+				);
+			}
+			return retired;
+		},
+
 		stop() {
 			stopped = true;
 			if (timer !== null) clearTimeout(timer);

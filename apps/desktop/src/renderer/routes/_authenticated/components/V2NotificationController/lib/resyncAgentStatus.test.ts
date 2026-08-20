@@ -21,11 +21,24 @@ interface SeenCall {
 }
 
 let seenCalls: SeenCall[] = [];
+/**
+ * (ALERT-RETIRE-ON-EXIT) Every relaunch boundary the resync reported.
+ *
+ * `seenAtReport` is the seeded seen mark for `terminal-1` AS THE REPORT WENT
+ * OUT. The host answers this report by retracting pre-launch ready cards, so
+ * the ordering it pins is a safety property, not a detail: the report may only
+ * leave after the reconciliation that took those finishes over.
+ */
+let relaunchCalls: Array<{
+	hostUrl: string;
+	boundaryMs: number;
+	seenAtReport: number | undefined;
+}> = [];
 let acceptSeen = true;
 let rejectSeen = false;
 let snapshotRows: SnapshotRow[] = [];
 let knownTerminalIds: string[] = [];
-let hostNow = 10_000;
+let hostNow: number | undefined = 10_000;
 
 interface SnapshotRow {
 	terminalId: string;
@@ -44,7 +57,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 	isHostServiceConnectionError: () => false,
 	hostServiceQueryRetry: () => false,
 	hostServiceQueryRetryDelay: () => 0,
-	getHostServiceClientByUrl: () => ({
+	getHostServiceClientByUrl: (hostUrl: string) => ({
 		notifications: {
 			agentStatusSnapshot: {
 				query: async () => ({
@@ -65,6 +78,17 @@ mock.module("renderer/lib/host-service-client", () => ({
 			syncAlertContexts: {
 				mutate: async () => ({ accepted: true }),
 			},
+			retireStaleReadyAlerts: {
+				mutate: async (input: { boundaryMs: number }) => {
+					relaunchCalls.push({
+						hostUrl,
+						boundaryMs: input.boundaryMs,
+						seenAtReport:
+							useV2NotificationStore.getState().terminalSeenAt["terminal-1"],
+					});
+					return { accepted: true };
+				},
+			},
 		},
 	}),
 }));
@@ -75,11 +99,14 @@ const { useV2NotificationStore } = await import(
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
-const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
-	"./companionAlertSync"
-);
+const {
+	registerWorkspaceHost,
+	resetRelaunchBoundaryLatchForTest,
+	unregisterWorkspaceHost,
+} = await import("./companionAlertSync");
 const {
 	__peekRepairOutcomeForTest,
+	__resetColdStartForTest,
 	__resetRepairCooldownsForTest,
 	resyncAgentStatusFromHost,
 } = await import("./resyncAgentStatus");
@@ -131,6 +158,7 @@ const settle = async () => {
 
 beforeEach(() => {
 	seenCalls = [];
+	relaunchCalls = [];
 	acceptSeen = true;
 	rejectSeen = false;
 	snapshotRows = [row()];
@@ -615,5 +643,137 @@ describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () 
 		expect(
 			useV2NotificationStore.getState().sources["terminal:terminal-1"],
 		).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (ALERT-RETIRE-ON-EXIT) the relaunch boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) The resync is the only thing that can put this
+ * desktop's launch on a HOST's clock — it derives the boundary from the host's
+ * own `hostNow` less the renderer's elapsed monotonic time — so it is where the
+ * report belongs.
+ *
+ * EACH TEST USES ITS OWN HOST URL. `hostSessionBoundaries` is module state that
+ * deliberately outlives a resync (a launch happens once), so a host another
+ * test has already boundaried cannot be re-tested here.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
+	beforeEach(() => {
+		// The tests above deliberately populate the store before their first
+		// resync, which decides this session WARM for the whole module. A relaunch
+		// only exists on a cold start, so it is re-decided here.
+		__resetColdStartForTest();
+		resetRelaunchBoundaryLatchForTest();
+		resetV2NotificationStoreForTest();
+	});
+
+	it("reports a FLOORED boundary once per host, AFTER the seeding pass", async () => {
+		const hostA = "http://host-relaunch-a";
+		// Far enough ahead of the row's 5_000 that the cold-start seed cannot be
+		// squeezed out by however long this process has been up.
+		hostNow = 1_000_000;
+		await resyncAgentStatusFromHost({
+			hostUrl: hostA,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(1);
+		expect(relaunchCalls[0]?.hostUrl).toBe(hostA);
+		const reported = relaunchCalls[0]?.boundaryMs ?? Number.NaN;
+		// The map keeps the fractional value; the WIRE gets an integer, because
+		// the tRPC input is `.int()` and would refuse anything else.
+		expect(Number.isInteger(reported)).toBe(true);
+		expect(reported).toBeLessThanOrEqual(hostNow ?? 0);
+		// THE ORDERING. The row's pre-launch finish was already seeded seen when
+		// the report went out, so the cards the host is about to retract are ones
+		// this renderer has demonstrably taken over.
+		expect(relaunchCalls[0]?.seenAtReport).toBe(5_000);
+
+		// A second epoch on the same host finds it latched and says nothing.
+		await resyncAgentStatusFromHost({
+			hostUrl: hostA,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(1);
+	});
+
+	it("reports each host separately", async () => {
+		const hostB = "http://host-relaunch-b";
+		await resyncAgentStatusFromHost({
+			hostUrl: hostB,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls.map((call) => call.hostUrl)).toEqual([hostB]);
+	});
+
+	it("SKIPS the report when cold-start seeding was skipped", async () => {
+		// A host too old to answer `hostNow` leaves the boundary unset, which
+		// disables seeding for it. There is no launch instant to report either,
+		// and guessing one with this machine's clock would retire alerts against
+		// a timeline the host has never been on.
+		const hostC = "http://host-relaunch-c";
+		hostNow = undefined;
+		await resyncAgentStatusFromHost({
+			hostUrl: hostC,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(0);
+	});
+
+	/**
+	 * A reply that lands after its socket closed describes a connection that no
+	 * longer exists, and the epoch that replaced it runs its own resync. Reported
+	 * from there, the retraction would take down every pre-launch ready card
+	 * having reconciled nothing — and the acknowledgement latch would make that
+	 * loss permanent for the launch, since no later epoch re-reports.
+	 */
+	it("says NOTHING when the epoch guard discards the reply", async () => {
+		const hostE = "http://host-relaunch-e";
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: hostE,
+			workspaces: workspaces(),
+			isCurrent: () => false,
+		});
+		await settle();
+		expect(result?.discarded).toBe(true);
+		expect(relaunchCalls).toEqual([]);
+
+		// The next live epoch on that host still reports it.
+		await resyncAgentStatusFromHost({
+			hostUrl: hostE,
+			workspaces: workspaces(),
+			isCurrent: () => true,
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(1);
+	});
+
+	it("retries on the next epoch when the host did not consume it", async () => {
+		// The acknowledgement latch, not the boundary map, is what suppresses a
+		// repeat — so a report a still-registering bridge refused comes back.
+		const hostD = "http://host-relaunch-d";
+		await resyncAgentStatusFromHost({
+			hostUrl: hostD,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(1);
+
+		resetRelaunchBoundaryLatchForTest();
+		await resyncAgentStatusFromHost({
+			hostUrl: hostD,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(2);
+		// Same launch, same instant — the map kept the fractional value and the
+		// floor is recomputed from it.
+		expect(relaunchCalls[1]?.boundaryMs).toBe(relaunchCalls[0]?.boundaryMs);
 	});
 });

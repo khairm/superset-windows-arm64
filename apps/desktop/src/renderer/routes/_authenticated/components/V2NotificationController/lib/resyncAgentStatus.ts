@@ -8,7 +8,10 @@ import {
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
 import type { HostNotificationWorkspaceState } from "../components/HostNotificationSubscriber";
-import { reportTerminalSeen } from "./companionAlertSync";
+import {
+	reportRelaunchBoundary,
+	reportTerminalSeen,
+} from "./companionAlertSync";
 import { markV2AgentLifecycleTargetSeen } from "./lifecycleEvents";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
 
@@ -316,6 +319,17 @@ const moduleLoadMonotonicMs: number | undefined =
 const hostSessionBoundaries = new Map<string, number>();
 
 /**
+ * Test seam: the cold-start verdict and the per-host boundaries are decided
+ * ONCE per renderer process by design, so a test that needs a second cold start
+ * cannot get one by resetting the store.
+ */
+export function __resetColdStartForTest(): void {
+	coldStartDecided = false;
+	sessionBeganCold = false;
+	hostSessionBoundaries.clear();
+}
+
+/**
  * Fetch the host snapshot and reconcile every terminal source this host owns.
  * Returns null when the snapshot could not be fetched — the caller must treat
  * that as "truth unknown" and change nothing, since clearing dots on a failed
@@ -474,6 +488,12 @@ export async function resyncAgentStatusFromHost({
 				workspaceId: row.originWorkspaceId,
 				payload,
 				paneLayout: workspace.paneLayout,
+				// (ALERT-RETIRE-ON-EXIT) THIS IS THE REPLAY. The visible-clear hop
+				// must not fire from it: `row.lastEventAt` is not an alert's subject,
+				// and a relaunch replays every idle tab's resting turn-end. The
+				// repair path below is this file's only route to a read report, and
+				// it argues from durable seen marks instead.
+				fromReplay: true,
 			});
 		};
 
@@ -743,6 +763,40 @@ export async function resyncAgentStatusFromHost({
 				);
 			result.retractedPermission++;
 		}
+	}
+
+	// (ALERT-RETIRE-ON-EXIT) The boundary is also the instant this desktop
+	// LAUNCH came up on this host's clock, and the host can use it to take down
+	// ready cards for finishes the user is about to see with fresh eyes.
+	//
+	// REPORTED HERE, AT THE END, and the position is the whole safety argument.
+	// The host's answer to this report is to RETRACT every pre-launch ready card
+	// it holds, which is only defensible once this renderer has actually taken
+	// those finishes over — i.e. after the epoch guard has proved the reply
+	// belongs to a live connection, and after the loop above has seeded a seen
+	// mark for every pre-launch row. Reported before either, a snapshot from a
+	// dead epoch (a socket that flapped while it was in flight) could retract
+	// the user's cards having reconciled nothing at all, and the acknowledgement
+	// latch would make that one-shot loss permanent for the launch.
+	//
+	// FLOORED, and the floor belongs here rather than at the wire: the boundary
+	// is `hostNow` minus a fractional `performance.now()` delta, the tRPC input
+	// is `.int()`, and an unfloored number would be refused there. The map keeps
+	// the fractional value — every other reader compares against it and must not
+	// be nudged by a millisecond.
+	//
+	// UNCONDITIONAL, because `reportRelaunchBoundary` owns the once-per-host
+	// latch itself. It is gated on the ACKNOWLEDGEMENT, not on the boundary
+	// being fresh, so a report the host did not consume (its bridge still
+	// registering) is retried by the next epoch. A host that answered without
+	// `hostNow`, or a renderer with no monotonic clock, leaves the boundary
+	// unset, which disables seeding AND skips this: a launch instant this
+	// renderer could not derive is not one it may guess at.
+	if (hostSessionBoundary !== undefined) {
+		void reportRelaunchBoundary({
+			hostUrl,
+			boundaryMs: Math.floor(hostSessionBoundary),
+		});
 	}
 
 	// Terminals the host POSITIVELY DISOWNS — it has a session row for them but

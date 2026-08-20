@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { DetectedPort } from "@superset/port-scanner";
+import {
+	clearCompanionTerminalGoneSink,
+	setCompanionTerminalGoneSink,
+} from "../companion/registry";
 import type { HostDb } from "../db";
 import { portManager } from "../ports/port-manager";
 import type { WorkspaceFilesystemManager } from "../runtime/filesystem";
@@ -188,5 +192,165 @@ describe("EventBus fs:watch-file", () => {
 		expect(errors).toHaveLength(3);
 		eventBus.handleClose(socket);
 		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// (ALERT-RETIRE-ON-EXIT) fork-only
+// ---------------------------------------------------------------------------
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) A confirmed PTY exit is the only signal that can take
+ * a phone card down for a terminal whose agent never got to report its own
+ * ending — a crash, a kill, a closed window. The bus is where it is observed,
+ * so the bus is where it is reported.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) terminal exits reach the companion registry", () => {
+	function harness() {
+		const eventBus = createEventBus();
+		const gone: Array<{ hostTerminalId: string }> = [];
+		const sink = (input: { hostTerminalId: string }) => {
+			gone.push(input);
+			return true;
+		};
+		setCompanionTerminalGoneSink(sink);
+		return {
+			eventBus,
+			gone,
+			release: () => {
+				clearCompanionTerminalGoneSink(sink);
+				eventBus.close();
+			},
+		};
+	}
+
+	it("records a confirmed exit", () => {
+		const h = harness();
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "exit",
+			exitCode: 0,
+			signal: 0,
+			confirmed: true,
+			occurredAt: 1_700_000_000_000,
+		});
+		expect(h.gone).toEqual([{ hostTerminalId: "terminal-1" }]);
+		h.release();
+	});
+
+	it("records an exit with no `confirmed` field — absent means confirmed", () => {
+		const h = harness();
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "exit",
+			exitCode: 1,
+			signal: 0,
+			occurredAt: 1_700_000_000_000,
+		});
+		expect(h.gone).toEqual([{ hostTerminalId: "terminal-1" }]);
+		h.release();
+	});
+
+	it("IGNORES an unconfirmed exit — the process may still be running", () => {
+		const h = harness();
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "exit",
+			exitCode: 0,
+			signal: 0,
+			confirmed: false,
+			occurredAt: 1_700_000_000_000,
+		});
+		expect(h.gone).toEqual([]);
+		h.release();
+	});
+
+	it("ignores `created` — adoption is not a death", () => {
+		const h = harness();
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "created",
+			adopted: true,
+			occurredAt: 1_700_000_000_000,
+		});
+		expect(h.gone).toEqual([]);
+		h.release();
+	});
+
+	it("ignores command-start and command-end", () => {
+		const h = harness();
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "command-start",
+			occurredAt: 1_700_000_000_000,
+		});
+		h.eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "command-end",
+			exitCode: 0,
+			occurredAt: 1_700_000_000_001,
+		});
+		expect(h.gone).toEqual([]);
+		h.release();
+	});
+
+	it("still broadcasts to clients when no companion sink is registered", () => {
+		const eventBus = createEventBus();
+		const sentMessages: string[] = [];
+		eventBus.handleOpen({
+			readyState: 1,
+			send: (data: string) => sentMessages.push(data),
+			close: () => {},
+		});
+		eventBus.broadcastTerminalLifecycle({
+			workspaceId: "workspace-1",
+			terminalId: "terminal-1",
+			eventType: "exit",
+			exitCode: 0,
+			signal: 0,
+			confirmed: true,
+			occurredAt: 1_700_000_000_000,
+		});
+		expect(sentMessages).toHaveLength(1);
+		expect(JSON.parse(sentMessages[0] ?? "{}")).toMatchObject({
+			type: "terminal:lifecycle",
+			eventType: "exit",
+			terminalId: "terminal-1",
+		});
+		eventBus.close();
+	});
+
+	it("a sink that THROWS cannot fail the broadcast", () => {
+		const eventBus = createEventBus();
+		const sentMessages: string[] = [];
+		eventBus.handleOpen({
+			readyState: 1,
+			send: (data: string) => sentMessages.push(data),
+			close: () => {},
+		});
+		const sink = (): boolean => {
+			throw new Error("the bridge is mid-teardown");
+		};
+		setCompanionTerminalGoneSink(sink);
+		expect(() =>
+			eventBus.broadcastTerminalLifecycle({
+				workspaceId: "workspace-1",
+				terminalId: "terminal-1",
+				eventType: "exit",
+				exitCode: 0,
+				signal: 0,
+				confirmed: true,
+				occurredAt: 1_700_000_000_000,
+			}),
+		).not.toThrow();
+		expect(sentMessages).toHaveLength(1);
+		clearCompanionTerminalGoneSink(sink);
+		eventBus.close();
 	});
 });
