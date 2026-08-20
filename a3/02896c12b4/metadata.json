@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "a302896c12b4",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 21,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/V2NotificationController.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/companionAlertSync.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/resyncAgentStatus.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.test.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.ts",
+    "packages/host-service/src/companion/registry.ts",
+    "packages/host-service/src/events/event-bus.test.ts",
+    "packages/host-service/src/events/event-bus.ts",
+    "packages/host-service/src/trpc/router/companion/companion.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a3/02896c12b4/0/metadata.json",
+      "transcript": "/a3/02896c12b4/0/full.jsonl",
+      "content_hash": "/a3/02896c12b4/0/content_hash.txt",
+      "prompt": "/a3/02896c12b4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 68466,
+    "cache_creation_tokens": 1911071,
+    "cache_read_tokens": 84024045,
+    "output_tokens": 203974,
+    "api_call_count": 243
+  }
+}
