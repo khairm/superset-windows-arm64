@@ -123,6 +123,18 @@ export interface AlertContextRegistry {
 		hostWorkspaceId: string,
 		hostTerminalId: string,
 	): { tabTitle: string; tabCount: number } | null;
+	/**
+	 * (CHAT-CONTEXT-NAMES) Just the TITLE, or `null` when there is none.
+	 *
+	 * The read path (`/v1/tree`, `/v1/question`'s `place`) names a chat and never
+	 * decides whether to name its tab, so `tabCount` is not its question — and
+	 * `/v1/tree` asks once per terminal per poll, which is the one place an
+	 * object allocated only to have one field read off it is worth not making.
+	 */
+	lookupTabTitle(
+		hostWorkspaceId: string,
+		hostTerminalId: string,
+	): string | null;
 	/** Bridge stop. Nothing may survive a bridge that is no longer running. */
 	clear(): void;
 	/** Diagnostics only — counts, never values. */
@@ -316,6 +328,14 @@ export function createAlertContextRegistry(
 			const tabTitle = snapshot.titlesByTerminalId.get(hostTerminalId);
 			if (tabTitle === undefined) return null;
 			return { tabTitle, tabCount: snapshot.tabCount };
+		},
+
+		lookupTabTitle(hostWorkspaceId, hostTerminalId) {
+			return (
+				byWorkspace
+					.get(hostWorkspaceId)
+					?.titlesByTerminalId.get(hostTerminalId) ?? null
+			);
 		},
 
 		clear() {

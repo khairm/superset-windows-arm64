@@ -25,22 +25,29 @@ import type {
 	PendingQuestion,
 } from "./question-store";
 import {
-	type HostBindingRow,
 	type HostDbReader,
 	type HostProjectRow,
-	type HostTerminalRow,
 	type HostWorkspaceRow,
 	handleHeartbeat,
 	handleTree,
-	type ReadDeps,
 } from "./read-api";
 import {
 	createSidebarCuration,
 	MIRROR_MAX_AGE_MS,
 	type SidebarMirrorSnapshot,
-	type SidebarProjectMirrorRow,
-	type SidebarWorkspaceMirrorRow,
 } from "./sidebar-filter";
+import {
+	LAUNCH,
+	mirrorProject,
+	mirrorWorkspace,
+	NOW,
+	ORG,
+	snapshot,
+	type TreeFixture,
+	terminalRow as terminal,
+	treeDeps,
+	workspaceRow,
+} from "./test-fixtures";
 import type {
 	QuestionId,
 	QuestionItem,
@@ -54,65 +61,7 @@ import type {
 // fixtures
 // ---------------------------------------------------------------------------
 
-// Real wall time: `handleTree`, `armPush` and the push probe all call
-// `Date.now()` themselves, so a fixture clock in the far future would read as a
-// mirror written after the fact. The pure `createSidebarCuration` cases pass
-// `NOW` in explicitly and are unaffected either way.
-const NOW = Date.now();
-const ORG = "org-this-machine";
 const OTHER_ORG = "org-somebody-else";
-const LAUNCH = "launch-1";
-
-function mirrorWorkspace(
-	workspaceId: string,
-	overrides: Partial<SidebarWorkspaceMirrorRow> = {},
-): SidebarWorkspaceMirrorRow {
-	return {
-		workspaceId,
-		projectId: "p-git",
-		isHidden: false,
-		archivedAt: null,
-		snoozeUntil: null,
-		snoozeLaunchId: null,
-		completedAt: null,
-		deletedAt: null,
-		pinnedAt: null,
-		tabOrder: 0,
-		...overrides,
-	};
-}
-
-function mirrorProject(
-	projectId: string,
-	overrides: Partial<SidebarProjectMirrorRow> = {},
-): SidebarProjectMirrorRow {
-	return {
-		projectId,
-		tabOrder: 0,
-		isPinned: false,
-		isCollapsed: false,
-		...overrides,
-	};
-}
-
-function snapshot(
-	workspaces: SidebarWorkspaceMirrorRow[],
-	projects: SidebarProjectMirrorRow[],
-	metaOverrides: Partial<SidebarMirrorSnapshot["meta"] & object> = {},
-): SidebarMirrorSnapshot {
-	return {
-		meta: {
-			lastFullSyncAtMs: NOW - 1_000,
-			appLaunchId: LAUNCH,
-			organizationId: ORG,
-			workspaceCount: workspaces.length,
-			projectCount: projects.length,
-			...metaOverrides,
-		},
-		workspaces,
-		projects,
-	};
-}
 
 const branchWorkspace = { id: "w-1", projectId: "p-git", type: "worktree" };
 
@@ -1470,102 +1419,6 @@ describe("(PUSH-ARMED-ORPHAN) a push held across a restart", () => {
 // ---------------------------------------------------------------------------
 // handleTree integration over a curated fixture — items 4/8/10/11
 // ---------------------------------------------------------------------------
-
-interface TreeFixture {
-	projects: HostProjectRow[];
-	workspaces: HostWorkspaceRow[];
-	terminals: HostTerminalRow[];
-	bindings: HostBindingRow[];
-	mirror: SidebarMirrorSnapshot;
-	pendingByHostTerminal?: Record<string, PendingQuestion>;
-}
-
-function treeDeps(fixture: TreeFixture): ReadDeps {
-	const db: HostDbReader = {
-		listProjects: () => fixture.projects,
-		listWorkspaces: () => fixture.workspaces,
-		listActiveTerminals: () => fixture.terminals,
-		listBindings: () => fixture.bindings,
-		findWorkspace: (id) => fixture.workspaces.find((w) => w.id === id) ?? null,
-		findProject: (id) => fixture.projects.find((p) => p.id === id) ?? null,
-		listTerminalIdsForWorkspace: (workspaceId) =>
-			fixture.terminals
-				.filter((t) => t.originWorkspaceId === workspaceId)
-				.map((t) => t.id),
-		findBinding: (id) =>
-			fixture.bindings.find((b) => b.terminalId === id) ?? null,
-		findTerminal: (id) => fixture.terminals.find((t) => t.id === id) ?? null,
-		readSidebarMirror: () => fixture.mirror,
-		resolveTerminal: () => null,
-		resolveActiveTerminal: () => null,
-		resolveTranscriptPath: () => null,
-		resolveTerminalActivityMs: () => NOW,
-		close: () => {},
-	};
-	const pending = fixture.pendingByHostTerminal ?? {};
-	return {
-		db,
-		log: () => {},
-		questions: {
-			byHostTerminal: (hostTerminalId: string) =>
-				pending[hostTerminalId] ?? null,
-			unanswerableReason: () => null,
-			headline: (question: PendingQuestion) =>
-				question.questions[0]?.header ?? "",
-			reconcile: async () => [],
-			oldestPendingAgeMs: () => null,
-		} as unknown as ReadDeps["questions"],
-		liveness: {
-			refresh: async () => {},
-			isLive: () => true,
-			isProvablyGone: () => false,
-			describe: () => ({
-				hasSnapshot: true,
-				aliveCount: fixture.terminals.length,
-				takenAtMs: NOW,
-			}),
-		},
-		organizationId: ORG,
-		versions: { appVersion: "0", hostServiceVersion: "0", forkTag: "0" },
-		bridgeStartedMs: NOW,
-		ledger: { currentEpoch: () => "epoch" } as unknown as ReadDeps["ledger"],
-		currentGseq: () => 7,
-		onQuestionsSettled: () => {},
-	};
-}
-
-function terminal(
-	id: string,
-	originWorkspaceId: string,
-	overrides: Partial<HostTerminalRow> = {},
-): HostTerminalRow {
-	return {
-		id,
-		originWorkspaceId,
-		status: "active",
-		createdAt: NOW - 100_000,
-		lastAttachedAt: NOW - 1_000,
-		endedAt: null,
-		...overrides,
-	};
-}
-
-function workspaceRow(
-	id: string,
-	projectId: string,
-	overrides: Partial<HostWorkspaceRow> = {},
-): HostWorkspaceRow {
-	return {
-		id,
-		projectId,
-		name: id,
-		branch: id,
-		worktreePath: `C:/wt/${id}`,
-		type: "worktree",
-		createdAt: NOW - 200_000,
-		...overrides,
-	};
-}
 
 const FULL_CTX = {
 	granted: ["tree.read"],

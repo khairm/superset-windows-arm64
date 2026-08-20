@@ -14,16 +14,14 @@ import {
 	placementProjectId,
 	SESSIONS_PROJECT_ID,
 } from "./session-project";
+import { createSidebarCuration } from "./sidebar-filter";
 import {
-	createSidebarCuration,
-	type SidebarMirrorSnapshot,
-	type SidebarProjectMirrorRow,
-	type SidebarWorkspaceMirrorRow,
-} from "./sidebar-filter";
-
-const NOW = Date.now();
-const ORG = "org-this-machine";
-const LAUNCH = "launch-1";
+	mirrorProject,
+	mirrorWorkspace,
+	NOW,
+	ORG,
+	snapshot,
+} from "./test-fixtures";
 
 /** A session workspace as `host.db` holds it: real id, NO project. */
 const SESSION_WORKSPACE = {
@@ -31,46 +29,6 @@ const SESSION_WORKSPACE = {
 	projectId: null,
 	type: "session",
 };
-
-function mirrorWorkspace(
-	workspaceId: string,
-	overrides: Partial<SidebarWorkspaceMirrorRow> = {},
-): SidebarWorkspaceMirrorRow {
-	return {
-		workspaceId,
-		projectId: "p-git",
-		isHidden: false,
-		archivedAt: null,
-		snoozeUntil: null,
-		snoozeLaunchId: null,
-		completedAt: null,
-		deletedAt: null,
-		pinnedAt: null,
-		tabOrder: 0,
-		...overrides,
-	};
-}
-
-function mirrorProject(projectId: string): SidebarProjectMirrorRow {
-	return { projectId, tabOrder: 0, isPinned: false, isCollapsed: false };
-}
-
-function snapshot(
-	workspaces: SidebarWorkspaceMirrorRow[],
-	projects: SidebarProjectMirrorRow[],
-): SidebarMirrorSnapshot {
-	return {
-		meta: {
-			lastFullSyncAtMs: NOW - 1_000,
-			appLaunchId: LAUNCH,
-			organizationId: ORG,
-			workspaceCount: workspaces.length,
-			projectCount: projects.length,
-		},
-		workspaces,
-		projects,
-	};
-}
 
 describe("(SESSIONS-PROJECT) placement", () => {
 	it("maps a missing project onto the synthetic group and leaves a real one alone", () => {

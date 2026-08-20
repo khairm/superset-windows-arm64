@@ -119,6 +119,7 @@ import {
 } from "./lifecycle-alerts";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
+import { errorClassName } from "./log-privacy";
 import {
 	openPairingWindow,
 	// Aliased: the bridge method below has the same name, and a method name is
@@ -164,7 +165,9 @@ import {
 	findActiveHostTerminalId,
 	type HostDbReader,
 	openHostDbReadOnly,
+	projectDisplayName,
 	type ReadApi,
+	workspaceDisplayName,
 } from "./read-api";
 import {
 	type CompanionMirrorChange,
@@ -762,16 +765,30 @@ export function createCompanionBridge(
 			try {
 				const workspace = hostDb.findWorkspace(hostWorkspaceId);
 				if (workspace !== null) {
-					workspaceName = workspace.name;
+					// (CHAT-CONTEXT-NAMES) The SAME display-name fallbacks `/v1/tree`
+					// and `/v1/question`'s `place` use, so the notification and the
+					// sheet it opens name the same rows identically. This CHANGES the
+					// alert only for a row whose stored name is empty: it used to
+					// resolve to `""` and the phone rendered its generic wording, and
+					// it now resolves to the branch (workspace) or the repo path's
+					// basename (project), exactly as every other surface names it.
+					workspaceName = workspaceDisplayName(workspace);
 					const placement = placementProjectId(workspace.projectId);
-					projectName = isSessionsProjectId(placement)
-						? SESSIONS_PROJECT_NAME
-						: (hostDb.findProject(placement)?.name ?? "");
+					if (isSessionsProjectId(placement)) {
+						projectName = SESSIONS_PROJECT_NAME;
+					} else {
+						const project = hostDb.findProject(placement);
+						projectName = project === null ? "" : projectDisplayName(project);
+					}
 				}
 			} catch (error) {
+				// (CHAT-CONTEXT-NAMES) A CLASS NAME, never the error. `new Error(name)`
+				// is a plausible thing for a row read to throw, and both `message` and
+				// `stack` can carry a project or workspace name — which is the exact
+				// string this alert path keeps out of the log.
 				logger.error(
 					"could not read workspace/project names for a companion alert; it will use generic wording",
-					{ hostWorkspaceId, error },
+					{ hostWorkspaceId, errorName: errorClassName(error) },
 				);
 			}
 
@@ -1006,6 +1023,10 @@ export function createCompanionBridge(
 			questions,
 			liveness,
 			log: (event) => logger.info("read", event),
+			// (CHAT-CONTEXT-NAMES) The read path's tab titles come from the SAME
+			// registry the alert path names its pushes from, so a notification and
+			// the sheet it opens can never name two different tabs.
+			resolveTabTitle: (w, t) => alertContexts.lookupTabTitle(w, t) ?? "",
 			// (MIRROR-ORG-GATE) Curation is only applied to a mirror written for
 			// THIS org.
 			organizationId: options.organizationId,

@@ -71,6 +71,7 @@ import {
 import { isCanonicalWireId } from "./crypto";
 import { WIRE_ID_CHARS } from "./limits";
 import type { TerminalLiveness } from "./liveness";
+import { errorClassName, logSafely } from "./log-privacy";
 import {
 	type AnswerabilityContext,
 	deriveHandle,
@@ -80,6 +81,7 @@ import {
 	readTranscriptWindow,
 } from "./question-store";
 import {
+	isSessionsProjectId,
 	placementProjectId,
 	SESSIONS_PROJECT_ID,
 	SESSIONS_PROJECT_NAME,
@@ -96,6 +98,7 @@ import {
 	type AgentKind,
 	type AgentStatus,
 	type Capability,
+	type ChatPlace,
 	type EpochMs,
 	type HeartbeatRequest,
 	type HeartbeatResponse,
@@ -455,6 +458,23 @@ export interface ReadDeps {
 	 * path recorded nothing about what `answerable` verdict it served).
 	 */
 	log(event: Record<string, unknown>): void;
+	/**
+	 * (CHAT-CONTEXT-NAMES) The renderer's TAB title for one terminal, or `""`.
+	 *
+	 * Nullable but REQUIRED, the house style for a dep a composition root may
+	 * genuinely not have: `null` is an explicit "this bridge has no tab-title
+	 * registry", stated at the wiring site, while an omitted field would be a
+	 * bridge that silently reports every chat as untitled and no one noticing.
+	 *
+	 * Tab titles live only in the renderer, so this is a lookup into the
+	 * `(ALERT-CONTEXT-NAMES)` snapshot registry rather than anything host.db
+	 * knows. It is called on the read path with host.db's OWN ids (never wire
+	 * handles, never empty — both are primary keys off a row that was read) and
+	 * MAY throw; every caller here wraps it.
+	 */
+	resolveTabTitle:
+		| ((hostWorkspaceId: string, hostTerminalId: string) => string)
+		| null;
 }
 
 /** Convenience binder so a composition root can hand around one object. */
@@ -850,6 +870,157 @@ function deriveProjectKind(
 }
 
 /**
+ * (CHAT-CONTEXT-NAMES) The ONE copy of "what does the user call this project".
+ *
+ * `/v1/tree` names its project headers with this, `/v1/question` names its
+ * `place` with it and the FCM alert path names its push with it, so the sheet's
+ * header, the row the user tapped and the notification that opened it can never
+ * disagree about a repo. Two copies of a fallback chain is two chances to drift
+ * apart, and the drift would show up as the phone contradicting itself.
+ *
+ * Non-null, like `workspaceDisplayName`: a row that has gone is the CALLER's
+ * fact to spell — `""`, the convention `ChatPlace` uses for every unknown — and
+ * a helper that swallowed it would let a caller forget it had a null to handle.
+ */
+export function projectDisplayName(row: HostProjectRow): string {
+	return row.name.length > 0 ? row.name : path.basename(row.repoPath || row.id);
+}
+
+/**
+ * (CHAT-CONTEXT-NAMES) The ONE copy of "what does the user call this
+ * workspace". Same argument as `projectDisplayName`.
+ */
+export function workspaceDisplayName(row: HostWorkspaceRow): string {
+	return row.name.length > 0 ? row.name : row.branch;
+}
+
+/**
+ * (CHAT-CONTEXT-NAMES) One tree read's tab-title failures, counted instead of
+ * logged one by one.
+ *
+ * `/v1/tree` is a POLLED endpoint and it resolves a title per terminal row, so
+ * a registry that is broken rather than merely missing an entry produces one
+ * log line per terminal per poll — a machine with twenty panes writes twenty
+ * lines every few seconds, for one fact. The tally collapses that to one line
+ * per read carrying the count, the same shape `push-context` uses for its
+ * rejected/ambiguous terminals. The question path keeps its per-call line:
+ * there is exactly one terminal on it, and it is not polled.
+ */
+interface TabTitleFailureTally {
+	count: number;
+	/** The class of the LAST failure. One class name starts the investigation; N copies do not. */
+	lastErrorName: string;
+}
+
+/**
+ * (CHAT-CONTEXT-NAMES) The renderer's tab title, or `""`. NEVER THROWS.
+ *
+ * The registry is process-local state owned by another subsystem; a lookup that
+ * fails costs the user one word of context, while letting it escape would cost
+ * them the whole tree or the whole question. `null` dep is the same answer as a
+ * failed lookup, because from the phone's side they are the same fact.
+ *
+ * Pass a `TabTitleFailureTally` from a loop; omit it and the failure is logged
+ * on the spot.
+ */
+function resolveTabTitleSafely(
+	deps: ReadDeps,
+	hostWorkspaceId: string,
+	hostTerminalId: string,
+	tally?: TabTitleFailureTally,
+): string {
+	const resolve = deps.resolveTabTitle;
+	if (resolve === null) return "";
+	try {
+		return resolve(hostWorkspaceId, hostTerminalId);
+	} catch (error) {
+		// A class name. NEVER the message, the stack or the error object.
+		const errorName = errorClassName(error);
+		if (tally !== undefined) {
+			tally.count++;
+			tally.lastErrorName = errorName;
+			return "";
+		}
+		// Ids and a class name. NEVER the message, the stack or the error object.
+		logSafely(deps.log, {
+			event: "companion.chat_place.tab_title_unresolved",
+			hostWorkspaceId,
+			hostTerminalId,
+			errorName,
+		});
+		return "";
+	}
+}
+
+/**
+ * (BRIDGE-SIDEBAR-FILTER) One read's view of what the sidebar shows.
+ *
+ * Three read paths build this from the same three arguments — the mirror, the
+ * read's clock and the org gate — and a fourth that forgot the org gate would
+ * apply another machine's curation (`(MIRROR-ORG-GATE)`) while still compiling.
+ * The triple is written once so there is nothing to forget.
+ */
+function curationFor(deps: ReadDeps, nowMs: EpochMs): SidebarCuration {
+	return createSidebarCuration(
+		deps.db.readSidebarMirror(),
+		nowMs,
+		deps.organizationId,
+	);
+}
+
+/**
+ * (CHAT-CONTEXT-NAMES) The three names for one terminal. NEVER THROWS, and
+ * every field degrades on its own.
+ *
+ * The project name is the SIDEBAR PLACEMENT's, resolved through the same
+ * `createSidebarCuration` + `effectiveProjectId` pair `/v1/tree` groups by, so
+ * the question sheet's header names the project the tapped row sits under. That
+ * is deliberately NOT `QuestionSource.projectId`, which is the owning project
+ * and goes stale as a NAME the moment a thread is dragged elsewhere.
+ *
+ * Curation is consulted for PLACEMENT ONLY, never for visibility: a hidden,
+ * snoozed or archived workspace's question is served exactly as it is today
+ * (`(ANSWER-GUARDLESS)`), and this function is incapable of refusing one.
+ */
+function resolveChatPlace(
+	deps: ReadDeps,
+	hostWorkspaceId: string,
+	hostTerminalId: string,
+): ChatPlace {
+	let projectName = "";
+	let workspaceName = "";
+	try {
+		const workspace = deps.db.findWorkspace(hostWorkspaceId);
+		if (workspace !== null) {
+			// Assigned BEFORE the project lookup, so a project read that throws
+			// costs the project name only.
+			workspaceName = workspaceDisplayName(workspace);
+			const curation = curationFor(deps, Date.now());
+			const placement = curation.effectiveProjectId(workspace);
+			if (isSessionsProjectId(placement)) {
+				// (SESSIONS-PROJECT) A session owns no project row to name.
+				projectName = SESSIONS_PROJECT_NAME;
+			} else {
+				const project = deps.db.findProject(placement);
+				projectName = project === null ? "" : projectDisplayName(project);
+			}
+		}
+	} catch (error) {
+		// Ids and a class name. NEVER the message, the stack or the error object.
+		logSafely(deps.log, {
+			event: "companion.chat_place.names_unresolved",
+			hostWorkspaceId,
+			errorName: errorClassName(error),
+		});
+	}
+	return {
+		projectName,
+		workspaceName,
+		tabTitle: resolveTabTitleSafely(deps, hostWorkspaceId, hostTerminalId),
+	};
+}
+
+/**
  * Curated ordinary threads stay out of both `/v1/tree` and its counts. A live
  * question is the exception: curation also holds its push, so filtering it out
  * would erase every phone/watch discovery path.
@@ -893,11 +1064,7 @@ export async function handleTree(
 
 	const nowMs = Date.now();
 	const answerability: AnswerabilityContext = { granted: ctx.granted };
-	const curation = createSidebarCuration(
-		deps.db.readSidebarMirror(),
-		nowMs,
-		deps.organizationId,
-	);
+	const curation = curationFor(deps, nowMs);
 	const projects = deps.db.listProjects();
 	const allWorkspaces = deps.db.listWorkspaces();
 	const visible = visibleWorkspaces(allWorkspaces, curation);
@@ -908,6 +1075,11 @@ export async function handleTree(
 
 	const counts: StatusCounts = { needsInput: 0, working: 0, idle: 0 };
 	const terminalsByWorkspace = new Map<string, Terminal[]>();
+	// (CHAT-CONTEXT-NAMES) One line per read, not one per pane. See TabTitleFailureTally.
+	const tabTitleFailures: TabTitleFailureTally = {
+		count: 0,
+		lastErrorName: "",
+	};
 
 	for (const row of terminals) {
 		if (row.originWorkspaceId === null) continue;
@@ -937,6 +1109,13 @@ export async function handleTree(
 			};
 		}
 
+		const tabTitle = resolveTabTitleSafely(
+			deps,
+			row.originWorkspaceId,
+			row.id,
+			tabTitleFailures,
+		);
+
 		const terminal: Terminal = {
 			terminalId: deriveHandle("terminal", row.id) as unknown as TerminalId,
 			title: terminalTitle(binding),
@@ -956,6 +1135,15 @@ export async function handleTree(
 			lastActivityMs: full
 				? (binding?.lastEventAt ?? row.lastAttachedAt ?? row.createdAt)
 				: null,
+			// (CHAT-CONTEXT-NAMES) (EMIT-OPTIONAL-FIELDS) The pane label the user
+			// reads on the desktop, omitted rather than sent empty — the client
+			// defaults an absent title to `""`, so the two say the same thing and
+			// only one of them costs a key on every terminal of every poll.
+			//
+			// NOT gated on `full`, exactly like `title` above: it is this row's own
+			// name, in the same class of fact as the name of the workspace and the
+			// project it is nested under, neither of which is gated either.
+			...(tabTitle.length === 0 ? {} : { tabTitle }),
 		};
 
 		const list = terminalsByWorkspace.get(row.originWorkspaceId);
@@ -964,6 +1152,17 @@ export async function handleTree(
 		} else {
 			list.push(terminal);
 		}
+	}
+
+	if (tabTitleFailures.count > 0) {
+		logSafely(deps.log, {
+			event: "companion.chat_place.tab_title_unresolved",
+			// The COUNT, and the class of the last one. No ids: the interesting
+			// fact is that the registry is failing at all, and a per-terminal id
+			// list would put this line straight back where it started.
+			terminals: tabTitleFailures.count,
+			errorName: tabTitleFailures.lastErrorName,
+		});
 	}
 
 	// (BRIDGE-SIDEBAR-FILTER) Grouped by the SIDEBAR's placement, not by
@@ -1006,7 +1205,7 @@ export async function handleTree(
 		const workspacePinned = curation.workspacePinned(row.id);
 		const workspace: Workspace = {
 			workspaceId: deriveHandle("workspace", row.id) as unknown as WorkspaceId,
-			name: row.name.length > 0 ? row.name : row.branch,
+			name: workspaceDisplayName(row),
 			branch: full ? (row.branch.length > 0 ? row.branch : null) : null,
 			status,
 			terminals: shown,
@@ -1058,8 +1257,7 @@ export async function handleTree(
 		const projectPinned = curation.projectPinned(row.id);
 		outProjects.push({
 			projectId: deriveHandle("project", row.id) as unknown as ProjectId,
-			name:
-				row.name.length > 0 ? row.name : path.basename(row.repoPath || row.id),
+			name: projectDisplayName(row),
 			kind: full
 				? deriveProjectKind(row, workspaceRowsByOwningProject.get(row.id) ?? [])
 				: PROJECT_KIND_UNKNOWN,
@@ -1407,6 +1605,18 @@ export async function handleQuestion(
 	const response = await deps.questions.toResponse(question, {
 		granted: ctx.granted,
 	});
+	// (CHAT-CONTEXT-NAMES) Which chat this is, in the user's own words, so a
+	// sheet opened straight from a notification tap can head itself. Resolved
+	// here rather than inside `toResponse` because it needs curation and the
+	// read API owns the org gate that curation is only valid behind.
+	//
+	// It can never fail the request: `resolveChatPlace` does not throw, and a
+	// name it could not resolve is `""`.
+	response.place = resolveChatPlace(
+		deps,
+		question.hostWorkspaceId,
+		question.hostTerminalId,
+	);
 	// One line per served detail — the durable record of what verdict this
 	// device was shown, and against which granted set. This is the line whose
 	// absence turned the 2026-08-09 watch refusal into an hour of forensics.
@@ -1518,11 +1728,7 @@ export async function handleHeartbeat(
  */
 function countStatuses(deps: ReadDeps, nowMs: EpochMs): StatusCounts {
 	const counts: StatusCounts = { needsInput: 0, working: 0, idle: 0 };
-	const curation = createSidebarCuration(
-		deps.db.readSidebarMirror(),
-		nowMs,
-		deps.organizationId,
-	);
+	const curation = curationFor(deps, nowMs);
 	const visible = visibleWorkspaces(deps.db.listWorkspaces(), curation);
 	const bindings = new Map(
 		deps.db.listBindings().map((b) => [b.terminalId, b]),

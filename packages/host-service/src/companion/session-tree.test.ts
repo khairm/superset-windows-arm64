@@ -5,170 +5,28 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PendingQuestion } from "./question-store";
-import {
-	type HostBindingRow,
-	type HostDbReader,
-	type HostProjectRow,
-	type HostTerminalRow,
-	type HostWorkspaceRow,
-	handleTree,
-	type ReadDeps,
-} from "./read-api";
+import { handleTree } from "./read-api";
 import { SESSIONS_PROJECT_NAME } from "./session-project";
-import type {
-	SidebarMirrorSnapshot,
-	SidebarProjectMirrorRow,
-	SidebarWorkspaceMirrorRow,
-} from "./sidebar-filter";
+import {
+	mirrorProject,
+	mirrorWorkspace,
+	NOW,
+	projectRow,
+	snapshot,
+	type TreeFixture,
+	terminalRow as terminal,
+	treeDeps,
+	workspaceRow,
+} from "./test-fixtures";
 import type { SealedRequestContext, TreeResponse } from "./types";
 
-const NOW = Date.now();
-const ORG = "org-this-machine";
-const LAUNCH = "launch-1";
-
-function mirrorWorkspace(
-	workspaceId: string,
-	overrides: Partial<SidebarWorkspaceMirrorRow> = {},
-): SidebarWorkspaceMirrorRow {
-	return {
-		workspaceId,
-		projectId: "p-git",
-		isHidden: false,
-		archivedAt: null,
-		snoozeUntil: null,
-		snoozeLaunchId: null,
-		completedAt: null,
-		deletedAt: null,
-		pinnedAt: null,
-		tabOrder: 0,
-		...overrides,
-	};
-}
-
-function mirrorProject(projectId: string): SidebarProjectMirrorRow {
-	return { projectId, tabOrder: 0, isPinned: false, isCollapsed: false };
-}
-
-function snapshot(
-	workspaces: SidebarWorkspaceMirrorRow[],
-	projects: SidebarProjectMirrorRow[],
-): SidebarMirrorSnapshot {
-	return {
-		meta: {
-			lastFullSyncAtMs: NOW - 1_000,
-			appLaunchId: LAUNCH,
-			organizationId: ORG,
-			workspaceCount: workspaces.length,
-			projectCount: projects.length,
-		},
-		workspaces,
-		projects,
-	};
-}
-
-interface TreeFixture {
-	projects: HostProjectRow[];
-	workspaces: HostWorkspaceRow[];
-	terminals: HostTerminalRow[];
-	bindings: HostBindingRow[];
-	mirror: SidebarMirrorSnapshot;
-	pendingByHostTerminal?: Record<string, PendingQuestion>;
-}
-
-function treeDeps(fixture: TreeFixture): ReadDeps {
-	const db: HostDbReader = {
-		listProjects: () => fixture.projects,
-		listWorkspaces: () => fixture.workspaces,
-		listActiveTerminals: () => fixture.terminals,
-		listBindings: () => fixture.bindings,
-		findWorkspace: (id) => fixture.workspaces.find((w) => w.id === id) ?? null,
-		findProject: (id) => fixture.projects.find((p) => p.id === id) ?? null,
-		listTerminalIdsForWorkspace: (workspaceId) =>
-			fixture.terminals
-				.filter((t) => t.originWorkspaceId === workspaceId)
-				.map((t) => t.id),
-		findBinding: (id) =>
-			fixture.bindings.find((b) => b.terminalId === id) ?? null,
-		findTerminal: (id) => fixture.terminals.find((t) => t.id === id) ?? null,
-		readSidebarMirror: () => fixture.mirror,
-		resolveTerminal: () => null,
-		resolveActiveTerminal: () => null,
-		resolveTranscriptPath: () => null,
-		resolveTerminalActivityMs: () => NOW,
-		close: () => {},
-	};
-	const pending = fixture.pendingByHostTerminal ?? {};
-	return {
-		db,
-		log: () => {},
-		questions: {
-			byHostTerminal: (hostTerminalId: string) =>
-				pending[hostTerminalId] ?? null,
-			unanswerableReason: () => null,
-			headline: (question: PendingQuestion) =>
-				question.questions[0]?.header ?? "",
-			reconcile: async () => [],
-			oldestPendingAgeMs: () => null,
-		} as unknown as ReadDeps["questions"],
-		liveness: {
-			refresh: async () => {},
-			isLive: () => true,
-			isProvablyGone: () => false,
-			describe: () => ({
-				hasSnapshot: true,
-				aliveCount: fixture.terminals.length,
-				takenAtMs: NOW,
-			}),
-		},
-		organizationId: ORG,
-		versions: { appVersion: "0", hostServiceVersion: "0", forkTag: "0" },
-		bridgeStartedMs: NOW,
-		ledger: { currentEpoch: () => "epoch" } as unknown as ReadDeps["ledger"],
-		currentGseq: () => 7,
-		onQuestionsSettled: () => {},
-	};
-}
-
-function terminal(
-	id: string,
-	originWorkspaceId: string,
-	overrides: Partial<HostTerminalRow> = {},
-): HostTerminalRow {
-	return {
-		id,
-		originWorkspaceId,
-		status: "active",
-		createdAt: NOW - 100_000,
-		lastAttachedAt: NOW - 1_000,
-		endedAt: null,
-		...overrides,
-	};
-}
-
 /** As `workspaces.createSession` writes it: real worktree, NO project. */
-function sessionWorkspaceRow(id: string): HostWorkspaceRow {
-	return {
-		id,
-		projectId: null,
-		name: id,
+function sessionWorkspaceRow(id: string) {
+	return workspaceRow(id, null, {
 		branch: "main",
 		worktreePath: `C:/Users/me/.superset/sessions/${id}`,
 		type: "session",
-		createdAt: NOW - 200_000,
-	};
-}
-
-function repoWorkspaceRow(id: string, projectId: string): HostWorkspaceRow {
-	return {
-		id,
-		projectId,
-		name: id,
-		branch: id,
-		worktreePath: `C:/wt/${id}`,
-		type: "worktree",
-		createdAt: NOW - 200_000,
-	};
+	});
 }
 
 const FULL_CTX = {
@@ -180,16 +38,14 @@ async function tree(fixture: TreeFixture): Promise<TreeResponse> {
 	return handleTree(treeDeps(fixture), FULL_CTX, { includeIdle: true });
 }
 
-const BASE_PROJECTS: HostProjectRow[] = [
-	{ id: "p-git", name: "repo", repoPath: "C:/repo", worktreeBaseDir: null },
-];
+const BASE_PROJECTS = [projectRow("p-git", "repo")];
 
 describe("(SESSIONS-PROJECT) handleTree", () => {
 	it("renders a session under the synthetic Sessions project instead of dropping it for having no project_id", async () => {
 		const response = await tree({
 			projects: BASE_PROJECTS,
 			workspaces: [
-				repoWorkspaceRow("w-branch", "p-git"),
+				workspaceRow("w-branch", "p-git"),
 				sessionWorkspaceRow("w-session"),
 			],
 			terminals: [

@@ -802,6 +802,22 @@ export interface Terminal {
 	agent: TerminalAgentBinding;
 	pendingQuestion: PendingQuestionRef | null;
 	lastActivityMs: EpochMs | null;
+	/**
+	 * (CHAT-CONTEXT-NAMES) (EMIT-OPTIONAL-FIELDS) The renderer's TAB title for
+	 * this terminal — the name the user reads on the desktop.
+	 *
+	 * `title` above is derived from the agent binding and answers "what is
+	 * running here"; this answers "what did the user call this pane", and the
+	 * phone's chat header wants the second. Not gated on `tree.read`, for the
+	 * same reason `title` is not: it is the row's own label, not content.
+	 *
+	 * OPTIONAL, like every field added after a client shipped, and OMITTED when
+	 * no snapshot resolved one: the client defaults an absent title to `""`, so
+	 * absent and empty say the same thing and only one of them costs a key on
+	 * every terminal of every poll. `ChatPlace.tabTitle` below is a fixed-shape
+	 * object with three siblings and spells the same fact `""`.
+	 */
+	tabTitle?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +921,31 @@ export interface QuestionSource {
 	subagent: { agentType: string } | null;
 }
 
+/**
+ * (CHAT-CONTEXT-NAMES) The three names that say WHICH chat a question is about,
+ * so the phone's question sheet can head itself the way the desktop does.
+ *
+ * All three fields are ALWAYS present and `""` spells unknown — the same
+ * convention `PushAlertContext` uses, and for the same reason: a consumer that
+ * has to distinguish "absent" from "empty" gets two ways to render nothing.
+ * Every field degrades on its own; a workspace whose project row cannot be read
+ * still reports its own name.
+ *
+ * PLACEMENT identity, deliberately: these names come from where the SIDEBAR
+ * puts the workspace (`(BRIDGE-SIDEBAR-FILTER)`, the same grouping `/v1/tree`
+ * uses), not from `QuestionSource.projectId`, which is the OWNING project. The
+ * two disagree the moment a thread is dragged under another repo, and the phone
+ * mirrors the screen the user is looking at. This is separate from the FCM
+ * notification's names, which keep the owner identity.
+ */
+export interface ChatPlace {
+	/** Sidebar PLACEMENT project, or `""`. `"Sessions"` for a session thread. */
+	projectName: string;
+	workspaceName: string;
+	/** The renderer's tab title, or `""` when none resolved. */
+	tabTitle: string;
+}
+
 export interface QuestionRequest {
 	questionId: QuestionId;
 }
@@ -924,6 +965,20 @@ export interface QuestionResponse {
 	questions: QuestionItem[];
 	/** The last 10 transcript entries, newest last, for the sheet. */
 	context: TranscriptEntry[];
+	/**
+	 * (CHAT-CONTEXT-NAMES) (EMIT-OPTIONAL-FIELDS) Which chat this question is
+	 * about, in the words the user gave it. A phone opening a question from a
+	 * notification tap has the ids and nothing else to head the sheet with.
+	 *
+	 * A separate TOP-LEVEL object rather than three fields on `source`, because
+	 * `source.projectId` is the OWNER handle and these are PLACEMENT names:
+	 * pairing them would state, of one identity, a name belonging to another.
+	 *
+	 * OPTIONAL, like every field added after a client shipped. Omitted only by a
+	 * bridge that predates the feature — this one always sets it, using `""` per
+	 * field for whatever it could not resolve.
+	 */
+	place?: ChatPlace;
 }
 
 /** §9.4 — carried on the event stream. NO question body, NO option text. */
