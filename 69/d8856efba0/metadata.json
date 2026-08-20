@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "69d8856efba0",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 24,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/chat-context-names.test.ts",
+    "packages/host-service/src/companion/curation-gates.test.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/log-privacy.ts",
+    "packages/host-service/src/companion/push-context.ts",
+    "packages/host-service/src/companion/read-api.ts",
+    "packages/host-service/src/companion/session-project.test.ts",
+    "packages/host-service/src/companion/session-tree.test.ts",
+    "packages/host-service/src/companion/test-fixtures.ts",
+    "packages/host-service/src/companion/types.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/69/d8856efba0/0/metadata.json",
+      "transcript": "/69/d8856efba0/0/full.jsonl",
+      "content_hash": "/69/d8856efba0/0/content_hash.txt",
+      "prompt": "/69/d8856efba0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 68120,
+    "cache_creation_tokens": 1698884,
+    "cache_read_tokens": 28365844,
+    "output_tokens": 127001,
+    "api_call_count": 135
+  }
+}
