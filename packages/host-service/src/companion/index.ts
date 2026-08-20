@@ -40,6 +40,7 @@ import {
 } from "../terminal/terminal";
 import type { TerminalAgentStore } from "../terminal-agents";
 import {
+	type CompanionQuestionSink,
 	getCompanionQuestionSink,
 	setCompanionLifecycleSink,
 	setCompanionQuestionSink,
@@ -151,6 +152,7 @@ import {
 	createQuestionStore,
 	deriveHandle,
 	type PendingQuestion,
+	QUESTION_STALE_MANUAL_DISMISS_REASON,
 	QUESTION_STALE_TERMINAL_GONE_REASON,
 	type QuestionCaptureSink,
 	type QuestionStore,
@@ -1757,7 +1759,7 @@ function publishQuestionResolved(
  */
 export function createNotifyingCaptureSink(
 	deps: NotifyingSinkDeps,
-): QuestionCaptureSink {
+): CompanionQuestionSink {
 	return {
 		capture(input) {
 			deps.inner.capture(input);
@@ -1804,6 +1806,76 @@ export function createNotifyingCaptureSink(
 				resolvedBy,
 				outcome: "answered",
 			});
+		},
+
+		/**
+		 * (MANUAL-DISMISS) The user cleared this terminal's status by hand. End the
+		 * question as `stale`, not `resolved`.
+		 *
+		 * `resolve` is wrong here and the difference is visible on the phone:
+		 * `QuestionStore.resolve` stamps `resolvedBy` provenance, so the tree would
+		 * report a question as answered-at-the-desk that nobody answered, and the
+		 * `question.resolved` frame would name a surface that never supplied an
+		 * answer. `markStale` is the store's designated ending for "stopped being
+		 * answerable, no answer exists" and stamps nothing.
+		 *
+		 * It also does the retraction for free: `markStale` -> `settle()` ->
+		 * `onSettled` -> `push.cancelPending`, the `(SETTLE-CHOKE-POINT)` path every
+		 * other ending takes, so the phone notification is pulled without this
+		 * wrapper touching `push` at all.
+		 *
+		 * `markStale` no-ops on a record that is already settled, so a dismissal
+		 * racing an answer cannot un-answer anything.
+		 *
+		 * FENCED ON `dismissStartedAtMs`, exactly as the marker sweep is. The
+		 * pending record this reads is whatever is pending NOW, which is not
+		 * necessarily the question the user was looking at: an agent that raised a
+		 * new AskUserQuestion between the click and this call owns the pending slot
+		 * by the time it runs. Settling THAT one is terminal and unrecoverable — the
+		 * phone alert is retracted, `/v1/answer` returns 410, and the agent stays
+		 * blocked with nothing left to answer it from — so a question that is not
+		 * provably older than the click is left strictly alone. Same direction and
+		 * same boundary as `clearPendingQuestionMarkers`: equal timestamps do not
+		 * prove precedence, so they survive.
+		 */
+		dismissByTerminal(input) {
+			const question = deps.questions.byHostTerminal(input.hostTerminalId);
+			if (question === null) return false;
+			if (question.askedAtMs >= input.dismissStartedAtMs) {
+				deps.logger.info(
+					"not dismissing a companion question raised at or after the user's click; it is a question they have never seen and the phone must keep being able to answer it",
+					{
+						questionId: question.questionId,
+						askedAtMs: question.askedAtMs,
+						dismissStartedAtMs: input.dismissStartedAtMs,
+					},
+				);
+				return false;
+			}
+
+			// The reason reaches `markStale` only as a log line (it is not stored on
+			// the record), which is why the frame below names the constant rather
+			// than reading a reason back off the question.
+			deps.questions.markStale(question.questionId, input.reason);
+
+			// Same guard as `publishSettledQuestion`: a frame nobody can currently
+			// receive must not turn a dismissal that already happened — markers gone,
+			// record settled, push retracted — into a reported failure.
+			try {
+				deps.events.publish({
+					t: "question.stale",
+					d: {
+						questionId: question.questionId,
+						reason: QUESTION_STALE_MANUAL_DISMISS_REASON,
+					},
+				});
+			} catch (error) {
+				deps.logger.error(
+					"could not publish the manual-dismissal event; the phone will fall back to its counts comparison for freshness",
+					{ questionId: question.questionId, error },
+				);
+			}
+			return true;
 		},
 	};
 }

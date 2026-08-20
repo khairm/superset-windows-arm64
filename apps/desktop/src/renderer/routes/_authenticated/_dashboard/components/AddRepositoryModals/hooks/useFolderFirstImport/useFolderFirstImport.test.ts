@@ -34,7 +34,13 @@ const createMock = mock(async () => ({
 const finalizeSetupMock = mock(() => undefined);
 const requestGitInitMock = mock(async () => false);
 
+// Spread the REAL module and override one hook. Replacing "react" wholesale
+// is process-global with no unmock, so every file bun loads afterwards
+// inherits it — and any of them that touches `React.createContext` (via
+// posthog-js/react, among others) dies on import.
+const realReact = await import("react");
 mock.module("react", () => ({
+	...realReact,
 	useCallback: <T extends (...args: never[]) => unknown>(callback: T) =>
 		callback,
 }));

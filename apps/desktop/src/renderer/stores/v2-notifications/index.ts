@@ -1,5 +1,4 @@
 export {
-	clearV2TerminalRunStatus,
 	getHighestPriorityDisplayStatus,
 	getV2ChatNotificationSource,
 	getV2ManualNotificationSource,

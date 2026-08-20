@@ -1,5 +1,7 @@
+import type { AppRouter } from "@superset/host-service";
 import { toast } from "@superset/ui/sonner";
 import { useQueryClient } from "@tanstack/react-query";
+import type { inferRouterOutputs } from "@trpc/server";
 import {
 	useMatchRoute,
 	useNavigate,
@@ -26,7 +28,158 @@ import {
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useDestroyWorkspaceIntent } from "renderer/stores/destroy-workspace-intent";
 import { useRemoveFromSidebarIntent } from "renderer/stores/remove-workspace-from-sidebar-intent";
-import { useV2NotificationStore } from "renderer/stores/v2-notifications";
+import {
+	getV2TerminalNotificationSource,
+	useV2NotificationStore,
+} from "renderer/stores/v2-notifications";
+
+/**
+ * (MANUAL-DISMISS) One terminal's outcome from the host's
+ * `terminalAgents.dismissWorkspaceStatuses` mutation.
+ *
+ * Inferred from the router rather than restated, so a field the host renames or
+ * retypes is a compile error here instead of silent drift. Only two fields are
+ * read; the rest are the host's own accounting.
+ *
+ * `lastEventAt` is the binding's value read back AFTER the clear — HOST clock,
+ * never this machine's. `null` means the terminal has no live binding at all (a
+ * leaked marker swept off something nothing is bound to), which is a success
+ * with nothing to mark seen. `pendingAfter` means a NEWER question arrived
+ * while the dismiss was in flight.
+ */
+export type DismissedWorkspaceTerminal =
+	inferRouterOutputs<AppRouter>["terminalAgents"]["dismissWorkspaceStatuses"]["terminals"][number];
+
+/**
+ * (MANUAL-DISMISS) "Clear Status", the whole sequence, with the two hook-local
+ * pieces passed in.
+ *
+ * Exported and React-free on purpose: the ORDERING below is the entire fix,
+ * and it is what the tests drive.
+ *
+ * THREE SIMILARLY-NAMED FUNCTIONS MEET HERE, and confusing two of them is what
+ * made this menu item do nothing for the red and yellow dots:
+ *
+ *  1. `terminalAgents.clearWorkspaceStatuses` — HOST mutation. Forces the
+ *     host bindings to Stop. Still what the interrupt path calls.
+ *  2. `terminalAgents.dismissWorkspaceStatuses` — HOST mutation, the one
+ *     called below. Forces the bindings AND removes the pending-permission
+ *     markers, so a resync cannot re-derive the red from the host's durable
+ *     truth a moment later.
+ *  3. `useV2NotificationStore.clearWorkspaceStatuses` — RENDERER store action.
+ *     The dots are rendered from ITS latched axes, so nothing on screen changes
+ *     until this one runs. The old handler called (1) plus a review-only local
+ *     clear and never this, so the host went quiet while the red and yellow
+ *     dots stayed exactly where they were.
+ *
+ * Ordering is deliberate:
+ *
+ *  - the local review clear goes FIRST, so a click with the host DOWN still
+ *    clears green and still reports the read, exactly as it did before;
+ *  - the axes the host owns are dropped only once the host has confirmed it
+ *    dropped them too. A failure leaves red and yellow latched, which is the
+ *    honest state: the markers survived, so the next resync would re-assert
+ *    anything dropped locally anyway.
+ */
+export async function runClearWorkspaceStatuses({
+	workspaceId,
+	workspaceHostUrl,
+	clearWorkspaceAttention,
+	invalidateBindings,
+}: {
+	workspaceId: string;
+	workspaceHostUrl: string | null | undefined;
+	clearWorkspaceAttention: () => void;
+	invalidateBindings: () => Promise<unknown>;
+}): Promise<void> {
+	clearWorkspaceAttention();
+	if (!workspaceHostUrl) return;
+	try {
+		const result = await getHostServiceClientByUrl(
+			workspaceHostUrl,
+		).terminalAgents.dismissWorkspaceStatuses.mutate({ workspaceId });
+		applyWorkspaceStatusDismissal({
+			workspaceId,
+			terminals: result.terminals,
+		});
+		await invalidateBindings();
+	} catch (error) {
+		toast.error(
+			`Failed to clear agent status: ${error instanceof Error ? error.message : "Unknown error"}`,
+		);
+	}
+}
+
+/**
+ * (MANUAL-DISMISS) Apply a completed host dismiss to the renderer's dots.
+ *
+ * The store purge is workspace-wide and comes first — it is what actually
+ * changes the pixels. The per-terminal seen mark is what makes the clear
+ * DURABLE: it moves the seen watermark to the host's `lastEventAt`, so the next
+ * resync replays those rows as already-read instead of re-latching them, and it
+ * retires the outstanding ready record through the host-ack compare-and-clear
+ * rather than by dropping it locally. (The purge deliberately leaves
+ * `outstandingReadyAt` standing for exactly that reason — it is the only
+ * remaining evidence of which finish the phone is still showing.)
+ *
+ * A terminal the host reports as `pendingAfter` is NOT marked seen: a newer
+ * question outlived the dismiss, and stamping it read would tell the companion
+ * the user has dealt with something they have not seen. Nor is one with a null
+ * `lastEventAt` — there is no binding behind it to have read.
+ *
+ * `pendingAfter` ALSO GETS ITS RED PUT BACK, and the purge is why it has to be
+ * done here rather than left to the incoming event. The surviving question is
+ * not necessarily in the future: it landed between the click and the mutation's
+ * reply, so this renderer has very likely ALREADY latched its red from the
+ * broadcast, and the workspace-wide purge a line above just wiped it. No
+ * further PermissionRequest is coming — that event has been and gone — so
+ * without this the blocked agent shows no dot at all until the 60s periodic
+ * resync re-derives it from the host. A re-latch for a red that is genuinely
+ * still in flight is harmless: it is the same axis at the same host instant the
+ * event itself would set.
+ *
+ * A `pendingAfter` with a null `lastEventAt` is skipped, because the re-latch
+ * has no instant to anchor. Every axis timestamp in this store is HOST clock —
+ * the resync's occurredAt fence compares latches against host `lastEventAt`
+ * directly — and `applySourceAxes` would otherwise default to `Date.now()` on
+ * THIS machine, planting a renderer-clock timestamp that the next resync
+ * compares against host time. A relay's skew then either freezes the row
+ * (renderer clock ahead: every host row reads as older and is skipped) or drops
+ * the red on the next pass. Leaving the dot to the periodic resync is the
+ * lesser failure, and the combination is close to unreachable anyway: it means
+ * a marker with no binding at all behind it.
+ */
+function applyWorkspaceStatusDismissal({
+	workspaceId,
+	terminals,
+}: {
+	workspaceId: string;
+	terminals: readonly DismissedWorkspaceTerminal[];
+}): void {
+	useV2NotificationStore.getState().clearWorkspaceStatuses(workspaceId);
+	for (const terminal of terminals) {
+		// No binding behind it: the host swept a leaked marker off a terminal
+		// nothing is bound to. The purge above already took its dot, and there is
+		// neither a read to report nor an instant to re-latch at.
+		if (terminal.lastEventAt === null) continue;
+		if (terminal.pendingAfter) {
+			useV2NotificationStore
+				.getState()
+				.applySourceAxes(
+					getV2TerminalNotificationSource(terminal.terminalId),
+					workspaceId,
+					{ set: ["permission"], clear: [] },
+					terminal.lastEventAt,
+				);
+			continue;
+		}
+		markTerminalSeenAndReportRead({
+			workspaceId,
+			terminalId: terminal.terminalId,
+			lastEventAt: terminal.lastEventAt,
+		});
+	}
+}
 
 interface UseDashboardSidebarWorkspaceItemActionsOptions {
 	workspaceId: string;
@@ -285,26 +438,20 @@ export function useDashboardSidebarWorkspaceItemActions({
 		setWorkspacePinned(workspaceId, projectId, !isPinned);
 	};
 
-	// Clears manual + review marks locally, then forces the host's bindings
-	// to Stop — the escape hatch for a wedged working/permission dot (an
-	// interrupted agent fires no Stop hook). Live agents re-assert on their
-	// next hook event, so this is safe to run on a genuinely busy workspace.
-	const handleClearStatus = async () => {
-		clearWorkspaceAttention();
-		if (!workspaceHostUrl) return;
-		try {
-			await getHostServiceClientByUrl(
-				workspaceHostUrl,
-			).terminalAgents.clearWorkspaceStatuses.mutate({ workspaceId });
-			await queryClient.invalidateQueries({
-				queryKey: getTerminalAgentBindingsQueryKey(workspaceId),
-			});
-		} catch (error) {
-			toast.error(
-				`Failed to clear agent status: ${error instanceof Error ? error.message : "Unknown error"}`,
-			);
-		}
-	};
+	// (MANUAL-DISMISS) The escape hatch for a wedged working/permission dot (an
+	// interrupted agent fires no Stop hook). The sequence lives in
+	// `runClearWorkspaceStatuses` above, which owns the three-similar-names
+	// hazard and the ordering that goes with it.
+	const handleClearStatus = () =>
+		runClearWorkspaceStatuses({
+			workspaceId,
+			workspaceHostUrl,
+			clearWorkspaceAttention,
+			invalidateBindings: () =>
+				queryClient.invalidateQueries({
+					queryKey: getTerminalAgentBindingsQueryKey(workspaceId),
+				}),
+		});
 
 	const handleRemovePullRequest = async () => {
 		if (!workspaceHostUrl) {

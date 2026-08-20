@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { resetV2NotificationStoreForTest } from "./resetForTest";
 import {
 	getHighestPriorityDisplayStatus,
 	getV2NotificationSourcesForPane,
@@ -42,7 +43,7 @@ const tab = {
 
 describe("v2 notification store", () => {
 	beforeEach(() => {
-		useV2NotificationStore.setState({ sources: {} });
+		resetV2NotificationStoreForTest();
 	});
 
 	it("maps panes and tabs to typed notification sources", () => {
@@ -283,10 +284,6 @@ describe("v2 notification store", () => {
 	describe("(ALERT-CONTEXT-NAMES) markTerminalSeen reports what it removed", () => {
 		const seenSource = { type: "terminal", id: "terminal-1" } as const;
 
-		beforeEach(() => {
-			useV2NotificationStore.setState({ sources: {}, terminalSeenAt: {} });
-		});
-
 		it("returns true when it actually dropped a review entry", () => {
 			const store = useV2NotificationStore.getState();
 			store.applySourceAxes(
@@ -344,14 +341,6 @@ describe("v2 notification store", () => {
 	 */
 	describe("(ONE-BUZZ-UNTIL-READ) outstandingReadyAt", () => {
 		const seenSource = { type: "terminal", id: "terminal-1" } as const;
-
-		beforeEach(() => {
-			useV2NotificationStore.setState({
-				sources: {},
-				terminalSeenAt: {},
-				outstandingReadyAt: {},
-			});
-		});
 
 		it("records the instant a review axis was SET", () => {
 			useV2NotificationStore
@@ -510,6 +499,95 @@ describe("v2 notification store", () => {
 			expect(
 				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
 			).toBeUndefined();
+		});
+	});
+	/**
+	 * (MANUAL-DISMISS) The renderer half of the user's explicit "Clear Status".
+	 *
+	 * The dots are rendered from THIS store, so this action is the only thing
+	 * that changes what the user sees. It has to reach every map a dot can come
+	 * from — and stop at the one map that is not a dot at all.
+	 */
+	describe("(MANUAL-DISMISS) clearWorkspaceStatuses", () => {
+
+		it("purges sources, BOTH blue maps and the manual mark for the workspace", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				{ type: "terminal", id: "terminal-1" },
+				"workspace-1",
+				{ set: ["permission", "working"], clear: [] },
+				100,
+			);
+			store.applySourceAxes(
+				{ type: "chat", id: "session-1" },
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			store.setManualUnread("workspace-1");
+			// A PLAIN shell's blue: no agent entry of its own, and the display fold
+			// yields it for any open terminal id, so a sources-only purge left it
+			// on screen.
+			store.setTerminalShellRunning("terminal-2", "workspace-1", 100);
+			store.setTerminalBackgroundRunning("terminal-3", "workspace-1", 100);
+
+			useV2NotificationStore.getState().clearWorkspaceStatuses("workspace-1");
+
+			const state = useV2NotificationStore.getState();
+			expect(Object.keys(state.sources)).toEqual([]);
+			expect(state.manualUnread["workspace-1"]).toBeUndefined();
+			expect(state.shellRunningTerminals["terminal-2"]).toBeUndefined();
+			expect(state.backgroundRunningTerminals["terminal-3"]).toBeUndefined();
+		});
+
+		/**
+		 * The record is the retraction evidence for a companion ready alert that
+		 * is still on the user's phone. Only a host that ACKED the read may retire
+		 * it; dropping it here would strand the notification with nothing left to
+		 * name it.
+		 */
+		it("leaves outstandingReadyAt standing", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				{ type: "terminal", id: "terminal-1" },
+				"workspace-1",
+				{ set: ["review"], clear: [] },
+				100,
+			);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt["terminal-1"],
+			).toBe(100);
+
+			useV2NotificationStore.getState().clearWorkspaceStatuses("workspace-1");
+
+			const state = useV2NotificationStore.getState();
+			expect(state.sources).toEqual({});
+			expect(state.outstandingReadyAt["terminal-1"]).toBe(100);
+		});
+
+		it("touches nothing belonging to another workspace", () => {
+			const store = useV2NotificationStore.getState();
+			store.applySourceAxes(
+				{ type: "terminal", id: "terminal-9" },
+				"workspace-2",
+				{ set: ["permission"], clear: [] },
+				100,
+			);
+			store.setManualUnread("workspace-2");
+			store.setTerminalShellRunning("terminal-8", "workspace-2", 100);
+			store.setTerminalBackgroundRunning("terminal-7", "workspace-2", 100);
+
+			useV2NotificationStore.getState().clearWorkspaceStatuses("workspace-1");
+
+			const state = useV2NotificationStore.getState();
+			expect(state.sources["terminal:terminal-9"]?.status).toBe("permission");
+			expect(state.manualUnread["workspace-2"]).toBe(true);
+			expect(state.shellRunningTerminals["terminal-8"]?.workspaceId).toBe(
+				"workspace-2",
+			);
+			expect(state.backgroundRunningTerminals["terminal-7"]?.workspaceId).toBe(
+				"workspace-2",
+			);
 		});
 	});
 });

@@ -84,6 +84,34 @@ export interface CompanionQuestionSink {
 	 * the user already dealt with in front of them.
 	 */
 	resolve(input: CompanionQuestionResolution): void;
+	/**
+	 * (MANUAL-DISMISS) The user dismissed the terminal's status by hand and
+	 * NOBODY answered the question.
+	 *
+	 * Deliberately NOT `resolve`: resolve stamps answered-by provenance, and a
+	 * dismissal has none to stamp — the tree would report a question as
+	 * desk-answered that no one ever answered. This settles the record `stale`
+	 * instead, which is the store's designated ending for "the question stopped
+	 * being answerable and no answer exists", and retracts the phone
+	 * notification through the same settle seam.
+	 *
+	 * FENCED BY `dismissStartedAtMs`, the same instant the marker sweep is fenced
+	 * on. A question raised AFTER the click is a question the user has never seen:
+	 * settling it terminally would retract the phone alert, answer `/v1/answer`
+	 * with 410 and leave the agent blocked with no surface left to answer from.
+	 * The implementation must therefore leave such a record alone and return
+	 * `false`.
+	 *
+	 * Returns whether a pending question was actually found and dismissed, so
+	 * the caller can report it rather than assume. `false` is the ordinary
+	 * answer on every build where the companion bridge is not running.
+	 */
+	dismissByTerminal(input: {
+		hostTerminalId: string;
+		reason: string;
+		/** The caller's pre-deletion clock reading; see the fence note above. */
+		dismissStartedAtMs: number;
+	}): boolean;
 }
 
 let sink: CompanionQuestionSink | null = null;
@@ -308,5 +336,47 @@ export function forwardCompanionCapture(args: {
 			toolUseId: resolved.toolUseId,
 			resolvedAtMs: occurredAt,
 		});
+	}
+}
+
+/**
+ * (MANUAL-DISMISS) Tell the bridge the user dismissed this terminal's status by
+ * hand, so the phone stops asking about a question nobody is going to answer.
+ *
+ * The mirror of `forwardCompanionCapture` for the OTHER direction of custody:
+ * capture arrives from the notify hook, this arrives from the renderer's
+ * right-click "Clear Status" via `terminalAgents.dismissWorkspaceStatuses`.
+ *
+ * Never throws. A companion fault is not allowed to fail a dismissal the user
+ * already performed on the dots — the markers are gone and the binding is
+ * cleared by the time this runs, so throwing here would report failure for work
+ * that succeeded. Drops to `false` when no bridge is registered, which is every
+ * build where the companion feature is not running.
+ *
+ * `dismissStartedAtMs` is carried through rather than re-read here, so the
+ * companion record and the marker sweep are fenced on ONE instant. The caller
+ * already declines to call this at all when a marker survived the sweep; this
+ * fence is the second layer, and it is the only one that can see a question
+ * raised on a terminal whose marker was answered away in the same window.
+ */
+export function forwardCompanionDismissal(args: {
+	terminalId: string;
+	reason: string;
+	dismissStartedAtMs: number;
+}): boolean {
+	const current = sink;
+	if (!current) return false;
+	try {
+		return current.dismissByTerminal({
+			hostTerminalId: args.terminalId,
+			reason: args.reason,
+			dismissStartedAtMs: args.dismissStartedAtMs,
+		});
+	} catch (error) {
+		console.error(
+			"[companion-capture] companion dismissal FAILED — the phone may keep showing a question the user dismissed at the desk",
+			{ terminalId: args.terminalId, error },
+		);
+		return false;
 	}
 }

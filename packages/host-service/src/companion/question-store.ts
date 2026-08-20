@@ -1484,6 +1484,22 @@ export const QUESTION_STALE_TERMINAL_GONE_REASON =
 	"the terminal this question was asked in no longer exists";
 
 /**
+ * (MANUAL-DISMISS) Why a question ends when the user right-clicks "Clear
+ * Status" on the terminal that raised it.
+ *
+ * A SECOND stale reason rather than a reuse of the terminal-gone one, because
+ * the two are not the same event and the phone shows this string: the terminal
+ * is alive and well here, the user simply decided at the desk that the question
+ * is not worth answering. Reusing the other reason would tell someone holding
+ * the phone that their machine lost a terminal.
+ *
+ * Deliberately not a `resolve`: nobody answered, so there is no provenance to
+ * stamp (see `CompanionQuestionSink.dismissByTerminal`).
+ */
+export const QUESTION_STALE_MANUAL_DISMISS_REASON =
+	"the question was dismissed at the desk without an answer";
+
+/**
  * (RECONCILE-STAT-CACHE) One stat, or `null` when there is nothing to compare.
  *
  * A failed stat is NOT swallowed into a verdict — it returns `null`, which makes

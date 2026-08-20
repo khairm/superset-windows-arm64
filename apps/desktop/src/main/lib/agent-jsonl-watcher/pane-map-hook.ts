@@ -390,23 +390,58 @@ dot decision above never reads them, and a rejected companion payload is
 retried once with the fields stripped so a dot is never lost.
 """
 import base64
+import collections
 import datetime
 import json
 import os
 import pathlib
 import sys
+import time
+import urllib.error
 import urllib.request
+
+
+_ROTATED = set()
+
+
+def _rotate(log_path, backup_path):
+    # Roll <log> to <log>.1 once it passes ~1MB, keeping exactly ONE backup.
+    # Shared by _log and _decision_log, which rotate identically.
+    #
+    # Path.replace, not rename: it overwrites an existing backup (rename raises
+    # on Windows when the target exists), so the old exists/unlink dance is
+    # gone and a second rotation REPLACES the backup instead of failing.
+    #
+    # Checked once per process per path. A hook process is short-lived and
+    # writes well under 10KB, so it cannot cross the 1MB line mid-run; stat()ing
+    # on every _log call only re-answered the same question. Best-effort: any
+    # failure leaves the log where it is. Never raises.
+    key = str(log_path)
+    if key in _ROTATED:
+        return
+    _ROTATED.add(key)
+    try:
+        if log_path.stat().st_size > 1048576:
+            log_path.replace(backup_path)
+    except Exception:
+        pass
 
 
 def _log(record):
     # Append one JSON line to ~/.superset/agent-notify-hook.log. Never raises.
+    #
+    # Rotates at ~1MB with a single .log.1 backup (see _rotate). This runs on
+    # EVERY hook event (not just terminal decisions), so without rotation it
+    # grows without bound: a live install reached 508MB.
     if os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0":
         return
     try:
         record["ts"] = datetime.datetime.now().isoformat()
         log_dir = pathlib.Path.home() / ".superset"
         log_dir.mkdir(parents=True, exist_ok=True)
-        with open(log_dir / "agent-notify-hook.log", "a", encoding="utf-8") as h:
+        log_path = log_dir / "agent-notify-hook.log"
+        _rotate(log_path, log_dir / "agent-notify-hook.log.1")
+        with open(log_path, "a", encoding="utf-8") as h:
             h.write(json.dumps(record) + "\\n")
     except Exception:
         pass
@@ -417,25 +452,17 @@ def _decision_log(terminal_id, session_id, event_type, reason):
     # terminal turn-end dot decision, so a stuck dot can be diagnosed after the
     # fact without reproducing it. Written ONLY at terminal decisions (Stop /
     # SubagentStop / StopFailure / manual-compact finish) — NOT on every
-    # PostToolUse — so it stays cheap and bounded. Rotates at ~1MB (single
-    # .log.1 backup). Best-effort: ANY failure here is swallowed so the hook
+    # PostToolUse — so it stays cheap and bounded. Rotates at ~1MB via the
+    # shared _rotate (single .log.1 backup, checked once per process -- a
+    # process writes at most a handful of these lines).
+    # Best-effort: ANY failure here is swallowed so the hook
     # still POSTs even if logging breaks. Never raises.
     try:
         ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
         log_dir = pathlib.Path.home() / ".superset" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "dot-decisions.log"
-        try:
-            if log_path.stat().st_size > 1048576:
-                backup = log_dir / "dot-decisions.log.1"
-                try:
-                    if backup.exists():
-                        backup.unlink()
-                except Exception:
-                    pass
-                log_path.rename(backup)
-        except Exception:
-            pass
+        _rotate(log_path, log_dir / "dot-decisions.log.1")
         line = (
             ts
             + " terminal=" + str(terminal_id)
@@ -715,6 +742,16 @@ def _reap_askq(askq_dir, bg_ids):
 
 
 def _pid_alive(pid):
+    # NOTE: this is the CODEX-job liveness probe. A SECOND, deliberately
+    # different probe -- _manifest_pid_alive -- lives further down for host
+    # manifests. They are not interchangeable and must never be merged: this
+    # one fails CLOSED-ish toward "still active" (an uncertain pid keeps the
+    # dot moving), while the manifest probe fails OPEN toward "keep the
+    # candidate" and treats access-denied as alive. This one additionally
+    # coerces the pid with int(), rejects pid <= 0, and confirms the exit code
+    # is STILL_ACTIVE, because a codex record can carry a junk pid and a
+    # not-yet-reaped handle must not read as running.
+    #
     # (BF) Best-effort process-liveness, used to reject a STALE codex job file
     # (a worker hard-killed before it could write its terminal status leaves a
     # stale running record that the companion's cwd-scoped SessionEnd cleanup
@@ -2235,27 +2272,397 @@ def _decide_event_type_inner(
 # esbuild template literal) and no raw backslashes.
 
 
-def _post_hook(url, body):
+def _post_hook(url, body, timeout):
     # Single place the notify POST is issued, so the (COMPANION-CAPTURE)
     # strip-and-retry path sends a byte-identical request to the original.
     #
-    # (DISPOSE-LIMBO) Returns (status, body). EVERY host-service outcome is a
-    # 200 -- a dropped event answers 200 with an ignored/reason body on purpose
-    # -- so the status alone cannot tell a delivered dot from one the host threw
-    # away for a terminal it has no row for, which is what a terminal stuck in
-    # dispose limbo produces.
+    # timeout is chosen by the caller and is never above 1.5s: _deliver shrinks
+    # it to whatever is left of the total probe budget, so the last attempt of a
+    # sweep cannot push the whole sweep past that budget.
+    #
+    # (DISPOSE-LIMBO) Returns (status, body) for a 2xx and raises
+    # urllib.error.HTTPError for anything else. A host-service route that took
+    # the event answers 200 -- and so does one that DROPPED it, with an
+    # ignored/reason body on purpose -- so the status alone cannot tell a
+    # delivered dot from one the host threw away for a terminal it has no row
+    # for, which is what a terminal stuck in dispose limbo produces.
     req = urllib.request.Request(
         url,
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=1.5) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         try:
             raw = resp.read(2048).decode("utf-8", "replace")
         except Exception as read_exc:
             raw = "<unreadable response: " + str(read_exc) + ">"
         return resp.status, raw[:500]
+
+
+# --- (HOOK-ENDPOINT-HEAL) ------------------------------------------------
+# The host-service can restart onto a NEW port at any time. A PTY started
+# before that restart keeps the OLD SUPERSET_HOST_AGENT_HOOK_URL in its env
+# forever -- a live process's env cannot be rewritten -- so every notify POST
+# from that terminal goes to a dead port and the dot silently stops moving,
+# INCLUDING the "Start" that clears a red dot once a question is answered.
+# Measured on Windows: a dead loopback port takes ~2040ms to refuse, so the
+# symptom in the logs is a 1.5s timeout, not ECONNREFUSED.
+#
+# Fix: treat the env URL as a hint, not the address. Each org's manifest
+# (<root>/host/<orgId>/manifest.json) is rewritten with the live endpoint on
+# every host start, so it is never stale. This is the same failover the shell
+# template already does (packages/agent-setup/templates/notify-hook.template.sh
+# :170-214), ported to Python.
+
+
+_KERNEL32 = None
+
+
+def _kernel32():
+    # Lazily loaded ONCE per process. Every _manifest_pid_alive call used to
+    # re-open kernel32 and re-declare the same two prototypes; the manifest
+    # sweep calls it per host, and the load is the expensive part.
+    global _KERNEL32
+    if _KERNEL32 is None:
+        import ctypes
+
+        lib = ctypes.WinDLL("kernel32", use_last_error=True)
+        lib.OpenProcess.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_uint32,
+        ]
+        lib.OpenProcess.restype = ctypes.c_void_p
+        lib.CloseHandle.argtypes = [ctypes.c_void_p]
+        _KERNEL32 = lib
+    return _KERNEL32
+
+
+def _manifest_pid_alive(pid):
+    # NOTE: distinct from _pid_alive above (the codex-job staleness probe) and
+    # deliberately so -- do not collapse the two. That one answers "is this
+    # codex worker still working?" and leans toward keeping a dot alive; this
+    # one answers "may I POST a payload to the port this manifest names?" and
+    # fails OPEN: only a PROVEN-dead pid drops the candidate, and access-denied
+    # counts as alive. It also takes the pid as-is (the caller has already
+    # type-checked it) instead of coercing.
+    #
+    # (HOOK-STALE-MANIFEST) Is the host that wrote this manifest still running?
+    # A crashed host leaves its manifest behind, and the OS eventually hands
+    # that port to an unrelated process -- which would then be POSTed the whole
+    # payload, companion question text included. The manifest stamps the
+    # writer pid, so a dead pid is a manifest to skip.
+    #
+    # FAILS OPEN: anything uncertain returns True. Skipping a LIVE host loses a
+    # dot; probing a dead one costs a single refused connection.
+    #
+    # NEVER os.kill(pid, 0) here. On Windows CPython os.kill ignores the signal
+    # for everything but the CTRL_*_EVENT constants and calls TerminateProcess,
+    # so signal 0 would KILL the process this only means to observe.
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = _kernel32()
+            # PROCESS_QUERY_LIMITED_INFORMATION (0x1000): the weakest right
+            # that still proves existence, granted across integrity levels.
+            handle = kernel32.OpenProcess(0x1000, 0, int(pid))
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            # 87 = ERROR_INVALID_PARAMETER, which is how Windows reports "no
+            # process has that id". Anything else (5 = access denied on a host
+            # running elevated or as another user) is a live process this
+            # simply cannot open, so it stays a candidate.
+            return ctypes.get_last_error() != 87
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
+_MANIFEST_CANDIDATES = None
+
+
+def _manifest_candidate_urls(already_queued):
+    # Every host-manifest URL worth trying, THIS terminal's org first and the
+    # rest by name, minus anything in already_queued and minus manifests whose
+    # writer pid is PROVEN dead. Any per-manifest problem skips that manifest
+    # with a log line. Never raises.
+    #
+    # Built at most ONCE per process and memoized: the companion
+    # strip-and-retry sweeps the same candidates a second time, and the glob +
+    # JSON parse + pid probe is the expensive half of a notify POST. The
+    # memoized answer ignores later already_queued arguments, which is safe
+    # because the env URL cannot change inside one hook process.
+    #
+    # SUPERSET_HOME_DIR scopes the MANIFEST GLOB ONLY. Every marker path in this
+    # script deliberately keeps using pathlib.Path.home(): the host-service reads
+    # those markers at a HARDCODED homedir()
+    # (packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts
+    # :133-138), so unifying the two roots would write markers where the host
+    # never looks and silently break resync.
+    global _MANIFEST_CANDIDATES
+    if _MANIFEST_CANDIDATES is not None:
+        return _MANIFEST_CANDIDATES
+    urls = []
+    seen_urls = set(already_queued)
+    seen_paths = set()
+    try:
+        home_dir = os.environ.get("SUPERSET_HOME_DIR")
+        if home_dir:
+            root = pathlib.Path(home_dir)
+        else:
+            root = pathlib.Path.home() / ".superset"
+        host_dir = root / "host"
+        manifest_paths = []
+        # This terminal's OWN host first: env.ts:256-257 stamps the org id on
+        # every terminal it launches, so the common case probes one URL and
+        # stops. Other orgs' hosts answer "ignored":true -- harmless, but slow.
+        org_id = os.environ.get("SUPERSET_ORGANIZATION_ID")
+        if org_id:
+            manifest_paths.append(host_dir / org_id / "manifest.json")
+        try:
+            manifest_paths.extend(sorted(host_dir.glob("*/manifest.json")))
+        except Exception as glob_exc:
+            _log({
+                "action": "hook-candidate-glob-failed",
+                "hostDir": str(host_dir),
+                "error": str(glob_exc),
+            })
+        for manifest_path in manifest_paths:
+            # The own-org path is also matched by the glob above. Without this
+            # it would be opened, parsed and pid-probed a second time.
+            if manifest_path in seen_paths:
+                continue
+            seen_paths.add(manifest_path)
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.loads(handle.read(65536))
+                if not isinstance(manifest, dict):
+                    raise ValueError("manifest is not an object")
+                endpoint = manifest.get("endpoint")
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise ValueError("manifest has no endpoint string")
+                candidate = endpoint.rstrip("/") + "/trpc/notifications.hook"
+                # Deduped BEFORE the liveness probe: the common case is the env
+                # URL naming this terminal's own host, and a URL already queued
+                # is going to be POSTed whatever the probe would answer.
+                if candidate in seen_urls:
+                    continue
+                # (HOOK-STALE-MANIFEST) A crashed host's manifest still names a
+                # port some unrelated process may now own. Only skip on PROOF
+                # the writer is gone: a missing or unusable pid keeps the entry.
+                pid = manifest.get("pid")
+                if (
+                    isinstance(pid, int)
+                    and not isinstance(pid, bool)
+                    and pid > 0
+                    and not _manifest_pid_alive(pid)
+                ):
+                    _log({
+                        "action": "hook-candidate-manifest-dead-pid",
+                        "manifest": str(manifest_path),
+                        "pid": pid,
+                    })
+                    continue
+                seen_urls.add(candidate)
+                urls.append(candidate)
+            except Exception as manifest_exc:
+                _log({
+                    "action": "hook-candidate-manifest-skipped",
+                    "manifest": str(manifest_path),
+                    "error": str(manifest_exc),
+                })
+    except Exception as exc:
+        _log({"action": "hook-candidates-failed", "error": str(exc)})
+    _MANIFEST_CANDIDATES = urls
+    return urls
+
+
+class _HookCandidates:
+    # Every URL worth trying for one notify POST, best first: the env URL, then
+    # THIS terminal's org manifest, then every other org's manifest. Deduped,
+    # first position wins.
+    #
+    # LAZY: the env URL answers on the overwhelming majority of events, so the
+    # manifest tail is enumerated only when a SECOND candidate is actually
+    # asked for -- an accepted first POST never touches the disk at all.
+    # RE-ITERABLE: the companion strip-and-retry sweeps the same candidates
+    # again, and _manifest_candidate_urls memoizes the tail so the second sweep
+    # costs nothing.
+    def __init__(self, env_url):
+        self._env_url = env_url
+
+    def __iter__(self):
+        if self._env_url:
+            yield self._env_url
+        for candidate in _manifest_candidate_urls(
+            [self._env_url] if self._env_url else []
+        ):
+            yield candidate
+
+
+def _hook_ignored_flag(raw):
+    # Tri-state read of ONE response body, the only parse any caller needs:
+    #
+    #   False -> POSITIVE acceptance by the owning host, which answers
+    #            {"result":{"data":{"json":{"success":true,"ignored":false}}}}
+    #            (notifications.ts:357). This and only this is delivery -- the
+    #            same positive check the sh template makes.
+    #   True  -> an EXPLICIT, well-formed disown. ONLY this counts toward
+    #            "ignored-everywhere".
+    #   None  -> neither: a truncated, empty or malformed body, HTML from a
+    #            foreign server that grabbed the recycled port, or the envelope
+    #            shape with a non-boolean there. NOT a disown -- nobody who
+    #            understands the route answered -- so it stays an undelivered
+    #            failure and probing must continue.
+    #
+    # Never raises. _post_hook truncates the body at 500 chars; the real
+    # envelope is ~60, so the only bodies this cannot parse were never answers.
+    try:
+        flag = json.loads(raw)["result"]["data"]["json"]["ignored"]
+    except Exception:
+        return None
+    return flag if flag is True or flag is False else None
+
+
+# kind "delivered": url/status/body name the host that took the event.
+# kind "ignored-everywhere": url/status are None and body is the last
+# well-formed disown envelope.
+_HookOutcome = collections.namedtuple(
+    "_HookOutcome", ("kind", "url", "status", "body")
+)
+
+
+class _HookUndelivered(RuntimeError):
+    # What _deliver raises when nothing accepted the POST.
+    #
+    # saw_response tells a host that ANSWERED-and-refused -- a 2xx nobody could
+    # parse, an outright 4xx from the owning host rejecting the body shape, or
+    # a disown sweep carrying an HTTP error -- from a dead port: when NOTHING
+    # answered, a stripped-body companion retry cannot answer either, so the
+    # caller skips it instead of burning another probe cycle on every
+    # candidate.
+    def __init__(self, message, saw_response, cause=None):
+        super().__init__(message)
+        self.saw_response = saw_response
+        self.__cause__ = cause
+
+    @classmethod
+    def from_sweep(cls, fallback, saw_response, cause):
+        # The underlying transport failure's own str() whenever there is one:
+        # the post-error log and the companion retry both surface the message
+        # verbatim, and a human needs "HTTP Error 400: Bad Request" there, not
+        # "no hook endpoint accepted the event".
+        return cls(fallback if cause is None else str(cause), saw_response, cause)
+
+
+def _deliver(candidates, body, tried):
+    # POST body to candidates in order until one POSITIVELY accepts it.
+    # Returns an _HookOutcome; raises _HookUndelivered on anything else.
+    #
+    # tried (list, in/out) collects every url actually attempted, in order and
+    # deduped across sweeps. candidates is lazy, so this is the only record of
+    # what was reached, and the caller logs it.
+    #
+    # "ignored-everywhere" is a DELIVERED NO-OP and needs at least one
+    # candidate to have returned a VALID envelope saying "ignored": true (every
+    # reachable host disowns this terminal id; see agent-status-snapshot.ts
+    # :41-48 for the ghost-terminal case). A 2xx body that does not parse to
+    # that envelope proves the opposite and goes down the raise path, so a
+    # foreign server on a recycled port can never be reported as delivery.
+    #
+    # A disown sweep that ALSO saw an HTTP ERROR status is promoted to a raise
+    # here rather than returned: the owning host rejects a bad companion shape
+    # with a 400 while a FOREIGN host on the same machine can answer 200
+    # "ignored": true in the SAME sweep, so returning a delivered no-op would
+    # let the owner's rejection hide behind a stranger and drop the dot with no
+    # error anywhere.
+    #
+    # Bounded by a 4.0s TOTAL probe budget. Each attempt gets
+    # min(1.5, remaining), so the per-request cap stays 1.5s AND the whole
+    # sweep stays inside the budget -- a machine with several dead hosts
+    # cannot stall the agent.
+    started = time.monotonic()
+    saw_response = False
+    last_ignored_body = None
+    http_error = None
+    last_exc = None
+    attempts = 0
+    for url in candidates:
+        remaining = 4.0 - (time.monotonic() - started)
+        if remaining <= 0.0:
+            _log({
+                "action": "hook-probe-budget-exhausted",
+                "elapsedMs": int((time.monotonic() - started) * 1000),
+                "triedUrls": tried,
+            })
+            raise _HookUndelivered.from_sweep(
+                "hook probe budget exhausted after "
+                + str(attempts)
+                + " candidate(s)",
+                saw_response,
+                last_exc,
+            )
+        attempts += 1
+        if url not in tried:
+            tried.append(url)
+        try:
+            status, raw = _post_hook(url, body, min(1.5, remaining))
+        except urllib.error.HTTPError as status_exc:
+            # A SERVER ANSWERED, with an error status. urllib turns every
+            # non-2xx into this exception, which is the only place the owning
+            # host schema rejection of a companion payload can land.
+            saw_response = True
+            last_exc = status_exc
+            http_error = (
+                "HTTP " + str(getattr(status_exc, "code", "?")) + " from " + url
+            )
+            _log({
+                "action": "hook-candidate-http-error",
+                "url": url,
+                "status": getattr(status_exc, "code", None),
+            })
+            continue
+        except Exception as exc:
+            last_exc = exc
+            continue
+        saw_response = True
+        ignored = _hook_ignored_flag(raw)
+        if ignored is False:
+            return _HookOutcome("delivered", url, status, raw)
+        if ignored is True:
+            last_ignored_body = raw
+    if last_ignored_body is not None:
+        if http_error:
+            # The promotion: a disown sweep that also carries an HTTP error.
+            # http_error, not the exception's own str(), is the message --
+            # it names the host that refused, which the stranger's 200 hides.
+            raise _HookUndelivered(http_error, saw_response, last_exc)
+        return _HookOutcome("ignored-everywhere", None, None, last_ignored_body)
+    raise _HookUndelivered.from_sweep(
+        "no hook endpoint accepted the event ("
+        + str(attempts)
+        + " candidate(s) tried)",
+        saw_response,
+        last_exc,
+    )
+
+
+def _companion_stripped_body(payload_json):
+    # (COMPANION-CAPTURE) Exactly the pre-companion body -- the dot fields
+    # only, in their original order -- so the retry is byte-identical to what
+    # this hook sent before the companion capture existed.
+    stripped = dict(payload_json)
+    stripped.pop("companionQuestion", None)
+    stripped.pop("companionQuestionResolved", None)
+    stripped.pop("companionLifecycleEventId", None)
+    stripped.pop("companionLifecycleOutcome", None)
+    return json.dumps({"json": stripped}).encode("utf-8")
 
 
 def _companion_log(reason, detail):
@@ -2603,49 +3010,127 @@ def main():
         or "companionLifecycleEventId" in payload_json
     )
 
+    # (HOOK-ENDPOINT-HEAL) Resolved HERE, strictly AFTER _decide_event_type has
+    # mutated its markers above: the marker state must survive total delivery
+    # failure, so nothing about delivery may run before it.
+    #
+    # Duplicate delivery is safe. The companion retry below re-sends the SAME
+    # companionLifecycleEventId, which the sink dedupes, and dot broadcasts are
+    # idempotent -- so re-POSTing to a host that already took the event costs
+    # nothing, while a lost event costs a stuck dot.
+    candidates = _HookCandidates(url)
+    # Every url _deliver actually reached, across BOTH sweeps. candidates is
+    # lazy, so this list -- not the candidate set -- is what the logs can name.
+    tried = []
+
+    outcome = None
+    exc = None
     try:
-        status, response_body = _post_hook(url, body)
-        _log({
-            "event": event, "tool": tool, "mappedEventType": event_type,
-            "terminalId": terminal_id, "sessionId": session_id, "url": url,
-            "agentId": sub_agent_id, "httpStatus": status, "action": "posted",
-            "responseBody": response_body,
-            "companion": has_companion,
-        })
-    except Exception as exc:
-        # (COMPANION-CAPTURE) The dot event must survive a rejected companion
-        # payload BYTE-FOR-BYTE -- the companion feature is additive and may
-        # never cost a dot. So on any failure that carried companion fields,
-        # retry ONCE with exactly the pre-companion body. The rejection is then
-        # logged under its own action name: it means the capture shape and the
-        # route schema disagree, which is a real bug for a human to fix, not
-        # something to paper over.
-        if has_companion:
-            payload_json.pop("companionQuestion", None)
-            payload_json.pop("companionQuestionResolved", None)
-            payload_json.pop("companionLifecycleEventId", None)
-            payload_json.pop("companionLifecycleOutcome", None)
-            try:
-                status, response_body = _post_hook(
-                    url, json.dumps({"json": payload_json}).encode("utf-8")
-                )
+        outcome = _deliver(candidates, body, tried)
+    except Exception as deliver_exc:
+        exc = deliver_exc
+
+    # (COMPANION-CAPTURE) The dot event must survive a rejected companion
+    # payload BYTE-FOR-BYTE -- the companion feature is additive and may never
+    # cost a dot. So whenever a SERVER ANSWERED and the event still was not
+    # accepted, retry ONCE with exactly the pre-companion body. The rejection
+    # is then logged under its own action name: it means the capture shape and
+    # the route schema disagree, which is a real bug for a human to fix, not
+    # something to paper over.
+    #
+    # Both ways to land here raise out of _deliver with saw_response set: the
+    # owning host rejecting a bad companion shape with a 400, and a disown
+    # sweep that also carried an HTTP error (a foreign host answering 200
+    # "ignored": true must never mask the owner refusing the body).
+    #
+    # (HOOK-ENDPOINT-HEAL) When NO candidate responded at all, the body was
+    # never read by anyone, so a stripped body cannot fare better -- skip
+    # straight to the failure log instead of probing every dead endpoint twice.
+    retry_after = None
+    if has_companion and isinstance(exc, _HookUndelivered) and exc.saw_response:
+        # "or" guards the empty-message exception: retry_after doubles as
+        # the "run the retry" flag, so it may never be falsy here.
+        retry_after = str(exc) or "a host answered and refused the event"
+
+    if retry_after:
+        try:
+            retry_outcome = _deliver(
+                candidates, _companion_stripped_body(payload_json), tried
+            )
+            if retry_outcome.kind == "ignored-everywhere":
                 _log({
-                    "event": event, "tool": tool, "mappedEventType": event_type,
+                    "event": event, "tool": tool,
+                    "mappedEventType": event_type,
                     "terminalId": terminal_id, "sessionId": session_id,
-                    "url": url, "agentId": sub_agent_id, "httpStatus": status,
-                    "responseBody": response_body,
-                    "action": "companion-rejected-dot-posted",
-                    "error": str(exc),
+                    "url": url, "agentId": sub_agent_id,
+                    "action": "companion-rejected-dot-ignored-everywhere",
+                    "candidateUrls": tried,
+                    "responseBody": retry_outcome.body,
+                    "error": retry_after,
                 })
                 return
-            except Exception as retry_exc:
-                exc = retry_exc
+            _log({
+                "event": event, "tool": tool,
+                "mappedEventType": event_type,
+                "terminalId": terminal_id, "sessionId": session_id,
+                "url": url, "deliveredUrl": retry_outcome.url,
+                "agentId": sub_agent_id, "httpStatus": retry_outcome.status,
+                "responseBody": retry_outcome.body,
+                "action": "companion-rejected-dot-posted",
+                "error": retry_after,
+            })
+            return
+        except Exception as retry_exc:
+            exc = retry_exc
+
+    if exc is None:
+        if outcome.kind == "ignored-everywhere":
+            # A DELIVERED NO-OP, not a failure: every reachable host answered a
+            # well-formed envelope and every one of them disowned this terminal
+            # id (the ghost-terminal case, agent-status-snapshot.ts:41-48).
+            # Nothing was lost in transit, so this must NOT look like a
+            # transport error -- no post-error line, and no companion
+            # strip-and-retry, which would only be ignored again.
+            # (DISPOSE-LIMBO) The body carries the reason the host disowned it,
+            # which is what tells one ghost-terminal cause from another.
+            _log({
+                "event": event, "tool": tool, "mappedEventType": event_type,
+                "terminalId": terminal_id, "sessionId": session_id, "url": url,
+                "agentId": sub_agent_id, "action": "ignored-everywhere",
+                "candidateUrls": tried,
+                "responseBody": outcome.body,
+                "companion": has_companion,
+            })
+            return
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
-            "agentId": sub_agent_id, "error": str(exc), "action": "post-error",
+            "deliveredUrl": outcome.url,
+            "agentId": sub_agent_id, "httpStatus": outcome.status,
+            "action": "posted",
+            "responseBody": outcome.body,
             "companion": has_companion,
         })
+        return
+
+    _log({
+        "event": event, "tool": tool, "mappedEventType": event_type,
+        "terminalId": terminal_id, "sessionId": session_id, "url": url,
+        "agentId": sub_agent_id, "error": str(exc), "action": "post-error",
+        "candidateUrls": tried,
+        "companion": has_companion,
+    })
+    # (HOOK-ENDPOINT-HEAL) _log is debug-gated and _decision_log is not, so
+    # a dot lost to delivery is otherwise invisible in a default install.
+    # Name every endpoint that was tried: that list is what tells a stale
+    # env URL apart from a host that is simply not running.
+    _decision_log(
+        terminal_id,
+        session_id,
+        event_type,
+        "hook-post-failed candidates=" + ",".join(tried)
+        + " error=" + str(exc),
+    )
     return
 
 

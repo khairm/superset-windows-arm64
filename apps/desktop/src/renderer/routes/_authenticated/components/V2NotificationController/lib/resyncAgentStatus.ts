@@ -43,6 +43,12 @@ interface ResyncResult {
 	applied: number;
 	pendingPermission: number;
 	unknownPermission: number;
+	/**
+	 * Rows where the host POSITIVELY says there is no pending question and a
+	 * latched red was dropped because of it — the retraction half of
+	 * `pendingPermission`.
+	 */
+	retractedPermission: number;
 	cleared: number;
 	seededSeen: number;
 	/**
@@ -404,6 +410,7 @@ export async function resyncAgentStatusFromHost({
 		applied: 0,
 		pendingPermission: 0,
 		unknownPermission: 0,
+		retractedPermission: 0,
 		cleared: 0,
 		seededSeen: 0,
 		seenRepairsSent: 0,
@@ -682,6 +689,59 @@ export async function resyncAgentStatusFromHost({
 				occurredAt: row.lastEventAt,
 			});
 			result.pendingPermission++;
+		} else if (
+			preEntry?.axes.permission !== undefined &&
+			preEntry.workspaceId === row.originWorkspaceId &&
+			// (MANUAL-DISMISS) THE HOST'S OWN LAST WORD OUTRANKS ITS MARKER
+			// DIRECTORY, and this clause is the whole reason the retraction cannot
+			// drop a LIVE red.
+			//
+			// `pendingPermission: false` means "no marker file". A marker is only
+			// ever written for `PreToolUse:AskUserQuestion`; the ORDINARY tool
+			// permission prompt (Claude's `Notification` event on the
+			// "permission_prompt" matcher, and the same shape from the sh-template
+			// agents) reaches the store as a `PermissionRequest` binding with NO
+			// marker behind it. For that red, "no marker" is not evidence the
+			// question was answered — no marker ever existed — so a resync that
+			// treated it as evidence took the dot down while the prompt was still
+			// on screen blocking the agent. The occurredAt fence does not save it
+			// either: the row and the latch carry the SAME instant, and `T > T` is
+			// false, so the row is not skipped.
+			//
+			// So the marker's absence is only allowed to speak when the red would
+			// have been marker-backed, and the binding says which: while the host's
+			// last word for this terminal is still `PermissionRequest`, the host is
+			// itself claiming a permission is pending and nothing here may
+			// contradict it. Both intended uses survive, because both leave the
+			// binding on something else — a dismissal forces the binding to `Stop`,
+			// and a delivered answer moves it on to `Start`/`Stop` of its own
+			// accord.
+			row.lastEventType !== "PermissionRequest"
+		) {
+			// (MANUAL-DISMISS) The host POSITIVELY DISOWNS the question: it read the
+			// marker directory and found nothing. `false` is evidence, and until
+			// now it was the only one of the three answers this loop did nothing
+			// with — so a red latched from an event whose answer arrived while the
+			// bus was down (or from a marker the user has since dismissed) was
+			// re-confirmed by every resync rather than retracted by it. The
+			// replayed `lastEventType` cannot do this job: a turn-end carries no
+			// answer-evidence and deliberately leaves the permission axis alone.
+			//
+			// Same workspaceId fence as the unknown branch above: a stale entry
+			// from another workspace is not this row's dot to touch.
+			//
+			// A newer local PermissionRequest is already safe — the occurredAt
+			// fence at the top of the loop skips the whole row when the store holds
+			// something fresher than `row.lastEventAt`.
+			useV2NotificationStore
+				.getState()
+				.applySourceAxes(
+					source,
+					row.originWorkspaceId,
+					{ set: [], clear: ["permission"] },
+					row.lastEventAt,
+				);
+			result.retractedPermission++;
 		}
 	}
 

@@ -43,11 +43,128 @@ export interface HostNotificationWorkspaceState {
 const RESYNC_RETRY_MS = 10_000;
 
 /**
+ * (MANUAL-DISMISS) How often an OPEN socket re-reconciles against the host
+ * anyway.
+ *
+ * The reconnect-triggered resync repairs a bus that DIED. It cannot repair a
+ * bus that stayed up while a single broadcast went missing, or a dot that this
+ * renderer and the host disagree about for any other reason — a second window
+ * dismissing a workspace's statuses is the case that motivated this: the host
+ * knows, this renderer's socket saw nothing, and no reconnect is ever coming.
+ * A minute is slow enough to be free (one small query per host) and fast
+ * enough that a stale dot is a blip rather than a bug report.
+ */
+export const PERIODIC_RESYNC_MS = 60_000;
+
+/**
+ * (MANUAL-DISMISS) How long the in-flight gate may be held by ONE request.
+ *
+ * The gate is released by the request's own settle, so a host that accepts the
+ * socket and then never answers the snapshot fetch holds it forever: no
+ * periodic tick and no queued key can get out, and only a disconnect clears it
+ * — which is exactly the event that is not coming from a host that is up but
+ * unresponsive. Past this deadline the request is ABANDONED rather than
+ * cancelled; its reply is already discarded by the generation guard, so the
+ * only thing the deadline changes is that the next resync stops waiting for it.
+ *
+ * Comfortably longer than any healthy snapshot query, so a slow-but-alive host
+ * is never double-requested, and well inside the periodic minute so a wedged
+ * one costs at most one skipped tick.
+ */
+export const RESYNC_DEADLINE_MS = 30_000;
+
+/**
  * (ALERT-CONTEXT-NAMES) Trailing delay on the title-change → sync trigger. A
  * terminal rewrites its title on every prompt redraw; this collapses a burst
  * into one pass over the host's workspaces.
  */
 const TITLE_SYNC_DEBOUNCE_MS = 250;
+
+/**
+ * (MANUAL-DISMISS) The single-flight gate around `runResync`.
+ *
+ * ONE object rather than three bare refs, because the three are one state
+ * machine and were previously spelled out four times: release-and-drain in the
+ * settle AND in the deadline, abandon in the disconnect AND in the unmount.
+ * Each copy was an independent chance to forget a `clearTimeout` or to drop the
+ * queued key on the floor.
+ *
+ * OWNERSHIP IS THE POINT, and it is why the token is a number rather than a
+ * boolean: a settle may only release the hold IT took. A reconnect abandons the
+ * request on the wire so the new epoch can go out immediately, and the
+ * abandoned request's own settle must not then open the gate under the request
+ * that replaced it, nor drain a key that request will handle.
+ *
+ * This is NOT `resyncGenerationRef`, which stays where it is. That one decides
+ * whose REPLY may be applied; this one decides who may be on the wire at all.
+ */
+interface ResyncGate {
+	/** Whether a request currently holds the gate. */
+	isHeld: () => boolean;
+	/** Park a key behind the live request. Latest wins; only one is held. */
+	queue: (workspaceSetKey: string) => void;
+	/**
+	 * Take the gate for `generation` and arm its deadline. Past the deadline the
+	 * request is ABANDONED rather than cancelled — its reply is already discarded
+	 * by the generation guard, so all the deadline changes is that the next
+	 * resync stops waiting for a host that is up but never answering. `drain`
+	 * runs whatever was parked behind it.
+	 */
+	begin: (generation: number, drain: (workspaceSetKey: string) => void) => void;
+	/** Release `generation`'s hold and run whatever it was holding up. */
+	settle: (
+		generation: number,
+		drain: (workspaceSetKey: string) => void,
+	) => void;
+	/** Socket down or unmounted: drop the hold, the queue and the deadline. */
+	abandon: () => void;
+}
+
+function createResyncGate(): ResyncGate {
+	let token: number | null = null;
+	let queuedKey: string | null = null;
+	let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function clearDeadline(): void {
+		if (deadlineTimer === null) return;
+		clearTimeout(deadlineTimer);
+		deadlineTimer = null;
+	}
+
+	function release(
+		generation: number,
+		drain: (workspaceSetKey: string) => void,
+	): void {
+		if (token !== generation) return;
+		clearDeadline();
+		token = null;
+		const queued = queuedKey;
+		if (queued === null) return;
+		queuedKey = null;
+		drain(queued);
+	}
+
+	return {
+		isHeld: () => token !== null,
+		queue: (workspaceSetKey) => {
+			queuedKey = workspaceSetKey;
+		},
+		begin: (generation, drain) => {
+			clearDeadline();
+			token = generation;
+			deadlineTimer = setTimeout(() => {
+				deadlineTimer = null;
+				release(generation, drain);
+			}, RESYNC_DEADLINE_MS);
+		},
+		settle: release,
+		abandon: () => {
+			clearDeadline();
+			token = null;
+			queuedKey = null;
+		},
+	};
+}
 
 export function HostNotificationSubscriber({
 	hostUrl,
@@ -107,6 +224,19 @@ export function HostNotificationSubscriber({
 	const resyncGenerationRef = useRef(0);
 	const syncedKeyRef = useRef<string | null>(null);
 	const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	// (MANUAL-DISMISS) Who is on the wire, what is queued behind them, and when
+	// they stop being waited for. See `createResyncGate`.
+	const resyncGateRef = useRef<ResyncGate | null>(null);
+	resyncGateRef.current ??= createResyncGate();
+	const resyncGate = resyncGateRef.current;
+	const periodicTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+	/** Stop the periodic reconciliation. Idempotent, so no caller has to check. */
+	const stopPeriodicTimer = (): void => {
+		if (periodicTimerRef.current === null) return;
+		clearInterval(periodicTimerRef.current);
+		periodicTimerRef.current = null;
+	};
 
 	const handleAgentLifecycle = useEffectEvent(
 		(workspaceId: string, payload: AgentLifecyclePayload) => {
@@ -138,11 +268,34 @@ export function HostNotificationSubscriber({
 	// and again if the workspace set grows while it is open.
 	const runResync = useEffectEvent((workspaceSetKey: string) => {
 		if (!connectedRef.current) return;
+		// (MANUAL-DISMISS) SERIALIZATION LIVES HERE, not in the periodic tick.
+		//
+		// It used to live in `runPeriodicResync`, which only ever protected the
+		// tick against itself. A workspace-key change is an edge and went straight
+		// past it, so a hydrating workspace could start resync B on top of a live
+		// resync A — and worse, A's `finally` then cleared the shared flag while B
+		// was still on the wire, so the very next tick started C alongside B. The
+		// gate belongs on the one function every caller goes through.
+		//
+		// Deferred, not dropped: a caller that arrives mid-flight is asking about a
+		// workspace set the in-flight request was not issued for, so its answer
+		// would be incomplete. The key is held and run on settle. Only the LATEST
+		// is held — an intermediate set is a state the app has already left.
+		if (resyncGate.isHeld()) {
+			resyncGate.queue(workspaceSetKey);
+			return;
+		}
 		const key = `${openEpochRef.current}:${workspaceSetKey}`;
 		if (syncedKeyRef.current === key) return;
 		syncedKeyRef.current = key;
 		const epoch = openEpochRef.current;
 		const generation = ++resyncGenerationRef.current;
+		// The deadline is armed WITH the token and released the same way: only the
+		// owner acts. A newer request has already replaced this timer by the time a
+		// stale one fires, and the gate checks the token before touching anything,
+		// so an abandoned request can neither free a live gate nor steal a key the
+		// live request will drain.
+		resyncGate.begin(generation, runResync);
 		void resyncAgentStatusFromHost({
 			hostUrl,
 			workspaces: workspacesById,
@@ -156,20 +309,53 @@ export function HostNotificationSubscriber({
 				connectedRef.current &&
 				openEpochRef.current === epoch &&
 				resyncGenerationRef.current === generation,
-		}).then((result) => {
-			if (result !== null) return;
-			// Fetch failed: nothing was reconciled and nothing was cleared.
-			// Re-arm so the retry below (or a later reconnect) tries again —
-			// but only if no newer resync has since taken over, whose bookkeeping
-			// this would otherwise clobber.
-			if (resyncGenerationRef.current !== generation) return;
-			syncedKeyRef.current = null;
-			if (retryTimerRef.current) return;
-			retryTimerRef.current = setTimeout(() => {
-				retryTimerRef.current = null;
-				runResync(workspaceSetKey);
-			}, RESYNC_RETRY_MS);
-		});
+		})
+			.then((result) => {
+				if (result !== null) return;
+				// Fetch failed: nothing was reconciled and nothing was cleared.
+				// Re-arm so the retry below (or a later reconnect) tries again —
+				// but only if no newer resync has since taken over, whose bookkeeping
+				// this would otherwise clobber.
+				if (resyncGenerationRef.current !== generation) return;
+				syncedKeyRef.current = null;
+				if (retryTimerRef.current) return;
+				retryTimerRef.current = setTimeout(() => {
+					retryTimerRef.current = null;
+					runResync(workspaceSetKey);
+				}, RESYNC_RETRY_MS);
+			})
+			.finally(() => {
+				// Both settle paths, rejection included — a gate left held would
+				// silently retire the periodic tick for the life of the socket.
+				// `finally` re-throws whatever it was handed, so a rejection stays as
+				// loud as it is today. The gate ignores a settle whose token it no
+				// longer holds, and disarms the deadline on the way through.
+				resyncGate.settle(generation, runResync);
+			});
+	});
+
+	/**
+	 * (MANUAL-DISMISS) One periodic reconciliation.
+	 *
+	 * `runResync` early-returns when the epoch+workspace key is the one it last
+	 * synced, and on a quiet socket that key is unchanged by construction — the
+	 * guard is there to stop hydration re-requesting, not to stop this. Clearing
+	 * it is therefore the tick's job. An effect event so `workspacesKey` is read
+	 * at FIRE time; the interval closure would otherwise hold the key from the
+	 * render that created it.
+	 *
+	 * The in-flight check here is SUPPRESSION, and it is not the serialization —
+	 * `runResync` owns that. A tick that arrived mid-flight has nothing to add:
+	 * it carries the same key the live request was issued under, so queueing it
+	 * would buy a duplicate pass a minute early. The next tick covers it.
+	 *
+	 * No generation mechanism of its own: `resyncGenerationRef` already discards
+	 * a superseded reply.
+	 */
+	const runPeriodicResync = useEffectEvent(() => {
+		if (!connectedRef.current || resyncGate.isHeld()) return;
+		syncedKeyRef.current = null;
+		runResync(workspacesKey);
 	});
 
 	/**
@@ -271,6 +457,17 @@ export function HostNotificationSubscriber({
 			.getState()
 			.setNotificationBusConnected(hostUrl, connected);
 		if (!connected) {
+			// Nothing to reconcile against a socket that is down, and the reconnect
+			// runs a resync of its own.
+			stopPeriodicTimer();
+			// (MANUAL-DISMISS) ABANDON whatever was on the wire rather than waiting
+			// for it. Its epoch is dead — `isCurrent` will discard its reply — and
+			// holding the gate for it would make the reconnect's resync, the one
+			// that actually matters, wait out a dead socket's tRPC timeout. Its own
+			// `finally` no longer owns the token, so it cannot release a gate the
+			// new epoch has taken. The queued key goes with it: it was queued
+			// against a workspace set the reconnect resync re-reads in full anyway.
+			resyncGate.abandon();
 			// A restarted host issues a new PSK; re-read it from the coordinator so
 			// the next dial carries the current one instead of retrying a stale
 			// secret until some unrelated render happens to refresh it.
@@ -286,6 +483,13 @@ export function HostNotificationSubscriber({
 		forgetAlertContextSyncsForHost(hostUrl);
 		syncAlertContexts(workspacesById);
 		runResync(workspacesKey);
+		// (MANUAL-DISMISS) Re-armed per open, and cleared first so a duplicate
+		// "open" (the mount-time catch-up firing alongside a real edge) leaves one
+		// interval rather than two.
+		stopPeriodicTimer();
+		periodicTimerRef.current = setInterval(() => {
+			runPeriodicResync();
+		}, PERIODIC_RESYNC_MS);
 	});
 
 	useEffect(() => {
@@ -331,8 +535,12 @@ export function HostNotificationSubscriber({
 				clearTimeout(retryTimerRef.current);
 				retryTimerRef.current = null;
 			}
+			stopPeriodicTimer();
 			connectedRef.current = false;
 			syncedKeyRef.current = null;
+			// Same reasoning as the disconnect branch: nothing may drain into a
+			// component that is gone.
+			resyncGate.abandon();
 			if (titleSyncTimerRef.current) {
 				clearTimeout(titleSyncTimerRef.current);
 				titleSyncTimerRef.current = null;

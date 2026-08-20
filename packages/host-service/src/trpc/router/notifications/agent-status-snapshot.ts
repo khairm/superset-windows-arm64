@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, rmdir, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { inArray } from "drizzle-orm";
@@ -80,6 +80,189 @@ export interface AgentStatusSnapshot {
 const SAFE_MARKER_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 /**
+ * (ASKQ-MARKER-READ) (MANUAL-DISMISS) The askq marker directory for a terminal,
+ * or `null` when the id could not have produced one.
+ *
+ * The `SAFE_MARKER_SEGMENT` test lives INSIDE this function rather than at each
+ * call site so that no caller can hold a path built from an unvalidated id.
+ * The reader's mistake would be a wrong dot; `clearPendingQuestionMarkers`
+ * UNLINKS what it finds here, so a traversal would delete arbitrary files.
+ * Returning `null` makes "we never wrote a marker for this id" the only value
+ * an unsafe id can produce, and every caller has to decide what to do with it.
+ */
+export function askqMarkerDir(terminalId: string): string | null {
+	if (!SAFE_MARKER_SEGMENT.test(terminalId)) return null;
+	return join(
+		homedir(),
+		".superset",
+		"agent-subagent-running",
+		`${terminalId}.askq`,
+	);
+}
+
+/**
+ * (MANUAL-DISMISS) What one terminal's manual dismissal actually did to disk.
+ *
+ * `removed` and `survivors` are owner FILE NAMES (`_main`, a sanitized subagent
+ * id). A non-empty `survivors` is the load-bearing half: an owner file is on
+ * disk after the sweep — because it postdates the click, because it could not be
+ * read, or because it appeared while the sweep ran — so a question the user has
+ * not seen is pending and the red must stay up.
+ */
+export interface ClearedQuestionMarkers {
+	removed: string[];
+	survivors: string[];
+}
+
+/**
+ * (MANUAL-DISMISS) The one filesystem call this fence's verdict turns on,
+ * injectable so its ENOENT / unknown-error branches and the create race below
+ * can be driven deterministically. Production passes nothing and gets
+ * `node:fs/promises`.
+ */
+export interface ClearMarkersDeps {
+	stat(path: string): Promise<{ mtimeMs: number }>;
+}
+
+/**
+ * (MANUAL-DISMISS) Remove the askq owners that existed when the user clicked
+ * "Clear Status", and only those.
+ *
+ * Manual dismissal is the one action licensed to drop a red the snapshot would
+ * otherwise re-assert forever (`(LEAKED-ASKQ-OWNER)` explains why nothing
+ * host-side can prove a leak, so the user is the evidence). But the click is not
+ * licensed to drop a question the agent raised in the meantime, and the window
+ * is real: the tRPC round trip plus the readdir is long enough for a hook to
+ * land. `dismissStartedAtMs` is captured by the CALLER before any deletion and
+ * fences every owner individually — the Python hook writes the owner file
+ * synchronously before it returns the `PermissionRequest`, so an owner whose
+ * mtime is not OLDER than the click is proof of a question the user has not
+ * seen. The comparison is strict in one direction only: an owner written in the
+ * SAME millisecond as the click cannot be shown to predate it, so it survives
+ * (`mtimeMs >= dismissStartedAtMs`) and only a provably older owner is deleted.
+ *
+ * THE LISTING IS READ TWICE, and the second read is not a nicety. The fence can
+ * judge only what the first `readdir` returned, while the stat/unlink loop is
+ * awaited — long enough for a hook to create an owner the loop never sees. The
+ * final re-`readdir` is therefore the authority on `survivors`: ANYTHING still
+ * present when the loop ends is a survivor, whether it was created during the
+ * loop or recreated after its unlink, because "there is an owner file on disk
+ * right now" is exactly what the next snapshot read finds and re-asserts a red
+ * for. Without it `pendingAfter: false` is a claim about a listing that is
+ * already out of date.
+ *
+ * Failure directions, all chosen to keep a red rather than invent a dismissal:
+ *
+ *  - an id that fails the path guard removes NOTHING (we never wrote for it, and
+ *    a path built from it would be a traversal);
+ *  - `ENOENT` on the directory is a successful no-op — the markers are already
+ *    gone, which is exactly the state the caller asked for;
+ *  - any OTHER readdir error THROWS, on both reads. An unreadable filesystem is
+ *    not a successful dismissal, and reporting one would leave the renderer
+ *    clearing a dot that the next resync re-asserts;
+ *  - `ENOENT` from a `stat` counts the owner as REMOVED. It is the one stat
+ *    failure that is positive evidence — the file provably no longer exists
+ *    (answered or reaped mid-operation), which is the very end state this
+ *    function exists to reach — and reporting it as a survivor invented a
+ *    `pendingAfter: true` for a marker nothing can read back;
+ *  - any OTHER `stat` failure leaves the owner in place and reports it as a
+ *    survivor. Unknown is not evidence, the same direction the reader takes at
+ *    `findOwnersOlderThanSession`.
+ *
+ * Owners are unlinked one at a time (never a recursive directory remove) and the
+ * directory itself is dropped only when the final read finds it empty, so a
+ * surviving owner keeps both its file and the directory the next reader looks
+ * in.
+ */
+export async function clearPendingQuestionMarkers(
+	terminalId: string,
+	dismissStartedAtMs: number,
+	deps: ClearMarkersDeps = { stat },
+): Promise<ClearedQuestionMarkers> {
+	const dir = askqMarkerDir(terminalId);
+	if (dir === null) {
+		console.warn(
+			"[notifications] refusing to clear askq markers for an unsafe terminal id",
+			{ terminalId },
+		);
+		return { removed: [], survivors: [] };
+	}
+
+	let owners: string[];
+	try {
+		owners = await readdir(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return { removed: [], survivors: [] };
+		}
+		throw error;
+	}
+
+	const removed: string[] = [];
+	const survivors: string[] = [];
+	for (const owner of owners) {
+		const path = join(dir, owner);
+		/** `null` = the file provably no longer exists, so there is no age to judge. */
+		let mtimeMs: number | null;
+		try {
+			mtimeMs = (await deps.stat(path)).mtimeMs;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				// Unknown age: not evidence the user has seen it. Keep the red.
+				console.warn(
+					"[notifications] askq owner could not be stat'd during dismissal — keeping it",
+					{ terminalId, owner, error },
+				);
+				survivors.push(owner);
+				continue;
+			}
+			// Answered or reaped between the readdir and here: gone is the end state
+			// this function is asking for, so it counts as removed rather than as an
+			// invented pending question.
+			mtimeMs = null;
+		}
+		if (mtimeMs !== null && mtimeMs >= dismissStartedAtMs) {
+			// Not provably older than the click. The user has not seen this question.
+			survivors.push(owner);
+			continue;
+		}
+		try {
+			await unlink(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			// Answered or reaped between the stat and here — the dismissal's
+			// intended end state, reached by somebody else.
+		}
+		removed.push(owner);
+	}
+
+	// The authority on what is pending NOW. Everything above judged one listing
+	// taken before an awaited loop; an owner created during that loop is invisible
+	// to it, and reporting `survivors` from it alone tells the renderer to clear a
+	// dot that a marker on disk re-asserts on the next resync.
+	let remaining: string[];
+	try {
+		remaining = await readdir(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		// Somebody removed the whole directory under us. Nothing is pending.
+		remaining = [];
+	}
+	for (const owner of remaining) {
+		if (!survivors.includes(owner)) survivors.push(owner);
+	}
+
+	if (remaining.length === 0) {
+		// Best effort, and deliberately never fatal: the directory is a container,
+		// not the truth. An empty one reads as "no question" either way, and a
+		// racing hook may legitimately have just recreated an owner inside it.
+		await rmdir(dir).catch(() => {});
+	}
+
+	return { removed, survivors };
+}
+
+/**
  * (ASKQ-MARKER-READ) Is a question currently pending on this terminal? True
  * when `~/.superset/agent-subagent-running/<terminalId>.askq/` holds at least
  * one owner file (`_main` for a main-loop question, a sanitized subagent id
@@ -129,13 +312,8 @@ async function hasPendingQuestionMarker(
 	sessionStartedAt: number,
 ): Promise<boolean | null> {
 	// An id we would never have written a marker for is definitively absent.
-	if (!SAFE_MARKER_SEGMENT.test(terminalId)) return false;
-	const dir = join(
-		homedir(),
-		".superset",
-		"agent-subagent-running",
-		`${terminalId}.askq`,
-	);
+	const dir = askqMarkerDir(terminalId);
+	if (dir === null) return false;
 	let owners: string[];
 	try {
 		owners = await readdir(dir);

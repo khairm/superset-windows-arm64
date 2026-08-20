@@ -261,6 +261,78 @@ export interface V2NotificationState {
 // failure — but clears on a real app restart, so dead terminals can't pin
 // stale dots across launches (and an app UPDATE can never rehydrate an old
 // schema). Only the three data maps persist; mutators come from the creator.
+/**
+ * Everything in `map` that does NOT belong to `workspaceId`, plus whether
+ * anything was actually dropped.
+ *
+ * `changed` is what the callers gate their `set()` on: a workspace with nothing
+ * in a given map must not hand zustand a fresh object, or a clear that removed
+ * nothing still re-renders every subscriber of that map.
+ */
+function omitByWorkspace<T extends { workspaceId: string }>(
+	map: Record<string, T>,
+	workspaceId: string,
+): { next: Record<string, T>; changed: boolean } {
+	const next: Record<string, T> = {};
+	let changed = false;
+	for (const [key, entry] of Object.entries(map)) {
+		if (entry.workspaceId === workspaceId) {
+			changed = true;
+			continue;
+		}
+		next[key] = entry;
+	}
+	return { next, changed };
+}
+
+/**
+ * One `store_mutation` line per source a workspace-wide clear is about to
+ * remove, so each line carries its own sourceKey.
+ *
+ * Read-only snapshot taken BEFORE the `set()`, which is why both callers log
+ * from out here rather than from inside the updater: zustand may invoke an
+ * updater more than once, and the log must not describe the clear twice.
+ */
+function logWorkspaceClear({
+	mutation,
+	workspaceId,
+	shouldClear = () => true,
+}: {
+	mutation: string;
+	workspaceId: string;
+	shouldClear?: (source: V2NotificationStatusEntry) => boolean;
+}): void {
+	const now = Date.now();
+	for (const [sourceKey, source] of Object.entries(
+		useV2NotificationStore.getState().sources,
+	)) {
+		if (source.workspaceId !== workspaceId || !shouldClear(source)) continue;
+		ndots({
+			event: "store_mutation",
+			mutation,
+			sourceKey,
+			workspaceId,
+			from: source.status,
+			to: null,
+			occurredAt: now,
+		});
+	}
+}
+
+/**
+ * (MANUAL-DISMISS) Whether two axis maps hold the same latches at the same
+ * instants. Used only to decide whether an `applySourceAxes` call is worth a
+ * log line — never to skip a state write.
+ */
+function axesEqual(a: V2AgentStatusAxes, b: V2AgentStatusAxes): boolean {
+	const keys = Object.keys(a) as V2AgentStatusAxis[];
+	if (keys.length !== Object.keys(b).length) return false;
+	for (const key of keys) {
+		if (a[key] !== b[key]) return false;
+	}
+	return true;
+}
+
 export const useV2NotificationStore = create<V2NotificationState>()(
 	devtools(
 		persist(
@@ -461,17 +533,34 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					for (const axis of ops.clear) delete axes[axis];
 					for (const axis of ops.set) axes[axis] = occurredAt;
 					const status = deriveAgentStatus(axes);
-					ndots({
-						event: "store_mutation",
-						mutation: "applySourceAxes",
-						sourceKey,
-						workspaceId,
-						setAxes: ops.set,
-						clearAxes: ops.clear,
-						from: prev?.status ?? null,
-						to: status,
-						occurredAt,
-					});
+					// (MANUAL-DISMISS) A REPLAY THAT CHANGED NOTHING GETS NO LINE. The
+					// 60s periodic resync runs this for every row of every workspace
+					// every minute, and the overwhelmingly common outcome is that the
+					// host agrees with what is already latched — which was costing a
+					// console.info per row per minute, forwarded to electron-log, for
+					// the life of the app.
+					//
+					// LOGGING ONLY. The `set()` below still runs: entry identity is a
+					// load-bearing staleness fence, so short-circuiting the write here
+					// would be a behaviour change, not a saving.
+					const unchanged =
+						prev !== undefined &&
+						!foreign &&
+						prev.status === status &&
+						axesEqual(prev.axes, axes);
+					if (!unchanged) {
+						ndots({
+							event: "store_mutation",
+							mutation: "applySourceAxes",
+							sourceKey,
+							workspaceId,
+							setAxes: ops.set,
+							clearAxes: ops.clear,
+							from: prev?.status ?? null,
+							to: status,
+							occurredAt,
+						});
+					}
 					set((state) => {
 						// (AGENT-SHELL-BLUE) Any agent-axis write for a terminal source —
 						// including a clear-to-null — proves an agent runs here.
@@ -645,41 +734,62 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 						return { sources };
 					});
 				},
+				/**
+				 * (MANUAL-DISMISS) Drop EVERY axis this workspace can paint a dot
+				 * from. The renderer half of the user's explicit "Clear Status".
+				 *
+				 * Sources, both blue maps and the manual unread mark go together
+				 * because the rendered dot is a fold over all of them: the display
+				 * selector yields a status for every OPEN terminal id, entry or not
+				 * (selectV2WorkspaceDisplayStatus), so a plain shell's
+				 * `shellRunningTerminals` blue survives a sources-only purge and the
+				 * click looks like it did nothing. The agent-terminal gate in
+				 * getSourceDisplayStatus suppresses that blue on AGENT terminals
+				 * only, which is why the sources purge appeared to be enough.
+				 *
+				 * `outstandingReadyAt` is deliberately NOT touched. It is the
+				 * retraction evidence the companion ready alerts are retired
+				 * against, and only a host that ACKED the read may retire it
+				 * (`clearOutstandingReady`). Dropping it here would strand a
+				 * ready-for-review notification on the phone with nothing left to
+				 * name it.
+				 */
 				clearWorkspaceStatuses: (workspaceId) => {
+					logWorkspaceClear({
+						mutation: "clearWorkspaceStatuses",
+						workspaceId,
+					});
 					set((state) => {
-						const sources: Record<string, V2NotificationStatusEntry> = {};
-						let changed = false;
-						for (const [sourceKey, source] of Object.entries(state.sources)) {
-							if (source.workspaceId === workspaceId) {
-								changed = true;
-								continue;
-							}
-							sources[sourceKey] = source;
-						}
+						const sources = omitByWorkspace(state.sources, workspaceId);
 						// (BA) Also drop background-running entries for this workspace — the
 						// blue axis has no OSC self-clear, so a workspace teardown must purge
 						// it too or a stale entry survives (hidden by the open-tab gate, but
 						// still leaked).
-						const backgroundRunningTerminals: Record<
-							string,
-							V2ShellRunningEntry
-						> = {};
-						let bgChanged = false;
-						for (const [tid, entry] of Object.entries(
+						const background = omitByWorkspace(
 							state.backgroundRunningTerminals,
-						)) {
-							if (entry.workspaceId === workspaceId) {
-								bgChanged = true;
-								continue;
-							}
-							backgroundRunningTerminals[tid] = entry;
-						}
+							workspaceId,
+						);
+						// (MANUAL-DISMISS) The OSC-133 shell latch, same reasoning: it
+						// self-clears only on a command-end this workspace may never
+						// emit, and it renders blue without any source entry.
+						const shell = omitByWorkspace(
+							state.shellRunningTerminals,
+							workspaceId,
+						);
 						const hadManual = workspaceId in state.manualUnread;
-						if (!changed && !bgChanged && !hadManual) return state;
+						if (
+							!sources.changed &&
+							!background.changed &&
+							!shell.changed &&
+							!hadManual
+						) {
+							return state;
+						}
 						const next: Partial<V2NotificationState> = {};
-						if (changed) next.sources = sources;
-						if (bgChanged)
-							next.backgroundRunningTerminals = backgroundRunningTerminals;
+						if (sources.changed) next.sources = sources.next;
+						if (background.changed)
+							next.backgroundRunningTerminals = background.next;
+						if (shell.changed) next.shellRunningTerminals = shell.next;
 						if (hadManual) {
 							const { [workspaceId]: _removed, ...manualUnread } =
 								state.manualUnread;
@@ -689,30 +799,11 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					});
 				},
 				clearWorkspaceAttention: (workspaceId) => {
-					{
-						// Log each source this call will clear (workspace match +
-						// status "review"). One line per source so each carries its
-						// own sourceKey. Read-only snapshot — no logic change.
-						const now = Date.now();
-						for (const [sourceKey, source] of Object.entries(
-							useV2NotificationStore.getState().sources,
-						)) {
-							if (
-								source.workspaceId === workspaceId &&
-								source.status === "review"
-							) {
-								ndots({
-									event: "store_mutation",
-									mutation: "clearWorkspaceAttention",
-									sourceKey,
-									workspaceId,
-									from: source.status,
-									to: null,
-									occurredAt: now,
-								});
-							}
-						}
-					}
+					logWorkspaceClear({
+						mutation: "clearWorkspaceAttention",
+						workspaceId,
+						shouldClear: (source) => source.status === "review",
+					});
 					set((state) => {
 						const sources: Record<string, V2NotificationStatusEntry> = {};
 						let changed = false;
@@ -803,27 +894,6 @@ export function getV2NotificationSourcesForTab(
 		}
 	}
 	return [...sources.values()];
-}
-
-/**
- * Used by close (races against host exit) and interrupt (pty stays alive,
- * no host exit) — neither can rely on the `terminal:lifecycle` exit path.
- */
-export function clearV2TerminalRunStatus(
-	terminalId: string,
-	workspaceId: string,
-): void {
-	const store = useV2NotificationStore.getState();
-	store.clearSourceStatus(
-		getV2TerminalNotificationSource(terminalId),
-		workspaceId,
-	);
-	// (BA) The cloud/background-running blue axis has NO OSC self-clear (unlike
-	// shell-running, which clears on the 133;D command-end). Both interrupt
-	// (Ctrl+C/Esc, useTerminalInterruptClear) and pane close (usePaneRegistry
-	// onAfterClose) route through here, so clear it too — otherwise a stale blue
-	// dot lingers on a live/closed terminal until some later agent event.
-	store.clearTerminalBackgroundRunning(terminalId);
 }
 
 /**

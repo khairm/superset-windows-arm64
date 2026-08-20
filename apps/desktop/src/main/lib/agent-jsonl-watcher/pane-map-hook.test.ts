@@ -1,4 +1,11 @@
-import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+} from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -40,7 +47,14 @@ const sink = Bun.serve({
 		});
 		const eventId = body.json?.companionLifecycleEventId;
 		if (typeof eventId === "string") lifecycleEventIds.push(eventId);
-		return Response.json({ result: { data: { json: { success: true } } } });
+		// (HOOK-ENDPOINT-HEAL) The exact envelope the real route returns
+		// (notifications.ts:357). The hook now treats delivery as POSITIVE
+		// acceptance of "ignored": false, so a stand-in sink that answers
+		// anything else is an UNDELIVERED event and would send every test in
+		// this file down the failover path.
+		return Response.json({
+			result: { data: { json: { ignored: false, success: true } } },
+		});
 	},
 });
 
@@ -62,9 +76,15 @@ beforeEach(() => {
 	sessionId = `session-${crypto.randomUUID()}`;
 });
 
-/** Run one hook event; returns the eventType/outcome the host-service received. */
+/**
+ * Run one hook event; returns the eventType/outcome the host-service received.
+ *
+ * `envOverride` wins over every default below, which is how the failover suite
+ * points the hook at its own sinks and turns debug logging on.
+ */
 async function hook(
 	payload: Record<string, unknown>,
+	envOverride: Record<string, string> = {},
 ): Promise<Post | undefined> {
 	// Async spawn, not spawnSync: the hook POSTs and waits for the response, so a
 	// blocked JS loop would stall the sink until the hook's own timeout.
@@ -81,7 +101,14 @@ async function hook(
 			SUPERSET_AGENT_ID: "claude",
 			SUPERSET_AGENT_WATCHER_DEBUG: "0",
 			SUPERSET_HOST_AGENT_HOOK_URL: `http://127.0.0.1:${sink.port}/hook`,
+			// (HOOK-ENDPOINT-HEAL) The suite runs INSIDE Superset, so both of
+			// these are set in the real environment and would point the hook's
+			// manifest failover at this machine's live hosts. Blanked so every
+			// candidate list is built from the throwaway HOME alone.
+			SUPERSET_HOME_DIR: "",
+			SUPERSET_ORGANIZATION_ID: "",
 			SUPERSET_TERMINAL_ID: TERMINAL_ID,
+			...envOverride,
 		},
 		stdin: Buffer.from(JSON.stringify({ session_id: sessionId, ...payload })),
 		stderr: "pipe",
@@ -646,4 +673,488 @@ describe("superset-notify lifecycle producer id", () => {
 		expect(lifecycleEventIds[1]).toMatch(ID_SHAPE);
 		expect(lifecycleEventIds[0]).not.toBe(lifecycleEventIds[1]);
 	});
+});
+
+// (HOOK-ENDPOINT-HEAL) The host-service can restart onto a new port; a PTY
+// started before that restart keeps the dead URL in its env forever, so every
+// dot after the restart is lost unless the hook re-resolves the endpoint from
+// the org manifests the host rewrites on every start. Same harness as above —
+// real script, real python, throwaway HOME — with several sinks so the probe
+// ORDER and the acceptance PREDICATE are observable rather than inferred.
+describe("superset-notify hook endpoint failover", () => {
+	type SinkMode =
+		| "accept"
+		| "empty-object"
+		| "empty-result"
+		| "html"
+		| "ignored"
+		| "reject-always"
+		| "reject-companion"
+		| "slow"
+		| "truncated";
+
+	interface TestSink {
+		/** Whether each POST still carried the companion lifecycle fields. */
+		companion: boolean[];
+		endpoint: string;
+		/** eventType of every POST this sink saw, in arrival order. */
+		hits: string[];
+		url: string;
+	}
+
+	const servers: Array<{ stop: (force?: boolean) => unknown }> = [];
+
+	function makeSink(mode: SinkMode): TestSink {
+		const hits: string[] = [];
+		const companion: boolean[] = [];
+		const server = Bun.serve({
+			port: 0,
+			async fetch(request) {
+				const body = (await request.json()) as {
+					json?: {
+						companionLifecycleEventId?: string;
+						companionQuestion?: unknown;
+						eventType?: string;
+					};
+				};
+				hits.push(body.json?.eventType ?? "");
+				const carriesCompanion =
+					typeof body.json?.companionLifecycleEventId === "string" ||
+					body.json?.companionQuestion !== undefined;
+				companion.push(carriesCompanion);
+				if (mode === "reject-companion" && carriesCompanion) {
+					// What the OWNING host does when the capture shape and the
+					// route schema disagree: zod rejects the input and tRPC
+					// answers 400. It is never a 2xx, which is why the dot's
+					// strip-and-retry may not be gated on one.
+					return Response.json(
+						{ error: { code: -32600, message: "invalid_type" } },
+						{ status: 400 },
+					);
+				}
+				if (mode === "reject-always") {
+					// The owning host refusing BOTH bodies: the companion one and
+					// the stripped dot-only one. Nothing is delivered, whatever
+					// else on the machine answers.
+					return Response.json(
+						{ error: { code: -32600, message: "invalid_type" } },
+						{ status: 400 },
+					);
+				}
+				if (mode === "slow") {
+					// Longer than the hook's unchanged 1.5s per-request timeout, so
+					// the probe budget is exercised deterministically instead of
+					// depending on how fast this OS refuses a connection.
+					await Bun.sleep(3_000);
+				}
+				if (mode === "html") {
+					return new Response("<html><body>not superset</body></html>", {
+						headers: { "content-type": "text/html" },
+					});
+				}
+				if (mode === "truncated") {
+					return new Response('{"result":{"data":{"json":{"ignored":fal');
+				}
+				if (mode === "empty-object") return Response.json({});
+				if (mode === "empty-result") return Response.json({ result: {} });
+				if (mode === "ignored") {
+					return Response.json({
+						result: {
+							data: {
+								json: {
+									ignored: true,
+									reason: "unknown terminal",
+									success: true,
+								},
+							},
+						},
+					});
+				}
+				return Response.json({
+					result: { data: { json: { ignored: false, success: true } } },
+				});
+			},
+		});
+		servers.push(server);
+		const endpoint = `http://127.0.0.1:${server.port}`;
+		return {
+			companion,
+			endpoint,
+			hits,
+			url: `${endpoint}/trpc/notifications.hook`,
+		};
+	}
+
+	/** An endpoint nothing listens on: bound to claim the port, then closed. */
+	function deadEndpoint(): string {
+		const probe = Bun.serve({ fetch: () => new Response("x"), port: 0 });
+		const endpoint = `http://127.0.0.1:${probe.port}`;
+		probe.stop(true);
+		return endpoint;
+	}
+
+	afterEach(() => {
+		for (const server of servers.splice(0)) server.stop(true);
+	});
+
+	/** The manifest the host-service rewrites with its live endpoint on start. */
+	function writeHostManifest(
+		organizationId: string,
+		endpoint: string,
+		pid: number = process.pid,
+	): void {
+		const dir = path.join(home, ".superset", "host", organizationId);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, "manifest.json"),
+			JSON.stringify({
+				authToken: "token",
+				endpoint,
+				organizationId,
+				pid,
+				startedAt: Date.now(),
+			}),
+		);
+	}
+
+	function notifyLogPath(): string {
+		return path.join(home, ".superset", "agent-notify-hook.log");
+	}
+
+	/** Every parsable record in the debug log (rotation pads it with junk). */
+	function logRecords(): Array<Record<string, unknown>> {
+		if (!fs.existsSync(notifyLogPath())) return [];
+		const records: Array<Record<string, unknown>> = [];
+		for (const line of fs.readFileSync(notifyLogPath(), "utf-8").split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				records.push(JSON.parse(line));
+			} catch {
+				// padding written by the rotation test
+			}
+		}
+		return records;
+	}
+
+	function recordsWithAction(action: string): Array<Record<string, unknown>> {
+		return logRecords().filter((record) => record.action === action);
+	}
+
+	function decisionLines(): string[] {
+		const file = path.join(home, ".superset", "logs", "dot-decisions.log");
+		if (!fs.existsSync(file)) return [];
+		return fs.readFileSync(file, "utf-8").split("\n").filter(Boolean);
+	}
+
+	/**
+	 * One hook event with an explicit environment, through the same spawn
+	 * harness as `hook`. Debug logging is ON (the failover decisions are only
+	 * observable through the log); `hook` already blanks SUPERSET_HOME_DIR and
+	 * SUPERSET_ORGANIZATION_ID so the real Superset environment this suite runs
+	 * inside cannot leak live hosts into the candidate list, and every test here
+	 * names its own SUPERSET_HOST_AGENT_HOOK_URL.
+	 */
+	async function runHook(
+		env: Record<string, string>,
+		payload: Record<string, unknown> = { hook_event_name: "UserPromptSubmit" },
+	): Promise<void> {
+		await hook(payload, { SUPERSET_AGENT_WATCHER_DEBUG: "1", ...env });
+	}
+
+	it("rotates the debug log at 1MB into a single .1 backup", async () => {
+		const live = makeSink("accept");
+		fs.mkdirSync(path.join(home, ".superset"), { recursive: true });
+		fs.writeFileSync(notifyLogPath(), `${"x".repeat(1_100_000)}\n`);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: live.url });
+
+		const backup = `${notifyLogPath()}.1`;
+		expect(fs.existsSync(backup)).toBe(true);
+		expect(fs.statSync(backup).size).toBeGreaterThan(1_000_000);
+		expect(fs.statSync(notifyLogPath()).size).toBeLessThan(100_000);
+
+		// A second rotation REPLACES the backup rather than growing a chain.
+		fs.writeFileSync(notifyLogPath(), `${"y".repeat(1_100_000)}\n`);
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: live.url });
+		expect(fs.existsSync(backup)).toBe(true);
+		expect(fs.existsSync(`${notifyLogPath()}.2`)).toBe(false);
+		expect(fs.readFileSync(backup, "utf-8").startsWith("y")).toBe(true);
+	}, 20_000);
+
+	it("delivers through an org manifest when the env URL points at a dead port", async () => {
+		const live = makeSink("accept");
+		writeHostManifest("org-live", live.endpoint);
+
+		await runHook({
+			SUPERSET_HOST_AGENT_HOOK_URL: `${deadEndpoint()}/trpc/notifications.hook`,
+		});
+
+		expect(live.hits).toEqual(["Start"]);
+		const posted = recordsWithAction("posted");
+		expect(posted).toHaveLength(1);
+		expect(posted[0]?.deliveredUrl).toBe(live.url);
+		expect(recordsWithAction("post-error")).toHaveLength(0);
+	}, 20_000);
+
+	it("never probes a manifest while the env URL still answers", async () => {
+		const live = makeSink("accept");
+		const other = makeSink("accept");
+		writeHostManifest("org-other", other.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: live.url });
+
+		expect(live.hits).toEqual(["Start"]);
+		expect(other.hits).toEqual([]);
+	}, 20_000);
+
+	it("keeps probing past a host that disowns the terminal and delivers to the one that owns it", async () => {
+		const wrongOrg = makeSink("ignored");
+		const rightOrg = makeSink("accept");
+		writeHostManifest("org-right", rightOrg.endpoint);
+
+		await runHook({
+			SUPERSET_HOST_AGENT_HOOK_URL: wrongOrg.url,
+			SUPERSET_ORGANIZATION_ID: "org-right",
+		});
+
+		expect(wrongOrg.hits).toEqual(["Start"]);
+		expect(rightOrg.hits).toEqual(["Start"]);
+		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(rightOrg.url);
+	}, 20_000);
+
+	it("treats every-host-ignored as a delivered no-op: one log line, no error, no companion retry", async () => {
+		const envSink = makeSink("ignored");
+		const orgSink = makeSink("ignored");
+		writeHostManifest("org-ghost", orgSink.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: envSink.url });
+
+		// Each candidate probed exactly once — a second hit would mean the
+		// companion strip-and-retry fired on an event that was delivered.
+		expect(envSink.hits).toEqual(["Start"]);
+		expect(orgSink.hits).toEqual(["Start"]);
+		expect(envSink.companion).toEqual([true]);
+		expect(orgSink.companion).toEqual([true]);
+
+		const ignoredEverywhere = recordsWithAction("ignored-everywhere");
+		expect(ignoredEverywhere).toHaveLength(1);
+		// (DISPOSE-LIMBO) The host's own reason is the only thing that tells
+		// one ghost-terminal cause from another, so the record must carry it.
+		expect(ignoredEverywhere[0]?.responseBody).toContain("unknown terminal");
+		expect(recordsWithAction("post-error")).toHaveLength(0);
+		expect(recordsWithAction("posted")).toHaveLength(0);
+		expect(recordsWithAction("companion-rejected-dot-posted")).toHaveLength(0);
+	}, 20_000);
+
+	it("rejects malformed and foreign response bodies and keeps probing", async () => {
+		const html = makeSink("html");
+		const truncated = makeSink("truncated");
+		const emptyObject = makeSink("empty-object");
+		const emptyResult = makeSink("empty-result");
+		const live = makeSink("accept");
+		writeHostManifest("org-2-truncated", truncated.endpoint);
+		writeHostManifest("org-3-empty-object", emptyObject.endpoint);
+		writeHostManifest("org-4-empty-result", emptyResult.endpoint);
+		writeHostManifest("org-5-live", live.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: html.url });
+
+		for (const sink of [html, truncated, emptyObject, emptyResult, live]) {
+			expect(sink.hits).toEqual(["Start"]);
+		}
+		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(live.url);
+		expect(recordsWithAction("post-error")).toHaveLength(0);
+	}, 20_000);
+
+	it("logs a post-error and one dot-decisions line naming every candidate when nothing answers", async () => {
+		const deadEnv = `${deadEndpoint()}/trpc/notifications.hook`;
+		const deadOrgA = deadEndpoint();
+		const deadOrgB = deadEndpoint();
+		writeHostManifest("org-a", deadOrgA);
+		writeHostManifest("org-b", deadOrgB);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: deadEnv });
+
+		const errors = recordsWithAction("post-error");
+		expect(errors).toHaveLength(1);
+		expect(errors[0]?.candidateUrls).toEqual([
+			deadEnv,
+			`${deadOrgA}/trpc/notifications.hook`,
+			`${deadOrgB}/trpc/notifications.hook`,
+		]);
+		// A stripped-body retry cannot answer where nothing answered at all.
+		expect(recordsWithAction("companion-rejected-dot-posted")).toHaveLength(0);
+
+		const failed = decisionLines().filter((line) =>
+			line.includes("hook-post-failed"),
+		);
+		expect(failed).toHaveLength(1);
+		for (const url of [deadEnv, deadOrgA, deadOrgB]) {
+			expect(failed[0]).toContain(url);
+		}
+	}, 30_000);
+
+	it("stops probing when the total budget is spent instead of stalling the agent", async () => {
+		const slowEnv = makeSink("slow");
+		const slowA = makeSink("slow");
+		const slowB = makeSink("slow");
+		const live = makeSink("accept");
+		writeHostManifest("org-1-slow", slowA.endpoint);
+		writeHostManifest("org-2-slow", slowB.endpoint);
+		writeHostManifest("org-3-live", live.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: slowEnv.url });
+
+		// Three 1.5s timeouts spend the 4.0s budget, so the fourth candidate
+		// is never attempted.
+		expect(slowEnv.hits).toEqual(["Start"]);
+		expect(slowA.hits).toEqual(["Start"]);
+		expect(slowB.hits).toEqual(["Start"]);
+		expect(live.hits).toEqual([]);
+
+		const exhausted = recordsWithAction("hook-probe-budget-exhausted");
+		expect(exhausted).toHaveLength(1);
+		// Each attempt gets min(1.5s, what is left of the 4.0s budget), so the
+		// sweep cannot outlast the budget. Checking the budget only BEFORE each
+		// attempt and then handing out a fresh 1.5s overshot it: 4.5s here, and
+		// up to ~5.4s when the check lands just under 4.0s.
+		expect(exhausted[0]?.elapsedMs as number).toBeLessThanOrEqual(4_200);
+		expect(recordsWithAction("post-error")).toHaveLength(1);
+		expect(recordsWithAction("posted")).toHaveLength(0);
+	}, 30_000);
+
+	it("probes this terminal's own org manifest before the others", async () => {
+		const ownOrg = makeSink("accept");
+		const otherOrg = makeSink("accept");
+		// "org-aaa" sorts first in the glob; the env org id must still win.
+		writeHostManifest("org-aaa", otherOrg.endpoint);
+		writeHostManifest("org-zzz", ownOrg.endpoint);
+
+		await runHook({
+			SUPERSET_HOST_AGENT_HOOK_URL: `${deadEndpoint()}/trpc/notifications.hook`,
+			SUPERSET_ORGANIZATION_ID: "org-zzz",
+		});
+
+		expect(ownOrg.hits).toEqual(["Start"]);
+		expect(otherOrg.hits).toEqual([]);
+		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(ownOrg.url);
+	}, 20_000);
+
+	it("strips the companion fields and retries when the owning host rejects the payload with a 400", async () => {
+		const owner = makeSink("reject-companion");
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: owner.url });
+
+		// Probed twice: the companion-carrying body (400) and then the
+		// dot-only body (accepted). A 4xx is the ONLY way the owning host
+		// reports a schema disagreement, so a retry gated on a parsed 2xx
+		// never fires and the dot is lost -- the exact regression this retry
+		// exists to prevent.
+		expect(owner.hits).toEqual(["Start", "Start"]);
+		expect(owner.companion).toEqual([true, false]);
+
+		const retried = recordsWithAction("companion-rejected-dot-posted");
+		expect(retried).toHaveLength(1);
+		expect(retried[0]?.deliveredUrl).toBe(owner.url);
+		expect(String(retried[0]?.error)).toContain("400");
+		expect(recordsWithAction("post-error")).toHaveLength(0);
+		expect(recordsWithAction("ignored-everywhere")).toHaveLength(0);
+	}, 20_000);
+
+	it("retries the stripped body when the owner rejects with a 400 and a foreign host answers ignored", async () => {
+		const foreign = makeSink("ignored");
+		const owner = makeSink("reject-companion");
+		writeHostManifest("org-owner", owner.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: foreign.url });
+
+		expect(foreign.hits).toEqual(["Start", "Start"]);
+		expect(owner.hits).toEqual(["Start", "Start"]);
+		expect(owner.companion).toEqual([true, false]);
+
+		// A stranger on this machine saying "ignored": true must never be read
+		// as a delivered no-op while the owning host is refusing the body.
+		expect(recordsWithAction("ignored-everywhere")).toHaveLength(0);
+		const retried = recordsWithAction("companion-rejected-dot-posted");
+		expect(retried).toHaveLength(1);
+		expect(retried[0]?.deliveredUrl).toBe(owner.url);
+		expect(recordsWithAction("post-error")).toHaveLength(0);
+	}, 30_000);
+
+	it("reports a post-error when the owner refuses the stripped body too and a foreign host answers ignored", async () => {
+		const foreign = makeSink("ignored");
+		const owner = makeSink("reject-always");
+		writeHostManifest("org-owner", owner.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: foreign.url });
+
+		// Both sweeps ran and the owner refused both bodies, so nothing was
+		// ever delivered. The retry sweep sees the same shape as the first one
+		// -- a stranger's "ignored": true alongside the owner's 400 -- and must
+		// promote it identically. Logging it as a delivered no-op would drop
+		// the dot with no error anywhere.
+		expect(foreign.hits).toEqual(["Start", "Start"]);
+		expect(owner.hits).toEqual(["Start", "Start"]);
+		expect(owner.companion).toEqual([true, false]);
+
+		expect(
+			recordsWithAction("companion-rejected-dot-ignored-everywhere"),
+		).toHaveLength(0);
+		expect(recordsWithAction("ignored-everywhere")).toHaveLength(0);
+		expect(recordsWithAction("companion-rejected-dot-posted")).toHaveLength(0);
+		const errors = recordsWithAction("post-error");
+		expect(errors).toHaveLength(1);
+		expect(String(errors[0]?.error)).toContain("400");
+	}, 30_000);
+
+	it("reports a post-error, not a delivered no-op, when only malformed 2xx bodies answer", async () => {
+		const html = makeSink("html");
+		const emptyObject = makeSink("empty-object");
+		writeHostManifest("org-empty", emptyObject.endpoint);
+
+		await runHook({ SUPERSET_HOST_AGENT_HOOK_URL: html.url });
+
+		// A 2xx nobody can parse is not a disown -- it proves only that SOME
+		// server answered. So the stripped retry still runs (hence two hits
+		// each) and the event is still undelivered.
+		expect(html.hits).toEqual(["Start", "Start"]);
+		expect(emptyObject.hits).toEqual(["Start", "Start"]);
+		expect(recordsWithAction("ignored-everywhere")).toHaveLength(0);
+		expect(recordsWithAction("posted")).toHaveLength(0);
+		expect(recordsWithAction("post-error")).toHaveLength(1);
+	}, 30_000);
+
+	it("skips a stale manifest whose host process is gone", async () => {
+		const recycled = makeSink("accept");
+		// A pid no OS hands out: rejected by the Windows OpenProcess probe and
+		// by POSIX kill alike. It stands in for a crashed host whose port an
+		// unrelated process now owns -- the payload carries the companion
+		// question text, so it must not be POSTed there.
+		writeHostManifest("org-crashed", recycled.endpoint, 2_147_483_647);
+
+		await runHook({
+			SUPERSET_HOST_AGENT_HOOK_URL: `${deadEndpoint()}/trpc/notifications.hook`,
+		});
+
+		expect(recycled.hits).toEqual([]);
+		expect(
+			recordsWithAction("hook-candidate-manifest-dead-pid"),
+		).toHaveLength(1);
+		expect(recordsWithAction("post-error")).toHaveLength(1);
+	}, 30_000);
+
+	it("keeps a manifest whose host process is alive", async () => {
+		const live = makeSink("accept");
+		writeHostManifest("org-live-pid", live.endpoint, process.pid);
+
+		await runHook({
+			SUPERSET_HOST_AGENT_HOOK_URL: `${deadEndpoint()}/trpc/notifications.hook`,
+		});
+
+		expect(live.hits).toEqual(["Start"]);
+		expect(
+			recordsWithAction("hook-candidate-manifest-dead-pid"),
+		).toHaveLength(0);
+		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(live.url);
+	}, 30_000);
 });

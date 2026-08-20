@@ -19,7 +19,13 @@ const readFileUseQuery = mock(
 );
 const emptyUseQuery = mock(() => ({ data: undefined, isLoading: false }));
 
+// Spread the REAL module and override one hook. Replacing "react" wholesale
+// is process-global with no unmock, so every file bun loads afterwards
+// inherits it — and any of them that touches `React.createContext` (via
+// posthog-js/react, among others) dies on import.
+const realReact = await import("react");
 mock.module("react", () => ({
+	...realReact,
 	useMemo: <T>(factory: () => T) => factory(),
 }));
 

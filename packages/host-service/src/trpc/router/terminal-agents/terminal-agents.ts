@@ -3,8 +3,11 @@ import {
 	BUILTIN_AGENT_IDS,
 } from "@superset/shared/agent-catalog";
 import { TRPCError } from "@trpc/server";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { QUESTION_STALE_MANUAL_DISMISS_REASON } from "../../../companion/question-store";
 import type { HostDb } from "../../../db";
+import { terminalSessions } from "../../../db/schema";
 import {
 	createTerminalSessionInternal,
 	disposeSessionAndWait,
@@ -26,6 +29,8 @@ import {
 	resolveHostAgentConfig,
 	runAgentInWorkspace,
 } from "../agents/agents";
+import { clearPendingQuestionMarkers } from "../notifications/agent-status-snapshot";
+import { forwardCompanionDismissal } from "../notifications/companion-question-sink";
 import { toTerminalSessionError } from "../terminal/errors";
 
 type GetOrCreateResult = {
@@ -131,6 +136,147 @@ export async function resumeTerminalAgentSession(
 	} finally {
 		resumeInflight.delete(key);
 	}
+}
+
+/**
+ * (MANUAL-DISMISS) What one terminal's manual dismissal did, as the renderer
+ * needs to hear it.
+ *
+ * `lastEventAt` is read back AFTER the clear so the renderer can mark exactly
+ * this state as seen; `null` means the terminal has no live binding (a leaked
+ * marker swept off a terminal nothing is bound to), which is a success, not a
+ * miss. `pendingAfter` is the one field that can contradict the user's click:
+ * true means a question was raised after they clicked and the red must stay up.
+ *
+ * `questionDismissed` is about the COMPANION record only, and it is false
+ * whenever `pendingAfter` is true: the phone must keep being able to answer a
+ * question the user never saw. False is also the ordinary answer on every build
+ * where the companion bridge is not running.
+ */
+export interface DismissedTerminalStatus {
+	terminalId: string;
+	lastEventAt: number | null;
+	markersRemoved: number;
+	pendingAfter: boolean;
+	questionDismissed: boolean;
+}
+
+export interface DismissWorkspaceStatusesResult {
+	dismissStartedAtMs: number;
+	terminals: DismissedTerminalStatus[];
+}
+
+export interface DismissWorkspaceStatusesDeps {
+	db: HostDb;
+	terminalAgentStore: TerminalAgentStore;
+}
+
+/**
+ * (MANUAL-DISMISS) The user right-clicked "Clear Status". Actually clear it —
+ * including the red.
+ *
+ * `clearWorkspaceStatuses` alone cannot: the red dot's truth is the on-disk askq
+ * marker directory, not the binding's `lastEventType` (the notify hook rewrites
+ * red-clearing events to `SubagentActive` while a marker is present, so the
+ * binding LOSES the permission truth — see `AgentStatusSnapshotRow`). Flipping
+ * the binding to `Stop` therefore drops the yellow and the next resync reads the
+ * marker straight back off disk and re-asserts the red. Deleting the marker is
+ * the only thing that makes the click stick, and a manual dismissal is the only
+ * event licensed to do it (`(LEAKED-ASKQ-OWNER)`: nothing host-side can prove a
+ * marker is stale, so the user is the evidence).
+ *
+ * THE TERMINAL SET COMES FROM THE DB, NEVER FROM THE CLIENT. The ids are fed to
+ * a path builder that unlinks what it finds, so the only defensible source is
+ * the same `terminal_sessions` read the snapshot performs — `originWorkspaceId`
+ * scoped, intersected with `terminalId` when the caller names one. Reading it
+ * server-side also does something the client set cannot: it sweeps terminals
+ * that have a session row but NO live binding, which is exactly where leaked
+ * markers accumulate.
+ *
+ * `dismissStartedAtMs` is captured ONCE, before any deletion, and fences every
+ * terminal AND the companion record for it. A dismissal may drop a red that
+ * existed when the user clicked; it may never drop one raised after, on the dots
+ * or on the phone.
+ *
+ * A marker failure ABORTS the whole mutation and names the terminals that did
+ * complete. Half a dismissal reported as success is the worst outcome available:
+ * the renderer would mark every terminal seen while some still hold their
+ * markers, and the next resync would light them back up with no explanation.
+ */
+export async function dismissWorkspaceStatuses(
+	deps: DismissWorkspaceStatusesDeps,
+	input: { workspaceId: string; terminalId?: string },
+): Promise<DismissWorkspaceStatusesResult> {
+	const dismissStartedAtMs = Date.now();
+	const terminalIds = deps.db
+		.select({ id: terminalSessions.id })
+		.from(terminalSessions)
+		.where(
+			and(
+				eq(terminalSessions.originWorkspaceId, input.workspaceId),
+				// The caller's `terminalId` only ever NARROWS the workspace-scoped
+				// read; it can never widen it, so a terminal the caller does not own
+				// comes back as the empty set rather than as a path to unlink.
+				input.terminalId === undefined
+					? undefined
+					: eq(terminalSessions.id, input.terminalId),
+			),
+		)
+		.all()
+		.map((session) => session.id);
+
+	const terminals: DismissedTerminalStatus[] = [];
+	for (const terminalId of terminalIds) {
+		let cleared: Awaited<ReturnType<typeof clearPendingQuestionMarkers>>;
+		try {
+			cleared = await clearPendingQuestionMarkers(
+				terminalId,
+				dismissStartedAtMs,
+			);
+		} catch (error) {
+			const completed = terminals.map((entry) => entry.terminalId);
+			throw new TRPCError({
+				code: "INTERNAL_SERVER_ERROR",
+				message:
+					`Could not clear the pending-question markers for terminal ${terminalId} in workspace ${input.workspaceId}; ` +
+					`the dismissal is INCOMPLETE. Dismissed before the failure: ${completed.length > 0 ? completed.join(", ") : "(none)"}.`,
+				cause: error,
+			});
+		}
+
+		// Only after the disk is authoritative: the binding flip is what the
+		// renderer sees first, and flipping it while a marker survived would show a
+		// cleared dot the next resync contradicts.
+		deps.terminalAgentStore.clearWorkspaceStatuses(
+			input.workspaceId,
+			terminalId,
+		);
+
+		// (MANUAL-DISMISS) The companion record is dismissed ONLY when the sweep
+		// left nothing behind. A surviving marker means a question was raised after
+		// the click, and the bridge's pending slot now holds THAT question: settling
+		// it is terminal (push retracted, `/v1/answer` 410) and would leave a
+		// blocked agent with no surface able to answer it. The sink applies the same
+		// fence again on `askedAtMs` — it is the only layer that can see a question
+		// raised on a terminal whose marker was answered away in the same window.
+		const questionDismissed =
+			cleared.survivors.length === 0 &&
+			forwardCompanionDismissal({
+				terminalId,
+				reason: QUESTION_STALE_MANUAL_DISMISS_REASON,
+				dismissStartedAtMs,
+			});
+
+		terminals.push({
+			terminalId,
+			lastEventAt: deps.terminalAgentStore.get(terminalId)?.lastEventAt ?? null,
+			markersRemoved: cleared.removed.length,
+			pendingAfter: cleared.survivors.length > 0,
+			questionDismissed,
+		});
+	}
+
+	return { dismissStartedAtMs, terminals };
 }
 
 function inflightKey(
@@ -285,6 +431,35 @@ export const terminalAgentsRouter = router({
 			);
 			return { success: true };
 		}),
+
+	/**
+	 * (MANUAL-DISMISS) The heavier sibling of `clearWorkspaceStatuses`, for the
+	 * renderer's right-click "Clear Status": it also deletes the askq marker
+	 * files, so the RED dot goes away and stays away.
+	 *
+	 * `clearWorkspaceStatuses` above is deliberately left alone and is NOT
+	 * reimplemented in terms of this one. Its other caller is the pane interrupt
+	 * handler (`useTerminalInterruptClear`), which fires on every Esc/Ctrl+C and
+	 * must NOT drop a red: an interrupt is not an answer, the question is still on
+	 * screen, and deleting its marker there would strand a blocked agent behind a
+	 * green dot. Only an explicit user gesture may destroy that evidence.
+	 *
+	 * See {@link dismissWorkspaceStatuses} for the fence that keeps a question
+	 * raised after the click alive.
+	 */
+	dismissWorkspaceStatuses: protectedProcedure
+		.input(
+			z.object({
+				workspaceId: z.string().min(1),
+				terminalId: z.string().min(1).optional(),
+			}),
+		)
+		.mutation(({ ctx, input }) =>
+			dismissWorkspaceStatuses(
+				{ db: ctx.db, terminalAgentStore: ctx.terminalAgentStore },
+				input,
+			),
+		),
 
 	/**
 	 * Reuse-or-launch primitive. Returns an existing active binding for the

@@ -36,6 +36,14 @@ interface SnapshotRow {
 }
 
 mock.module("renderer/lib/host-service-client", () => ({
+	// The module is replaced whole. Without the query-policy helpers other
+	// importers in this graph pull from it, running this file ON ITS OWN dies
+	// with "Export named 'hostServiceQueryRetryDelay' not found" before a single
+	// test executes.
+	getHostServiceClient: () => ({}),
+	isHostServiceConnectionError: () => false,
+	hostServiceQueryRetry: () => false,
+	hostServiceQueryRetryDelay: () => 0,
 	getHostServiceClientByUrl: () => ({
 		notifications: {
 			agentStatusSnapshot: {
@@ -63,6 +71,9 @@ mock.module("renderer/lib/host-service-client", () => ({
 
 const { useV2NotificationStore } = await import(
 	"renderer/stores/v2-notifications"
+);
+const { resetV2NotificationStoreForTest } = await import(
+	"renderer/stores/v2-notifications/resetForTest"
 );
 const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
 	"./companionAlertSync"
@@ -127,13 +138,7 @@ beforeEach(() => {
 	hostNow = 10_000;
 	__resetRepairCooldownsForTest();
 	registerWorkspaceHost(WORKSPACE, HOST);
-	useV2NotificationStore.setState({
-		sources: {},
-		terminalSeenAt: {},
-		outstandingReadyAt: {},
-		shellRunningTerminals: {},
-		backgroundRunningTerminals: {},
-	});
+	resetV2NotificationStoreForTest();
 });
 
 afterEach(() => {
@@ -419,5 +424,196 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 		await settle();
 		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1`)).not.toBeNull();
 		expect(__peekRepairOutcomeForTest("http://host-b:terminal-1")).toBeNull();
+	});
+});
+/**
+ * (MANUAL-DISMISS) `pendingPermission: false` — the answer the loop used to
+ * throw away.
+ *
+ * The host reads its marker directory and gives one of three answers: a
+ * question is pending, none is, or it could not tell. Only the first two were
+ * ever acted on, and "none is" is the retraction half: a red latched from a
+ * question whose answer arrived while the bus was down, or one the user has
+ * since dismissed, was RE-CONFIRMED by every resync instead of being taken
+ * down by it. The replayed `lastEventType` cannot do the job — a turn-end
+ * carries no answer-evidence and deliberately leaves the permission axis alone.
+ */
+describe("(MANUAL-DISMISS) pendingPermission: false retracts a latched red", () => {
+	const source = { type: "terminal", id: "terminal-1" } as const;
+
+	function latchRed(workspaceId: string, at: number): void {
+		useV2NotificationStore
+			.getState()
+			.applySourceAxes(
+				source,
+				workspaceId,
+				{ set: ["permission"], clear: [] },
+				at,
+			);
+	}
+
+	it("clears the permission axis the host says nothing backs", async () => {
+		latchRed(WORKSPACE, 1_000);
+		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		const entry =
+			useV2NotificationStore.getState().sources["terminal:terminal-1"];
+		expect(entry?.axes.permission).toBeUndefined();
+		expect(entry?.status).not.toBe("permission");
+		expect(result?.retractedPermission).toBe(1);
+	});
+
+	/**
+	 * THE INVARIANT: NO AUTOMATIC PATH DROPS A LIVE RED.
+	 *
+	 * `pendingPermission: false` means "no marker file", and a marker is only
+	 * ever written for `PreToolUse:AskUserQuestion`. An ordinary tool-permission
+	 * prompt (Claude's `Notification` event on the "permission_prompt" matcher,
+	 * and the same shape from the sh-template agents) latches its red with a
+	 * `PermissionRequest` binding and NO marker, so "no marker" says nothing
+	 * about it — yet the periodic resync replayed the row, read `false` as an
+	 * answer, and took the dot down while the prompt was still on screen blocking
+	 * the agent. The occurredAt fence does not catch it: row and latch carry the
+	 * SAME instant, and `5_000 > 5_000` is false.
+	 */
+	it("does NOT retract while the host's own last word is a PermissionRequest", async () => {
+		latchRed(WORKSPACE, 5_000);
+		snapshotRows = [
+			row({
+				lastEventType: "PermissionRequest",
+				lastEventAt: 5_000,
+				pendingPermission: false,
+			}),
+		];
+
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		const entry =
+			useV2NotificationStore.getState().sources["terminal:terminal-1"];
+		expect(entry?.axes.permission).toBe(5_000);
+		expect(entry?.status).toBe("permission");
+		expect(result?.retractedPermission).toBe(0);
+	});
+
+	/**
+	 * Same fence the unknown branch carries: an entry belonging to another
+	 * workspace is not this row's dot to retract. (Whatever the replay itself
+	 * does with a cross-workspace entry is the replay's business; the counter is
+	 * the honest witness for this branch.)
+	 */
+	it("does not retract an entry belonging to a different workspace", async () => {
+		latchRed("workspace-2", 1_000);
+		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		expect(result?.retractedPermission).toBe(0);
+	});
+
+	/**
+	 * The snapshot is OLDER truth than anything the open bus is delivering while
+	 * it is in flight. A PermissionRequest that landed after the request went out
+	 * must not be retracted by a row that predates it — the occurredAt fence at
+	 * the top of the loop skips the whole row, and it still does.
+	 */
+	it("leaves a NEWER local PermissionRequest alone", async () => {
+		latchRed(WORKSPACE, 9_000);
+		snapshotRows = [row({ lastEventAt: 5_000, pendingPermission: false })];
+
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		const entry =
+			useV2NotificationStore.getState().sources["terminal:terminal-1"];
+		expect(entry?.status).toBe("permission");
+		expect(entry?.axes.permission).toBe(9_000);
+		expect(result?.retractedPermission).toBe(0);
+		expect(result?.skippedNewerLocal).toBe(1);
+	});
+
+	/**
+	 * (MANUAL-DISMISS) CROSS-WINDOW CONVERGENCE, as far as this path can carry
+	 * it. A second window dismissed the workspace; THIS renderer's socket saw
+	 * nothing and no reconnect is coming, so the periodic resync is the only way
+	 * its red ever comes down — and it does, because the host no longer has a
+	 * marker to back it AND its binding has been forced off `PermissionRequest`
+	 * to `Stop` by the dismiss, which is what licenses the retraction at all.
+	 *
+	 * The GREEN does not converge the same way and is not expected to: the seen
+	 * watermark is per-renderer (sessionStorage), the snapshot carries no read
+	 * state, so this window keeps its own unread green until its own user reads
+	 * it. Only the red is a claim about the host's durable truth.
+	 */
+	it("takes down a red another window dismissed", async () => {
+		const store = useV2NotificationStore.getState();
+		store.applySourceAxes(
+			source,
+			WORKSPACE,
+			{ set: ["permission"], clear: [] },
+			1_000,
+		);
+		snapshotRows = [
+			row({
+				lastEventType: "Stop",
+				lastEventAt: 5_000,
+				pendingPermission: false,
+			}),
+		];
+
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		const entry =
+			useV2NotificationStore.getState().sources["terminal:terminal-1"];
+		expect(entry?.axes.permission).toBeUndefined();
+		expect(entry?.status).not.toBe("permission");
+		expect(result?.retractedPermission).toBe(1);
+	});
+
+	/**
+	 * The durability half of the fix. After a "Clear Status" the store is empty
+	 * and the seen watermark sits at the host's `lastEventAt`, so the very next
+	 * resync — which replays the same resting turn-end the host still holds —
+	 * must not put either dot back.
+	 */
+	it("does not resurrect a dismissed workspace's dots", async () => {
+		seenThrough("terminal-1", 5_000);
+		snapshotRows = [
+			row({
+				lastEventType: "Stop",
+				lastEventAt: 5_000,
+				pendingPermission: false,
+			}),
+		];
+
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+
+		expect(
+			useV2NotificationStore.getState().sources["terminal:terminal-1"],
+		).toBeUndefined();
 	});
 });
