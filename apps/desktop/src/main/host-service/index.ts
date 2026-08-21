@@ -24,6 +24,10 @@ import {
 	resolveTerminalBaseEnv,
 } from "@superset/host-service/terminal-env";
 import {
+	applyWindowsUserEnvToProcess,
+	WIN_USER_ENV_MERGED_BY_PARENT,
+} from "@superset/shared/windows-user-env";
+import {
 	type HostServiceManifest,
 	isProcessAlive,
 	readManifest,
@@ -40,6 +44,20 @@ const MANIFEST_RECLAIM_INTERVAL_MS = 15_000;
 type Server = ReturnType<typeof serve>;
 
 async function main(): Promise<void> {
+	// (WIN-USER-ENV) Awaited FIRST, before any env-gated flag is read — this is
+	// the entry a desktop-spawned host-service runs, and `SUPERSET_COMPANION_BRIDGE`
+	// never reaching `startCompanionBridgeIfEnabled` below is the incident.
+	// Normally there is nothing to do: the Electron parent merged before
+	// spawning us and we inherit the result via `...process.env`, which is what
+	// the marker says. That does NOT make the parent's own call redundant — main
+	// needs the merge in its own process for keep-awake's companion gate — and
+	// this call is still the retry when the parent's merge failed, plus the
+	// whole story for a CLI-spawned host. Rationale:
+	// packages/shared/src/windows-user-env.ts.
+	if (process.env[WIN_USER_ENV_MERGED_BY_PARENT] !== "1") {
+		await applyWindowsUserEnvToProcess();
+	}
+
 	initSentry({ organizationId: env.ORGANIZATION_ID });
 
 	// Install the parent watchdog before any awaits so a crash during

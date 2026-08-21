@@ -13,6 +13,10 @@ import {
 import { settings } from "@superset/local-db";
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import {
+	applyWindowsUserEnvToProcess,
+	WIN_USER_ENV_MERGED_BY_PARENT,
+} from "@superset/shared/windows-user-env";
+import {
 	app,
 	BrowserWindow,
 	dialog,
@@ -390,9 +394,24 @@ if (!gotTheLock) {
 			__anLagLast = now;
 		}, 1000);
 		__anLagTimer.unref?.();
+		// (WIN-USER-ENV) Started here rather than awaited here, so a cold
+		// PowerShell overlaps Electron's own init instead of adding to it. It
+		// never rejects; the await below is where its ordering guarantees apply.
+		const windowsUserEnvMerge = applyWindowsUserEnvToProcess();
 		log.info("[boot] awaiting app.whenReady +" + bootMs() + "ms");
 		await app.whenReady();
 		log.info("[boot] app.whenReady resolved +" + bootMs() + "ms");
+		// (WIN-USER-ENV) Awaited HERE: before the coordinator spawns its
+		// host-service child (which inherits `...process.env`) and before
+		// keep-awake's companion gate reads `SUPERSET_COMPANION_BRIDGE`, so
+		// neither can race it. Rationale:
+		// packages/shared/src/windows-user-env.ts.
+		if ((await windowsUserEnvMerge).ok) {
+			// Children inherit this env, so one spawn per boot covers all of them.
+			// Only on success — a failed merge leaves the child's own read as the
+			// retry rather than suppressing it.
+			process.env[WIN_USER_ENV_MERGED_BY_PARENT] = "1";
+		}
 		// (CLOUD-SEVERANCE-P1) First thing after whenReady, before any protocol
 		// handler or window exists: install the LOG-ONLY egress fence so no
 		// session request can slip past unobserved. MainWindow() throws if this

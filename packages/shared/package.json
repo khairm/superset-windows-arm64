@@ -195,6 +195,10 @@
 		"./rrule": {
 			"types": "./src/rrule.ts",
 			"default": "./src/rrule.ts"
+		},
+		"./windows-user-env": {
+			"types": "./src/windows-user-env.ts",
+			"default": "./src/windows-user-env.ts"
 		}
 	},
 	"scripts": {

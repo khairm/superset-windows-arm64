@@ -1,6 +1,7 @@
 // (WS-NATIVE-OFF) Must be first — see the module comment.
 import "./ws-native-off";
 import { serve } from "@hono/node-server";
+import { applyWindowsUserEnvToProcess } from "@superset/shared/windows-user-env";
 import { createApp } from "./app";
 import { startCompanionBridgeIfEnabled } from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
@@ -17,6 +18,12 @@ import { startTerminalBaseEnvResolution } from "./terminal/env";
 import { startTerminalReaper } from "./terminal/reaper";
 
 async function main(): Promise<void> {
+	// (WIN-USER-ENV) Awaited FIRST, before anything below reads an env-gated
+	// flag — `startCompanionBridgeIfEnabled` most of all. Standalone/CLI entry:
+	// nothing merged this env before us. Rationale and semantics:
+	// packages/shared/src/windows-user-env.ts.
+	await applyWindowsUserEnvToProcess();
+
 	initSentry({ organizationId: env.ORGANIZATION_ID });
 	console.log(
 		`[host-service] starting (org=${env.ORGANIZATION_ID}, port=${env.PORT}, NODE_ENV=${process.env.NODE_ENV ?? "unset"})`,

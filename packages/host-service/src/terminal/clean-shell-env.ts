@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as os from "node:os";
 import { signalProcessTreeAndGroups } from "@superset/pty-daemon/process-tree";
+import { applyWindowsUserEnvToProcess } from "@superset/shared/windows-user-env";
 import { resolveConfiguredShell } from "./user-shell.ts";
 
 const SHELL_ENV_TIMEOUT_MS = 8_000;
@@ -224,6 +225,30 @@ function spawnCleanShellEnv(): Promise<Record<string, string>> {
 let cache: Record<string, string> | null = null;
 let cacheTime = 0;
 
+/**
+ * (WIN-USER-ENV) fork-only: the Windows shell-env snapshot.
+ *
+ * `spawnCleanShellEnv()` below cannot run on Windows and never could: it
+ * launches `%COMSPEC%` (cmd.exe) with POSIX login-shell flags (`-i -l -c`) and
+ * a POSIX body (`echo -n`, `command env`). cmd ignores the switches, prints its
+ * banner and exits 0, so the success path reached `parseEnvOutput`, which threw
+ * `delimiter not found` on EVERY Windows boot — silently pinning the whole app
+ * to its parent's env block. Fixing the parse buys nothing: cmd.exe has no rc
+ * files, so there are no shell-exported variables to recover.
+ *
+ * `HKCU\Environment` is the Windows equivalent, and the read is memoized, so
+ * this shares the spawn boot already paid for. See
+ * packages/shared/src/windows-user-env.ts.
+ */
+async function resolveWindowsShellEnv(): Promise<Record<string, string>> {
+	const snapshot: Record<string, string> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (typeof value === "string") snapshot[key] = value;
+	}
+	await applyWindowsUserEnvToProcess({ targetEnv: snapshot });
+	return snapshot;
+}
+
 export async function getStrictShellEnvironment(): Promise<
 	Record<string, string>
 > {
@@ -231,7 +256,12 @@ export async function getStrictShellEnvironment(): Promise<
 		return { ...cache };
 	}
 
-	const env = await spawnCleanShellEnv();
+	// (WIN-USER-ENV) See resolveWindowsShellEnv — the POSIX probe cannot run
+	// on Windows and there is no login shell there to probe.
+	const env =
+		process.platform === "win32"
+			? await resolveWindowsShellEnv()
+			: await spawnCleanShellEnv();
 	cache = env;
 	cacheTime = Date.now();
 	return { ...cache };

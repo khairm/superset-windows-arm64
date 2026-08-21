@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	augmentPathForMacOS,
 	buildMinimalEnv,
+	clearStrictShellEnvCache,
+	getStrictShellEnvironment,
 	parseEnvOutput,
 } from "./clean-shell-env.ts";
 
@@ -114,4 +116,41 @@ describe("parseEnvOutput", () => {
 	test("throws when section parses to empty", () => {
 		expect(() => parseEnvOutput(withDelimiters(""))).toThrow("returned empty");
 	});
+});
+
+// (WIN-USER-ENV) The Windows snapshot path. Before this branch existed the
+// snapshot spawned `%COMSPEC%` (cmd.exe) with POSIX login-shell flags on every
+// Windows boot: cmd printed its banner, exited 0, and parseEnvOutput threw
+// "delimiter not found" — so the whole app fell back to its parent's env block.
+describe("(WIN-USER-ENV) Windows shell env snapshot", () => {
+	const isWindows = process.platform === "win32";
+
+	test.skipIf(!isWindows)(
+		"resolves from process.env + the registry instead of probing cmd.exe",
+		async () => {
+			clearStrictShellEnvCache();
+			// A cmd.exe probe reaches parseEnvOutput and throws; reaching here
+			// with a populated env proves it never ran.
+			const env = await getStrictShellEnvironment();
+			expect(Object.keys(env).length).toBeGreaterThan(0);
+			expect(env.SystemRoot ?? env.SYSTEMROOT).toBeTruthy();
+			clearStrictShellEnvCache();
+		},
+	);
+
+	test.skipIf(!isWindows)(
+		"keeps process.env values authoritative",
+		async () => {
+			clearStrictShellEnvCache();
+			const sentinel = "__WIN_USER_ENV_SENTINEL__";
+			process.env[sentinel] = "from-process";
+			try {
+				const env = await getStrictShellEnvironment();
+				expect(env[sentinel]).toBe("from-process");
+			} finally {
+				delete process.env[sentinel];
+				clearStrictShellEnvCache();
+			}
+		},
+	);
 });
