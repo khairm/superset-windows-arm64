@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "63325fa18257",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 33,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/host-service/index.ts",
+    "apps/desktop/src/main/index.ts",
+    "packages/host-service/src/companion/windows-user-env-gate.test.ts",
+    "packages/host-service/src/serve.ts",
+    "packages/host-service/src/terminal/clean-shell-env.test.ts",
+    "packages/host-service/src/terminal/clean-shell-env.ts",
+    "packages/shared/package.json",
+    "packages/shared/src/windows-user-env.test.ts",
+    "packages/shared/src/windows-user-env.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/63/325fa18257/0/metadata.json",
+      "transcript": "/63/325fa18257/0/full.jsonl",
+      "content_hash": "/63/325fa18257/0/content_hash.txt",
+      "prompt": "/63/325fa18257/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 89219,
+    "cache_creation_tokens": 2372837,
+    "cache_read_tokens": 111698146,
+    "output_tokens": 266283,
+    "api_call_count": 332
+  }
+}
