@@ -86,7 +86,12 @@ export function handleV2AgentLifecycleEvent({
 		payload.eventType === "BackgroundRunning" ||
 		// (TEAM-YELLOW) turn-end working-hold (agent-type background work still
 		// running) — the turn is NOT finished, so it must stay silent too.
-		payload.eventType === "SubagentActive"
+		payload.eventType === "SubagentActive" ||
+		// (STALE-WORKING-SWEEP) a host-synthesized finalization of a turn that
+		// actually ended ~30 min ago: the dot must move, but chiming and
+		// toasting "Complete" at someone who walked away half an hour earlier
+		// is pure noise.
+		payload.synthetic === true
 	) {
 		return;
 	}

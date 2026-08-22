@@ -16,6 +16,7 @@ import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 import { captureFatalStartupError, initSentry } from "./sentry";
 import { startTerminalBaseEnvResolution } from "./terminal/env";
 import { startTerminalReaper } from "./terminal/reaper";
+import { startStaleWorkingSweep } from "./terminal-agents/stale-working-sweep";
 
 async function main(): Promise<void> {
 	// (WIN-USER-ENV) Awaited FIRST, before anything below reads an env-gated
@@ -116,6 +117,14 @@ async function main(): Promise<void> {
 		console.log(`[host-service] listening on http://localhost:${info.port}`);
 
 		startTerminalReaper(db, eventBus);
+
+		// (STALE-WORKING-SWEEP) fork-only backstop: a terminal whose LAST hook
+		// event resolved to a working hold and that then goes silent has no
+		// event left to re-evaluate it — the dot pins yellow forever. Mounted
+		// in BOTH entries (this file and the desktop child's
+		// apps/desktop/src/main/host-service/index.ts), same lesson as
+		// (COMPANION-BRIDGE-MOUNT).
+		startStaleWorkingSweep(terminalAgentStore, eventBus);
 
 		// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
 		// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. Mounted here,

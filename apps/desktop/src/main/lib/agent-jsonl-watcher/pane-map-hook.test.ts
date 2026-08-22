@@ -497,9 +497,146 @@ describe("superset-notify teammate entry binding", () => {
 			offset,
 			path: transcript,
 			trustedEntryIds: [],
-			version: 6,
+			version: 7,
 		});
 	}
+
+	it("finalizes green from the last SubagentStop after a Stop held yellow for a zombie teammate row", async () => {
+		// (SENTINEL-HOLD) The 2026-08-22 incident, verbatim: the turn's final
+		// Stop holds yellow for a teammate row the ledger cannot drop, then the
+		// last SubagentStop arrives after the zombie set has been idle past the
+		// (BG-STALE) window. The old code removed .mainstopped during the held
+		// Stop, so this SubagentStop silently no-op'd and the dot stayed yellow
+		// forever; it must now finalize green.
+		expect((await stop("tZOMBIE"))?.eventType).toBe("SubagentActive");
+
+		const bgActive = path.join(
+			home,
+			".superset",
+			"agent-subagent-running",
+			`${TERMINAL_ID}.bgactive`,
+		);
+		const stale = new Date(Date.now() - 20 * 60_000);
+		fs.utimesSync(bgActive, stale, stale);
+
+		expect(
+			await hook({
+				background_tasks: [entry("tZOMBIE")],
+				hook_event_name: "SubagentStop",
+				transcript_path: transcript,
+			}),
+		).toEqual({ eventType: "Stop", lifecycleOutcome: "ready" });
+	});
+
+	it("marks a TaskStop'd teammate idle once its tool result confirms the stop", async () => {
+		// (TEAM-TASKSTOP) A teammate stopped via the TaskStop tool never sends an
+		// idle_notification; before the fix its ledger entry latched "active"
+		// forever and the lead could never green. The idle lands only on the
+		// confirmed (non-error) tool result — the request alone proves nothing.
+		await establishCausalBoundary();
+		const description = "Implement the finalized plan";
+		spawnTyped("implementer", "general-purpose", description);
+		reports("implementer");
+		expect((await stopEntry("tIMPL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		append([
+			{
+				id: "tu-taskstop",
+				input: { task_id: "implementer@team" },
+				name: "TaskStop",
+				type: "tool_use",
+			},
+		]);
+		// Request alone: still active, still yellow.
+		expect((await stopEntry("tIMPL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		append([
+			{ tool_use_id: "tu-taskstop", type: "tool_result" },
+		]);
+		expect(await stopEntry("tIMPL", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps a teammate active when its TaskStop errored", async () => {
+		await establishCausalBoundary();
+		const description = "Implement the risky plan";
+		spawnTyped("survivor", "general-purpose", description);
+		expect((await stopEntry("tSURV", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		append([
+			{
+				id: "tu-failstop",
+				input: { task_id: "survivor" },
+				name: "TaskStop",
+				type: "tool_use",
+			},
+		]);
+		append([
+			{ is_error: true, tool_use_id: "tu-failstop", type: "tool_result" },
+		]);
+		expect((await stopEntry("tSURV", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("keeps a later same-description row bound to its true spawner despite consumption order", async () => {
+		// (TEAM-SPAWN-CREDIT) Slot consumption is front-first but rows are not
+		// listed in spawn order: a fast-finishing sibling must not strip a
+		// still-working teammate's name from its own candidate set.
+		await establishCausalBoundary();
+		const description = "Quality review, single angle";
+		for (const name of ["simp-a", "simp-b", "simp-c"]) {
+			spawnTyped(name, "general-purpose", description);
+		}
+		expect((await stopEntry("tC", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("simp-b");
+		idles("simp-c");
+		// simp-a is still working; its row appears only now and must keep it.
+		expect((await stopEntry("tA", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("simp-a");
+		expect(await stopEntry("tA", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("trusts a row first listed after an earlier turn-end consumed its spawn delta", async () => {
+		// (TEAM-SPAWN-CREDIT) The dominant real-session shape: a turn-end fires
+		// seconds after the spawn and consumes the transcript delta holding it,
+		// while the harness lists the new row only in a LATER payload. The old
+		// same-delta rule left such rows permanently untrusted (both 2026-08-22
+		// stuck sessions ended with trustedEntryIds=[]).
+		await establishCausalBoundary();
+		const description = "Pull New Relic logs for alerts";
+		spawnTyped("logs-investigator", "general-purpose", description);
+		// This turn-end consumes the spawn's delta; the row is not listed yet.
+		expect(await stopEntries()).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		// The row appears for the first time only now — and must still bind.
+		expect((await stopEntry("tLATE", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("logs-investigator");
+		expect(await stopEntry("tLATE", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
 
 	it("greens the lead when its last teammate idles, despite same-preamble names stuck active", async () => {
 		// Three earlier teammates whose last transcript trace is a report, never an
@@ -617,7 +754,7 @@ describe("superset-notify teammate entry binding", () => {
 			path: string;
 			version: number;
 		};
-		expect(cache).toMatchObject({ offset: 0, path: transcript, version: 6 });
+		expect(cache).toMatchObject({ offset: 0, path: transcript, version: 7 });
 
 		const description = "First task after transcript creation";
 		spawnTyped("startup-worker", "general-purpose", description);
@@ -1258,7 +1395,7 @@ pathlib.Path(os.environ["TEST_NEW_WRITER_DONE"]).write_text("done", encoding="ut
 			lifecycleOutcome: "ready",
 		});
 		expect(JSON.parse(fs.readFileSync(teamStateFile(), "utf8")).version).toBe(
-			6,
+			7,
 		);
 	});
 
@@ -1286,7 +1423,7 @@ pathlib.Path(os.environ["TEST_NEW_WRITER_DONE"]).write_text("done", encoding="ut
 			trustedEntryIds: string[];
 			version: number;
 		};
-		expect(cache.version).toBe(6);
+		expect(cache.version).toBe(7);
 		expect(cache.entryNames.tMIGRATE).toEqual(["trusted-worker"]);
 		expect(cache.trustedEntryIds).toEqual(["tMIGRATE"]);
 	});

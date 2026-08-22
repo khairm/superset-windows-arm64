@@ -80,6 +80,15 @@ export interface AgentStatusSnapshot {
 const SAFE_MARKER_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 /**
+ * (ASKQ-MARKER-READ) The one root every agent-status marker hangs off — the
+ * HARDCODED homedir the Python notify hook writes under. Shared so the sweep
+ * and the snapshot reader cannot drift on the path shape.
+ */
+export function agentMarkerRoot(): string {
+	return join(homedir(), ".superset", "agent-subagent-running");
+}
+
+/**
  * (ASKQ-MARKER-READ) (MANUAL-DISMISS) The askq marker directory for a terminal,
  * or `null` when the id could not have produced one.
  *
@@ -92,12 +101,7 @@ const SAFE_MARKER_SEGMENT = /^[A-Za-z0-9_-]+$/;
  */
 export function askqMarkerDir(terminalId: string): string | null {
 	if (!SAFE_MARKER_SEGMENT.test(terminalId)) return null;
-	return join(
-		homedir(),
-		".superset",
-		"agent-subagent-running",
-		`${terminalId}.askq`,
-	);
+	return join(agentMarkerRoot(), `${terminalId}.askq`);
 }
 
 /**

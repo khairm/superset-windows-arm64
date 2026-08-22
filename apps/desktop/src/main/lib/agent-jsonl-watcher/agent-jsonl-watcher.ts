@@ -1050,12 +1050,14 @@ function processFile(
 			// touched nothing, so any owner (incl `_main`) must not be Stop-cleared.
 			const askqTid = mapping?.terminalId;
 			const heldRed = !!askqTid && askqHasOwner(askqTid, truncatedReset);
-			// Held for a surviving teammate question on a genuine main interrupt ->
-			// stamp .mainstopped so the eventual last SubagentStop finalizes green.
-			if (heldRed && !truncatedReset && askqTid) stampMainStopped(askqTid);
 			// (BF) a codex companion survives a Claude interrupt (own API) -> keep
 			// working (yellow) too, not only for a held question.
 			const hold = heldRed || codexJobActive(state.sessionId);
+			// (SENTINEL-HOLD) EVERY hold on a genuine interrupt stamps .mainstopped
+			// (held question OR codex-only): without it the eventual last
+			// SubagentStop fails its sentinel check and no-ops — the yellow then
+			// waits on the stale-working sweep instead of finalizing on time.
+			if (hold && !truncatedReset && askqTid) stampMainStopped(askqTid);
 			// (WATCHER-BLUE-STOMP) A bare `Stop` here is correct AND required. The
 			// replay gate above means this only runs for a turn that ended just now,
 			// so there is no stale-marker phantom to guard against — and the (BA)

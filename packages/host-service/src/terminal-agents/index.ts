@@ -1,4 +1,5 @@
 export { SqliteTerminalAgentBindingPersistence } from "./persistence";
+export { startStaleWorkingSweep } from "./stale-working-sweep";
 export type {
 	TerminalAgentBindingListFilter,
 	TerminalAgentBindingPersistence,

@@ -39,6 +39,11 @@ export interface AgentLifecyclePayload {
 	// Absent when the hook ran without `SUPERSET_AGENT_ID` set.
 	agent?: AgentIdentity;
 	occurredAt: number;
+	/**
+	 * (STALE-WORKING-SWEEP) Synthesized by the host-service sweep, not
+	 * reported by the agent's hooks — move the dot, never chime/notify.
+	 */
+	synthetic?: true;
 }
 
 export type TerminalLifecyclePayload =

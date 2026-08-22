@@ -22,6 +22,7 @@ export type { GitCredentialProvider, GitFactory } from "./runtime/git";
 export { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 export { captureFatalStartupError, initSentry } from "./sentry";
 export { startTerminalReaper } from "./terminal/reaper";
+export { startStaleWorkingSweep } from "./terminal-agents/stale-working-sweep";
 export type {
 	DeleteInProgressCause,
 	TeardownFailureCause,

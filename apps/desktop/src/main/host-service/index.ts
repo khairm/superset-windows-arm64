@@ -18,6 +18,7 @@ import {
 	SeveredApiAuthProvider,
 	startCompanionBridgeIfEnabled,
 	startTerminalReaper,
+	startStaleWorkingSweep,
 } from "@superset/host-service";
 import {
 	initTerminalBaseEnv,
@@ -146,6 +147,13 @@ async function main(): Promise<void> {
 
 			// Orphan reaping + port detection for terminals no renderer has attached.
 			startTerminalReaper(db, eventBus);
+
+			// (STALE-WORKING-SWEEP) fork-only backstop: a terminal whose LAST
+			// hook event resolved to a working hold and that then goes silent has
+			// no event left to re-evaluate it — the dot pins yellow forever.
+			// Mounted in BOTH entries (this file and serve.ts), same lesson as
+			// (COMPANION-BRIDGE-MOUNT).
+			startStaleWorkingSweep(terminalAgentStore, eventBus);
 
 			// (COMPANION-BRIDGE) (COMPANION-BRIDGE-MOUNT) fork-only: phone/watch
 			// companion. Does nothing unless SUPERSET_COMPANION_BRIDGE=1. THIS is

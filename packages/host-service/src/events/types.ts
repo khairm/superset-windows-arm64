@@ -32,6 +32,13 @@ export interface AgentLifecycleMessage {
 	// or third-party hook configs that bypass our wrappers).
 	agent?: AgentIdentity;
 	occurredAt: number;
+	/**
+	 * (STALE-WORKING-SWEEP) True when this event was synthesized by the
+	 * host-service stale-working sweep rather than reported by the agent's own
+	 * hooks. The dot must move; the completion chime and native notification
+	 * must NOT fire for a turn that actually ended half an hour earlier.
+	 */
+	synthetic?: true;
 }
 
 /**

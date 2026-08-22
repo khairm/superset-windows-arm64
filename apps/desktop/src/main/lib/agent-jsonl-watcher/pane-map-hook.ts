@@ -1216,7 +1216,7 @@ def _team_prompt_binding_spawn(subagent_type):
     )
 
 
-def _team_scan_record(state, fork_tools, match_keys, spawns, obj):
+def _team_scan_record(state, fork_tools, match_keys, spawns, taskstop_tools, obj):
     # One JSONL record -> state plus per-name prompt/description history.
     # Every NAMED non-fork Agent is eligible: live 2026-08-21 showed named
     # general-purpose agents producing teammate rows and idle notifications.
@@ -1241,6 +1241,16 @@ def _team_scan_record(state, fork_tools, match_keys, spawns, obj):
             record_text = str(c.get("text") or "")
             _team_scan_text(state, record_text)
             _team_scan_completion(state, fork_tools, record_text)
+        elif ctype == "tool_result":
+            # (TEAM-TASKSTOP) apply the pending idle only on the CONFIRMED
+            # result: an errored (or never-answered) TaskStop must not idle a
+            # still-running teammate — that would false-green the lead until
+            # the teammate's next message. Either way the pending entry is
+            # consumed: a failed stop leaves the ledger untouched (active).
+            result_id = str(c.get("tool_use_id") or "").strip()
+            stopped_name = taskstop_tools.pop(result_id, None)
+            if stopped_name and not c.get("is_error"):
+                _team_set_state(state, stopped_name, "idle")
         elif ctype == "tool_use":
             inp = c.get("input")
             if not isinstance(inp, dict):
@@ -1275,9 +1285,29 @@ def _team_scan_record(state, fork_tools, match_keys, spawns, obj):
                 name = str(inp.get("to") or "").strip()
                 if name and name not in fork_tools.values():
                     state[name] = "active"
+            elif c.get("name") == "TaskStop":
+                # (TEAM-TASKSTOP) A teammate stopped via the TaskStop tool never
+                # emits an idle_notification, so the ledger latched it "active"
+                # forever and its background_tasks row could never be dropped
+                # (live 2026-08-22: implementer + three simp-* reviewers stopped
+                # at turn end held the lead's dot yellow permanently). Record
+                # the request keyed by its tool-use id; the idle lands only when
+                # the matching NON-ERROR tool_result confirms the stop (see the
+                # tool_result branch above). task_id accepts "name", "name@team"
+                # or an agent id; the agent-id form matches no ledger name and
+                # is a harmless no-op.
+                stop_target = str(inp.get("task_id") or "").strip()
+                stop_name = stop_target.split("@")[0].strip()
+                stop_tool_id = str(c.get("id") or "").strip()
+                if (
+                    stop_name
+                    and stop_tool_id
+                    and stop_name not in fork_tools.values()
+                ):
+                    taskstop_tools[stop_tool_id] = stop_name
 
 
-def _team_scan_records(data, state, fork_tools, match_keys, spawns):
+def _team_scan_records(data, state, fork_tools, match_keys, spawns, taskstop_tools):
     for raw in data.split(b"\\n"):
         if not raw.strip():
             continue
@@ -1286,11 +1316,20 @@ def _team_scan_records(data, state, fork_tools, match_keys, spawns):
         except Exception:
             continue
         if isinstance(obj, dict):
-            _team_scan_record(state, fork_tools, match_keys, spawns, obj)
+            _team_scan_record(state, fork_tools, match_keys, spawns, taskstop_tools, obj)
+
+
+# (TEAM-SPAWN-CREDIT) Seconds a spawn credit slot survives unconsumed —
+# WALL-CLOCK, not ledger runs: turn-ends arrive in bursts in multi-teammate
+# sessions (several SubagentStops in seconds), so a run-counted TTL could
+# expire before the harness first lists the row. 15 min covers any real
+# spawn-to-first-listing gap while still expiring long before a much-later
+# same-text workflow row could inherit the credit and false-green.
+_CREDIT_TTL_SECONDS = 900
 
 
 def _team_empty_ledger():
-    return ({}, {}, {}, {}, [], set(), 0)
+    return ({}, {}, {}, {}, [], set(), {}, {}, 0)
 
 
 def _team_cached_bindings(record):
@@ -1418,7 +1457,7 @@ def _team_initialize_fresh_cache(transcript_path, terminal_id):
             # record written after this hook is unread causal evidence.
             offset = 0
         _team_write_cache(cache_file, {
-            "version": 6,
+            "version": 7,
             "path": transcript_path,
             "offset": offset,
             "state": {},
@@ -1427,6 +1466,8 @@ def _team_initialize_fresh_cache(transcript_path, terminal_id):
             "seenIds": [],
             "entryNames": {},
             "trustedEntryIds": [],
+            "spawnDescCredits": {},
+            "taskStopTools": {},
         })
     except Exception as error:
         _log({
@@ -1459,8 +1500,10 @@ def _team_ledger(transcript_path, terminal_id, entry_descriptions):
 def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
     # Incrementally parse the lead transcript into state, match-key histories,
     # prompt bindings, and exact-description bindings. Cache schema v6 adds
-    # descriptions; v5 migration rebuilds key history while preserving its
-    # already-causal live bindings. Every failure path returns None.
+    # descriptions; v7 adds cumulative spawn-credit counters
+    # ((TEAM-SPAWN-CREDIT), v6 migrates in place with zero credits); v5
+    # migration rebuilds key history while preserving its already-causal live
+    # bindings. Every failure path returns None.
     entry_ids = list(entry_descriptions)
     cache_file = _teamstate_path(terminal_id)
     (
@@ -1470,6 +1513,8 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
         entry_names,
         seen_ids,
         trusted_ids,
+        spawn_credits,
+        taskstop_tools,
         offset,
     ) = _team_empty_ledger()
     migrating_v5 = False
@@ -1486,7 +1531,7 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
         )
         if (
             common
-            and rec.get("version") == 6
+            and rec.get("version") in (6, 7)
             and isinstance(rec.get("matchKeys"), dict)
             and all(
                 isinstance(value, dict)
@@ -1510,6 +1555,37 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
             }
             seen_ids, entry_names = _team_cached_bindings(rec)
             trusted_ids = {str(value) for value in rec["trustedEntryIds"]}
+            # (TEAM-SPAWN-CREDIT) v7 adds cumulative spawn-credit records (per
+            # description: the full NAME SET ever credited plus one ttl slot
+            # per unconsumed spawn) and the pending-TaskStop map; a v6 cache
+            # migrates in place with both empty (only records scanned from
+            # HERE on can credit — never a reparse storm, never a historical
+            # credit).
+            if rec.get("version") == 7:
+                raw_credits = rec.get("spawnDescCredits")
+                if isinstance(raw_credits, dict):
+                    for k, v in raw_credits.items():
+                        if not isinstance(v, dict):
+                            continue
+                        names = [
+                            str(n) for n in v.get("names", [])
+                            if n and isinstance(n, str)
+                        ]
+                        slots = [
+                            float(t) for t in v.get("slots", [])
+                            if isinstance(t, (int, float))
+                            and not isinstance(t, bool)
+                            and t > 0
+                        ]
+                        if names and slots:
+                            spawn_credits[str(k)] = {
+                                "names": names, "slots": slots
+                            }
+                raw_taskstops = rec.get("taskStopTools")
+                if isinstance(raw_taskstops, dict):
+                    taskstop_tools = {
+                        str(k): str(v) for k, v in raw_taskstops.items() if v
+                    }
             loaded_cache = True
         elif (
             common
@@ -1547,6 +1623,8 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
             entry_names,
             seen_ids,
             trusted_ids,
+            spawn_credits,
+            taskstop_tools,
             offset,
         ) = _team_empty_ledger()
         migrating_v5 = False
@@ -1564,6 +1642,8 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
                     entry_names,
                     seen_ids,
                     trusted_ids,
+                    spawn_credits,
+                    taskstop_tools,
                     offset,
                 ) = _team_empty_ledger()
                 migrating_v5 = False
@@ -1582,12 +1662,14 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
         historical_state = {}
         historical_fork_tools = {}
         historical_spawns = []
+        historical_taskstops = {}
         _team_scan_records(
             historical_data,
             historical_state,
             historical_fork_tools,
             match_keys,
             historical_spawns,
+            historical_taskstops,
         )
         state = historical_state
         fork_tools = historical_fork_tools
@@ -1600,18 +1682,73 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
     # evidence before the next clean scan.
     if newline >= 0 and not partial_tail:
         _team_scan_records(
-            data[:newline], state, fork_tools, match_keys, spawns
+            data[:newline], state, fork_tools, match_keys, spawns, taskstop_tools
         )
         offset += newline + 1
     previously_seen = set(seen_ids)
-    # Exact descriptions are the strongest identity available in the payload,
-    # but they are not unique. Batch first-seen rows by description and trust
-    # the batch only when this scan contains at least as many matching spawn
-    # records. A spawn is causal even if a later record in the same delta idles
-    # it. One spawn plus a workflow-created same-text row remains untrusted.
-    # A cold offset-0 scan has no causal boundary, so its historical spawns may
-    # rebuild match history but may never trust current rows.
+    # (TEAM-SPAWN-CREDIT) Exact descriptions are the strongest identity in the
+    # payload, but the OLD trust rule demanded the spawn record and the row's
+    # FIRST listing land in the SAME scan delta. In real sessions they almost
+    # never do: any turn-end seconds after the spawn (a sibling teammate's
+    # SubagentStop) consumes the delta holding the spawn record, the harness
+    # lists the new row only in a LATER payload, and the row is then
+    # "previously seen" — permanently untrusted, so its exact-description match
+    # was refused and the entry could never be dropped (live 2026-08-22: BOTH
+    # stuck sessions ended a full day of teamwork with trustedEntryIds=[];
+    # zombie row t7qlyg0mu "Pull New Relic logs for alerts" pinned the eMAR
+    # lead yellow although its teammate had idled hours earlier). Spawn
+    # evidence is now CUMULATIVE ACROSS A BOUNDED WINDOW: every named non-fork
+    # Agent spawn scanned since the fresh-session boundary credits its
+    # description once, and a first-seen row batch may consume that credit
+    # within the next few ledger runs — still causal (credits exist only for
+    # spawns observed inside this session's own scan chain, never from a cold
+    # offset-0 replay), still conservative (a batch larger than the unconsumed
+    # credit binds nothing, consumed credit can never be spent twice, and a
+    # credit slot EXPIRES after _CREDIT_TTL_SECONDS of wall-clock so an
+    # arbitrarily old spawn cannot lend causal identity to a much-later
+    # same-text workflow row and let it inherit an idle verdict — the same
+    # expiry principle (TEAM-ENTRY-BIND) applies to pending prompt bindings).
     if not partial_tail and loaded_cache:
+        # Expire dead credit slots FIRST (wall-clock — see _CREDIT_TTL_SECONDS).
+        # A description whose slots all expired/consumed is dropped WHOLE — its
+        # name set with it — so later same-text rows are unbindable again.
+        credit_now = time.time()
+        for description in list(spawn_credits):
+            slots = [t for t in spawn_credits[description]["slots"] if t > credit_now]
+            if slots:
+                spawn_credits[description]["slots"] = slots
+            else:
+                spawn_credits.pop(description)
+        for spawn_name, spawn_description, _ in spawns:
+            if spawn_description:
+                credit = spawn_credits.setdefault(
+                    spawn_description, {"names": [], "slots": []}
+                )
+                if spawn_name not in credit["names"]:
+                    credit["names"].append(spawn_name)
+                credit["slots"].append(credit_now + _CREDIT_TTL_SECONDS)
+        # Bounded, always in the SAFE direction (a forgotten credit only means
+        # a row stays yellow): slots trim to the newest 16; a name set past 64
+        # drops the WHOLE entry — trimming names alone would narrow a later
+        # row's candidate set and make its all-idle drop EASIER, the unsafe
+        # direction. The map keeps the 64 most-recently-credited descriptions;
+        # recency lives in the slot timestamps (newest slot = last credit), so
+        # eviction reads them rather than trusting dict order. Pending
+        # TaskStops keep the newest 32; a forgotten one only leaves its target
+        # active.
+        for description in list(spawn_credits):
+            credit = spawn_credits[description]
+            if len(credit["names"]) > 64:
+                spawn_credits.pop(description)
+                continue
+            if len(credit["slots"]) > 16:
+                credit["slots"] = credit["slots"][-16:]
+        while len(spawn_credits) > 64:
+            spawn_credits.pop(
+                min(spawn_credits, key=lambda d: max(spawn_credits[d]["slots"]))
+            )
+        while len(taskstop_tools) > 32:
+            taskstop_tools.pop(next(iter(taskstop_tools)))
         new_rows_by_description = {}
         for entry_id, raw_description in entry_descriptions.items():
             if not entry_id or entry_id in trusted_ids:
@@ -1622,14 +1759,29 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
             if description:
                 new_rows_by_description.setdefault(description, []).append(entry_id)
         for description, row_ids in new_rows_by_description.items():
-            causal_spawns = [
-                name
-                for name, spawn_description, _ in spawns
-                if spawn_description == description
-            ]
-            if not causal_spawns or len(row_ids) > len(causal_spawns):
+            credit = spawn_credits.get(description)
+            if credit is None or len(row_ids) > len(credit["slots"]):
+                # Diagnosable, not silent: an unbound first-seen row is exactly
+                # the pre-fix stuck shape, so name why the credit did not cover
+                # it (expired TTL, consumed pool, workflow-created row, batch
+                # larger than the pool).
+                _log({
+                    "action": "spawn-credit-miss",
+                    "description": description[:160],
+                    "rows": len(row_ids),
+                    "slots": 0 if credit is None else len(credit["slots"]),
+                })
                 continue
-            causal_names = sorted(set(causal_spawns))
+            # The batch binds to EVERY name ever credited for this description
+            # (not just the unconsumed remainder): rows are not listed in spawn
+            # order, so consuming slots front-first must never exclude a row's
+            # true spawner from its own candidate set — one early fast-finisher
+            # would otherwise strip its sibling's name and false-green a
+            # still-working teammate. Slots gate CARDINALITY only.
+            causal_names = sorted(set(credit["names"]))
+            del credit["slots"][: len(row_ids)]
+            if not credit["slots"]:
+                spawn_credits.pop(description, None)
             for entry_id in row_ids:
                 entry_names[entry_id] = causal_names
                 trusted_ids.add(entry_id)
@@ -1654,7 +1806,7 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
     description_index = _team_description_index(match_keys)
     try:
         _team_write_cache(cache_file, {
-            "version": 6,
+            "version": 7,
             "path": transcript_path,
             "offset": offset,
             "state": state,
@@ -1663,6 +1815,8 @@ def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
             "seenIds": seen_ids,
             "entryNames": entry_names,
             "trustedEntryIds": sorted(trusted_ids),
+            "spawnDescCredits": spawn_credits,
+            "taskStopTools": taskstop_tools,
         })
     except Exception:
         pass
@@ -2104,13 +2258,13 @@ def _decide_event_type(
         session_id, reason_out,
     )
     after = _running_count(askq_dir)
+    final = result
     # DOWNGRADE: never clear a red while a question owner is still live -> hold
-    # SubagentActive (stamp .mainstopped on a held turn-end so the last SubagentStop
-    # can still finalize green once the dir empties).
+    # SubagentActive; the sentinel policy below stamps .mainstopped on a held
+    # turn-end so the last SubagentStop can still finalize green once the dir
+    # empties.
     if result in ("Start", "Stop", "BackgroundRunning") and after > 0:
-        if result != "Start":
-            _touch(_sentinel_path(terminal_id))
-        return "SubagentActive"
+        final = "SubagentActive"
     # UPGRADE: this event removed the LAST question owner (answered / cancelled
     # SubagentStop / reaped) but the inner returned a NON-clearing result
     # (SubagentActive for a yellow/agent/codex hold, or None for a no-op) — so the
@@ -2118,14 +2272,35 @@ def _decide_event_type(
     # shows (red>working only applied while an owner existed), and the next genuine
     # turn-end greens. Without this, a cancelled subagent question or a main Stop
     # held by other subagents would leave the answered/gone question's red stuck.
-    if (
+    elif (
         event != "SessionStart"  # a fresh-session cleanup empties the dir but resolves NO question -> never assert working
         and before > 0
         and after == 0
         and (result is None or result == "SubagentActive")
     ):
-        return "Start"
-    return result
+        final = "Start"
+    # (SENTINEL-HOLD) CENTRAL SENTINEL POLICY. The .mainstopped sentinel means
+    # "the main turn ended while a hold was still live"; the eventual last
+    # SubagentStop requires it to finalize green. The rule is a pure function
+    # of (turn-end event, FINAL result), so it is enforced HERE, once, on the
+    # result actually returned — the incident's root cause was exactly one
+    # branch (Stop holding for background_tasks agents) applying it by hand and
+    # getting it wrong, which no-op'd the terminal's last SubagentStop and
+    # latched yellow forever (live 2026-08-22, terminal ad607899). A hold
+    # result at a turn-end keeps/stamps the sentinel; a true turn-end result
+    # (Stop/Failed) consumes it; None leaves whatever the inner branch decided
+    # (e.g. the Stop live-markers hold touches it itself). Non-turn-end events
+    # (SubagentStart, PostToolUse, UserPromptSubmit — whose branch removes it
+    # explicitly) are outside the rule on purpose: their SubagentActive asserts
+    # say nothing about the main turn.
+    if event in ("Stop", "SubagentStop", "StopFailure", "SessionEnd") or (
+        event == "SessionStart" and source == "compact"
+    ):
+        if final in ("Stop", "Failed"):
+            _remove(_sentinel_path(terminal_id))
+        elif final in ("SubagentActive", "BackgroundRunning"):
+            _touch(_sentinel_path(terminal_id))
+    return final
 
 
 def _decide_event_type_inner(
@@ -2319,8 +2494,9 @@ def _decide_event_type_inner(
         _reap_askq(askq_dir, bg_ids)  # (UNTAGGED-BG-RED) drop any other dead subagent question owners
         # (review #3) reap age-stale markers so a leaked sibling marker cannot
         # keep this count >0 forever and block the last-subagent green.
-        if _reap_stale_markers(run_dir, terminal_id) == 0 and sentinel.exists():
-            _remove(sentinel)
+        live_markers = _reap_stale_markers(run_dir, terminal_id)
+        if live_markers == 0 and sentinel.exists():
+            _remove(sentinel)  # (SENTINEL-HOLD) the wrapper re-stamps it on a hold result
             # has_background here is read from THIS SubagentStop payload, which
             # carries background_tasks[] scoped to the PARENT session (Claude Code
             # docs >= 2.1.145) — i.e. what is still running now that this subagent
@@ -2373,6 +2549,14 @@ def _decide_event_type_inner(
             else:
                 _reason("GREEN: no active holds (SubagentStop, last subagent done)" + _skip_suffix(cx_skip))
             return "Stop"  # main already stopped + last subagent done -> green
+        # (SENTINEL-HOLD diagnostics) this used to be a SILENT no-op — the exact
+        # path the 2026-08-22 stuck-yellow incident died on. Always name why no
+        # turn-end decision was made so dot-decisions.log can prove it.
+        _reason(
+            "NOOP: SubagentStop, markers=" + str(live_markers)
+            + " main_stopped=" + str(sentinel.exists())
+            + " -> no turn-end decision"
+        )
         return None  # other subagents running, or main still working
     if event == "UserPromptSubmit":
         _remove(sentinel)  # main working again; keep live subagent markers
@@ -2396,7 +2580,7 @@ def _decide_event_type_inner(
             _touch(sentinel)  # defer the green; subagents still running
             _reason("HOLD working: " + str(live_markers) + " subagent markers in " + str(run_dir) + " (Stop)")
             return None  # stay yellow
-        _remove(sentinel)
+        _remove(sentinel)  # (SENTINEL-HOLD) the wrapper re-stamps it on a hold result
         # (BG-STALE) an agent set the harness still reports running but that has
         # produced no activity for _BG_STALE_SECONDS is idle/zombie -> drop the
         # yellow hold (fall through to blue/green); the watcher re-asserts if it
@@ -2472,7 +2656,7 @@ def _decide_event_type_inner(
             cx_skip = []
             if _codex_job_active(session_id, cx, cx_skip):
                 _reason("HOLD working: codex job " + (cx[0] if cx else "?") + " (StopFailure/subagent)")
-                return "SubagentActive"
+                return "SubagentActive"  # wrapper re-stamps .mainstopped for the companion's finalize
             if pending_failure_marker.exists():
                 # (DEFERRED-FAILURE) same release as the SubagentStop path — a
                 # green here would swallow the parked main-loop abort.
