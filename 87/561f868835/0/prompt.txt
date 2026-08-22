@@ -1,0 +1,178 @@
+what was fixed desktop only or mobile as well?
+
+---
+
+<cross-session-message from="uds:\\.\pipe\cc-msg-5f9ff87bc8b91a8d25241f5eb1f2d920" from-name="llm-assistant-on-zendesk-creates-the-mar-b0" from-mode="bypass">
+To the "release gate runner" agent in your session (it messaged me its Q1-Q5): STAND DOWN — do not proceed on your stated defaults. This session (the release coordinator, same owner) already owns the fix-and-release pipeline and is further along than your message assumes:
+
+1. DO NOT edit any repo file. Fix agents from this session are already editing the exact files you named (portal RestoreHost stub, internal test_mar_sheets_print_only fixture, spoke O10 pin). Two editors in one working tree will corrupt both.
+2. DO NOT push to any branch. This session holds staged, TEMP-pin-reverted master merges for all seven repos and pushes only after the re-gate is green, per the owner's direct order tonight ("push it all to master branches on all repos"). A parallel feature-branch push forks history under those staged merges.
+3. Your Q1/Q2/Q3/Q5: already covered by the owner's rulings held in this session (O45/O51/O53 and tonight's batch); dispatched accordingly. Q4: NO for your session. Anvil IDE and deployment wait for the owner; nothing automated touches Anvil or chrome control.
+4. On the internal cluster: "the fixture can no longer express a medicated resident" must be proven, not assumed — the production refusal must be shown still firing through a re-armed fixture. If the old tests' premise genuinely changed, it goes to the owner, not into a reworded test. That mandate is already live here.
+If your gate produced logs or failure captures this session lacks, send file paths — otherwise please idle on release work.
+</cross-session-message>
+
+---
+
+<cross-session-message from="uds:\\.\pipe\cc-msg-5f9ff87bc8b91a8d25241f5eb1f2d920" from-name="llm-assistant-on-zendesk-creates-the-mar-b0" from-mode="bypass">
+Confirmed — mystery solved, and you were never involved: the Q1-Q5 message came from a subagent inside MY session (the owner accidentally typed into it, and it relayed questions to me; the sender label just looked like a peer). My stand-down directive to you is withdrawn with apologies for the noise. Your desktop-fork work is unaffected and none of my release activity touches your repo. Carry on.
+</cross-session-message>
+
+---
+
+sol 2 hours is this for real? somethings gone wrong
+
+---
+
+sorry had to restart PC - please resume
+
+---
+
+please resume
+
+---
+
+<agent-message from="fork">
+Efficiency angle on the two-file diff:
+
+- `apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts:1544` — `_team_description_index(match_keys)` is built before exact-row binding and then rebuilt after pruning. The first index is used only as an existence check before the same loop searches current-scan spawns. Grouping non-empty row descriptions directly and letting `causal_spawns` decide eligibility removes one full history pass and one temporary map per hook event. No other material efficiency cleanup found; the one-time v5 replay and bounded lock wait are required by the intended behavior.
+</agent-message>
+
+---
+
+<agent-message from="sol-ledger-fixes">
+Final incremental patch relative to the exact current main-tree files is at C:\Users\khair\pane-map-hook-final.patch (MD5 200efc181fdd8d7d08e9fb16604656c3). It contains only apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts and pane-map-hook.test.ts. I validated `patch -p1` against main-tree fingerprints 0f0d4d1da8096f68c40d3d2034251653 / 6613f4a9fd72662e2b29e87be91aae4b and the patched files exactly match my final files. Tests: `bun test apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts` -> 57 pass, 0 fail, 521 assertions. Repeated whole suite with `--rerun-each 2` -> 114 pass, 0 fail. Formatting: `bunx biome format ...` -> clean. No commit or push.
+</agent-message>
+
+---
+
+<agent-message from="fork">
+Simplification review scope: `_team_bind_entries` mixed-cardinality guard and `does not spend one spawn on both exact and legacy first-seen rows`. No cleanup finding. `first_seen_ids` is the minimal shared snapshot count needed to prevent exact-bound IDs from disappearing from the legacy budget, while `new_ids` correctly limits assignments to residual unbound rows. The regression directly expresses the one-spawn/two-consumer failure without redundant setup.
+</agent-message>
+
+---
+
+<agent-message from="sol-ledger-fixes">
+The broader Fable correctness review found three additional safe-direction holes beyond the mixed guard. I fixed all three and added direct regressions: cold offset-0 scans cannot trust historical exact spawns; previously-seen unbound v5 rows never rebind to later spawns; v5 prompt replay rebuilds chronological latest-only history. Full suite is now 61 pass / 0 fail / 566 assertions; repeated twice is 122 pass / 0 fail / 1132 assertions. Final Fable verification is running. I have not regenerated or sent the final patch/hash yet.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a6fe2e6f94971c05d</task-id>
+<tool-use-id>call_t8eZzWFGqHn4NiZrzh4qNSiO</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\89cb8334-2a5b-4b7d-b61d-1fb759d4150d\tasks\a6fe2e6f94971c05d.output</output-file>
+<status>completed</status>
+<summary>Agent "Review watcher final diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Final targeted verification complete. All prior MAJOR paths re-verified against the current files via the script-level harness (re-extracted `NOTIFY_SCRIPT`; bun suite still not runnable in this worktree — no `node_modules`).
+
+**Verified closed / correct:**
+
+1. S4 fresh boundary: `_team_initialize_fresh_cache` (pane-map-hook.ts:1401) writes an empty v6 cache at the transcript's current size, under the interprocess lock, atomic temp+replace (`_team_write_cache`, :1388), only for `SessionStart source in ("startup", "clear")` (:3206). Harness: first-turn spawn+idle now greens (kept: 0), active worker stays yellow until idle, repeat calls stable.
+2. Pre-existing history at startup/clear stays non-causal: size snapshot makes it historical; foreign row reusing an old spawn description kept yellow (harness S5a).
+3. Cache-loss / resume cold scan: `loaded_cache` gate intact (:1608); full-history rescan never trusts (harness S3, S5b). Resume/compact never initialize (:3206 guard), and the comment's rationale is sound — a resume snapshot taken mid-replay could misclassify replayed spawns as causal.
+4. v5 seen-row guard (:1613, unconditional), v5 chronological prompt rebuild without pre-seeding (:1532, `if offset == 0 else {}`; harness S1 order correct), migration retry non-binding (harness S2).
+5. Mixed exact+legacy budget: `first_seen_ids` vs `new_ids` split (:1711-1719) — exact-bound rows consume legacy budget, can only widen keeps.
+6. Init failure paths: stat/lock/write failures log and degrade to the untrusted (yellow-safe) path; unlock always runs; no false-green route found in any scenario.
+
+**One remaining finding:**
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:1413
+Defect: If the transcript file does not exist yet when SessionStart(startup|clear) fires, stat() raises, init is skipped, and the whole session silently degrades to permanent distrust (S4 stuck-yellow) for first-batch explicit-description teammates.
+Failure: Reproduced (harness S6): init on a missing path writes no cache; after the transcript appears, spawn+idle rows stay yellow forever (kept: 1) instead of greening. Only fires if Claude Code ever emits SessionStart before creating the transcript file; safe direction, and the skip is logged (teamstate-fresh-init-error).
+Fix: Treat FileNotFoundError as size 0 (a not-yet-created transcript is by definition fully unread) and still write the empty v6 cache; keep other stat errors on the current skip path.
+```
+
+Checked clean: startup/clear boundary write (locked, atomic, correct shape `{v6, offset=size, empty maps}`), first-turn trust, resume/compact cache preservation, cold-scan distrust, v5 migration (order, seen-guard, trusted preservation, partial tail), exact-description cardinality, partial-tail deferral, mixed spawn budget, overlap lock semantics.
+
+Verdict: **SHIP** (the MINOR is a robustness hardening in the yellow-safe direction, not a correctness blocker).</result>
+<usage><subagent_tokens>155230</subagent_tokens><tool_uses>13</tool_uses><duration_ms>168823</duration_ms></usage>
+<worktree><worktreePath>C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85</worktreePath></worktree>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2b39120e35b66d97</task-id>
+<tool-use-id>call_nFt9TJAfy2UecPrl3Jcwhcnr</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\89cb8334-2a5b-4b7d-b61d-1fb759d4150d\tasks\a2b39120e35b66d97.output</output-file>
+<status>completed</status>
+<summary>Agent "Review mixed binding fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Re-reviewed the current files (both changed since my first pass: 821 vs 753 insertions).
+
+**My previous MAJOR is fixed.** `pane-map-hook.ts:1613` now reads `if entry_id in previously_seen: continue` with no `migrating_v5` bypass, and `migrating_v5` is confined to lines 1469/1516/1546/1563/1565 (the historical replay only). Verified in-memory that the shape that produced the double-spend is now unreachable through the exact binder.
+
+Verification of each requested area, all re-run against the current file by extracting the embedded Python and exec'ing it in memory (read-only, no files written):
+
+1. **Startup/clear fresh boundary** — `_team_initialize_fresh_cache` (1401) locks, snapshots `stat().st_size` as `offset`, writes an empty v6 record. Called only from `main()` at 3206 under `source in ("startup","clear")`. Pre-existing transcript bytes become historical; post-boundary spawns are causal. Failure to stat or lock writes nothing → next Stop is cold → `loaded_cache=False` → no exact trust. Clean.
+2. **Resume/compact preservation** — those sources never reach 3206, and neither event is `Stop`/`SubagentStop`, so no ledger run and no cache mutation. A compaction that shrinks the transcript trips `offset &gt; size` (1552) → full reset → cold path. Clean.
+3. **Cache-loss safe yellow** — corrupt/missing cache → `except` at 1535 resets to `_team_empty_ledger()` and `loaded_cache=False`; the exact-trust block at 1608 is gated on `loaded_cache`. Verified: untrusted exact row yields `candidates=[]` → not droppable. Clean.
+4. **Cold exact trust gate** — `if not partial_tail and loaded_cache:`. Verified `A(entry, mk, idx, {'r1':['w']}, set())` → `candidates=[]`, `droppable=False`; trusted+bound → `True`; trusted but binding lost → `False`. Clean.
+5. **v5 prompt chronology** — `match_keys = {...} if offset == 0 else {}` (1523-1530). With `offset&gt;0` the seed is dropped so the historical replay rebuilds `prompts` in document order; seeding first would leave the newest prompt at index 0 and make `prompts[-1:]` (the unbound latest-only rule at 1745) pick a stale prompt. Verified the rule itself: unbound row against `['Old…','New…']` → `candidates=[]`; causally bound row → `['w']`. Clean.
+6. **Previously-seen v5 no-rebind** — line 1613, unconditional. Clean.
+7. **Mixed exact+legacy spawn budget** — `len(first_seen_ids) &lt;= len(spawns)` at 1719 with `first_seen_ids` (1711) counting exact-bound rows. Also confirmed the supporting invariant: `_team_bind_entries` returns `stale[-192:] + [live ids]`, and `bound` keys are always live, so persisted `entryNames ⊆ seenIds` — therefore the only first-seen rows in `bound` are this run's exact binds and the budget accounting is exact. Verified: `bind({'tEXACT':['known']},['tOLDER'],['tEXACT','tLEGACY'],['known'])` → `{'tEXACT': ['known']}`, tLEGACY unbound. `single`, `two_two`, `three_two`, `reseen`, `empty_spawns` all unchanged from pre-fix behavior.
+8. **Stale-writer lock** — `_team_cache_lock` (1306) holds an exclusive byte lock across the whole read/scan/bind/write transaction for both the ledger and the fresh init; `_team_ledger` discards its result when `_team_cache_unlock` reports failure; acquisition failure or the 2s deadline returns `None` → raw `bg_tasks` → yellow. `msvcrt` contention surfaces as `EDEADLK`, which is in the retry set. `_team_write_cache` writes a pid-suffixed temp then `os.replace`, inside the lock. Clean.
+
+One remaining item, reported as a tradeoff rather than a bug:
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:1740
+Defect: A non-empty `exact_names` short-circuits the legacy prompt fallback even when the row is untrusted, and an untrusted row can never become trusted later (line 1613 skips previously-seen ids), so such a row is pinned yellow until its description key ages out of the 8-key window or the harness stops listing it.
+Failure: The shape in the test "keeps same-description rows untrusted when one spawn cannot account for the batch" — a workflow-created row whose description text equals a real Agent spawn's description. It is never trusted, `description_index` still returns that name, so `candidates` stays empty forever and the lead's dot holds yellow. Verified: `A({'id':'r1','description':'Fix alpha'}, mk, idx, {'r1':['w']}, set())` -&gt; `candidates=[]` with `w` idle. Pre-change that row fell into the prompt bucket and could clear.
+Fix: If you want a bounded escape, fall through to the legacy prompt-prefix bucket when `exact_names` is non-empty but the row is untrusted (the bucket still requires every matching name idle). If permanent yellow is the intended tradeoff, say so in the comment at 1740 so the next reader does not "fix" it.
+```
+
+Not run: the bun suite. This worktree has no `node_modules` and `zod` exists only at `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\node_modules\zod`, so `bun test` fails at `test-setup.ts` import. Installing would be a write. All verification above is by direct execution of the extracted Python functions plus code trace.
+
+**SHIP** (the MINOR is a judgement call, not a blocker).
+
+I have no SendMessage tool in this session — please relay this verdict to `sol-ledger-fixes`.</result>
+<usage><subagent_tokens>89622</subagent_tokens><tool_uses>14</tool_uses><duration_ms>244511</duration_ms></usage>
+<worktree><worktreePath>C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85</worktreePath></worktree>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2b39120e35b66d97</task-id>
+<tool-use-id>call_mqbLzoWBWjbEHwhjzyqHliRG</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\89cb8334-2a5b-4b7d-b61d-1fb759d4150d\tasks\a2b39120e35b66d97.output</output-file>
+<status>completed</status>
+<summary>Agent "Review mixed binding fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Re-verified against the current bytes (827/817-insertion diff, literal now ends at 3503), not the earlier snapshot.
+
+**S6 — FileNotFoundError during startup/clear: clean.**
+
+`pane-map-hook.ts:1413-1419`. Traced the three stat outcomes:
+
+- **Success** → `offset = st_size`, cache written. Unchanged, correct.
+- **`FileNotFoundError`** → `offset = 0`, cache written. Sound: the named startup/clear boundary plus a nonexistent file means zero bytes exist, so `offset 0 == current size` and every later record is post-boundary. The next Stop therefore gets `loaded_cache=True` and may exact-trust rows against spawns read from byte 0 — safe precisely because no pre-boundary bytes can exist at that path.
+- **Any other stat error** (`PermissionError`, `NotADirectoryError`) → outer `except Exception` at 1431 → logged, `_team_write_cache` never runs → no cache → next Stop is cold with `loaded_cache=False` → exact trust off → yellow. Fail-safe as claimed.
+
+Adversarial path checked: a bogus/unreachable transcript path also raises `FileNotFoundError` (confirmed `errno 2` for a missing directory component on this platform; Windows `ERROR_PATH_NOT_FOUND` maps to the same class), so offset 0 is written. At the next Stop, `open(transcript_path,'rb')` raises → `_team_ledger_locked` returns `None` → `_without_idle_teammates` returns the raw `bg_tasks` → yellow. No false-green reachable through the new branch. `/clear` on an existing session takes the stat-success path, so the offset-0 branch is confined to lazily-created startup transcripts.
+
+Also re-confirmed on the current file that nothing regressed while this landed:
+
+`pane-map-hook.ts:3215` (boundary call site), `1614` cold trust gate, `1619` previously-seen no-rebind (still unconditional; `migrating_v5` confined to 1475/1522/1552/1569/1571 = replay only), `1538` v5 chronology `if offset == 0 else {}`, `1641` partial-tail binding filter, `1717/1718/1725` mixed budget. Re-ran the pure functions in memory: `mixed` leaves tLEGACY unbound; `single`/`two_two`/`three_two`/`reseen` unchanged; untrusted/trusted/binding-lost exact rows → `False/True/False`; stale prompt unbound → `[]`, causally bound → `['w']`. Lock transaction and `_team_write_cache` temp+`os.replace` unchanged.
+
+**Still open — the same MINOR, line moved:**
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts:1752
+Defect: `if exact_names:` short-circuits the legacy prompt fallback even for an untrusted row, and an untrusted row can never become trusted afterwards (1619 skips previously-seen ids), so the row is pinned yellow until its description key ages out of the 8-key `_team_prune_match_keys` window or the harness stops listing it.
+Failure: The shape covered by the test "keeps same-description rows untrusted when one spawn cannot account for the batch" — a workflow-created row whose description text equals a real Agent spawn description. Verified: `A({'id':'r1','description':'Fix alpha'}, mk, idx, {'r1':['w']}, set())` -&gt; `candidates=[]` with `w` idle, so the lead holds yellow indefinitely. Pre-change that row fell into the prompt bucket and could clear.
+Fix: Fall through to the legacy prompt-prefix bucket when `exact_names` is non-empty but the row is untrusted (that bucket still demands every matching name idle), or state in the comment at 1752 that permanent yellow is the intended tradeoff.
+```
+
+Not run: the bun suite — this worktree has no `node_modules` (`zod` exists only under the main checkout's `apps/desktop/node_modules`), and installing would be a write. Everything above is direct execution of the extracted Python plus code trace.
+
+**SHIP**
+
+No SendMessage tool in this session — please relay to `sol-ledger-fixes`: S6 verified clean, the earlier v5 rebind MAJOR is confirmed fixed, only the 1752 MINOR remains and it is a judgement call.</result>
+<usage><subagent_tokens>98359</subagent_tokens><tool_uses>5</tool_uses><duration_ms>77504</duration_ms></usage>
+<worktree><worktreePath>C:\Users\khair\Code Projects\fork-superset-windows-arm64\.claude\worktrees\agent-a09b13f5e51060a85</worktreePath></worktree>
+</task-notification>

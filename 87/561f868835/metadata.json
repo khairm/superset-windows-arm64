@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "87561f868835",
+  "strategy": "manual-commit",
+  "branch": "fix-stuck-yellow-status",
+  "checkpoints_count": 32,
+  "files_touched": [
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/87/561f868835/0/metadata.json",
+      "transcript": "/87/561f868835/0/full.jsonl",
+      "content_hash": "/87/561f868835/0/content_hash.txt",
+      "prompt": "/87/561f868835/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1074855,
+    "cache_creation_tokens": 352610,
+    "cache_read_tokens": 43180051,
+    "output_tokens": 131096,
+    "api_call_count": 354
+  }
+}
