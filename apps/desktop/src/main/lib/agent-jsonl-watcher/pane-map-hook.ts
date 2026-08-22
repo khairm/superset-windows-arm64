@@ -392,6 +392,7 @@ retried once with the fields stripped so a dot is never lost.
 import base64
 import collections
 import datetime
+import errno
 import json
 import os
 import pathlib
@@ -1021,10 +1022,10 @@ def _split_background(bg_tasks):
 # Agent spawns like sol/general-purpose review agents that finish via
 # task-notification and never idle-notify, forks re-marked active by a later
 # SendMessage, and "name [hash]" duplicate-suffix splits — held 25 finished
-# wrangler teammates yellow all day). The decision is now PER ENTRY: a
-# running teammate entry's payload "description" is the spawn prompt's head
-# (observed live: first 50 chars + "..."), so match it against the prompt
-# prefix recorded at each named Agent spawn; an entry may be dropped only
+# wrangler teammates yellow all day). The decision is now PER ENTRY. Older
+# Claude Code builds used the spawn prompt's head for a running teammate
+# entry's "description"; current builds use the Agent tool's explicit
+# description. Record both values at each named spawn; an entry may be dropped only
 # when it matches at least one recorded spawn AND every matching name's last
 # ledger event is an idle_notification. Unmatched, ambiguous-with-active, or
 # unparseable -> keep that entry (the safe yellow direction). Poisoned
@@ -1049,6 +1050,22 @@ def _team_norm(text):
     # file is a TS template literal and single backslashes in regex escapes
     # would be silently swallowed).
     return " ".join(str(text or "").split())
+
+
+def _team_prompt_key(text):
+    return _team_norm(text)[:160]
+
+
+def _team_description_key(text):
+    return _team_norm(text)[:512]
+
+
+def _team_description_index(match_keys):
+    index = {}
+    for name, keys in match_keys.items():
+        for description in keys.get("descriptions", []):
+            index.setdefault(description, []).append(name)
+    return index
 
 
 def _team_set_state(state, name, val):
@@ -1134,29 +1151,62 @@ def _team_scan_completion(state, fork_tools, text):
         state.pop(name, None)
 
 
-def _team_teammate_spawn(subagent_type):
-    # (TEAM-ENTRY-BIND) True if a named non-fork Agent spawn of this
-    # subagent_type can produce a teammate-type background_tasks entry, i.e.
-    # whether it is worth remembering as a binding candidate. Plain subagent
-    # types never do: they finish via a tool result / task-notification and
-    # never idle-notify, so their name stays "active" in the ledger for the
-    # whole session. Folding one into a binding batch pins the bound entry
-    # yellow forever -- the exact stuck yellow this binding exists to clear
-    # (live 2026-08-18: a "general-purpose" name was active across an entire
-    # session while every real teammate had idled).
-    # The two error directions are deliberately asymmetric: a poison type
-    # MISSING from this list only WIDENS a batch (more names must be idle =
-    # safe yellow), while a real teammate type wrongly listed here only costs
-    # narrowing power -- its entry finds no binding, falls back to the prompt
-    # prefix bucket and is KEPT. So the list stays short and names only types
-    # that are read-only/utility subagents by definition.
-    t = str(subagent_type or "").strip().lower()
-    if not t:
+def _team_append_key(values, value):
+    # Pruning happens after live row bindings are known. Capping here can drop
+    # the only key that identifies a still-live trusted row when one teammate
+    # name is reused for more than eight descriptions.
+    if value and value not in values:
+        values.append(value)
+
+
+def _team_prune_match_keys(
+    match_keys, entry_descriptions, entry_names, trusted_ids
+):
+    # Keep the ordinary eight-key history plus any older key still required by
+    # a live trusted row. Once that row disappears, its key naturally falls out
+    # of the next prune. This bounds historical churn without false-greening a
+    # live row whose identifying key was evicted.
+    required_prompts = {}
+    required_descriptions = {}
+    for entry_id in trusted_ids:
+        raw_description = entry_descriptions.get(entry_id)
+        if raw_description is None:
+            continue
+        description = _team_description_key(raw_description)
+        prefix = (
+            _team_description_key(raw_description[:-3])
+            if str(raw_description).endswith("...")
+            else description
+        )
+        for name in entry_names.get(entry_id, []):
+            keys = match_keys.get(name, {})
+            if description in keys.get("descriptions", []):
+                required_descriptions.setdefault(name, set()).add(description)
+            if len(prefix) >= 12:
+                for prompt in keys.get("prompts", []):
+                    if prompt and prompt.startswith(prefix):
+                        required_prompts.setdefault(name, set()).add(prompt)
+    for name, keys in match_keys.items():
+        for kind, required in (
+            ("prompts", required_prompts.get(name, set())),
+            ("descriptions", required_descriptions.get(name, set())),
+        ):
+            values = keys.get(kind, [])
+            tail = values[-8:]
+            keys[kind] = [
+                value for value in values if value in required and value not in tail
+            ] + tail
+
+
+def _team_prompt_binding_spawn(subagent_type):
+    # Legacy prompt-head rows need the old coarse binding filter. Exact
+    # descriptions use every named spawn independently of this list.
+    value = str(subagent_type or "").strip().lower()
+    if not value:
         return True
-    if ":" in t:
-        # plugin/skill-provided agent type (e.g. "codex:codex-rescue")
+    if ":" in value:
         return False
-    return t not in (
+    return value not in (
         "general-purpose",
         "explore",
         "sol",
@@ -1166,16 +1216,10 @@ def _team_teammate_spawn(subagent_type):
     )
 
 
-def _team_scan_record(state, fork_tools, prompts, spawns, obj):
-    # One JSONL transcript record -> ledger updates. Spawning a non-fork Agent
-    # with a name or waking it via SendMessage marks it active; the spawn also
-    # records a normalized prompt prefix so (TEAM-ENTRY-MATCH) can map a
-    # background_tasks[] teammate entry's description back to this name. Named
-    # forks are excluded and indexed by Agent tool-use-id so a completed
-    # task-notification can untrack stale state; a SendMessage to a known fork
-    # name is IGNORED (forks never idle-notify — marking one active poisoned
-    # the ledger forever, live 2026-07-22). Teammate/agent message text
-    # decides idle vs active.
+def _team_scan_record(state, fork_tools, match_keys, spawns, obj):
+    # One JSONL record -> state plus per-name prompt/description history.
+    # Every NAMED non-fork Agent is eligible: live 2026-08-21 showed named
+    # general-purpose agents producing teammate rows and idle notifications.
     top_content = obj.get("content")
     if isinstance(top_content, str):
         _team_scan_completion(state, fork_tools, top_content)
@@ -1194,160 +1238,437 @@ def _team_scan_record(state, fork_tools, prompts, spawns, obj):
             continue
         ctype = c.get("type")
         if ctype == "text":
-            text = str(c.get("text") or "")
-            _team_scan_text(state, text)
-            _team_scan_completion(state, fork_tools, text)
+            record_text = str(c.get("text") or "")
+            _team_scan_text(state, record_text)
+            _team_scan_completion(state, fork_tools, record_text)
         elif ctype == "tool_use":
             inp = c.get("input")
             if not isinstance(inp, dict):
                 continue
             if c.get("name") == "Agent":
-                n = str(inp.get("name") or "").strip()
-                if n and str(inp.get("subagent_type") or "").strip() == "fork":
+                name = str(inp.get("name") or "").strip()
+                if name and str(inp.get("subagent_type") or "").strip() == "fork":
                     tool_use_id = str(c.get("id") or "").strip()
                     if tool_use_id:
-                        fork_tools[tool_use_id] = n
-                    state.pop(n, None)
-                    prompts.pop(n, None)
-                elif n:
-                    state[n] = "active"
-                    prompts[n] = _team_norm(inp.get("prompt"))[:160]
-                    # (TEAM-ENTRY-BIND) remember the spawn so THIS ledger run's
-                    # turn-end snapshot can bind the background_tasks entry id
-                    # that appears with it to this name. Only types that can
-                    # actually produce a teammate entry are remembered (see
-                    # _team_teammate_spawn) and unconsumed pendings expire with
-                    # the run that observed them (see _team_ledger) -- a
-                    # never-idling name that survived into a later batch kept
-                    # its entry yellow forever.
-                    if _team_teammate_spawn(inp.get("subagent_type")):
-                        spawns.append(n)
-                    # A non-fork spawn RECLAIMS the name: purge any fork
-                    # tool-use mappings still pointing at it, else the
-                    # SendMessage fork-guard below would ignore wakes of this
-                    # real teammate forever (review finding 2026-07-22 — an
-                    # ignored wake leaves a stale "idle" that false-greens
-                    # its running entry). A stale fork completion then finds
-                    # no mapping and no-ops, which is safe.
-                    stale = [k for k, v in fork_tools.items() if v == n]
-                    for k in stale:
-                        fork_tools.pop(k, None)
+                        fork_tools[tool_use_id] = name
+                    state.pop(name, None)
+                    match_keys.pop(name, None)
+                elif name:
+                    state[name] = "active"
+                    keys = match_keys.setdefault(
+                        name, {"prompts": [], "descriptions": []}
+                    )
+                    prompt = _team_prompt_key(inp.get("prompt"))
+                    description = _team_description_key(inp.get("description"))
+                    _team_append_key(keys["prompts"], prompt)
+                    _team_append_key(keys["descriptions"], description)
+                    spawns.append((
+                        name,
+                        description,
+                        _team_prompt_binding_spawn(inp.get("subagent_type")),
+                    ))
+                    # A non-fork spawn reclaims the name from stale fork maps.
+                    stale = [k for k, value in fork_tools.items() if value == name]
+                    for key in stale:
+                        fork_tools.pop(key, None)
             elif c.get("name") == "SendMessage":
-                n = str(inp.get("to") or "").strip()
-                if n and n not in fork_tools.values():
-                    state[n] = "active"
+                name = str(inp.get("to") or "").strip()
+                if name and name not in fork_tools.values():
+                    state[name] = "active"
 
 
-def _team_ledger(transcript_path, terminal_id, entry_ids):
-    # Incrementally parse the lead transcript into (state, prompts, entry_names):
-    # name -> "active"|"idle", name -> normalized spawn-prompt prefix, and
-    # (TEAM-ENTRY-BIND) background_tasks entry id -> the candidate spawn name(s)
-    # that entry appeared with. Consumes only bytes appended since the cached
-    # offset (the first call pays one full read; transcripts are append-only,
-    # surviving /compact). Cache schema v5 (adds seenIds, drops the pending
-    # spawn carry-over) — an older cache fails the version check and forces one
-    # full rescan, self-healing ledgers poisoned by the pre-v4 scan-order bug.
-    # Never raises; every failure path returns None (keep every hold).
+def _team_scan_records(data, state, fork_tools, match_keys, spawns):
+    for raw in data.split(b"\\n"):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            _team_scan_record(state, fork_tools, match_keys, spawns, obj)
+
+
+def _team_empty_ledger():
+    return ({}, {}, {}, {}, [], set(), 0)
+
+
+def _team_cached_bindings(record):
+    seen_ids = [str(value) for value in record["seenIds"]]
+    entry_names = {
+        str(key): [str(value) for value in values]
+        for key, values in record["entryNames"].items()
+        if isinstance(values, list)
+    }
+    return seen_ids, entry_names
+
+
+def _team_cache_lock(cache_file):
+    # Serialize the whole read/scan/bind/replace transaction. os.replace makes
+    # one write atomic but cannot stop an older overlapping process from
+    # replacing a newer cache afterward. The one-byte lock works on Windows
+    # and POSIX, waits at most two seconds, and returns None on every acquisition
+    # error so uncertain rows stay yellow rather than running unlocked.
+    lock_file = cache_file.with_name(cache_file.name + ".lock")
+    handle = None
+    try:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_file, "a+b")
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"\\0")
+            handle.flush()
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return handle
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    _log({
+                        "action": "teamstate-lock-error",
+                        "phase": "acquire",
+                        "error": type(error).__name__ + ": " + str(error),
+                    })
+                    handle.close()
+                    return None
+                if time.monotonic() >= deadline:
+                    handle.close()
+                    return None
+                time.sleep(0.025)
+    except Exception as error:
+        _log({
+            "action": "teamstate-lock-error",
+            "phase": "open",
+            "error": type(error).__name__ + ": " + str(error),
+        })
+        try:
+            if handle is not None:
+                handle.close()
+        except Exception:
+            pass
+        return None
+
+
+def _team_cache_unlock(handle):
+    ok = True
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception as error:
+        ok = False
+        _log({
+            "action": "teamstate-lock-error",
+            "phase": "release",
+            "error": type(error).__name__ + ": " + str(error),
+        })
+    try:
+        handle.close()
+    except Exception as error:
+        ok = False
+        _log({
+            "action": "teamstate-lock-error",
+            "phase": "close",
+            "error": type(error).__name__ + ": " + str(error),
+        })
+    return ok
+
+
+def _team_write_cache(cache_file, record):
+    temp_file = cache_file.with_name(
+        cache_file.name + "." + str(os.getpid()) + ".tmp"
+    )
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        temp_file.write_text(json.dumps(record), encoding="utf-8")
+        os.replace(temp_file, cache_file)
+    except Exception:
+        _remove(temp_file)
+        raise
+
+
+def _team_initialize_fresh_cache(transcript_path, terminal_id):
+    # SessionStart source=startup|clear is the one provable fresh-session
+    # boundary. Snapshot the transcript's CURRENT size so metadata or branched
+    # history already present is historical, while every later first-turn spawn
+    # is unread causal evidence. Resume/compact never call this helper.
+    if not transcript_path or not terminal_id:
+        return
+    cache_file = _teamstate_path(terminal_id)
+    lock_handle = _team_cache_lock(cache_file)
+    if lock_handle is None:
+        return
+    try:
+        try:
+            offset = pathlib.Path(transcript_path).stat().st_size
+        except FileNotFoundError:
+            # SessionStart can fire before the new transcript file is created.
+            # The named startup/clear boundary still proves offset zero; every
+            # record written after this hook is unread causal evidence.
+            offset = 0
+        _team_write_cache(cache_file, {
+            "version": 6,
+            "path": transcript_path,
+            "offset": offset,
+            "state": {},
+            "forkTools": {},
+            "matchKeys": {},
+            "seenIds": [],
+            "entryNames": {},
+            "trustedEntryIds": [],
+        })
+    except Exception as error:
+        _log({
+            "action": "teamstate-fresh-init-error",
+            "error": type(error).__name__ + ": " + str(error),
+        })
+    _team_cache_unlock(lock_handle)
+
+
+def _team_ledger(transcript_path, terminal_id, entry_descriptions):
     if not transcript_path or not terminal_id:
         return None
+    lock_handle = _team_cache_lock(_teamstate_path(terminal_id))
+    if lock_handle is None:
+        return None
+    try:
+        result = _team_ledger_locked(
+            transcript_path, terminal_id, entry_descriptions
+        )
+    except Exception as error:
+        _log({
+            "action": "teamstate-ledger-error",
+            "error": type(error).__name__ + ": " + str(error),
+        })
+        result = None
+    unlocked = _team_cache_unlock(lock_handle)
+    return result if unlocked else None
+
+
+def _team_ledger_locked(transcript_path, terminal_id, entry_descriptions):
+    # Incrementally parse the lead transcript into state, match-key histories,
+    # prompt bindings, and exact-description bindings. Cache schema v6 adds
+    # descriptions; v5 migration rebuilds key history while preserving its
+    # already-causal live bindings. Every failure path returns None.
+    entry_ids = list(entry_descriptions)
     cache_file = _teamstate_path(terminal_id)
-    state = {}
-    fork_tools = {}
-    prompts = {}
-    spawns = []
-    entry_names = {}
-    seen_ids = []
-    offset = 0
+    (
+        state,
+        fork_tools,
+        match_keys,
+        entry_names,
+        seen_ids,
+        trusted_ids,
+        offset,
+    ) = _team_empty_ledger()
+    migrating_v5 = False
+    loaded_cache = False
     try:
         rec = json.loads(cache_file.read_text(encoding="utf-8"))
-        if (
+        common = (
             isinstance(rec, dict)
-            and rec.get("version") == 5
             and rec.get("path") == transcript_path
             and isinstance(rec.get("state"), dict)
             and isinstance(rec.get("forkTools"), dict)
-            and isinstance(rec.get("prompts"), dict)
             and isinstance(rec.get("seenIds"), list)
             and isinstance(rec.get("entryNames"), dict)
+        )
+        if (
+            common
+            and rec.get("version") == 6
+            and isinstance(rec.get("matchKeys"), dict)
+            and all(
+                isinstance(value, dict)
+                and isinstance(value.get("prompts"), list)
+                and isinstance(value.get("descriptions"), list)
+                for value in rec.get("matchKeys", {}).values()
+            )
+            and isinstance(rec.get("trustedEntryIds"), list)
         ):
             offset = int(rec.get("offset") or 0)
-            for k, v in rec["state"].items():
-                state[str(k)] = str(v)
-            for k, v in rec["forkTools"].items():
-                fork_tools[str(k)] = str(v)
-            for k, v in rec["prompts"].items():
-                prompts[str(k)] = str(v)
-            for v in rec["seenIds"]:
-                seen_ids.append(str(v))
-            for k, v in rec["entryNames"].items():
-                if isinstance(v, list):
-                    entry_names[str(k)] = [str(x) for x in v]
+            state = {str(k): str(v) for k, v in rec["state"].items()}
+            fork_tools = {
+                str(k): str(v) for k, v in rec["forkTools"].items()
+            }
+            match_keys = {
+                str(k): {
+                    "prompts": [str(x) for x in v["prompts"]],
+                    "descriptions": [str(x) for x in v["descriptions"]],
+                }
+                for k, v in rec["matchKeys"].items()
+            }
+            seen_ids, entry_names = _team_cached_bindings(rec)
+            trusted_ids = {str(value) for value in rec["trustedEntryIds"]}
+            loaded_cache = True
+        elif (
+            common
+            and rec.get("version") == 5
+            and isinstance(rec.get("prompts"), dict)
+        ):
+            # Preserve v5's already-causal bindings and offset. Rebuild its
+            # historical description keys below, but never treat those old
+            # records as causal evidence for a previously unbound row.
+            migrating_v5 = True
+            offset = int(rec.get("offset") or 0)
+            state = {str(k): str(v) for k, v in rec["state"].items()}
+            fork_tools = {
+                str(k): str(v) for k, v in rec["forkTools"].items()
+            }
+            # A historical replay rebuilds prompt history in document order.
+            # Seed only when no replay is available; prepending v5's latest
+            # prompt before older replayed prompts would invert latest-only
+            # fallback and let a stale prompt false-green a foreign row.
+            match_keys = {
+                str(k): {
+                    "prompts": [str(v)] if str(v) else [],
+                    "descriptions": [],
+                }
+                for k, v in rec["prompts"].items()
+            } if offset == 0 else {}
+            seen_ids, entry_names = _team_cached_bindings(rec)
+            trusted_ids = set(entry_names)
+            loaded_cache = True
     except Exception:
-        state = {}
-        fork_tools = {}
-        prompts = {}
-        spawns = []
-        entry_names = {}
-        seen_ids = []
-        offset = 0
+        (
+            state,
+            fork_tools,
+            match_keys,
+            entry_names,
+            seen_ids,
+            trusted_ids,
+            offset,
+        ) = _team_empty_ledger()
+        migrating_v5 = False
+        loaded_cache = False
+    historical_data = b""
     try:
-        with open(transcript_path, "rb") as h:
-            h.seek(0, 2)
-            size = h.tell()
+        with open(transcript_path, "rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
             if offset < 0 or offset > size:
-                offset = 0
-                state = {}
-                fork_tools = {}
-                prompts = {}
-                spawns = []
-                entry_names = {}
-                seen_ids = []
-            h.seek(offset)
-            data = h.read()
+                (
+                    state,
+                    fork_tools,
+                    match_keys,
+                    entry_names,
+                    seen_ids,
+                    trusted_ids,
+                    offset,
+                ) = _team_empty_ledger()
+                migrating_v5 = False
+                loaded_cache = False
+            if migrating_v5 and offset:
+                handle.seek(0)
+                historical_data = handle.read(offset)
+            handle.seek(offset)
+            data = handle.read()
     except Exception:
         return None
-    nl = data.rfind(b"\\n")
-    if nl >= 0:
-        for raw in data[:nl].split(b"\\n"):
-            if not raw.strip():
-                continue
-            try:
-                obj = json.loads(raw.decode("utf-8", "replace"))
-            except Exception:
-                continue
-            if isinstance(obj, dict):
-                _team_scan_record(state, fork_tools, prompts, spawns, obj)
-        offset = offset + nl + 1
-    entry_names, seen_ids = _team_bind_entries(
-        entry_names, seen_ids, entry_ids, spawns
-    )
-    # (TEAM-ENTRY-BIND) Unconsumed pendings EXPIRE with the run that observed
-    # them: the pending list is never carried into the cache. A spawn whose entry
-    # did not show up in THIS snapshot (a type that produces no teammate entry, or
-    # a teammate that finished inside the turn) would otherwise sit in the list
-    # for the rest of the session and fold wholesale into the next entry's
-    # batch, where one never-idling name holds that entry yellow forever. The
-    # only cost is narrowing power, and an unbound entry falls back to the
-    # prompt prefix bucket and is KEPT.
-    try:
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(
-            json.dumps({
-                "version": 5,
-                "path": transcript_path,
-                "offset": offset,
-                "state": state,
-                "forkTools": fork_tools,
-                "prompts": prompts,
-                "seenIds": seen_ids,
-                "entryNames": entry_names,
-            }),
-            encoding="utf-8",
+    if historical_data:
+        # One migration-only replay reconstructs exact-description history for
+        # trusted v5 bindings. Its spawn list is discarded, so historical rows
+        # cannot make an unbound v5 entry trustworthy.
+        historical_state = {}
+        historical_fork_tools = {}
+        historical_spawns = []
+        _team_scan_records(
+            historical_data,
+            historical_state,
+            historical_fork_tools,
+            match_keys,
+            historical_spawns,
         )
+        state = historical_state
+        fork_tools = historical_fork_tools
+    spawns = []
+    newline = data.rfind(b"\\n")
+    partial_tail = bool(data[newline + 1:].strip()) if newline >= 0 else bool(data.strip())
+    # A partial trailing record makes the whole unread delta provisional. Do not
+    # advance past complete spawn lines ahead of it: first-seen rows are deferred
+    # while partial, and consuming those lines would discard their causal spawn
+    # evidence before the next clean scan.
+    if newline >= 0 and not partial_tail:
+        _team_scan_records(
+            data[:newline], state, fork_tools, match_keys, spawns
+        )
+        offset += newline + 1
+    previously_seen = set(seen_ids)
+    # Exact descriptions are the strongest identity available in the payload,
+    # but they are not unique. Batch first-seen rows by description and trust
+    # the batch only when this scan contains at least as many matching spawn
+    # records. A spawn is causal even if a later record in the same delta idles
+    # it. One spawn plus a workflow-created same-text row remains untrusted.
+    # A cold offset-0 scan has no causal boundary, so its historical spawns may
+    # rebuild match history but may never trust current rows.
+    if not partial_tail and loaded_cache:
+        new_rows_by_description = {}
+        for entry_id, raw_description in entry_descriptions.items():
+            if not entry_id or entry_id in trusted_ids:
+                continue
+            if entry_id in previously_seen:
+                continue
+            description = _team_description_key(raw_description)
+            if description:
+                new_rows_by_description.setdefault(description, []).append(entry_id)
+        for description, row_ids in new_rows_by_description.items():
+            causal_spawns = [
+                name
+                for name, spawn_description, _ in spawns
+                if spawn_description == description
+            ]
+            if not causal_spawns or len(row_ids) > len(causal_spawns):
+                continue
+            causal_names = sorted(set(causal_spawns))
+            for entry_id in row_ids:
+                entry_names[entry_id] = causal_names
+                trusted_ids.add(entry_id)
+    binding_ids = entry_ids
+    if partial_tail:
+        binding_ids = [
+            entry_id
+            for entry_id in entry_ids
+            if entry_id in previously_seen or entry_id in entry_names
+        ]
+    entry_names, seen_ids = _team_bind_entries(
+        entry_names,
+        seen_ids,
+        binding_ids,
+        [name for name, _, prompt_eligible in spawns if prompt_eligible],
+    )
+    live_ids = set(entry_ids)
+    trusted_ids.intersection_update(live_ids)
+    _team_prune_match_keys(
+        match_keys, entry_descriptions, entry_names, trusted_ids
+    )
+    description_index = _team_description_index(match_keys)
+    try:
+        _team_write_cache(cache_file, {
+            "version": 6,
+            "path": transcript_path,
+            "offset": offset,
+            "state": state,
+            "forkTools": fork_tools,
+            "matchKeys": match_keys,
+            "seenIds": seen_ids,
+            "entryNames": entry_names,
+            "trustedEntryIds": sorted(trusted_ids),
+        })
     except Exception:
         pass
-    return (state, prompts, entry_names)
-
+    if partial_tail:
+        return None
+    return (state, match_keys, description_index, entry_names, trusted_ids)
 
 def _team_bind_entries(entry_names, seen_ids, entry_ids, spawns):
     # (TEAM-ENTRY-BIND) Bind each FIRST-SEEN running teammate entry id to the
@@ -1393,13 +1714,15 @@ def _team_bind_entries(entry_names, seen_ids, entry_ids, spawns):
     # passes. Both maps stay bounded: bindings prune to the live set, and the
     # seen list keeps only a tail of the ids that have left it.
     seen = set(seen_ids)
-    new_ids = [i for i in entry_ids if i and i not in bound and i not in seen]
-    # More new entries than observed spawns means at least one of them was
+    first_seen_ids = [i for i in entry_ids if i and i not in seen]
+    new_ids = [i for i in first_seen_ids if i not in bound]
+    # More first-seen entries than observed spawns means at least one of them was
     # created by something other than a lead Agent tool-use (a workflow spawning
-    # its own teammate), so no assignment is trustworthy — leave them all
-    # unbound and let the prefix rule keep them. This is the only shape where a
-    # binding could NARROW onto the wrong name and false-green live work.
-    if new_ids and spawns and len(new_ids) <= len(spawns):
+    # its own teammate), so no assignment is trustworthy. Count rows already
+    # exact-bound above too: one spawn cannot be spent once by exact matching and
+    # again by this legacy prompt binder. Leave residual rows unbound so the
+    # broader prompt bucket keeps uncertain work yellow.
+    if new_ids and spawns and len(first_seen_ids) <= len(spawns):
         candidates = list(spawns)
         for i in new_ids:
             bound[i] = candidates
@@ -1408,69 +1731,77 @@ def _team_bind_entries(entry_names, seen_ids, entry_ids, spawns):
 
 
 
-def _team_entry_candidates(entry, prompts, entry_names):
-    # (TEAM-ENTRY-MATCH)(TEAM-ENTRY-BIND) The ledger names that could be THIS
-    # entry. Start from the prompt-prefix bucket, then narrow it to the names
-    # causally bound to this entry id at the snapshot where it first appeared.
-    # The binding only ever REMOVES candidates and an empty intersection falls
-    # back to the full bucket, so it can never make a drop HARDER to justify —
-    # but removing candidates is exactly what makes a drop possible, so a wrong
-    # binding can still drop a running entry. _team_bind_entries is where that
-    # risk is contained.
-    desc = str(entry.get("description") or "")
-    if desc.endswith("..."):
-        desc = desc[: len(desc) - 3]
-    prefix = _team_norm(desc)
-    if len(prefix) < 12:
-        return []
-    names = []
-    for name, p in prompts.items():
-        if p and p.startswith(prefix):
-            names.append(name)
-    bound = entry_names.get(str(entry.get("id") or ""))
-    if bound:
-        narrowed = [n for n in names if n in bound]
-        if narrowed:
-            return narrowed
-    return names
+def _team_entry_analysis(
+    entry, match_keys, description_index, entry_names, trusted_ids
+):
+    # Exact Agent descriptions take precedence. Only a trusted first-seen
+    # binding may use them. If no Agent description equals the payload, retain
+    # the legacy prompt-prefix behavior (with or without a trailing "...").
+    raw_description = str(entry.get("description") or "")
+    description = _team_description_key(raw_description)
+    prefix = (
+        _team_description_key(raw_description[:-3])
+        if raw_description.endswith("...")
+        else description
+    )
+    entry_id = str(entry.get("id") or "")
+    bound = entry_names.get(entry_id) or []
+    exact_names = description_index.get(description, [])
+    prompt_matches = []
+    description_matches = []
+    if exact_names:
+        # Exact text without causal trust must stay candidate-free/yellow. Never
+        # fall through to legacy prompts: a foreign live row could inherit an
+        # idle Agent name and false-ready.
+        if entry_id in trusted_ids:
+            description_matches = [name for name in exact_names if name in bound]
+        candidates = description_matches
+    else:
+        if len(prefix) >= 12:
+            for name, keys in match_keys.items():
+                prompts = keys.get("prompts", [])
+                # An unbound row may only compare against the name's latest
+                # prompt. Old prompt history can belong to finished work and
+                # must not make a later foreign row look idle. A causal legacy
+                # binding may keep using its older identifying prompt.
+                if name not in bound:
+                    prompts = prompts[-1:]
+                if any(
+                    prompt and prompt.startswith(prefix)
+                    for prompt in prompts
+                ):
+                    prompt_matches.append(name)
+        narrowed = [name for name in prompt_matches if name in bound]
+        candidates = narrowed or prompt_matches
+    return (
+        prefix,
+        prompt_matches,
+        description_matches,
+        bound,
+        candidates,
+        entry_id in trusted_ids,
+    )
 
-
-def _team_entry_droppable(entry, state, prompts, entry_names):
-    # True only on POSITIVE proof for THIS entry: it has at least one candidate
-    # name (see _team_entry_candidates) and every candidate's last ledger event
-    # is an idle_notification. Too-short or unmatched descriptions never drop
-    # (the safe yellow direction).
-    names = _team_entry_candidates(entry, prompts, entry_names)
-    if not names:
-        return False
-    for name in names:
-        if state.get(name) != "idle":
-            return False
-    return True
-
-
-def _team_debug_entry(terminal_id, entry, state, prompts, entry_names, droppable):
+def _team_debug_entry(
+    terminal_id, entry, state, analysis, droppable, analysis_error
+):
     # (TEAM-KEPT-DEBUG) One JSONL line per teammate bg entry per decision:
-    # the raw entry shape, its normalized match prefix, which ledger names
-    # prefix-match it and their states, the (TEAM-ENTRY-BIND) narrowing, and the
-    # drop verdict — so a stuck yellow names its culprit directly instead of an
-    # opaque "kept N".
+    # the normalized match, causal binding, candidate states, and verdict.
     # Best-effort: never raises (caller wraps too).
-    desc = str(entry.get("description") or "")
-    stripped = desc[: len(desc) - 3] if desc.endswith("...") else desc
-    prefix = _team_norm(stripped)
-    matches = []
-    for name, p in prompts.items():
-        if p and p.startswith(prefix):
-            matches.append(name + "=" + str(state.get(name)))
-    bound = entry_names.get(str(entry.get("id") or "")) or []
-    candidates = _team_entry_candidates(entry, prompts, entry_names)
-    if droppable:
+    (
+        prefix,
+        prompt_matches,
+        description_matches,
+        bound,
+        candidates,
+        trusted,
+    ) = analysis
+    if analysis_error:
+        reason = "analysis-error"
+    elif droppable:
         reason = "dropped"
-    elif len(prefix) < 12:
-        reason = "short-prefix"
-    elif not matches:
-        reason = "unmatched"
+    elif not (prompt_matches or description_matches):
+        reason = "untrusted-description" if prefix and not trusted else "unmatched"
     else:
         reason = "matched-active"
     log_dir = pathlib.Path.home() / ".superset" / "logs"
@@ -1492,17 +1823,25 @@ def _team_debug_entry(terminal_id, entry, state, prompts, entry_names, droppable
         "terminal": str(terminal_id),
         "droppable": bool(droppable),
         "reason": reason,
+        "analysis_error": analysis_error,
         "prefix_len": len(prefix),
         "prefix": prefix[:220],
-        "matches": matches,
-        "bound": [str(x) for x in bound],
-        "candidates": [n + "=" + str(state.get(n)) for n in candidates],
+        "prompt_matches": [
+            name + "=" + str(state.get(name)) for name in prompt_matches
+        ],
+        "description_matches": [
+            name + "=" + str(state.get(name)) for name in description_matches
+        ],
+        "bound": [str(value) for value in bound],
+        "trusted_binding": trusted,
+        "candidates": [
+            name + "=" + str(state.get(name)) for name in candidates
+        ],
         "ledger_state": {str(k): str(v) for k, v in state.items()},
         "entry": {str(k): str(v)[:300] for k, v in entry.items()},
     }
     with open(log_path, "a", encoding="utf-8") as h:
         h.write(json.dumps(rec) + "\\n")
-
 
 def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=None):
     # (TEAMMATE-IDLE)(TEAM-ENTRY-MATCH) Returns bg_tasks with each unfinished
@@ -1513,7 +1852,7 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
     if not isinstance(bg_tasks, list) or not bg_tasks:
         return bg_tasks
     has_teammate = False
-    entry_ids = []
+    entry_descriptions = {}
     for t in bg_tasks:
         if (
             isinstance(t, dict)
@@ -1521,16 +1860,20 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
             and str(t.get("type") or "") == "teammate"
         ):
             has_teammate = True
-            entry_ids.append(str(t.get("id") or ""))
+            entry_descriptions[str(t.get("id") or "")] = str(
+                t.get("description") or ""
+            )
     if not has_teammate:
         return bg_tasks
     try:
-        ledger = _team_ledger(transcript_path, terminal_id, entry_ids)
+        ledger = _team_ledger(
+            transcript_path, terminal_id, entry_descriptions
+        )
     except Exception:
         return bg_tasks
     if ledger is None:
         return bg_tasks
-    state, prompts, entry_names = ledger
+    state, match_keys, description_index, entry_names, trusted_ids = ledger
     out = []
     dropped = 0
     kept = 0
@@ -1541,12 +1884,31 @@ def _without_idle_teammates(bg_tasks, transcript_path, terminal_id, note_out=Non
             and str(t.get("type") or "") == "teammate"
         ):
             droppable = False
+            analysis = ("", [], [], [], [], False)
+            analysis_error = ""
             try:
-                droppable = _team_entry_droppable(t, state, prompts, entry_names)
-            except Exception:
-                droppable = False
+                analysis = _team_entry_analysis(
+                    t,
+                    match_keys,
+                    description_index,
+                    entry_names,
+                    trusted_ids,
+                )
+                _, _, _, _, candidates, _ = analysis
+                droppable = bool(candidates) and all(
+                    state.get(name) == "idle" for name in candidates
+                )
+            except Exception as error:
+                analysis_error = type(error).__name__
             try:
-                _team_debug_entry(terminal_id, t, state, prompts, entry_names, droppable)
+                _team_debug_entry(
+                    terminal_id,
+                    t,
+                    state,
+                    analysis,
+                    droppable,
+                    analysis_error,
+                )
             except Exception:
                 pass
             if droppable:
@@ -2850,6 +3212,8 @@ def main():
     transcript_path = str(
         payload.get("transcript_path") or payload.get("transcriptPath") or ""
     ).strip()
+    if event == "SessionStart" and source in ("startup", "clear"):
+        _team_initialize_fresh_cache(transcript_path, terminal_id)
     team_note = []
     bg_tasks_eff = bg_tasks
     if event in ("Stop", "SubagentStop"):

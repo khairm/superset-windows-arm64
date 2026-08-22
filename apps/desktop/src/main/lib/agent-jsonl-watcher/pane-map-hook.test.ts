@@ -85,11 +85,12 @@ beforeEach(() => {
 async function hook(
 	payload: Record<string, unknown>,
 	envOverride: Record<string, string> = {},
+	command: string[] = [PYTHON, scriptPath],
 ): Promise<Post | undefined> {
 	// Async spawn, not spawnSync: the hook POSTs and waits for the response, so a
 	// blocked JS loop would stall the sink until the hook's own timeout.
 	const proc = Bun.spawn({
-		cmd: [PYTHON, scriptPath],
+		cmd: command,
 		env: {
 			...process.env,
 			HOME: home,
@@ -370,13 +371,19 @@ describe("superset-notify teammate entry binding", () => {
 	}
 
 	/** A named non-fork Agent spawn, as the lead transcript records it. */
-	function spawnTyped(name: string, subagentType: string): void {
+	function spawnTyped(
+		name: string,
+		subagentType: string,
+		description?: string,
+		prompt = `${PREAMBLE} work assigned to ${name}`,
+	): void {
 		append([
 			{
 				id: `tu-${name}`,
 				input: {
+					description,
 					name,
-					prompt: `${PREAMBLE} work assigned to ${name}`,
+					prompt,
 					subagent_type: subagentType,
 				},
 				name: "Agent",
@@ -399,6 +406,28 @@ describe("superset-notify teammate entry binding", () => {
 		);
 	}
 
+	function writeV5TeamState(input: {
+		entryNames: Record<string, string[]>;
+		name: string;
+		prompt?: string;
+		seenIds: string[];
+	}): void {
+		fs.mkdirSync(path.dirname(teamStateFile()), { recursive: true });
+		fs.writeFileSync(
+			teamStateFile(),
+			JSON.stringify({
+				entryNames: input.entryNames,
+				forkTools: {},
+				offset: fs.statSync(transcript).size,
+				path: transcript,
+				prompts: { [input.name]: input.prompt ?? PREAMBLE },
+				seenIds: input.seenIds,
+				state: { [input.name]: "active" },
+				version: 5,
+			}),
+		);
+	}
+
 	function say(text: string): void {
 		append([{ text, type: "text" }]);
 	}
@@ -413,21 +442,62 @@ describe("superset-notify teammate entry binding", () => {
 		);
 	}
 
-	function entry(id: string): Record<string, unknown> {
+	function entry(
+		id: string,
+		description = `${PREAMBLE}...`,
+	): Record<string, unknown> {
 		return {
-			description: `${PREAMBLE}...`,
+			description,
 			id,
 			status: "running",
 			type: "teammate",
 		};
 	}
 
-	/** One turn end carrying the running teammate set. */
-	function stop(...ids: string[]): Promise<Post | undefined> {
+	function stopEntries(
+		...entries: Array<Record<string, unknown>>
+	): Promise<Post | undefined> {
 		return hook({
-			background_tasks: ids.map(entry),
+			background_tasks: entries,
 			hook_event_name: "Stop",
 			transcript_path: transcript,
+		});
+	}
+
+	/** One turn end carrying the running teammate set. */
+	function stop(...ids: string[]): Promise<Post | undefined> {
+		return stopEntries(...ids.map((id) => entry(id)));
+	}
+
+	function stopEntry(
+		id: string,
+		description: string,
+	): Promise<Post | undefined> {
+		return stopEntries(entry(id, description));
+	}
+
+	async function establishCausalBoundary(
+		source: "startup" | "clear" = "startup",
+	): Promise<void> {
+		const offset = fs.statSync(transcript).size;
+		expect(
+			await hook({
+				hook_event_name: "SessionStart",
+				source,
+				transcript_path: transcript,
+			}),
+		).toBeUndefined();
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			offset: number;
+			path: string;
+			trustedEntryIds: string[];
+			version: number;
+		};
+		expect(cache).toMatchObject({
+			offset,
+			path: transcript,
+			trustedEntryIds: [],
+			version: 6,
 		});
 	}
 
@@ -455,6 +525,443 @@ describe("superset-notify teammate entry binding", () => {
 			eventType: "Stop",
 			lifecycleOutcome: "ready",
 		});
+	});
+
+	it("preserves resume and compact caches, then keeps cache-loss history untrusted", async () => {
+		await establishCausalBoundary();
+		const description = "Historical cold-scan review";
+		spawnTyped("historical-review", "general-purpose", description);
+		expect((await stopEntry("tHISTORICAL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("historical-review");
+		expect(await stopEntry("tHISTORICAL", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		const preservedCache = fs.readFileSync(teamStateFile(), "utf8");
+		for (const source of ["resume", "compact"] as const) {
+			expect(
+				await hook({
+					hook_event_name: "SessionStart",
+					source,
+					transcript_path: transcript,
+				}),
+			).toBeUndefined();
+			expect(fs.readFileSync(teamStateFile(), "utf8")).toBe(preservedCache);
+		}
+
+		fs.rmSync(teamStateFile());
+		expect(
+			await hook({
+				hook_event_name: "SessionStart",
+				source: "resume",
+				transcript_path: transcript,
+			}),
+		).toBeUndefined();
+		expect(fs.existsSync(teamStateFile())).toBe(false);
+
+		expect((await stopEntry("tFOREIGNCOLD", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			trustedEntryIds: string[];
+		};
+		expect(cache.trustedEntryIds).toEqual([]);
+	});
+
+	it("matches ordinary, short, and long explicit descriptions", async () => {
+		await establishCausalBoundary();
+		for (const [name, id, description] of [
+			["dose-fixer", "tDOSE", "Fix dose-normalise regression"],
+			["short-fixer", "tSHORT", "Fix UI bug"],
+			["ellipsis-fixer", "tELLIPSIS", "Review logs..."],
+			["long-fixer", "tLONG", "L".repeat(240)],
+		] as const) {
+			spawnTyped(name, "general-purpose", description);
+			expect((await stopEntry(id, description))?.eventType).toBe(
+				"SubagentActive",
+			);
+			idles(name);
+			expect(await stopEntry(id, description)).toEqual({
+				eventType: "Stop",
+				lifecycleOutcome: "ready",
+			});
+		}
+	});
+
+	it("binds a spawn that idles before its first Stop", async () => {
+		await establishCausalBoundary();
+		const description = "Review and report in one delta";
+		spawnTyped("fast-review", "general-purpose", description);
+		idles("fast-review");
+
+		expect(await stopEntry("tFAST", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("starts at offset zero when startup precedes transcript creation", async () => {
+		fs.rmSync(transcript);
+		expect(
+			await hook({
+				hook_event_name: "SessionStart",
+				source: "startup",
+				transcript_path: transcript,
+			}),
+		).toBeUndefined();
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			offset: number;
+			path: string;
+			version: number;
+		};
+		expect(cache).toMatchObject({ offset: 0, path: transcript, version: 6 });
+
+		const description = "First task after transcript creation";
+		spawnTyped("startup-worker", "general-purpose", description);
+		idles("startup-worker");
+		expect(await stopEntry("tSTARTUP", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("starts clear sessions after transcript history already present", async () => {
+		say("branched transcript history");
+		await establishCausalBoundary("clear");
+		const description = "First task after clear";
+		spawnTyped("clear-worker", "general-purpose", description);
+		idles("clear-worker");
+
+		expect(await stopEntry("tCLEAR", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("defers a description row until a partial spawn record is complete", async () => {
+		const description = "Review partial transcript";
+		const record = JSON.stringify({
+			message: {
+				content: [
+					{
+						id: "tu-partial",
+						input: {
+							description,
+							name: "partial-review",
+							prompt: "Review partial transcript in detail",
+							subagent_type: "general-purpose",
+						},
+						name: "Agent",
+						type: "tool_use",
+					},
+				],
+				role: "assistant",
+			},
+		});
+		fs.appendFileSync(transcript, record);
+		expect((await stopEntry("tPARTIAL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		fs.appendFileSync(transcript, "\n");
+		expect((await stopEntry("tPARTIAL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("partial-review");
+		expect(await stopEntry("tPARTIAL", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps a complete spawn pending while a later transcript record is partial", async () => {
+		const description = "Review before partial tail";
+		spawnTyped("before-tail", "general-purpose", description);
+		fs.appendFileSync(transcript, '{"message":');
+
+		expect((await stopEntry("tBEFORETAIL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		fs.appendFileSync(transcript, '{"content":[]}}\n');
+		expect((await stopEntry("tBEFORETAIL", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("before-tail");
+		expect(await stopEntry("tBEFORETAIL", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps a trusted row yellow when a wake precedes a partial tail", async () => {
+		await establishCausalBoundary();
+		const description = "Wake before partial tail";
+		spawnTyped("woken-worker", "general-purpose", description);
+		expect((await stopEntry("tWOKEN", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("woken-worker");
+		expect(await stopEntry("tWOKEN", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		reports("woken-worker");
+		fs.appendFileSync(transcript, '{"message":');
+		expect((await stopEntry("tWOKEN", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		fs.appendFileSync(transcript, '{"content":[]}}\n');
+		expect((await stopEntry("tWOKEN", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("keeps match history when a teammate name is reused", async () => {
+		await establishCausalBoundary();
+		spawnTyped("worker", "general-purpose", "First task");
+		expect((await stopEntry("tFIRST", "First task"))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("worker");
+		expect(await stopEntry("tFIRST", "First task")).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		spawnTyped("worker", "general-purpose", "Second task");
+		expect(
+			(
+				await stopEntries(
+					entry("tFIRST", "First task"),
+					entry("tSECOND", "Second task"),
+				)
+			)?.eventType,
+		).toBe("SubagentActive");
+		idles("worker");
+		expect(
+			await stopEntries(
+				entry("tFIRST", "First task"),
+				entry("tSECOND", "Second task"),
+			),
+		).toEqual({ eventType: "Stop", lifecycleOutcome: "ready" });
+	});
+
+	it("retains an old description key while its trusted same-name row stays live", async () => {
+		await establishCausalBoundary();
+		const descriptions = Array.from(
+			{ length: 10 },
+			(_, index) => `Same-name task ${index + 1}`,
+		);
+		spawnTyped("worker", "general-purpose", descriptions[0]);
+		expect((await stopEntry("tFIRST", descriptions[0]))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		for (let index = 1; index < 9; index++) {
+			spawnTyped("worker", "general-purpose", descriptions[index]);
+			expect(
+				(
+					await stopEntries(
+						entry("tFIRST", descriptions[0]),
+						entry(`t${index + 1}`, descriptions[index]),
+					)
+				)?.eventType,
+			).toBe("SubagentActive");
+		}
+
+		let cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			matchKeys: Record<string, { descriptions: string[] }>;
+		};
+		expect(cache.matchKeys.worker.descriptions).toContain(descriptions[0]);
+		expect(cache.matchKeys.worker.descriptions).toHaveLength(9);
+
+		idles("worker");
+		expect(await stopEntry("tFIRST", descriptions[0])).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		// Once tFIRST leaves the live set, the old key is no longer protected and
+		// the normal eight-item cap applies on the next ledger update.
+		spawnTyped("worker", "general-purpose", descriptions[9]);
+		expect((await stopEntry("tTENTH", descriptions[9]))?.eventType).toBe(
+			"SubagentActive",
+		);
+		cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			matchKeys: Record<string, { descriptions: string[] }>;
+		};
+		expect(cache.matchKeys.worker.descriptions).not.toContain(descriptions[0]);
+		expect(cache.matchKeys.worker.descriptions).toHaveLength(8);
+	});
+
+	it("keeps an unrelated active prompt out of an exact ellipsis match", async () => {
+		await establishCausalBoundary();
+		const description = "Review release logs...";
+		spawnTyped(
+			"prompt-holder",
+			"claude",
+			undefined,
+			"Review release logs before publishing",
+		);
+		spawnTyped("ellipsis-review", "general-purpose", description);
+		expect((await stopEntry("tELLIPSIS2", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("ellipsis-review");
+		expect(await stopEntry("tELLIPSIS2", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("binds a new row to its causal duplicate-description spawn", async () => {
+		const sharedDescription = "Shared review description";
+		spawnTyped("old-active", "general-purpose", sharedDescription);
+		spawnTyped("anchor", "general-purpose", "Anchor task");
+		expect((await stopEntry("tANCHOR", "Anchor task"))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		spawnTyped("current-review", "general-purpose", sharedDescription);
+		expect((await stopEntry("tCURRENT", sharedDescription))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("current-review");
+		expect(await stopEntry("tCURRENT", sharedDescription)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("keeps same-description rows untrusted when one spawn cannot account for the batch", async () => {
+		const description = "Shared workflow review";
+		spawnTyped("known-review", "general-purpose", description);
+
+		// The second row was created inside a workflow and has no lead-transcript
+		// spawn. Exact text alone cannot identify which row belongs to the one
+		// observed spawn, so both rows must stay in the safe yellow direction.
+		expect(
+			(
+				await stopEntries(
+					entry("tKNOWN", description),
+					entry("tWORKFLOW", description),
+				)
+			)?.eventType,
+		).toBe("SubagentActive");
+		idles("known-review");
+		expect(
+			(
+				await stopEntries(
+					entry("tKNOWN", description),
+					entry("tWORKFLOW", description),
+				)
+			)?.eventType,
+		).toBe("SubagentActive");
+	});
+
+	it("does not spend one spawn on both exact and legacy first-seen rows", async () => {
+		const exactDescription = "Known exact review";
+		spawn("older-active");
+		reports("older-active");
+		expect((await stop("tOLDER"))?.eventType).toBe("SubagentActive");
+
+		// One new spawn produces one exact-description row. A workflow also
+		// contributes a legacy prompt-head row in the same first-seen snapshot.
+		// The exact binder consumes the only causal spawn; the legacy binder must
+		// count both rows and refuse to narrow the second row onto that spawn.
+		spawnTyped("known-review", "claude", exactDescription);
+		expect(
+			(await stopEntries(entry("tEXACT", exactDescription), entry("tLEGACY")))
+				?.eventType,
+		).toBe("SubagentActive");
+
+		idles("known-review");
+		// A wrong legacy binding drops both rows here and false-greens over the
+		// still-active older name that shares the legacy prompt prefix.
+		expect(
+			(await stopEntries(entry("tEXACT", exactDescription), entry("tLEGACY")))
+				?.eventType,
+		).toBe("SubagentActive");
+	});
+
+	it("retains legacy prompt matching without a trailing ellipsis", async () => {
+		const prompt = "Review one old prompt";
+		spawnTyped("legacy-review", "claude", undefined, prompt);
+		expect((await stopEntry("tLEGACY", prompt))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("legacy-review");
+		expect(await stopEntry("tLEGACY", prompt)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("does not match a foreign legacy row against an older prompt for the same name", async () => {
+		const firstPrompt = "Review legacy release one";
+		const secondPrompt = "Review legacy release two";
+		spawnTyped("legacy-worker", "claude", undefined, firstPrompt);
+		expect((await stopEntry("tLEGACY1", firstPrompt))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("legacy-worker");
+		expect(await stopEntry("tLEGACY1", firstPrompt)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		spawnTyped("legacy-worker", "claude", undefined, secondPrompt);
+		expect((await stopEntry("tLEGACY2", secondPrompt))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("legacy-worker");
+		expect(await stopEntry("tLEGACY2", secondPrompt)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		// No new spawn caused this row. Matching the name's historical P1 would
+		// inherit its idle state and false-green a workflow-created live row.
+		expect((await stopEntry("tFOREIGNP1", firstPrompt))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("does not bind a row to a historical same-description spawn", async () => {
+		const description = "Precommit code review";
+		spawnTyped("finished-review", "general-purpose", description);
+		idles("finished-review");
+		spawnTyped("anchor", "general-purpose", "Anchor current scan");
+		expect((await stopEntry("tANCHOR", "Anchor current scan"))?.eventType).toBe(
+			"SubagentActive",
+		);
+
+		expect((await stopEntry("tSUBSTITUTE", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("keeps an unbound live row yellow when it reuses an old idle description", async () => {
+		await establishCausalBoundary();
+		const description = "Precommit code review";
+		spawnTyped("old-review", "claude", description);
+		expect((await stopEntry("tOLD", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("old-review");
+		expect(await stopEntry("tOLD", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+
+		// A workflow-created row has no matching Agent spawn in this transcript.
+		// Reusing the old description must not inherit its idle state.
+		expect((await stopEntry("tFOREIGN", description))?.eventType).toBe(
+			"SubagentActive",
+		);
 	});
 
 	it("stays yellow when one of two running teammates finishes and the other is still working", async () => {
@@ -612,6 +1119,288 @@ describe("superset-notify teammate entry binding", () => {
 		// Binding the re-listed tS to the newer spawn would drop it here while
 		// "solo" — the teammate it actually belongs to — is still working.
 		expect((await stop("tS"))?.eventType).toBe("SubagentActive");
+	});
+
+	it("serializes overlapping cache transactions so a stale writer cannot erase a newer binding", async () => {
+		await establishCausalBoundary();
+		const firstDescription = "First concurrent review";
+		const secondDescription = "Second concurrent review";
+		const cacheFile = teamStateFile();
+		const lockFile = `${cacheFile}.lock`;
+		const pauseReady = path.join(home, "stale-writer-ready");
+		const pauseRelease = path.join(home, "stale-writer-release");
+		const lockAttempted = path.join(home, "new-writer-lock-attempted");
+		const newWriterDone = path.join(home, "new-writer-done");
+		const pausingWrapper = path.join(home, "pause-before-replace.py");
+		const observingWrapper = path.join(home, "observe-lock.py");
+		fs.writeFileSync(
+			pausingWrapper,
+			`import os
+import pathlib
+import runpy
+import sys
+import time
+
+real_replace = os.replace
+paused = False
+
+def replace(src, dst):
+    global paused
+    if not paused and os.path.abspath(os.fspath(dst)) == os.path.abspath(os.environ["TEST_CACHE_FILE"]):
+        paused = True
+        pathlib.Path(os.environ["TEST_PAUSE_READY"]).write_text("ready", encoding="utf-8")
+        deadline = time.monotonic() + 5.0
+        release = pathlib.Path(os.environ["TEST_PAUSE_RELEASE"])
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not release.exists():
+            raise RuntimeError("timed out waiting to release stale writer")
+    return real_replace(src, dst)
+
+os.replace = replace
+runpy.run_path(sys.argv[1], run_name="__main__")
+`,
+		);
+		fs.writeFileSync(
+			observingWrapper,
+			`import builtins
+import os
+import pathlib
+import runpy
+import sys
+
+real_open = builtins.open
+announced = False
+
+def observed_open(file, *args, **kwargs):
+    global announced
+    if not announced and os.path.abspath(os.fspath(file)) == os.path.abspath(os.environ["TEST_LOCK_FILE"]):
+        announced = True
+        pathlib.Path(os.environ["TEST_LOCK_ATTEMPTED"]).write_text("attempted", encoding="utf-8")
+    return real_open(file, *args, **kwargs)
+
+builtins.open = observed_open
+runpy.run_path(sys.argv[1], run_name="__main__")
+pathlib.Path(os.environ["TEST_NEW_WRITER_DONE"]).write_text("done", encoding="utf-8")
+`,
+		);
+		const waitForFile = async (file: string): Promise<void> => {
+			const deadline = Date.now() + 5_000;
+			while (!fs.existsSync(file)) {
+				if (Date.now() >= deadline)
+					throw new Error(`Timed out waiting for ${file}`);
+				await Bun.sleep(10);
+			}
+		};
+
+		spawnTyped("first-worker", "general-purpose", firstDescription);
+		const staleWriter = hook(
+			{
+				background_tasks: [entry("tFIRST", firstDescription)],
+				hook_event_name: "Stop",
+				transcript_path: transcript,
+			},
+			{
+				TEST_CACHE_FILE: cacheFile,
+				TEST_PAUSE_READY: pauseReady,
+				TEST_PAUSE_RELEASE: pauseRelease,
+			},
+			[PYTHON, pausingWrapper, scriptPath],
+		);
+		await waitForFile(pauseReady);
+
+		spawnTyped("second-worker", "general-purpose", secondDescription);
+		const newerWriter = hook(
+			{
+				background_tasks: [
+					entry("tFIRST", firstDescription),
+					entry("tSECOND", secondDescription),
+				],
+				hook_event_name: "Stop",
+				transcript_path: transcript,
+			},
+			{
+				TEST_LOCK_ATTEMPTED: lockAttempted,
+				TEST_LOCK_FILE: lockFile,
+				TEST_NEW_WRITER_DONE: newWriterDone,
+			},
+			[PYTHON, observingWrapper, scriptPath],
+		);
+		await waitForFile(lockAttempted);
+		expect(fs.existsSync(newWriterDone)).toBe(false);
+
+		fs.writeFileSync(pauseRelease, "release");
+		await Promise.all([staleWriter, newerWriter]);
+		expect(fs.existsSync(newWriterDone)).toBe(true);
+
+		idles("first-worker");
+		idles("second-worker");
+		expect(
+			await stopEntries(
+				entry("tFIRST", firstDescription),
+				entry("tSECOND", secondDescription),
+			),
+		).toEqual({ eventType: "Stop", lifecycleOutcome: "ready" });
+	});
+
+	it("migrates a v5 causal binding before matching an explicit description", async () => {
+		const description = "Fix dose-normalise regression";
+		spawnTyped("migrate-worker", "general-purpose", description);
+		idles("migrate-worker");
+		writeV5TeamState({
+			entryNames: { tMIGRATE: ["migrate-worker"] },
+			name: "migrate-worker",
+			seenIds: ["tMIGRATE"],
+		});
+
+		expect(await stopEntry("tMIGRATE", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+		expect(JSON.parse(fs.readFileSync(teamStateFile(), "utf8")).version).toBe(
+			6,
+		);
+	});
+
+	it("preserves a trusted v5 name through same-description history and a partial tail", async () => {
+		const description = "Shared migration description";
+		spawnTyped("trusted-worker", "general-purpose", description);
+		idles("trusted-worker");
+		spawnTyped("active-impostor", "general-purpose", description);
+		reports("active-impostor");
+		writeV5TeamState({
+			entryNames: { tMIGRATE: ["trusted-worker"] },
+			name: "trusted-worker",
+			seenIds: ["tMIGRATE"],
+		});
+		fs.appendFileSync(transcript, '{"message":');
+
+		// Migration may reconstruct both names for the same text, but it must keep
+		// the causal v5 binding. The partial tail keeps this decision yellow while
+		// the migrated cache remains intact for the next complete scan.
+		expect((await stopEntry("tMIGRATE", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			entryNames: Record<string, string[]>;
+			trustedEntryIds: string[];
+			version: number;
+		};
+		expect(cache.version).toBe(6);
+		expect(cache.entryNames.tMIGRATE).toEqual(["trusted-worker"]);
+		expect(cache.trustedEntryIds).toEqual(["tMIGRATE"]);
+	});
+
+	it("keeps an unbound v5 explicit-description row yellow", async () => {
+		const description = "Fix dose-normalise regression";
+		spawnTyped("unbound-worker", "general-purpose", description);
+		idles("unbound-worker");
+		writeV5TeamState({
+			entryNames: {},
+			name: "unbound-worker",
+			seenIds: ["tUNBOUNDV5"],
+		});
+
+		// The matching spawn is before the v5 cache offset. Reconstructing its
+		// description is useful history, but it is not new causal evidence.
+		expect((await stopEntry("tUNBOUNDV5", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+	});
+
+	it("rebuilds v5 prompt history in document order before latest-only matching", async () => {
+		const firstPrompt = "Review migration prompt one";
+		const secondPrompt = "Review migration prompt two";
+		spawnTyped("migration-worker", "claude", undefined, firstPrompt);
+		idles("migration-worker");
+		spawnTyped("migration-worker", "claude", undefined, secondPrompt);
+		idles("migration-worker");
+		writeV5TeamState({
+			entryNames: {},
+			name: "migration-worker",
+			prompt: secondPrompt,
+			seenIds: ["tMIGRATIONSEED"],
+		});
+
+		// A foreign row matching stale P1 must not inherit the idle worker state.
+		expect((await stopEntry("tFOREIGNP1", firstPrompt))?.eventType).toBe(
+			"SubagentActive",
+		);
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			matchKeys: Record<string, { prompts: string[] }>;
+		};
+		expect(cache.matchKeys["migration-worker"]?.prompts).toEqual([
+			firstPrompt,
+			secondPrompt,
+		]);
+	});
+
+	it("never rebinds a previously-seen v5 row to a later same-description spawn", async () => {
+		const description = "Unread migration review";
+		spawnTyped("historical-worker", "general-purpose", description);
+		reports("historical-worker");
+		writeV5TeamState({
+			entryNames: {},
+			name: "historical-worker",
+			seenIds: ["tUNBOUNDV5"],
+		});
+
+		// This later worker can finish without producing a row. It cannot own the
+		// already-seen tUNBOUNDV5 row, whose historical worker is still active.
+		spawnTyped("new-worker", "general-purpose", description);
+		idles("new-worker");
+		expect((await stopEntry("tUNBOUNDV5", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			trustedEntryIds: string[];
+		};
+		expect(cache.trustedEntryIds).toEqual([]);
+	});
+
+	it("trusts a new migration row from an unread causal spawn", async () => {
+		const description = "New migration review";
+		spawnTyped("historical-worker", "general-purpose", "Historical task");
+		idles("historical-worker");
+		writeV5TeamState({
+			entryNames: {},
+			name: "historical-worker",
+			seenIds: ["tHISTORICAL"],
+		});
+
+		spawnTyped("new-worker", "general-purpose", description);
+		expect((await stopEntry("tNEWV5", description))?.eventType).toBe(
+			"SubagentActive",
+		);
+		idles("new-worker");
+		expect(await stopEntry("tNEWV5", description)).toEqual({
+			eventType: "Stop",
+			lifecycleOutcome: "ready",
+		});
+	});
+
+	it("preserves a trusted v5 row without trusting a foreign live workflow row", async () => {
+		const description = "Fix dose-normalise regression";
+		spawnTyped("migrate-worker", "general-purpose", description);
+		idles("migrate-worker");
+		writeV5TeamState({
+			entryNames: { tTRUSTEDV5: ["migrate-worker"] },
+			name: "migrate-worker",
+			seenIds: ["tTRUSTEDV5", "tWORKFLOWV5"],
+		});
+
+		expect(
+			(
+				await stopEntries(
+					entry("tTRUSTEDV5", description),
+					entry("tWORKFLOWV5", description),
+				)
+			)?.eventType,
+		).toBe("SubagentActive");
+		const cache = JSON.parse(fs.readFileSync(teamStateFile(), "utf8")) as {
+			trustedEntryIds: string[];
+		};
+		expect(cache.trustedEntryIds).toEqual(["tTRUSTEDV5"]);
 	});
 
 	it("degrades to a coarse keep-everything binding when the ledger cache is lost", async () => {
@@ -1137,9 +1926,9 @@ describe("superset-notify hook endpoint failover", () => {
 		});
 
 		expect(recycled.hits).toEqual([]);
-		expect(
-			recordsWithAction("hook-candidate-manifest-dead-pid"),
-		).toHaveLength(1);
+		expect(recordsWithAction("hook-candidate-manifest-dead-pid")).toHaveLength(
+			1,
+		);
 		expect(recordsWithAction("post-error")).toHaveLength(1);
 	}, 30_000);
 
@@ -1152,9 +1941,9 @@ describe("superset-notify hook endpoint failover", () => {
 		});
 
 		expect(live.hits).toEqual(["Start"]);
-		expect(
-			recordsWithAction("hook-candidate-manifest-dead-pid"),
-		).toHaveLength(0);
+		expect(recordsWithAction("hook-candidate-manifest-dead-pid")).toHaveLength(
+			0,
+		);
 		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(live.url);
 	}, 30_000);
 });
