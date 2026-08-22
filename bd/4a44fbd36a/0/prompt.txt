@@ -1,0 +1,176 @@
+<task-notification>
+<task-id>a4cdf7f4e8fdab82e</task-id>
+<tool-use-id>toolu_01BRPFBCvTf1PxC5uAKgtXaK</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\b47f0a34-e926-4bb4-bf0c-842dd56c71e0\tasks\a4cdf7f4e8fdab82e.output</output-file>
+<status>completed</status>
+<summary>Agent "Efficiency review of dot fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reviewed full diff (`git diff HEAD` + both untracked files) for efficiency only.
+
+## Findings
+
+Nothing material at stated cadences (hook short-lived, sweep 5-min). Three minor items, all in sweep:
+
+1. **`packages/host-service/src/terminal-agents/stale-working-sweep.ts:148-226` — `codexJobActive` re-walks entire codex job store per candidate binding.**
+   Cost: with N stale candidates in one pass, N full readdir trees over `~/.claude/plugins/data/codex*/state/*/jobs` + `$TMP/codex-companion/*/jobs`, plus stat+read+parse of every fresh job JSON, every 5 min. N usually 0–1, so cost small in practice.
+   Cheaper: scan job dirs once per sweep pass → build `Set&lt;sessionId&gt;` of active sessions; per-binding check becomes map lookup.
+
+2. **`stale-working-sweep.ts:116-136` — `newestRunMarker` stats every dir entry serially, computes max mtime; caller (line 295-301) only needs "any entry younger than 12h".**
+   Cost: one serial stat per marker file per candidate per pass; no early exit even when first entry already fresh.
+   Cheaper: pass cutoff in, return `active` on first entry inside window (also drops need for max computation); or `Promise.all` the stats. Marginal — dirs are small.
+
+3. **`stale-working-sweep.ts:270-290` — check order: `.askq` readdir runs before `.mainstopped` stat.**
+   Cost: legit long-working binding (no sentinel, e.g. long tool call) re-evaluates every 5 min and pays readdir + stat; sentinel-missing is its early-out.
+   Cheaper: stat sentinel first (single stat, most selective cheap check), askq after. Correctness unaffected — evaluation is read-only. One syscall per pass saved; borderline worth doing only because it's a one-line reorder.
+
+## Explicitly checked, clean
+
+- Sequential short-circuit stats in `evaluateStaleWorkingBinding` (compacting/bgactive/pendingfailure): ordering is load-bearing (early returns), sequential correct.
+- Commit path no-await block: synchronous by design (race guard), not a blocking-hot-path issue — runs only on rare finalization.
+- Python hook (`pane-map-hook.ts` embedded): credit expiry/trim loops bounded at 64/16/32 entries; `_touch(sentinel)` adds one fs op per hook event; TaskStop branch adds dict ops only. All trivial for a short-lived per-event process.
+- Watcher `stampMainStopped` (agent-jsonl-watcher.ts:1063): one conditional fs write on interrupt path, reuses already-computed `codexJobActive` result.
+- Renderer `synthetic` skip and type additions: no runtime cost.
+- Dual mount (desktop `index.ts` + `serve.ts`): alternative entrypoints, one per process — no duplicate interval at runtime.
+- `appendDecisionLog` `mkdir` per call: finalization-only, rare.
+
+No blocking work on hot paths, no long-lived closures capturing large scope (sweep closure holds store + eventBus refs only).</result>
+<usage><subagent_tokens>64049</subagent_tokens><tool_uses>4</tool_uses><duration_ms>66252</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a950cf9e3d8fba4a3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\b47f0a34-e926-4bb4-bf0c-842dd56c71e0\tasks\a950cf9e3d8fba4a3.output</output-file>
+<status>completed</status>
+<summary>Agent "Reuse review of dot fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>REUSE review of uncommitted diff. Four findings + one minor.
+
+**1. `packages/host-service/src/terminal-agents/stale-working-sweep.ts:413-414` — re-implements `nextLifecycleInstantMs`**
+- `const occurredAt = now &gt; binding.lastEventAt ? now : binding.lastEventAt + 1;` — exact logic of exported `nextLifecycleInstantMs(nowMs, previousEventAtMs)` at `packages/host-service/src/trpc/router/notifications/notifications.ts:81-89`. The sweep's own comment even names it ("same rule as notifications.ts `nextLifecycleInstantMs`").
+- Cost: two copies of the clock-backstep ordering rule the companion generation/retraction stack depends on; a fix to one won't reach the other.
+- Fix: `import { nextLifecycleInstantMs } from "../trpc/router/notifications/notifications"` (same package, already exported) — `nextLifecycleInstantMs(now, binding.lastEventAt)`.
+
+**2. `stale-working-sweep.ts:90, 93, 271-277` — re-declares marker root, safe-segment guard, and askq pending-read**
+- `MARKER_ROOT()`, `SAFE_SEGMENT` and the askq readdir (ENOENT → absent, non-ENOENT → hold) duplicate `askqMarkerDir()` + `SAFE_MARKER_SEGMENT` + `hasPendingQuestionMarker`'s core in same-package `packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts:80-101, 310-345`. `askqMarkerDir` is exported and embeds the same guard (guard-inside-builder is that file's documented invariant — "no caller can hold a path built from an unvalidated id"; the sweep re-splits guard from path building).
+- Cost: `~/.superset/agent-subagent-running` + the traversal guard now spelled in 3 places in host-service src; a root or guard change drifts.
+- Fix: use `askqMarkerDir(terminalId)` for the askq check; hoist a shared `agentMarkerRoot()` (and the segment guard) out of agent-status-snapshot for the sibling marker paths (`.mainstopped`, `.compacting`, `.bgactive`, run dir).
+
+**3. `stale-working-sweep.ts:148-226` — third `codexJobActive` implementation**
+- A TS mirror already exists: `apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts:431-503` (`codexJobActive`, "(BF codex-companion parity) Mirror of the Python hook's _codex_job_active"). Same two roots (`~/.claude/plugins/data/codex*/state/*/jobs/*.json`, `tmpdir()/codex-companion/*/jobs/*.json`), same queued/running check.
+- Caveat honored: the Python port itself is licensed (different runtime), and the desktop copy can't be imported into host-service (dependency direction is desktop → host-service). But the fix direction exists: hoist the probe into `packages/host-service` (parameterize the pid probe / freshness windows the sweep deliberately drops) and have the desktop watcher import it — host-service is already the desktop's dependency.
+- Cost: codex job-store layout now encoded in 3 places; a new job root or status value added in one silently misses the others.
+
+**4. `packages/host-service/src/terminal-agents/stale-working-sweep.test.ts:19-53` — re-implements test home-redirect + marker-root helpers**
+- Manual USERPROFILE/HOME save/redirect/restore + `markerRoot()` duplicate `withFakeHome()` and `askqMarkerRoot()` in `packages/host-service/test/helpers/askq-markers.ts:28-56`, built for exactly this ("every test that exercises marker code has to redirect homedir()… without the redirect these tests delete out of the developer's own ~/.superset").
+- Cost: ~30 lines of env-restore/cleanup boilerplate re-derived; the shared helper also guarantees temp-dir removal on failure paths.
+- Fix: `const fakeHome = withFakeHome("stale-sweep-")` at top level, `home = await fakeHome()` in beforeEach; `askqMarkerRoot(home)` for the root.
+
+**Minor. `stale-working-sweep.ts:444-446` — id mint**
+- `randomBytes(16).toString("base64url").slice(0, 22)`: same-package precedent is `base64UrlEncode(randomBytes(16))` (`packages/host-service/src/companion/crypto.ts:739`, exported; private `mintLeaseId` in `companion/lease.ts:171` is this exact mint). Also `.slice(0, 22)` is dead — 16 bytes encode to exactly 22 base64url chars.
+
+Clean elsewhere: `mapEventType`, `forwardCompanionLifecycle`, `startTerminalReaper` shape are properly reused; Python-side edits in `pane-map-hook.ts` reuse existing `_team_set_state`/`_log`/`_touch`/`_remove` with no intra-script duplication; `statMarker`/`newestRunMarker` have no existing generic counterpart.</result>
+<usage><subagent_tokens>99220</subagent_tokens><tool_uses>15</tool_uses><duration_ms>129049</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ad1267a567a433b0c</task-id>
+<tool-use-id>toolu_015X1dJJtrvMroCJcqiiLSZm</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\b47f0a34-e926-4bb4-bf0c-842dd56c71e0\tasks\ad1267a567a433b0c.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplification review of dot fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reviewed full uncommitted diff. Findings, ordered by impact.
+
+**1. Sentinel lifecycle scattered across ~10 sites — centralize in the wrapper**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts` (~2452, 2455, 2527, 2534, 2564, 2602, 2611, 2614, 2621, 2655; plus pre-existing wrapper touch at 2265)
+- Diff enforces one invariant — "turn-end hold keeps/touches `.mainstopped`; only a true Stop/Failed removes it" — by hand at every hold/green/failed return in four branches (Stop, SubagentStop, manual-compact SessionStart, StopFailure/subagent), each with its own comment restating the rule.
+- Cost: every future branch must remember the pairing; the missed-site failure mode is exactly the bug this fixes (StopFailure's main-loop `Failed` path appears to have no remove today — the scattering already leaked once). Six comment blocks say the same thing.
+- Simpler: enforce once in `_decide_event_type` after `result` is computed: `result in ("Stop", "Failed")` → remove sentinel; hold result (`SubagentActive`/`BackgroundRunning`/`None`) at a turn-end event (`Stop`, `SubagentStop`, `StopFailure`, SessionStart with source=compact) → touch. Keeps UserPromptSubmit's explicit remove. One wrinkle to verify: manual-compact green currently does NOT remove; centralized rule would — same invariant, so should be correct, but confirm against tests.
+
+**2. Ledger state is a growing 9-tuple threaded positionally**
+- File: same, lines 1331 (`_team_empty_ledger`), destructured identically at 1519, 1629, 1648; params threaded through `_team_scan_record` (1219, now 6 positional args) and `_team_scan_records` (1310).
+- Diff added 2 fields (`spawn_credits`, `taskstop_tools`) and had to edit 7 sites to do it, including a throwaway `historical_taskstops = {}`.
+- Cost: each schema bump is a 7-site mechanical edit; positional order is the only thing keeping fields aligned.
+- Simpler: one mutable dict (`ledger = {"state": {}, "fork_tools": {}, ...}`) passed as a single argument; `_team_empty_ledger` returns it; scan functions take `(ledger, obj)`. No backticks/backslashes needed.
+
+**3. Spawn-credit LRU pop/reinsert is redundant state — recency is already in the slots**
+- File: same, 1721–1730 (pop/reinsert dance + comment) and 1747 (`while len &gt; 64: pop(next(iter(...)))`).
+- Every surviving entry holds ≥1 unexpired slot, and each slot is `credit_time + TTL`, so most-recently-credited = `max(slots)`. Maintaining dict insertion order as a second recency record duplicates derivable information and needs a comment explaining the trick.
+- Simpler: `credit = spawn_credits.setdefault(spawn_description, {"names": [], "slots": []})` (replaces 5 lines), and evict via `min(spawn_credits, key=lambda d: max(spawn_credits[d]["slots"]))`. Same behavior, one source of truth.
+
+**4. Redundant guard on tool_result pop**
+- File: same, line 1251: `stopped_name = taskstop_tools.pop(result_id, None) if result_id else None`.
+- Empty string is never a key (insertion at ~1305 requires truthy `stop_tool_id`), so the conditional buys nothing.
+- Simpler: `stopped_name = taskstop_tools.pop(result_id, None)`.
+
+**5. Three copy-pasted marker-window checks in the sweep**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal-agents\stale-working-sweep.ts`, lines 295–317.
+- runMarker/compacting/bgActive each repeat "error → null; mtime inside window → null" (~18 lines).
+- Simpler: `const holds: Array&lt;[MarkerStat, number]&gt; = [[runMarker, RUN_MARKER_WINDOW_MS], [compacting, COMPACT_WINDOW_MS], [bgActive, staleAfterMs]]` + one loop. The per-window comments move to the array.
+
+**6. `codexJobActive`: flag-parameterized traversal + dead outer try/catch**
+- File: same, lines 148–226.
+- The `codexShape` boolean makes one loop body a union of two unrelated directory shapes (`codex*/state/*/jobs` vs `*/jobs`), forcing if/else nesting. The outer `try { ... } catch {}` (161/221) is unreachable in practice — every await inside is individually caught; only `join`/`Date.now` remain. Dead defensive layer, and this codebase's rule is fail loud.
+- Simpler: two plain sequential collection loops (or two tiny helpers) filling `jobDirs`; delete the outer try/catch.
+
+**7. Sweep integration tests hand-roll the same mock harness three times**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal-agents\stale-working-sweep.test.ts`, lines 133–259.
+- Each test rebuilds binding + store + eventBus + start/sleep/stop (~25 lines each, minor variation).
+- Simpler: `runSweepOnce(binding)` helper returning `{broadcast, recorded}`; tests shrink to setup + assertions.
+
+**Minor**: `evaluateStaleWorkingBinding` duplicates the `staleAfterMs` default (`?? STALE_AFTER_MS`, line 264) that `startStaleWorkingSweep` already applies (line 356), and the sweep always passes it — one default site suffices.
+
+Clean elsewhere: the dual mount (host-service/index.ts + serve.ts) is deliberate per `(COMPANION-BRIDGE-MOUNT)`; `synthetic?: true` mirrored across `packages/host-service/src/events/types.ts` and `packages/workspace-client/src/lib/eventBus.ts` follows the existing mirrored-interface pattern; `MARKER_ROOT` as a function is required (tests swap HOME per test); the TS port of `_codex_job_active` is unavoidable cross-language duplication; renderer/watcher/FEATURES.md edits add no removable complexity.</result>
+<usage><subagent_tokens>93402</subagent_tokens><tool_uses>10</tool_uses><duration_ms>193771</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa8767336ec693adb</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\b47f0a34-e926-4bb4-bf0c-842dd56c71e0\tasks\aa8767336ec693adb.output</output-file>
+<status>completed</status>
+<summary>Agent "Altitude review of dot fix" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Altitude review of working-tree diff. Findings, ordered by weight:
+
+**1. (SENTINEL-HOLD) sentinel policy scattered per return site — the one real altitude miss**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\pane-map-hook.ts` lines 2452, 2456, 2474-2478, 2527, 2534, 2564-2566, 2602, 2611, 2615, 2622, 2651, 2655, 2680, 2696, 2706 (plus pre-existing wrapper site at 2264).
+- Summary: sentinel touch/remove now maintained at ~11 sites inside `_decide_event_type_inner`, while wrapper `_decide_event_type` already owns the identical rule for downgraded turn-ends ("stamp .mainstopped on a held turn-end"). Policy split across two layers.
+- Concrete cost: the incident's root cause WAS one per-site mistake (unconditional `_remove` in the Stop branch). Fix adds more per-site calls; next new hold branch (fifth hold type in Stop/StopFailure/compact-finish path) that forgets `_touch(sentinel)` recreates the exact silent-no-op class. New `NOOP:` log makes recurrence diagnosable, not prevented.
+- Deeper alternative: the policy is a function of (event class, result) — turn-end events (`Stop`, `StopFailure` sans agent-hold, `SubagentStop`, `SessionStart` source=compact/manual) + hold result (`SubagentActive`/`BackgroundRunning`) → touch; + terminal result (`Stop`/`Failed`) → remove. Wrapper sees event, source, and result; every NEW site in this diff fits the rule, and non-turn-end `SubagentActive` returns (SubagentStart at 2469, PostToolUse at 2762/2776/2797) correctly fall outside it. Move policy into `_decide_event_type`; inner keeps only the `UserPromptSubmit` remove and the pre-existing None-with-markers touch at 2564. No backticks/backslashes needed — constraint-compatible.
+
+**2. Sweep re-declares askq helper its own package already exports**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\terminal-agents\stale-working-sweep.ts` lines 90-93 (`MARKER_ROOT`, `SAFE_SEGMENT`), 266-276 (hand-built `.askq` path).
+- Summary: duplicates `askqMarkerDir` + `SAFE_MARKER_SEGMENT` from `packages\host-service\src\trpc\router\notifications\agent-status-snapshot.ts:80-101` — whose docstring explicitly says validation lives inside the function so no caller can hold an unvalidated path.
+- Cost: safety invariant forked inside one package; path-shape drift between the two readers.
+- Alternative: import `askqMarkerDir`; hoist marker-root/sentinel path builders into that shared module.
+
+**3. Third implementation of codex-job-active scan**
+- File: `stale-working-sweep.ts:148-226` (`codexJobActive`, async).
+- Summary: now three copies — Python `_codex_job_active` (pane-map-hook), sync TS mirror `agent-jsonl-watcher.ts:392-431`, this async port. Same dir shapes, same queued/running semantics, same 6h cap.
+- Cost: a codex-plugin path or status-vocabulary change must be fixed three times; two will drift silently.
+- Alternative: Python copy is inherent (embedded template). The two TS copies aren't — export one from host-service; desktop watcher already imports `@superset/host-service`.
+
+**4. Two adjacent stamp sites in watcher interrupt path**
+- File: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\main\lib\agent-jsonl-watcher\agent-jsonl-watcher.ts:1055` + 1064.
+- Summary: `stampMainStopped` called twice with complementary guards (`heldRed &amp;&amp; !truncatedReset` then `hold &amp;&amp; !heldRed &amp;&amp; !truncatedReset`) because the old site was left in place.
+- Cost: minor — duplicated guard logic, one more thing to keep complementary.
+- Alternative: single `if (hold &amp;&amp; !truncatedReset &amp;&amp; askqTid) stampMainStopped(askqTid)` after `hold` is computed (`askqTid` === `mapping?.terminalId`).
+
+**Judged at the right depth (no finding):**
+- **(TEAM-SPAWN-CREDIT)**: correct direction — replaces the fragile same-delta special case with a generalized TTL'd credit mechanism, bounded, migration in place, misses logged. High complexity but each rule carries its counterexample.
+- **(TEAM-TASKSTOP)**: tool_use/tool_result pairing is the shared ledger-scan primitive extended, not a bolt-on; errored-stop-leaves-active is right.
+- **Synthetic-flag layer**: renderer notification controller is where chime/toast are decided; dot movement (`updatePaneStatus`) runs before the skip; companion deliberately still alerted host-side. Age-based suppression is not a viable "deeper" alternative — the sweep mints `occurredAt = now` (ONE-BUZZ monotonicity), so provenance must be explicit. `synthetic?: true` on the shared payload types is acceptable metadata, though note it's a second "not news" channel alongside the existing `fromReplay` concept.
+- **Sweep architecture**: matches the documented constraint (hook owns markers, sweep is a read-only backstop honoring the hook's own windows, sync commit block, positive `.mainstopped` evidence). Window constants (12h/2h/6h) mirror Python with no sync gate — inherent cross-language, self-correcting on next real event.
+- **Dual mount** (serve.ts + desktop child): follows documented (COMPANION-BRIDGE-MOUNT) lesson, mirrors `startTerminalReaper`.
+
+Net: mechanism choices are at the right altitude; the scatter is in execution — finding 1 is the one that will regenerate this bug class, findings 2-4 are consolidation debt.</result>
+<usage><subagent_tokens>93674</subagent_tokens><tool_uses>12</tool_uses><duration_ms>227156</duration_ms></usage>
+</task-notification>

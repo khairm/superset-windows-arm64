@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "bd4a44fbd36a",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 9,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/main/host-service/index.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.test.ts",
+    "apps/desktop/src/main/lib/agent-jsonl-watcher/pane-map-hook.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/lib/lifecycleEvents.ts",
+    "packages/host-service/src/events/lifecycle-instant.ts",
+    "packages/host-service/src/events/types.ts",
+    "packages/host-service/src/index.ts",
+    "packages/host-service/src/serve.ts",
+    "packages/host-service/src/terminal-agents/index.ts",
+    "packages/host-service/src/terminal-agents/stale-working-sweep.test.ts",
+    "packages/host-service/src/terminal-agents/stale-working-sweep.ts",
+    "packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts",
+    "packages/host-service/src/trpc/router/notifications/notifications.ts",
+    "packages/workspace-client/src/lib/eventBus.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bd/4a44fbd36a/0/metadata.json",
+      "transcript": "/bd/4a44fbd36a/0/full.jsonl",
+      "content_hash": "/bd/4a44fbd36a/0/content_hash.txt",
+      "prompt": "/bd/4a44fbd36a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13983,
+    "cache_creation_tokens": 475083,
+    "cache_read_tokens": 50967519,
+    "output_tokens": 200802,
+    "api_call_count": 154
+  }
+}
