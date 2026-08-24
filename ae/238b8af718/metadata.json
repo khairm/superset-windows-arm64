@@ -3,7 +3,7 @@
   "checkpoint_id": "ae238b8af718",
   "strategy": "manual-commit",
   "branch": "feature/workspace-account-switching",
-  "checkpoints_count": 1,
+  "checkpoints_count": 6,
   "files_touched": [
     "CONTEXT.md",
     "FEATURES.md",
@@ -75,13 +75,19 @@
       "transcript": "/ae/238b8af718/0/full.jsonl",
       "content_hash": "/ae/238b8af718/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/ae/238b8af718/1/metadata.json",
+      "transcript": "/ae/238b8af718/1/full.jsonl",
+      "content_hash": "/ae/238b8af718/1/content_hash.txt",
+      "prompt": "/ae/238b8af718/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 12448,
-    "cache_creation_tokens": 87580,
-    "cache_read_tokens": 1254080,
-    "output_tokens": 8490,
-    "api_call_count": 13
+    "input_tokens": 44302,
+    "cache_creation_tokens": 723947,
+    "cache_read_tokens": 59137226,
+    "output_tokens": 231106,
+    "api_call_count": 206
   }
 }
