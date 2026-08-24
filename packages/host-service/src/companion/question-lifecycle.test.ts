@@ -71,7 +71,7 @@ function resolver(
 			hostWorkspaceId: "w-1",
 			agentId: "claude",
 		}),
-		resolveTranscriptPath: () => null,
+		resolveTranscriptPath: async () => null,
 		resolveTerminalActivityMs: () => NOW - 60_000,
 		...overrides,
 	};
@@ -160,23 +160,25 @@ describe("(ANSWER-LEDGER) question write fence against real SQL", () => {
 // ---------------------------------------------------------------------------
 
 describe("(CAPTURE-BOUNDED) capture is gated on an ACTIVE terminal", () => {
-	it("refuses a capture whose terminal is not active, even though the unrestricted resolver would answer for it", () => {
+	it("refuses a capture whose terminal is not active, even though the unrestricted resolver would answer for it", async () => {
 		const store = createQuestionStore({
 			source: resolver({ resolveActiveTerminal: () => null }),
 			liveness: { isProvablyGone: () => false },
 			onSettled: () => {},
 		});
-		expect(() => store.capture(captureInput())).toThrow(CaptureRejectedError);
+		await expect(store.capture(captureInput())).rejects.toThrow(
+			CaptureRejectedError,
+		);
 		expect(store.listPending()).toEqual([]);
 	});
 
-	it("accepts one whose terminal is active", () => {
+	it("accepts one whose terminal is active", async () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
 			onSettled: () => {},
 		});
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		expect(question.state).toBe("pending");
 		expect(store.listPending()).toHaveLength(1);
 	});
@@ -286,14 +288,14 @@ function requireFirstPendingId(store: QuestionStore) {
 }
 
 describe("positive question settlement", () => {
-	it("keeps an acknowledged remote answer pending until the exact PostToolUse arrives", () => {
+	it("keeps an acknowledged remote answer pending until the exact PostToolUse arrives", async () => {
 		const settled: string[] = [];
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
 			onSettled: (question) => settled.push(question.questionId),
 		});
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 
 		expect(
 			store.markRemoteAnswered(
@@ -324,14 +326,14 @@ describe("positive question settlement", () => {
 		expect(settled).toEqual([question.questionId]);
 	});
 
-	it("preserves remote provenance when PostToolUse wins the marking race", () => {
+	it("preserves remote provenance when PostToolUse wins the marking race", async () => {
 		const settled: string[] = [];
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
 			onSettled: (question) => settled.push(question.questionId),
 		});
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 
 		store.asCaptureSink().resolve({
 			hostTerminalId: question.hostTerminalId,
@@ -370,13 +372,13 @@ describe("positive question settlement", () => {
 		).toBe(false);
 	});
 
-	it("does not settle remote provenance on a mismatched PostToolUse", () => {
+	it("does not settle remote provenance on a mismatched PostToolUse", async () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
 			onSettled: () => {},
 		});
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		store.markRemoteAnswered(
 			question.questionId,
 			{
@@ -407,7 +409,7 @@ describe("transcript reconciliation cache", () => {
 				liveness: { isProvablyGone: () => false },
 				onSettled: () => {},
 			});
-			const question = store.capture(captureInput({ transcriptPath }));
+			const question = await store.capture(captureInput({ transcriptPath }));
 			let scans = 0;
 			store.verifyResolvedInTranscript = async () => {
 				scans += 1;
@@ -434,7 +436,7 @@ describe("transcript reconciliation cache", () => {
 				liveness: { isProvablyGone: () => false },
 				onSettled: () => {},
 			});
-			const question = store.capture(captureInput({ transcriptPath }));
+			const question = await store.capture(captureInput({ transcriptPath }));
 			let announceScan!: () => void;
 			const scanStarted = new Promise<void>((resolve) => {
 				announceScan = resolve;
@@ -471,18 +473,20 @@ describe("transcript reconciliation cache", () => {
 });
 
 describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
-	function goneStore(isProvablyGone: () => boolean): QuestionStore {
+	async function goneStore(
+		isProvablyGone: () => boolean,
+	): Promise<QuestionStore> {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone },
 			onSettled: () => {},
 		});
-		store.capture(captureInput());
+		await store.capture(captureInput());
 		return store;
 	}
 
 	it("a SINGLE observation can never expire a question, however far in the future the pass runs", async () => {
-		const store = goneStore(() => true);
+		const store = await goneStore(() => true);
 		// A whole day past the corroboration window, on the FIRST pass. The clock
 		// starts at the first sighting, so age alone proves nothing — the second
 		// sighting is the evidence, and it has not happened.
@@ -492,7 +496,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 	});
 
 	it("expires on the second observation, once the window has passed", async () => {
-		const store = goneStore(() => true);
+		const store = await goneStore(() => true);
 		const questionId = requireFirstPendingId(store);
 
 		expect(await store.reconcile(NOW)).toEqual([]);
@@ -513,7 +517,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 
 	it("a FLAP resets the clock — one pass that sees the terminal alive undoes the standing of every pass before it", async () => {
 		let gone = true;
-		const store = goneStore(() => gone);
+		const store = await goneStore(() => gone);
 		const questionId = requireFirstPendingId(store);
 
 		await store.reconcile(NOW);
@@ -529,7 +533,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 	});
 
 	it("never expires a question whose terminal is not PROVABLY gone, however many passes run", async () => {
-		const store = goneStore(() => false);
+		const store = await goneStore(() => false);
 		for (let i = 0; i < 5; i++) {
 			expect(
 				await store.reconcile(NOW + i * QUESTION_EXPIRY_CORROBORATION_MS * 2),
@@ -550,7 +554,7 @@ describe("(QUESTION-EXPIRY) reconcile needs TWO observations", () => {
 			},
 			onSettled: () => {},
 		});
-		store.capture(captureInput());
+		await store.capture(captureInput());
 		await store.reconcile(NOW);
 		expect(seen).toEqual([4_242]);
 	});

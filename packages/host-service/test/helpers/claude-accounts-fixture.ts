@@ -1,4 +1,3 @@
-import { Database as BunDatabase } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
 	mkdir,
@@ -9,22 +8,22 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import { join } from "node:path";
+import type { ClaudeAccountsService } from "../../src/claude-accounts";
 import { ClaudeProfileJanitor } from "../../src/claude-accounts/janitor";
 import { WorkspaceLocks } from "../../src/claude-accounts/locks";
-import { ClaudeProfileManager } from "../../src/claude-accounts/profile-manager";
+import {
+	ClaudeProfileManager,
+	credentialsFromToken,
+} from "../../src/claude-accounts/profile-manager";
 import type {
 	ClaudeAccountEvent,
 	ClaudeAccountsLogger,
 	ManagedCredentials,
 } from "../../src/claude-accounts/types";
 import type { HostDb } from "../../src/db";
-import * as schema from "../../src/db/schema";
 import { workspaces } from "../../src/db/schema";
-
-const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../drizzle");
+import { createMigratedTestDb } from "./migrated-test-db";
 
 export const WORKSPACE_IDS = [
 	"11111111-1111-4111-8111-111111111111",
@@ -43,6 +42,40 @@ export interface RecordingLogger extends ClaudeAccountsLogger {
 	infoEntries: LogEntry[];
 	warnEntries: LogEntry[];
 	errorEntries: LogEntry[];
+}
+
+export function createFakeClaudeAccountsService(
+	overrides: Partial<ClaudeAccountsService> = {},
+): ClaudeAccountsService {
+	const service: ClaudeAccountsService = {
+		start: async () => {},
+		stop: () => {},
+		mintProfileForNewWorkspace: async () => {},
+		ensureProfileForLaunch: async () => "",
+		profileDirFor: () => "",
+		configDirCandidatesFor: () => [],
+		setWorkspaceAccount: async () => {},
+		getWorkspaceState: async () => ({
+			state: "following",
+			slug: null,
+			warning: null,
+		}),
+		getWorkspaceStates: async () => [],
+		getRoster: async () => ({ trayDefaultSlug: null, accounts: [] }),
+		getCapability: () => ({ managed: false, configured: false }),
+		withWorkspaceDeletion: async <T>(
+			_targets: Parameters<ClaudeAccountsService["withWorkspaceDeletion"]>[0],
+			fn: () => Promise<T>,
+			_options: Parameters<ClaudeAccountsService["withWorkspaceDeletion"]>[2],
+		) => fn(),
+		withWorkspaceLocks: async <T>(
+			_workspaceIds: string[],
+			fn: () => Promise<T>,
+		) => fn(),
+		withWorkspaceLock: async <T>(_workspaceId: string, fn: () => Promise<T>) =>
+			fn(),
+	};
+	return Object.assign(service, overrides);
 }
 
 export interface ClaudeTestWorld {
@@ -69,22 +102,18 @@ export async function createClaudeTestWorld(
 		SUPERSET_PTY_DAEMON_SOCKET: process.env.SUPERSET_PTY_DAEMON_SOCKET,
 	};
 	const dbPath = join(root, "host.db");
-	const sqlite = new BunDatabase(dbPath, { create: true, readwrite: true });
-	const bunDb = drizzle(sqlite, { schema });
+	let migrated: ReturnType<typeof createMigratedTestDb>;
 	try {
-		sqlite.exec("PRAGMA journal_mode = WAL");
-		sqlite.exec("PRAGMA foreign_keys = ON");
-		migrate(bunDb, { migrationsFolder: MIGRATIONS_FOLDER });
+		migrated = createMigratedTestDb(dbPath);
 	} catch (error) {
-		sqlite.close();
 		await rm(root, { recursive: true, force: true }).catch(() => {});
 		throw error;
 	}
+	const { sqlite, db } = migrated;
 	process.env.USERPROFILE = home;
 	process.env.HOME = home;
 	process.env.SUPERSET_HOME_DIR = join(root, "superset-home");
 	delete process.env.SUPERSET_PTY_DAEMON_SOCKET;
-	const db = bunDb as unknown as HostDb;
 	const log = createRecordingLogger();
 	const events: ClaudeAccountEvent[] = [];
 	let disposed = false;
@@ -113,6 +142,47 @@ export async function createClaudeTestWorld(
 				await rm(root, { recursive: true, force: true }).catch(() => {});
 			}
 		},
+	};
+}
+
+export function claudeAccountWire(
+	slug = "claude12",
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		slug,
+		name: slug,
+		type: "claude",
+		enabled: true,
+		dead: false,
+		dead_reason: null,
+		last_success: new Date().toISOString(),
+		consecutive_failures: 0,
+		five_pct: 10,
+		seven_pct: 10,
+		fable_pct: null,
+		five_resets_at: null,
+		seven_resets_at: null,
+		fable_resets_at: null,
+		in_use: false,
+		fable_in_use: false,
+		pc_active: true,
+		...overrides,
+	};
+}
+
+export async function createPiFakeServer(
+	root: string,
+	fetch: (request: Request) => Response | Promise<Response>,
+	options: { pushKeyContents?: string } = {},
+) {
+	const pushKeyPath = join(root, "push-key.txt");
+	await writeFile(pushKeyPath, options.pushKeyContents ?? "test-key\n", "utf8");
+	const server = Bun.serve({ port: 0, fetch });
+	return {
+		server,
+		baseUrl: `http://127.0.0.1:${server.port}`,
+		pushKeyPath,
 	};
 }
 
@@ -246,17 +316,49 @@ export async function seedOldStaging(
 	return path;
 }
 
+interface CredentialOverrides {
+	accessToken?: string;
+	expiresAt?: number;
+	trayManagedAccount?: string | null;
+}
+
+type TestCredentials<TRefreshToken extends string> = Omit<
+	ManagedCredentials,
+	"claudeAiOauth"
+> & {
+	claudeAiOauth: Omit<ManagedCredentials["claudeAiOauth"], "refreshToken"> & {
+		refreshToken: TRefreshToken;
+	};
+};
+
+export function managedCredentials<TRefreshToken extends string>(
+	slug: string,
+	overrides: CredentialOverrides & { refreshToken: TRefreshToken },
+): TestCredentials<TRefreshToken>;
+export function managedCredentials(
+	slug?: string,
+	overrides?: CredentialOverrides,
+): ManagedCredentials;
 export function managedCredentials(
 	slug = "claude123",
-	token = "access-token",
-): ManagedCredentials {
+	overrides: CredentialOverrides & { refreshToken?: string } = {},
+) {
+	const credentials = credentialsFromToken({
+		account: slug,
+		accessToken: overrides.accessToken ?? "access-token",
+		expiresAt: overrides.expiresAt ?? Date.now() + 2 * 60 * 60 * 1000,
+	});
+	credentials.trayManagedAccount =
+		overrides.trayManagedAccount === undefined
+			? slug
+			: overrides.trayManagedAccount;
+	if (overrides.refreshToken === undefined) return credentials;
 	return {
+		...credentials,
 		claudeAiOauth: {
-			accessToken: token,
-			expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-			refreshToken: "managed-by-usage-display-tray",
+			...credentials.claudeAiOauth,
+			refreshToken: overrides.refreshToken,
 		},
-		trayManagedAccount: slug,
 	};
 }
 

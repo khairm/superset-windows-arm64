@@ -175,8 +175,8 @@ export function hostDbReader(fixture: TreeFixture): HostDbReader {
 		readSidebarMirror: () => fixture.mirror,
 		resolveTerminal: () => null,
 		resolveActiveTerminal: () => null,
-		resolveTranscriptPath: () => null,
-		transcriptPathsFor: () => [],
+		resolveTranscriptPath: async () => null,
+		transcriptPathFor: async () => null,
 		resolveTerminalActivityMs: () => NOW,
 		close: () => {},
 	};

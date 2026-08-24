@@ -301,7 +301,7 @@ export const notificationsRouter = router({
 		// broadcast: by the time anything below can throw, the dot has already
 		// moved. A throw here surfaces as a 500 the notify hook logs — loud, and
 		// harmless to the agent (the hook ignores the status beyond logging it).
-		forwardCompanionCapture({
+		await forwardCompanionCapture({
 			payload: input,
 			terminalId: input.terminalId,
 			workspaceId: terminalSession.originWorkspaceId,

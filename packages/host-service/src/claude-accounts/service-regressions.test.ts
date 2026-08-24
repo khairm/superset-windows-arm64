@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import {
 	type ClaudeTestWorld,
+	claudeAccountWire,
 	createClaudeTestWorld,
+	createPiFakeServer,
 	managedCredentials,
 	seedWorkspace,
 	WORKSPACE_IDS,
@@ -29,29 +31,6 @@ afterEach(async () => {
 	for (const world of worlds.splice(0).reverse()) await world.dispose();
 });
 
-function account(slug: string, overrides: Record<string, unknown> = {}) {
-	return {
-		slug,
-		name: slug,
-		type: "claude",
-		enabled: true,
-		dead: false,
-		dead_reason: null,
-		last_success: new Date().toISOString(),
-		consecutive_failures: 0,
-		five_pct: 10,
-		seven_pct: 10,
-		fable_pct: null,
-		five_resets_at: null,
-		seven_resets_at: null,
-		fable_resets_at: null,
-		in_use: false,
-		fable_in_use: false,
-		pc_active: true,
-		...overrides,
-	};
-}
-
 async function waitFor(
 	predicate: () => boolean,
 	message: string,
@@ -69,37 +48,35 @@ async function setupService() {
 	worlds.push(world);
 	await writeGlobalClaudeState(world);
 	await writeGlobalCredentials(world, {});
-	const pushKeyPath = join(world.root, "push-key.txt");
-	await writeFile(pushKeyPath, "test-key\n", "utf8");
-	const server = Bun.serve({
-		port: 0,
-		fetch(request) {
-			const url = new URL(request.url);
-			if (url.pathname === "/accounts") {
-				return Response.json([account("claude123"), account("claude456")]);
-			}
-			const slug = url.pathname.split("/")[2];
-			if (url.pathname.endsWith("/token") && slug) {
-				return Response.json({
-					account: slug,
-					claude_ai_oauth: {
-						accessToken: `${slug}-token`,
-						expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-					},
-				});
-			}
-			return new Response(null, { status: 404 });
-		},
+	const pi = await createPiFakeServer(world.root, (request) => {
+		const url = new URL(request.url);
+		if (url.pathname === "/accounts") {
+			return Response.json([
+				claudeAccountWire("claude123"),
+				claudeAccountWire("claude456"),
+			]);
+		}
+		const slug = url.pathname.split("/")[2];
+		if (url.pathname.endsWith("/token") && slug) {
+			return Response.json({
+				account: slug,
+				claude_ai_oauth: {
+					accessToken: `${slug}-token`,
+					expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+				},
+			});
+		}
+		return new Response(null, { status: 404 });
 	});
-	servers.push(server);
+	servers.push(pi.server);
 	const service = createClaudeAccountsService({
 		db: world.db,
 		dbPath: world.dbPath,
 		emit: (event) => world.events.push(event),
 		log: world.log,
 		awaitInitialBackgroundWork: true,
-		piBaseUrl: `http://127.0.0.1:${server.port}`,
-		pushKeyPath,
+		piBaseUrl: pi.baseUrl,
+		pushKeyPath: pi.pushKeyPath,
 	});
 	services.push(service);
 	await service.start();
@@ -117,7 +94,13 @@ async function setupFallbackService(options: {
 	const world = await createClaudeTestWorld("claude-fallback-regression-");
 	worlds.push(world);
 	await writeGlobalClaudeState(world);
-	await writeGlobalCredentials(world, machineDefaultCredentials("claude12"));
+	await writeGlobalCredentials(
+		world,
+		managedCredentials("claude12", {
+			accessToken: "claude12-default-token",
+			refreshToken: "real-token-stays-global",
+		}),
+	);
 	const trayDirectory = join(world.home, ".usage-display");
 	await mkdir(trayDirectory, { recursive: true });
 	await writeFile(
@@ -125,8 +108,6 @@ async function setupFallbackService(options: {
 		JSON.stringify({ trigger_five_pct: 80, trigger_seven_pct: 80 }),
 		"utf8",
 	);
-	const pushKeyPath = join(world.root, "push-key.txt");
-	await writeFile(pushKeyPath, "test-key\n", "utf8");
 	const manager = new ClaudeProfileManager(world.dbPath, world.log);
 	await manager.initialize();
 	for (const [index, slug] of options.workspaceSlugs.entries()) {
@@ -139,15 +120,12 @@ async function setupFallbackService(options: {
 			managedCredentials(slug),
 		);
 	}
-	const server = Bun.serve({
-		port: 0,
-		fetch(request) {
-			const path = new URL(request.url).pathname;
-			if (path === "/accounts") return Response.json(options.roster);
-			return new Response(null, { status: 404 });
-		},
+	const pi = await createPiFakeServer(world.root, (request) => {
+		const path = new URL(request.url).pathname;
+		if (path === "/accounts") return Response.json(options.roster);
+		return new Response(null, { status: 404 });
 	});
-	servers.push(server);
+	servers.push(pi.server);
 	const service = createClaudeAccountsService({
 		db: world.db,
 		dbPath: world.dbPath,
@@ -157,24 +135,61 @@ async function setupFallbackService(options: {
 		},
 		log: world.log,
 		awaitInitialBackgroundWork: true,
-		piBaseUrl: `http://127.0.0.1:${server.port}`,
-		pushKeyPath,
+		piBaseUrl: pi.baseUrl,
+		pushKeyPath: pi.pushKeyPath,
 	});
 	services.push(service);
 	await service.start();
 	return { world, service };
 }
 
-function machineDefaultCredentials(slug: string) {
-	return {
-		claudeAiOauth: {
-			accessToken: `${slug}-default-token`,
-			expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-			refreshToken: "real-token-stays-global",
-		},
-		trayManagedAccount: slug,
-	};
-}
+describe("Claude transcript config directories", () => {
+	test("rejects invalid workspaces and uses the global folder when unmanaged", async () => {
+		const world = await createClaudeTestWorld("claude-config-dirs-unmanaged-");
+		worlds.push(world);
+		const service = createClaudeAccountsService({
+			db: world.db,
+			dbPath: world.dbPath,
+			emit: (event) => world.events.push(event),
+			log: world.log,
+			pushKeyPath: join(world.root, "missing-key"),
+		});
+		services.push(service);
+
+		expect(service.configDirCandidatesFor("not-a-uuid")).toEqual([]);
+		expect(service.configDirCandidatesFor(WORKSPACE_IDS[0])).toEqual([
+			join(world.home, ".claude"),
+		]);
+	});
+
+	test("prefers an existing managed folder and deduplicates the global folder", async () => {
+		const { world, service } = await setupService();
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await seedWorkspace(world, { id: WORKSPACE_IDS[1] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		const profile = service.profileDirFor(WORKSPACE_IDS[0]);
+		const globalDir = join(world.home, ".claude");
+
+		expect(service.configDirCandidatesFor(WORKSPACE_IDS[0])).toEqual([
+			profile,
+			globalDir,
+		]);
+		expect(service.configDirCandidatesFor(WORKSPACE_IDS[1])).toEqual([
+			globalDir,
+		]);
+
+		const previous = process.env.CLAUDE_CONFIG_DIR;
+		process.env.CLAUDE_CONFIG_DIR = profile;
+		try {
+			expect(service.configDirCandidatesFor(WORKSPACE_IDS[0])).toEqual([
+				profile,
+			]);
+		} finally {
+			if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = previous;
+		}
+	});
+});
 
 describe("Claude account service transitions", () => {
 	test("signed-out Following preserves the pinned workspace's last-good credentials", async () => {
@@ -285,8 +300,6 @@ describe("Claude account service transitions", () => {
 		worlds.push(world);
 		await writeGlobalClaudeState(world);
 		await writeGlobalCredentials(world, {});
-		const pushKeyPath = join(world.root, "push-key.txt");
-		await writeFile(pushKeyPath, "test-key\n", "utf8");
 		const rows = await Promise.all(
 			WORKSPACE_IDS.slice(0, 2).map((id) =>
 				seedWorkspace(world, { id, claudeAccountSlug: "claude123" }),
@@ -294,29 +307,32 @@ describe("Claude account service transitions", () => {
 		);
 		const manager = new ClaudeProfileManager(world.dbPath, world.log);
 		await manager.initialize();
-		const expiring = managedCredentials("claude123", "last-good-token");
+		const expiring = managedCredentials("claude123", {
+			accessToken: "last-good-token",
+		});
 		expiring.claudeAiOauth.expiresAt = Date.now() + 40 * 60 * 1000;
 		for (const row of rows) {
 			await manager.mintProfile(row.id, row.worktreePath, expiring);
 		}
-		const server = Bun.serve({
-			port: 0,
-			fetch(request) {
-				const path = new URL(request.url).pathname;
-				if (path === "/accounts") return Response.json([account("claude123")]);
-				if (path.endsWith("/token")) return new Response(null, { status: 503 });
-				return new Response(null, { status: 404 });
-			},
+		const pi = await createPiFakeServer(world.root, (request) => {
+			const path = new URL(request.url).pathname;
+			if (path === "/accounts") {
+				return Response.json([claudeAccountWire("claude123")]);
+			}
+			if (path.endsWith("/token")) {
+				return new Response(null, { status: 503 });
+			}
+			return new Response(null, { status: 404 });
 		});
-		servers.push(server);
+		servers.push(pi.server);
 		const service = createClaudeAccountsService({
 			db: world.db,
 			dbPath: world.dbPath,
 			emit: (event) => world.events.push(event),
 			log: world.log,
 			awaitInitialBackgroundWork: true,
-			piBaseUrl: `http://127.0.0.1:${server.port}`,
-			pushKeyPath,
+			piBaseUrl: pi.baseUrl,
+			pushKeyPath: pi.pushKeyPath,
 		});
 		services.push(service);
 
@@ -353,7 +369,7 @@ describe("Claude account service transitions", () => {
 describe("Claude automatic fallback safeguards", () => {
 	test("suppresses the whole pass when the machine default is missing from the roster", async () => {
 		const { world } = await setupFallbackService({
-			roster: [account("claude123", { five_pct: 95 })],
+			roster: [claudeAccountWire("claude123", { five_pct: 95 })],
 			workspaceSlugs: ["claude123"],
 		});
 		await waitFor(
@@ -382,9 +398,9 @@ describe("Claude automatic fallback safeguards", () => {
 		let changedIdentity = false;
 		const { world } = await setupFallbackService({
 			roster: [
-				account("claude12"),
-				account("claude123", { five_pct: 95 }),
-				account("claude456", { five_pct: 95 }),
+				claudeAccountWire("claude12"),
+				claudeAccountWire("claude123", { five_pct: 95 }),
+				claudeAccountWire("claude456", { five_pct: 95 }),
 			],
 			workspaceSlugs: ["claude123", "claude456"],
 			onEmit: (event, testWorld) => {
@@ -398,7 +414,12 @@ describe("Claude automatic fallback safeguards", () => {
 				changedIdentity = true;
 				writeFileSync(
 					join(testWorld.home, ".claude", ".credentials.json"),
-					JSON.stringify(machineDefaultCredentials("claude456")),
+					JSON.stringify(
+						managedCredentials("claude456", {
+							accessToken: "claude456-default-token",
+							refreshToken: "real-token-stays-global",
+						}),
+					),
 					"utf8",
 				);
 			},
@@ -430,8 +451,8 @@ describe("Claude automatic fallback safeguards", () => {
 	test("warns for a dead pinned account without falling back", async () => {
 		const { world, service } = await setupFallbackService({
 			roster: [
-				account("claude12"),
-				account("claude123", {
+				claudeAccountWire("claude12"),
+				claudeAccountWire("claude123", {
 					dead: true,
 					dead_reason: "login expired",
 					five_pct: 95,
@@ -466,8 +487,11 @@ describe("Claude automatic fallback safeguards", () => {
 	test("does not fall back onto a dead machine-default account", async () => {
 		const { world, service } = await setupFallbackService({
 			roster: [
-				account("claude12", { dead: true, dead_reason: "login expired" }),
-				account("claude123", { five_pct: 95 }),
+				claudeAccountWire("claude12", {
+					dead: true,
+					dead_reason: "login expired",
+				}),
+				claudeAccountWire("claude123", { five_pct: 95 }),
 			],
 			workspaceSlugs: ["claude123"],
 		});
@@ -605,6 +629,25 @@ describe("Claude workspace deletion choreography", () => {
 });
 
 describe("Claude account service startup", () => {
+	test("rejects workspace deletion before the service starts", async () => {
+		const world = await createClaudeTestWorld("claude-service-not-started-");
+		worlds.push(world);
+		const service = createClaudeAccountsService({
+			db: world.db,
+			dbPath: world.dbPath,
+			emit: (event) => world.events.push(event),
+			log: world.log,
+			pushKeyPath: join(world.root, "missing-key"),
+		});
+		services.push(service);
+
+		await expect(
+			service.withWorkspaceDeletion([], async () => {}, {
+				disposalMode: "abort",
+			}),
+		).rejects.toThrow("Claude accounts service has not started");
+	});
+
 	test("resolves in unmanaged mode when profile storage cannot initialize", async () => {
 		const world = await createClaudeTestWorld("claude-service-degraded-");
 		worlds.push(world);

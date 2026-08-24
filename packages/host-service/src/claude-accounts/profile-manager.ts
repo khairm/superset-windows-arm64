@@ -55,9 +55,14 @@ interface MirrorSource {
 }
 
 interface DestinationMirrorState {
-	sourceHash: string;
+	sourceHash: string | null;
 	mtimeMs: number;
 	size: number;
+}
+
+interface MirrorRefreshResult {
+	settingsChanged: boolean;
+	settingsSourceHash: string | null;
 }
 
 export type CredentialFileState =
@@ -228,10 +233,11 @@ export class ClaudeProfileManager {
 		workspaceId: string,
 		worktreePath: string,
 		credentials: ManagedCredentials | null,
+		knownExists?: boolean,
 	): Promise<string> {
 		this.assertInitialized();
 		const finalDir = this.profileDirFor(workspaceId);
-		if (await this.profileExists(workspaceId)) {
+		if (knownExists ?? (await this.profileExists(workspaceId))) {
 			try {
 				await this.refreshProfile(finalDir);
 				if (credentials) await this.writeCredentials(finalDir, credentials);
@@ -262,13 +268,20 @@ export class ClaudeProfileManager {
 		try {
 			const mirrorSources = await this.loadMirrorSources();
 			await this.ensureJunctions(stagingDir);
-			await this.refreshCopiedFiles(stagingDir, mirrorSources);
+			const mirrorRefresh = await this.refreshCopiedFiles(
+				stagingDir,
+				mirrorSources,
+			);
 			await this.writeSeedState(stagingDir, worktreePath);
 			if (credentials) await this.writeCredentials(stagingDir, credentials);
 			ensureClaudeManagedHooksAt(stagingDir);
 			await rename(stagingDir, finalDir);
 			this.clearProfileCaches(stagingDir);
 			this.clearProfileCaches(finalDir);
+			await this.recordSettingsMirrorState(
+				finalDir,
+				mirrorRefresh.settingsSourceHash,
+			);
 			this.log.info("Minted Claude workspace profile", {
 				workspaceId,
 				profileDir: finalDir,
@@ -276,6 +289,7 @@ export class ClaudeProfileManager {
 			});
 			return finalDir;
 		} catch (error) {
+			this.clearProfileCaches(stagingDir);
 			await this.deleteContainedDirectory(
 				stagingDir,
 				`${workspaceId}.tmp`,
@@ -606,8 +620,22 @@ export class ClaudeProfileManager {
 	): Promise<void> {
 		this.assertContainedProfileDir(profileDir);
 		await this.ensureJunctions(profileDir);
-		await this.refreshCopiedFiles(profileDir, mirrorSources);
-		ensureClaudeManagedHooksAt(profileDir);
+		const mirrorRefresh = await this.refreshCopiedFiles(
+			profileDir,
+			mirrorSources,
+		);
+		if (mirrorRefresh.settingsChanged) {
+			try {
+				ensureClaudeManagedHooksAt(profileDir);
+				await this.recordSettingsMirrorState(
+					profileDir,
+					mirrorRefresh.settingsSourceHash,
+				);
+			} catch (error) {
+				this.destinationMirrorCache.delete(join(profileDir, "settings.json"));
+				throw error;
+			}
+		}
 	}
 
 	private async loadMirrorSources(): Promise<MirrorSource[]> {
@@ -654,11 +682,33 @@ export class ClaudeProfileManager {
 	private async refreshCopiedFiles(
 		profileDir: string,
 		mirrorSources: readonly MirrorSource[],
-	): Promise<void> {
+	): Promise<MirrorRefreshResult> {
 		const presentNames = new Set(mirrorSources.map((source) => source.name));
+		const settingsSourceHash =
+			mirrorSources.find((source) => source.name === "settings.json")?.hash ??
+			null;
+		let settingsChanged = false;
 		for (const name of COPY_NAMES) {
 			if (presentNames.has(name)) continue;
 			const destination = join(profileDir, name);
+			const cached = this.destinationMirrorCache.get(destination);
+			if (name === "settings.json") {
+				if (cached?.sourceHash === null) {
+					try {
+						const destinationStat = await lstat(destination);
+						if (
+							destinationStat.isFile() &&
+							cached.mtimeMs === destinationStat.mtimeMs &&
+							cached.size === destinationStat.size
+						) {
+							continue;
+						}
+					} catch (error) {
+						if (!isMissing(error)) throw error;
+					}
+				}
+				settingsChanged = true;
+			}
 			this.destinationMirrorCache.delete(destination);
 			try {
 				await unlink(destination);
@@ -669,6 +719,7 @@ export class ClaudeProfileManager {
 		for (const source of mirrorSources) {
 			const destination = join(profileDir, source.name);
 			let unchanged = false;
+			let hooksCurrent = false;
 			try {
 				const destinationStat = await lstat(destination);
 				if (!destinationStat.isFile()) {
@@ -683,6 +734,7 @@ export class ClaudeProfileManager {
 					cached.size === destinationStat.size
 				) {
 					unchanged = true;
+					hooksCurrent = true;
 				} else if (destinationStat.size === source.size) {
 					unchanged = source.hash === sha256(await readFile(destination));
 					if (unchanged) {
@@ -696,6 +748,9 @@ export class ClaudeProfileManager {
 			} catch (error) {
 				this.destinationMirrorCache.delete(destination);
 				if (!isMissing(error)) throw error;
+			}
+			if (source.name === "settings.json" && !hooksCurrent) {
+				settingsChanged = true;
 			}
 			if (unchanged) continue;
 			const temporary = `${destination}.${randomUUID()}.tmp`;
@@ -719,6 +774,30 @@ export class ClaudeProfileManager {
 				});
 				throw error;
 			}
+		}
+		return { settingsChanged, settingsSourceHash };
+	}
+
+	private async recordSettingsMirrorState(
+		profileDir: string,
+		sourceHash: string | null,
+	): Promise<void> {
+		const destination = join(profileDir, "settings.json");
+		try {
+			const destinationStat = await lstat(destination);
+			if (!destinationStat.isFile()) {
+				throw new Error(
+					`Claude copied mirror destination is not a file: ${destination}`,
+				);
+			}
+			this.destinationMirrorCache.set(destination, {
+				sourceHash,
+				mtimeMs: destinationStat.mtimeMs,
+				size: destinationStat.size,
+			});
+		} catch (error) {
+			this.destinationMirrorCache.delete(destination);
+			if (!isMissing(error)) throw error;
 		}
 	}
 

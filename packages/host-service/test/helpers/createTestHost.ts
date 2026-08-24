@@ -1,10 +1,7 @@
-import { Database as BunDatabase } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import SuperJSON from "superjson";
 import {
 	type CreateAppOptions,
@@ -12,7 +9,6 @@ import {
 	createApp,
 } from "../../src/app";
 import type { HostDb } from "../../src/db";
-import * as schema from "../../src/db/schema";
 import type { AppRouter as HostAppRouter } from "../../src/trpc/router";
 import {
 	createFakeApiClient,
@@ -21,8 +17,7 @@ import {
 	FakeHostAuthProvider,
 	MemoryGitCredentialProvider,
 } from "./fakes";
-
-const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../drizzle");
+import { createMigratedTestDb } from "./migrated-test-db";
 
 export interface TestHostOptions {
 	organizationId?: string;
@@ -92,11 +87,7 @@ export async function createTestHost(
 		process.env.SUPERSET_HOME_DIR = dataDir;
 	}
 
-	const sqlite = new BunDatabase(dbPath, { create: true, readwrite: true });
-	sqlite.exec("PRAGMA journal_mode = WAL");
-	sqlite.exec("PRAGMA foreign_keys = ON");
-	const db = drizzle(sqlite, { schema });
-	migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+	const { sqlite, db } = createMigratedTestDb(dbPath);
 
 	const fakeApi = createFakeApiClient(options.apiOverrides);
 
@@ -114,7 +105,7 @@ export async function createTestHost(
 			hostAuth: new FakeHostAuthProvider(psk),
 			credentials: new MemoryGitCredentialProvider(options.githubToken ?? null),
 		},
-		db: db as unknown as HostDb,
+		db,
 		api: fakeApi.client,
 		github: options.githubFactory
 			? (options.githubFactory as CreateAppOptions["github"])
@@ -189,7 +180,7 @@ export async function createTestHost(
 		app: result.app,
 		api: fakeApi.client,
 		eventBus: result.eventBus,
-		db: db as unknown as HostDb,
+		db,
 		dispose,
 		psk,
 		dbPath,

@@ -12,6 +12,7 @@ import { projects, workspaces } from "../src/db/schema";
 import type { EventBus } from "../src/events";
 import { ensureMainWorkspaceStrict } from "../src/trpc/router/project/utils/ensure-main-workspace";
 import { insertLocalWorkspace } from "../src/workspaces/local-workspace-store";
+import { createFakeClaudeAccountsService } from "./helpers/claude-accounts-fixture";
 
 const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../drizzle");
 const ORG_ID = "00000000-0000-0000-0000-000000000001";
@@ -69,13 +70,7 @@ function makeCtx(db: HostDb) {
 		organizationId: ORG_ID,
 		clientMachineId: "m1",
 		eventBus,
-		claudeAccounts: {
-			mintProfileForNewWorkspace: mock(async () => {}),
-			withWorkspaceLock: async <T>(
-				_workspaceId: string,
-				fn: () => Promise<T>,
-			) => fn(),
-		} as never,
+		claudeAccounts: createFakeClaudeAccountsService(),
 	};
 }
 

@@ -100,7 +100,9 @@ describe("Claude workspace profile lifecycle", () => {
 	test("re-mints a vanished profile with selected credentials", async () => {
 		const { world, manager, worktree } = await setup();
 		await writeGlobalClaudeState(world);
-		const credentials = managedCredentials("claude123", "selected-token");
+		const credentials = managedCredentials("claude123", {
+			accessToken: "selected-token",
+		});
 		const first = await manager.mintProfile(
 			WORKSPACE_IDS[0],
 			worktree,
@@ -140,6 +142,34 @@ describe("Claude workspace profile lifecycle", () => {
 			code: "ENOENT",
 		});
 	});
+
+	for (const settingsSource of ["present", "absent"] as const) {
+		test(`does not rewrite unchanged ${settingsSource} global settings`, async () => {
+			const { world, manager, worktree } = await setup();
+			await writeGlobalClaudeState(world);
+			if (settingsSource === "present") {
+				await writeGlobalMirror(
+					world,
+					"settings.json",
+					JSON.stringify({ permissions: { allow: ["Read"] } }),
+				);
+			}
+			const profile = await manager.mintProfile(
+				WORKSPACE_IDS[0],
+				worktree,
+				null,
+			);
+			const settingsPath = join(profile, "settings.json");
+			const before = await lstat(settingsPath);
+			const contents = await readFile(settingsPath, "utf8");
+
+			await manager.refreshProfile(profile);
+
+			const after = await lstat(settingsPath);
+			expect(after.mtimeMs).toBe(before.mtimeMs);
+			expect(await readFile(settingsPath, "utf8")).toBe(contents);
+		});
+	}
 
 	test("treats signed-out JSON without claudeAiOauth as absent", async () => {
 		const { world, manager } = await setup();

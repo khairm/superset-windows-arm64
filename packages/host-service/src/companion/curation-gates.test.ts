@@ -336,7 +336,7 @@ function armDeps(): {
 	const scheduled: QuestionId[] = [];
 	const errors: string[] = [];
 	const deps = {
-		inner: { capture: () => {}, resolve: () => {} },
+		inner: { capture: async () => {}, resolve: () => {} },
 		questions: {} as NotifyingSinkDeps["questions"],
 		push: {
 			schedule: (input: { questionId: QuestionId }) => {

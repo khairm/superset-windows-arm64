@@ -316,7 +316,7 @@ function resolver(): QuestionSourceResolver {
 			hostWorkspaceId: "ws-1",
 			agentId: "claude",
 		}),
-		resolveTranscriptPath: () => null,
+		resolveTranscriptPath: async () => null,
 		resolveTerminalActivityMs: () => Date.now(),
 	};
 }
@@ -351,12 +351,12 @@ function captureInput(hostTerminalId: string, askedAtMs = Date.now() - 60_000) {
  * here would prove nothing: the whole claim under test is that `markStale`
  * reaches the retraction through the `(SETTLE-CHOKE-POINT)` seam.
  */
-function registerBridgeSink(askedAtMs?: number): {
+async function registerBridgeSink(askedAtMs?: number): Promise<{
 	questions: QuestionStore;
 	cancelled: string[];
 	frames: { t: string; d: unknown }[];
 	gseq: () => number;
-} {
+}> {
 	const cancelled: string[] = [];
 	const frames: { t: string; d: unknown }[] = [];
 	const questions = createQuestionStore({
@@ -383,7 +383,7 @@ function registerBridgeSink(askedAtMs?: number): {
 		logger: { info: () => {}, warn: () => {}, error: () => {} },
 	});
 	setCompanionQuestionSink(sink);
-	sink.capture(captureInput("term-1", askedAtMs));
+	await sink.capture(captureInput("term-1", askedAtMs));
 	return { questions, cancelled, frames, gseq: () => events.currentGseq() };
 }
 
@@ -393,7 +393,7 @@ describe("(MANUAL-DISMISS) companion dismissal", () => {
 		const db = createTestDb();
 		seedSession(db, "term-1", "ws-1");
 		await seedAskqOwner(home, "term-1", "_main", Date.now() - 60_000);
-		const bridge = registerBridgeSink();
+		const bridge = await registerBridgeSink();
 		const question = bridge.questions.byHostTerminal("term-1");
 		if (question === null) throw new Error("expected a pending question");
 		const gseqBefore = bridge.gseq();
@@ -445,7 +445,7 @@ describe("(MANUAL-DISMISS) companion dismissal", () => {
 		const db = createTestDb();
 		seedSession(db, "term-other", "ws-1");
 		await seedAskqOwner(home, "term-other", "_main", Date.now() - 60_000);
-		const bridge = registerBridgeSink();
+		const bridge = await registerBridgeSink();
 
 		const result = await dismissWorkspaceStatuses(
 			{ db, terminalAgentStore: new TerminalAgentStore() },
@@ -471,7 +471,7 @@ describe("(MANUAL-DISMISS) companion dismissal", () => {
 			"sub-late",
 			Date.now() + 5_000,
 		);
-		const bridge = registerBridgeSink();
+		const bridge = await registerBridgeSink();
 		const question = bridge.questions.byHostTerminal("term-1");
 		if (question === null) throw new Error("expected a pending question");
 		const framesBefore = bridge.frames.length;
@@ -505,7 +505,7 @@ describe("(MANUAL-DISMISS) companion dismissal", () => {
 			"_main",
 			Date.now() - 60_000,
 		);
-		const bridge = registerBridgeSink(Date.now() + 5_000);
+		const bridge = await registerBridgeSink(Date.now() + 5_000);
 		const question = bridge.questions.byHostTerminal("term-1");
 		if (question === null) throw new Error("expected a pending question");
 		const framesBefore = bridge.frames.length;

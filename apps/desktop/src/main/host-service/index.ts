@@ -8,7 +8,6 @@
 import { serve } from "@hono/node-server";
 import {
 	captureFatalStartupError,
-	claudeConfigDirsForWorkspace,
 	createApp,
 	initSentry,
 	installProcessSafetyNet,
@@ -192,7 +191,7 @@ async function main(): Promise<void> {
 				hostDbPath: env.HOST_DB_PATH,
 				db,
 				profileDirsForWorkspace: (workspaceId) =>
-					claudeConfigDirsForWorkspace(claudeAccounts, workspaceId),
+					claudeAccounts.configDirCandidatesFor(workspaceId),
 				organizationId: env.ORGANIZATION_ID,
 				terminalAgentStore,
 			});

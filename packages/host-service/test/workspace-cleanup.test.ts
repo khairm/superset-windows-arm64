@@ -16,6 +16,7 @@ import {
 } from "../src/trpc/router/workspace-cleanup/workspace-cleanup";
 import type { HostServiceContext } from "../src/types";
 import { WorkerTaskError } from "../src/workers/WorkerTaskRunner";
+import { createFakeClaudeAccountsService } from "./helpers/claude-accounts-fixture";
 
 type WorkspaceRow = {
 	id: string;
@@ -132,16 +133,7 @@ function makeCtx(spec: ContextSpec): HostServiceContext & {
 				}),
 			}),
 		} as never,
-		claudeAccounts: {
-			withWorkspaceLock: async <T>(
-				_workspaceId: string,
-				fn: () => Promise<T>,
-			) => fn(),
-			withWorkspaceDeletion: async <T>(
-				_targets: unknown,
-				fn: () => Promise<T>,
-			) => fn(),
-		} as never,
+		claudeAccounts: createFakeClaudeAccountsService(),
 		runtime: {} as never,
 		eventBus: { broadcastWorkspaceChanged } as never,
 	};

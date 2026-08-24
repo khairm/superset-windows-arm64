@@ -40,6 +40,7 @@ const HOST_SETTINGS_ID = 1;
 const GLOBAL_WARNING_KEY = "__global__";
 const WORKSPACE_REFRESH_CONCURRENCY = 6;
 const ROSTER_REFRESH_EVERY_TICKS = 5;
+const SILENT_WORKSPACE_CAUSES = new Set(["renewal"]);
 
 export interface ClaudeAccountsServiceDeps {
 	db: HostDb;
@@ -70,6 +71,7 @@ export interface ClaudeAccountsService {
 	mintProfileForNewWorkspace(workspaceId: string): Promise<void>;
 	ensureProfileForLaunch(workspaceId: string): Promise<string>;
 	profileDirFor(workspaceId: string): string;
+	configDirCandidatesFor(workspaceId: string): string[];
 	setWorkspaceAccount(workspaceId: string, slug: string | null): Promise<void>;
 	getWorkspaceState(
 		workspaceId: string,
@@ -102,15 +104,21 @@ interface TokenBackoff {
 	nextAttemptAt: number;
 }
 
-interface AccountTransition {
+type CredentialTransition =
+	| { credentialAction: "write"; credentials: ManagedCredentials }
+	| { credentialAction: "remove" }
+	| { credentialAction: "keep" };
+
+interface AccountTransitionBase {
 	desiredSlug: string | null;
-	credentials: ManagedCredentials | null | undefined;
-	ensureProfileForWorktree?: string;
+	ensureProfile?: { worktreePath: string; knownExists?: boolean };
 	database?:
 		| { kind: "set"; currentSlug: string | null }
 		| { kind: "compare-and-set"; expectedSlug: string };
 	cause: "manual" | "auto-fallback" | "system";
 }
+
+type AccountTransition = AccountTransitionBase & CredentialTransition;
 
 class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private readonly locks = new WorkspaceLocks();
@@ -123,6 +131,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private managed = false;
 	private managedLatchPersisted = false;
 	private started = false;
+	private degraded = false;
 	private stopped = false;
 	private interval: ReturnType<typeof setInterval> | null = null;
 	private credentialsWatcher: FSWatcher | null = null;
@@ -162,6 +171,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			await this.profiles.initialize();
 			profileStateExists = await this.hasManagedProfileState();
 		} catch (error) {
+			this.degraded = true;
 			this.deps.log.error(
 				"Claude profile storage failed to initialize; account management is disabled",
 				{ error },
@@ -172,12 +182,12 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"Claude workspace profile storage is unavailable. Account management is disabled.",
 			);
 			this.managed = false;
-			this.configured = await this.refreshPushKeyHealth(false);
+			this.configured = await this.refreshPushKeyHealth({ emitWarning: false });
 			this.started = true;
 			return;
 		}
 		const pushKeyPathExists = existsSync(this.pi.getPushKeyPath());
-		this.configured = await this.refreshPushKeyHealth(false);
+		this.configured = await this.refreshPushKeyHealth({ emitWarning: false });
 		const pinnedStateExists = workspaceRows.some(
 			(row) => row.claudeAccountSlug !== null,
 		);
@@ -285,8 +295,12 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 		return this.withWorkspaceLock(workspaceId, async () => {
 			const row = this.requireWorkspace(workspaceId);
-			const current = await this.readProfileCredentialsForCache(workspaceId);
-			const credentials =
+			const profileExists = await this.profiles.profileExists(workspaceId);
+			const current = await this.readProfileCredentialsForCache(
+				workspaceId,
+				profileExists,
+			);
+			const credentialTransition =
 				row.claudeAccountSlug !== null
 					? this.credentialsForPinnedLaunch(
 							workspaceId,
@@ -296,8 +310,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					: await this.credentialsForFollowingLaunch(workspaceId);
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug: row.claudeAccountSlug,
-				credentials,
-				ensureProfileForWorktree: row.worktreePath,
+				...credentialTransition,
+				ensureProfile: {
+					worktreePath: row.worktreePath,
+					knownExists: profileExists,
+				},
 				cause: "system",
 			});
 			this.latchManaged();
@@ -307,6 +324,18 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	profileDirFor(workspaceId: string): string {
 		return this.profiles.profileDirFor(workspaceId);
+	}
+
+	configDirCandidatesFor(workspaceId: string): string[] {
+		if (!isWorkspaceUuid(workspaceId)) return [];
+		const globalDir =
+			process.env.CLAUDE_CONFIG_DIR ?? this.profiles.globalClaudeDir;
+		if (!this.managed) return [globalDir];
+		const workspaceDir = this.profiles.profileDirFor(workspaceId);
+		const candidates = existsSync(workspaceDir)
+			? [workspaceDir, globalDir]
+			: [globalDir];
+		return [...new Set(candidates)];
 	}
 
 	async setWorkspaceAccount(
@@ -322,24 +351,24 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			const row = this.requireWorkspace(workspaceId);
 			if (row.claudeAccountSlug !== slug)
 				this.credentialCache.delete(workspaceId);
-			let credentials: ManagedCredentials | null | undefined;
+			let credentialTransition: CredentialTransition;
 			if (slug !== null) {
 				validateAccountSlug(slug);
 				const roster = await this.pi.fetchAccounts();
-				const account = roster.find(
-					(candidate) => candidate.type === "claude" && candidate.slug === slug,
-				);
+				const account = findClaudeAccount(roster, slug);
 				if (!account)
 					throw new Error(`Claude account ${slug} is not in the Pi roster`);
-				if (!account.enabled)
-					throw new Error(`Claude account ${slug} is disabled`);
-				if (account.dead) {
-					throw new Error(
-						`Claude account ${slug} needs re-login${account.deadReason ? `: ${account.deadReason}` : ""}`,
-					);
-				}
+				const accountHealth = accountHealthMessage(
+					"Claude account",
+					slug,
+					account,
+				);
+				if (accountHealth) throw new Error(accountHealth);
 				const token = await this.pi.fetchToken(slug);
-				credentials = credentialsFromToken(token);
+				credentialTransition = {
+					credentialAction: "write",
+					credentials: credentialsFromToken(token),
+				};
 			} else {
 				let identity: GlobalIdentity;
 				try {
@@ -355,8 +384,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						{ cause: error },
 					);
 				}
-				credentials =
-					identity.kind === "absent" ? undefined : identity.credentials;
+				credentialTransition =
+					identity.kind === "absent"
+						? { credentialAction: "keep" }
+						: {
+								credentialAction: "write",
+								credentials: identity.credentials,
+							};
 				this.setWarningCause(
 					workspaceId,
 					"machine-default",
@@ -367,8 +401,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			}
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug: slug,
-				credentials,
-				ensureProfileForWorktree: row.worktreePath,
+				...credentialTransition,
+				ensureProfile: { worktreePath: row.worktreePath },
 				database: { kind: "set", currentSlug: row.claudeAccountSlug },
 				cause: "manual",
 			});
@@ -456,6 +490,9 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		fn: () => Promise<T>,
 		opts: { disposalMode: DisposalFailureMode; timeoutMs?: number },
 	): Promise<T> {
+		if (!this.started) {
+			throw new Error("Claude accounts service has not started");
+		}
 		const deletionTargets = targets.map((target) => ({
 			workspaceId: target.workspaceId,
 			terminalIds: [...target.terminalIds],
@@ -466,18 +503,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"Workspace deletion targets contain a duplicate workspace id",
 			);
 		}
-		const disposalOptions = {
-			mode: opts.disposalMode,
-			log: this.deps.log,
-			...(this.deps.eventBus ? { eventBus: this.deps.eventBus } : {}),
-		};
+		const disposalOptions = this.disposalOptions(opts.disposalMode);
 		return this.withWorkspaceLocks(
 			workspaceIds,
 			async () => {
-				if (!this.janitor) {
-					if (!this.started || this.managed) this.requireJanitor();
+				if (this.degraded) {
 					this.deps.log.warn(
-						"Claude profile storage is degraded; workspace deletion will continue without profile markers",
+						"Claude profile storage is unavailable; workspace deletion will continue without profile markers",
 						{ workspaceIds },
 					);
 					await disposeTerminalIds(
@@ -487,7 +519,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					);
 					return fn();
 				}
-				const janitor = this.janitor;
+				const janitor = this.requireJanitor();
 				const preparedIds: string[] = [];
 				try {
 					for (const target of deletionTargets) {
@@ -582,7 +614,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private async executeTick(): Promise<void> {
 		this.tickCount += 1;
-		this.configured = await this.refreshPushKeyHealth(true);
+		this.configured = await this.refreshPushKeyHealth({ emitWarning: true });
 
 		let identity: GlobalIdentity | null = null;
 		try {
@@ -642,16 +674,6 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		} else {
 			this.setWarningCause(null, "pi-roster", null);
 		}
-		for (const row of rows) {
-			this.setWarningCause(
-				row.id,
-				"push-key",
-				this.configured
-					? null
-					: "The Pi push key is unavailable. This workspace will keep its last-good Claude token.",
-				false,
-			);
-		}
 		await mapConcurrent(rows, WORKSPACE_REFRESH_CONCURRENCY, (row) =>
 			this.refreshWorkspace(row.id, identity, roster),
 		);
@@ -695,8 +717,10 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						.sync();
 					if (!row || row.archivedAt !== null) return;
 					if (!(await this.profiles.profileExists(workspaceId))) return;
-					const current =
-						await this.readProfileCredentialsForCache(workspaceId);
+					const current = await this.readProfileCredentialsForCache(
+						workspaceId,
+						true,
+					);
 					if (row.claudeAccountSlug === null) {
 						await this.refreshFollowing(workspaceId, identity, roster, current);
 					} else {
@@ -743,6 +767,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			if (!sameAccessToken(current, identity.credentials)) {
 				await this.applyWorkspaceAccountTransition(workspaceId, {
 					desiredSlug: null,
+					credentialAction: "write",
 					credentials: identity.credentials,
 					cause: "system",
 				});
@@ -752,13 +777,14 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"unmanaged",
 				"This workspace is following a personal Claude login. Superset can mirror its access token but cannot renew it.",
 			);
-			this.setWarningCause(workspaceId, "renewal", null, false);
+			this.setWarningCause(workspaceId, "renewal", null);
 			return;
 		}
 		this.setWarningCause(workspaceId, "unmanaged", null);
 		if (!sameAccessToken(current, identity.credentials)) {
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug: null,
+				credentialAction: "write",
 				credentials: identity.credentials,
 				cause: "system",
 			});
@@ -776,14 +802,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return;
 		}
 		if (roster) this.setWarningCause(workspaceId, "roster", null);
-		if (account?.dead || account?.enabled === false) {
-			this.setWarningCause(
-				workspaceId,
-				"account-health",
-				account.dead
-					? `The machine-default Claude account '${identity.slug}' needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`
-					: `The machine-default Claude account '${identity.slug}' is disabled.`,
-			);
+		const accountHealth = account
+			? accountHealthMessage(
+					"The machine-default Claude account",
+					identity.slug,
+					account,
+				)
+			: null;
+		if (accountHealth) {
+			this.setWarningCause(workspaceId, "account-health", accountHealth);
 			return;
 		}
 		if (account) this.setWarningCause(workspaceId, "account-health", null);
@@ -793,7 +820,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		) {
 			await this.renewWorkspace(workspaceId, null, identity.slug);
 		} else {
-			this.setWarningCause(workspaceId, "renewal", null, false);
+			this.setWarningCause(workspaceId, "renewal", null);
 		}
 	}
 
@@ -808,7 +835,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		if (current && current.trayManagedAccount !== slug) {
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug: slug,
-				credentials: null,
+				credentialAction: "remove",
 				cause: "system",
 			});
 			current = null;
@@ -827,14 +854,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return;
 		}
 		if (roster) this.setWarningCause(workspaceId, "roster", null);
-		if (account?.dead || account?.enabled === false) {
-			this.setWarningCause(
-				workspaceId,
-				"account-health",
-				account.dead
-					? `Pinned Claude account '${slug}' needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`
-					: `Pinned Claude account '${slug}' is disabled.`,
-			);
+		const accountHealth = account
+			? accountHealthMessage("Pinned Claude account", slug, account)
+			: null;
+		if (accountHealth) {
+			this.setWarningCause(workspaceId, "account-health", accountHealth);
 			return;
 		}
 		if (account) this.setWarningCause(workspaceId, "account-health", null);
@@ -842,7 +866,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			current?.trayManagedAccount === slug &&
 			current.claudeAiOauth.expiresAt - Date.now() > RENEW_HEADROOM_MS
 		) {
-			this.setWarningCause(workspaceId, "renewal", null, false);
+			this.setWarningCause(workspaceId, "renewal", null);
 			return;
 		}
 		await this.renewWorkspace(workspaceId, slug, slug);
@@ -857,16 +881,16 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			const token = await this.fetchTokenWithBackoff(tokenSlug);
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug,
+				credentialAction: "write",
 				credentials: credentialsFromToken(token),
 				cause: "system",
 			});
-			this.setWarningCause(workspaceId, "renewal", null, false);
+			this.setWarningCause(workspaceId, "renewal", null);
 		} catch (error) {
 			this.setWarningCause(
 				workspaceId,
 				"renewal",
 				`Claude token renewal failed for '${tokenSlug}'. This workspace is using its last-good token.`,
-				false,
 			);
 			this.setWarningCause(
 				null,
@@ -909,16 +933,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			);
 			return;
 		}
-		if (defaultAccount.dead || !defaultAccount.enabled) {
+		const defaultAccountHealth = accountHealthMessage(
+			"The machine-default Claude account",
+			identity.slug,
+			defaultAccount,
+		);
+		if (defaultAccountHealth) {
 			for (const row of rows) {
 				if (row.claudeAccountSlug === null) continue;
-				this.setWarningCause(
-					row.id,
-					"account-health",
-					defaultAccount.dead
-						? `The machine-default Claude account '${identity.slug}' needs re-login${defaultAccount.deadReason ? `: ${defaultAccount.deadReason}` : "."}`
-						: `The machine-default Claude account '${identity.slug}' is disabled.`,
-				);
+				this.setWarningCause(row.id, "account-health", defaultAccountHealth);
 			}
 			this.deps.log.warn(
 				"Claude auto-fallback suppressed: machine default is unavailable",
@@ -949,14 +972,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				);
 				continue;
 			}
-			if (account.dead) {
-				this.setWarningCause(
-					row.id,
-					"account-health",
-					`Pinned Claude account '${slug}' needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`,
-				);
+			const accountHealth = accountHealthMessage(
+				"Pinned Claude account",
+				slug,
+				account,
+			);
+			if (accountHealth) {
+				this.setWarningCause(row.id, "account-health", accountHealth);
 				this.deps.log.info(
-					"Claude auto-fallback suppressed: pinned account needs re-login",
+					"Claude auto-fallback suppressed: pinned account is unavailable",
 					{ workspaceId: row.id, slug },
 				);
 				continue;
@@ -983,7 +1007,6 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				candidate.workspaceId,
 				candidate.pinnedSlug,
 				identity,
-				defaultAccount,
 				triggers,
 				candidate.reason,
 			);
@@ -994,7 +1017,6 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		workspaceId: string,
 		pinnedSlug: string,
 		evaluatedIdentity: Extract<GlobalIdentity, { kind: "tray" }>,
-		evaluatedDefaultAccount: PiAccount,
 		evaluatedTriggers: TrayTriggers,
 		reason: string,
 	): Promise<void> {
@@ -1028,8 +1050,6 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						identity.kind !== "tray" ||
 						identity.slug !== evaluatedIdentity.slug ||
 						identity.slug === pinnedSlug ||
-						evaluatedDefaultAccount.dead ||
-						!evaluatedDefaultAccount.enabled ||
 						!triggers ||
 						triggers.five !== evaluatedTriggers.five ||
 						triggers.seven !== evaluatedTriggers.seven
@@ -1040,11 +1060,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						);
 						return;
 					}
-					this.credentialCache.delete(workspaceId);
 					const updated = await this.applyWorkspaceAccountTransition(
 						workspaceId,
 						{
 							desiredSlug: null,
+							credentialAction: "write",
 							credentials: identity.credentials,
 							database: {
 								kind: "compare-and-set",
@@ -1114,32 +1134,38 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		workspaceId: string,
 		slug: string,
 		current: ManagedCredentials | null,
-	): ManagedCredentials | null {
+	): CredentialTransition {
 		if (
 			current?.trayManagedAccount === slug &&
 			current.claudeAiOauth.accessToken
 		) {
-			this.setWarningCause(workspaceId, "renewal", null, false);
-			return current;
+			this.setWarningCause(workspaceId, "renewal", null);
+			return { credentialAction: "write", credentials: current };
 		}
 		const lastGood = this.pi.getTokenLastGood(slug);
 		if (lastGood) {
-			this.setWarningCause(workspaceId, "renewal", null, false);
-			return credentialsFromToken(lastGood);
+			this.setWarningCause(workspaceId, "renewal", null);
+			return {
+				credentialAction: "write",
+				credentials: credentialsFromToken(lastGood),
+			};
 		}
 		this.setWarningCause(
 			workspaceId,
 			"renewal",
 			`Pinned Claude account '${slug}' has no last-good token. The workspace profile is intentionally credential-less until keep-fresh recovers.`,
+			{ emit: true },
 		);
-		return null;
+		return { credentialAction: "remove" };
 	}
 
 	private async credentialsForFollowingLaunch(
 		workspaceId: string,
-	): Promise<ManagedCredentials | undefined> {
+	): Promise<CredentialTransition> {
 		const identity = await this.readGlobalIdentityOrWarn(workspaceId);
-		if (!identity || identity.kind === "absent") return undefined;
+		if (!identity || identity.kind === "absent") {
+			return { credentialAction: "keep" };
+		}
 		if (identity.kind === "unmanaged") {
 			this.setWarningCause(
 				workspaceId,
@@ -1154,7 +1180,10 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				expiresAt: identity.credentials.claudeAiOauth.expiresAt,
 			});
 		}
-		return identity.credentials;
+		return {
+			credentialAction: "write",
+			credentials: identity.credentials,
+		};
 	}
 
 	private async readGlobalIdentityOrWarn(
@@ -1186,8 +1215,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private async readProfileCredentialsForCache(
 		workspaceId: string,
+		knownExists?: boolean,
 	): Promise<ManagedCredentials | null> {
-		if (!(await this.profiles.profileExists(workspaceId))) {
+		const profileExists =
+			knownExists ?? (await this.profiles.profileExists(workspaceId));
+		if (!profileExists) {
 			this.credentialCache.delete(workspaceId);
 			return null;
 		}
@@ -1231,36 +1263,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		workspaceId: string,
 		transition: AccountTransition,
 	): Promise<boolean> {
-		const priorCredentialState = transition.database
-			? await this.profiles.captureCredentialFileState(
-					this.profiles.profileDirFor(workspaceId),
-				)
-			: null;
-		if (transition.ensureProfileForWorktree !== undefined) {
-			await this.profiles.mintProfile(
-				workspaceId,
-				transition.ensureProfileForWorktree,
-				transition.credentials ?? null,
-			);
-			if (transition.credentials) {
-				this.cacheCredentials(workspaceId, transition.credentials);
-			}
-		}
-		if (
-			transition.credentials &&
-			transition.ensureProfileForWorktree === undefined
-		) {
-			await this.writeWorkspaceCredentials(workspaceId, transition.credentials);
-		} else if (transition.credentials === null) {
-			await this.removeWorkspaceCredentials(workspaceId);
+		if (!transition.database) {
+			await this.applyCredentialTransition(workspaceId, transition);
+			return true;
 		}
 
-		if (!transition.database) return true;
-		if (!priorCredentialState) {
-			throw new Error(
-				"Credential state snapshot is missing for database transition",
-			);
-		}
+		const priorCredentialState = await this.profiles.captureCredentialFileState(
+			this.profiles.profileDirFor(workspaceId),
+		);
+		await this.applyCredentialTransition(workspaceId, transition);
 		let updated: { id: string } | undefined;
 		try {
 			if (transition.database.kind === "set") {
@@ -1304,7 +1315,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 
 		this.setWarningCause(workspaceId, "credential-compensation", null);
-		this.setWarningCause(workspaceId, "renewal", null, false);
+		this.setWarningCause(workspaceId, "renewal", null);
 		this.setWarningCause(workspaceId, "roster", null);
 		if (transition.desiredSlug !== null) {
 			this.setWarningCause(workspaceId, "machine-default", null);
@@ -1323,6 +1334,33 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			});
 		}
 		return true;
+	}
+
+	private async applyCredentialTransition(
+		workspaceId: string,
+		transition: AccountTransition,
+	): Promise<void> {
+		if (transition.ensureProfile) {
+			await this.profiles.mintProfile(
+				workspaceId,
+				transition.ensureProfile.worktreePath,
+				null,
+				transition.ensureProfile.knownExists,
+			);
+		}
+		switch (transition.credentialAction) {
+			case "write":
+				await this.writeWorkspaceCredentials(
+					workspaceId,
+					transition.credentials,
+				);
+				return;
+			case "remove":
+				await this.removeWorkspaceCredentials(workspaceId);
+				return;
+			case "keep":
+				return;
+		}
 	}
 
 	private async restoreCredentialStateAfterDatabaseFailure(
@@ -1388,6 +1426,18 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		return row;
 	}
 
+	private disposalOptions(mode: DisposalFailureMode): {
+		mode: DisposalFailureMode;
+		log: ClaudeAccountsLogger;
+		eventBus?: EventBus;
+	} {
+		return {
+			mode,
+			log: this.deps.log,
+			...(this.deps.eventBus ? { eventBus: this.deps.eventBus } : {}),
+		};
+	}
+
 	private async clearDeletionMarkersOrThrow(
 		workspaceIds: readonly string[],
 		originalError: unknown,
@@ -1425,27 +1475,23 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		workspaceId: string,
 		terminalIds: readonly string[],
 	): Promise<void> {
-		const disposalOptions = {
-			mode: "warn-and-continue" as const,
-			log: this.deps.log,
-			...(this.deps.eventBus ? { eventBus: this.deps.eventBus } : {}),
-		};
+		const disposalOptions = this.disposalOptions("warn-and-continue");
 		await disposeTerminalIds(this.deps.db, terminalIds, disposalOptions);
 		try {
 			await this.profiles.deleteProfileDir(workspaceId);
 		} catch (error) {
 			if (!isBusyFsError(error)) throw error;
 			const retryIds = [
-				...new Set([
-					...terminalIds,
-					...listUndisposedTerminalIdsByWorkspaceId(workspaceId, this.deps.db),
-				]),
+				...terminalIds,
+				...listUndisposedTerminalIdsByWorkspaceId(workspaceId, this.deps.db),
 			];
 			await disposeTerminalIds(this.deps.db, retryIds, disposalOptions);
 			await this.profiles.deleteProfileDir(workspaceId);
 		}
 		this.credentialCache.delete(workspaceId);
-		this.warningCauses.delete(workspaceId);
+		for (const cause of this.warningCauses.get(workspaceId)?.keys() ?? []) {
+			this.setWarningCause(workspaceId, cause, null, { emit: false });
+		}
 		const referencedSlugs = new Set(
 			this.deps.db
 				.select({ slug: workspaces.claudeAccountSlug })
@@ -1513,7 +1559,9 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		this.persistManagedLatch();
 	}
 
-	private async refreshPushKeyHealth(emitWarning: boolean): Promise<boolean> {
+	private async refreshPushKeyHealth(options: {
+		emitWarning: boolean;
+	}): Promise<boolean> {
 		let configured = true;
 		try {
 			await this.pi.validatePushKey();
@@ -1526,7 +1574,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			configured
 				? null
 				: "Claude account management is active, but the Pi push key is unavailable or invalid.",
-			emitWarning,
+			{ emit: options.emitWarning },
 		);
 		return configured;
 	}
@@ -1535,10 +1583,16 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		activeWorkspaceIds: readonly string[],
 	): void {
 		const activeIds = new Set(activeWorkspaceIds);
-		for (const [key, causes] of this.warningCauses) {
-			if (key === GLOBAL_WARNING_KEY || activeIds.has(key)) continue;
-			causes.delete("renewal");
-			if (causes.size === 0) this.warningCauses.delete(key);
+		const inactiveRenewalWorkspaceIds = [...this.warningCauses]
+			.filter(
+				([key, causes]) =>
+					key !== GLOBAL_WARNING_KEY &&
+					!activeIds.has(key) &&
+					causes.has("renewal"),
+			)
+			.map(([key]) => key);
+		for (const workspaceId of inactiveRenewalWorkspaceIds) {
+			this.setWarningCause(workspaceId, "renewal", null);
 		}
 		const renewalFailureRemains = [...activeIds].some((workspaceId) =>
 			this.warningCauses.get(workspaceId)?.has("renewal"),
@@ -1596,7 +1650,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		workspaceId: string | null,
 		cause: string,
 		message: string | null,
-		emit = true,
+		options?: { emit?: boolean },
 	): void {
 		const key = workspaceId ?? GLOBAL_WARNING_KEY;
 		const previous = this.renderWarning(workspaceId);
@@ -1609,13 +1663,17 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		else causes.set(cause, message);
 		if (causes.size === 0) this.warningCauses.delete(key);
 		const rendered = this.renderWarning(workspaceId);
+		const emit =
+			options?.emit ??
+			(workspaceId === null || !SILENT_WORKSPACE_CAUSES.has(cause));
 		if (rendered === previous || !emit) return;
+		const eventMessage = rendered ?? previous;
+		if (eventMessage === null) return;
 		this.deps.emit({
 			type: "claude-account-warning",
 			workspaceId,
 			kind: "credential-health",
-			message:
-				rendered ?? previous ?? "Claude account credential warning cleared.",
+			message: eventMessage,
 			active: rendered !== null,
 		});
 	}
@@ -1635,10 +1693,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private renderWarning(workspaceId: string | null): string | null {
 		const key = workspaceId ?? GLOBAL_WARNING_KEY;
-		const messages = this.warningCauses.get(key);
-		return messages && messages.size > 0
-			? [...messages.values()].join(" ")
-			: null;
+		const messages = [...(this.warningCauses.get(key)?.values() ?? [])];
+		if (workspaceId !== null && this.managed && !this.configured) {
+			messages.push(
+				"The Pi push key is unavailable. This workspace will keep its last-good Claude token.",
+			);
+		}
+		return messages.length > 0 ? messages.join(" ") : null;
 	}
 
 	private requireJanitor(): ClaudeProfileJanitor {
@@ -1647,6 +1708,17 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 		return this.janitor;
 	}
+}
+
+function accountHealthMessage(
+	prefix: string,
+	slug: string,
+	account: PiAccount,
+): string | null {
+	if (account.dead) {
+		return `${prefix} '${slug}' needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`;
+	}
+	return account.enabled ? null : `${prefix} '${slug}' is disabled.`;
 }
 
 function findClaudeAccount(

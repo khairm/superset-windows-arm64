@@ -19,7 +19,7 @@ import { createTerminalSessionInternal } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { resolveAttachmentPath } from "../attachments/storage";
-import { sanitizeStoredAgentEnv } from "../settings/reserved-agent-env";
+import { parseStoredAgentEnv } from "../settings/reserved-agent-env";
 import { toTerminalSessionError } from "../terminal/errors";
 import { resolveDefaultAccountEnv } from "../usage/default-account";
 
@@ -50,23 +50,6 @@ function parseArgv(value: string): string[] {
 	}
 }
 
-function parseEnv(value: string): Record<string, string> {
-	try {
-		const parsed = JSON.parse(value);
-		if (
-			parsed === null ||
-			typeof parsed !== "object" ||
-			Array.isArray(parsed) ||
-			Object.values(parsed).some((entry) => typeof entry !== "string")
-		) {
-			return {};
-		}
-		return sanitizeStoredAgentEnv(parsed as Record<string, string>);
-	} catch {
-		return {};
-	}
-}
-
 function rowToConfig(
 	row: typeof hostAgentConfigs.$inferSelect,
 ): ResolvedHostAgentConfig {
@@ -79,7 +62,7 @@ function rowToConfig(
 		promptTransport: row.promptTransport as "argv" | "stdin",
 		promptArgs: parseArgv(row.promptArgsJson),
 		resumeArgs: parseArgv(row.resumeArgsJson),
-		env: parseEnv(row.envJson),
+		env: parseStoredAgentEnv(row.envJson),
 	};
 }
 

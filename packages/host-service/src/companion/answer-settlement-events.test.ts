@@ -22,7 +22,7 @@ function source(): QuestionSourceResolver {
 			hostWorkspaceId: "workspace-1",
 			agentId: "claude",
 		}),
-		resolveTranscriptPath: () => null,
+		resolveTranscriptPath: async () => null,
 		resolveTerminalActivityMs: () => NOW,
 	};
 }
@@ -52,7 +52,7 @@ function captureInput() {
 }
 
 describe("companion remote-answer settlement events", () => {
-	it("publishes corrected phone provenance when PostToolUse wins the race", () => {
+	it("publishes corrected phone provenance when PostToolUse wins the race", async () => {
 		const frames: Record<string, unknown>[] = [];
 		const store = createQuestionStore({
 			source: source(),
@@ -72,7 +72,7 @@ describe("companion remote-answer settlement events", () => {
 			} as never,
 			logger: { info: () => {}, warn: () => {}, error: () => {} },
 		});
-		sink.capture(captureInput());
+		await sink.capture(captureInput());
 		const question = store.byHostTerminal("terminal-1");
 		if (question === null) throw new Error("expected pending question");
 

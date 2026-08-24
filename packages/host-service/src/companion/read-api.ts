@@ -52,7 +52,6 @@
  * thread was snoozed is still answerable.
  */
 
-import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import Database from "better-sqlite3";
@@ -208,11 +207,11 @@ export interface HostDbReader extends QuestionSourceResolver {
 	listTerminalIdsForWorkspace(hostWorkspaceId: string): string[];
 	findBinding(hostTerminalId: string): HostBindingRow | null;
 	findTerminal(hostTerminalId: string): HostTerminalRow | null;
-	transcriptPathsFor(resolved: {
+	transcriptPathFor(resolved: {
 		workspaceId: string;
 		worktreePath: string;
 		agentSessionId: string;
-	}): string[];
+	}): Promise<string | null>;
 	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
 	readSidebarMirror(): SidebarMirrorSnapshot;
 	close(): void;
@@ -381,39 +380,32 @@ export function openHostDbReadOnly(
 		// (TRANSCRIPT-PATH-DERIVED) The question store's guard-1 source. Same
 		// derivation `/v1/transcript` uses, from the same two host.db columns, so
 		// the two can never disagree about which file is this agent's transcript.
-		resolveTranscriptPath: (id) => {
+		resolveTranscriptPath: async (id) => {
 			const binding = reader.findBinding(id);
 			if (binding === null) return null;
-			if (
-				binding.agentSessionId === null ||
-				binding.agentSessionId.length === 0
-			) {
-				return null;
-			}
+			const agentSessionId = binding.agentSessionId;
+			if (agentSessionId === null || agentSessionId.length === 0) return null;
 			if (agentKindFromAgentId(binding.agentId) !== "claude") return null;
 			const workspace = reader.findWorkspace(binding.workspaceId);
 			if (workspace === null) return null;
-			const candidates = profileDirsForWorkspace(binding.workspaceId)
-				.map((configDir) =>
-					deriveClaudeTranscriptPath(
-						workspace.worktreePath,
-						binding.agentSessionId as string,
-						configDir,
-					),
-				)
-				.filter((candidate): candidate is string => candidate !== null);
-			return candidates.find((candidate) => existsSync(candidate)) ?? null;
+			return reader.transcriptPathFor({
+				workspaceId: binding.workspaceId,
+				worktreePath: workspace.worktreePath,
+				agentSessionId,
+			});
 		},
-		transcriptPathsFor: (resolved) =>
-			profileDirsForWorkspace(resolved.workspaceId)
-				.map((configDir) =>
-					deriveClaudeTranscriptPath(
-						resolved.worktreePath,
-						resolved.agentSessionId,
-						configDir,
-					),
-				)
-				.filter((candidate): candidate is string => candidate !== null),
+		transcriptPathFor: (resolved) =>
+			firstExistingCandidate(
+				profileDirsForWorkspace(resolved.workspaceId)
+					.map((configDir) =>
+						deriveClaudeTranscriptPath(
+							resolved.worktreePath,
+							resolved.agentSessionId,
+							configDir,
+						),
+					)
+					.filter((candidate): candidate is string => candidate !== null),
+			),
 		close: () => db.close(),
 	};
 	return reader;
@@ -1418,6 +1410,20 @@ function decodeCursor(raw: string): number {
  */
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
+async function firstExistingCandidate(
+	candidates: readonly string[],
+): Promise<string | null> {
+	for (const candidate of candidates) {
+		try {
+			await fs.access(candidate);
+			return candidate;
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
 export function deriveClaudeTranscriptPath(
 	cwd: string,
 	sessionId: string,
@@ -1482,23 +1488,15 @@ async function resolveTranscript(
 	if (workspace === null) {
 		throw badRequest("the workspace that owns this terminal no longer exists");
 	}
-	const candidates = deps.db.transcriptPathsFor({
+	const transcriptPath = await deps.db.transcriptPathFor({
 		workspaceId: binding.workspaceId,
 		worktreePath: workspace.worktreePath,
 		agentSessionId: binding.agentSessionId,
 	});
-	for (const candidate of candidates) {
-		try {
-			await fs.access(candidate);
-			return {
-				transcriptPath: candidate,
-				sessionGeneration: binding.startedAt,
-			};
-		} catch {
-			continue;
-		}
+	if (transcriptPath === null) {
+		throw badRequest("the agent transcript for this terminal is unreadable");
 	}
-	throw badRequest("the agent transcript for this terminal is unreadable");
+	return { transcriptPath, sessionGeneration: binding.startedAt };
 }
 
 export async function handleTranscript(

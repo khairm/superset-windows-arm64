@@ -67,13 +67,13 @@ function resolver(
 			hostWorkspaceId: "w-1",
 			agentId,
 		}),
-		resolveTranscriptPath: () => null,
+		resolveTranscriptPath: async () => null,
 		resolveTerminalActivityMs: () => NOW - 60_000,
 		...overrides,
 	};
 }
 
-function pendingQuestion(
+async function pendingQuestion(
 	overrides: Record<string, unknown> = {},
 	source: QuestionSourceResolver = resolver(),
 ) {
@@ -82,12 +82,12 @@ function pendingQuestion(
 		liveness: { isProvablyGone: () => false },
 		onSettled: () => {},
 	});
-	return { store, question: store.capture(captureInput(overrides)) };
+	return { store, question: await store.capture(captureInput(overrides)) };
 }
 
 describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
-	it("projects the §9.4 identity and shape fields, and reports a claude question as answerable to a fully-granted device", () => {
-		const { store, question } = pendingQuestion();
+	it("projects the §9.4 identity and shape fields, and reports a claude question as answerable to a fully-granted device", async () => {
+		const { store, question } = await pendingQuestion();
 		const summary = store.summarize(question, {
 			granted: BRIDGE_CAPABILITIES,
 		});
@@ -108,8 +108,8 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		expect(summary?.projectId).not.toBe("p-1");
 	});
 
-	it("counts the items and reports multiSelect when ANY item is multi-select", () => {
-		const { store, question } = pendingQuestion({
+	it("counts the items and reports multiSelect when ANY item is multi-select", async () => {
+		const { store, question } = await pendingQuestion({
 			questions: [
 				questionItem(),
 				questionItem({ index: 1, multiSelect: true }),
@@ -126,22 +126,25 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		expect(summary?.answerable).toBe(true);
 	});
 
-	it("offers every pending question even when capability evidence is absent", () => {
-		const { store, question } = pendingQuestion();
+	it("offers every pending question even when capability evidence is absent", async () => {
+		const { store, question } = await pendingQuestion();
 		expect(store.summarize(question, { granted: [] })?.answerable).toBe(true);
 	});
 
 	it.each([
 		null,
 		"codex",
-	])("does not turn agent kind %p into an answer barrier", (agentId) => {
-		const { store, question } = pendingQuestion({}, resolver({}, agentId));
+	])("does not turn agent kind %p into an answer barrier", async (agentId) => {
+		const { store, question } = await pendingQuestion(
+			{},
+			resolver({}, agentId),
+		);
 
 		expect(store.summarize(question, { granted: [] })?.answerable).toBe(true);
 	});
 
-	it("clamps the headline to the first item's header, never the body", () => {
-		const { store, question } = pendingQuestion({
+	it("clamps the headline to the first item's header, never the body", async () => {
+		const { store, question } = await pendingQuestion({
 			questions: [questionItem({ header: "Deploy to prod?" })],
 		});
 		expect(
@@ -149,8 +152,8 @@ describe("(TREE-FRESHNESS-GSEQ) QuestionStore.summarize", () => {
 		).toBe("Deploy to prod?");
 	});
 
-	it("FAILS CLOSED: a record whose terminal no longer resolves in host.db is dropped, not published with a guessed project handle", () => {
-		const { question } = pendingQuestion();
+	it("FAILS CLOSED: a record whose terminal no longer resolves in host.db is dropped, not published with a guessed project handle", async () => {
+		const { question } = await pendingQuestion();
 		// The row goes away between capture and the frame — a disposed terminal, a
 		// pruned workspace. `resolveSource` throws, and a fabricated identity on
 		// the wire is worse than a missing frame.
@@ -173,7 +176,7 @@ describe("(TREE-FRESHNESS-GSEQ) publishPendingQuestion", () => {
 		const warns: string[] = [];
 		const errors: string[] = [];
 		const deps = {
-			inner: { capture: () => {}, resolve: () => {} },
+			inner: { capture: async () => {}, resolve: () => {} },
 			questions: { summarize },
 			push: {},
 			events: { publish },

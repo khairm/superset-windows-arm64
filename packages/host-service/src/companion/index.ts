@@ -21,17 +21,12 @@
  * observations as eligibility gates.
  */
 
-import { existsSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import hostServicePackageJson from "@superset/host-service/package.json" with {
 	type: "json",
 };
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import type { ClaudeAccountsService } from "../claude-accounts";
-import { isWorkspaceUuid } from "../claude-accounts/profile-manager";
 import type { HostDb } from "../db";
 import * as hostDbSchema from "../db/schema";
 import { getDaemonClient } from "../terminal/daemon-client-singleton";
@@ -1724,19 +1719,6 @@ function pairingDeps(current: BridgeState, logger: BridgeLogger): PairingDeps {
 // the host-service mount (the single call added to serve.ts)
 // ---------------------------------------------------------------------------
 
-export function claudeConfigDirsForWorkspace(
-	service: ClaudeAccountsService,
-	workspaceId: string,
-): readonly string[] {
-	if (!isWorkspaceUuid(workspaceId)) return [];
-	const globalDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-	if (!service.getCapability().managed) return [globalDir];
-	const workspaceDir = service.profileDirFor(workspaceId);
-	if (!existsSync(workspaceDir) || workspaceDir === globalDir)
-		return [globalDir];
-	return [workspaceDir, globalDir];
-}
-
 export interface CompanionMountInput {
 	/** `env.HOST_DB_PATH`. */
 	hostDbPath: string;
@@ -1905,8 +1887,8 @@ export function createNotifyingCaptureSink(
 	deps: NotifyingSinkDeps,
 ): CompanionQuestionSink {
 	return {
-		capture(input) {
-			deps.inner.capture(input);
+		async capture(input) {
+			await deps.inner.capture(input);
 			const question = deps.questions.byHostTerminal(input.hostTerminalId);
 			if (question === null) {
 				// Captured and immediately superseded inside the same tick. Nothing to

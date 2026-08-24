@@ -277,7 +277,7 @@ export interface QuestionResolutionInput {
 
 /** Structural shape of `CompanionQuestionSink`; see `asCaptureSink()`. */
 export interface QuestionCaptureSink {
-	capture(input: QuestionCaptureInput): void;
+	capture(input: QuestionCaptureInput): Promise<void>;
 	resolve(input: QuestionResolutionInput): void;
 }
 
@@ -650,7 +650,7 @@ export interface QuestionSourceResolver {
 	 * unsafe session id, or no workspace row). `null` is a REFUSAL upstream, never
 	 * a licence to fall back to a caller-supplied path.
 	 */
-	resolveTranscriptPath(hostTerminalId: string): string | null;
+	resolveTranscriptPath(hostTerminalId: string): Promise<string | null>;
 	/**
 	 * (QUESTION-EXPIRY) The row's newest known instant — `last_attached_at ??
 	 * created_at` — or `null` when host.db has no row for the id at all.
@@ -730,7 +730,7 @@ export interface QuestionStore {
 	 * Mints the id and the fingerprint. Prefer `asCaptureSink()`, which does the
 	 * boundary validation for you.
 	 */
-	capture(input: QuestionCaptureInput): PendingQuestion;
+	capture(input: QuestionCaptureInput): Promise<PendingQuestion>;
 	/**
 	 * THE ENTRY POINT for captures. The object to hand
 	 * `setCompanionQuestionSink()`; structurally a `CompanionQuestionSink`.
@@ -1732,7 +1732,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 	}
 
 	const store: QuestionStore = {
-		capture(input) {
+		async capture(input) {
 			if (input.questions.length === 0) {
 				throw new CaptureRejectedError("questions", "must not be empty");
 			}
@@ -1796,7 +1796,7 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 			// reconciliation without blocking answers. The hook's own claim is kept
 			// only so a mismatch is investigable.
 			const derivedTranscriptPath =
-				deps.source.resolveTranscriptPath(input.hostTerminalId) ?? "";
+				(await deps.source.resolveTranscriptPath(input.hostTerminalId)) ?? "";
 			if (
 				derivedTranscriptPath.length > 0 &&
 				path.resolve(derivedTranscriptPath).toLowerCase() !==
@@ -1896,8 +1896,8 @@ export function createQuestionStore(deps: QuestionStoreDeps): QuestionStore {
 
 		asCaptureSink() {
 			return {
-				capture: (input) => {
-					store.capture(validateCapture(input));
+				capture: async (input) => {
+					await store.capture(validateCapture(input));
 				},
 				resolve: (input) => {
 					const hostTerminalId = requireString(

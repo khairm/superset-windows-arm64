@@ -12,8 +12,8 @@ import type { HostDb } from "../../../db";
 import { hostAgentConfigs } from "../../../db/schema";
 import { protectedProcedure, router } from "../../index";
 import {
+	parseStoredAgentEnv,
 	RESERVED_CLAUDE_ENV_KEY,
-	sanitizeStoredAgentEnv,
 } from "./reserved-agent-env";
 
 const promptTransportSchema = z.enum(["argv", "stdin"]);
@@ -77,24 +77,6 @@ function parseArgv(value: string): string[] {
 	return parsed as string[];
 }
 
-function parseEnv(value: string): Record<string, string> {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(value);
-	} catch {
-		return {};
-	}
-	if (
-		parsed === null ||
-		typeof parsed !== "object" ||
-		Array.isArray(parsed) ||
-		Object.values(parsed).some((item) => typeof item !== "string")
-	) {
-		return {};
-	}
-	return sanitizeStoredAgentEnv(parsed as Record<string, string>);
-}
-
 function toOutput(row: HostAgentConfigRow): HostAgentConfig {
 	return {
 		id: row.id,
@@ -106,7 +88,7 @@ function toOutput(row: HostAgentConfigRow): HostAgentConfig {
 		promptTransport: row.promptTransport as PromptTransport,
 		promptArgs: parseArgv(row.promptArgsJson),
 		resumeArgs: parseArgv(row.resumeArgsJson),
-		env: parseEnv(row.envJson),
+		env: parseStoredAgentEnv(row.envJson),
 		order: row.displayOrder,
 	};
 }

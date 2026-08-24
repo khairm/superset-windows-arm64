@@ -108,13 +108,13 @@ function resolver(): QuestionSourceResolver {
 			hostWorkspaceId: "w-1",
 			agentId: "claude",
 		}),
-		resolveTranscriptPath: () => null,
+		resolveTranscriptPath: async () => null,
 		resolveTerminalActivityMs: () => NOW - 60_000,
 	};
 }
 
 describe("(HOOK-CLAIM-NOT-TRUSTED) the workspace a question belongs to", () => {
-	it("stores host.db's value, not the hook's claim", () => {
+	it("stores host.db's value, not the hook's claim", async () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
@@ -123,7 +123,7 @@ describe("(HOOK-CLAIM-NOT-TRUSTED) the workspace a question belongs to", () => {
 		// An unauthenticated localhost POST naming somebody else's thread. That id
 		// decides which thread the phone opens and is the one the curation gate
 		// asks about, so the derived value is the only one that may be stored.
-		const question = store.capture(
+		const question = await store.capture(
 			captureInput({ workspaceId: "w-somebody-elses" }),
 		);
 		expect(question.hostWorkspaceId).toBe("w-1");
@@ -153,9 +153,9 @@ function settleHarness() {
  * buzzing about a question that no longer existed.
  */
 describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () => {
-	it("a REMOTE answer — the path `/v1/answer` takes, which had no retraction wiring at all", () => {
+	it("a REMOTE answer — the path `/v1/answer` takes, which had no retraction wiring at all", async () => {
 		const { store, settled } = settleHarness();
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		expect(
 			store.resolve(
 				question.questionId,
@@ -168,9 +168,9 @@ describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () 
 		]);
 	});
 
-	it("a DESK answer through the capture sink", () => {
+	it("a DESK answer through the capture sink", async () => {
 		const { store, settled } = settleHarness();
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		store.asCaptureSink().resolve({
 			hostTerminalId: "term-live",
 			toolUseId: "tu-1",
@@ -181,10 +181,10 @@ describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () 
 		]);
 	});
 
-	it("a SUPERSEDE — the prior record left `pending` by a direct field write, so nothing retracted its notification", () => {
+	it("a SUPERSEDE — the prior record left `pending` by a direct field write, so nothing retracted its notification", async () => {
 		const { store, settled } = settleHarness();
-		const first = store.capture(captureInput());
-		const second = store.capture(
+		const first = await store.capture(captureInput());
+		const second = await store.capture(
 			captureInput({ toolUseId: "tu-2", sessionId: "s-2" }),
 		);
 		expect(second.questionId).not.toBe(first.questionId);
@@ -195,18 +195,18 @@ describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () 
 		);
 	});
 
-	it("a RECONCILE-STALE settle", () => {
+	it("a RECONCILE-STALE settle", async () => {
 		const { store, settled } = settleHarness();
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		store.markStale(question.questionId, "terminal_gone");
 		expect(settled).toEqual([
 			{ questionId: question.questionId, state: "stale" },
 		]);
 	});
 
-	it("reports each ending exactly once — a second resolve is not a second retraction", () => {
+	it("reports each ending exactly once — a second resolve is not a second retraction", async () => {
 		const { store, settled } = settleHarness();
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		store.resolve(
 			question.questionId,
 			{ deviceLabel: null, surface: "desktop" },
@@ -221,7 +221,7 @@ describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () 
 		expect(settled).toHaveLength(1);
 	});
 
-	it("does not let a thrown sink un-settle the question — the answer was already typed by then", () => {
+	it("does not let a thrown sink un-settle the question — the answer was already typed by then", async () => {
 		const store = createQuestionStore({
 			source: resolver(),
 			liveness: { isProvablyGone: () => false },
@@ -229,7 +229,7 @@ describe("(SETTLE-CHOKE-POINT) every route out of `pending` reports itself", () 
 				throw new Error("FCM is down");
 			},
 		});
-		const question = store.capture(captureInput());
+		const question = await store.capture(captureInput());
 		expect(() =>
 			store.resolve(
 				question.questionId,

@@ -2,7 +2,25 @@ export const RESERVED_CLAUDE_ENV_KEY = "CLAUDE_CONFIG_DIR";
 
 let didLogIgnoredReservedClaudeEnv = false;
 
-export function sanitizeStoredAgentEnv(
+export function parseStoredAgentEnv(value: string): Record<string, string> {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		return {};
+	}
+	if (
+		parsed === null ||
+		typeof parsed !== "object" ||
+		Array.isArray(parsed) ||
+		Object.values(parsed).some((entry) => typeof entry !== "string")
+	) {
+		return {};
+	}
+	return sanitizeStoredAgentEnv(parsed as Record<string, string>);
+}
+
+function sanitizeStoredAgentEnv(
 	env: Record<string, string>,
 ): Record<string, string> {
 	if (!Object.hasOwn(env, RESERVED_CLAUDE_ENV_KEY)) return env;

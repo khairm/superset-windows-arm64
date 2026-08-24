@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	claudeAccountWire,
+	createPiFakeServer,
+} from "../../test/helpers/claude-accounts-fixture";
 import { accountSlugSchema, PiClient, PiRequestError } from "./pi-client";
 import type { ClaudeAccountsLogger } from "./types";
 
@@ -30,29 +34,6 @@ describe("accountSlugSchema", () => {
 	});
 });
 
-function accountWire(overrides: Record<string, unknown> = {}) {
-	return {
-		slug: "claude12",
-		name: "Claude 12",
-		type: "claude",
-		enabled: true,
-		dead: false,
-		dead_reason: null,
-		last_success: new Date().toISOString(),
-		consecutive_failures: 0,
-		five_pct: 25,
-		seven_pct: 30,
-		fable_pct: null,
-		five_resets_at: null,
-		seven_resets_at: null,
-		fable_resets_at: null,
-		in_use: false,
-		fable_in_use: false,
-		pc_active: true,
-		...overrides,
-	};
-}
-
 describe("PiClient configuration", () => {
 	test("rejects a relative push-key path", () => {
 		expect(
@@ -65,12 +46,11 @@ describe("PiClient configuration", () => {
 		scratchPaths.push(scratch);
 		await mkdir(scratch);
 		const keyPath = join(scratch, "push-key.txt");
-		await writeFile(keyPath, "﻿first\n", "utf8");
-		const original = await stat(keyPath);
+		let original: Awaited<ReturnType<typeof stat>>;
 		let requests = 0;
-		const server = Bun.serve({
-			port: 0,
-			fetch: async (request) => {
+		const pi = await createPiFakeServer(
+			scratch,
+			async (request) => {
 				requests += 1;
 				const authorization = request.headers.get("authorization");
 				if (requests === 1) {
@@ -82,11 +62,13 @@ describe("PiClient configuration", () => {
 				expect(authorization).toBe("Bearer other");
 				return Response.json([]);
 			},
-		});
-		servers.push(server);
+			{ pushKeyContents: "﻿first\n" },
+		);
+		original = await stat(keyPath);
+		servers.push(pi.server);
 		const client = new PiClient(log, {
-			baseUrl: `http://127.0.0.1:${server.port}`,
-			pushKeyPath: keyPath,
+			baseUrl: pi.baseUrl,
+			pushKeyPath: pi.pushKeyPath,
 		});
 
 		await expect(client.fetchAccounts()).rejects.toBeInstanceOf(PiRequestError);
@@ -100,20 +82,21 @@ describe("PiClient response compatibility", () => {
 		const scratch = join(tmpdir(), `claude-pi-client-${randomUUID()}`);
 		scratchPaths.push(scratch);
 		await mkdir(scratch);
-		const keyPath = join(scratch, "push-key.txt");
-		await writeFile(keyPath, "secret\n", "utf8");
-		const server = Bun.serve({
-			port: 0,
-			fetch: () =>
-				Response.json([
-					accountWire({ added_by_new_pi: { nested: true } }),
-					accountWire({ slug: "future1", name: "Future", type: "future" }),
-				]),
-		});
-		servers.push(server);
+		const pi = await createPiFakeServer(scratch, () =>
+			Response.json([
+				claudeAccountWire("claude12", {
+					added_by_new_pi: { nested: true },
+				}),
+				claudeAccountWire("future1", {
+					name: "Future",
+					type: "future",
+				}),
+			]),
+		);
+		servers.push(pi.server);
 		const client = new PiClient(log, {
-			baseUrl: `http://127.0.0.1:${server.port}`,
-			pushKeyPath: keyPath,
+			baseUrl: pi.baseUrl,
+			pushKeyPath: pi.pushKeyPath,
 		});
 
 		const accounts = await client.fetchAccounts();
@@ -151,16 +134,13 @@ describe("PiClient response compatibility", () => {
 			const scratch = join(tmpdir(), `claude-pi-client-${randomUUID()}`);
 			scratchPaths.push(scratch);
 			await mkdir(scratch);
-			const keyPath = join(scratch, "push-key.txt");
-			await writeFile(keyPath, "secret\n", "utf8");
-			const server = Bun.serve({
-				port: 0,
-				fetch: () => Response.json(scenario.body),
-			});
-			servers.push(server);
+			const pi = await createPiFakeServer(scratch, () =>
+				Response.json(scenario.body),
+			);
+			servers.push(pi.server);
 			const client = new PiClient(log, {
-				baseUrl: `http://127.0.0.1:${server.port}`,
-				pushKeyPath: keyPath,
+				baseUrl: pi.baseUrl,
+				pushKeyPath: pi.pushKeyPath,
 			});
 
 			await expect(client.fetchToken("claude12")).rejects.toBeInstanceOf(

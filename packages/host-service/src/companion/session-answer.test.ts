@@ -166,7 +166,7 @@ describe("(SESSIONS-PROJECT) the question source for a session terminal", () => 
 			liveness: { isProvablyGone: () => false },
 			onSettled: () => {},
 		});
-		const question = store.capture({
+		const question = await store.capture({
 			hostTerminalId: SESSION_TERMINAL_ID,
 			workspaceId: SESSION_WORKSPACE_ID,
 			toolUseId: "tu-session",

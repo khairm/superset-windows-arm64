@@ -294,7 +294,6 @@ async function runDestroy(
 	}
 
 	let result: Awaited<ReturnType<typeof runDestroyPhases>>;
-	let rolledBackInsideCommit = false;
 	try {
 		// ─── Step 1: Preflight ─────────────────────────────────────
 		// Block only on dirty worktree (the common "I forgot to commit"
@@ -385,24 +384,16 @@ async function runDestroy(
 		}
 
 		const commitDestroy = async () => {
-			try {
-				const destroyResult = await runDestroyPhases(ctx, input, {
-					local,
-					project,
-					multiRepo,
-					warnings,
-				});
-				// Telemetry at the true commit: a failed destroy un-archives below and
-				// must not count, and a retried destroy must count exactly once.
-				if (local) trackWorkspaceDeleted(ctx, local);
-				return destroyResult;
-			} catch (error) {
-				if (marked) {
-					unarchiveLocalWorkspace(ctx, input.workspaceId);
-					rolledBackInsideCommit = true;
-				}
-				throw error;
-			}
+			const destroyResult = await runDestroyPhases(ctx, input, {
+				local,
+				project,
+				multiRepo,
+				warnings,
+			});
+			// Telemetry at the true commit: a failed destroy un-archives below and
+			// must not count, and a retried destroy must count exactly once.
+			if (local) trackWorkspaceDeleted(ctx, local);
+			return destroyResult;
 		};
 		result = await ctx.claudeAccounts.withWorkspaceDeletion(
 			[
@@ -418,9 +409,7 @@ async function runDestroy(
 			{ disposalMode: "warn-and-continue" },
 		);
 	} catch (err) {
-		if (marked && !rolledBackInsideCommit) {
-			unarchiveLocalWorkspace(ctx, input.workspaceId);
-		}
+		if (marked) unarchiveLocalWorkspace(ctx, input.workspaceId);
 		throw err;
 	}
 	return result;

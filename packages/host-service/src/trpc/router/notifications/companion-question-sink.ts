@@ -77,7 +77,7 @@ export interface CompanionQuestionResolution {
 
 export interface CompanionQuestionSink {
 	/** A new AskUserQuestion is on screen. */
-	capture(input: CompanionQuestionCapture): void;
+	capture(input: CompanionQuestionCapture): Promise<void>;
 	/**
 	 * The question was answered (or otherwise closed) at the desk. Drives push
 	 * retraction (§13.3): without this the phone keeps buzzing about a question
@@ -289,12 +289,12 @@ function deriveFreeTextOption(
  * registered — that is every build where the companion is not running, and it is
  * why the hook route must never depend on this returning anything.
  */
-export function forwardCompanionCapture(args: {
+export async function forwardCompanionCapture(args: {
 	payload: CompanionHookPayload;
 	terminalId: string;
 	workspaceId: string;
 	occurredAt: number;
-}): void {
+}): Promise<void> {
 	const { payload, terminalId, workspaceId, occurredAt } = args;
 	const captured = payload.companionQuestion;
 	const resolved = payload.companionQuestionResolved;
@@ -305,7 +305,7 @@ export function forwardCompanionCapture(args: {
 
 	if (captured) {
 		const questionCount = captured.questions.length;
-		current.capture({
+		await current.capture({
 			hostTerminalId: terminalId,
 			workspaceId,
 			toolUseId: captured.toolUseId,
