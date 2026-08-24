@@ -97,6 +97,15 @@ describe("WorkspaceLocks", () => {
 		await firstHeld;
 	});
 
+	it("allows a multi-lock operation to re-enter a subset", async () => {
+		const locks = new WorkspaceLocks();
+		const result = await locks.withLocks(
+			[SECOND_WORKSPACE_ID, WORKSPACE_ID],
+			() => locks.withLocks([WORKSPACE_ID], async () => "done"),
+		);
+		expect(result).toBe("done");
+	});
+
 	it("bounds queued lock acquisition", async () => {
 		const locks = new WorkspaceLocks();
 		let release!: () => void;
