@@ -13,6 +13,8 @@ import {
 	getPresetIcon,
 	useIsDarkTheme,
 } from "renderer/assets/app-icons/preset-icons";
+import { useClaudeAccountCapability } from "renderer/hooks/host-service/useClaudeAccounts";
+import { formatResetIn, formatResetLabel } from "renderer/lib/formatResetTime";
 import type {
 	UsageAccount,
 	UsageQuotaWindow,
@@ -24,7 +26,6 @@ import { UsageHistorySection } from "../UsageHistorySection";
 import type { SwitchSignInTarget } from "./components/AddAccountDialog";
 import { AddAccountDialog } from "./components/AddAccountDialog";
 import { RemoveAccountDialog } from "./components/RemoveAccountDialog";
-import { formatResetIn, formatResetLabel } from "./utils/formatResetIn";
 
 type Provider = UsageAccount["provider"];
 
@@ -84,6 +85,7 @@ function AccountCard({
 	onSwitchSignIn,
 	onRemove,
 	isSwitching,
+	showDefaultControl,
 }: {
 	account: UsageAccount;
 	onMakeDefault: () => void;
@@ -91,6 +93,7 @@ function AccountCard({
 	/** Null on the system-default card — the main login is never removable. */
 	onRemove: (() => void) | null;
 	isSwitching: boolean;
+	showDefaultControl: boolean;
 }) {
 	const credits = creditsLine(account);
 	return (
@@ -113,25 +116,26 @@ function AccountCard({
 								: "Unavailable"}
 					</span>
 				)}
-				{account.isDefault ? (
-					<span
-						className="rounded bg-primary/15 px-1 text-[9px] font-medium uppercase tracking-wide text-primary"
-						title="New terminals and agents use this account. Existing ones keep theirs."
-					>
-						Default
-					</span>
-				) : (
-					<Button
-						variant="ghost"
-						size="sm"
-						className="h-4 rounded px-1 text-[9px] font-medium uppercase tracking-wide text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-						disabled={isSwitching}
-						title="Launch new terminals and agents on this account. Existing ones keep theirs."
-						onClick={onMakeDefault}
-					>
-						Make default
-					</Button>
-				)}
+				{showDefaultControl &&
+					(account.isDefault ? (
+						<span
+							className="rounded bg-primary/15 px-1 text-[9px] font-medium uppercase tracking-wide text-primary"
+							title="New terminals and agents use this account. Existing ones keep theirs."
+						>
+							Default
+						</span>
+					) : (
+						<Button
+							variant="ghost"
+							size="sm"
+							className="h-4 rounded px-1 text-[9px] font-medium uppercase tracking-wide text-muted-foreground opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+							disabled={isSwitching}
+							title="Launch new terminals and agents on this account. Existing ones keep theirs."
+							onClick={onMakeDefault}
+						>
+							Make default
+						</Button>
+					))}
 				<span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
 					{/* Source label always shows — it is the only thing that tells two
 					    profiles of the same account apart. */}
@@ -181,6 +185,7 @@ function AccountCard({
 
 export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 	const quotaQuery = useHostUsageQuota(hostUrl);
+	const claudeAccountCapability = useClaudeAccountCapability(hostUrl);
 	const setDefault = useSetDefaultUsageAccount(hostUrl);
 	const removeAccount = useRemoveUsageAccount(hostUrl);
 	const isDark = useIsDarkTheme();
@@ -303,6 +308,10 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 													: () => setRemoveTarget(account)
 											}
 											isSwitching={setDefault.isPending}
+											showDefaultControl={
+												provider === "codex" ||
+												claudeAccountCapability.data?.managed !== true
+											}
 										/>
 									))}
 								</div>

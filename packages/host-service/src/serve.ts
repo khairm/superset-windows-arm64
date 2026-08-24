@@ -60,32 +60,42 @@ async function main(): Promise<void> {
 	// any more.
 	const authProvider = new SeveredApiAuthProvider();
 
-	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
-		createApp({
-			config: {
-				organizationId: env.ORGANIZATION_ID,
-				dbPath: env.HOST_DB_PATH,
-				cloudApiUrl: env.SUPERSET_API_URL,
-				migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
-				allowedOrigins: env.CORS_ORIGINS ?? [],
-				browserBridge: resolveBrowserBridgeFromEnv(env),
-			},
-			providers: {
-				auth: authProvider,
-				// (CLOUD-SEVERANCE-P2) Always the PSK. Upstream's sandbox branch
-				// installs a provider that accepts everything, on the promise of
-				// an edge that does not exist here; the env schema refuses that
-				// mode outright, and this reads the secret rather than the flag
-				// so no future flag can reach an unauthenticated provider.
-				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
-				credentials: new LocalGitCredentialProvider(),
-			},
-		});
+	const {
+		app,
+		injectWebSocket,
+		db,
+		claudeAccounts,
+		terminalAgentStore,
+		eventBus,
+	} = createApp({
+		config: {
+			organizationId: env.ORGANIZATION_ID,
+			dbPath: env.HOST_DB_PATH,
+			cloudApiUrl: env.SUPERSET_API_URL,
+			migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
+			allowedOrigins: env.CORS_ORIGINS ?? [],
+			browserBridge: resolveBrowserBridgeFromEnv(env),
+		},
+		providers: {
+			auth: authProvider,
+			// (CLOUD-SEVERANCE-P2) Always the PSK. Upstream's sandbox branch
+			// installs a provider that accepts everything, on the promise of
+			// an edge that does not exist here; the env schema refuses that
+			// mode outright, and this reads the secret rather than the flag
+			// so no future flag can reach an unauthenticated provider.
+			hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+			credentials: new LocalGitCredentialProvider(),
+		},
+	});
 
 	// Dev-mode shutdown: kill the daemon on host-service exit so dev
 	// iteration on daemon code resets cleanly. Production keeps the
 	// daemon detached so PTYs survive host-service restarts.
 	// Per the migration plan's D5 decision.
+	// (CLAUDE-ACCOUNTS-MOUNT) Both host-service entry points start the same
+	// database-anchored account service before accepting terminal launches.
+	await claudeAccounts.start();
+
 	const isDev = process.env.NODE_ENV === "development";
 	if (isDev) {
 		let shuttingDown = false;
@@ -150,6 +160,8 @@ async function main(): Promise<void> {
 		void startCompanionBridgeIfEnabled({
 			hostDbPath: env.HOST_DB_PATH,
 			db,
+			profileDirForWorkspace: (workspaceId) =>
+				claudeAccounts.profileDirFor(workspaceId),
 			organizationId: env.ORGANIZATION_ID,
 			terminalAgentStore,
 		});

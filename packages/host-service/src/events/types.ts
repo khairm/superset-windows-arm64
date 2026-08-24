@@ -205,6 +205,22 @@ export interface WorkspaceCreateSettledMessage {
 	occurredAt: number;
 }
 
+export interface ClaudeAccountStateChangedMessage {
+	type: "claude-account-state-changed";
+	workspaceId: string;
+	state: "following" | "pinned";
+	slug: string | null;
+	cause: "manual" | "auto-fallback" | "system";
+}
+
+export interface ClaudeAccountWarningMessage {
+	type: "claude-account-warning";
+	workspaceId: string | null;
+	kind: "credential-health";
+	message: string;
+	active: boolean;
+}
+
 export interface EventBusErrorMessage {
 	type: "error";
 	message: string;
@@ -219,6 +235,8 @@ export type ServerMessage =
 	| WorkspaceChangedMessage
 	| WorkspaceCreateSettledMessage
 	| ProjectChangedMessage
+	| ClaudeAccountStateChangedMessage
+	| ClaudeAccountWarningMessage
 	| EventBusErrorMessage;
 
 // ── Client → Server ────────────────────────────────────────────────

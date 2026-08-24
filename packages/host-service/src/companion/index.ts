@@ -306,6 +306,7 @@ export interface CompanionBridgeOptions {
 	 * goes through the separate `mode=ro` reader opened from `hostDbPath`.
 	 */
 	db: HostDb;
+	profileDirForWorkspace: (workspaceId: string) => string;
 	/**
 	 * (MIRROR-ORG-GATE) The org this bridge serves. Compared against
 	 * `sidebar_mirror_meta.organization_id` before any curation is applied — see
@@ -522,7 +523,10 @@ export function createCompanionBridge(
 		//    of the on-disk state rather than each re-deriving its own.
 		const anchor = await openStateAnchor(paths.root);
 		unwind.push({ what: "state anchor", close: () => anchor.close() });
-		const hostDb = openHostDbReadOnly(options.hostDbPath);
+		const hostDb = openHostDbReadOnly(
+			options.hostDbPath,
+			options.profileDirForWorkspace,
+		);
 		unwind.push({ what: "host db reader", close: async () => hostDb.close() });
 		/**
 		 * (BRIDGE-LIVENESS) The one place the bridge asks whether a terminal still
@@ -1720,6 +1724,7 @@ export interface CompanionMountInput {
 	hostDbPath: string;
 	/** The live drizzle handle from `createApp()` — same process, same pty writer. */
 	db: HostDb;
+	profileDirForWorkspace: (workspaceId: string) => string;
 	/**
 	 * (MIRROR-ORG-GATE) `env.ORGANIZATION_ID` — the org THIS host-service is
 	 * serving. Required, with no default: `host.db` is per machine and the
@@ -1771,6 +1776,7 @@ export async function startCompanionBridgeIfEnabled(
 		const bridge = createCompanionBridge({
 			hostDbPath: input.hostDbPath,
 			db: input.db,
+			profileDirForWorkspace: input.profileDirForWorkspace,
 			organizationId: input.organizationId,
 			terminalAgentStore: input.terminalAgentStore,
 			versions: {

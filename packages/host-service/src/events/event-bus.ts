@@ -248,6 +248,15 @@ export class EventBus {
 		}
 	}
 
+	broadcastClaudeAccountEvent(
+		message: Extract<
+			ServerMessage,
+			{ type: "claude-account-state-changed" | "claude-account-warning" }
+		>,
+	): void {
+		this.broadcast(message);
+	}
+
 	/**
 	 * Fan out workspace lifecycle changes (create/rename/delete) from the
 	 * host-owned workspaces table. Broadcast to all clients — list consumers

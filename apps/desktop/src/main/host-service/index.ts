@@ -17,8 +17,8 @@ import {
 	resolveBrowserBridgeFromEnv,
 	SeveredApiAuthProvider,
 	startCompanionBridgeIfEnabled,
-	startTerminalReaper,
 	startStaleWorkingSweep,
+	startTerminalReaper,
 } from "@superset/host-service";
 import {
 	initTerminalBaseEnv,
@@ -116,26 +116,36 @@ async function main(): Promise<void> {
 	// logins and no JWTs; nothing consumes these headers.
 	const authProvider = new SeveredApiAuthProvider();
 
-	const { app, injectWebSocket, api, db, terminalAgentStore, eventBus } =
-		createApp({
-			config: {
-				organizationId: env.ORGANIZATION_ID,
-				dbPath: env.HOST_DB_PATH,
-				cloudApiUrl: env.SUPERSET_API_URL,
-				migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
-				allowedOrigins: [
-					"superset-app://app",
-					`http://localhost:${env.DESKTOP_VITE_PORT}`,
-					`http://127.0.0.1:${env.DESKTOP_VITE_PORT}`,
-				],
-				browserBridge: resolveBrowserBridgeFromEnv(env),
-			},
-			providers: {
-				auth: authProvider,
-				hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
-				credentials: new LocalGitCredentialProvider(),
-			},
-		});
+	const {
+		app,
+		injectWebSocket,
+		db,
+		claudeAccounts,
+		terminalAgentStore,
+		eventBus,
+	} = createApp({
+		config: {
+			organizationId: env.ORGANIZATION_ID,
+			dbPath: env.HOST_DB_PATH,
+			cloudApiUrl: env.SUPERSET_API_URL,
+			migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
+			allowedOrigins: [
+				"superset-app://app",
+				`http://localhost:${env.DESKTOP_VITE_PORT}`,
+				`http://127.0.0.1:${env.DESKTOP_VITE_PORT}`,
+			],
+			browserBridge: resolveBrowserBridgeFromEnv(env),
+		},
+		providers: {
+			auth: authProvider,
+			hostAuth: new PskHostAuthProvider(env.HOST_SERVICE_SECRET),
+			credentials: new LocalGitCredentialProvider(),
+		},
+	});
+
+	// (CLAUDE-ACCOUNTS-MOUNT) Production and standalone host-service entries
+	// start the same database-anchored service before accepting terminal launches.
+	await claudeAccounts.start();
 
 	const startedAt = Date.now();
 	const server = serve(
@@ -180,6 +190,8 @@ async function main(): Promise<void> {
 			void startCompanionBridgeIfEnabled({
 				hostDbPath: env.HOST_DB_PATH,
 				db,
+				profileDirForWorkspace: (workspaceId) =>
+					claudeAccounts.profileDirFor(workspaceId),
 				organizationId: env.ORGANIZATION_ID,
 				terminalAgentStore,
 			});

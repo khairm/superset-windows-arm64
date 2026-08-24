@@ -25,6 +25,7 @@ import {
 import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
 import { useSidebarWorkspaceStatus } from "../../providers/DashboardSidebarWorkspaceStatusProvider";
 import type { DashboardSidebarWorkspace } from "../../types";
+import { ClaudeAccountIndicator } from "./components/ClaudeAccountIndicator";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
 import {
@@ -272,6 +273,9 @@ export function DashboardSidebarWorkspaceItem({
 					isNonGit={isNonGit}
 					aria-label={isPending ? `Creating workspace: ${name}` : undefined}
 				/>
+				{!isPending && hostType === "local-device" && (
+					<ClaudeAccountIndicator workspaceId={id} collapsed />
+				)}
 			</div>
 		);
 

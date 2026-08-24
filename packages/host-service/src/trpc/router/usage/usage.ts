@@ -250,6 +250,7 @@ export const usageRouter = router({
 				prepare: ({ ctx, input }) => {
 					const workspaceRows = ctx.db
 						.select({
+							id: workspaces.id,
 							worktreePath: workspaces.worktreePath,
 							name: workspaces.name,
 							projectId: workspaces.projectId,
@@ -270,6 +271,12 @@ export const usageRouter = router({
 							row.name || basename(row.repoPath),
 						]),
 					);
+					const workspaceClaudeHomes = ctx.claudeAccounts.getCapability()
+						.managed
+						? workspaceRows.map((row) =>
+								ctx.claudeAccounts.profileDirFor(row.id),
+							)
+						: [];
 					const cwdLabels = [
 						...workspaceRows.map((row) => ({
 							prefix: row.worktreePath,
@@ -291,7 +298,7 @@ export const usageRouter = router({
 							};
 						}),
 					].filter((label) => label.prefix);
-					return { days: input.days, cwdLabels };
+					return { days: input.days, cwdLabels, workspaceClaudeHomes };
 				},
 				options: ({ input }) => ({
 					dedupeKey: `usage-history:${input.days}`,

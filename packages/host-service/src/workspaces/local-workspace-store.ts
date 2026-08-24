@@ -25,6 +25,12 @@ export interface WorkspaceStoreContext {
 	clientMachineId?: string;
 }
 
+export interface InsertWorkspaceStoreContext extends WorkspaceStoreContext {
+	claudeAccounts: {
+		mintProfileForNewWorkspace(workspaceId: string): Promise<void>;
+	};
+}
+
 /**
  * Workspaces have no cloud mirror since local-first (#5731), so the host
  * relays workspace lifecycle events through `analytics.captureEvent`.
@@ -132,16 +138,17 @@ export interface InsertLocalWorkspaceValues {
 	type?: "main" | "worktree" | "session";
 	taskId?: string | null;
 	createdByUserId?: string | null;
+	claudeAccountSlug?: string | null;
 }
 
 /**
  * Insert a fully-populated local workspace row (host mints the id when the
  * caller didn't) and broadcast `workspace:changed`.
  */
-export function insertLocalWorkspace(
-	ctx: WorkspaceStoreContext,
+export async function insertLocalWorkspace(
+	ctx: InsertWorkspaceStoreContext,
 	values: InsertLocalWorkspaceValues,
-): HostWorkspaceRow {
+): Promise<HostWorkspaceRow> {
 	const now = Date.now();
 	const id = values.id ?? randomUUID();
 	ctx.db
@@ -155,12 +162,19 @@ export function insertLocalWorkspace(
 			type: values.type ?? "worktree",
 			taskId: values.taskId ?? null,
 			createdByUserId: values.createdByUserId ?? null,
+			claudeAccountSlug: values.claudeAccountSlug ?? null,
 			createdAt: now,
 			updatedAt: now,
 		})
 		.run();
 	const row = getLocalWorkspace(ctx.db, id);
 	if (!row) throw new Error(`Workspace insert readback failed: ${id}`);
+	try {
+		await ctx.claudeAccounts.mintProfileForNewWorkspace(id);
+	} catch (error) {
+		ctx.db.delete(workspaces).where(eq(workspaces.id, id)).run();
+		throw error;
+	}
 	emitWorkspaceChanged(ctx.eventBus, "created", row);
 	trackWorkspaceEvent(ctx, "workspace_created", row);
 	return row;
@@ -172,6 +186,7 @@ export interface UpdateLocalWorkspacePatch {
 	worktreePath?: string;
 	taskId?: string | null;
 	projectId?: string;
+	claudeAccountSlug?: string | null;
 }
 
 /** Patch a local row, bump `updatedAt`, and broadcast. */

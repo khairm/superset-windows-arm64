@@ -9,7 +9,14 @@ import { OverflowFadeContainer } from "@superset/ui/overflow-fade-container";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	memo,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
 import { HiringBanner } from "renderer/components/HiringBanner";
 import { NotificationBusPill } from "renderer/components/NotificationBusPill";
@@ -36,6 +43,7 @@ import { V2SetupScriptCard } from "./components/V2SetupScriptCard";
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
 import { useDashboardSidebarDnd } from "./hooks/useSidebarDnd";
+import { ClaudeAccountSidebarProvider } from "./providers/ClaudeAccountSidebarProvider";
 import { DashboardSidebarDndProvider } from "./providers/DashboardSidebarDndProvider";
 import { DashboardSidebarHoverProvider } from "./providers/DashboardSidebarHoverProvider";
 import { DashboardSidebarPortsProvider } from "./providers/DashboardSidebarPortsProvider";
@@ -43,6 +51,7 @@ import { DashboardSidebarSelectionProvider } from "./providers/DashboardSidebarS
 import {
 	DashboardSidebarWorkspaceStatusProvider,
 	type SidebarStatusWorkspaceRef,
+	useSidebarWorkspaceHostTargets,
 } from "./providers/DashboardSidebarWorkspaceStatusProvider";
 import type {
 	DashboardSidebarProject,
@@ -407,6 +416,15 @@ export function DashboardSidebar({
 		}
 		return [...byId.values()];
 	}, [pinnedWorkspaces, sessionWorkspaces, orderedGroups]);
+	const sidebarWorkspaceHostTargets =
+		useSidebarWorkspaceHostTargets(statusWorkspaces);
+	const claudeAccountWorkspaceIds = useMemo(
+		() =>
+			sidebarWorkspaceHostTargets
+				.filter((target) => target.hostUrl === activeHostUrl)
+				.map((target) => target.workspaceId),
+		[sidebarWorkspaceHostTargets, activeHostUrl],
+	);
 
 	// Resolve the full project object for the active workspace from the id above
 	// (used by the footer / view-in-place logic).
@@ -510,11 +528,16 @@ export function DashboardSidebar({
 		>
 			<DashboardSidebarSectionRenameProvider>
 				<DashboardSidebarHoverProvider>
-					<DashboardSidebarWorkspaceStatusProvider
-						workspaces={statusWorkspaces}
-						activeWorkspaceId={activeV2WorkspaceId}
+					<ClaudeAccountSidebarProvider
+						hostUrl={activeHostUrl}
+						workspaceIds={claudeAccountWorkspaceIds}
+						includeRoster={!isCollapsed}
 					>
-						<DashboardSidebarPortsProvider enabled={!isCollapsed}>
+						<DashboardSidebarWorkspaceStatusProvider
+							targets={sidebarWorkspaceHostTargets}
+							activeWorkspaceId={activeV2WorkspaceId}
+						>
+							<DashboardSidebarPortsProvider enabled={!isCollapsed}>
 							<DashboardSidebarHoverCardOverlay>
 								<DashboardSidebarDndProvider
 									// (HOVER-FREEZE) The DnD order must be the RENDERED
@@ -639,8 +662,9 @@ export function DashboardSidebar({
 									</div>
 								</DashboardSidebarDndProvider>
 							</DashboardSidebarHoverCardOverlay>
-						</DashboardSidebarPortsProvider>
-					</DashboardSidebarWorkspaceStatusProvider>
+							</DashboardSidebarPortsProvider>
+						</DashboardSidebarWorkspaceStatusProvider>
+					</ClaudeAccountSidebarProvider>
 				</DashboardSidebarHoverProvider>
 			</DashboardSidebarSectionRenameProvider>
 		</DashboardSidebarSelectionProvider>

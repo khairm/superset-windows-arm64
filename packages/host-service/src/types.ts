@@ -2,6 +2,7 @@ import type { Octokit } from "@octokit/rest";
 import type { ChatService } from "@superset/provider-auth/server";
 import type { AppRouter } from "@superset/trpc";
 import type { TRPCClient } from "@trpc/client";
+import type { ClaudeAccountsService } from "./claude-accounts";
 import type { HostDb } from "./db";
 import type { EventBus } from "./events";
 import type { WorkspaceFilesystemManager } from "./runtime/filesystem";
@@ -27,6 +28,7 @@ export interface HostServiceContext {
 	db: HostDb;
 	runtime: HostServiceRuntime;
 	eventBus: EventBus;
+	claudeAccounts: ClaudeAccountsService;
 	terminalAgentStore: TerminalAgentStore;
 	organizationId: string;
 	isAuthenticated: boolean;

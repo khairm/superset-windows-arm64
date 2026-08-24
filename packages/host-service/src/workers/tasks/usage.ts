@@ -10,11 +10,12 @@ import { computeUsageHistory } from "../../trpc/router/usage/history/aggregate.t
 import { defineWorkerTask } from "../define-worker-task.ts";
 
 export const usageHistoryTask = defineWorkerTask<
-	{ days: number; cwdLabels: CwdLabel[] },
+	{ days: number; cwdLabels: CwdLabel[]; workspaceClaudeHomes: string[] },
 	UsageHistory
 >({
 	type: "usage/history",
-	handler: ({ days, cwdLabels }) => computeUsageHistory(days, cwdLabels),
+	handler: ({ days, cwdLabels, workspaceClaudeHomes }) =>
+		computeUsageHistory(days, cwdLabels, workspaceClaudeHomes),
 });
 
 export const usageTasks = [usageHistoryTask];

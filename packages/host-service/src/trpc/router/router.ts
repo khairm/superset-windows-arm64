@@ -3,6 +3,7 @@ import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
 import { authRouter } from "./auth";
 import { browserRouter } from "./browser/browser";
+import { claudeAccountsRouter } from "./claude-accounts/claude-accounts";
 // (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
 // This token is registered in FEATURES.md against THIS file, not against the
 // companion/ directory — a marker satisfied only by fork-only files cannot
@@ -41,6 +42,7 @@ export const appRouter = router({
 	attachments: attachmentsRouter,
 	auth: authRouter,
 	browser: browserRouter,
+	claudeAccounts: claudeAccountsRouter,
 	health: healthRouter,
 	host: hostRouter,
 	// (COMPANION-ROUTER-MOUNT) fork-only.

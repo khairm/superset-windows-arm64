@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { basename, resolve as resolvePath } from "node:path";
 import {
 	type ParsedGitHubRemote,
@@ -17,6 +16,7 @@ import {
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
+import { listUndisposedTerminalIdsByWorkspaceIds } from "../../../terminal/terminal";
 import { deleteLocalWorkspace } from "../../../workspaces/local-workspace-store";
 import { machineOnlyProcedure, protectedProcedure, router } from "../../index";
 import { removeMultiRepoProjectArtifacts } from "../workspace-cleanup/multi-repo-cleanup";
@@ -53,6 +53,7 @@ import {
 // Icons are downscaled to a small square PNG data-URI client-side; this caps
 // the stored/broadcast value (it rides in project.list and project:changed).
 const MAX_PROJECT_ICON_LENGTH = 256 * 1024;
+const PROJECT_REMOVE_LOCK_TIMEOUT_MS = 15_000;
 
 // (PATH-CI-DEDUPE) Windows and macOS filesystems are case-insensitive: the
 // same folder can come back under a different casing (a case-only rename, a
@@ -890,8 +891,7 @@ export const projectRouter = router({
 				.select()
 				.from(workspaces)
 				.where(eq(workspaces.projectId, input.projectId))
-				.all()
-				.filter((ws) => ws.archivedAt == null || existsSync(ws.worktreePath));
+				.all();
 
 			// (MULTI-REPO WORKSPACE) The project repoPath is a non-git anchor;
 			// each workspace's worktreePath is a container of per-member
@@ -899,52 +899,85 @@ export const projectRouter = router({
 			// (best-effort, like the single-repo loop below), drops each
 			// container, and removes the fork-owned anchor dir itself after
 			// the rows are gone. Member repos are never touched.
-			let multiRepoConfig: ReturnType<typeof readMultiRepoConfig> = null;
+			const workspaceIds = localWorkspaces.map((workspace) => workspace.id);
 			try {
-				multiRepoConfig = readMultiRepoConfig(localProject.repoPath);
-			} catch (err) {
-				console.warn("[project.remove] unreadable multi-repo config", {
-					projectId: input.projectId,
-					err,
-				});
-			}
-			if (multiRepoConfig) {
-				await removeMultiRepoProjectArtifacts(
-					ctx,
-					multiRepoConfig,
-					localProject.repoPath,
-					localWorkspaces.map((ws) => ws.worktreePath),
-				);
-			} else {
-				for (const ws of localWorkspaces) {
-					if (ws.worktreePath === localProject.repoPath) continue;
-					try {
-						const git = await ctx.git(localProject.repoPath);
-						await git.raw(["worktree", "remove", ws.worktreePath]);
-					} catch (err) {
-						console.warn("[project.remove] failed to remove worktree", {
-							projectId: input.projectId,
-							worktreePath: ws.worktreePath,
-							err,
-						});
-					}
-				}
-			}
+				return await ctx.claudeAccounts.withWorkspaceLocks(
+					workspaceIds,
+					async () => {
+						const terminalIdsByWorkspace =
+							listUndisposedTerminalIdsByWorkspaceIds(workspaceIds, ctx.db);
+						return ctx.claudeAccounts.withWorkspaceDeletion(
+							workspaceIds.map((workspaceId) => ({
+								workspaceId,
+								terminalIds: terminalIdsByWorkspace.get(workspaceId) ?? [],
+							})),
+							async () => {
+								let multiRepoConfig: ReturnType<typeof readMultiRepoConfig> =
+									null;
+								try {
+									multiRepoConfig = readMultiRepoConfig(localProject.repoPath);
+								} catch (err) {
+									console.warn(
+										"[project.remove] unreadable multi-repo config",
+										{
+											projectId: input.projectId,
+											err,
+										},
+									);
+								}
+								if (multiRepoConfig) {
+									await removeMultiRepoProjectArtifacts(
+										ctx,
+										multiRepoConfig,
+										localProject.repoPath,
+										localWorkspaces.map((workspace) => workspace.worktreePath),
+									);
+								} else {
+									for (const workspace of localWorkspaces) {
+										if (workspace.worktreePath === localProject.repoPath)
+											continue;
+										try {
+											const git = await ctx.git(localProject.repoPath);
+											await git.raw([
+												"worktree",
+												"remove",
+												workspace.worktreePath,
+											]);
+										} catch (err) {
+											console.warn(
+												"[project.remove] failed to remove worktree",
+												{
+													projectId: input.projectId,
+													worktreePath: workspace.worktreePath,
+													err,
+												},
+											);
+										}
+									}
+								}
 
-			try {
-				// Per-row so each deletion broadcasts.
-				for (const ws of localWorkspaces) {
-					deleteLocalWorkspace(ctx, ws.id);
-				}
-				ctx.db.delete(projects).where(eq(projects.id, input.projectId)).run();
-				emitProjectChanged(ctx.eventBus, "deleted", input.projectId);
-			} catch (err) {
+								// Per-row so each deletion broadcasts.
+								for (const workspace of localWorkspaces) {
+									deleteLocalWorkspace(ctx, workspace.id);
+								}
+								ctx.db
+									.delete(projects)
+									.where(eq(projects.id, input.projectId))
+									.run();
+								emitProjectChanged(ctx.eventBus, "deleted", input.projectId);
+								return { success: true, repoPath: localProject.repoPath };
+							},
+						);
+					},
+					{ timeoutMs: PROJECT_REMOVE_LOCK_TIMEOUT_MS },
+				);
+			} catch (error) {
+				if (error instanceof TRPCError) throw error;
 				throw new TRPCError({
 					code: "INTERNAL_SERVER_ERROR",
-					message: `Failed to delete project locally: ${err instanceof Error ? err.message : String(err)}`,
+					message: `Failed to delete project locally: ${error instanceof Error ? error.message : String(error)}`,
+					cause: error,
 				});
 			}
-
-			return { success: true, repoPath: localProject.repoPath };
 		}),
 });

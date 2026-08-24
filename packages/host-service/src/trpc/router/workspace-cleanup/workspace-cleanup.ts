@@ -9,7 +9,7 @@ import { invalidateLabelCache } from "../../../ports/static-ports";
 import { readMultiRepoConfig } from "../../../runtime/git/multi-repo";
 import { coercePullRequestState } from "../../../runtime/pull-requests/utils/pull-request-mappers";
 import { runTeardown, type TeardownResult } from "../../../runtime/teardown";
-import { disposeSessionsByWorkspaceId } from "../../../terminal/terminal";
+import { listUndisposedTerminalIdsByWorkspaceId } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
 import type { GitTaskEnv } from "../../../workers/tasks/git";
 import {
@@ -246,7 +246,9 @@ export async function destroyWorkspace(
 	}
 	destroysInFlight.add(input.workspaceId);
 	try {
-		return await runDestroy(ctx, input);
+		return await ctx.claudeAccounts.withWorkspaceLock(input.workspaceId, () =>
+			runDestroy(ctx, input),
+		);
 	} finally {
 		destroysInFlight.delete(input.workspaceId);
 	}
@@ -291,6 +293,7 @@ async function runDestroy(
 		archiveLocalWorkspace(ctx, input.workspaceId, archiveReasonFor(ctx, local));
 	}
 
+	let result: Awaited<ReturnType<typeof runDestroyPhases>>;
 	try {
 		// ─── Step 1: Preflight ─────────────────────────────────────
 		// Block only on dirty worktree (the common "I forgot to commit"
@@ -376,20 +379,44 @@ async function runDestroy(
 			}
 		}
 
-		const result = await runDestroyPhases(ctx, input, {
-			local,
-			project,
-			multiRepo,
-			warnings,
-		});
-		// Telemetry at the true commit: a failed destroy un-archives below and
-		// must not count, and a retried destroy must count exactly once.
-		if (marked && local) trackWorkspaceDeleted(ctx, local);
-		return result;
+		const commitDestroy = async () => {
+			try {
+				const destroyResult = await runDestroyPhases(ctx, input, {
+					local,
+					project,
+					multiRepo,
+					warnings,
+				});
+				// Telemetry at the true commit: a failed destroy un-archives below and
+				// must not count, and a retried destroy must count exactly once.
+				if (local) trackWorkspaceDeleted(ctx, local);
+				return destroyResult;
+			} catch (error) {
+				if (marked) unarchiveLocalWorkspace(ctx, input.workspaceId);
+				throw error;
+			}
+		};
+		if (marked) {
+			result = await ctx.claudeAccounts.withWorkspaceDeletion(
+				[
+					{
+						workspaceId: input.workspaceId,
+						terminalIds: listUndisposedTerminalIdsByWorkspaceId(
+							input.workspaceId,
+							ctx.db,
+						),
+					},
+				],
+				commitDestroy,
+			);
+		} else {
+			result = await commitDestroy();
+		}
 	} catch (err) {
 		if (marked) unarchiveLocalWorkspace(ctx, input.workspaceId);
 		throw err;
 	}
+	return result;
 }
 
 /** "merged" when the linked PR was observed merged; every other delete —
@@ -445,22 +472,7 @@ async function runDestroyPhases(
 	},
 ) {
 	// ─── Step 3: Local cleanup ─────────────────────────────────────
-	// 3a. PTYs
-	try {
-		const killed = await disposeSessionsByWorkspaceId(
-			input.workspaceId,
-			ctx.db,
-			ctx.eventBus,
-		);
-		if (killed.failed > 0) {
-			warnings.push(`${killed.failed} terminal(s) may still be running`);
-		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		warnings.push(`Failed to dispose terminal sessions: ${message}`);
-	}
-
-	// 3b. Worktree. Double-force unlocks the rare locked-worktree case and
+	// Worktree. Double-force unlocks the rare locked-worktree case and
 	//     clears stale metadata when the directory was manually removed.
 	//     Runs in the worker pool: the removal is a recursive delete of the
 	//     whole worktree directory, which would otherwise stall the loop.

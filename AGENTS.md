@@ -124,6 +124,16 @@ In brief:
   date filters, promote-to-branch drag, sidebar Mark completed for active
   worktrees, frozen completed records, append-only daily JSON backups under
   `~/.superset/backups/kanban/`.
+- **Per-workspace Claude accounts** — every local workspace on a Pi-capable
+  host (push-key at `~/.usage-display/push-key.txt`) owns a Claude profile
+  folder under `<db-dir>/claude-profiles/<uuid>`; sidebar right-click
+  "Account ▸" pins it to a Pi-managed account or follows the tray default,
+  hot-swapped by rewriting credentials in place (no restarts). Pinned accounts
+  crossing the tray's usage trigger lines auto-fall back to Following,
+  permanently. Two-phase delete-intent markers + a gated janitor own folder
+  lifecycle (destroy deletes, archive never does); sentinel refresh token —
+  the Pi owns all real credential lineages. Glossary: `CONTEXT.md`. Module:
+  `packages/host-service/src/claude-accounts/`.
 
 ## Live footguns (do NOT repeat)
 

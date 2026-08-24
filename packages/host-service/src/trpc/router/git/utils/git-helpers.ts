@@ -6,6 +6,7 @@ import {
 	isBinaryMediaFile,
 } from "@superset/shared/media-files";
 import type { SimpleGit } from "simple-git";
+import { mapConcurrent } from "../../../../lib/map-concurrent";
 import { resolveUpstream } from "../../../../runtime/git/refs";
 import { createUserSimpleGit } from "../../../../runtime/git/simple-git";
 import type { Branch, ChangedFile, FileStatus } from "../types";
@@ -24,25 +25,6 @@ const UNTRACKED_IO_CONCURRENCY = 64;
 // per-file memory to this × UNTRACKED_IO_CONCURRENCY instead of the full
 // file size, and comfortably covers the 8KB binary sniff window.
 const UNTRACKED_READ_CHUNK_SIZE = 64 * 1024;
-
-async function mapWithConcurrency<T>(
-	items: T[],
-	limit: number,
-	fn: (item: T) => Promise<void>,
-): Promise<void> {
-	let next = 0;
-	const workers = Array.from(
-		{ length: Math.min(limit, items.length) },
-		async () => {
-			while (true) {
-				const i = next++;
-				if (i >= items.length) return;
-				await fn(items[i] as T);
-			}
-		},
-	);
-	await Promise.all(workers);
-}
 
 /** Map git's single-letter status codes to GitHub-aligned FileStatus */
 export function mapGitStatus(code: string): FileStatus {
@@ -280,7 +262,7 @@ export async function countUntrackedFileLines(
 		return;
 	}
 
-	await mapWithConcurrency(files, UNTRACKED_IO_CONCURRENCY, async (file) => {
+	await mapConcurrent(files, UNTRACKED_IO_CONCURRENCY, async (file) => {
 		try {
 			const absolutePath = resolve(worktreePath, file.path);
 			if (!isPathWithinWorktree(worktreePath, absolutePath)) return;

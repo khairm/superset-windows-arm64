@@ -234,6 +234,8 @@ togglePinProject	apps/desktop/src/renderer
 (KEEP-AWAKE-UNMOUNT)	apps/desktop/src/main/windows
 (COMPANION-BRIDGE-MOUNT)	packages/host-service/src/serve.ts
 (COMPANION-BRIDGE-MOUNT)	apps/desktop/src/main/host-service
+(CLAUDE-ACCOUNTS-MOUNT)	packages/host-service/src/serve.ts
+(CLAUDE-ACCOUNTS-MOUNT)	apps/desktop/src/main/host-service
 (WIN-USER-ENV)	packages/shared/src/windows-user-env.ts
 (WIN-USER-ENV)	packages/host-service/src/terminal/clean-shell-env.ts
 (WIN-USER-ENV)	packages/host-service/src/serve.ts

@@ -7,6 +7,7 @@ import {
 	type CloudShapedWorkspace,
 	deleteLocalWorkspace,
 	getLocalWorkspace,
+	type InsertWorkspaceStoreContext,
 	insertLocalWorkspace,
 	toCloudShape,
 	updateLocalWorkspace,
@@ -71,12 +72,13 @@ export async function adoptExistingWorktree(
 		idempotencyId,
 		taskId,
 	} = args;
-	const store: WorkspaceStoreContext = {
+	const store: InsertWorkspaceStoreContext = {
 		db: ctx.db,
 		eventBus: ctx.eventBus,
 		api: ctx.api,
 		organizationId: ctx.organizationId,
 		clientMachineId: ctx.clientMachineId,
+		claudeAccounts: ctx.claudeAccounts,
 	};
 
 	if (existingWorkspaceId) {
@@ -100,7 +102,7 @@ export async function adoptExistingWorktree(
 				alreadyExists: true,
 			};
 		}
-		const inserted = insertLocalWorkspace(store, {
+		const inserted = await insertLocalWorkspace(store, {
 			id: existingWorkspaceId,
 			projectId,
 			worktreePath,
@@ -171,9 +173,9 @@ export async function adoptExistingWorktree(
 		keepWorkspaceId: id,
 	});
 
-	let inserted: ReturnType<typeof insertLocalWorkspace>;
+	let inserted: Awaited<ReturnType<typeof insertLocalWorkspace>>;
 	try {
-		inserted = insertLocalWorkspace(store, {
+		inserted = await insertLocalWorkspace(store, {
 			id,
 			projectId,
 			worktreePath,

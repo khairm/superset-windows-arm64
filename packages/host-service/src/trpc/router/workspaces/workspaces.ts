@@ -33,7 +33,6 @@ import {
 import { buildTerminalAgentLaunch, validateAgentLaunchEffort } from "../agents";
 import { ensureMainWorkspace } from "../project/utils/ensure-main-workspace";
 import { tryRevParseGitRoot } from "../project/utils/resolve-repo";
-import { normalizeWorktreePath } from "../workspace-creation/shared/worktree-list";
 import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import { createMultiRepoWorkspaceFlow } from "../workspace-creation/multi-repo-create";
 import { createSession } from "../workspace-creation/procedures/create-session";
@@ -58,6 +57,7 @@ import {
 	parseSparseCheckoutPaths,
 } from "../workspace-creation/shared/sparse-checkout";
 import type { GitClient } from "../workspace-creation/shared/types";
+import { normalizeWorktreePath } from "../workspace-creation/shared/worktree-list";
 import { safeResolveWorktreePath } from "../workspace-creation/shared/worktree-paths";
 import { generateBranchNameFromPrompt } from "../workspace-creation/utils/ai-branch-name";
 import {
@@ -137,7 +137,9 @@ export const createInputSchema = z
 
 const workspaceCreateLocks = new Map<string, Promise<void>>();
 
-export async function acquireWorkspaceCreateLock(key: string): Promise<() => void> {
+export async function acquireWorkspaceCreateLock(
+	key: string,
+): Promise<() => void> {
 	const previous = workspaceCreateLocks.get(key) ?? Promise.resolve();
 	let releaseCurrent!: () => void;
 	const current = new Promise<void>((resolve) => {
@@ -496,9 +498,9 @@ export async function registerLocalWorkspace(args: {
 }): Promise<CloudWorkspace> {
 	const { ctx } = args;
 
-	let localRow: ReturnType<typeof insertLocalWorkspace>;
+	let localRow: Awaited<ReturnType<typeof insertLocalWorkspace>>;
 	try {
-		localRow = insertLocalWorkspace(ctx, {
+		localRow = await insertLocalWorkspace(ctx, {
 			id: args.id,
 			projectId: args.projectId,
 			worktreePath: args.worktreePath,

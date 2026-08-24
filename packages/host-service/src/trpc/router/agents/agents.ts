@@ -12,6 +12,7 @@ import {
 import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { getManagedClaudeAccountsForLaunch } from "../../../claude-accounts-runtime";
 import type { HostDb } from "../../../db";
 import { hostAgentConfigs, workspaces } from "../../../db/schema";
 import { createTerminalSessionInternal } from "../../../terminal/terminal";
@@ -323,11 +324,19 @@ export function buildTerminalAgentLaunch(
 		{ resumeSessionId: input.resumeSessionId },
 	);
 	const modelEnv = buildAgentModelEnv(config.presetId, input.model);
-	// Host-default provider account (Usage tab switcher). Per-agent env wins,
-	// so a "Claude (work)" agent with its own CLAUDE_CONFIG_DIR stays pinned.
 	const accountEnv = resolveDefaultAccountEnv(db, config.presetId);
+	const claudeAccounts = getManagedClaudeAccountsForLaunch(db);
+	const workspaceClaudeEnv: Record<string, string> =
+		config.presetId === "claude" && claudeAccounts
+			? { CLAUDE_CONFIG_DIR: claudeAccounts.profileDirFor(input.workspaceId) }
+			: {};
 	return {
-		fullCommand: `${envOverlayPrefix({ ...accountEnv, ...config.env, ...modelEnv })}${command}`,
+		fullCommand: `${envOverlayPrefix({
+			...accountEnv,
+			...config.env,
+			...modelEnv,
+			...workspaceClaudeEnv,
+		})}${command}`,
 		label: config.label,
 	};
 }

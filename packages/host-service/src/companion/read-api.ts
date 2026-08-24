@@ -53,7 +53,6 @@
  */
 
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 import Database from "better-sqlite3";
 import { MULTI_REPO_ANCHORS_DIR } from "../runtime/git/multi-repo";
@@ -208,6 +207,11 @@ export interface HostDbReader extends QuestionSourceResolver {
 	listTerminalIdsForWorkspace(hostWorkspaceId: string): string[];
 	findBinding(hostTerminalId: string): HostBindingRow | null;
 	findTerminal(hostTerminalId: string): HostTerminalRow | null;
+	transcriptPathFor(resolved: {
+		workspaceId: string;
+		worktreePath: string;
+		agentSessionId: string;
+	}): string | null;
 	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
 	readSidebarMirror(): SidebarMirrorSnapshot;
 	close(): void;
@@ -260,7 +264,10 @@ export function toTerminalSource(row: unknown): TerminalSource | null {
  * Fails loud if the file is missing: a bridge that silently serves an empty
  * tree is worse than one that reports itself unavailable.
  */
-export function openHostDbReadOnly(dbPath: string): HostDbReader {
+export function openHostDbReadOnly(
+	dbPath: string,
+	profileDirForWorkspace: (workspaceId: string) => string,
+): HostDbReader {
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 	db.pragma("busy_timeout = 5000");
 
@@ -388,8 +395,15 @@ export function openHostDbReadOnly(dbPath: string): HostDbReader {
 			return deriveClaudeTranscriptPath(
 				workspace.worktreePath,
 				binding.agentSessionId,
+				profileDirForWorkspace(binding.workspaceId),
 			);
 		},
+		transcriptPathFor: (resolved) =>
+			deriveClaudeTranscriptPath(
+				resolved.worktreePath,
+				resolved.agentSessionId,
+				profileDirForWorkspace(resolved.workspaceId),
+			),
 		close: () => db.close(),
 	};
 	return reader;
@@ -1397,11 +1411,10 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export function deriveClaudeTranscriptPath(
 	cwd: string,
 	sessionId: string,
+	configDir: string,
 ): string | null {
 	if (!SAFE_SESSION_ID.test(sessionId)) return null;
 	if (typeof cwd !== "string" || cwd.length === 0) return null;
-	const configDir =
-		process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 	const mangled = cwd.replace(/[^A-Za-z0-9-]/g, "-");
 	if (mangled.length === 0) return null;
 	const projectsRoot = path.resolve(path.join(configDir, "projects"));
@@ -1459,10 +1472,11 @@ function resolveTranscript(
 	if (workspace === null) {
 		throw badRequest("the workspace that owns this terminal no longer exists");
 	}
-	const candidate = deriveClaudeTranscriptPath(
-		workspace.worktreePath,
-		binding.agentSessionId,
-	);
+	const candidate = deps.db.transcriptPathFor({
+		workspaceId: binding.workspaceId,
+		worktreePath: workspace.worktreePath,
+		agentSessionId: binding.agentSessionId,
+	});
 	if (candidate === null) {
 		throw badRequest("the agent transcript for this terminal is unreadable");
 	}

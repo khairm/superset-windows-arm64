@@ -19,7 +19,9 @@ type EventType =
 	| "port:changed"
 	| "workspace:changed"
 	| "workspace:create-settled"
-	| "project:changed";
+	| "project:changed"
+	| "claude-account-state-changed"
+	| "claude-account-warning";
 
 interface FsEventsPayload {
 	events: FsWatchEvent[];
@@ -137,6 +139,26 @@ export interface ProjectChangedPayload {
 	occurredAt: number;
 }
 
+type ClaudeAccountStateChangedMessage = Extract<
+	ServerMessage,
+	{ type: "claude-account-state-changed" }
+>;
+
+export type ClaudeAccountStateChangedPayload = Omit<
+	ClaudeAccountStateChangedMessage,
+	"type" | "workspaceId"
+>;
+
+type ClaudeAccountWarningMessage = Extract<
+	ServerMessage,
+	{ type: "claude-account-warning" }
+>;
+
+export type ClaudeAccountWarningPayload = Omit<
+	ClaudeAccountWarningMessage,
+	"type" | "workspaceId"
+>;
+
 type EventListener<T extends EventType> = T extends "fs:events"
 	? (workspaceId: string, payload: FsEventsPayload) => void
 	: T extends "git:changed"
@@ -156,7 +178,17 @@ type EventListener<T extends EventType> = T extends "fs:events"
 								) => void
 							: T extends "project:changed"
 								? (projectId: string, payload: ProjectChangedPayload) => void
-								: never;
+								: T extends "claude-account-state-changed"
+									? (
+											workspaceId: string,
+											payload: ClaudeAccountStateChangedPayload,
+										) => void
+									: T extends "claude-account-warning"
+										? (
+												workspaceId: string | null,
+												payload: ClaudeAccountWarningPayload,
+											) => void
+										: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -317,7 +349,9 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "terminal:lifecycle" ||
 			message.type === "port:changed" ||
 			message.type === "workspace:changed" ||
-			message.type === "workspace:create-settled"
+			message.type === "workspace:create-settled" ||
+			message.type === "claude-account-state-changed" ||
+			message.type === "claude-account-warning"
 				? message.workspaceId
 				: message.type === "project:changed"
 					? message.projectId
@@ -385,6 +419,18 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 				project: message.project,
 				occurredAt: message.occurredAt,
 			});
+		} else if (message.type === "claude-account-state-changed") {
+			const { type: _type, workspaceId: _workspaceId, ...payload } = message;
+			(entry.callback as EventListener<"claude-account-state-changed">)(
+				message.workspaceId,
+				payload,
+			);
+		} else if (message.type === "claude-account-warning") {
+			const { type: _type, workspaceId: _workspaceId, ...payload } = message;
+			(entry.callback as EventListener<"claude-account-warning">)(
+				message.workspaceId,
+				payload,
+			);
 		}
 	}
 }

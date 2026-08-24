@@ -23,6 +23,7 @@ import type {
 	DashboardSidebarWorkspace,
 	DashboardSidebarWorkspacePullRequest,
 } from "../../../../types";
+import { ClaudeAccountIndicator } from "../ClaudeAccountIndicator";
 import { DashboardSidebarWorkspaceDetails } from "../DashboardSidebarWorkspaceDetails/DashboardSidebarWorkspaceDetails";
 import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarWorkspaceDiffStats";
 import { DashboardSidebarWorkspaceIcon } from "../DashboardSidebarWorkspaceIcon";
@@ -346,6 +347,9 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 									<span className="ml-auto shrink-0 text-[10px] tabular-nums text-amber-500/80">
 										{snoozeRemaining}
 									</span>
+								)}
+								{hostType === "local-device" && (
+									<ClaudeAccountIndicator workspaceId={workspace.id} />
 								)}
 								{/* (TAB-CHIPS) A zero/one-tab workspace keeps one folded
 								    inline dot; multi-tab workspaces move every dot to its chip. */}

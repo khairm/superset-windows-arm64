@@ -123,6 +123,12 @@ export const hostSettings = sqliteTable("host_settings", {
 	// inject (CLAUDE_CONFIG_DIR / CODEX_HOME). Null = the system default login.
 	defaultClaudeConfigDir: text("default_claude_config_dir"),
 	defaultCodexHome: text("default_codex_home"),
+	claudeAccountsManaged: integer("claude_accounts_managed", {
+		mode: "boolean",
+	})
+		.notNull()
+		.default(false),
+	claudeAccountsDbInstanceId: text("claude_accounts_db_instance_id"),
 });
 
 export const pullRequests = sqliteTable(
@@ -232,6 +238,7 @@ export const workspaces = sqliteTable(
 		// Empty string means "not yet backfilled from cloud" — the startup
 		// backfill sweep targets these rows.
 		name: text().notNull().default(""),
+		claudeAccountSlug: text("claude_account_slug"),
 		type: text()
 			.$type<"main" | "worktree" | "session">()
 			.notNull()

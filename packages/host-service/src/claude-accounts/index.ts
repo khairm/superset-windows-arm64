@@ -1,0 +1,1467 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, type FSWatcher, watch } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { and, eq, isNull } from "drizzle-orm";
+import type { HostDb } from "../db";
+import { hostSettings, workspaces } from "../db/schema";
+import { mapConcurrent } from "../lib/map-concurrent";
+import { clearLegacyClaudeDefaultAccount } from "../trpc/router/usage/default-account";
+import { FallbackPolicy, type TrayTriggers } from "./fallback";
+import {
+	ClaudeProfileJanitor,
+	disposeTerminalIds,
+	getActiveTerminalIds,
+} from "./janitor";
+import { WorkspaceLockBusyError, WorkspaceLocks } from "./locks";
+import { PiClient, validateAccountSlug } from "./pi-client";
+import {
+	ClaudeProfileManager,
+	credentialsFromToken,
+	isWorkspaceUuid,
+} from "./profile-manager";
+import type {
+	ClaudeAccessToken,
+	ClaudeAccountEvent,
+	ClaudeAccountRosterEntry,
+	ClaudeAccountsLogger,
+	GlobalIdentity,
+	ManagedCredentials,
+	PiAccount,
+} from "./types";
+
+const TICK_INTERVAL_MS = 60_000;
+const RENEW_HEADROOM_MS = 55 * 60 * 1000;
+const WARNING_HEADROOM_MS = 30 * 60 * 1000;
+const MAX_TOKEN_BACKOFF_MS = 15 * 60 * 1000;
+const HOST_SETTINGS_ID = 1;
+const GLOBAL_WARNING_KEY = "__global__";
+const WORKSPACE_REFRESH_CONCURRENCY = 6;
+const ROSTER_REFRESH_EVERY_TICKS = 5;
+
+export interface ClaudeAccountsServiceDeps {
+	db: HostDb;
+	dbPath: string;
+	emit: (event: ClaudeAccountEvent) => void;
+	log: ClaudeAccountsLogger;
+	piBaseUrl?: string;
+	pushKeyPath?: string;
+}
+
+export interface WorkspaceClaudeAccountState {
+	workspaceId: string;
+	state: "following" | "pinned";
+	slug: string | null;
+	warning: { kind: "credential-health"; message: string } | null;
+}
+
+export interface WorkspaceDeletionTarget {
+	workspaceId: string;
+	terminalIds: readonly string[];
+}
+
+export interface ClaudeAccountsService {
+	start(): Promise<void>;
+	stop(): void;
+	mintProfileForNewWorkspace(workspaceId: string): Promise<void>;
+	ensureProfileForLaunch(workspaceId: string): Promise<string>;
+	profileDirFor(workspaceId: string): string;
+	setWorkspaceAccount(workspaceId: string, slug: string | null): Promise<void>;
+	getWorkspaceState(
+		workspaceId: string,
+	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">>;
+	getWorkspaceStates(): Promise<WorkspaceClaudeAccountState[]>;
+	getRoster(): Promise<{
+		trayDefaultSlug: string | null;
+		accounts: ClaudeAccountRosterEntry[];
+	}>;
+	getCapability(): { managed: boolean; configured: boolean };
+	withWorkspaceDeletion<T>(
+		targets: readonly WorkspaceDeletionTarget[],
+		fn: () => Promise<T>,
+		opts?: { timeoutMs?: number },
+	): Promise<T>;
+	withWorkspaceLocks<T>(
+		workspaceIds: string[],
+		fn: () => Promise<T>,
+		opts?: { timeoutMs?: number },
+	): Promise<T>;
+	withWorkspaceLock<T>(
+		workspaceId: string,
+		fn: () => Promise<T>,
+		opts?: { tryOnly?: boolean; timeoutMs?: number },
+	): Promise<T>;
+}
+
+interface TokenBackoff {
+	failures: number;
+	nextAttemptAt: number;
+}
+
+interface AccountTransition {
+	desiredSlug: string | null;
+	credentials: ManagedCredentials | null | undefined;
+	ensureProfileForWorktree?: string;
+	database?:
+		| { kind: "set" }
+		| { kind: "compare-and-set"; expectedSlug: string };
+	cause: "manual" | "auto-fallback" | "system";
+}
+
+class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
+	private readonly locks = new WorkspaceLocks();
+	private readonly profiles: ClaudeProfileManager;
+	private readonly pi: PiClient;
+	private readonly fallback: FallbackPolicy;
+	private janitor: ClaudeProfileJanitor | null = null;
+	private dbInstanceId: string | null = null;
+	private configured = false;
+	private managed = false;
+	private started = false;
+	private stopped = false;
+	private interval: ReturnType<typeof setInterval> | null = null;
+	private credentialsWatcher: FSWatcher | null = null;
+	private tickInFlight: Promise<void> | null = null;
+	private tickCount = 0;
+	private readonly tokenBackoffs = new Map<string, TokenBackoff>();
+	private readonly credentialCache = new Map<
+		string,
+		ManagedCredentials | null
+	>();
+	private readonly warningCauses = new Map<string, Map<string, string>>();
+
+	constructor(private readonly deps: ClaudeAccountsServiceDeps) {
+		this.profiles = new ClaudeProfileManager(deps.dbPath, deps.log);
+		this.pi = new PiClient(deps.log, {
+			...(deps.piBaseUrl !== undefined ? { baseUrl: deps.piBaseUrl } : {}),
+			...(deps.pushKeyPath !== undefined
+				? { pushKeyPath: deps.pushKeyPath }
+				: {}),
+		});
+		this.fallback = new FallbackPolicy(deps.log);
+	}
+
+	async start(): Promise<void> {
+		if (this.started && !this.stopped) return;
+		if (this.stopped) {
+			throw new Error(
+				"Claude accounts service cannot be restarted after stop()",
+			);
+		}
+		await this.profiles.initialize();
+		this.configured = existsSync(this.pi.getPushKeyPath());
+		const settings = this.ensureDatabaseInstance();
+		this.dbInstanceId = settings.dbInstanceId;
+
+		const workspaceRows = this.deps.db.select().from(workspaces).all();
+		const profileStateExists = await this.hasManagedProfileState();
+		const pinnedStateExists = workspaceRows.some(
+			(row) => row.claudeAccountSlug !== null,
+		);
+		if ((profileStateExists || pinnedStateExists) && !settings.managedLatch) {
+			this.persistManagedLatch();
+		}
+		this.managed =
+			this.configured ||
+			settings.managedLatch ||
+			profileStateExists ||
+			pinnedStateExists;
+
+		this.janitor = new ClaudeProfileJanitor({
+			db: this.deps.db,
+			dbInstanceId: this.dbInstanceId,
+			profiles: this.profiles,
+			log: this.deps.log,
+			withWorkspaceLock: (workspaceId, fn, opts) =>
+				this.withWorkspaceLock(workspaceId, fn, opts),
+			deleteProfileWithTerminalIds: (workspaceId, terminalIds) =>
+				this.deleteProfileWithTerminalIds(workspaceId, terminalIds),
+		});
+
+		if (this.managed) {
+			clearLegacyClaudeDefaultAccount(this.deps.db);
+			this.startCredentialsWatcher();
+			if (!this.configured) {
+				this.setWarningCause(
+					null,
+					"push-key",
+					"Claude account management is active, but the Pi push key is missing.",
+				);
+			}
+		}
+
+		this.started = true;
+		void this.runInitialBackgroundWork(workspaceRows.map((row) => row.id));
+		this.interval = setInterval(() => {
+			void this.runTick().catch((error) => {
+				this.deps.log.error("Claude account keep-fresh tick failed", { error });
+			});
+		}, TICK_INTERVAL_MS);
+		this.interval.unref();
+	}
+
+	private async runInitialBackgroundWork(
+		workspaceIds: readonly string[],
+	): Promise<void> {
+		if (this.managed) {
+			const tasks = [
+				{
+					name: "profile sweep",
+					run: () => this.profiles.sweepProfiles(workspaceIds),
+				},
+				{
+					name: "credential cache seed",
+					run: () => this.seedTokenCache(workspaceIds),
+				},
+				{
+					name: "profile janitor",
+					run: () => this.requireJanitor().run(true),
+				},
+			] as const;
+			for (const task of tasks) {
+				try {
+					await task.run();
+				} catch (error) {
+					this.deps.log.error(`Claude account startup ${task.name} failed`, {
+						error,
+					});
+				}
+			}
+		}
+		try {
+			await this.runTick();
+		} catch (error) {
+			this.deps.log.error("Initial Claude account keep-fresh tick failed", {
+				error,
+			});
+		}
+	}
+
+	stop(): void {
+		this.stopped = true;
+		if (this.interval) clearInterval(this.interval);
+		this.interval = null;
+		this.credentialsWatcher?.close();
+		this.credentialsWatcher = null;
+	}
+
+	async mintProfileForNewWorkspace(workspaceId: string): Promise<void> {
+		if (!this.managed) return;
+		await this.ensureProfileForLaunch(workspaceId);
+	}
+
+	async ensureProfileForLaunch(workspaceId: string): Promise<string> {
+		if (!this.managed) {
+			throw new Error(
+				"Claude workspace profiles are not configured on this host",
+			);
+		}
+		return this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.requireWorkspace(workspaceId);
+			const current = await this.readProfileCredentialsForCache(workspaceId);
+			const credentials =
+				row.claudeAccountSlug !== null
+					? this.credentialsForPinnedLaunch(
+							workspaceId,
+							row.claudeAccountSlug,
+							current,
+						)
+					: await this.credentialsForFollowingLaunch(workspaceId);
+			await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug: row.claudeAccountSlug,
+				credentials,
+				ensureProfileForWorktree: row.worktreePath,
+				cause: "system",
+			});
+			this.latchManaged();
+			return this.profiles.profileDirFor(workspaceId);
+		});
+	}
+
+	profileDirFor(workspaceId: string): string {
+		return this.profiles.profileDirFor(workspaceId);
+	}
+
+	async setWorkspaceAccount(
+		workspaceId: string,
+		slug: string | null,
+	): Promise<void> {
+		if (!this.managed) {
+			throw new Error(
+				"Claude account switching is not configured on this host",
+			);
+		}
+		await this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.requireWorkspace(workspaceId);
+			if (row.claudeAccountSlug !== slug)
+				this.credentialCache.delete(workspaceId);
+			let credentials: ManagedCredentials | null | undefined;
+			if (slug !== null) {
+				validateAccountSlug(slug);
+				const roster = await this.pi.fetchAccounts();
+				const account = roster.find(
+					(candidate) => candidate.type === "claude" && candidate.slug === slug,
+				);
+				if (!account)
+					throw new Error(`Claude account ${slug} is not in the Pi roster`);
+				if (!account.enabled)
+					throw new Error(`Claude account ${slug} is disabled`);
+				if (account.dead) {
+					throw new Error(
+						`Claude account ${slug} needs re-login${account.deadReason ? `: ${account.deadReason}` : ""}`,
+					);
+				}
+				const token = await this.pi.fetchToken(slug);
+				credentials = credentialsFromToken(token);
+			} else {
+				const identity = await this.readGlobalIdentityOrWarn(workspaceId);
+				credentials =
+					identity && identity.kind !== "absent"
+						? identity.credentials
+						: row.claudeAccountSlug === null
+							? undefined
+							: null;
+			}
+			await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug: slug,
+				credentials,
+				ensureProfileForWorktree: row.worktreePath,
+				database: { kind: "set" },
+				cause: "manual",
+			});
+			this.latchManaged();
+		});
+	}
+
+	async getWorkspaceState(
+		workspaceId: string,
+	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">> {
+		const row = this.requireWorkspace(workspaceId);
+		const { workspaceId: _workspaceId, ...state } = this.mapWorkspaceState(
+			workspaceId,
+			row.claudeAccountSlug,
+		);
+		return state;
+	}
+
+	async getWorkspaceStates(): Promise<WorkspaceClaudeAccountState[]> {
+		return this.deps.db
+			.select({
+				workspaceId: workspaces.id,
+				slug: workspaces.claudeAccountSlug,
+			})
+			.from(workspaces)
+			.where(isNull(workspaces.archivedAt))
+			.all()
+			.map((row) => this.mapWorkspaceState(row.workspaceId, row.slug));
+	}
+
+	async getRoster(): Promise<{
+		trayDefaultSlug: string | null;
+		accounts: ClaudeAccountRosterEntry[];
+	}> {
+		let accounts: PiAccount[];
+		try {
+			accounts = await this.pi.fetchAccounts();
+		} catch (error) {
+			const lastGood = this.pi.getAccountsLastGood();
+			if (!lastGood) throw error;
+			this.deps.log.warn(
+				"Serving last-good Claude account roster after Pi failure",
+				{
+					error,
+				},
+			);
+			accounts = lastGood;
+		}
+		let trayDefaultSlug: string | null = null;
+		try {
+			const identity = await this.profiles.readGlobalIdentity();
+			trayDefaultSlug = identity.kind === "tray" ? identity.slug : null;
+		} catch (error) {
+			this.deps.log.warn(
+				"Could not resolve tray default for Claude account roster",
+				{
+					error,
+				},
+			);
+		}
+		return {
+			trayDefaultSlug,
+			accounts: accounts
+				.filter((account) => account.type === "claude")
+				.map(
+					({
+						type: _type,
+						fableResetsAt: _fableReset,
+						fableInUse: _fableInUse,
+						...account
+					}) => account,
+				),
+		};
+	}
+
+	getCapability(): { managed: boolean; configured: boolean } {
+		return {
+			managed: this.managed && process.env.SUPERSET_HOST_RUN_MODE !== "sandbox",
+			configured: this.configured,
+		};
+	}
+
+	async withWorkspaceDeletion<T>(
+		targets: readonly WorkspaceDeletionTarget[],
+		fn: () => Promise<T>,
+		opts?: { timeoutMs?: number },
+	): Promise<T> {
+		const deletionTargets = targets.map((target) => ({
+			workspaceId: target.workspaceId,
+			terminalIds: [...target.terminalIds],
+		}));
+		const workspaceIds = deletionTargets.map((target) => target.workspaceId);
+		if (new Set(workspaceIds).size !== workspaceIds.length) {
+			throw new Error(
+				"Workspace deletion targets contain a duplicate workspace id",
+			);
+		}
+		return this.withWorkspaceLocks(
+			workspaceIds,
+			async () => {
+				const janitor = this.requireJanitor();
+				const preparedIds: string[] = [];
+				try {
+					for (const target of deletionTargets) {
+						await janitor.prepareWorkspaceDeletion(
+							target.workspaceId,
+							target.terminalIds,
+						);
+						preparedIds.push(target.workspaceId);
+					}
+					await disposeTerminalIds(
+						this.deps.db,
+						deletionTargets.flatMap((target) => target.terminalIds),
+					);
+				} catch (error) {
+					await this.clearDeletionMarkersOrThrow(preparedIds, error);
+					throw error;
+				}
+
+				let result: T;
+				try {
+					result = await fn();
+				} catch (error) {
+					const rolledBackIds = preparedIds.filter((workspaceId) => {
+						const row = this.deps.db.query.workspaces
+							.findFirst({ where: eq(workspaces.id, workspaceId) })
+							.sync();
+						return row !== undefined;
+					});
+					await this.clearDeletionMarkersOrThrow(rolledBackIds, error);
+					throw error;
+				}
+
+				const deletions = await Promise.allSettled(
+					preparedIds.map((workspaceId) =>
+						this.deletePreparedProfile(workspaceId),
+					),
+				);
+				for (const [index, deletion] of deletions.entries()) {
+					if (deletion.status === "fulfilled") continue;
+					this.deps.log.warn(
+						"Workspace was deleted but its Claude profile remains for janitor retry",
+						{
+							workspaceId: preparedIds[index],
+							error: deletion.reason,
+						},
+					);
+				}
+				return result;
+			},
+			opts,
+		);
+	}
+
+	withWorkspaceLocks<T>(
+		workspaceIds: string[],
+		fn: () => Promise<T>,
+		opts?: { timeoutMs?: number },
+	): Promise<T> {
+		for (const workspaceId of workspaceIds) {
+			if (!isWorkspaceUuid(workspaceId)) {
+				return Promise.reject(
+					new Error(`Invalid workspace UUID: ${workspaceId}`),
+				);
+			}
+		}
+		return this.locks.withLocks(workspaceIds, fn, opts);
+	}
+
+	withWorkspaceLock<T>(
+		workspaceId: string,
+		fn: () => Promise<T>,
+		opts?: { tryOnly?: boolean; timeoutMs?: number },
+	): Promise<T> {
+		if (!isWorkspaceUuid(workspaceId)) {
+			return Promise.reject(
+				new Error(`Invalid workspace UUID: ${workspaceId}`),
+			);
+		}
+		return this.locks.withLock(workspaceId, fn, opts);
+	}
+
+	private runTick(): Promise<void> {
+		if (!this.managed || this.stopped) return Promise.resolve();
+		if (this.tickInFlight) return this.tickInFlight;
+		const tick = this.executeTick().finally(() => {
+			if (this.tickInFlight === tick) this.tickInFlight = null;
+		});
+		this.tickInFlight = tick;
+		return tick;
+	}
+
+	private async executeTick(): Promise<void> {
+		this.tickCount += 1;
+		this.configured = existsSync(this.pi.getPushKeyPath());
+		this.setWarningCause(
+			null,
+			"push-key",
+			this.configured
+				? null
+				: "Claude account management is active, but the Pi push key is missing.",
+		);
+
+		let identity: GlobalIdentity | null = null;
+		try {
+			identity = await this.profiles.readGlobalIdentity();
+			if (identity.kind === "tray") {
+				this.pi.rememberToken({
+					account: identity.slug,
+					accessToken: identity.credentials.claudeAiOauth.accessToken,
+					expiresAt: identity.credentials.claudeAiOauth.expiresAt,
+					...(identity.credentials.claudeAiOauth.scopes
+						? { scopes: identity.credentials.claudeAiOauth.scopes }
+						: {}),
+				});
+			}
+		} catch (error) {
+			this.deps.log.warn("Could not read machine-default Claude credentials", {
+				error,
+			});
+		}
+
+		const rows = this.deps.db
+			.select({
+				id: workspaces.id,
+				claudeAccountSlug: workspaces.claudeAccountSlug,
+			})
+			.from(workspaces)
+			.where(isNull(workspaces.archivedAt))
+			.all();
+		const hasPinnedWorkspace = rows.some(
+			(row) => row.claudeAccountSlug !== null,
+		);
+		const triggers = hasPinnedWorkspace
+			? await this.fallback.readTriggers()
+			: null;
+		const rosterRequired =
+			rows.some((row) => this.workspaceNeedsRoster(row, identity)) ||
+			triggers !== null ||
+			this.tickCount % ROSTER_REFRESH_EVERY_TICKS === 0;
+		let roster: PiAccount[] | null = null;
+		if (this.configured && rosterRequired) {
+			try {
+				roster = await this.pi.fetchAccounts();
+			} catch (error) {
+				this.deps.log.warn(
+					"Claude account roster refresh failed; preserving last-good state",
+					{
+						error,
+					},
+				);
+			}
+		}
+		for (const row of rows) {
+			this.setWarningCause(
+				row.id,
+				"push-key",
+				this.configured
+					? null
+					: "The Pi push key is missing. This workspace will keep its last-good Claude token.",
+			);
+		}
+		await mapConcurrent(rows, WORKSPACE_REFRESH_CONCURRENCY, (row) =>
+			this.refreshWorkspace(row.id, identity, roster),
+		);
+		if (roster && triggers) {
+			await this.runFallbacks(rows, identity, roster, triggers);
+		}
+
+		if (this.tickCount % 60 === 0) {
+			await this.requireJanitor().run(false);
+		}
+	}
+
+	private workspaceNeedsRoster(
+		row: { id: string; claudeAccountSlug: string | null },
+		identity: GlobalIdentity | null,
+	): boolean {
+		const tokenSlug =
+			row.claudeAccountSlug ??
+			(identity?.kind === "tray" ? identity.slug : null);
+		if (!tokenSlug) return false;
+		const credentials = this.credentialCache.get(row.id);
+		return (
+			!credentials ||
+			credentials.trayManagedAccount !== tokenSlug ||
+			credentials.claudeAiOauth.expiresAt - Date.now() <= RENEW_HEADROOM_MS
+		);
+	}
+
+	private async refreshWorkspace(
+		workspaceId: string,
+		identity: GlobalIdentity | null,
+		roster: PiAccount[] | null,
+	): Promise<void> {
+		try {
+			await this.withWorkspaceLock(
+				workspaceId,
+				async () => {
+					const row = this.deps.db.query.workspaces
+						.findFirst({ where: eq(workspaces.id, workspaceId) })
+						.sync();
+					if (!row || row.archivedAt !== null) return;
+					if (!(await this.profiles.profileExists(workspaceId))) return;
+					const current =
+						await this.readProfileCredentialsForCache(workspaceId);
+					if (row.claudeAccountSlug === null) {
+						await this.refreshFollowing(workspaceId, identity, roster, current);
+					} else {
+						await this.refreshPinned(
+							workspaceId,
+							row.claudeAccountSlug,
+							roster,
+							current,
+						);
+					}
+				},
+				{ tryOnly: true },
+			);
+		} catch (error) {
+			if (error instanceof WorkspaceLockBusyError) {
+				this.deps.log.info("Claude keep-fresh skipped locked workspace", {
+					workspaceId,
+				});
+				return;
+			}
+			this.deps.log.error("Claude keep-fresh failed for workspace", {
+				workspaceId,
+				error,
+			});
+		}
+	}
+
+	private async refreshFollowing(
+		workspaceId: string,
+		identity: GlobalIdentity | null,
+		roster: PiAccount[] | null,
+		current: ManagedCredentials | null,
+	): Promise<void> {
+		if (!identity || identity.kind === "absent") {
+			this.setWarningCause(
+				workspaceId,
+				"machine-default",
+				"The machine default is signed out or unreadable. This workspace is using its last-good token.",
+			);
+			return;
+		}
+		this.setWarningCause(workspaceId, "machine-default", null);
+		if (identity.kind === "unmanaged") {
+			if (!sameAccessToken(current, identity.credentials)) {
+				await this.applyWorkspaceAccountTransition(workspaceId, {
+					desiredSlug: null,
+					credentials: identity.credentials,
+					cause: "system",
+				});
+			}
+			this.setWarningCause(
+				workspaceId,
+				"unmanaged",
+				"This workspace is following a personal Claude login. Superset can mirror its access token but cannot renew it.",
+			);
+			this.setWarningCause(workspaceId, "renewal", null);
+			return;
+		}
+		this.setWarningCause(workspaceId, "unmanaged", null);
+		if (!sameAccessToken(current, identity.credentials)) {
+			await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug: null,
+				credentials: identity.credentials,
+				cause: "system",
+			});
+			current = identity.credentials;
+		}
+		if (roster && !roster.some((account) => account.slug === identity.slug)) {
+			this.setWarningCause(
+				workspaceId,
+				"roster",
+				`The machine-default Claude account '${identity.slug}' is missing from the Pi roster. The last-good token is unchanged.`,
+			);
+			return;
+		}
+		if (roster) this.setWarningCause(workspaceId, "roster", null);
+		if (
+			current?.trayManagedAccount !== identity.slug ||
+			current.claudeAiOauth.expiresAt - Date.now() <= RENEW_HEADROOM_MS
+		) {
+			await this.renewWorkspace(workspaceId, null, identity.slug, current);
+		} else {
+			this.setWarningCause(workspaceId, "renewal", null);
+		}
+	}
+
+	private async refreshPinned(
+		workspaceId: string,
+		slug: string,
+		roster: PiAccount[] | null,
+		current: ManagedCredentials | null,
+	): Promise<void> {
+		this.setWarningCause(workspaceId, "machine-default", null);
+		this.setWarningCause(workspaceId, "unmanaged", null);
+		if (current && current.trayManagedAccount !== slug) {
+			await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug: slug,
+				credentials: null,
+				cause: "system",
+			});
+			current = null;
+			this.deps.log.warn(
+				"Removed mismatched Claude credentials from pinned workspace profile",
+				{ workspaceId, pinnedSlug: slug },
+			);
+		}
+		if (roster && !roster.some((account) => account.slug === slug)) {
+			this.setWarningCause(
+				workspaceId,
+				"roster",
+				`Pinned Claude account '${slug}' is missing from the Pi roster. The last-good token is unchanged.`,
+			);
+			return;
+		}
+		if (roster) this.setWarningCause(workspaceId, "roster", null);
+		if (
+			current?.trayManagedAccount === slug &&
+			current.claudeAiOauth.expiresAt - Date.now() > RENEW_HEADROOM_MS
+		) {
+			this.setWarningCause(workspaceId, "renewal", null);
+			return;
+		}
+		await this.renewWorkspace(workspaceId, slug, slug, current);
+	}
+
+	private async renewWorkspace(
+		workspaceId: string,
+		desiredSlug: string | null,
+		tokenSlug: string,
+		current: ManagedCredentials | null,
+	): Promise<void> {
+		try {
+			const token = await this.fetchTokenWithBackoff(tokenSlug);
+			await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug,
+				credentials: credentialsFromToken(token),
+				cause: "system",
+			});
+			this.setWarningCause(workspaceId, "renewal", null);
+		} catch (error) {
+			const remaining = (current?.claudeAiOauth.expiresAt ?? 0) - Date.now();
+			if (!current || remaining < WARNING_HEADROOM_MS) {
+				this.setWarningCause(
+					workspaceId,
+					"renewal",
+					`Claude token renewal failed for '${tokenSlug}' with less than 30 minutes remaining.`,
+				);
+			}
+			this.deps.log.warn(
+				"Claude token renewal failed; preserving last-good credentials",
+				{
+					workspaceId,
+					slug: tokenSlug,
+					error,
+				},
+			);
+		}
+	}
+
+	private async runFallbacks(
+		rows: Array<{ id: string; claudeAccountSlug: string | null }>,
+		identity: GlobalIdentity | null,
+		roster: PiAccount[],
+		triggers: TrayTriggers,
+	): Promise<void> {
+		if (!identity || identity.kind !== "tray") {
+			for (const row of rows) {
+				if (row.claudeAccountSlug !== null) {
+					this.deps.log.info(
+						"Claude auto-fallback suppressed: machine default identity is unknown",
+						{ workspaceId: row.id },
+					);
+				}
+			}
+			return;
+		}
+		const candidates: Array<{
+			workspaceId: string;
+			pinnedSlug: string;
+			reason: string;
+		}> = [];
+		for (const row of rows) {
+			const slug = row.claudeAccountSlug;
+			if (slug === null) continue;
+			if (slug === identity.slug) {
+				this.deps.log.info(
+					"Claude auto-fallback suppressed: pinned account is the machine default",
+					{ workspaceId: row.id, slug },
+				);
+				continue;
+			}
+			const account = roster.find(
+				(candidate) => candidate.type === "claude" && candidate.slug === slug,
+			);
+			if (!account) {
+				this.deps.log.warn(
+					"Claude auto-fallback suppressed: pinned account is absent from roster",
+					{ workspaceId: row.id, slug },
+				);
+				continue;
+			}
+			const evaluation = this.fallback.evaluate(account, triggers);
+			if (evaluation.action === "suppress") {
+				this.deps.log.info("Claude auto-fallback suppressed", {
+					workspaceId: row.id,
+					slug,
+					reason: evaluation.reason,
+				});
+				continue;
+			}
+			candidates.push({
+				workspaceId: row.id,
+				pinnedSlug: slug,
+				reason: evaluation.reason,
+			});
+		}
+		if (candidates.length === 0) return;
+
+		let revalidatedIdentity: GlobalIdentity;
+		let revalidatedTriggers: TrayTriggers | null;
+		try {
+			[revalidatedIdentity, revalidatedTriggers] = await Promise.all([
+				this.profiles.readGlobalIdentity(),
+				this.fallback.readTriggers(),
+			]);
+		} catch (error) {
+			this.deps.log.warn(
+				"Claude auto-fallback pass discarded: revalidation failed",
+				{ error },
+			);
+			return;
+		}
+		if (
+			revalidatedIdentity.kind !== "tray" ||
+			revalidatedIdentity.slug !== identity.slug ||
+			!revalidatedTriggers ||
+			revalidatedTriggers.five !== triggers.five ||
+			revalidatedTriggers.seven !== triggers.seven
+		) {
+			this.deps.log.info(
+				"Claude auto-fallback pass discarded by shared revalidation",
+				{ candidateCount: candidates.length },
+			);
+			return;
+		}
+		for (const candidate of candidates) {
+			await this.commitFallback(
+				candidate.workspaceId,
+				candidate.pinnedSlug,
+				revalidatedIdentity,
+				candidate.reason,
+			);
+		}
+	}
+
+	private async commitFallback(
+		workspaceId: string,
+		pinnedSlug: string,
+		identity: Extract<GlobalIdentity, { kind: "tray" }>,
+		reason: string,
+	): Promise<void> {
+		try {
+			await this.withWorkspaceLock(
+				workspaceId,
+				async () => {
+					const row = this.requireWorkspace(workspaceId);
+					if (row.claudeAccountSlug !== pinnedSlug) {
+						this.deps.log.info(
+							"Claude auto-fallback discarded: workspace account changed",
+							{ workspaceId },
+						);
+						return;
+					}
+					this.credentialCache.delete(workspaceId);
+					const updated = await this.applyWorkspaceAccountTransition(
+						workspaceId,
+						{
+							desiredSlug: null,
+							credentials: identity.credentials,
+							database: {
+								kind: "compare-and-set",
+								expectedSlug: pinnedSlug,
+							},
+							cause: "auto-fallback",
+						},
+					);
+					if (!updated) {
+						this.deps.log.info(
+							"Claude auto-fallback CAS lost; state unchanged",
+							{ workspaceId },
+						);
+						return;
+					}
+					this.deps.log.warn(
+						"Claude workspace permanently fell back to Following",
+						{
+							workspaceId,
+							pinnedSlug,
+							machineDefaultSlug: identity.slug,
+							reason,
+						},
+					);
+				},
+				{ tryOnly: true },
+			);
+		} catch (error) {
+			if (error instanceof WorkspaceLockBusyError) {
+				this.deps.log.info("Claude auto-fallback skipped locked workspace", {
+					workspaceId,
+				});
+				return;
+			}
+			throw error;
+		}
+	}
+
+	private async fetchTokenWithBackoff(
+		slug: string,
+	): Promise<ClaudeAccessToken> {
+		const backoff = this.tokenBackoffs.get(slug);
+		if (backoff && backoff.nextAttemptAt > Date.now()) {
+			throw new Error(
+				`Token fetch for ${slug} is backed off until ${new Date(backoff.nextAttemptAt).toISOString()}`,
+			);
+		}
+		try {
+			const token = await this.pi.fetchToken(slug);
+			this.tokenBackoffs.delete(slug);
+			return token;
+		} catch (error) {
+			const failures = (backoff?.failures ?? 0) + 1;
+			const delay = Math.min(
+				TICK_INTERVAL_MS * 2 ** Math.min(failures - 1, 8),
+				MAX_TOKEN_BACKOFF_MS,
+			);
+			this.tokenBackoffs.set(slug, {
+				failures,
+				nextAttemptAt: Date.now() + delay,
+			});
+			throw error;
+		}
+	}
+
+	private credentialsForPinnedLaunch(
+		workspaceId: string,
+		slug: string,
+		current: ManagedCredentials | null,
+	): ManagedCredentials | null {
+		if (
+			current?.trayManagedAccount === slug &&
+			current.claudeAiOauth.accessToken
+		) {
+			this.setWarningCause(workspaceId, "renewal", null);
+			return current;
+		}
+		const lastGood = this.pi.getTokenLastGood(slug);
+		if (lastGood) {
+			this.setWarningCause(workspaceId, "renewal", null);
+			return credentialsFromToken(lastGood);
+		}
+		this.setWarningCause(
+			workspaceId,
+			"renewal",
+			`Pinned Claude account '${slug}' has no last-good token. The workspace profile is intentionally credential-less until keep-fresh recovers.`,
+		);
+		return null;
+	}
+
+	private async credentialsForFollowingLaunch(
+		workspaceId: string,
+	): Promise<ManagedCredentials | undefined> {
+		const identity = await this.readGlobalIdentityOrWarn(workspaceId);
+		if (!identity || identity.kind === "absent") return undefined;
+		if (identity.kind === "unmanaged") {
+			this.setWarningCause(
+				workspaceId,
+				"unmanaged",
+				"This workspace is following a personal Claude login. Superset can mirror its access token but cannot renew it.",
+			);
+		} else {
+			this.setWarningCause(workspaceId, "unmanaged", null);
+			this.pi.rememberToken({
+				account: identity.slug,
+				accessToken: identity.credentials.claudeAiOauth.accessToken,
+				expiresAt: identity.credentials.claudeAiOauth.expiresAt,
+			});
+		}
+		return identity.credentials;
+	}
+
+	private async readGlobalIdentityOrWarn(
+		workspaceId: string,
+	): Promise<GlobalIdentity | null> {
+		try {
+			const identity = await this.profiles.readGlobalIdentity();
+			this.setWarningCause(
+				workspaceId,
+				"machine-default",
+				identity.kind === "absent"
+					? "The machine default is signed out. This workspace will keep its last-good token."
+					: null,
+			);
+			return identity;
+		} catch (error) {
+			this.setWarningCause(
+				workspaceId,
+				"machine-default",
+				"The machine-default Claude credentials are unreadable. This workspace will keep its last-good token.",
+			);
+			this.deps.log.warn("Machine-default Claude credentials are unreadable", {
+				workspaceId,
+				error,
+			});
+			return null;
+		}
+	}
+
+	private async readProfileCredentialsForCache(
+		workspaceId: string,
+	): Promise<ManagedCredentials | null> {
+		if (this.credentialCache.has(workspaceId)) {
+			return this.credentialCache.get(workspaceId) ?? null;
+		}
+		if (!(await this.profiles.profileExists(workspaceId))) {
+			this.credentialCache.set(workspaceId, null);
+			return null;
+		}
+		try {
+			const credentials =
+				await this.profiles.readProfileCredentials(workspaceId);
+			if (credentials) this.cacheCredentials(workspaceId, credentials);
+			else this.credentialCache.set(workspaceId, null);
+			return credentials;
+		} catch (error) {
+			this.credentialCache.set(workspaceId, null);
+			this.deps.log.warn(
+				"Existing Claude profile credentials could not seed last-good cache",
+				{
+					workspaceId,
+					error,
+				},
+			);
+			return null;
+		}
+	}
+
+	private cacheCredentials(
+		workspaceId: string,
+		credentials: ManagedCredentials,
+	): void {
+		this.credentialCache.set(workspaceId, credentials);
+		if (credentials.trayManagedAccount) {
+			this.pi.rememberToken({
+				account: credentials.trayManagedAccount,
+				accessToken: credentials.claudeAiOauth.accessToken,
+				expiresAt: credentials.claudeAiOauth.expiresAt,
+			});
+		}
+	}
+
+	private async applyWorkspaceAccountTransition(
+		workspaceId: string,
+		transition: AccountTransition,
+	): Promise<boolean> {
+		if (transition.ensureProfileForWorktree !== undefined) {
+			const cachedCredentials = this.credentialCache.get(workspaceId) ?? null;
+			const profileCredentials =
+				transition.credentials &&
+				sameAccessToken(cachedCredentials, transition.credentials)
+					? null
+					: (transition.credentials ?? null);
+			await this.profiles.mintProfile(
+				workspaceId,
+				transition.ensureProfileForWorktree,
+				profileCredentials,
+			);
+			if (transition.credentials) {
+				this.cacheCredentials(workspaceId, transition.credentials);
+			}
+		}
+		if (
+			transition.credentials &&
+			transition.ensureProfileForWorktree === undefined
+		) {
+			await this.writeWorkspaceCredentials(workspaceId, transition.credentials);
+		} else if (transition.credentials === null) {
+			await this.removeWorkspaceCredentials(workspaceId);
+		}
+
+		if (!transition.database) return true;
+		let updated: { id: string } | undefined;
+		if (transition.database.kind === "set") {
+			updated = this.deps.db
+				.update(workspaces)
+				.set({ claudeAccountSlug: transition.desiredSlug })
+				.where(eq(workspaces.id, workspaceId))
+				.returning({ id: workspaces.id })
+				.get();
+		} else {
+			updated = this.deps.db
+				.update(workspaces)
+				.set({ claudeAccountSlug: transition.desiredSlug })
+				.where(
+					and(
+						eq(workspaces.id, workspaceId),
+						eq(workspaces.claudeAccountSlug, transition.database.expectedSlug),
+					),
+				)
+				.returning({ id: workspaces.id })
+				.get();
+		}
+		if (!updated) {
+			await this.restoreCredentialsForDesiredState(workspaceId);
+			return false;
+		}
+
+		this.setWarningCause(workspaceId, "renewal", null);
+		this.setWarningCause(workspaceId, "roster", null);
+		if (transition.desiredSlug !== null) {
+			this.setWarningCause(workspaceId, "machine-default", null);
+			this.setWarningCause(workspaceId, "unmanaged", null);
+		}
+		this.deps.emit({
+			type: "claude-account-state-changed",
+			workspaceId,
+			state: transition.desiredSlug === null ? "following" : "pinned",
+			slug: transition.desiredSlug,
+			cause: transition.cause,
+		});
+		return true;
+	}
+
+	private async restoreCredentialsForDesiredState(
+		workspaceId: string,
+	): Promise<void> {
+		const desiredSlug = this.requireWorkspace(workspaceId).claudeAccountSlug;
+		if (desiredSlug === null) {
+			const identity = await this.profiles.readGlobalIdentity();
+			if (identity.kind !== "absent") {
+				await this.writeWorkspaceCredentials(workspaceId, identity.credentials);
+			} else {
+				await this.removeWorkspaceCredentials(workspaceId);
+			}
+			return;
+		}
+		const token = this.pi.getTokenLastGood(desiredSlug);
+		if (token) {
+			await this.writeWorkspaceCredentials(
+				workspaceId,
+				credentialsFromToken(token),
+			);
+		} else {
+			await this.removeWorkspaceCredentials(workspaceId);
+		}
+	}
+
+	private async writeWorkspaceCredentials(
+		workspaceId: string,
+		credentials: ManagedCredentials,
+	): Promise<void> {
+		await this.profiles.writeCredentials(
+			this.profiles.profileDirFor(workspaceId),
+			credentials,
+		);
+		this.cacheCredentials(workspaceId, credentials);
+	}
+
+	private async removeWorkspaceCredentials(workspaceId: string): Promise<void> {
+		await this.profiles.removeCredentials(
+			this.profiles.profileDirFor(workspaceId),
+		);
+		this.credentialCache.set(workspaceId, null);
+	}
+
+	private async seedTokenCache(workspaceIds: readonly string[]): Promise<void> {
+		await mapConcurrent(
+			workspaceIds,
+			WORKSPACE_REFRESH_CONCURRENCY,
+			async (workspaceId) => {
+				await this.readProfileCredentialsForCache(workspaceId);
+			},
+		);
+	}
+
+	private requireWorkspace(workspaceId: string) {
+		if (!isWorkspaceUuid(workspaceId)) {
+			throw new Error(`Invalid workspace UUID: ${workspaceId}`);
+		}
+		const row = this.deps.db.query.workspaces
+			.findFirst({ where: eq(workspaces.id, workspaceId) })
+			.sync();
+		if (!row) throw new Error(`Workspace ${workspaceId} does not exist`);
+		return row;
+	}
+
+	private async clearDeletionMarkersOrThrow(
+		workspaceIds: readonly string[],
+		originalError: unknown,
+	): Promise<void> {
+		const janitor = this.requireJanitor();
+		const clearResults = await Promise.allSettled(
+			workspaceIds.map((workspaceId) =>
+				janitor.clearDeletionMarker(workspaceId),
+			),
+		);
+		const clearErrors = clearResults.flatMap((result) =>
+			result.status === "rejected" ? [result.reason] : [],
+		);
+		if (clearErrors.length > 0) {
+			throw new AggregateError(
+				[originalError, ...clearErrors],
+				"Workspace deletion failed and one or more Claude profile markers could not be cleared",
+			);
+		}
+	}
+
+	private async deletePreparedProfile(workspaceId: string): Promise<void> {
+		const janitor = this.requireJanitor();
+		const marker = await janitor.readDeletionMarker(workspaceId);
+		if (!marker) {
+			throw new Error(
+				`Claude profile deletion marker disappeared for ${workspaceId}`,
+			);
+		}
+		await this.deleteProfileWithTerminalIds(workspaceId, marker.terminalIds);
+		await janitor.clearDeletionMarker(workspaceId);
+	}
+
+	private async deleteProfileWithTerminalIds(
+		workspaceId: string,
+		terminalIds: readonly string[],
+	): Promise<void> {
+		await disposeTerminalIds(this.deps.db, terminalIds);
+		try {
+			await this.profiles.deleteProfileDir(workspaceId);
+		} catch (error) {
+			if (!isBusyFsError(error)) throw error;
+			const retryIds = getActiveTerminalIds(this.deps.db, workspaceId);
+			await disposeTerminalIds(this.deps.db, retryIds);
+			await this.profiles.deleteProfileDir(workspaceId);
+		}
+		this.credentialCache.delete(workspaceId);
+		this.warningCauses.delete(workspaceId);
+		const referencedSlugs = new Set(
+			this.deps.db
+				.select({ slug: workspaces.claudeAccountSlug })
+				.from(workspaces)
+				.all()
+				.flatMap((row) => (row.slug ? [row.slug] : [])),
+		);
+		for (const credentials of this.credentialCache.values()) {
+			if (credentials?.trayManagedAccount) {
+				referencedSlugs.add(credentials.trayManagedAccount);
+			}
+		}
+		for (const slug of this.tokenBackoffs.keys()) {
+			if (!referencedSlugs.has(slug)) this.tokenBackoffs.delete(slug);
+		}
+	}
+
+	private ensureDatabaseInstance(): {
+		dbInstanceId: string;
+		managedLatch: boolean;
+	} {
+		const existing = this.deps.db
+			.select({
+				dbInstanceId: hostSettings.claudeAccountsDbInstanceId,
+				managedLatch: hostSettings.claudeAccountsManaged,
+			})
+			.from(hostSettings)
+			.where(eq(hostSettings.id, HOST_SETTINGS_ID))
+			.get();
+		const dbInstanceId = existing?.dbInstanceId ?? randomUUID();
+		if (!existing?.dbInstanceId) {
+			this.deps.db
+				.insert(hostSettings)
+				.values({
+					id: HOST_SETTINGS_ID,
+					claudeAccountsDbInstanceId: dbInstanceId,
+				})
+				.onConflictDoUpdate({
+					target: hostSettings.id,
+					set: { claudeAccountsDbInstanceId: dbInstanceId },
+				})
+				.run();
+		}
+		return {
+			dbInstanceId,
+			managedLatch: existing?.managedLatch === true,
+		};
+	}
+
+	private persistManagedLatch(): void {
+		this.deps.db
+			.insert(hostSettings)
+			.values({ id: HOST_SETTINGS_ID, claudeAccountsManaged: true })
+			.onConflictDoUpdate({
+				target: hostSettings.id,
+				set: { claudeAccountsManaged: true },
+			})
+			.run();
+	}
+
+	private latchManaged(): void {
+		if (!this.managed) this.managed = true;
+		this.persistManagedLatch();
+	}
+
+	private async hasManagedProfileState(): Promise<boolean> {
+		const entries = await readdir(this.profiles.profilesRoot, {
+			withFileTypes: true,
+		});
+		return entries.some(
+			(entry) => entry.isDirectory() && isWorkspaceUuid(entry.name),
+		);
+	}
+
+	private startCredentialsWatcher(): void {
+		const parent = dirname(this.profiles.globalCredentialsPath);
+		const filename = basename(this.profiles.globalCredentialsPath);
+		try {
+			this.credentialsWatcher = watch(parent, (eventType, changed) => {
+				if (changed?.toString() !== filename) return;
+				this.deps.log.info("Machine-default Claude credentials changed", {
+					eventType,
+				});
+				const followingRows = this.deps.db
+					.select({ id: workspaces.id })
+					.from(workspaces)
+					.where(isNull(workspaces.claudeAccountSlug))
+					.all();
+				for (const row of followingRows) this.credentialCache.delete(row.id);
+				void this.runTick().catch((error) => {
+					this.deps.log.error("Claude credential mirror tick failed", {
+						error,
+					});
+				});
+			});
+			this.credentialsWatcher.on("error", (error) => {
+				this.deps.log.warn(
+					"Machine-default Claude credential watcher failed; 60-second polling remains active",
+					{ error },
+				);
+			});
+		} catch (error) {
+			this.deps.log.warn(
+				"Could not start machine-default Claude credential watcher; 60-second polling remains active",
+				{ error },
+			);
+		}
+	}
+
+	private setWarningCause(
+		workspaceId: string | null,
+		cause: string,
+		message: string | null,
+	): void {
+		const key = workspaceId ?? GLOBAL_WARNING_KEY;
+		const previous = this.renderWarning(workspaceId);
+		let causes = this.warningCauses.get(key);
+		if (!causes) {
+			causes = new Map();
+			this.warningCauses.set(key, causes);
+		}
+		if (message === null) causes.delete(cause);
+		else causes.set(cause, message);
+		if (causes.size === 0) this.warningCauses.delete(key);
+		const rendered = this.renderWarning(workspaceId);
+		if (rendered === previous) return;
+		this.deps.emit({
+			type: "claude-account-warning",
+			workspaceId,
+			kind: "credential-health",
+			message:
+				rendered ?? previous ?? "Claude account credential warning cleared.",
+			active: rendered !== null,
+		});
+	}
+
+	private mapWorkspaceState(
+		workspaceId: string,
+		slug: string | null,
+	): WorkspaceClaudeAccountState {
+		const message = this.renderWarning(workspaceId);
+		return {
+			workspaceId,
+			state: slug === null ? "following" : "pinned",
+			slug,
+			warning: message ? { kind: "credential-health", message } : null,
+		};
+	}
+
+	private renderWarning(workspaceId: string | null): string | null {
+		const key = workspaceId ?? GLOBAL_WARNING_KEY;
+		const messages = this.warningCauses.get(key);
+		return messages && messages.size > 0
+			? [...messages.values()].join(" ")
+			: null;
+	}
+
+	private requireJanitor(): ClaudeProfileJanitor {
+		if (!this.janitor) {
+			throw new Error("Claude accounts service has not started");
+		}
+		return this.janitor;
+	}
+}
+
+function sameAccessToken(
+	left: ManagedCredentials | null,
+	right: ManagedCredentials,
+): boolean {
+	return (
+		left?.claudeAiOauth.accessToken === right.claudeAiOauth.accessToken &&
+		left.claudeAiOauth.expiresAt === right.claudeAiOauth.expiresAt &&
+		left.trayManagedAccount === right.trayManagedAccount
+	);
+}
+
+function isBusyFsError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as NodeJS.ErrnoException).code === "EBUSY"
+	);
+}
+
+export function createClaudeAccountsService(
+	deps: ClaudeAccountsServiceDeps,
+): ClaudeAccountsService {
+	return new ClaudeAccountsServiceImpl(deps);
+}

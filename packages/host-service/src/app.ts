@@ -8,6 +8,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createSeveredApiClient } from "./api";
 import { createChatV3Mount, registerChatV3Routes } from "./chat-v3";
+import {
+	type ClaudeAccountsService,
+	createClaudeAccountsService,
+} from "./claude-accounts";
+import { registerClaudeAccountsService } from "./claude-accounts-runtime";
 import { createDb, type HostDb } from "./db";
 import { EventBus, GitWatcher, registerEventBusRoute } from "./events";
 import type { ApiAuthProvider } from "./providers/auth";
@@ -65,6 +70,7 @@ export interface CreateAppOptions {
 	github?: () => Promise<Octokit>;
 	execGh?: ExecGh;
 	chatService?: ChatService;
+	claudeAccounts?: ClaudeAccountsService;
 }
 
 export interface CreateAppResult {
@@ -85,6 +91,7 @@ export interface CreateAppResult {
 	 * `active -> disposed` and the renderer is never told.
 	 */
 	eventBus: EventBus;
+	claudeAccounts: ClaudeAccountsService;
 	dispose: () => Promise<void>;
 }
 
@@ -185,6 +192,22 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
 	const eventBus = new EventBus({ db, filesystem, gitWatcher });
 	eventBus.start();
+	const claudeAccounts =
+		options.claudeAccounts ??
+		createClaudeAccountsService({
+			db,
+			dbPath: config.dbPath,
+			emit: (event) => eventBus.broadcastClaudeAccountEvent(event),
+			log: {
+				info: (message, fields) =>
+					console.info(`[claude-accounts] ${message}`, fields ?? {}),
+				warn: (message, fields) =>
+					console.warn(`[claude-accounts] ${message}`, fields ?? {}),
+				error: (message, fields) =>
+					console.error(`[claude-accounts] ${message}`, fields ?? {}),
+			},
+		});
+	registerClaudeAccountsService(db, claudeAccounts);
 	// Post-construction wiring (the runtime is built before the EventBus):
 	// newly created workspaces get their first branch/upstream sync + PR link
 	// immediately instead of waiting for the 5-min safety net.
@@ -231,6 +254,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			db,
 			git,
 			eventBus,
+			claudeAccounts,
 		}).catch((err) => {
 			console.warn("[host-service] main-workspace sweep failed:", err);
 		});
@@ -245,6 +269,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			db,
 			runtime,
 			eventBus,
+			claudeAccounts,
 			terminalAgentStore,
 			organizationId: config.organizationId,
 			isAuthenticated: true,
@@ -295,6 +320,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 					db,
 					runtime,
 					eventBus,
+					claudeAccounts,
 					terminalAgentStore,
 					organizationId: config.organizationId,
 					isAuthenticated,
@@ -322,6 +348,11 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			console.warn("[host-service] chatV3.dispose failed:", err);
 		}
 		try {
+			claudeAccounts.stop();
+		} catch (err) {
+			console.warn("[host-service] claudeAccounts.stop failed:", err);
+		}
+		try {
 			eventBus.close();
 		} catch (err) {
 			console.warn("[host-service] eventBus.close failed:", err);
@@ -345,6 +376,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		injectWebSocket,
 		api,
 		db,
+		claudeAccounts,
 		terminalAgentStore,
 		// (DISPOSE-LIMBO) Exposed so the caller can hand it to
 		// `startTerminalReaper`: a reaped terminal's confirming exit has no

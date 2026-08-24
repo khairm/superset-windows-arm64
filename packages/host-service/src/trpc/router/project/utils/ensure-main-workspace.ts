@@ -12,7 +12,7 @@ import {
 
 export type EnsureMainWorkspaceContext = Pick<
 	HostServiceContext,
-	"db" | "git" | "eventBus"
+	"db" | "git" | "eventBus" | "claudeAccounts"
 > &
 	Partial<
 		Pick<HostServiceContext, "api" | "organizationId" | "clientMachineId">
@@ -109,6 +109,7 @@ export async function ensureMainWorkspaceStrict(
 		api: ctx.api,
 		organizationId: ctx.organizationId,
 		clientMachineId: ctx.clientMachineId,
+		claudeAccounts: ctx.claudeAccounts,
 	};
 
 	const existing = ctx.db.query.workspaces
@@ -132,9 +133,9 @@ export async function ensureMainWorkspaceStrict(
 		return { id: existing.id };
 	}
 
-	let inserted: ReturnType<typeof insertLocalWorkspace>;
+	let inserted: Awaited<ReturnType<typeof insertLocalWorkspace>>;
 	try {
-		inserted = insertLocalWorkspace(store, {
+		inserted = await insertLocalWorkspace(store, {
 			projectId,
 			worktreePath: repoPath,
 			branch,

@@ -9,15 +9,15 @@ import { resolveSupersetHomeDir } from "@superset/agent-setup/paths";
 import { hasRunningForegroundProcess } from "@superset/pty-daemon/process-tree";
 import { CURRENT_PROTOCOL_VERSION } from "@superset/pty-daemon/protocol";
 import {
-	createOsc133CdScanState,
-	type Osc133CdScanState,
-	scanForOsc133Cd,
-} from "@superset/shared/shell-osc133-cd-scanner";
-import {
 	buildFishPromptCommandString,
 	type ParsedPromptHeredocCommand,
 	parsePromptHeredocCommand,
 } from "@superset/shared/agent-prompt-launch";
+import {
+	createOsc133CdScanState,
+	type Osc133CdScanState,
+	scanForOsc133Cd,
+} from "@superset/shared/shell-osc133-cd-scanner";
 import {
 	createScanState,
 	SHELLS_WITH_READY_MARKER,
@@ -31,6 +31,8 @@ import {
 } from "@superset/shared/terminal-title-scanner";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Hono } from "hono";
+import type { ClaudeAccountsService } from "../claude-accounts";
+import { getManagedClaudeAccountsForLaunch } from "../claude-accounts-runtime";
 import { stampHumanInput } from "../companion/human-input.ts";
 import { getSupervisor } from "../daemon/index.ts";
 import { isProcessAlive, readPtyDaemonManifest } from "../daemon/manifest.ts";
@@ -692,7 +694,8 @@ async function resolveAttachSessionOnce({
 	db: HostDb;
 	eventBus?: EventBus;
 }): Promise<
-	TerminalSession | { error: string; code?: "session-gone"; transient?: boolean }
+	| TerminalSession
+	| { error: string; code?: "session-gone"; transient?: boolean }
 > {
 	const existing = sessions.get(terminalId);
 	if (existing) return existing;
@@ -2649,6 +2652,13 @@ export function disposeSessionAndWait(
 	return resolution;
 }
 
+export function isDisposalComplete(result: DisposeSessionResult): boolean {
+	return (
+		result.daemonCloseSucceeded &&
+		(result.dbDisposition === "disposed" || result.dbDisposition === "no-row")
+	);
+}
+
 async function runDisposeSession(
 	terminalId: string,
 	db: HostDb,
@@ -2935,39 +2945,61 @@ async function runDisposeSession(
  * reachable for the reaper. Returns counts so callers (e.g.
  * workspaceCleanup.destroy) can surface warnings.
  */
+export function listUndisposedTerminalIdsByWorkspaceId(
+	workspaceId: string,
+	db: HostDb,
+): string[] {
+	return (
+		listUndisposedTerminalIdsByWorkspaceIds([workspaceId], db).get(
+			workspaceId,
+		) ?? []
+	);
+}
+
+export function listUndisposedTerminalIdsByWorkspaceIds(
+	workspaceIds: readonly string[],
+	db: HostDb,
+): Map<string, string[]> {
+	const terminalIdsByWorkspace = new Map(
+		workspaceIds.map((workspaceId) => [workspaceId, [] as string[]]),
+	);
+	if (workspaceIds.length === 0) return terminalIdsByWorkspace;
+
+	const rows = db
+		.select({
+			id: terminalSessions.id,
+			workspaceId: terminalSessions.originWorkspaceId,
+		})
+		.from(terminalSessions)
+		.where(
+			and(
+				inArray(terminalSessions.originWorkspaceId, [...workspaceIds]),
+				ne(terminalSessions.status, "disposed"),
+			),
+		)
+		.all();
+	for (const row of rows) {
+		if (row.workspaceId === null) continue;
+		terminalIdsByWorkspace.get(row.workspaceId)?.push(row.id);
+	}
+	return terminalIdsByWorkspace;
+}
+
 export async function disposeSessionsByWorkspaceId(
 	workspaceId: string,
 	db: HostDb,
 	eventBus?: EventBus,
 ): Promise<{ terminated: number; failed: number }> {
-	const rows = db
-		.select({ id: terminalSessions.id })
-		.from(terminalSessions)
-		.where(
-			and(
-				eq(terminalSessions.originWorkspaceId, workspaceId),
-				ne(terminalSessions.status, "disposed"),
-			),
-		)
-		.all();
+	const terminalIds = listUndisposedTerminalIdsByWorkspaceId(workspaceId, db);
 
 	let terminated = 0;
 	let failed = 0;
-	for (const row of rows) {
+	for (const terminalId of terminalIds) {
 		try {
-			const result = await disposeSessionAndWait(row.id, db, eventBus);
-			// (DISPOSE-LIMBO) Scored off the DURABLE outcome, not the daemon
-			// close: a `superseded` close succeeded against a REPLACEMENT
-			// terminal that is running right now, and counting it terminated let
-			// workspace cleanup suppress its "terminal(s) may still be running"
-			// warning and remove the worktree under a live process. `disposed`
-			// proves this generation's row is durably dead; `no-row` means
-			// nothing durable references it at all. Everything else — `pending`,
-			// `superseded` — is a terminal we cannot vouch for.
-			if (
-				result.dbDisposition === "disposed" ||
-				result.dbDisposition === "no-row"
-			) {
+			const result = await disposeSessionAndWait(terminalId, db, eventBus);
+			// (DISPOSE-LIMBO) Teardown needs both a confirmed daemon close and
+			// a durable disposition for this terminal generation.
+			if (isDisposalComplete(result)) {
 				terminated += 1;
 			} else {
 				failed += 1;
@@ -3070,26 +3102,41 @@ function getTerminalWorkspaceMismatchError({
 }
 
 type CreateSessionError = TerminalSessionError;
+// (DISPOSE-LIMBO) `code: "session-gone"` marks an id permanently spoken for
+// instead of retrying a request that can only fail.
+type CreateSessionResult =
+	| TerminalSession
+	| (CreateSessionError & { code?: "session-gone" });
 
-export async function createTerminalSessionInternal({
-	terminalId,
-	workspaceId,
-	themeType,
-	db,
-	eventBus,
-	initialCommand,
-	cwd: cwdOverride,
-	listed = true,
-	cols: requestedCols,
-	rows: requestedRows,
-	adoptOnly = false,
-	restoredNotice = false,
-}: CreateTerminalSessionOptions): Promise<
-	// (DISPOSE-LIMBO) `code: "session-gone"` rides alongside upstream's kinded
-	// error: the REST and WS attach paths both key off it to mark the id
-	// permanently spoken for instead of retrying a request that can only fail.
-	TerminalSession | (CreateSessionError & { code?: "session-gone" })
-> {
+export async function createTerminalSessionInternal(
+	options: CreateTerminalSessionOptions,
+): Promise<CreateSessionResult> {
+	const claudeAccounts = getManagedClaudeAccountsForLaunch(options.db);
+	if (!claudeAccounts || options.adoptOnly === true) {
+		return createTerminalSessionUnlocked(options);
+	}
+	return claudeAccounts.withWorkspaceLock(options.workspaceId, () =>
+		createTerminalSessionUnlocked(options, claudeAccounts),
+	);
+}
+
+async function createTerminalSessionUnlocked(
+	{
+		terminalId,
+		workspaceId,
+		themeType,
+		db,
+		eventBus,
+		initialCommand,
+		cwd: cwdOverride,
+		listed = true,
+		cols: requestedCols,
+		rows: requestedRows,
+		adoptOnly = false,
+		restoredNotice = false,
+	}: CreateTerminalSessionOptions,
+	claudeAccounts?: ClaudeAccountsService,
+): Promise<CreateSessionResult> {
 	const existing = sessions.get(terminalId);
 	if (existing) {
 		const mismatchError = getTerminalWorkspaceMismatchError({
@@ -3182,7 +3229,12 @@ export async function createTerminalSessionInternal({
 	// Use the preserved shell snapshot — never live process.env. Resolution
 	// runs in the background at startup so the server can listen immediately;
 	// wait for it here before the first PTY needs the snapshot.
-	await waitForTerminalBaseEnv();
+	const [claudeProfileDir] = await Promise.all([
+		claudeAccounts
+			? claudeAccounts.ensureProfileForLaunch(workspaceId)
+			: Promise.resolve(null),
+		waitForTerminalBaseEnv(),
+	]);
 	const baseEnv = getTerminalBaseEnv();
 	// Fallback matters for hosts not spawned by the desktop (CLI/systemd):
 	// without it the wrapper paths, hook guard env, and shell bootstrap all
@@ -3212,6 +3264,7 @@ export async function createTerminalSessionInternal({
 		// this terminal run on the selected login. Baked at spawn — existing
 		// terminals keep the account they started with.
 		...resolveDefaultAccountTerminalEnv(db),
+		...(claudeProfileDir ? { CLAUDE_CONFIG_DIR: claudeProfileDir } : {}),
 	};
 
 	let daemon: DaemonClient;

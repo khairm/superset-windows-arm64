@@ -27,6 +27,10 @@ export function getDefaultAccountSelections(
 	};
 }
 
+export function clearLegacyClaudeDefaultAccount(db: HostDb): void {
+	setDefaultAccountSelection(db, "claude", null);
+}
+
 export function setDefaultAccountSelection(
 	db: HostDb,
 	provider: UsageProvider,

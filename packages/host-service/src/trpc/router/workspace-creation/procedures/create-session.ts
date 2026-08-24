@@ -136,9 +136,9 @@ export const createSession = protectedProcedure
 			});
 		}
 
-		let row: ReturnType<typeof insertLocalWorkspace>;
+		let row: Awaited<ReturnType<typeof insertLocalWorkspace>>;
 		try {
-			row = insertLocalWorkspace(ctx, {
+			row = await insertLocalWorkspace(ctx, {
 				id: input.id,
 				projectId: null,
 				worktreePath: repoPath,

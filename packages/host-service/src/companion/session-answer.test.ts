@@ -103,7 +103,7 @@ describe("(SESSIONS-PROJECT) the question source for a session terminal", () => 
 			},
 		])
 		.run();
-	const reader = openHostDbReadOnly(dbPath);
+	const reader = openHostDbReadOnly(dbPath, () => join(dir, "claude"));
 
 	afterAll(() => {
 		reader.close();

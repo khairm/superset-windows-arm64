@@ -156,7 +156,8 @@ function attributeCwd(
 
 export async function computeUsageHistory(
 	days: number,
-	cwdLabels: CwdLabel[] = [],
+	cwdLabels: CwdLabel[],
+	workspaceClaudeHomes: string[],
 ): Promise<UsageHistory> {
 	const home = homedir();
 	const labelsByLength = [...cwdLabels].sort(
@@ -180,6 +181,9 @@ export async function computeUsageHistory(
 		join(home, ".config", "claude"),
 	]);
 	for (const dir of (process.env.CLAUDE_CONFIG_DIR ?? "").split(",")) {
+		if (dir.trim()) claudeHomes.add(dir.trim());
+	}
+	for (const dir of workspaceClaudeHomes) {
 		if (dir.trim()) claudeHomes.add(dir.trim());
 	}
 	const [claudeProfiles, codexHomes] = await Promise.all([

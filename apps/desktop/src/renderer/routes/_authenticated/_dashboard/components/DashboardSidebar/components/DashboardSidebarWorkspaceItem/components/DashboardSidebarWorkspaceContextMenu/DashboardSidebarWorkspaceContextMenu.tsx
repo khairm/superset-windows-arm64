@@ -43,6 +43,7 @@ import {
 import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { useDashboardSidebarPortKill } from "../../../DashboardSidebarPortsList/hooks/useDashboardSidebarPortKill";
+import { ClaudeAccountPicker } from "../ClaudeAccountPicker";
 
 /** Which reveal-able section a workspace row is rendered inside, if any. */
 export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
@@ -224,6 +225,8 @@ export function DashboardSidebarWorkspaceContextMenu({
 		<ContextMenu onOpenChange={setContextMenuOpen}>
 			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
 			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
+				<ClaudeAccountPicker workspaceId={workspaceId} />
+				<ContextMenuSeparator />
 				{/* A snoozed / archived / in-bin row isn't in the active lane, so the
 				Pinned section can't show it — offer Pin only on normal rows. */}
 				{!isSectioned && (

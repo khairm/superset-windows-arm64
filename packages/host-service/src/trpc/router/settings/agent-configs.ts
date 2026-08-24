@@ -16,6 +16,17 @@ const promptTransportSchema = z.enum(["argv", "stdin"]);
 
 const argvSchema = z.array(z.string());
 const envSchema = z.record(z.string(), z.string());
+const RESERVED_CLAUDE_ENV_KEY = "CLAUDE_CONFIG_DIR";
+const editableEnvSchema = envSchema.superRefine((value, ctx) => {
+	if (Object.hasOwn(value, RESERVED_CLAUDE_ENV_KEY)) {
+		ctx.addIssue({
+			code: "custom",
+			message: `${RESERVED_CLAUDE_ENV_KEY} is managed per workspace and cannot be set on an agent`,
+			path: [RESERVED_CLAUDE_ENV_KEY],
+		});
+	}
+});
+let didLogIgnoredReservedClaudeEnv = false;
 
 export interface HostAgentConfig {
 	id: string;
@@ -79,7 +90,16 @@ function parseEnv(value: string): Record<string, string> {
 	) {
 		return {};
 	}
-	return parsed as Record<string, string>;
+	const env = parsed as Record<string, string>;
+	if (!Object.hasOwn(env, RESERVED_CLAUDE_ENV_KEY)) return env;
+	if (!didLogIgnoredReservedClaudeEnv) {
+		didLogIgnoredReservedClaudeEnv = true;
+		console.warn(
+			`[agent-configs] ignoring stored ${RESERVED_CLAUDE_ENV_KEY}; Claude accounts are managed per workspace`,
+		);
+	}
+	const { [RESERVED_CLAUDE_ENV_KEY]: _ignored, ...sanitized } = env;
+	return sanitized;
 }
 
 function toOutput(row: HostAgentConfigRow): HostAgentConfig {
@@ -152,7 +172,7 @@ const updatePatchSchema = z
 		promptTransport: promptTransportSchema.optional(),
 		promptArgs: argvSchema.optional(),
 		resumeArgs: argvSchema.optional(),
-		env: envSchema.optional(),
+		env: editableEnvSchema.optional(),
 		iconId: iconIdPatchSchema.optional(),
 	})
 	.refine(
@@ -176,7 +196,7 @@ const addInputSchema = z.object({
 	promptArgs: argvSchema,
 	// Defaulted so an older desktop client that doesn't send it can still add.
 	resumeArgs: argvSchema.default([]),
-	env: envSchema,
+	env: editableEnvSchema,
 	presetId: z.string().trim().min(1).optional(),
 	iconId: iconIdSchema.optional(),
 });

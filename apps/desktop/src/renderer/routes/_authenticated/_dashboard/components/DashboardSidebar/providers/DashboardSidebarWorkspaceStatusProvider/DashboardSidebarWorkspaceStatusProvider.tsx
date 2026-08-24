@@ -117,7 +117,7 @@ export interface SidebarStatusWorkspaceRef {
 	hostId: string;
 }
 
-interface WorkspaceStatusTarget {
+export interface SidebarWorkspaceHostTarget {
 	workspaceId: string;
 	hostUrl: string | null;
 }
@@ -150,29 +150,11 @@ function entriesEqual(
 	);
 }
 
-/**
- * Owns the sidebar's terminal-agent-bindings queries and lifecycle-event
- * subscriptions for every visible workspace, replacing the per-row copies
- * (~4 query observers + 2 bus listeners per row). Query keys, fetch shape,
- * and staleTime match useTerminalAgentBindings exactly, so the react-query
- * cache semantics (and consumers like useV2AttentionWorkspaceCount, which
- * aggregates over these keys) are unchanged — this reduces subscription
- * fan-out, not fetches.
- */
-export function DashboardSidebarWorkspaceStatusProvider({
-	workspaces,
-	activeWorkspaceId,
-	children,
-}: {
-	workspaces: SidebarStatusWorkspaceRef[];
-	activeWorkspaceId: string | null;
-	children: ReactNode;
-}) {
-	const [store] = useState(() => new SidebarWorkspaceStatusStore());
-	const queryClient = useQueryClient();
+export function useSidebarWorkspaceHostTargets(
+	workspaces: SidebarStatusWorkspaceRef[],
+): SidebarWorkspaceHostTarget[] {
 	const { cache: hostWorkspacesCache } = useHostWorkspaces();
-
-	const computedTargets = useMemo<WorkspaceStatusTarget[]>(
+	const computedTargets = useMemo<SidebarWorkspaceHostTarget[]>(
 		() =>
 			workspaces.map((workspace) => ({
 				workspaceId: workspace.id,
@@ -187,19 +169,41 @@ export function DashboardSidebarWorkspaceStatusProvider({
 		[workspaces, hostWorkspacesCache],
 	);
 	// Fingerprint-stabilized: the host-workspaces cache object churns identity
-	// on unrelated updates, and the subscription effect below must only re-run
-	// when a workspace or its host URL actually changes.
+	// on unrelated updates, and consumers must only re-run when a workspace or
+	// its host URL actually changes.
 	const previousTargetsRef = useRef<{
 		fingerprint: string;
-		targets: WorkspaceStatusTarget[];
+		targets: SidebarWorkspaceHostTarget[];
 	} | null>(null);
-	const targets = useMemo(() => {
+	return useMemo(() => {
 		const fingerprint = JSON.stringify(computedTargets);
 		const previous = previousTargetsRef.current;
 		if (previous?.fingerprint === fingerprint) return previous.targets;
 		previousTargetsRef.current = { fingerprint, targets: computedTargets };
 		return computedTargets;
 	}, [computedTargets]);
+}
+
+/**
+ * Owns the sidebar's terminal-agent-bindings queries and lifecycle-event
+ * subscriptions for every visible workspace, replacing the per-row copies
+ * (~4 query observers + 2 bus listeners per row). Query keys, fetch shape,
+ * and staleTime match useTerminalAgentBindings exactly, so the react-query
+ * cache semantics (and consumers like useV2AttentionWorkspaceCount, which
+ * aggregates over these keys) are unchanged — this reduces subscription
+ * fan-out, not fetches.
+ */
+export function DashboardSidebarWorkspaceStatusProvider({
+	targets,
+	activeWorkspaceId,
+	children,
+}: {
+	targets: SidebarWorkspaceHostTarget[];
+	activeWorkspaceId: string | null;
+	children: ReactNode;
+}) {
+	const [store] = useState(() => new SidebarWorkspaceStatusStore());
+	const queryClient = useQueryClient();
 
 	const bindingRowsByIndex = useQueries({
 		queries: targets.map((target) => ({

@@ -176,6 +176,7 @@ export function hostDbReader(fixture: TreeFixture): HostDbReader {
 		resolveTerminal: () => null,
 		resolveActiveTerminal: () => null,
 		resolveTranscriptPath: () => null,
+		transcriptPathFor: () => null,
 		resolveTerminalActivityMs: () => NOW,
 		close: () => {},
 	};

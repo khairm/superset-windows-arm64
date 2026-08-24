@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatResetIn, formatResetLabel } from "./formatResetIn";
+import { formatResetIn, formatResetLabel } from "./formatResetTime";
 
 const NOW = new Date("2026-08-16T12:00:00Z");
 
