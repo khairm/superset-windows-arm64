@@ -74,7 +74,7 @@ export class FallbackPolicy {
 		}
 		if (account.dead) {
 			return {
-				action: "suppress",
+				action: "fallback",
 				reason: "pinned account credentials need re-login",
 			};
 		}

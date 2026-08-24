@@ -3,10 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	claudeAccountWire,
-	createPiFakeServer,
-} from "../../test/helpers/claude-accounts-fixture";
+import { wireAccount } from "../../test/helpers/claude-accounts-fixture";
 import { accountSlugSchema, PiClient, PiRequestError } from "./pi-client";
 import type { ClaudeAccountsLogger } from "./types";
 
@@ -25,6 +22,23 @@ afterEach(async () => {
 		await rm(path, { recursive: true, force: true });
 	}
 });
+
+async function clientReturningJson(body: unknown): Promise<PiClient> {
+	const scratch = join(tmpdir(), `claude-pi-client-${randomUUID()}`);
+	scratchPaths.push(scratch);
+	await mkdir(scratch);
+	const keyPath = join(scratch, "push-key.txt");
+	await writeFile(keyPath, "secret\n", "utf8");
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json(body),
+	});
+	servers.push(server);
+	return new PiClient(log, {
+		baseUrl: `http://127.0.0.1:${server.port}`,
+		pushKeyPath: keyPath,
+	});
+}
 
 describe("accountSlugSchema", () => {
 	test("rejects surrounding whitespace", () => {
@@ -46,11 +60,12 @@ describe("PiClient configuration", () => {
 		scratchPaths.push(scratch);
 		await mkdir(scratch);
 		const keyPath = join(scratch, "push-key.txt");
-		let original: Awaited<ReturnType<typeof stat>>;
+		await writeFile(keyPath, "﻿first\n", "utf8");
+		const original = await stat(keyPath);
 		let requests = 0;
-		const pi = await createPiFakeServer(
-			scratch,
-			async (request) => {
+		const server = Bun.serve({
+			port: 0,
+			fetch: async (request) => {
 				requests += 1;
 				const authorization = request.headers.get("authorization");
 				if (requests === 1) {
@@ -62,13 +77,11 @@ describe("PiClient configuration", () => {
 				expect(authorization).toBe("Bearer other");
 				return Response.json([]);
 			},
-			{ pushKeyContents: "﻿first\n" },
-		);
-		original = await stat(keyPath);
-		servers.push(pi.server);
+		});
+		servers.push(server);
 		const client = new PiClient(log, {
-			baseUrl: pi.baseUrl,
-			pushKeyPath: pi.pushKeyPath,
+			baseUrl: `http://127.0.0.1:${server.port}`,
+			pushKeyPath: keyPath,
 		});
 
 		await expect(client.fetchAccounts()).rejects.toBeInstanceOf(PiRequestError);
@@ -77,34 +90,31 @@ describe("PiClient configuration", () => {
 	});
 });
 
-describe("PiClient response compatibility", () => {
-	test("accepts added account fields and filters unsupported account types", async () => {
-		const scratch = join(tmpdir(), `claude-pi-client-${randomUUID()}`);
-		scratchPaths.push(scratch);
-		await mkdir(scratch);
-		const pi = await createPiFakeServer(scratch, () =>
-			Response.json([
-				claudeAccountWire("claude12", {
+describe("PiClient strict responses", () => {
+	for (const scenario of [
+		{
+			name: "added account field",
+			body: [
+				{
+					...wireAccount("claude12"),
 					added_by_new_pi: { nested: true },
-				}),
-				claudeAccountWire("future1", {
-					name: "Future",
-					type: "future",
-				}),
-			]),
-		);
-		servers.push(pi.server);
-		const client = new PiClient(log, {
-			baseUrl: pi.baseUrl,
-			pushKeyPath: pi.pushKeyPath,
+				},
+			],
+		},
+		{
+			name: "unsupported account type",
+			body: [{ ...wireAccount("future1"), type: "future" }],
+		},
+	]) {
+		test(`rejects an ${scenario.name}`, async () => {
+			const client = await clientReturningJson(scenario.body);
+
+			await expect(client.fetchAccounts()).rejects.toBeInstanceOf(
+				PiRequestError,
+			);
+			expect(client.getAccountsLastGood()).toBeNull();
 		});
-
-		const accounts = await client.fetchAccounts();
-
-		expect(accounts).toHaveLength(1);
-		expect(accounts[0]?.slug).toBe("claude12");
-		expect(client.getAccountsLastGood()).toEqual(accounts);
-	});
+	}
 
 	for (const scenario of [
 		{
@@ -131,17 +141,7 @@ describe("PiClient response compatibility", () => {
 		},
 	]) {
 		test(`keeps token envelopes strict for an added ${scenario.name}`, async () => {
-			const scratch = join(tmpdir(), `claude-pi-client-${randomUUID()}`);
-			scratchPaths.push(scratch);
-			await mkdir(scratch);
-			const pi = await createPiFakeServer(scratch, () =>
-				Response.json(scenario.body),
-			);
-			servers.push(pi.server);
-			const client = new PiClient(log, {
-				baseUrl: pi.baseUrl,
-				pushKeyPath: pi.pushKeyPath,
-			});
+			const client = await clientReturningJson(scenario.body);
 
 			await expect(client.fetchToken("claude12")).rejects.toBeInstanceOf(
 				PiRequestError,

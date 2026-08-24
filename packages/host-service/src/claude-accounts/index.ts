@@ -349,19 +349,27 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 		await this.withWorkspaceLock(workspaceId, async () => {
 			const row = this.requireWorkspace(workspaceId);
-			if (row.claudeAccountSlug !== slug)
-				this.credentialCache.delete(workspaceId);
+			if (slug !== null) validateAccountSlug(slug);
+			let roster: PiAccount[];
+			try {
+				roster = await this.pi.fetchAccounts();
+			} catch (error) {
+				if (slug === null) {
+					throw new Error(
+						"Cannot switch this workspace to Following while the Pi is unavailable",
+						{ cause: error },
+					);
+				}
+				throw error;
+			}
 			let credentialTransition: CredentialTransition;
 			if (slug !== null) {
-				validateAccountSlug(slug);
-				const roster = await this.pi.fetchAccounts();
 				const account = findClaudeAccount(roster, slug);
 				if (!account)
 					throw new Error(`Claude account ${slug} is not in the Pi roster`);
 				const accountHealth = accountHealthMessage(
-					"Claude account",
-					slug,
 					account,
+					`Claude account '${slug}'`,
 				);
 				if (accountHealth) throw new Error(accountHealth);
 				const token = await this.pi.fetchToken(slug);
@@ -398,6 +406,9 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						? "The machine default is signed out. This workspace will keep its last-good token."
 						: null,
 				);
+			}
+			if (row.claudeAccountSlug !== slug) {
+				this.credentialCache.delete(workspaceId);
 			}
 			await this.applyWorkspaceAccountTransition(workspaceId, {
 				desiredSlug: slug,
@@ -804,9 +815,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		if (roster) this.setWarningCause(workspaceId, "roster", null);
 		const accountHealth = account
 			? accountHealthMessage(
-					"The machine-default Claude account",
-					identity.slug,
 					account,
+					`The machine-default Claude account '${identity.slug}'`,
 				)
 			: null;
 		if (accountHealth) {
@@ -855,7 +865,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 		if (roster) this.setWarningCause(workspaceId, "roster", null);
 		const accountHealth = account
-			? accountHealthMessage("Pinned Claude account", slug, account)
+			? accountHealthMessage(account, `Pinned Claude account '${slug}'`)
 			: null;
 		if (accountHealth) {
 			this.setWarningCause(workspaceId, "account-health", accountHealth);
@@ -934,9 +944,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return;
 		}
 		const defaultAccountHealth = accountHealthMessage(
-			"The machine-default Claude account",
-			identity.slug,
 			defaultAccount,
+			`The machine-default Claude account '${identity.slug}'`,
 		);
 		if (defaultAccountHealth) {
 			for (const row of rows) {
@@ -972,21 +981,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				);
 				continue;
 			}
-			const accountHealth = accountHealthMessage(
-				"Pinned Claude account",
-				slug,
-				account,
-			);
-			if (accountHealth) {
-				this.setWarningCause(row.id, "account-health", accountHealth);
-				this.deps.log.info(
-					"Claude auto-fallback suppressed: pinned account is unavailable",
-					{ workspaceId: row.id, slug },
-				);
-				continue;
-			}
 			const evaluation = this.fallback.evaluate(account, triggers);
 			if (evaluation.action === "suppress") {
+				const accountHealth = accountHealthMessage(
+					account,
+					`Pinned Claude account '${slug}'`,
+				);
+				if (accountHealth) {
+					this.setWarningCause(row.id, "account-health", accountHealth);
+				}
 				this.deps.log.info("Claude auto-fallback suppressed", {
 					workspaceId: row.id,
 					slug,
@@ -1317,6 +1320,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		this.setWarningCause(workspaceId, "credential-compensation", null);
 		this.setWarningCause(workspaceId, "renewal", null);
 		this.setWarningCause(workspaceId, "roster", null);
+		this.setWarningCause(workspaceId, "account-health", null);
 		if (transition.desiredSlug !== null) {
 			this.setWarningCause(workspaceId, "machine-default", null);
 			this.setWarningCause(workspaceId, "unmanaged", null);
@@ -1711,14 +1715,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 }
 
 function accountHealthMessage(
-	prefix: string,
-	slug: string,
 	account: PiAccount,
+	label: string,
 ): string | null {
 	if (account.dead) {
-		return `${prefix} '${slug}' needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`;
+		return `${label} needs re-login${account.deadReason ? `: ${account.deadReason}` : "."}`;
 	}
-	return account.enabled ? null : `${prefix} '${slug}' is disabled.`;
+	return account.enabled ? null : `${label} is disabled.`;
 }
 
 function findClaudeAccount(

@@ -45,12 +45,12 @@ describe("FallbackPolicy", () => {
 		});
 	});
 
-	it("suppresses fallback when current credentials need re-login", () => {
+	it("falls back when current credentials need re-login", () => {
 		const policy = new FallbackPolicy(log);
 		expect(
 			policy.evaluate(account({ dead: true }), triggers, 1_000_000),
 		).toEqual({
-			action: "suppress",
+			action: "fallback",
 			reason: "pinned account credentials need re-login",
 		});
 	});

@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import {
 	type ClaudeTestWorld,
-	claudeAccountWire,
 	createClaudeTestWorld,
-	createPiFakeServer,
 	managedCredentials,
 	seedWorkspace,
+	servePiFake,
+	type WireAccount,
 	WORKSPACE_IDS,
+	wireAccount,
 	writeGlobalClaudeState,
 	writeGlobalCredentials,
 } from "../../test/helpers/claude-accounts-fixture";
@@ -48,26 +49,10 @@ async function setupService() {
 	worlds.push(world);
 	await writeGlobalClaudeState(world);
 	await writeGlobalCredentials(world, {});
-	const pi = await createPiFakeServer(world.root, (request) => {
-		const url = new URL(request.url);
-		if (url.pathname === "/accounts") {
-			return Response.json([
-				claudeAccountWire("claude123"),
-				claudeAccountWire("claude456"),
-			]);
-		}
-		const slug = url.pathname.split("/")[2];
-		if (url.pathname.endsWith("/token") && slug) {
-			return Response.json({
-				account: slug,
-				claude_ai_oauth: {
-					accessToken: `${slug}-token`,
-					expiresAt: Date.now() + 2 * 60 * 60 * 1000,
-				},
-			});
-		}
-		return new Response(null, { status: 404 });
-	});
+	const pi = await servePiFake(world.root, [
+		wireAccount("claude123"),
+		wireAccount("claude456"),
+	]);
 	servers.push(pi.server);
 	const service = createClaudeAccountsService({
 		db: world.db,
@@ -80,11 +65,11 @@ async function setupService() {
 	});
 	services.push(service);
 	await service.start();
-	return { world, service };
+	return { world, service, pi };
 }
 
 async function setupFallbackService(options: {
-	roster: unknown[];
+	roster: WireAccount[];
 	workspaceSlugs: string[];
 	onEmit?: (
 		event: ClaudeTestWorld["events"][number],
@@ -120,11 +105,7 @@ async function setupFallbackService(options: {
 			managedCredentials(slug),
 		);
 	}
-	const pi = await createPiFakeServer(world.root, (request) => {
-		const path = new URL(request.url).pathname;
-		if (path === "/accounts") return Response.json(options.roster);
-		return new Response(null, { status: 404 });
-	});
+	const pi = await servePiFake(world.root, options.roster);
 	servers.push(pi.server);
 	const service = createClaudeAccountsService({
 		db: world.db,
@@ -210,6 +191,24 @@ describe("Claude account service transitions", () => {
 				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
 				.sync()?.claudeAccountSlug,
 		).toBeNull();
+	});
+
+	test("refuses a manual switch to Following while the Pi is unavailable", async () => {
+		const { world, service, pi } = await setupService();
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		pi.server.stop(true);
+
+		await expect(
+			service.setWorkspaceAccount(WORKSPACE_IDS[0], null),
+		).rejects.toThrow(
+			"Cannot switch this workspace to Following while the Pi is unavailable",
+		);
+		expect(
+			world.db.query.workspaces
+				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
+				.sync()?.claudeAccountSlug,
+		).toBe("claude123");
 	});
 
 	test("does not emit a state-change event when the desired account is unchanged", async () => {
@@ -309,30 +308,35 @@ describe("Claude account service transitions", () => {
 		await manager.initialize();
 		const expiring = managedCredentials("claude123", {
 			accessToken: "last-good-token",
+			expiresAt: Date.now() + 40 * 60 * 1000,
 		});
-		expiring.claudeAiOauth.expiresAt = Date.now() + 40 * 60 * 1000;
 		for (const row of rows) {
 			await manager.mintProfile(row.id, row.worktreePath, expiring);
 		}
-		const pi = await createPiFakeServer(world.root, (request) => {
-			const path = new URL(request.url).pathname;
-			if (path === "/accounts") {
-				return Response.json([claudeAccountWire("claude123")]);
-			}
-			if (path.endsWith("/token")) {
-				return new Response(null, { status: 503 });
-			}
-			return new Response(null, { status: 404 });
+		const pushKeyPath = join(world.root, "push-key.txt");
+		await writeFile(pushKeyPath, "test-key\n", "utf8");
+		const server = Bun.serve({
+			port: 0,
+			fetch(request) {
+				const path = new URL(request.url).pathname;
+				if (path === "/accounts") {
+					return Response.json([wireAccount("claude123")]);
+				}
+				if (path.endsWith("/token")) {
+					return new Response(null, { status: 503 });
+				}
+				return new Response(null, { status: 404 });
+			},
 		});
-		servers.push(pi.server);
+		servers.push(server);
 		const service = createClaudeAccountsService({
 			db: world.db,
 			dbPath: world.dbPath,
 			emit: (event) => world.events.push(event),
 			log: world.log,
 			awaitInitialBackgroundWork: true,
-			piBaseUrl: pi.baseUrl,
-			pushKeyPath: pi.pushKeyPath,
+			piBaseUrl: `http://127.0.0.1:${server.port}`,
+			pushKeyPath,
 		});
 		services.push(service);
 
@@ -369,7 +373,7 @@ describe("Claude account service transitions", () => {
 describe("Claude automatic fallback safeguards", () => {
 	test("suppresses the whole pass when the machine default is missing from the roster", async () => {
 		const { world } = await setupFallbackService({
-			roster: [claudeAccountWire("claude123", { five_pct: 95 })],
+			roster: [wireAccount("claude123", { five_pct: 95 })],
 			workspaceSlugs: ["claude123"],
 		});
 		await waitFor(
@@ -398,9 +402,9 @@ describe("Claude automatic fallback safeguards", () => {
 		let changedIdentity = false;
 		const { world } = await setupFallbackService({
 			roster: [
-				claudeAccountWire("claude12"),
-				claudeAccountWire("claude123", { five_pct: 95 }),
-				claudeAccountWire("claude456", { five_pct: 95 }),
+				wireAccount("claude12"),
+				wireAccount("claude123", { five_pct: 95 }),
+				wireAccount("claude456", { five_pct: 95 }),
 			],
 			workspaceSlugs: ["claude123", "claude456"],
 			onEmit: (event, testWorld) => {
@@ -448,11 +452,11 @@ describe("Claude automatic fallback safeguards", () => {
 		).toHaveLength(1);
 	});
 
-	test("warns for a dead pinned account without falling back", async () => {
+	test("permanently falls back from a dead pinned account", async () => {
 		const { world, service } = await setupFallbackService({
 			roster: [
-				claudeAccountWire("claude12"),
-				claudeAccountWire("claude123", {
+				wireAccount("claude12"),
+				wireAccount("claude123", {
 					dead: true,
 					dead_reason: "login expired",
 					five_pct: 95,
@@ -464,34 +468,25 @@ describe("Claude automatic fallback safeguards", () => {
 			() =>
 				world.events.some(
 					(event) =>
-						event.type === "claude-account-warning" &&
-						event.workspaceId === WORKSPACE_IDS[0] &&
-						event.active,
+						event.type === "claude-account-state-changed" &&
+						event.cause === "auto-fallback",
 				),
-			"dead-account warning was not emitted",
+			"dead-account fallback was not emitted",
 		);
 
 		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
-		expect(state.state).toBe("pinned");
-		expect(state.slug).toBe("claude123");
-		expect(state.warning?.message).toContain("needs re-login");
-		expect(
-			world.events.some(
-				(event) =>
-					event.type === "claude-account-state-changed" &&
-					event.cause === "auto-fallback",
-			),
-		).toBe(false);
+		expect(state.state).toBe("following");
+		expect(state.slug).toBeNull();
 	});
 
 	test("does not fall back onto a dead machine-default account", async () => {
 		const { world, service } = await setupFallbackService({
 			roster: [
-				claudeAccountWire("claude12", {
+				wireAccount("claude12", {
 					dead: true,
 					dead_reason: "login expired",
 				}),
-				claudeAccountWire("claude123", { five_pct: 95 }),
+				wireAccount("claude123", { five_pct: 95 }),
 			],
 			workspaceSlugs: ["claude123"],
 		});

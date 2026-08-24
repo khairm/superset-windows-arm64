@@ -145,10 +145,30 @@ export async function createClaudeTestWorld(
 	};
 }
 
-export function claudeAccountWire(
+export interface WireAccount {
+	slug: string;
+	name: string;
+	type: "claude" | "codex";
+	enabled: boolean;
+	dead: boolean;
+	dead_reason: string | null;
+	last_success: string | null;
+	consecutive_failures: number;
+	five_pct: number | null;
+	seven_pct: number | null;
+	fable_pct: number | null;
+	five_resets_at: string | null;
+	seven_resets_at: string | null;
+	fable_resets_at: string | null;
+	in_use: boolean;
+	fable_in_use: boolean;
+	pc_active: boolean;
+}
+
+export function wireAccount(
 	slug = "claude12",
-	overrides: Record<string, unknown> = {},
-) {
+	overrides: Partial<WireAccount> = {},
+): WireAccount {
 	return {
 		slug,
 		name: slug,
@@ -171,14 +191,30 @@ export function claudeAccountWire(
 	};
 }
 
-export async function createPiFakeServer(
+export async function servePiFake(
 	root: string,
-	fetch: (request: Request) => Response | Promise<Response>,
-	options: { pushKeyContents?: string } = {},
+	accounts: readonly WireAccount[],
 ) {
 	const pushKeyPath = join(root, "push-key.txt");
-	await writeFile(pushKeyPath, options.pushKeyContents ?? "test-key\n", "utf8");
-	const server = Bun.serve({ port: 0, fetch });
+	await writeFile(pushKeyPath, "test-key\n", "utf8");
+	const server = Bun.serve({
+		port: 0,
+		fetch(request) {
+			const path = new URL(request.url).pathname;
+			if (path === "/accounts") return Response.json(accounts);
+			const slug = path.split("/")[2];
+			if (path.endsWith("/token") && slug) {
+				return Response.json({
+					account: slug,
+					claude_ai_oauth: {
+						accessToken: `${slug}-token`,
+						expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+					},
+				});
+			}
+			return new Response(null, { status: 404 });
+		},
+	});
 	return {
 		server,
 		baseUrl: `http://127.0.0.1:${server.port}`,
