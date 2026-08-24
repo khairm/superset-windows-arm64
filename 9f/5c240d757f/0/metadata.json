@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "9f5c240d757f",
+  "session_id": "aa11cfb2-4a02-42b8-8f66-dfc794ecbb7e",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-24T15:09:57.4334959Z",
+  "branch": "feature/workspace-account-switching",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/usage/components/UsageView/UsageView.tsx"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "511d395e4d44",
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-24T15:09:57.4308979Z",
+    "agent_lines": 0,
+    "agent_removed": 1,
+    "human_added": 2301,
+    "human_modified": 371,
+    "human_removed": 0,
+    "total_committed": 2672,
+    "total_lines_changed": 2988,
+    "agent_percentage": 0.03346720214190094,
+    "metric_version": 2
+  }
+}
