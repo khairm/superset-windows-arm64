@@ -19,6 +19,7 @@ import { createTerminalSessionInternal } from "../../../terminal/terminal";
 import type { HostServiceContext } from "../../../types";
 import { protectedProcedure, router } from "../../index";
 import { resolveAttachmentPath } from "../attachments/storage";
+import { sanitizeStoredAgentEnv } from "../settings/reserved-agent-env";
 import { toTerminalSessionError } from "../terminal/errors";
 import { resolveDefaultAccountEnv } from "../usage/default-account";
 
@@ -60,7 +61,7 @@ function parseEnv(value: string): Record<string, string> {
 		) {
 			return {};
 		}
-		return parsed as Record<string, string>;
+		return sanitizeStoredAgentEnv(parsed as Record<string, string>);
 	} catch {
 		return {};
 	}

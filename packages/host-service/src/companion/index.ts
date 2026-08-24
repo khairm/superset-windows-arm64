@@ -21,12 +21,17 @@
  * observations as eligibility gates.
  */
 
+import { existsSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import hostServicePackageJson from "@superset/host-service/package.json" with {
 	type: "json",
 };
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { ClaudeAccountsService } from "../claude-accounts";
+import { isWorkspaceUuid } from "../claude-accounts/profile-manager";
 import type { HostDb } from "../db";
 import * as hostDbSchema from "../db/schema";
 import { getDaemonClient } from "../terminal/daemon-client-singleton";
@@ -306,7 +311,7 @@ export interface CompanionBridgeOptions {
 	 * goes through the separate `mode=ro` reader opened from `hostDbPath`.
 	 */
 	db: HostDb;
-	profileDirForWorkspace: (workspaceId: string) => string;
+	profileDirsForWorkspace: (workspaceId: string) => readonly string[];
 	/**
 	 * (MIRROR-ORG-GATE) The org this bridge serves. Compared against
 	 * `sidebar_mirror_meta.organization_id` before any curation is applied — see
@@ -525,7 +530,7 @@ export function createCompanionBridge(
 		unwind.push({ what: "state anchor", close: () => anchor.close() });
 		const hostDb = openHostDbReadOnly(
 			options.hostDbPath,
-			options.profileDirForWorkspace,
+			options.profileDirsForWorkspace,
 		);
 		unwind.push({ what: "host db reader", close: async () => hostDb.close() });
 		/**
@@ -1719,12 +1724,25 @@ function pairingDeps(current: BridgeState, logger: BridgeLogger): PairingDeps {
 // the host-service mount (the single call added to serve.ts)
 // ---------------------------------------------------------------------------
 
+export function claudeConfigDirsForWorkspace(
+	service: ClaudeAccountsService,
+	workspaceId: string,
+): readonly string[] {
+	if (!isWorkspaceUuid(workspaceId)) return [];
+	const globalDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+	if (!service.getCapability().managed) return [globalDir];
+	const workspaceDir = service.profileDirFor(workspaceId);
+	if (!existsSync(workspaceDir) || workspaceDir === globalDir)
+		return [globalDir];
+	return [workspaceDir, globalDir];
+}
+
 export interface CompanionMountInput {
 	/** `env.HOST_DB_PATH`. */
 	hostDbPath: string;
 	/** The live drizzle handle from `createApp()` — same process, same pty writer. */
 	db: HostDb;
-	profileDirForWorkspace: (workspaceId: string) => string;
+	profileDirsForWorkspace: (workspaceId: string) => readonly string[];
 	/**
 	 * (MIRROR-ORG-GATE) `env.ORGANIZATION_ID` — the org THIS host-service is
 	 * serving. Required, with no default: `host.db` is per machine and the
@@ -1776,7 +1794,7 @@ export async function startCompanionBridgeIfEnabled(
 		const bridge = createCompanionBridge({
 			hostDbPath: input.hostDbPath,
 			db: input.db,
-			profileDirForWorkspace: input.profileDirForWorkspace,
+			profileDirsForWorkspace: input.profileDirsForWorkspace,
 			organizationId: input.organizationId,
 			terminalAgentStore: input.terminalAgentStore,
 			versions: {

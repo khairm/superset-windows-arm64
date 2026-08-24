@@ -8,6 +8,7 @@
 import { serve } from "@hono/node-server";
 import {
 	captureFatalStartupError,
+	claudeConfigDirsForWorkspace,
 	createApp,
 	initSentry,
 	installProcessSafetyNet,
@@ -190,8 +191,8 @@ async function main(): Promise<void> {
 			void startCompanionBridgeIfEnabled({
 				hostDbPath: env.HOST_DB_PATH,
 				db,
-				profileDirForWorkspace: (workspaceId) =>
-					claudeAccounts.profileDirFor(workspaceId),
+				profileDirsForWorkspace: (workspaceId) =>
+					claudeConfigDirsForWorkspace(claudeAccounts, workspaceId),
 				organizationId: env.ORGANIZATION_ID,
 				terminalAgentStore,
 			});

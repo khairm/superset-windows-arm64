@@ -1,14 +1,16 @@
 import { statSync } from "node:fs";
 import { lstat, readdir, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { HostDb } from "../db";
-import { terminalSessions, workspaces } from "../db/schema";
+import { workspaces } from "../db/schema";
+import type { EventBus } from "../events";
 import { mapConcurrent } from "../lib/map-concurrent";
 import {
 	disposeSessionAndWait,
 	isDisposalComplete,
+	listUndisposedTerminalIdsByWorkspaceId,
 } from "../terminal/terminal";
 import { WorkspaceLockBusyError } from "./locks";
 import {
@@ -153,6 +155,7 @@ export class ClaudeProfileJanitor {
 
 	async run(startup = false): Promise<void> {
 		let snapshot: WorkspaceSnapshotRow[];
+		let inventory: RootInventory;
 		try {
 			const raw = this.deps.db.select().from(workspaces).all();
 			const parsed = workspaceSnapshotSchema.safeParse(raw);
@@ -160,15 +163,14 @@ export class ClaudeProfileJanitor {
 				throw new Error(z.prettifyError(parsed.error));
 			}
 			snapshot = parsed.data;
+			inventory = await this.inventoryRoot(snapshot.length > 0);
 		} catch (error) {
 			this.deps.log.error(
-				"Claude profile janitor refused the entire pass: workspace snapshot failed",
+				"Claude profile janitor refused the entire pass: snapshot or root inventory failed",
 				{ error },
 			);
 			return;
 		}
-
-		const inventory = await this.inventoryRoot(snapshot.length > 0);
 		if (startup && inventory.quarantinedCount > 0) {
 			this.deps.log.warn(
 				`${inventory.quarantinedCount} quarantined Claude profile folder(s) await manual review`,
@@ -258,7 +260,13 @@ export class ClaudeProfileJanitor {
 
 	private async cleanupOldStaging(workspaceId: string): Promise<void> {
 		const path = this.deps.profiles.stagingPathFor(workspaceId);
-		const metadata = await lstat(path);
+		let metadata: Awaited<ReturnType<typeof lstat>>;
+		try {
+			metadata = await lstat(path);
+		} catch (error) {
+			if (isMissingFsError(error)) return;
+			throw error;
+		}
 		if (Date.now() - metadata.mtimeMs <= STAGING_MAX_AGE_MS) return;
 		this.deps.log.warn(
 			"Deleting Claude profile staging folder older than 24 hours",
@@ -337,7 +345,7 @@ export class ClaudeProfileJanitor {
 		) {
 			const terminalIds = marker
 				? marker.terminalIds
-				: getActiveTerminalIds(this.deps.db, workspaceId);
+				: listUndisposedTerminalIdsByWorkspaceId(workspaceId, this.deps.db);
 			await this.deps.deleteProfileWithTerminalIds(workspaceId, terminalIds);
 			await this.clearDeletionMarker(workspaceId);
 			this.deps.log.warn(
@@ -358,6 +366,17 @@ export class ClaudeProfileJanitor {
 				await this.deps.withWorkspaceLock(
 					workspaceId,
 					async () => {
+						const current = this.deps.db.query.workspaces
+							.findFirst({ where: eq(workspaces.id, workspaceId) })
+							.sync();
+						if (current) {
+							await this.clearDeletionMarker(workspaceId);
+							this.deps.log.warn(
+								"Cleared stale zero-row deletion marker after workspace appeared",
+								{ workspaceId },
+							);
+							return;
+						}
 						const marker = await this.readDeletionMarker(workspaceId);
 						if (!marker || marker.dbInstanceId !== this.deps.dbInstanceId) {
 							this.deps.log.warn(
@@ -417,34 +436,29 @@ export class ClaudeProfileJanitor {
 	}
 }
 
-export function getActiveTerminalIds(
-	db: HostDb,
-	workspaceId: string,
-): string[] {
-	return db
-		.select({ id: terminalSessions.id })
-		.from(terminalSessions)
-		.where(
-			and(
-				eq(terminalSessions.originWorkspaceId, workspaceId),
-				eq(terminalSessions.status, "active"),
-				isNull(terminalSessions.endedAt),
-			),
-		)
-		.all()
-		.map((row) => row.id);
+export type DisposalFailureMode = "abort" | "warn-and-continue";
+
+interface DisposeTerminalIdsOptions {
+	mode: DisposalFailureMode;
+	log: ClaudeAccountsLogger;
+	eventBus?: EventBus;
 }
 
 export async function disposeTerminalIds(
 	db: HostDb,
 	terminalIds: readonly string[],
+	options: DisposeTerminalIdsOptions,
 ): Promise<void> {
 	const results = await Promise.allSettled(
 		[...new Set(terminalIds)].map(async (terminalId) => {
-			const result = await disposeSessionAndWait(terminalId, db);
+			const result = await disposeSessionAndWait(
+				terminalId,
+				db,
+				options.eventBus,
+			);
 			if (!isDisposalComplete(result)) {
 				throw new Error(
-					`Terminal ${terminalId} disposal did not complete (${result.dbDisposition}: ${result.daemonCloseError ?? "daemon close unconfirmed"})`,
+					`Terminal ${terminalId} disposal did not complete (${result.dbDisposition}${result.daemonCloseError ? `: ${result.daemonCloseError}` : ""})`,
 				);
 			}
 		}),
@@ -452,7 +466,12 @@ export async function disposeTerminalIds(
 	const errors = results.flatMap((result) =>
 		result.status === "rejected" ? [result.reason] : [],
 	);
-	if (errors.length > 0) {
+	if (errors.length === 0) return;
+	if (options.mode === "abort") {
 		throw new AggregateError(errors, "One or more terminal disposals failed");
 	}
+	options.log.warn(
+		"One or more terminal disposals did not complete; workspace destroy will continue",
+		{ errors },
+	);
 }

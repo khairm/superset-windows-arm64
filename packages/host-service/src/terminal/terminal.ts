@@ -3112,7 +3112,14 @@ export async function createTerminalSessionInternal(
 	options: CreateTerminalSessionOptions,
 ): Promise<CreateSessionResult> {
 	const claudeAccounts = getManagedClaudeAccountsForLaunch(options.db);
-	if (!claudeAccounts || options.adoptOnly === true) {
+	if (!claudeAccounts) return createTerminalSessionUnlocked(options);
+	if (options.adoptOnly === true) {
+		// (DISPOSE-LIMBO) Adoption never spawns or changes a live PTY's environment.
+		// It must stay outside the workspace lock because disposal holds that lock
+		// while awaiting an in-flight attach; locking adoption would make them wait
+		// on each other. The unlocked path rejects disposeRequestedAt rows, so a
+		// pending deletion cannot reactivate the terminal. Pre-upgrade PTYs keep
+		// their existing environment until their next managed spawn.
 		return createTerminalSessionUnlocked(options);
 	}
 	return claudeAccounts.withWorkspaceLock(options.workspaceId, () =>

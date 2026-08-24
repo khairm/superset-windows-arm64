@@ -3,6 +3,7 @@ import { type Dirent, existsSync } from "node:fs";
 import {
 	lstat,
 	mkdir,
+	open,
 	readdir,
 	readFile,
 	readlink,
@@ -58,6 +59,10 @@ interface DestinationMirrorState {
 	mtimeMs: number;
 	size: number;
 }
+
+export type CredentialFileState =
+	| { kind: "absent" }
+	| { kind: "present"; contents: string };
 
 const oauthSchema = z
 	.object({
@@ -166,7 +171,8 @@ export class ClaudeProfileManager {
 				`dbPath must be a non-empty absolute path, got ${dbPath}`,
 			);
 		}
-		this.profilesRoot = resolve(dirname(dbPath), "claude-profiles");
+		const resolvedDbPath = resolve(dbPath);
+		this.profilesRoot = resolve(dirname(resolvedDbPath), "claude-profiles");
 	}
 
 	async initialize(): Promise<void> {
@@ -226,16 +232,31 @@ export class ClaudeProfileManager {
 		this.assertInitialized();
 		const finalDir = this.profileDirFor(workspaceId);
 		if (await this.profileExists(workspaceId)) {
-			await this.refreshProfile(finalDir);
-			if (credentials) await this.writeCredentials(finalDir, credentials);
-			return finalDir;
+			try {
+				await this.refreshProfile(finalDir);
+				if (credentials) await this.writeCredentials(finalDir, credentials);
+				return finalDir;
+			} catch (error) {
+				if (!isMissing(error) || (await this.profileExists(workspaceId))) {
+					throw error;
+				}
+				this.clearProfileCaches(finalDir);
+				this.log.warn(
+					"Claude workspace profile vanished during refresh; minting it again",
+					{ workspaceId, profileDir: finalDir },
+				);
+			}
 		}
 
 		const stagingDir = this.stagingPathFor(workspaceId);
 		if (existsSync(stagingDir)) {
-			throw new Error(
-				`Claude profile staging folder already exists for ${workspaceId}: ${stagingDir}`,
-			);
+			// Service callers hold the workspace lock, so this can only be residue
+			// from a mint that exited before its final rename.
+			await this.deleteStagingDir(workspaceId);
+			this.log.warn("Removed crashed Claude profile mint staging folder", {
+				workspaceId,
+				stagingDir,
+			});
 		}
 		await mkdir(stagingDir);
 		try {
@@ -247,6 +268,7 @@ export class ClaudeProfileManager {
 			ensureClaudeManagedHooksAt(stagingDir);
 			await rename(stagingDir, finalDir);
 			this.clearProfileCaches(stagingDir);
+			this.clearProfileCaches(finalDir);
 			this.log.info("Minted Claude workspace profile", {
 				workspaceId,
 				profileDir: finalDir,
@@ -308,6 +330,14 @@ export class ClaudeProfileManager {
 				`Machine-default Claude credentials are invalid JSON at ${this.globalCredentialsPath}`,
 				{ cause: error },
 			);
+		}
+		if (
+			typeof raw === "object" &&
+			raw !== null &&
+			!Array.isArray(raw) &&
+			!("claudeAiOauth" in raw)
+		) {
+			return { kind: "absent" };
 		}
 		const parsed = globalCredentialsSchema.safeParse(raw);
 		if (!parsed.success) {
@@ -387,6 +417,45 @@ export class ClaudeProfileManager {
 		}
 	}
 
+	async captureCredentialFileState(
+		profileDir: string,
+	): Promise<CredentialFileState> {
+		this.assertContainedProfileDir(profileDir, true);
+		try {
+			const contents = await readFile(
+				join(profileDir, ".credentials.json"),
+				"utf8",
+			);
+			if (!contents.trim()) {
+				throw new Error(
+					`Claude credentials file is empty at ${join(profileDir, ".credentials.json")}`,
+				);
+			}
+			return { kind: "present", contents };
+		} catch (error) {
+			if (isMissing(error)) return { kind: "absent" };
+			throw error;
+		}
+	}
+
+	async restoreCredentialFileState(
+		profileDir: string,
+		state: CredentialFileState,
+	): Promise<void> {
+		this.assertContainedProfileDir(profileDir, true);
+		if (state.kind === "absent") {
+			await this.removeCredentials(profileDir);
+			return;
+		}
+		if (!state.contents.trim()) {
+			throw new Error("Refusing to restore an empty Claude credentials file");
+		}
+		await this.atomicWriteFile(
+			join(profileDir, ".credentials.json"),
+			state.contents,
+		);
+	}
+
 	async writeMarkerFile(path: string, value: unknown): Promise<void> {
 		this.assertRootChild(path);
 		await this.atomicWriteJson(path, value);
@@ -417,11 +486,10 @@ export class ClaudeProfileManager {
 		worktreePath: string,
 	): Promise<void> {
 		const globalStatePath = join(homedir(), ".claude.json");
-		let globalState: Record<string, unknown>;
+		let globalState: Record<string, unknown> = {};
 		try {
-			const parsed: unknown = JSON.parse(
-				await readFile(globalStatePath, "utf8"),
-			);
+			const text = await readFile(globalStatePath, "utf8");
+			const parsed: unknown = text.trim() ? JSON.parse(text) : {};
 			if (
 				typeof parsed !== "object" ||
 				parsed === null ||
@@ -431,35 +499,53 @@ export class ClaudeProfileManager {
 			}
 			globalState = parsed as Record<string, unknown>;
 		} catch (error) {
-			throw new Error(`Cannot seed Claude profile from ${globalStatePath}`, {
-				cause: error,
-			});
+			this.log.warn(
+				"Claude global state could not seed optional workspace profile fields",
+				{ globalStatePath, error },
+			);
 		}
+		const optionalSeed: Record<string, unknown> = {};
+		const invalidFields: string[] = [];
 		const lastOnboardingVersion = globalState.lastOnboardingVersion;
+		if (typeof lastOnboardingVersion === "string" && lastOnboardingVersion) {
+			optionalSeed.lastOnboardingVersion = lastOnboardingVersion;
+		} else if (lastOnboardingVersion !== undefined) {
+			invalidFields.push("lastOnboardingVersion");
+		}
 		const installMethod = globalState.installMethod;
+		if (typeof installMethod === "string" && installMethod) {
+			optionalSeed.installMethod = installMethod;
+		} else if (installMethod !== undefined) {
+			invalidFields.push("installMethod");
+		}
 		const autoUpdates = globalState.autoUpdates;
+		if (typeof autoUpdates === "boolean") {
+			optionalSeed.autoUpdates = autoUpdates;
+		} else if (autoUpdates !== undefined) {
+			invalidFields.push("autoUpdates");
+		}
 		const mcpServers = globalState.mcpServers;
 		if (
-			typeof lastOnboardingVersion !== "string" ||
-			!lastOnboardingVersion ||
-			typeof installMethod !== "string" ||
-			!installMethod ||
-			typeof autoUpdates !== "boolean" ||
-			typeof mcpServers !== "object" ||
-			mcpServers === null ||
-			Array.isArray(mcpServers)
+			typeof mcpServers === "object" &&
+			mcpServers !== null &&
+			!Array.isArray(mcpServers)
 		) {
-			throw new Error(
-				`Claude state at ${globalStatePath} lacks required onboarding fields`,
+			optionalSeed.mcpServers = mcpServers;
+		} else if (mcpServers !== undefined) {
+			invalidFields.push("mcpServers");
+		}
+		if (invalidFields.length > 0) {
+			this.log.warn(
+				"Claude global state contains invalid optional workspace profile fields",
+				{ globalStatePath, invalidFields },
 			);
 		}
 		const projectPath = normalizeClaudeProjectPath(worktreePath);
+		// R8 live check, 2026-08-24: Claude Code booted without oauthAccount
+		// while pinned claude123 differed from machine default claude12.
 		await this.atomicWriteJson(join(profileDir, ".claude.json"), {
 			hasCompletedOnboarding: true,
-			lastOnboardingVersion,
-			installMethod,
-			autoUpdates,
-			mcpServers,
+			...optionalSeed,
 			projects: {
 				[projectPath]: {
 					allowedTools: [],
@@ -569,6 +655,17 @@ export class ClaudeProfileManager {
 		profileDir: string,
 		mirrorSources: readonly MirrorSource[],
 	): Promise<void> {
+		const presentNames = new Set(mirrorSources.map((source) => source.name));
+		for (const name of COPY_NAMES) {
+			if (presentNames.has(name)) continue;
+			const destination = join(profileDir, name);
+			this.destinationMirrorCache.delete(destination);
+			try {
+				await unlink(destination);
+			} catch (error) {
+				if (!isMissing(error)) throw error;
+			}
+		}
 		for (const source of mirrorSources) {
 			const destination = join(profileDir, source.name);
 			let unchanged = false;
@@ -626,12 +723,22 @@ export class ClaudeProfileManager {
 	}
 
 	private async atomicWriteJson(path: string, value: unknown): Promise<void> {
-		const temporary = `${path}.${randomUUID()}.tmp`;
 		const text = `${JSON.stringify(value, null, 2)}\n`;
 		if (!text.trim())
 			throw new Error(`Refusing to write empty JSON file at ${path}`);
+		await this.atomicWriteFile(path, text);
+	}
+
+	private async atomicWriteFile(path: string, contents: string): Promise<void> {
+		const temporary = `${path}.${randomUUID()}.tmp`;
 		try {
-			await writeFile(temporary, text, { encoding: "utf8", mode: 0o600 });
+			const handle = await open(temporary, "wx", 0o600);
+			try {
+				await handle.writeFile(contents, "utf8");
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
 			await rename(temporary, path);
 		} catch (error) {
 			await unlink(temporary).catch((cleanupError) => {

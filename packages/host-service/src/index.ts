@@ -7,6 +7,7 @@ export { type CreateAppOptions, type CreateAppResult, createApp } from "./app";
 // bridge shipped once with the mount only in serve.ts, and every production
 // child reported enabled-but-never-started while every gate stayed green.
 export {
+	claudeConfigDirsForWorkspace,
 	type CompanionMountInput,
 	startCompanionBridgeIfEnabled,
 } from "./companion";

@@ -38,6 +38,9 @@ export class WorkspaceLocks {
 		ReadonlyMap<string, HeldLease>
 	>();
 
+	// withWorkspaceDeletion nests inside router-held multi-locks. Reentrancy is
+	// therefore scoped to this active AsyncLocalStorage lease; invalidating the
+	// lease on release prevents detached async work from bypassing a later lock.
 	async withLock<T>(
 		workspaceId: string,
 		fn: () => Promise<T>,

@@ -197,6 +197,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		createClaudeAccountsService({
 			db,
 			dbPath: config.dbPath,
+			eventBus,
 			emit: (event) => eventBus.broadcastClaudeAccountEvent(event),
 			log: {
 				info: (message, fields) =>

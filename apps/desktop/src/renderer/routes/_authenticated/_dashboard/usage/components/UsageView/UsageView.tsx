@@ -310,7 +310,8 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 											isSwitching={setDefault.isPending}
 											showDefaultControl={
 												provider === "codex" ||
-												claudeAccountCapability.data?.managed !== true
+												(claudeAccountCapability.isSuccess &&
+													claudeAccountCapability.data.managed === false)
 											}
 										/>
 									))}

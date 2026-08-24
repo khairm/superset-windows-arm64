@@ -3,7 +3,10 @@ import "./ws-native-off";
 import { serve } from "@hono/node-server";
 import { applyWindowsUserEnvToProcess } from "@superset/shared/windows-user-env";
 import { createApp } from "./app";
-import { startCompanionBridgeIfEnabled } from "./companion";
+import {
+	claudeConfigDirsForWorkspace,
+	startCompanionBridgeIfEnabled,
+} from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
 import { SeveredApiAuthProvider } from "./providers/auth";
@@ -160,8 +163,8 @@ async function main(): Promise<void> {
 		void startCompanionBridgeIfEnabled({
 			hostDbPath: env.HOST_DB_PATH,
 			db,
-			profileDirForWorkspace: (workspaceId) =>
-				claudeAccounts.profileDirFor(workspaceId),
+			profileDirsForWorkspace: (workspaceId) =>
+				claudeConfigDirsForWorkspace(claudeAccounts, workspaceId),
 			organizationId: env.ORGANIZATION_ID,
 			terminalAgentStore,
 		});

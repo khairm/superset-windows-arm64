@@ -904,10 +904,33 @@ export const projectRouter = router({
 				return await ctx.claudeAccounts.withWorkspaceLocks(
 					workspaceIds,
 					async () => {
+						const lockedWorkspaces = ctx.db
+							.select()
+							.from(workspaces)
+							.where(eq(workspaces.projectId, input.projectId))
+							.all();
+						const lockedWorkspaceIds = lockedWorkspaces
+							.map((workspace) => workspace.id)
+							.sort();
+						const capturedWorkspaceIds = [...workspaceIds].sort();
+						if (
+							lockedWorkspaceIds.length !== capturedWorkspaceIds.length ||
+							lockedWorkspaceIds.some(
+								(workspaceId, index) =>
+									workspaceId !== capturedWorkspaceIds[index],
+							)
+						) {
+							throw new Error(
+								"Project workspaces changed while removal locks were being acquired; retry removal",
+							);
+						}
 						const terminalIdsByWorkspace =
-							listUndisposedTerminalIdsByWorkspaceIds(workspaceIds, ctx.db);
+							listUndisposedTerminalIdsByWorkspaceIds(
+								lockedWorkspaceIds,
+								ctx.db,
+							);
 						return ctx.claudeAccounts.withWorkspaceDeletion(
-							workspaceIds.map((workspaceId) => ({
+							lockedWorkspaceIds.map((workspaceId) => ({
 								workspaceId,
 								terminalIds: terminalIdsByWorkspace.get(workspaceId) ?? [],
 							})),
@@ -926,14 +949,23 @@ export const projectRouter = router({
 									);
 								}
 								if (multiRepoConfig) {
-									await removeMultiRepoProjectArtifacts(
-										ctx,
-										multiRepoConfig,
-										localProject.repoPath,
-										localWorkspaces.map((workspace) => workspace.worktreePath),
-									);
+									try {
+										await removeMultiRepoProjectArtifacts(
+											ctx,
+											multiRepoConfig,
+											localProject.repoPath,
+											lockedWorkspaces.map(
+												(workspace) => workspace.worktreePath,
+											),
+										);
+									} catch (error) {
+										throw new Error(
+											`Failed to remove project worktrees after terminals were disposed: ${error instanceof Error ? error.message : String(error)}`,
+											{ cause: error },
+										);
+									}
 								} else {
-									for (const workspace of localWorkspaces) {
+									for (const workspace of lockedWorkspaces) {
 										if (workspace.worktreePath === localProject.repoPath)
 											continue;
 										try {
@@ -957,7 +989,7 @@ export const projectRouter = router({
 								}
 
 								// Per-row so each deletion broadcasts.
-								for (const workspace of localWorkspaces) {
+								for (const workspace of lockedWorkspaces) {
 									deleteLocalWorkspace(ctx, workspace.id);
 								}
 								ctx.db
@@ -967,6 +999,7 @@ export const projectRouter = router({
 								emitProjectChanged(ctx.eventBus, "deleted", input.projectId);
 								return { success: true, repoPath: localProject.repoPath };
 							},
+							{ disposalMode: "abort" },
 						);
 					},
 					{ timeoutMs: PROJECT_REMOVE_LOCK_TIMEOUT_MS },

@@ -132,6 +132,16 @@ function makeCtx(spec: ContextSpec): HostServiceContext & {
 				}),
 			}),
 		} as never,
+		claudeAccounts: {
+			withWorkspaceLock: async <T>(
+				_workspaceId: string,
+				fn: () => Promise<T>,
+			) => fn(),
+			withWorkspaceDeletion: async <T>(
+				_targets: unknown,
+				fn: () => Promise<T>,
+			) => fn(),
+		} as never,
 		runtime: {} as never,
 		eventBus: { broadcastWorkspaceChanged } as never,
 	};

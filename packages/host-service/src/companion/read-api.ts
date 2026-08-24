@@ -52,6 +52,7 @@
  * thread was snoozed is still answerable.
  */
 
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import Database from "better-sqlite3";
@@ -207,11 +208,11 @@ export interface HostDbReader extends QuestionSourceResolver {
 	listTerminalIdsForWorkspace(hostWorkspaceId: string): string[];
 	findBinding(hostTerminalId: string): HostBindingRow | null;
 	findTerminal(hostTerminalId: string): HostTerminalRow | null;
-	transcriptPathFor(resolved: {
+	transcriptPathsFor(resolved: {
 		workspaceId: string;
 		worktreePath: string;
 		agentSessionId: string;
-	}): string | null;
+	}): string[];
 	/** (BRIDGE-SIDEBAR-FILTER) The renderer's curation as last mirrored. */
 	readSidebarMirror(): SidebarMirrorSnapshot;
 	close(): void;
@@ -266,7 +267,7 @@ export function toTerminalSource(row: unknown): TerminalSource | null {
  */
 export function openHostDbReadOnly(
 	dbPath: string,
-	profileDirForWorkspace: (workspaceId: string) => string,
+	profileDirsForWorkspace: (workspaceId: string) => readonly string[],
 ): HostDbReader {
 	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
 	db.pragma("busy_timeout = 5000");
@@ -392,18 +393,27 @@ export function openHostDbReadOnly(
 			if (agentKindFromAgentId(binding.agentId) !== "claude") return null;
 			const workspace = reader.findWorkspace(binding.workspaceId);
 			if (workspace === null) return null;
-			return deriveClaudeTranscriptPath(
-				workspace.worktreePath,
-				binding.agentSessionId,
-				profileDirForWorkspace(binding.workspaceId),
-			);
+			const candidates = profileDirsForWorkspace(binding.workspaceId)
+				.map((configDir) =>
+					deriveClaudeTranscriptPath(
+						workspace.worktreePath,
+						binding.agentSessionId as string,
+						configDir,
+					),
+				)
+				.filter((candidate): candidate is string => candidate !== null);
+			return candidates.find((candidate) => existsSync(candidate)) ?? null;
 		},
-		transcriptPathFor: (resolved) =>
-			deriveClaudeTranscriptPath(
-				resolved.worktreePath,
-				resolved.agentSessionId,
-				profileDirForWorkspace(resolved.workspaceId),
-			),
+		transcriptPathsFor: (resolved) =>
+			profileDirsForWorkspace(resolved.workspaceId)
+				.map((configDir) =>
+					deriveClaudeTranscriptPath(
+						resolved.worktreePath,
+						resolved.agentSessionId,
+						configDir,
+					),
+				)
+				.filter((candidate): candidate is string => candidate !== null),
 		close: () => db.close(),
 	};
 	return reader;
@@ -1450,7 +1460,7 @@ interface ResolvedTranscript {
  * the agent's own conversation. `PendingQuestion.transcriptPath` is now itself
  * derived, so there is no second source to prefer and none is consulted.
  */
-function resolveTranscript(
+async function resolveTranscript(
 	deps: ReadDeps,
 	hostTerminalId: string,
 ): Promise<ResolvedTranscript> {
@@ -1472,26 +1482,23 @@ function resolveTranscript(
 	if (workspace === null) {
 		throw badRequest("the workspace that owns this terminal no longer exists");
 	}
-	const candidate = deps.db.transcriptPathFor({
+	const candidates = deps.db.transcriptPathsFor({
 		workspaceId: binding.workspaceId,
 		worktreePath: workspace.worktreePath,
 		agentSessionId: binding.agentSessionId,
 	});
-	if (candidate === null) {
-		throw badRequest("the agent transcript for this terminal is unreadable");
+	for (const candidate of candidates) {
+		try {
+			await fs.access(candidate);
+			return {
+				transcriptPath: candidate,
+				sessionGeneration: binding.startedAt,
+			};
+		} catch {
+			continue;
+		}
 	}
-	// `fs/promises`, like every other read in this module. The old `existsSync`
-	// here was the one synchronous fs call on a REQUEST path in the bridge, and
-	// blocking fs on this process is the documented footgun that starves the
-	// renderer's `superset-app://` loader. It also asked the question twice: the
-	// caller followed it with an `fs.access` on the same path, so the check that
-	// actually protects the read is this one, and there is now exactly one.
-	return fs.access(candidate).then(
-		() => ({ transcriptPath: candidate, sessionGeneration: binding.startedAt }),
-		() => {
-			throw badRequest("the agent transcript for this terminal is unreadable");
-		},
-	);
+	throw badRequest("the agent transcript for this terminal is unreadable");
 }
 
 export async function handleTranscript(

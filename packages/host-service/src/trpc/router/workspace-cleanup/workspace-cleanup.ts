@@ -294,6 +294,7 @@ async function runDestroy(
 	}
 
 	let result: Awaited<ReturnType<typeof runDestroyPhases>>;
+	let rolledBackInsideCommit = false;
 	try {
 		// ─── Step 1: Preflight ─────────────────────────────────────
 		// Block only on dirty worktree (the common "I forgot to commit"
@@ -348,6 +349,10 @@ async function runDestroy(
 		// blocking failure throws, the catch below un-archives, and the
 		// globally-mounted dialog re-opens with a force-retry.
 		if (input.teardownMode !== "skip" && local && project) {
+			// destroyWorkspace already holds this workspace's Claude lock. runTeardown
+			// awaits createTerminalSessionInternal, which re-enters that lock and then
+			// re-enters again while preparing the profile. This depends on the
+			// AsyncLocalStorage lease propagating through the unbroken await chain.
 			const teardown: TeardownResult = await runTeardown({
 				db: ctx.db,
 				workspaceId: input.workspaceId,
@@ -392,28 +397,30 @@ async function runDestroy(
 				if (local) trackWorkspaceDeleted(ctx, local);
 				return destroyResult;
 			} catch (error) {
-				if (marked) unarchiveLocalWorkspace(ctx, input.workspaceId);
+				if (marked) {
+					unarchiveLocalWorkspace(ctx, input.workspaceId);
+					rolledBackInsideCommit = true;
+				}
 				throw error;
 			}
 		};
-		if (marked) {
-			result = await ctx.claudeAccounts.withWorkspaceDeletion(
-				[
-					{
-						workspaceId: input.workspaceId,
-						terminalIds: listUndisposedTerminalIdsByWorkspaceId(
-							input.workspaceId,
-							ctx.db,
-						),
-					},
-				],
-				commitDestroy,
-			);
-		} else {
-			result = await commitDestroy();
-		}
+		result = await ctx.claudeAccounts.withWorkspaceDeletion(
+			[
+				{
+					workspaceId: input.workspaceId,
+					terminalIds: listUndisposedTerminalIdsByWorkspaceId(
+						input.workspaceId,
+						ctx.db,
+					),
+				},
+			],
+			commitDestroy,
+			{ disposalMode: "warn-and-continue" },
+		);
 	} catch (err) {
-		if (marked) unarchiveLocalWorkspace(ctx, input.workspaceId);
+		if (marked && !rolledBackInsideCommit) {
+			unarchiveLocalWorkspace(ctx, input.workspaceId);
+		}
 		throw err;
 	}
 	return result;

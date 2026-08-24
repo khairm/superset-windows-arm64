@@ -325,7 +325,7 @@ describe("buildTerminalAgentLaunch default account env", () => {
 		);
 	});
 
-	it("lets a per-agent CLAUDE_CONFIG_DIR beat the host default", () => {
+	it("ignores a stored per-agent CLAUDE_CONFIG_DIR at launch", () => {
 		const db = createTestDb();
 		seedClaude(db, { CLAUDE_CONFIG_DIR: "/pinned/profile" });
 		setDefaultAccountSelection(db, "claude", existingDir);
@@ -335,7 +335,7 @@ describe("buildTerminalAgentLaunch default account env", () => {
 			prompt: "hi",
 		});
 		expect(launch.fullCommand).toBe(
-			"CLAUDE_CONFIG_DIR='/pinned/profile' 'claude' 'hi'",
+			`CLAUDE_CONFIG_DIR='${existingDir}' 'claude' 'hi'`,
 		);
 	});
 

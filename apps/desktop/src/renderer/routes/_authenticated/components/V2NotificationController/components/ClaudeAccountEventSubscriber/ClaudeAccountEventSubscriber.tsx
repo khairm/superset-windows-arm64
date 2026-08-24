@@ -82,22 +82,19 @@ export function ClaudeAccountEventSubscriber({
 						queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
 					});
 				}
-			} else {
-				void queryClient.invalidateQueries({
-					queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
-				});
+				return;
 			}
 
-			const warningKey = `claude-account-warning:${hostUrl}:${workspaceId ?? "host"}:${payload.kind}`;
+			void queryClient.invalidateQueries({
+				queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
+			});
+			const warningKey = `claude-account-warning:${hostUrl}:host:${payload.kind}`;
 			if (!payload.active) {
 				toast.dismiss(warningKey);
 				return;
 			}
 
-			const workspaceName = workspaceId
-				? (workspaceNames.get(workspaceId) ?? "Workspace")
-				: "Claude account";
-			toast.warning(`${workspaceName} needs attention`, {
+			toast.warning("Claude account needs attention", {
 				description: payload.message,
 				id: warningKey,
 			});

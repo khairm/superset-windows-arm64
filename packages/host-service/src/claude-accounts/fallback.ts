@@ -74,8 +74,8 @@ export class FallbackPolicy {
 		}
 		if (account.dead) {
 			return {
-				action: "fallback",
-				reason: "pinned account credentials are dead",
+				action: "suppress",
+				reason: "pinned account credentials need re-login",
 			};
 		}
 		const five = effectivePercentage(

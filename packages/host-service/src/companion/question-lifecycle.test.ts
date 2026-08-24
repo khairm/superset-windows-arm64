@@ -236,7 +236,7 @@ describe("(CAPTURE-BOUNDED) resolveActiveTerminal against real SQL", () => {
 			},
 		])
 		.run();
-	const reader = openHostDbReadOnly(dbPath, () => join(dir, "claude"));
+	const reader = openHostDbReadOnly(dbPath, () => [join(dir, "claude")]);
 
 	afterAll(() => {
 		reader.close();

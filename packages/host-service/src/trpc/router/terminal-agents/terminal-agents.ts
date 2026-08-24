@@ -378,7 +378,7 @@ export const terminalAgentsRouter = router({
 					terminalAgentStore: ctx.terminalAgentStore,
 					runAgent: (runInput) => runAgentInWorkspace(ctx, runInput),
 					disposeSession: (terminalId) =>
-						disposeSessionAndWait(terminalId, ctx.db),
+						disposeSessionAndWait(terminalId, ctx.db, ctx.eventBus),
 				},
 				input,
 			),

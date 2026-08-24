@@ -18,6 +18,10 @@ const ACCOUNTS_TIMEOUT_MS = 10_000;
 const TOKEN_TIMEOUT_MS = 35_000;
 const MIN_TOKEN_VALIDITY_MS = 30 * 60 * 1000;
 
+function isKnownAccountType(value: string): value is PiAccount["type"] {
+	return value === "claude" || value === "codex";
+}
+
 const isoTimestamp = z
 	.string()
 	.min(1)
@@ -59,7 +63,7 @@ const accountSchema = z
 	.object({
 		slug: accountSlugSchema,
 		name: z.string().min(1),
-		type: z.enum(["claude", "codex"]),
+		type: z.string().min(1),
 		enabled: z.boolean(),
 		dead: z.boolean(),
 		dead_reason: z.string().min(1).nullable(),
@@ -75,7 +79,7 @@ const accountSchema = z
 		fable_in_use: z.boolean(),
 		pc_active: z.boolean(),
 	})
-	.strict();
+	.passthrough();
 const accountsSchema = z.array(accountSchema);
 
 const tokenEnvelopeSchema = z
@@ -146,6 +150,10 @@ export class PiClient {
 		return this.pushKeyPath;
 	}
 
+	async validatePushKey(): Promise<void> {
+		await this.readPushKey();
+	}
+
 	getAccountsLastGood(): PiAccount[] | null {
 		return this.lastGoodAccounts?.map((account) => ({ ...account })) ?? null;
 	}
@@ -199,11 +207,19 @@ export class PiClient {
 				`Pi /accounts response failed validation: ${z.prettifyError(parsed.error)}`,
 			);
 		}
-		const accounts = parsed.data.map(
+		const supported = parsed.data.filter((account) => {
+			if (isKnownAccountType(account.type)) return true;
+			this.log.info("Ignoring Pi account with unsupported type", {
+				slug: account.slug,
+				type: account.type,
+			});
+			return false;
+		});
+		const accounts = supported.map(
 			(account): PiAccount => ({
 				slug: account.slug,
 				displayName: account.name,
-				type: account.type,
+				type: account.type as PiAccount["type"],
 				enabled: account.enabled,
 				dead: account.dead,
 				deadReason: account.dead_reason,

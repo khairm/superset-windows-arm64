@@ -7,6 +7,7 @@ import {
 } from "@superset/agent-setup";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { isWorkspaceUuid } from "../../../claude-accounts/profile-manager";
 import { projects, workspaces } from "../../../db/schema";
 import { usageHistoryTask } from "../../../workers/tasks/usage";
 import { protectedProcedure, queryProcedure, router } from "../../index";
@@ -129,6 +130,16 @@ export const usageRouter = router({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
+			if (
+				input.provider === "claude" &&
+				ctx.claudeAccounts.getCapability().managed
+			) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message:
+						"Claude accounts are managed per workspace on this host; the global default cannot be changed.",
+				});
+			}
 			if (input.selection !== null) {
 				// Only accept a discovered login: the value lands in a shell env
 				// overlay, and a typo'd dir would boot agents signed out.
@@ -254,6 +265,7 @@ export const usageRouter = router({
 							worktreePath: workspaces.worktreePath,
 							name: workspaces.name,
 							projectId: workspaces.projectId,
+							archivedAt: workspaces.archivedAt,
 						})
 						.from(workspaces)
 						.all();
@@ -273,9 +285,11 @@ export const usageRouter = router({
 					);
 					const workspaceClaudeHomes = ctx.claudeAccounts.getCapability()
 						.managed
-						? workspaceRows.map((row) =>
-								ctx.claudeAccounts.profileDirFor(row.id),
-							)
+						? workspaceRows
+								.filter(
+									(row) => row.archivedAt === null && isWorkspaceUuid(row.id),
+								)
+								.map((row) => ctx.claudeAccounts.profileDirFor(row.id))
 						: [];
 					const cwdLabels = [
 						...workspaceRows.map((row) => ({

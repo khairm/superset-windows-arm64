@@ -11,12 +11,15 @@ import { z } from "zod";
 import type { HostDb } from "../../../db";
 import { hostAgentConfigs } from "../../../db/schema";
 import { protectedProcedure, router } from "../../index";
+import {
+	RESERVED_CLAUDE_ENV_KEY,
+	sanitizeStoredAgentEnv,
+} from "./reserved-agent-env";
 
 const promptTransportSchema = z.enum(["argv", "stdin"]);
 
 const argvSchema = z.array(z.string());
 const envSchema = z.record(z.string(), z.string());
-const RESERVED_CLAUDE_ENV_KEY = "CLAUDE_CONFIG_DIR";
 const editableEnvSchema = envSchema.superRefine((value, ctx) => {
 	if (Object.hasOwn(value, RESERVED_CLAUDE_ENV_KEY)) {
 		ctx.addIssue({
@@ -26,7 +29,6 @@ const editableEnvSchema = envSchema.superRefine((value, ctx) => {
 		});
 	}
 });
-let didLogIgnoredReservedClaudeEnv = false;
 
 export interface HostAgentConfig {
 	id: string;
@@ -90,16 +92,7 @@ function parseEnv(value: string): Record<string, string> {
 	) {
 		return {};
 	}
-	const env = parsed as Record<string, string>;
-	if (!Object.hasOwn(env, RESERVED_CLAUDE_ENV_KEY)) return env;
-	if (!didLogIgnoredReservedClaudeEnv) {
-		didLogIgnoredReservedClaudeEnv = true;
-		console.warn(
-			`[agent-configs] ignoring stored ${RESERVED_CLAUDE_ENV_KEY}; Claude accounts are managed per workspace`,
-		);
-	}
-	const { [RESERVED_CLAUDE_ENV_KEY]: _ignored, ...sanitized } = env;
-	return sanitized;
+	return sanitizeStoredAgentEnv(parsed as Record<string, string>);
 }
 
 function toOutput(row: HostAgentConfigRow): HostAgentConfig {

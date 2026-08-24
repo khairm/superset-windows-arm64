@@ -130,6 +130,7 @@ export async function createTestHost(
 	};
 
 	const result = createApp(createOptions);
+	await result.claudeAccounts.start();
 
 	// Hono's `app.fetch(req, env, ctx)` second arg is the Cloudflare-style
 	// env binding, NOT a `RequestInit`. Build a proper `Request` first and

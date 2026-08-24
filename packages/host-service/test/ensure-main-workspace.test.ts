@@ -69,6 +69,13 @@ function makeCtx(db: HostDb) {
 		organizationId: ORG_ID,
 		clientMachineId: "m1",
 		eventBus,
+		claudeAccounts: {
+			mintProfileForNewWorkspace: mock(async () => {}),
+			withWorkspaceLock: async <T>(
+				_workspaceId: string,
+				fn: () => Promise<T>,
+			) => fn(),
+		} as never,
 	};
 }
 
@@ -105,22 +112,19 @@ describe("ensureMainWorkspaceStrict", () => {
 	test("returns the winner instead of throwing when the pre-check misses a concurrent create", async () => {
 		const db = makeDb();
 		// The race winner already committed a main for this project.
-		const winner = insertLocalWorkspace(
-			{ db, eventBus: { broadcastWorkspaceChanged: () => {} } as never },
-			{
-				projectId: "p-1",
-				worktreePath: REPO_PATH,
-				branch: "feat/main",
-				name: "feat/main",
-				type: "main",
-			},
-		);
+		const ctx = makeCtx(db);
+		const winner = await insertLocalWorkspace(ctx, {
+			projectId: "p-1",
+			worktreePath: REPO_PATH,
+			branch: "feat/main",
+			name: "feat/main",
+			type: "main",
+		});
 
 		// Simulate TOCTOU: force the pre-check `findFirst` to miss ONCE (as if
 		// the winner hadn't committed yet), so the insert path runs and hits
 		// the one-main-per-project unique index. The catch must re-query and
 		// return the winner rather than throw the raw SQLITE_CONSTRAINT.
-		const ctx = makeCtx(db);
 		const realFindFirst = ctx.db.query.workspaces.findFirst;
 		let missed = false;
 		ctx.db.query.workspaces.findFirst = ((...args: unknown[]) => {
