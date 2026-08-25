@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "0018865d87c3",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 31,
+  "files_touched": [
+    "AGENTS.md",
+    "CONTEXT.md",
+    "apps/desktop/src/renderer/lib/formatResetTime/formatResetTime.test.ts",
+    "apps/desktop/src/renderer/lib/formatResetTime/formatResetTime.ts",
+    "apps/desktop/src/renderer/lib/formatResetTime/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/ClaudeAccountIndicator/ClaudeAccountIndicator.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/ClaudeAccountPicker/ClaudeAccountPicker.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/ClaudeAccountSidebarProvider/ClaudeAccountSidebarProvider.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/ClaudeAccountSidebarProvider/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/claudeUsagePace/claudeUsagePace.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/claudeUsagePace/claudeUsagePace.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/utils/claudeUsagePace/index.ts",
+    "packages/host-service/src/claude-accounts/index.ts",
+    "packages/host-service/src/claude-accounts/profile-lifecycle.test.ts",
+    "packages/host-service/src/claude-accounts/profile-manager.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/00/18865d87c3/0/metadata.json",
+      "transcript": "/00/18865d87c3/0/full.jsonl",
+      "content_hash": "/00/18865d87c3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18021,
+    "cache_creation_tokens": 801795,
+    "cache_read_tokens": 23553130,
+    "output_tokens": 138173,
+    "api_call_count": 92
+  }
+}
