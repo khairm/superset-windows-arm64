@@ -6,7 +6,6 @@ import {
 	ContextMenuSubContent,
 	ContextMenuSubTrigger,
 } from "@superset/ui/context-menu";
-import { Progress } from "@superset/ui/progress";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
 import type { ReactNode } from "react";
@@ -19,40 +18,120 @@ import {
 	useSetClaudeWorkspaceAccount,
 } from "renderer/hooks/host-service/useClaudeAccounts";
 import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHostUrl";
-import { formatResetIn } from "renderer/lib/formatResetTime";
+import { useNow } from "renderer/hooks/useNow";
+import { formatResetCompact } from "renderer/lib/formatResetTime";
+import {
+	FIVE_HOUR_WINDOW_MS,
+	formatUsagePct,
+	USAGE_PACE_CLASS,
+	usagePaceLevel,
+	WEEKLY_WINDOW_MS,
+} from "../../../../utils/claudeUsagePace";
 
-function UsageMetric({
-	label,
+function PctSpan({
 	percent,
+	resetsAt,
+	windowMs,
+	now,
 }: {
-	label: string;
 	percent: number | null;
+	resetsAt: string | null;
+	windowMs: number;
+	now: number;
 }) {
+	if (percent === null) {
+		return <span className="w-9 text-right">—</span>;
+	}
 	return (
-		<div className="flex min-w-0 flex-1 items-center gap-1.5">
-			<span className="w-7 shrink-0 text-[10px] text-muted-foreground">
-				{label}
-			</span>
-			<Progress
-				value={percent === null ? 0 : Math.min(100, Math.max(0, percent))}
-				className="h-1 min-w-10 flex-1"
-			/>
-			<span className="w-8 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground">
-				{percent === null ? "—" : `${percent}%`}
-			</span>
-		</div>
+		<span
+			className={cn(
+				"w-9 text-right",
+				USAGE_PACE_CLASS[usagePaceLevel(percent, resetsAt, windowMs, now)],
+			)}
+		>
+			{formatUsagePct(percent)}
+		</span>
 	);
 }
 
-function accountDisabledReason(account: ClaudeAccount): string | null {
-	if (account.dead) return account.deadReason ?? "Authentication unavailable";
-	if (!account.enabled) return "Disabled";
-	return null;
+function ResetSpan({
+	resetsAt,
+	windowMs,
+	now,
+}: {
+	resetsAt: string | null;
+	windowMs: number;
+	now: number;
+}) {
+	const countdown = formatResetCompact(resetsAt, windowMs, now);
+	return (
+		<span className="w-14 text-right">
+			{countdown !== "" && (
+				<>
+					→<span className="text-fuchsia-500">{countdown}</span>
+				</>
+			)}
+		</span>
+	);
 }
 
-function resetText(resetsAt: string | null): string {
-	if (resetsAt === null) return "Reset time unavailable";
-	return `Resets in ${formatResetIn(new Date(resetsAt))}`;
+const METRICS_CLASS =
+	"flex items-center gap-1 whitespace-nowrap text-[11px] tabular-nums text-muted-foreground";
+
+function AccountMetrics({
+	account,
+	now,
+}: {
+	account: ClaudeAccount;
+	now: number;
+}) {
+	if (account.dead) {
+		return <div className={METRICS_CLASS}>RE-LOGIN needed</div>;
+	}
+	if (
+		account.fivePct === null &&
+		account.sevenPct === null &&
+		account.fablePct === null
+	) {
+		return <div className={METRICS_CLASS}>no data yet</div>;
+	}
+	return (
+		<div className={METRICS_CLASS}>
+			5h
+			<PctSpan
+				percent={account.fivePct}
+				resetsAt={account.fiveResetsAt}
+				windowMs={FIVE_HOUR_WINDOW_MS}
+				now={now}
+			/>
+			<ResetSpan
+				resetsAt={account.fiveResetsAt}
+				windowMs={FIVE_HOUR_WINDOW_MS}
+				now={now}
+			/>
+			| all:
+			<PctSpan
+				percent={account.sevenPct}
+				resetsAt={account.sevenResetsAt}
+				windowMs={WEEKLY_WINDOW_MS}
+				now={now}
+			/>
+			• fable:
+			{/* Fable shares the weekly boundary: the Pi emits matching stamps and
+			    fableResetsAt is not shipped to the app. */}
+			<PctSpan
+				percent={account.fablePct}
+				resetsAt={account.sevenResetsAt}
+				windowMs={WEEKLY_WINDOW_MS}
+				now={now}
+			/>
+			<ResetSpan
+				resetsAt={account.sevenResetsAt}
+				windowMs={WEEKLY_WINDOW_MS}
+				now={now}
+			/>
+		</div>
+	);
 }
 
 function AccountRow({
@@ -60,34 +139,29 @@ function AccountRow({
 	trayDefaultSlug,
 	selectedSlug,
 	isPending,
+	now,
 	onSelect,
 }: {
 	account: ClaudeAccount;
 	trayDefaultSlug: string | null;
 	selectedSlug: string | null;
 	isPending: boolean;
+	now: number;
 	onSelect: (slug: string) => void;
 }) {
-	const disabledReason = accountDisabledReason(account);
-	const disabled = disabledReason !== null || isPending;
-
 	return (
 		<ContextMenuItem
-			disabled={disabled}
+			// A pinned-but-tray-hidden account stays listed but is not a valid
+			// switch target — the host rejects disabled accounts.
+			disabled={account.dead || !account.enabled || isPending}
 			onSelect={() => onSelect(account.slug)}
-			className={cn(
-				"flex-col items-stretch gap-1.5 py-2",
-				disabledReason && "opacity-50",
-			)}
+			className="grid grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2"
 		>
-			<div className="flex min-w-0 items-center gap-2">
-				<span className="flex w-4 shrink-0 items-center">
-					{selectedSlug === account.slug && <LuCheck className="size-3.5" />}
-				</span>
-				<span className="shrink-0 font-medium">{account.slug}</span>
-				<span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-					{account.displayName}
-				</span>
+			<span className="flex w-4 shrink-0 items-center">
+				{selectedSlug === account.slug && <LuCheck className="size-3.5" />}
+			</span>
+			<span className="flex min-w-0 items-center gap-2">
+				<span className="min-w-0 truncate font-medium">{account.slug}</span>
 				{trayDefaultSlug === account.slug && (
 					<Badge
 						variant="outline"
@@ -96,22 +170,8 @@ function AccountRow({
 						tray default
 					</Badge>
 				)}
-			</div>
-			<div className="flex items-center gap-3 pl-6 pr-1">
-				{disabledReason ? (
-					<span className="truncate text-[10px] text-muted-foreground">
-						{disabledReason}
-					</span>
-				) : (
-					<>
-						<UsageMetric label="5h" percent={account.fivePct} />
-						<UsageMetric label="week" percent={account.sevenPct} />
-						<span className="shrink-0 text-[10px] text-muted-foreground">
-							{resetText(account.fiveResetsAt)}
-						</span>
-					</>
-				)}
-			</div>
+			</span>
+			<AccountMetrics account={account} now={now} />
 		</ContextMenuItem>
 	);
 }
@@ -132,6 +192,8 @@ export function ClaudeAccountPicker({ workspaceId }: { workspaceId: string }) {
 	const state = useClaudeWorkspaceAccountState(hostUrl, workspaceId, isManaged);
 	const roster = useClaudeAccountRoster(hostUrl, isManaged);
 	const setAccount = useSetClaudeWorkspaceAccount(hostUrl, workspaceId);
+	// Ticking clock so an open submenu's countdowns and pace colours stay live.
+	const now = useNow(60_000).getTime();
 
 	if (hostUrl === null) {
 		return <DisabledAccountItem>Account unavailable</DisabledAccountItem>;
@@ -164,13 +226,20 @@ export function ClaudeAccountPicker({ workspaceId }: { workspaceId: string }) {
 		});
 	};
 
+	const selectedSlug = state.data.state === "pinned" ? state.data.slug : null;
+	// Tray-hidden accounts stay out of the list unless this workspace is pinned
+	// to one, which has to remain visible to be switched away from.
+	const visibleAccounts = roster.data.accounts.filter(
+		(account) => account.enabled || account.slug === selectedSlug,
+	);
+
 	return (
 		<ContextMenuSub>
 			<ContextMenuSubTrigger>
 				<LuUserRound className="size-4 mr-2" />
 				Account
 			</ContextMenuSubTrigger>
-			<ContextMenuSubContent className="w-[26rem] max-h-[min(32rem,calc(100vh-2rem))] overflow-y-auto">
+			<ContextMenuSubContent className="w-[30rem] max-h-[min(32rem,calc(100vh-2rem))] overflow-y-auto">
 				<ContextMenuItem
 					disabled={setAccount.isPending}
 					onSelect={() => chooseAccount(null)}
@@ -187,18 +256,21 @@ export function ClaudeAccountPicker({ workspaceId }: { workspaceId: string }) {
 					</span>
 				</ContextMenuItem>
 				<ContextMenuSeparator />
-				{roster.data.accounts.map((account) => (
-					<AccountRow
-						key={account.slug}
-						account={account}
-						trayDefaultSlug={roster.data.trayDefaultSlug}
-						selectedSlug={
-							state.data.state === "pinned" ? state.data.slug : null
-						}
-						isPending={setAccount.isPending}
-						onSelect={chooseAccount}
-					/>
-				))}
+				{visibleAccounts.length === 0 ? (
+					<DisabledAccountItem>No accounts available</DisabledAccountItem>
+				) : (
+					visibleAccounts.map((account) => (
+						<AccountRow
+							key={account.slug}
+							account={account}
+							trayDefaultSlug={roster.data.trayDefaultSlug}
+							selectedSlug={selectedSlug}
+							isPending={setAccount.isPending}
+							now={now}
+							onSelect={chooseAccount}
+						/>
+					))
+				)}
 			</ContextMenuSubContent>
 		</ContextMenuSub>
 	);

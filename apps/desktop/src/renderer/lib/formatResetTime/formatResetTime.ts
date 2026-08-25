@@ -14,6 +14,36 @@ export function formatResetIn(resetsAt: Date, now: Date = new Date()): string {
 }
 
 /**
+ * Compact countdown for tight surfaces, e.g. "6d17h", "4h0m", "45m", "now".
+ * Units are floored and both are always shown; a reset further out than the
+ * window is capped to it, so a skewed timestamp cannot print past the window.
+ * Returns "" for a null or unparseable timestamp.
+ * Same output format as the statusline countdown in
+ * mk-skills/statusline/statusline.py — keep the two in sync.
+ */
+export function formatResetCompact(
+	resetsAt: string | null,
+	windowMs: number,
+	now: number,
+): string {
+	if (resetsAt === null) return "";
+	const resetMs = Date.parse(resetsAt);
+	if (Number.isNaN(resetMs)) return "";
+
+	const remainingMs = Math.min(Math.max(resetMs - now, 0), windowMs);
+	const totalSeconds = Math.floor(remainingMs / 1000);
+	if (totalSeconds <= 0) return "now";
+
+	const days = Math.floor(totalSeconds / 86_400);
+	const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+	const minutes = Math.floor((totalSeconds % 3_600) / 60);
+
+	if (days > 0) return `${days}d${hours}h`;
+	if (hours > 0) return `${hours}h${minutes}m`;
+	return `${minutes}m`;
+}
+
+/**
  * Full reset caption: countdown plus the absolute time — clock time when the
  * reset lands within 24h, date otherwise. e.g. "Resets in 2h 10m · 3:22 PM",
  * "Resets in 5d 13h · Aug 21".

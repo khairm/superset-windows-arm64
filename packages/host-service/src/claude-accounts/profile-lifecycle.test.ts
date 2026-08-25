@@ -17,7 +17,10 @@ import {
 	writeGlobalCredentials,
 	writeGlobalMirror,
 } from "../../test/helpers/claude-accounts-fixture";
-import { ClaudeProfileManager } from "./profile-manager";
+import {
+	BlankedCredentialsError,
+	ClaudeProfileManager,
+} from "./profile-manager";
 
 const worlds: ClaudeTestWorld[] = [];
 
@@ -170,6 +173,36 @@ describe("Claude workspace profile lifecycle", () => {
 			expect(await readFile(settingsPath, "utf8")).toBe(contents);
 		});
 	}
+
+	test("reports a CLI-blanked credentials file as blanked, not foreign", async () => {
+		const { world, manager, worktree } = await setup();
+		await writeGlobalClaudeState(world);
+		const profile = await manager.mintProfile(
+			WORKSPACE_IDS[0],
+			worktree,
+			managedCredentials("claude123"),
+		);
+		await writeFile(
+			join(profile, ".credentials.json"),
+			JSON.stringify({
+				claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0 },
+				trayManagedAccount: "claude123",
+			}),
+			"utf8",
+		);
+
+		const failure = await manager
+			.readProfileCredentials(WORKSPACE_IDS[0])
+			.then(
+				() => null,
+				(error: unknown) => error,
+			);
+
+		expect(failure).toBeInstanceOf(BlankedCredentialsError);
+		expect((failure as BlankedCredentialsError).trayManagedAccount).toBe(
+			"claude123",
+		);
+	});
 
 	test("treats signed-out JSON without claudeAiOauth as absent", async () => {
 		const { world, manager } = await setup();

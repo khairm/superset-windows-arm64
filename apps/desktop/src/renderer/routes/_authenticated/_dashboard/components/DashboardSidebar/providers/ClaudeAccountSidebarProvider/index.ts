@@ -1,4 +1,5 @@
 export {
+	type ClaudeAccountSidebarAccount,
 	type ClaudeAccountSidebarEntry,
 	ClaudeAccountSidebarProvider,
 	useClaudeAccountSidebarEntry,

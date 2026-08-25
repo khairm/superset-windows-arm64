@@ -1,1 +1,5 @@
-export { formatResetIn, formatResetLabel } from "./formatResetTime";
+export {
+	formatResetCompact,
+	formatResetIn,
+	formatResetLabel,
+} from "./formatResetTime";

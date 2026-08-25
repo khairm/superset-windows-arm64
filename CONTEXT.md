@@ -35,3 +35,7 @@ A pinned workspace whose account crosses the trigger lines flips to Following, p
 
 **Trigger lines**:
 The tray-owned usage thresholds meaning "about to run out". One machine-wide definition, tuned only in the tray.
+
+**Pace colour**:
+How a percentage is coloured: by how its remaining budget compares to the time left in its window, not by the number alone. The tray, the round display and the app share the same bands.
+_Avoid_: usage colour, threshold colour

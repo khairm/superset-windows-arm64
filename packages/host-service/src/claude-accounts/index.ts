@@ -18,6 +18,7 @@ import {
 import { WorkspaceLockBusyError, WorkspaceLocks } from "./locks";
 import { PiClient, validateAccountSlug } from "./pi-client";
 import {
+	BlankedCredentialsError,
 	ClaudeProfileManager,
 	type CredentialFileState,
 	credentialsFromToken,
@@ -731,6 +732,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					const current = await this.readProfileCredentialsForCache(
 						workspaceId,
 						true,
+						true,
 					);
 					if (row.claudeAccountSlug === null) {
 						await this.refreshFollowing(workspaceId, identity, roster, current);
@@ -1219,6 +1221,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private async readProfileCredentialsForCache(
 		workspaceId: string,
 		knownExists?: boolean,
+		revalidate = false,
 	): Promise<ManagedCredentials | null> {
 		const profileExists =
 			knownExists ?? (await this.profiles.profileExists(workspaceId));
@@ -1226,7 +1229,10 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			this.credentialCache.delete(workspaceId);
 			return null;
 		}
-		if (this.credentialCache.has(workspaceId)) {
+		// revalidate: the CLI can blank the file on disk underneath a warm cache
+		// entry (failed refresh); the keep-fresh tick re-reads so that state is
+		// detected and repaired instead of trusted away.
+		if (!revalidate && this.credentialCache.has(workspaceId)) {
 			return this.credentialCache.get(workspaceId) ?? null;
 		}
 		try {
@@ -1237,6 +1243,22 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return credentials;
 		} catch (error) {
 			this.credentialCache.set(workspaceId, null);
+			if (error instanceof BlankedCredentialsError) {
+				this.deps.log.error(
+					"Claude blanked this workspace's managed credentials; rewriting them",
+					{
+						workspaceId,
+						trayManagedAccount: error.trayManagedAccount,
+						path: error.path,
+					},
+				);
+				this.setWarningCause(
+					workspaceId,
+					"blanked",
+					"A failed Claude token refresh emptied this workspace's credentials. Superset is restoring them from the Pi.",
+				);
+				return null;
+			}
 			this.deps.log.warn(
 				"Existing Claude profile credentials could not seed last-good cache",
 				{
@@ -1400,6 +1422,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			credentials,
 		);
 		this.cacheCredentials(workspaceId, credentials);
+		this.setWarningCause(workspaceId, "blanked", null);
 	}
 
 	private async removeWorkspaceCredentials(workspaceId: string): Promise<void> {
@@ -1407,6 +1430,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			this.profiles.profileDirFor(workspaceId),
 		);
 		this.credentialCache.set(workspaceId, null);
+		this.setWarningCause(workspaceId, "blanked", null);
 	}
 
 	private async seedTokenCache(workspaceIds: readonly string[]): Promise<void> {

@@ -14,13 +14,26 @@ import {
 	claudeWorkspaceAccountStatesQueryKey,
 } from "renderer/hooks/host-service/useClaudeAccounts";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import {
+	FIVE_HOUR_WINDOW_MS,
+	type UsagePaceLevel,
+	usagePaceLevel,
+	WEEKLY_WINDOW_MS,
+} from "../../utils/claudeUsagePace";
 import { KeyedEntryStore, useKeyedEntry } from "../KeyedEntryStore";
 
 const SIDEBAR_ACCOUNT_STALE_TIME_MS = 60_000;
+const SIDEBAR_ACCOUNT_REFETCH_INTERVAL_MS = 60_000;
 
-interface ClaudeAccountSidebarAccount {
+export interface ClaudeAccountSidebarAccount {
 	slug: string;
 	fivePct: number | null;
+	sevenPct: number | null;
+	fablePct: number | null;
+	/** null exactly when the matching percent is null. */
+	fivePace: UsagePaceLevel | null;
+	sevenPace: UsagePaceLevel | null;
+	fablePace: UsagePaceLevel | null;
 }
 
 export interface ClaudeAccountSidebarEntry {
@@ -43,7 +56,12 @@ function entriesEqual(
 		left.state?.warning?.kind === right.state?.warning?.kind &&
 		left.state?.warning?.message === right.state?.warning?.message &&
 		left.account?.slug === right.account?.slug &&
-		left.account?.fivePct === right.account?.fivePct
+		left.account?.fivePct === right.account?.fivePct &&
+		left.account?.sevenPct === right.account?.sevenPct &&
+		left.account?.fablePct === right.account?.fablePct &&
+		left.account?.fivePace === right.account?.fivePace &&
+		left.account?.sevenPace === right.account?.sevenPace &&
+		left.account?.fablePace === right.account?.fablePace
 	);
 }
 
@@ -101,15 +119,63 @@ export function ClaudeAccountSidebarProvider({
 			return getHostServiceClientByUrl(hostUrl).claudeAccounts.roster.query();
 		},
 		staleTime: SIDEBAR_ACCOUNT_STALE_TIME_MS,
+		refetchInterval: SIDEBAR_ACCOUNT_REFETCH_INTERVAL_MS,
+		// A blurred window counts as unfocused here, which would otherwise park
+		// the poll and freeze the percentages the moment the user alt-tabs. The
+		// interval stays unconditional: gating it on document.hidden lets a poll
+		// that fires while minimized clear the interval for good.
+		refetchIntervalInBackground: true,
+		// dataUpdatedAt is already tracked because the join memo reads it; listing
+		// it explicitly keeps the re-pace alive if that read ever moves.
+		notifyOnChangeProps: ["data", "dataUpdatedAt"],
 	});
+	const statesByWorkspaceId = useMemo(
+		() =>
+			new Map(
+				(states.data ?? []).map((state) => [state.workspaceId, state] as const),
+			),
+		[states.data],
+	);
 	const entries = useMemo(() => {
-		const statesByWorkspaceId = new Map(
-			(states.data ?? []).map((state) => [state.workspaceId, state] as const),
-		);
+		const now = Date.now();
 		const accountsBySlug = new Map(
 			(roster.data?.accounts ?? []).map((account) => [
 				account.slug,
-				{ slug: account.slug, fivePct: account.fivePct },
+				{
+					slug: account.slug,
+					fivePct: account.fivePct,
+					sevenPct: account.sevenPct,
+					fablePct: account.fablePct,
+					fivePace:
+						account.fivePct === null
+							? null
+							: usagePaceLevel(
+									account.fivePct,
+									account.fiveResetsAt,
+									FIVE_HOUR_WINDOW_MS,
+									now,
+								),
+					sevenPace:
+						account.sevenPct === null
+							? null
+							: usagePaceLevel(
+									account.sevenPct,
+									account.sevenResetsAt,
+									WEEKLY_WINDOW_MS,
+									now,
+								),
+					// Fable shares the weekly reset boundary; the roster does not
+					// carry a separate fableResetsAt.
+					fablePace:
+						account.fablePct === null
+							? null
+							: usagePaceLevel(
+									account.fablePct,
+									account.sevenResetsAt,
+									WEEKLY_WINDOW_MS,
+									now,
+								),
+				},
 			]),
 		);
 		return new Map(
@@ -122,7 +188,9 @@ export function ClaudeAccountSidebarProvider({
 				return [workspaceId, { state, account }] as const;
 			}),
 		);
-	}, [workspaceIds, states.data, roster.data]);
+		// dataUpdatedAt: each poll re-paces the percentages against the clock even
+		// when the roster payload is unchanged.
+	}, [workspaceIds, statesByWorkspaceId, roster.data, roster.dataUpdatedAt]);
 
 	store.replaceEntries(entries);
 	useEffect(() => store.flushNotifications());

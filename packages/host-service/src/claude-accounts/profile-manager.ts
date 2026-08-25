@@ -93,6 +93,34 @@ const managedCredentialsSchema = z
 		trayManagedAccount: z.string().min(1).nullable(),
 	})
 	.passthrough();
+// When a refresh fails (inevitable with the sentinel refresh token) the CLI
+// empties the token fields in place, refreshToken included — so the sentinel
+// is expected to be GONE from a blanked file and is deliberately not checked.
+// The surviving trayManagedAccount key is the discriminator: it marks the file
+// as ours to repair rather than a foreign login to leave alone.
+const blankedCredentialsSchema = z
+	.object({
+		claudeAiOauth: z
+			.object({
+				accessToken: z.literal(""),
+				expiresAt: z.literal(0),
+			})
+			.passthrough(),
+		trayManagedAccount: z.string().min(1).nullable(),
+	})
+	.passthrough();
+
+export class BlankedCredentialsError extends Error {
+	constructor(
+		readonly path: string,
+		readonly trayManagedAccount: string | null,
+	) {
+		super(
+			`Claude credentials at ${path} were blanked in place by a failed token refresh`,
+		);
+		this.name = "BlankedCredentialsError";
+	}
+}
 
 function isMissing(error: unknown): boolean {
 	return (
@@ -395,6 +423,13 @@ export class ClaudeProfileManager {
 		}
 		const parsed = managedCredentialsSchema.safeParse(raw);
 		if (!parsed.success) {
+			const blanked = blankedCredentialsSchema.safeParse(raw);
+			if (blanked.success) {
+				throw new BlankedCredentialsError(
+					path,
+					blanked.data.trayManagedAccount,
+				);
+			}
 			throw new Error(
 				`Claude credentials failed validation at ${path}: ${z.prettifyError(parsed.error)}`,
 			);
