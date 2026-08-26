@@ -242,6 +242,7 @@ function V2WorkspaceLayout() {
 					name={heldWorkspace.name}
 					branch={heldWorkspace.branch}
 					startedAt={new Date(heldWorkspace.createdAt).getTime()}
+					isSession={heldWorkspace.type === "session"}
 				/>
 			</StateScreenShell>
 		);

@@ -18,35 +18,36 @@ import {
 	useState,
 } from "react";
 import { HiOutlineCog6Tooth } from "react-icons/hi2";
-import { HiringBanner } from "renderer/components/HiringBanner";
 import { NotificationBusPill } from "renderer/components/NotificationBusPill";
-import { StarNagCard } from "renderer/components/StarNagCard";
+import {
+	SidebarCardSlot,
+	useHiringCard,
+	usePaymentFailedCard,
+	useStarNagCard,
+} from "renderer/components/SidebarCardSlot";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-import { useInlineWorkspacePortsEnabled } from "renderer/stores/inline-workspace-ports";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { DashboardSidebarBulkActions } from "./components/DashboardSidebarBulkActions";
 import { DashboardSidebarCloudSection } from "./components/DashboardSidebarCloudSection";
 import { DashboardSidebarHeader } from "./components/DashboardSidebarHeader";
 import { DashboardSidebarHoverCardOverlay } from "./components/DashboardSidebarHoverCardOverlay";
 import { DashboardSidebarPinnedSection } from "./components/DashboardSidebarPinnedSection";
-import { DashboardSidebarPortsList } from "./components/DashboardSidebarPortsList";
 import { DashboardSidebarProjectSection } from "./components/DashboardSidebarProjectSection";
 import { DashboardSidebarSectionRenameProvider } from "./components/DashboardSidebarSectionRenameContext";
 import { DashboardSidebarSessionsSection } from "./components/DashboardSidebarSessionsSection";
 import { DashboardSidebarWorkspacesHeader } from "./components/DashboardSidebarWorkspacesHeader";
 import { SectionDragSpacer } from "./components/SectionDragSpacer";
-import { V2SetupScriptCard } from "./components/V2SetupScriptCard";
+import { useV2SetupScriptCard } from "./components/V2SetupScriptCard";
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
 import { useDashboardSidebarDnd } from "./hooks/useSidebarDnd";
 import { ClaudeAccountSidebarProvider } from "./providers/ClaudeAccountSidebarProvider";
 import { DashboardSidebarDndProvider } from "./providers/DashboardSidebarDndProvider";
 import { DashboardSidebarHoverProvider } from "./providers/DashboardSidebarHoverProvider";
-import { DashboardSidebarPortsProvider } from "./providers/DashboardSidebarPortsProvider";
 import { DashboardSidebarSelectionProvider } from "./providers/DashboardSidebarSelectionProvider";
 import {
 	DashboardSidebarWorkspaceStatusProvider,
@@ -188,7 +189,6 @@ export function DashboardSidebar({
 	const settingsHotkey = useHotkeyDisplay("OPEN_SETTINGS").text;
 	const isSettingsOpen = !!matchRoute({ to: "/settings", fuzzy: true });
 	const { activeHostUrl } = useLocalHostService();
-	const inlineWorkspacePortsEnabled = useInlineWorkspacePortsEnabled();
 	const v2RouteMatch = matchRoute({ to: "/v2-workspace/$workspaceId" });
 	const activeV2WorkspaceId = v2RouteMatch ? v2RouteMatch.workspaceId : null;
 	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
@@ -468,6 +468,17 @@ export function DashboardSidebar({
 		reorderProjects(nextOrder);
 	}, [groups, reorderProjects]);
 
+	// Ordered by priority for the single card slot below — blocking first,
+	// then actionable, then nags.
+	const paymentFailedCard = usePaymentFailedCard({ surface: "v2" });
+	const setupScriptCard = useV2SetupScriptCard({
+		hostUrl: activeHostUrl,
+		projectId: activeV2Project?.id ?? null,
+		projectName: activeV2Project?.name ?? null,
+	});
+	const starNagCard = useStarNagCard({ isCollapsed });
+	const hiringCard = useHiringCard({ surface: "v2" });
+
 	// (ACTIVE-FIRST) (HOVER-FREEZE) dnd-kit hands back the whole display order
 	// after a project move, so reconstruct the single move it made: exactly one
 	// row travels, every other shifts by one, so the largest displacement names
@@ -537,7 +548,8 @@ export function DashboardSidebar({
 							targets={sidebarWorkspaceHostTargets}
 							activeWorkspaceId={activeV2WorkspaceId}
 						>
-							<DashboardSidebarPortsProvider enabled={!isCollapsed}>
+							{/* Port data comes from the single DashboardSidebarPortsProvider in the
+							    dashboard layout, which wraps this sidebar. */}
 							<DashboardSidebarHoverCardOverlay>
 								<DashboardSidebarDndProvider
 									// (HOVER-FREEZE) The DnD order must be the RENDERED
@@ -607,18 +619,15 @@ export function DashboardSidebar({
 											)}
 											<SectionDragSpacer />
 										</OverflowFadeContainer>
-										{!isCollapsed && !inlineWorkspacePortsEnabled && (
-											<DashboardSidebarPortsList />
-										)}
-										{!isCollapsed && activeV2Project && activeHostUrl && (
-											<V2SetupScriptCard
-												hostUrl={activeHostUrl}
-												projectId={activeV2Project.id}
-												projectName={activeV2Project.name}
-											/>
-										)}
-										<HiringBanner surface="v2" isCollapsed={isCollapsed} />
-										<StarNagCard isCollapsed={isCollapsed} />
+										<SidebarCardSlot
+											isCollapsed={isCollapsed}
+											entries={[
+												paymentFailedCard,
+												setupScriptCard,
+												starNagCard,
+												hiringCard,
+											]}
+										/>
 										{/* (CLOUD-SEVERANCE-P2) The organization menu used to
 										    anchor this footer: switch org, manage members, log
 										    out. All three are gone — there is one organization,
@@ -662,7 +671,6 @@ export function DashboardSidebar({
 									</div>
 								</DashboardSidebarDndProvider>
 							</DashboardSidebarHoverCardOverlay>
-							</DashboardSidebarPortsProvider>
 						</DashboardSidebarWorkspaceStatusProvider>
 					</ClaudeAccountSidebarProvider>
 				</DashboardSidebarHoverProvider>

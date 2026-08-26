@@ -108,13 +108,6 @@ export function htmlEnvTransformPlugin(): Plugin {
 					process.env.NEXT_PUBLIC_API_URL || "https://api.cloud-severed.invalid",
 				)
 				.replace(
-					/%NEXT_PUBLIC_ELECTRIC_URL%/g,
-					new URL(
-						process.env.NEXT_PUBLIC_ELECTRIC_URL ||
-							"https://electric.cloud-severed.invalid",
-					).origin,
-				)
-				.replace(
 					/%NEXT_PUBLIC_STREAMS_URL%/g,
 					process.env.NEXT_PUBLIC_STREAMS_URL || "https://streams.cloud-severed.invalid",
 				)

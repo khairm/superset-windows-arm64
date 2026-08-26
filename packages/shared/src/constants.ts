@@ -1,3 +1,5 @@
+import type { TriggerConfigInput } from "./automation-triggers";
+
 // Auth
 export const AUTH_PROVIDERS = ["github", "google"] as const;
 export type AuthProvider = (typeof AUTH_PROVIDERS)[number];
@@ -199,7 +201,34 @@ export const FEATURE_FLAGS = {
 	 * visibility rather than access.
 	 */
 	CLOUD_WORKSPACES: "cloud-workspaces",
+	/**
+	 * Shows the Plugins page in the v2 dashboard sidebar. Audience is a
+	 * release condition on the flag (email contains @superset.sh, plus an
+	 * override for the local dev account, which is not on that domain) so
+	 * widening the rollout never needs a release. Everything the page does is
+	 * desktop-local; the flag controls visibility, not capability.
+	 */
+	PLUGINS: "plugins",
 } as const;
+
+/**
+ * The trigger kinds the server accepts on save. The AUTOMATION_EVENT_TRIGGERS
+ * flag payload gates which of these each user's Add Trigger menu offers;
+ * flipping a provider off for everyone is deleting its line here.
+ */
+export const LAUNCHED_TRIGGER_KINDS = [
+	"schedule",
+	"webhook",
+	"github",
+	"slack",
+	"linear",
+	"sentry",
+	"notion",
+	"circleback",
+	"microsoft_teams",
+	"google_calendar",
+	"gmail",
+] as const satisfies readonly TriggerConfigInput["kind"][];
 
 /**
  * What a cloud workspace sandbox holds in place of a real model API key. The

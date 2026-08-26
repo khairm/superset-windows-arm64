@@ -271,7 +271,11 @@ export function DashboardSidebarWorkspaceItem({
 					isCreatePending={isPending}
 					pullRequestState={pullRequest?.state ?? null}
 					isNonGit={isNonGit}
-					aria-label={isPending ? `Creating workspace: ${name}` : undefined}
+					aria-label={
+						isPending
+							? `Creating ${workspace.type === "session" ? "session" : "workspace"}: ${name}`
+							: undefined
+					}
 				/>
 				{!isPending && hostType === "local-device" && (
 					<ClaudeAccountIndicator workspaceId={id} collapsed />

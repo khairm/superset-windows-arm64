@@ -3268,8 +3268,8 @@ async function createTerminalSessionUnlocked(
 			hostAgentHookUrl: getHostAgentHookUrl(),
 		}),
 		// Usage-tab default account: provider CLIs typed or preset-launched in
-		// this terminal run on the selected login. Baked at spawn — existing
-		// terminals keep the account they started with.
+		// this terminal run on the selected login. Baked at spawn as the fast
+		// path; the agent wrappers re-resolve later switches at launch time.
 		...resolveDefaultAccountTerminalEnv(db),
 		...(claudeProfileDir ? { CLAUDE_CONFIG_DIR: claudeProfileDir } : {}),
 	};
@@ -3526,6 +3526,20 @@ async function createTerminalSessionUnlocked(
 			})
 		: Promise.resolve();
 
+	// The tracker's leaked-mode reclaim needs the session to broadcast disarm
+	// bytes, but the session literal below needs the tracker — close over a
+	// ref assigned right after construction.
+	let reclaimSession: TerminalSession | null = null;
+	const modeTracker = createModeTracker(cols, rows, {
+		onLeakedInputModeDisarm(bytes) {
+			const s = reclaimSession;
+			if (!s || !isCurrentLiveSession(s)) return;
+			// deliverOutput feeds the tracker too, so its modes (and the next
+			// attach preamble) converge with what clients were just told.
+			deliverOutput(s, bytes);
+		},
+	});
+
 	const session: TerminalSession = {
 		terminalId,
 		workspaceId,
@@ -3567,7 +3581,7 @@ async function createTerminalSessionUnlocked(
 		initialCommandQueued: isAdopted,
 		launchShellName: basename(shell),
 		portHintDecoder: new StringDecoder("utf8"),
-		modeTracker: createModeTracker(cols, rows),
+		modeTracker,
 		adoptionReplaySettled: Promise.resolve(),
 		epoch: randomBytes(8).toString("hex"),
 		outputSeq: 0,
@@ -3578,6 +3592,7 @@ async function createTerminalSessionUnlocked(
 		resizeGeneration: 0,
 		focusedSockets: new Set(),
 	};
+	reclaimSession = session;
 	const overwrittenSession = sessions.get(terminalId);
 	sessions.set(terminalId, session);
 	portManager.upsertSession(terminalId, workspaceId, pty.pid);

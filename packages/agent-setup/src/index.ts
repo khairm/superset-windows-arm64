@@ -64,6 +64,11 @@ export {
 	ensureClaudeManagedHooksAt,
 	ensureCodexManagedHooksAt,
 } from "./agent-wrappers-claude-codex-opencode";
+export {
+	type ProfileProvisionReport,
+	provisionClaudeProfile,
+	provisionCodexProfile,
+} from "./provider-profiles";
 
 export { getCommandShellArgs, getShellArgs, getShellEnv };
 
@@ -75,4 +80,9 @@ export {
 	readSharedDisabledAgentIds,
 	writeSharedDisabledAgentIds,
 } from "./disabled-agent-hooks";
+export {
+	readExternallyConfiguredMcpServers,
+	type SyncManagedMcpServersOptions,
+	syncManagedMcpServers,
+} from "./managed-mcp-servers";
 export { getBinDir, resolveSupersetHomeDir } from "./paths";

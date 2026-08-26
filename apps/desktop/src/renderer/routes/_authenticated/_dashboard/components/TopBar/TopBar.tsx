@@ -1,3 +1,4 @@
+import { cn } from "@superset/ui/utils";
 import { useMatchRoute, useParams } from "@tanstack/react-router";
 import { HiOutlineWifi } from "react-icons/hi2";
 import { ZoomStable } from "renderer/components/ZoomStable";
@@ -11,6 +12,7 @@ import { SidebarToggle } from "../SidebarToggle";
 import { OpenInMenuButton } from "./components/OpenInMenuButton";
 import { ResourceConsumption } from "./components/ResourceConsumption";
 import { RightSidebarToggle } from "./components/RightSidebarToggle";
+import { TopBarPortsDropdown } from "./components/TopBarPortsDropdown";
 import { V2WorkspaceTitle } from "./components/V2WorkspaceTitle";
 import { WindowControls } from "./components/WindowControls";
 
@@ -33,6 +35,8 @@ export function TopBar() {
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const isSidebarOpen = useWorkspaceSidebarStore((s) => s.isOpen);
 	const isSidebarCollapsed = useWorkspaceSidebarStore((s) => s.isCollapsed());
+	const isPullRequestsRoute =
+		matchRoute({ to: "/pull-requests", fuzzy: true }) !== false;
 	// Default to Mac layout while loading to avoid overlap with traffic lights
 	const isMac = platform === undefined || platform === "darwin";
 	// In v2 the expanded sidebar lives outside the TopBar column, so the TopBar
@@ -54,7 +58,12 @@ export function TopBar() {
 			// spacer + title filler), never on this container: `no-drag` carve-outs
 			// under a `drag` ancestor are lost inside zoomed/masked/scrollable
 			// wrappers, which makes the whole bar swallow clicks.
-			className="gap-2 h-12 w-full flex items-center justify-between bg-muted/45 relative dark:bg-muted/35"
+			className={cn(
+				"gap-2 h-12 w-full flex items-center justify-between relative dark:bg-muted/35",
+				isPullRequestsRoute && isSidebarCollapsed
+					? "bg-sidebar"
+					: "bg-muted/45",
+			)}
 			style={barStyle}
 		>
 			<div className="flex items-center h-full">
@@ -82,6 +91,9 @@ export function TopBar() {
 			    that should come back: it lists organizations from the cloud and its
 			    only working action would be a log-out that cannot happen. */}
 			<div className="flex items-center gap-3 h-full pr-4 shrink-0">
+				{/* When the expanded sidebar hosts the chrome, its header also hosts
+				    the ports pill — don't render a duplicate here. */}
+				{!sidebarHostsChrome && <TopBarPortsDropdown />}
 				{!isOnline && (
 					<div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
 						<HiOutlineWifi className="size-3.5" />

@@ -7,6 +7,7 @@ import {
 	HiOutlineCommandLine,
 	HiOutlineCpuChip,
 	HiOutlineFolder,
+	HiOutlineGlobeAlt,
 	HiOutlineLink,
 	HiOutlinePaintBrush,
 	HiOutlineShieldCheck,
@@ -27,6 +28,7 @@ type SettingsRoute =
 	| "/settings/ringtones"
 	| "/settings/keyboard"
 	| "/settings/behavior"
+	| "/settings/browser"
 	| "/settings/git"
 	| "/settings/agents"
 	| "/settings/terminal"
@@ -105,6 +107,12 @@ const SECTION_GROUPS: SectionGroup[] = [
 				section: "links",
 				label: "Links",
 				icon: <HiOutlineLink className="h-4 w-4" />,
+			},
+			{
+				id: "/settings/browser",
+				section: "browser",
+				label: "Browser",
+				icon: <HiOutlineGlobeAlt className="h-4 w-4" />,
 			},
 			{
 				id: "/settings/models",

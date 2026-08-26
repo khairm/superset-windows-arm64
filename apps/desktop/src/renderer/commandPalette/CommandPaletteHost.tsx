@@ -9,6 +9,7 @@ import { CommandPalette } from "./ui/CommandPalette/CommandPalette";
 import { DeleteWorkspaceMount } from "./ui/DeleteWorkspaceMount/DeleteWorkspaceMount";
 import { DestroyWorkspaceMount } from "./ui/DestroyWorkspaceMount/DestroyWorkspaceMount";
 import { FolderImportMount } from "./ui/FolderImportMount/FolderImportMount";
+import { QuickCreateWorkspaceMount } from "./ui/QuickCreateWorkspaceMount/QuickCreateWorkspaceMount";
 import { RemoveFromSidebarMount } from "./ui/RemoveFromSidebarMount/RemoveFromSidebarMount";
 import { SetPreferredOpenInAppMount } from "./ui/SetPreferredOpenInAppMount/SetPreferredOpenInAppMount";
 
@@ -27,6 +28,7 @@ export function CommandPaletteHost({ children }: { children?: ReactNode }) {
 			<RemoveFromSidebarMount />
 			<SetPreferredOpenInAppMount />
 			<FolderImportMount />
+			<QuickCreateWorkspaceMount />
 			{children}
 		</CommandContextProvider>
 	);

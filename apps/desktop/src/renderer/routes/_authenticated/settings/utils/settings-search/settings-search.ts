@@ -1,3 +1,7 @@
+import {
+	INTEGRATIONS,
+	type IntegrationProvider,
+} from "@superset/shared/integrations";
 import type { SettingsSection } from "renderer/stores/settings-state";
 
 export const SETTING_ITEM_ID = {
@@ -33,6 +37,9 @@ export const SETTING_ITEM_ID = {
 	BEHAVIOR_RECYCLE_BIN_RETENTION: "behavior-recycle-bin-retention",
 	BEHAVIOR_STAR_GITHUB: "behavior-star-github",
 
+	BROWSER_HOMEPAGE: "browser-homepage",
+	BROWSER_IMPORT_HISTORY: "browser-import-history",
+
 	GIT_BRANCH_PREFIX: "git-branch-prefix",
 	GIT_DELETE_LOCAL_BRANCH: "git-delete-local-branch",
 	GIT_WORKTREE_LOCATION: "git-worktree-location",
@@ -67,11 +74,6 @@ export const SETTING_ITEM_ID = {
 	// (CLOUD-SEVERANCE-P2)
 	EXPERIMENTAL_LOCAL_CHAT: "experimental-local-chat",
 
-	INTEGRATIONS_LINEAR: "integrations-linear",
-	INTEGRATIONS_GITHUB: "integrations-github",
-	INTEGRATIONS_SLACK: "integrations-slack",
-	INTEGRATIONS_GOOGLE: "integrations-google",
-
 	BILLING_OVERVIEW: "billing-overview",
 	BILLING_PLANS: "billing-plans",
 	BILLING_USAGE: "billing-usage",
@@ -103,8 +105,18 @@ export const SETTING_ITEM_ID = {
 	HOST_DELETE: "host-delete",
 } as const;
 
+/** One settings-search row per roster entry, id derived from the provider. */
+export function integrationSettingItemId<P extends IntegrationProvider>(
+	provider: P,
+): `integrations-${P}` {
+	return `integrations-${provider}`;
+}
+
+type IntegrationSettingItemId = `integrations-${IntegrationProvider}`;
+
 export type SettingItemId =
-	(typeof SETTING_ITEM_ID)[keyof typeof SETTING_ITEM_ID];
+	| (typeof SETTING_ITEM_ID)[keyof typeof SETTING_ITEM_ID]
+	| IntegrationSettingItemId;
 
 export interface SettingsItem {
 	id: SettingItemId;
@@ -125,7 +137,16 @@ export interface SettingsItem {
  */
 export type SettingVariant = "v1" | "v2" | "shared";
 
+const INTEGRATION_ITEM_VARIANTS = Object.fromEntries(
+	INTEGRATIONS.map((integration) => [
+		integrationSettingItemId(integration.provider),
+		"shared",
+	]),
+) as Record<IntegrationSettingItemId, SettingVariant>;
+
 export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
+	...INTEGRATION_ITEM_VARIANTS,
+
 	[SETTING_ITEM_ID.ACCOUNT_PROFILE]: "shared",
 	[SETTING_ITEM_ID.ACCOUNT_SIGNOUT]: "shared",
 	[SETTING_ITEM_ID.ACCOUNT_DELETE]: "shared",
@@ -158,6 +179,10 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	// (RECYCLE-BIN) the bin lives in the v2 sidebar + kanban only.
 	[SETTING_ITEM_ID.BEHAVIOR_RECYCLE_BIN_RETENTION]: "v2",
 	[SETTING_ITEM_ID.BEHAVIOR_STAR_GITHUB]: "shared",
+
+	// The in-app browser pane is a v2-only surface.
+	[SETTING_ITEM_ID.BROWSER_HOMEPAGE]: "v2",
+	[SETTING_ITEM_ID.BROWSER_IMPORT_HISTORY]: "v2",
 
 	// Branch prefix exists in both UIs — v1 `GitSettings`, v2 `V2GitSettings`.
 	[SETTING_ITEM_ID.GIT_BRANCH_PREFIX]: "shared",
@@ -193,11 +218,6 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING]: "v2",
 	// (CLOUD-SEVERANCE-P2) the local chat pane only exists in the v2 workspace.
 	[SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT]: "v2",
-
-	[SETTING_ITEM_ID.INTEGRATIONS_LINEAR]: "shared",
-	[SETTING_ITEM_ID.INTEGRATIONS_GITHUB]: "shared",
-	[SETTING_ITEM_ID.INTEGRATIONS_SLACK]: "shared",
-	[SETTING_ITEM_ID.INTEGRATIONS_GOOGLE]: "shared",
 
 	[SETTING_ITEM_ID.BILLING_OVERVIEW]: "shared",
 	[SETTING_ITEM_ID.BILLING_PLANS]: "shared",
@@ -265,6 +285,74 @@ export function isItemAllowedForVariant(
 	if (variant === "shared") return true;
 	return isV2 ? variant === "v2" : variant === "v1";
 }
+
+/**
+ * Search keywords per integration; everything else (title, description, id)
+ * comes from the shared roster. Exhaustive so a new roster entry fails
+ * typecheck until it gets keywords.
+ */
+const INTEGRATION_KEYWORDS: Record<IntegrationProvider, string[]> = {
+	linear: ["issues", "tasks", "sync", "project management"],
+	github: [
+		"repos",
+		"repositories",
+		"pull requests",
+		"pr",
+		"sync",
+		"version control",
+		"git",
+	],
+	slack: [
+		"messages",
+		"conversations",
+		"tasks",
+		"chat",
+		"sync",
+		"communication",
+	],
+	notion: [
+		"pages",
+		"databases",
+		"data sources",
+		"comments",
+		"docs",
+		"knowledge",
+	],
+	microsoft_teams: [
+		"teams",
+		"microsoft",
+		"channels",
+		"messages",
+		"chat",
+		"communication",
+	],
+	sentry: ["errors", "issues", "monitoring", "alerts", "triage"],
+	google: [
+		"calendar",
+		"gmail",
+		"email",
+		"mail",
+		"events",
+		"triggers",
+		"automations",
+	],
+};
+
+const INTEGRATION_SEARCH_ITEMS: SettingsItem[] = INTEGRATIONS.map(
+	(integration) => ({
+		id: integrationSettingItemId(integration.provider),
+		section: "integrations",
+		title: integration.label,
+		description: integration.description,
+		keywords: [
+			"integrations",
+			integration.label.toLowerCase(),
+			...INTEGRATION_KEYWORDS[integration.provider],
+			"connect",
+			"connected",
+		],
+	}),
+);
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
 	{
@@ -765,6 +853,40 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 		],
 	},
 	{
+		id: SETTING_ITEM_ID.BROWSER_HOMEPAGE,
+		section: "browser",
+		title: "Browser homepage",
+		description: "The page new in-app browser tabs open to",
+		keywords: [
+			"browser",
+			"homepage",
+			"home",
+			"start page",
+			"default url",
+			"new tab",
+			"landing",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.BROWSER_IMPORT_HISTORY,
+		section: "browser",
+		title: "Import settings from another browser",
+		description:
+			"Copy browsing history and logins from Chrome, Brave, Arc, or another Chromium browser",
+		keywords: [
+			"browser",
+			"import",
+			"history",
+			"logins",
+			"cookies",
+			"chrome",
+			"brave",
+			"arc",
+			"chromium",
+			"migrate",
+		],
+	},
+	{
 		id: SETTING_ITEM_ID.AGENTS_ENABLED,
 		section: "agents",
 		title: "Enabled agents",
@@ -1137,15 +1259,18 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 	{
 		id: SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS,
 		section: "experimental",
-		title: "Inline workspace ports",
+		title: "Ports in top bar dropdown",
 		description:
-			"Show detected ports under each workspace in the sidebar instead of a single panel at the bottom",
+			"Show detected ports as a dropdown in the top bar instead of a chip under each workspace",
 		keywords: [
 			"experimental",
 			"ports",
 			"port",
 			"inline",
 			"sidebar",
+			"topbar",
+			"top bar",
+			"dropdown",
 			"workspace",
 			"workspaces",
 			"dev server",
@@ -1245,78 +1370,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"install",
 		],
 	},
-	{
-		id: SETTING_ITEM_ID.INTEGRATIONS_LINEAR,
-		section: "integrations",
-		title: "Linear",
-		description: "Sync issues bidirectionally with Linear",
-		keywords: [
-			"integrations",
-			"linear",
-			"issues",
-			"tasks",
-			"sync",
-			"connect",
-			"connected",
-			"project management",
-		],
-	},
-	{
-		id: SETTING_ITEM_ID.INTEGRATIONS_GITHUB,
-		section: "integrations",
-		title: "GitHub",
-		description: "Connect repos and sync pull requests",
-		keywords: [
-			"integrations",
-			"github",
-			"repos",
-			"repositories",
-			"pull requests",
-			"pr",
-			"sync",
-			"connect",
-			"connected",
-			"version control",
-			"git",
-		],
-	},
-	{
-		id: SETTING_ITEM_ID.INTEGRATIONS_SLACK,
-		section: "integrations",
-		title: "Slack",
-		description: "Manage tasks from Slack conversations",
-		keywords: [
-			"integrations",
-			"slack",
-			"messages",
-			"conversations",
-			"tasks",
-			"chat",
-			"sync",
-			"connect",
-			"connected",
-			"communication",
-		],
-	},
-	{
-		id: SETTING_ITEM_ID.INTEGRATIONS_GOOGLE,
-		section: "integrations",
-		title: "Google",
-		description: "Trigger automations from Google Calendar and Gmail",
-		keywords: [
-			"integrations",
-			"google",
-			"calendar",
-			"gmail",
-			"email",
-			"mail",
-			"events",
-			"triggers",
-			"automations",
-			"connect",
-			"connected",
-		],
-	},
+	...INTEGRATION_SEARCH_ITEMS,
 	{
 		id: SETTING_ITEM_ID.BILLING_OVERVIEW,
 		section: "billing",

@@ -20,6 +20,14 @@
 			"types": "./src/git-hook-tolerance.ts",
 			"default": "./src/git-hook-tolerance.ts"
 		},
+		"./integrations": {
+			"types": "./src/integrations.ts",
+			"default": "./src/integrations.ts"
+		},
+		"./plugins": {
+			"types": "./src/plugins/index.ts",
+			"default": "./src/plugins/index.ts"
+		},
 		"./sentry": {
 			"types": "./src/sentry.ts",
 			"default": "./src/sentry.ts"
@@ -132,6 +140,10 @@
 			"types": "./src/agent-launch-request.ts",
 			"default": "./src/agent-launch-request.ts"
 		},
+		"./workspace-attachments": {
+			"types": "./src/workspace-attachments.ts",
+			"default": "./src/workspace-attachments.ts"
+		},
 		"./agent-permissions-migration": {
 			"types": "./src/agent-permissions-migration.ts",
 			"default": "./src/agent-permissions-migration.ts"
@@ -187,6 +199,10 @@
 		"./shell-osc133-cd-scanner": {
 			"types": "./src/shell-osc133-cd-scanner.ts",
 			"default": "./src/shell-osc133-cd-scanner.ts"
+		},
+		"./leaked-input-mode-reclaim": {
+			"types": "./src/leaked-input-mode-reclaim.ts",
+			"default": "./src/leaked-input-mode-reclaim.ts"
 		},
 		"./terminal-title-scanner": {
 			"types": "./src/terminal-title-scanner.ts",

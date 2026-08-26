@@ -44,19 +44,6 @@ export default function AuthenticatedLayout() {
 				    back-button long-press menus (otherwise raw route names leak,
 				    e.g. "(home)"). */}
 				<Stack.Screen name="(home)" options={{ title: "Home" }} />
-				{/* Sits above the home and workspace stacks alike — both composers
-				    open the same sheet into the shared PromptInputProvider tray. */}
-				<Stack.Screen
-					name="attachments"
-					options={{
-						presentation: "formSheet",
-						headerShown: false,
-						// Single detent: multi-detent resizes corrupt expo-image frames.
-						// Content (incl. the screenshots grid) is sized to fit 0.5.
-						sheetAllowedDetents: [0.5],
-						sheetGrabberVisible: true,
-					}}
-				/>
 				<Stack.Screen
 					name="settings/index"
 					options={settingsScreenOptions("Settings")}
@@ -68,10 +55,6 @@ export default function AuthenticatedLayout() {
 				<Stack.Screen
 					name="settings/hosts"
 					options={settingsScreenOptions("Hosts")}
-				/>
-				<Stack.Screen
-					name="settings/presets"
-					options={settingsScreenOptions("Agent presets")}
 				/>
 				<Stack.Screen
 					name="workspace/[id]/index"
@@ -137,7 +120,10 @@ export default function AuthenticatedLayout() {
 						presentation: "formSheet",
 						sheetAllowedDetents: [0.65],
 						sheetGrabberVisible: true,
-						headerShown: false,
+						// The workspace name is the sheet's own centred headline, so
+						// the bar carries no title — only the native close button.
+						...glassHeaderOptions,
+						title: "",
 					}}
 				/>
 				<Stack.Screen
