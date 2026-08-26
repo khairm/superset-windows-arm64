@@ -1463,7 +1463,7 @@ describe("(PAIR-EVICTION-HONEST) a candidate the desktop evicted", () => {
 		const helper = source.slice(
 			source.indexOf("function requireRemoteCandidate("),
 		);
-		const bodyEnd = helper.indexOf("\n}\n");
+		const bodyEnd = helper.search(/\r?\n}\r?\n/);
 		expect(bodyEnd).toBeGreaterThan(0);
 		expect(helper.slice(0, bodyEnd)).toContain(literal);
 	});
