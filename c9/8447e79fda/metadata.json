@@ -3,7 +3,7 @@
   "checkpoint_id": "c98447e79fda",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "FEATURES.md",
     "packages/host-service/src/companion/index.ts",
@@ -18,6 +18,10 @@
       "transcript": "/c9/8447e79fda/0/full.jsonl",
       "content_hash": "/c9/8447e79fda/0/content_hash.txt",
       "prompt": "/c9/8447e79fda/0/prompt.txt"
+    },
+    {
+      "metadata": "/c9/8447e79fda/1/metadata.json",
+      "prompt": ""
     }
   ],
   "token_usage": {
