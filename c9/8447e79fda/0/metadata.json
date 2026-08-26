@@ -1,0 +1,124 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "c98447e79fda",
+  "session_id": "396be207-1dac-4eee-baa5-b58988187754",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-26T23:30:35.680036Z",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "FEATURES.md",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.test.ts",
+    "packages/host-service/src/companion/lifecycle-alerts.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.test.ts",
+    "packages/host-service/src/trpc/router/notifications/companion-lifecycle-sink.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "4bd550f7dce3",
+  "token_usage": {
+    "input_tokens": 27630,
+    "cache_creation_tokens": 1032312,
+    "cache_read_tokens": 42909960,
+    "output_tokens": 202973,
+    "api_call_count": 175
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_016wY2HitV3DhmxwsTeVzLno",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "4bd550f7dce3",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 536,
+        "end": 537,
+        "entry_ids": [
+          "41e7e0cf-1678-416d-8c94-67f75d28ef56"
+        ],
+        "tool_use_id": "toolu_016wY2HitV3DhmxwsTeVzLno"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_016wY2HitV3DhmxwsTeVzLno"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01KtpERvUpJdFM1jTBBUQMM6",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "4bd550f7dce3",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 1082,
+        "end": 1083,
+        "entry_ids": [
+          "3daa6757-49c1-4a1a-82c0-78f84f268237"
+        ],
+        "tool_use_id": "toolu_01KtpERvUpJdFM1jTBBUQMM6"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01KtpERvUpJdFM1jTBBUQMM6"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-26T23:30:35.5505455Z",
+    "agent_lines": 258,
+    "agent_removed": 4,
+    "human_added": 0,
+    "human_modified": 3501,
+    "human_removed": 0,
+    "total_committed": 3759,
+    "total_lines_changed": 3763,
+    "agent_percentage": 6.962529896359287,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
