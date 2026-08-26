@@ -143,34 +143,36 @@ export function PluginDetail({ plugin }: { plugin: PluginCatalogEntry }) {
 				</section>
 			)}
 
-			<section className="mt-8 flex flex-col gap-3">
-				<h2 className="text-sm font-semibold text-foreground">MCP servers</h2>
-				<div className="flex flex-col divide-y divide-border/60 rounded-lg border border-border/60">
-					{Object.entries(plugin.mcpServers).map(([name, config]) => (
-						<div key={name} className="flex items-center gap-3 p-3">
-							<div className="min-w-0 flex-1">
-								<div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
-									{name}
-									<Badge
-										variant="outline"
-										className="h-4 shrink-0 rounded px-1 text-[9px] font-medium tracking-wide text-muted-foreground uppercase"
-									>
-										{"url" in config ? "MCP" : "CLI"}
-									</Badge>
+			{Object.keys(plugin.mcpServers).length > 0 && (
+				<section className="mt-8 flex flex-col gap-3">
+					<h2 className="text-sm font-semibold text-foreground">MCP servers</h2>
+					<div className="flex flex-col divide-y divide-border/60 rounded-lg border border-border/60">
+						{Object.entries(plugin.mcpServers).map(([name, config]) => (
+							<div key={name} className="flex items-center gap-3 p-3">
+								<div className="min-w-0 flex-1">
+									<div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+										{name}
+										<Badge
+											variant="outline"
+											className="h-4 shrink-0 rounded px-1 text-[9px] font-medium tracking-wide text-muted-foreground uppercase"
+										>
+											{"url" in config ? "MCP" : "CLI"}
+										</Badge>
+									</div>
+									<p className="truncate font-mono text-xs text-muted-foreground">
+										{"url" in config
+											? config.url
+											: [config.command, ...(config.args ?? [])].join(" ")}
+									</p>
 								</div>
-								<p className="truncate font-mono text-xs text-muted-foreground">
-									{"url" in config
-										? config.url
-										: [config.command, ...(config.args ?? [])].join(" ")}
-								</p>
 							</div>
-						</div>
-					))}
-				</div>
-				<p className="text-xs text-muted-foreground">
-					Remote servers sign you in the first time an agent uses them.
-				</p>
-			</section>
+						))}
+					</div>
+					<p className="text-xs text-muted-foreground">
+						Remote servers sign you in the first time an agent uses them.
+					</p>
+				</section>
+			)}
 
 			{plugin.skills && plugin.skills.length > 0 && (
 				<section className="mt-8 flex flex-col gap-3">

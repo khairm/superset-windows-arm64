@@ -49,6 +49,10 @@ export function ManageInstalledDialog({
 					<div className="flex flex-col divide-y divide-border/60">
 						{installed.map((entry) => {
 							const plugin = getPluginByName(entry.name);
+							// A catalog entry can carry no servers at all (the
+							// skills-only Superset plugin), so joining blindly
+							// would leave a dangling separator.
+							const serverNames = Object.keys(plugin?.mcpServers ?? {});
 							const isEnabled = entry.enabled !== false;
 							return (
 								<div key={entry.name} className="flex items-center gap-3 py-3">
@@ -60,7 +64,9 @@ export function ManageInstalledDialog({
 										<p className="truncate text-xs text-muted-foreground">
 											v{entry.version}
 											{plugin
-												? ` · ${Object.keys(plugin.mcpServers).join(", ")}`
+												? serverNames.length > 0
+													? ` · ${serverNames.join(", ")}`
+													: ""
 												: " · no longer in the catalog"}
 										</p>
 									</div>
