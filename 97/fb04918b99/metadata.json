@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "97fb04918b99",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "packages/host-service/src/companion/remote-pairing.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/97/fb04918b99/0/metadata.json",
+      "transcript": "/97/fb04918b99/0/full.jsonl",
+      "content_hash": "/97/fb04918b99/0/content_hash.txt",
+      "prompt": "/97/fb04918b99/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12394,
+    "cache_creation_tokens": 130224,
+    "cache_read_tokens": 3848691,
+    "output_tokens": 34179,
+    "api_call_count": 39
+  }
+}
