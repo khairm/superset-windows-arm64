@@ -48,7 +48,13 @@ describe("Claude workspace profile lifecycle", () => {
 		);
 
 		expect(seed.hasCompletedOnboarding).toBe(true);
-		expect(seed.projects[worktree.replaceAll("\\", "/")]).toBeDefined();
+		expect(seed.unpinOpus47LaunchEffort).toBe(true);
+		expect(seed.unpinOpus48LaunchEffort).toBe(true);
+		expect(seed.unpinFable5LaunchEffort).toBe(true);
+		expect(seed.projects[worktree.replaceAll("\\", "/")]).toMatchObject({
+			hasClaudeMdExternalIncludesWarningShown: true,
+			hasClaudeMdExternalIncludesApproved: false,
+		});
 		expect(seed.lastOnboardingVersion).toBeUndefined();
 		expect(
 			world.log.warnEntries.some((entry) => entry.message.includes("optional")),
@@ -74,6 +80,15 @@ describe("Claude workspace profile lifecycle", () => {
 			installMethod: 42,
 			autoUpdates: false,
 			mcpServers: [],
+			respectGitignore: true,
+			teammateDefaultModel: "opus",
+			tipsHistory: { agents: 1 },
+			hasIdeOnboardingBeenShown: { vscode: true },
+			copyOnSelect: "yes",
+			oauthAccount: { accountUuid: "acct" },
+			machineID: "machine",
+			userID: "user",
+			anonymousId: "anon",
 		});
 
 		const profile = await manager.mintProfile(WORKSPACE_IDS[0], worktree, null);
@@ -83,8 +98,18 @@ describe("Claude workspace profile lifecycle", () => {
 
 		expect(seed.lastOnboardingVersion).toBe("2.1.0");
 		expect(seed.autoUpdates).toBe(false);
+		expect(seed.respectGitignore).toBe(true);
+		expect(seed.teammateDefaultModel).toBe("opus");
+		expect(seed.tipsHistory).toEqual({ agents: 1 });
+		expect(seed.hasIdeOnboardingBeenShown).toEqual({ vscode: true });
 		expect(seed.installMethod).toBeUndefined();
 		expect(seed.mcpServers).toBeUndefined();
+		expect(seed.copyOnSelect).toBeUndefined();
+		// Identity/account state must never cross the profile boundary.
+		expect(seed.oauthAccount).toBeUndefined();
+		expect(seed.machineID).toBeUndefined();
+		expect(seed.userID).toBeUndefined();
+		expect(seed.anonymousId).toBeUndefined();
 	});
 
 	test("removes crashed staging residue and completes the mint", async () => {

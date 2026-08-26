@@ -100,6 +100,7 @@ export async function createClaudeTestWorld(
 		HOME: process.env.HOME,
 		SUPERSET_HOME_DIR: process.env.SUPERSET_HOME_DIR,
 		SUPERSET_PTY_DAEMON_SOCKET: process.env.SUPERSET_PTY_DAEMON_SOCKET,
+		CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
 	};
 	const dbPath = join(root, "host.db");
 	let migrated: ReturnType<typeof createMigratedTestDb>;
@@ -114,6 +115,8 @@ export async function createClaudeTestWorld(
 	process.env.HOME = home;
 	process.env.SUPERSET_HOME_DIR = join(root, "superset-home");
 	delete process.env.SUPERSET_PTY_DAEMON_SOCKET;
+	// Tests must not inherit a Superset-managed profile from the running session.
+	delete process.env.CLAUDE_CONFIG_DIR;
 	const log = createRecordingLogger();
 	const events: ClaudeAccountEvent[] = [];
 	let disposed = false;
@@ -139,6 +142,7 @@ export async function createClaudeTestWorld(
 					"SUPERSET_PTY_DAEMON_SOCKET",
 					previous.SUPERSET_PTY_DAEMON_SOCKET,
 				);
+				restoreEnv("CLAUDE_CONFIG_DIR", previous.CLAUDE_CONFIG_DIR);
 				await rm(root, { recursive: true, force: true }).catch(() => {});
 			}
 		},

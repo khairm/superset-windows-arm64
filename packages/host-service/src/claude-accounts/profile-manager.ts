@@ -45,6 +45,46 @@ const COPY_NAMES = [
 ] as const;
 const PROFILE_SWEEP_CONCURRENCY = 6;
 
+const isNonEmptyString = (value: unknown): boolean =>
+	typeof value === "string" && value.length > 0;
+const isBoolean = (value: unknown): boolean => typeof value === "boolean";
+const isPlainObject = (value: unknown): boolean =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+const SEED_VALIDATORS = [
+	["lastOnboardingVersion", isNonEmptyString],
+	["installMethod", isNonEmptyString],
+	["autoUpdates", isBoolean],
+	["mcpServers", isPlainObject],
+	["respectGitignore", isBoolean],
+	["shiftEnterKeyBindingInstalled", isBoolean],
+	["showSpinnerTree", isBoolean],
+	["copyOnSelect", isBoolean],
+	["leftArrowOpensAgents", isBoolean],
+	["claudeInChromeDefaultEnabled", isBoolean],
+	["hasSeenTasksHint", isBoolean],
+	["hasSeenStashHint", isBoolean],
+	["hasUsedBackgroundTask", isBoolean],
+	["hasUsedBackslashReturn", isBoolean],
+	["hasUsedAgentsFleet", isBoolean],
+	["hasOpenedAgentsView", isBoolean],
+	["hasSeenUltrareviewTerms", isBoolean],
+	["hasCompletedClaudeInChromeOnboarding", isBoolean],
+	// Per-IDE map, e.g. { vscode: true } — not a boolean.
+	["hasIdeOnboardingBeenShown", isPlainObject],
+	["effortCalloutDismissed", isBoolean],
+	["effortCalloutV2Dismissed", isBoolean],
+	["resumeReturnDismissed", isBoolean],
+	["transcriptShareDismissed", isBoolean],
+	["teammateDefaultModel", isNonEmptyString],
+	["workflowSizeGuideline", isNonEmptyString],
+	["lastReleaseNotesSeen", isNonEmptyString],
+	["fableOverageConsentV2", isPlainObject],
+	["tipsHistory", isPlainObject],
+	["tipLifetimeShownCounts", isPlainObject],
+	["announcementImpressions", isPlainObject],
+	["seenNotifications", isPlainObject],
+] as const;
+
 interface MirrorSource {
 	name: (typeof COPY_NAMES)[number];
 	bytes: Buffer;
@@ -530,6 +570,8 @@ export class ClaudeProfileManager {
 		this.clearProfileCaches(source);
 	}
 
+	// Mint-only by design: existing profiles are never re-seeded — Claude Code
+	// owns each profile's .claude.json after the mint.
 	private async writeSeedState(
 		profileDir: string,
 		worktreePath: string,
@@ -555,33 +597,10 @@ export class ClaudeProfileManager {
 		}
 		const optionalSeed: Record<string, unknown> = {};
 		const invalidFields: string[] = [];
-		const lastOnboardingVersion = globalState.lastOnboardingVersion;
-		if (typeof lastOnboardingVersion === "string" && lastOnboardingVersion) {
-			optionalSeed.lastOnboardingVersion = lastOnboardingVersion;
-		} else if (lastOnboardingVersion !== undefined) {
-			invalidFields.push("lastOnboardingVersion");
-		}
-		const installMethod = globalState.installMethod;
-		if (typeof installMethod === "string" && installMethod) {
-			optionalSeed.installMethod = installMethod;
-		} else if (installMethod !== undefined) {
-			invalidFields.push("installMethod");
-		}
-		const autoUpdates = globalState.autoUpdates;
-		if (typeof autoUpdates === "boolean") {
-			optionalSeed.autoUpdates = autoUpdates;
-		} else if (autoUpdates !== undefined) {
-			invalidFields.push("autoUpdates");
-		}
-		const mcpServers = globalState.mcpServers;
-		if (
-			typeof mcpServers === "object" &&
-			mcpServers !== null &&
-			!Array.isArray(mcpServers)
-		) {
-			optionalSeed.mcpServers = mcpServers;
-		} else if (mcpServers !== undefined) {
-			invalidFields.push("mcpServers");
+		for (const [field, isValid] of SEED_VALIDATORS) {
+			const value = globalState[field];
+			if (isValid(value)) optionalSeed[field] = value;
+			else if (value !== undefined) invalidFields.push(field);
 		}
 		if (invalidFields.length > 0) {
 			this.log.warn(
@@ -593,8 +612,13 @@ export class ClaudeProfileManager {
 		// R8 live check, 2026-08-24: Claude Code booted without oauthAccount
 		// while pinned claude123 differed from machine default claude12.
 		await this.atomicWriteJson(join(profileDir, ".claude.json"), {
-			hasCompletedOnboarding: true,
 			...optionalSeed,
+			// After the spread so a future SEED_VALIDATORS entry can never override them.
+			hasCompletedOnboarding: true,
+			// settings.json owns effort, so prevent Claude Code from pinning its defaults.
+			unpinOpus47LaunchEffort: true,
+			unpinOpus48LaunchEffort: true,
+			unpinFable5LaunchEffort: true,
 			projects: {
 				[projectPath]: {
 					allowedTools: [],
@@ -605,6 +629,9 @@ export class ClaudeProfileManager {
 					hasTrustDialogAccepted: true,
 					projectOnboardingSeenCount: 0,
 					hasCompletedProjectOnboarding: true,
+					// Deliberate: new workspaces skip the external-includes warning; approval stays off.
+					hasClaudeMdExternalIncludesWarningShown: true,
+					hasClaudeMdExternalIncludesApproved: false,
 				},
 			},
 		});
