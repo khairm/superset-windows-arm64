@@ -117,6 +117,7 @@ import {
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
 	type LifecycleSeenInput,
+	READY_SETTLE_MS,
 } from "./lifecycle-alerts";
 import { PANIC_REASON_MAX_CHARS } from "./limits";
 import { createTerminalLiveness, type TerminalLiveness } from "./liveness";
@@ -883,6 +884,7 @@ export function createCompanionBridge(
 			// ended sessions, straight off host.db. It is what stops a restart
 			// inside a wall-clock backstep from "proving" that an alert the
 			// PREVIOUS process sent never existed — see `proofEpochs`.
+			readySettleMs: READY_SETTLE_MS,
 			proofEpochs: () =>
 				hostDb.listBindings().map((binding) => ({
 					hostTerminalId: binding.terminalId,

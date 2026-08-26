@@ -39,6 +39,7 @@ function setup(
 		 * all, which disables proof-of-absence outright.
 		 */
 		proofEpochs?: Array<[string, number]> | null;
+		readySettleMs?: number;
 		/** Model a host.db read that fails at bridge start. */
 		epochThrows?: boolean;
 	} = {},
@@ -111,6 +112,7 @@ function setup(
 		},
 		workspaceHandle: () => HANDLE,
 		terminalHandle: () => TERMINAL_HANDLE,
+		readySettleMs: options.readySettleMs ?? 0,
 		resolveContext: (input) => {
 			contextCalls.push({ hostTerminalId: input.hostTerminalId });
 			return context;
@@ -474,6 +476,194 @@ describe("lifecycle alerts", () => {
 		expect(
 			state.infos.some((line) => line.message.includes("duplicate lifecycle")),
 		).toBe(true);
+	});
+});
+
+describe("ready alert settle window", () => {
+	const SETTLE_MS = 10_000;
+
+	it("sends only after ten continuous seconds of ready", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+
+		state.setNow(10_999);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("sends failure alerts immediately", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of failedCycle(1_000)) state.manager.record(step);
+		await tick();
+		expect(state.sent.map((alert) => alert.kind)).toEqual(["e"]);
+	});
+
+	it("cancels settling ready alerts for every working or blocked status", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		const eventTypes = [
+			"Start",
+			"SubagentActive",
+			"BackgroundRunning",
+			"PermissionRequest",
+			"Failed",
+		];
+		for (const [index, eventType] of eventTypes.entries()) {
+			const hostTerminalId = `terminal-${index}`;
+			for (const step of cycle(1_000, { hostTerminalId })) {
+				state.manager.record(step);
+			}
+			state.manager.observeStatus(hostTerminalId, eventType);
+		}
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	it("cancels the first Stop on SubagentActive and sends only after the second window", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+
+		state.setNow(2_000);
+		state.manager.observeStatus("terminal-1", "SubagentActive");
+		state.manager.record(
+			event({
+				outcome: "ready",
+				eventType: "Stop",
+				occurredAtMs: 3_000,
+				previousEventType: "SubagentActive",
+				previousEventAtMs: 2_500,
+			}),
+		);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+		expect(state.retracted).toHaveLength(0);
+		state.setNow(12_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("does not reset the window for a repeated Stop", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+
+		state.setNow(2_000);
+		state.manager.observeStatus("terminal-1", "Stop");
+		state.manager.record(
+			event({
+				outcome: "ready",
+				eventType: "Stop",
+				occurredAtMs: 3_000,
+				previousEventType: "Stop",
+				previousEventAtMs: 2_000,
+			}),
+		);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("does not re-enter settling after the deadline when the clock steps back", async () => {
+		const state = setup({ present: true, readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+
+		state.setNow(5_000);
+		state.manager.observeStatus("terminal-1", "PermissionRequest");
+		state.setPresent(false);
+		state.setNow(12_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("keeps a zero-window presence hold through a clock backstep", async () => {
+		const state = setup({ present: true, readySettleMs: 0 });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		await tick();
+		expect(state.sent).toHaveLength(0);
+
+		state.setNow(500);
+		state.manager.observeStatus("terminal-1", "PermissionRequest");
+		state.setPresent(false);
+		state.setNow(1_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("retires a settling alert when the lifecycle is marked seen", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS, proofEpochs: null });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		state.manager.markLifecycleSeen({
+			hostTerminalId: "terminal-1",
+			hostWorkspaceId: "workspace-1",
+			seenThroughAt: 2_000,
+		});
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	it("retires a settling alert when its terminal exits", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		state.manager.retireTerminal("terminal-1");
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+	});
+
+	it("keeps the strict retireReadyBefore boundary for a settling alert", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		expect(state.manager.retireReadyBefore(2_000)).toBe(0);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("cleans up a settling alert when stopped", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		state.manager.stop();
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+	});
+
+	it("keeps settling through Stop and Attached status observations", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		for (const step of cycle(1_000)) state.manager.record(step);
+		state.manager.observeStatus("terminal-1", "Stop");
+		state.manager.observeStatus("terminal-1", "Attached");
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	});
+
+	it("rejects a settle window that could never become due", () => {
+		expect(() => setup({ readySettleMs: Number.NaN })).toThrow(
+			"readySettleMs must be a finite non-negative number",
+		);
+		expect(() => setup({ readySettleMs: -1 })).toThrow(
+			"readySettleMs must be a finite non-negative number",
+		);
 	});
 });
 

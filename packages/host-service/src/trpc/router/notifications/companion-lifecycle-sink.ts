@@ -35,6 +35,7 @@ export interface CompanionLifecycleEvent {
 
 export interface CompanionLifecycleSink {
 	record(input: CompanionLifecycleEvent): void;
+	observeStatus(hostTerminalId: string, eventType: string): void;
 }
 
 let sink: CompanionLifecycleSink | null = null;
@@ -71,6 +72,7 @@ export function forwardCompanionLifecycle(input: {
 	previousEventType: string | null;
 	previousEventAtMs: number | null;
 }): void {
+	sink?.observeStatus(input.terminalId, input.eventType);
 	const eventId = input.payload.companionLifecycleEventId;
 	const outcome = input.payload.companionLifecycleOutcome;
 	if (eventId === undefined || outcome === undefined) return;

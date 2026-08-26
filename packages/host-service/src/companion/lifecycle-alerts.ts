@@ -14,7 +14,21 @@ import {
 import type { WorkspaceId } from "./types";
 
 const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
+export const READY_SETTLE_MS = 10_000;
 const SWEEP_MS = 2_000;
+
+/**
+ * `Failed` is red and cancels ready before `record()` mints its immediate `e`.
+ * `Stop` is excluded because a repeat must not reset the settle window.
+ * `Attached` is not working; `Detached` reaches `record()` as `session-end`.
+ */
+const READY_SETTLE_CANCEL_EVENTS = new Set([
+	"Start",
+	"SubagentActive",
+	"BackgroundRunning",
+	"PermissionRequest",
+	"Failed",
+]);
 
 /**
  * Capacity bound on the alert table. Exported so the tests that exercise
@@ -206,6 +220,8 @@ interface HeldAlert {
 	outcomeAtMs: number;
 	expiresAtMs: number;
 	state: LifecycleAlertState;
+	/** True only until a ready alert first reaches its settle deadline. */
+	settling: boolean;
 	/** Wall-clock instant a `held` alert becomes eligible again after a failure. */
 	retryAtMs: number;
 	/** Consecutive failed deliveries, which is what the backoff is derived from. */
@@ -261,6 +277,7 @@ export interface LifecycleSeenInput {
 
 export interface LifecycleAlertManager {
 	record(input: CompanionLifecycleEvent): void;
+	observeStatus(hostTerminalId: string, eventType: string): void;
 
 	/**
 	 * (ALERT-CONTEXT-NAMES) The user read the chat on the desktop: take the
@@ -531,6 +548,8 @@ export interface LifecycleAlertManagerDeps {
 	proofEpochs:
 		| (() => Iterable<{ hostTerminalId: string; lastEventAtMs: number }>)
 		| null;
+	/** Required so the composition root declares the ready-settle policy. */
+	readySettleMs: number;
 	logger: BridgeLogger;
 	now?: () => number;
 }
@@ -592,6 +611,9 @@ function lifecycleAlertId(input: {
 export function createLifecycleAlertManager(
 	deps: LifecycleAlertManagerDeps,
 ): LifecycleAlertManager {
+	if (!Number.isFinite(deps.readySettleMs) || deps.readySettleMs < 0) {
+		throw new Error("readySettleMs must be a finite non-negative number");
+	}
 	const now = deps.now ?? (() => Date.now());
 
 	/**
@@ -788,13 +810,17 @@ export function createLifecycleAlertManager(
 	 * or expired between the snapshot and this call.
 	 */
 	function claim(alertId: string, nowMs: number): HeldAlert | null {
-		const current = alerts.get(alertId);
+		let current = alerts.get(alertId);
 		if (current === undefined || current.state !== "held") return null;
 		if (current.expiresAtMs <= nowMs) {
 			alerts.delete(alertId);
 			return null;
 		}
 		if (current.retryAtMs > nowMs) return null;
+		if (current.settling) {
+			current = { ...current, settling: false };
+			alerts.set(alertId, current);
+		}
 		// HELD, not dropped: presence and curation both change their minds, and the
 		// alert fires on the first sweep after they do.
 		if (deps.presence.present(nowMs).present) return null;
@@ -1175,6 +1201,7 @@ export function createLifecycleAlertManager(
 			outcomeAtMs: input.outcomeAtMs,
 			expiresAtMs: nowMs + ALERT_TTL_MS,
 			state: "retracted",
+			settling: false,
 			retryAtMs: nowMs,
 			failures: 0,
 			superseded: false,
@@ -1268,7 +1295,8 @@ export function createLifecycleAlertManager(
 			outcomeAtMs: input.occurredAtMs,
 			expiresAtMs: input.occurredAtMs + ALERT_TTL_MS,
 			state: "held",
-			retryAtMs: nowMs,
+			settling: kind === "g" && deps.readySettleMs > 0,
+			retryAtMs: kind === "g" ? nowMs + deps.readySettleMs : nowMs,
 			failures: 0,
 			superseded: false,
 			supersededReason: null,
@@ -1329,6 +1357,18 @@ export function createLifecycleAlertManager(
 	}
 
 	return {
+		observeStatus(hostTerminalId, eventType) {
+			if (stopped || !READY_SETTLE_CANCEL_EVENTS.has(eventType)) return;
+			retireWhere(
+				(alert) =>
+					alert.hostTerminalId === hostTerminalId &&
+					alert.kind === "g" &&
+					alert.state === "held" &&
+					alert.failures === 0 &&
+					alert.settling,
+				{ kind: "new-cycle" },
+			);
+		},
 		record(input) {
 			if (stopped) return;
 			prune(now());
