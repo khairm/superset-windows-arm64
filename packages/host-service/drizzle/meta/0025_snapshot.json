@@ -1330,6 +1330,80 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "workspace_pull_requests": {
+      "name": "workspace_pull_requests",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pull_request_id": {
+          "name": "pull_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "linked_at": {
+          "name": "linked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "workspace_pull_requests_workspace_idx": {
+          "name": "workspace_pull_requests_workspace_idx",
+          "columns": [
+            "workspace_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "workspace_pull_requests_workspace_id_workspaces_id_fk": {
+          "name": "workspace_pull_requests_workspace_id_workspaces_id_fk",
+          "tableFrom": "workspace_pull_requests",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "workspace_pull_requests_pull_request_id_pull_requests_id_fk": {
+          "name": "workspace_pull_requests_pull_request_id_pull_requests_id_fk",
+          "tableFrom": "workspace_pull_requests",
+          "tableTo": "pull_requests",
+          "columnsFrom": [
+            "pull_request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "workspace_pull_requests_workspace_id_pull_request_id_pk": {
+          "columns": [
+            "workspace_id",
+            "pull_request_id"
+          ],
+          "name": "workspace_pull_requests_workspace_id_pull_request_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "workspaces": {
       "name": "workspaces",
       "columns": {

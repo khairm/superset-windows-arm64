@@ -1,7 +1,7 @@
 import { toast } from "@superset/ui/sonner";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef } from "react";
-import { authClient } from "renderer/lib/auth-client";
+import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
@@ -30,6 +30,7 @@ export function useSubmitWorkspace(
 	selectedAgent: WorkspaceCreateAgent,
 	selectedModel: string | null,
 	selectedEffort: string | null,
+	selectedMode: string | null,
 	uploadAttachments: UseUploadAttachmentsApi,
 	promptContext: NewWorkspacePromptContextApi,
 	/**
@@ -56,10 +57,11 @@ export function useSubmitWorkspace(
 	// path: the modal closes and unmounts this hook, and that unmount is what
 	// makes the next open a fresh submit.
 	const masterSubmitInFlight = useRef(false);
+	// (CLOUD-SEVERANCE-P2) Frozen local organization. Upstream reads the
+	// per-window org here; with one organization every window resolves to it.
+	const activeOrganizationId = useActiveOrganizationId();
 	const createCloudWorkspace = cloudTrpc.cloudWorkspace.create.useMutation();
 	const utils = cloudTrpc.useUtils();
-	const { data: session } = authClient.useSession();
-	const activeOrganizationId = session?.session?.activeOrganizationId;
 
 	const isSession = draft.isSession;
 
@@ -311,6 +313,7 @@ export function useSubmitWorkspace(
 						attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
 						model: selectedModel ?? undefined,
 						effort: selectedEffort ?? undefined,
+						mode: selectedMode ?? undefined,
 					},
 				]
 			: undefined;
@@ -410,6 +413,7 @@ export function useSubmitWorkspace(
 		selectedModel,
 		selectedEffort,
 		restoreWorkspace,
+		selectedMode,
 		submit,
 		uploadAttachments,
 		utils,

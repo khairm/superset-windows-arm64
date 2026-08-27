@@ -172,6 +172,7 @@ async function finishCreate(args: {
 				attachmentIds: soleLaunch.attachmentIds,
 				model: soleLaunch.model,
 				effort: soleLaunch.effort,
+				mode: soleLaunch.mode,
 			});
 		} catch (err) {
 			console.warn(

@@ -8,9 +8,11 @@ import type {
 	CommentPaneData,
 	DiffFocusSide,
 	DiffPaneData,
+	PagePaneData,
 	PaneViewerData,
 	TerminalPaneData,
 } from "../../types";
+import { openPagePaneInStore } from "../../utils/openPagePaneInStore";
 import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 
@@ -39,6 +41,7 @@ export function useWorkspacePaneOpeners({
 	addChatV3Tab: () => void;
 	addBrowserTab: () => void;
 	openCommentPane: (comment: CommentPaneData) => void;
+	openPagePane: (page: PagePaneData) => void;
 } {
 	const openDiffPane = useCallback(
 		(
@@ -193,11 +196,19 @@ export function useWorkspacePaneOpeners({
 		[store],
 	);
 
+	const openPagePane = useCallback(
+		(page: PagePaneData) => {
+			openPagePaneInStore(store, page);
+		},
+		[store],
+	);
+
 	return {
 		openDiffPane,
 		addTerminalTab,
 		addChatV3Tab,
 		addBrowserTab,
 		openCommentPane,
+		openPagePane,
 	};
 }

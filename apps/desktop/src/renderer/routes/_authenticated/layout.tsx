@@ -31,6 +31,11 @@ import { InitGitDialog } from "renderer/react-query/projects/InitGitDialog";
 import { DaemonAutoUpdateFailureDialog } from "renderer/routes/_authenticated/components/DaemonAutoUpdateFailureDialog";
 import { DashboardNewWorkspaceModal } from "renderer/routes/_authenticated/components/DashboardNewWorkspaceModal";
 import { DiffThemeSync } from "renderer/routes/_authenticated/components/DiffThemeSync";
+import { LeaderboardAutoPublish } from "renderer/routes/_authenticated/components/LeaderboardAutoPublish";
+import { LeaderboardFirstRunDialog } from "renderer/routes/_authenticated/components/LeaderboardFirstRunDialog";
+// (CLOUD-SEVERANCE-P2) `PendingDeletionScreen` is deliberately NOT imported:
+// the gate that rendered it is removed below, and an import with no render
+// site is how a merge quietly wires a cloud-only screen back up.
 import { StarNagObserver } from "renderer/routes/_authenticated/components/StarNagObserver";
 import {
 	V1AutoMigration,
@@ -56,6 +61,7 @@ import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
 import { GlobalBrowserLifecycle } from "./components/GlobalBrowserLifecycle";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { V2NotificationController } from "./components/V2NotificationController";
+import { WindowTitle } from "./components/WindowTitle";
 import { createPierreWorker } from "./lib/pierreWorker";
 import { CollectionsProvider } from "./providers/CollectionsProvider";
 import { HostWorkspacesProvider } from "./providers/HostWorkspacesProvider";
@@ -270,6 +276,7 @@ function AuthenticatedLayout() {
 	return (
 		<DndProvider manager={dragDropManager}>
 			<CollectionsProvider>
+				<WindowTitle />
 				<GlobalBrowserLifecycle />
 				<LocalHostServiceProvider>
 					{/* Above the workspace fan-out: it needs sandbox addresses to
@@ -289,6 +296,8 @@ function AuthenticatedLayout() {
 								<AutoResumeController />
 								<DockBadgeController />
 								<StarNagObserver />
+								<LeaderboardAutoPublish />
+								<LeaderboardFirstRunDialog />
 								<DaemonAutoUpdateFailureDialog />
 								<Outlet />
 								<V1ImportModal />

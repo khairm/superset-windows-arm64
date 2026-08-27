@@ -46,7 +46,10 @@ export function useHostProjects(): UseHostProjectsResult {
 	const queryClient = useQueryClient();
 	const { activeHostUrl, machineId } = useLocalHostService();
 	const relayUrl = useRelayUrl();
-	// (CLOUD-SEVERANCE-P2) Frozen local organization.
+	// (CLOUD-SEVERANCE-P2) Frozen local organization. Upstream read the window's
+	// org off the local host service here so a second window would not list the
+	// first window's projects; with one organization resolved from disk before
+	// any window exists, every window already agrees on this value.
 	const fallbackOrganizationId = useActiveOrganizationId();
 
 	const { hosts, settled: knownHostsSettled } = useKnownHosts();

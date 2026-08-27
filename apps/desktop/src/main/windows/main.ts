@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,14 +9,13 @@ import type { BrowserWindow } from "electron";
 import { app, dialog, Notification, nativeTheme } from "electron";
 import log from "electron-log/main";
 import { createWindow } from "lib/electron-app/factories/windows/create";
+import { createTrpcContext } from "lib/trpc/context";
 import { createAppRouter } from "lib/trpc/routers";
+import { resolveDevWorkspaceName } from "main/lib/dev-workspace-name";
 import { localDb } from "main/lib/local-db";
 import { isExpectedRendererExit } from "main/lib/renderer-exit";
 import { NOTIFICATION_EVENTS, PLATFORM } from "shared/constants";
-import {
-	env,
-	getWorkspaceName as getEnvWorkspaceName,
-} from "shared/env.shared";
+import { env } from "shared/env.shared";
 import type { AgentLifecycleEvent } from "shared/notification-types";
 import { createIPCHandler } from "trpc-electron/main";
 import { productName } from "~/package.json";
@@ -23,7 +23,7 @@ import {
 	startAgentJsonlWatcher,
 	stopAgentJsonlWatcher,
 } from "../lib/agent-jsonl-watcher";
-import { appState } from "../lib/app-state";
+import { appState, pruneWindowScopedState } from "../lib/app-state";
 import { browserManager } from "../lib/browser/browser-manager";
 import { attachEditContextMenu } from "../lib/edit-context-menu";
 import {
@@ -32,6 +32,7 @@ import {
 	unregisterAppWebContents,
 } from "../lib/egress-fence/egress-fence-core";
 import { createApplicationMenu } from "../lib/menu";
+import { menuEmitter } from "../lib/menu-events";
 import { playNotificationSound } from "../lib/notification-sound";
 import { NotificationManager } from "../lib/notifications/notification-manager";
 import {
@@ -45,17 +46,36 @@ import {
 } from "../lib/notifications/utils";
 import { recordV1TerminalExit } from "../lib/notifications/v1-agent-sessions";
 import {
+	getAllWindows,
+	getFocusedOrLastWindow,
+	getKey,
+	getOrg,
+	markFocused,
+	registerWindow,
+	unregisterWindow,
+} from "../lib/window-registry/window-registry";
+import {
 	getInitialWindowBounds,
 	loadWindowState,
+	loadWindows,
+	type PersistedWindow,
 	saveWindowState,
+	saveWindows,
+	type WindowState,
 } from "../lib/window-state";
 import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
 import { findActiveOrganizationId } from "../lib/auto-resume/host-send/host-send";
 import { autoResumeManager } from "../lib/auto-resume/manager/manager";
 import { startKeepAwake, stopKeepAwake } from "../lib/keep-awake";
 
-// Singleton IPC handler to prevent duplicate handlers on window reopen (macOS)
+// Singleton IPC handler — created once, shared by every window. Each window is
+// attached/detached individually via attachWindow/detachWindow.
 let ipcHandler: ReturnType<typeof createIPCHandler> | null = null;
+
+// Routers receive this getter so they always act on the currently relevant
+// window. With multi-window support that is the most-recently-focused window
+// (tracked by the window registry) rather than a single stored reference.
+const getWindow = (): BrowserWindow | null => getFocusedOrLastWindow();
 
 function getWorkspaceNameFromDb(workspaceId: string | undefined): string {
 	if (!workspaceId) return "Workspace";
@@ -79,11 +99,6 @@ function getWorkspaceNameFromDb(workspaceId: string | undefined): string {
 	}
 }
 
-let currentWindow: BrowserWindow | null = null;
-
-// Routers receive this getter so they always see the current window, not a stale reference
-const getWindow = () => currentWindow;
-
 // invalidate() alone may not rebuild corrupted GPU layers — a tiny resize
 // forces Chromium to reconstruct the compositor layer tree.
 const forceRepaint = (win: BrowserWindow) => {
@@ -98,26 +113,328 @@ const forceRepaint = (win: BrowserWindow) => {
 };
 
 // GPU process restarts don't repaint existing compositor layers automatically.
+// Rate-limited: each repaint resizes the window, which runs a full fit +
+// refresh on every attached terminal, so a crash-looping GPU process must not
+// turn into an unbounded resize storm (GH #6822).
+const GPU_GONE_REPAINT_COOLDOWN_MS = 10_000;
+let lastGpuGoneRepaintAt = 0;
 app.on("child-process-gone", (_event, details) => {
 	if (details.type === "GPU") {
 		console.warn("[main-window] GPU process gone:", details.reason);
+		const now = Date.now();
+		if (now - lastGpuGoneRepaintAt < GPU_GONE_REPAINT_COOLDOWN_MS) return;
+		lastGpuGoneRepaintAt = now;
 		const win = getWindow();
 		if (win) forceRepaint(win);
 	}
 });
 
-export async function MainWindow() {
-	log.info("[boot] MainWindow() entered +" + Math.round(process.uptime() * 1000) + "ms");
+// ---------------------------------------------------------------------------
+// App-level services
+// ---------------------------------------------------------------------------
+// These exist once for the whole app, independent of how many windows are open.
+// Splitting them out of per-window setup is what makes opening a second window
+// safe: the notifications HTTP server binds a single fixed port and the
+// terminal/notification listeners must not be registered more than once.
+
+let appServicesInitialized = false;
+
+/**
+ * Initialize app-wide singletons (the tRPC IPC handler and the application
+ * menu). Idempotent — safe to call before each window is created.
+ */
+export function initAppServices(): void {
+	if (appServicesInitialized) return;
+	appServicesInitialized = true;
+	ipcHandler = createIPCHandler({
+		createContext: createTrpcContext,
+		router: createAppRouter(getWindow),
+		windows: [],
+	});
+	createApplicationMenu();
+
+	// File → New Window (Cmd+N): open another window on the same org as the
+	// currently focused window. Per-window org independence arrives in a later
+	// milestone; for now a new window mirrors the current org.
+	menuEmitter.on("new-window", (payload?: { orgId?: string | null }) => {
+		// Prefer the org the caller passed (e.g. window.openNew, which captures the
+		// calling window deterministically). Fall back to the focused window's org
+		// for the menu-driven File → New Window.
+		const focused = getFocusedOrLastWindow();
+		const orgId =
+			payload && "orgId" in payload
+				? (payload.orgId ?? null)
+				: focused
+					? getOrg(focused.id)
+					: null;
+		void createPlatformWindow({ orgId }).catch((error) => {
+			console.error("[main-window] Failed to open new window:", error);
+		});
+	});
+}
+
+// Shared services that should run while at least one window is open. Started
+// when the first window opens and torn down when the last window closes, so
+// they are never double-initialized by additional windows.
+let notificationsServer: ReturnType<typeof notificationsApp.listen> | null =
+	null;
+let notificationManager: NotificationManager | null = null;
+let agentLifecycleHandler: ((event: AgentLifecycleEvent) => void) | null = null;
+
+function startSharedServices(): void {
+	if (notificationManager) return;
+
+	// Windows: forward agent state from Claude's JSONL session transcripts
+	// to notificationsEmitter, sidestepping the bash-only hook chain that
+	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
+	// and the fork's project memory `superset-windows-hook-chain-broken`.
+	log.info(
+		"[boot] startAgentJsonlWatcher (seed scan deferred) +" +
+			Math.round(process.uptime() * 1000) +
+			"ms",
+	);
+	// (AUTO-RESUME) Detect+auto-resume Claude chats that died on an API failure.
+	autoResumeManager.start({
+		emitter: notificationsEmitter,
+		getOrganizationId: findActiveOrganizationId,
+	});
+	startAgentJsonlWatcher({
+		notificationsEmitter,
+		onClaudeApiError: (info) => autoResumeManager.onClaudeApiErrorSignal(info),
+	});
+	log.info(
+		"[boot] startAgentJsonlWatcher returned +" +
+			Math.round(process.uptime() * 1000) +
+			"ms",
+	);
+
+	// (KEEP-AWAKE) (KEEP-AWAKE-MOUNT) Hold Windows out of sleep while an agent is
+	// working or a question is pending, so the companion phone's liveness
+	// watchdog only ever fires on a real loss of contact. Timer-driven and
+	// non-blocking; the first read lands one poll interval from now.
+	// Starting is NOT the same as holding: every tick re-evaluates the companion
+	// gate (bridge enabled AND >=1 paired device, `keep-awake/companion-gate.ts`)
+	// and a closed gate — the case for every fork user without the companion —
+	// releases the power request and skips all I/O. Gating this CALL instead
+	// would mean pairing a phone did nothing until the app was restarted.
+	// (KEEP-AWAKE-MOUNT) exists ONLY on this seam — (KEEP-AWAKE) is satisfied by
+	// the fork-only lib/keep-awake/ files, so without a token unique to the start
+	// call an upstream merge could drop it here and the marker gate would still
+	// pass with the feature silently never starting.
+	startKeepAwake();
+
+	notificationsServer = notificationsApp.listen(
+		env.DESKTOP_NOTIFICATIONS_PORT,
+		"127.0.0.1",
+		() => {
+			console.log(
+				`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
+			);
+		},
+	);
+
+	notificationManager = new NotificationManager({
+		isSupported: () => Notification.isSupported(),
+		createNotification: (opts) => new Notification(opts),
+		playSound: playNotificationSound,
+		onNotificationClick: (ids) => {
+			const win = getFocusedOrLastWindow();
+			win?.show();
+			win?.focus();
+			if (ids.workspaceId && ids.terminalId) {
+				notificationsEmitter.emit(
+					NOTIFICATION_EVENTS.FOCUS_V2_NOTIFICATION_SOURCE,
+					{
+						workspaceId: ids.workspaceId,
+						source: { type: "terminal", id: ids.terminalId },
+					},
+				);
+				return;
+			}
+			notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
+		},
+		getVisibilityContext: () => {
+			const win = getFocusedOrLastWindow();
+			return {
+				isFocused: win?.isFocused() ?? false,
+				currentWorkspaceId: win
+					? extractWorkspaceIdFromUrl(win.webContents.getURL())
+					: null,
+				tabsState: appState.data?.tabsState,
+			};
+		},
+		getWorkspaceName: getWorkspaceNameFromDb,
+		getNotificationTitle: (event) =>
+			getNotificationTitle({
+				tabId: event.tabId,
+				paneId: event.paneId,
+				tabs: appState.data?.tabsState?.tabs,
+				panes: appState.data?.tabsState?.panes,
+			}),
+	});
+	notificationManager.start();
+
+	agentLifecycleHandler = (event: AgentLifecycleEvent) => {
+		notificationManager?.handleAgentLifecycle(event);
+	};
+	notificationsEmitter.on(
+		NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
+		agentLifecycleHandler,
+	);
+
+	// Forward low-volume terminal lifecycle events to the renderer via the
+	// existing notifications subscription. Used only for correctness (e.g.
+	// clearing stuck agent lifecycle statuses when terminal panes aren't
+	// mounted).
+	getWorkspaceRuntimeRegistry()
+		.getDefault()
+		.terminal.on(
+			"terminalExit",
+			(event: {
+				paneId: string;
+				exitCode: number;
+				signal?: number;
+				reason?: "killed" | "exited" | "error";
+			}) => {
+				// A goodbye hook just before this death was the agent's SIGHUP
+				// death gasp — keep the session resumable across migration.
+				recordV1TerminalExit(event.paneId);
+				notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
+					paneId: event.paneId,
+					exitCode: event.exitCode,
+					signal: event.signal,
+					reason: event.reason,
+				});
+			},
+		);
+}
+
+function stopSharedServices(): void {
+	stopAgentJsonlWatcher();
+	// (KEEP-AWAKE) (KEEP-AWAKE-UNMOUNT) release the power request with the last
+	// window, not at before-quit — that handler fires too late on Windows.
+	// A DISTINCT token from the start seam on purpose: the marker gate passes
+	// on the first hit anywhere under a root, so one shared token could not
+	// catch "stop dropped, start kept" — a power request acquired and never
+	// released for the rest of the process's life.
+	stopKeepAwake();
+	browserManager.unregisterAll();
+	notificationsServer?.close();
+	notificationsServer = null;
+	notificationManager?.dispose();
+	notificationManager = null;
+	if (agentLifecycleHandler) {
+		notificationsEmitter.off(
+			NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
+			agentLifecycleHandler,
+		);
+		agentLifecycleHandler = null;
+	}
+	getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+}
+
+// ---------------------------------------------------------------------------
+// Multi-window restore
+// ---------------------------------------------------------------------------
+
+// Set during app quit so per-window close handlers don't shrink the persisted
+// set as windows close one-by-one — the full set is snapshotted in before-quit.
+let appQuitting = false;
+export function markAppQuitting(): void {
+	appQuitting = true;
+}
+
+function snapshotWindowState(window: BrowserWindow): WindowState {
+	const isMaximized = window.isMaximized();
+	const bounds = isMaximized ? window.getNormalBounds() : window.getBounds();
+	return {
+		x: bounds.x,
+		y: bounds.y,
+		width: bounds.width,
+		height: bounds.height,
+		isMaximized,
+		zoomLevel: window.webContents.getZoomLevel(),
+	};
+}
+
+/** Persist every open window's bounds + org so they can be restored on relaunch. */
+export function persistOpenWindows(): void {
+	const persisted: PersistedWindow[] = getAllWindows()
+		.filter((w) => !w.isDestroyed())
+		.map((w) => ({
+			key: getKey(w.id) ?? randomUUID(),
+			orgId: getOrg(w.id),
+			state: snapshotWindowState(w),
+		}));
+	// Per-window UI state is keyed by these, so anything belonging to a window
+	// that is no longer restorable is dropped here rather than accumulating in
+	// app-state.json forever.
+	pruneWindowScopedState(persisted.map((w) => w.key));
+	// Write unconditionally — an empty array clears stale restore state when the
+	// last window closes, so previously-closed windows aren't reopened next launch.
+	saveWindows(persisted);
+}
+
+/** Recreate the windows saved from the previous session (each on its org). */
+export async function restoreWindows(): Promise<void> {
+	const saved = loadWindows();
+	for (const pw of saved) {
+		await createPlatformWindow({
+			orgId: pw.orgId,
+			bounds: pw.state,
+			key: pw.key,
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-window setup
+// ---------------------------------------------------------------------------
+
+/**
+ * Create one platform window. Safe to call multiple times — each call builds an
+ * independent BrowserWindow, registers it in the window registry, and attaches
+ * it to the shared IPC handler. The first window starts shared services; the
+ * last window to close stops them.
+ *
+ * @param orgId  The organization this window should show. Consumed by the
+ *               per-window organization context (Milestone 2); may be null
+ *               until the renderer resolves a default.
+ * @param bounds Optional saved bounds to restore (used by window restore).
+ * @param key    The window's persisted identity. Supplied when restoring so the
+ *               window finds its own tab layout again; minted for a new window.
+ */
+export async function createPlatformWindow({
+	orgId,
+	bounds,
+	key,
+}: {
+	orgId: string | null;
+	bounds?: WindowState;
+	key?: string;
+}): Promise<BrowserWindow> {
+	log.info(
+		"[boot] createPlatformWindow() entered +" +
+			Math.round(process.uptime() * 1000) +
+			"ms",
+	);
 	// (EGRESS-FENCE) Runtime proof, not a comment: this window is what generates
 	// renderer traffic, so if the fence was not installed in the boot path we
 	// would silently lose every early request. Throw instead.
 	assertEgressFenceInstalled();
-	const savedWindowState = loadWindowState();
+	initAppServices();
+
+	const wasEmpty = getAllWindows().length === 0;
+
+	// Explicit bounds (restore) win. The first window falls back to the saved
+	// single-window position; an *additional* New Window opens fresh/centered so
+	// it doesn't land exactly on top of an existing window.
+	const savedWindowState = bounds ?? (wasEmpty ? loadWindowState() : null);
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 	let persistedZoomLevel = savedWindowState?.zoomLevel;
 
 	const isDev = env.NODE_ENV === "development";
-	const workspaceName = isDev ? getEnvWorkspaceName() : undefined;
+	const workspaceName = isDev ? resolveDevWorkspaceName() : undefined;
 	const windowTitle = workspaceName
 		? `${productName} — ${workspaceName}`
 		: productName;
@@ -165,10 +482,15 @@ export async function MainWindow() {
 		unregisterAppWebContents(appWebContentsId);
 	});
 
+	registerWindow({ window, orgId, key: key ?? randomUUID() });
+	window.on("focus", () => markFocused(window.id));
+
 	createApplicationMenu();
 	attachEditContextMenu(window.webContents);
 
-	currentWindow = window;
+	if (wasEmpty) {
+		startSharedServices();
+	}
 
 	// macOS Sequoia+: background throttling can corrupt GPU compositor layers
 	if (PLATFORM.IS_MAC) {
@@ -307,124 +629,7 @@ export async function MainWindow() {
 		try { log.info("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
 	}
 
-	if (ipcHandler) {
-		ipcHandler.attachWindow(window);
-	} else {
-		ipcHandler = createIPCHandler({
-			router: createAppRouter(getWindow),
-			windows: [window],
-		});
-	}
-
-	const server = notificationsApp.listen(
-		env.DESKTOP_NOTIFICATIONS_PORT,
-		"127.0.0.1",
-		() => {
-			console.log(
-				`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
-			);
-		},
-	);
-
-	// Windows: forward agent state from Claude's JSONL session transcripts
-	// to notificationsEmitter, sidestepping the bash-only hook chain that
-	// silently fails on Windows. See PATCHES.md (Patch: agent-jsonl-watcher)
-	// and the fork's project memory `superset-windows-hook-chain-broken`.
-	log.info("[boot] startAgentJsonlWatcher (seed scan deferred) +" + Math.round(process.uptime() * 1000) + "ms");
-	// (AUTO-RESUME) Detect+auto-resume Claude chats that died on an API failure.
-	autoResumeManager.start({
-		emitter: notificationsEmitter,
-		getOrganizationId: findActiveOrganizationId,
-	});
-	startAgentJsonlWatcher({
-		notificationsEmitter,
-		onClaudeApiError: (info) => autoResumeManager.onClaudeApiErrorSignal(info),
-	});
-	log.info("[boot] startAgentJsonlWatcher returned +" + Math.round(process.uptime() * 1000) + "ms");
-
-	// (KEEP-AWAKE) (KEEP-AWAKE-MOUNT) Hold Windows out of sleep while an agent is
-	// working or a question is pending, so the companion phone's liveness
-	// watchdog only ever fires on a real loss of contact. Timer-driven and
-	// non-blocking; the first read lands one poll interval from now.
-	// Starting is NOT the same as holding: every tick re-evaluates the companion
-	// gate (bridge enabled AND >=1 paired device, `keep-awake/companion-gate.ts`)
-	// and a closed gate — the case for every fork user without the companion —
-	// releases the power request and skips all I/O. Gating this CALL instead
-	// would mean pairing a phone did nothing until the app was restarted.
-	// (KEEP-AWAKE-MOUNT) exists ONLY on this seam — (KEEP-AWAKE) is satisfied by
-	// the fork-only lib/keep-awake/ files, so without a token unique to the start
-	// call an upstream merge could drop it here and the marker gate would still
-	// pass with the feature silently never starting.
-	startKeepAwake();
-
-	const notificationManager = new NotificationManager({
-		isSupported: () => Notification.isSupported(),
-		createNotification: (opts) => new Notification(opts),
-		playSound: playNotificationSound,
-		onNotificationClick: (ids) => {
-			window.show();
-			window.focus();
-			if (ids.workspaceId && ids.terminalId) {
-				notificationsEmitter.emit(
-					NOTIFICATION_EVENTS.FOCUS_V2_NOTIFICATION_SOURCE,
-					{
-						workspaceId: ids.workspaceId,
-						source: { type: "terminal", id: ids.terminalId },
-					},
-				);
-				return;
-			}
-			notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
-		},
-		getVisibilityContext: () => ({
-			isFocused: window.isFocused(),
-			currentWorkspaceId: extractWorkspaceIdFromUrl(
-				window.webContents.getURL(),
-			),
-			tabsState: appState.data?.tabsState,
-		}),
-		getWorkspaceName: getWorkspaceNameFromDb,
-		getNotificationTitle: (event) =>
-			getNotificationTitle({
-				tabId: event.tabId,
-				paneId: event.paneId,
-				tabs: appState.data?.tabsState?.tabs,
-				panes: appState.data?.tabsState?.panes,
-			}),
-	});
-	notificationManager.start();
-
-	notificationsEmitter.on(
-		NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
-		(event: AgentLifecycleEvent) => {
-			notificationManager.handleAgentLifecycle(event);
-		},
-	);
-
-	// Forward low-volume terminal lifecycle events to the renderer via the existing
-	// notifications subscription. This is used only for correctness (e.g. clearing
-	// stuck agent lifecycle statuses when terminal panes aren't mounted).
-	getWorkspaceRuntimeRegistry()
-		.getDefault()
-		.terminal.on(
-			"terminalExit",
-			(event: {
-				paneId: string;
-				exitCode: number;
-				signal?: number;
-				reason?: "killed" | "exited" | "error";
-			}) => {
-				// A goodbye hook just before this death was the agent's SIGHUP
-				// death gasp — keep the session resumable across migration.
-				recordV1TerminalExit(event.paneId);
-				notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
-					paneId: event.paneId,
-					exitCode: event.exitCode,
-					signal: event.signal,
-					reason: event.reason,
-				});
-			},
-		);
+	ipcHandler?.attachWindow(window);
 
 	// macOS Sequoia+: occluded/minimized windows can lose compositor layers
 	if (PLATFORM.IS_MAC) {
@@ -462,6 +667,8 @@ export async function MainWindow() {
 				zoomLevel,
 			});
 			persistedZoomLevel = zoomLevel;
+			// Keep the multi-window restore set fresh as windows move/resize.
+			persistOpenWindows();
 		}, 500);
 	};
 	window.on("move", debouncedSave);
@@ -628,21 +835,20 @@ window.webContents.on("did-finish-load", () => {
 		});
 		persistedZoomLevel = zoomLevel;
 
-		browserManager.unregisterAll();
-		server.close();
-		notificationManager.dispose();
-		stopAgentJsonlWatcher();
-		// (KEEP-AWAKE) (KEEP-AWAKE-UNMOUNT) release the power request with the
-		// window, not at before-quit — that handler fires too late on Windows.
-		// A DISTINCT token from the start seam on purpose: the marker gate passes
-		// on the first hit anywhere under a root, so one shared token could not
-		// catch "stop dropped, start kept" — a power request acquired and never
-		// released for the rest of the process's life.
-		stopKeepAwake();
-		notificationsEmitter.removeAllListeners();
-		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
 		ipcHandler?.detachWindow(window);
-		currentWindow = null;
+		unregisterWindow(window.id);
+
+		// A user closing one window (app keeps running) updates the restore set.
+		// During app quit we skip this — before-quit snapshots the full set so
+		// closing windows one-by-one doesn't shrink it.
+		if (!appQuitting) {
+			persistOpenWindows();
+		}
+
+		// Tear down app-wide shared services only when the last window closes.
+		if (getAllWindows().length === 0) {
+			stopSharedServices();
+		}
 	});
 
 	return window;

@@ -1,11 +1,3 @@
-// (CLOUD-SEVERANCE-P2) Repointed from `@superset/auth/client`. That module
-// builds a SECOND better-auth client against NEXT_PUBLIC_API_URL, and it is
-// the only thing in the desktop bundle that still emitted better-auth's HTTP
-// routes — which the severance build gate asserts are absent from every
-// artifact. This dialog is unreachable (Tasks is severed) but it still ships in
-// the chunk graph, so the import has to go, not just the screen.
-// The renderer's own severed shim answers useSession from the local identity.
-import { authClient } from "renderer/lib/auth-client";
 import type { TaskPriority } from "@superset/db/enums";
 import { Button } from "@superset/ui/button";
 import {
@@ -23,6 +15,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HiChevronRight, HiOutlinePaperClip, HiXMark } from "react-icons/hi2";
 import { MarkdownEditor } from "renderer/components/MarkdownEditor";
+import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
 import { PLATFORM } from "renderer/hotkeys";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
@@ -47,7 +40,6 @@ export function CreateTaskDialog({
 	searchQuery,
 	assigneeFilter,
 }: CreateTaskDialogProps) {
-	const { data: session } = authClient.useSession();
 	const navigate = useNavigate();
 	const modKey = PLATFORM === "mac" ? "⌘" : "Ctrl";
 	const titleInputRef = useRef<HTMLInputElement>(null);
@@ -77,7 +69,7 @@ export function CreateTaskDialog({
 		() => (memberData ?? []).map((member) => member.user),
 		[memberData],
 	);
-	const activeOrganizationId = session?.session?.activeOrganizationId ?? null;
+	const activeOrganizationId = useActiveOrganizationId();
 	const organizationLabel = useMemo(() => {
 		const organization = organizationData?.find(
 			(org) => org.id === activeOrganizationId,

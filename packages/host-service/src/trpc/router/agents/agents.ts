@@ -1,8 +1,11 @@
 import {
 	buildAgentEffortArgs,
+	buildAgentModeArgs,
 	buildAgentModelArgs,
 	buildAgentModelEnv,
 	getAgentEffortSupport,
+	getAgentModeSupport,
+	resolveAgentLaunchPresetId,
 } from "@superset/shared/agent-models";
 import {
 	buildPromptCommandString,
@@ -22,6 +25,7 @@ import { resolveAttachmentPath } from "../attachments/storage";
 import { parseStoredAgentEnv } from "../settings/reserved-agent-env";
 import { toTerminalSessionError } from "../terminal/errors";
 import { resolveDefaultAccountEnv } from "../usage/default-account";
+import { seedAgentFolderTrust } from "../workspace-creation/shared/seed-agent-trust";
 
 interface ResolvedHostAgentConfig {
 	id: string;
@@ -175,6 +179,7 @@ export interface AgentRunInput {
 	attachmentIds?: string[];
 	model?: string;
 	effort?: string;
+	mode?: string;
 	/** Session id of a previous run of this agent to restore (e.g. a killed
 	 * session's `agentSessionId`). The prompt may be empty when resuming. */
 	resumeSessionId?: string;
@@ -218,6 +223,33 @@ export function validateAgentEffortSelection(
 }
 
 /**
+ * Validate an explicit launch mode before launch. Omitting mode delegates to
+ * the underlying agent's default behaviour.
+ */
+export function validateAgentModeSelection(
+	presetId: string,
+	label: string,
+	mode: string | undefined,
+): void {
+	if (!mode) return;
+
+	const support = getAgentModeSupport(presetId);
+	if (!support) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `${label} does not support a launch mode override. Omit mode to use the agent default.`,
+		});
+	}
+
+	if (!support.modes.some((option) => option.id === mode)) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Unsupported launch mode "${mode}" for ${label}. Choose one of: ${support.modes.map((option) => option.id).join(", ")}.`,
+		});
+	}
+}
+
+/**
  * Validate an explicit resume request before launch. Resumability is a
  * per-config capability: configs without `resumeArgs` have no id-based
  * resume form to splice the session id into.
@@ -247,11 +279,11 @@ export function validateAgentResumeSelection(
  * Preflight a host-scoped launch before any larger workflow (such as
  * workspace creation) performs side effects.
  */
-export function validateAgentLaunchEffort(
+export function validateAgentLaunchOptions(
 	db: HostDb,
-	input: Pick<AgentRunInput, "agent" | "effort">,
+	input: Pick<AgentRunInput, "agent" | "effort" | "mode">,
 ): void {
-	if (!input.effort) return;
+	if (!input.effort && !input.mode) return;
 
 	const config = resolveHostAgentConfig(db, input.agent);
 	if (!config) {
@@ -260,7 +292,12 @@ export function validateAgentLaunchEffort(
 			message: `No host agent config matching '${input.agent}' (tried instance id then preset id).`,
 		});
 	}
-	validateAgentEffortSelection(config.presetId, config.label, input.effort);
+	const launchPresetId = resolveAgentLaunchPresetId(
+		config.presetId,
+		config.command,
+	);
+	validateAgentEffortSelection(launchPresetId, config.label, input.effort);
+	validateAgentModeSelection(launchPresetId, config.label, input.mode);
 }
 
 /**
@@ -283,7 +320,12 @@ export function buildTerminalAgentLaunch(
 			message: `No host agent config matching '${input.agent}' — the agent may have been removed or this host's agents were reset. Re-select an agent (or use a preset id like "claude").`,
 		});
 	}
-	validateAgentEffortSelection(config.presetId, config.label, input.effort);
+	const launchPresetId = resolveAgentLaunchPresetId(
+		config.presetId,
+		config.command,
+	);
+	validateAgentEffortSelection(launchPresetId, config.label, input.effort);
+	validateAgentModeSelection(launchPresetId, config.label, input.mode);
 	validateAgentResumeSelection(config, input.resumeSessionId);
 
 	const resolvedAttachments: Array<{ attachmentId: string; path: string }> = [];
@@ -299,15 +341,18 @@ export function buildTerminalAgentLaunch(
 	}
 
 	const prompt = buildAttachmentBlock(input.prompt, resolvedAttachments);
-	const modelArgs = buildAgentModelArgs(config.presetId, input.model);
-	const effortArgs = buildAgentEffortArgs(config.presetId, input.effort);
+	const modelArgs = buildAgentModelArgs(launchPresetId, input.model);
+	const effortArgs = buildAgentEffortArgs(launchPresetId, input.effort);
+	const modeArgs = buildAgentModeArgs(launchPresetId, input.mode);
 	const command = buildAgentCommandString(
 		config,
 		prompt,
-		[...modelArgs, ...effortArgs],
+		[...modelArgs, ...effortArgs, ...modeArgs],
 		{ resumeSessionId: input.resumeSessionId },
 	);
-	const modelEnv = buildAgentModelEnv(config.presetId, input.model);
+	const modelEnv = buildAgentModelEnv(launchPresetId, input.model);
+	// Host-default provider account (Usage tab switcher). Per-agent env wins,
+	// so a "Claude (work)" agent with its own CLAUDE_CONFIG_DIR stays pinned.
 	const accountEnv = resolveDefaultAccountEnv(db, config.presetId);
 	const claudeAccounts = getManagedClaudeAccountsForLaunch(db);
 	const workspaceClaudeEnv: Record<string, string> =
@@ -382,6 +427,17 @@ export async function runAgentInWorkspace(
 				"does not talk to. Use a terminal agent (claude, codex, …) instead.",
 		});
 	}
+	// Session workspaces are standalone repos the host itself scaffolded, so
+	// agent CLIs can't inherit folder trust from anywhere — pre-trust the
+	// folder in the launching agent's own trust store so its first
+	// interactive boot skips the trust dialog. Worktree workspaces inherit
+	// trust from the main checkout and need nothing.
+	if (workspace.projectId === null) {
+		const config = resolveHostAgentConfig(ctx.db, input.agent);
+		if (config) {
+			await seedAgentFolderTrust(ctx.db, workspace.worktreePath, config);
+		}
+	}
 	return runTerminalAgent(ctx, input);
 }
 
@@ -397,6 +453,7 @@ export const agentsRouter = router({
 				attachmentIds: z.array(z.string().uuid()).optional(),
 				model: z.string().min(1).optional(),
 				effort: z.string().min(1).optional(),
+				mode: z.string().min(1).optional(),
 				resumeSessionId: z.string().min(1).optional(),
 			}),
 		)

@@ -1,3 +1,4 @@
+import { resolveAgentLaunchPresetId } from "@superset/shared/agent-models";
 import { useMemo } from "react";
 import type { AgentSelectAgent } from "renderer/components/AgentSelect";
 import { useV2AgentConfigs } from "renderer/hooks/useV2AgentConfigs";
@@ -32,6 +33,10 @@ export function useV2AgentChoices(
 				// URI); fall back to the preset-implied icon.
 				iconId: config.iconId ?? config.presetId,
 				presetId: config.presetId,
+				launchPresetId: resolveAgentLaunchPresetId(
+					config.presetId,
+					config.command,
+				),
 			}),
 		);
 		return terminalAgents;

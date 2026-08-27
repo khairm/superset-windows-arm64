@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { useActiveOrganizationId } from "renderer/lib/local-identity";
-import { env } from "renderer/env.renderer";
 import { useHostsPresence } from "renderer/hooks/useHostsPresence";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";

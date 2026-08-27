@@ -173,6 +173,15 @@ export async function computeUsageHistory(
 		return start.getTime();
 	})();
 
+	// Upstream lifted this scan into `collectUsageEntries()` (./entries.ts).
+	// It stays inline HERE because that helper takes no `workspaceClaudeHomes`:
+	// a per-workspace Claude profile lives under `<db-dir>/claude-profiles/<uuid>`,
+	// which `discoverClaudeProfiles()` (dot-dirs at ~ and ~/.config only) cannot
+	// find, so calling the helper would silently drop every pinned account's
+	// history. Splitting it into "helper plus a second pass for the extra homes"
+	// is worse than the duplication: shared-history profiles symlink their
+	// projects/ into ~/.claude, and only ONE `claudeEntriesByMessage` map across
+	// every root keeps that from double-counting.
 	// Same homes the quota discovery covers: the default locations, any
 	// CLAUDE_CONFIG_DIR entries (comma-list), and auto-discovered profile /
 	// CODEX_HOME dirs — a custom config dir keeps its transcripts INSIDE the

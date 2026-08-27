@@ -28,6 +28,8 @@ interface UseDiffCodeViewItemsOptions {
 	workspaceId: string;
 	files: ChangesetFile[];
 	collapsedSet: ReadonlySet<string>;
+	editingSet: ReadonlySet<string>;
+	editorRevisionByItemId: ReadonlyMap<string, number>;
 	annotationsByPath: ReadonlyMap<
 		string,
 		DiffLineAnnotation<DiffAnnotationMetadata>[]
@@ -75,6 +77,8 @@ export function useDiffCodeViewItems({
 	workspaceId,
 	files,
 	collapsedSet,
+	editingSet,
+	editorRevisionByItemId,
 	annotationsByPath,
 	extraAnnotationsByItemId,
 }: UseDiffCodeViewItemsOptions): UseDiffCodeViewItemsResult {
@@ -226,6 +230,7 @@ export function useDiffCodeViewItems({
 			const itemId = getDiffItemId(file);
 			liveItemIds.add(itemId);
 			const collapsed = collapsedSet.has(getChangesetFileKey(file));
+			const editing = editingSet.has(getChangesetFileKey(file));
 
 			if (file.isBinary) {
 				// The placeholder item only has a single line, so re-anchor any
@@ -326,6 +331,8 @@ export function useDiffCodeViewItems({
 					file.additions,
 					file.deletions,
 					collapsed ? "1" : "0",
+					editing ? "editing" : "readonly",
+					editorRevisionByItemId.get(itemId) ?? 0,
 					getAnnotationsVersion(annotations),
 				].join("\0"),
 			);
@@ -336,6 +343,7 @@ export function useDiffCodeViewItems({
 				fileDiff,
 				annotations,
 				collapsed,
+				edit: editing,
 				version,
 			});
 		}
@@ -352,6 +360,8 @@ export function useDiffCodeViewItems({
 		diffContentByItemId,
 		annotationsByPath,
 		collapsedSet,
+		editingSet,
+		editorRevisionByItemId,
 		extraAnnotationsByItemId,
 	]);
 

@@ -9,6 +9,7 @@ import {
 	setAgentSetupTemplatesDir,
 	setupAgentIntegrations,
 	writeSharedDisabledAgentIds,
+	writeSharedDisabledSkillIds,
 } from "@superset/agent-setup";
 import { settings } from "@superset/local-db";
 import { getHostId, getHostName } from "@superset/shared/host-info";
@@ -16,15 +17,7 @@ import {
 	applyWindowsUserEnvToProcess,
 	WIN_USER_ENV_MERGED_BY_PARENT,
 } from "@superset/shared/windows-user-env";
-import {
-	app,
-	BrowserWindow,
-	dialog,
-	Notification,
-	net,
-	protocol,
-	session,
-} from "electron";
+import { app, dialog, Notification, net, protocol, session } from "electron";
 import { makeAppSetup } from "lib/electron-app/factories/app/setup";
 import { loadToken } from "lib/trpc/routers/auth/utils/auth-functions";
 import { applyShellEnvToProcess } from "lib/trpc/routers/workspaces/utils/shell-env";
@@ -39,6 +32,7 @@ import { initAppState } from "./lib/app-state";
 import { requestAppleEventsAccess } from "./lib/apple-events-permission";
 import { isUpdateReadyToInstall, setupAutoUpdater } from "./lib/auto-updater";
 import { startBrowserBridge } from "./lib/browser/browser-bridge";
+import { downloadManager } from "./lib/browser/download-manager";
 import { installBundledCliShim } from "./lib/bundled-cli";
 import { resolveDevWorkspaceName } from "./lib/dev-workspace-name";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
@@ -48,6 +42,7 @@ import { getHostServiceCoordinator } from "./lib/host-service-coordinator";
 import { localDb } from "./lib/local-db";
 import { resolveLocalOrgId } from "./lib/local-identity/local-org";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
+import { PAGE_SCHEME, pageProtocolHandler } from "./lib/pageContent";
 import {
 	initTanstackDbPersistence,
 	shutdownTanstackDbPersistence,
@@ -65,10 +60,17 @@ import {
 	getTerminalHostClient,
 } from "./lib/terminal-host/client";
 import { disposeTray, initTray } from "./lib/tray";
+import { getFocusedOrLastWindow } from "./lib/window-registry/window-registry";
 import { startNetworkLogger, stopNetworkLogger } from "./network-logger";
 import { isNetworkLoggingEnabled } from "./network-logger/policy";
 import { sweepNetworkLogs } from "./network-logger-sweep";
-import { MainWindow } from "./windows/main";
+import {
+	createPlatformWindow,
+	initAppServices,
+	markAppQuitting,
+	persistOpenWindows,
+	restoreWindows,
+} from "./windows/main";
 
 console.log("[main] Local database ready:", !!localDb);
 const IS_DEV = process.env.NODE_ENV === "development";
@@ -110,10 +112,8 @@ async function processDeepLink(url: string): Promise<void> {
 	const path = `/${url.split("://")[1]}`;
 	focusMainWindow();
 
-	const windows = BrowserWindow.getAllWindows();
-	if (windows.length > 0) {
-		windows[0].webContents.send("deep-link-navigate", path);
-	}
+	const target = getFocusedOrLastWindow();
+	target?.webContents.send("deep-link-navigate", path);
 }
 
 function findDeepLinkInArgv(argv: string[]): string | undefined {
@@ -121,13 +121,12 @@ function findDeepLinkInArgv(argv: string[]): string | undefined {
 }
 
 export function focusMainWindow(): void {
-	const windows = BrowserWindow.getAllWindows();
-	if (windows.length > 0) {
-		const mainWindow = windows[0];
-		if (mainWindow.isMinimized()) {
-			mainWindow.restore();
+	const target = getFocusedOrLastWindow();
+	if (target) {
+		if (target.isMinimized()) {
+			target.restore();
 		}
-		mainWindow.show();
+		target.show();
 		// Windows holds a foreground lock: show()/focus() alone leave the window
 		// buried in z-order when another app owns the foreground, so relaunching
 		// Superset (which routes here via the second-instance handler) looks like
@@ -135,13 +134,13 @@ export function focusMainWindow(): void {
 		// forces the window to the top; release it on the next tick so it isn't
 		// left permanently pinned above other apps. No-op cost on macOS/Linux.
 		if (process.platform === "win32") {
-			mainWindow.setAlwaysOnTop(true);
-			mainWindow.focus();
+			target.setAlwaysOnTop(true);
+			target.focus();
 			setTimeout(() => {
-				if (!mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+				if (!target.isDestroyed()) target.setAlwaysOnTop(false);
 			}, 250);
 		} else {
-			mainWindow.focus();
+			target.focus();
 		}
 	} else {
 		// Triggers window creation via makeAppSetup's activate handler
@@ -258,6 +257,11 @@ app.on("before-quit", async (event) => {
 	// (NETLOG-OFF) Flush the opt-in netlog before the rest of the shutdown; a
 	// no-op on every run that never started it, which is the default.
 	await stopNetworkLogger();
+	// Snapshot all open windows (bounds + org) before they close, so relaunch
+	// restores them. markAppQuitting() stops per-window close handlers from
+	// shrinking the set as windows close one-by-one.
+	markAppQuitting();
+	persistOpenWindows();
 	await runQuitCleanup({
 		isDev,
 		forceFullCleanup,
@@ -360,6 +364,13 @@ protocol.registerSchemesAsPrivileged([
 			corsEnabled: true,
 		},
 	},
+	{
+		scheme: PAGE_SCHEME,
+		privileges: {
+			standard: true,
+			secure: true,
+		},
+	},
 ]);
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -415,8 +426,8 @@ if (!gotTheLock) {
 		}
 		// (CLOUD-SEVERANCE-P1) First thing after whenReady, before any protocol
 		// handler or window exists: install the LOG-ONLY egress fence so no
-		// session request can slip past unobserved. MainWindow() throws if this
-		// did not run.
+		// session request can slip past unobserved. createPlatformWindow() throws
+		// if this did not run.
 		installEgressFence();
 		// (CLOUD-SEVERANCE-P2) The boot-time proxy warm-up probe is gone along
 		// with the host it was resolving a route to.
@@ -459,6 +470,11 @@ if (!gotTheLock) {
 		// patterns but kept the API one because sign-in still needed it —
 		// nothing signs in now, and a shim that smooths the path to a severed
 		// host is the last thing that should outlive it.
+
+		protocol.handle(PAGE_SCHEME, pageProtocolHandler);
+		session
+			.fromPartition("persist:superset")
+			.protocol.handle(PAGE_SCHEME, pageProtocolHandler);
 
 		// Serve system fonts (e.g. SF Mono on macOS) via custom protocol
 		// so the renderer can use @font-face with font-src 'self' CSP
@@ -537,6 +553,7 @@ if (!gotTheLock) {
 		} catch (error) {
 			console.error("[main] Failed to start browser bridge:", error);
 		}
+		downloadManager.start();
 
 		const hostServiceCoordinator = getHostServiceCoordinator();
 		// (CLOUD-SEVERANCE-P2) The host-service — and therefore every terminal —
@@ -610,12 +627,17 @@ if (!gotTheLock) {
 			// The vite build copies @superset/agent-setup's templates (plus the
 			// bundled Claude plugin) next to this bundle; see vite/helpers.ts.
 			setAgentSetupTemplatesDir(path.join(__dirname, "templates"));
-			const disabledAgentHooks =
-				localDb.select().from(settings).get()?.disabledAgentHooks ?? [];
-			// Mirror the disable list so CLI-launched host-services on this
-			// machine honor it instead of re-provisioning disabled agents.
+			const settingsRow = localDb.select().from(settings).get();
+			const disabledAgentHooks = settingsRow?.disabledAgentHooks ?? [];
+			const disabledSkills = settingsRow?.disabledSkills ?? [];
+			// Mirror the disable lists so CLI-launched host-services on this
+			// machine honor them instead of re-provisioning disabled agents/skills.
 			writeSharedDisabledAgentIds(disabledAgentHooks);
-			setupAgentIntegrations({ disabledAgentIds: disabledAgentHooks });
+			writeSharedDisabledSkillIds(disabledSkills);
+			setupAgentIntegrations({
+				disabledAgentIds: disabledAgentHooks,
+				disabledSkillIds: disabledSkills,
+			});
 		} catch (error) {
 			console.error("[main] Failed to set up agent integrations:", error);
 		}
@@ -639,8 +661,12 @@ if (!gotTheLock) {
 			}));
 		}
 
-		log.info("[boot] step makeAppSetup (MainWindow) start +" + bootMs() + "ms");
-		await makeAppSetup(() => MainWindow());
+		log.info("[boot] step makeAppSetup start +" + bootMs() + "ms");
+		initAppServices();
+		await makeAppSetup(
+			() => createPlatformWindow({ orgId: null }),
+			restoreWindows,
+		);
 		log.info("[boot] step makeAppSetup done +" + bootMs() + "ms");
 		setupAutoUpdater();
 		initTray();

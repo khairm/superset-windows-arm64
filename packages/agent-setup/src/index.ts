@@ -6,6 +6,7 @@ import {
 	teardownSingleAgent,
 } from "./agent-setup";
 import { resolveDisabledAgentIds } from "./disabled-agent-hooks";
+import { resolveDisabledSkillIds } from "./disabled-skills";
 import {
 	getBashDir,
 	getBinDir,
@@ -31,15 +32,20 @@ import {
  * process and the standalone (CLI-launched) host-service alike.
  *
  * Callers without their own settings store (headless hosts) omit
- * `disabledAgentIds`; the shared ~/.superset/agent-hooks.json mirror and the
- * SUPERSET_DISABLED_AGENT_HOOKS env override apply instead, so a machine
- * running both the desktop and CLI hosts converges on one disable set.
+ * `disabledAgentIds`/`disabledSkillIds`; the shared ~/.superset mirror files
+ * (agent-hooks.json, disabled-skills.json) and their SUPERSET_DISABLED_*
+ * env overrides apply instead, so a machine running both the desktop and CLI
+ * hosts converges on one disable set.
  */
 export function setupAgentIntegrations(
-	options: { disabledAgentIds?: readonly string[] } = {},
+	options: {
+		disabledAgentIds?: readonly string[];
+		disabledSkillIds?: readonly string[];
+	} = {},
 ): void {
 	console.log("[agent-setup] Provisioning agent integrations...");
 	const disabledAgentIds = resolveDisabledAgentIds(options.disabledAgentIds);
+	const disabledSkillIds = resolveDisabledSkillIds(options.disabledSkillIds);
 
 	fs.mkdirSync(getBinDir(), { recursive: true });
 	fs.mkdirSync(getHooksDir(), { recursive: true });
@@ -47,7 +53,7 @@ export function setupAgentIntegrations(
 	fs.mkdirSync(getBashDir(), { recursive: true });
 	fs.mkdirSync(getOpenCodePluginDir(), { recursive: true });
 
-	setupAgentCapabilities({ disabledAgentIds });
+	setupAgentCapabilities({ disabledAgentIds, disabledSkillIds });
 
 	runSetupAction("zsh-wrapper", createZshWrapper);
 	runSetupAction("bash-wrapper", createBashWrapper);
@@ -81,8 +87,14 @@ export {
 	writeSharedDisabledAgentIds,
 } from "./disabled-agent-hooks";
 export {
+	readSharedDisabledSkillIds,
+	resolveDisabledSkillIds,
+	writeSharedDisabledSkillIds,
+} from "./disabled-skills";
+export {
 	readExternallyConfiguredMcpServers,
 	type SyncManagedMcpServersOptions,
 	syncManagedMcpServers,
 } from "./managed-mcp-servers";
+export { createManagedSkills } from "./managed-skills";
 export { getBinDir, resolveSupersetHomeDir } from "./paths";

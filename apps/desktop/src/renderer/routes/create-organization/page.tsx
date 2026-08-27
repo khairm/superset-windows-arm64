@@ -21,6 +21,7 @@ import { CLOUD_SEVERED_FALLBACK_ROUTE } from "renderer/lib/cloud-severed-routes"
 import { useSignOut } from "renderer/hooks/useSignOut";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { authClient } from "renderer/lib/auth-client";
+import { electronTrpcClient } from "renderer/lib/trpc-client";
 import { z } from "zod";
 
 /**
@@ -153,6 +154,13 @@ export function CreateOrganization() {
 			});
 
 			await authClient.organization.setActive({
+				organizationId: organization.id,
+			});
+			// This route lives outside the authenticated layout, so navigating
+			// back remounts CollectionsProvider, which seeds from the window
+			// registry first. Without moving the window too, the registry's old
+			// org wins and you are not taken into the org you just created.
+			await electronTrpcClient.window.setActiveOrg.mutate({
 				organizationId: organization.id,
 			});
 

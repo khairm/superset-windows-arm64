@@ -232,6 +232,13 @@
       "when": 1787569198344,
       "tag": "0025_whole_gorgon",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1787569198345,
+      "tag": "0025_fuzzy_true_believers",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,10 @@
 import type { RendererContext } from "@superset/panes";
+import { FEATURE_FLAGS } from "@superset/shared/constants";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
 import { workspaceTrpc } from "@superset/workspace-client";
 import "@xterm/xterm/css/xterm.css";
+import { useFeatureFlagEnabled } from "posthog-js/react";
 import {
 	useCallback,
 	useEffect,
@@ -11,6 +13,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
+import { env } from "renderer/env.renderer";
 import { useHotkey } from "renderer/hotkeys";
 import {
 	actionLabel,
@@ -33,6 +36,7 @@ import type {
 	PaneViewerData,
 	TerminalPaneData,
 } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
+import { openPagePaneInStore } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/utils/openPagePaneInStore";
 import { openUrlInV2Workspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/utils/openUrlInV2Workspace";
 import { useWorkspaceWsUrl } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceTrpcProvider/WorkspaceTrpcProvider";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
@@ -55,6 +59,7 @@ import {
 } from "./richInputOpenStore";
 import { PasteUploadLimitError, uploadPastedFiles } from "./uploadPastedFiles";
 import { shellEscapePaths } from "./utils";
+import { parseSupersetPageUrl } from "./utils/parseSupersetPageUrl";
 
 interface TerminalPaneProps {
 	ctx: RendererContext<PaneViewerData>;
@@ -72,6 +77,7 @@ export function TerminalPane({
 	const filePolicy = useTerminalFilePolicy();
 	const urlPolicy = useTerminalUrlPolicy();
 	const folderPolicy = useTerminalFolderPolicy();
+	const isPagesEnabled = useFeatureFlagEnabled(FEATURE_FLAGS.PAGES) ?? false;
 	const {
 		hoveredLink,
 		onHover: onLinkHover,
@@ -371,13 +377,20 @@ export function TerminalPane({
 						electronTrpcClient.external.openUrl.mutate(url).catch((error) => {
 							console.error("[v2 Terminal] Failed to open URL:", url, error);
 						});
-					} else {
-						openUrlInV2Workspace({
-							store: ctx.store,
-							target: action === "newTab" ? "new-tab" : "current-tab",
-							url,
-						});
+						return;
 					}
+					const pageSlug = isPagesEnabled
+						? parseSupersetPageUrl(url, env.NEXT_PUBLIC_WEB_URL)
+						: null;
+					if (pageSlug) {
+						openPagePaneInStore(ctx.store, { slug: pageSlug });
+						return;
+					}
+					openUrlInV2Workspace({
+						store: ctx.store,
+						target: action === "newTab" ? "new-tab" : "current-tab",
+						url,
+					});
 				},
 				onLinkHover,
 				onLinkLeave,
@@ -401,6 +414,7 @@ export function TerminalPane({
 		urlPolicy,
 		isLocalWorkspace,
 		folderPolicy,
+		isPagesEnabled,
 	]);
 
 	// --- Remote image paste ---

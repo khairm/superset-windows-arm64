@@ -35,8 +35,6 @@ interface DashboardSidebarSessionsSectionProps {
 	 * deleted first. */
 	deletedSessionWorkspaces?: DashboardSidebarWorkspace[];
 	isCollapsed?: boolean;
-	/** The workspaces-list collapse toggle hides rows; the header stays. */
-	rowsHidden?: boolean;
 	workspaceShortcutLabels?: Map<string, string>;
 	onWorkspaceHover: (workspaceId: string) => void | Promise<void>;
 }
@@ -64,7 +62,6 @@ export function DashboardSidebarSessionsSection({
 	archivedSessionWorkspaces = [],
 	deletedSessionWorkspaces = [],
 	isCollapsed = false,
-	rowsHidden = false,
 	workspaceShortcutLabels,
 	onWorkspaceHover,
 }: DashboardSidebarSessionsSectionProps) {
@@ -83,7 +80,6 @@ export function DashboardSidebarSessionsSection({
 	// zone renders regardless of the section collapse.
 	const dropZoneEligible =
 		!isCollapsed &&
-		!rowsHidden &&
 		sessionItems.length === 0 &&
 		activeWorkspaceHome === SESSIONS_CONTAINER;
 
@@ -162,7 +158,7 @@ export function DashboardSidebarSessionsSection({
 	];
 
 	return (
-		<div className="pb-1">
+		<div className="mt-3 pb-1 first:mt-0">
 			{/* (SESSION-LIFECYCLE) The reveal toggles for the subsections below
 			    live on the header's right-click menu. The wrapper div is the
 			    trigger's `asChild` target: the shared section header renders its
@@ -199,7 +195,7 @@ export function DashboardSidebarSessionsSection({
 					</DashboardSidebarSectionHeader>
 				</div>
 			</DashboardSidebarSessionsContextMenu>
-			{!rowsHidden && !isSectionCollapsed && (
+			{!isSectionCollapsed && (
 				<SortableContext
 					items={sessionItems}
 					strategy={verticalListSortingStrategy}
@@ -227,8 +223,7 @@ export function DashboardSidebarSessionsSection({
 					label="Drop to unpin"
 				/>
 			)}
-			{!rowsHidden &&
-				!isSectionCollapsed &&
+			{!isSectionCollapsed &&
 				stateSections
 					.filter((section) => section.show)
 					.map((section) => (

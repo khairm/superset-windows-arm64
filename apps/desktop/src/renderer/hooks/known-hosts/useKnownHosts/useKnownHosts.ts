@@ -36,7 +36,10 @@ export function useKnownHosts(): {
 	settled: boolean;
 } {
 	// (CLOUD-SEVERANCE-P2) Frozen local organization — never null, so every
-	// org-scoped read below is authoritative from the first render.
+	// org-scoped read below is authoritative from the first render. Upstream's
+	// per-window hook resolves to this same value here (one organization), but
+	// it can be null before CollectionsProvider settles and this hook is also
+	// reached from outside that provider.
 	const organizationId = useActiveOrganizationId();
 
 	// Presence drives the fan-out targets the sidebar polls while the window is

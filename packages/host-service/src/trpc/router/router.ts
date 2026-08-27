@@ -1,4 +1,5 @@
 import { router } from "../index";
+import { agentToolingRouter } from "./agent-tooling";
 import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
 import { authRouter } from "./auth";
@@ -39,6 +40,7 @@ import { workspacesRouter } from "./workspaces";
 
 export const appRouter = router({
 	agents: agentsRouter,
+	agentTooling: agentToolingRouter,
 	attachments: attachmentsRouter,
 	auth: authRouter,
 	browser: browserRouter,

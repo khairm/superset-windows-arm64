@@ -35,6 +35,8 @@ export const CLOUD_TRPC_ROUTER_ROOTS = [
 	"host",
 	"integration",
 	"organization",
+	"page",
+	"pageComment",
 	"support",
 	"task",
 	"team",
@@ -43,7 +45,29 @@ export const CLOUD_TRPC_ROUTER_ROOTS = [
 	"v2Project",
 ] as const;
 
+/**
+ * The organization this window's cloud reads are scoped to.
+ *
+ * Module state is per-renderer, and every window is its own renderer, so this
+ * is per-window by construction — two windows cannot see each other's value.
+ * Without it the API falls back to the login session's active organization,
+ * which is shared by every window: a window switched to another org would read
+ * the first window's data.
+ *
+ * Null until CollectionsProvider resolves the window's org, which is also the
+ * pre-sign-in state; the API then applies its session default as before.
+ */
+let cloudOrganizationId: string | null = null;
+
+export function setCloudOrganizationId(organizationId: string | null): void {
+	cloudOrganizationId = organizationId;
+}
+
 export const cloudTrpcClient = cloudTrpc.createClient({
-	// (CLOUD-SEVERANCE-P2) No HTTP transport. See cloud-severed-link.ts.
+	// (CLOUD-SEVERANCE-P2) No HTTP transport, so no org header to send: the
+	// window's organization is read straight off `getLocalOrganizationId()`
+	// inside the severed link. `cloudOrganizationId` is still tracked above so
+	// the per-window org that upstream threads through here has somewhere to
+	// land if a transport ever comes back.
 	links: [cloudSeveredLink],
 });

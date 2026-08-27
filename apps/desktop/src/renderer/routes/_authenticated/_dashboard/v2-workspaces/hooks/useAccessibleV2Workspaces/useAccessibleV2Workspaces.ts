@@ -3,7 +3,6 @@ import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { env } from "renderer/env.renderer";
 import { resolveProjectIconUrl } from "renderer/hooks/host-projects/resolveProjectIconUrl";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { deriveTerminalAgentStatus } from "renderer/hooks/host-service/useTerminalAgentStatuses";
@@ -110,8 +109,6 @@ export interface AccessibleV2Workspace {
 	/** Most recent agent event across the workspace's terminals (epoch ms);
 	 * null when no agent has ever run here. */
 	lastAgentEventAt: number | null;
-	/** Distinct agents bound to this workspace's terminals, most recent first. */
-	agentIds: string[];
 	/** Working-tree + against-base churn; null until the host answers. */
 	diffStats: V2WorkspaceDiffStats | null;
 	/** Non-null = archived tombstone (soft-deleted workspace). */
@@ -250,6 +247,9 @@ export function useAccessibleV2Workspaces(
 	const relayUrl = useRelayUrl();
 
 	// (CLOUD-SEVERANCE-P2) Frozen local organization and the one local user.
+	// Every row below is filtered against this id and the rows are served by the
+	// window's own host service; upstream made it per-window for exactly that
+	// reason, and here every window resolves to the same frozen organization.
 	const activeOrganizationId = useActiveOrganizationId();
 	const currentUserId = session?.user?.id ?? null;
 
@@ -765,9 +765,6 @@ export function useAccessibleV2Workspaces(
 				agentStatus: agentActivityByWorkspaceId.get(row.id)?.status ?? "idle",
 				lastAgentEventAt:
 					agentActivityByWorkspaceId.get(row.id)?.lastEventAt ?? null,
-				agentIds: (agentActivityByWorkspaceId.get(row.id)?.agents ?? [])
-					.sort((a, b) => b[1] - a[1])
-					.map(([agentId]) => agentId),
 				diffStats: diffStatsByWorkspaceId.get(row.id) ?? null,
 				archivedAt: row.archivedAt,
 				archiveReason: row.archiveReason,
