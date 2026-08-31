@@ -1,0 +1,118 @@
+Remove them. I don't want any superset base skills ever injected or in any of my folders/files. remove the code that does anything like that from superset root and stem
+
+---
+
+<task-notification>
+<task-id>a0ddf66dc0d3ddec9</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\17c6a835-0a5c-450c-9164-edbc67144cfb\tasks\a0ddf66dc0d3ddec9.output</output-file>
+<status>completed</status>
+<summary>Agent "Review skill removal" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I've traced the diff, the two new untracked files, the call graph, and run the fork's own gates.
+
+Verification performed: `node scripts/check-no-bundled-skills.mjs` (pass), `node scripts/check-feature-markers.mjs` (279/279 pass), `node scripts/check-dangerous-diagnostics.mjs` (REFERR gate clean across all 7 shipped packages), `tsc --noEmit` on `packages/agent-setup` (clean), `biome lint` on every touched area (only pre-existing warnings), plus repo-wide greps for every removed export, path and identifier.
+
+---
+
+```
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\agent-setup\src\provider-profiles.ts:186
+Defect: `cleanupLegacyClaudeConfigDir(target)` is an unguarded destructive sweep placed as the FIRST statement of `provisionClaudeProfile`, ahead of `fs.mkdirSync`, the ledger, the shared-dir links and `ensureClaudeManagedHooksAt` (line 232) — and the `fs.rmSync(target, { recursive: true })` it calls (legacy-managed-skills-cleanup.ts:59) passes no `maxRetries`, so any non-ENOENT error rethrows and aborts the whole profile provisioning.
+Failure: Windows ARM64 only. A handle is held anywhere under `~/.claude/skills/superset/**` — a running agent executing the bundled `skills/10x/scripts/audit.sh` or `skills/standup/scripts/sweep.sh`, an indexer, or Windows' delayed-delete semantics returning ENOTEMPTY (the exact class Node's `rm` added `maxRetries` for). `rmSync` throws EPERM/EBUSY/ENOTEMPTY, `provisionClaudeProfile` rejects before it reaches `ensureClaudeManagedHooksAt`, and that account's Claude lifecycle hooks are never (re)written. The fork's agent status dots, companion alerts and auto-resume all ride those hooks, so they silently stop working for that profile. Via `provisionSelectedAccounts` the throw is swallowed into a `console.warn`; via `usage.addAccount` it surfaces as a failed mutation. Before this change a locked legacy skills dir could not block provisioning at all.
+Fix: Pass `{ recursive: true, force: true, maxRetries: 3, retryDelay: 100 }` in `removeDirectory`, and move the `cleanupLegacyClaudeConfigDir(target)` call to AFTER `ensureClaudeManagedHooksAt(target)` (or wrap it in the module's own try/log) so a stuck legacy directory can never cost the account its hooks.
+```
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\agent-setup\src\legacy-managed-skills-cleanup.ts:170
+Defect: The four cleanup steps are independent but sequenced without isolation — `removeDirectory`/`removeFile` rethrow, so the first failure inside `cleanupLegacyClaudeConfigDir` skips `cleanupAgentSkillDirs`, `cleanupAgentCommands` and `cleanupDisabledSkillsState` entirely. The caller (index.ts:46) wraps it in `runSetupAction`, which downgrades the throw to a `console.warn` in a background main-process log.
+Failure: One locked file under `~/.claude/skills/superset` on one boot leaves `~/.agents/skills/superset-*`, `~/.agents/commands/superset/*.md` and `~/.superset/disabled-skills.json` in place. Every agent CLI keeps loading the retired Superset skills, the state the fork declares removed, and the only signal is a warn line nobody reads. That is the opposite of the stated "fail loudly on unexpected filesystem errors" requirement.
+Fix: Run each of the four steps under its own try/catch, collect the errors, finish the other three, then rethrow (or `console.error`) an aggregate naming every path that survived.
+```
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\.github\workflows\nightly-merge.yml:445
+Defect: `check-no-bundled-skills.mjs` is wired into the three build jobs and into `ci-repair.sh`, but not into the nightly merge's own deterministic gate block (which runs its marker gate inline via awk at line 449 and the REFERR gate at line 402).
+Failure: An upstream `desktop-v*` tag that re-adds `plugins/superset/**` merges as pure additions — no conflict, no marker lost, no cannot-find-name diagnostic. Every merge gate passes; the violation is only caught later by the build gate, which burns the bounded `(BUILD-REPAIR)` budget (max 2 repairs) on deleting files a two-second deterministic check could have rejected before the merge was ever committed.
+Fix: Add `node scripts/check-no-bundled-skills.mjs` next to `run_marker_gate` in the merge gate block, so the merge aborts (or the adapt pass is retargeted) before the build half starts.
+```
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\scripts\check-no-bundled-skills.mjs:31
+Defect: `SOURCE_ROOTS` covers `packages/agent-setup/src`, `apps/desktop/src/main`, `apps/desktop/vite`, `packages/cli/scripts` and `packages/shared/src/plugins`, but omits `apps/desktop/src/lib` (where the five removed skill tRPC procedures lived), `apps/desktop/src/renderer` and `packages/host-service/src`.
+Failure: A merge that restores upstream's skill router at `apps/desktop/src/lib/trpc/routers/plugins/index.ts`, or the Skills UI under a renamed renderer path, is invisible to the identifier scan — `FORBIDDEN_PATHS` only pins the two exact old `SkillsList`/`SkillIcon` directories. The esbuild bundle would fail on the unresolved named imports, so it fails closed, but the gate that is supposed to name the violation stays silent and the failure arrives as an opaque bundler error inside the repair loop.
+Fix: Add `apps/desktop/src/lib`, `apps/desktop/src/renderer` and `packages/host-service/src` to `SOURCE_ROOTS` (the scan already skips `node_modules`, so the cost is one extra tree walk).
+```
+
+```
+[MINOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\components\FileEditPane\FileEditPane.tsx:28
+Defect: `FileEditPane` is now orphaned — its only consumer was the deleted `SkillPreviewDialog`. `rg FileEditPane` returns just the component, its barrel `index.ts`, and a stale doc comment in `apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/FilePane/registry/types.ts:44` that still cites "the skill editor's FileEditPane" as the live example for the `showToolbar: false` case.
+Failure: No runtime effect (Rollup drops an unimported module). It is repo debt that misleads the next reader and the nightly merge's semantic reviewer, which is told to read surrounding code to judge fork features.
+Fix: Delete `apps/desktop/src/renderer/components/FileEditPane/` and rewrite the `types.ts:44` comment to name a surviving consumer, or drop the example.
+```
+
+Checked and found clean: the marker-proof cleanup logic itself (the `&lt;!-- superset-managed-skill v1 --&gt;` string and `.superset-managed` sentinel path match exactly what every shipped version of `createManagedSkills` wrote, verified against `git show 34a6160557` — the first release of the mechanism — through HEAD; user-owned skills, commands and a non-canonical `disabled-skills.json` are all correctly preserved, and the dev-only `~/.claude/skills/superset-dev` copy is safe because `sync-dev-skills.ts` stripped the sentinel); symlink handling (`lstat`-based `isSymbolicLink` guards, `isRealDirectory` on the commands namespace); `disabled_skills` retained as an unused column with a matching CLI registry note and no schema/migration change; every removed export, identifier and path is gone repo-wide with zero dangling references; `PLUGIN_CATALOG` removal degrades gracefully in `ManageInstalledDialog` and redirects in the `$pluginName` route; MCP sync, generic plugin install/enable/uninstall, agent hooks, shell wrappers and profile sharing are untouched; the build gate is correctly placed inside the FROZEN pre-publish workflow step and inside the `ci-repair.sh` frozen-path list validated from the trusted base blob (with `set -euo pipefail` making a missing base blob fail loud rather than silently no-op); docs and `meta.json` have no surviving `/skills` links; the CLI headless-e2e `sleep 1` removal is correct since the only async provisioning it covered is gone.
+
+**FIX-FIRST**</result>
+<usage><subagent_tokens>186757</subagent_tokens><tool_uses>77</tool_uses><duration_ms>890051</duration_ms></usage>
+</task-notification>
+
+---
+
+No more Opus Agents from now on. Stick to Sol Agents, please.
+
+---
+
+<task-notification>
+<task-id>ae88440e16b979234</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\17c6a835-0a5c-450c-9164-edbc67144cfb\tasks\ae88440e16b979234.output</output-file>
+<status>completed</status>
+<summary>Agent "Verify review fixes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\agent-setup\src\legacy-managed-skills-cleanup.ts:71  
+Defect: Regular-file cleanup uses one-shot `unlinkSync`; only directory deletion receives Windows retries.  
+Failure: A transient Windows sharing violation on a managed command or `disabled-skills.json` leaves that legacy file behind. The cleanup continues with other areas, then throws an `AggregateError`, so the retired command remains available until a later successful cleanup.  
+Fix: Apply bounded retries for transient Windows deletion errors to regular files while preserving `ENOENT` handling and the final aggregate throw.
+
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\scripts\check-no-bundled-skills.mjs:29  
+Defect: The identifier gate omits retired exported APIs including `getBundledSkillContent`, `getBundledSkillPath`, `getBundledSkillIcons`, `writeBundledSkillContent`, and `getDisabledSkillsStateFilePath`.  
+Failure: An upstream merge can restore any of these APIs in an existing source file while keeping the currently listed identifiers and forbidden paths absent; the no-bundled-skills gate then passes despite retired skill-management code returning.  
+Fix: Add the exact retired exported identifiers, scoped to their relevant source areas to avoid blocking unrelated user-skill code.
+
+Checked clean: independent cleanup attempts and aggregate failure reporting, Claude profile cleanup ordering and hook provisioning, nightly gate ordering, marker-based preservation of user-owned skills, and complete removal of `FileEditPane` and `showFrontMatterNote`.
+
+**FIX-FIRST**</result>
+<usage><subagent_tokens>0</subagent_tokens><tool_uses>64</tool_uses><duration_ms>503227</duration_ms></usage>
+</task-notification>
+
+---
+
+can you install it? new version?
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
+
+---
+
+.
