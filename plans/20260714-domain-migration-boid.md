@@ -169,7 +169,6 @@ Update in: `packages/auth/src/server.ts`, `packages/shared/src/constants.ts` (do
 - [ ] `README.md` (32 refs incl. `docs.superset.sh` badges), `CODE_OF_CONDUCT.md`
 - [ ] Marketing blog/legal MDX content mentions
 - [ ] Logos, wordmark, favicon, OG images across marketing/docs/app/desktop
-- [ ] Skill/plugin docs (`skills/superset/`, `plugins/superset/`)
 
 ---
 

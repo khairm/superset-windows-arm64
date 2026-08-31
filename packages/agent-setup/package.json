@@ -15,10 +15,6 @@
 		"./paths": {
 			"types": "./src/paths.ts",
 			"default": "./src/paths.ts"
-		},
-		"./config": {
-			"types": "./src/config.ts",
-			"default": "./src/config.ts"
 		}
 	},
 	"scripts": {

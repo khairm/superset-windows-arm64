@@ -9,6 +9,7 @@ import {
 } from "renderer/stores/v2-notifications";
 import type { HostNotificationWorkspaceState } from "../components/HostNotificationSubscriber";
 import {
+	hasAcknowledgedRelaunchBoundary,
 	reportRelaunchBoundary,
 	reportTerminalSeen,
 } from "./companionAlertSync";
@@ -87,7 +88,7 @@ interface ResyncResult {
 const MAX_SEEN_REPAIRS_PER_RESYNC = 10;
 
 /**
- * How long a REPAIRED terminal stays out of the batch.
+ * How long a REPAIRED finish stays out of the batch.
  *
  * This is what makes the cap ROTATE instead of starve. Without it every epoch
  * spent its whole budget on the same first ten rows and everything past them
@@ -125,9 +126,15 @@ function nowMonotonic(): number {
 }
 
 /**
- * `${hostUrl}:${terminalId}` -> the monotonic instant it may be attempted
- * again. One number rather than `{at, cooldownMs}`: nothing reads the parts
- * separately, and the comparison is what every caller actually wants.
+ * `${hostUrl}:${terminalId}:${seenThroughAt}` -> the monotonic instant it may
+ * be attempted again. One number rather than `{at, cooldownMs}`: nothing reads
+ * the parts separately, and the comparison is what every caller actually wants.
+ *
+ * The instant is IN the key because a repair is a claim about ONE finish, not
+ * about a terminal. Keying per terminal let a repaired finish suppress the next
+ * one: the agent finishes again half an hour into the cooldown, the user reads
+ * it, and the next resync skipped that terminal as "recently repaired" — so the
+ * phone kept the newer alert up with nothing left to take it down.
  */
 const repairCooldowns = new Map<string, number>();
 
@@ -315,6 +322,10 @@ const moduleLoadMonotonicMs: number | undefined =
  * Per host URL: `moduleLoadMonotonicMs` expressed in THAT host's clock, latched
  * from its first answering snapshot. Meaningless unless `sessionBeganCold`; an
  * absent entry means "not translatable yet" and suppresses seeding entirely.
+ *
+ * DROPPED AGAIN when the host would not take it as a relaunch boundary and has
+ * not already accepted one — the next epoch then re-derives it from a fresher
+ * `hostNow`. See the report at the end of the reconcile.
  */
 const hostSessionBoundaries = new Map<string, number>();
 
@@ -655,7 +666,7 @@ export async function resyncAgentStatusFromHost({
 				? outstandingAt
 				: null;
 		if (repairSeenThroughAt !== null) {
-			const repairKey = `${hostUrl}:${row.terminalId}`;
+			const repairKey = `${hostUrl}:${row.terminalId}:${repairSeenThroughAt}`;
 			if (isInRepairCooldown(repairKey, nowMonotonicMs)) {
 				result.seenRepairsSkipped++;
 			} else if (result.seenRepairsSent < MAX_SEEN_REPAIRS_PER_RESYNC) {
@@ -792,10 +803,24 @@ export async function resyncAgentStatusFromHost({
 	// `hostNow`, or a renderer with no monotonic clock, leaves the boundary
 	// unset, which disables seeding AND skips this: a launch instant this
 	// renderer could not derive is not one it may guess at.
+	//
+	// AND AN UNCONSUMED REPORT DROPS THE LATCHED BOUNDARY, which is what makes
+	// "retried by the next epoch" mean anything. The host's other reason for
+	// answering `false` is that it REFUSED the instant as out of range — a
+	// boundary in its own FUTURE, which its clock stepping forward after this
+	// value was derived is enough to produce — and re-offering the identical
+	// number would be refused identically until the app is restarted. Dropping
+	// it makes the next epoch derive a fresh one from that epoch's `hostNow`,
+	// which has moved on. A host that already ACKNOWLEDGED one answers `false`
+	// for the opposite reason (nothing left to send) and must keep its boundary:
+	// every seeding comparison above reads it.
 	if (hostSessionBoundary !== undefined) {
 		void reportRelaunchBoundary({
 			hostUrl,
 			boundaryMs: Math.floor(hostSessionBoundary),
+		}).then((accepted) => {
+			if (accepted || hasAcknowledgedRelaunchBoundary(hostUrl)) return;
+			hostSessionBoundaries.delete(hostUrl);
 		});
 	}
 

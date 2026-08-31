@@ -13,6 +13,7 @@ export {
 	type PortChangedPayload,
 	type ProjectChangedPayload,
 	type ProjectSnapshotPayload,
+	peekConnectionStatus,
 	type TerminalLifecyclePayload,
 	type WorkspaceChangedPayload,
 	type WorkspaceCreateSettledPayload,

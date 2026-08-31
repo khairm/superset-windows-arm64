@@ -21,8 +21,7 @@ import {
 	ensureClaudeManagedHooksAt,
 	ensureCodexManagedHooksAt,
 } from "./agent-wrappers-claude-codex-opencode";
-import { resolveDisabledSkillIds } from "./disabled-skills";
-import { provisionManagedClaudePluginAt } from "./managed-skills";
+import { cleanupLegacyClaudeConfigDir } from "./legacy-managed-skills-cleanup";
 import {
 	linkSharedDir,
 	mergeSharedJsonKeys,
@@ -184,6 +183,12 @@ export async function provisionClaudeProfile(
 		return { configDir: target, surfaces };
 	}
 
+	let cleanupError: unknown;
+	try {
+		cleanupLegacyClaudeConfigDir(target);
+	} catch (error) {
+		cleanupError = error;
+	}
 	fs.mkdirSync(target, { recursive: true });
 	const ledger = readProfileLedger(target, defaultDir);
 
@@ -230,18 +235,7 @@ export async function provisionClaudeProfile(
 	// After the settings merge: the merge only writes shared keys, and the
 	// hook entries have to survive it.
 	ensureClaudeManagedHooksAt(target);
-
-	if (surfaces["skills/"] === "user-owned") {
-		// The profile brought its own skills dir, so it isn't sharing ours —
-		// the bundled Superset plugin has to be written into it directly.
-		// No settings row here (this can run from a headless host), so resolve
-		// through the shared mirror/env — the same source the default account
-		// path converges on.
-		await provisionManagedClaudePluginAt(target, {
-			disabledSkills: resolveDisabledSkillIds(),
-		});
-		surfaces["skills/superset"] = "synced";
-	}
+	if (cleanupError !== undefined) throw cleanupError;
 
 	const report = { configDir: target, surfaces };
 	logReport("Claude", report);

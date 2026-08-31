@@ -61,8 +61,6 @@ export interface PluginCatalogEntry {
 	 * is tracked by the materialization ledger, not the name.
 	 */
 	mcpServers: Record<string, PluginMcpServerConfig>;
-	/** Names of skills the plugin bundles (Codex manifests point `skills` at a directory; a resolved entry lists them). */
-	skills?: readonly string[];
 	/** Curation attribute, not manifest vocabulary: surfaces in Featured. */
 	featured?: boolean;
 }
@@ -166,12 +164,11 @@ export function isPluginExternallyConfigured(
 }
 
 /** What a plugin puts on your machine, for at-a-glance labeling in the UI. */
-export type PluginComponentKind = "mcp" | "cli" | "skills";
+export type PluginComponentKind = "mcp" | "cli";
 
 /**
  * Derived from the manifest so labels can't drift from behavior: a remote
- * `url` server is "mcp", a `command` server runs a local process ("cli"),
- * bundled skills are "skills".
+ * `url` server is "mcp", while a `command` server runs a local process ("cli").
  */
 export function getPluginComponentKinds(
 	plugin: PluginCatalogEntry,
@@ -180,76 +177,10 @@ export function getPluginComponentKinds(
 	for (const config of Object.values(plugin.mcpServers)) {
 		kinds.add("url" in config ? "mcp" : "cli");
 	}
-	if (plugin.skills && plugin.skills.length > 0) {
-		kinds.add("skills");
-	}
 	return [...kinds];
 }
 
-/**
- * The managed skills the `superset` plugin provisions into every agent CLI
- * (see packages/agent-setup/src/managed-skills.ts). The Plugins page lists
- * these read-only on its Skills tab; they are not installable units in the
- * MVP.
- */
-export const SUPERSET_MANAGED_SKILLS = [
-	{
-		name: "10x",
-		description: "Personalized audit of Superset features you're not using yet",
-	},
-	{
-		name: "automate",
-		description: "Turn a recurring chore into a Superset automation",
-	},
-	{
-		name: "browser",
-		description: "Drive web pages from the in-app browser panes",
-	},
-	{
-		name: "computer",
-		description: "Drive native desktop apps and system browsers",
-	},
-	{
-		name: "contribute",
-		description: "Set up an open-source contribution to Superset",
-	},
-	{ name: "doctor", description: "Diagnose and fix Superset problems" },
-	{ name: "feedback", description: "Report bugs and request features" },
-	{
-		name: "orchestrate",
-		description: "Coordinate multiple coding agents across workspaces",
-	},
-	{ name: "setup", description: "Make a repository Superset-ready" },
-	{ name: "standup", description: "Digest of what your Superset agents did" },
-] as const;
-
 export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
-	{
-		name: "superset",
-		version: "1.0.0",
-		description: "Manage Superset workspaces, tasks, and automations",
-		interface: { displayName: "Superset", category: "Productivity" },
-		/**
-		 * (CLOUD-SEVERANCE-P2) Upstream materializes a remote MCP server here,
-		 * at the `/mcp` route of the cloud data plane this fork severed (the
-		 * hostname is deliberately not written out: the main bundle keeps
-		 * source comments, and the gate scans artifact BYTES, so spelling it
-		 * would fail the build from a comment). There is no account, no
-		 * session and nothing to authenticate an agent CLI against it, so
-		 * that server could only ever fail — and unlike the app's own cloud
-		 * calls it is not merely dead code, it gets WRITTEN INTO THE USER'S
-		 * AGENT CONFIGS on install, on disk, where the in-process egress
-		 * fence never sees it.
-		 *
-		 * So this entry ships its bundled skills and no server. Everything
-		 * that reads `mcpServers` already handles an empty map: the kind
-		 * badges fall back to "Skill", external-server detection matches
-		 * nothing, and the sync writes (and reaps) nothing for it.
-		 */
-		mcpServers: {},
-		skills: SUPERSET_MANAGED_SKILLS.map((skill) => skill.name),
-		featured: true,
-	},
 	{
 		name: "linear",
 		version: "1.0.0",

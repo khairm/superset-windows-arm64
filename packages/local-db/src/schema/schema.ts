@@ -262,6 +262,8 @@ export const settings = sqliteTable("settings", {
 	installedPlugins: text("installed_plugins", { mode: "json" }).$type<
 		InstalledPlugin[]
 	>(),
+	// Dead compatibility column from the removed bundled-skills provisioner.
+	// Keep it until a separately approved schema migration removes it.
 	disabledSkills: text("disabled_skills", { mode: "json" }).$type<string[]>(),
 });
 

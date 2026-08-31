@@ -29,6 +29,8 @@ interface SeenCall {
 	terminalId: string;
 	seenThroughAt: number;
 	resolve: (accepted: boolean) => void;
+	/** (ALERT-RETIRE-ON-EXIT) The host judged the claim wrong, not unusable. */
+	refuse: () => void;
 	reject: (error: Error) => void;
 }
 
@@ -45,6 +47,12 @@ let relaunchCalls: RelaunchCall[] = [];
 let autoAcceptSync: boolean | null = true;
 let autoAcceptSeen: boolean | null = true;
 let autoAcceptRelaunch: boolean | null = true;
+/**
+ * (ALERT-RETIRE-ON-EXIT) When set, the seen mutation answers the PERMANENT
+ * refusal — host.db does not place that terminal in that workspace — rather
+ * than the transient "nothing consumed it".
+ */
+let refuseSeen = false;
 /** When set, the relaunch mutation rejects instead of resolving. */
 let relaunchThrows = false;
 
@@ -73,13 +81,22 @@ function makeClient() {
 					terminalId: string;
 					seenThroughAt: number;
 				}) =>
-					new Promise<{ accepted: boolean }>((resolve, reject) => {
+					new Promise<{
+						accepted: boolean;
+						refusal: "workspace-mismatch" | null;
+					}>((resolve, reject) => {
 						const call: SeenCall = {
 							...input,
-							resolve: (accepted) => resolve({ accepted }),
+							resolve: (accepted) => resolve({ accepted, refusal: null }),
+							refuse: () =>
+								resolve({ accepted: false, refusal: "workspace-mismatch" }),
 							reject,
 						};
 						seenCalls.push(call);
+						if (refuseSeen) {
+							call.refuse();
+							return;
+						}
 						if (autoAcceptSeen !== null) call.resolve(autoAcceptSeen);
 					}),
 			},
@@ -124,6 +141,7 @@ const {
 	reportRelaunchBoundary,
 	reportTerminalSeen,
 	resetRelaunchBoundaryLatchForTest,
+	resetSeenRefusalLatchForTest,
 	unregisterWorkspaceHost,
 } = await import("./companionAlertSync");
 const { useV2NotificationStore } = await import(
@@ -168,8 +186,10 @@ beforeEach(() => {
 	autoAcceptSync = true;
 	autoAcceptSeen = true;
 	autoAcceptRelaunch = true;
+	refuseSeen = false;
 	relaunchThrows = false;
 	resetRelaunchBoundaryLatchForTest();
+	resetSeenRefusalLatchForTest();
 	releaseAlertContextSync(WORKSPACE);
 });
 
@@ -517,6 +537,160 @@ describe("(ALERT-CONTEXT-NAMES) reportTerminalSeen", () => {
 				seenThroughAt: 1_000,
 			}),
 		).resolves.toBe(true);
+	});
+});
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) A report the host REFUSED on its own evidence is not
+ * offered again.
+ *
+ * THE LOOP THIS CLOSES: the focus path re-reports every time the terminal
+ * bindings change, and it keeps doing so while the store holds an outstanding
+ * ready record. A host that answers `workspace-mismatch` will answer the same
+ * way forever — host.db does not place that terminal in that workspace — so the
+ * pair re-sent for the life of the record.
+ *
+ * WHAT MUST STILL RETRY is everything the host did not judge: a bridge still
+ * registering, an unreadable host.db, a transport that threw. And the resync's
+ * own report, which names the workspace host.db owns, is a different claim.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) a refused seen report is not re-sent", () => {
+	const TERMINAL = "terminal-1";
+	/** What the resync reports: the row's own `originWorkspaceId`. */
+	const DB_OWNED = "workspace-2";
+
+	beforeEach(() => {
+		useV2NotificationStore.setState({ outstandingReadyAt: {} });
+		registerWorkspaceHost(WORKSPACE, HOST);
+	});
+
+	afterEach(() => unregisterWorkspaceHost(DB_OWNED, HOST));
+
+	it("sends the refused claim ONCE, however many times it is reported", async () => {
+		refuseSeen = true;
+		for (let i = 0; i < 5; i++) {
+			await expect(
+				reportTerminalSeen({
+					workspaceId: WORKSPACE,
+					terminalId: TERMINAL,
+					seenThroughAt: 1_000,
+				}),
+			).resolves.toBe(false);
+		}
+		expect(seenCalls).toHaveLength(1);
+	});
+
+	it("still reports the NEXT finish on the same terminal", async () => {
+		refuseSeen = true;
+		await reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			seenThroughAt: 1_000,
+		});
+		refuseSeen = false;
+		await expect(
+			reportTerminalSeen({
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				seenThroughAt: 2_000,
+			}),
+		).resolves.toBe(true);
+		expect(seenCalls).toHaveLength(2);
+	});
+
+	it("still reports the SAME finish against the workspace host.db owns", async () => {
+		refuseSeen = true;
+		await reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			seenThroughAt: 1_000,
+		});
+		registerWorkspaceHost(DB_OWNED, HOST);
+		refuseSeen = false;
+		await expect(
+			reportTerminalSeen({
+				workspaceId: DB_OWNED,
+				terminalId: TERMINAL,
+				seenThroughAt: 1_000,
+			}),
+		).resolves.toBe(true);
+		expect(seenCalls).toHaveLength(2);
+	});
+
+	it("still reports the SAME claim after the workspace moves HOSTS", async () => {
+		// The verdict was one host reading its OWN host.db. Another machine — or
+		// the same local host-service back on a different address — has never been
+		// asked, and latching on the claim alone silenced it for the whole
+		// session.
+		refuseSeen = true;
+		await reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			seenThroughAt: 1_000,
+		});
+		registerWorkspaceHost(WORKSPACE, "http://host-b");
+		refuseSeen = false;
+		await expect(
+			reportTerminalSeen({
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				seenThroughAt: 1_000,
+			}),
+		).resolves.toBe(true);
+		expect(seenCalls).toHaveLength(2);
+		// The shared afterEach unregisters by identity, and this workspace no
+		// longer points at HOST.
+		unregisterWorkspaceHost(WORKSPACE, "http://host-b");
+	});
+
+	it("keeps retrying a report nothing CONSUMED — that is not a refusal", async () => {
+		autoAcceptSeen = false;
+		for (let i = 0; i < 3; i++) {
+			await expect(
+				reportTerminalSeen({
+					workspaceId: WORKSPACE,
+					terminalId: TERMINAL,
+					seenThroughAt: 1_000,
+				}),
+			).resolves.toBe(false);
+		}
+		expect(seenCalls).toHaveLength(3);
+	});
+
+	it("keeps retrying after a transport failure", async () => {
+		autoAcceptSeen = null;
+		const pending = reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			seenThroughAt: 1_000,
+		});
+		seenCalls[0]?.reject(new Error("host gone"));
+		await expect(pending).resolves.toBe(false);
+
+		autoAcceptSeen = true;
+		await expect(
+			reportTerminalSeen({
+				workspaceId: WORKSPACE,
+				terminalId: TERMINAL,
+				seenThroughAt: 1_000,
+			}),
+		).resolves.toBe(true);
+		expect(seenCalls).toHaveLength(2);
+	});
+
+	it("leaves the outstanding record standing — a refusal retired nothing", async () => {
+		useV2NotificationStore.setState({
+			outstandingReadyAt: { [TERMINAL]: 1_000 },
+		});
+		refuseSeen = true;
+		await reportTerminalSeen({
+			workspaceId: WORKSPACE,
+			terminalId: TERMINAL,
+			seenThroughAt: 1_000,
+		});
+		expect(useV2NotificationStore.getState().outstandingReadyAt[TERMINAL]).toBe(
+			1_000,
+		);
 	});
 });
 

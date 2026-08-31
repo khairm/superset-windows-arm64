@@ -171,15 +171,14 @@ describe("scanClaudeSlashCommands", () => {
 	});
 
 	it("surfaces a skills-directory plugin's commands and skills as name:entry", async () => {
-		// The managed-plugin layout: a plugin manifest inside skills/, with its
-		// own commands/ and skills/ trees (see managed-skills.ts).
-		const pluginDir = join(configDir, "skills", "superset");
+		// A skills-directory plugin manifest may expose its own commands and skills.
+		const pluginDir = join(configDir, "skills", "example");
 		mkdirSync(join(pluginDir, "skills", "cdp-verification"), {
 			recursive: true,
 		});
 		mkdirSync(join(pluginDir, "skills", "decide"), { recursive: true });
 		mkdirSync(join(pluginDir, "commands"), { recursive: true });
-		write(join(pluginDir, "plugin.json"), JSON.stringify({ name: "superset" }));
+		write(join(pluginDir, "plugin.json"), JSON.stringify({ name: "example" }));
 		write(
 			join(pluginDir, "skills", "cdp-verification", "SKILL.md"),
 			skill("Verify over CDP"),
@@ -194,9 +193,9 @@ describe("scanClaudeSlashCommands", () => {
 			await scanClaudeSlashCommands({ worktreePath: worktree, configDir }),
 		);
 		expect(result.map((entry) => entry.name).sort()).toEqual([
-			"superset:cdp-verification",
-			"superset:decide",
-			"superset:feedback",
+			"example:cdp-verification",
+			"example:decide",
+			"example:feedback",
 		]);
 		expect(result.every((entry) => entry.source === "plugin")).toBe(true);
 	});

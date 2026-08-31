@@ -72,6 +72,11 @@ import {
 	type ModeTracker,
 	type TerminalSnapshot,
 } from "./terminal-mode-tracker.ts";
+import {
+	isWorkspaceLaunchFenced,
+	isWorkspaceRetirementActive,
+	readWorkspaceLaunchEpoch,
+} from "./workspace-launch-fence.ts";
 import { toWsCloseReason } from "./ws-close-reason.ts";
 
 const TERMINAL_COMMAND_EOL = process.platform === "win32" ? "\r" : "\n";
@@ -1019,6 +1024,12 @@ export type TerminalSessionErrorKind =
 	| "WORKSPACE_NOT_FOUND"
 	/** The workspace row exists but its worktree is gone from disk. */
 	| "WORKTREE_GONE"
+	/**
+	 * (WORKTREE-EXIT-CLEANUP) The user exited the workspace while this launch
+	 * was starting, so the terminal was refused. Any PTY it had opened is
+	 * closed and no session row was written.
+	 */
+	| "WORKSPACE_RETIRED"
 	/**
 	 * The daemon could not be reached (stalled, restarting, bootstrap
 	 * pending). The supervisor heals these and the session may still come up
@@ -3197,10 +3208,44 @@ export async function createTerminalSessionInternal(
 		// their existing environment until their next managed spawn.
 		return createTerminalSessionUnlocked(options);
 	}
-	return claudeAccounts.withWorkspaceLock(options.workspaceId, () =>
-		createTerminalSessionUnlocked(options, claudeAccounts),
-	);
+	// (WORKTREE-EXIT-CLEANUP) Refused BEFORE the lock, not inside it. A
+	// retirement holds this workspace's lock for its whole run — every terminal
+	// disposed, then the pinned account released — so a launch that queued would
+	// sit there for the length of that operation only to be refused at the front
+	// of the queue. Asking the flag first answers it now.
+	//
+	// The two checks below still earn their place: the in-lock one catches a
+	// launch that queued BEFORE the flag went up, and the one at the row insert
+	// is the authoritative check every path reaches — including unmanaged hosts,
+	// which take no lock here at all.
+	if (isWorkspaceRetirementActive(options.workspaceId)) {
+		return {
+			kind: "WORKSPACE_RETIRED",
+			error: workspaceRetiredError(options.workspaceId, options.terminalId),
+		};
+	}
+	const retirementEpoch = readWorkspaceLaunchEpoch(options.workspaceId);
+	return claudeAccounts.withWorkspaceLock(options.workspaceId, () => {
+		if (isWorkspaceLaunchFenced(options.workspaceId, retirementEpoch)) {
+			return Promise.resolve<CreateSessionResult>({
+				kind: "WORKSPACE_RETIRED",
+				error: workspaceRetiredError(options.workspaceId, options.terminalId),
+			});
+		}
+		return createTerminalSessionUnlocked(options, claudeAccounts);
+	});
 }
+
+function workspaceRetiredError(
+	workspaceId: string,
+	terminalId: string,
+): string {
+	return `Workspace "${workspaceId}" was exited while terminal "${terminalId}" was starting.`;
+}
+
+/** (WORKTREE-EXIT-CLEANUP) Thrown at the row insert, so the PTY this call
+ * opened is closed by the cleanup that already guards that step. */
+class WorkspaceRetiredDuringLaunchError extends Error {}
 
 async function createTerminalSessionUnlocked(
 	{
@@ -3219,6 +3264,17 @@ async function createTerminalSessionUnlocked(
 	}: CreateTerminalSessionOptions,
 	claudeAccounts?: ClaudeAccountsService,
 ): Promise<CreateSessionResult> {
+	// (WORKTREE-EXIT-CLEANUP) The moment this launch began, re-read at the row
+	// insert below. A launch that BEGINS inside the retirement window is
+	// refused here, before a PTY exists — the unmanaged path arrives straight
+	// at this function with no lock and no earlier check.
+	const launchEpoch = readWorkspaceLaunchEpoch(workspaceId);
+	if (isWorkspaceLaunchFenced(workspaceId, launchEpoch)) {
+		return {
+			kind: "WORKSPACE_RETIRED",
+			error: workspaceRetiredError(workspaceId, terminalId),
+		};
+	}
 	const existing = sessions.get(terminalId);
 	if (existing) {
 		const mismatchError = getTerminalWorkspaceMismatchError({
@@ -3497,6 +3553,19 @@ async function createTerminalSessionUnlocked(
 	try {
 		pty = makeDaemonPty(daemon, terminalId, openResult.pid);
 
+		// (WORKTREE-EXIT-CLEANUP) The row insert is the moment this terminal
+		// starts existing for everyone else, so it is where the launch fence
+		// has to sit. No `await` separates this check from the insert, and
+		// retirement opens its window in the same synchronous step that lists
+		// the rows it disposes — so a launch either lands in that list or is
+		// refused here, on managed and unmanaged hosts alike. The epoch catches
+		// the launch that straddles a retirement that has already finished.
+		if (isWorkspaceLaunchFenced(workspaceId, launchEpoch)) {
+			throw new WorkspaceRetiredDuringLaunchError(
+				workspaceRetiredError(workspaceId, terminalId),
+			);
+		}
+
 		db.insert(terminalSessions)
 			.values({
 				id: terminalId,
@@ -3563,6 +3632,11 @@ async function createTerminalSessionUnlocked(
 					closeError,
 				});
 			}
+		}
+		// (WORKTREE-EXIT-CLEANUP) A fenced launch is a refusal, not a fault: the
+		// PTY it opened is closed above, and nothing durable was written.
+		if (error instanceof WorkspaceRetiredDuringLaunchError) {
+			return { kind: "WORKSPACE_RETIRED", error: error.message };
 		}
 		throw error;
 	}

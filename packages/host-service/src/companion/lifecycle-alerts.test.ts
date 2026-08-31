@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+	ALERT_TTL_MS,
 	createLifecycleAlertManager,
 	createLifecycleCurationProbe,
 	type LifecycleAlertManager,
@@ -24,6 +25,20 @@ interface LogLine {
 	fields?: Record<string, unknown>;
 }
 
+/** One host.db binding row, in the shape the manager reads at construction. */
+function restartRow(
+	hostTerminalId: string,
+	lastEventAtMs: number,
+	lastEventType: string,
+) {
+	return {
+		hostTerminalId,
+		hostWorkspaceId: "workspace-1",
+		lastEventAtMs,
+		lastEventType,
+	};
+}
+
 function setup(
 	options: {
 		present?: boolean;
@@ -39,6 +54,13 @@ function setup(
 		 * all, which disables proof-of-absence outright.
 		 */
 		proofEpochs?: Array<[string, number]> | null;
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) Terminals whose last recorded event before this
+		 * manager started was the `Stop` that mints a ready alert — i.e. a ready
+		 * card this process INHERITED from the process before it. Also proof
+		 * epochs, because they are the same host.db row.
+		 */
+		inheritedReady?: Array<[string, number]>;
 		readySettleMs?: number;
 		/** Model a host.db read that fails at bridge start. */
 		epochThrows?: boolean;
@@ -76,6 +98,8 @@ function setup(
 	const contextCalls: Array<{ hostTerminalId: string }> = [];
 	/** (ALERT-RETIRE-ON-EXIT) What the injected curation read answers, per test. */
 	let curatedOff: (hostWorkspaceId: string) => boolean = () => false;
+	/** What the SEND path's own curation probe answers, per test. */
+	let curatedOffProbe: (hostWorkspaceId: string) => boolean = () => false;
 	/** One entry per retirement walk: the workspaces it asked about, in order. */
 	const curationAsks: string[][] = [];
 	const manager = createLifecycleAlertManager({
@@ -117,19 +141,21 @@ function setup(
 			contextCalls.push({ hostTerminalId: input.hostTerminalId });
 			return context;
 		},
-		proofEpochs:
+		restartEvidence:
 			options.proofEpochs === null
 				? null
 				: () => {
 						if (options.epochThrows) throw new Error("host.db is locked");
-						return (options.proofEpochs ?? []).map(
-							([hostTerminalId, lastEventAtMs]) => ({
-								hostTerminalId,
-								lastEventAtMs,
-							}),
-						);
+						return [
+							...(options.proofEpochs ?? []).map(([id, at]) =>
+								restartRow(id, at, "Start"),
+							),
+							...(options.inheritedReady ?? []).map(([id, at]) =>
+								restartRow(id, at, "Stop"),
+							),
+						];
 					},
-		isCuratedOff: () => false,
+		isCuratedOff: (hostWorkspaceId) => curatedOffProbe(hostWorkspaceId),
 		/**
 		 * (ALERT-RETIRE-ON-EXIT) The fresh curation read, as a test seam. It
 		 * records what it was asked so a test can prove the walk asked ONCE for
@@ -164,6 +190,8 @@ function setup(
 		curationAsks,
 		setCuratedOff: (value: (hostWorkspaceId: string) => boolean) =>
 			(curatedOff = value),
+		setCuratedOffProbe: (value: (hostWorkspaceId: string) => boolean) =>
+			(curatedOffProbe = value),
 	};
 }
 
@@ -229,6 +257,22 @@ function failedCycle(
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** One sweep interval (2 s) plus slack. */
 const sweep = () => new Promise((resolve) => setTimeout(resolve, 2_200));
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) Report a relaunch the manager will ACT on.
+ *
+ * `retireReadyBefore` refuses a boundary in its own future — that shape would
+ * retire finishes the user has never seen — so the fake clock is moved to the
+ * boundary before the report goes in. Tests that want the REFUSAL call the
+ * manager directly with the clock left behind it.
+ */
+function relaunchAt(
+	state: ReturnType<typeof setup>,
+	boundaryMs: number,
+): number | null {
+	state.setNow(boundaryMs);
+	return state.manager.retireReadyBefore(boundaryMs);
+}
 
 describe("lifecycle alerts", () => {
 	it("alerts once for Start then clean Stop and rearms for the next cycle", async () => {
@@ -502,7 +546,7 @@ describe("ready alert settle window", () => {
 		expect(state.sent.map((alert) => alert.kind)).toEqual(["e"]);
 	});
 
-	it("cancels settling ready alerts for every working or blocked status", async () => {
+	it("cancels ready alerts for every working or blocked status", async () => {
 		const state = setup({ readySettleMs: SETTLE_MS });
 		const eventTypes = [
 			"Start",
@@ -571,30 +615,57 @@ describe("ready alert settle window", () => {
 		expect(state.sent).toHaveLength(1);
 	});
 
-	it("does not re-enter settling after the deadline when the clock steps back", async () => {
+	/**
+	 * A CLAIM THE PRESENCE GATE REFUSED IS NOT THE SETTLE WINDOW ENDING. The
+	 * refusal used to rewrite the row on its way out, mutating an alert the sweep
+	 * had just declined to touch. The alert must survive the refusal intact and
+	 * fire on the first sweep after presence lapses, however many deadlines have
+	 * passed in between.
+	 *
+	 * THREE REAL SWEEPS, hence the explicit timeout: the sweep interval is 2 s of
+	 * wall clock and the default per-test budget is 5 s.
+	 */
+	it("keeps a ready alert the presence gate refused after its deadline", async () => {
 		const state = setup({ present: true, readySettleMs: SETTLE_MS });
 		for (const step of cycle(1_000)) state.manager.record(step);
 
 		state.setNow(11_000);
 		await sweep();
 		expect(state.sent).toHaveLength(0);
+		// A second refused sweep, well past the deadline, still changes nothing.
+		state.setNow(13_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
 
-		state.setNow(5_000);
-		state.manager.observeStatus("terminal-1", "PermissionRequest");
 		state.setPresent(false);
-		state.setNow(12_000);
+		state.setNow(15_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+	}, 15_000);
+
+	it("keeps a ready alert the curation gate refused after its deadline", async () => {
+		const state = setup({ readySettleMs: SETTLE_MS });
+		state.setCuratedOffProbe(() => true);
+		for (const step of cycle(1_000)) state.manager.record(step);
+
+		state.setNow(11_000);
+		await sweep();
+		expect(state.sent).toHaveLength(0);
+
+		// The snooze expires: the very next sweep delivers it.
+		state.setCuratedOffProbe(() => false);
+		state.setNow(13_000);
 		await sweep();
 		expect(state.sent).toHaveLength(1);
 	});
 
-	it("keeps a zero-window presence hold through a clock backstep", async () => {
+	it("keeps a zero-window presence hold across a clock backstep", async () => {
 		const state = setup({ present: true, readySettleMs: 0 });
 		for (const step of cycle(1_000)) state.manager.record(step);
 		await tick();
 		expect(state.sent).toHaveLength(0);
 
 		state.setNow(500);
-		state.manager.observeStatus("terminal-1", "PermissionRequest");
 		state.setPresent(false);
 		state.setNow(1_000);
 		await sweep();
@@ -629,7 +700,7 @@ describe("ready alert settle window", () => {
 	it("keeps the strict retireReadyBefore boundary for a settling alert", async () => {
 		const state = setup({ readySettleMs: SETTLE_MS });
 		for (const step of cycle(1_000)) state.manager.record(step);
-		expect(state.manager.retireReadyBefore(2_000)).toBe(0);
+		expect(relaunchAt(state, 2_000)).toBe(0);
 
 		state.setNow(11_000);
 		await sweep();
@@ -646,7 +717,7 @@ describe("ready alert settle window", () => {
 		expect(state.sent).toHaveLength(0);
 	});
 
-	it("keeps settling through Stop and Attached status observations", async () => {
+	it("keeps a settling alert through Stop and Attached status observations", async () => {
 		const state = setup({ readySettleMs: SETTLE_MS });
 		for (const step of cycle(1_000)) state.manager.record(step);
 		state.manager.observeStatus("terminal-1", "Stop");
@@ -841,14 +912,13 @@ describe("(ALERT-CONTEXT-NAMES) alert ids are recomputable from the outcome even
 
 describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) THE OVERNIGHT CASE. Measured on v0.1.0: one chat
-	 * finished sixteen times in a night, ~15 minutes apart, every time while the
-	 * user was away — sixteen stacked buzzing notifications for one unread
-	 * conversation. A new work cycle now retires the delivered alert SILENTLY:
-	 * the notification stays on the handset and the next `g` for that terminal
-	 * replaces it in place.
+	 * THE CASE THE SILENT RETIREMENT COST. A delivered ready alert overtaken by
+	 * fresh work used to be left on the handset for the next `g` to replace in
+	 * place. When no next `g` came — the agent blocked, crashed, or was left
+	 * alone — the card sat there for six hours saying a chat was ready for
+	 * review when it was not.
 	 */
-	it("does NOT retract a delivered ready alert when a new cycle starts", async () => {
+	it("retracts a delivered ready alert when a new cycle starts", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
@@ -856,21 +926,19 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 
 		state.manager.record(event({ occurredAtMs: 3_000 }));
 		await tick();
-		expect(state.retracted).toHaveLength(0);
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 
 		// STORM GUARD, unchanged: everything after `retracted` is a no-op, however
-		// much progress the terminal reports — and none of it buzzes either.
+		// much progress the terminal reports.
 		for (let i = 0; i < 20; i++) {
 			state.manager.record(event({ occurredAtMs: 4_000 + i }));
 		}
 		await tick();
-		expect(state.retracted).toHaveLength(0);
+		expect(state.retracted).toHaveLength(1);
 		expect(state.sent).toHaveLength(1);
 	});
 
-	it("still buzzes fresh for the NEXT finish after a silent retirement", async () => {
-		// One live card per unread chat, updated quietly — but the next cycle is
-		// a real alert, which the phone replaces the standing one with.
+	it("still buzzes fresh for the NEXT finish after a retirement", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
@@ -878,7 +946,9 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 		await tick();
 		expect(state.sent).toHaveLength(2);
 		expect(state.sent[0]?.alertId).not.toBe(state.sent[1]?.alertId);
-		expect(state.retracted).toHaveLength(0);
+		// The second cycle's Start took the first card down; the second finish
+		// then raised its own.
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 	});
 
 	it("DOES retract a delivered ready alert when the SESSION ENDS", async () => {
@@ -897,10 +967,9 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 	});
 
 	it("DOES retract a delivered ERROR alert when a new cycle starts", async () => {
-		// (ONE-BUZZ-UNTIL-READ) is a rule about READY alerts only. An agent that
-		// DIED is not superseded by later work in any useful sense, and an error
-		// the user has not seen is exactly what must not be quietly folded away —
-		// so `e` keeps the original behaviour.
+		// `record`'s progress path retires BOTH kinds. Only `observeStatus` is
+		// ready-only, because an error card must survive the statuses that merely
+		// prove the terminal is no longer ready.
 		const state = setup();
 		for (const e of failedCycle(1_000)) state.manager.record(e);
 		await tick();
@@ -918,16 +987,17 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 		await tick();
 		state.manager.record(event({ occurredAtMs: 3_000 }));
 		await tick();
+		expect(state.retracted).toHaveLength(1);
 
 		// A redelivery of the same Stop under a fresh producer id. The retracted
-		// row is KEPT precisely so this cannot buzz again — that is why the silent
-		// retirement transitions the state rather than deleting the row.
+		// row is KEPT precisely so this cannot buzz again — that is why retirement
+		// transitions the state rather than deleting the row.
 		const stop = events[1];
 		if (stop === undefined) throw new Error("cycle() must yield a stop event");
 		state.manager.record({ ...stop, producerEventId: producerEventId() });
 		await tick();
 		expect(state.sent).toHaveLength(1);
-		expect(state.retracted).toHaveLength(0);
+		expect(state.retracted).toHaveLength(1);
 	});
 
 	it("deletes a HELD alert without sending a retraction", async () => {
@@ -941,7 +1011,7 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 		expect(state.retracted).toHaveLength(0);
 	});
 
-	it("leaves an alert superseded MID-FLIGHT by a new cycle standing", async () => {
+	it("retracts an alert superseded MID-FLIGHT by a new cycle once it lands", async () => {
 		const state = setup();
 		let release = () => {};
 		state.setGate(
@@ -962,9 +1032,9 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 		release();
 		await tick();
 		await tick();
-		// It LANDED on the phone, and the chat is still alive — so it stays, for
-		// the next cycle's alert to replace.
-		expect(state.retracted).toHaveLength(0);
+		// It LANDED on the phone, and what it says is already out of date, so it
+		// comes straight back off.
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 	});
 
 	it("retracts an alert superseded MID-FLIGHT by a SESSION END once it lands", async () => {
@@ -1017,33 +1087,25 @@ describe("(ALERT-CONTEXT-NAMES) retraction state machine", () => {
 });
 
 /**
- * (ONE-BUZZ-UNTIL-READ) `standing` is the state the whole feature turns on: the
- * alert has been delivered, a newer cycle has retired it, and its notification
- * is STILL ON THE DEVICES — so the row has to outlive the retirement, and the
- * one retraction it is owed has to fire later, exactly once, whichever way the
- * user or the session gets round to it.
+ * A DELIVERED READY CARD IS OWED EXACTLY ONE `c`, and it must name the finish
+ * the phone is actually holding rather than whatever event took it down. Every
+ * way a cycle can end goes through the same row, so the guarantee is one
+ * retraction per alert whichever arrives first — and nothing at all afterwards.
  */
-describe("(ONE-BUZZ-UNTIL-READ) the standing state", () => {
+describe("a delivered ready card comes down exactly once", () => {
 	/** The `g` a plain `cycle(armedAtMs)` mints: its Stop lands 1 s after Start. */
 	const outcomeOf = (armedAtMs: number) => armedAtMs + 1_000;
 
-	it("fires exactly ONE retraction when a standing alert's session ends", async () => {
+	it("names the finish the phone holds, not the event that ended it", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
 		expect(state.sent).toHaveLength(1);
 
-		// New cycle: silent retirement, notification left on the handset.
-		state.manager.record(event({ occurredAtMs: 3_000 }));
-		await tick();
-		expect(state.retracted).toHaveLength(0);
-
 		state.manager.record(
 			event({ outcome: "session-end", occurredAtMs: 9_000 }),
 		);
 		await tick();
-		// The `c` names the finish the phone is HOLDING — the standing alert's own
-		// outcome instant, never the session-end's.
 		expect(state.retractions).toEqual([
 			{
 				alertId: state.sent[0]?.alertId ?? "",
@@ -1053,18 +1115,15 @@ describe("(ONE-BUZZ-UNTIL-READ) the standing state", () => {
 		]);
 	});
 
-	it("fires exactly ONE retraction when the user reads a standing alert", async () => {
+	it("fires once when the user reads the chat", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
-		state.manager.record(event({ occurredAtMs: 3_000 }));
-		await tick();
-		expect(state.retracted).toHaveLength(0);
 
 		state.manager.markLifecycleSeen({
 			hostTerminalId: "terminal-1",
 			hostWorkspaceId: "workspace-1",
-			seenThroughAt: 3_500,
+			seenThroughAt: 2_000,
 		});
 		await tick();
 		expect(state.retractions).toEqual([
@@ -1085,23 +1144,11 @@ describe("(ONE-BUZZ-UNTIL-READ) the standing state", () => {
 		expect(state.retracted).toHaveLength(1);
 	});
 
-	it("stays inert however many further cycles run over a standing alert", async () => {
+	it("stays inert however many further cycles run over it", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
 		state.manager.record(event({ occurredAtMs: 3_000 }));
-		await tick();
-
-		for (let i = 0; i < 20; i++) {
-			state.manager.record(event({ occurredAtMs: 4_000 + i }));
-		}
-		await tick();
-		expect(state.retracted).toHaveLength(0);
-
-		// Still owed its single retraction, and it still names the right finish.
-		state.manager.record(
-			event({ outcome: "session-end", occurredAtMs: 9_000 }),
-		);
 		await tick();
 		expect(state.retractions).toEqual([
 			{
@@ -1110,6 +1157,15 @@ describe("(ONE-BUZZ-UNTIL-READ) the standing state", () => {
 				outcomeAtMs: outcomeOf(1_000),
 			},
 		]);
+
+		for (let i = 0; i < 20; i++) {
+			state.manager.record(event({ occurredAtMs: 4_000 + i }));
+		}
+		state.manager.record(
+			event({ outcome: "session-end", occurredAtMs: 9_000 }),
+		);
+		await tick();
+		expect(state.retracted).toHaveLength(1);
 	});
 
 	it("is inert once retracted — a later cycle cannot make it fire twice", async () => {
@@ -1131,66 +1187,44 @@ describe("(ONE-BUZZ-UNTIL-READ) the standing state", () => {
 	});
 
 	/**
-	 * The in-flight reason UPGRADES. A new cycle asks for silence and a session
-	 * end asks for a retraction; whichever order they arrive in while the send is
-	 * still in the air, the session end wins — the weaker reason must never be
-	 * able to swallow the stronger one's `c`.
+	 * TWO REASONS, ONE `c`. A new cycle and a session end can both land while the
+	 * broadcast is still in the air, in either order. Neither may swallow the
+	 * other and neither may double it.
 	 */
-	it("upgrades a mid-flight new-cycle supersession to a session end", async () => {
-		const state = setup();
-		let release = () => {};
-		state.setGate(
-			new Promise<void>((resolve) => {
-				release = resolve;
-			}),
-		);
-		for (const e of cycle(1_000)) state.manager.record(e);
-		await tick();
-		expect(state.sent).toHaveLength(1);
+	for (const [name, first, second] of [
+		["a new cycle then a session end", "progress", "session-end"],
+		["a session end then a new cycle", "session-end", "progress"],
+	] as const) {
+		it(`retracts once for ${name} mid-flight`, async () => {
+			const state = setup();
+			let release = () => {};
+			state.setGate(
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+			);
+			for (const e of cycle(1_000)) state.manager.record(e);
+			await tick();
+			expect(state.sent).toHaveLength(1);
 
-		state.manager.record(event({ occurredAtMs: 3_000 }));
-		state.manager.record(
-			event({ outcome: "session-end", occurredAtMs: 4_000 }),
-		);
-		await tick();
-		expect(state.retracted).toHaveLength(0);
+			state.manager.record(event({ outcome: first, occurredAtMs: 3_000 }));
+			state.manager.record(event({ outcome: second, occurredAtMs: 4_000 }));
+			await tick();
+			expect(state.retracted).toHaveLength(0);
 
-		state.setGate(null);
-		release();
-		await tick();
-		await tick();
-		expect(state.retractions).toEqual([
-			{
-				alertId: state.sent[0]?.alertId ?? "",
-				terminalHandle: TERMINAL_HANDLE,
-				outcomeAtMs: outcomeOf(1_000),
-			},
-		]);
-	});
-
-	it("does not DOWNGRADE a mid-flight session end to a new cycle", async () => {
-		const state = setup();
-		let release = () => {};
-		state.setGate(
-			new Promise<void>((resolve) => {
-				release = resolve;
-			}),
-		);
-		for (const e of cycle(1_000)) state.manager.record(e);
-		await tick();
-
-		state.manager.record(
-			event({ outcome: "session-end", occurredAtMs: 3_000 }),
-		);
-		state.manager.record(event({ occurredAtMs: 4_000 }));
-		await tick();
-
-		state.setGate(null);
-		release();
-		await tick();
-		await tick();
-		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
-	});
+			state.setGate(null);
+			release();
+			await tick();
+			await tick();
+			expect(state.retractions).toEqual([
+				{
+					alertId: state.sent[0]?.alertId ?? "",
+					terminalHandle: TERMINAL_HANDLE,
+					outcomeAtMs: outcomeOf(1_000),
+				},
+			]);
+		});
+	}
 
 	it("carries the alert's own outcome instant on the `g` it sends", async () => {
 		const state = setup();
@@ -1585,18 +1619,18 @@ describe("(ALERT-CONTEXT-NAMES) markLifecycleSeen", () => {
  * phone. Retiring whatever happened to be live would then retract work the user
  * has never seen, and nothing would re-raise it.
  */
-describe("(ONE-BUZZ-UNTIL-READ) a read is bounded by its own instant", () => {
-	it("leaves a LATER finish standing when a delayed read of an earlier one lands", async () => {
+describe("a read is bounded by its own instant", () => {
+	it("leaves a LATER finish alone when a delayed read of an earlier one lands", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
-		// A new cycle retires A silently, then finishes: B is on the phone.
+		// The next cycle retires A as it starts, then finishes: B is on the phone.
 		for (const e of cycle(3_000)) state.manager.record(e);
 		await tick();
 		expect(state.sent).toHaveLength(2);
 		const alertA = state.sent[0]?.alertId ?? "";
 		const alertB = state.sent[1]?.alertId ?? "";
-		expect(state.retracted).toHaveLength(0);
+		expect(state.retracted).toEqual([alertA]);
 
 		// The delayed read of A arrives.
 		state.manager.markLifecycleSeen({
@@ -1606,7 +1640,7 @@ describe("(ONE-BUZZ-UNTIL-READ) a read is bounded by its own instant", () => {
 		});
 		await tick();
 
-		// A is retired — it was standing and owed one `c`. B is untouched.
+		// A's row is spent, so the read adds nothing. B is untouched.
 		expect(state.retractions).toEqual([
 			{
 				alertId: alertA,
@@ -1646,16 +1680,24 @@ describe("(ONE-BUZZ-UNTIL-READ) a read is bounded by its own instant", () => {
 	});
 
 	it("retires EVERY covered generation, not just the newest", async () => {
-		// A is delivered and then silently retired by a new cycle (standing, still
-		// on the phone). The next finish is HELD — the user came back to the desk
-		// — so the newest covered generation has never reached a device. Retiring
-		// only that one would drop the held row in silence and leave A's card up.
+		// A is DELIVERED and still on the phone. B finishes without an intervening
+		// progress event and is HELD — the user came back to the desk — so the
+		// newest covered generation has never reached a device. Retiring only that
+		// one would drop the held row in silence and leave A's card up forever.
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
 		const alertA = state.sent[0]?.alertId ?? "";
 		state.setPresent(true);
-		for (const e of cycle(3_000)) state.manager.record(e);
+		state.manager.record(
+			event({
+				outcome: "ready",
+				eventType: "Stop",
+				occurredAtMs: 4_000,
+				previousEventType: "Start",
+				previousEventAtMs: 3_000,
+			}),
+		);
 		await tick();
 		expect(state.sent).toHaveLength(1);
 
@@ -1850,7 +1892,7 @@ describe("(ONE-BUZZ-UNTIL-READ) proof of absence is bounded by the restart", () 
 		});
 		expect(
 			state.errors.some((line) =>
-				line.message.includes("could not read the lifecycle proof epoch"),
+				line.message.includes("could not read the lifecycle restart evidence"),
 			),
 		).toBe(true);
 		state.manager.markLifecycleSeen({
@@ -1924,17 +1966,17 @@ describe("(ALERT-RETIRE-ON-EXIT) retireTerminal", () => {
 		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 	});
 
-	it("retracts a STANDING alert — the card is still on the handset", async () => {
+	it("adds nothing for an alert a newer cycle already retracted", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
-		// A newer cycle leaves the delivered alert standing rather than retracted.
 		state.manager.record(event({ occurredAtMs: 3_000 }));
 		await tick();
-		expect(state.retracted).toEqual([]);
+		expect(state.retracted).toHaveLength(1);
 
 		state.manager.retireTerminal("terminal-1");
 		await tick();
+		// One card, one `c`, naming the finish the phone was holding.
 		expect(state.retractions).toEqual([
 			{
 				alertId: state.sent[0]?.alertId ?? "",
@@ -1999,7 +2041,7 @@ describe("(ALERT-RETIRE-ON-EXIT) retireReadyBefore", () => {
 		await tick();
 		expect(state.sent).toHaveLength(2);
 
-		expect(state.manager.retireReadyBefore(4_000)).toBe(1);
+		expect(relaunchAt(state, 4_000)).toBe(1);
 		await tick();
 		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 	});
@@ -2010,7 +2052,7 @@ describe("(ALERT-RETIRE-ON-EXIT) retireReadyBefore", () => {
 		await tick();
 		expect(state.sent[0]?.kind).toBe("e");
 
-		expect(state.manager.retireReadyBefore(9_000)).toBe(0);
+		expect(relaunchAt(state, 9_000)).toBe(0);
 		await tick();
 		expect(state.retracted).toEqual([]);
 	});
@@ -2021,7 +2063,7 @@ describe("(ALERT-RETIRE-ON-EXIT) retireReadyBefore", () => {
 		await tick();
 		expect(state.sent).toEqual([]);
 
-		expect(state.manager.retireReadyBefore(9_000)).toBe(1);
+		expect(relaunchAt(state, 9_000)).toBe(1);
 		state.setPresent(false);
 		await sweep();
 		// Deleted in silence: it never reached a device.
@@ -2029,17 +2071,76 @@ describe("(ALERT-RETIRE-ON-EXIT) retireReadyBefore", () => {
 		expect(state.retracted).toEqual([]);
 	});
 
-	it("retracts a STANDING alert and counts it once", async () => {
+	it("counts a delivered alert once and never retracts it twice", async () => {
 		const state = setup();
 		for (const e of cycle(1_000)) state.manager.record(e);
 		await tick();
-		state.manager.record(event({ occurredAtMs: 3_000 }));
-		await tick();
 		expect(state.retracted).toEqual([]);
 
-		expect(state.manager.retireReadyBefore(9_000)).toBe(1);
-		// A second relaunch report finds nothing left to do.
-		expect(state.manager.retireReadyBefore(9_000)).toBe(0);
+		expect(relaunchAt(state, 9_000)).toBe(1);
+		// A second relaunch report finds a spent row and does nothing with it.
+		expect(relaunchAt(state, 9_000)).toBe(0);
+		await tick();
+		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
+	});
+});
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) A boundary this manager cannot act on answers `null`,
+ * which the bridge sink reports to the renderer as `accepted: false`.
+ *
+ * THE ACKNOWLEDGEMENT IS THE POINT, not the return type. The renderer latches
+ * this report once per host per LAUNCH on the acknowledgement, so a refusal
+ * reported as "received" burns the launch's only attempt and every pre-launch
+ * ready card stands for its full TTL. It is asserted here rather than in the
+ * sink because this is where the host clock the boundary must be in the past of
+ * lives.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) an unusable relaunch boundary is refused", () => {
+	/** One delivered ready card at generation 2_000, clock left at 1_000. */
+	async function oneDeliveredCard() {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+		return state;
+	}
+
+	it("refuses a boundary in the host's FUTURE and retires nothing", async () => {
+		const state = await oneDeliveredCard();
+		// The clock is still 1_000; the renderer claims it launched at 9_000.
+		expect(state.manager.retireReadyBefore(9_000)).toBeNull();
+		await tick();
+		expect(state.retracted).toEqual([]);
+		expect(
+			state.errors.some((line) =>
+				line.message.includes("out-of-range desktop relaunch boundary"),
+			),
+		).toBe(true);
+	});
+
+	it("refuses a non-integer and a non-positive boundary", async () => {
+		const state = await oneDeliveredCard();
+		state.setNow(9_000);
+		expect(state.manager.retireReadyBefore(4_000.5)).toBeNull();
+		expect(state.manager.retireReadyBefore(0)).toBeNull();
+		expect(state.manager.retireReadyBefore(Number.NaN)).toBeNull();
+		await tick();
+		expect(state.retracted).toEqual([]);
+	});
+
+	it("refuses once the manager has stopped — a stopped bridge retired nothing", async () => {
+		const state = await oneDeliveredCard();
+		state.setNow(9_000);
+		state.manager.stop();
+		expect(state.manager.retireReadyBefore(9_000)).toBeNull();
+	});
+
+	it("acts on the boundary the renderer offers NEXT, having refused the first", async () => {
+		const state = await oneDeliveredCard();
+		expect(state.manager.retireReadyBefore(9_000)).toBeNull();
+		// The renderer kept its latch clear, so the next epoch offers again.
+		expect(relaunchAt(state, 9_000)).toBe(1);
 		await tick();
 		expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 	});
@@ -2230,6 +2331,59 @@ describe("(ALERT-RETIRE-ON-EXIT) retireCuratedOffAlerts", () => {
 			},
 		]);
 	});
+
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) THE CARD WITH NO ROW BEHIND IT. The host-service
+	 * restarted, nothing has happened in that terminal since, and the user then
+	 * archives the thread — which is precisely when a ready card inherited
+	 * across that restart is still sitting on the phone. Walking only the live
+	 * rows left it there for its full TTL.
+	 */
+	it("retires a card INHERITED across a restart when its thread is put away", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.setCuratedOff(() => true);
+
+		expect(state.manager.retireCuratedOffAlerts()).toBe(1);
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: readyAlertIdFor(2_000),
+				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 2_000,
+			},
+		]);
+
+		// Consumed: a later sidebar write finds the entry gone and sends nothing.
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+	});
+
+	it("judges an inherited card by its OWN workspace, and leaves it if shown", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.setCuratedOff(() => false);
+
+		expect(state.manager.retireCuratedOffAlerts()).toBe(0);
+		// Asked once, naming the workspace host.db recorded for that terminal.
+		expect(state.curationAsks).toEqual([["workspace-1"]]);
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	it("asks ONCE for the live rows and the inherited cards together", async () => {
+		const state = setup({ inheritedReady: [["terminal-2", 2_000]] });
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+
+		state.setCuratedOff(() => true);
+		// One live `g` in workspace-1 and one inherited card in the same
+		// workspace: two retirements, one read of the sidebar mirror.
+		expect(state.manager.retireCuratedOffAlerts()).toBe(2);
+		expect(state.curationAsks).toEqual([["workspace-1"]]);
+		await tick();
+		expect(state.retracted).toHaveLength(2);
+	});
 });
 
 /**
@@ -2239,11 +2393,11 @@ describe("(ALERT-RETIRE-ON-EXIT) retireCuratedOffAlerts", () => {
  * notifying the phone would strand a card for six hours with nothing to show
  * for it.
  */
-describe("(ALERT-RETIRE-ON-EXIT) every new reason is loud and outranks new-cycle", () => {
+describe("(ALERT-RETIRE-ON-EXIT) every reason takes a delivered card down", () => {
 	type State = ReturnType<typeof setup>;
 	const drive: Array<[string, (state: State) => unknown]> = [
 		["terminal-gone", (state) => state.manager.retireTerminal("terminal-1")],
-		["desktop-relaunch", (state) => state.manager.retireReadyBefore(9_000)],
+		["desktop-relaunch", (state) => relaunchAt(state, 9_000)],
 		[
 			"curated-off",
 			(state) => {
@@ -2263,10 +2417,9 @@ describe("(ALERT-RETIRE-ON-EXIT) every new reason is loud and outranks new-cycle
 			expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 		});
 
-		it(`${reason} upgrades a silent in-flight new-cycle retirement`, async () => {
-			// RANK. A new cycle flags the in-flight send silently; the loud reason
-			// arriving behind it must still take the notification down when the
-			// send lands, rather than being masked by the silent one.
+		it(`${reason} still retracts when it lands behind a new cycle`, async () => {
+			// Two retirements over one in-flight send: the alert lands, and exactly
+			// one `c` follows it.
 			const state = setup();
 			let release = () => {};
 			state.setGate(
@@ -2287,4 +2440,346 @@ describe("(ALERT-RETIRE-ON-EXIT) every new reason is loud and outranks new-cycle
 			expect(state.retracted).toEqual([state.sent[0]?.alertId ?? ""]);
 		});
 	}
+});
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) THE STALE READY CARD. `observeStatus` used to cancel
+ * only rows that were still inside their settle window and had never failed a
+ * delivery, which meant the one case that matters — a card ALREADY ON THE
+ * PHONE — was the one it could not touch. The agent went back to work, blocked
+ * on a prompt an hour later, and the phone still said "ready for review".
+ */
+describe("(ALERT-RETIRE-ON-EXIT) observeStatus retires ready alerts", () => {
+	const CANCELS = [
+		"Start",
+		"SubagentActive",
+		"BackgroundRunning",
+		"PermissionRequest",
+		"Failed",
+	] as const;
+
+	for (const eventType of CANCELS) {
+		it(`retracts a DELIVERED ready alert on ${eventType}`, async () => {
+			const state = setup();
+			for (const e of cycle(1_000)) state.manager.record(e);
+			await tick();
+			expect(state.sent).toHaveLength(1);
+
+			state.manager.observeStatus("terminal-1", eventType);
+			await tick();
+			expect(state.retractions).toEqual([
+				{
+					alertId: state.sent[0]?.alertId ?? "",
+					terminalHandle: TERMINAL_HANDLE,
+					outcomeAtMs: 2_000,
+				},
+			]);
+		});
+	}
+
+	it("is idempotent — twenty cancels send one retraction", async () => {
+		const state = setup();
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		for (let i = 0; i < 20; i++) {
+			state.manager.observeStatus("terminal-1", "Start");
+		}
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+	});
+
+	it("sends NO retraction for an alert that never reached a device", async () => {
+		const state = setup({ present: true });
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(0);
+
+		state.manager.observeStatus("terminal-1", "Start");
+		state.setPresent(false);
+		state.setNow(9_000);
+		await sweep();
+		// Deleted, not retracted: nothing was ever on the phone, and the alert it
+		// would have raised is a cycle out of date.
+		expect(state.retracted).toHaveLength(0);
+		expect(state.sent).toHaveLength(0);
+	});
+
+	it("retires a ready alert whose delivery already FAILED", async () => {
+		const state = setup();
+		state.setFailSends(true);
+		for (const e of cycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+
+		state.setFailSends(false);
+		state.manager.observeStatus("terminal-1", "Start");
+		// Well past the 30 s first-failure backoff: the retry must not resurrect
+		// a finish the terminal has already moved past.
+		state.setNow(60_000);
+		await sweep();
+		expect(state.sent).toHaveLength(1);
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	it("leaves the ERROR card alone — a status does not answer a crash", async () => {
+		const state = setup();
+		for (const e of failedCycle(1_000)) state.manager.record(e);
+		await tick();
+		expect(state.sent.map((alert) => alert.kind)).toEqual(["e"]);
+
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	it("leaves ANOTHER terminal's card alone", async () => {
+		const state = setup();
+		for (const e of cycle(1_000, { hostTerminalId: "terminal-2" })) {
+			state.manager.record(e);
+		}
+		await tick();
+		expect(state.sent).toHaveLength(1);
+
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+	});
+});
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) THE RESTART CASE, with no durable alert table. The
+ * process that sent the card is gone; what survives is host.db's binding row.
+ * When its last recorded event is the `Stop` that mints a ready alert, the id
+ * is recomputable from that instant — so the card can still be named, and taken
+ * down the moment a status proves the terminal is no longer ready.
+ */
+describe("(ALERT-RETIRE-ON-EXIT) a ready card inherited across a restart", () => {
+	it("retracts it when a status proves it stale", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: readyAlertIdFor(2_000),
+				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 2_000,
+			},
+		]);
+	});
+
+	it("retracts it on a session end too", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.manager.record(
+			event({ outcome: "session-end", occurredAtMs: 3_000 }),
+		);
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(2_000)]);
+	});
+
+	/**
+	 * A CONFIRMED PTY EXIT IS AN AUTHORITATIVE ENDING, so it names the inherited
+	 * card like any other proof the terminal is not ready. Unconfirmed exits never
+	 * arrive here at all — the event bus drops them `(DISPOSE-LIMBO)`.
+	 */
+	it("retracts it for a dead terminal", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: readyAlertIdFor(2_000),
+				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 2_000,
+			},
+		]);
+	});
+
+	it("retracts it once for a terminal that exits twice", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.manager.retireTerminal("terminal-1");
+		state.manager.retireTerminal("terminal-1");
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(2_000)]);
+	});
+
+	/**
+	 * THE RELAUNCH IS WHEN AN INHERITED CARD IS MOST LIKELY TO BE THERE: the
+	 * desktop coming back up after the host-service restarted under it.
+	 */
+	it("retracts it when the desktop relaunches after the finish", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		expect(relaunchAt(state, 9_000)).toBe(1);
+		await tick();
+		expect(state.retractions).toEqual([
+			{
+				alertId: readyAlertIdFor(2_000),
+				terminalHandle: TERMINAL_HANDLE,
+				outcomeAtMs: 2_000,
+			},
+		]);
+		// A second relaunch report finds the entry consumed and sends nothing.
+		expect(relaunchAt(state, 9_000)).toBe(0);
+		await tick();
+		expect(state.retracted).toHaveLength(1);
+	});
+
+	/**
+	 * BOUNDARY-EXCLUSIVE AGAINST THE CARD'S OWN INSTANT, exactly as a held row is.
+	 * A finish stamped at or after the launch is news the user has not seen, and a
+	 * blind `c` computed from the boundary alone would cancel it.
+	 */
+	it("leaves a finish the relaunch does not predate alone", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 4_000]] });
+		expect(relaunchAt(state, 4_000)).toBe(0);
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+
+		// The same card, once the boundary really is after it.
+		expect(relaunchAt(state, 4_001)).toBe(1);
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(4_000)]);
+	});
+
+	it("does it ONCE, however many statuses arrive", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		for (let i = 0; i < 10; i++) {
+			state.manager.observeStatus("terminal-1", "Start");
+		}
+		state.manager.record(
+			event({ outcome: "session-end", occurredAtMs: 3_000 }),
+		);
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(2_000)]);
+	});
+
+	it("sends nothing for a terminal whose last event was not a Stop", async () => {
+		const state = setup({ proofEpochs: [["terminal-1", 2_000]] });
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	/**
+	 * A card this process DELIVERED has replaced the inherited one on the handset
+	 * — the phone keys ready notifications by terminal handle — so retracting the
+	 * inherited id afterwards would name a card nobody holds, and every bogus `c`
+	 * evicts a real claim from the phone's fixed-size window.
+	 */
+	it("stops naming the inherited generation once its own card is delivered", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 2_000]] });
+		state.manager.record(
+			event({
+				outcome: "ready",
+				eventType: "Stop",
+				occurredAtMs: 5_000,
+				previousEventType: "Start",
+				previousEventAtMs: 4_000,
+			}),
+		);
+		await tick();
+		expect(state.sent).toHaveLength(1);
+
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(5_000)]);
+	});
+
+	/**
+	 * A HELD card is the opposite case: this process minted a newer generation
+	 * but never got it onto a device, so the inherited card is still the one the
+	 * user can see and it must come down.
+	 */
+	it("still names it when this process's own card is only HELD", async () => {
+		const state = setup({
+			present: true,
+			inheritedReady: [["terminal-1", 2_000]],
+		});
+		state.manager.record(
+			event({
+				outcome: "ready",
+				eventType: "Stop",
+				occurredAtMs: 5_000,
+				previousEventType: "Start",
+				previousEventAtMs: 4_000,
+			}),
+		);
+		await tick();
+		expect(state.sent).toHaveLength(0);
+
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toEqual([readyAlertIdFor(2_000)]);
+	});
+
+	it("refuses an unusable instant loudly instead of naming nonsense", async () => {
+		const state = setup({ inheritedReady: [["terminal-1", 0]] });
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+		expect(
+			state.errors.some((line) =>
+				line.message.includes("carries an unusable instant"),
+			),
+		).toBe(true);
+	});
+
+	it("is disabled entirely when there is no restart evidence", async () => {
+		const state = setup({ proofEpochs: null });
+		state.manager.observeStatus("terminal-1", "Start");
+		await tick();
+		expect(state.retracted).toHaveLength(0);
+	});
+
+	/**
+	 * ONLY A FINISH YOUNG ENOUGH TO STILL BE ON A PHONE is inherited. host.db
+	 * keeps a terminal's last event forever, so without the age bound every
+	 * historical `Stop` — a workspace last touched a month ago — was seeded as an
+	 * inherited card and broadcast a blind `c` on its terminal's next status, for
+	 * a notification that expired weeks earlier.
+	 */
+	describe("bounded by the alert TTL from this process's start", () => {
+		/** The Stop instant every case here inherits from. */
+		const STOP_AT = 1_000;
+
+		it("inherits a Stop just inside the TTL", async () => {
+			const state = setup({
+				startAtMs: STOP_AT + ALERT_TTL_MS - 1,
+				inheritedReady: [["terminal-1", STOP_AT]],
+			});
+			state.manager.observeStatus("terminal-1", "Start");
+			await tick();
+			expect(state.retracted).toEqual([readyAlertIdFor(STOP_AT)]);
+		});
+
+		it("drops a Stop exactly the TTL old — its card has already expired", async () => {
+			const state = setup({
+				startAtMs: STOP_AT + ALERT_TTL_MS,
+				inheritedReady: [["terminal-1", STOP_AT]],
+			});
+			state.manager.observeStatus("terminal-1", "Start");
+			await tick();
+			expect(state.retracted).toHaveLength(0);
+		});
+
+		it("drops a historical binding rather than retracting blind for it", async () => {
+			const state = setup({
+				startAtMs: STOP_AT + ALERT_TTL_MS * 30,
+				inheritedReady: [["terminal-1", STOP_AT]],
+			});
+			state.manager.retireTerminal("terminal-1");
+			state.manager.observeStatus("terminal-1", "Start");
+			await tick();
+			expect(state.retracted).toHaveLength(0);
+		});
+
+		it("keeps a Stop stamped AFTER this process started — a clock backstep is not age", async () => {
+			const state = setup({
+				startAtMs: STOP_AT,
+				inheritedReady: [["terminal-1", STOP_AT + 5_000]],
+			});
+			state.manager.observeStatus("terminal-1", "Start");
+			await tick();
+			expect(state.retracted).toEqual([readyAlertIdFor(STOP_AT + 5_000)]);
+		});
+	});
 });

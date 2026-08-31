@@ -310,9 +310,31 @@ export function recordCompanionAlertContexts(
 	return alertContextSlot.call(input);
 }
 
-const lifecycleSeenSlot = createSinkSlot<LifecycleSeenInput, boolean>({
+/**
+ * (ALERT-RETIRE-ON-EXIT) What one "the user read this chat" report was worth.
+ *
+ * TWO FIELDS BECAUSE THERE ARE THREE ANSWERS, and a boolean could only carry
+ * two of them. `accepted` says the read was APPLIED. `refusal` says the host
+ * judged the report WRONG rather than merely being unable to act on it right
+ * now, which is what tells the renderer whether re-sending the same report can
+ * ever produce a different answer:
+ *
+ *  - `{ accepted: true,  refusal: null }` — applied; forget the record.
+ *  - `{ accepted: false, refusal: null }` — no bridge, a bridge that threw, or
+ *    a host.db read that failed. TRANSIENT: offer it again.
+ *  - `{ accepted: false, refusal: "workspace-mismatch" }` — host.db does not
+ *    place that terminal in that workspace, and will not next time either.
+ *    Re-sending the same pair is pure noise; the record still stands so the
+ *    resync can report it against the workspace host.db owns.
+ */
+export interface LifecycleSeenAck {
+	accepted: boolean;
+	refusal: "workspace-mismatch" | null;
+}
+
+const lifecycleSeenSlot = createSinkSlot<LifecycleSeenInput, LifecycleSeenAck>({
 	what: "lifecycle-seen",
-	whenAbsent: false,
+	whenAbsent: { accepted: false, refusal: null },
 	onThrowMessage:
 		"the lifecycle-seen sink threw; a phone notification may outlive the chat the user just read",
 });
@@ -321,11 +343,12 @@ export const setCompanionLifecycleSeenSink = lifecycleSeenSlot.set;
 export const clearCompanionLifecycleSeenSink = lifecycleSeenSlot.clear;
 
 /**
- * The user read a chat on the desktop. Returns whether anything consumed it.
+ * The user read a chat on the desktop. See `LifecycleSeenAck` for the three
+ * answers and which of them the renderer may retry.
  */
 export function recordCompanionLifecycleSeen(
 	input: LifecycleSeenInput,
-): boolean {
+): LifecycleSeenAck {
 	return lifecycleSeenSlot.call(input);
 }
 

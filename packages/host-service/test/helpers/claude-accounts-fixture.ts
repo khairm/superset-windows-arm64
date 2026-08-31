@@ -55,6 +55,12 @@ export function createFakeClaudeAccountsService(
 		profileDirFor: () => "",
 		configDirCandidatesFor: () => [],
 		setWorkspaceAccount: async () => {},
+		retireWorkspaceRuntime: async () => ({
+			foundWorkspace: false,
+			terminated: [],
+			failed: [],
+			accountReleased: false,
+		}),
 		getWorkspaceState: async () => ({
 			state: "following",
 			slug: null,

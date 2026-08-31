@@ -17,6 +17,13 @@ interface UseAutoAdoptBackgroundSessionsArgs {
 	store: StoreApi<WorkspaceStore<PaneViewerData>>;
 	workspaceId: string;
 	isLayoutReady: boolean;
+	/**
+	 * (WORKTREE-EXIT-CLEANUP) Passed in rather than read here, from
+	 * `useWorkspaceExitCleanupPending`. It is the only value this hook needs from
+	 * the collections provider, and taking it as an argument keeps the provider
+	 * out of this module's import graph.
+	 */
+	isExitCleanupPending: boolean;
 }
 
 /**
@@ -34,11 +41,19 @@ interface UseAutoAdoptBackgroundSessionsArgs {
  * refresh) still get a pane, instead of being stranded by a one-shot pass
  * that fired on a premature or empty list. Deliberately backgrounded sessions
  * (marker set) are always skipped.
+ *
+ * (WORKTREE-EXIT-CLEANUP) So is EVERY session of a workspace whose exit cleanup
+ * is still pending. Completed/Archive/Snooze/Recycle Bin clear the panes here
+ * and then wait on the owning host to kill the sessions; until that lands the
+ * host still lists them, and adoption is exactly the mechanism that would build
+ * fresh panes for the terminals the user just closed. The gate lifts by itself
+ * when the host confirms and the reconciler clears the stamp.
  */
 export function useAutoAdoptBackgroundSessions({
 	store,
 	workspaceId,
 	isLayoutReady,
+	isExitCleanupPending,
 }: UseAutoAdoptBackgroundSessionsArgs): void {
 	const sessionsQuery = workspaceTrpc.terminal.list.useQuery(
 		{ workspaceId },
@@ -77,6 +92,7 @@ export function useAutoAdoptBackgroundSessions({
 
 	useEffect(() => {
 		if (!isLayoutReady || !sessions || isFetchingSessions) return;
+		if (isExitCleanupPending) return;
 
 		const state = store.getState();
 		const marked = new Set(
@@ -103,5 +119,12 @@ export function useAutoAdoptBackgroundSessions({
 			count: toAdopt.length,
 			workspaceId,
 		});
-	}, [isLayoutReady, isFetchingSessions, sessions, store, workspaceId]);
+	}, [
+		isLayoutReady,
+		isFetchingSessions,
+		isExitCleanupPending,
+		sessions,
+		store,
+		workspaceId,
+	]);
 }

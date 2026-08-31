@@ -41,9 +41,8 @@ export function AutomationsEmptyState({
 				<h2 className="text-lg font-semibold tracking-tight">
 					What should run on a schedule?
 				</h2>
-				{/* Opens an agent session that asks what to automate and creates it
-				    via the superset:automate skill / CLI. Swaps to the inline NL
-				    chat input in Phase 2. */}
+				{/* Opens an agent session that creates the automation through the CLI.
+				    Swaps to the inline NL chat input in Phase 2. */}
 				<button
 					type="button"
 					onClick={onCreateWithAgent}

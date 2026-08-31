@@ -54,9 +54,11 @@ const { markV2AgentLifecycleTargetSeen } = await import("./lifecycleEvents");
 const { registerWorkspaceHost, unregisterWorkspaceHost } = await import(
 	"./companionAlertSync"
 );
-const { useV2NotificationStore } = await import(
-	"renderer/stores/v2-notifications"
-);
+const {
+	getV2NotificationSourceKey,
+	getV2TerminalNotificationSource,
+	useV2NotificationStore,
+} = await import("renderer/stores/v2-notifications");
 const { resetV2NotificationStoreForTest } = await import(
 	"renderer/stores/v2-notifications/resetForTest"
 );
@@ -256,6 +258,57 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 * pane. That is a question being answered, not a chat being read, so the
 	 * `targetVisible` clause — not the axes one — is what has to exclude it.
 	 */
+	/**
+	 * THE OTHER HALF OF THE SAME BUG. Layout visibility alone also decides
+	 * whether the finish raises a REVIEW DOT: the transition clears the source
+	 * for a pane it thinks the user is watching. With the screen locked that
+	 * left the user coming back to a chat with nothing marking it AND a phone
+	 * card nothing would take down. Presence is folded into visibility for live
+	 * events, so an away user gets the dot.
+	 */
+	it("raises a review dot for a turn that ends while the user is away", async () => {
+		presence.hidden = true;
+		fire({ eventType: "Stop", occurredAt: 5_000 });
+		await settle();
+		const key = getV2NotificationSourceKey(
+			getV2TerminalNotificationSource(TERMINAL),
+		);
+		expect(useV2NotificationStore.getState().sources[key]?.status).toBe(
+			"review",
+		);
+		expect(seenCalls).toEqual([]);
+	});
+
+	it("raises NO review dot when the user watched it finish", async () => {
+		fire({ eventType: "Stop", occurredAt: 5_000 });
+		await settle();
+		const key = getV2NotificationSourceKey(
+			getV2TerminalNotificationSource(TERMINAL),
+		);
+		expect(useV2NotificationStore.getState().sources[key]).toBeUndefined();
+	});
+
+	/**
+	 * REPLAYS KEEP THE LAYOUT-ONLY TEST. A replay re-derives history, and
+	 * presence NOW says nothing about a finish that happened before the
+	 * reconnect — folding it in would raise a review dot on the very pane the
+	 * user is looking at, on every reconnect.
+	 */
+	it("still clears a REPLAYED turn end on the pane the user is looking at", async () => {
+		markV2AgentLifecycleTargetSeen({
+			workspaceId: WORKSPACE,
+			payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
+			paneLayout: layout,
+			fromReplay: true,
+		});
+		await settle();
+		const key = getV2NotificationSourceKey(
+			getV2TerminalNotificationSource(TERMINAL),
+		);
+		expect(useV2NotificationStore.getState().sources[key]).toBeUndefined();
+		expect(seenCalls).toEqual([]);
+	});
+
 	it("does NOT report a cleared permission on an invisible pane", async () => {
 		useV2NotificationStore
 			.getState()

@@ -476,6 +476,10 @@ jobs:
           if ! run_marker_gate; then
             exit 1
           fi
+          if ! node scripts/check-no-bundled-skills.mjs; then
+            echo "::error::(NO-BUNDLED-SKILLS) the merged tree restored retired Superset skills. Baseline untouched."
+            exit 1
+          fi
 
           # --- (MERGE-SEMANTIC-GATE) bounded review/adapt/re-verify loop -------
           # The marker gate only proves feature TOKENS still exist, and the
@@ -571,6 +575,10 @@ jobs:
             run_referr_gate
             if ! run_marker_gate; then
               echo "::error::(MERGE-ADAPT) repair round $round removed a fork feature marker — no further repair is acceptable. Baseline untouched."
+              exit 1
+            fi
+            if ! node scripts/check-no-bundled-skills.mjs; then
+              echo "::error::(MERGE-ADAPT) repair round $round restored retired Superset skills. Baseline untouched."
               exit 1
             fi
             rm -f "$ADAPT_DIAGS_FILE"

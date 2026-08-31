@@ -1,9 +1,9 @@
 import { toast } from "@superset/ui/sonner";
-import type { electronTrpc } from "renderer/lib/electron-trpc";
-import { setHostServiceSecret } from "renderer/lib/host-service-auth";
-import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
-
-type ElectronTrpcUtils = ReturnType<typeof electronTrpc.useUtils>;
+import type { ElectronTrpcUtils } from "renderer/lib/electron-trpc";
+import {
+	getHostServiceClientByUrl,
+	getLocalHostServiceUrls,
+} from "renderer/lib/host-service-client";
 
 export interface DisposeHostSessionsResult {
 	terminated: number;
@@ -19,32 +19,11 @@ export interface DisposeHostSessionsResult {
 }
 
 /**
- * Build a host-service client for every running local host-service (one per
- * org). Disposal is broadcast to all of them because the electron delete path
- * doesn't know which org owns the workspace; each host no-ops for workspaces it
- * doesn't own, so this is safe and covers non-active-org workspaces too.
- *
- * Returns null (not []) when the coordinator lookup FAILS — the caller must
- * distinguish "no hosts running" (safe: nothing to dispose) from "couldn't ask"
- * (a real failure that would otherwise masquerade as success).
+ * Broadcast a disposal to every running local host-service (one per org),
+ * because the electron delete path doesn't know which org owns the workspace;
+ * each host no-ops for workspaces it doesn't own, so this is safe and covers
+ * non-active-org workspaces too.
  */
-async function localHostClients(utils: ElectronTrpcUtils) {
-	let connections: { port: number; secret: string }[];
-	try {
-		connections = await utils.hostServiceCoordinator.getConnections.fetch(
-			undefined,
-			{ staleTime: 0 },
-		);
-	} catch {
-		return null;
-	}
-	return (connections ?? []).map(({ port, secret }) => {
-		const url = `http://127.0.0.1:${port}`;
-		setHostServiceSecret(url, secret);
-		return getHostServiceClientByUrl(url);
-	});
-}
-
 async function disposeViaHosts(
 	utils: ElectronTrpcUtils,
 	run: (
@@ -58,15 +37,15 @@ async function disposeViaHosts(
 		unreachableHosts: 0,
 		coordinatorUnavailable: false,
 	};
-	const clients = await localHostClients(utils);
-	if (clients === null) {
+	const urls = await getLocalHostServiceUrls(utils);
+	if (urls === null) {
 		console.warn("Failed to enumerate host services for dispose", logContext);
 		result.coordinatorUnavailable = true;
 		return result;
 	}
 	const outcomes = await Promise.all(
-		clients.map((client) =>
-			run(client).catch((error) => {
+		urls.map((url) =>
+			run(getHostServiceClientByUrl(url)).catch((error) => {
 				console.warn("Failed to dispose host sessions", {
 					...logContext,
 					error,

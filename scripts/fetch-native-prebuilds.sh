@@ -4,9 +4,20 @@
 # root after `bun install`. Requires GH_TOKEN. Writes ELECTRON_ABI /
 # LIBSQL_ARM64_DIR / TOKENIZERS_ARM64_DIR to GITHUB_ENV for later steps.
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
-LV=$(ls -d node_modules/.bun/libsql@* 2>/dev/null | sed 's#.*/libsql@##' | sort -V | tail -1)
-[ -n "$LV" ] || { echo "::error::could not determine resolved libsql version"; exit 1; }
+# Every version below is the one bun.lock RESOLVES TO, bare semver, exactly one
+# per package or the run stops. NOT the highest directory in node_modules/.bun:
+# that store caches every version any past install needed, and a companion
+# release tag or an Electron ABI taken from a version nothing resolves to
+# fetches a native binary the app cannot load — green build, crash on the
+# user's machine. Contract: scripts/bun-locked-versions.sh (fatal, never a
+# fallback, on an absent package or a second live version).
+# shellcheck source=./bun-locked-versions.sh
+. "$ROOT/scripts/bun-locked-versions.sh"
+
+LV="$(bun_locked_version_one libsql)"
 echo "Resolved libsql: $LV"
 rm -rf libsql-dl libsql-arm64
 if ! gh release download "$LV" --repo khairm/libsql-windows-arm64 \
@@ -20,8 +31,7 @@ mkdir -p libsql-arm64
 tar -xzf libsql-dl/libsql-win32-arm64-msvc.tar.gz -C libsql-arm64
 [ -f libsql-arm64/index.node ] || { echo "::error::libsql artifact missing index.node"; exit 1; }
 
-TV=$(ls -d node_modules/.bun/@anush008+tokenizers@* 2>/dev/null | sed 's#.*/@anush008+tokenizers@##' | sort -V | tail -1)
-[ -n "$TV" ] || { echo "::error::could not determine resolved @anush008/tokenizers version"; exit 1; }
+TV="$(bun_locked_version_one @anush008/tokenizers)"
 echo "Resolved @anush008/tokenizers: $TV"
 rm -rf tok-dl tokenizers-arm64
 if ! gh release download "$TV" --repo khairm/tokenizers-windows-arm64 \
@@ -39,9 +49,8 @@ tar -xzf tok-dl/tokenizers-win32-arm64-msvc.tar.gz -C tokenizers-arm64
 # a wrong ABI fetches a prebuilt that crashes Electron. Derive
 # authoritatively via node-abi against the resolved electron, fall back
 # to a pinned map, HARD-FAIL on an unknown major (never silently guess).
-EM=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | cut -d. -f1 | sort -n | tail -1)
-EV=$(ls -d node_modules/.bun/electron@* 2>/dev/null | sed 's#.*/electron@##' | sort -V | tail -1)
-[ -n "$EM" ] || { echo "::error::could not determine resolved electron version"; exit 1; }
+EV="$(bun_locked_version_one electron)"
+EM="${EV%%.*}"
 ABI=$(node -e "try{process.stdout.write(String(require('node-abi').getAbi('$EV','electron')))}catch(e){}" 2>/dev/null || true)
 if printf '%s' "$ABI" | grep -Eq '^[0-9]+$'; then
   echo "ABI from node-abi getAbi('$EV','electron') = $ABI"

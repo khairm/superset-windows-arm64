@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+	applyAutomaticSnoozeReturn,
+	applyWorkspaceExitCleanup,
+	cancelWorkspaceExitCleanup,
 	removeProjectFromSidebarState,
 	resolveSidebarRowProjectId,
 	type SidebarWorkspaceRow,
@@ -356,5 +359,110 @@ describe("resolveSidebarRowProjectId", () => {
 		// from Sidebar" on a session with no local-state row silently did nothing.
 		expect(resolveSidebarRowProjectId(null, null)).toBeNull();
 		expect(resolveSidebarRowProjectId(null, "proj-1")).toBeNull();
+	});
+});
+
+describe("applyWorkspaceExitCleanup", () => {
+	// The helper only ever WRITES these, so the fixture keeps the payload fields
+	// opaque — asserting on them is the test's job, not the type's.
+	interface ExitCleanupFixture {
+		paneLayout: unknown;
+		workspaceRunTerminals: unknown;
+		pendingMigratedTerminals: unknown;
+		sidebarState: {
+			pinnedAt: number | null;
+			runtimeCleanupPendingAt: number | null;
+		};
+	}
+
+	function exitedRow(): ExitCleanupFixture {
+		return {
+			paneLayout: {
+				version: 1,
+				tabs: [{ id: "tab-1", panes: {} }],
+				activeTabId: "tab-1",
+			},
+			workspaceRunTerminals: { "run-1": { terminalId: "term-1" } },
+			pendingMigratedTerminals: [
+				{ terminalId: "term-2", cwd: null, v1PaneId: null },
+			],
+			sidebarState: { pinnedAt: 111, runtimeCleanupPendingAt: null },
+		};
+	}
+
+	it("clears every piece of runtime state the row owns", () => {
+		const row = exitedRow();
+
+		applyWorkspaceExitCleanup(
+			row as unknown as Parameters<typeof applyWorkspaceExitCleanup>[0],
+			999,
+		);
+
+		expect(row.paneLayout).toEqual({
+			version: 1,
+			tabs: [],
+			activeTabId: null,
+		});
+		expect(row.workspaceRunTerminals).toEqual({});
+		expect(row.pendingMigratedTerminals).toEqual([]);
+	});
+
+	it("unpins the row, so restoring it cannot resurrect the pin", () => {
+		const row = exitedRow();
+
+		applyWorkspaceExitCleanup(
+			row as unknown as Parameters<typeof applyWorkspaceExitCleanup>[0],
+			999,
+		);
+
+		expect(row.sidebarState.pinnedAt).toBeNull();
+	});
+
+	it("stamps the host debt so the reconciler retries it after a restart", () => {
+		// Stamped whichever machine owns the workspace: the reconciler routes to a
+		// remote owner over the relay, and an owner that is switched off right now
+		// is the exact case the durable stamp exists for.
+		const row = exitedRow();
+
+		applyWorkspaceExitCleanup(
+			row as unknown as Parameters<typeof applyWorkspaceExitCleanup>[0],
+			999,
+		);
+
+		expect(row.sidebarState.runtimeCleanupPendingAt).toBe(999);
+	});
+});
+
+describe("applyAutomaticSnoozeReturn", () => {
+	it("clears the Snooze timer without cancelling pending host cleanup", () => {
+		const sidebarState = {
+			snoozeUntil: 123 as number | null,
+			snoozeLaunchId: "launch-1" as string | null,
+			runtimeCleanupPendingAt: 999 as number | null,
+		};
+
+		applyAutomaticSnoozeReturn(sidebarState);
+
+		expect(sidebarState.snoozeUntil).toBeNull();
+		expect(sidebarState.snoozeLaunchId).toBeNull();
+		expect(sidebarState.runtimeCleanupPendingAt).toBe(999);
+	});
+});
+
+describe("cancelWorkspaceExitCleanup", () => {
+	it("clears a pending host cleanup", () => {
+		const sidebarState = { runtimeCleanupPendingAt: 999 as number | null };
+
+		cancelWorkspaceExitCleanup(sidebarState);
+
+		expect(sidebarState.runtimeCleanupPendingAt).toBeNull();
+	});
+
+	it("is a no-op for a row that owes nothing", () => {
+		const sidebarState = { runtimeCleanupPendingAt: null };
+
+		cancelWorkspaceExitCleanup(sidebarState);
+
+		expect(sidebarState.runtimeCleanupPendingAt).toBeNull();
 	});
 });

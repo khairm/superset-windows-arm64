@@ -5,7 +5,11 @@ import {
 	TRPCClientError,
 } from "@trpc/client";
 import superjson from "superjson";
-import { getHostServiceHeaders } from "./host-service-auth";
+import type { ElectronTrpcUtils } from "./electron-trpc";
+import {
+	getHostServiceHeaders,
+	setHostServiceSecret,
+} from "./host-service-auth";
 
 const clientCache = new Map<
 	string,
@@ -49,6 +53,41 @@ export function getHostServiceClientByUrl(hostUrl: string): HostServiceClient {
 
 	clientCache.set(hostUrl, client);
 	return client;
+}
+
+/**
+ * The URL of every running local host-service (one per org), with each one's
+ * pre-shared key registered so `getHostServiceClientByUrl` can authenticate to
+ * it. Broadcast calls use this when they hold no resolved URL for the host that
+ * owns a workspace; each host answers for the workspaces it owns and no-ops for
+ * the rest, so asking all of them is safe.
+ *
+ * URLs rather than clients so a caller that ALSO has a specific host to reach
+ * (a remote owner, via `resolveHostUrl`) can union the two sets and address
+ * each host exactly once — the client cache is keyed by URL, so equal URLs are
+ * the same host.
+ *
+ * Returns null (not []) when the coordinator lookup FAILS — every caller must
+ * distinguish "no hosts running" (safe: nothing to do) from "couldn't ask" (a
+ * real failure that would otherwise masquerade as success).
+ */
+export async function getLocalHostServiceUrls(
+	utils: ElectronTrpcUtils,
+): Promise<string[] | null> {
+	let connections: { port: number; secret: string }[];
+	try {
+		connections = await utils.hostServiceCoordinator.getConnections.fetch(
+			undefined,
+			{ staleTime: 0 },
+		);
+	} catch {
+		return null;
+	}
+	return (connections ?? []).map(({ port, secret }) => {
+		const url = `http://127.0.0.1:${port}`;
+		setHostServiceSecret(url, secret);
+		return url;
+	});
 }
 
 const HOST_SERVICE_MAX_RETRIES = 3;

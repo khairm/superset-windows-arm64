@@ -3,6 +3,10 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRecycleBinRetention } from "renderer/routes/_authenticated/_dashboard/stores/recycleBinRetention";
+import {
+	completeWorkspaceInSidebar,
+	uncompleteWorkspaceInSidebar,
+} from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	APP_LAUNCH_ID,
@@ -33,6 +37,7 @@ import {
 import { deadlineGroupKey } from "../../utils/deadlineUrgency";
 import { deriveCardTitle } from "../../utils/deriveCardTitle";
 import { isKanbanEligibleWorkspace } from "../../utils/isKanbanEligibleWorkspace";
+import { repairKanbanWorkspaceLifecycle } from "./repairWorkspaceLifecycle";
 
 const TICK_INTERVAL_MS = 60_000;
 const STARTER_COLUMN_NAME = "In Progress";
@@ -443,83 +448,59 @@ export function useKanbanData(): UseKanbanDataResult {
 			// deliberately deleted — don't resurrect them from here.
 			if (!isKanbanEligibleWorkspace(ws, sidebarProjectIds)) continue;
 			const local = localStateByWorkspace.get(card.workspaceId);
+			const nowMs = Date.now();
 			const bucket = getWorkspaceSidebarBucket(
 				local?.sidebarState ?? {},
-				Date.now(),
+				nowMs,
 				ws.type,
 			);
-			const inCompleted = card.columnId === KANBAN_COMPLETED_COLUMN_ID;
-			if (
-				inCompleted &&
-				bucket !== "completed" &&
-				bucket !== "hidden" &&
-				ws.type !== "main"
-			) {
-				const completedAt = card.completedAt ?? Date.now();
-				// Decide insert-vs-update from the LIVE collection state, not the
-				// render snapshot (`local`): useKanbanData runs in two instances
-				// (the dashboard-level KanbanReconciler AND the mounted board), and
-				// both can see a stale "no row" in the same commit cycle — the
-				// second insert would throw a duplicate-key error. The live
-				// get-before-write makes the second instance update instead.
-				if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
-					collections.v2WorkspaceLocalState.update(
-						card.workspaceId,
-						(draft) => {
-							draft.sidebarState.completedAt = completedAt;
-							draft.sidebarState.isHidden = true;
-							draft.sidebarState.archivedAt = null;
-							draft.sidebarState.snoozeUntil = null;
-							draft.sidebarState.snoozeLaunchId = null;
-						},
-					);
-				} else {
-					// No local-state row (e.g. the project was just re-added to the
-					// sidebar): the completion must be re-asserted via INSERT or the
-					// branch would resurface in the active lane while its card sits in
-					// Completed. Same minimal row hideWorkspaceInSidebar seeds.
-					collections.v2WorkspaceLocalState.insert({
-						workspaceId: card.workspaceId,
-						createdAt: new Date(),
-						sidebarState: {
-							projectId: ws.projectId,
-							tabOrder: 0,
-							sectionId: null,
-							isHidden: true,
-							completedAt,
-						},
-						paneLayout: { version: 1, tabs: [], activeTabId: null },
-					});
-				}
-				if (card.completedAt == null) {
-					// Backfill the report datum from the stamp we just asserted.
-					collections.v2KanbanCards.update(card.id, (draft) => {
-						draft.completedAt = completedAt;
-					});
-				}
-			} else if (
-				inCompleted &&
-				bucket === "completed" &&
-				card.completedAt == null
-			) {
-				// Card transaction landed without its date (crash mid-complete):
-				// backfill from the sidebar stamp.
-				const stamp = local?.sidebarState.completedAt ?? Date.now();
-				collections.v2KanbanCards.update(card.id, (draft) => {
-					draft.completedAt = stamp;
+			const isCompletedCard = card.columnId === KANBAN_COMPLETED_COLUMN_ID;
+			const needsLifecycleRepair = isCompletedCard
+				? bucket !== "hidden" &&
+					bucket !== "deleted" &&
+					(bucket !== "completed" || card.completedAt == null)
+				: bucket === "completed";
+			if (!needsLifecycleRepair) continue;
+
+			const persistCardCompletedAt = (cardId: string, completedAt: number) =>
+				collections.v2KanbanCards.update(cardId, (draft) => {
+					draft.completedAt = completedAt;
 				});
-			} else if (!inCompleted && bucket === "completed") {
-				if (collections.v2WorkspaceLocalState.get(card.workspaceId)) {
-					collections.v2WorkspaceLocalState.update(
-						card.workspaceId,
-						(draft) => {
-							draft.sidebarState.completedAt = null;
-							draft.sidebarState.isHidden = false;
-							draft.sidebarState.archivedAt = null;
-						},
-					);
-				}
-			}
+
+			repairKanbanWorkspaceLifecycle(
+				{
+					cardId: card.id,
+					workspaceId: card.workspaceId,
+					isCompletedCard,
+					now: nowMs,
+				},
+				{
+					getWorkspaceState: (workspaceId) => {
+						const live = collections.v2WorkspaceLocalState.get(workspaceId);
+						return {
+							bucket: getWorkspaceSidebarBucket(
+								live?.sidebarState ?? {},
+								Date.now(),
+								ws.type,
+							),
+							completedAt: live?.sidebarState.completedAt ?? null,
+						};
+					},
+					getCardCompletedAt: (cardId) =>
+						collections.v2KanbanCards.get(cardId)?.completedAt,
+					completeWorkspace: (cardId, workspaceId, completedAt) =>
+						completeWorkspaceInSidebar(
+							collections,
+							workspaceRows,
+							workspaceId,
+							completedAt,
+							() => persistCardCompletedAt(cardId, completedAt),
+						),
+					uncompleteWorkspace: (workspaceId) =>
+						uncompleteWorkspaceInSidebar(collections, workspaceId),
+					setCardCompletedAt: persistCardCompletedAt,
+				},
+			);
 		}
 
 		// (KANBAN HOST SOURCE) Nothing re-renders on wall-clock alone —

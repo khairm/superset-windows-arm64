@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,26 +23,6 @@ export function getAgentSetupTemplatesDir(): string {
 
 export function getTemplatePath(name: string): string {
 	return path.join(getAgentSetupTemplatesDir(), name);
-}
-
-/**
- * The repo's Claude Code plugin (skills + commands) is overlaid at
- * templates/plugin by each distribution's copy step. When running from TS
- * source nothing performs that copy, so fall back to the plugin's in-repo
- * location.
- */
-export function getBundledPluginDir(): string {
-	const bundled = path.join(getAgentSetupTemplatesDir(), "plugin");
-	if (fs.existsSync(path.join(bundled, "skills"))) return bundled;
-	const repoPlugin = path.join(
-		path.dirname(fileURLToPath(import.meta.url)),
-		"..",
-		"..",
-		"..",
-		"plugins",
-		"superset",
-	);
-	return fs.existsSync(path.join(repoPlugin, "skills")) ? repoPlugin : bundled;
 }
 
 /**

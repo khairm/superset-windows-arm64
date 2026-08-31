@@ -11,3 +11,6 @@ export const electronTrpc = createTRPCReact<AppRouter>({
 });
 
 export type ElectronRouterOutputs = inferRouterOutputs<AppRouter>;
+
+/** The query-cache handle `electronTrpc.useUtils()` hands back. */
+export type ElectronTrpcUtils = ReturnType<typeof electronTrpc.useUtils>;

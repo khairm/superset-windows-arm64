@@ -479,19 +479,12 @@ async function main(): Promise<void> {
 
 	// Agent-setup templates ship side-by-side with host-service.js (resolved
 	// by resolveAgentTemplatesDir in host-service) so headless hosts can
-	// provision notify hooks, wrappers, and shell bootstrap at startup. The
-	// repo's Claude Code plugin overlays at templates/plugin, mirroring the
-	// desktop's copy step in apps/desktop/vite/helpers.ts.
+	// provision notify hooks, wrappers, and shell bootstrap at startup.
 	console.log("[build-dist] copying agent-setup templates");
 	const agentTemplatesDest = join(stagingRoot, "lib", "agent-templates");
 	cpSync(
 		resolve(import.meta.dir, "../../agent-setup/templates"),
 		agentTemplatesDest,
-		{ recursive: true },
-	);
-	cpSync(
-		resolve(import.meta.dir, "../../../plugins/superset"),
-		join(agentTemplatesDest, "plugin"),
 		{ recursive: true },
 	);
 

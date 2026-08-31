@@ -35,6 +35,7 @@ import { useV2PresetExecution } from "../../hooks/useV2PresetExecution";
 import { useV2TerminalLauncher } from "../../hooks/useV2TerminalLauncher";
 import { useV2WorkspacePaneLayout } from "../../hooks/useV2WorkspacePaneLayout";
 import { useV2WorkspaceRun } from "../../hooks/useV2WorkspaceRun";
+import { useWorkspaceExitCleanupPending } from "../../hooks/useWorkspaceExitCleanupPending";
 import { useWorkspaceFileNavigation } from "../../hooks/useWorkspaceFileNavigation";
 import { useWorkspaceHotkeys } from "../../hooks/useWorkspaceHotkeys";
 import { useWorkspacePaneOpeners } from "../../hooks/useWorkspacePaneOpeners";
@@ -131,12 +132,21 @@ function V2WorkspaceCenter({
 	const showPresetsBar = v2UserPreferences.showPresetsBar;
 	const sidebarOpen = v2UserPreferences.rightSidebarOpen;
 	const { store, isLayoutReady } = useV2WorkspacePaneLayout();
+	// (WORKTREE-EXIT-CLEANUP) Read here so the adoption hook stays free of the
+	// collections provider; it blocks adoption while the host still owes this
+	// workspace a teardown.
+	const isExitCleanupPending = useWorkspaceExitCleanupPending(workspaceId);
 	// (MASTER-PLUS-LAUNCH) NOT a duplicate — this is the ONLY mount of the
 	// auto-adopt hook. Upstream called it from `$workspaceId/page.tsx`
 	// (ebe0144bfb, PR #5740); the fork's kanban commit 066f6f2f77 extracted
 	// this center out of that page and dropped the call, so every session
 	// created outside the desktop (CLI, `agents.run`) lost its pane. Keep it.
-	useAutoAdoptBackgroundSessions({ store, workspaceId, isLayoutReady });
+	useAutoAdoptBackgroundSessions({
+		store,
+		workspaceId,
+		isLayoutReady,
+		isExitCleanupPending,
+	});
 	// (CLOUD-SEVERANCE-P2) Off by default; see `stores/local-chat`.
 	const isLocalChatEnabled = useLocalChatEnabled();
 	useClearActivePaneAttention({ store });
@@ -351,9 +361,7 @@ function V2WorkspaceCenter({
 									// on. This is the fork's single entry point to the local
 									// chat pane, and it appears only once the user switches
 									// it on in Experimental settings.
-									onAddChatV3={
-										isLocalChatEnabled ? addChatV3Tab : undefined
-									}
+									onAddChatV3={isLocalChatEnabled ? addChatV3Tab : undefined}
 									onAddBrowser={addBrowserTab}
 									showPresetsBar={showPresetsBar}
 									onToggleShowPresetsBar={setShowPresetsBar}

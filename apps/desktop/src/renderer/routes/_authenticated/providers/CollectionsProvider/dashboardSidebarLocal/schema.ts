@@ -185,16 +185,29 @@ export const workspaceLocalStateSchema = z.object({
 		completedAt: z.number().nullable().default(null),
 		// (RECYCLE-BIN) Soft-delete timestamp. Set by deleteWorkspace (the default
 		// "Delete" now moves a thread to the project's Recycle Bin instead of the
-		// hard git-destroy). Visual-only and fully lossless — the worktree, branch
-		// and running terminals are untouched, exactly like Archive. Presence makes
-		// the bucket classifier return "deleted" FIRST (before completed/archived),
-		// so a deleted thread shows ONLY in the bin. restoreWorkspace clears it back
-		// to active. The permanent git-destroy lives behind "Delete permanently"
-		// inside the bin.
+		// hard git-destroy). The worktree and branch are untouched and every field
+		// is restorable, exactly like Archive — but the workspace's RUNTIME is not:
+		// (WORKTREE-EXIT-CLEANUP) closes its tabs and terminals. Presence makes the
+		// bucket classifier return "deleted" FIRST (before completed/archived), so a
+		// deleted thread shows ONLY in the bin. restoreWorkspace clears it back to
+		// active. The permanent git-destroy lives behind "Delete permanently" inside
+		// the bin.
 		deletedAt: z.number().nullable().default(null),
 		// Epoch ms when the user pinned this workspace to the sidebar's Pinned
 		// section; null = not pinned. Ordering is pinnedAt ascending.
 		pinnedAt: z.number().int().nullable().default(null),
+		// (WORKTREE-EXIT-CLEANUP) Epoch ms when Completed/Archive/Snooze/Recycle Bin
+		// tore this workspace's runtime down locally and still owes the owning host
+		// its half (dispose the terminals, release the pinned Claude account). The
+		// renderer clears the panes synchronously; this field is the durable record
+		// that the host call has NOT yet been confirmed by the workspace's owner, so
+		// the reconciler retries it when that owner becomes reachable — on this
+		// machine or over the relay — and across app restarts. Null = nothing owed;
+		// un-exiting the card (restore/unarchive/unsnooze/uncomplete) nulls it. It
+		// also gates background-session auto-adoption, so a host that is still
+		// killing terminals cannot have them re-adopted into new panes. The VALUE
+		// identifies the debt: a reconciler reply quoting a different one is stale.
+		runtimeCleanupPendingAt: z.number().int().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -242,6 +255,7 @@ const SIDEBAR_STATE_DEFAULTS = {
 	completedAt: null,
 	deletedAt: null,
 	pinnedAt: null,
+	runtimeCleanupPendingAt: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
@@ -311,6 +325,15 @@ export type DashboardSidebarProjectRow = z.infer<
 	typeof dashboardSidebarProjectSchema
 >;
 export type WorkspaceLocalStateRow = z.infer<typeof workspaceLocalStateSchema>;
+/**
+ * What a collection `insert`/`update` draft looks like: pre-parse, so every
+ * field with a schema default is optional here even though the stored row
+ * always has one. A mutation helper that takes a draft must be typed against
+ * THIS, not the parsed row.
+ */
+export type WorkspaceLocalStateDraft = z.input<
+	typeof workspaceLocalStateSchema
+>;
 export type WorkspaceRunState = z.infer<typeof workspaceRunStateSchema>;
 export type WorkspaceRunTerminalState = z.infer<
 	typeof workspaceRunTerminalStateSchema

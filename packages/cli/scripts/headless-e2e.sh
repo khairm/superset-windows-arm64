@@ -134,7 +134,6 @@ for _ in $(seq 1 30); do
   grep -q "login-shell PATH entries into process env" "$HSDIR/host.log" && break
   sleep 0.5
 done
-sleep 1  # managed-skills provisioning is async fire-and-forget
 
 echo "[e2e] === assert: provisioning artifacts ==="
 test -x "$HOME/.superset/hooks/notify.sh"
@@ -158,10 +157,6 @@ echo "[e2e] === assert: managed hook configs ==="
 '
 test -f "$HOME/.codex/hooks.json"
 test -f "$HOME/.gemini/settings.json"
-
-echo "[e2e] === assert: managed skills from bundled templates ==="
-test -f "$HOME/.claude/skills/superset/skills/doctor/SKILL.md"
-ls "$HOME/.agents/skills" | grep -q "superset-doctor"
 
 echo "[e2e] === assert: login-shell PATH merge ==="
 grep -q "login-shell PATH entries into process env" "$HSDIR/host.log"

@@ -1,1 +1,5 @@
-export { useDashboardSidebarState } from "./useDashboardSidebarState";
+export {
+	completeWorkspaceInSidebar,
+	uncompleteWorkspaceInSidebar,
+	useDashboardSidebarState,
+} from "./useDashboardSidebarState";

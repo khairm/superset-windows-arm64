@@ -561,6 +561,23 @@ export interface EventBusHandle {
 }
 
 /**
+ * The connection status of a host this process HAS ALREADY DIALLED, or null
+ * when it has not.
+ *
+ * ASKING COSTS NOTHING, which is the whole reason it exists separately from
+ * `getEventBus(...).getConnectionStatus()`: that one creates the connection as
+ * a side effect of handing back a handle, and for a cloud sandbox the dial
+ * itself wakes the VM. A background caller that only wants to know whether
+ * somebody ELSE is already holding a host open must not be the thing that
+ * opens it.
+ */
+export function peekConnectionStatus(
+	hostUrl: string,
+): HostConnectionStatus | null {
+	return connections.get(hostUrl)?.status ?? null;
+}
+
+/**
  * Get a handle to the event bus for a given host.
  * One WS connection is shared across all handles for the same hostUrl.
  */

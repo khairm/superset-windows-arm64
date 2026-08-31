@@ -71,9 +71,8 @@ export async function readInstalledClaudePlugins(
 /**
  * Everything Claude Code offers behind `/` in this workspace: project and
  * user commands, project and user skills, and plugin commands and skills —
- * both installed plugins and skills-directory plugins (a plugin manifest
- * living inside `skills/`, like the managed `superset` one, which Claude
- * loads as a plugin named after its directory).
+ * both installed plugins and skills-directory plugins whose manifest lives
+ * inside `skills/`.
  */
 export async function scanClaudeSlashCommands(
 	ctx: SlashCommandScanContext,

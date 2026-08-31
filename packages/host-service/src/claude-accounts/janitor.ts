@@ -444,34 +444,60 @@ interface DisposeTerminalIdsOptions {
 	eventBus?: EventBus;
 }
 
+type TerminalDisposalOutcome =
+	| { terminalId: string; ok: true }
+	| { terminalId: string; ok: false; error: unknown };
+
+/**
+ * Disposes every id and reports which ones actually completed.
+ * (WORKTREE-EXIT-CLEANUP) The split return exists for workspace retirement,
+ * which reports per-terminal outcomes to the renderer; `abort` still throws
+ * and `warn-and-continue` still only warns, so deletion callers are unchanged.
+ */
 export async function disposeTerminalIds(
 	db: HostDb,
 	terminalIds: readonly string[],
 	options: DisposeTerminalIdsOptions,
-): Promise<void> {
-	const results = await Promise.allSettled(
-		[...new Set(terminalIds)].map(async (terminalId) => {
-			const result = await disposeSessionAndWait(
-				terminalId,
-				db,
-				options.eventBus,
-			);
-			if (!isDisposalComplete(result)) {
-				throw new Error(
-					`Terminal ${terminalId} disposal did not complete (${result.dbDisposition}${result.daemonCloseError ? `: ${result.daemonCloseError}` : ""})`,
-				);
-			}
-		}),
+): Promise<{ terminated: string[]; failed: string[] }> {
+	const outcomes = await Promise.all(
+		[...new Set(terminalIds)].map(
+			async (terminalId): Promise<TerminalDisposalOutcome> => {
+				try {
+					const result = await disposeSessionAndWait(
+						terminalId,
+						db,
+						options.eventBus,
+					);
+					if (!isDisposalComplete(result)) {
+						throw new Error(
+							`Terminal ${terminalId} disposal did not complete (${result.dbDisposition}${result.daemonCloseError ? `: ${result.daemonCloseError}` : ""})`,
+						);
+					}
+					return { terminalId, ok: true };
+				} catch (error) {
+					return { terminalId, ok: false, error };
+				}
+			},
+		),
 	);
-	const errors = results.flatMap((result) =>
-		result.status === "rejected" ? [result.reason] : [],
-	);
-	if (errors.length === 0) return;
+	const terminated: string[] = [];
+	const failed: string[] = [];
+	const errors: unknown[] = [];
+	for (const outcome of outcomes) {
+		if (outcome.ok) {
+			terminated.push(outcome.terminalId);
+			continue;
+		}
+		failed.push(outcome.terminalId);
+		errors.push(outcome.error);
+	}
+	if (errors.length === 0) return { terminated, failed };
 	if (options.mode === "abort") {
 		throw new AggregateError(errors, "One or more terminal disposals failed");
 	}
 	options.log.warn(
-		"One or more terminal disposals did not complete; workspace destroy will continue",
+		"One or more terminal disposals did not complete; the caller will continue",
 		{ errors },
 	);
+	return { terminated, failed };
 }

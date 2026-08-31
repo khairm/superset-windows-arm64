@@ -62,4 +62,52 @@ describe("companion lifecycle sink", () => {
 			previousEventAtMs: 90,
 		});
 	});
+
+	// A swallowed fault here would let the caller's `recordEvent` bury the `Stop`
+	// row this event was meant to retract against, losing the only durable
+	// evidence of the alert. Both sink entry points must therefore propagate.
+	it("propagates a record fault instead of swallowing it", () => {
+		setCompanionLifecycleSink({
+			observeStatus: () => {},
+			record: () => {
+				throw new Error("record exploded");
+			},
+		});
+
+		expect(() =>
+			forwardCompanionLifecycle({
+				payload: {
+					companionLifecycleEventId: "c".repeat(22),
+					companionLifecycleOutcome: "progress",
+				},
+				eventType: "Start",
+				terminalId: "terminal-1",
+				workspaceId: "workspace-1",
+				occurredAtMs: 200,
+				previousEventType: "Stop",
+				previousEventAtMs: 190,
+			}),
+		).toThrow("record exploded");
+	});
+
+	it("propagates an observeStatus fault, which is the immediate-retraction path", () => {
+		setCompanionLifecycleSink({
+			observeStatus: () => {
+				throw new Error("observe exploded");
+			},
+			record: () => {},
+		});
+
+		expect(() =>
+			forwardCompanionLifecycle({
+				payload: {},
+				eventType: "SubagentActive",
+				terminalId: "terminal-1",
+				workspaceId: "workspace-1",
+				occurredAtMs: 200,
+				previousEventType: "Stop",
+				previousEventAtMs: 190,
+			}),
+		).toThrow("observe exploded");
+	});
 });

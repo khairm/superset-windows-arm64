@@ -13,22 +13,40 @@ import {
 } from "./sidebar-filter";
 import type { WorkspaceId } from "./types";
 
-const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * How long an alert can live from its own outcome instant. Exported so the
+ * tests that exercise the inherited-card age bound cannot drift from it.
+ */
+export const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
 export const READY_SETTLE_MS = 10_000;
 const SWEEP_MS = 2_000;
 
 /**
+ * (ALERT-RETIRE-ON-EXIT) The statuses that PROVE a ready alert is stale: the
+ * agent is working again, is blocked on a prompt, or has died. Every one of
+ * them retires that terminal's ready alerts outright — held, in flight, or
+ * already on the phone — because "ready for review" stopped being true the
+ * moment one of them arrived.
+ *
  * `Failed` is red and cancels ready before `record()` mints its immediate `e`.
- * `Stop` is excluded because a repeat must not reset the settle window.
+ * `Stop` IS the ready outcome, so it is excluded: it must not cancel the alert
+ * it is about to raise.
  * `Attached` is not working; `Detached` reaches `record()` as `session-end`.
  */
-const READY_SETTLE_CANCEL_EVENTS = new Set([
+const READY_CANCEL_EVENTS = new Set([
 	"Start",
 	"SubagentActive",
 	"BackgroundRunning",
 	"PermissionRequest",
 	"Failed",
 ]);
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) The hook event type a `ready` outcome arrives on, and
+ * therefore the only `lastEventType` host.db can carry that names a ready card
+ * this process may have inherited from the one before it.
+ */
+const READY_OUTCOME_EVENT_TYPE = "Stop";
 
 /**
  * Capacity bound on the alert table. Exported so the tests that exercise
@@ -67,23 +85,37 @@ const CURATION_CACHE_SOFT_MAX = 64;
 type LifecycleAlertKind = "g" | "e";
 
 /**
- * (ONE-BUZZ-UNTIL-READ) Why an alert is being retired — which decides whether
- * the PHONE hears about it.
+ * Why an alert is being retired.
  *
- * A reason rather than a string, because exactly ONE of them is silent and
- * getting that wrong is invisible from the host: the notification either stacks
- * up overnight or vanishes when it should have stayed.
+ * EVERY REASON REACHES THE PHONE, and that is the whole rule. The reason is
+ * carried only so the logs say which trigger fired; none of them changes what
+ * happens to the alert.
+ *
+ * IT USED TO HAVE AN EXCEPTION. A delivered ready alert overtaken by a new work
+ * cycle was retired SILENTLY: the notification was left on the handset for the
+ * next `g` to replace in place, on the argument that one live card per unread
+ * chat beats sixteen buzzes a night. The argument held only while the next `g`
+ * actually arrived. When the agent went back to work and then blocked, crashed,
+ * or was simply left alone, nothing ever replaced the card and the phone kept
+ * saying "ready for review" about a chat that was not — for six hours, or until
+ * the user opened it on the desktop.
+ *
+ * USER DECISION: a delivered ready card must come down the moment the terminal
+ * stops being ready, whatever comes next. Volume is the phone's problem to
+ * solve, not the host's: the companion app is being taught to absorb the higher
+ * event rate.
  */
 type RetireReason =
 	/**
-	 * A NEW WORK CYCLE started on this terminal (`outcome: "progress"`). The
-	 * chat is alive and about to finish again.
+	 * A NEW WORK CYCLE started on this terminal — `outcome: "progress"`, or any
+	 * of `READY_CANCEL_EVENTS`. The finish the card names is over, so the
+	 * card comes down.
 	 */
-	| { kind: "new-cycle" }
+	| "new-cycle"
 	/** The session ended: there is no chat left to open, so clear the buzz. */
-	| { kind: "session-end" }
+	| "session-end"
 	/** The user read the chat on the desktop. */
-	| { kind: "seen" }
+	| "seen"
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The TERMINAL PROCESS died — the host runtime saw a
 	 * CONFIRMED pty exit.
@@ -94,7 +126,7 @@ type RetireReason =
 	 * `kill -9`). The second case is the one this reason exists for, and it was
 	 * the commonest way a notification outlived the thing it pointed at.
 	 */
-	| { kind: "terminal-gone" }
+	| "terminal-gone"
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The DESKTOP relaunched, so every alert about a
 	 * finish that predates this launch names a chat the user is about to look
@@ -104,7 +136,7 @@ type RetireReason =
 	 * never "everything": a finish that landed AFTER the desktop came up is
 	 * still news the phone should keep.
 	 */
-	| { kind: "desktop-relaunch" }
+	| "desktop-relaunch"
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The user curated the thread OFF their sidebar
 	 * (snoozed, archived, or removed it).
@@ -113,95 +145,19 @@ type RetireReason =
 	 * `(PUSH-CURATION-GATE)`, but an alert already on the handset was minted
 	 * before the user made that decision and nothing took it back down.
 	 */
-	| { kind: "curated-off" };
-
-/**
- * (ONE-BUZZ-UNTIL-READ) Which reason wins when an alert is superseded twice
- * while its broadcast is still in flight.
- *
- * A new cycle is the only SILENT reason, so it must never mask a later loud
- * one: fresh work starts, then the session ends before the send lands, and the
- * notification that lands names a chat that no longer exists. Ranking makes the
- * upgrade one-way — a loud reason can replace a silent one, never the reverse.
- */
-function retireReasonRank(reason: RetireReason): number {
-	return reason.kind === "new-cycle" ? 0 : 1;
-}
-
-function upgradeRetireReason(
-	existing: RetireReason | null,
-	next: RetireReason,
-): RetireReason {
-	if (existing === null) return next;
-	return retireReasonRank(next) > retireReasonRank(existing) ? next : existing;
-}
-
-/**
- * (ONE-BUZZ-UNTIL-READ) Does retiring this alert send a `c` frame?
- *
- * ONE BUZZ PER UNREAD CHAT. Measured overnight on v0.1.0: a single long-running
- * chat finished sixteen times in a night, ~15 minutes apart, every one of them
- * while the user was away — sixteen separate buzzing notifications stacked on
- * the phone for one conversation nobody had read yet. Retracting each one as
- * the next cycle began would have been worse, not better: the wrist would still
- * buzz sixteen times and the user would also lose the standing "this chat has
- * something for you" card in between.
- *
- * So a delivered READY alert superseded by a NEW CYCLE is retired SILENTLY: the
- * row is kept (it is still the dedupe record for that cycle) and the
- * notification is left standing on the handset, where the next `g` for the same
- * terminal replaces it in place — the phone keys ready notifications by
- * terminal handle, and `t` has been on the v3 wire since the feature shipped.
- * The user sees one live card per unread chat, updated quietly, however many
- * turns it takes.
- *
- * EVERY OTHER RETIREMENT STILL FIRES, and each for a reason the silent case
- * does not share:
- *
- *  - `session-end` — the chat is GONE. Nothing will replace the notification
- *    and tapping it opens nothing, so it must come down.
- *  - `seen` — the user read it. That is the event that RESETS the cycle, so
- *    the next finish is allowed to buzz fresh.
- *  - (ALERT-RETIRE-ON-EXIT) `terminal-gone` — the pty died. Same argument as
- *    `session-end`, from the host runtime rather than the hook stream.
- *  - (ALERT-RETIRE-ON-EXIT) `desktop-relaunch` — the user is back at the
- *    machine and the app has restarted around them.
- *  - (ALERT-RETIRE-ON-EXIT) `curated-off` — they took the thread off their
- *    sidebar, which is a decision about the thread, not about this cycle.
- *
- * `e` ALERTS FIRE FOR EVERY REASON THERE IS, including `new-cycle`: an agent
- * that died is not superseded by later work on the same terminal in any useful
- * sense, so there is no silent case to fall into. What changed on 2026-08-20
- * is which reasons can REACH an `e` at all — `seen` now does, see
- * `findReadAlerts` — not how one is retired once it does.
- */
-function notifiesPhone(alert: HeldAlert, reason: RetireReason): boolean {
-	return !(alert.kind === "g" && reason.kind === "new-cycle");
-}
+	| "curated-off";
 
 /**
  * `held` — minted, never put on the wire yet; the only state a sweep may claim.
  * `sending` — CLAIMED by exactly one caller, an FCM broadcast is in flight.
- * `sent` — accepted by FCM, and NOT yet superseded.
- * `standing` — (ONE-BUZZ-UNTIL-READ) delivered, then overtaken by a newer work
- *   cycle. The notification is STILL ON THE DEVICES and the next `g` for this
- *   terminal replaces it in place, so nothing was sent to take it down — but it
- *   is live, and a later read or session end must still be able to retract it.
- *   That is why it is a state of its own rather than `retracted`: a `retracted`
- *   row is inert, and treating a standing notification as inert would strand it
- *   on the handset forever.
+ * `sent` — accepted by FCM, and NOT yet retired.
  * `retracted` — a `c` frame has gone out for it. Kept until the TTL for the
  *   SAME reason `sent` is: deleting the row re-opens re-minting, and a terminal
  *   that reports progress after the user read its chat would then buzz again
  *   about the cycle they just read. It is also the storm guard — nothing
  *   further ever happens to a `retracted` row.
  */
-type LifecycleAlertState =
-	| "held"
-	| "sending"
-	| "sent"
-	| "standing"
-	| "retracted";
+type LifecycleAlertState = "held" | "sending" | "sent" | "retracted";
 
 interface HeldAlert {
 	alertId: string;
@@ -210,8 +166,8 @@ interface HeldAlert {
 	hostWorkspaceId: string;
 	workspaceHandle: WorkspaceId;
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) The outcome event's instant this alert was minted
-	 * from — the same value its id hashes, carried on the wire as `gx`.
+	 * The outcome event's instant this alert was minted from — the same value its
+	 * id hashes, carried on the wire as `gx`.
 	 *
 	 * Stored rather than recomputed because every frame about this alert needs
 	 * it: the `g` so the phone can tell a replacement from a duplicate, and the
@@ -220,28 +176,25 @@ interface HeldAlert {
 	outcomeAtMs: number;
 	expiresAtMs: number;
 	state: LifecycleAlertState;
-	/** True only until a ready alert first reaches its settle deadline. */
-	settling: boolean;
 	/** Wall-clock instant a `held` alert becomes eligible again after a failure. */
 	retryAtMs: number;
 	/** Consecutive failed deliveries, which is what the backoff is derived from. */
 	failures: number;
 	/**
-	 * A newer work cycle (or a session end) landed on this terminal while the
-	 * broadcast was in flight. A `sending` alert cannot be un-sent, but it must
-	 * not be RE-held on failure: the thing it reports has been overtaken.
+	 * WHY a newer work cycle (or a session end) overtook this alert while the
+	 * broadcast was in flight, and `null` when nothing did. A `sending` alert
+	 * cannot be un-sent, but it must not be RE-held on failure: the thing it
+	 * reports has been overtaken.
 	 *
 	 * (ALERT-CONTEXT-NAMES) It is no longer only a suppression flag. If that
 	 * in-flight send is ACCEPTED, the alert is now on the phone and the fact that
 	 * superseded it is still true, so `markDelivered` retracts it immediately.
 	 * Before retraction existed the flag was silently dropped on success and the
 	 * alert simply stood.
-	 */
-	superseded: boolean;
-	/**
-	 * (ONE-BUZZ-UNTIL-READ) WHY it was superseded, kept so `markDelivered` can
-	 * make the same silent-or-not decision when the in-flight send lands. By
-	 * then the event that superseded it is long gone.
+	 *
+	 * The FIRST reason is the one kept. It decides nothing — every reason
+	 * retracts — and only names the trigger in the log line `markDelivered`
+	 * writes, by which time the event itself is long gone.
 	 */
 	supersededReason: RetireReason | null;
 }
@@ -249,18 +202,13 @@ interface HeldAlert {
 /**
  * (ALERT-RETIRE-ON-EXIT) Is this alert ON a device, or on its way to one?
  *
- * The three states that answer yes are `sending` (in flight, and `markDelivered`
- * will retract it the moment it lands), `sent` and `standing` (delivered, the
- * second one silently superseded but still showing). The two that answer no are
- * `held` — never left this process — and `retracted`, which is a spent row kept
- * only so the same cycle cannot be re-minted.
+ * `sending` (in flight, and `markDelivered` will retract it the moment it
+ * lands) and `sent` (delivered) answer yes. `held` — never left this process —
+ * and `retracted`, a spent row kept only so the same cycle cannot be re-minted,
+ * answer no.
  */
 function isLiveAlert(alert: HeldAlert): boolean {
-	return (
-		alert.state === "sending" ||
-		alert.state === "sent" ||
-		alert.state === "standing"
-	);
+	return alert.state === "sending" || alert.state === "sent";
 }
 
 export interface LifecycleSeenInput {
@@ -292,17 +240,22 @@ export interface LifecycleAlertManager {
 	 * Retires EVERY alert for that terminal, `g` and `e` alike, for the reason
 	 * `session-end` retires them: tapping the notification opens a chat that no
 	 * longer exists. The hook stream cannot cover this on its own — a crashed
-	 * or killed agent never gets to POST its own ending.
+	 * or killed agent never gets to POST its own ending. A ready card INHERITED
+	 * across a host-service restart is named too.
 	 */
 	retireTerminal(hostTerminalId: string): void;
 
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched at `boundaryMs`: retire
-	 * every READY alert about a finish that predates it.
+	 * every READY alert about a finish that predates it, including a card
+	 * INHERITED across a host-service restart whose own recorded finish
+	 * predates it.
 	 *
-	 * Returns how many rows were retired, for the caller's log.
+	 * Returns how many rows were retired, for the caller's log, or `null` for a
+	 * boundary this manager REFUSED to act on — see the implementation for the
+	 * range and why a refusal must reach the renderer as `accepted: false`.
 	 */
-	retireReadyBefore(boundaryMs: number): number;
+	retireReadyBefore(boundaryMs: number): number | null;
 
 	/**
 	 * (ALERT-RETIRE-ON-EXIT) The sidebar mirror changed: retire the live alerts
@@ -525,14 +478,14 @@ export interface LifecycleAlertManagerDeps {
 	 */
 	terminalHandle(hostTerminalId: string): string;
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) The last lifecycle instant this HOST had recorded for
-	 * each terminal before this manager started — read ONCE, at construction.
+	 * (ALERT-RETIRE-ON-EXIT) What host.db had recorded for each terminal before
+	 * this manager started — read ONCE, at construction, and used for two things.
 	 *
-	 * It is what puts the proof-of-absence test on the same timeline as the
-	 * thing it is reasoning about. `startedAtMs` is a wall-clock reading, while
-	 * generations are per-terminal monotonic (`nextLifecycleInstantMs`), and a
-	 * restart that lands inside a clock backstep makes those two disagree: the
-	 * process starts at 4000 while the alert the previous process sent is
+	 * THE PROOF EPOCH. It puts the proof-of-absence test on the same timeline as
+	 * the thing it is reasoning about. `startedAtMs` is a wall-clock reading,
+	 * while generations are per-terminal monotonic (`nextLifecycleInstantMs`),
+	 * and a restart that lands inside a clock backstep makes those two disagree:
+	 * the process starts at 4000 while the alert the previous process sent is
 	 * stamped 5000, so a read of that alert looks like it happened BEFORE this
 	 * process began holding state — and the silent "nothing ever existed" branch
 	 * swallows the one `c` that could take the notification off the phone.
@@ -540,13 +493,26 @@ export interface LifecycleAlertManagerDeps {
 	 * the test mean what it says: "this read names a generation only I could
 	 * have minted".
 	 *
-	 * `null` states that no restart evidence is available, which DISABLES the
-	 * proof entirely — a blind `c` the phone drops is the safe failure, a
-	 * swallowed retraction is not. Required rather than optional so a
-	 * composition root has to say which it is.
+	 * THE INHERITED READY CARD. A restart drops every alert row while the
+	 * notifications they describe are still on the phone, and the alert table is
+	 * deliberately process-local (no schema change). `lastEventType` is what
+	 * makes one of those recoverable: a terminal whose last recorded event was
+	 * the `Stop` that mints a ready alert has a card this process can NAME —
+	 * the id is hashed from that event's instant — and therefore retract when a
+	 * later status proves the terminal is no longer ready.
+	 *
+	 * `null` states that no restart evidence is available, which DISABLES both —
+	 * a blind `c` the phone drops is the safe failure, a swallowed retraction is
+	 * not. Required rather than optional so a composition root has to say which
+	 * it is.
 	 */
-	proofEpochs:
-		| (() => Iterable<{ hostTerminalId: string; lastEventAtMs: number }>)
+	restartEvidence:
+		| (() => Iterable<{
+				hostTerminalId: string;
+				hostWorkspaceId: string;
+				lastEventAtMs: number;
+				lastEventType: string;
+		  }>)
 		| null;
 	/** Required so the composition root declares the ready-settle policy. */
 	readySettleMs: number;
@@ -627,8 +593,8 @@ export function createLifecycleAlertManager(
 	const startedAtMs = now();
 
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) The proof epoch, per terminal: the last generation
-	 * each terminal had recorded when this manager started.
+	 * The proof epoch, per terminal: the last generation each terminal had
+	 * recorded when this manager started.
 	 *
 	 * A read may only be answered with silence when it names a generation this
 	 * process would necessarily hold a row for. With per-terminal monotonic
@@ -642,26 +608,104 @@ export function createLifecycleAlertManager(
 	 * notification for six hours.
 	 */
 	const proofEpochByTerminal = new Map<string, number>();
-	let proofDisabled = deps.proofEpochs === null;
+	/**
+	 * (ALERT-RETIRE-ON-EXIT) The ready card this process INHERITED for a
+	 * terminal, if host.db says its last recorded event was a `Stop`.
+	 *
+	 * ONE ENTRY, THE NEWEST GENERATION, and never more: the row IS the terminal's
+	 * last event, so nothing older can still be the card on the handset. Consumed
+	 * the moment it is retracted, or when a `g` this process minted is DELIVERED
+	 * for the same terminal — a delivered ready card replaces the inherited one
+	 * in place (the phone keys ready notifications by terminal handle), so
+	 * retracting the inherited id afterwards would name a card nobody holds.
+	 *
+	 * A ROW HERE IS NOT PROOF A CARD EXISTS. The Stop may have been suppressed at
+	 * mint time (a Stop on top of a `PermissionRequest` arms nothing), or its
+	 * alert may have been read, retracted or expired before the restart. That is
+	 * the accepted cost of having no durable alert table: a `c` for an id no
+	 * phone holds is dropped by the phone, while the notification it does hold
+	 * has no other way down.
+	 *
+	 * BOUNDED BY `ALERT_TTL_MS` FROM THIS PROCESS'S START. host.db keeps a
+	 * terminal's last event forever, so without that bound every historical
+	 * binding was seeded here — see the seeding loop for what that cost.
+	 */
+	const inheritedReadyByTerminal = new Map<
+		string,
+		{ outcomeAtMs: number; hostWorkspaceId: string }
+	>();
+	let proofDisabled = deps.restartEvidence === null;
 	try {
-		for (const row of deps.proofEpochs?.() ?? []) {
+		for (const row of deps.restartEvidence?.() ?? []) {
 			if (typeof row.hostTerminalId !== "string") continue;
 			if (!Number.isFinite(row.lastEventAtMs)) continue;
 			const existing = proofEpochByTerminal.get(row.hostTerminalId);
 			if (existing === undefined || existing < row.lastEventAtMs) {
 				proofEpochByTerminal.set(row.hostTerminalId, row.lastEventAtMs);
 			}
+			if (row.lastEventType !== READY_OUTCOME_EVENT_TYPE) continue;
+			// The id is `String(occurredAtMs)` hashed, so a non-integer or
+			// non-positive instant cannot name the card the previous process sent.
+			// Loud rather than skipped in silence: either guard failing means
+			// host.db handed back a binding shape this build does not understand.
+			if (!Number.isInteger(row.lastEventAtMs) || row.lastEventAtMs <= 0) {
+				deps.logger.error(
+					"a terminal's last recorded Stop carries an unusable instant; a ready notification from before this restart cannot be retracted",
+					{ hostTerminalId: row.hostTerminalId },
+				);
+				continue;
+			}
+			if (
+				typeof row.hostWorkspaceId !== "string" ||
+				row.hostWorkspaceId.length === 0
+			) {
+				deps.logger.error(
+					"a terminal's last recorded Stop names no workspace; a ready notification from before this restart cannot be retracted",
+					{ hostTerminalId: row.hostTerminalId },
+				);
+				continue;
+			}
+			// (ALERT-RETIRE-ON-EXIT) ONLY A FINISH YOUNG ENOUGH TO STILL BE ON A
+			// PHONE. host.db keeps a terminal's last event forever, so a binding
+			// whose last word was a `Stop` from last week looks exactly like one
+			// from five minutes ago — and every one of them was being seeded as an
+			// inherited card. Two costs, both real: the first status on a
+			// long-idle terminal broadcast a `c` for a notification that expired
+			// days earlier (and each bogus `c` the phone receives evicts a real
+			// claim from its 64-slot window), and the map held one entry per
+			// historical binding rather than per live card.
+			//
+			// An alert cannot outlive `ALERT_TTL_MS` from its own outcome instant,
+			// so a Stop older than that names nothing any device still holds. A
+			// clock that stepped BACKWARDS makes the age negative, which passes —
+			// erring towards keeping the card retractable, as everywhere else here.
+			if (startedAtMs - row.lastEventAtMs >= ALERT_TTL_MS) continue;
+			// NEWEST GENERATION WINS, exactly as the proof epoch above resolves the
+			// same duplicate: two rows for one terminal must not leave the card that
+			// gets retracted decided by iteration order.
+			const inherited = inheritedReadyByTerminal.get(row.hostTerminalId);
+			if (
+				inherited !== undefined &&
+				inherited.outcomeAtMs >= row.lastEventAtMs
+			) {
+				continue;
+			}
+			inheritedReadyByTerminal.set(row.hostTerminalId, {
+				outcomeAtMs: row.lastEventAtMs,
+				hostWorkspaceId: row.hostWorkspaceId,
+			});
 		}
 	} catch (error) {
 		proofDisabled = true;
+		inheritedReadyByTerminal.clear();
 		deps.logger.error(
-			"could not read the lifecycle proof epoch; proof-of-absence is off for this process and reads will broadcast blind",
+			"could not read the lifecycle restart evidence; proof-of-absence is off for this process, reads will broadcast blind, and ready notifications from before this restart cannot be retracted",
 			{ error: String(error) },
 		);
 	}
 
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) Is this host's clock BEHIND the timeline its own
+	 * Is this host's clock BEHIND the timeline its own
 	 * persisted state is on?
 	 *
 	 * A terminal with no epoch entry has no predecessor generation to compare
@@ -679,7 +723,7 @@ export function createLifecycleAlertManager(
 	})();
 
 	/**
-	 * (ONE-BUZZ-UNTIL-READ) May silence be read as proof for THIS read?
+	 * May silence be read as proof for THIS read?
 	 *
 	 * Every clause is a separate way of knowing the map's emptiness is ignorance
 	 * rather than evidence, and any one of them is enough to send the blind `c`
@@ -810,21 +854,20 @@ export function createLifecycleAlertManager(
 	 * or expired between the snapshot and this call.
 	 */
 	function claim(alertId: string, nowMs: number): HeldAlert | null {
-		let current = alerts.get(alertId);
+		const current = alerts.get(alertId);
 		if (current === undefined || current.state !== "held") return null;
 		if (current.expiresAtMs <= nowMs) {
 			alerts.delete(alertId);
 			return null;
 		}
 		if (current.retryAtMs > nowMs) return null;
-		if (current.settling) {
-			current = { ...current, settling: false };
-			alerts.set(alertId, current);
-		}
 		// HELD, not dropped: presence and curation both change their minds, and the
 		// alert fires on the first sweep after they do.
 		if (deps.presence.present(nowMs).present) return null;
 		if (deps.isCuratedOff(current.hostWorkspaceId)) return null;
+		// A REFUSAL LEAVES THE ROW EXACTLY AS IT FOUND IT. Presence and curation
+		// both change their minds, and neither refusal is the settle window ending,
+		// so nothing about the alert is rewritten on the way out.
 		const claimed: HeldAlert = { ...current, state: "sending" };
 		alerts.set(alertId, claimed);
 		return claimed;
@@ -889,38 +932,24 @@ export function createLifecycleAlertManager(
 	 * phone. The flag used to be dropped here in silence — the alert landed and
 	 * nothing could ever take it back.
 	 *
-	 * (ONE-BUZZ-UNTIL-READ) Whether that retirement REACHES the phone is the same
-	 * question `retireAlert` asks, answered with the reason recorded when the
-	 * supersede happened: a new work cycle retires a ready alert silently and
-	 * leaves the notification standing for the next one to replace, a session end
-	 * clears it. A missing reason is treated as one that fires — a spare `c` the
-	 * phone drops is cheaper than a notification for a chat that no longer exists.
+	 * SO IT IS RETRACTED THE MOMENT IT LANDS, whatever superseded it. The
+	 * recorded reason only names the trigger in the log.
 	 */
 	function markDelivered(claimed: HeldAlert): void {
 		const current = alerts.get(claimed.alertId);
 		if (current === undefined || current.state !== "sending") return;
-		if (current.superseded) {
-			const reason: RetireReason = current.supersededReason ?? {
-				kind: "session-end",
-			};
-			if (!notifiesPhone(current, reason)) {
-				// It LANDED, and the chat is still alive: leave it standing for the
-				// next cycle's alert to replace in place.
-				alerts.set(claimed.alertId, { ...current, state: "standing" });
-				deps.logger.info(
-					"(ONE-BUZZ-UNTIL-READ) a ready alert landed after a newer cycle began; leaving it standing for the next one to replace",
-					{
-						alertId: current.alertId,
-						hostTerminalId: current.hostTerminalId,
-					},
-				);
-				return;
-			}
+		if (current.supersededReason !== null) {
 			alerts.set(claimed.alertId, { ...current, state: "retracted" });
-			fireRetraction(current, `${reason.kind} while in flight`);
+			fireRetraction(current, `${current.supersededReason} while in flight`);
 			return;
 		}
 		alerts.set(claimed.alertId, { ...current, state: "sent" });
+		// (ALERT-RETIRE-ON-EXIT) This card has REPLACED any inherited one on the
+		// handset — the phone keys ready notifications by terminal handle — so the
+		// inherited id names nothing the user can still see.
+		if (current.kind === "g") {
+			inheritedReadyByTerminal.delete(current.hostTerminalId);
+		}
 	}
 
 	/**
@@ -953,7 +982,7 @@ export function createLifecycleAlertManager(
 		}
 		const current = alerts.get(claimed.alertId);
 		if (current === undefined || current.state !== "sending") return;
-		if (current.superseded) {
+		if (current.supersededReason !== null) {
 			alerts.delete(claimed.alertId);
 			deps.logger.info(
 				"dropping a failed lifecycle alert; a newer cycle superseded it",
@@ -1020,9 +1049,9 @@ export function createLifecycleAlertManager(
 				workspaceId: claimed.workspaceHandle,
 				kind: claimed.kind,
 				expiresAtMs: claimed.expiresAtMs,
-				// (ONE-BUZZ-UNTIL-READ) Both come off the ALERT ROW, never out of the
-				// resolved context: a context that fails to resolve costs the names
-				// and must never cost the handle a ready notification is keyed by.
+				// Both come off the ALERT ROW, never out of the resolved context: a
+				// context that fails to resolve costs the names and must never cost
+				// the handle a ready notification is keyed by.
 				terminalHandle: deps.terminalHandle(claimed.hostTerminalId),
 				outcomeAtMs: claimed.outcomeAtMs,
 				// (ALERT-CONTEXT-NAMES) Resolved INSIDE the send, so every retry gets a
@@ -1061,7 +1090,8 @@ export function createLifecycleAlertManager(
 	}
 
 	/**
-	 * (LIFECYCLE-ALERT-SUPERSEDE) The terminal has moved on.
+	 * (LIFECYCLE-ALERT-SUPERSEDE) A LIVE HOOK EVENT says the terminal has moved
+	 * on.
 	 *
 	 * Four states, four different right answers, and (ALERT-CONTEXT-NAMES) added
 	 * the two that involve the phone:
@@ -1076,41 +1106,89 @@ export function createLifecycleAlertManager(
 	 *  - `retracted` — nothing further, ever. That is the storm guard: a terminal
 	 *    that reports progress twenty times after the user read its chat sends
 	 *    twenty nothings, not twenty retractions.
+	 *
+	 * `kind` NARROWS WHICH ROWS ARE TOUCHED and nothing else: the inherited card
+	 * is a `g` by construction, so it comes down either way. `undefined` means
+	 * both kinds, and every caller that reaches this through `record` or a
+	 * terminal exit passes it — a cycle that ended, a session that ended and a
+	 * pty that died all take the error card down with the ready one. Only
+	 * `observeStatus` passes `"g"`, because an agent that died is not undone by
+	 * a status saying the terminal is busy again.
 	 */
-	function supersede(hostTerminalId: string, reason: RetireReason): void {
-		retireWhere((alert) => alert.hostTerminalId === hostTerminalId, reason);
+	function supersede(
+		hostTerminalId: string,
+		reason: RetireReason,
+		kind?: LifecycleAlertKind,
+	): void {
+		retireWhere(
+			(alert) =>
+				alert.hostTerminalId === hostTerminalId &&
+				(kind === undefined || alert.kind === kind),
+			reason,
+		);
+		retractInheritedReady(hostTerminalId, reason);
 	}
 
 	/**
-	 * Retire every alert a predicate picks, over a SNAPSHOT of the table.
+	 * (ALERT-RETIRE-ON-EXIT) Take down the ready card this process INHERITED for
+	 * a terminal — see `inheritedReadyByTerminal` for where it comes from and why
+	 * its id is recomputable.
 	 *
-	 * The snapshot is the point: `retireAlert` writes to `alerts` as it goes
-	 * (deleting a held row, replacing a sent one), and iterating the live map
-	 * while it does that is unspecified. Returns how many rows it touched, for
-	 * the callers that report a count.
+	 * ONCE PER TERMINAL, and the entry is consumed whether or not a card was
+	 * really there: `retractReadyById` leaves a tombstone, so a second trigger for
+	 * the same generation is inert rather than a second broadcast.
+	 */
+	function retractInheritedReady(
+		hostTerminalId: string,
+		reason: RetireReason,
+	): void {
+		const inherited = inheritedReadyByTerminal.get(hostTerminalId);
+		if (inherited === undefined) return;
+		inheritedReadyByTerminal.delete(hostTerminalId);
+		deps.logger.info(
+			"(ALERT-RETIRE-ON-EXIT) retracting a ready notification this host-service inherited across a restart",
+			{
+				hostTerminalId,
+				outcomeAtMs: inherited.outcomeAtMs,
+				reason,
+			},
+		);
+		retractReadyById({
+			hostTerminalId,
+			hostWorkspaceId: inherited.hostWorkspaceId,
+			outcomeAtMs: inherited.outcomeAtMs,
+			reason,
+		});
+	}
+
+	/**
+	 * Retire every alert a predicate picks.
+	 *
+	 * MATCHES ARE COLLECTED FIRST, and that is the point: `retireAlert` writes to
+	 * `alerts` as it goes (deleting a held row, replacing a sent one), and
+	 * iterating the live map while it does that is unspecified. Returns how many
+	 * rows it touched, for the callers that report a count.
 	 */
 	function retireWhere(
 		predicate: (alert: HeldAlert) => boolean,
 		reason: RetireReason,
 	): number {
-		let retired = 0;
-		for (const alert of [...alerts.values()]) {
-			if (!predicate(alert)) continue;
-			retireAlert(alert, reason);
-			retired += 1;
+		const matched: HeldAlert[] = [];
+		for (const alert of alerts.values()) {
+			if (predicate(alert)) matched.push(alert);
 		}
-		return retired;
+		for (const alert of matched) retireAlert(alert, reason);
+		return matched.length;
 	}
 
 	/**
 	 * (ALERT-CONTEXT-NAMES) Take ONE known alert out of play, by its state.
 	 *
-	 * The four-way transition above, as a function, because two callers need it
-	 * and had grown their own copies: `supersede` (a newer cycle landed on this
-	 * terminal) and `retractById` (the user read the chat). They differ only in
-	 * how they FIND the alert — by terminal or by id — and a divergence between
-	 * two hand-written copies of a state machine is exactly the class of bug the
-	 * `sending` case was introduced to fix.
+	 * two callers need it and had grown their own copies: `supersede` (a newer
+	 * cycle landed on this terminal) and `retractReadyById` (the user read the
+	 * chat). They differ only in how they FIND the alert — by terminal or by id —
+	 * and a divergence between two hand-written copies of a state machine is
+	 * exactly the class of bug the `sending` case was introduced to fix.
 	 */
 	function retireAlert(alert: HeldAlert, reason: RetireReason): void {
 		if (alert.state === "retracted") return;
@@ -1120,46 +1198,34 @@ export function createLifecycleAlertManager(
 				alertId: alert.alertId,
 				kind: alert.kind,
 				hostTerminalId: alert.hostTerminalId,
-				reason: reason.kind,
+				reason,
 			});
 			return;
 		}
 		if (alert.state === "sending") {
-			// The reason is REMEMBERED, not just the fact: `markDelivered` has to
-			// make the same silent-or-not decision when this send lands, and by
-			// then the event that superseded it is long gone. It UPGRADES, so a
-			// session end arriving behind a new cycle still takes the notification
-			// down when it lands.
+			// The FIRST reason is remembered, for the log line `markDelivered`
+			// writes when this send lands. It no longer decides anything — every
+			// reason retracts — so a later one overwriting it would only rename the
+			// trigger in a log.
 			alerts.set(alert.alertId, {
 				...alert,
-				superseded: true,
-				supersededReason: upgradeRetireReason(alert.supersededReason, reason),
+				supersededReason: alert.supersededReason ?? reason,
 			});
 			return;
 		}
-		// `sent` or `standing` — both are LIVE ON THE DEVICES.
-		if (!notifiesPhone(alert, reason)) {
-			// A newer cycle. The first one moves the row to `standing`; a second,
-			// third and twentieth are no-ops, which is the storm guard.
-			if (alert.state === "standing") return;
-			alerts.set(alert.alertId, { ...alert, state: "standing" });
-			deps.logger.info(
-				"(ONE-BUZZ-UNTIL-READ) a newer cycle began; leaving the delivered ready alert standing for the next one to replace",
-				{
-					alertId: alert.alertId,
-					hostTerminalId: alert.hostTerminalId,
-					reason: reason.kind,
-				},
-			);
-			return;
-		}
+		// `sent` — it is ON THE DEVICES. One `c`, then the row is inert forever,
+		// which is the storm guard: a terminal that reports progress twenty times
+		// after its card came down sends twenty nothings.
 		alerts.set(alert.alertId, { ...alert, state: "retracted" });
-		fireRetraction(alert, reason.kind);
+		fireRetraction(alert, reason);
 	}
 
 	/**
-	 * (ALERT-CONTEXT-NAMES) Retract one alert by id, whatever state it is in —
-	 * including a state this process has never seen.
+	 * (ALERT-CONTEXT-NAMES) Retract the READY alert for one generation, whatever
+	 * state it is in — including a state this process has never seen. The id is
+	 * recomputed here from `outcomeAtMs` rather than passed in, because both
+	 * callers derive it the same way and a divergence between them would name a
+	 * card nobody holds.
 	 *
 	 * THE UNKNOWN-ID CASE IS THE POINT, not an edge. A host-service restart drops
 	 * every alert row while the notification it sent is still on the phone, and
@@ -1172,19 +1238,23 @@ export function createLifecycleAlertManager(
 	 * rather than a second, third and fourth broadcast. It expires on the
 	 * ordinary TTL like every other row.
 	 */
-	function retractById(input: {
-		alertId: string;
+	function retractReadyById(input: {
 		hostTerminalId: string;
 		hostWorkspaceId: string;
 		/**
-		 * (ONE-BUZZ-UNTIL-READ) What the blind restart `c` names, when no row
-		 * survives to read an outcome instant off: the instant the user read
-		 * through, which is the same value the recomputed id hashes.
+		 * The generation being cancelled — the outcome instant the id hashes. On
+		 * the blind restart path, where no row survives to read one off, it is the
+		 * instant the user read through.
 		 */
 		outcomeAtMs: number;
 		reason: RetireReason;
 	}): void {
-		const existing = alerts.get(input.alertId);
+		const alertId = lifecycleAlertId({
+			hostTerminalId: input.hostTerminalId,
+			occurredAtMs: input.outcomeAtMs,
+			kind: "g",
+		});
+		const existing = alerts.get(alertId);
 		if (existing !== undefined) {
 			retireAlert(existing, input.reason);
 			return;
@@ -1193,7 +1263,7 @@ export function createLifecycleAlertManager(
 		const nowMs = now();
 
 		const tombstone: HeldAlert = {
-			alertId: input.alertId,
+			alertId,
 			kind: "g",
 			hostTerminalId: input.hostTerminalId,
 			hostWorkspaceId: input.hostWorkspaceId,
@@ -1201,15 +1271,13 @@ export function createLifecycleAlertManager(
 			outcomeAtMs: input.outcomeAtMs,
 			expiresAtMs: nowMs + ALERT_TTL_MS,
 			state: "retracted",
-			settling: false,
 			retryAtMs: nowMs,
 			failures: 0,
-			superseded: false,
 			supersededReason: null,
 		};
-		alerts.set(input.alertId, tombstone);
+		alerts.set(alertId, tombstone);
 		prune(nowMs);
-		fireRetraction(tombstone, input.reason.kind);
+		fireRetraction(tombstone, input.reason);
 	}
 
 	/**
@@ -1219,7 +1287,7 @@ export function createLifecycleAlertManager(
 	 * (ALERT-RETIRE-ON-EXIT) BOTH KINDS, since 2026-08-20. It used to filter to
 	 * `g` on the argument that an agent which DIED is not undone by reading its
 	 * chat. The owner overrode that: opening the chat is exactly how you find
-	 * out an agent died, so a red card left standing on the wrist after that is
+	 * out an agent died, so a red card left on the wrist after that is
 	 * the phone nagging about something already dealt with. An `e` the read
 	 * covers is now retired like any other row.
 	 *
@@ -1239,13 +1307,11 @@ export function createLifecycleAlertManager(
 	 * send NOTHING — but only if this lookup surfaces it. Answering nothing for a
 	 * held alert would drop straight through to the blind fallback and broadcast
 	 * a `c` for an alert that was never delivered. Knowing anything about this
-	 * terminal is enough to say the hash is not needed. `standing` counts too,
-	 * and that is load-bearing twice over: a standing notification is still on
-	 * the devices, so a read has to be able to retract it; and its row is still
-	 * evidence for the proof-of-absence test, which would otherwise conclude
-	 * nothing was ever sent for a terminal whose card is on the user's phone.
+	 * terminal is enough to say the hash is not needed. A `retracted` row counts
+	 * too: it is still evidence for the proof-of-absence test, which would
+	 * otherwise conclude nothing was ever sent for that terminal.
 	 *
-	 * (ONE-BUZZ-UNTIL-READ) BOUNDED BY THE READ, and this is the whole point of
+	 * BOUNDED BY THE READ, and this is the whole point of
 	 * the filter. A read is a statement about a MOMENT — "I have seen this chat
 	 * through `seenThroughAt`" — and it travels: the renderer batches, the resync
 	 * repairs a report that was dropped minutes ago, a host restart replays one.
@@ -1295,10 +1361,8 @@ export function createLifecycleAlertManager(
 			outcomeAtMs: input.occurredAtMs,
 			expiresAtMs: input.occurredAtMs + ALERT_TTL_MS,
 			state: "held",
-			settling: kind === "g" && deps.readySettleMs > 0,
 			retryAtMs: kind === "g" ? nowMs + deps.readySettleMs : nowMs,
 			failures: 0,
-			superseded: false,
 			supersededReason: null,
 		};
 		alerts.set(alertId, alert);
@@ -1357,17 +1421,30 @@ export function createLifecycleAlertManager(
 	}
 
 	return {
+		/**
+		 * (ALERT-RETIRE-ON-EXIT) A status that PROVES this terminal is not ready
+		 * for review: it is working again, blocked on a prompt, or dead.
+		 *
+		 * EVERY READY ALERT FOR THE TERMINAL GOES, whatever state it is in. A
+		 * `held` row is deleted, a `sending` one is retracted when it lands, and a
+		 * DELIVERED one fires its `c` — that last case is the one this used to
+		 * miss. It only ever cancelled rows that were still inside their settle
+		 * window and had never failed a delivery, so a card already on the phone
+		 * stayed there through every subsequent turn, and the ready alert the user
+		 * saw could be hours out of date.
+		 *
+		 * Repeats are free: a retracted row is inert, and a deleted one is gone.
+		 *
+		 * `e` ALERTS ARE UNTOUCHED BY A STATUS. An agent that DIED is not undone
+		 * by the terminal being attached to, or by a subagent starting; the crash
+		 * is still the last thing the user needs to know about. It comes down on
+		 * the hook events that end the cycle outright — a `progress` or a
+		 * `session-end` through `record` — or on a read, a dead terminal or the
+		 * TTL.
+		 */
 		observeStatus(hostTerminalId, eventType) {
-			if (stopped || !READY_SETTLE_CANCEL_EVENTS.has(eventType)) return;
-			retireWhere(
-				(alert) =>
-					alert.hostTerminalId === hostTerminalId &&
-					alert.kind === "g" &&
-					alert.state === "held" &&
-					alert.failures === 0 &&
-					alert.settling,
-				{ kind: "new-cycle" },
-			);
+			if (stopped || !READY_CANCEL_EVENTS.has(eventType)) return;
+			supersede(hostTerminalId, "new-cycle", "g");
 		},
 		record(input) {
 			if (stopped) return;
@@ -1375,19 +1452,18 @@ export function createLifecycleAlertManager(
 			if (alreadyApplied(input)) return;
 
 			// (LIFECYCLE-ALERT-SUPERSEDE) Fresh work, or the session ending, retires
-			// everything still held for this terminal. Neither can mint.
+			// every alert for this terminal — held, in flight or already on the
+			// phone. Neither can mint.
 			//
-			// (ONE-BUZZ-UNTIL-READ) The two are NOT the same retirement: fresh work
-			// means the chat is alive and about to finish again, so a delivered
-			// ready alert is left standing for the next one to replace, while a
-			// session end means there is no chat left to open and the buzz must
-			// come down. `notifiesPhone` is where that split lives.
+			// `observeStatus` has usually done the ready half already (the hook POST
+			// carries a status before it carries an outcome), which is why this is
+			// idempotent by construction: a retired row is inert on the second pass.
 			if (input.outcome === "progress") {
-				supersede(input.hostTerminalId, { kind: "new-cycle" });
+				supersede(input.hostTerminalId, "new-cycle");
 				return;
 			}
 			if (input.outcome === "session-end") {
-				supersede(input.hostTerminalId, { kind: "session-end" });
+				supersede(input.hostTerminalId, "session-end");
 				return;
 			}
 			if (input.outcome !== "ready" && input.outcome !== "failed") return;
@@ -1465,7 +1541,7 @@ export function createLifecycleAlertManager(
 				// accepts any state. An empty answer therefore is not ignorance, it
 				// is proof — and a `c` broadcast on proof of absence is pure harm.
 				//
-				// (ONE-BUZZ-UNTIL-READ) "Empty" here means "nothing this read
+				// "Empty" here means "nothing this read
 				// COVERS". A generation minted after `seenThroughAt` is not evidence
 				// that the read's own generation existed, so it neither suppresses
 				// this branch nor gets retracted by it.
@@ -1498,27 +1574,21 @@ export function createLifecycleAlertManager(
 				return;
 			}
 			if (read.length > 0) {
-				// (ONE-BUZZ-UNTIL-READ) EVERY covered generation is retired, newest
-				// first, not just the newest one. A `standing` card from two cycles
-				// ago is still on the handset while the newest generation may only
-				// ever have been `held` — retiring the newest alone would delete the
-				// held row silently and leave the visible notification up forever.
-				// Each retirement is per-alert and idempotent: `held` is deleted in
-				// silence, `sent`/`standing` fire their one `c`, `retracted` is inert.
-				// Rows past the boundary are not in this list at all.
-				for (const alert of read) retireAlert(alert, { kind: "seen" });
+				// EVERY covered generation is retired, newest first, not just the
+				// newest one: an older `sent` card can still be on the handset while
+				// the newest generation has only ever been `held`, and retiring the
+				// newest alone would delete the held row silently and leave the
+				// visible notification up forever. Each retirement is per-alert and
+				// idempotent: `held` is deleted in silence, `sent` fires its one `c`,
+				// `retracted` is inert. Rows past the boundary are not in this list.
+				for (const alert of read) retireAlert(alert, "seen");
 				return;
 			}
-			retractById({
-				alertId: lifecycleAlertId({
-					hostTerminalId: input.hostTerminalId,
-					occurredAtMs: input.seenThroughAt,
-					kind: "g",
-				}),
+			retractReadyById({
 				hostTerminalId: input.hostTerminalId,
 				hostWorkspaceId: input.hostWorkspaceId,
 				outcomeAtMs: input.seenThroughAt,
-				reason: { kind: "seen" },
+				reason: "seen",
 			});
 		},
 		/**
@@ -1527,13 +1597,20 @@ export function createLifecycleAlertManager(
 		 *
 		 * BOTH KINDS, deliberately: a dead terminal takes its error card down as
 		 * well as its ready card, because neither one opens anything any more.
-		 * `supersede` walks every state, so a `held` row is deleted in silence, a
+		 * The walk covers every state, so a `held` row is deleted in silence, a
 		 * `sending` one is flagged for `markDelivered`, and a delivered one fires
 		 * its single `c`.
 		 */
 		retireTerminal(hostTerminalId) {
 			if (stopped) return;
-			supersede(hostTerminalId, { kind: "terminal-gone" });
+			// `supersede`, so the card this process INHERITED across a restart comes
+			// down with the rows it holds itself. Only CONFIRMED exits reach here —
+			// the event bus drops `confirmed: false` (`(DISPOSE-LIMBO)`), where the
+			// daemon never answered and the process may still be running — so this is
+			// an authoritative ending rather than a guess. The blind `c` names the
+			// terminal's own last recorded `Stop` and nothing newer: a generation this
+			// process delivered has already consumed the inherited entry.
+			supersede(hostTerminalId, "terminal-gone");
 		},
 
 		/**
@@ -1543,8 +1620,8 @@ export function createLifecycleAlertManager(
 		 * and the user is now sitting in front of the app that shows it — the
 		 * card is redundant the moment the window opens. An `e` is a record that
 		 * something BROKE, which a relaunch does not answer, so error alerts
-		 * survive a restart and come down only on a read, a dead terminal or the
-		 * TTL.
+		 * survive a restart and come down on the hook events that end the cycle
+		 * (`progress`, `session-end`), a read, a dead terminal or the TTL.
 		 *
 		 * BOUNDARY-EXCLUSIVE (`<`, not `<=`), because the boundary is this
 		 * launch's own instant: a finish stamped exactly there is not "before the
@@ -1556,19 +1633,59 @@ export function createLifecycleAlertManager(
 		 * would fire later about work the desktop has already written off. It is
 		 * deleted in silence, which is exactly right: it never reached a device.
 		 *
-		 * THE BOUNDARY IS TRUSTED HERE. It is range-checked by the one caller
-		 * that can judge it — the bridge sink, which alone knows the host clock
-		 * it has to be in the past of.
+		 * THE BOUNDARY IS RANGE-CHECKED HERE, and a bad one is REFUSED rather
+		 * than clamped or waved through. A boundary in the FUTURE is the
+		 * dangerous shape — it would retire every ready alert this host holds,
+		 * including finishes the user has never seen — and a non-integer or
+		 * non-positive one names no instant at all. Both come from a renderer
+		 * deriving `hostNow` minus its own elapsed monotonic time, so both are
+		 * reachable from a broken clock rather than only from a bug.
+		 *
+		 * A REFUSAL ANSWERS `null`, WHICH THE SINK REPORTS AS `accepted: false`.
+		 * The renderer latches this report once per host per launch on the
+		 * ACKNOWLEDGEMENT, so answering "received" for a boundary that retired
+		 * nothing would burn the launch's one attempt and strand every
+		 * pre-launch ready card for the rest of it. `false` keeps the latch
+		 * clear and the next resync epoch offers a freshly derived boundary.
 		 */
 		retireReadyBefore(boundaryMs) {
-			if (stopped) return 0;
-			const retired = retireWhere(
+			// A stopped manager retired NOTHING, so it must not answer "received":
+			// the renderer's once-per-launch latch would close over a report that
+			// did no work.
+			if (stopped) return null;
+			const nowMs = now();
+			if (
+				!Number.isInteger(boundaryMs) ||
+				boundaryMs <= 0 ||
+				boundaryMs > nowMs
+			) {
+				deps.logger.error(
+					"refusing an out-of-range desktop relaunch boundary; stale ready notifications may survive until the renderer offers a usable one",
+					{ boundaryMs, nowMs },
+				);
+				return null;
+			}
+			let retired = retireWhere(
 				(alert) =>
 					alert.kind === "g" &&
 					alert.state !== "retracted" &&
 					alert.outcomeAtMs < boundaryMs,
-				{ kind: "desktop-relaunch" },
+				"desktop-relaunch",
 			);
+			// (ALERT-RETIRE-ON-EXIT) The inherited card is on the phone with no row
+			// here to find, and a relaunch is exactly when it is most likely to be
+			// there: the desktop coming up after a host-service restart. It is held
+			// to the SAME boundary as a row, against its OWN recorded `Stop` instant
+			// — never the boundary alone — so a finish this host has minted since the
+			// launch cannot be cancelled by a blind `c`.
+			//
+			// Iterated live: `retractInheritedReady` only ever deletes the key the
+			// walk is standing on, which Map iteration handles.
+			for (const [hostTerminalId, inherited] of inheritedReadyByTerminal) {
+				if (inherited.outcomeAtMs >= boundaryMs) continue;
+				retractInheritedReady(hostTerminalId, "desktop-relaunch");
+				retired += 1;
+			}
 			if (retired > 0) {
 				deps.logger.info(
 					"(ALERT-RETIRE-ON-EXIT) the desktop relaunched; retired the ready alerts it predates",
@@ -1597,13 +1714,28 @@ export function createLifecycleAlertManager(
 		 * FAIL-CLOSED CURATION, read fresh and once — see
 		 * `createFreshCurationRead`. A workspace whose verdict could not be read
 		 * is simply not in the set, so an unknown verdict retires nothing.
+		 *
+		 * INHERITED CARDS COME DOWN TOO. A ready card this process inherited
+		 * across a restart has no row here to walk, and archiving the thread it
+		 * belongs to is exactly when it is most likely to be sitting on the phone
+		 * — the host-service restarted, nothing has happened in that terminal
+		 * since, and the user has now taken the thread off their sidebar. It is
+		 * held to the same fresh read, asked about with its OWN recorded
+		 * workspace, and retracted against its own `Stop` instant.
 		 */
 		retireCuratedOffAlerts() {
 			if (stopped) return 0;
 			const live = [...alerts.values()].filter(isLiveAlert);
-			if (live.length === 0) return 0;
+			const inherited = [...inheritedReadyByTerminal.entries()];
+			if (live.length === 0 && inherited.length === 0) return 0;
+			// ONE READ FOR BOTH SETS. Rebuilding the sidebar curation is the
+			// expensive part, so the walk asks once for the union rather than once
+			// per source — see `createFreshCurationRead`.
 			const curatedOff = deps.curatedOffAmong([
-				...new Set(live.map((alert) => alert.hostWorkspaceId)),
+				...new Set([
+					...live.map((alert) => alert.hostWorkspaceId),
+					...inherited.map(([, entry]) => entry.hostWorkspaceId),
+				]),
 			]);
 
 			let retired = 0;
@@ -1611,7 +1743,16 @@ export function createLifecycleAlertManager(
 				let retiredHere = 0;
 				for (const alert of live) {
 					if (alert.hostWorkspaceId !== hostWorkspaceId) continue;
-					retireAlert(alert, { kind: "curated-off" });
+					retireAlert(alert, "curated-off");
+					retiredHere += 1;
+				}
+				// The exact ids this walk read, so an entry consumed while it ran
+				// (a delivered `g` replacing it) is not retracted a second time —
+				// `retractInheritedReady` re-reads the map and is inert if it went.
+				for (const [hostTerminalId, entry] of inherited) {
+					if (entry.hostWorkspaceId !== hostWorkspaceId) continue;
+					if (!inheritedReadyByTerminal.has(hostTerminalId)) continue;
+					retractInheritedReady(hostTerminalId, "curated-off");
 					retiredHere += 1;
 				}
 				retired += retiredHere;
@@ -1631,6 +1772,7 @@ export function createLifecycleAlertManager(
 			if (timer !== null) clearTimeout(timer);
 			timer = null;
 			alerts.clear();
+			inheritedReadyByTerminal.clear();
 			seenProducerEvents.clear();
 		},
 	};

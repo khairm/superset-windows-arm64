@@ -35,6 +35,8 @@ let relaunchCalls: Array<{
 	seenAtReport: number | undefined;
 }> = [];
 let acceptSeen = true;
+/** (ALERT-RETIRE-ON-EXIT) What the host answers a relaunch boundary with. */
+let acceptRelaunch = true;
 let rejectSeen = false;
 let snapshotRows: SnapshotRow[] = [];
 let knownTerminalIds: string[] = [];
@@ -86,7 +88,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 						seenAtReport:
 							useV2NotificationStore.getState().terminalSeenAt["terminal-1"],
 					});
-					return { accepted: true };
+					return { accepted: acceptRelaunch };
 				},
 			},
 		},
@@ -160,6 +162,7 @@ beforeEach(() => {
 	seenCalls = [];
 	relaunchCalls = [];
 	acceptSeen = true;
+	acceptRelaunch = true;
 	rejectSeen = false;
 	snapshotRows = [row()];
 	knownTerminalIds = ["terminal-1"];
@@ -405,6 +408,37 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — bounds and rotation"
 		expect(seenCalls).toHaveLength(0);
 		expect(result?.seenRepairsSkipped).toBe(1);
 	});
+
+	it("DOES re-report the same terminal for a NEWER finish", async () => {
+		// The finish's instant is part of the cooldown key. Keyed per terminal
+		// alone, a finish repaired at 09:00 suppressed the 09:20 one for the rest
+		// of the half hour, and the phone held an alert for a chat the user had
+		// already read with nothing left to take it down.
+		seenThrough("terminal-1", 5_000);
+		await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toHaveLength(1);
+
+		seenCalls = [];
+		snapshotRows = [row({ lastEventAt: 7_000 })];
+		seenThrough("terminal-1", 7_000);
+		const result = await resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(seenCalls).toEqual([
+			{
+				workspaceId: WORKSPACE,
+				terminalId: "terminal-1",
+				seenThroughAt: 7_000,
+			},
+		]);
+		expect(result?.seenRepairsSkipped).toBe(0);
+	});
 });
 
 describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repair", () => {
@@ -415,7 +449,9 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1`)).toBe("repaired");
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe(
+			"repaired",
+		);
 	});
 
 	it("records an UNCONSUMED report under the short retry cooldown", async () => {
@@ -429,7 +465,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1`)).toBe("failed");
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe("failed");
 	});
 
 	it("records a REJECTED report under the short retry cooldown too", async () => {
@@ -440,7 +476,7 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1`)).toBe("failed");
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).toBe("failed");
 	});
 
 	it("keys the cooldown per HOST, so two hosts' terminals are separate subjects", async () => {
@@ -450,8 +486,10 @@ describe("(ALERT-CONTEXT-NAMES) resync companion repair — failure is not repai
 			workspaces: workspaces(),
 		});
 		await settle();
-		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1`)).not.toBeNull();
-		expect(__peekRepairOutcomeForTest("http://host-b:terminal-1")).toBeNull();
+		expect(__peekRepairOutcomeForTest(`${HOST}:terminal-1:5000`)).not.toBeNull();
+		expect(
+			__peekRepairOutcomeForTest("http://host-b:terminal-1:5000"),
+		).toBeNull();
 	});
 });
 /**
@@ -775,5 +813,49 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 		// Same launch, same instant — the map kept the fractional value and the
 		// floor is recomputed from it.
 		expect(relaunchCalls[1]?.boundaryMs).toBe(relaunchCalls[0]?.boundaryMs);
+	});
+
+	/**
+	 * A HOST THAT REFUSED THE BOUNDARY MUST BE OFFERED A DIFFERENT ONE. The
+	 * refusal it actually sends is "that instant is in my future", which its
+	 * clock stepping forward after this renderer derived the value is enough to
+	 * produce — and re-offering the identical number would be refused
+	 * identically until the app restarts. So an unconsumed report drops the
+	 * latched boundary and the next epoch derives a fresh one from a fresher
+	 * `hostNow`.
+	 */
+	it("offers a FRESHLY DERIVED boundary after the host did not take one", async () => {
+		const hostF = "http://host-relaunch-f";
+		hostNow = 1_000_000;
+		acceptRelaunch = false;
+		await resyncAgentStatusFromHost({
+			hostUrl: hostF,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(1);
+
+		// The host's clock has moved on by the next epoch, which is exactly what
+		// makes the second offer usable where the first was not.
+		hostNow = 2_000_000;
+		acceptRelaunch = true;
+		await resyncAgentStatusFromHost({
+			hostUrl: hostF,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(2);
+		const first = relaunchCalls[0]?.boundaryMs ?? Number.NaN;
+		const second = relaunchCalls[1]?.boundaryMs ?? Number.NaN;
+		expect(second).toBeGreaterThan(first);
+
+		// And the host has now ACCEPTED one, so a third epoch says nothing — the
+		// acknowledgement latch, not the boundary map, is what closes it.
+		await resyncAgentStatusFromHost({
+			hostUrl: hostF,
+			workspaces: workspaces(),
+		});
+		await settle();
+		expect(relaunchCalls).toHaveLength(2);
 	});
 });

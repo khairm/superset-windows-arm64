@@ -68,7 +68,7 @@ non-default profile from the default account (`~/.claude`, `~/.codex`):
 Provisioning is idempotent and runs when an account is added, when one is selected, and at host
 boot for the selected accounts (`usage/account-provisioning.ts`).
 
-## Testing the CLI and skills against the dev app
+## Testing the CLI against the dev app
 
 The dev desktop app is local-first: it registers its host service under a
 local-db organization (e.g. `a1b2c3d4-…`), which is unrelated to the org your
@@ -82,13 +82,6 @@ Use the wrapper instead:
 bun scripts/dev-cli.ts browser list --workspace <id> --json
 bun run cli:dev -- browser open --workspace <id> --url http://localhost:3000
 ```
-
-To test in-development *skills* in Claude Code, run `bun run dev:skills`: it
-mirrors this worktree's `plugins/superset` into `~/.claude/skills/superset-dev`
-(a renamed copy so it doesn't collide with the installed prod `superset` plugin),
-exposing them as `/superset-dev:<skill>`. Re-run after editing a skill, then
-`/reload-plugins`. In production the skills ship inside the real `superset`
-plugin, so there's no collision — this is dev-only.
 
 `bun scripts/dev-cli.ts` finds the live host manifest under `<worktree>/superset-dev-data/host/*`,
 then runs the dev CLI with `SUPERSET_HOME_DIR` (the dev data dir),

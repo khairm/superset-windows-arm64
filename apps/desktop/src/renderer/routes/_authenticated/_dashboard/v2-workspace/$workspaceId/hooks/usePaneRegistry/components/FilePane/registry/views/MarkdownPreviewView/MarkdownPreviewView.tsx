@@ -13,7 +13,6 @@ export function MarkdownPreviewView({
 	document,
 	filePath,
 	isActive,
-	showFrontMatterNote = true,
 }: ViewProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const search = useMarkdownSearch({
@@ -47,7 +46,7 @@ export function MarkdownPreviewView({
 				onClose={search.closeSearch}
 			/>
 			<div ref={containerRef} className="h-full overflow-auto p-4">
-				{frontMatter !== "" && showFrontMatterNote && (
+				{frontMatter !== "" && (
 					<div className="mx-auto mb-2 max-w-3xl select-text text-xs text-muted-foreground">
 						Front matter hidden — switch to the Markdown view to edit it
 					</div>

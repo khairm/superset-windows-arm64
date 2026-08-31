@@ -49,9 +49,8 @@ export function ManageInstalledDialog({
 					<div className="flex flex-col divide-y divide-border/60">
 						{installed.map((entry) => {
 							const plugin = getPluginByName(entry.name);
-							// A catalog entry can carry no servers at all (the
-							// skills-only Superset plugin), so joining blindly
-							// would leave a dangling separator.
+							// A persisted install can outlive its catalog entry, leaving no
+							// server names to join after the version.
 							const serverNames = Object.keys(plugin?.mcpServers ?? {});
 							const isEnabled = entry.enabled !== false;
 							return (

@@ -33,6 +33,17 @@ The background renewal that keeps every workspace profile folder's access token 
 **Auto-fallback**:
 A pinned workspace whose account crosses the trigger lines flips to Following, permanently (no re-pin when the account's window resets).
 
+**Card exit**:
+Marking a workspace Completed, Archived, Snoozed or deleted to the Recycle Bin. All four mean the user is done with the thread for now, so all four close its tabs, dispose its terminals and release its account back to Following. The worktree and branch survive; the runtime does not. Snooze is the temporary one, but its account release is still permanent: the thread comes back Following and re-pinning is a manual choice.
+_Avoid_: hide, dismiss, close (those are display-only, and this is not)
+
+**Runtime retirement**:
+The host-side half of a card exit: kill the workspace's terminal sessions and release its pinned account. Requested by the desktop, done by the host that owns the workspace.
+
+**Pending host cleanup**:
+A card exit whose retirement the owning host has not yet confirmed — the owner was off, or a terminal would not die. Recorded on the workspace's own row so it survives an app restart, retried when the owner becomes reachable again, and cleared by that owner's confirmation or by proof that the workspace is gone. A host that does not own the workspace answering "not mine" never clears it. Un-exiting the card cancels it.
+_Avoid_: dirty, unsynced
+
 **Trigger lines**:
 The tray-owned usage thresholds meaning "about to run out". One machine-wide definition, tuned only in the tray.
 

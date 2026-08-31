@@ -83,11 +83,9 @@ type AutomationListItem = RouterOutputs["automation"]["list"][number];
 
 type AutomationSortField = "name" | "owner" | "schedule" | "status";
 
-// Seeds the "Create with AI" agent session. The skill is provisioned as
-// superset:automate; mentioning it by name loads it (it isn't in the chat
-// slash-command allowlist).
+// Seeds the "Create with AI" agent session with the CLI workflow.
 const AUTOMATION_AGENT_PROMPT =
-	"Help me create a Superset automation. Use the superset:automate skill if it's available, otherwise the `superset` CLI (start with `superset automations --help`). Ask me what should run on a schedule, confirm the cadence, target project, and agent, then create the automation and trigger a first run so we can review the result together.";
+	"Help me create a Superset automation with the `superset` CLI. Start with `superset automations --help`. Ask me what should run on a schedule, confirm the cadence, target project, and agent, then create the automation and trigger a first run so we can review the result together.";
 
 const DEFAULT_TIMEZONE =
 	Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

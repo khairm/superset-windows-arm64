@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { LEGACY_MANAGED_SKILL_MARKER } from "./legacy-managed-skills-cleanup";
 import {
 	provisionClaudeProfile,
 	provisionCodexProfile,
@@ -47,7 +48,7 @@ function seedDefaultAccount(): void {
 	writeJson(path.join(DEFAULT_DIR, "settings.json"), {
 		model: "claude-opus-5",
 		effortLevel: "high",
-		enabledPlugins: { "superset@superset": true },
+		enabledPlugins: { "example@marketplace": true },
 		env: { DISABLE_TELEMETRY: "1", ANTHROPIC_API_KEY: "sk-secret" },
 		apiKeyHelper: "/usr/local/bin/key.sh",
 		hooks: { Stop: [{ hooks: [{ type: "command", command: "user-hook" }] }] },
@@ -111,7 +112,7 @@ describe("provisionClaudeProfile", () => {
 		const settings = readJson(path.join(PROFILE, "settings.json"));
 		expect(settings.model).toBe("claude-opus-5");
 		expect(settings.effortLevel).toBe("high");
-		expect(settings.enabledPlugins).toEqual({ "superset@superset": true });
+		expect(settings.enabledPlugins).toEqual({ "example@marketplace": true });
 		expect(settings.env).toEqual({ DISABLE_TELEMETRY: "1" });
 		expect(settings.apiKeyHelper).toBeUndefined();
 		// Hooks are provisioned per profile, not copied from the default's file.
@@ -162,11 +163,35 @@ describe("provisionClaudeProfile", () => {
 		expect(second.surfaces[".claude.json"]).toBe("unchanged");
 	});
 
-	it("writes the bundled plugin into a skills dir the profile owns", async () => {
+	it("cleans a legacy-only skills directory before sharing user skills", async () => {
+		seedDefaultAccount();
+		seedProfile();
+		mkdirSync(path.join(PROFILE, "skills", "superset"), { recursive: true });
+		writeFileSync(
+			path.join(PROFILE, "skills", "superset", ".superset-managed"),
+			LEGACY_MANAGED_SKILL_MARKER,
+		);
+
+		const report = await provisionClaudeProfile(PROFILE, { homeDir: HOME });
+
+		expect(report.surfaces["skills/"]).toBe("linked");
+		expect(lstatSync(path.join(PROFILE, "skills")).isSymbolicLink()).toBe(true);
+		expect(
+			existsSync(path.join(PROFILE, "skills", "redesign", "SKILL.md")),
+		).toBe(true);
+		expect(existsSync(path.join(PROFILE, "skills", "superset"))).toBe(false);
+	});
+
+	it("preserves user skills while cleaning a direct legacy plugin copy", async () => {
 		seedDefaultAccount();
 		seedProfile();
 		mkdirSync(path.join(PROFILE, "skills", "mine"), { recursive: true });
 		writeFileSync(path.join(PROFILE, "skills", "mine", "SKILL.md"), "# mine");
+		mkdirSync(path.join(PROFILE, "skills", "superset"), { recursive: true });
+		writeFileSync(
+			path.join(PROFILE, "skills", "superset", ".superset-managed"),
+			LEGACY_MANAGED_SKILL_MARKER,
+		);
 
 		const report = await provisionClaudeProfile(PROFILE, { homeDir: HOME });
 
@@ -174,9 +199,7 @@ describe("provisionClaudeProfile", () => {
 		expect(existsSync(path.join(PROFILE, "skills", "mine", "SKILL.md"))).toBe(
 			true,
 		);
-		expect(existsSync(path.join(PROFILE, "skills", "superset", "skills"))).toBe(
-			true,
-		);
+		expect(existsSync(path.join(PROFILE, "skills", "superset"))).toBe(false);
 	});
 
 	it("does nothing to the default account itself", async () => {

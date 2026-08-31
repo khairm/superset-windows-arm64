@@ -20,7 +20,8 @@ import { shareClaudeSessionState } from "./session-share.ts";
 /**
  * Everything a Claude account needs on this host: the shared session state
  * (one `--resume` history across accounts — session-share.ts) plus the
- * config surfaces agent-setup owns (skills, plugins, settings, MCP servers).
+ * config surfaces agent-setup shares (plugins, settings, MCP servers, and
+ * user-owned capabilities).
  */
 export async function provisionClaudeAccount(configDir: string): Promise<void> {
 	shareClaudeSessionState(configDir);
@@ -29,9 +30,9 @@ export async function provisionClaudeAccount(configDir: string): Promise<void> {
 
 /**
  * Re-shares the default account's config into whichever profiles are
- * currently selected. Runs at host boot so a profile keeps up with skills,
- * plugins, and settings added since it was selected, and so one provisioned
- * by an older build — or by a switch that failed halfway — is repaired
+ * currently selected. Runs at host boot so a profile keeps up with plugins,
+ * settings, and user-owned capabilities added since it was selected, and so
+ * one provisioned by an older build — or by a switch that failed halfway — is repaired
  * before the next agent launches on it.
  */
 export async function provisionSelectedAccounts(db: HostDb): Promise<void> {

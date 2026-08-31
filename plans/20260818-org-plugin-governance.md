@@ -26,7 +26,7 @@ Plan gating uses the existing `isPaidPlan()` (`packages/shared/src/billing.ts`) 
 
 ## 3. Plugin manifest
 
-Superset-native manifest, deliberately isomorphic to the Codex/Claude plugin shape so third-party plugins port trivially (we already ship one: `plugins/superset/.claude-plugin/plugin.json`, published via `.claude-plugin/marketplace.json`).
+Superset-native manifest, deliberately isomorphic to the Codex/Claude plugin shape so third-party plugins port trivially.
 
 ```jsonc
 // <plugin-root>/superset-plugin.json  (falls back to .claude-plugin/plugin.json for skills-only plugins)
@@ -54,7 +54,7 @@ Rules carried over from Codex research: relative `./` paths only — and a `./` 
 
 ### 4.2 Org member (paid org)
 
-- The **Org tab** shows plugins the org has published or approved, filtered by the member's role/team policy. `installed_by_default` plugins appear pre-installed and are provisioned automatically at host startup — same hook where `createManagedSkills()` already runs (`apps/desktop/src/main/index.ts:486`, `packages/host-service/src/runtime/agent-provisioning.ts:51`).
+- The **Org tab** shows plugins the org has published or approved, filtered by the member's role/team policy. `installed_by_default` plugins appear pre-installed and are provisioned automatically at host startup.
 - Plugins needing a connector show its authorization state; if the org connection exists, the member configures nothing — tokens never reach their machine (§5.3).
 - `not_available` plugins are hidden or shown greyed with "blocked by your organization" (admin-configurable, Codex-style).
 
@@ -79,9 +79,7 @@ The registry stores manifests + resolved content hashes; plugin **content** is f
 
 ### 5.2 Materialization engine (the free-tier core)
 
-Extend `packages/agent-setup` — the machinery that already pushes org-controlled content into 13 heterogeneous agent configs with ownership markers, user-file guards, and reapers:
-
-- `managed-skills.ts` (`createManagedSkills()`, `MANAGED_SKILL_MARKER`, `isUserOwnedFile()`, `reapStaleSkillDirs()`) → generalize from the single hardcoded `plugins/superset` source to N installed plugins.
+Add a dedicated materialization engine under `packages/agent-setup` with ownership markers, user-file guards, and reapers:
 - `managed-json-hooks.ts` → **net-new capability: write `mcpServers` blocks** into Claude/Codex(json)/Droid/Mastra/Cursor/Gemini configs. `managed-toml-block.ts` → same for Codex `config.toml` (`[mcp_servers.<name>]`), Kimi, Vibe, Grok. The write matrix is already documented by the committed configs at repo root (`.codex/config.toml`, `opencode.json`, `.mastracode/mcp.json`) plus `docs/agent-tooling.md`.
 - Sync triggers: desktop main startup, host-service agent provisioning, `superset plugins sync`, and on policy-change push (orgs). Never clobber user-owned entries — same sentinel model as skills.
 - Per-agent env (gateway URLs, `CODEX_HOME`, tokens) rides the already-plumbed-but-unused `host_agent_configs.env_json` → `envOverlayPrefix()` path (`packages/host-service/src/trpc/router/agents/agents.ts:270`) — zero new launch plumbing.
@@ -129,7 +127,7 @@ Two complementary planes:
 
 | Phase | Ships | Tier |
 | --- | --- | --- |
-| **0 — Foundations** | Manifest format; `plugins`/`plugin_versions`/`plugin_installs` tables; `plugin` router; curated registry seeded with our own plugin + the `superset-sh/skills` set (unifying the two drifting distribution paths); agent-setup writes MCP config (the net-new writer); desktop `settings/plugins` catalog; `superset plugins` CLI. | Free |
+| **0 — Foundations** | Manifest format; `plugins`/`plugin_versions`/`plugin_installs` tables; `plugin` router; curated registry; agent-setup writes MCP config (the net-new writer); desktop `settings/plugins` catalog; `superset plugins` CLI. | Free |
 | **1 — Org governance** | Org marketplace scope + private publishing; `plugin_policies` with role/team scoping + `installed_by_default` auto-provisioning; connector-requirement surfacing; admin Plugins area; `audit_events` for management actions; PostHog groups fix + adoption dashboard v1. | Paid |
 | **2 — Gateway** | Token encryption at rest; gateway endpoint with org-credential injection; per-tool policies (`plugin_tool_policies`, scopes per `packages/mcp` roadmap); tool-call audit; bundles UI. | Paid |
 | **3 — Agent identities & guardrails** | Delegation tokens with actor claims; per-agent audit trails; rule-based blocking / PII & secret scanning at the gateway (MintMCP "Agent Monitor" analogue). | Paid (enterprise) |

@@ -180,6 +180,7 @@ import {
 	clearCompanionPresenceStore,
 	clearCompanionRelaunchBoundarySink,
 	clearCompanionTerminalGoneSink,
+	type LifecycleSeenAck,
 	setCompanionAlertContextSink,
 	setCompanionBridge,
 	setCompanionLifecycleSeenSink,
@@ -879,16 +880,19 @@ export function createCompanionBridge(
 			terminalHandle: (hostTerminalId): string =>
 				deriveHandle("terminal", hostTerminalId),
 			resolveContext: resolveAlertContext,
-			// (ONE-BUZZ-UNTIL-READ) The proof epoch, read ONCE here at bridge
-			// start: every terminal's last recorded lifecycle instant, including
-			// ended sessions, straight off host.db. It is what stops a restart
-			// inside a wall-clock backstep from "proving" that an alert the
-			// PREVIOUS process sent never existed — see `proofEpochs`.
+			// (ALERT-RETIRE-ON-EXIT) The restart evidence, read ONCE here at bridge
+			// start: every terminal's last recorded lifecycle event, including
+			// ended sessions, straight off host.db. It stops a restart inside a
+			// wall-clock backstep from "proving" that an alert the PREVIOUS process
+			// sent never existed, and it names the ready card this process
+			// inherited from that predecessor — see `restartEvidence`.
 			readySettleMs: READY_SETTLE_MS,
-			proofEpochs: () =>
+			restartEvidence: () =>
 				hostDb.listBindings().map((binding) => ({
 					hostTerminalId: binding.terminalId,
+					hostWorkspaceId: binding.workspaceId,
 					lastEventAtMs: binding.lastEventAt,
+					lastEventType: binding.lastEventType,
 				})),
 			// (LIFECYCLE-CURATION-CACHE) The probe owns the cache, the throw-fires-
 			// anyway rule and the log-on-transition discipline that being asked once
@@ -932,13 +936,23 @@ export function createCompanionBridge(
 		 * workspace's read retract another workspace's notification, which is the
 		 * one thing a retraction must never do. A mismatch drops the signal with
 		 * an ID-ONLY log — the failure is diagnosable and no name goes near it.
+		 *
+		 * A DROP SAYS WHICH KIND IT IS, and the two are not interchangeable to the
+		 * renderer. `accepted: true` means THE READ WAS APPLIED, never merely that
+		 * a bridge was listening — a signal this bridge drops retired nothing, and
+		 * calling that `true` would have the renderer forget an outstanding finish
+		 * the phone is still showing, with nothing left to take that card down.
+		 *
+		 * A host.db read that FAILED is transient — the next report may
+		 * well land — so it answers `refusal: null` and the renderer keeps
+		 * offering it. A PLACEMENT MISMATCH is a judgement host.db will repeat for
+		 * that exact (terminal, workspace) pair, and the renderer's focus path
+		 * re-reports on every binding change: without a distinct answer it re-sent
+		 * the same refused report indefinitely. `workspace-mismatch` lets it stop
+		 * re-sending THAT pair while keeping the outstanding record, so the resync
+		 * — which reports the workspace host.db itself owns — can still repair it.
 		 */
-		const lifecycleSeen = (input: LifecycleSeenInput): boolean => {
-			// `true` means THE BRIDGE RECEIVED IT, which is the only thing the
-			// renderer's `accepted` has ever meant — a signal this bridge then drops
-			// on its own evidence (below) is still a signal that reached a running
-			// bridge, and reporting it as unconsumed would have the resync retry a
-			// terminal host.db has already said does not belong to that workspace.
+		const lifecycleSeen = (input: LifecycleSeenInput): LifecycleSeenAck => {
 			let placed = false;
 			try {
 				const row = hostDb.findTerminal(input.hostTerminalId);
@@ -957,7 +971,7 @@ export function createCompanionBridge(
 						error,
 					},
 				);
-				return true;
+				return { accepted: false, refusal: null };
 			}
 			if (!placed) {
 				logger.info(
@@ -967,10 +981,10 @@ export function createCompanionBridge(
 						hostWorkspaceId: input.hostWorkspaceId,
 					},
 				);
-				return true;
+				return { accepted: false, refusal: "workspace-mismatch" };
 			}
 			lifecycleAlerts.markLifecycleSeen(input);
-			return true;
+			return { accepted: true, refusal: null };
 		};
 		setCompanionLifecycleSeenSink(lifecycleSeen);
 		unwind.push({
@@ -1004,29 +1018,24 @@ export function createCompanionBridge(
 		 * (ALERT-RETIRE-ON-EXIT) The desktop relaunched at this host-clock
 		 * instant, so every ready card about a finish before it is redundant.
 		 *
-		 * VALIDATED HERE RATHER THAN TRUSTED. The boundary is a number the
-		 * RENDERER derived (the host's own `hostNow`, less the renderer's elapsed
-		 * monotonic time), so a renderer with a broken clock, or a host whose
-		 * `hostNow` was wrong, can hand over something absurd. A boundary in the
-		 * FUTURE is the dangerous shape — it would retire every ready alert this
-		 * host holds, including finishes the user has never seen — so it is
-		 * refused with a log rather than clamped. `true` either way: the bridge
-		 * received it, which is all `accepted` has ever meant.
+		 * VALIDATED IN THE MANAGER RATHER THAN TRUSTED. The boundary is a number
+		 * the RENDERER derived (the host's own `hostNow`, less the renderer's
+		 * elapsed monotonic time), so a renderer with a broken clock, or a host
+		 * whose `hostNow` was wrong, can hand over something absurd — and a
+		 * boundary in the FUTURE would retire every ready alert this host holds,
+		 * including finishes the user has never seen. `retireReadyBefore` owns
+		 * that range check because it owns the clock the boundary must be in the
+		 * past of, and answers `null` for one it refused.
+		 *
+		 * A REFUSAL IS `accepted: false`. The renderer latches this report once
+		 * per host per launch on the acknowledgement, so answering "received" for
+		 * a boundary that retired nothing burns the launch's only attempt and
+		 * strands every pre-launch ready card. `false` keeps the latch clear and
+		 * the next resync epoch offers a freshly derived boundary.
 		 */
 		const relaunchBoundary = (input: { boundaryMs: number }): boolean => {
-			const nowMs = Date.now();
-			if (
-				!Number.isInteger(input.boundaryMs) ||
-				input.boundaryMs <= 0 ||
-				input.boundaryMs > nowMs
-			) {
-				logger.error(
-					"refusing an out-of-range desktop relaunch boundary; stale ready notifications may survive this launch",
-					{ boundaryMs: input.boundaryMs, nowMs },
-				);
-				return true;
-			}
 			const retired = lifecycleAlerts.retireReadyBefore(input.boundaryMs);
+			if (retired === null) return false;
 			logger.info("(ALERT-RETIRE-ON-EXIT) the desktop reported a relaunch", {
 				boundaryMs: input.boundaryMs,
 				retired,

@@ -143,20 +143,29 @@ function createStore(): Store {
 function Probe({
 	store,
 	isLayoutReady,
+	isExitCleanupPending = false,
 }: {
 	store: Store;
 	isLayoutReady: boolean;
+	isExitCleanupPending?: boolean;
 }) {
 	useAutoAdoptBackgroundSessions({
 		store,
 		workspaceId: WORKSPACE_ID,
 		isLayoutReady,
+		isExitCleanupPending,
 	});
 	return null;
 }
 
-function mount(store: Store, isLayoutReady = true) {
-	return render(React.createElement(Probe, { store, isLayoutReady }));
+function mount(
+	store: Store,
+	isLayoutReady = true,
+	isExitCleanupPending = false,
+) {
+	return render(
+		React.createElement(Probe, { store, isLayoutReady, isExitCleanupPending }),
+	);
 }
 
 /** Terminal ids of every terminal pane currently in the store. */
@@ -288,5 +297,50 @@ describe("(MASTER-PLUS-LAUNCH) useAutoAdoptBackgroundSessions lifecycle refetch"
 		});
 
 		expect(panedTerminalIds(store)).toEqual(["terminal-1"]);
+	});
+
+	it("(WORKTREE-EXIT-CLEANUP) does not adopt a workspace whose exit cleanup is pending", () => {
+		const store = createStore();
+		sessions = [
+			{
+				terminalId: "terminal-exited",
+				workspaceId: WORKSPACE_ID,
+				createdAt: 1,
+			},
+		];
+		mount(store, true, true);
+
+		// The host still lists the sessions it has not killed yet; adopting them
+		// would rebuild panes for the terminals the user just closed.
+		expect(panedTerminalIds(store)).toEqual([]);
+	});
+
+	it("(WORKTREE-EXIT-CLEANUP) adopts once the gate lifts", async () => {
+		const store = createStore();
+		sessions = [
+			{
+				terminalId: "terminal-exited",
+				workspaceId: WORKSPACE_ID,
+				createdAt: 1,
+			},
+		];
+		const view = mount(store, true, true);
+
+		expect(panedTerminalIds(store)).toEqual([]);
+
+		// The reconciler cleared the stamp, or the query hydrated to no debt.
+		// Adoption resumes without the workspace being reopened. WHICH inputs
+		// lift the gate is asserted in `isExitCleanupPending.test.ts`.
+		await act(async () => {
+			view.rerender(
+				React.createElement(Probe, {
+					store,
+					isLayoutReady: true,
+					isExitCleanupPending: false,
+				}),
+			);
+		});
+
+		expect(panedTerminalIds(store)).toEqual(["terminal-exited"]);
 	});
 });

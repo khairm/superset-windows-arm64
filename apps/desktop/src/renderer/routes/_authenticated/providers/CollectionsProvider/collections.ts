@@ -34,7 +34,12 @@ import {
 	type WorkspacesCreateInput,
 	workspaceLocalStateSchema,
 } from "./dashboardSidebarLocal";
+import {
+	kanbanCardsStorageKey,
+	workspaceLocalStateStorageKey,
+} from "./collectionStorageKeys";
 import { evictInactiveOrgs } from "./evictInactiveOrgs";
+import { recordLocalCollectionPersistFailure } from "./localCollectionPersistence";
 import { notifyQuotaExhausted } from "./notifyQuotaExhausted";
 import { withQuotaGuard } from "./withQuotaGuard";
 import { withReadHeal } from "./withReadHeal";
@@ -81,9 +86,12 @@ const hardenLocalCollection = <T>(
 			// Oldest-first by the terminal GC's persisted-at index (24h pressure TTL)
 			// — survives relaunches, unlike registry membership.
 			reclaim: () => reclaimTerminalStateForQuota(),
-			// Not passed by reference: the guard's second argument is the error, which
-			// would land in the notice's optional `mode` slot.
-			onPersistFailed: (storageKey) => notifyQuotaExhausted(storageKey),
+			onPersistFailed: (storageKey) => {
+				recordLocalCollectionPersistFailure(storageKey);
+				// Not passed by reference: the guard's second argument is the error,
+				// which would land in the notice's optional `mode` slot.
+				notifyQuotaExhausted(storageKey);
+			},
 		},
 	);
 
@@ -178,7 +186,7 @@ function createOrgCollections(organizationId: string): OrgCollections {
 			hardenLocalCollection(
 				{
 					id: `v2_workspace_local_state-${organizationId}`,
-					storageKey: `v2-workspace-local-state-${organizationId}`,
+					storageKey: workspaceLocalStateStorageKey(organizationId),
 					schema: workspaceLocalStateSchema,
 					// Explicit type so `withReadHeal`'s passthrough generic keeps the
 					// linkage between schema and getKey for downstream inference.
@@ -286,7 +294,7 @@ function createOrgCollections(organizationId: string): OrgCollections {
 			hardenLocalCollection(
 				{
 					id: `v2_kanban_cards-${organizationId}`,
-					storageKey: `v2-kanban-cards-${organizationId}`,
+					storageKey: kanbanCardsStorageKey(organizationId),
 					schema: kanbanCardSchema,
 					getKey: (item: KanbanCardRow) => item.id,
 				},

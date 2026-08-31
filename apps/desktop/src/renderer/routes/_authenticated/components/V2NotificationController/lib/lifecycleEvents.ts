@@ -3,6 +3,7 @@ import type {
 	AgentLifecyclePayload,
 	TerminalLifecyclePayload,
 } from "@superset/workspace-client";
+import { isUserPresent } from "renderer/hooks/useUserPresent";
 import { playRingtone } from "renderer/lib/ringtones/play";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -95,7 +96,7 @@ export function handleV2AgentLifecycleEvent({
 	) {
 		return;
 	}
-	if (shouldSuppress(target, paneLayout)) return;
+	if (isTargetWatched(target, paneLayout)) return;
 
 	const ringtoneId = useRingtoneStore.getState().selectedRingtoneId;
 	void playRingtone({ ringtoneId, volume, muted });
@@ -235,11 +236,21 @@ function updatePaneStatus({
 	fromReplay: boolean;
 }): void {
 	const store = useV2NotificationStore.getState();
-	const targetVisible = isV2NotificationTargetVisible({
-		currentWorkspaceId: getCurrentWorkspaceId(),
-		paneLayout,
-		target,
-	});
+	// VISIBLE MEANS WATCHED, NOT MERELY ON SCREEN. A turn ending on the active
+	// pane while the screen is locked or the window is behind a browser satisfies
+	// the layout test completely. Every consumer below treats `targetVisible` as
+	// "the user has seen this": the transition clears the source instead of
+	// raising a review dot, and the hop reports a read. Both were wrong for
+	// exactly the case the phone alert exists for, and the dot's absence was the
+	// worse half — the user came back to a chat with nothing marking it and a
+	// phone card nothing would ever take down.
+	//
+	// REPLAYS KEEP THE LAYOUT-ONLY TEST. A replay re-derives history: presence NOW
+	// says nothing about a finish that happened before the reconnect, and folding
+	// it in would raise a review dot on every pane the user is looking at.
+	const targetVisible = fromReplay
+		? isTargetInLayout(target, paneLayout)
+		: isTargetWatched(target, paneLayout);
 	const transition = resolveV2AgentStatusTransition({
 		workspaceId,
 		payload,
@@ -343,22 +354,15 @@ function updatePaneStatus({
 	// where a replay may report a read, off durable seen marks and never off the
 	// mere fact that the pane is on screen.
 	//
-	// PRESENCE, NOT LAYOUT. `targetVisible` only says the pane occupies the
-	// active tab; it is equally true with the screen locked, the window behind
-	// the browser, or the user out of the room — which is the feature's PRIMARY
-	// scenario (a turn finishing on the active pane while they are away) and the
-	// one where retracting the alert is both wrong and irreversible. The same
-	// predicate `shouldSuppress` uses for the chime is the presence test here.
+	// PRESENCE IS ALREADY IN `targetVisible` for a live event — see where it is
+	// computed. A pane on the active tab with the screen locked is the feature's
+	// primary scenario, and retracting there is both wrong and irreversible.
 	if (
 		!fromReplay &&
 		(payload.eventType === "Stop" || payload.eventType === "Failed") &&
 		transition.axes === null &&
 		target.terminalId.length > 0 &&
-		targetVisible &&
-		// LAST, because it is the only one that costs anything: `document.hidden`
-		// and `hasFocus()` are DOM reads, and every predicate above is a field
-		// comparison that rules this event out for free.
-		isUserPresent()
+		targetVisible
 	) {
 		store.markTerminalSeen(target.terminalId, payload.occurredAt);
 		void reportTerminalSeen({
@@ -453,31 +457,38 @@ function getCurrentWorkspaceId(): string | null {
 	}
 }
 
-/**
- * Is the user actually AT the machine — window shown and focused?
- *
- * The chime's suppression test and the visible-clear hop ask the same question
- * for opposite reasons (do not ring at someone who is watching; do not retract
- * a phone alert for someone who is not), so they share one predicate rather
- * than growing two that can drift apart.
- */
-function isUserPresent(): boolean {
-	if (typeof document !== "undefined" && document.hidden) return false;
-	if (typeof window !== "undefined" && !document.hasFocus()) return false;
-	return true;
-}
-
-function shouldSuppress(
+/** Where the pane SITS: on the open workspace, on the active tab, unhidden. */
+function isTargetInLayout(
 	target: V2NotificationTarget,
 	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
 ): boolean {
-	if (!isUserPresent()) return false;
-
 	return isV2NotificationTargetVisible({
 		currentWorkspaceId: getCurrentWorkspaceId(),
 		paneLayout,
 		target,
 	});
+}
+
+/**
+ * Is the user WATCHING this target — present at the machine AND looking at the
+ * pane the event names?
+ *
+ * ONE PREDICATE, TWO CALLERS asking it for the same reason: a chime and a
+ * review dot are both "you missed something", and neither is true of a finish
+ * the user watched happen. They had grown separate copies of the test, in
+ * opposite operand order, which is how the two surfaces drift apart.
+ *
+ * LAYOUT FIRST: the cheap pure check on data already in hand, before the one
+ * that reads the document.
+ *
+ * NOT FOR REPLAYS. A replay re-derives history, where presence NOW says nothing
+ * about a finish that predates the reconnect — those ask `isTargetInLayout`.
+ */
+function isTargetWatched(
+	target: V2NotificationTarget,
+	paneLayout: WorkspaceState<PaneViewerData> | null | undefined,
+): boolean {
+	return isTargetInLayout(target, paneLayout) && isUserPresent();
 }
 
 function showNativeNotification({

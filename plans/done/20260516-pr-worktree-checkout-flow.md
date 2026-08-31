@@ -58,7 +58,6 @@ creation is implemented by `gh pr checkout`:
 - `packages/mcp-v2/src/tools/workspaces/create.ts:43`
 - `packages/sdk/src/resources/workspaces.ts:164`
 - `apps/docs/content/docs/cli/cli-reference.mdx:539`
-- `skills/superset/SKILL.md:39`
 
 The implementation plan in
 `apps/desktop/plans/20260416-v2-pr-checkout-endpoint.md` explicitly chose the

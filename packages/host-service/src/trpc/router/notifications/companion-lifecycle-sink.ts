@@ -55,6 +55,28 @@ export function getCompanionLifecycleSink(): CompanionLifecycleSink | null {
 	return sink;
 }
 
+/**
+ * Hand one hook event to the lifecycle sink.
+ *
+ * THROWS INTO THE CALLER on a sink fault, deliberately. The hook handler runs
+ * this BEFORE the host.db write that overwrites the terminal's last recorded
+ * event (see the ordering note at the call site), so swallowing a fault here
+ * would let `recordEvent` bury the `Stop` row that is the ONLY durable evidence
+ * of the ready alert this call just failed to retract: the card on the phone
+ * becomes unnameable and stands for its full six-hour TTL. Throwing skips that
+ * write, so the row survives and the next start reconstructs and retracts the
+ * exact id.
+ *
+ * The live dot is not the price — `broadcastAgentLifecycle` has already fired
+ * by the time this runs. What a throw costs is the persisted binding that
+ * (BUS-RESYNC) reads, which the next hook event replaces anyway. A stale resync
+ * row is the cheap failure; unretractable alert evidence is the expensive one.
+ *
+ * The stale-working sweep calls this the other way round, AFTER its own
+ * `recordEvent`, and rightly so: it announces a finish it has already written,
+ * so there is no evidence to protect. A throw there aborts the rest of that
+ * pass, which the next tick redoes over bindings that are still stale.
+ */
 export function forwardCompanionLifecycle(input: {
 	payload: {
 		companionLifecycleEventId?: string;

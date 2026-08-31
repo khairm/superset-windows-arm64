@@ -1,7 +1,6 @@
 import {
 	getMatchingExternalServers,
 	type PluginCatalogEntry,
-	SUPERSET_MANAGED_SKILLS,
 } from "@superset/shared/plugins";
 import { Badge } from "@superset/ui/badge";
 import { Button } from "@superset/ui/button";
@@ -12,12 +11,7 @@ import { LuArrowLeft, LuTrash2 } from "react-icons/lu";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon";
 import { PluginKindBadges } from "renderer/routes/_authenticated/_dashboard/plugins/components/PluginKindBadges";
-import { SkillIcon } from "renderer/routes/_authenticated/_dashboard/plugins/components/SkillIcon";
 import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
-
-const SKILL_DESCRIPTIONS = new Map<string, string>(
-	SUPERSET_MANAGED_SKILLS.map((skill) => [skill.name, skill.description]),
-);
 
 export function PluginDetail({ plugin }: { plugin: PluginCatalogEntry }) {
 	const navigate = useNavigate();
@@ -171,29 +165,6 @@ export function PluginDetail({ plugin }: { plugin: PluginCatalogEntry }) {
 					<p className="text-xs text-muted-foreground">
 						Remote servers sign you in the first time an agent uses them.
 					</p>
-				</section>
-			)}
-
-			{plugin.skills && plugin.skills.length > 0 && (
-				<section className="mt-8 flex flex-col gap-3">
-					<h2 className="text-sm font-semibold text-foreground">Skills</h2>
-					<div className="flex flex-col divide-y divide-border/60 rounded-lg border border-border/60">
-						{plugin.skills.map((name) => (
-							<div key={name} className="flex items-center gap-3 p-3">
-								<SkillIcon skillName={name} className="size-7" />
-								<div className="min-w-0 flex-1">
-									<div className="text-sm font-medium text-foreground">
-										{name}
-									</div>
-									{SKILL_DESCRIPTIONS.has(name) && (
-										<p className="truncate text-xs text-muted-foreground">
-											{SKILL_DESCRIPTIONS.get(name)}
-										</p>
-									)}
-								</div>
-							</div>
-						))}
-					</div>
 				</section>
 			)}
 		</div>

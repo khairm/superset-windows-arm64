@@ -48,6 +48,7 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   gates parse), `.fork/upstream-baseline.txt`,
   `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
   `scripts/check-feature-markers.mjs` (standalone marker gate),
+  `scripts/check-no-bundled-skills.mjs` (blocks bundled Superset skills),
   `scripts/ci-repair.sh` (build-repair engine),
   `scripts/ai-run.sh` ((AI-UNAVAILABLE) classification + shared Claude CLI wrapper),
   `scripts/ai-streak.sh` ((AI-UNAVAILABLE) green no-op + consecutive-blocked-night
@@ -61,6 +62,8 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 - **Whole feature set or fail loud** — every `FEATURES.md` marker survives a
   merge or the run aborts; never ship a partial fork.
 - **v2-only, forever** — the v2 cloud/host-service stack is pinned on; never v1.
+- **No bundled Superset skills** — never package or inject them; remove only
+  marker-proven legacy copies. Keep hooks and user-owned skills.
 - **No phone-home to upstream (phase 1)** — upstream's telemetry, auto-update
   and desktop-notice channels are deliberately SEVERED as of cloud severance
   phase 1 (`(CLOUD-SEVERANCE-P1)`, `(EGRESS-FENCE)`): dead PostHog/Sentry keys,
@@ -105,6 +108,19 @@ In brief:
   automatically (bounded retries/budget, default-on, away-detection).
 - **Recycle Bin** — every delete entry point soft-deletes (30-day display
   window); permanent delete only from inside the bin.
+- **Exiting a card closes its runtime** — Completed, Archive, Snooze and Recycle
+  Bin clear the workspace's tabs, dispose its terminals and release its pinned
+  Claude account, for every card type and entry point. Worktree and branch
+  untouched; a restored thread comes back empty. Snooze's account release is
+  permanent even though the snooze is not: the thread returns Following.
+  Renderer and host teardown wait until the exit row is durably saved. The host
+  half is retried from a persisted `runtimeCleanupPendingAt` stamp until
+  the OWNING host confirms a teardown or the workspace is authoritatively
+  absent — stamped for every workspace, reached at its own host (locally or over
+  the relay) plus a local broadcast for other orgs, retried when a local
+  host-service is replaced or an owner's socket reopens, and cancelled if the
+  user un-exits. The host refuses terminal launches for the whole retirement.
+  Sidebar removal is unchanged (still non-destructive).
 - **Non-git / multi-repo workspaces** — open any folder (non-git or multi-repo)
   as a plain workspace.
 - **Multi-repo branch workspaces** — group N git repos under one project row;
@@ -113,7 +129,7 @@ In brief:
 - **Workspace branch label** — branch name top-right in the tab bar; click
   copies.
 - **Thread snooze / archive** — timed Snooze (auto-returns) + sticky Archive in
-  revealable sidebar sections.
+  revealable sidebar sections; both are exits (see above), not display-only.
 - **Sidebar** — pinned > active > idle tier sort with stable manual drag order;
   hover freezes re-sorting.
 - **Terminal links** — plain click copies a URL/path; Ctrl/Cmd+click opens.
@@ -157,6 +173,14 @@ In brief:
 - Never assert upstream-derived incidental names (Rollup chunk filenames, file
   hashes, ordering) in fork-owned gates — assert the invariant over the whole
   artifact set (`SCREENREADER-GUARD-DRIFT`: a chunk rename blocked 3 nightlies).
+- In the fork's ARM64 native scripts (`scripts/fetch-native-prebuilds.sh`,
+  `scripts/materialize-native-closure.sh`,
+  `apps/desktop/scripts/copy-native-modules.ts`), never pick a native's version
+  by taking the highest one in `node_modules/.bun` — that store caches versions
+  other consumers needed, and a tag/ABI from one the app never links to ships a
+  binary it cannot load. Ask `bun why` (via `scripts/bun-locked-versions.sh`),
+  then touch only the store dirs matching that version exactly (`key@ver`,
+  `key@ver+<16 hex>`).
 
 ## Accepted limitations
 

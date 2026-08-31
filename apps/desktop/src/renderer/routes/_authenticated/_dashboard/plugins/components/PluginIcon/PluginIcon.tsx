@@ -3,7 +3,6 @@ import type { IconType } from "react-icons";
 import { FaGithub } from "react-icons/fa";
 import { LuBookOpen, LuDrama, LuPuzzle } from "react-icons/lu";
 import { SiGooglechrome, SiSentry, SiStripe, SiVercel } from "react-icons/si";
-import { usePresetIcon } from "renderer/assets/app-icons/preset-icons";
 import circlebackIconUrl from "renderer/assets/icons/circleback-icon.png";
 import figmaIconUrl from "renderer/assets/icons/figma-icon.svg";
 import granolaIconUrl from "renderer/assets/icons/granola-icon.svg";
@@ -19,9 +18,9 @@ import superhumanIconUrl from "renderer/assets/icons/superhuman-icon.png";
 /**
  * Per-plugin brand icons. Icons stay per-app rather than in the shared
  * catalog (same split as INTEGRATIONS — packages/shared isn't React-aware).
- * Three tiers: full-bleed marks that ship their own square art (Superset,
- * Linear, and white-tile logos), transparent color marks rendered inside a
- * tile, and tinted glyphs for the rest. Black-mark brands (GitHub, Notion,
+ * Three tiers: full-bleed marks that ship their own square art, transparent
+ * color marks rendered inside a tile, and tinted glyphs for the rest.
+ * Black-mark brands (GitHub, Notion,
  * Vercel) stay on the foreground token so they invert with the theme.
  */
 
@@ -63,11 +62,9 @@ interface PluginIconProps {
 }
 
 export function PluginIcon({ pluginName, className }: PluginIconProps) {
-	const supersetIcon = usePresetIcon("superset");
 	const size = className ?? "size-9";
 
-	const fullBleed =
-		pluginName === "superset" ? supersetIcon : FULL_BLEED_ICONS[pluginName];
+	const fullBleed = FULL_BLEED_ICONS[pluginName];
 	if (fullBleed !== undefined) {
 		return (
 			<img

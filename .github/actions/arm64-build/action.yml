@@ -2,8 +2,8 @@ name: ARM64 build steps
 description: >
   All build/package/verify steps for the Windows ARM64 installer. Publishing is
   deliberately NOT here: it lives in .github/workflows/build-arm64.yml, after
-  the frozen cloud-severance enforcement step, so a repaired build cannot ship a
-  Release before that gate has passed.
+  the frozen pre-publish release gates, so a repaired build cannot ship a
+  Release before those gates have passed.
   Lives under .github/actions (NOT .github/workflows) deliberately: this file
   is part of the checked-out tree, so the (BUILD-REPAIR) AI loop can fix it
   mid-run and the next attempt picks the fix up — workflow YAML is frozen once
@@ -131,10 +131,14 @@ runs:
     # artifact assertions are the point.
     #
     # This copy is for FAST FEEDBACK only. The step that actually decides is
-    # "Enforce cloud severance" in .github/workflows/build-arm64.yml, which is
-    # frozen for the whole run and therefore out of reach of a mid-run repair —
+    # "Enforce pre-publish release gates" in .github/workflows/build-arm64.yml,
+    # which is frozen for the whole run and out of reach of a mid-run repair —
     # and which runs BEFORE the release is published. Publishing deliberately
     # no longer lives in this composite action for exactly that reason.
+    - name: Verify no bundled Superset skills
+      shell: bash
+      run: node scripts/check-no-bundled-skills.mjs
+
     - name: Verify cloud severance (telemetry / update channels)
       shell: bash
       run: node scripts/check-cloud-severance.mjs

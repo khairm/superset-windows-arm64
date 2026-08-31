@@ -70,6 +70,7 @@ import {
 import {
 	type CompanionBridgeStatus,
 	getCompanionBridge,
+	type LifecycleSeenAck,
 	readCompanionBridgeStatus,
 	recordCompanionAlertContexts,
 	recordCompanionLifecycleSeen,
@@ -410,17 +411,27 @@ export const companionRouter = router({
 	 * Also never throws for the off states, and for the same reason: the dot has
 	 * already cleared locally by the time this runs, and a failed retraction must
 	 * not present to the user as a failed mark-read.
+	 *
+	 * `accepted` MEANS THE READ WAS APPLIED, not merely that a bridge was
+	 * listening. A bridge that drops the report on its own evidence — host.db
+	 * does not place that terminal in that workspace, or could not be read to
+	 * check — retired nothing, and the renderer keeps its outstanding record so
+	 * the resync can offer it again. Reporting that as `true` left the phone
+	 * card up with nothing left to take it down.
+	 *
+	 * `refusal` SEPARATES THE PERMANENT DROP FROM THE TRANSIENT ONE. A
+	 * placement mismatch will be judged the same way on every re-send, and the
+	 * renderer's focus path re-reports on every binding change; without this the
+	 * pair looped forever. See `LifecycleSeenAck`.
 	 */
 	markLifecycleSeen: protectedProcedure
 		.input(lifecycleSeenInput)
-		.mutation(({ input }): { accepted: boolean } => {
-			return {
-				accepted: recordCompanionLifecycleSeen({
-					hostTerminalId: input.terminalId,
-					hostWorkspaceId: input.workspaceId,
-					seenThroughAt: input.seenThroughAt,
-				}),
-			};
+		.mutation(({ input }): LifecycleSeenAck => {
+			return recordCompanionLifecycleSeen({
+				hostTerminalId: input.terminalId,
+				hostWorkspaceId: input.workspaceId,
+				seenThroughAt: input.seenThroughAt,
+			});
 		}),
 
 	/**
@@ -436,6 +447,13 @@ export const companionRouter = router({
 	 * Never throws for the off states, like `markLifecycleSeen` and for the same
 	 * reason: bridge-off is the normal state on most machines and this fires
 	 * unprompted on every launch. `accepted: false` is the answer, not an error.
+	 *
+	 * `accepted` MEANS THE BOUNDARY WAS APPLIED. The shape above only proves it
+	 * is a positive integer; the alert manager additionally refuses one that
+	 * lands in the HOST's future, which a renderer whose clock runs ahead will
+	 * derive. That refusal has to reach the renderer as `accepted: false` — its
+	 * latch is what makes this once-per-launch, and answering `true` for a
+	 * boundary nothing acted on burns the latch for the whole launch.
 	 */
 	retireStaleReadyAlerts: protectedProcedure
 		.input(relaunchBoundaryInput)

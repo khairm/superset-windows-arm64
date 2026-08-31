@@ -52,13 +52,6 @@ const RESOURCES_TO_COPY = [
 		src: resolve(__dirname, "../../../packages/agent-setup/templates"),
 		dest: resolve(__dirname, "..", devPath, "main/templates"),
 	},
-	// Must come after the templates copy above: copyDir wipes its dest, and
-	// this nests inside it. Bundles the repo's Claude Code plugin so
-	// agent-setup can provision its skills into user environments at boot.
-	{
-		src: resolve(__dirname, "../../../plugins/superset"),
-		dest: resolve(__dirname, "..", devPath, "main/templates/plugin"),
-	},
 ];
 
 /**

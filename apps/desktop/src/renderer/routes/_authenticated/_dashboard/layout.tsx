@@ -17,6 +17,7 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { DashboardSidebar } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar";
 import { DashboardSidebarPortsProvider } from "renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarPortsProvider";
 import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/components/KanbanReconciler";
+import { WorkspaceExitCleanupReconciler } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceExitCleanupReconciler";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
@@ -258,6 +259,11 @@ function DashboardLayout() {
 			<div className="flex h-full w-full overflow-hidden">
 				<CommandPaletteHost />
 				<KanbanReconciler />
+				{/* (WORKTREE-EXIT-CLEANUP) Mounted here, not in the workspace route:
+				    the thread that owes its host a teardown is by definition not the
+				    one on screen. Losing this mount silently strands every pending
+				    cleanup, so the marker is load-bearing. */}
+				<WorkspaceExitCleanupReconciler />
 				{sidebarOutsideColumn && sidebarPanel}
 				<div className="flex flex-1 flex-col min-w-0 min-h-0">
 					{!hideTopBar && <TopBar />}

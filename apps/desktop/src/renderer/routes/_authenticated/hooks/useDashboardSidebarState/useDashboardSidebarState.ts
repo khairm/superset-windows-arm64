@@ -1,4 +1,6 @@
 import type { Pane } from "@superset/panes";
+import type { WritableDeep } from "@tanstack/db";
+import type { HostShapedWorkspace } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import { useCallback } from "react";
 import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-registry";
 import { browserRuntimeRegistry } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/usePaneRegistry/components/BrowserPane/browserRuntimeRegistry";
@@ -7,22 +9,32 @@ import {
 	type PaneLifecycleRow,
 } from "renderer/routes/_authenticated/components/utils/paneLifecycleRows";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { kanbanCardsStorageKey } from "renderer/routes/_authenticated/providers/CollectionsProvider/collectionStorageKeys";
 import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
+import {
+	persistWorkspaceExitMutation,
+	type WorkspaceExitMutation,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/workspaceExitPersistence";
 import {
 	APP_LAUNCH_ID,
 	getNextTabOrder,
 	getPrependTabOrder,
 	getWorkspaceSidebarBucket,
 	isSidebarWorkspaceVisible,
+	type WorkspaceLocalStateDraft,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
 import {
+	applyAutomaticSnoozeReturn,
+	applyWorkspaceExitCleanup,
+	cancelWorkspaceExitCleanup,
 	createEmptyPaneLayout,
 	removeProjectFromSidebarState,
 	resolveSidebarRowProjectId,
 	tombstoneSidebarWorkspaceRecord,
+	workspaceExitCleanupState,
 } from "./sidebarMutations";
 
 /** The per-project reveal/collapse booleans on the sidebar project row. */
@@ -209,13 +221,244 @@ function getBrowserRuntimeId(pane: Pane<unknown>): string | null {
 	return pane.kind === "browser" ? pane.id : null;
 }
 
+/**
+ * Tears down the renderer runtimes behind a workspace's panes.
+ *
+ * `terminalAction` is the whole difference between the two callers. Sidebar
+ * REMOVAL only `release`s — it detaches the renderer view and leaves the host
+ * PTY running, because a removed row is a display decision the user can undo by
+ * re-opening the workspace. (WORKTREE-EXIT-CLEANUP) An EXIT is not: the user is
+ * done with the thread, so the terminal runtime is `dispose`d outright (which
+ * also tells host-service to kill the session and clears the persisted
+ * snapshot, so nothing survives to be restored). Browser panes are destroyed
+ * either way — they hold no host-side session.
+ */
+interface WorkspacePaneRuntimeIds {
+	terminalIds: Set<string>;
+	browserIds: Set<string>;
+}
+
+function extractWorkspacePaneRuntimeIds(
+	rows: PaneLifecycleRow[],
+): WorkspacePaneRuntimeIds {
+	return {
+		terminalIds: extractPaneIds(rows, getTerminalRuntimeId),
+		browserIds: extractPaneIds(rows, getBrowserRuntimeId),
+	};
+}
+
+function cleanupWorkspacePaneRuntimeIds(
+	{ terminalIds, browserIds }: WorkspacePaneRuntimeIds,
+	terminalAction: "release" | "dispose",
+): void {
+	for (const terminalId of terminalIds) {
+		if (terminalAction === "dispose")
+			terminalRuntimeRegistry.dispose(terminalId);
+		else terminalRuntimeRegistry.release(terminalId);
+	}
+	for (const browserId of browserIds) browserRuntimeRegistry.destroy(browserId);
+}
+
 function cleanupWorkspacePaneRuntimes(rows: PaneLifecycleRow[]): void {
-	for (const terminalId of extractPaneIds(rows, getTerminalRuntimeId)) {
-		terminalRuntimeRegistry.release(terminalId);
+	cleanupWorkspacePaneRuntimeIds(
+		extractWorkspacePaneRuntimeIds(rows),
+		"release",
+	);
+}
+
+type WorkspaceExitCollections = Pick<
+	AppCollections,
+	"v2WorkspaceLocalState"
+> & { activeOrganizationId: string };
+
+/**
+ * (WORKTREE-EXIT-CLEANUP) Register cleanup debt before the optimistic mutation,
+ * then wait for the whole localStorage collection to land before destroying
+ * renderer runtimes. The reconciler waits on the same registration before it
+ * asks any host to retire sessions or release the workspace account.
+ */
+function persistWorkspaceExit(
+	collections: WorkspaceExitCollections,
+	workspaceId: string,
+	exitedAt: number,
+	mutate: WorkspaceExitMutation["mutate"],
+	additionalMutations: readonly WorkspaceExitMutation[] = [],
+): Promise<void> {
+	return persistWorkspaceExitMutation(
+		collections.activeOrganizationId,
+		workspaceId,
+		exitedAt,
+		mutate,
+		additionalMutations,
+	);
+}
+
+/**
+ * (WORKTREE-EXIT-CLEANUP) Exit an existing workspace row. The original pane row
+ * is captured before the mutation clears it, but its runtimes stay alive until
+ * the exit and its cleanup stamp are durably saved.
+ */
+function exitWorkspaceRow(
+	collections: WorkspaceExitCollections,
+	workspaceId: string,
+	applyExitFlags: (
+		draft: WritableDeep<WorkspaceLocalStateDraft>,
+		exitedAt: number,
+	) => void,
+	additionalMutations: readonly WorkspaceExitMutation[] = [],
+): void {
+	const existing = collections.v2WorkspaceLocalState.get(workspaceId);
+	if (!existing) {
+		throw new Error(`Cannot exit missing workspace row ${workspaceId}`);
 	}
-	for (const browserId of extractPaneIds(rows, getBrowserRuntimeId)) {
-		browserRuntimeRegistry.destroy(browserId);
+	const exitedAt = Date.now();
+	const runtimeIds = extractWorkspacePaneRuntimeIds([existing]);
+	void persistWorkspaceExit(
+		collections,
+		workspaceId,
+		exitedAt,
+		() =>
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				applyExitFlags(draft, exitedAt);
+				applyWorkspaceExitCleanup(draft, exitedAt);
+			}),
+		additionalMutations,
+	).then(() => cleanupWorkspacePaneRuntimeIds(runtimeIds, "dispose"));
+}
+
+type RowlessWorkspaceExitFlags = Pick<
+	WorkspaceLocalStateDraft["sidebarState"],
+	"isHidden"
+> &
+	Partial<
+		Pick<
+			WorkspaceLocalStateDraft["sidebarState"],
+			| "archivedAt"
+			| "completedAt"
+			| "deletedAt"
+			| "snoozeLaunchId"
+			| "snoozeUntil"
+		>
+	>;
+
+function insertWorkspaceExitRow(
+	collections: WorkspaceExitCollections,
+	workspaceId: string,
+	projectId: string | null,
+	createFlags: (exitedAt: number) => RowlessWorkspaceExitFlags,
+	additionalMutations: readonly WorkspaceExitMutation[] = [],
+): void {
+	const exitedAt = Date.now();
+	void persistWorkspaceExit(
+		collections,
+		workspaceId,
+		exitedAt,
+		() =>
+			collections.v2WorkspaceLocalState.insert({
+				workspaceId,
+				createdAt: new Date(),
+				sidebarState: {
+					projectId,
+					tabOrder: 0,
+					sectionId: null,
+					...workspaceExitCleanupState(exitedAt),
+					...createFlags(exitedAt),
+				},
+				paneLayout: createEmptyPaneLayout(),
+			}),
+		additionalMutations,
+	);
+}
+
+type WorkspaceCompletionHostRow = Pick<
+	HostShapedWorkspace,
+	"id" | "projectId" | "type"
+>;
+
+type WorkspaceCompletionCollections = Pick<
+	AppCollections,
+	"v2SidebarProjects" | "v2SidebarSections" | "v2WorkspaceLocalState"
+> & { activeOrganizationId: string };
+
+/**
+ * Runs the complete-card sidebar lifecycle without requiring the full sidebar
+ * React hook. The command owns row creation and workspace-type validation so
+ * repair callers cannot bypass exit cleanup when a prior write stopped halfway.
+ */
+export function completeWorkspaceInSidebar(
+	collections: WorkspaceCompletionCollections,
+	hostWorkspaces: readonly WorkspaceCompletionHostRow[],
+	workspaceId: string,
+	completedAt: number,
+	persistCardIntent?: WorkspaceExitMutation["mutate"],
+): boolean {
+	const hostWorkspace = hostWorkspaces.find(
+		(candidate) => candidate.id === workspaceId,
+	);
+	if (!hostWorkspace) {
+		console.error(
+			`[completeWorkspace] refusing to complete ${workspaceId}: workspace type unresolvable (host lists miss)`,
+		);
+		return false;
 	}
+	if (hostWorkspace.type === "main") return false;
+
+	const additionalMutations: readonly WorkspaceExitMutation[] = persistCardIntent
+		? [
+				{
+					storageKey: kanbanCardsStorageKey(collections.activeOrganizationId),
+					mutate: persistCardIntent,
+				},
+			]
+		: [];
+
+	if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
+		if (hostWorkspace.projectId !== null) {
+			ensureSidebarProjectRecord(collections, hostWorkspace.projectId);
+		}
+		insertWorkspaceExitRow(
+			collections,
+			workspaceId,
+			hostWorkspace.projectId,
+			() => ({
+				completedAt,
+				isHidden: true,
+				archivedAt: null,
+				snoozeUntil: null,
+				snoozeLaunchId: null,
+			}),
+			additionalMutations,
+		);
+		return true;
+	}
+
+	// The caller's `completedAt` is the board's own record of when the card
+	// landed in Completed and can be older than this call, so the cleanup debt
+	// gets its own instant from `exitWorkspaceRow`.
+	exitWorkspaceRow(collections, workspaceId, (draft) => {
+		draft.sidebarState.completedAt = completedAt;
+		// isHidden too, so raw-visibility consumers (notifications, ports,
+		// accessible-list "in sidebar") treat it like an archived row. The bucket
+		// classifier checks completedAt first, so it never appears under Archived.
+		draft.sidebarState.isHidden = true;
+		draft.sidebarState.archivedAt = null;
+		applyAutomaticSnoozeReturn(draft.sidebarState);
+	}, additionalMutations);
+	return true;
+}
+
+export function uncompleteWorkspaceInSidebar(
+	collections: Pick<AppCollections, "v2WorkspaceLocalState">,
+	workspaceId: string,
+): boolean {
+	if (!collections.v2WorkspaceLocalState.get(workspaceId)) return false;
+	collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+		draft.sidebarState.completedAt = null;
+		draft.sidebarState.isHidden = false;
+		draft.sidebarState.archivedAt = null;
+		cancelWorkspaceExitCleanup(draft.sidebarState);
+	});
+	return true;
 }
 
 export function useDashboardSidebarState() {
@@ -672,9 +915,18 @@ export function useDashboardSidebarState() {
 	);
 
 	// --- Snooze / Archive ---------------------------------------------------
-	// All visual-only: they only flip local sidebar flags, intentionally leaving
-	// the worktree and any running session untouched so a restored thread comes
-	// back exactly as it was.
+	// The worktree and branch are untouched, and every sidebar flag is
+	// restorable. The workspace's RUNTIME is not: (WORKTREE-EXIT-CLEANUP) treats
+	// Snooze and Archive as exits like Completed and Recycle Bin, so both clear
+	// the tabs, dispose the terminals and hand the host its half of the teardown
+	// (kill the sessions, release the pinned Claude account). A restored thread
+	// comes back as an empty workspace, not with a wall of stale panes.
+	//
+	// Snooze is TIMED and the account release is not: a snoozed thread returns
+	// on its own, but it returns Following, and re-pinning it is a manual
+	// choice. That asymmetry is deliberate and signed off — the point of
+	// snoozing is to stop the thread consuming an account while it waits, and a
+	// pin that came back by itself would quietly resume the spend.
 
 	const archiveWorkspace = useCallback(
 		// (RECYCLE-BIN-SESSIONS) Same contract as deleteWorkspace / snoozeWorkspace:
@@ -703,25 +955,21 @@ export function useDashboardSidebarState() {
 					projectId,
 					hostWorkspace?.projectId ?? null,
 				);
-				collections.v2WorkspaceLocalState.insert({
+				insertWorkspaceExitRow(
+					collections,
 					workspaceId,
-					createdAt: new Date(),
-					sidebarState: {
-						projectId: resolvedProjectId,
-						tabOrder: 0,
-						sectionId: null,
+					resolvedProjectId,
+					(exitedAt) => ({
 						isHidden: true,
-						archivedAt: Date.now(),
-					},
-					paneLayout: createEmptyPaneLayout(),
-				});
+						archivedAt: exitedAt,
+					}),
+				);
 				return;
 			}
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+			exitWorkspaceRow(collections, workspaceId, (draft, exitedAt) => {
 				draft.sidebarState.isHidden = true;
-				draft.sidebarState.archivedAt = Date.now();
-				draft.sidebarState.snoozeUntil = null;
-				draft.sidebarState.snoozeLaunchId = null;
+				draft.sidebarState.archivedAt = exitedAt;
+				applyAutomaticSnoozeReturn(draft.sidebarState);
 			});
 		},
 		[collections, hostWorkspaces],
@@ -754,23 +1002,20 @@ export function useDashboardSidebarState() {
 					projectId,
 					hostWorkspace?.projectId ?? null,
 				);
-				collections.v2WorkspaceLocalState.insert({
+				insertWorkspaceExitRow(
+					collections,
 					workspaceId,
-					createdAt: new Date(),
-					sidebarState: {
-						projectId: resolvedProjectId,
-						tabOrder: 0,
-						sectionId: null,
+					resolvedProjectId,
+					() => ({
 						isHidden: false,
 						...(until === "next-launch"
 							? { snoozeLaunchId: APP_LAUNCH_ID }
 							: { snoozeUntil: until }),
-					},
-					paneLayout: createEmptyPaneLayout(),
-				});
+					}),
+				);
 				return;
 			}
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+			exitWorkspaceRow(collections, workspaceId, (draft) => {
 				if (until === "next-launch") {
 					draft.sidebarState.snoozeUntil = null;
 					draft.sidebarState.snoozeLaunchId = APP_LAUNCH_ID;
@@ -785,12 +1030,22 @@ export function useDashboardSidebarState() {
 		[collections, hostWorkspaces],
 	);
 
+	const autoReturnSnoozedWorkspace = useCallback(
+		(workspaceId: string) => {
+			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+				applyAutomaticSnoozeReturn(draft.sidebarState);
+			});
+		},
+		[collections],
+	);
+
 	const unsnoozeWorkspace = useCallback(
 		(workspaceId: string) => {
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.snoozeUntil = null;
-				draft.sidebarState.snoozeLaunchId = null;
+				applyAutomaticSnoozeReturn(draft.sidebarState);
+				cancelWorkspaceExitCleanup(draft.sidebarState);
 			});
 		},
 		[collections],
@@ -826,6 +1081,7 @@ export function useDashboardSidebarState() {
 				collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 					draft.sidebarState.isHidden = false;
 					draft.sidebarState.archivedAt = null;
+					cancelWorkspaceExitCleanup(draft.sidebarState);
 				});
 			}
 		},
@@ -887,32 +1143,28 @@ export function useDashboardSidebarState() {
 					projectId,
 					hostWorkspace.projectId,
 				);
-				collections.v2WorkspaceLocalState.insert({
+				insertWorkspaceExitRow(
+					collections,
 					workspaceId,
-					createdAt: new Date(),
-					sidebarState: {
-						projectId: resolvedProjectId,
-						tabOrder: 0,
-						sectionId: null,
+					resolvedProjectId,
+					(exitedAt) => ({
 						// isHidden too, so raw-visibility consumers (notifications, ports,
 						// accessible-list "in sidebar") treat it like an archived row. The
 						// bucket classifier checks deletedAt FIRST, so it never surfaces
 						// under Archived/Completed.
 						isHidden: true,
-						deletedAt: Date.now(),
-					},
-					paneLayout: createEmptyPaneLayout(),
-				});
+						deletedAt: exitedAt,
+					}),
+				);
 				return true;
 			}
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.deletedAt = Date.now();
+			exitWorkspaceRow(collections, workspaceId, (draft, exitedAt) => {
+				draft.sidebarState.deletedAt = exitedAt;
 				draft.sidebarState.isHidden = true;
 				// Clear every other state flag so a re-delete after a restore lands
 				// cleanly in the bin with a fresh timestamp.
 				draft.sidebarState.archivedAt = null;
-				draft.sidebarState.snoozeUntil = null;
-				draft.sidebarState.snoozeLaunchId = null;
+				applyAutomaticSnoozeReturn(draft.sidebarState);
 				draft.sidebarState.completedAt = null;
 			});
 			return true;
@@ -924,6 +1176,14 @@ export function useDashboardSidebarState() {
 	// every other state flag (archived/completed/snooze) plus isHidden so the row
 	// re-enters the active lane regardless of what it was before deletion. A later
 	// re-delete stamps a fresh deletedAt.
+	//
+	// (WORKTREE-EXIT-CLEANUP) It also CANCELS any host cleanup still pending, and
+	// so does every other un-exit (unarchive, unsnooze, uncomplete): the user has
+	// said they are not done with the thread, so killing its remaining terminals
+	// and unpinning its account is no longer what they asked for. Only the
+	// unstarted part is cancelled — the panes and renderer runtimes went at exit
+	// and do not come back, and a teardown already in flight on the host finishes
+	// on its own; the reconciler discards its late answer.
 	const restoreWorkspace = useCallback(
 		(workspaceId: string) => {
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
@@ -932,8 +1192,8 @@ export function useDashboardSidebarState() {
 				draft.sidebarState.isHidden = false;
 				draft.sidebarState.archivedAt = null;
 				draft.sidebarState.completedAt = null;
-				draft.sidebarState.snoozeUntil = null;
-				draft.sidebarState.snoozeLaunchId = null;
+				applyAutomaticSnoozeReturn(draft.sidebarState);
+				cancelWorkspaceExitCleanup(draft.sidebarState);
 			});
 		},
 		[collections],
@@ -943,49 +1203,28 @@ export function useDashboardSidebarState() {
 	// Set/cleared exclusively by the kanban board's complete/uncomplete actions
 	// (drag into / out of the fixed Completed column) — the card's placement is
 	// the single intent signal, so no sidebar surface offers these directly.
-	// Like snooze/archive these are visual-only: worktree + sessions untouched.
+	// Like snooze/archive, completing is an EXIT (WORKTREE-EXIT-CLEANUP): the
+	// worktree survives, the runtime does not.
 
 	const completeWorkspace = useCallback(
-		(workspaceId: string, completedAt: number) => {
-			// A repo's main workspace can never be completed (the board rejects the
-			// drop; this guard keeps any other caller honest). Same fail-loud type
-			// resolution as deleteWorkspace (MASTER-ARCHIVE-ONLY): host record
-			// first, cloud cache fallback, unknown type refuses.
-			const workspaceType =
-				hostWorkspaces.find((candidate) => candidate.id === workspaceId)
-					?.type ?? null;
-			if (workspaceType == null) {
-				console.error(
-					`[completeWorkspace] refusing to complete ${workspaceId}: workspace type unresolvable (host lists miss)`,
-				);
-				return;
-			}
-			if (workspaceType === "main") return;
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.completedAt = completedAt;
-				// isHidden too, so raw-visibility consumers (notifications, ports,
-				// accessible-list "in sidebar") treat it like an archived row. The
-				// bucket classifier checks completedAt FIRST, so it never surfaces
-				// under Archived.
-				draft.sidebarState.isHidden = true;
-				draft.sidebarState.archivedAt = null;
-				draft.sidebarState.snoozeUntil = null;
-				draft.sidebarState.snoozeLaunchId = null;
-			});
-		},
+		(
+			workspaceId: string,
+			completedAt: number,
+			persistCardIntent?: WorkspaceExitMutation["mutate"],
+		) =>
+			completeWorkspaceInSidebar(
+				collections,
+				hostWorkspaces,
+				workspaceId,
+				completedAt,
+				persistCardIntent,
+			),
 		[collections, hostWorkspaces],
 	);
 
 	const uncompleteWorkspace = useCallback(
-		(workspaceId: string) => {
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.completedAt = null;
-				draft.sidebarState.isHidden = false;
-				draft.sidebarState.archivedAt = null;
-			});
-		},
+		(workspaceId: string) =>
+			uncompleteWorkspaceInSidebar(collections, workspaceId),
 		[collections],
 	);
 
@@ -1010,6 +1249,7 @@ export function useDashboardSidebarState() {
 
 	return {
 		archiveWorkspace,
+		autoReturnSnoozedWorkspace,
 		completeWorkspace,
 		createSection,
 		deleteSection,

@@ -14,8 +14,7 @@ export type { CompleteWorkspaceCardResult };
 
 export function useCompleteWorkspaceCard() {
 	const collections = useCollections();
-	const { completeWorkspace, ensureWorkspaceInSidebar } =
-		useDashboardSidebarState();
+	const { completeWorkspace } = useDashboardSidebarState();
 	const { projects } = useHostProjects();
 	const { workspaces } = useHostWorkspaces();
 
@@ -50,19 +49,6 @@ export function useCompleteWorkspaceCard() {
 			if (!verdict.ok) return verdict;
 			const { workspace: eligible, projectId } = verdict;
 
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
-				ensureWorkspaceInSidebar(workspaceId, projectId);
-				if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
-					// Loud, structured failure — the caller turns this into its toast
-					// rather than throwing through a context-menu onSelect.
-					return {
-						ok: false,
-						reason: `Failed to create sidebar state for workspace ${workspaceId}`,
-						canFreezeCard: false,
-					};
-				}
-			}
-
 			const completedAt = Date.now();
 			const completedCard = buildCompletedWorkspaceCard({
 				workspace: eligible,
@@ -71,22 +57,23 @@ export function useCompleteWorkspaceCard() {
 				completedAt,
 			});
 
-			if (existingCard) {
-				collections.v2KanbanCards.update(cardId, (draft) => {
-					Object.assign(draft, completedCard);
-				});
-			} else {
-				collections.v2KanbanCards.insert(completedCard);
+			const persistCardIntent = () => {
+				if (existingCard) {
+					return collections.v2KanbanCards.update(cardId, (draft) => {
+						Object.assign(draft, completedCard);
+					});
+				}
+				return collections.v2KanbanCards.insert(completedCard);
+			};
+			if (!completeWorkspace(workspaceId, completedAt, persistCardIntent)) {
+				return {
+					ok: false,
+					reason: `Failed to complete workspace ${workspaceId}`,
+					canFreezeCard: false,
+				};
 			}
-			completeWorkspace(workspaceId, completedAt);
 			return { ok: true };
 		},
-		[
-			collections,
-			completeWorkspace,
-			ensureWorkspaceInSidebar,
-			projectNameById,
-			workspaceById,
-		],
+		[collections, completeWorkspace, projectNameById, workspaceById],
 	);
 }

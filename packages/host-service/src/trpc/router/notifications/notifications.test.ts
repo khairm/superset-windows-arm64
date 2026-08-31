@@ -3,6 +3,7 @@ import type { AgentIdentity } from "@superset/shared/agent-identity";
 import type { AgentLifecycleEventType } from "../../../events";
 import { TerminalAgentStore } from "../../../terminal-agents";
 import type { HostServiceContext } from "../../../types";
+import { setCompanionLifecycleSink } from "./companion-lifecycle-sink";
 import { nextLifecycleInstantMs, notificationsRouter } from "./notifications";
 
 interface BroadcastedAgentLifecycleEvent {
@@ -249,6 +250,45 @@ describe("notificationsRouter.hook", () => {
 		expect(binding?.lastEventType).toBe("Failed");
 		expect(binding?.agentId).toBe("claude");
 		expect(binding?.agentSessionId).toBe("session-abc");
+	});
+
+	// (ALERT-RETIRE-ON-EXIT) host.db's last-event row is the only durable
+	// evidence of a ready alert, and a lifecycle-sink fault means its retraction
+	// was never queued. Burying the `Stop` under this Start would strand the card
+	// on the phone for its full TTL with no id left to name it, so the hook fails
+	// instead and leaves the row for the restart path.
+	it("keeps the prior Stop row when the lifecycle sink faults", async () => {
+		const { ctx, terminalAgentStore } = createContext("workspace-1");
+		const caller = notificationsRouter.createCaller(ctx);
+
+		await caller.hook({
+			terminalId: "terminal-1",
+			eventType: "Stop",
+			agent: { agentId: "claude", sessionId: "session-abc" },
+		});
+		const stopAt = terminalAgentStore.get("terminal-1")?.lastEventAt;
+
+		setCompanionLifecycleSink({
+			observeStatus: () => {
+				throw new Error("alert manager exploded");
+			},
+			record: () => {},
+		});
+		try {
+			await expect(
+				caller.hook({
+					terminalId: "terminal-1",
+					eventType: "Start",
+					agent: { agentId: "claude", sessionId: "session-abc" },
+				}),
+			).rejects.toThrow("alert manager exploded");
+		} finally {
+			setCompanionLifecycleSink(null);
+		}
+
+		const binding = terminalAgentStore.get("terminal-1");
+		expect(binding?.lastEventType).toBe("Stop");
+		expect(binding?.lastEventAt).toBe(stopAt);
 	});
 
 	it("nudges the linked task to In Progress once per task on Start events", async () => {

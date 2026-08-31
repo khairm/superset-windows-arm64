@@ -286,6 +286,40 @@ export const notificationsRouter = router({
 			occurredAt,
 		});
 
+		// (ALERT-RETIRE-ON-EXIT) BEFORE `recordEvent`, and the order is the whole
+		// point. host.db keeps ONE last-event row per terminal, and it is the only
+		// durable evidence that a terminal finished — the alert table is
+		// process-local, so a restart recovers the ready card it may still owe a
+		// retraction for by reading `lastEventType === "Stop"` off that row.
+		// `recordEvent` OVERWRITES it. Run afterwards, a crash in the window
+		// between the write and this call left host.db saying "Start" with no `c`
+		// ever queued: the notification on the phone became unnameable and stood
+		// for its full six-hour TTL.
+		//
+		// Forwarding first makes both outcomes safe. Crash before it and host.db
+		// still says `Stop`, so the next start reconstructs and retracts the exact
+		// id; crash after it and the `c` is already queued on the push chain. Both
+		// can happen at once, which is a DUPLICATE retraction — the phone drops
+		// the second — and duplicating a `c` is the cheap failure while losing the
+		// evidence is the expensive one.
+		//
+		// A FAULT here propagates rather than being swallowed, which closes the
+		// same window a crash opens: it skips the `recordEvent` below, so the
+		// `Stop` row survives for the restart path instead of being buried by an
+		// event whose retraction was never queued. The live dot already moved on
+		// the broadcast above; the cost is the persisted binding (BUS-RESYNC)
+		// reads, which the next hook event replaces.
+		// `forwardCompanionCapture` stays strictly after, below.
+		forwardCompanionLifecycle({
+			payload: input,
+			eventType,
+			terminalId: input.terminalId,
+			workspaceId: terminalSession.originWorkspaceId,
+			occurredAtMs: occurredAt,
+			previousEventType: previousBinding?.lastEventType ?? null,
+			previousEventAtMs: previousBinding?.lastEventAt ?? null,
+		});
+
 		ctx.terminalAgentStore.recordEvent({
 			terminalId: input.terminalId,
 			workspaceId: terminalSession.originWorkspaceId,
@@ -306,15 +340,6 @@ export const notificationsRouter = router({
 			terminalId: input.terminalId,
 			workspaceId: terminalSession.originWorkspaceId,
 			occurredAt,
-		});
-		forwardCompanionLifecycle({
-			payload: input,
-			eventType,
-			terminalId: input.terminalId,
-			workspaceId: terminalSession.originWorkspaceId,
-			occurredAtMs: occurredAt,
-			previousEventType: previousBinding?.lastEventType ?? null,
-			previousEventAtMs: previousBinding?.lastEventAt ?? null,
 		});
 
 		// An agent began working in this workspace — nudge the linked task

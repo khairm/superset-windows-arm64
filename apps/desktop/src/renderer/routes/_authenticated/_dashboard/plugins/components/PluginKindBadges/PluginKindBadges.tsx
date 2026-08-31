@@ -12,7 +12,6 @@ const COMPONENT_KIND_LABELS: Record<
 > = {
 	mcp: { label: "MCP", tooltip: "Remote MCP server — connects over HTTP" },
 	cli: { label: "CLI", tooltip: "Runs a local command on your machine" },
-	skills: { label: "Skill", tooltip: "Adds skills to your agents" },
 };
 
 export function PluginKindBadges({ plugin }: { plugin: PluginCatalogEntry }) {

@@ -80,7 +80,8 @@ export interface UseKanbanActionsResult {
 	/** (RECYCLE-BIN) The default card "Delete" — SOFT, silent (no dialog/toast).
 	 * Bound cards delegate to deleteWorkspace (one source of truth on the branch's
 	 * sidebarState); an unbound (Queued) card stamps its own deletedAt. The
-	 * worktree/branch/sessions are untouched — exactly like Archive. */
+	 * worktree and branch are untouched — but (WORKTREE-EXIT-CLEANUP) closes the
+	 * bound workspace's tabs and terminals, exactly like Archive. */
 	deleteCard: (card: KanbanCardRow) => void;
 	/** (RECYCLE-BIN) Restore a soft-deleted card straight back to ACTIVE — bound
 	 * via restoreWorkspace, unbound by clearing its deletedAt. */
@@ -604,9 +605,10 @@ export function useKanbanActions(): UseKanbanActionsResult {
 		[collections, unarchiveWorkspaces],
 	);
 
-	// (RECYCLE-BIN) Soft delete is the DEFAULT card "Delete" now — silent,
-	// reversible, visual-only (worktree/branch/sessions untouched). Bound cards
-	// delegate to the branch's sidebarState (one source of truth via
+	// (RECYCLE-BIN) Soft delete is the DEFAULT card "Delete" now — silent and
+	// reversible, with the worktree and branch untouched. It is NOT runtime-free:
+	// (WORKTREE-EXIT-CLEANUP) closes a bound workspace's tabs and terminals. Bound
+	// cards delegate to the branch's sidebarState (one source of truth via
 	// deleteWorkspace); unbound (Queued) cards stamp their own deletedAt. The
 	// permanent git-destroy is relocated to "Delete permanently" inside the bin.
 

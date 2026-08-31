@@ -115,7 +115,7 @@ jobs:
       # validated and how many assertions actually executed. The stale stamp is
       # deleted first so a stamp forged by a repair-added step earlier in the
       # job cannot satisfy this check.
-      - name: Enforce cloud severance (frozen — cannot be repaired away)
+      - name: Enforce pre-publish release gates (frozen — cannot be repaired away)
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
@@ -180,6 +180,7 @@ jobs:
           fi
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-no-bundled-skills.mjs
           "$NODE_BIN" scripts/check-cloud-severance.mjs
           # The verifier below is passed to node as a SINGLE-quoted shell
           # argument, and it therefore uses double quotes internally and
@@ -419,7 +420,7 @@ jobs:
       # validated and how many assertions actually executed. The stale stamp is
       # deleted first so a stamp forged by a repair-added step earlier in the
       # job cannot satisfy this check.
-      - name: Enforce cloud severance (frozen — cannot be repaired away)
+      - name: Enforce pre-publish release gates (frozen — cannot be repaired away)
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
@@ -484,6 +485,7 @@ jobs:
           fi
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-no-bundled-skills.mjs
           "$NODE_BIN" scripts/check-cloud-severance.mjs
           # The verifier below is passed to node as a SINGLE-quoted shell
           # argument, and it therefore uses double quotes internally and
@@ -720,7 +722,7 @@ jobs:
       # validated and how many assertions actually executed. The stale stamp is
       # deleted first so a stamp forged by a repair-added step earlier in the
       # job cannot satisfy this check.
-      - name: Enforce cloud severance (frozen — cannot be repaired away)
+      - name: Enforce pre-publish release gates (frozen — cannot be repaired away)
         shell: bash
         env:
           BUILT_SHA: ${{ steps.sha.outputs.sha }}
@@ -785,6 +787,7 @@ jobs:
           fi
           echo "using node: $NODE_BIN ($("$NODE_BIN" --version))"
           rm -f .fork/cloud-severance-stamp.json
+          "$NODE_BIN" scripts/check-no-bundled-skills.mjs
           "$NODE_BIN" scripts/check-cloud-severance.mjs
           # The verifier below is passed to node as a SINGLE-quoted shell
           # argument, and it therefore uses double quotes internally and

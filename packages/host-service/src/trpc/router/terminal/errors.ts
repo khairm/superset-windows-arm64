@@ -21,6 +21,7 @@ export function toTerminalSessionError(
 		case "SESSION_NOT_ACTIVE":
 		case "WORKSPACE_NOT_FOUND":
 		case "WORKTREE_GONE":
+		case "WORKSPACE_RETIRED":
 			return new TRPCError({ code: "NOT_FOUND", message, cause: { kind } });
 		case "DAEMON_UNAVAILABLE":
 			return new TRPCError({

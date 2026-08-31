@@ -8,6 +8,7 @@ import { hostSettings, workspaces } from "../db/schema";
 import type { EventBus } from "../events";
 import { mapConcurrent } from "../lib/map-concurrent";
 import { listUndisposedTerminalIdsByWorkspaceId } from "../terminal/terminal";
+import { beginWorkspaceRetirement } from "../terminal/workspace-launch-fence";
 import { clearLegacyClaudeDefaultAccount } from "../trpc/router/usage/default-account";
 import { FallbackPolicy, type TrayTriggers } from "./fallback";
 import {
@@ -66,6 +67,23 @@ export interface WorkspaceDeletionTarget {
 	terminalIds: readonly string[];
 }
 
+/**
+ * (WORKTREE-EXIT-CLEANUP) What retiring a workspace's runtime actually did on
+ * THIS host. The renderer broadcasts the retirement to every connected host,
+ * so `foundWorkspace: false` is the ordinary answer from a host that does not
+ * own the workspace, not a failure.
+ */
+export interface WorkspaceRuntimeRetirement {
+	/** False when this host has no row for the workspace. */
+	foundWorkspace: boolean;
+	/** Terminal ids whose disposal completed. */
+	terminated: string[];
+	/** Terminal ids whose disposal did not complete; the pin is cleared anyway. */
+	failed: string[];
+	/** True when this call cleared a pin; false when it was already Following. */
+	accountReleased: boolean;
+}
+
 export interface ClaudeAccountsService {
 	start(): Promise<void>;
 	stop(): void;
@@ -74,6 +92,9 @@ export interface ClaudeAccountsService {
 	profileDirFor(workspaceId: string): string;
 	configDirCandidatesFor(workspaceId: string): string[];
 	setWorkspaceAccount(workspaceId: string, slug: string | null): Promise<void>;
+	retireWorkspaceRuntime(
+		workspaceId: string,
+	): Promise<WorkspaceRuntimeRetirement>;
 	getWorkspaceState(
 		workspaceId: string,
 	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">>;
@@ -419,6 +440,70 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				cause: "manual",
 			});
 			this.latchManaged();
+		});
+	}
+
+	/**
+	 * (WORKTREE-EXIT-CLEANUP) Stop everything this workspace is running and
+	 * hand its Claude account back, because the user has exited the workspace.
+	 *
+	 * System-only and idempotent: it never asks the Pi anything, so it works
+	 * with the Pi offline, and it deliberately does NOT gate on `managed` — a
+	 * host that lost its Pi capability can still be carrying a stale pin. An
+	 * unknown workspace answers `foundWorkspace: false` instead of throwing,
+	 * because the renderer broadcasts this to every connected host.
+	 *
+	 * The profile folder itself is left alone; only the credentials inside it
+	 * go, so a restored card starts again on the machine default.
+	 */
+	async retireWorkspaceRuntime(
+		workspaceId: string,
+	): Promise<WorkspaceRuntimeRetirement> {
+		return this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.deps.db.query.workspaces
+				.findFirst({ where: eq(workspaces.id, workspaceId) })
+				.sync();
+			if (!row) {
+				return {
+					foundWorkspace: false,
+					terminated: [],
+					failed: [],
+					accountReleased: false,
+				};
+			}
+			// Opened before disposing: this and the row listing below are one
+			// synchronous step, so a launch in flight on this host either lands
+			// in that list or is refused at its own row insert. The window stays
+			// open across the account release too — a terminal started while the
+			// profile's credentials are being rewritten would come up against a
+			// half-released account — and closes in `finally` so a failure here
+			// cannot fence this workspace's terminals forever.
+			const endRetirement = beginWorkspaceRetirement(workspaceId);
+			try {
+				const { terminated, failed } = await disposeTerminalIds(
+					this.deps.db,
+					listUndisposedTerminalIdsByWorkspaceId(workspaceId, this.deps.db),
+					this.disposalOptions("warn-and-continue"),
+				);
+				// `remove` runs even for an already-Following workspace: the file
+				// is the only place a pinned token can outlive the pin, and the
+				// cache entry it writes makes a stale pinned token unusable from
+				// memory.
+				await this.applyWorkspaceAccountTransition(workspaceId, {
+					desiredSlug: null,
+					credentialAction: "remove",
+					database: { kind: "set", currentSlug: row.claudeAccountSlug },
+					cause: "system",
+				});
+				return {
+					foundWorkspace: true,
+					terminated,
+					failed,
+					accountReleased: row.claudeAccountSlug !== null,
+				};
+			} finally {
+				endRetirement();
+			}
 		});
 	}
 

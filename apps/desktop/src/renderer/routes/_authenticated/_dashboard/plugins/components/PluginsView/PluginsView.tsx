@@ -6,7 +6,6 @@ import {
 } from "@superset/shared/plugins";
 import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@superset/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useNavigate } from "@tanstack/react-router";
@@ -17,7 +16,6 @@ import { PluginIcon } from "renderer/routes/_authenticated/_dashboard/plugins/co
 import { usePluginMutations } from "renderer/routes/_authenticated/_dashboard/plugins/hooks/usePluginMutations";
 import { ManageInstalledDialog } from "./components/ManageInstalledDialog";
 import { PluginCard } from "./components/PluginCard";
-import { SkillsList } from "./components/SkillsList";
 
 export function PluginsView() {
 	const [search, setSearch] = useState("");
@@ -97,128 +95,100 @@ export function PluginsView() {
 	);
 
 	return (
-		<div className="mx-auto w-full max-w-3xl px-6 pb-16">
-			<Tabs defaultValue="plugins">
-				<TabsList className="mb-6">
-					<TabsTrigger value="plugins">Plugins</TabsTrigger>
-					<TabsTrigger value="skills">Skills</TabsTrigger>
-				</TabsList>
+		<div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 pb-16">
+			<div>
+				<h1 className="text-2xl font-semibold text-foreground">Plugins</h1>
+				<p className="mt-1 text-sm text-muted-foreground">
+					Work with your agents across your favorite tools
+				</p>
+			</div>
 
-				<TabsContent value="plugins" className="flex flex-col gap-6">
-					<div>
-						<h1 className="text-2xl font-semibold text-foreground">Plugins</h1>
-						<p className="mt-1 text-sm text-muted-foreground">
-							Work with your agents across your favorite tools
-						</p>
+			<div className="relative">
+				<LuSearch className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+				<Input
+					value={search}
+					onChange={(event) => setSearch(event.target.value)}
+					placeholder="Search plugins"
+					className="rounded-full pl-9"
+				/>
+			</div>
+
+			{installedPlugins.length > 0 && (
+				<section className="flex flex-col gap-3">
+					<div className="flex items-center justify-between">
+						<h2 className="text-sm font-semibold text-foreground">Installed</h2>
+						<Tooltip delayDuration={300}>
+							<TooltipTrigger asChild>
+								<Button
+									variant="ghost"
+									size="icon-xs"
+									className="text-muted-foreground"
+									aria-label="Manage plugins"
+									onClick={() => setIsManageOpen(true)}
+								>
+									<LuSettings2 className="size-4" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>Manage plugins</TooltipContent>
+						</Tooltip>
 					</div>
-
-					<div className="relative">
-						<LuSearch className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-						<Input
-							value={search}
-							onChange={(event) => setSearch(event.target.value)}
-							placeholder="Search plugins"
-							className="rounded-full pl-9"
-						/>
+					<div className="flex flex-wrap gap-2">
+						{installedPlugins.map((plugin) => (
+							<Tooltip key={plugin.name} delayDuration={300}>
+								<TooltipTrigger asChild>
+									<button
+										type="button"
+										aria-label={plugin.interface.displayName}
+										onClick={() => handleOpen(plugin)}
+										className={cn(
+											disabledNames.has(plugin.name) && "opacity-40",
+										)}
+									>
+										<PluginIcon pluginName={plugin.name} className="size-8" />
+									</button>
+								</TooltipTrigger>
+								<TooltipContent>
+									{plugin.interface.displayName}
+									{disabledNames.has(plugin.name) ? " (disabled)" : ""}
+								</TooltipContent>
+							</Tooltip>
+						))}
 					</div>
+				</section>
+			)}
 
-					{installedPlugins.length > 0 && (
-						<section className="flex flex-col gap-3">
-							<div className="flex items-center justify-between">
-								<h2 className="text-sm font-semibold text-foreground">
-									Installed
-								</h2>
-								<Tooltip delayDuration={300}>
-									<TooltipTrigger asChild>
-										<Button
-											variant="ghost"
-											size="icon-xs"
-											className="text-muted-foreground"
-											aria-label="Manage plugins"
-											onClick={() => setIsManageOpen(true)}
-										>
-											<LuSettings2 className="size-4" />
-										</Button>
-									</TooltipTrigger>
-									<TooltipContent>Manage plugins</TooltipContent>
-								</Tooltip>
-							</div>
-							<div className="flex flex-wrap gap-2">
-								{installedPlugins.map((plugin) => (
-									<Tooltip key={plugin.name} delayDuration={300}>
-										<TooltipTrigger asChild>
-											<button
-												type="button"
-												aria-label={plugin.interface.displayName}
-												onClick={() => handleOpen(plugin)}
-												className={cn(
-													disabledNames.has(plugin.name) && "opacity-40",
-												)}
-											>
-												<PluginIcon
-													pluginName={plugin.name}
-													className="size-8"
-												/>
-											</button>
-										</TooltipTrigger>
-										<TooltipContent>
-											{plugin.interface.displayName}
-											{disabledNames.has(plugin.name) ? " (disabled)" : ""}
-										</TooltipContent>
-									</Tooltip>
-								))}
-							</div>
-						</section>
-					)}
-
-					{featured.length > 0 && (
-						<section className="flex flex-col gap-3">
-							<h2 className="text-sm font-semibold text-foreground">
-								Featured
-							</h2>
-							<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-								{featured.map(renderCard)}
-							</div>
-						</section>
-					)}
-
-					{byCategory.map(({ category, plugins }) => (
-						<section key={category} className="flex flex-col gap-3">
-							<h2 className="text-sm font-semibold text-foreground">
-								{category}
-							</h2>
-							<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-								{plugins.map(renderCard)}
-							</div>
-						</section>
-					))}
-
-					{visiblePlugins.length === 0 && (
-						<p className="py-8 text-center text-sm text-muted-foreground">
-							No plugins match "{search.trim()}"
-						</p>
-					)}
-
-					<ManageInstalledDialog
-						open={isManageOpen}
-						onOpenChange={setIsManageOpen}
-						installed={installed ?? []}
-						isBusy={isBusy}
-						onSetEnabled={setEnabled}
-						onUninstall={uninstall}
-					/>
-				</TabsContent>
-
-				<TabsContent value="skills" className="flex flex-col gap-6">
-					<div>
-						<h1 className="text-2xl font-semibold text-foreground">Skills</h1>
-						<p className="mt-1 text-sm text-muted-foreground">
-							Reusable instructions your agents pick up automatically
-						</p>
+			{featured.length > 0 && (
+				<section className="flex flex-col gap-3">
+					<h2 className="text-sm font-semibold text-foreground">Featured</h2>
+					<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+						{featured.map(renderCard)}
 					</div>
-					<SkillsList />
-				</TabsContent>
-			</Tabs>
+				</section>
+			)}
+
+			{byCategory.map(({ category, plugins }) => (
+				<section key={category} className="flex flex-col gap-3">
+					<h2 className="text-sm font-semibold text-foreground">{category}</h2>
+					<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+						{plugins.map(renderCard)}
+					</div>
+				</section>
+			))}
+
+			{visiblePlugins.length === 0 && (
+				<p className="py-8 text-center text-sm text-muted-foreground">
+					No plugins match "{search.trim()}"
+				</p>
+			)}
+
+			<ManageInstalledDialog
+				open={isManageOpen}
+				onOpenChange={setIsManageOpen}
+				installed={installed ?? []}
+				isBusy={isBusy}
+				onSetEnabled={setEnabled}
+				onUninstall={uninstall}
+			/>
 		</div>
 	);
 }

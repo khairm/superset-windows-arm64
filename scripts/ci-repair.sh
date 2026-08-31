@@ -105,11 +105,23 @@ FROZEN_GATE_PATHS=(
   .github/workflows
   scripts/check-dangerous-diagnostics.mjs
   scripts/check-feature-markers.mjs
+  scripts/check-no-bundled-skills.mjs
   scripts/check-cloud-severance.mjs
   scripts/cloud-severance-allowlist.tsv
   scripts/verify-renderer-guards.sh
   scripts/verify-packaged-natives.sh
   scripts/materialize-native-closure.sh
+  # Which VERSION of a native gets fetched, materialized and copied carries the
+  # same authority as the frozen scripts it feeds: fetch-native-prebuilds
+  # derives the companion release tag and the Electron ABI, materialize repairs
+  # the store payloads, copy-native-modules picks which store entry is packaged,
+  # and all three ask bun-locked-versions.sh what the lockfile resolves to.
+  # A repair that "fixed" a native failure by going back to highest-in-
+  # node_modules/.bun would ship a prebuilt for a version the app never
+  # resolves — green build, crash on the user's machine.
+  scripts/fetch-native-prebuilds.sh
+  scripts/bun-locked-versions.sh
+  apps/desktop/scripts/copy-native-modules.ts
   scripts/ci-repair.sh
   scripts/ai-run.sh
   scripts/ai-streak.sh
@@ -411,6 +423,8 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
       # agent-edited) working-tree copy of the checker.
       git show "$BASE_SHA:scripts/check-feature-markers.mjs" > "$STATE_DIR/check-feature-markers.mjs"
       node "$STATE_DIR/check-feature-markers.mjs"
+      git show "$BASE_SHA:scripts/check-no-bundled-skills.mjs" > "$STATE_DIR/check-no-bundled-skills.mjs"
+      node "$STATE_DIR/check-no-bundled-skills.mjs"
       # (CLOUD-SEVERANCE-P1) Belt-and-braces. The step that actually ENFORCES
       # severance lives in .github/workflows/build-arm64.yml, which GitHub
       # freezes for the whole run, so a mid-run repair cannot reach it and the

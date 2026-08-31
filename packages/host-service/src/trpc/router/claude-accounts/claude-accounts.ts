@@ -43,4 +43,14 @@ export const claudeAccountsRouter = router({
 				});
 			}
 		}),
+	/**
+	 * (WORKTREE-EXIT-CLEANUP) System-only teardown for a workspace the user has
+	 * exited. The renderer sends it to every connected host, so a host that does
+	 * not own the workspace answers `foundWorkspace: false` rather than failing.
+	 */
+	retireWorkspaceRuntime: protectedProcedure
+		.input(workspaceInput)
+		.mutation(({ ctx, input }) =>
+			ctx.claudeAccounts.retireWorkspaceRuntime(input.workspaceId),
+		),
 });

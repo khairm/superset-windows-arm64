@@ -172,7 +172,7 @@ export function useDashboardSidebarData() {
 	const collections = useCollections();
 	const { machineId, activeHostUrl } = useLocalHostService();
 	const relayUrl = useRelayUrl();
-	const { toggleProjectCollapsed, unsnoozeWorkspace } =
+	const { autoReturnSnoozedWorkspace, toggleProjectCollapsed } =
 		useDashboardSidebarState();
 	const queryClient = useQueryClient();
 	const workspaceTransactionsById = useWorkspaceTransactionsStore(
@@ -410,8 +410,8 @@ export function useDashboardSidebarData() {
 			}
 		}
 		if (expiredIds.length === 0) return;
-		for (const id of expiredIds) unsnoozeWorkspace(id);
-	}, [nowMs, rawSidebarWorkspaces, unsnoozeWorkspace]);
+		for (const id of expiredIds) autoReturnSnoozedWorkspace(id);
+	}, [autoReturnSnoozedWorkspace, nowMs, rawSidebarWorkspaces]);
 
 	const {
 		sidebarWorkspaces,

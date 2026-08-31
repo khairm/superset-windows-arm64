@@ -329,8 +329,13 @@ function isReportableInstant(value: number): boolean {
  * Never rejects, which is the shared contract of everything below: a host that
  * is down, a bridge that is off (the normal state on most machines) or a
  * mutation that 500s are all `false`. The distinction matters to callers —
- * `accepted: false` is the documented transient while a host's bridge finishes
- * registering, and recording it as done would suppress the retry.
+ * `accepted: false` means NOTHING WAS APPLIED (a bridge still registering, or
+ * one that refused the report on its own evidence), and recording it as done
+ * would suppress the retry.
+ *
+ * The seen report reads its own result rather than going through here: it has a
+ * second field to act on (`refusal`), and folding that into a boolean is what
+ * let a permanently refused report re-send forever.
  */
 function mutateAccepted(
 	mutate: () => Promise<{ accepted?: boolean } | undefined>,
@@ -392,13 +397,13 @@ export function unregisterWorkspaceHost(
  *    alert at all (a `SessionStart` moves it while the hook leaves the
  *    lifecycle outcome null), so hashing that would name nothing.
  *
- * (ONE-BUZZ-UNTIL-READ) A CLEARED GREEN IS NOT THE ONLY EVIDENCE OF A READ.
- * The dot is also cleared by the agent starting work again, and the phone goes
- * on holding the notification for the finish before that — that is the whole
- * point of the standing state on the host. So when the store has an
- * OUTSTANDING ready record for this terminal, opening the chat is a read even
- * though there is no green left to clear, and the record's instant (not the
- * binding's) is what the retraction names.
+ * A CLEARED GREEN IS NOT THE ONLY EVIDENCE OF A READ. The dot is also cleared
+ * by the agent starting work again, and a phone card can still be up for the
+ * finish before that — the host retires it when the next status arrives, but
+ * the report may already be in flight or the host may have restarted since. So
+ * when the store has an OUTSTANDING ready record for this terminal, opening the
+ * chat is a read even though there is no green left to clear, and the record's
+ * instant (not the binding's) is what the retraction names.
  *
  * Returns whether a green dot was cleared, for callers that count.
  */
@@ -447,6 +452,63 @@ export function markTerminalSeenAndReportRead({
 }
 
 /**
+ * (ALERT-RETIRE-ON-EXIT) Reports a host REFUSED on its own evidence, keyed by
+ * the exact claim it refused:
+ * `${hostUrl}\0${workspaceId}\0${terminalId}\0${seenThroughAt}`.
+ *
+ * WHY A LATCH AND NOT A RETRY. The focus path re-reports whenever the terminal
+ * bindings change, which for a live agent is constantly, and it re-reports
+ * while the store still holds an outstanding record for the terminal. A host
+ * that answers `workspace-mismatch` is not busy or still starting up — host.db
+ * does not place that terminal in that workspace and will answer the same way
+ * every time — so without this the pair looped for as long as the record stood.
+ *
+ * IT LATCHES A CLAIM, NOT A TERMINAL, and every part of the key earns its
+ * place. The HOST, because the verdict is that host's own reading of its own
+ * host.db and says nothing about anyone else's: a workspace that moves to
+ * another machine, or a local host-service that comes back on a different
+ * address, is a fresh question and gets asked. The WORKSPACE, so the resync's
+ * report — which names the workspace host.db itself owns — is a different claim
+ * and still goes. The TERMINAL, so one bad pane cannot silence another. The
+ * GENERATION, so the next finish is reported normally rather than inheriting
+ * this one's verdict.
+ *
+ * ONLY A REFUSAL LATCHES. A transport failure, a bridge still registering and
+ * an unreadable host.db all answer `accepted: false` with no refusal, and every
+ * one of them is worth trying again.
+ *
+ * The record itself is NEVER cleared by this — a latched claim retired nothing,
+ * so the phone card is still up and the resync is still the thing that can take
+ * it down.
+ */
+const MAX_REFUSED_SEEN_REPORTS = 256;
+const refusedSeenReports = new Set<string>();
+
+function refusedSeenKey(input: {
+	hostUrl: string;
+	workspaceId: string;
+	terminalId: string;
+	seenThroughAt: number;
+}): string {
+	return `${input.hostUrl}\u0000${input.workspaceId}\u0000${input.terminalId}\u0000${input.seenThroughAt}`;
+}
+
+function latchRefusedSeenReport(key: string): void {
+	refusedSeenReports.add(key);
+	// Oldest first, and one add can only ever put the set one over. An evicted
+	// key costs one duplicate report, which the host refuses again and re-latches.
+	if (refusedSeenReports.size > MAX_REFUSED_SEEN_REPORTS) {
+		const oldest = refusedSeenReports.values().next();
+		if (!oldest.done) refusedSeenReports.delete(oldest.value);
+	}
+}
+
+/** Test seam only: the latch outlives an individual report by design. */
+export function resetSeenRefusalLatchForTest(): void {
+	refusedSeenReports.clear();
+}
+
+/**
  * The user read a chat. Tell its host so the phone and watch drop the
  * ready-for-review notification.
  *
@@ -459,12 +521,17 @@ export function markTerminalSeenAndReportRead({
  * `seenThroughAt` is the HOST's clock (the review entry's `occurredAt`), never
  * this machine's: it is hashed into the alert id the retraction has to name.
  *
- * RESOLVES WITH WHETHER A BRIDGE ACTUALLY CONSUMED IT. Callers that keep a
- * cooldown need to tell a delivered report from one that fell on the floor —
- * `accepted: false` is the documented transient while a host's bridge finishes
- * registering, and recording that as "repaired" would suppress the retry for as
- * long as the cooldown lasts. Never rejects: the dot has already cleared
- * locally and there is nothing a caller could usefully do with a throw.
+ * RESOLVES WITH WHETHER THE HOST ACTUALLY APPLIED IT. Callers that keep a
+ * cooldown, or an outstanding record, need to tell a delivered report from one
+ * that fell on the floor. `accepted: false` covers both a bridge still
+ * registering AND a host that refused the report on its own evidence (host.db
+ * does not place that terminal in that workspace, or could not be read to
+ * check) — in every one of them nothing was retired, so recording it as
+ * "repaired" would strand the phone card for as long as the cooldown lasts.
+ * Never rejects: the dot has already cleared locally and there is nothing a
+ * caller could usefully do with a throw.
+ *
+ * A REFUSED CLAIM IS NOT PUT ON THE WIRE AGAIN — see `refusedSeenReports`.
  */
 export function reportTerminalSeen({
 	workspaceId,
@@ -478,21 +545,39 @@ export function reportTerminalSeen({
 	const hostUrl = hostUrlByWorkspaceId.get(workspaceId);
 	if (hostUrl === undefined) return Promise.resolve(false);
 	if (!isReportableInstant(seenThroughAt)) return Promise.resolve(false);
+	const key = refusedSeenKey({
+		hostUrl,
+		workspaceId,
+		terminalId,
+		seenThroughAt,
+	});
+	if (refusedSeenReports.has(key)) return Promise.resolve(false);
 	// Silent on failure: the dot has already cleared locally, the frame's own
 	// 24 h TTL and the phone's foreground sweep are the backstops, and there is
 	// nothing the user could do with this.
-	return mutateAccepted(() =>
-		getHostServiceClientByUrl(hostUrl).companion.markLifecycleSeen.mutate({
+	return getHostServiceClientByUrl(hostUrl)
+		.companion.markLifecycleSeen.mutate({
 			workspaceId,
 			terminalId,
 			seenThroughAt,
-		}),
-	).then((accepted) => {
-		if (!accepted) {
+		})
+		.then((result) => {
+			if (result?.accepted === true) return true;
+			if (result?.refusal === "workspace-mismatch") {
+				latchRefusedSeenReport(key);
+				log({ event: "seen_report_refused", hostUrl, terminalId });
+				return false;
+			}
 			log({ event: "seen_report_unconsumed", hostUrl, terminalId });
-		}
-		return accepted;
-	});
+			return false;
+		})
+		.catch(() => {
+			// A host that is down reads exactly like a bridge that is off: nothing
+			// was retired either way, and the ONE line that says so is this one.
+			// Returning false in silence left the commonest failure invisible.
+			log({ event: "seen_report_unconsumed", hostUrl, terminalId });
+			return false;
+		});
 }
 
 // ---------------------------------------------------------------------------
@@ -512,8 +597,26 @@ export function reportTerminalSeen({
  * Added ONLY on `accepted === true`. A host whose bridge was still registering
  * answers `false`, and that report changed nothing — leaving it unlatched is
  * what lets the next resync epoch try again.
+ *
+ * AN UNLATCHED HOST IS NOT ENOUGH ON ITS OWN. The other reason a host answers
+ * `false` is that it REFUSED the boundary as out of range — most plausibly one
+ * in its own future, which its clock stepping forward after this renderer
+ * derived the instant is enough to produce. Re-offering the identical number
+ * would be refused identically, forever, so the caller drops its cached
+ * per-host boundary and derives a fresh one; `hasAcknowledgedRelaunchBoundary`
+ * is how it tells that case from an already-settled host.
  */
 const relaunchBoundaryAcknowledgedHosts = new Set<string>();
+
+/**
+ * (ALERT-RETIRE-ON-EXIT) Has this host already accepted a boundary for this
+ * launch? Asked by the caller ONLY to read a `false` correctly: a settled host
+ * answers `false` because there is nothing left to send, an unsettled one
+ * because the report did not land.
+ */
+export function hasAcknowledgedRelaunchBoundary(hostUrl: string): boolean {
+	return relaunchBoundaryAcknowledgedHosts.has(hostUrl);
+}
 
 /**
  * (ALERT-RETIRE-ON-EXIT) Tell one host when this desktop launch came up, so it
@@ -524,13 +627,19 @@ const relaunchBoundaryAcknowledgedHosts = new Set<string>();
  * one workspace, and the caller — the resync — already holds the host URL.
  *
  * SAME SILENT-ON-FAILURE CONTRACT as `reportTerminalSeen`: a host that is down,
- * a bridge that is off (the normal state on most machines) or a mutation that
- * 500s all resolve `false`. Nothing here may reject, and nothing may surface to
- * the user — the desktop has already relaunched and shown them everything.
+ * a bridge that is off (the normal state on most machines), a mutation that
+ * 500s and a host that REFUSED the boundary all resolve `false`. Nothing here
+ * may reject, and nothing may surface to the user — the desktop has already
+ * relaunched and shown them everything.
  *
  * THE LATCH IS CHECKED IN HERE, not by the caller. "Once per host per launch"
  * is this function's own rule — the Set is private to it — and a caller that
  * had to remember to ask first is a caller that can forget.
+ *
+ * THE BOUNDARY IS NOT THIS FUNCTION'S TO RE-DERIVE. It reports the number it is
+ * given and says whether the host took it; deciding that an unconsumed report
+ * means "derive a new instant" belongs to the resync, which owns the per-host
+ * boundary and the monotonic clock behind it.
  *
  * The instant guard is the shared one — see `isReportableInstant`.
  */
