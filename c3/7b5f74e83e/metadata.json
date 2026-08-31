@@ -3,7 +3,7 @@
   "checkpoint_id": "c37b5f74e83e",
   "strategy": "manual-commit",
   "branch": "remove-superset-base-skills",
-  "checkpoints_count": 235,
+  "checkpoints_count": 247,
   "files_touched": [
     ".claude-plugin/marketplace.json",
     ".github/actions/arm64-build/action.yml",
@@ -193,13 +193,19 @@
       "transcript": "/c3/7b5f74e83e/1/full.jsonl",
       "content_hash": "/c3/7b5f74e83e/1/content_hash.txt",
       "prompt": "/c3/7b5f74e83e/1/prompt.txt"
+    },
+    {
+      "metadata": "/c3/7b5f74e83e/2/metadata.json",
+      "transcript": "/c3/7b5f74e83e/2/full.jsonl",
+      "content_hash": "/c3/7b5f74e83e/2/content_hash.txt",
+      "prompt": "/c3/7b5f74e83e/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 6477230,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 195604992,
-    "output_tokens": 320506,
-    "api_call_count": 1338
+    "input_tokens": 6492491,
+    "cache_creation_tokens": 434072,
+    "cache_read_tokens": 203488131,
+    "output_tokens": 374708,
+    "api_call_count": 1406
   }
 }

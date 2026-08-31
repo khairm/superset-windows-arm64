@@ -1,0 +1,164 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "c37b5f74e83e",
+  "session_id": "f9a1cec4-1b10-4b58-9eaf-6d999f31b436",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-31T12:37:30.8834883Z",
+  "branch": "remove-superset-base-skills",
+  "checkpoints_count": 12,
+  "save_step_count": 13,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/lib/trpc/routers/plugins/index.ts",
+    "apps/desktop/src/main/index.ts",
+    "apps/desktop/src/main/lib/plugin-installs.ts",
+    "apps/desktop/src/renderer/lib/host-service-client.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/automations/page.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/layout.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/$pluginName/components/PluginDetail/PluginDetail.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginIcon/PluginIcon.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginKindBadges/PluginKindBadges.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/PluginsView.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/components/ManageInstalledDialog/ManageInstalledDialog.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/components/SkillsList/SkillsList.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/components/SkillsList/components/SkillPreviewDialog/SkillPreviewDialog.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/components/SkillsList/components/SkillPreviewDialog/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/PluginsView/components/SkillsList/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/SkillIcon/SkillIcon.tsx",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/plugins/components/SkillIcon/index.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/V2WorkspaceView/V2WorkspaceView.tsx",
+    "apps/desktop/vite/helpers.ts",
+    "apps/docs/content/docs/agent-integration.mdx",
+    "apps/docs/content/docs/browser.mdx",
+    "apps/docs/content/docs/computer.mdx",
+    "apps/docs/content/docs/meta.json",
+    "apps/docs/content/docs/skills.mdx",
+    "docs/agent-tooling.md",
+    "package.json",
+    "packages/agent-setup/src/index.ts",
+    "packages/agent-setup/src/managed-skills.ts",
+    "packages/agent-setup/src/provider-profiles.test.ts",
+    "packages/agent-setup/src/provider-profiles.ts",
+    "packages/cli/src/lib/settings/registry.ts",
+    "packages/host-service/src/companion/index.ts",
+    "packages/host-service/src/terminal/terminal.ts",
+    "packages/host-service/src/trpc/router/usage/account-provisioning.ts",
+    "packages/host-service/test/helpers/claude-accounts-fixture.ts",
+    "packages/local-db/src/schema/schema.ts",
+    "packages/shared/src/plugins/index.ts",
+    "plans/20260818-org-plugin-governance.md",
+    "plugins/superset/skills/browser/SKILL.md",
+    "plugins/superset/skills/computer/SKILL.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5[1m]",
+  "turn_id": "91448705e6e1",
+  "token_usage": {
+    "input_tokens": 15261,
+    "cache_creation_tokens": 434072,
+    "cache_read_tokens": 7883139,
+    "output_tokens": 54202,
+    "api_call_count": 68
+  },
+  "session_metrics": {
+    "turn_count": 31
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-31T12:37:30.8454343Z",
+    "agent_lines": 0,
+    "agent_removed": 1599,
+    "human_added": 7484,
+    "human_modified": 15682,
+    "human_removed": 0,
+    "total_committed": 23166,
+    "total_lines_changed": 27790,
+    "agent_percentage": 5.753868297948903,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
