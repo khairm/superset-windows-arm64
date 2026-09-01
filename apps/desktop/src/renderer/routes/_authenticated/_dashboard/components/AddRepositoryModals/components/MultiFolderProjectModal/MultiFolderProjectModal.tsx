@@ -61,8 +61,10 @@ export function MultiFolderProjectModal({
 
 	const handleAddFolders = async () => {
 		if (!activeHostUrl) {
+			// `action` is a key into a closed, translated set now, not a free
+			// sentence fragment — folder validation is part of the folder import.
 			showHostServiceUnavailableToast(hostService, {
-				action: "validate the selected folders",
+				action: "importFolder",
 			});
 			return;
 		}
@@ -129,7 +131,7 @@ export function MultiFolderProjectModal({
 		}
 		if (!activeHostUrl) {
 			showHostServiceUnavailableToast(hostService, {
-				action: "create the multi-repo workspace",
+				action: "createWorkspace",
 			});
 			return;
 		}

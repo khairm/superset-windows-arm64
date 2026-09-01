@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { CheckResourcesHotkeyMount } from "renderer/commandPalette";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
@@ -16,7 +17,10 @@ import {
 } from "renderer/stores/settings-state";
 import { NavigationControls } from "../_dashboard/components/NavigationControls";
 import { SearchResultsBanner } from "./components/SearchResultsBanner";
-import { SettingsSidebar } from "./components/SettingsSidebar";
+import {
+	FULL_WIDTH_SECTION_PATHS,
+	SettingsSidebar,
+} from "./components/SettingsSidebar";
 import { useScrollReset } from "./hooks/useScrollReset";
 import {
 	getMatchCountBySection,
@@ -34,60 +38,72 @@ export const Route = createFileRoute("/_authenticated/settings")({
 const SECTION_ORDER: SettingsSection[] = [
 	"appearance",
 	"ringtones",
+	"usage",
 	"keyboard",
 	"behavior",
 	"git",
+	"agents",
 	"terminal",
 	"links",
+	"browser",
 	"models",
 	"project",
 	"permissions",
 	"experimental",
 ];
 
+/**
+ * Single source of truth for section <-> path, read in both directions by
+ * getSectionFromPath/getPathFromSection below instead of two independently
+ * hand-maintained lookups that can drift out of sync with each other.
+ */
+const SECTION_PATHS: Partial<Record<SettingsSection, string>> = {
+	account: "/settings/account",
+	organization: "/settings/organization",
+	teams: "/settings/teams",
+	appearance: "/settings/appearance",
+	ringtones: "/settings/ringtones",
+	usage: "/settings/usage",
+	keyboard: "/settings/keyboard",
+	behavior: "/settings/behavior",
+	git: "/settings/git",
+	agents: "/settings/agents",
+	terminal: "/settings/terminal",
+	links: "/settings/links",
+	browser: "/settings/browser",
+	models: "/settings/models",
+	experimental: "/settings/experimental",
+	integrations: "/settings/integrations",
+	billing: "/settings/billing",
+	apikeys: "/settings/api-keys",
+	security: "/settings/security",
+	permissions: "/settings/permissions",
+	hosts: "/settings/hosts",
+	project: "/settings/projects",
+};
+
 function getSectionFromPath(pathname: string): SettingsSection | null {
-	if (pathname.includes("/settings/appearance")) return "appearance";
-	if (pathname.includes("/settings/ringtones")) return "ringtones";
-	if (pathname.includes("/settings/keyboard")) return "keyboard";
-	if (pathname.includes("/settings/behavior")) return "behavior";
-	if (pathname.includes("/settings/git")) return "git";
-	if (pathname.includes("/settings/terminal")) return "terminal";
-	if (pathname.includes("/settings/links")) return "links";
-	if (pathname.includes("/settings/models")) return "models";
-	if (pathname.includes("/settings/experimental")) return "experimental";
-	if (pathname.includes("/settings/permissions")) return "permissions";
-	if (pathname.includes("/settings/project")) return "project";
-	return null;
+	const match = Object.entries(SECTION_PATHS).find(([, path]) =>
+		pathname.includes(path),
+	);
+	return match ? (match[0] as SettingsSection) : null;
 }
 
 function getPathFromSection(section: SettingsSection): string {
-	switch (section) {
-		case "appearance":
-			return "/settings/appearance";
-		case "ringtones":
-			return "/settings/ringtones";
-		case "keyboard":
-			return "/settings/keyboard";
-		case "behavior":
-			return "/settings/behavior";
-		case "git":
-			return "/settings/git";
-		case "terminal":
-			return "/settings/terminal";
-		case "links":
-			return "/settings/links";
-		case "models":
-			return "/settings/models";
-		case "experimental":
-			return "/settings/experimental";
-		case "permissions":
-			return "/settings/permissions";
-		case "project":
-			return "/settings/projects";
-		default:
-			return DEFAULT_SETTINGS_ROUTE;
-	}
+	// (CLOUD-SEVERANCE-P2) /settings/account is severed; fall back to the
+	// fork's first reachable settings route instead.
+	return SECTION_PATHS[section] ?? DEFAULT_SETTINGS_ROUTE;
 }
+
+/**
+ * Sections whose drilldown routes (a param segment with no index route of
+ * its own) would 404 if the Escape handler below popped just one path
+ * segment — going up from those lands on /settings/usage instead.
+ */
+const NON_ROUTABLE_ESCAPE_PARENTS = new Set([
+	"/settings/usage/model",
+	"/settings/usage/workspace",
+]);
 
 function SettingsLayout() {
 	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
@@ -112,6 +128,8 @@ function SettingsLayout() {
 		if (!currentSection) return;
 
 		if (currentSection === "project") return;
+		if (currentSection === "hosts") return;
+		if (currentSection === "usage") return;
 
 		const matchCounts = getMatchCountBySection(normalizedSearchQuery);
 		const currentHasMatches = (matchCounts[currentSection] ?? 0) > 0;
@@ -138,19 +156,29 @@ function SettingsLayout() {
 			}
 
 			const parent = `/${segments.slice(0, -1).join("/")}`;
-			navigate({ to: parent });
+			navigate({
+				to: NON_ROUTABLE_ESCAPE_PARENTS.has(parent)
+					? "/settings/usage"
+					: parent,
+			});
 		},
 		{ enableOnFormTags: false, enableOnContentEditable: false },
 		[navigate, location.pathname, originRoute],
 	);
 
-	const usesInnerSidebar =
-		location.pathname.startsWith("/settings/projects") ||
-		location.pathname.startsWith("/settings/agents");
+	// Covers the fork's inner-sidebar pages (projects, agents) plus usage —
+	// every section marked `fullWidth` in GeneralSettings.
+	const usesFullWidthContent = FULL_WIDTH_SECTION_PATHS.some((path) =>
+		location.pathname.startsWith(path),
+	);
 
 	return (
-		<div className="flex flex-col h-screen w-screen bg-tertiary">
-			<div className="flex h-12 w-full items-center bg-tertiary">
+		<div className="flex flex-col h-screen w-screen bg-background">
+			{/* CommandPaletteHost (Cmd/Ctrl+K etc.) only mounts inside the
+			    _dashboard route tree; CHECK_RESOURCES needs its own mount here so
+			    the hotkey and native "Resources" menu item still work in Settings. */}
+			<CheckResourcesHotkeyMount />
+			<div className="flex h-12 w-full items-center bg-sidebar dark:bg-muted/35">
 				<div
 					className="drag h-full shrink-0"
 					style={{ width: isMac ? "96px" : "8px" }}
@@ -169,7 +197,7 @@ function SettingsLayout() {
 							onClear={() => setSearchQuery("")}
 						/>
 					)}
-					{usesInnerSidebar ? (
+					{usesFullWidthContent ? (
 						<Outlet />
 					) : (
 						<div className="mx-auto max-w-4xl">

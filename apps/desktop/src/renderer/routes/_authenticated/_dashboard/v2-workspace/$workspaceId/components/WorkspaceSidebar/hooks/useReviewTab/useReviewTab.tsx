@@ -1,3 +1,4 @@
+import { useLingui } from "@lingui/react/macro";
 import type { AppRouter } from "@superset/host-service";
 import { workspaceTrpc } from "@superset/workspace-client";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -32,6 +33,7 @@ export function useReviewTab({
 	onOpenComment,
 	onOpenInDiff,
 }: UseReviewTabParams): SidebarTabDefinition {
+	const { t } = useLingui();
 	// (NON-GIT WORKSPACE) A non-git folder has no PR — skip the PR + threads
 	// queries entirely. Stays true until the query positively resolves non-git
 	// so a real repo never flicker-skips on mount. The Review tab itself isn't
@@ -104,7 +106,7 @@ export function useReviewTab({
 
 	return {
 		id: "review",
-		label: "Review",
+		label: t({ id: "workspace.reviewTab.label", message: "Review" }),
 		icon: LuMessageSquare,
 		badge: openReviewCount > 0 ? openReviewCount : undefined,
 		content,

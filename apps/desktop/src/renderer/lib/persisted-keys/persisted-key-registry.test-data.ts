@@ -121,7 +121,7 @@ export const PERSISTED_KEY_REGISTRY: ReadonlyArray<
 	],
 	["src/renderer/stores/workspace-agents-row.ts", ["workspace-agents-row"]],
 	[
-		"src/renderer/routes/_authenticated/_dashboard/usage/utils/usageLastSection/usageLastSection.ts",
+		"src/renderer/routes/_authenticated/settings/usage/utils/usageLastSection/usageLastSection.ts",
 		["usage-last-section-v1"],
 	],
 	["src/renderer/stores/inline-workspace-ports.ts", ["inline-workspace-ports"]],
@@ -149,7 +149,7 @@ export const PERSISTED_KEY_REGISTRY: ReadonlyArray<
 	],
 	[
 		"src/renderer/routes/_authenticated/components/LeaderboardAutoPublish/hooks/useLeaderboardAutoPublish/autoPublishState.ts",
-		["leaderboard-auto-publish-v1"],
+		["leaderboard-auto-publish-v2"],
 	],
 	["src/renderer/lib/leaderboard/askedState.ts", ["leaderboard-asked-v1"]],
 	[

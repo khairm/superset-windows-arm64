@@ -31,6 +31,8 @@ export interface V2UserPreferencesApi {
 	/** (SESSION-LIFECYCLE) Session-scoped twin of `setProjectSectionFlag`. */
 	setSessionSectionFlag: (flag: SessionSectionFlag, value: boolean) => void;
 	toggleSessionSectionFlag: (flag: SessionSectionFlag) => void;
+	/** Hide/show a tag folder in one project without touching anyone's tags. */
+	setTagFolderHidden: (projectId: string, tag: string, hidden: boolean) => void;
 }
 
 export function useV2UserPreferences(): V2UserPreferencesApi {
@@ -291,6 +293,40 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		[collections],
 	);
 
+	const setTagFolderHidden = useCallback(
+		(projectId: string, tag: string, hidden: boolean) => {
+			const existing = collections.v2UserPreferences.get(
+				V2_USER_PREFERENCES_ID,
+			);
+			const prevMap =
+				existing?.hiddenTagFolders ??
+				DEFAULT_V2_USER_PREFERENCES.hiddenTagFolders;
+			const prev = prevMap[projectId] ?? [];
+			const next = hidden
+				? prev.includes(tag)
+					? prev
+					: [...prev, tag]
+				: prev.filter((entry) => entry !== tag);
+			if (next === prev || (next.length === prev.length && !hidden)) return;
+			const nextMap = { ...prevMap };
+			// Deleting the key (never writing an empty list) keeps the record
+			// from accumulating empty project entries.
+			if (next.length === 0) delete nextMap[projectId];
+			else nextMap[projectId] = next;
+			if (!existing) {
+				collections.v2UserPreferences.insert({
+					...DEFAULT_V2_USER_PREFERENCES,
+					hiddenTagFolders: nextMap,
+				});
+				return;
+			}
+			collections.v2UserPreferences.update(V2_USER_PREFERENCES_ID, (draft) => {
+				draft.hiddenTagFolders = nextMap;
+			});
+		},
+		[collections],
+	);
+
 	return {
 		preferences,
 		setFileLinks,
@@ -307,5 +343,6 @@ export function useV2UserPreferences(): V2UserPreferencesApi {
 		setBuiltinPresetHidden,
 		setSessionSectionFlag,
 		toggleSessionSectionFlag,
+		setTagFolderHidden,
 	};
 }

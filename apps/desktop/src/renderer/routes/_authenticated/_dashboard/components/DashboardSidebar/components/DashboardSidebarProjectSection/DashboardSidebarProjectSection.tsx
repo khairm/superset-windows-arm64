@@ -143,6 +143,7 @@ export function DashboardSidebarProjectSection({
 	if (isSidebarCollapsed) {
 		return (
 			<DashboardSidebarProjectContextMenu
+				projectId={project.id}
 				isPinned={project.isPinned}
 				onTogglePin={() => togglePinProject(project.id)}
 				onCreateSection={handleNewSection}
@@ -173,6 +174,7 @@ export function DashboardSidebarProjectSection({
 	return (
 		<div className="mt-1 first:mt-0">
 			<DashboardSidebarProjectContextMenu
+				projectId={project.id}
 				isPinned={project.isPinned}
 				onTogglePin={() => togglePinProject(project.id)}
 				onCreateSection={handleNewSection}

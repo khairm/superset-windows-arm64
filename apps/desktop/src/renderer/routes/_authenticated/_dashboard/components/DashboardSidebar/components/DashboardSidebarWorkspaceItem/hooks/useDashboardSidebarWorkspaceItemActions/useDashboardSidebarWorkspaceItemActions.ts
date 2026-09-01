@@ -1,4 +1,6 @@
+import { useLingui } from "@lingui/react/macro";
 import type { AppRouter } from "@superset/host-service";
+import { errorMessage } from "@superset/i18n/errors";
 import { toast } from "@superset/ui/sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -199,6 +201,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 	isMainWorkspace = false,
 	isPinned = false,
 }: UseDashboardSidebarWorkspaceItemActionsOptions) {
+	const { t } = useLingui();
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
 	const hostService = useLocalHostService();
@@ -387,7 +390,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const resolveWorktreePath = async (): Promise<string | null> => {
 		if (!activeHostUrl) {
 			showHostServiceUnavailableToast(hostService, {
-				action: "resolve the workspace path",
+				action: "resolveWorkspacePath",
 			});
 			return null;
 		}
@@ -395,7 +398,12 @@ export function useDashboardSidebarWorkspaceItemActions({
 			activeHostUrl,
 		).workspace.get.query({ id: workspaceId });
 		if (!workspace?.worktreePath) {
-			toast.error("Workspace path is not available");
+			toast.error(
+				t({
+					id: "dashboard.sidebar.workspaceActions.pathUnavailable",
+					message: "Workspace path is not available",
+				}),
+			);
 			return null;
 		}
 		return workspace.worktreePath;
@@ -408,7 +416,10 @@ export function useDashboardSidebarWorkspaceItemActions({
 			await electronTrpcClient.external.openInFinder.mutate(path);
 		} catch (error) {
 			toast.error(
-				`Failed to open in Finder: ${error instanceof Error ? error.message : "Unknown error"}`,
+				t({
+					id: "dashboard.sidebar.workspaceActions.openInFinderFailed",
+					message: `Failed to open in Finder: ${errorMessage(error, "Unknown error")}`,
+				}),
 			);
 		}
 	};
@@ -418,10 +429,18 @@ export function useDashboardSidebarWorkspaceItemActions({
 			const path = await resolveWorktreePath();
 			if (!path) return;
 			await copyToClipboard(path);
-			toast.success("Path copied");
+			toast.success(
+				t({
+					id: "dashboard.sidebar.workspaceActions.pathCopied",
+					message: "Path copied",
+				}),
+			);
 		} catch (error) {
 			toast.error(
-				`Failed to copy path: ${error instanceof Error ? error.message : "Unknown error"}`,
+				t({
+					id: "dashboard.sidebar.workspaceActions.copyPathFailed",
+					message: `Failed to copy path: ${errorMessage(error, "Unknown error")}`,
+				}),
 			);
 		}
 	};
@@ -456,7 +475,7 @@ export function useDashboardSidebarWorkspaceItemActions({
 	const handleRemovePullRequest = async () => {
 		if (!workspaceHostUrl) {
 			showHostServiceUnavailableToast(hostService, {
-				action: "remove the PR link",
+				action: "removePrLink",
 			});
 			return;
 		}
@@ -469,22 +488,38 @@ export function useDashboardSidebarWorkspaceItemActions({
 			});
 		} catch (error) {
 			toast.error(
-				`Failed to remove PR link: ${error instanceof Error ? error.message : "Unknown error"}`,
+				t({
+					id: "dashboard.sidebar.workspaceActions.removePrLinkFailed",
+					message: `Failed to remove PR link: ${errorMessage(error, "Unknown error")}`,
+				}),
 			);
 		}
 	};
 
 	const handleCopyBranchName = async () => {
 		if (!branch) {
-			toast.error("Branch name is not available");
+			toast.error(
+				t({
+					id: "dashboard.sidebar.workspaceActions.branchUnavailable",
+					message: "Branch name is not available",
+				}),
+			);
 			return;
 		}
 		try {
 			await copyToClipboard(branch);
-			toast.success("Branch name copied");
+			toast.success(
+				t({
+					id: "dashboard.sidebar.workspaceActions.branchCopied",
+					message: "Branch name copied",
+				}),
+			);
 		} catch (error) {
 			toast.error(
-				`Failed to copy branch name: ${error instanceof Error ? error.message : "Unknown error"}`,
+				t({
+					id: "dashboard.sidebar.workspaceActions.copyBranchFailed",
+					message: `Failed to copy branch name: ${errorMessage(error, "Unknown error")}`,
+				}),
 			);
 		}
 	};

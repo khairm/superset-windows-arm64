@@ -1,11 +1,13 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { discoverClaudeProfiles, discoverCodexHomes } from "../profiles";
-import type { UsageProvider } from "../types";
+import { discoverClaudeProfiles } from "../profiles";
+import type { ModelProvider, UsageAgent } from "../types";
+import { collectUsageEntries } from "./entries";
 import { collectLogFiles, dedupeLogFiles } from "./logs";
+import { inferModelProvider } from "./model-provider";
 import type { UsageLogEntry } from "./parse";
-import { parseClaudeLogFile, parseCodexLogFile } from "./parse";
+import { parseClaudeLogFile } from "./parse";
 import {
 	cacheSavingsUsd,
 	costUsd,
@@ -16,13 +18,14 @@ import {
 export interface UsageDailyBucket {
 	/** Local calendar day, `YYYY-MM-DD` in the host's timezone. */
 	day: string;
-	providers: Partial<Record<UsageProvider, { usd: number; tokens: number }>>;
+	agents: Partial<Record<UsageAgent, { usd: number; tokens: number }>>;
 	usd: number;
 	tokens: number;
 }
 
 export interface UsageModelBreakdown {
-	provider: UsageProvider;
+	agent: UsageAgent;
+	modelProvider: ModelProvider;
 	model: string;
 	usd: number;
 	tokens: number;
@@ -53,7 +56,7 @@ export interface UsageSessionBreakdown {
 	id: string;
 	/** First user prompt of the session, when one was found. */
 	label: string | null;
-	provider: UsageProvider;
+	agent: UsageAgent;
 	usd: number;
 	tokens: number;
 	lastMs: number;
@@ -71,7 +74,7 @@ export interface UsageDrilldownEntry {
 	/** Cross-breakdown: models for a workspace, workspaces for a model. */
 	breakdown: Array<{
 		label: string;
-		provider: UsageProvider;
+		agent: UsageAgent;
 		usd: number;
 		tokens: number;
 	}>;
@@ -86,7 +89,7 @@ export interface UsageHistory {
 	buckets: UsageDailyBucket[];
 	models: UsageModelBreakdown[];
 	projects: UsageProjectBreakdown[];
-	/** Drilldown cubes, keyed by project label / `provider|model`. Bounded to
+	/** Drilldown cubes, keyed by project label / `agent|model`. Bounded to
 	 * the top projects by cost so the payload stays small. */
 	projectDetails: Record<string, UsageDrilldownEntry>;
 	modelDetails: Record<string, UsageDrilldownEntry>;
@@ -155,12 +158,85 @@ function attributeCwd(
 	return { label: basename(cwd), kind: "other", group: null };
 }
 
+/** Real paths of the `projects/` dirs behind a set of Claude home dirs. */
+async function resolveClaudeProjectRoots(
+	homes: Iterable<string>,
+): Promise<string[]> {
+	const resolved = await Promise.all(
+		[...homes].map(async (home) => {
+			try {
+				return await realpath(join(home, "projects"));
+			} catch {
+				return null; // Dir absent — collectLogFiles would find nothing.
+			}
+		}),
+	);
+	return [...new Set(resolved.filter((root): root is string => root !== null))];
+}
+
+/**
+ * (CLAUDE-ACCOUNTS) Claude transcripts living under the fork's per-workspace
+ * profile dirs, which `collectUsageEntries` has no way to discover.
+ *
+ * Roots it already scans are filtered out by real path, so an entry is never
+ * counted twice — the whole reason this is a filtered supplement rather than a
+ * plain second scan.
+ */
+async function collectWorkspaceClaudeEntries(
+	workspaceClaudeHomes: string[],
+	days: number,
+	cutoffMs: number,
+	sessionLabels: Map<string, string>,
+): Promise<{ entries: UsageLogEntry[]; scannedFiles: number }> {
+	const extraHomes = workspaceClaudeHomes
+		.map((dir) => dir.trim())
+		.filter((dir) => dir.length > 0);
+	if (extraHomes.length === 0) return { entries: [], scannedFiles: 0 };
+
+	const home = homedir();
+	// Mirrors the discovery `collectUsageEntries` performs for Claude.
+	const covered = new Set<string>([
+		join(home, ".claude"),
+		join(home, ".config", "claude"),
+	]);
+	for (const dir of (process.env.CLAUDE_CONFIG_DIR ?? "").split(",")) {
+		if (dir.trim()) covered.add(dir.trim());
+	}
+	for (const profile of await discoverClaudeProfiles()) {
+		covered.add(profile.configDir);
+	}
+	const coveredRoots = new Set(await resolveClaudeProjectRoots(covered));
+	const roots = (await resolveClaudeProjectRoots(extraHomes)).filter(
+		(root) => !coveredRoots.has(root),
+	);
+	if (roots.length === 0) return { entries: [], scannedFiles: 0 };
+
+	const fileGroups = await Promise.all(
+		roots.map((root) => collectLogFiles(root, days + 1)),
+	);
+	const files = dedupeLogFiles(fileGroups.flat());
+	const entries: UsageLogEntry[] = [];
+	// One map across every extra root: the same message reached through two
+	// profile paths must collapse, exactly as it does inside the helper.
+	const entriesByMessage = new Map<string, UsageLogEntry>();
+	for (const file of files) {
+		await parseClaudeLogFile(
+			file,
+			entriesByMessage,
+			cutoffMs,
+			entries,
+			sessionLabels,
+		);
+	}
+	entries.push(...entriesByMessage.values());
+	return { entries, scannedFiles: files.length };
+}
+
 export async function computeUsageHistory(
 	days: number,
 	cwdLabels: CwdLabel[],
 	workspaceClaudeHomes: string[],
 ): Promise<UsageHistory> {
-	const home = homedir();
 	const labelsByLength = [...cwdLabels].sort(
 		(a, b) => b.prefix.length - a.prefix.length,
 	);
@@ -173,82 +249,28 @@ export async function computeUsageHistory(
 		return start.getTime();
 	})();
 
-	// Upstream lifted this scan into `collectUsageEntries()` (./entries.ts).
-	// It stays inline HERE because that helper takes no `workspaceClaudeHomes`:
-	// a per-workspace Claude profile lives under `<db-dir>/claude-profiles/<uuid>`,
-	// which `discoverClaudeProfiles()` (dot-dirs at ~ and ~/.config only) cannot
-	// find, so calling the helper would silently drop every pinned account's
-	// history. Splitting it into "helper plus a second pass for the extra homes"
-	// is worse than the duplication: shared-history profiles symlink their
-	// projects/ into ~/.claude, and only ONE `claudeEntriesByMessage` map across
-	// every root keeps that from double-counting.
-	// Same homes the quota discovery covers: the default locations, any
-	// CLAUDE_CONFIG_DIR entries (comma-list), and auto-discovered profile /
-	// CODEX_HOME dirs — a custom config dir keeps its transcripts INSIDE the
-	// dir, so multi-account history means scanning every profile's projects/.
-	const claudeHomes = new Set<string>([
-		join(home, ".claude"),
-		join(home, ".config", "claude"),
-	]);
-	for (const dir of (process.env.CLAUDE_CONFIG_DIR ?? "").split(",")) {
-		if (dir.trim()) claudeHomes.add(dir.trim());
-	}
-	for (const dir of workspaceClaudeHomes) {
-		if (dir.trim()) claudeHomes.add(dir.trim());
-	}
-	const [claudeProfiles, codexHomes] = await Promise.all([
-		discoverClaudeProfiles(),
-		discoverCodexHomes(),
-	]);
-	for (const profile of claudeProfiles) claudeHomes.add(profile.configDir);
+	const { entries, sessionLabels, scannedFiles } = await collectUsageEntries(
+		days,
+		cutoffMs,
+		{ cwdCandidates: cwdLabels.map((label) => label.prefix) },
+	);
 
-	// Shared-history profiles symlink their projects/ into ~/.claude (see
-	// session-share.ts), so two homes can name the same tree under different
-	// paths — resolve every scan root and dedupe by real path, or the tree
-	// gets walked and parsed once per profile.
-	const resolveRoots = async (roots: string[]): Promise<string[]> => {
-		const resolved = await Promise.all(
-			roots.map(async (root) => {
-				try {
-					return await realpath(root);
-				} catch {
-					return null; // Dir absent — collectLogFiles would find nothing.
-				}
-			}),
-		);
-		return [
-			...new Set(resolved.filter((root): root is string => root !== null)),
-		];
-	};
-	const [claudeRoots, codexRoots] = await Promise.all([
-		resolveRoots([...claudeHomes].map((root) => join(root, "projects"))),
-		resolveRoots(
-			codexHomes.map((codexHome) => join(codexHome.home, "sessions")),
-		),
-	]);
-	const [claudeFileGroups, codexFileGroups] = await Promise.all([
-		Promise.all(claudeRoots.map((root) => collectLogFiles(root, days + 1))),
-		Promise.all(codexRoots.map((root) => collectLogFiles(root, days + 1))),
-	]);
-	const claudeFiles = dedupeLogFiles(claudeFileGroups.flat());
-	const codexFiles = dedupeLogFiles(codexFileGroups.flat());
-
-	const entries: UsageLogEntry[] = [];
-	const claudeEntriesByMessage = new Map<string, UsageLogEntry>();
-	const sessionLabels = new Map<string, string>();
-	for (const file of claudeFiles) {
-		await parseClaudeLogFile(
-			file,
-			claudeEntriesByMessage,
-			cutoffMs,
-			entries,
-			sessionLabels,
-		);
-	}
-	entries.push(...claudeEntriesByMessage.values());
-	for (const file of codexFiles) {
-		await parseCodexLogFile(file, cutoffMs, entries, sessionLabels);
-	}
+	// (CLAUDE-ACCOUNTS) `collectUsageEntries` finds Claude homes by looking at
+	// dot-dirs under ~ and ~/.config, which can never see a per-workspace profile
+	// at `<db-dir>/claude-profiles/<uuid>` — without this second pass every
+	// pinned account's history vanishes from Usage. It parses ONLY the roots the
+	// helper did not already cover: shared-history profiles symlink their
+	// `projects/` into ~/.claude, so scanning them again would re-read the same
+	// transcripts and double-count. Real paths are compared, which is how the
+	// helper dedupes its own roots.
+	const workspaceClaude = await collectWorkspaceClaudeEntries(
+		workspaceClaudeHomes,
+		days,
+		cutoffMs,
+		sessionLabels,
+	);
+	entries.push(...workspaceClaude.entries);
+	const totalScannedFiles = scannedFiles + workspaceClaude.scannedFiles;
 
 	const bucketsByDay = new Map<string, UsageDailyBucket>();
 	const modelsByKey = new Map<string, UsageModelBreakdown>();
@@ -262,16 +284,16 @@ export async function computeUsageHistory(
 	const projectDays = new Map<string, Map<string, Slice>>();
 	const projectModels = new Map<
 		string,
-		Map<string, Slice & { provider: UsageProvider }>
+		Map<string, Slice & { agent: UsageAgent }>
 	>();
 	const modelDays = new Map<string, Map<string, Slice>>();
 	const modelProjects = new Map<
 		string,
-		Map<string, Slice & { provider: UsageProvider }>
+		Map<string, Slice & { agent: UsageAgent }>
 	>();
 	const projectSessions = new Map<
 		string,
-		Map<string, Slice & { provider: UsageProvider; lastMs: number }>
+		Map<string, Slice & { agent: UsageAgent; lastMs: number }>
 	>();
 	const bump = <K>(
 		map: Map<K, Slice>,
@@ -309,38 +331,47 @@ export async function computeUsageHistory(
 	};
 
 	for (const entry of entries) {
-		const rate = matchModelRate(entry.provider, entry.model);
-		const usd = costUsd(rate, entry);
+		const rate = matchModelRate(
+			entry.agent,
+			entry.model,
+			entry.uncachedInput + entry.cachedInput,
+		);
+		// A harness-reported real cost beats the API-list-rate estimate, and an
+		// entry priced by its own harness is never "approximate".
+		const estimated = entry.costUsd === undefined;
+		const usd = entry.costUsd ?? costUsd(rate, entry);
 		const tokens = entryTokens(entry);
 
 		const day = dayKey(entry.timestampMs);
 		let bucket = bucketsByDay.get(day);
 		if (!bucket) {
-			bucket = { day, providers: {}, usd: 0, tokens: 0 };
+			bucket = { day, agents: {}, usd: 0, tokens: 0 };
 			bucketsByDay.set(day, bucket);
 		}
-		let providerSlot = bucket.providers[entry.provider];
-		if (!providerSlot) {
-			providerSlot = { usd: 0, tokens: 0 };
-			bucket.providers[entry.provider] = providerSlot;
+		let agentSlot = bucket.agents[entry.agent];
+		if (!agentSlot) {
+			agentSlot = { usd: 0, tokens: 0 };
+			bucket.agents[entry.agent] = agentSlot;
 		}
-		providerSlot.usd += usd;
-		providerSlot.tokens += tokens;
+		agentSlot.usd += usd;
+		agentSlot.tokens += tokens;
 		bucket.usd += usd;
 		bucket.tokens += tokens;
 
-		const modelKey = `${entry.provider}|${entry.model}`;
+		const modelKey = `${entry.agent}|${entry.model}`;
 		let model = modelsByKey.get(modelKey);
 		if (!model) {
 			model = {
-				provider: entry.provider,
+				agent: entry.agent,
+				modelProvider: inferModelProvider(entry.agent, entry.model),
 				model: entry.model,
 				usd: 0,
 				tokens: 0,
-				approximate: rate.approximate,
+				approximate: false,
 			};
 			modelsByKey.set(modelKey, model);
 		}
+		model.approximate ||= estimated && rate.approximate;
 		model.usd += usd;
 		model.tokens += tokens;
 
@@ -362,22 +393,22 @@ export async function computeUsageHistory(
 				modelKey,
 				usd,
 				tokens,
-			) as Slice & { provider: UsageProvider };
-			modelSlice.provider = entry.provider;
+			) as Slice & { agent: UsageAgent };
+			modelSlice.agent = entry.agent;
 			const projectSlice = bump(
 				nested(modelProjects, modelKey),
 				label,
 				usd,
 				tokens,
-			) as Slice & { provider: UsageProvider };
-			projectSlice.provider = entry.provider;
+			) as Slice & { agent: UsageAgent };
+			projectSlice.agent = entry.agent;
 			const sessionSlice = bump(
 				nested(projectSessions, label),
 				entry.sessionId,
 				usd,
 				tokens,
-			) as Slice & { provider: UsageProvider; lastMs: number };
-			sessionSlice.provider = entry.provider;
+			) as Slice & { agent: UsageAgent; lastMs: number };
+			sessionSlice.agent = entry.agent;
 			sessionSlice.lastMs = Math.max(
 				sessionSlice.lastMs ?? 0,
 				entry.timestampMs,
@@ -391,8 +422,13 @@ export async function computeUsageHistory(
 		totals.cacheWrite += entry.cacheWrite5m + entry.cacheWrite1h;
 		totals.output += entry.output;
 		totals.reasoningOutput += entry.reasoningOutput;
-		totals.cacheSavingsUsd += cacheSavingsUsd(rate, entry);
-		totals.approximate ||= rate.approximate;
+		// Savings are rate-derived; for harness-priced entries the matched rate
+		// may be a fallback, so only estimate savings where the cost itself is
+		// a rate estimate too.
+		if (estimated) {
+			totals.cacheSavingsUsd += cacheSavingsUsd(rate, entry);
+			totals.approximate ||= rate.approximate;
+		}
 	}
 
 	// Emit a contiguous day series so charts show gaps as zero, not missing.
@@ -402,7 +438,7 @@ export async function computeUsageHistory(
 		date.setDate(date.getDate() + i);
 		const key = dayKey(date.getTime());
 		buckets.push(
-			bucketsByDay.get(key) ?? { day: key, providers: {}, usd: 0, tokens: 0 },
+			bucketsByDay.get(key) ?? { day: key, agents: {}, usd: 0, tokens: 0 },
 		);
 	}
 
@@ -416,19 +452,19 @@ export async function computeUsageHistory(
 	const TOP_PROJECT_DETAILS = 24;
 	const buildDetail = (
 		dayMap: Map<string, Slice> | undefined,
-		crossMap: Map<string, Slice & { provider: UsageProvider }> | undefined,
+		crossMap: Map<string, Slice & { agent: UsageAgent }> | undefined,
 	): UsageDrilldownEntry => {
 		const daySlices = [...(dayMap ?? new Map<string, Slice>()).entries()]
 			.map(([day, slice]) => ({ day, usd: slice.usd, tokens: slice.tokens }))
 			.sort((a, b) => a.day.localeCompare(b.day));
 		const breakdown = [
 			...(
-				crossMap ?? new Map<string, Slice & { provider: UsageProvider }>()
+				crossMap ?? new Map<string, Slice & { agent: UsageAgent }>()
 			).entries(),
 		]
 			.map(([label, slice]) => ({
 				label,
-				provider: slice.provider,
+				agent: slice.agent,
 				usd: slice.usd,
 				tokens: slice.tokens,
 			}))
@@ -452,7 +488,7 @@ export async function computeUsageHistory(
 			.map(([id, slice]) => ({
 				id,
 				label: sessionLabels.get(id) ?? null,
-				provider: slice.provider,
+				agent: slice.agent,
 				usd: slice.usd,
 				tokens: slice.tokens,
 				lastMs: slice.lastMs,
@@ -463,7 +499,7 @@ export async function computeUsageHistory(
 	}
 	const modelDetails: Record<string, UsageDrilldownEntry> = {};
 	for (const row of sortedModels) {
-		const key = `${row.provider}|${row.model}`;
+		const key = `${row.agent}|${row.model}`;
 		modelDetails[key] = buildDetail(modelDays.get(key), modelProjects.get(key));
 	}
 
@@ -475,7 +511,7 @@ export async function computeUsageHistory(
 		projectDetails,
 		modelDetails,
 		totals,
-		scannedFiles: claudeFiles.length + codexFiles.length,
+		scannedFiles: totalScannedFiles,
 		pricingTableUpdated: PRICING_TABLE_UPDATED,
 	};
 }

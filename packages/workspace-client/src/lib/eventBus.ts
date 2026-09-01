@@ -21,7 +21,8 @@ type EventType =
 	| "workspace:create-settled"
 	| "project:changed"
 	| "claude-account-state-changed"
-	| "claude-account-warning";
+	| "claude-account-warning"
+	| "page-watch:changed";
 
 interface FsEventsPayload {
 	events: FsWatchEvent[];
@@ -159,6 +160,10 @@ export type ClaudeAccountWarningPayload = Omit<
 	"type" | "workspaceId"
 >;
 
+export interface PageWatchChangedPayload {
+	occurredAt: number;
+}
+
 type EventListener<T extends EventType> = T extends "fs:events"
 	? (workspaceId: string, payload: FsEventsPayload) => void
 	: T extends "git:changed"
@@ -188,7 +193,12 @@ type EventListener<T extends EventType> = T extends "fs:events"
 												workspaceId: string | null,
 												payload: ClaudeAccountWarningPayload,
 											) => void
-										: never;
+										: T extends "page-watch:changed"
+											? (
+													workspaceId: string,
+													payload: PageWatchChangedPayload,
+												) => void
+											: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -351,7 +361,8 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "workspace:changed" ||
 			message.type === "workspace:create-settled" ||
 			message.type === "claude-account-state-changed" ||
-			message.type === "claude-account-warning"
+			message.type === "claude-account-warning" ||
+			message.type === "page-watch:changed"
 				? message.workspaceId
 				: message.type === "project:changed"
 					? message.projectId
@@ -391,6 +402,11 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 					payload,
 				);
 			}
+		} else if (message.type === "page-watch:changed") {
+			(entry.callback as EventListener<"page-watch:changed">)(
+				message.workspaceId,
+				{ occurredAt: message.occurredAt },
+			);
 		} else if (message.type === "port:changed") {
 			(entry.callback as EventListener<"port:changed">)(message.workspaceId, {
 				eventType: message.eventType,
@@ -516,6 +532,23 @@ function getOrCreateConnection(
 
 	connections.set(key, state);
 	return state;
+}
+
+/**
+ * Dial the existing connection for `hostUrl` now, if there is one and it
+ * isn't open. For the moment a client learns the host's endpoint or
+ * credentials changed (a host-service restart handing out a fresh port or
+ * secret): the socket may be mid-backoff, or its last dial may have lost the
+ * race against the credential update and been auth-rejected — either way the
+ * next scheduled attempt is seconds out, and this collapses that wait.
+ * Deliberately never creates a connection: with no established consumers
+ * there is nothing to recover.
+ */
+export function reconnectEventBusIfDown(hostUrl: string): void {
+	const state = connections.get(hostUrl);
+	if (!state || state.status.state === "open") return;
+	state.socket.reconnect(1000, "endpoint or credentials refreshed");
+	setConnectionStatus(state, { state: "connecting" });
 }
 
 function maybeCleanupConnection(hostUrl: string): void {

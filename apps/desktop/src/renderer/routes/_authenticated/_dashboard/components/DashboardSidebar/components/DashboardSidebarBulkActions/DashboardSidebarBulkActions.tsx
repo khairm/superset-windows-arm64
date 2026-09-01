@@ -1,3 +1,5 @@
+import { plural } from "@lingui/core/macro";
+import { Plural, Trans, useLingui } from "@lingui/react/macro";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -31,6 +33,7 @@ export function DashboardSidebarBulkActions({
 	projects,
 	children,
 }: DashboardSidebarBulkActionsProps) {
+	const { t } = useLingui();
 	const { clearSelection, removeSelectedWorkspaces, selectedProjectId } =
 		useDashboardSidebarSelection();
 	const selectedProject = useMemo(
@@ -84,7 +87,10 @@ export function DashboardSidebarBulkActions({
 			) : (
 				<div
 					role="toolbar"
-					aria-label="Selected workspace actions"
+					aria-label={t({
+						id: "dashboard.sidebar.bulkActions.toolbarAriaLabel",
+						message: "Selected workspace actions",
+					})}
 					// Sticky: the toolbar's natural slot (the Workspaces header) can be
 					// scrolled far out of view when selecting rows at the bottom of a
 					// long sidebar — pin it to the scroller top so the selection always
@@ -97,17 +103,28 @@ export function DashboardSidebarBulkActions({
 								type="button"
 								onClick={clearSelection}
 								className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover hover:text-foreground"
-								aria-label="Clear workspace selection"
+								aria-label={t({
+									id: "dashboard.sidebar.bulkActions.clearSelectionAriaLabel",
+									message: "Clear workspace selection",
+								})}
 							>
 								<LuX className="size-3.5" />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="bottom">Clear selection (Esc)</TooltipContent>
+						<TooltipContent side="bottom">
+							<Trans id="dashboard.sidebar.bulkActions.clearSelection">
+								Clear selection (Esc)
+							</Trans>
+						</TooltipContent>
 					</Tooltip>
 
 					<span className="min-w-0 flex-1 truncate pl-1 text-xs font-medium text-foreground">
-						{selectedWorkspaces.length}{" "}
-						{selectedWorkspaces.length === 1 ? "workspace" : "workspaces"}
+						<Plural
+							id="dashboard.sidebar.bulkActions.selectedCount"
+							value={selectedWorkspaces.length}
+							one="# workspace"
+							other="# workspaces"
+						/>
 					</span>
 
 					<div className="mx-1 h-4 w-px bg-border" />
@@ -119,18 +136,30 @@ export function DashboardSidebarBulkActions({
 									<button
 										type="button"
 										className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover hover:text-foreground"
-										aria-label={`Move ${selectedWorkspaces.length} selected ${selectedWorkspaces.length === 1 ? "workspace" : "workspaces"} to a group`}
+										aria-label={t({
+											id: "dashboard.sidebar.bulkActions.moveToGroupAriaLabel",
+											message: plural(selectedWorkspaces.length, {
+												one: "Move # selected workspace to a group",
+												other: "Move # selected workspaces to a group",
+											}),
+										})}
 									>
 										<LuFolderInput className="size-3.5" />
 									</button>
 								</DropdownMenuTrigger>
 							</TooltipTrigger>
-							<TooltipContent side="bottom">Move to group</TooltipContent>
+							<TooltipContent side="bottom">
+								<Trans id="dashboard.sidebar.bulkActions.moveToGroup">
+									Move to group
+								</Trans>
+							</TooltipContent>
 						</Tooltip>
 						<DropdownMenuContent align="end" side="bottom" className="w-48">
 							<DropdownMenuItem onSelect={createGroupFromSelection}>
 								<LuFolderPlus className="size-4" />
-								New group
+								<Trans id="dashboard.sidebar.bulkActions.newGroup">
+									New group
+								</Trans>
 							</DropdownMenuItem>
 							{sectionMenuState === "populated" && <DropdownMenuSeparator />}
 							{sections?.map((section) => (
@@ -151,9 +180,15 @@ export function DashboardSidebarBulkActions({
 							))}
 							{sectionMenuState !== "populated" && (
 								<DropdownMenuItem disabled>
-									{sectionMenuState === "empty"
-										? "No groups yet"
-										: "Loading groups…"}
+									{sectionMenuState === "empty" ? (
+										<Trans id="dashboard.sidebar.bulkActions.noGroupsYet">
+											No groups yet
+										</Trans>
+									) : (
+										<Trans id="dashboard.sidebar.bulkActions.loadingGroups">
+											Loading groups…
+										</Trans>
+									)}
 								</DropdownMenuItem>
 							)}
 						</DropdownMenuContent>
@@ -166,12 +201,17 @@ export function DashboardSidebarBulkActions({
 								disabled={groupedWorkspaceIds.length === 0}
 								onClick={ungroupSelection}
 								className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
-								aria-label="Ungroup selected workspaces"
+								aria-label={t({
+									id: "dashboard.sidebar.bulkActions.ungroupAriaLabel",
+									message: "Ungroup selected workspaces",
+								})}
 							>
 								<LuUngroup className="size-3.5" />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="bottom">Ungroup</TooltipContent>
+						<TooltipContent side="bottom">
+							<Trans id="dashboard.sidebar.bulkActions.ungroup">Ungroup</Trans>
+						</TooltipContent>
 					</Tooltip>
 
 					<Tooltip delayDuration={300}>
@@ -180,12 +220,17 @@ export function DashboardSidebarBulkActions({
 								type="button"
 								onClick={softDeleteSelection}
 								className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-								aria-label="Delete selected workspaces"
+								aria-label={t({
+									id: "dashboard.sidebar.bulkActions.deleteAriaLabel",
+									message: "Delete selected workspaces",
+								})}
 							>
 								<LuTrash2 className="size-3.5" />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="bottom">Delete</TooltipContent>
+						<TooltipContent side="bottom">
+							<Trans id="dashboard.sidebar.bulkActions.delete">Delete</Trans>
+						</TooltipContent>
 					</Tooltip>
 				</div>
 			)}

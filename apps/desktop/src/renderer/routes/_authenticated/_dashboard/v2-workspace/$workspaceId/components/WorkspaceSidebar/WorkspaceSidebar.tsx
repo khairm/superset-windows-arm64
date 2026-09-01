@@ -1,3 +1,4 @@
+import { useLingui } from "@lingui/react/macro";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -66,6 +67,7 @@ export function WorkspaceSidebar({
 	pendingReveal,
 	workspaceId,
 }: WorkspaceSidebarProps) {
+	const { t } = useLingui();
 	const gitStatus = useWorkspaceGitStatus();
 	// (NON-GIT WORKSPACE) A non-git folder has no Changes/Review/PR — only the
 	// Files tab (plus terminal + agents, which live outside this sidebar). Stays
@@ -152,7 +154,7 @@ export function WorkspaceSidebar({
 	const { flowState, onRetry } = usePRFlowState(workspaceId);
 	const filesTab: SidebarTabDefinition = {
 		id: "files",
-		label: "Files",
+		label: t({ id: "workspace.sidebar.filesTab", message: "Files" }),
 		icon: LuFile,
 		content: (
 			<FilesTab

@@ -1,3 +1,4 @@
+import { useLingui } from "@lingui/react/macro";
 import { toast } from "@superset/ui/sonner";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef } from "react";
@@ -40,6 +41,7 @@ export function useSubmitWorkspace(
 	 */
 	masterTarget: MasterWorkspaceTarget,
 ) {
+	const { t } = useLingui();
 	const navigate = useNavigate();
 	const matchRoute = useMatchRoute();
 	const { closeAndResetDraft, draft } = useDashboardNewWorkspaceDraft();
@@ -67,21 +69,41 @@ export function useSubmitWorkspace(
 
 	const submitWorkspace = useCallback(async () => {
 		if (!projectId && !isSession) {
-			toast.error("Select a project first");
+			toast.error(
+				t({
+					id: "dashboard.newWorkspaceModal.submit.selectProjectFirst",
+					message: "Select a project first",
+				}),
+			);
 			return;
 		}
 		if (isSession && draft.linkedPR !== null) {
-			toast.error("Checking out a PR requires a project");
+			toast.error(
+				t({
+					id: "dashboard.newWorkspaceModal.submit.prRequiresProject",
+					message: "Checking out a PR requires a project",
+				}),
+			);
 			return;
 		}
 		if (!activeOrganizationId) {
-			toast.error("No active organization");
+			toast.error(
+				t({
+					id: "dashboard.newWorkspaceModal.submit.noActiveOrganization",
+					message: "No active organization",
+				}),
+			);
 			return;
 		}
 
 		const hostId = draft.hostId ?? machineId;
 		if (!hostId) {
-			toast.error("No active host");
+			toast.error(
+				t({
+					id: "dashboard.newWorkspaceModal.submit.noActiveHost",
+					message: "No active host",
+				}),
+			);
 			return;
 		}
 
@@ -91,8 +113,14 @@ export function useSubmitWorkspace(
 			const first = errors[0];
 			toast.error(
 				first.filename
-					? `Attachment upload failed (${first.filename}): ${first.message}`
-					: `Attachment upload failed: ${first.message}`,
+					? t({
+							id: "dashboard.newWorkspaceModal.submit.attachmentUploadFailedNamed",
+							message: `Attachment upload failed (${first.filename}): ${first.message}`,
+						})
+					: t({
+							id: "dashboard.newWorkspaceModal.submit.attachmentUploadFailed",
+							message: `Attachment upload failed: ${first.message}`,
+						}),
 			);
 			return;
 		}
@@ -232,7 +260,12 @@ export function useSubmitWorkspace(
 		// they bypass the host `workspaces.create` path entirely.
 		if (hostId === CLOUD_HOST_ID) {
 			if (!projectId) {
-				toast.error("Cloud workspaces require a project");
+				toast.error(
+					t({
+						id: "dashboard.newWorkspaceModal.submit.cloudRequiresProject",
+						message: "Cloud workspaces require a project",
+					}),
+				);
 				return;
 			}
 			try {
@@ -277,7 +310,10 @@ export function useSubmitWorkspace(
 				toast.error(
 					error instanceof Error
 						? error.message
-						: "Could not create cloud workspace",
+						: t({
+								id: "dashboard.newWorkspaceModal.submit.cloudCreateFailed",
+								message: "Could not create cloud workspace",
+							}),
 				);
 			}
 			return;
@@ -415,6 +451,7 @@ export function useSubmitWorkspace(
 		restoreWorkspace,
 		selectedMode,
 		submit,
+		t,
 		uploadAttachments,
 		utils,
 	]);

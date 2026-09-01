@@ -4,7 +4,7 @@ import type { UsageLogEntry } from "./parse";
 
 function entry(over: Partial<UsageLogEntry> = {}): UsageLogEntry {
 	return {
-		provider: "claude",
+		agent: "claude",
 		model: "claude-opus-5",
 		timestampMs: Date.parse("2026-08-20T12:00:00.000Z"),
 		cwd: "/Users/someone/secret-project",
@@ -20,7 +20,7 @@ function entry(over: Partial<UsageLogEntry> = {}): UsageLogEntry {
 }
 
 describe("groupEntriesByDay", () => {
-	test("sums the six dimensions per day/provider/model", () => {
+	test("sums the six dimensions per day/agent/model", () => {
 		const [row] = groupEntriesByDay([entry(), entry()]);
 		expect(row).toMatchObject({
 			day: "2026-08-20",
@@ -35,6 +35,20 @@ describe("groupEntriesByDay", () => {
 		});
 	});
 
+	test("a harness-reported cost replaces the rate estimate", () => {
+		const [row] = groupEntriesByDay([
+			entry({
+				agent: "opencode",
+				model: "some-unknown-model",
+				costUsd: 1.25,
+			}),
+		]);
+		expect(row?.usdEstimate).toBe(1.25);
+		// Priced by the harness itself — not an approximation, even though the
+		// model is absent from the rate table.
+		expect(row?.approximate).toBe(false);
+	});
+
 	test("splits the same day across models", () => {
 		const rows = groupEntriesByDay([
 			entry(),
@@ -47,10 +61,10 @@ describe("groupEntriesByDay", () => {
 		]);
 	});
 
-	test("splits the same model across providers", () => {
+	test("splits the same model across agents", () => {
 		const rows = groupEntriesByDay([
 			entry(),
-			entry({ provider: "codex", model: "gpt-5.6" }),
+			entry({ agent: "codex", model: "gpt-5.6" }),
 		]);
 		expect(rows).toHaveLength(2);
 	});

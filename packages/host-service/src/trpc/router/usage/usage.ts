@@ -13,19 +13,21 @@ import {
 import { protectedProcedure, queryProcedure, router } from "../../index";
 import { offLoop } from "../../off-loop";
 import { provisionClaudeAccount } from "./account-provisioning";
+import { fetchAgyAccounts } from "./agy-quota";
 import { fetchClaudeAccounts, readDefaultLoginEmail } from "./claude";
 import { fetchCodexAccounts } from "./codex";
 import {
 	getDefaultAccountSelections,
 	setDefaultAccountSelection,
 } from "./default-account";
+import { fetchGrokAccounts } from "./grok-quota";
 import { countAgentPrsByDay } from "./history/agent-prs";
 import { removeClaudeProfile, removeCodexHome } from "./profile-remove";
 import { discoverClaudeProfiles, discoverCodexHomes } from "./profiles";
 import type { UsageAccount } from "./types";
 
 /**
- * Provider quota endpoints are undocumented and rate-limit-sensitive, so
+ * Agent quota endpoints are undocumented and rate-limit-sensitive, so
  * results are cached briefly and concurrent callers share one in-flight
  * request. The cached promise is evicted on rejection so a failure does not
  * replay for the whole TTL.
@@ -38,9 +40,12 @@ let cachedQuota: { promise: Promise<UsageAccount[]>; cachedAt: number } | null =
 	null;
 
 function loadAccounts(): Promise<UsageAccount[]> {
-	return Promise.all([fetchClaudeAccounts(), fetchCodexAccounts()]).then(
-		(groups) => groups.flat(),
-	);
+	return Promise.all([
+		fetchClaudeAccounts(),
+		fetchCodexAccounts(),
+		fetchGrokAccounts(),
+		fetchAgyAccounts(),
+	]).then((groups) => groups.flat());
 }
 
 function getQuota(forceRefresh: boolean): Promise<UsageAccount[]> {
@@ -73,10 +78,11 @@ export const usageRouter = router({
 			return accounts.map((account) => ({
 				...account,
 				isDefault:
-					account.selection ===
-					(account.provider === "claude"
-						? defaults.claudeConfigDir
-						: defaults.codexHome),
+					account.agent === "claude"
+						? account.selection === defaults.claudeConfigDir
+						: account.agent === "codex"
+							? account.selection === defaults.codexHome
+							: false,
 			}));
 		}),
 
@@ -126,13 +132,13 @@ export const usageRouter = router({
 	setDefaultAccount: protectedProcedure
 		.input(
 			z.object({
-				provider: z.enum(["claude", "codex"]),
+				agent: z.enum(["claude", "codex"]),
 				selection: z.string().nullable(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
 			if (
-				input.provider === "claude" &&
+				input.agent === "claude" &&
 				ctx.claudeAccounts.getCapability().managed
 			) {
 				throw new TRPCError({
@@ -147,17 +153,17 @@ export const usageRouter = router({
 				const accounts = await getQuota(false);
 				const known = accounts.some(
 					(account) =>
-						account.provider === input.provider &&
+						account.agent === input.agent &&
 						account.selection === input.selection,
 				);
 				if (!known) {
 					throw new TRPCError({
 						code: "BAD_REQUEST",
-						message: `No ${input.provider} login found at ${input.selection} — refresh usage and pick again.`,
+						message: `No ${input.agent} login found at ${input.selection} — refresh usage and pick again.`,
 					});
 				}
 			}
-			setDefaultAccountSelection(ctx.db, input.provider, input.selection);
+			setDefaultAccountSelection(ctx.db, input.agent, input.selection);
 			// A profile dir is a whole config root, not just a login: without
 			// provisioning, agents launched there lose the user's skills,
 			// plugins, MCP servers and settings along with Superset's lifecycle
@@ -166,12 +172,12 @@ export const usageRouter = router({
 			// on the next switch and at host boot.
 			if (input.selection !== null) {
 				try {
-					await (input.provider === "claude"
+					await (input.agent === "claude"
 						? provisionClaudeAccount(input.selection)
 						: provisionCodexProfile(input.selection));
 				} catch (error) {
 					console.warn(
-						`[host-service] provisioning ${input.provider} account ${input.selection} failed (continuing):`,
+						`[host-service] provisioning ${input.agent} account ${input.selection} failed (continuing):`,
 						error,
 					);
 				}
@@ -189,7 +195,7 @@ export const usageRouter = router({
 	removeAccount: protectedProcedure
 		.input(
 			z.object({
-				provider: z.enum(["claude", "codex"]),
+				agent: z.enum(["claude", "codex"]),
 				selection: z.string(),
 			}),
 		)
@@ -197,27 +203,27 @@ export const usageRouter = router({
 			const accounts = await getQuota(false);
 			const known = accounts.some(
 				(account) =>
-					account.provider === input.provider &&
+					account.agent === input.agent &&
 					account.selection === input.selection,
 			);
 			if (!known) {
 				throw new TRPCError({
 					code: "BAD_REQUEST",
-					message: `No removable ${input.provider} profile at ${input.selection}.`,
+					message: `No removable ${input.agent} profile at ${input.selection}.`,
 				});
 			}
-			if (input.provider === "claude") {
+			if (input.agent === "claude") {
 				await removeClaudeProfile(input.selection);
 			} else {
 				await removeCodexHome(input.selection);
 			}
 			const defaults = getDefaultAccountSelections(ctx.db);
 			const pointer =
-				input.provider === "claude"
+				input.agent === "claude"
 					? defaults.claudeConfigDir
 					: defaults.codexHome;
 			if (pointer === input.selection) {
-				setDefaultAccountSelection(ctx.db, input.provider, null);
+				setDefaultAccountSelection(ctx.db, input.agent, null);
 			}
 			// The quota cache still lists the removed account; drop it so the
 			// next query re-discovers.
@@ -235,29 +241,29 @@ export const usageRouter = router({
 	prepareAccount: protectedProcedure
 		.input(
 			z.object({
-				provider: z.enum(["claude", "codex"]),
+				agent: z.enum(["claude", "codex"]),
 				selection: z.string(),
 			}),
 		)
 		.mutation(async ({ input }) => {
 			const discovered =
-				input.provider === "claude"
+				input.agent === "claude"
 					? (await discoverClaudeProfiles()).map((profile) => profile.configDir)
 					: (await discoverCodexHomes()).map((home) => home.home);
 			if (!discovered.includes(input.selection)) {
 				throw new TRPCError({
 					code: "BAD_REQUEST",
-					message: `No ${input.provider} profile found at ${input.selection}.`,
+					message: `No ${input.agent} profile found at ${input.selection}.`,
 				});
 			}
-			await (input.provider === "claude"
+			await (input.agent === "claude"
 				? provisionClaudeAccount(input.selection)
 				: provisionCodexProfile(input.selection));
 			return { success: true as const };
 		}),
 
 	/**
-	 * Token/cost history estimated from the providers' own transcript logs,
+	 * Token/cost history estimated from the agents' own transcript logs,
 	 * priced at API list rates. Runs in the worker pool — the transcript
 	 * trees reach multiple GB. Coalesced per window so concurrent callers
 	 * (and the renderer's poll) share one scan.
@@ -370,4 +376,10 @@ export type {
 	LeaderboardDay,
 	LeaderboardPayload,
 } from "./history/leaderboard-days";
-export type { UsageAccount, UsageProvider, UsageQuotaWindow } from "./types";
+export type {
+	ModelProvider,
+	QuotaCapableAgent,
+	UsageAccount,
+	UsageAgent,
+	UsageQuotaWindow,
+} from "./types";

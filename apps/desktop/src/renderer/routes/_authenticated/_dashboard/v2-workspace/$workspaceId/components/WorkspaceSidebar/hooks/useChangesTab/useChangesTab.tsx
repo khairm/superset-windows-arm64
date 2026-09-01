@@ -1,3 +1,5 @@
+import { useLingui } from "@lingui/react/macro";
+import { errorMessage } from "@superset/i18n/errors";
 import { Button } from "@superset/ui/button";
 import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
@@ -43,6 +45,7 @@ export function useChangesTab({
 	onSelectFile,
 	onOpenFile,
 }: UseChangesTabParams): SidebarTabDefinition {
+	const { t } = useLingui();
 	const status = useWorkspaceGitStatus();
 	// (NON-GIT WORKSPACE) Don't fire any git query/mutation for a non-git
 	// folder — the marker branch must never reach a git command. Stays true
@@ -111,12 +114,17 @@ export function useChangesTab({
 			void utils.git.getStatus.invalidate({ workspaceId });
 			void utils.git.listCommits.invalidate({ workspaceId });
 			void utils.git.getDiff.invalidate({ workspaceId });
-			void utils.git.getDiffBulk.invalidate({ workspaceId });
 		},
 		// The picker re-renders from getBaseBranch, so a rejected change
 		// silently snaps back without this.
 		onError: (error) =>
-			toast.error(error.message || "Failed to change base branch"),
+			toast.error(
+				error.message ||
+					t({
+						id: "workspace.changesTab.changeBaseBranchFailed",
+						message: "Failed to change base branch",
+					}),
+			),
 	});
 
 	const setBaseBranch = useCallback(
@@ -151,10 +159,22 @@ export function useChangesTab({
 					newName,
 				}),
 				{
-					loading: `Renaming branch to ${newName}...`,
-					success: `Branch renamed to ${newName}`,
+					loading: t({
+						id: "workspace.changesTab.renameBranchLoading",
+						message: `Renaming branch to ${newName}...`,
+					}),
+					success: t({
+						id: "workspace.changesTab.renameBranchSuccess",
+						message: `Branch renamed to ${newName}`,
+					}),
 					error: (err) =>
-						err instanceof Error ? err.message : "Failed to rename branch",
+						errorMessage(
+							err,
+							t({
+								id: "workspace.changesTab.renameBranchFailed",
+								message: "Failed to rename branch",
+							}),
+						),
 				},
 			);
 		},
@@ -163,6 +183,7 @@ export function useChangesTab({
 			workspaceId,
 			status.data?.currentBranch.name,
 			renameBranchMutation,
+			t,
 		],
 	);
 
@@ -185,7 +206,6 @@ export function useChangesTab({
 			await Promise.all([
 				utils.git.getStatus.invalidate({ workspaceId }),
 				utils.git.getDiff.invalidate({ workspaceId }),
-				utils.git.getDiffBulk.invalidate({ workspaceId }),
 				utils.git.listCommits.invalidate({ workspaceId }),
 				utils.git.listBranches.invalidate({ workspaceId }),
 				utils.git.getBaseBranch.invalidate({ workspaceId }),
@@ -193,12 +213,18 @@ export function useChangesTab({
 		} catch (error) {
 			console.warn("Failed to refresh changes tab", error);
 			toast.error(
-				error instanceof Error ? error.message : "Failed to refresh changes",
+				errorMessage(
+					error,
+					t({
+						id: "workspace.changesTab.refreshFailed",
+						message: "Failed to refresh changes",
+					}),
+				),
 			);
 		} finally {
 			setIsRefreshing(false);
 		}
-	}, [utils, workspaceId, isRefreshing]);
+	}, [utils, workspaceId, isRefreshing, t]);
 
 	const actions = (
 		<Tooltip>
@@ -257,7 +283,7 @@ export function useChangesTab({
 
 	return {
 		id: "changes",
-		label: "Changes",
+		label: t({ id: "workspace.changesTab.label", message: "Changes" }),
 		badge: totalChanges > 0 ? totalChanges : undefined,
 		actions,
 		content,

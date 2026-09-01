@@ -2,6 +2,7 @@ import {
 	SortableContext,
 	verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { Trans, useLingui } from "@lingui/react/macro";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { LuPlus } from "react-icons/lu";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
@@ -65,6 +66,7 @@ export function DashboardSidebarSessionsSection({
 	workspaceShortcutLabels,
 	onWorkspaceHover,
 }: DashboardSidebarSessionsSectionProps) {
+	const { t } = useLingui();
 	const openNewSessionModal = useOpenNewSessionModal();
 	const { preferences, setSessionSectionFlag, toggleSessionSectionFlag } =
 		useV2UserPreferences();
@@ -174,12 +176,21 @@ export function DashboardSidebarSessionsSection({
 				onToggleDeleted={() => toggleSessionSectionFlag("showDeletedSessions")}
 			>
 				<div>
-					<DashboardSidebarSectionHeader label="Sessions" section="sessions">
+					<DashboardSidebarSectionHeader
+						label={t({
+							id: "dashboard.sidebar.sectionSessions",
+							message: "Sessions",
+						})}
+						section="sessions"
+					>
 						<Tooltip delayDuration={700}>
 							<TooltipTrigger asChild>
 								<button
 									type="button"
-									aria-label="New session"
+									aria-label={t({
+										id: "dashboard.sidebar.sessionsSection.newSessionAriaLabel",
+										message: "New session",
+									})}
 									onClick={(event) => {
 										event.stopPropagation();
 										openNewSessionModal();
@@ -190,7 +201,11 @@ export function DashboardSidebarSessionsSection({
 									<LuPlus className="size-3.5" />
 								</button>
 							</TooltipTrigger>
-							<TooltipContent side="bottom">New session</TooltipContent>
+							<TooltipContent side="bottom">
+								<Trans id="dashboard.sidebar.sessionsSection.newSession">
+									New session
+								</Trans>
+							</TooltipContent>
 						</Tooltip>
 					</DashboardSidebarSectionHeader>
 				</div>
@@ -220,7 +235,10 @@ export function DashboardSidebarSessionsSection({
 			{dropZoneEligible && (
 				<SidebarDropZone
 					dropZoneId={dropZoneId(SESSIONS_CONTAINER)}
-					label="Drop to unpin"
+					label={t({
+						id: "dashboard.sidebar.sessionsSection.dropToUnpin",
+						message: "Drop to unpin",
+					})}
 				/>
 			)}
 			{!isSectionCollapsed &&

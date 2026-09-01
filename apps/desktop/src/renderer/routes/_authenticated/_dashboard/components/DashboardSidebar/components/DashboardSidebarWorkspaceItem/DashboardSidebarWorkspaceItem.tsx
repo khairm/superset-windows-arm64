@@ -1,3 +1,4 @@
+import { useLingui } from "@lingui/react/macro";
 import {
 	type KeyboardEvent,
 	type MouseEvent,
@@ -63,6 +64,7 @@ export function DashboardSidebarWorkspaceItem({
 	onSelectionClick,
 	pinnedContext,
 }: DashboardSidebarWorkspaceItemProps) {
+	const { t } = useLingui();
 	const {
 		id,
 		projectId,
@@ -273,7 +275,15 @@ export function DashboardSidebarWorkspaceItem({
 					isNonGit={isNonGit}
 					aria-label={
 						isPending
-							? `Creating ${workspace.type === "session" ? "session" : "workspace"}: ${name}`
+							? workspace.type === "session"
+								? t({
+										id: "dashboard.sidebar.workspaceItem.creatingSession",
+										message: `Creating session: ${name}`,
+									})
+								: t({
+										id: "dashboard.sidebar.workspaceItem.creatingWorkspace",
+										message: `Creating workspace: ${name}`,
+									})
 							: undefined
 					}
 				/>

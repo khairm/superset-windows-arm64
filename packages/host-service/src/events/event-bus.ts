@@ -54,6 +54,10 @@ type WorkspaceChangedListener = (
 	message: Omit<Extract<ServerMessage, { type: "workspace:changed" }>, "type">,
 ) => void;
 
+type TerminalLifecycleListener = (
+	message: Omit<Extract<ServerMessage, { type: "terminal:lifecycle" }>, "type">,
+) => void;
+
 function sendMessage(socket: WsSocket, message: ServerMessage): void {
 	if (socket.readyState !== 1) return;
 	socket.send(JSON.stringify(message));
@@ -104,6 +108,8 @@ export class EventBus {
 	private readonly clients = new Map<WsSocket, ClientState>();
 	private readonly workspaceChangedListeners =
 		new Set<WorkspaceChangedListener>();
+	private readonly terminalLifecycleListeners =
+		new Set<TerminalLifecycleListener>();
 	private readonly gitWatcher: GitWatcher;
 	private readonly filesystem: WorkspaceFilesystemManager;
 	private removeGitListener: (() => void) | null = null;
@@ -230,6 +236,15 @@ export class EventBus {
 			"type"
 		>,
 	): void {
+		for (const listener of this.terminalLifecycleListeners) {
+			try {
+				listener(message);
+			} catch (error) {
+				console.error("[event-bus] terminal-lifecycle listener failed", {
+					error,
+				});
+			}
+		}
 		this.broadcast({ type: "terminal:lifecycle", ...message });
 		// (ALERT-RETIRE-ON-EXIT) fork-only. A dead terminal takes its phone and
 		// watch cards down with it: tapping one opens a chat that no longer
@@ -255,6 +270,20 @@ export class EventBus {
 		>,
 	): void {
 		this.broadcast(message);
+	}
+
+	onTerminalLifecycle(listener: TerminalLifecycleListener): () => void {
+		this.terminalLifecycleListeners.add(listener);
+		return () => this.terminalLifecycleListeners.delete(listener);
+	}
+
+	broadcastPageWatchChanged(
+		message: Omit<
+			Extract<ServerMessage, { type: "page-watch:changed" }>,
+			"type"
+		>,
+	): void {
+		this.broadcast({ type: "page-watch:changed", ...message });
 	}
 
 	/**

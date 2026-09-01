@@ -19,6 +19,7 @@ import { healthRouter } from "./health";
 import { hostRouter } from "./host";
 import { issuesRouter } from "./issues";
 import { notificationsRouter } from "./notifications";
+import { pageWatchRouter } from "./page-watch";
 import { portsRouter } from "./ports";
 import { projectRouter } from "./project";
 import { pullRequestsRouter } from "./pull-requests";
@@ -57,6 +58,7 @@ export const appRouter = router({
 	notifications: notificationsRouter,
 	pullRequests: pullRequestsRouter,
 	project: projectRouter,
+	pageWatch: pageWatchRouter,
 	ports: portsRouter,
 	settings: settingsRouter,
 	// (SIDEBAR-MIRROR) fork-only.

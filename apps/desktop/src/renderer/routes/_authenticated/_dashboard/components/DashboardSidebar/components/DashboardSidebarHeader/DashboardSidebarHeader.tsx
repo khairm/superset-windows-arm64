@@ -1,3 +1,4 @@
+import { Trans, useLingui } from "@lingui/react/macro";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
 import {
 	DropdownMenu,
@@ -15,7 +16,6 @@ import { GoGitPullRequest } from "react-icons/go";
 import {
 	LuColumns3,
 	LuFileText,
-	LuGauge,
 	LuLayers,
 	LuPlus,
 	LuPuzzle,
@@ -42,10 +42,6 @@ import {
 	pullRequestsSearchFromFilters,
 	usePullRequestsFilterStore,
 } from "renderer/routes/_authenticated/_dashboard/pull-requests/stores/pullRequestsFilterStore";
-import {
-	getUsageLastSection,
-	usageSectionPath,
-} from "renderer/routes/_authenticated/_dashboard/usage/utils/usageLastSection";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { STROKE_WIDTH_THICK } from "renderer/screens/main/components/WorkspaceSidebar/constants";
 import {
@@ -74,6 +70,7 @@ let kanbanCloseTarget:
 export function DashboardSidebarHeader({
 	isCollapsed = false,
 }: DashboardSidebarHeaderProps) {
+	const { t } = useLingui();
 	const openModal = useOpenNewWorkspaceModal();
 	const openEmptyProject = useOpenEmptyProjectModal();
 	const openNewProject = useOpenNewProjectModal();
@@ -83,23 +80,45 @@ export function DashboardSidebarHeader({
 	const router = useRouter();
 	const folderImport = useFolderFirstImport({
 		onError: (message) => {
-			toast.error(`Import failed: ${message}`);
+			toast.error(
+				t({
+					id: "dashboard.sidebar.header.importFailed",
+					message: `Import failed: ${message}`,
+				}),
+			);
 		},
 		onMultipleProjects: ({ candidates }) => {
-			toast.error("Import failed", {
-				description: `Multiple projects use this repository (${candidates.length}). Choose the project in settings to set it up on this device.`,
-				action: {
-					label: "Open Projects",
-					onClick: () => navigate({ to: "/settings/projects" }),
+			toast.error(
+				t({
+					id: "dashboard.sidebar.header.importFailedTitle",
+					message: "Import failed",
+				}),
+				{
+					description: t({
+						id: "dashboard.sidebar.header.importMultipleProjects",
+						message: `Multiple projects use this repository (${candidates.length}). Choose the project in settings to set it up on this device.`,
+					}),
+					action: {
+						label: t({
+							id: "dashboard.sidebar.header.openProjects",
+							message: "Open Projects",
+						}),
+						onClick: () => navigate({ to: "/settings/projects" }),
+					},
 				},
-			});
+			);
 		},
 	});
 
 	const handleImportFolder = async () => {
 		const result = await folderImport.start();
 		if (result) {
-			toast.success("Project ready — open it from the sidebar.");
+			toast.success(
+				t({
+					id: "dashboard.sidebar.header.projectReady",
+					message: "Project ready — open it from the sidebar.",
+				}),
+			);
 		}
 	};
 
@@ -144,10 +163,9 @@ export function DashboardSidebarHeader({
 		fuzzy: true,
 	});
 	const isKanbanOpen = !!matchRoute({ to: "/kanban", fuzzy: true });
-	// (USAGE) New in v1.23.0 and kept: it reads token and machine-resource
-	// figures from the LOCAL host-service (`usage.history`, `usage.quota`),
-	// not from the cloud.
-	const isUsageOpen = !!matchRoute({ to: "/usage", fuzzy: true });
+	// (USAGE) Upstream moved the Usage page under Settings in v1.25.1, so the
+	// rail button is gone with it — the page itself is still ours and still
+	// reads the LOCAL host-service (`usage.history`, `usage.quota`).
 	const isPluginsOpen = !!matchRoute({ to: "/plugins", fuzzy: true });
 	const isPagesOpen = !!matchRoute({ to: "/pages", fuzzy: true });
 	// `?? false`: the hook returns undefined until PostHog flags resolve.
@@ -203,12 +221,6 @@ export function DashboardSidebarHeader({
 			return;
 		}
 		navigate({ to: "/v2-workspaces" });
-	};
-
-	const handleUsageClick = () => {
-		// Reopen whichever Usage section (token / machine resources) was
-		// visited last.
-		navigate({ to: usageSectionPath(getUsageLastSection()) });
 	};
 
 	const isPagesEnabled = useFeatureFlagEnabled(FEATURE_FLAGS.PAGES) ?? false;
@@ -271,7 +283,9 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">
-							New Workspace ({shortcutText})
+							<Trans id="dashboard.sidebar.header.newWorkspaceWithShortcut">
+								New Workspace ({shortcutText})
+							</Trans>
 						</TooltipContent>
 					</Tooltip>
 
@@ -288,8 +302,14 @@ export function DashboardSidebarHeader({
 						</TooltipTrigger>
 						<TooltipContent side="right">
 							{searchShortcutText !== "Unassigned"
-								? `Search (${searchShortcutText})`
-								: "Search"}
+								? t({
+										id: "dashboard.sidebar.header.searchWithShortcut",
+										message: `Search (${searchShortcutText})`,
+									})
+								: t({
+										id: "dashboard.sidebar.header.searchTooltip",
+										message: "Search",
+									})}
 						</TooltipContent>
 					</Tooltip>
 
@@ -308,7 +328,11 @@ export function DashboardSidebarHeader({
 								<LuLayers className="size-3.5" strokeWidth={1.5} />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="right">Workspaces</TooltipContent>
+						<TooltipContent side="right">
+							<Trans id="dashboard.sidebar.header.workspacesTooltip">
+								Workspaces
+							</Trans>
+						</TooltipContent>
 					</Tooltip>
 
 					<Tooltip delayDuration={300}>
@@ -316,7 +340,10 @@ export function DashboardSidebarHeader({
 							<button
 								type="button"
 								onClick={handlePullRequestsClick}
-								aria-label="Pull requests"
+								aria-label={t({
+									id: "dashboard.sidebar.header.pullRequestsRailAriaLabel",
+									message: "Pull requests",
+								})}
 								aria-current={isPullRequestsOpen ? "page" : undefined}
 								className={cn(
 									"flex size-7 items-center justify-center rounded-md transition-colors",
@@ -328,7 +355,11 @@ export function DashboardSidebarHeader({
 								<GoGitPullRequest className="size-3.5" />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="right">Pull requests</TooltipContent>
+						<TooltipContent side="right">
+							<Trans id="dashboard.sidebar.header.pullRequestsTooltip">
+								Pull requests
+							</Trans>
+						</TooltipContent>
 					</Tooltip>
 
 					<Tooltip delayDuration={300}>
@@ -336,7 +367,10 @@ export function DashboardSidebarHeader({
 							<button
 								type="button"
 								onClick={handleKanbanClick}
-								aria-label="Kanban"
+								aria-label={t({
+									id: "dashboard.sidebar.header.kanbanRailAriaLabel",
+									message: "Kanban",
+								})}
 								aria-current={isKanbanOpen ? "page" : undefined}
 								className={cn(
 									"flex size-7 items-center justify-center rounded-md transition-colors",
@@ -348,27 +382,9 @@ export function DashboardSidebarHeader({
 								<LuColumns3 className="size-3.5" strokeWidth={1.5} />
 							</button>
 						</TooltipTrigger>
-						<TooltipContent side="right">Kanban</TooltipContent>
-					</Tooltip>
-
-					<Tooltip delayDuration={300}>
-						<TooltipTrigger asChild>
-							<button
-								type="button"
-								onClick={handleUsageClick}
-								aria-label="Usage"
-								aria-current={isUsageOpen ? "page" : undefined}
-								className={cn(
-									"flex size-7 items-center justify-center rounded-md transition-colors",
-									isUsageOpen
-										? "bg-fill-selected text-muted-foreground"
-										: "text-muted-foreground hover:bg-fill-hover",
-								)}
-							>
-								<LuGauge className="size-3.5" strokeWidth={1.5} />
-							</button>
-						</TooltipTrigger>
-						<TooltipContent side="right">Usage</TooltipContent>
+						<TooltipContent side="right">
+							<Trans id="dashboard.sidebar.header.kanbanTooltip">Kanban</Trans>
+						</TooltipContent>
 					</Tooltip>
 
 					{isPagesEnabled && (
@@ -377,7 +393,10 @@ export function DashboardSidebarHeader({
 								<button
 									type="button"
 									onClick={handlePagesClick}
-									aria-label="Pages"
+									aria-label={t({
+										id: "dashboard.sidebar.header.pagesRailAriaLabel",
+										message: "Pages",
+									})}
 									aria-current={isPagesOpen ? "page" : undefined}
 									className={cn(
 										"flex size-7 items-center justify-center rounded-md transition-colors",
@@ -389,7 +408,9 @@ export function DashboardSidebarHeader({
 									<LuFileText className="size-3.5" strokeWidth={1.5} />
 								</button>
 							</TooltipTrigger>
-							<TooltipContent side="right">Pages</TooltipContent>
+							<TooltipContent side="right">
+								<Trans id="dashboard.sidebar.header.pagesTooltip">Pages</Trans>
+							</TooltipContent>
 						</Tooltip>
 					)}
 
@@ -399,7 +420,10 @@ export function DashboardSidebarHeader({
 								<button
 									type="button"
 									onClick={handlePluginsClick}
-									aria-label="Plugins"
+									aria-label={t({
+										id: "dashboard.sidebar.header.pluginsRailAriaLabel",
+										message: "Plugins",
+									})}
 									aria-current={isPluginsOpen ? "page" : undefined}
 									className={cn(
 										"flex size-7 items-center justify-center rounded-md transition-colors",
@@ -411,7 +435,11 @@ export function DashboardSidebarHeader({
 									<LuPuzzle className="size-3.5" strokeWidth={1.5} />
 								</button>
 							</TooltipTrigger>
-							<TooltipContent side="right">Plugins</TooltipContent>
+							<TooltipContent side="right">
+								<Trans id="dashboard.sidebar.header.pluginsTooltip">
+									Plugins
+								</Trans>
+							</TooltipContent>
 						</Tooltip>
 					)}
 
@@ -421,7 +449,10 @@ export function DashboardSidebarHeader({
 								<DropdownMenuTrigger asChild>
 									<button
 										type="button"
-										aria-label="Add project"
+										aria-label={t({
+											id: "dashboard.sidebar.header.addProjectAriaLabel",
+											message: "Add project",
+										})}
 										className="group/addrepo flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover"
 									>
 										<VscNewFolder className="size-3.5 group-hover/addrepo:hidden" />
@@ -429,7 +460,11 @@ export function DashboardSidebarHeader({
 									</button>
 								</DropdownMenuTrigger>
 							</TooltipTrigger>
-							<TooltipContent side="right">Add project</TooltipContent>
+							<TooltipContent side="right">
+								<Trans id="dashboard.sidebar.header.addProjectTooltip">
+									Add project
+								</Trans>
+							</TooltipContent>
 						</Tooltip>
 						<DropdownMenuContent
 							align="start"
@@ -437,11 +472,15 @@ export function DashboardSidebarHeader({
 						>
 							<DropdownMenuItem onSelect={handleImportFolder}>
 								<VscFolderOpened className="size-4" />
-								Open project
+								<Trans id="dashboard.sidebar.header.openProject">
+									Open project
+								</Trans>
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openNewProject()}>
 								<VscGithubAlt className="size-4" />
-								Clone from URL
+								<Trans id="dashboard.sidebar.header.cloneFromUrl">
+									Clone from URL
+								</Trans>
 							</DropdownMenuItem>
 							{/* (MULTI-REPO WORKSPACE) group N git repos under one row */}
 							<DropdownMenuItem onSelect={() => openMultiFolder()}>
@@ -450,11 +489,15 @@ export function DashboardSidebarHeader({
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openEmptyProject()}>
 								<VscNewFolder className="size-4" />
-								Create new project
+								<Trans id="dashboard.sidebar.header.createNewProject">
+									Create new project
+								</Trans>
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openTemplateGallery()}>
 								<VscLayout className="size-4" />
-								Start from a template
+								<Trans id="dashboard.sidebar.header.startFromTemplate">
+									Start from a template
+								</Trans>
 							</DropdownMenuItem>
 						</DropdownMenuContent>
 					</DropdownMenu>
@@ -508,7 +551,9 @@ export function DashboardSidebarHeader({
 					<LuPlus className="size-3" strokeWidth={STROKE_WIDTH_THICK} />
 				</div>
 				<span className="flex-1 truncate text-left whitespace-nowrap">
-					New Workspace
+					<Trans id="dashboard.sidebar.header.newWorkspace">
+						New Workspace
+					</Trans>
 				</span>
 				<SidebarKbdHint label={shortcutText} />
 			</button>
@@ -523,7 +568,9 @@ export function DashboardSidebarHeader({
 					className="size-4 shrink-0 text-muted-foreground"
 					strokeWidth={1.5}
 				/>
-				<span className="flex-1 text-left">Search</span>
+				<span className="flex-1 text-left">
+					<Trans id="dashboard.sidebar.header.search">Search</Trans>
+				</span>
 				{searchShortcutText !== "Unassigned" && (
 					<SidebarKbdHint label={searchShortcutText} />
 				)}
@@ -543,13 +590,18 @@ export function DashboardSidebarHeader({
 					className="size-4 shrink-0 text-muted-foreground"
 					strokeWidth={1.5}
 				/>
-				<span className="flex-1 text-left">Workspaces</span>
+				<span className="flex-1 text-left">
+					<Trans id="dashboard.sidebar.header.workspaces">Workspaces</Trans>
+				</span>
 			</button>
 
 			<button
 				type="button"
 				onClick={handlePullRequestsClick}
-				aria-label="Pull requests"
+				aria-label={t({
+					id: "dashboard.sidebar.header.pullRequestsAriaLabel",
+					message: "Pull requests",
+				})}
 				aria-current={isPullRequestsOpen ? "page" : undefined}
 				className={cn(
 					"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
@@ -559,13 +611,20 @@ export function DashboardSidebarHeader({
 				)}
 			>
 				<GoGitPullRequest className="size-4 shrink-0 text-muted-foreground" />
-				<span className="flex-1 text-left">Pull requests</span>
+				<span className="flex-1 text-left">
+					<Trans id="dashboard.sidebar.header.pullRequests">
+						Pull requests
+					</Trans>
+				</span>
 			</button>
 
 			<button
 				type="button"
 				onClick={handleKanbanClick}
-				aria-label="Kanban"
+				aria-label={t({
+					id: "dashboard.sidebar.header.kanbanAriaLabel",
+					message: "Kanban",
+				})}
 				aria-current={isKanbanOpen ? "page" : undefined}
 				className={cn(
 					"flex w-full items-center gap-2 rounded-md px-2 py-1 text-[13px] font-medium transition-colors",
@@ -578,33 +637,19 @@ export function DashboardSidebarHeader({
 					className="size-3.5 shrink-0 text-muted-foreground"
 					strokeWidth={1.5}
 				/>
-				<span className="flex-1 text-left">Kanban</span>
-			</button>
-
-			<button
-				type="button"
-				onClick={handleUsageClick}
-				aria-label="Usage"
-				aria-current={isUsageOpen ? "page" : undefined}
-				className={cn(
-					"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
-					isUsageOpen
-						? "bg-fill-selected text-foreground"
-						: "text-muted-foreground hover:bg-fill-hover hover:text-foreground",
-				)}
-			>
-				<LuGauge
-					className="size-4 shrink-0 text-muted-foreground"
-					strokeWidth={1.5}
-				/>
-				<span className="flex-1 text-left">Usage</span>
+				<span className="flex-1 text-left">
+					<Trans id="dashboard.sidebar.header.kanban">Kanban</Trans>
+				</span>
 			</button>
 
 			{isPagesEnabled && (
 				<button
 					type="button"
 					onClick={handlePagesClick}
-					aria-label="Pages"
+					aria-label={t({
+						id: "dashboard.sidebar.header.pagesAriaLabel",
+						message: "Pages",
+					})}
 					aria-current={isPagesOpen ? "page" : undefined}
 					className={cn(
 						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
@@ -617,7 +662,9 @@ export function DashboardSidebarHeader({
 						className="size-4 shrink-0 text-muted-foreground"
 						strokeWidth={1.5}
 					/>
-					<span className="flex-1 text-left">Pages</span>
+					<span className="flex-1 text-left">
+						<Trans id="dashboard.sidebar.header.pages">Pages</Trans>
+					</span>
 				</button>
 			)}
 
@@ -625,7 +672,10 @@ export function DashboardSidebarHeader({
 				<button
 					type="button"
 					onClick={handlePluginsClick}
-					aria-label="Plugins"
+					aria-label={t({
+						id: "dashboard.sidebar.header.pluginsAriaLabel",
+						message: "Plugins",
+					})}
 					aria-current={isPluginsOpen ? "page" : undefined}
 					className={cn(
 						"flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium transition-colors",
@@ -638,7 +688,9 @@ export function DashboardSidebarHeader({
 						className="size-4 shrink-0 text-muted-foreground"
 						strokeWidth={1.5}
 					/>
-					<span className="flex-1 text-left">Plugins</span>
+					<span className="flex-1 text-left">
+						<Trans id="dashboard.sidebar.header.plugins">Plugins</Trans>
+					</span>
 				</button>
 			)}
 		</div>

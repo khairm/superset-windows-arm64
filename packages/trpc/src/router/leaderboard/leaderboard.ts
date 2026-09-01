@@ -15,6 +15,7 @@ import {
 	createTRPCRouter,
 	protectedProcedure,
 	publicProcedure,
+	userError,
 } from "../../trpc";
 import { requireActiveOrgMembership } from "../utils/active-org";
 import { isUniqueViolation } from "../utils/unique-violation";
@@ -119,9 +120,10 @@ async function enforceHostBudget(
 	`);
 
 	if (Number(seen.rows[0]?.hosts ?? 0) >= MAX_HOSTS_PER_USER) {
-		throw new TRPCError({
+		throw userError({
 			code: "BAD_REQUEST",
 			message: "Too many machines publishing for this account.",
+			i18nKey: "serverError.leaderboard.tooManyMachinesPublishing",
 		});
 	}
 }
@@ -171,9 +173,10 @@ async function enforcePublicRead(headers: Headers): Promise<void> {
 		return;
 	}
 	if (!success) {
-		throw new TRPCError({
+		throw userError({
 			code: "TOO_MANY_REQUESTS",
 			message: "Rate limit exceeded.",
+			i18nKey: "serverError.leaderboard.rateLimitExceeded",
 		});
 	}
 }
@@ -199,9 +202,10 @@ async function requireParticipant(userId: string) {
 		.limit(1);
 
 	if (!row || row.revokedAt) {
-		throw new TRPCError({
+		throw userError({
 			code: "PRECONDITION_FAILED",
 			message: "Not on the leaderboard. Opt in first.",
+			i18nKey: "serverError.leaderboard.notOnTheLeaderboardOptIn",
 		});
 	}
 	return row;
@@ -267,6 +271,7 @@ async function recomputeTier(userId: string): Promise<void> {
 				sessions: sql<number>`coalesce(sum(${leaderboardDailyFactory.sessions}), 0)::int`,
 				parallelSessions: sql<string>`coalesce(max(${leaderboardDailyFactory.parallelSessions}), 0)`,
 				agentPrsMerged: sql<number>`coalesce(max(${leaderboardDailyFactory.agentPrsMerged}), 0)::int`,
+				agentPrsAllHosts: sql<number>`coalesce(sum(${leaderboardDailyFactory.agentPrsMerged}), 0)::int`,
 			})
 			.from(leaderboardDailyFactory)
 			.where(
@@ -280,6 +285,7 @@ async function recomputeTier(userId: string): Promise<void> {
 			.select({
 				day: leaderboardDaily.day,
 				tokens: sql<number>`coalesce(sum(${leaderboardDaily.tokens}), 0)::bigint`,
+				usd: sql<string>`coalesce(sum(${leaderboardDaily.usdEstimate}), 0)`,
 			})
 			.from(leaderboardDaily)
 			.where(
@@ -296,6 +302,7 @@ async function recomputeTier(userId: string): Promise<void> {
 			.limit(1),
 	]);
 
+	const usdByDay = new Map(tokenRows.map((row) => [row.day, Number(row.usd)]));
 	const tokensByDay = new Map(
 		tokenRows.map((row) => [row.day, Number(row.tokens)]),
 	);
@@ -306,6 +313,8 @@ async function recomputeTier(userId: string): Promise<void> {
 		sessions: Number(row.sessions),
 		parallelSessions: Number(row.parallelSessions),
 		agentPrsMerged: Number(row.agentPrsMerged),
+		agentPrsAllHosts: Number(row.agentPrsAllHosts),
+		usd: usdByDay.get(row.day) ?? 0,
 	}));
 
 	const result = computeTier(rows, (current[0]?.tier ?? 0) as Tier);
@@ -319,6 +328,7 @@ async function recomputeTier(userId: string): Promise<void> {
 			axisWidth: result.axisWidth.toFixed(2),
 			axisDepth: result.axisDepth,
 			axisOutput: result.axisOutput.toFixed(2),
+			axisCost: result.axisCost.toFixed(2),
 		})
 		.where(eq(leaderboardParticipants.userId, userId));
 }
@@ -388,9 +398,10 @@ export const leaderboardRouter = createTRPCRouter({
 				.limit(1);
 
 			if (taken && taken.userId !== userId) {
-				throw new TRPCError({
+				throw userError({
 					code: "CONFLICT",
 					message: "That handle is taken.",
+					i18nKey: "serverError.leaderboard.thatHandleIsTaken",
 				});
 			}
 
@@ -419,9 +430,10 @@ export const leaderboardRouter = createTRPCRouter({
 				return row;
 			} catch (error) {
 				if (isUniqueViolation(error, HANDLE_CONSTRAINT)) {
-					throw new TRPCError({
+					throw userError({
 						code: "CONFLICT",
 						message: "That handle is taken.",
+						i18nKey: "serverError.leaderboard.thatHandleIsTaken",
 					});
 				}
 				throw error;
@@ -629,7 +641,11 @@ export const leaderboardRouter = createTRPCRouter({
 				await enforcePublicRead(ctx.headers);
 				const profile = await getParticipant(input.handle, input);
 				if (!profile) {
-					throw new TRPCError({ code: "NOT_FOUND", message: "Not found" });
+					throw userError({
+						code: "NOT_FOUND",
+						message: "Not found",
+						i18nKey: "serverError.leaderboard.notFound",
+					});
 				}
 				return profile;
 			}),

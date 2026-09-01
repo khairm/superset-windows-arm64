@@ -1,5 +1,11 @@
-import type { ComposerHandle } from "@superset/composer";
+import type { MessageDescriptor } from "@lingui/core";
+import { msg } from "@lingui/core/macro";
+import { Trans, useLingui } from "@lingui/react/macro";
+import type { ComposerHandle, ComposerSessionTab } from "@superset/composer";
+import { i18n } from "@superset/i18n";
+import { errorMessage } from "@superset/i18n/errors";
 import { useQueryClient } from "@tanstack/react-query";
+import * as Clipboard from "expo-clipboard";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import {
 	CloudOff,
@@ -10,6 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ActivityIndicator,
+	Alert,
 	Keyboard,
 	LayoutAnimation,
 	Pressable,
@@ -30,6 +37,7 @@ import {
 	useHostTerminals,
 } from "@/screens/(authenticated)/(home)/home/hooks/useHostTerminals";
 import { PressableScale } from "@/screens/(authenticated)/components/PressableScale";
+import { useAgentIconUris } from "@/screens/(authenticated)/hooks/useAgentIconUris";
 import { useAppReviewPrompt } from "@/screens/(authenticated)/hooks/useAppReviewPrompt";
 import { useCreateTerminalWorkspace } from "@/screens/(authenticated)/hooks/useCreateTerminalWorkspace";
 import { useSlashCommands } from "@/screens/(authenticated)/hooks/useSlashCommands";
@@ -45,7 +53,6 @@ import {
 	TerminalComposer,
 	type TerminalQuickKey,
 } from "../components/TerminalComposer";
-import { TerminalTabs } from "../components/TerminalTabs";
 import {
 	type TerminalConnectionState,
 	type TerminalControlMessage,
@@ -77,10 +84,18 @@ const PENDING_CREATE_ROW_TIMEOUT_MS = 5 * 60_000;
 /** The row landed but the launched agent never produced a session. */
 const PENDING_CREATE_SESSION_TIMEOUT_MS = 60_000;
 
-const STATE_BANNERS: Partial<Record<TerminalConnectionState, string>> = {
-	connecting: "Connecting…",
-	reconnecting: "Reconnecting…",
-	denied: "You don't have access to this terminal.",
+const STATE_BANNERS: Partial<
+	Record<TerminalConnectionState, MessageDescriptor>
+> = {
+	connecting: msg({ id: "mobile.terminal.connecting", message: "Connecting…" }),
+	reconnecting: msg({
+		id: "mobile.terminal.reconnecting",
+		message: "Reconnecting…",
+	}),
+	denied: msg({
+		id: "mobile.terminal.denied",
+		message: "You don't have access to this terminal.",
+	}),
 };
 
 /**
@@ -88,8 +103,17 @@ const STATE_BANNERS: Partial<Record<TerminalConnectionState, string>> = {
  * the active tab is the one live attached stream, and the + menu launches a
  * new session from the host's agent presets (or a plain shell). Chrome: the
  * compact header (name → action sheet, Review pill) and the terminal composer.
+ *
+ * The tab strip is drawn by the composer rather than here. It sits directly
+ * above the quick keys, inside the composer's own view tree, because its
+ * position depends on the composer's height — as a sibling it would have to
+ * guess a number that only exists on the other side of the bridge, which is the
+ * drift `ComposerQuickKeys` was moved native to fix. This screen still owns
+ * every decision: which session is attached, what closing one costs, the order
+ * they sit in.
  */
 export function WorkspaceScreen() {
+	const { t } = useLingui();
 	const params = useLocalSearchParams<{ id: string; tab?: string }>();
 	const id = params.id;
 	const router = useRouter();
@@ -194,11 +218,14 @@ export function WorkspaceScreen() {
 		const timer = setTimeout(() => {
 			failPendingCreate(
 				workspaceId,
-				"Timed out waiting for the host to create the workspace.",
+				t({
+					id: "mobile.workspaceCreate.timedOut",
+					message: "Timed out waiting for the host to create the workspace.",
+				}),
 			);
 		}, remaining);
 		return () => clearTimeout(timer);
-	}, [pendingCreate, workspaceResolved, failPendingCreate]);
+	}, [pendingCreate, workspaceResolved, failPendingCreate, t]);
 
 	// Row landed but no session followed (agent failed to launch): fall
 	// through to the regular empty state instead of spinning.
@@ -306,6 +333,22 @@ export function WorkspaceScreen() {
 		requestAppReview("session_completed");
 	}, [activeRow, markTerminalSeen, requestAppReview]);
 
+	// Brand marks as file URIs: the composer draws them, and neither SwiftUI nor
+	// the bridge can read a Metro asset reference.
+	const agentIds = useMemo(() => rows.map((row) => row.agentId), [rows]);
+	const agentIconUris = useAgentIconUris(agentIds);
+	const sessionTabs = useMemo<ComposerSessionTab[]>(
+		() =>
+			rows.map((row) => ({
+				id: row.terminalId,
+				label: row.title,
+				iconUri: row.agentId ? agentIconUris[row.agentId] : undefined,
+				selected: row.terminalId === activeTerminalId,
+				attention: row.attention ?? undefined,
+			})),
+		[rows, activeTerminalId, agentIconUris],
+	);
+
 	const invalidateTerminals = useCallback(() => {
 		if (!host) return;
 		void queryClient.invalidateQueries({
@@ -339,9 +382,50 @@ export function WorkspaceScreen() {
 			if (!workspace || !hostUrl) return;
 			void getHostServiceClientByUrl(hostUrl)
 				.terminal.killSession.mutate({ terminalId, workspaceId: workspace.id })
+				// A kill that fails leaves the tab exactly where it was, which reads
+				// as the tap having missed. Cheap to ignore while closing was a
+				// long-press only; the strip now offers it on every selected tab and
+				// in the press-and-hold menu, so silence is no longer affordable.
+				.catch((cause: unknown) =>
+					Alert.alert(
+						t({
+							id: "mobile.terminal.closeFailed",
+							message: "Could not close the session",
+						}),
+						errorMessage(cause),
+					),
+				)
 				.finally(invalidateTerminals);
 		},
-		[workspace, hostUrl, invalidateTerminals],
+		[workspace, hostUrl, invalidateTerminals, t],
+	);
+
+	// The composer reports the intent and stops there: it has no idea that
+	// closing a tab kills an agent mid-task, so the confirm lives here. Reached
+	// from the selected tab's close disc and from its press-and-hold menu.
+	const confirmCloseTerminal = useCallback(
+		(terminalId: string) => {
+			const row = rows.find((candidate) => candidate.terminalId === terminalId);
+			Alert.alert(
+				t({
+					id: "mobile.terminalTabs.closeSession",
+					message: "Close session",
+				}),
+				row?.title,
+				[
+					{
+						text: t({ id: "common.cancel", message: "Cancel" }),
+						style: "cancel",
+					},
+					{
+						text: t({ id: "mobile.common.close", message: "Close" }),
+						style: "destructive",
+						onPress: () => killTerminal(terminalId),
+					},
+				],
+			);
+		},
+		[rows, killTerminal, t],
 	);
 
 	// --- active terminal connection (one live stream; tabs switch it) ---
@@ -373,8 +457,23 @@ export function WorkspaceScreen() {
 		if (composerActiveRef.current) composerRef.current?.blur();
 	}, []);
 	const handleCopied = useCallback(
-		() => setNotice((prev) => ({ text: "Copied", seq: (prev?.seq ?? 0) + 1 })),
-		[],
+		() =>
+			setNotice((prev) => ({
+				text: t({ id: "mobile.terminal.copied", message: "Copied" }),
+				seq: (prev?.seq ?? 0) + 1,
+			})),
+		[t],
+	);
+
+	// Press and hold a tab → Copy session ID. The pasteboard write lands here
+	// rather than natively so it shares the header notice every other copy on
+	// this screen already uses.
+	const copyTerminalId = useCallback(
+		(terminalId: string) => {
+			void Clipboard.setStringAsync(terminalId).then(handleCopied);
+			posthog.capture("session_id_copied", { workspace_id: id ?? null });
+		},
+		[handleCopied, id],
 	);
 
 	useEffect(() => {
@@ -449,7 +548,8 @@ export function WorkspaceScreen() {
 		});
 	}, [connectionState, id, activeTerminalId]);
 
-	const banner = STATE_BANNERS[connectionState];
+	const bannerDescriptor = STATE_BANNERS[connectionState];
+	const banner = bannerDescriptor ? i18n._(bannerDescriptor) : undefined;
 	const showComposer =
 		activeTerminalId !== null &&
 		host !== null &&
@@ -474,7 +574,15 @@ export function WorkspaceScreen() {
 			: projectName;
 		return (
 			<View className="bg-background flex-1">
-				<Stack.Screen options={{ ...headerOptions, title: "New workspace" }} />
+				<Stack.Screen
+					options={{
+						...headerOptions,
+						title: t({
+							id: "mobile.workspaceCreate.newWorkspace",
+							message: "New workspace",
+						}),
+					}}
+				/>
 				{createFailed ? (
 					<WorkspaceCreateFailedState
 						subtitle={subtitle}
@@ -501,7 +609,7 @@ export function WorkspaceScreen() {
 			<Stack.Screen
 				options={{
 					...headerOptions,
-					title: "Workspace",
+					title: t({ id: "mobile.nav.workspace.title", message: "Workspace" }),
 					headerTitle: notice
 						? () => (
 								<HeaderNotice
@@ -535,19 +643,6 @@ export function WorkspaceScreen() {
 				)}
 			</Stack.Screen>
 
-			{/* A cloud workspace exists on screen before anything serves it; the
-			    tab strip would only offer sessions on a sandbox that isn't up. */}
-			{cloud && !workspace ? null : (
-				<TerminalTabs
-					rows={rows}
-					activeTerminalId={activeTerminalId}
-					onSelect={pickTerminal}
-					onAdd={openAddMenu}
-					onManage={openSessions}
-					onClose={killTerminal}
-				/>
-			)}
-
 			{banner && activeTerminalId ? (
 				<View className="bg-muted px-3 py-1.5">
 					<Text className="text-muted-foreground text-center text-xs">
@@ -558,10 +653,14 @@ export function WorkspaceScreen() {
 			{connectionState === "error" && activeTerminalId ? (
 				<View className="bg-muted flex-row items-center justify-center gap-3 px-3 py-1.5">
 					<Text className="text-muted-foreground text-xs">
-						Connection failed.
+						<Trans id="mobile.terminal.connectionFailed">
+							Connection failed.
+						</Trans>
 					</Text>
 					<Pressable onPress={() => terminalRef.current?.retry()}>
-						<Text className="text-foreground text-xs font-medium">Retry</Text>
+						<Text className="text-foreground text-xs font-medium">
+							<Trans id="mobile.terminal.retry">Retry</Trans>
+						</Text>
 					</Pressable>
 				</View>
 			) : null}
@@ -578,11 +677,17 @@ export function WorkspaceScreen() {
 			>
 				{hostCompatibility.incompatible ? (
 					<WorkspacePlaceholder
-						body={`${host?.name ?? "This host"} is running host service ${hostCompatibility.hostVersion} — this app needs ${hostCompatibility.minVersion} or newer. Update Superset on that machine.`}
+						body={t({
+							id: "mobile.workspace.hostOutdated.body",
+							message: `${host?.name ?? t({ id: "mobile.workspace.thisHost", message: "This host" })} is running host service ${hostCompatibility.hostVersion} — this app needs ${hostCompatibility.minVersion} or newer. Update Superset on that machine.`,
+						})}
 						icon={TriangleAlert}
 						onRefresh={onRefresh}
 						refreshing={refreshing}
-						title="This host needs an update"
+						title={t({
+							id: "mobile.workspace.hostOutdated.title",
+							message: "This host needs an update",
+						})}
 					/>
 				) : activeTerminalId && host && id ? (
 					<>
@@ -641,11 +746,18 @@ export function WorkspaceScreen() {
 					</Centered>
 				) : !host ? (
 					<WorkspacePlaceholder
-						body="It will reconnect on its own once the machine is back. Pull to check again."
+						body={t({
+							id: "mobile.workspace.hostOffline.body",
+							message:
+								"It will reconnect on its own once the machine is back. Pull to check again.",
+						})}
 						icon={CloudOff}
 						onRefresh={onRefresh}
 						refreshing={refreshing}
-						title="This workspace's host is offline"
+						title={t({
+							id: "mobile.workspace.hostOffline.title",
+							message: "This workspace's host is offline",
+						})}
 					/>
 				) : (
 					<WorkspacePlaceholder
@@ -656,14 +768,25 @@ export function WorkspaceScreen() {
 								onPress={openAddMenu}
 							>
 								<Icon as={Plus} className="text-foreground size-4" />
-								<Text className="font-medium text-[15px]">Start a session</Text>
+								<Text className="font-medium text-[15px]">
+									<Trans id="mobile.workspace.startSession">
+										Start a session
+									</Trans>
+								</Text>
 							</Pressable>
 						}
-						body="Start an agent or a terminal to begin working in this workspace."
+						body={t({
+							id: "mobile.workspace.noSessions.body",
+							message:
+								"Start an agent or a terminal to begin working in this workspace.",
+						})}
 						icon={SquareTerminal}
 						onRefresh={onRefresh}
 						refreshing={refreshing}
-						title="No sessions yet"
+						title={t({
+							id: "mobile.workspace.noSessions.title",
+							message: "No sessions yet",
+						})}
 					/>
 				)}
 			</View>
@@ -710,6 +833,15 @@ export function WorkspaceScreen() {
 							workspaceId={id}
 							allowAttachments={activeRow?.agentId != null}
 							slashCommands={slashCommands}
+							// A cloud workspace exists on screen before anything serves
+							// it; the strip would offer sessions on a sandbox that is not
+							// up yet.
+							sessionTabs={cloud && !workspace ? [] : sessionTabs}
+							onSessionTabPress={pickTerminal}
+							onSessionTabClose={confirmCloseTerminal}
+							onSessionTabCopyId={copyTerminalId}
+							onNewSessionPress={openAddMenu}
+							onAllSessionsPress={openSessions}
 							attachmentTarget={attachmentTarget}
 							onActiveChange={setComposerActive}
 							onHeightChange={setComposerHeight}

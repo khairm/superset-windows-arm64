@@ -202,6 +202,8 @@ export const settings = sqliteTable("settings", {
 		"agent_preset_permissions_migrated_at",
 	),
 	selectedRingtoneId: text("selected_ringtone_id"),
+	// App display language: "auto" or a supported BCP 47 tag; null = auto.
+	language: text("language"),
 	activeOrganizationId: text("active_organization_id"),
 	confirmOnQuit: integer("confirm_on_quit", { mode: "boolean" }),
 	terminalLinkBehavior: text(
@@ -242,6 +244,9 @@ export const settings = sqliteTable("settings", {
 	>(),
 	terminalCursorBlink: integer("terminal_cursor_blink", { mode: "boolean" }),
 	terminalParkedRuntimeCap: integer("terminal_parked_runtime_cap"),
+	terminalCopyOnSelect: integer("terminal_copy_on_select", {
+		mode: "boolean",
+	}),
 	editorFontFamily: text("editor_font_family"),
 	editorFontSize: integer("editor_font_size"),
 	editorLineHeight: real("editor_line_height"),

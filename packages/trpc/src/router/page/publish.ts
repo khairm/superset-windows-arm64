@@ -1,6 +1,5 @@
 import { dbWs } from "@superset/db/client";
 import {
-	pageCommentThreads,
 	pages,
 	pageVersions,
 	type SelectPage,
@@ -10,6 +9,7 @@ import { mintPageSlug } from "@superset/shared/page-slug";
 import { TRPCError } from "@trpc/server";
 import { del, put } from "@vercel/blob";
 import { and, desc, eq } from "drizzle-orm";
+import { userError } from "../../i18n-error";
 import { assertPageWritable } from "./access";
 import { pageUrl } from "./page-url";
 import {
@@ -46,9 +46,10 @@ export async function publishPage({
 		} catch (error) {
 			if (!isVersionConflict(error)) throw error;
 			if (attempt < MAX_PUBLISH_ATTEMPTS) continue;
-			throw new TRPCError({
+			throw userError({
 				code: "CONFLICT",
 				message: "This page is being published from somewhere else — retry",
+				i18nKey: "serverError.page.thisPageIsBeingPublishedFrom",
 			});
 		}
 	}
@@ -149,19 +150,12 @@ async function runPublish({
 				.returning();
 
 			if (!row) {
-				throw new TRPCError({
+				throw userError({
 					code: "INTERNAL_SERVER_ERROR",
 					message: "Failed to record page version",
+					i18nKey: "serverError.page.failedToRecordPageVersion",
 				});
 			}
-
-			// A new version is not what anyone handed off, so agent activation does
-			// not carry over to it. Someone has to look at the page again and hand
-			// off the threads that still apply.
-			await tx
-				.update(pageCommentThreads)
-				.set({ agentActivatedAt: null, agentActivatedByUserId: null })
-				.where(eq(pageCommentThreads.pageId, page.id));
 
 			bodyCompleted = true;
 			return {
@@ -218,7 +212,11 @@ async function resolveTargetPage({
 			)
 			.limit(1);
 		if (!page) {
-			throw new TRPCError({ code: "NOT_FOUND", message: "Page not found" });
+			throw userError({
+				code: "NOT_FOUND",
+				message: "Page not found",
+				i18nKey: "serverError.page.pageNotFound",
+			});
 		}
 		assertPageWritable(page, userId);
 		return page;
@@ -287,14 +285,15 @@ async function createPage({
 			createdByUserId: userId,
 			title,
 			description: input.description ?? null,
-			visibility: input.visibility ?? "just_me",
+			visibility: input.visibility ?? "org",
 		})
 		.returning();
 
 	if (!page) {
-		throw new TRPCError({
+		throw userError({
 			code: "INTERNAL_SERVER_ERROR",
 			message: "Failed to create page",
+			i18nKey: "serverError.page.failedToCreatePage",
 		});
 	}
 	return page;

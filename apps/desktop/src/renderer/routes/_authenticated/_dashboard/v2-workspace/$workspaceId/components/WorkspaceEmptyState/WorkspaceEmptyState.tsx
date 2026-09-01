@@ -1,3 +1,4 @@
+import { useLingui } from "@lingui/react/macro";
 import { useMemo } from "react";
 import type { IconType } from "react-icons";
 import { BsTerminalPlus } from "react-icons/bs";
@@ -35,6 +36,7 @@ export function WorkspaceEmptyState({
 	onOpenQuickOpen,
 	onOpenTerminal,
 }: WorkspaceEmptyStateProps) {
+	const { t } = useLingui();
 	const activeTheme = useTheme();
 	const { keys: newGroupDisplay } = useHotkeyDisplay("NEW_GROUP");
 	const { keys: newBrowserDisplay } = useHotkeyDisplay("NEW_BROWSER");
@@ -44,21 +46,30 @@ export function WorkspaceEmptyState({
 		() => [
 			{
 				id: "terminal",
-				label: "Open Terminal",
+				label: t({
+					id: "workspace.emptyState.openTerminal",
+					message: "Open Terminal",
+				}),
 				display: newGroupDisplay,
 				icon: BsTerminalPlus,
 				onClick: onOpenTerminal,
 			},
 			{
 				id: "browser",
-				label: "Open Browser",
+				label: t({
+					id: "workspace.emptyState.openBrowser",
+					message: "Open Browser",
+				}),
 				display: newBrowserDisplay,
 				icon: TbWorld,
 				onClick: onOpenBrowser,
 			},
 			{
 				id: "search-files",
-				label: "Search Files",
+				label: t({
+					id: "workspace.emptyState.searchFiles",
+					message: "Search Files",
+				}),
 				display: quickOpenDisplay,
 				icon: LuSearch,
 				onClick: onOpenQuickOpen,
@@ -71,6 +82,7 @@ export function WorkspaceEmptyState({
 			onOpenQuickOpen,
 			onOpenTerminal,
 			quickOpenDisplay,
+			t,
 		],
 	);
 

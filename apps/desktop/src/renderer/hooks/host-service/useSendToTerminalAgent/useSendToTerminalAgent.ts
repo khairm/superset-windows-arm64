@@ -1,3 +1,5 @@
+import { useLingui } from "@lingui/react/macro";
+import { errorMessage } from "@superset/i18n/errors";
 import { sanitizePromptForPty } from "@superset/shared/agent-prompt-launch";
 import { toast } from "@superset/ui/sonner";
 import { workspaceTrpc } from "@superset/workspace-client";
@@ -65,6 +67,7 @@ interface UseSendToTerminalAgentResult {
  * through this so the payload normalization + error toast stay consistent.
  */
 export function useSendToTerminalAgent(): UseSendToTerminalAgentResult {
+	const { t } = useLingui();
 	const writeInput = workspaceTrpc.terminal.writeInput.useMutation();
 	// (AUTO-RESUME) A manual send into a terminal is a takeover — cancel any armed/pending
 	// auto-resume for it so we never inject "resume…" on top of the user's own message.
@@ -83,13 +86,24 @@ export function useSendToTerminalAgent(): UseSendToTerminalAgentResult {
 					data: normalizeTerminalCommand(sanitizePromptForPty(text)),
 				});
 			} catch (error) {
-				const message =
-					error instanceof Error ? error.message : "Unknown error";
-				toast.error("Couldn't send to agent", { description: message });
+				const message = errorMessage(
+					error,
+					t({
+						id: "hooks.sendToTerminalAgent.unknownError",
+						message: "Unknown error",
+					}),
+				);
+				toast.error(
+					t({
+						id: "hooks.sendToTerminalAgent.sendFailed",
+						message: "Couldn't send to agent",
+					}),
+					{ description: message },
+				);
 				throw error;
 			}
 		},
-		[writeInput, notifyAutoResumeActivity],
+		[writeInput, notifyAutoResumeActivity, t],
 	);
 
 	return { send, isPending: writeInput.isPending };

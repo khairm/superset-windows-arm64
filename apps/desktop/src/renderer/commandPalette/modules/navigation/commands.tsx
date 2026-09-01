@@ -1,3 +1,4 @@
+import { msg } from "@lingui/core/macro";
 import { BookOpenIcon, HistoryIcon, SettingsIcon } from "lucide-react";
 import { LuLayers } from "react-icons/lu";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
@@ -12,7 +13,7 @@ export const navigationProvider: CommandProvider = {
 		const commands: Command[] = [
 			{
 				id: "nav.settings",
-				title: "Settings",
+				title: msg({ id: "commandPalette.nav.settings", message: "Settings" }),
 				section: "navigation",
 				icon: SettingsIcon,
 				hotkeyId: "OPEN_SETTINGS",
@@ -23,7 +24,10 @@ export const navigationProvider: CommandProvider = {
 			},
 			{
 				id: "nav.recentlyViewed",
-				title: "Recently Viewed",
+				title: msg({
+					id: "commandPalette.nav.recentlyViewed",
+					message: "Recently Viewed",
+				}),
 				section: "navigation",
 				icon: HistoryIcon,
 				keywords: ["history", "recent", "back"],
@@ -31,7 +35,10 @@ export const navigationProvider: CommandProvider = {
 			},
 			{
 				id: "nav.workspaces",
-				title: "Workspaces",
+				title: msg({
+					id: "commandPalette.nav.workspaces",
+					message: "Workspaces",
+				}),
 				section: "navigation",
 				icon: LuLayers,
 				keywords: ["workspace", "project", "repo", "repository", "switch"],
@@ -39,9 +46,13 @@ export const navigationProvider: CommandProvider = {
 			},
 			{
 				id: "nav.docs",
-				title: "Open documentation",
+				title: msg({
+					id: "commandPalette.nav.openDocs",
+					message: "Open documentation",
+				}),
 				section: "navigation",
 				icon: BookOpenIcon,
+				keywords: ["docs", "help"],
 				run: () => {
 					window.open("https://docs.superset.sh", "_blank", "noreferrer");
 				},

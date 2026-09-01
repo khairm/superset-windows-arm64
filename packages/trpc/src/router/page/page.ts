@@ -11,21 +11,24 @@ import {
 import { TRPCError, type TRPCRouterRecord } from "@trpc/server";
 import { del, head } from "@vercel/blob";
 import { and, desc, eq, or, type SQL, sql } from "drizzle-orm";
-import { protectedProcedure } from "../../trpc";
+import { protectedProcedure, userError } from "../../trpc";
 import { requireActiveOrgMembership } from "../utils/active-org";
 import { assertPageReadable, assertPageWritable } from "./access";
 import { pageUrl } from "./page-url";
 import { publishPage } from "./publish";
 import {
+	clearPageWatchSchema,
 	deletePageSchema,
 	listPagesSchema,
 	pageRefSchema,
 	publishPageSchema,
 	pullPageSchema,
 	setPageVisibilitySchema,
+	setPageWatchSchema,
 	setSharedVersionSchema,
 } from "./schema";
 import { resolveSharedVersion, servedVersion } from "./shared-version";
+import { watchState } from "./watch";
 import { assertWorkspaceAccess } from "./workspace-access";
 
 function visibilityFilter(userId: string) {
@@ -51,7 +54,11 @@ async function pageNotFound(identity: SQL, userId: string): Promise<TRPCError> {
 		.limit(1);
 
 	if (!elsewhere) {
-		return new TRPCError({ code: "NOT_FOUND", message: "Page not found" });
+		return userError({
+			code: "NOT_FOUND",
+			message: "Page not found",
+			i18nKey: "serverError.page.pageNotFound",
+		});
 	}
 	return new TRPCError({
 		code: "FORBIDDEN",
@@ -72,9 +79,10 @@ async function loadPage({
 }): Promise<SelectPage> {
 	const identity = id ? eq(pages.id, id) : slug ? eq(pages.slug, slug) : null;
 	if (!identity) {
-		throw new TRPCError({
+		throw userError({
 			code: "BAD_REQUEST",
 			message: "Provide either id or slug",
+			i18nKey: "serverError.page.provideEitherIdOrSlug",
 		});
 	}
 
@@ -165,12 +173,15 @@ export const pageRouter = {
 					sharedVersion: pages.sharedVersion,
 					createdAt: pages.createdAt,
 					updatedAt: pages.updatedAt,
+					createdByUserId: pages.createdByUserId,
+					ownerName: users.name,
 					latestVersion: latest.version,
 					contentType: latest.contentType,
 					sizeBytes: latest.sizeBytes,
 					publishedAt: latest.publishedAt,
 				})
 				.from(pages)
+				.leftJoin(users, eq(users.id, pages.createdByUserId))
 				.leftJoinLateral(latest, sql`true`);
 
 			const scoped = input?.workspaceId
@@ -209,6 +220,7 @@ export const pageRouter = {
 			url: pageUrl(page.slug),
 			latestVersion,
 			servedVersion: servedVersion(page.sharedVersion, latestVersion),
+			watch: watchState(page, Date.now()),
 		};
 	}),
 
@@ -227,9 +239,48 @@ export const pageRouter = {
 				.returning();
 
 			if (!updated) {
-				throw new TRPCError({ code: "NOT_FOUND", message: "Page not found" });
+				throw userError({
+					code: "NOT_FOUND",
+					message: "Page not found",
+					i18nKey: "serverError.page.pageNotFound",
+				});
 			}
 			return { id: updated.id, visibility: updated.visibility };
+		}),
+
+	setWatch: protectedProcedure
+		.input(setPageWatchSchema)
+		.mutation(async ({ ctx, input }) => {
+			const organizationId = await requireActiveOrgMembership(ctx);
+			const userId = ctx.session.user.id;
+			const page = await loadPage({ id: input.id, organizationId, userId });
+			assertPageWritable(page, userId);
+
+			await db
+				.update(pages)
+				.set({
+					watchedByAgent: input.agentId,
+					watchHeartbeatAt: new Date(),
+				})
+				.where(eq(pages.id, page.id));
+
+			return { id: page.id };
+		}),
+
+	clearWatch: protectedProcedure
+		.input(clearPageWatchSchema)
+		.mutation(async ({ ctx, input }) => {
+			const organizationId = await requireActiveOrgMembership(ctx);
+			const userId = ctx.session.user.id;
+			const page = await loadPage({ id: input.id, organizationId, userId });
+			assertPageWritable(page, userId);
+
+			await db
+				.update(pages)
+				.set({ watchedByAgent: null, watchHeartbeatAt: null })
+				.where(eq(pages.id, page.id));
+
+			return { id: page.id };
 		}),
 
 	access: protectedProcedure
@@ -285,7 +336,11 @@ export const pageRouter = {
 				.returning();
 
 			if (!updated) {
-				throw new TRPCError({ code: "NOT_FOUND", message: "Page not found" });
+				throw userError({
+					code: "NOT_FOUND",
+					message: "Page not found",
+					i18nKey: "serverError.page.pageNotFound",
+				});
 			}
 			return { id: updated.id, sharedVersion: updated.sharedVersion };
 		}),
@@ -362,9 +417,10 @@ export const pageRouter = {
 			const version =
 				input.version ?? servedVersion(page.sharedVersion, latestVersion);
 			if (version === null) {
-				throw new TRPCError({
+				throw userError({
 					code: "NOT_FOUND",
 					message: "Page has no versions",
+					i18nKey: "serverError.page.pageHasNoVersions",
 				});
 			}
 
@@ -395,9 +451,10 @@ export const pageRouter = {
 					version,
 					error,
 				});
-				throw new TRPCError({
+				throw userError({
 					code: "NOT_FOUND",
 					message: "Page content is not available",
+					i18nKey: "serverError.page.pageContentIsNotAvailable",
 				});
 			}
 
@@ -413,6 +470,7 @@ export const pageRouter = {
 				sharedVersion: page.sharedVersion,
 				latestVersion,
 				servedVersion: servedVersion(page.sharedVersion, latestVersion),
+				watch: watchState(page, Date.now()),
 				version: row.version,
 				label: row.label,
 				contentType: row.contentType,
