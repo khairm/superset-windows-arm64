@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "7289e6eaab61",
+  "session_id": "17c6a835-0a5c-450c-9164-edbc67144cfb",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-03T23:37:53.853123Z",
+  "branch": "remove-superset-base-skills",
+  "checkpoints_count": 217,
+  "save_step_count": 1,
+  "files_touched": [
+    "AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "codex-gpt-5-6-sol",
+  "turn_id": "98f2379a71ee",
+  "session_metrics": {
+    "turn_count": 217
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-03T23:37:53.84875Z",
+    "agent_lines": 0,
+    "agent_removed": 2,
+    "human_added": 220,
+    "human_modified": 338,
+    "human_removed": 0,
+    "total_committed": 558,
+    "total_lines_changed": 582,
+    "agent_percentage": 0.3436426116838488,
+    "metric_version": 2
+  }
+}
