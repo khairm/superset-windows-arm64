@@ -3,14 +3,32 @@
   "checkpoint_id": "7289e6eaab61",
   "strategy": "manual-commit",
   "branch": "remove-superset-base-skills",
-  "checkpoints_count": 217,
+  "checkpoints_count": 226,
   "files_touched": [
-    "AGENTS.md"
+    "AGENTS.md",
+    "FEATURES.md",
+    "packages/host-service/src/claude-accounts/index.ts",
+    "packages/host-service/src/claude-accounts/service-regressions.test.ts",
+    "packages/host-service/src/claude-accounts/workspace-retirement.test.ts",
+    "packages/host-service/test/helpers/claude-accounts-fixture.ts"
   ],
   "sessions": [
     {
       "metadata": "/72/89e6eaab61/0/metadata.json",
       "prompt": ""
+    },
+    {
+      "metadata": "/72/89e6eaab61/1/metadata.json",
+      "transcript": "/72/89e6eaab61/1/full.jsonl",
+      "content_hash": "/72/89e6eaab61/1/content_hash.txt",
+      "prompt": "/72/89e6eaab61/1/prompt.txt"
     }
-  ]
+  ],
+  "token_usage": {
+    "input_tokens": 959291,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 31780992,
+    "output_tokens": 75643,
+    "api_call_count": 226
+  }
 }

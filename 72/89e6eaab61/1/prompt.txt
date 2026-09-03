@@ -1,0 +1,22 @@
+<agent-message from="pi-account-flow">
+I traced the Pi warning and sidebar switch flow. Relevant files are unchanged from origin/main despite this branch being 106 commits behind.
+
+Current behavior:
+- `packages/host-service/src/claude-accounts/index.ts:712-779` runs every 60 seconds. The first `/accounts` failure immediately sets global cause `pi-roster` with the exact toast text at lines 759-763.
+- `packages/host-service/src/claude-accounts/index.ts:1762-1791` emits `claude-account-warning` whenever a cause changes.
+- `apps/desktop/src/renderer/routes/_authenticated/components/V2NotificationController/components/ClaudeAccountEventSubscriber/ClaudeAccountEventSubscriber.tsx:66-100` shows that global event as the toast. No renderer delay exists.
+- `packages/host-service/src/claude-accounts/index.ts:363-443` handles sidebar switches. It always fetches the live roster. Any Pi failure rejects the mutation. Following has a custom rejection at lines 379-383. Pinned switches fail on the raw Pi error.
+- `apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/ClaudeAccountPicker/ClaudeAccountPicker.tsx:188-227` disables only while loading/pending and shows a failure toast when the host mutation rejects. The host's `getRoster()` at index.ts:533-550 already serves its last-good roster after a Pi failure, so choices can stay visible.
+- `packages/host-service/src/claude-accounts/index.ts:924-969` deletes mismatched old credentials before fetching the newly requested account. That must change for queued switching because it would discard the last-good account while the Pi is down.
+- Existing test `packages/host-service/src/claude-accounts/service-regressions.test.ts:196-212` explicitly expects a Following switch to be rejected while Pi is unavailable. The immediate-warning test is at lines 297-370, though it covers renewal rather than the exact roster toast.
+
+Minimal implementation:
+1. Add a 10-minute Pi failure grace tracker in the host service, with an injected clock in service deps for instant tests. Feed every service `/accounts` call through it, including `executeTick`, `getRoster`, and `setWorkspaceAccount`, so one success resets the continuous-failure clock.
+2. Suppress the global roster warning until the failure clock reaches 10 minutes. Clear it immediately on success.
+3. During grace, use the Pi client's last-good roster to validate a pinned target. If the token fetch fails, save the requested slug to `workspaces.claudeAccountSlug` with `credentialAction: "keep"`. For Following, save null and apply the machine-default credentials without requiring Pi data. This keeps SQLite as the requested-state source and makes the existing success event/UI cache show the accepted request.
+4. In `refreshPinned`, preserve mismatched last-good credentials and fetch the desired token first. Once the Pi returns, write the desired token and complete the switch. Bypass or reset the exponential token backoff for this mismatched pending state, otherwise recovery can lag by up to 15 minutes.
+5. Once a continuous failure is 10 minutes old, keep the current rejection behavior for new switch requests and emit the warning. Requests accepted during grace remain represented in SQLite and should finish on recovery.
+6. Update regression tests to cover no warning before 10 minutes, warning at 10 minutes, timer reset on success, accepted/queued pinned switch preserving old credentials, automatic completion after recovery, Following during grace, and rejection of a new switch after 10 minutes.
+
+No schema change is needed.
+</agent-message>
