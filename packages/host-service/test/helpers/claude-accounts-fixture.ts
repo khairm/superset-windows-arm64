@@ -207,13 +207,18 @@ export async function servePiFake(
 ) {
 	const pushKeyPath = join(root, "push-key.txt");
 	await writeFile(pushKeyPath, "test-key\n", "utf8");
+	let available = true;
+	let tokenAvailable = true;
+	let currentAccounts = [...accounts];
 	const server = Bun.serve({
 		port: 0,
 		fetch(request) {
+			if (!available) return new Response(null, { status: 503 });
 			const path = new URL(request.url).pathname;
-			if (path === "/accounts") return Response.json(accounts);
+			if (path === "/accounts") return Response.json(currentAccounts);
 			const slug = path.split("/")[2];
 			if (path.endsWith("/token") && slug) {
+				if (!tokenAvailable) return new Response(null, { status: 503 });
 				return Response.json({
 					account: slug,
 					claude_ai_oauth: {
@@ -229,6 +234,15 @@ export async function servePiFake(
 		server,
 		baseUrl: `http://127.0.0.1:${server.port}`,
 		pushKeyPath,
+		setAvailable(next: boolean) {
+			available = next;
+		},
+		setTokenAvailable(next: boolean) {
+			tokenAvailable = next;
+		},
+		setAccounts(next: readonly WireAccount[]) {
+			currentAccounts = [...next];
+		},
 	};
 }
 

@@ -146,8 +146,10 @@ In brief:
   "Account ▸" pins it to a Pi-managed account or follows the tray default,
   hot-swapped by rewriting credentials in place (no restarts). Pinned accounts
   crossing the tray's usage trigger lines (or marked dead on the Pi) auto-fall
-  back to Following, permanently; every manual switch needs a live Pi. Two-phase delete-intent markers + a gated janitor own folder
-  lifecycle (destroy deletes, archive never does); sentinel refresh token —
+  back to Following, permanently. A Pi outage gets a 10-minute grace period:
+  switches are saved and apply on recovery; later attempts fail. Two-phase
+  delete-intent markers + a gated janitor own folder lifecycle (destroy deletes,
+  archive never does); sentinel refresh token —
   the Pi owns all real credential lineages. The sidebar chip and the
   "Account ▸" menu show pace-coloured 5h/weekly/Fable percentages with reset
   countdowns, mirroring the tray. Glossary: `CONTEXT.md`. Module:

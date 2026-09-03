@@ -19,6 +19,7 @@ import { terminalSessions, workspaces } from "../db/schema";
 import {
 	type ClaudeAccountsService,
 	createClaudeAccountsService,
+	PI_FAILURE_GRACE_MS,
 } from "./index";
 import { ClaudeProfileManager } from "./profile-manager";
 
@@ -33,18 +34,32 @@ afterEach(async () => {
 });
 
 async function waitFor(
-	predicate: () => boolean,
+	predicate: () => boolean | Promise<boolean>,
 	message: string,
 	timeoutMs = 2_000,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
-	while (!predicate()) {
+	while (!(await predicate())) {
 		if (Date.now() >= deadline) throw new Error(message);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
 
-async function setupService() {
+function hasActiveGlobalWarning(
+	world: ClaudeTestWorld,
+	messageIncludes?: string,
+): boolean {
+	return world.events.some(
+		(event) =>
+			event.type === "claude-account-warning" &&
+			event.workspaceId === null &&
+			event.active &&
+			(messageIncludes === undefined ||
+				event.message.includes(messageIncludes)),
+	);
+}
+
+async function setupService(options: { now?: () => number } = {}) {
 	const world = await createClaudeTestWorld("claude-service-regression-");
 	worlds.push(world);
 	await writeGlobalClaudeState(world);
@@ -62,6 +77,7 @@ async function setupService() {
 		awaitInitialBackgroundWork: true,
 		piBaseUrl: pi.baseUrl,
 		pushKeyPath: pi.pushKeyPath,
+		...(options.now ? { now: options.now } : {}),
 	});
 	services.push(service);
 	await service.start();
@@ -193,11 +209,46 @@ describe("Claude account service transitions", () => {
 		).toBeNull();
 	});
 
-	test("refuses a manual switch to Following while the Pi is unavailable", async () => {
+	test("applies a manual switch to Following during a short Pi outage", async () => {
 		const { world, service, pi } = await setupService();
 		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
 		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
-		pi.server.stop(true);
+		const credentialPath = join(
+			service.profileDirFor(WORKSPACE_IDS[0]),
+			".credentials.json",
+		);
+		await writeGlobalCredentials(world, managedCredentials("claude456"));
+		pi.setAvailable(false);
+		world.events.length = 0;
+
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], null);
+
+		expect(
+			world.db.query.workspaces
+				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
+				.sync()?.claudeAccountSlug,
+		).toBeNull();
+		expect(
+			JSON.parse(await readFile(credentialPath, "utf8")).trayManagedAccount,
+		).toBe("claude456");
+		expect(
+			world.events.some(
+				(event) =>
+					event.type === "claude-account-state-changed" &&
+					event.workspaceId === WORKSPACE_IDS[0] &&
+					event.state === "following",
+			),
+		).toBe(true);
+	});
+
+	test("refuses a new manual switch after ten minutes of Pi failures", async () => {
+		let now = 1_000_000;
+		const { world, service, pi } = await setupService({ now: () => now });
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		pi.setAvailable(false);
+		await service.getRoster();
+		now += PI_FAILURE_GRACE_MS;
 
 		await expect(
 			service.setWorkspaceAccount(WORKSPACE_IDS[0], null),
@@ -209,6 +260,145 @@ describe("Claude account service transitions", () => {
 				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
 				.sync()?.claudeAccountSlug,
 		).toBe("claude123");
+	});
+
+	test("delays the Pi warning until ten continuous minutes have failed", async () => {
+		let now = 1_000_000;
+		const { world, service, pi } = await setupService({ now: () => now });
+		await service.getRoster();
+		world.events.length = 0;
+		pi.setAvailable(false);
+
+		await service.getRoster();
+		now += PI_FAILURE_GRACE_MS - 1;
+		await service.getRoster();
+		expect(hasActiveGlobalWarning(world)).toBe(false);
+
+		pi.setAvailable(true);
+		await service.getRoster();
+		pi.setAvailable(false);
+		await service.getRoster();
+		now += PI_FAILURE_GRACE_MS;
+		await service.getRoster();
+
+		const warnings = world.events.filter(
+			(event) =>
+				event.type === "claude-account-warning" &&
+				event.workspaceId === null &&
+				event.active &&
+				event.message.includes("cannot reach the Pi"),
+		);
+		expect(warnings).toHaveLength(1);
+	});
+
+	test("queues a pinned switch and applies it when the Pi recovers", async () => {
+		const { world, service, pi } = await setupService();
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		const credentialPath = join(
+			service.profileDirFor(WORKSPACE_IDS[0]),
+			".credentials.json",
+		);
+		pi.setAvailable(false);
+		world.events.length = 0;
+
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude456");
+
+		expect(
+			world.db.query.workspaces
+				.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
+				.sync()?.claudeAccountSlug,
+		).toBe("claude456");
+		expect(
+			JSON.parse(await readFile(credentialPath, "utf8")).trayManagedAccount,
+		).toBe("claude123");
+		expect(hasActiveGlobalWarning(world)).toBe(false);
+		expect(
+			world.events.some(
+				(event) =>
+					event.type === "claude-account-warning" &&
+					event.workspaceId === WORKSPACE_IDS[0] &&
+					event.active &&
+					event.message.includes("waiting for the Pi"),
+			),
+		).toBe(true);
+
+		pi.setAvailable(true);
+		await writeGlobalCredentials(world, { changedAt: Date.now() });
+		await waitFor(
+			async () =>
+				JSON.parse(await readFile(credentialPath, "utf8"))
+					.trayManagedAccount === "claude456",
+			"queued Claude account switch did not complete after Pi recovery",
+		);
+		expect(
+			(await service.getWorkspaceState(WORKSPACE_IDS[0])).warning,
+		).toBeNull();
+	});
+
+	test("removes old credentials when a queued account becomes unavailable", async () => {
+		const { world, service, pi } = await setupService();
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		const credentialPath = join(
+			service.profileDirFor(WORKSPACE_IDS[0]),
+			".credentials.json",
+		);
+		pi.setAvailable(false);
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude456");
+
+		pi.setAccounts([wireAccount("claude123")]);
+		pi.setAvailable(true);
+		await writeGlobalCredentials(world, { changedAt: Date.now() });
+		await waitFor(
+			async () =>
+				(
+					await service.getWorkspaceState(WORKSPACE_IDS[0])
+				).warning?.message.includes("no usable credentials") === true,
+			"invalid queued Claude account switch was not reported",
+		);
+
+		await expect(lstat(credentialPath)).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	test("removes old credentials after a queued token fails for ten minutes", async () => {
+		let now = 1_000_000;
+		const { world, service, pi } = await setupService({ now: () => now });
+		await seedWorkspace(world, { id: WORKSPACE_IDS[0] });
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude123");
+		const credentialPath = join(
+			service.profileDirFor(WORKSPACE_IDS[0]),
+			".credentials.json",
+		);
+		pi.setTokenAvailable(false);
+		await service.setWorkspaceAccount(WORKSPACE_IDS[0], "claude456");
+		now += PI_FAILURE_GRACE_MS;
+
+		await writeGlobalCredentials(world, { changedAt: Date.now() });
+		await waitFor(
+			async () =>
+				(
+					await service.getWorkspaceState(WORKSPACE_IDS[0])
+				).warning?.message.includes("could not finish after 10 minutes") ===
+				true,
+			"expired queued Claude account switch was not reported",
+		);
+
+		await expect(lstat(credentialPath)).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+
+		pi.setTokenAvailable(true);
+		await writeGlobalCredentials(world, { recoveredAt: Date.now() });
+		await waitFor(async () => {
+			if (!(await Bun.file(credentialPath).exists())) return false;
+			return (
+				JSON.parse(await readFile(credentialPath, "utf8"))
+					.trayManagedAccount === "claude456"
+			);
+		}, "queued Claude account switch did not recover after old credentials were removed");
 	});
 
 	test("does not emit a state-change event when the desired account is unchanged", async () => {
@@ -294,7 +484,8 @@ describe("Claude account service transitions", () => {
 		).toBe("claude123");
 	});
 
-	test("warns on the first renewal failure with one global outage event", async () => {
+	test("warns after ten minutes of renewal failures with one global outage event", async () => {
+		let now = 1_000_000;
 		const world = await createClaudeTestWorld("claude-renewal-warning-");
 		worlds.push(world);
 		await writeGlobalClaudeState(world);
@@ -337,10 +528,14 @@ describe("Claude account service transitions", () => {
 			awaitInitialBackgroundWork: true,
 			piBaseUrl: `http://127.0.0.1:${server.port}`,
 			pushKeyPath,
+			now: () => now,
 		});
 		services.push(service);
 
 		await service.start();
+		expect(hasActiveGlobalWarning(world, "renewal")).toBe(false);
+		now += PI_FAILURE_GRACE_MS;
+		await writeGlobalCredentials(world, { changedAt: Date.now() });
 		await waitFor(
 			() =>
 				world.events.some(

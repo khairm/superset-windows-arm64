@@ -97,7 +97,7 @@ function statusOf(world: ClaudeTestWorld, terminalId: string): string {
 }
 
 describe("workspace runtime retirement", () => {
-	test("stops every terminal and unpins with the Pi stopped, where the interactive switch still refuses", async () => {
+	test("stops every terminal and unpins while the Pi is unavailable", async () => {
 		const { world, service, pi } = await setupService();
 		const workspaceId = WORKSPACE_IDS[0];
 		await seedWorkspace(world, { id: workspaceId });
@@ -109,15 +109,7 @@ describe("workspace runtime retirement", () => {
 		expect((await lstat(credentialPath)).isFile()).toBe(true);
 		seedTerminal(world, "retire-live-1", workspaceId);
 		seedTerminal(world, "retire-live-2", workspaceId);
-		pi.server.stop(true);
-		servers.length = 0;
-
-		await expect(
-			service.setWorkspaceAccount(workspaceId, null),
-		).rejects.toThrow(
-			"Cannot switch this workspace to Following while the Pi is unavailable",
-		);
-		expect(slugOf(world, workspaceId)).toBe("claude123");
+		pi.setAvailable(false);
 
 		const result = await service.retireWorkspaceRuntime(workspaceId);
 
