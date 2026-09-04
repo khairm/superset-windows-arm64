@@ -15,6 +15,7 @@ import {
 	defineEnv,
 	devPath,
 	htmlEnvTransformPlugin,
+	linguiMacroPlugin,
 	stripCrossOriginPlugin,
 } from "./vite/helpers";
 import { assertNoTelemetryKeys } from "./vite/telemetry-key-ban";
@@ -69,7 +70,7 @@ const hostServiceSentryPlugin = process.env.SENTRY_AUTH_TOKEN
 
 export default defineConfig({
 	main: {
-		plugins: [tsconfigPaths, copyResourcesPlugin()],
+		plugins: [tsconfigPaths, linguiMacroPlugin(), copyResourcesPlugin()],
 
 		define: {
 			"process.env.NODE_ENV": defineEnv(process.env.NODE_ENV, "production"),

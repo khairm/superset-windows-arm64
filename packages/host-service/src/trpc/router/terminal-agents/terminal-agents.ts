@@ -7,7 +7,8 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { QUESTION_STALE_MANUAL_DISMISS_REASON } from "../../../companion/question-store";
 import type { HostDb } from "../../../db";
-import { terminalSessions } from "../../../db/schema";
+import { terminalSessions, workspaces } from "../../../db/schema";
+import { hasHarnessSession } from "../../../terminal/harness-transcript";
 import {
 	createTerminalSessionInternal,
 	disposeSessionAndWait,
@@ -32,6 +33,7 @@ import {
 import { clearPendingQuestionMarkers } from "../notifications/agent-status-snapshot";
 import { forwardCompanionDismissal } from "../notifications/companion-question-sink";
 import { toTerminalSessionError } from "../terminal/errors";
+import { resolveDefaultAccountEnv } from "../usage/default-account";
 
 type GetOrCreateResult = {
 	binding: TerminalAgentBinding;
@@ -56,12 +58,47 @@ export interface ResumeSessionDeps {
 		workspaceId: string;
 		agent: string;
 		prompt: string;
-		resumeSessionId: string;
+		resumeSessionId?: string;
 	}) => Promise<AgentRunResult>;
 	disposeSession: (terminalId: string) => Promise<unknown>;
+	/**
+	 * Whether the harness still holds a conversation for the binding's session
+	 * id (`null` = cannot tell). Consulted only for a session that never
+	 * progressed past "Attached".
+	 */
+	hasSession: (binding: TerminalAgentBinding) => boolean | null;
 }
 
 const resumeInflight = new Map<string, Promise<ResumeResult>>();
+
+/**
+ * Whether the harness behind `binding` still holds its conversation, read
+ * from the directory the relaunch will run under: the default account can
+ * have changed since the session started (that is what the account-switch
+ * restart is for), and session sharing makes the transcript reachable from
+ * the new profile too.
+ */
+function bindingHasHarnessSession(
+	db: HostDb,
+	binding: TerminalAgentBinding,
+): boolean | null {
+	const config = resolveHostAgentConfig(
+		db,
+		binding.definitionId ?? binding.agentId,
+	);
+	if (!config) return null;
+	const worktreePath = db
+		.select({ path: workspaces.worktreePath })
+		.from(workspaces)
+		.where(eq(workspaces.id, binding.workspaceId))
+		.get()?.path;
+	return hasHarnessSession({
+		agentId: config.presetId,
+		sessionId: binding.agentSessionId,
+		worktreePath,
+		env: { ...resolveDefaultAccountEnv(db, config.presetId), ...config.env },
+	});
+}
 
 /**
  * Idempotently resume the agent session behind a dead terminal into a fresh
@@ -71,6 +108,14 @@ const resumeInflight = new Map<string, Promise<ResumeResult>>();
  * one resumed session — later callers either share its result or get
  * `{ resumed: false }`. The dead terminal is disposed after a successful
  * launch; a failed launch un-claims the candidate so it can be retried.
+ *
+ * A session still at "Attached" started but was never prompted, and agents
+ * only persist a conversation once it has a message — when the harness store
+ * shows none, the agent is launched fresh instead of `--resume`-ing into "no
+ * conversation found". A store that does hold one (a resumed session idle
+ * since its restore) or cannot be read resumes as usual. Nothing is lost
+ * either way: the pane comes back as the same agent on the current default
+ * account.
  */
 export async function resumeTerminalAgentSession(
 	deps: ResumeSessionDeps,
@@ -100,13 +145,19 @@ export async function resumeTerminalAgentSession(
 			return { resumed: false };
 		}
 
+		// Only a definite "no transcript" launches fresh: an unreadable or
+		// unsurveyed store must not cost a restored conversation its history.
+		const resumable =
+			claimed.lastEventType !== "Attached" ||
+			deps.hasSession(claimed) !== false;
+
 		let result: AgentRunResult;
 		try {
 			result = await deps.runAgent({
 				workspaceId,
 				agent: config.id,
 				prompt: "",
-				resumeSessionId: claimed.agentSessionId,
+				...(resumable ? { resumeSessionId: claimed.agentSessionId } : {}),
 			});
 		} catch (error) {
 			unclaimResumeCandidateBinding(deps.db, terminalId);
@@ -282,10 +333,12 @@ export async function dismissWorkspaceStatuses(
 /**
  * Live agent sessions a default-account switch cannot reach: their PTY env
  * was frozen at spawn, so they keep the old login until relaunched. A
- * session qualifies when its binding captured a resumable conversation
- * (session id present, progressed past attach) and its config both belongs
- * to `provider` — the presetId keying resolveDefaultAccountEnv — and knows
- * how to resume. Sessions that fail the bar are left running rather than
+ * session qualifies when its binding captured a session id and its config
+ * both belongs to `provider` — the presetId keying resolveDefaultAccountEnv —
+ * and knows how to resume. A session idle since it started ("Attached")
+ * counts: it is exactly the agent the user would otherwise have to close and
+ * relaunch by hand, and the resume path starts it fresh when it has no
+ * conversation yet. Sessions that fail the bar are left running rather than
  * killed without a way back.
  */
 export function listAccountRestartCandidates(
@@ -295,9 +348,7 @@ export function listAccountRestartCandidates(
 ): Array<{ binding: TerminalAgentBinding; agentLabel: string }> {
 	const out: Array<{ binding: TerminalAgentBinding; agentLabel: string }> = [];
 	for (const binding of store.list()) {
-		if (!binding.agentSessionId || binding.lastEventType === "Attached") {
-			continue;
-		}
+		if (!binding.agentSessionId) continue;
 		const config = resolveHostAgentConfig(
 			db,
 			binding.definitionId ?? binding.agentId,
@@ -319,12 +370,13 @@ export interface RestartAccountSessionsDeps {
  * Relaunch every live `provider` agent onto the current default account.
  * Each candidate terminal is killed the way a crash would kill it — the
  * binding is marked "terminal-exited", never "disposed" — so the standard
- * auto-resume path relaunches the agent with its saved session id, and the
- * agent wrapper re-resolves the account pointer at launch: same
- * conversation, new account. Marking ended precedes the dispose because the
- * renderer re-checks for a resume candidate on the socket close the dispose
- * causes; the store's own "change" event never reaches it. Panes that are
- * not open resume when their workspace is next viewed, like any other
+ * auto-resume path relaunches the agent with its saved session id (or fresh,
+ * for one that never got a prompt), and the agent wrapper re-resolves the
+ * account pointer at launch: same conversation, new account. Marking ended
+ * precedes the dispose because the renderer re-checks for a resume candidate
+ * on the socket close the dispose causes; the store's own "change" event
+ * never reaches it. Panes that are not open resume when their workspace is
+ * next viewed, like any other
  * dead-terminal candidate.
  */
 export async function restartAccountSessions(
@@ -454,6 +506,7 @@ export const terminalAgentsRouter = router({
 					runAgent: (runInput) => runAgentInWorkspace(ctx, runInput),
 					disposeSession: (terminalId) =>
 						disposeSessionAndWait(terminalId, ctx.db, ctx.eventBus),
+					hasSession: (binding) => bindingHasHarnessSession(ctx.db, binding),
 				},
 				input,
 			),
@@ -537,6 +590,10 @@ export const terminalAgentsRouter = router({
 				input.workspaceId,
 				input.terminalId,
 			);
+			ctx.eventBus.broadcastAgentBindingsChanged({
+				workspaceId: input.workspaceId,
+				occurredAt: Date.now(),
+			});
 			return { success: true };
 		}),
 

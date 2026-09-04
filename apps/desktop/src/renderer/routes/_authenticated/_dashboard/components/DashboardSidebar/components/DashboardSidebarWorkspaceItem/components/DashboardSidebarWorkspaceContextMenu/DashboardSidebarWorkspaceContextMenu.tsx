@@ -16,6 +16,7 @@ import {
 	LuArrowRightLeft,
 	LuArrowUp,
 	LuBellOff,
+	LuBox,
 	LuCircleCheck,
 	LuClock,
 	LuCopy,
@@ -24,6 +25,7 @@ import {
 	LuFolderOpen,
 	LuFolderPlus,
 	LuGitBranch,
+	LuHash,
 	LuPencil,
 	LuPin,
 	LuPinOff,
@@ -49,8 +51,13 @@ export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
 
 interface DashboardSidebarWorkspaceContextMenuProps {
 	workspaceId: string;
-	/** Null for project-less "session" workspaces (no group actions yet). */
+	/** Null for project-less session workspaces. */
 	projectId: string | null;
+	/**
+	 * Cloud rows are project-less too, so a null `projectId` alone does not mean
+	 * "session". Only sessions and project workspaces can join a group.
+	 */
+	isSessionWorkspace?: boolean;
 	isInSection?: boolean;
 	isLocalWorkspace: boolean;
 	isNonGit?: boolean;
@@ -72,8 +79,11 @@ interface DashboardSidebarWorkspaceContextMenuProps {
 	onOpenInFinder: () => void;
 	onCopyPath: () => void;
 	onCopyBranchName: () => void;
+	onCopyWorkspaceId: () => void;
 	onRemoveFromSidebar: () => void;
 	onRename?: () => void;
+	/** Cloud workspaces only: turn this sandbox into a reusable environment. */
+	onPromoteToEnvironment?: () => void;
 	/** Default-mode Delete: a silent soft-delete to the Recycle Bin (RECYCLE-BIN).
 	 * Omitted (undefined) for mains, which are never deletable. */
 	onDelete?: () => void;
@@ -154,6 +164,7 @@ function SnoozeSubmenu({
 export function DashboardSidebarWorkspaceContextMenu({
 	workspaceId,
 	projectId,
+	isSessionWorkspace = false,
 	isInSection,
 	isLocalWorkspace,
 	isNonGit = false,
@@ -169,8 +180,10 @@ export function DashboardSidebarWorkspaceContextMenu({
 	onOpenInFinder,
 	onCopyPath,
 	onCopyBranchName,
+	onCopyWorkspaceId,
 	onRemoveFromSidebar,
 	onRename,
+	onPromoteToEnvironment,
 	onDelete,
 	onRestore,
 	onDeletePermanently,
@@ -189,8 +202,16 @@ export function DashboardSidebarWorkspaceContextMenu({
 	// Group actions mutate placement (sectionId/tabOrder). They need a project
 	// (sessions have none) and a row that actually renders its placement — a
 	// pinned, main, or sectioned row does not.
+	// Group actions mutate placement (sectionId/tabOrder), which a pinned, main
+	// or sectioned row doesn't display — the change would only surface once it
+	// returns to the active lane. Cloud rows are project-less but ungroupable:
+	// they stay in the Cloud section, so grouping them would write tags with
+	// nothing to show. Sessions ARE groupable (tag-backed folders).
 	const canUseGroupActions =
-		!isPinned && !isLocalMainWorkspace && !isSectioned && projectId !== null;
+		!isPinned &&
+		!isLocalMainWorkspace &&
+		!isSectioned &&
+		(projectId !== null || isSessionWorkspace);
 	const portGroup = useDashboardSidebarWorkspacePorts(workspaceId);
 	const { isPending: isKillingPorts, killPorts } =
 		useDashboardSidebarPortKill();
@@ -218,14 +239,12 @@ export function DashboardSidebarWorkspaceContextMenu({
 							{isPinned ? (
 								<>
 									<LuPinOff className="size-4 mr-2" />
-									<Trans id="dashboard.sidebar.workspaceMenu.unpin">
-										Unpin
-									</Trans>
+									<Trans>Unpin</Trans>
 								</>
 							) : (
 								<>
 									<LuPin className="size-4 mr-2" />
-									<Trans id="dashboard.sidebar.workspaceMenu.pin">Pin</Trans>
+									<Trans>Pin</Trans>
 								</>
 							)}
 						</ContextMenuItem>
@@ -235,7 +254,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 				{onRename && (
 					<ContextMenuItem onSelect={onRename}>
 						<LuPencil className="size-4 mr-2" />
-						<Trans id="dashboard.sidebar.workspaceMenu.rename">Rename</Trans>
+						<Trans>Rename</Trans>
 					</ContextMenuItem>
 				)}
 				{isLocalWorkspace && (
@@ -243,15 +262,20 @@ export function DashboardSidebarWorkspaceContextMenu({
 						{onRename && <ContextMenuSeparator />}
 						<ContextMenuItem onSelect={onOpenInFinder}>
 							<LuFolderOpen className="size-4 mr-2" />
-							<Trans id="dashboard.sidebar.workspaceMenu.openInFinder">
-								Open in Finder
-							</Trans>
+							<Trans>Open in Finder</Trans>
 						</ContextMenuItem>
 						<ContextMenuItem onSelect={onCopyPath}>
 							<LuCopy className="size-4 mr-2" />
-							<Trans id="dashboard.sidebar.workspaceMenu.copyPath">
-								Copy Path
-							</Trans>
+							<Trans>Copy Path</Trans>
+						</ContextMenuItem>
+					</>
+				)}
+				{onPromoteToEnvironment && (
+					<>
+						<ContextMenuSeparator />
+						<ContextMenuItem onSelect={onPromoteToEnvironment}>
+							<LuBox className="h-4 w-4" />
+							<Trans>Save as environment</Trans>
 						</ContextMenuItem>
 					</>
 				)}
@@ -262,12 +286,14 @@ export function DashboardSidebarWorkspaceContextMenu({
 						{!isLocalWorkspace && onRename && <ContextMenuSeparator />}
 						<ContextMenuItem onSelect={onCopyBranchName}>
 							<LuGitBranch className="size-4 mr-2" />
-							<Trans id="dashboard.sidebar.workspaceMenu.copyBranchName">
-								Copy Branch Name
-							</Trans>
+							<Trans>Copy Branch Name</Trans>
 						</ContextMenuItem>
 					</>
 				)}
+				<ContextMenuItem onSelect={onCopyWorkspaceId}>
+					<LuHash className="size-4 mr-2" />
+					<Trans>Copy Workspace ID</Trans>
+				</ContextMenuItem>
 				{!isSectioned && (
 					<>
 						<ContextMenuSeparator />
@@ -275,25 +301,19 @@ export function DashboardSidebarWorkspaceContextMenu({
 							{isUnread ? (
 								<>
 									<LuEye className="size-4 mr-2" />
-									<Trans id="dashboard.sidebar.workspaceMenu.markAsRead">
-										Mark as Read
-									</Trans>
+									<Trans>Mark as Read</Trans>
 								</>
 							) : (
 								<>
 									<LuEyeOff className="size-4 mr-2" />
-									<Trans id="dashboard.sidebar.workspaceMenu.markAsUnread">
-										Mark as Unread
-									</Trans>
+									<Trans>Mark as Unread</Trans>
 								</>
 							)}
 						</ContextMenuItem>
 						{hasStatus && (
 							<ContextMenuItem onSelect={onClearStatus}>
 								<LuBellOff className="size-4 mr-2" />
-								<Trans id="dashboard.sidebar.workspaceMenu.clearStatus">
-									Clear Status
-								</Trans>
+								<Trans>Clear Status</Trans>
 							</ContextMenuItem>
 						)}
 					</>
@@ -301,9 +321,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 				{hasPullRequest && (
 					<ContextMenuItem onSelect={onRemovePullRequest}>
 						<LuUnlink className="size-4 mr-2" />
-						<Trans id="dashboard.sidebar.workspaceMenu.removePrLink">
-							Remove PR Link
-						</Trans>
+						<Trans>Remove PR Link</Trans>
 					</ContextMenuItem>
 				)}
 				{canUseGroupActions && (
@@ -311,18 +329,14 @@ export function DashboardSidebarWorkspaceContextMenu({
 						<ContextMenuSeparator />
 						<ContextMenuItem onSelect={onCreateSection}>
 							<LuFolderPlus className="size-4 mr-2" />
-							<Trans id="dashboard.sidebar.workspaceMenu.newGroupFromWorkspace">
-								New group from workspace
-							</Trans>
+							<Trans>New group from workspace</Trans>
 						</ContextMenuItem>
 						{(sections.length > 0 || isInSection) && <ContextMenuSeparator />}
 						{sections.length > 0 && (
 							<ContextMenuSub>
 								<ContextMenuSubTrigger>
 									<LuArrowRightLeft className="size-4 mr-2" />
-									<Trans id="dashboard.sidebar.workspaceMenu.moveToGroup">
-										Move to group
-									</Trans>
+									<Trans>Move to group</Trans>
 								</ContextMenuSubTrigger>
 								<ContextMenuSubContent>
 									{sections.map((section) => (
@@ -345,9 +359,7 @@ export function DashboardSidebarWorkspaceContextMenu({
 						{isInSection && (
 							<ContextMenuItem onSelect={() => onMoveToSection(null)}>
 								<LuArrowUp className="size-4 mr-2" />
-								<Trans id="dashboard.sidebar.workspaceMenu.ungroup">
-									Ungroup
-								</Trans>
+								<Trans>Ungroup</Trans>
 							</ContextMenuItem>
 						)}
 					</>

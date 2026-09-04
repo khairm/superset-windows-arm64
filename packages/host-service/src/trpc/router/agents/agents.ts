@@ -1,3 +1,4 @@
+import { isBuiltinAgentId } from "@superset/shared/agent-catalog";
 import { FORK_SESSION_ID_TOKEN } from "@superset/shared/agent-definition";
 import {
 	buildAgentEffortArgs,
@@ -5,6 +6,7 @@ import {
 	buildAgentModelArgs,
 	buildAgentModelEnv,
 	getAgentEffortSupport,
+	getAgentEfforts,
 	getAgentModelSupport,
 	getAgentModeSupport,
 	resolveAgentLaunchPresetId,
@@ -264,6 +266,7 @@ export function validateAgentEffortSelection(
 	presetId: string,
 	label: string,
 	effort: string | undefined,
+	model?: string,
 ): void {
 	if (!effort) return;
 
@@ -275,10 +278,13 @@ export function validateAgentEffortSelection(
 		});
 	}
 
-	if (!support.efforts.some((option) => option.id === effort)) {
+	// Some efforts only exist on some of the agent's models (Codex's max and
+	// ultra need GPT-5.6), so the accepted set follows the selected model.
+	const efforts = getAgentEfforts(presetId, model);
+	if (!efforts.some((option) => option.id === effort)) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
-			message: `Unsupported reasoning effort "${effort}" for ${label}. Choose one of: ${support.efforts.map((option) => option.id).join(", ")}.`,
+			message: `Unsupported reasoning effort "${effort}" for ${label}${model ? ` with model ${model}` : ""}. Choose one of: ${efforts.map((option) => option.id).join(", ")}.`,
 		});
 	}
 }
@@ -423,7 +429,12 @@ export function validateAgentLaunchOptions(
 		config.command,
 	);
 	validateAgentModelSelection(launchPresetId, config.label, input.model);
-	validateAgentEffortSelection(launchPresetId, config.label, input.effort);
+	validateAgentEffortSelection(
+		launchPresetId,
+		config.label,
+		input.effort,
+		input.model,
+	);
 	validateAgentModeSelection(launchPresetId, config.label, input.mode);
 }
 
@@ -452,7 +463,12 @@ export function buildTerminalAgentLaunch(
 		config.command,
 	);
 	validateAgentModelSelection(launchPresetId, config.label, input.model);
-	validateAgentEffortSelection(launchPresetId, config.label, input.effort);
+	validateAgentEffortSelection(
+		launchPresetId,
+		config.label,
+		input.effort,
+		input.model,
+	);
 	validateAgentModeSelection(launchPresetId, config.label, input.mode);
 	// Ahead of the per-field validators: passing both is its own mistake, and
 	// "this agent cannot fork" would send the caller after the wrong one.
@@ -480,7 +496,11 @@ export function buildTerminalAgentLaunch(
 
 	const prompt = buildAttachmentBlock(input.prompt, resolvedAttachments);
 	const modelArgs = buildAgentModelArgs(launchPresetId, input.model);
-	const effortArgs = buildAgentEffortArgs(launchPresetId, input.effort);
+	const effortArgs = buildAgentEffortArgs(
+		launchPresetId,
+		input.effort,
+		input.model,
+	);
 	const modeArgs = buildAgentModeArgs(launchPresetId, input.mode);
 	const command = buildAgentCommandString(
 		config,
@@ -511,8 +531,37 @@ export function buildTerminalAgentLaunch(
 	};
 }
 
+/**
+ * Bind a resumed session's id to its fresh terminal at launch instead of
+ * waiting for a hook. Harnesses differ on when they first report a session
+ * id: Claude's SessionStart fires at launch, but Codex's TUI fires nothing
+ * until the first turn (verified on codex-cli 0.151), so a resumed pane the
+ * user has not prompted yet would carry no id — and dying again would leave
+ * its restored conversation with no resume candidate. `codex resume <id>`
+ * keeps the same rollout id, so the id we launched with is the id to bind.
+ * Forks are excluded: they mint a new session id we cannot know here.
+ */
+export function bindResumedSession(
+	ctx: Pick<HostServiceContext, "db" | "terminalAgentStore">,
+	input: AgentRunInput,
+	terminalId: string,
+): void {
+	if (!input.resumeSessionId) return;
+	const presetId = resolveHostAgentConfig(ctx.db, input.agent)?.presetId;
+	if (!presetId || !isBuiltinAgentId(presetId)) return;
+
+	ctx.terminalAgentStore.recordEvent({
+		terminalId,
+		workspaceId: input.workspaceId,
+		eventType: "Attached",
+		agentId: presetId,
+		agentSessionId: input.resumeSessionId,
+		occurredAt: Date.now(),
+	});
+}
+
 async function runTerminalAgent(
-	ctx: { db: HostDb; eventBus: import("../../../events").EventBus },
+	ctx: Pick<HostServiceContext, "db" | "eventBus" | "terminalAgentStore">,
 	input: AgentRunInput,
 ): Promise<AgentRunResult> {
 	const { fullCommand, label } = buildTerminalAgentLaunch(ctx.db, input);
@@ -529,6 +578,8 @@ async function runTerminalAgent(
 	if ("error" in result) {
 		throw toTerminalSessionError(result);
 	}
+
+	bindResumedSession(ctx, input, result.terminalId);
 
 	return {
 		kind: "terminal",

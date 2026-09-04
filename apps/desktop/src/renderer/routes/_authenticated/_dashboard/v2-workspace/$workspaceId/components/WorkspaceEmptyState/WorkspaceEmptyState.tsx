@@ -2,7 +2,7 @@ import { useLingui } from "@lingui/react/macro";
 import { useMemo } from "react";
 import type { IconType } from "react-icons";
 import { BsTerminalPlus } from "react-icons/bs";
-import { LuSearch } from "react-icons/lu";
+import { LuGitCompareArrows, LuSearch } from "react-icons/lu";
 import { TbWorld } from "react-icons/tb";
 import { GitHubStarPill } from "renderer/components/GitHubStarPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
@@ -19,6 +19,9 @@ import { useTheme } from "renderer/stores/theme";
 // and nothing that is switched off.
 interface WorkspaceEmptyStateProps {
 	onOpenBrowser: () => void;
+	/** Optional so the fork's thin route shim can omit it; the tile is hidden
+	 * when it is. */
+	onOpenChanges?: (() => void) | undefined;
 	onOpenQuickOpen: () => void;
 	onOpenTerminal: () => void;
 }
@@ -33,6 +36,7 @@ interface WorkspaceEmptyStateAction {
 
 export function WorkspaceEmptyState({
 	onOpenBrowser,
+	onOpenChanges,
 	onOpenQuickOpen,
 	onOpenTerminal,
 }: WorkspaceEmptyStateProps) {
@@ -41,13 +45,13 @@ export function WorkspaceEmptyState({
 	const { keys: newGroupDisplay } = useHotkeyDisplay("NEW_GROUP");
 	const { keys: newBrowserDisplay } = useHotkeyDisplay("NEW_BROWSER");
 	const { keys: quickOpenDisplay } = useHotkeyDisplay("QUICK_OPEN");
+	const { keys: openChangesDisplay } = useHotkeyDisplay("OPEN_DIFF_VIEWER");
 
 	const actions = useMemo<Array<WorkspaceEmptyStateAction>>(
 		() => [
 			{
 				id: "terminal",
 				label: t({
-					id: "workspace.emptyState.openTerminal",
 					message: "Open Terminal",
 				}),
 				display: newGroupDisplay,
@@ -57,17 +61,28 @@ export function WorkspaceEmptyState({
 			{
 				id: "browser",
 				label: t({
-					id: "workspace.emptyState.openBrowser",
 					message: "Open Browser",
 				}),
 				display: newBrowserDisplay,
 				icon: TbWorld,
 				onClick: onOpenBrowser,
 			},
+			...(onOpenChanges
+				? [
+						{
+							id: "changes",
+							label: t({
+								message: "Open Changes",
+							}),
+							display: openChangesDisplay,
+							icon: LuGitCompareArrows,
+							onClick: onOpenChanges,
+						},
+					]
+				: []),
 			{
 				id: "search-files",
 				label: t({
-					id: "workspace.emptyState.searchFiles",
 					message: "Search Files",
 				}),
 				display: quickOpenDisplay,
@@ -79,8 +94,10 @@ export function WorkspaceEmptyState({
 			newBrowserDisplay,
 			newGroupDisplay,
 			onOpenBrowser,
+			onOpenChanges,
 			onOpenQuickOpen,
 			onOpenTerminal,
+			openChangesDisplay,
 			quickOpenDisplay,
 			t,
 		],

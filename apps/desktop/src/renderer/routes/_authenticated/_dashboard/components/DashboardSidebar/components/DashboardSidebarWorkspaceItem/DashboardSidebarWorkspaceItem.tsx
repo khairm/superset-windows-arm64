@@ -1,4 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
+import { errorMessage } from "@superset/i18n/errors";
+import { toast } from "@superset/ui/sonner";
 import {
 	type KeyboardEvent,
 	type MouseEvent,
@@ -9,6 +11,7 @@ import {
 	useState,
 } from "react";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { useOptimisticActions } from "renderer/routes/_authenticated/hooks/useOptimisticActions";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { RenameBranchDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
@@ -25,7 +28,10 @@ import {
 } from "../../providers/DashboardSidebarHoverProvider";
 import type { WorkspaceSelectionEvent } from "../../providers/DashboardSidebarSelectionProvider";
 import { useSidebarWorkspaceStatus } from "../../providers/DashboardSidebarWorkspaceStatusProvider";
-import type { DashboardSidebarWorkspace } from "../../types";
+import type {
+	DashboardSidebarWorkspace,
+	DashboardSidebarWorkspaceIndentation,
+} from "../../types";
 import { ClaudeAccountIndicator } from "./components/ClaudeAccountIndicator";
 import { DashboardSidebarCollapsedWorkspaceButton } from "./components/DashboardSidebarCollapsedWorkspaceButton";
 import { DashboardSidebarExpandedWorkspaceRow } from "./components/DashboardSidebarExpandedWorkspaceRow";
@@ -43,6 +49,7 @@ interface DashboardSidebarWorkspaceItemProps {
 	isCollapsed?: boolean;
 	isInSection?: boolean;
 	sectionState?: "snoozed" | "archived" | "deleted";
+	indentation?: DashboardSidebarWorkspaceIndentation;
 	isSelected?: boolean;
 	onSelectionClick?: (event: WorkspaceSelectionEvent) => boolean;
 	/**
@@ -60,11 +67,35 @@ export function DashboardSidebarWorkspaceItem({
 	isCollapsed = false,
 	isInSection = false,
 	sectionState,
+	indentation,
 	isSelected = false,
 	onSelectionClick,
 	pinnedContext,
 }: DashboardSidebarWorkspaceItemProps) {
 	const { t } = useLingui();
+	// TODO(SUPER-2116): belongs in the create-environment flow; this offers
+	// itself on workspaces that are not "ready" and cannot be promoted.
+	const promoteToEnvironment = cloudTrpc.environment.promote.useMutation();
+
+	const handlePromoteToEnvironment = useCallback(() => {
+		toast.promise(
+			promoteToEnvironment.mutateAsync({
+				cloudWorkspaceId: workspace.id,
+				name: workspace.name,
+			}),
+			{
+				loading: t({
+					message: "Saving as an environment...",
+				}),
+				success: (created) =>
+					t({
+						message: `Saved "${created?.name}" as an environment`,
+					}),
+				error: (error) => errorMessage(error),
+			},
+		);
+	}, [promoteToEnvironment, workspace.id, workspace.name, t]);
+
 	const {
 		id,
 		projectId,
@@ -77,6 +108,7 @@ export function DashboardSidebarWorkspaceItem({
 		pullRequest,
 	} = workspace;
 	const isMainWorkspace = workspace.type === "main";
+	const isSessionWorkspace = workspace.type === "session";
 	const collections = useCollections();
 	const projectIsInSidebar =
 		projectId !== null &&
@@ -112,11 +144,13 @@ export function DashboardSidebarWorkspaceItem({
 		handleClick,
 		handleCopyPath,
 		handleCopyBranchName,
+		handleCopyWorkspaceId,
 		handleCreateSection,
 		handleDelete,
 		handleDeletePermanently,
 		handleArchive,
 		handleMarkCompleted,
+		handleMoveToSection,
 		handleOpenInFinder,
 		handleRemoveFromSidebar,
 		handleRemovePullRequest,
@@ -129,7 +163,6 @@ export function DashboardSidebarWorkspaceItem({
 		isActive,
 		isUnread,
 		isRenaming,
-		moveWorkspaceToSection,
 		renameValue,
 		setRenameValue,
 		startRename,
@@ -137,8 +170,11 @@ export function DashboardSidebarWorkspaceItem({
 	} = useDashboardSidebarWorkspaceItemActions({
 		workspaceId: id,
 		projectId,
+		isSessionWorkspace,
 		workspaceName: name,
 		branch,
+		pullRequestUrl: pullRequest?.url ?? null,
+		isCloudWorkspace: hostType === "cloud",
 		isMainWorkspace,
 		isPinned: workspace.isPinned,
 	});
@@ -277,11 +313,9 @@ export function DashboardSidebarWorkspaceItem({
 						isPending
 							? workspace.type === "session"
 								? t({
-										id: "dashboard.sidebar.workspaceItem.creatingSession",
 										message: `Creating session: ${name}`,
 									})
 								: t({
-										id: "dashboard.sidebar.workspaceItem.creatingWorkspace",
 										message: `Creating workspace: ${name}`,
 									})
 							: undefined
@@ -302,6 +336,7 @@ export function DashboardSidebarWorkspaceItem({
 						<DashboardSidebarWorkspaceContextMenu
 							workspaceId={id}
 							projectId={projectId}
+							isSessionWorkspace={isSessionWorkspace}
 							isInSection={isInSection}
 							isUnread={isUnread}
 							hasStatus={!!workspaceStatus}
@@ -311,15 +346,18 @@ export function DashboardSidebarWorkspaceItem({
 							isLocalMainWorkspace={
 								isMainWorkspace && hostType === "local-device"
 							}
+							onPromoteToEnvironment={
+								hostType === "cloud" ? handlePromoteToEnvironment : undefined
+							}
 							isPinned={workspace.isPinned}
 							onTogglePin={handleTogglePin}
 							onCreateSection={handleCreateSection}
-							onMoveToSection={(targetSectionId) =>
-								moveWorkspaceToSection(id, projectId, targetSectionId)
-							}
+							showDeleteHotkey={isActive}
+							onMoveToSection={handleMoveToSection}
 							onOpenInFinder={handleOpenInFinder}
 							onCopyPath={handleCopyPath}
 							onCopyBranchName={handleCopyBranchName}
+							onCopyWorkspaceId={handleCopyWorkspaceId}
 							onRemoveFromSidebar={handleRemoveFromSidebar}
 							onRemovePullRequest={handleRemovePullRequest}
 							onRename={isMainWorkspace ? undefined : startRename}
@@ -383,6 +421,7 @@ export function DashboardSidebarWorkspaceItem({
 				tabStatus={rowTabStatus}
 				isInSection={isInSection}
 				isNonGit={isNonGit}
+				indentation={indentation}
 				isBulkSelectable={onSelectionClick != null}
 				isSelected={isSelected}
 				onClick={handleExpandedClick}
@@ -428,14 +467,13 @@ export function DashboardSidebarWorkspaceItem({
 					<DashboardSidebarWorkspaceContextMenu
 						workspaceId={id}
 						projectId={projectId}
+						isSessionWorkspace={isSessionWorkspace}
 						isInSection={isInSection}
 						isUnread={isUnread}
 						hasStatus={!!workspaceStatus}
 						hasPullRequest={!!pullRequest}
 						onCreateSection={handleCreateSection}
-						onMoveToSection={(targetSectionId) =>
-							moveWorkspaceToSection(id, projectId, targetSectionId)
-						}
+						onMoveToSection={handleMoveToSection}
 						isLocalWorkspace={hostType === "local-device"}
 						isNonGit={isNonGit}
 						isLocalMainWorkspace={
@@ -446,6 +484,7 @@ export function DashboardSidebarWorkspaceItem({
 						onOpenInFinder={handleOpenInFinder}
 						onCopyPath={handleCopyPath}
 						onCopyBranchName={handleCopyBranchName}
+						onCopyWorkspaceId={handleCopyWorkspaceId}
 						onRemoveFromSidebar={handleRemoveFromSidebar}
 						onRemovePullRequest={handleRemovePullRequest}
 						onRename={isMainWorkspace ? undefined : startRename}

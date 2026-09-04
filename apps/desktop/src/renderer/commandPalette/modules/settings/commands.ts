@@ -34,7 +34,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "appearance",
 		title: msg({
-			id: "commandPalette.settingsTab.appearance",
 			message: "Appearance",
 		}),
 		path: "/settings/appearance",
@@ -44,7 +43,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "behavior",
 		title: msg({
-			id: "commandPalette.settingsTab.behavior",
 			message: "Behavior",
 		}),
 		path: "/settings/behavior",
@@ -52,7 +50,7 @@ const TABS: SettingsTab[] = [
 	},
 	{
 		id: "models",
-		title: msg({ id: "commandPalette.settingsTab.models", message: "Models" }),
+		title: msg({ message: "Models" }),
 		path: "/settings/models",
 		icon: CpuIcon,
 		keywords: ["ai", "llm"],
@@ -60,7 +58,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "terminal",
 		title: msg({
-			id: "commandPalette.settingsTab.terminal",
 			message: "Terminal",
 		}),
 		path: "/settings/terminal",
@@ -69,14 +66,13 @@ const TABS: SettingsTab[] = [
 	},
 	{
 		id: "git",
-		title: msg({ id: "commandPalette.settingsTab.git", message: "Git" }),
+		title: msg({ message: "Git" }),
 		path: "/settings/git",
 		icon: GitBranchIcon,
 	},
 	{
 		id: "experimental",
 		title: msg({
-			id: "commandPalette.settingsTab.experimental",
 			message: "Experimental",
 		}),
 		path: "/settings/experimental",
@@ -85,7 +81,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "keyboard",
 		title: msg({
-			id: "commandPalette.settingsTab.keyboard",
 			message: "Keyboard shortcuts",
 		}),
 		path: "/settings/keyboard",
@@ -94,14 +89,13 @@ const TABS: SettingsTab[] = [
 	},
 	{
 		id: "links",
-		title: msg({ id: "commandPalette.settingsTab.links", message: "Links" }),
+		title: msg({ message: "Links" }),
 		path: "/settings/links",
 		icon: BookmarkIcon,
 	},
 	{
 		id: "permissions",
 		title: msg({
-			id: "commandPalette.settingsTab.permissions",
 			message: "Permissions",
 		}),
 		path: "/settings/permissions",
@@ -110,7 +104,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "projects",
 		title: msg({
-			id: "commandPalette.settingsTab.projects",
 			message: "Projects",
 		}),
 		path: "/settings/projects",
@@ -119,7 +112,6 @@ const TABS: SettingsTab[] = [
 	{
 		id: "ringtones",
 		title: msg({
-			id: "commandPalette.settingsTab.ringtones",
 			message: "Ringtones",
 		}),
 		path: "/settings/ringtones",
@@ -127,14 +119,14 @@ const TABS: SettingsTab[] = [
 	},
 	{
 		id: "usage",
-		title: msg({ id: "commandPalette.settingsTab.usage", message: "Usage" }),
+		title: msg({ message: "Usage" }),
 		path: "/settings/usage",
 		icon: ChartBarIcon,
 		keywords: ["tokens", "cost", "quota", "cpu", "memory", "resources"],
 	},
 	{
 		id: "agents",
-		title: msg({ id: "commandPalette.settingsTab.agents", message: "Agents" }),
+		title: msg({ message: "Agents" }),
 		path: "/settings/agents",
 		icon: WrenchIcon,
 	},

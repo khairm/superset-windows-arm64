@@ -16,7 +16,6 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
 import {
 	deriveTagFolders,
 	useTagFolderContext,
@@ -36,7 +35,7 @@ import type {
 import {
 	buildDashboardSidebarInactiveSessionWorkspaces,
 	buildDashboardSidebarPinnedWorkspaces,
-	buildDashboardSidebarSessionWorkspaces,
+	buildDashboardSidebarSessions,
 	partitionSidebarWorkspacesByPinned,
 	partitionSidebarWorkspacesBySession,
 } from "./buildDashboardSidebarProjects";
@@ -284,8 +283,17 @@ export function useDashboardSidebarData() {
 		[collections],
 	);
 
-	const { workspaces: hostWorkspaces } = useHostWorkspaces();
-	const { targets: sandboxes } = useSandboxAccess();
+	const { workspaces: allHostWorkspaces, cache: hostWorkspacesCache } =
+		useHostWorkspaces();
+	// Cloud workspaces render in the Cloud section only, whatever placement
+	// their local-state row carries.
+	const hostWorkspaces = useMemo(
+		() =>
+			allHostWorkspaces.filter(
+				(workspace) => !hostWorkspacesCache.isSandboxHost(workspace.hostId),
+			),
+		[allHostWorkspaces, hostWorkspacesCache],
+	);
 	const hostWorkspacesById = useMemo(
 		() => new Map(hostWorkspaces.map((workspace) => [workspace.id, workspace])),
 		[hostWorkspaces],
@@ -365,6 +373,7 @@ export function useDashboardSidebarData() {
 						taskId: workspace.taskId,
 						createdAt: workspace.createdAt,
 						updatedAt: workspace.updatedAt,
+						lastActivityAt: workspace.lastActivityAt,
 						tabOrder: localState.tabOrder,
 						sectionId: localState.sectionId,
 						tags: workspace.tags,
@@ -582,6 +591,7 @@ export function useDashboardSidebarData() {
 					taskId: workspace.taskId,
 					createdAt: workspace.createdAt,
 					updatedAt: workspace.updatedAt,
+					lastActivityAt: workspace.lastActivityAt,
 					tabOrder: MAIN_WORKSPACE_TAB_ORDER,
 					sectionId: null as string | null,
 					tags: workspace.tags,
@@ -634,7 +644,6 @@ export function useDashboardSidebarData() {
 					(workspace) => workspace.projectId !== null,
 				),
 				fallbackOrganizationId: knownHostsOrgId,
-				sandboxes,
 			}),
 		[
 			activeHostUrl,
@@ -642,7 +651,6 @@ export function useDashboardSidebarData() {
 			knownHostsOrgId,
 			machineId,
 			relayUrl,
-			sandboxes,
 			visibleSidebarWorkspaces,
 		],
 	);
@@ -849,6 +857,10 @@ export function useDashboardSidebarData() {
 				behindCount: null,
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
+				// The host's activity stamp, carried so the "Last active" project
+				// sort ranks this row by real agent activity instead of falling back
+				// to `updatedAt` (which moves on renames and bulk moves).
+				lastActivityAt: workspace.lastActivityAt,
 				taskId: workspace.taskId,
 				// Always false here — pinned rows were partitioned out above and
 				// render only in the Pinned section.
@@ -913,6 +925,7 @@ export function useDashboardSidebarData() {
 				behindCount: null,
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
+				lastActivityAt: workspace.lastActivityAt,
 				taskId: workspace.taskId,
 				// A snoozed / archived / soft-deleted row never renders in the Pinned
 				// section, so its pin state is irrelevant to the row it produces.
@@ -1060,16 +1073,18 @@ export function useDashboardSidebarData() {
 	]);
 	const groups = useStableDashboardSidebarProjects(computedGroups);
 
-	const computedSessionWorkspaces = useMemo<DashboardSidebarWorkspace[]>(
+	const computedSessions = useMemo(
 		() =>
-			buildDashboardSidebarSessionWorkspaces({
+			buildDashboardSidebarSessions({
 				sessionSidebarWorkspaces: sessionRows,
+				sidebarSections,
 				machineId,
 				pullRequestsByWorkspaceId,
 			}),
-		[machineId, pullRequestsByWorkspaceId, sessionRows],
+		[machineId, pullRequestsByWorkspaceId, sessionRows, sidebarSections],
 	);
-	const sessionWorkspaces = useJsonStable(computedSessionWorkspaces);
+	const sessions = useJsonStable(computedSessions);
+	const sessionWorkspaces = sessions.workspaces;
 
 	// (SESSION-LIFECYCLE) Rows for the top-level Snoozed Sessions / Archived
 	// Sessions subsections. `nowMs` is the same coarse tick that expires snoozes,
@@ -1137,6 +1152,7 @@ export function useDashboardSidebarData() {
 		groups,
 		pinnedWorkspaces,
 		sessionWorkspaces,
+		sessionChildren: sessions.children,
 		snoozedSessionWorkspaces,
 		archivedSessionWorkspaces,
 		deletedSessionWorkspaces,

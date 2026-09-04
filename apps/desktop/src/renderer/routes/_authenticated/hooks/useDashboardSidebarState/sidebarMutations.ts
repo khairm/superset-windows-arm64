@@ -6,8 +6,19 @@ import type { WorkspaceLocalStateDraft } from "renderer/routes/_authenticated/pr
 
 export type SidebarWorkspaceRow = Pick<
 	HostShapedWorkspace,
-	"id" | "projectId" | "type" | "hostId"
+	"id" | "projectId" | "type" | "hostId" | "createdByUserId"
 >;
+
+/**
+ * Who the sidebar reconciler places for: the local host unconditionally, a
+ * remote host only for worktrees this user created. Mirrors
+ * `selectWorktreesToPlace` so removal tombstones exactly what placement could
+ * bring back.
+ */
+export type SidebarPlacementScope = {
+	machineId: string | null;
+	currentUserId: string | null;
+};
 
 /**
  * Pure sidebar local-state mutations, kept free of React/Electron imports so
@@ -181,12 +192,18 @@ export function tombstoneSidebarWorkspaceRecord(
  * (`buildDashboardSidebarProjects` drops any workspace whose project is absent).
  *
  * EVERY workspace of the project is tombstoned so "removed" stays removed
- * (REMOVE-STICKY). A worktree with no local-state row would be re-placed by
- * `usePlaceLocalWorktreesInSidebar` (recreating the project), and a
+ * (REMOVE-STICKY). A workspace with no local-state row would be re-placed by
+ * `usePlaceWorktreesInSidebar` (recreating the project), and a
  * kept-but-visible row would flood back the moment anything recreates the
  * project row — e.g. a later automation-created worktree. Hiding each one
- * (existing rows, plus this device's row-less workspaces) means a resurrected
- * project shows only the genuinely-new worktree, not these dismissed ones.
+ * (existing rows, plus the row-less workspaces the reconciler could re-pin)
+ * means a resurrected project shows only the genuinely-new worktree, not these
+ * dismissed ones. Row-less rows are tombstoned on every host the reconciler
+ * could place from — the local host, plus any remote host for workspaces this
+ * user created — not just online ones: a host that is offline now would
+ * re-place the project the moment it comes back. Teammates' workspaces on a
+ * shared host never qualify for placement, so they get no tombstone; on a busy
+ * host that would be hundreds of localStorage rows per removal for nothing.
  *
  * `main` workspaces used to be left alone (visible row kept, hidden only by
  * project-row absence) — but any passive `ensureWorkspaceInSidebar` (a route
@@ -217,7 +234,7 @@ export function removeProjectFromSidebarState(
 	>,
 	workspaces: SidebarWorkspaceRow[],
 	projectId: string,
-	machineId: string,
+	placement: SidebarPlacementScope,
 	cleanupPaneRuntimes: CleanupPaneRuntimes,
 ): void {
 	const tombstoneIds = new Set<string>();
@@ -227,9 +244,15 @@ export function removeProjectFromSidebarState(
 		}
 	}
 	for (const ws of workspaces) {
-		if (ws.projectId === projectId && ws.hostId === machineId) {
-			tombstoneIds.add(ws.id);
-		}
+		// (REMOVE-STICKY) Every type, not just worktrees — see the mains note
+		// above; the host/creator gate below is upstream's placement scope.
+		if (ws.projectId !== projectId) continue;
+		const isLocal =
+			placement.machineId !== null && ws.hostId === placement.machineId;
+		const isMine =
+			placement.currentUserId !== null &&
+			ws.createdByUserId === placement.currentUserId;
+		if (isLocal || isMine) tombstoneIds.add(ws.id);
 	}
 
 	// Also clears each row's pinnedAt, so no separate pin sweep is needed.

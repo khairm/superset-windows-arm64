@@ -322,7 +322,6 @@ export const users = sqliteTable(
 	"users",
 	{
 		id: text("id").primaryKey(),
-		clerk_id: text("clerk_id").notNull().unique(),
 		name: text("name").notNull(),
 		email: text("email").notNull().unique(),
 		avatar_url: text("avatar_url"),
@@ -330,10 +329,7 @@ export const users = sqliteTable(
 		created_at: text("created_at").notNull(),
 		updated_at: text("updated_at").notNull(),
 	},
-	(table) => [
-		index("users_email_idx").on(table.email),
-		index("users_clerk_id_idx").on(table.clerk_id),
-	],
+	(table) => [index("users_email_idx").on(table.email)],
 );
 
 export type InsertUser = typeof users.$inferInsert;
@@ -346,7 +342,6 @@ export const organizations = sqliteTable(
 	"organizations",
 	{
 		id: text("id").primaryKey(),
-		clerk_org_id: text("clerk_org_id").unique(),
 		name: text("name").notNull(),
 		slug: text("slug").notNull().unique(),
 		github_org: text("github_org"),
@@ -354,10 +349,7 @@ export const organizations = sqliteTable(
 		created_at: text("created_at").notNull(),
 		updated_at: text("updated_at").notNull(),
 	},
-	(table) => [
-		index("organizations_slug_idx").on(table.slug),
-		index("organizations_clerk_org_id_idx").on(table.clerk_org_id),
-	],
+	(table) => [index("organizations_slug_idx").on(table.slug)],
 );
 
 export type InsertOrganization = typeof organizations.$inferInsert;

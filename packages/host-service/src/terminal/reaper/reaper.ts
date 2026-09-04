@@ -362,6 +362,15 @@ async function reapOrphanedSessions(
 	// daemon still drops stale scans.
 	const { liveSessions, rowById } = await syncPortScans(db);
 
+	// (BRIDGE-LIVENESS) (REAPER-CORRECTION-CAP) Upstream reconciles rows stuck
+	// `active` for sessions the daemon no longer owns with a single-pass
+	// `markStaleActiveRows` sweep. This fork already does that job — with a
+	// two-pass rule, an age floor that also honours `lastAttachedAt`, a
+	// per-pass correction cap and a createdAt-fenced write — in the reverse
+	// walk at the end of this pass, so the unbounded sweep is deliberately NOT
+	// mounted: running both would let the single-pass writer condemn exactly
+	// the live terminals the cap exists to protect.
+
 	if (liveSessions.length === 0) {
 		rowlessPendingSecondPass.clear();
 		staleRowState.absentOnPreviousPass.clear();

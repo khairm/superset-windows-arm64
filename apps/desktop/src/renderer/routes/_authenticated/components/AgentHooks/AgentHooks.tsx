@@ -1,7 +1,7 @@
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useCliTerminalScriptImport } from "./hooks/useCliTerminalScriptImport";
 import { useDefaultV2TerminalPresets } from "./hooks/useDefaultV2TerminalPresets";
-import { usePlaceLocalWorktreesInSidebar } from "./hooks/usePlaceLocalWorktreesInSidebar";
+import { usePlaceWorktreesInSidebar } from "./hooks/usePlaceWorktreesInSidebar";
 import { useSidebarMirrorSync } from "./hooks/useSidebarMirrorSync";
 import { useSurfaceHiddenMainWorkspaces } from "./hooks/useSurfaceHiddenMainWorkspaces";
 
@@ -14,7 +14,7 @@ export function AgentHooks() {
 	// config cache for Settings.
 	useDefaultV2TerminalPresets(activeHostUrl);
 	useCliTerminalScriptImport(activeOrganizationId);
-	usePlaceLocalWorktreesInSidebar();
+	usePlaceWorktreesInSidebar();
 	// (MASTER-ALWAYS-ACTIVE) Returns master workspaces stranded in the legacy
 	// "hidden" bucket (no active lane, no Archived section, no way back) to the
 	// active list. Runs AFTER placement so a main placed this pass is already

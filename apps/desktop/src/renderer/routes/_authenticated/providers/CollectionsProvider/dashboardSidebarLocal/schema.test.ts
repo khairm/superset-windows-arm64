@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import type { WorkspaceState } from "@superset/panes";
+import { SESSIONS_TAG_SCOPE } from "@superset/shared/workspace-tags";
 import {
 	DEFAULT_V2_USER_PREFERENCES,
 	dashboardSidebarSectionSchema,
@@ -12,6 +13,7 @@ import {
 	KANBAN_QUEUE_COLUMN_ID,
 	KANBAN_QUEUE_TAB_ORDER,
 	sanitizePaneLayout,
+	v2UserPreferencesSchema,
 	workspaceLocalStateSchema,
 } from "./schema";
 
@@ -174,6 +176,38 @@ describe("healV2UserPreferences", () => {
 	});
 });
 
+describe("healV2UserPreferences sidebarProjectSortMode", () => {
+	it("defaults to manual on rows written before the field existed", () => {
+		expect(healV2UserPreferences({}).sidebarProjectSortMode).toBe("manual");
+	});
+
+	it("preserves a valid stored mode", () => {
+		expect(
+			healV2UserPreferences({ sidebarProjectSortMode: "active" })
+				.sidebarProjectSortMode,
+		).toBe("active");
+	});
+
+	it("degrades a retired mode to manual instead of dropping the row", () => {
+		// #5956 persisted "updated" before its revert; an unknown value must
+		// heal to the default, and the rest of the row must survive.
+		const healed = healV2UserPreferences({
+			sidebarProjectSortMode: "updated",
+			rightSidebarWidth: 500,
+		});
+		expect(healed.sidebarProjectSortMode).toBe("manual");
+		expect(healed.rightSidebarWidth).toBe(500);
+	});
+
+	it("degrades a retired mode on the write-path schema too", () => {
+		const parsed = v2UserPreferencesSchema.parse({
+			id: "preferences",
+			sidebarProjectSortMode: "updated",
+		});
+		expect(parsed.sidebarProjectSortMode).toBe("manual");
+	});
+});
+
 describe("healV2UserPreferences favoritePageIds", () => {
 	it("defaults to an empty list on rows written before the field existed", () => {
 		expect(healV2UserPreferences({}).favoritePageIds).toEqual([]);
@@ -258,6 +292,7 @@ describe("healWorkspaceLocalState", () => {
 		expect(healed.viewedFiles).toEqual([]);
 		expect(healed.recentlyViewedFiles).toEqual([]);
 		expect(healed.workspaceRunTerminals).toEqual({});
+		expect(healed.pendingCreationPresetIds).toEqual([]);
 	});
 
 	it("fills missing nested sidebarState fields while preserving projectId", () => {
@@ -511,11 +546,13 @@ describe("workspace sidebar activeTab retirement", () => {
 	});
 
 	it("leaves a surviving tab untouched", () => {
-		const healed = healWorkspaceLocalState({
-			...stored,
-			sidebarState: { ...stored.sidebarState, activeTab: "review" },
-		});
-		expect(healed.sidebarState.activeTab).toBe("review");
+		for (const tab of ["changes", "files", "review"] as const) {
+			const healed = healWorkspaceLocalState({
+				...stored,
+				sidebarState: { ...stored.sidebarState, activeTab: tab },
+			});
+			expect(healed.sidebarState.activeTab).toBe(tab);
+		}
 	});
 
 	it("rejects the retired value at the schema edge", () => {
@@ -596,5 +633,29 @@ describe("workspaceLocalStateSchema sectionId widening", () => {
 		expect(
 			workspaceLocalStateSchema.parse(row(undefined)).sidebarState.sectionId,
 		).toBeNull();
+	});
+});
+
+describe("dashboardSidebarSectionSchema (Sessions scope)", () => {
+	it("accepts a folder row stored under the Sessions tag scope", () => {
+		const parsed = dashboardSidebarSectionSchema.parse({
+			sectionId: `${SESSIONS_TAG_SCOPE}:automation`,
+			projectId: SESSIONS_TAG_SCOPE,
+			name: "automation",
+			tag: "automation",
+			createdAt: new Date().toISOString(),
+		});
+		expect(parsed.projectId).toBe(SESSIONS_TAG_SCOPE);
+	});
+
+	it("still rejects an arbitrary non-uuid project id", () => {
+		expect(() =>
+			dashboardSidebarSectionSchema.parse({
+				sectionId: "x:tag",
+				projectId: "x",
+				name: "x",
+				createdAt: new Date().toISOString(),
+			}),
+		).toThrow();
 	});
 });

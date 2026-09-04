@@ -64,6 +64,7 @@ async function main(): Promise<void> {
 		app,
 		injectWebSocket,
 		db,
+		launchSandboxAgent,
 		claudeAccounts,
 		terminalAgentStore,
 		eventBus,
@@ -133,6 +134,10 @@ async function main(): Promise<void> {
 		console.log(`[host-service] listening on http://${address}:${info.port}`);
 
 		startTerminalReaper(db, eventBus);
+		// A cloud workspace created with an agent starts it now: the pty daemon
+		// and event bus are up, and a person opening the workspace sees the
+		// agent's terminal the way they would on their own machine.
+		void launchSandboxAgent();
 
 		// (STALE-WORKING-SWEEP) fork-only backstop: a terminal whose LAST hook
 		// event resolved to a working hold and that then goes silent has no

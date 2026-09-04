@@ -109,7 +109,6 @@ export function useWorkspaceHostOptions(): UseWorkspaceHostOptionsResult {
 			localHost?.name ??
 			(machineId
 				? t({
-						id: "dashboard.newWorkspaceModal.devicePicker.thisDevice",
 						message: "This device",
 					})
 				: null),

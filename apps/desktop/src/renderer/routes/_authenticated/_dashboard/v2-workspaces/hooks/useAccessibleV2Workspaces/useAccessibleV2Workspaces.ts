@@ -435,11 +435,9 @@ export function useAccessibleV2Workspaces(
 							host?.name ??
 							(workspace.hostId === machineId
 								? t({
-										id: "dashboard.workspaces.hostThisDevice",
 										message: "This device",
 									})
 								: t({
-										id: "dashboard.workspaces.hostUnknownDevice",
 										message: "Unknown device",
 									})),
 						hostIsOnline: host?.isOnline ?? workspace.hostReachable,
@@ -491,11 +489,9 @@ export function useAccessibleV2Workspaces(
 						host?.name ??
 						(workspace.hostId === machineId
 							? t({
-									id: "dashboard.workspaces.hostThisDevice",
 									message: "This device",
 								})
 							: t({
-									id: "dashboard.workspaces.hostUnknownDevice",
 									message: "Unknown device",
 								})),
 					hostIsOnline: host?.isOnline ?? workspace.hostReachable,

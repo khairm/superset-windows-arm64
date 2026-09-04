@@ -4,8 +4,10 @@ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/u
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-import type { LocalWorkspaceForPlacement } from "../usePlaceLocalWorktreesInSidebar/selectWorktreesToPlace";
-import { selectHiddenMainsToSurface } from "./selectHiddenMainsToSurface";
+import {
+	type LocalWorkspaceForPlacement,
+	selectHiddenMainsToSurface,
+} from "./selectHiddenMainsToSurface";
 
 /**
  * (MASTER-ALWAYS-ACTIVE) Returns any master ("main") workspace that is stuck in

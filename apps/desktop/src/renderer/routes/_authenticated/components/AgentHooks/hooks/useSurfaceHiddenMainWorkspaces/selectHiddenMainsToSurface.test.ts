@@ -4,10 +4,10 @@ import {
 	getWorkspaceSidebarBucket,
 	type SidebarWorkspaceBucket,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import type { LocalWorkspaceForPlacement } from "../usePlaceLocalWorktreesInSidebar/selectWorktreesToPlace";
 import {
 	type HiddenMainSidebarRow,
 	type HiddenMainSidebarState,
+	type LocalWorkspaceForPlacement,
 	selectHiddenMainsToSurface,
 } from "./selectHiddenMainsToSurface";
 

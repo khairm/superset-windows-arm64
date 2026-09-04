@@ -5,6 +5,7 @@ import { installWindowsChildProcessPatch } from "./lib/windows-child-process-pat
 installWindowsChildProcessPatch();
 
 import { pathToFileURL } from "node:url";
+import { msg } from "@lingui/core/macro";
 import {
 	setAgentSetupTemplatesDir,
 	setupAgentIntegrations,
@@ -44,11 +45,6 @@ import { localDb } from "./lib/local-db";
 import { resolveLocalOrgId } from "./lib/local-identity/local-org";
 import { requestLocalNetworkAccess } from "./lib/local-network-permission";
 import { menuEmitter } from "./lib/menu-events";
-import { PAGE_SCHEME, pageProtocolHandler } from "./lib/pageContent";
-import {
-	THUMBNAIL_SCHEME,
-	thumbnailProtocolHandler,
-} from "./lib/pageThumbnails";
 import {
 	initTanstackDbPersistence,
 	shutdownTanstackDbPersistence,
@@ -255,16 +251,17 @@ app.on("before-quit", async (event) => {
 			const { response } = await dialog.showMessageBox({
 				type: "question",
 				buttons: [
-					i18n._({ id: "main.quit.confirm", message: "Quit" }),
-					i18n._({ id: "main.dialog.cancel", message: "Cancel" }),
+					i18n._(msg({ message: "Quit" })),
+					i18n._(msg({ message: "Cancel" })),
 				],
 				defaultId: 0,
 				cancelId: 1,
-				title: i18n._({ id: "main.quit.title", message: "Quit Superset" }),
-				message: i18n._({
-					id: "main.quit.message",
-					message: "Are you sure you want to quit?",
-				}),
+				title: i18n._(msg({ message: "Quit Superset" })),
+				message: i18n._(
+					msg({
+						message: "Are you sure you want to quit?",
+					}),
+				),
 			});
 
 			if (response === 1) {
@@ -361,6 +358,12 @@ if (process.env.NODE_ENV === "development") {
 	parentCheckInterval.unref();
 }
 
+// Chromium refuses to cache any single entry larger than about an eighth
+// of the disk cache, and the default cache is a few hundred MB — too
+// small for a video inside a page. 1 GiB lifts the per-entry cap to
+// roughly 128 MB.
+app.commandLine.appendSwitch("disk-cache-size", String(1024 * 1024 * 1024));
+
 protocol.registerSchemesAsPrivileged([
 	{
 		scheme: "superset-icon",
@@ -387,22 +390,6 @@ protocol.registerSchemesAsPrivileged([
 			secure: true,
 			supportFetchAPI: true,
 			corsEnabled: true,
-		},
-	},
-	{
-		scheme: PAGE_SCHEME,
-		privileges: {
-			standard: true,
-			secure: true,
-		},
-	},
-	{
-		scheme: THUMBNAIL_SCHEME,
-		privileges: {
-			standard: true,
-			secure: true,
-			bypassCSP: true,
-			supportFetchAPI: true,
 		},
 	},
 ]);
@@ -529,16 +516,6 @@ if (!gotTheLock) {
 		// patterns but kept the API one because sign-in still needed it —
 		// nothing signs in now, and a shim that smooths the path to a severed
 		// host is the last thing that should outlive it.
-
-		protocol.handle(PAGE_SCHEME, pageProtocolHandler);
-		session
-			.fromPartition("persist:superset")
-			.protocol.handle(PAGE_SCHEME, pageProtocolHandler);
-
-		protocol.handle(THUMBNAIL_SCHEME, thumbnailProtocolHandler);
-		session
-			.fromPartition("persist:superset")
-			.protocol.handle(THUMBNAIL_SCHEME, thumbnailProtocolHandler);
 
 		// Serve system fonts (e.g. SF Mono on macOS) via custom protocol
 		// so the renderer can use @font-face with font-src 'self' CSP

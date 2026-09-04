@@ -87,12 +87,10 @@ export function ExperimentalSettings({
 		<div className="p-6 max-w-4xl w-full mx-auto">
 			<div className="mb-8">
 				<h2 className="text-xl font-semibold">
-					<Trans id="settings.experimental.title">Experimental</Trans>
+					<Trans>Experimental</Trans>
 				</h2>
 				<p className="text-sm text-muted-foreground mt-1">
-					<Trans id="settings.experimental.subtitle">
-						Try early access features and previews.
-					</Trans>
+					<Trans>Try early access features and previews.</Trans>
 				</p>
 			</div>
 
@@ -103,7 +101,6 @@ export function ExperimentalSettings({
 							<Label htmlFor="superset-v2" className="text-sm font-medium">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.v2Label",
 										message: "Try Superset v2",
 									})}
 									query={searchQuery}
@@ -112,7 +109,6 @@ export function ExperimentalSettings({
 							<p className="text-xs text-muted-foreground">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.v2Hint",
 										message: "Use the new workspace experience.",
 									})}
 									query={searchQuery}
@@ -138,7 +134,6 @@ export function ExperimentalSettings({
 							<Label className="text-sm font-medium">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.v1ImportLabel",
 										message: "Import from v1",
 									})}
 									query={searchQuery}
@@ -147,7 +142,6 @@ export function ExperimentalSettings({
 							<p className="text-xs text-muted-foreground">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.v1ImportHint",
 										message:
 											"Bring v1 projects, workspaces, and terminal scripts over to v2. Each item is imported individually and can be retried.",
 									})}
@@ -158,7 +152,6 @@ export function ExperimentalSettings({
 								<p className="text-xs text-muted-foreground">
 									<HighlightText
 										text={t({
-											id: "settings.experimental.v1ImportRequiresV2",
 											message: "Available when v2 is enabled.",
 										})}
 										query={searchQuery}
@@ -174,9 +167,7 @@ export function ExperimentalSettings({
 							disabled={!isV2CloudEnabled}
 							className="shrink-0"
 						>
-							<Trans id="settings.experimental.openImporter">
-								Open importer
-							</Trans>
+							<Trans>Open importer</Trans>
 						</Button>
 					</div>
 				)}
@@ -189,7 +180,6 @@ export function ExperimentalSettings({
 							>
 								<HighlightText
 									text={t({
-										id: "settings.experimental.inlinePortsLabel",
 										message: "Ports in top bar dropdown",
 									})}
 									query={searchQuery}
@@ -198,7 +188,6 @@ export function ExperimentalSettings({
 							<p className="text-xs text-muted-foreground">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.inlinePortsHint",
 										message:
 											"Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar.",
 									})}
@@ -221,7 +210,6 @@ export function ExperimentalSettings({
 							<Label htmlFor="workspace-agents" className="text-sm font-medium">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.workspaceAgentsLabel",
 										message: "Workspace agents",
 									})}
 									query={searchQuery}
@@ -230,7 +218,6 @@ export function ExperimentalSettings({
 							<p className="text-xs text-muted-foreground">
 								<HighlightText
 									text={t({
-										id: "settings.experimental.workspaceAgentsHint",
 										message:
 											"Show running agents under each workspace in the sidebar, with their live status.",
 									})}

@@ -13,6 +13,7 @@ import { getQueryKey } from "@trpc/react-query";
 import type { inferRouterInputs } from "@trpc/server";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+import { isMissingProcedureError } from "renderer/lib/isMissingProcedureError";
 import { MAX_RENDERABLE_CHANGED_LINES } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/DiffTooLargePlaceholder";
 import {
 	type ChangesetFile,
@@ -20,7 +21,6 @@ import {
 } from "../../../../../useChangeset";
 import { createGetDiffInput } from "../../utils/createGetDiffInput";
 import { isGeneratedDiffFile } from "../../utils/diffLoadingGuards";
-import { isMissingProcedureError } from "../../utils/isMissingProcedureError";
 import type {
 	DeferredDiffReason,
 	DiffAnnotationMetadata,

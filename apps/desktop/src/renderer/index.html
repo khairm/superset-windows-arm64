@@ -39,7 +39,7 @@
       - img-src 'self' data: blob: https: http:: Allow images from any source (needed for favicons, browser pane webview content, and file attachment previews)
       - media-src 'self' data: blob:: Allow <video>/<audio> from blob + data URIs (file preview); without this, media falls back to default-src 'self' and blob video won't play
       - font-src 'self': Allow fonts from same origin
-      - frame-src https: http: data: blob: superset-page:: Allow webview browser pane to load any URL + the page pane's frame, which main serves under the page's own CSP (srcdoc would inherit this policy and block the page's scripts)
+      - frame-src https: http: data: blob:: Allow webview browser pane to load any URL + the page pane's frame, served by the usercontent origin under the page's own CSP
       - child-src 'self' blob:: Allow workers from same origin + blob workers
     -->
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' data: blob: ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* http://127.0.0.1:* http://localhost:*; img-src 'self' data: blob: https: http:; media-src 'self' data: blob:; font-src 'self'; frame-src https: http: data: blob: superset-page:; child-src 'self' blob:;" />

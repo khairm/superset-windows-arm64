@@ -18,6 +18,11 @@ interface WorkspaceGitStatusProviderProps {
 	workspaceId: string;
 }
 
+// Always enabled while the workspace route is mounted: the top-bar Changes
+// pill needs status regardless of sidebar/pane state, and the query is
+// event-driven (git:changed subscription + window focus), not an interval
+// poll — it was effectively always-on anyway since the right sidebar
+// defaults to open.
 export function WorkspaceGitStatusProvider({
 	children,
 	sidebarOpen,

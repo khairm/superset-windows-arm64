@@ -82,7 +82,6 @@ export function DashboardSidebarHeader({
 		onError: (message) => {
 			toast.error(
 				t({
-					id: "dashboard.sidebar.header.importFailed",
 					message: `Import failed: ${message}`,
 				}),
 			);
@@ -90,17 +89,14 @@ export function DashboardSidebarHeader({
 		onMultipleProjects: ({ candidates }) => {
 			toast.error(
 				t({
-					id: "dashboard.sidebar.header.importFailedTitle",
 					message: "Import failed",
 				}),
 				{
 					description: t({
-						id: "dashboard.sidebar.header.importMultipleProjects",
 						message: `Multiple projects use this repository (${candidates.length}). Choose the project in settings to set it up on this device.`,
 					}),
 					action: {
 						label: t({
-							id: "dashboard.sidebar.header.openProjects",
 							message: "Open Projects",
 						}),
 						onClick: () => navigate({ to: "/settings/projects" }),
@@ -115,7 +111,6 @@ export function DashboardSidebarHeader({
 		if (result) {
 			toast.success(
 				t({
-					id: "dashboard.sidebar.header.projectReady",
 					message: "Project ready — open it from the sidebar.",
 				}),
 			);
@@ -283,9 +278,7 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">
-							<Trans id="dashboard.sidebar.header.newWorkspaceWithShortcut">
-								New Workspace ({shortcutText})
-							</Trans>
+							<Trans>New Workspace ({shortcutText})</Trans>
 						</TooltipContent>
 					</Tooltip>
 
@@ -303,11 +296,9 @@ export function DashboardSidebarHeader({
 						<TooltipContent side="right">
 							{searchShortcutText !== "Unassigned"
 								? t({
-										id: "dashboard.sidebar.header.searchWithShortcut",
 										message: `Search (${searchShortcutText})`,
 									})
 								: t({
-										id: "dashboard.sidebar.header.searchTooltip",
 										message: "Search",
 									})}
 						</TooltipContent>
@@ -329,9 +320,7 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">
-							<Trans id="dashboard.sidebar.header.workspacesTooltip">
-								Workspaces
-							</Trans>
+							<Trans>Workspaces</Trans>
 						</TooltipContent>
 					</Tooltip>
 
@@ -341,7 +330,6 @@ export function DashboardSidebarHeader({
 								type="button"
 								onClick={handlePullRequestsClick}
 								aria-label={t({
-									id: "dashboard.sidebar.header.pullRequestsRailAriaLabel",
 									message: "Pull requests",
 								})}
 								aria-current={isPullRequestsOpen ? "page" : undefined}
@@ -356,9 +344,7 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">
-							<Trans id="dashboard.sidebar.header.pullRequestsTooltip">
-								Pull requests
-							</Trans>
+							<Trans>Pull requests</Trans>
 						</TooltipContent>
 					</Tooltip>
 
@@ -394,7 +380,6 @@ export function DashboardSidebarHeader({
 									type="button"
 									onClick={handlePagesClick}
 									aria-label={t({
-										id: "dashboard.sidebar.header.pagesRailAriaLabel",
 										message: "Pages",
 									})}
 									aria-current={isPagesOpen ? "page" : undefined}
@@ -409,7 +394,7 @@ export function DashboardSidebarHeader({
 								</button>
 							</TooltipTrigger>
 							<TooltipContent side="right">
-								<Trans id="dashboard.sidebar.header.pagesTooltip">Pages</Trans>
+								<Trans>Pages</Trans>
 							</TooltipContent>
 						</Tooltip>
 					)}
@@ -421,7 +406,6 @@ export function DashboardSidebarHeader({
 									type="button"
 									onClick={handlePluginsClick}
 									aria-label={t({
-										id: "dashboard.sidebar.header.pluginsRailAriaLabel",
 										message: "Plugins",
 									})}
 									aria-current={isPluginsOpen ? "page" : undefined}
@@ -436,9 +420,7 @@ export function DashboardSidebarHeader({
 								</button>
 							</TooltipTrigger>
 							<TooltipContent side="right">
-								<Trans id="dashboard.sidebar.header.pluginsTooltip">
-									Plugins
-								</Trans>
+								<Trans>Plugins</Trans>
 							</TooltipContent>
 						</Tooltip>
 					)}
@@ -450,7 +432,6 @@ export function DashboardSidebarHeader({
 									<button
 										type="button"
 										aria-label={t({
-											id: "dashboard.sidebar.header.addProjectAriaLabel",
 											message: "Add project",
 										})}
 										className="group/addrepo flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover"
@@ -461,9 +442,7 @@ export function DashboardSidebarHeader({
 								</DropdownMenuTrigger>
 							</TooltipTrigger>
 							<TooltipContent side="right">
-								<Trans id="dashboard.sidebar.header.addProjectTooltip">
-									Add project
-								</Trans>
+								<Trans>Add project</Trans>
 							</TooltipContent>
 						</Tooltip>
 						<DropdownMenuContent
@@ -472,15 +451,11 @@ export function DashboardSidebarHeader({
 						>
 							<DropdownMenuItem onSelect={handleImportFolder}>
 								<VscFolderOpened className="size-4" />
-								<Trans id="dashboard.sidebar.header.openProject">
-									Open project
-								</Trans>
+								<Trans>Open project</Trans>
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openNewProject()}>
 								<VscGithubAlt className="size-4" />
-								<Trans id="dashboard.sidebar.header.cloneFromUrl">
-									Clone from URL
-								</Trans>
+								<Trans>Clone from URL</Trans>
 							</DropdownMenuItem>
 							{/* (MULTI-REPO WORKSPACE) group N git repos under one row */}
 							<DropdownMenuItem onSelect={() => openMultiFolder()}>
@@ -489,15 +464,11 @@ export function DashboardSidebarHeader({
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openEmptyProject()}>
 								<VscNewFolder className="size-4" />
-								<Trans id="dashboard.sidebar.header.createNewProject">
-									Create new project
-								</Trans>
+								<Trans>Create new project</Trans>
 							</DropdownMenuItem>
 							<DropdownMenuItem onSelect={() => openTemplateGallery()}>
 								<VscLayout className="size-4" />
-								<Trans id="dashboard.sidebar.header.startFromTemplate">
-									Start from a template
-								</Trans>
+								<Trans>Start from a template</Trans>
 							</DropdownMenuItem>
 						</DropdownMenuContent>
 					</DropdownMenu>
@@ -551,9 +522,7 @@ export function DashboardSidebarHeader({
 					<LuPlus className="size-3" strokeWidth={STROKE_WIDTH_THICK} />
 				</div>
 				<span className="flex-1 truncate text-left whitespace-nowrap">
-					<Trans id="dashboard.sidebar.header.newWorkspace">
-						New Workspace
-					</Trans>
+					<Trans>New Workspace</Trans>
 				</span>
 				<SidebarKbdHint label={shortcutText} />
 			</button>
@@ -569,7 +538,7 @@ export function DashboardSidebarHeader({
 					strokeWidth={1.5}
 				/>
 				<span className="flex-1 text-left">
-					<Trans id="dashboard.sidebar.header.search">Search</Trans>
+					<Trans>Search</Trans>
 				</span>
 				{searchShortcutText !== "Unassigned" && (
 					<SidebarKbdHint label={searchShortcutText} />
@@ -591,7 +560,7 @@ export function DashboardSidebarHeader({
 					strokeWidth={1.5}
 				/>
 				<span className="flex-1 text-left">
-					<Trans id="dashboard.sidebar.header.workspaces">Workspaces</Trans>
+					<Trans>Workspaces</Trans>
 				</span>
 			</button>
 
@@ -599,7 +568,6 @@ export function DashboardSidebarHeader({
 				type="button"
 				onClick={handlePullRequestsClick}
 				aria-label={t({
-					id: "dashboard.sidebar.header.pullRequestsAriaLabel",
 					message: "Pull requests",
 				})}
 				aria-current={isPullRequestsOpen ? "page" : undefined}
@@ -612,9 +580,7 @@ export function DashboardSidebarHeader({
 			>
 				<GoGitPullRequest className="size-4 shrink-0 text-muted-foreground" />
 				<span className="flex-1 text-left">
-					<Trans id="dashboard.sidebar.header.pullRequests">
-						Pull requests
-					</Trans>
+					<Trans>Pull requests</Trans>
 				</span>
 			</button>
 
@@ -647,7 +613,6 @@ export function DashboardSidebarHeader({
 					type="button"
 					onClick={handlePagesClick}
 					aria-label={t({
-						id: "dashboard.sidebar.header.pagesAriaLabel",
 						message: "Pages",
 					})}
 					aria-current={isPagesOpen ? "page" : undefined}
@@ -663,7 +628,7 @@ export function DashboardSidebarHeader({
 						strokeWidth={1.5}
 					/>
 					<span className="flex-1 text-left">
-						<Trans id="dashboard.sidebar.header.pages">Pages</Trans>
+						<Trans>Pages</Trans>
 					</span>
 				</button>
 			)}
@@ -673,7 +638,6 @@ export function DashboardSidebarHeader({
 					type="button"
 					onClick={handlePluginsClick}
 					aria-label={t({
-						id: "dashboard.sidebar.header.pluginsAriaLabel",
 						message: "Plugins",
 					})}
 					aria-current={isPluginsOpen ? "page" : undefined}
@@ -689,7 +653,7 @@ export function DashboardSidebarHeader({
 						strokeWidth={1.5}
 					/>
 					<span className="flex-1 text-left">
-						<Trans id="dashboard.sidebar.header.plugins">Plugins</Trans>
+						<Trans>Plugins</Trans>
 					</span>
 				</button>
 			)}

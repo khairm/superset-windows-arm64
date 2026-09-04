@@ -80,6 +80,7 @@ export {
 	type ProfileProvisionReport,
 	provisionClaudeProfile,
 	provisionCodexProfile,
+	resolveAmbientCodexHome,
 } from "./provider-profiles";
 
 export { getCommandShellArgs, getShellArgs, getShellEnv };

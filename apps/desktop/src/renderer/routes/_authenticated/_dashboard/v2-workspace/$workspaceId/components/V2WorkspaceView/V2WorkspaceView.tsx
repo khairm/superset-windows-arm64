@@ -5,6 +5,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuickOpenStore } from "renderer/commandPalette/ui/QuickOpen/quickOpenStore";
 import { ZoomStable } from "renderer/components/ZoomStable";
+import { useWorkspaceHostTarget } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useZoomFactor } from "renderer/hooks/useZoomFactor";
 import { useHotkey } from "renderer/hotkeys";
@@ -125,7 +126,6 @@ function V2WorkspaceCenter({
 	const {
 		preferences: v2UserPreferences,
 		setRightSidebarOpen,
-		setRightSidebarTab,
 		setRightSidebarWidth,
 		setShowPresetsBar,
 	} = useV2UserPreferences();
@@ -192,7 +192,6 @@ function V2WorkspaceCenter({
 	} = useWorkspaceFileNavigation({
 		store,
 		setRightSidebarOpen,
-		setRightSidebarTab,
 	});
 
 	const paneRegistry = usePaneRegistry({
@@ -210,13 +209,23 @@ function V2WorkspaceCenter({
 		addTerminalTab,
 		addChatV3Tab,
 		addBrowserTab,
+		openChangesPane,
 		openCommentPane,
 	} = useWorkspacePaneOpeners({
 		store,
 		launcher,
 		newTabPresets,
 		executePreset,
+		setRightSidebarOpen,
 	});
+	const hostTarget = useWorkspaceHostTarget(workspaceId);
+	const isSandbox =
+		hostTarget.status === "ready" && hostTarget.kind === "sandbox";
+	const addDesktopTab = useCallback(() => {
+		store.getState().addTab({
+			panes: [{ kind: "desktop", data: { kind: "desktop" } }],
+		});
+	}, [store]);
 
 	const quickOpenOpen = useQuickOpenStore(
 		(s) => s.open && s.target?.workspaceId === workspaceId,
@@ -236,10 +245,9 @@ function V2WorkspaceCenter({
 	const handleQuickOpenSelectFile = useCallback(
 		(filePath: string, openInNewTab?: boolean) => {
 			setRightSidebarOpen(true);
-			setRightSidebarTab("files");
 			openFilePane(filePath, openInNewTab);
 		},
-		[openFilePane, setRightSidebarOpen, setRightSidebarTab],
+		[openFilePane, setRightSidebarOpen],
 	);
 	const defaultPaneActions = useDefaultPaneActions({ launcher });
 	const onBeforeCloseTab = useDirtyTabCloseGuard();
@@ -271,8 +279,10 @@ function V2WorkspaceCenter({
 		matchedPresets,
 		executePreset,
 		addTerminalTab,
+		openChangesPane,
 		paneRegistry,
 		launcher,
+		isSandbox,
 	});
 	useHotkey("QUICK_OPEN", handleQuickOpen);
 	useHotkey("RUN_WORKSPACE_COMMAND", () => {
@@ -363,6 +373,8 @@ function V2WorkspaceCenter({
 									// it on in Experimental settings.
 									onAddChatV3={isLocalChatEnabled ? addChatV3Tab : undefined}
 									onAddBrowser={addBrowserTab}
+									onAddChanges={openChangesPane}
+									onAddDesktop={isSandbox ? addDesktopTab : undefined}
 									showPresetsBar={showPresetsBar}
 									onToggleShowPresetsBar={setShowPresetsBar}
 								/>

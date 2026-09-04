@@ -61,6 +61,7 @@ export const THEME_STORAGE_KEY = "superset-theme";
 // Download URLs
 export const DOWNLOAD_URL_MAC_ARM64 = `${COMPANY.GITHUB_URL}/releases/latest/download/Superset-arm64.dmg`;
 export const DOWNLOAD_URL_MAC_X64 = `${COMPANY.GITHUB_URL}/releases/latest/download/Superset-x64.dmg`;
+export const DOWNLOAD_URL_LINUX_X64 = `${COMPANY.GITHUB_URL}/releases/latest/download/Superset-x86_64.AppImage`;
 
 // Auth token configuration
 export const TOKEN_CONFIG = {
@@ -229,7 +230,6 @@ export const LAUNCHED_TRIGGER_KINDS = [
 	"linear",
 	"sentry",
 	"notion",
-	"circleback",
 	"microsoft_teams",
 	"google_calendar",
 	"gmail",
@@ -260,6 +260,22 @@ export const SANDBOX_WORKSPACE_PATH = "/workspace";
  * a pre-migrated template alongside it.
  */
 export const SANDBOX_HOST_DB_PATH = "/data/host.db";
+
+export const SANDBOX_IMAGE_NAME = "superset-hostsvc";
+
+export const SHARED_ENVIRONMENT_ORGANIZATION_ID =
+	"00000000-0000-0000-0000-000000000000";
+
+export const SHARED_ENVIRONMENT_NAME = "Default";
+
+/**
+ * Every cloud workspace clones this. Environments cannot carry repositories yet,
+ * so there is nothing per-workspace to resolve and no project to pick.
+ */
+export const CLOUD_WORKSPACE_REPO = {
+	owner: "superset-sh",
+	name: "superset",
+} as const;
 
 // Terminal identity presented to shell programs via TERM_PROGRAM. kitty:
 // agent TUIs (claude-code especially) tune wheel-scroll compensation per

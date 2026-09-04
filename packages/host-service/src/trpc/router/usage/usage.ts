@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { provisionCodexProfile } from "@superset/agent-setup";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isWorkspaceUuid } from "../../../claude-accounts/profile-manager";
@@ -12,7 +11,10 @@ import {
 } from "../../../workers/tasks/usage";
 import { protectedProcedure, queryProcedure, router } from "../../index";
 import { offLoop } from "../../off-loop";
-import { provisionClaudeAccount } from "./account-provisioning";
+import {
+	provisionClaudeAccount,
+	provisionCodexAccount,
+} from "./account-provisioning";
 import { fetchAgyAccounts } from "./agy-quota";
 import { fetchClaudeAccounts, readDefaultLoginEmail } from "./claude";
 import { fetchCodexAccounts } from "./codex";
@@ -174,7 +176,7 @@ export const usageRouter = router({
 				try {
 					await (input.agent === "claude"
 						? provisionClaudeAccount(input.selection)
-						: provisionCodexProfile(input.selection));
+						: provisionCodexAccount(input.selection));
 				} catch (error) {
 					console.warn(
 						`[host-service] provisioning ${input.agent} account ${input.selection} failed (continuing):`,
@@ -258,7 +260,7 @@ export const usageRouter = router({
 			}
 			await (input.agent === "claude"
 				? provisionClaudeAccount(input.selection)
-				: provisionCodexProfile(input.selection));
+				: provisionCodexAccount(input.selection));
 			return { success: true as const };
 		}),
 

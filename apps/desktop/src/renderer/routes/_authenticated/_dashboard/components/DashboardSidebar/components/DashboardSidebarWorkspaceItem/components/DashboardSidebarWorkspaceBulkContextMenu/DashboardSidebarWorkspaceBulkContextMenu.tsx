@@ -63,16 +63,12 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 				<ContextMenuSub>
 					<ContextMenuSubTrigger>
 						<LuArrowRightLeft className="size-4 mr-2" />
-						<Trans id="dashboard.sidebar.workspaceBulkMenu.moveToGroup">
-							Move {count} to Group
-						</Trans>
+						<Trans>Move {count} to Group</Trans>
 					</ContextMenuSubTrigger>
 					<ContextMenuSubContent>
 						<ContextMenuItem onSelect={createGroupFromSelection}>
 							<LuFolderPlus className="size-4 mr-2" />
-							<Trans id="dashboard.sidebar.workspaceBulkMenu.newGroup">
-								New group
-							</Trans>
+							<Trans>New group</Trans>
 						</ContextMenuItem>
 						{sectionMenuState === "populated" && <ContextMenuSeparator />}
 						{sections?.map((section) => (
@@ -92,13 +88,9 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 						{sectionMenuState !== "populated" && (
 							<ContextMenuItem disabled>
 								{sectionMenuState === "empty" ? (
-									<Trans id="dashboard.sidebar.workspaceBulkMenu.noGroupsYet">
-										No groups yet
-									</Trans>
+									<Trans>No groups yet</Trans>
 								) : (
-									<Trans id="dashboard.sidebar.workspaceBulkMenu.loadingGroups">
-										Loading groups…
-									</Trans>
+									<Trans>Loading groups…</Trans>
 								)}
 							</ContextMenuItem>
 						)}
@@ -107,9 +99,7 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 				{groupedWorkspaceIds.length > 0 && (
 					<ContextMenuItem onSelect={ungroupSelection}>
 						<LuArrowUp className="size-4 mr-2" />
-						<Trans id="dashboard.sidebar.workspaceBulkMenu.ungroup">
-							Ungroup
-						</Trans>
+						<Trans>Ungroup</Trans>
 					</ContextMenuItem>
 				)}
 				<ContextMenuSeparator />
@@ -121,7 +111,6 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 				>
 					<LuTrash2 className="size-4 mr-2 text-destructive" />
 					<Plural
-						id="dashboard.sidebar.workspaceBulkMenu.deleteCount"
 						value={count}
 						one="Delete # Workspace"
 						other="Delete # Workspaces"
@@ -130,9 +119,7 @@ export function DashboardSidebarWorkspaceBulkContextMenu({
 				<ContextMenuSeparator />
 				<ContextMenuItem onSelect={clearSelection}>
 					<LuX className="size-4 mr-2" />
-					<Trans id="dashboard.sidebar.workspaceBulkMenu.clearSelection">
-						Clear Selection
-					</Trans>
+					<Trans>Clear Selection</Trans>
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>

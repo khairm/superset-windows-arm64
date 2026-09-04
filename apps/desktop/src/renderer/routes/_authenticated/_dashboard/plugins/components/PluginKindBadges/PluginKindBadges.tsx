@@ -14,16 +14,14 @@ export function PluginKindBadges({ plugin }: { plugin: PluginCatalogEntry }) {
 		{ label: string; tooltip: string }
 	> = {
 		mcp: {
-			label: t({ id: "dashboard.plugins.kindBadge.mcp", message: "MCP" }),
+			label: t({ message: "MCP" }),
 			tooltip: t({
-				id: "dashboard.plugins.kindBadge.mcpTooltip",
 				message: "Remote MCP server — connects over HTTP",
 			}),
 		},
 		cli: {
-			label: t({ id: "dashboard.plugins.kindBadge.cli", message: "CLI" }),
+			label: t({ message: "CLI" }),
 			tooltip: t({
-				id: "dashboard.plugins.kindBadge.cliTooltip",
 				message: "Runs a local command on your machine",
 			}),
 		},

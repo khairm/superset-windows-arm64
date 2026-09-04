@@ -4,13 +4,29 @@
 	"private": true,
 	"type": "module",
 	"exports": {
+		"./usercontent": {
+			"types": "./src/usercontent/index.ts",
+			"default": "./src/usercontent/index.ts"
+		},
+		"./page-comments-runtime": {
+			"types": "./src/page-comments-runtime.ts",
+			"default": "./src/page-comments-runtime.ts"
+		},
 		"./automation-matching": {
 			"types": "./src/automation-matching/index.ts",
 			"default": "./src/automation-matching/index.ts"
 		},
+		"./environment-secrets": {
+			"types": "./src/environment-secrets.ts",
+			"default": "./src/environment-secrets.ts"
+		},
 		"./automation-triggers": {
 			"types": "./src/automation-triggers.ts",
 			"default": "./src/automation-triggers.ts"
+		},
+		"./cloud-agent-launch": {
+			"types": "./src/cloud-agent-launch.ts",
+			"default": "./src/cloud-agent-launch.ts"
 		},
 		"./constants": {
 			"types": "./src/constants.ts",
@@ -256,6 +272,7 @@
 	},
 	"dependencies": {
 		"@date-fns/tz": "1.4.1",
+		"@lingui/core": "6.6.0",
 		"@superset/i18n": "workspace:*",
 		"culori": "4.0.2",
 		"friendly-words": "1.3.1",

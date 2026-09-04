@@ -55,9 +55,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 		>
 			<a href={previewUrl} target="_blank" rel="noopener noreferrer">
 				<LuGlobe className="size-3" />
-				<Trans id="dashboard.sidebar.workspaceHoverCard.openPreview">
-					Open Preview
-				</Trans>
+				<Trans>Open Preview</Trans>
 			</a>
 		</Button>
 	) : null;
@@ -68,9 +66,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 				{hasCustomAlias && <div className="text-sm font-medium">{name}</div>}
 				<div className="space-y-0.5">
 					<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-						<Trans id="dashboard.sidebar.workspaceHoverCard.branchLabel">
-							Branch
-						</Trans>
+						<Trans>Branch</Trans>
 					</span>
 					<div className="flex items-center gap-1.5">
 						{onEditBranchClick ? (
@@ -79,7 +75,6 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 								onClick={() => onEditBranchClick(branch)}
 								className={`group/branch flex min-w-0 flex-1 items-center gap-1 font-mono break-all text-left hover:text-foreground hover:underline ${hasCustomAlias ? "text-xs" : "text-sm"}`}
 								title={t({
-									id: "dashboard.sidebar.workspaceHoverCard.renameBranch",
 									message: "Rename branch",
 								})}
 							>
@@ -100,7 +95,6 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 								rel="noopener noreferrer"
 								className="shrink-0 text-muted-foreground hover:text-foreground"
 								title={t({
-									id: "dashboard.sidebar.workspaceHoverCard.openBranchOnGitHub",
 									message: "Open branch on GitHub",
 								})}
 								onClick={(e) => e.stopPropagation()}
@@ -126,15 +120,12 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 					<span>
 						{behindCount != null ? (
 							<Plural
-								id="dashboard.sidebar.workspaceHoverCard.behindMain"
 								value={behindCount}
 								one="Behind main by # commit, needs rebase"
 								other="Behind main by # commits, needs rebase"
 							/>
 						) : (
-							<Trans id="dashboard.sidebar.workspaceHoverCard.behindMainUnknown">
-								Behind main by ? commits, needs rebase
-							</Trans>
+							<Trans>Behind main by ? commits, needs rebase</Trans>
 						)}
 					</span>
 				</div>
@@ -160,9 +151,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 						{diffStats && (
 							<div className="flex items-center gap-1.5 text-xs font-mono shrink-0">
 								<span className="text-emerald-500">+{diffStats.additions}</span>
-								<span className="text-destructive-foreground">
-									-{diffStats.deletions}
-								</span>
+								<span className="text-destructive">-{diffStats.deletions}</span>
 							</div>
 						)}
 					</div>
@@ -193,9 +182,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 					>
 						<a href={pullRequest.url} target="_blank" rel="noopener noreferrer">
 							<FaGithub className="size-3" />
-							<Trans id="dashboard.sidebar.workspaceHoverCard.viewOnGitHub">
-								View on GitHub
-							</Trans>
+							<Trans>View on GitHub</Trans>
 							{hasOpenPRShortcut && (
 								<KbdGroup className="ml-auto">
 									{openPRDisplay.map((key) => (
@@ -212,9 +199,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 			) : repoUrl ? (
 				<div className="pt-2 border-t border-border space-y-2">
 					<div className="text-xs text-muted-foreground">
-						<Trans id="dashboard.sidebar.workspaceHoverCard.noPrForBranch">
-							No PR for this branch
-						</Trans>
+						<Trans>No PR for this branch</Trans>
 					</div>
 					{previewButton}
 				</div>
@@ -232,9 +217,7 @@ export function DashboardSidebarWorkspaceHoverCardContent({
 							rel="noopener noreferrer"
 						>
 							<LuGlobe className="size-3" />
-							<Trans id="dashboard.sidebar.workspaceHoverCard.openPreviewOnly">
-								Open Preview
-							</Trans>
+							<Trans>Open Preview</Trans>
 						</a>
 					</Button>
 				</div>

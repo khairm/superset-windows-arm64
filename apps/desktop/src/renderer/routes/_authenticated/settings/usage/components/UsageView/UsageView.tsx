@@ -38,7 +38,7 @@ import { useHostUsageQuota } from "../../hooks/useHostUsageQuota";
 import { useRemoveUsageAccount } from "../../hooks/useRemoveUsageAccount";
 import { useRestartAgentSessions } from "../../hooks/useRestartAgentSessions";
 import { useSetDefaultUsageAccount } from "../../hooks/useSetDefaultUsageAccount";
-import { LeaderboardPrompt } from "../LeaderboardPrompt";
+import { LeaderboardCard } from "../LeaderboardCard";
 import { UsageHistorySection } from "../UsageHistorySection";
 import type { SwitchSignInTarget } from "./components/AddAccountDialog";
 import { AddAccountDialog } from "./components/AddAccountDialog";
@@ -46,23 +46,15 @@ import { RemoveAccountDialog } from "./components/RemoveAccountDialog";
 import type { RestartSessionsPrompt } from "./components/RestartSessionsDialog";
 import { RestartSessionsDialog } from "./components/RestartSessionsDialog";
 import { switchSignInCommand } from "./utils/switchSignInCommand";
+import type { ManagedAgent, QuotaAgent } from "./utils/visibleQuotaAgents";
+import { isManagedAgent, visibleQuotaAgents } from "./utils/visibleQuotaAgents";
 
-type Agent = UsageAccount["agent"];
-
-const AGENTS: Agent[] = ["claude", "codex", "grok", "agy"];
-
-const AGENT_LABELS: Record<Agent, string> = {
+const AGENT_LABELS: Record<QuotaAgent, string> = {
 	claude: "Claude Code",
 	codex: "Codex",
 	grok: "Grok",
 	agy: "Antigravity",
 };
-
-type ManagedAgent = "claude" | "codex";
-
-function isManagedAgent(agent: Agent): agent is ManagedAgent {
-	return agent === "claude" || agent === "codex";
-}
 
 function meterColor(usedPercent: number): string {
 	if (usedPercent >= 90) return "bg-red-500";
@@ -102,7 +94,6 @@ function creditsLine(account: UsageAccount): string | null {
 		const balance = account.creditsBalance.toFixed(2);
 		return i18n._(
 			msg({
-				id: "settings.usage.account.creditsBalance",
 				message: `$${balance} credits`,
 			}),
 		);
@@ -112,7 +103,6 @@ function creditsLine(account: UsageAccount): string | null {
 		const limit = (account.extraUsage.limitCents / 100).toFixed(2);
 		return i18n._(
 			msg({
-				id: "settings.usage.account.extraUsage",
 				message: `extra $${used} of $${limit}`,
 			}),
 		);
@@ -121,7 +111,6 @@ function creditsLine(account: UsageAccount): string | null {
 }
 
 const DEFAULT_TITLE = msg({
-	id: "settings.usage.account.defaultTitle",
 	message:
 		"New agent launches use this account. Relaunch a running agent to switch it.",
 });
@@ -192,7 +181,6 @@ function AccountCard({
 							className="shrink-0 self-center text-muted-foreground/50 transition-colors hover:text-primary disabled:pointer-events-none"
 							disabled={isSwitching}
 							title={t({
-								id: "settings.usage.account.makeDefaultTitle",
 								message:
 									"Make default — launch new terminals and agents on this account.",
 							})}
@@ -208,7 +196,7 @@ function AccountCard({
 					)}
 				>
 					{hideEmails && account.email ? (
-						<Trans id="settings.usage.account.emailHidden">Email hidden</Trans>
+						<Trans>Email hidden</Trans>
 					) : (
 						(account.email ?? AGENT_LABELS[account.agent])
 					)}
@@ -221,17 +209,11 @@ function AccountCard({
 				{account.status !== "ok" && (
 					<span className="rounded bg-amber-500/15 px-1 text-[9px] font-medium uppercase tracking-wide text-amber-500">
 						{account.status === "token_expired" ? (
-							<Trans id="settings.usage.account.statusSignInExpired">
-								Sign-in expired
-							</Trans>
+							<Trans>Sign-in expired</Trans>
 						) : account.status === "signed_out" ? (
-							<Trans id="settings.usage.account.statusSignedOut">
-								Signed out
-							</Trans>
+							<Trans>Signed out</Trans>
 						) : (
-							<Trans id="settings.usage.account.statusUnavailable">
-								Unavailable
-							</Trans>
+							<Trans>Unavailable</Trans>
 						)}
 					</span>
 				)}
@@ -254,14 +236,12 @@ function AccountCard({
 						<DropdownMenuContent align="end">
 							{onSwitchSignIn && (
 								<DropdownMenuItem onClick={onSwitchSignIn}>
-									<Trans id="settings.usage.account.switchSignIn">
-										Switch sign-in…
-									</Trans>
+									<Trans>Switch sign-in…</Trans>
 								</DropdownMenuItem>
 							)}
 							{onRemove && (
 								<DropdownMenuItem variant="destructive" onClick={onRemove}>
-									<Trans id="settings.usage.account.remove">Remove…</Trans>
+									<Trans>Remove…</Trans>
 								</DropdownMenuItem>
 							)}
 						</DropdownMenuContent>
@@ -277,9 +257,7 @@ function AccountCard({
 			) : expiredCommand !== null ? (
 				<div className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] text-muted-foreground">
 					<span>
-						<Trans id="settings.usage.account.expiredRunPrefix">
-							Sign-in expired — run
-						</Trans>
+						<Trans>Sign-in expired — run</Trans>
 					</span>
 					<button
 						type="button"
@@ -289,7 +267,6 @@ function AccountCard({
 							copyToClipboard(expiredCommand).catch(() =>
 								toast.error(
 									t({
-										id: "settings.usage.account.copyFailed",
 										message: "Copy failed",
 									}),
 									{ description: expiredCommand },
@@ -305,18 +282,12 @@ function AccountCard({
 						)}
 					</button>
 					<span>
-						<Trans id="settings.usage.account.expiredRunSuffix">
-							in a terminal on this host.
-						</Trans>
+						<Trans>in a terminal on this host.</Trans>
 					</span>
 				</div>
 			) : (
 				<div className="mt-1.5 text-[11px] text-muted-foreground">
-					{account.statusDetail ?? (
-						<Trans id="settings.usage.account.usageUnavailable">
-							Usage unavailable.
-						</Trans>
-					)}
+					{account.statusDetail ?? <Trans>Usage unavailable.</Trans>}
 				</div>
 			)}
 			{/* The radio + accent border already mark the default when the cards
@@ -334,9 +305,7 @@ function AccountCard({
 									title={i18n._(DEFAULT_TITLE)}
 								>
 									<LuCircleCheck className="size-3" />
-									<Trans id="settings.usage.account.defaultForNewAgents">
-										Default for new agents
-									</Trans>
+									<Trans>Default for new agents</Trans>
 								</span>
 							)
 						) : onMakeDefault ? (
@@ -348,9 +317,7 @@ function AccountCard({
 								title={i18n._(DEFAULT_TITLE)}
 								onClick={onMakeDefault}
 							>
-								<Trans id="settings.usage.account.makeDefault">
-									Make default
-								</Trans>
+								<Trans>Make default</Trans>
 							</Button>
 						) : null)}
 					{credits && (
@@ -393,12 +360,10 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 	) => {
 		toast.success(
 			t({
-				id: "settings.usage.account.madeDefaultToast",
 				message: `New ${providerLabel} agents will use ${accountLabel}.`,
 			}),
 			{
 				description: t({
-					id: "settings.usage.account.madeDefaultDescription",
 					message: "Relaunch running agents to switch them.",
 				}),
 			},
@@ -465,12 +430,10 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 				onSuccess: () => {
 					toast.success(
 						t({
-							id: "settings.usage.restartAgents.startedToast",
 							message: `Restarting agents on ${accountLabel}.`,
 						}),
 						{
 							description: t({
-								id: "settings.usage.restartAgents.startedDescription",
 								message: "Each session resumes where it left off.",
 							}),
 						},
@@ -503,12 +466,10 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 
 	return (
 		<div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-3 px-6 py-4">
-			<LeaderboardPrompt hostUrl={hostUrl} />
+			<LeaderboardCard hostUrl={hostUrl} />
 			<div className="flex items-center gap-2">
 				<span className="ml-auto text-[10px] text-muted-foreground">
-					<Trans id="settings.usage.quota.refreshNote">
-						Official quota · refreshes every 5 min
-					</Trans>
+					<Trans>Official quota · refreshes every 5 min</Trans>
 				</span>
 				<Button
 					variant="ghost"
@@ -522,11 +483,7 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 					) : (
 						<LuEyeOff className="size-3" />
 					)}
-					{hideEmails ? (
-						<Trans id="settings.usage.quota.showEmails">Show emails</Trans>
-					) : (
-						<Trans id="settings.usage.quota.hideEmails">Hide emails</Trans>
-					)}
+					{hideEmails ? <Trans>Show emails</Trans> : <Trans>Hide emails</Trans>}
 				</Button>
 				<Button
 					variant="ghost"
@@ -548,14 +505,10 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 
 			{quotaQuery.isPending ? (
 				<div className="py-4 text-center text-xs text-muted-foreground">
-					<Trans id="settings.usage.quota.reading">
-						Reading subscription usage…
-					</Trans>
+					<Trans>Reading subscription usage…</Trans>
 				</div>
 			) : (
-				AGENTS.filter((agent) =>
-					accounts.some((account) => account.agent === agent),
-				).map((agent) => {
+				visibleQuotaAgents(accounts).map((agent) => {
 					const agentAccounts = accounts.filter(
 						(account) => account.agent === agent,
 					);
@@ -576,15 +529,13 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 										onClick={() => openAddAgentAccount(agent)}
 									>
 										<LuPlus className="size-3" />
-										<Trans id="settings.usage.quota.addAccount">
-											Add account
-										</Trans>
+										<Trans>Add account</Trans>
 									</Button>
 								)}
 							</div>
 							{agentAccounts.length === 0 ? (
 								<div className="rounded-lg border border-dashed px-3 py-2 text-[11px] text-muted-foreground">
-									<Trans id="settings.usage.quota.noLogins">
+									<Trans>
 										No {AGENT_LABELS[agent]} logins on this host — sign in and
 										usage appears here.
 									</Trans>
@@ -654,7 +605,6 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 									removeTarget.email ?? removeTarget.sourceLabel;
 								toast.success(
 									t({
-										id: "settings.usage.account.removedToast",
 										message: `Removed ${removedLabel}.`,
 									}),
 								);

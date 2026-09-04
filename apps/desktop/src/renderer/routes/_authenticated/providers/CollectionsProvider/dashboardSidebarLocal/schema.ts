@@ -1,5 +1,6 @@
 import type { AppRouter } from "@superset/host-service";
 import type { LayoutNode, Tab, WorkspaceState } from "@superset/panes";
+import { tagFolderScopeInputSchema } from "@superset/shared/workspace-tags";
 import type { inferRouterInputs } from "@trpc/server";
 import { z } from "zod";
 
@@ -139,6 +140,7 @@ export const workspaceRunTerminalStateSchema = z.object({
 // "card" (KANBAN) is the right-panel Task/Card tab added alongside
 // Files/Changes/Review. Additive widening — older persisted rows still read
 // "changes", and the default stays "changes" (the Card tab never auto-selects).
+// "pages" is a retired tab; persisted rows on it heal to "changes" below.
 export const WORKSPACE_SIDEBAR_TABS = [
 	"changes",
 	"files",
@@ -210,6 +212,9 @@ export const workspaceLocalStateSchema = z.object({
 		// killing terminals cannot have them re-adopted into new panes. The VALUE
 		// identifies the debt: a reconciler reply quoting a different one is stale.
 		runtimeCleanupPendingAt: z.number().int().nullable().default(null),
+		// "Remove PR link" for cloud-sourced chips: that PR stays hidden, a
+		// different PR still shows.
+		suppressedPullRequestUrl: z.string().nullable().default(null),
 	}),
 	paneLayout: paneWorkspaceStateSchema,
 	viewedFiles: z.array(z.string()).default([]),
@@ -239,6 +244,12 @@ export const workspaceLocalStateSchema = z.object({
 			}),
 		)
 		.default([]),
+	// Terminal presets tagged "auto-run on workspace creation" that matched
+	// this workspace's project when the create resolved. Presets live in
+	// renderer localStorage, so the host can't run them; the v2 workspace
+	// page drains this queue once on first open (see
+	// useRunWorkspaceCreationPresets) and clears it before running.
+	pendingCreationPresetIds: z.array(z.string()).default([]),
 });
 
 // Defaults for fields heal can synthesize. Identity fields (workspaceId,
@@ -258,6 +269,7 @@ const SIDEBAR_STATE_DEFAULTS = {
 	deletedAt: null,
 	pinnedAt: null,
 	runtimeCleanupPendingAt: null,
+	suppressedPullRequestUrl: null,
 } as const;
 
 const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
@@ -276,6 +288,7 @@ const WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS = {
 		cwd: string | null;
 		v1PaneId: string | null;
 	}>,
+	pendingCreationPresetIds: [] as string[],
 };
 
 /**
@@ -289,7 +302,9 @@ export const dashboardSidebarSectionSchema = z.object({
 	// withReadHeal DELETES rows that fail parse, so this schema must keep
 	// accepting every previously persisted shape.
 	sectionId: z.string().min(1),
-	projectId: z.string().uuid(),
+	// A project id, or the Sessions tag scope: the Sessions lane stores its
+	// folder rows (order, collapse) under that scope since it has no project.
+	projectId: tagFolderScopeInputSchema,
 	name: z.string().trim().min(1),
 	createdAt: persistedDateSchema,
 	tabOrder: z.number().int().default(0),
@@ -469,6 +484,19 @@ function isCompleteLinkTierMap(
 	);
 }
 
+const sidebarProjectSortModeSchema = z.enum(["manual", "active", "created"]);
+
+export type SidebarProjectSortMode = z.infer<
+	typeof sidebarProjectSortModeSchema
+>;
+
+// `.catch`, not `.default`: #5956 persisted a since-retired "updated" value
+// for some users, and an enum failure must degrade to manual rather than
+// drop the whole preferences row. Also applied at heal time (below) because
+// the localStorage collection only runs the schema on writes.
+const persistedSidebarProjectSortModeSchema =
+	sidebarProjectSortModeSchema.catch("manual");
+
 export const v2UserPreferencesSchema = z.object({
 	id: z.literal("preferences"),
 	fileLinks: linkTierMapSchema.default(DEFAULT_LINK_TIER_MAP),
@@ -500,6 +528,8 @@ export const v2UserPreferencesSchema = z.object({
 	 */
 	showDeletedSessions: z.boolean().default(false),
 	deletedSessionsCollapsed: z.boolean().default(false),
+	// Ordering of the dashboard sidebar's Projects list; manual = drag order.
+	sidebarProjectSortMode: persistedSidebarProjectSortModeSchema,
 	// Built-in (synthetic, app-shipped) presets the user hid from the preset
 	// bar. Synthetic presets have no v2TerminalPresets row, so visibility can't
 	// live on the row's pinnedToBar like user presets. Pruned against
@@ -542,6 +572,7 @@ export const DEFAULT_V2_USER_PREFERENCES: V2UserPreferencesRow = {
 	archivedSessionsCollapsed: false,
 	showDeletedSessions: false,
 	deletedSessionsCollapsed: false,
+	sidebarProjectSortMode: "manual",
 	hiddenBuiltinPresetIds: [],
 	favoritePageIds: [],
 	hiddenTagFolders: {},
@@ -577,6 +608,9 @@ export function healWorkspaceLocalState(raw: unknown): WorkspaceLocalStateRow {
 		pendingMigratedTerminals:
 			r.pendingMigratedTerminals ??
 			WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS.pendingMigratedTerminals,
+		pendingCreationPresetIds:
+			r.pendingCreationPresetIds ??
+			WORKSPACE_LOCAL_STATE_OPTIONAL_DEFAULTS.pendingCreationPresetIds,
 		sidebarState: {
 			...SIDEBAR_STATE_DEFAULTS,
 			...sidebar,
@@ -673,6 +707,9 @@ export function healV2UserPreferences(raw: unknown): V2UserPreferencesRow {
 			...DEFAULT_V2_USER_PREFERENCES.folderLinks,
 			...r.folderLinks,
 		},
+		sidebarProjectSortMode: persistedSidebarProjectSortModeSchema.parse(
+			r.sidebarProjectSortMode,
+		),
 		// Prune retired/stray built-in ids so the array stays bounded.
 		hiddenBuiltinPresetIds: (Array.isArray(r.hiddenBuiltinPresetIds)
 			? r.hiddenBuiltinPresetIds

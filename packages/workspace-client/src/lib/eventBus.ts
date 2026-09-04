@@ -15,11 +15,13 @@ type EventType =
 	| "fs:events"
 	| "git:changed"
 	| "agent:lifecycle"
+	| "agent:bindings-changed"
 	| "terminal:lifecycle"
 	| "port:changed"
 	| "workspace:changed"
 	| "workspace:create-settled"
 	| "project:changed"
+	| "tag-folders:changed"
 	| "claude-account-state-changed"
 	| "claude-account-warning"
 	| "page-watch:changed";
@@ -47,6 +49,10 @@ export interface AgentLifecyclePayload {
 	 * reported by the agent's hooks — move the dot, never chime/notify.
 	 */
 	synthetic?: true;
+}
+
+export interface AgentBindingsChangedPayload {
+	occurredAt: number;
 }
 
 export type TerminalLifecyclePayload =
@@ -164,41 +170,56 @@ export interface PageWatchChangedPayload {
 	occurredAt: number;
 }
 
+type TagFoldersChangedMessage = Extract<
+	ServerMessage,
+	{ type: "tag-folders:changed" }
+>;
+
+export interface TagFoldersChangedPayload {
+	/** The scope's full set after the change — empty when all were removed. */
+	settings: TagFoldersChangedMessage["settings"];
+	occurredAt: TagFoldersChangedMessage["occurredAt"];
+}
+
 type EventListener<T extends EventType> = T extends "fs:events"
 	? (workspaceId: string, payload: FsEventsPayload) => void
 	: T extends "git:changed"
 		? (workspaceId: string, payload: GitChangedPayload) => void
 		: T extends "agent:lifecycle"
 			? (workspaceId: string, payload: AgentLifecyclePayload) => void
-			: T extends "terminal:lifecycle"
-				? (workspaceId: string, payload: TerminalLifecyclePayload) => void
-				: T extends "port:changed"
-					? (workspaceId: string, payload: PortChangedPayload) => void
-					: T extends "workspace:changed"
-						? (workspaceId: string, payload: WorkspaceChangedPayload) => void
-						: T extends "workspace:create-settled"
-							? (
-									workspaceId: string,
-									payload: WorkspaceCreateSettledPayload,
-								) => void
-							: T extends "project:changed"
-								? (projectId: string, payload: ProjectChangedPayload) => void
-								: T extends "claude-account-state-changed"
-									? (
-											workspaceId: string,
-											payload: ClaudeAccountStateChangedPayload,
-										) => void
-									: T extends "claude-account-warning"
-										? (
-												workspaceId: string | null,
-												payload: ClaudeAccountWarningPayload,
-											) => void
-										: T extends "page-watch:changed"
+			: T extends "agent:bindings-changed"
+				? (workspaceId: string, payload: AgentBindingsChangedPayload) => void
+				: T extends "terminal:lifecycle"
+					? (workspaceId: string, payload: TerminalLifecyclePayload) => void
+					: T extends "port:changed"
+						? (workspaceId: string, payload: PortChangedPayload) => void
+						: T extends "workspace:changed"
+							? (workspaceId: string, payload: WorkspaceChangedPayload) => void
+							: T extends "workspace:create-settled"
+								? (
+										workspaceId: string,
+										payload: WorkspaceCreateSettledPayload,
+									) => void
+								: T extends "project:changed"
+									? (projectId: string, payload: ProjectChangedPayload) => void
+									: T extends "tag-folders:changed"
+										? (scope: string, payload: TagFoldersChangedPayload) => void
+										: T extends "claude-account-state-changed"
 											? (
 													workspaceId: string,
-													payload: PageWatchChangedPayload,
+													payload: ClaudeAccountStateChangedPayload,
 												) => void
-											: never;
+											: T extends "claude-account-warning"
+												? (
+														workspaceId: string | null,
+														payload: ClaudeAccountWarningPayload,
+													) => void
+												: T extends "page-watch:changed"
+													? (
+															workspaceId: string,
+															payload: PageWatchChangedPayload,
+														) => void
+													: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -249,6 +270,15 @@ function fileWatchKey(workspaceId: string, absolutePath: string): string {
 	return `${workspaceId}\0${absolutePath}`;
 }
 
+function probesEqual(
+	left: RelayAffinityProbe | null,
+	right: RelayAffinityProbe | null,
+): boolean {
+	if (left === right) return true;
+	if (left === null || right === null) return false;
+	return left.status === right.status && left.region === right.region;
+}
+
 function setConnectionStatus(
 	state: ConnectionState,
 	next: { state?: HostConnectionState; probe?: RelayAffinityProbe | null },
@@ -256,12 +286,20 @@ function setConnectionStatus(
 	const current = state.status;
 	const nextState = next.state ?? current.state;
 	const nextProbe = "probe" in next ? (next.probe ?? null) : current.probe;
-	if (nextState === current.state && nextProbe === current.probe) return;
+	// Value-compare probes: the preflight allocates a fresh result object per
+	// dial, so identity comparison republished an unchanged 503 on every
+	// backoff attempt — fanning a no-op "transition" out to every status
+	// subscriber (and their React commits) for as long as a host stayed down.
+	if (nextState === current.state && probesEqual(nextProbe, current.probe)) {
+		return;
+	}
 
 	state.status = {
 		state: nextState,
 		since: nextState === current.state ? current.since : Date.now(),
-		probe: nextProbe,
+		// Keep the old probe object when only the state moved, so subscribers
+		// keying on probe identity don't re-derive from an equal value.
+		probe: probesEqual(nextProbe, current.probe) ? current.probe : nextProbe,
 	};
 	for (const listener of state.statusListeners) listener(state.status);
 }
@@ -356,6 +394,7 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "fs:events" ||
 			message.type === "git:changed" ||
 			message.type === "agent:lifecycle" ||
+			message.type === "agent:bindings-changed" ||
 			message.type === "terminal:lifecycle" ||
 			message.type === "port:changed" ||
 			message.type === "workspace:changed" ||
@@ -366,7 +405,9 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 				? message.workspaceId
 				: message.type === "project:changed"
 					? message.projectId
-					: null;
+					: message.type === "tag-folders:changed"
+						? message.scope
+						: null;
 
 		if (
 			workspaceId &&
@@ -393,6 +434,11 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 					...(message.agent ? { agent: message.agent } : {}),
 					occurredAt: message.occurredAt,
 				},
+			);
+		} else if (message.type === "agent:bindings-changed") {
+			(entry.callback as EventListener<"agent:bindings-changed">)(
+				message.workspaceId,
+				{ occurredAt: message.occurredAt },
 			);
 		} else if (message.type === "terminal:lifecycle") {
 			const payload = toTerminalLifecyclePayload(message);
@@ -447,6 +493,11 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 				message.workspaceId,
 				payload,
 			);
+		} else if (message.type === "tag-folders:changed") {
+			(entry.callback as EventListener<"tag-folders:changed">)(message.scope, {
+				settings: message.settings,
+				occurredAt: message.occurredAt,
+			});
 		}
 	}
 }

@@ -9,11 +9,11 @@ import { WorkspaceNameMarquee } from "renderer/components/WorkspaceNameMarquee";
 import { useFocusVisible } from "renderer/hooks/useFocusVisible";
 import { useDeletingWorkspacesStore } from "renderer/routes/_authenticated/_dashboard/stores/deletingWorkspacesStore";
 import { V2WorkspaceContextMenu } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/components/V2WorkspaceContextMenu";
+import { WorkspaceStateGlyph } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/components/WorkspaceStateGlyph";
 import type { AccessibleV2Workspace } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/hooks/useAccessibleV2Workspaces";
 import { workspaceActivityAt } from "renderer/routes/_authenticated/_dashboard/v2-workspaces/utils/sortWorkspaces";
 import { PRIcon } from "renderer/screens/main/components/PRIcon/PRIcon";
 import { getRelativeTime } from "renderer/screens/main/components/WorkspacesListView/utils";
-import { WorkspaceStateGlyph } from "./components/WorkspaceStateGlyph";
 
 interface V2WorkspaceRowProps {
 	workspace: AccessibleV2Workspace;
@@ -46,7 +46,7 @@ export function V2WorkspaceRow({
 	} = useFocusVisible();
 
 	const creatorLabel = workspace.isCreatedByCurrentUser
-		? t({ id: "dashboard.workspaces.row.creatorYou", message: "you" })
+		? t({ message: "you" })
 		: workspace.createdByName;
 
 	// The visible age tracks activity (matches the default sort); creation
@@ -58,16 +58,13 @@ export function V2WorkspaceRow({
 	const timeTitle = [
 		creatorLabel
 			? t({
-					id: "dashboard.workspaces.row.createdAtBy",
 					message: `Created ${createdAtLabel} by ${creatorLabel}`,
 				})
 			: t({
-					id: "dashboard.workspaces.row.createdAt",
 					message: `Created ${createdAtLabel}`,
 				}),
 		workspace.lastAgentEventAt
 			? t({
-					id: "dashboard.workspaces.row.lastAgentActivity",
 					message: `Last agent activity ${new Date(workspace.lastAgentEventAt).toLocaleString()}`,
 				})
 			: null,
@@ -81,23 +78,19 @@ export function V2WorkspaceRow({
 	const rowTitle = [
 		workspace.pr
 			? t({
-					id: "dashboard.workspaces.row.prLine",
 					message: `PR #${workspace.pr.prNumber} (${workspace.pr.state})`,
 				})
 			: null,
 		workspace.type !== "session" &&
 		workspace.branch.toLowerCase() !== workspace.name.toLowerCase()
 			? t({
-					id: "dashboard.workspaces.row.branchLine",
 					message: `Branch: ${workspace.branch}`,
 				})
 			: null,
 		t({
-			id: "dashboard.workspaces.row.projectLine",
 			message: `Project: ${
 				workspace.projectName ??
 				t({
-					id: "dashboard.workspaces.row.projectNoneSession",
 					message: "none (session)",
 				})
 			}`,
@@ -154,16 +147,13 @@ export function V2WorkspaceRow({
 									<CgLaptop
 										className="size-3.5 shrink-0 text-muted-foreground"
 										aria-label={t({
-											id: "dashboard.workspaces.row.mainWorkspaceLabel",
 											message: "Main workspace",
 										})}
 									/>
 								</span>
 							</TooltipTrigger>
 							<TooltipContent side="top">
-								<Trans id="dashboard.workspaces.row.mainWorkspace">
-									Main workspace
-								</Trans>
+								<Trans>Main workspace</Trans>
 							</TooltipContent>
 						</Tooltip>
 					) : null}
@@ -188,7 +178,6 @@ export function V2WorkspaceRow({
 							onClick={(event) => event.stopPropagation()}
 							title=""
 							aria-label={t({
-								id: "dashboard.workspaces.row.pullRequestLabel",
 								message: `Pull request #${workspace.pr.prNumber}, ${workspace.pr.state}`,
 							})}
 							className="shrink-0"
@@ -226,7 +215,6 @@ export function V2WorkspaceRow({
 						<span
 							className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums leading-none"
 							title={t({
-								id: "dashboard.workspaces.row.changedFiles",
 								message: plural(workspace.diffStats.fileCount, {
 									one: "# changed file",
 									other: "# changed files",

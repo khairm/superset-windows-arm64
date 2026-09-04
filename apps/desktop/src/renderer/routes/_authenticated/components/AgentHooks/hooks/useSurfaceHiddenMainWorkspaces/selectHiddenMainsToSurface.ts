@@ -2,7 +2,20 @@ import {
 	getWorkspaceSidebarBucket,
 	isLocalMainWorkspaceInSidebarScope,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import type { LocalWorkspaceForPlacement } from "../usePlaceLocalWorktreesInSidebar/selectWorktreesToPlace";
+import type { WorkspaceForPlacement } from "../usePlaceWorktreesInSidebar/selectWorktreesToPlace";
+
+/**
+ * The workspace fields BOTH sidebar reconcilers select on. Derived from the
+ * placement type rather than redeclared so the two cannot drift into
+ * disagreeing about what a row is. It is a `Pick` because the placement
+ * selector also gates on `hostReachable`/`createdByUserId` (remote hosts,
+ * #7100) and this reconciler is local-mains-only, so requiring them here
+ * would make callers invent values the predicate never reads.
+ */
+export type LocalWorkspaceForPlacement = Pick<
+	WorkspaceForPlacement,
+	"id" | "projectId" | "type" | "hostId"
+>;
 
 /**
  * The classifier-relevant half of a `v2WorkspaceLocalState` row. Every field is

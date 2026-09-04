@@ -9,7 +9,7 @@ Show a popup in the desktop app **without shipping a release**. Rows in the `des
 A notice is **one markdown body** plus behavioral fields. There is no title field — put the title in the markdown (`### Heads up: …`).
 
 - Markdown supports headings, bold, links, lists, and images. Raw HTML is stripped.
-- A leading image (`![alt](https://…)`) renders edge-to-edge at the top of the dialog, card-cover style (capped height, `object-cover`). Host images at any public URL (e.g. Vercel Blob).
+- A leading image (`![alt](https://…)`) renders edge-to-edge at the top of the dialog, card-cover style (capped height, `object-cover`). Host images at any public URL (e.g. `static.supersetusercontent.com`).
 
 ## Creating one
 

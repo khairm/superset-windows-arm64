@@ -4,6 +4,7 @@ import { z } from "zod";
 import { terminalSessions, workspaces } from "../../../db/schema";
 import { mapEventType } from "../../../events";
 import type { HostServiceContext } from "../../../types";
+import { touchLocalWorkspaceActivity } from "../../../workspaces/local-workspace-store";
 import { publicProcedure, queryProcedure, router } from "../../index";
 import {
 	type AgentStatusSnapshot,
@@ -329,6 +330,22 @@ export const notificationsRouter = router({
 			...(agent?.definitionId ? { definitionId: agent.definitionId } : {}),
 			occurredAt,
 		});
+
+		// Every lifecycle event is activity for the sidebar's "Last active"
+		// ranking. Best-effort: a failed write must not fail the hook, which
+		// also drives the chime and the status dots.
+		try {
+			touchLocalWorkspaceActivity(
+				ctx,
+				terminalSession.originWorkspaceId,
+				occurredAt,
+			);
+		} catch (err) {
+			console.warn(
+				`[notifications.hook] failed to record activity for workspace ${terminalSession.originWorkspaceId}:`,
+				err,
+			);
+		}
 
 		// (COMPANION-CAPTURE-HOOK) Strictly AFTER the dot work above, so a
 		// companion bridge fault can never alter or delay the agent-status

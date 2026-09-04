@@ -226,6 +226,20 @@ export class EventBus {
 	}
 
 	/**
+	 * Fan out binding mutations that are not lifecycle hooks. Renderers refetch
+	 * status from the host, but notification controllers do not treat this as an
+	 * agent completion event.
+	 */
+	broadcastAgentBindingsChanged(
+		message: Omit<
+			Extract<ServerMessage, { type: "agent:bindings-changed" }>,
+			"type"
+		>,
+	): void {
+		this.broadcast({ type: "agent:bindings-changed", ...message });
+	}
+
+	/**
 	 * Fan out terminal process lifecycle events to renderer clients. Agent hook
 	 * status can otherwise get stuck when a terminal exits while its pane is not
 	 * mounted and therefore cannot observe the terminal websocket `exit` packet.
@@ -345,6 +359,20 @@ export class EventBus {
 		message: Omit<Extract<ServerMessage, { type: "project:changed" }>, "type">,
 	): void {
 		this.broadcast({ type: "project:changed", ...message });
+	}
+
+	/**
+	 * Fan out tag-folder presentation changes for one scope (a project id, or
+	 * the Sessions lane). Its own channel rather than a field on the project
+	 * snapshot: the Sessions lane has no project to carry it.
+	 */
+	broadcastTagFoldersChanged(
+		message: Omit<
+			Extract<ServerMessage, { type: "tag-folders:changed" }>,
+			"type"
+		>,
+	): void {
+		this.broadcast({ type: "tag-folders:changed", ...message });
 	}
 
 	/**

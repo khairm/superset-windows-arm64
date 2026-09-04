@@ -14,6 +14,7 @@ import {
 	useV2NotificationStore,
 	type V2NotificationSourceInput,
 } from "renderer/stores/v2-notifications";
+import { applyRememberedV2PaneSelection } from "renderer/stores/v2-pane-selection";
 import { reportTerminalSeen } from "./companionAlertSync";
 import { getV2NativeNotificationContent } from "./notificationContent";
 import {
@@ -60,15 +61,18 @@ export function handleV2AgentLifecycleEvent({
 	volume: number;
 	muted: boolean;
 }): void {
+	const localPaneLayout = paneLayout
+		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
+		: paneLayout;
 	const target = resolveV2NotificationTarget({
 		workspaceId,
 		payload,
-		paneLayout,
+		paneLayout: localPaneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
 		payload,
-		paneLayout,
+		paneLayout: localPaneLayout,
 		target,
 		// News, not history — so the visible-clear hop is allowed to fire.
 		fromReplay: false,
@@ -96,7 +100,7 @@ export function handleV2AgentLifecycleEvent({
 	) {
 		return;
 	}
-	if (isTargetWatched(target, paneLayout)) return;
+	if (isTargetWatched(target, localPaneLayout)) return;
 
 	const ringtoneId = useRingtoneStore.getState().selectedRingtoneId;
 	void playRingtone({ ringtoneId, volume, muted });
@@ -133,15 +137,18 @@ export function markV2AgentLifecycleTargetSeen({
 	 */
 	fromReplay: boolean;
 }): void {
+	const localPaneLayout = paneLayout
+		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
+		: paneLayout;
 	const target = resolveV2NotificationTarget({
 		workspaceId,
 		payload,
-		paneLayout,
+		paneLayout: localPaneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
 		payload,
-		paneLayout,
+		paneLayout: localPaneLayout,
 		target,
 		fromReplay,
 	});

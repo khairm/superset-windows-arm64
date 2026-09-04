@@ -27,6 +27,7 @@ import {
 	useStarNagCard,
 } from "renderer/components/SidebarCardSlot";
 import { UpdatesPill } from "renderer/components/UpdatesPill";
+import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
@@ -41,7 +42,6 @@ import { DashboardSidebarProjectSection } from "./components/DashboardSidebarPro
 import { DashboardSidebarSectionRenameProvider } from "./components/DashboardSidebarSectionRenameContext";
 import { DashboardSidebarSessionsSection } from "./components/DashboardSidebarSessionsSection";
 import { DashboardSidebarWorkspacesHeader } from "./components/DashboardSidebarWorkspacesHeader";
-import { SectionDragSpacer } from "./components/SectionDragSpacer";
 import { useV2SetupScriptCard } from "./components/V2SetupScriptCard";
 import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
@@ -60,7 +60,9 @@ import type {
 	DashboardSidebarProject,
 	DashboardSidebarWorkspace,
 } from "./types";
+import { filterDashboardSidebarProjects } from "./utils/filterDashboardSidebarProjects";
 import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
+import { sortDashboardSidebarProjects } from "./utils/sortDashboardSidebarProjects";
 
 interface DashboardSidebarProps {
 	isCollapsed?: boolean;
@@ -180,13 +182,19 @@ export function DashboardSidebar({
 		groups,
 		pinnedWorkspaces,
 		sessionWorkspaces,
+		sessionChildren,
 		snoozedSessionWorkspaces,
 		archivedSessionWorkspaces,
 		deletedSessionWorkspaces,
 		refreshWorkspacePullRequest,
 		toggleProjectCollapsed,
 	} = useDashboardSidebarData();
-	const { reorderProjects } = useDashboardSidebarState();
+	const {
+		deleteSection,
+		reorderProjects,
+		renameSection,
+		toggleSectionCollapsed,
+	} = useDashboardSidebarState();
 	// Converts legacy uuid-keyed folders to tag-backed folders in the
 	// background; retries whenever the workspace cache changes.
 	useMigrateLegacySidebarFolders();
@@ -200,6 +208,14 @@ export function DashboardSidebar({
 	const workspacesListCollapsed = useSidebarSectionsCollapseStore(
 		(s) => s.collapsed.workspaces,
 	);
+	const { preferences, setSidebarProjectSortMode } = useV2UserPreferences();
+	const sortMode = preferences.sidebarProjectSortMode;
+	const [projectFilterQuery, setProjectFilterQuery] = useState("");
+	// The icon rail hides the Projects header (and its filter input); a
+	// filter left active there would invisibly hide projects.
+	useEffect(() => {
+		if (isCollapsed) setProjectFilterQuery("");
+	}, [isCollapsed]);
 
 	// Local project order — syncs from groups, updated on drag end
 	const [projectOrder, setProjectOrder] = useState(() =>
@@ -274,10 +290,36 @@ export function DashboardSidebar({
 	// renders (the tiered `orderedGroups`), so drag indices map to the right slot.
 	// A within-tier drag reorders and persists; a cross-tier drag re-tiers on the
 	// next render (a row can't be dragged out of its pinned/active/idle group).
+	// This is also the order a drop PERSISTS into, which is why it stays the
+	// manual one rather than the sorted/filtered view rendered below.
 	const orderedIds = useMemo(
 		() => orderedGroups.map((g) => g.id),
 		[orderedGroups],
 	);
+
+	// Sort, then filter, as derived views over the tiered manual order:
+	// `orderedGroups` and the persisted tabOrder stay untouched, so Manual
+	// restores the drag order exactly.
+	const sortedGroups = useMemo(
+		() =>
+			sortMode === "manual"
+				? orderedGroups
+				: sortDashboardSidebarProjects(orderedGroups, sortMode),
+		[sortMode, orderedGroups],
+	);
+	const displayedGroups = useMemo(
+		() => filterDashboardSidebarProjects(sortedGroups, projectFilterQuery),
+		[sortedGroups, projectFilterQuery],
+	);
+	const renderedIds = useMemo(
+		() => displayedGroups.map((project) => project.id),
+		[displayedGroups],
+	);
+	const trimmedFilterQuery = projectFilterQuery.trim();
+	const isFilterActive = trimmedFilterQuery !== "";
+	// A sorted or filtered list is not the manual order, so a drop into it would
+	// persist an arrangement the user never made.
+	const isDragDisabled = sortMode !== "manual" || isFilterActive;
 
 	// (HOVER-FREEZE) Don't reshuffle rows while the pointer is over the project
 	// list — tier transitions (active/idle flips, pins) re-sort the sidebar, and
@@ -299,6 +341,9 @@ export function DashboardSidebar({
 	const frozenOrderRef = useRef<string[]>([]);
 	const orderedIdsRef = useRef<string[]>(orderedIds);
 	orderedIdsRef.current = orderedIds;
+	// The freeze snapshots what is ON SCREEN, which is the sorted/filtered view.
+	const renderedIdsRef = useRef<string[]>(renderedIds);
+	renderedIdsRef.current = renderedIds;
 	useEffect(() => {
 		let raf = 0;
 		let lastX = 0;
@@ -319,7 +364,7 @@ export function DashboardSidebar({
 			isPointerOverListRef.current = inside;
 			// Snapshot via refs (not closure state) — immune to the stale-closure
 			// race a render-captured handler had between a state flip and commit.
-			if (inside) frozenOrderRef.current = orderedIdsRef.current;
+			if (inside) frozenOrderRef.current = renderedIdsRef.current;
 			setIsPointerOverList(inside);
 		};
 		const onPointerMove = (event: PointerEvent) => {
@@ -341,22 +386,22 @@ export function DashboardSidebar({
 	// NOW, or the freeze renders a stale order from an earlier hover.
 	const snapshotFrozenOrder = useCallback(() => {
 		if (!isPointerOverListRef.current) {
-			frozenOrderRef.current = orderedIdsRef.current;
+			frozenOrderRef.current = renderedIdsRef.current;
 		}
 	}, []);
 	const orderFrozen = isPointerOverList || isDraggingSidebar;
 	const displayGroups = useMemo(() => {
-		if (!orderFrozen) return orderedGroups;
-		const byId = new Map(orderedGroups.map((g) => [g.id, g]));
+		if (!orderFrozen) return displayedGroups;
+		const byId = new Map(displayedGroups.map((g) => [g.id, g]));
 		const kept = frozenOrderRef.current
 			.map((id) => byId.get(id))
 			.filter((g): g is DashboardSidebarProject => g != null);
-		if (kept.length === orderedGroups.length) return kept;
+		if (kept.length === displayedGroups.length) return kept;
 		// Projects that appeared while frozen append at the end — visible
 		// without reshuffling the rows already under the pointer.
 		const keptIds = new Set(kept.map((g) => g.id));
-		return [...kept, ...orderedGroups.filter((g) => !keptIds.has(g.id))];
-	}, [orderFrozen, orderedGroups]);
+		return [...kept, ...displayedGroups.filter((g) => !keptIds.has(g.id))];
+	}, [orderFrozen, displayedGroups]);
 	// dnd-kit indices must match the RENDERED (possibly frozen) order.
 	const displayIds = useMemo(
 		() => displayGroups.map((g) => g.id),
@@ -369,13 +414,18 @@ export function DashboardSidebar({
 	const displayGroupsRef = useRef<DashboardSidebarProject[]>(displayGroups);
 	displayGroupsRef.current = displayGroups;
 
-	// Shortcut numbering follows the RENDERED (tiered + hover-frozen) order so a
-	// label never points at a different row than the one on screen.
+	// Shortcut numbering follows the RENDERED (tiered + sorted + hover-frozen)
+	// order so a label never points at a different row than the one on screen.
+	// The filtered view expands matches through derived objects, so a jump must
+	// not toggle the persisted collapse state while a filter is active.
 	const workspaceShortcutLabels = useDashboardSidebarShortcuts(
 		displayGroups,
 		sessionWorkspaces,
+		sessionChildren,
+		{ revealCollapsed: !isFilterActive },
 	);
-
+	// Scoped to what the filter actually shows — select-all and range-select
+	// must not reach rows the filter is hiding.
 	const selectableWorkspaceIds = useMemo(() => {
 		const ids = new Set<string>();
 		const addWorkspace = (workspace: DashboardSidebarWorkspace) => {
@@ -386,7 +436,7 @@ export function DashboardSidebar({
 				ids.add(workspace.id);
 			}
 		};
-		for (const project of orderedGroups) {
+		for (const project of displayedGroups) {
 			for (const child of project.children) {
 				if (child.type === "workspace") {
 					addWorkspace(child.workspace);
@@ -402,11 +452,12 @@ export function DashboardSidebar({
 			}
 		}
 		return ids;
-	}, [orderedGroups]);
+	}, [displayedGroups]);
 
 	// Every workspace the sidebar can render (pinned, sessions, project rows) —
 	// the status provider fans out bindings queries and event subscriptions for
-	// these once, instead of per row.
+	// these once, instead of per row. Deliberately unfiltered so subscriptions
+	// don't churn per keystroke.
 	const statusWorkspaces = useMemo<SidebarStatusWorkspaceRef[]>(() => {
 		const byId = new Map<string, SidebarStatusWorkspaceRef>();
 		for (const workspace of pinnedWorkspaces) {
@@ -542,6 +593,7 @@ export function DashboardSidebar({
 	return (
 		<DashboardSidebarSelectionProvider
 			availableWorkspaceIds={selectableWorkspaceIds}
+			activeWorkspaceId={activeV2WorkspaceId}
 		>
 			<DashboardSidebarSectionRenameProvider>
 				<DashboardSidebarHoverProvider>
@@ -559,14 +611,15 @@ export function DashboardSidebar({
 							<DashboardSidebarHoverCardOverlay>
 								<DashboardSidebarDndProvider
 									// (HOVER-FREEZE) The DnD order must be the RENDERED
-									// (tiered + frozen) one, or drag indices point at rows
-									// that are not where the user sees them.
+									// (tiered + sorted + frozen) one, or drag indices point
+									// at rows that are not where the user sees them.
 									projects={displayGroups}
 									pinnedWorkspaces={pinnedWorkspaces}
-									sessionWorkspaces={sessionWorkspaces}
+									sessionChildren={sessionChildren}
 									isSidebarCollapsed={isCollapsed}
 									workspaceShortcutLabels={workspaceShortcutLabels}
 									onReorderProjects={handleReorderProjects}
+									isDragDisabled={isDragDisabled}
 								>
 									<SidebarDragFreezeMonitor
 										onDragActiveChange={setIsDraggingSidebar}
@@ -599,11 +652,19 @@ export function DashboardSidebar({
 												isCollapsed={isCollapsed}
 												workspaceShortcutLabels={workspaceShortcutLabels}
 												onWorkspaceHover={refreshWorkspacePullRequest}
+												onDeleteSection={deleteSection}
+												onRenameSection={renameSection}
+												onToggleSectionCollapse={toggleSectionCollapsed}
 											/>
 											{!isCollapsed && (
 												<div className="mt-3 first:mt-0">
 													<DashboardSidebarBulkActions projects={orderedGroups}>
-														<DashboardSidebarWorkspacesHeader />
+														<DashboardSidebarWorkspacesHeader
+															sortMode={sortMode}
+															onSortModeChange={setSidebarProjectSortMode}
+															filterQuery={projectFilterQuery}
+															onFilterQueryChange={setProjectFilterQuery}
+														/>
 													</DashboardSidebarBulkActions>
 												</div>
 											)}
@@ -624,7 +685,15 @@ export function DashboardSidebar({
 													))}
 												</SortableContext>
 											)}
-											<SectionDragSpacer />
+											{!isCollapsed &&
+												isFilterActive &&
+												displayGroups.length === 0 && (
+													<div className="select-text cursor-text px-4 py-2 text-xs text-muted-foreground">
+														{t({
+															message: `No projects match "${trimmedFilterQuery}"`,
+														})}
+													</div>
+												)}
 										</OverflowFadeContainer>
 										<SidebarCardSlot
 											isCollapsed={isCollapsed}
@@ -655,12 +724,9 @@ export function DashboardSidebar({
 													<button
 														type="button"
 														aria-label={t({
-															id: "dashboard.sidebar.settingsAriaLabel",
 															message: "Settings",
 														})}
-														onClick={() =>
-															navigate({ to: DEFAULT_SETTINGS_ROUTE })
-														}
+														onClick={() => navigate({ to: DEFAULT_SETTINGS_ROUTE })}
 														className={cn(
 															"flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
 															isSettingsOpen
@@ -674,11 +740,9 @@ export function DashboardSidebar({
 												<TooltipContent side={isCollapsed ? "right" : "top"}>
 													{settingsHotkey !== "Unassigned"
 														? t({
-																id: "dashboard.sidebar.settingsTooltipWithHotkey",
 																message: `Settings (${settingsHotkey})`,
 															})
 														: t({
-																id: "dashboard.sidebar.settingsTooltip",
 																message: "Settings",
 															})}
 												</TooltipContent>

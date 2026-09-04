@@ -13,6 +13,7 @@ import { authClient } from "renderer/lib/auth-client";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
 	setClientMachineId,
+	setClientUserId,
 	setHostServiceSecret,
 } from "renderer/lib/host-service-auth";
 import type { HostServiceAvailabilityStatus } from "renderer/lib/host-service-unavailable";
@@ -41,6 +42,8 @@ export function LocalHostServiceProvider({
 }) {
 	const utils = electronTrpc.useUtils();
 	const { data: activeOrganization } = authClient.useActiveOrganization();
+	// Session still owns who is signed in; only the ACTIVE org is frozen locally.
+	const { data: session } = authClient.useSession();
 
 	// (CLOUD-SEVERANCE-P2) The frozen local organization. Upstream derived this
 	// from the cloud session and then pushed the membership back down to main
@@ -61,6 +64,12 @@ export function LocalHostServiceProvider({
 			setClientMachineId(machineIdData.machineId);
 		}
 	}, [machineIdData]);
+
+	const sessionUserId = session?.user.id ?? null;
+	useEffect(() => {
+		setClientUserId(sessionUserId);
+		return () => setClientUserId(null);
+	}, [sessionUserId]);
 
 	const { data: activeConnection } =
 		electronTrpc.hostServiceCoordinator.getConnection.useQuery(

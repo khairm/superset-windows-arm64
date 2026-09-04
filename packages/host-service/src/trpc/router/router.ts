@@ -31,6 +31,7 @@ import { settingsRouter } from "./settings";
 // and without this mount the mirror is never written and every consumer
 // silently falls back to the uncurated `host.db` set.
 import { sidebarMirrorRouter } from "./sidebar-mirror";
+import { tagFoldersRouter } from "./tag-folders";
 import { terminalRouter } from "./terminal";
 import { terminalAgentsRouter } from "./terminal-agents";
 import { usageRouter } from "./usage";
@@ -58,6 +59,7 @@ export const appRouter = router({
 	notifications: notificationsRouter,
 	pullRequests: pullRequestsRouter,
 	project: projectRouter,
+	tagFolders: tagFoldersRouter,
 	pageWatch: pageWatchRouter,
 	ports: portsRouter,
 	settings: settingsRouter,

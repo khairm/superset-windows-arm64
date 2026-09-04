@@ -59,6 +59,7 @@ export function useTerminalAgentBindings(
 	}, [queryClient, queryKey]);
 
 	useWorkspaceEvent("agent:lifecycle", workspaceId, invalidate, enabled);
+	useWorkspaceEvent("agent:bindings-changed", workspaceId, invalidate, enabled);
 	// (DISPOSE-LIMBO) Deliberately NOT gated on `payload.confirmed`: this only
 	// refetches the host's own binding list, so an unconfirmed exit re-reads
 	// truth rather than asserting any. Whatever the host still considers live

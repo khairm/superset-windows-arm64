@@ -13,7 +13,7 @@ export const navigationProvider: CommandProvider = {
 		const commands: Command[] = [
 			{
 				id: "nav.settings",
-				title: msg({ id: "commandPalette.nav.settings", message: "Settings" }),
+				title: msg({ message: "Settings" }),
 				section: "navigation",
 				icon: SettingsIcon,
 				hotkeyId: "OPEN_SETTINGS",
@@ -25,7 +25,6 @@ export const navigationProvider: CommandProvider = {
 			{
 				id: "nav.recentlyViewed",
 				title: msg({
-					id: "commandPalette.nav.recentlyViewed",
 					message: "Recently Viewed",
 				}),
 				section: "navigation",
@@ -36,7 +35,6 @@ export const navigationProvider: CommandProvider = {
 			{
 				id: "nav.workspaces",
 				title: msg({
-					id: "commandPalette.nav.workspaces",
 					message: "Workspaces",
 				}),
 				section: "navigation",
@@ -47,7 +45,6 @@ export const navigationProvider: CommandProvider = {
 			{
 				id: "nav.docs",
 				title: msg({
-					id: "commandPalette.nav.openDocs",
 					message: "Open documentation",
 				}),
 				section: "navigation",
