@@ -142,3 +142,10 @@ runs:
     - name: Verify cloud severance (telemetry / update channels)
       shell: bash
       run: node scripts/check-cloud-severance.mjs
+
+    # (I18N-CATALOG-GATE) Fast feedback only. The step that DECIDES is the
+    # frozen one in .github/workflows/build-arm64.yml, for the same reason the
+    # severance gate is duplicated: a mid-run repair can rewrite this file.
+    - name: Verify i18n catalogs match source
+      shell: bash
+      run: bash scripts/check-i18n-catalogs.sh

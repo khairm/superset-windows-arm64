@@ -175,14 +175,6 @@ msgstr "{0, plural, one {このホストで#件} other {このホストで#件}}
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {#件の結果} other {#件の結果}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {実行中のエージェント#件 — 詳細を隠す} other {実行中のエージェント#件 — 詳細を隠す}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {実行中のエージェント#件 — 詳細を表示} other {実行中のエージェント#件 — 詳細を表示}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {#件のセッションが実行中} other {#件のセッションが実行中}}"
@@ -278,10 +270,6 @@ msgstr "{0}が{actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} 保留中"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "{0}の操作"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0}差で後続"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0}人の開発者がエージェント利用量でランク付けされています。あなたの直近30日はすでに集計済みで、非表示になっているだけです。公開されるのはトークン数とモデル名のみで、リポジトリ名・ファイルパス・プロンプトは含まれません。"
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0}を無効にしました"
 
@@ -640,9 +627,6 @@ msgstr "{months}か月"
 
 msgid "{months}mo ago"
 msgstr "{months}か月前"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "自分のオートメーションのうち{myFailedCount}件が前回の実行に失敗しました"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {人を1人以上指定するか、{choice}を選択してください。} sender {送信者を1人以上指定するか、{choice}を選択してください。} other {項目を1つ以上指定するか、{choice}を選択してください。}}"
@@ -1052,9 +1036,6 @@ msgstr "進行中のもの、次に来るもの、そして{company}が向かう
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "本番への変更の過半数が、人間が差分を読まないままマージされる。"
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "続行するには新しいバージョンのSupersetが必要です。最新バージョンに更新してください。"
-
 msgid "A process is still running in this tab"
 msgstr "このタブではプロセスがまだ実行中です"
 
@@ -1310,9 +1291,6 @@ msgstr "エージェントでコメントに対応"
 
 msgid "Address Unreachable"
 msgstr "アドレスに到達できません"
-
-msgid "Adds skills to your agents"
-msgstr "エージェントにスキルを追加します"
 
 msgid "Admin"
 msgstr "管理者"
@@ -1763,9 +1741,6 @@ msgstr "APIキーを取り消しました"
 msgid "API keys"
 msgstr "APIキー"
 
-msgid "API Keys"
-msgstr "APIキー"
-
 msgid "API-equivalent"
 msgstr "API換算"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "アーカイブ"
+
+msgid "Archive workspace"
+msgstr "ワークスペースをアーカイブ"
 
 msgid "Archived"
 msgstr "アーカイブ済み"
@@ -2030,17 +2008,11 @@ msgstr "オートメーションのタイトル"
 msgid "Automations"
 msgstr "オートメーション"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "オートメーション({myFailedCount}件失敗中)"
-
 msgid "Automations & event triggers"
 msgstr "オートメーションとイベントトリガー"
 
 msgid "Automations docs"
 msgstr "オートメーションのドキュメント"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "オートメーション、{myFailedCount}件が失敗中"
 
 msgid "Autonomous"
 msgstr "自律"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "サインインすると、以下に同意したことになります\n"
 "<0>利用規約</0>と<1>プライバシーポリシー</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "サインインすると、<0>利用規約</0>と<1>プライバシーポリシー</1>に同意したことになります"
-
 msgid "by spend"
 msgstr "支出額順"
 
@@ -2633,23 +2602,8 @@ msgstr "チャットセッションが見つかりません"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "チャットの構成要素: メッセージ、推論、提案"
 
-msgid "Chat v3"
-msgstr "チャットv3"
-
 msgid "Check again"
 msgstr "再確認"
-
-msgid "Check for Update"
-msgstr "アップデートを確認"
-
-msgid "Check for updates"
-msgstr "更新を確認"
-
-msgid "Check for Updates"
-msgstr "アップデートを確認"
-
-msgid "Check for Updates..."
-msgstr "アップデートを確認..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "実行中のエージェントの状況を確認し、変更内容をスマートフォンから読めます。"
@@ -3466,12 +3420,6 @@ msgstr "別のエージェントで続ける"
 msgid "Continue with another agent…"
 msgstr "別のエージェントで続ける…"
 
-msgid "Continue with GitHub"
-msgstr "GitHubで続行"
-
-msgid "Continue with Google"
-msgstr "Googleで続行"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "このマシンに外部からどのように接続できるかを設定"
 
@@ -3802,9 +3750,6 @@ msgstr "スクリーンショットを撮れませんでした"
 msgid "Could not update plugin"
 msgstr "プラグインを更新できませんでした"
 
-msgid "Could not update skill"
-msgstr "スキルを更新できませんでした"
-
 msgid "Could not update the branch"
 msgstr "ブランチを更新できませんでした"
 
@@ -3883,9 +3828,6 @@ msgstr "このターミナルのコンテキストを読み取れませんでし
 
 msgid "Couldn't read usage history from this host."
 msgstr "このホストから使用履歴を読み取れませんでした。"
-
-msgid "Couldn't remove the local sign-in"
-msgstr "ローカルのサインインを削除できませんでした"
 
 msgid "Couldn't restart terminals"
 msgstr "ターミナルを再起動できませんでした"
@@ -4606,9 +4548,6 @@ msgstr "ディレクトリ"
 msgid "Disable"
 msgstr "無効にする"
 
-msgid "Disable skill"
-msgstr "スキルを無効にする"
-
 msgid "Disabled"
 msgstr "無効"
 
@@ -4798,8 +4737,8 @@ msgstr "macOS版をダウンロード"
 msgid "Download image"
 msgstr "画像をダウンロード"
 
-msgid "Download Manually"
-msgstr "手動でダウンロード"
+msgid "Download Latest Release"
+msgstr "最新リリースをダウンロード"
 
 msgid "Download starter"
 msgstr "スターターをダウンロード"
@@ -4819,9 +4758,6 @@ msgstr "テーマファイルをダウンロード"
 
 msgid "downloaded"
 msgstr "ダウンロード済み"
-
-msgid "Downloading..."
-msgstr "ダウンロード中..."
 
 msgid "Downloads"
 msgstr "ダウンロード"
@@ -5037,9 +4973,6 @@ msgstr "自動マージを有効にする"
 
 msgid "Enable relay access…"
 msgstr "リレーアクセスを有効にする…"
-
-msgid "Enable skill"
-msgstr "スキルを有効にする"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "有効 — サーバーがエージェント設定に書き込まれます。"
@@ -5335,18 +5268,11 @@ msgstr "ベースブランチの変更に失敗しました"
 msgid "Failed to change role"
 msgstr "ロールの変更に失敗しました"
 
-msgid "Failed to check for updates: {message}"
-msgstr "更新を確認できませんでした: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "アップデートを確認できませんでした。しばらくしてからもう一度お試しください。"
 
 msgid "Failed to clear"
 msgstr "クリアに失敗しました"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "エージェントのステータスをクリアできませんでした: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "ターミナル履歴のクリアに失敗しました"
@@ -5374,10 +5300,6 @@ msgstr "Slackに接続できませんでした。もう一度お試しくださ�
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "ブランチ名のコピーに失敗しました: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "Markdownをコピーできませんでした: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "ワークスペースの移動に失敗しました: {0}"
 msgid "Failed to open {name}"
 msgstr "{name}を開けませんでした"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "ファイルを開けませんでした: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "{app}で開けませんでした: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "新規ウィンドウを開けませんでした: {message}"
 
 msgid "Failed to open project"
 msgstr "プロジェクトを開けませんでした"
+
+msgid "Failed to open releases page: {message}"
+msgstr "リリースページを開けませんでした: {message}"
 
 msgid "Failed to open task"
 msgstr "タスクを開けませんでした"
@@ -5579,6 +5500,9 @@ msgstr "ブランチをプッシュできませんでした"
 
 msgid "Failed to record page version"
 msgstr "ページバージョンの記録に失敗しました"
+
+msgid "Failed to refresh changes"
+msgstr "変更を更新できませんでした"
 
 msgid "Failed to remove"
 msgstr "削除に失敗しました"
@@ -5644,10 +5568,6 @@ msgstr "オートメーションを再試行できませんでした"
 
 msgid "Failed to reveal in Finder"
 msgstr "Finderでの表示に失敗しました"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Finderに表示できませんでした: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Finderでの表示に失敗しました: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "移動元"
 
 msgid "from {price}/user/mo"
 msgstr "{price}/ユーザー/月〜"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "フロントマターは非表示です — 編集するにはMarkdownに切り替えてください"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "フロントマターは非表示です — 編集するにはMarkdownビューに切り替えてください"
@@ -6823,12 +6740,6 @@ msgstr "{0}を検査中"
 msgid "Install"
 msgstr "インストール"
 
-msgid "Install & restart"
-msgstr "インストールして再起動"
-
-msgid "Install & Restart"
-msgstr "インストールして再起動"
-
 msgid "Install failed"
 msgstr "インストールに失敗しました"
 
@@ -6853,9 +6764,6 @@ msgstr "インストール済み"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "{0}をインストールしました"
-
-msgid "Installing..."
-msgstr "インストール中..."
 
 msgid "Instructions"
 msgstr "指示"
@@ -7090,6 +6998,9 @@ msgstr "自分のみ"
 
 msgid "just now"
 msgstr "たった今"
+
+msgid "Kanban"
+msgstr "カンバン"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "Issueをリンク"
 msgid "Link pull request"
 msgstr "プルリクエストをリンク"
 
-msgid "Link task"
-msgstr "タスクをリンク"
-
 msgid "Linked {slug} to workspace"
 msgstr "{slug}をワークスペースにリンクしました"
 
@@ -7707,9 +7615,6 @@ msgstr "組織のブランディングとメンバーを管理します。"
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "サブスクリプションと請求はデスクトップアプリで管理します。"
 
-msgid "Managed"
-msgstr "管理対象"
-
 msgid "Managed by your organization admin."
 msgstr "組織の管理者によって管理されています。"
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "プレビュー付きのMarkdown編集画面"
-
-msgid "Markdown copied"
-msgstr "Markdownをコピーしました"
 
 msgid "Markdown style"
 msgstr "Markdownスタイル"
@@ -8950,6 +8852,10 @@ msgstr "この環境ではNotionが設定されていません。"
 msgid "now"
 msgstr "今"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "今"
+
 msgid "Now"
 msgstr "現在"
 
@@ -9169,9 +9075,6 @@ msgstr "変更を開く"
 
 msgid "Open Changes"
 msgstr "変更を開く"
-
-msgid "Open Chat v3"
-msgstr "チャットv3を開く"
 
 msgid "Open Command Palette"
 msgstr "コマンドパレットを開く"
@@ -10131,8 +10034,8 @@ msgstr "プレビュー"
 msgid "Preview {filename}"
 msgstr "{filename}をプレビュー"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "通知プレビュー: ブロッキング（アップデート必須）"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "通知プレビュー: ブロッキング（警告に降格）"
 
 msgid "Preview notice: info"
 msgstr "通知プレビュー: 情報"
@@ -10970,9 +10873,6 @@ msgstr "必須"
 msgid "Required"
 msgstr "必須"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "必要バージョン: {minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "OSが予約済み"
 
@@ -11136,9 +11036,6 @@ msgstr "このバージョンを復元しますか?"
 msgid "Restored"
 msgstr "復元済み"
 
-msgid "Restoring your session"
-msgstr "セッションを復元中"
-
 msgid "Restoring..."
 msgstr "復元中..."
 
@@ -11193,9 +11090,6 @@ msgstr "戻り値"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "ターミナルで起動する再利用可能なコマンド。プロジェクトのセットアップ・実行・ティアダウンコマンドはライフサイクルスクリプトとして設定します。"
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "エージェントが自動的に取り込む再利用可能な指示"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "再利用可能なターミナル起動。クリックで編集、ドラッグで並べ替え。プロジェクトのセットアップ・実行・ティアダウンコマンドはライフサイクルスクリプトです。"
@@ -11419,6 +11313,9 @@ msgstr "マシン上でローカルコマンドを実行します"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "今週これまでに失敗した実行がありますが、現在失敗しているものはありません"
+
+msgid "Runs in {masterLabel}"
+msgstr "{masterLabel}で実行"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "実行結果はワークスペースに入ります。差分を確認し、良いものをマージしてください。"
@@ -12319,9 +12216,6 @@ msgstr "サインインの期限切れ"
 msgid "Sign-in expired — run"
 msgstr "サインインの期限切れ — 次を実行:"
 
-msgid "Sign-in failed"
-msgstr "サインインに失敗しました"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "<0>{userName}</0>としてサインイン中"
 
@@ -12387,15 +12281,6 @@ msgstr "サイズ"
 
 msgid "Skeleton"
 msgstr "Skeleton"
-
-msgid "Skill"
-msgstr "スキル"
-
-msgid "Skills"
-msgstr "スキル"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "スキルはSupersetプラグインに同梱され、使用するすべてのエージェントで自動的に最新の状態に保たれます。クリックしてプレビューできます。"
 
 msgid "Skip"
 msgstr "スキップ"
@@ -12889,9 +12774,6 @@ msgstr "Superset コンポーネント"
 msgid "Superset Components"
 msgstr "Supersetコンポーネント"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Supersetはサインインを完了できませんでした。もう一度お試しください。"
-
 msgid "Superset CPU"
 msgstr "Superset CPU"
 
@@ -12948,9 +12830,6 @@ msgstr "Supersetは、F3からF4への移行のための作業台です。独立
 
 msgid "Superset isn't on Windows yet"
 msgstr "SupersetはまだWindowsに対応していません"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "再起動後にSupersetが再びサインインする場合があります。もう一度サインアウトをお試しください。"
 
 msgid "Superset memory"
 msgstr "Supersetメモリ"
@@ -13295,6 +13174,9 @@ msgstr "ターミナルスクリプト"
 msgid "Terminal session creation failed."
 msgstr "ターミナルセッションの作成に失敗しました。"
 
+msgid "Terminal session did not close"
+msgstr "ターミナルセッションが終了しませんでした"
+
 msgid "Terminal session killed"
 msgstr "ターミナルセッションを終了しました"
 
@@ -13466,6 +13348,9 @@ msgstr "再利用可能なSupersetエージェント設定、プロンプト、�
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "ホストがSupersetリレーに接続されていません。このデバイスの場合は、設定 > リモートアクセスで「リレー経由でこのデバイスへのリモートアクセスを許可」をオンにしてから再試行してください。"
 
+msgid "The host will keep retrying."
+msgstr "ホストは再試行を続けます。"
+
 msgid "The human reads every line before it merges."
 msgstr "人間がマージ前に全行を読む。"
 
@@ -13583,9 +13468,6 @@ msgstr "自動運転するソフトウェア工場"
 
 msgid "The server could not be found"
 msgstr "サーバーが見つかりませんでした"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "サインインリンクが不完全でした。もう一度お試しください。"
 
 msgid "The site's certificate authority is not trusted"
 msgstr "サイトの認証局が信頼されていません"
@@ -14390,9 +14272,6 @@ msgstr "アップデートあり"
 msgid "Update Branch"
 msgstr "ブランチを更新"
 
-msgid "Update check failed. Please try again."
-msgstr "更新の確認に失敗しました。もう一度お試しください。"
-
 msgid "Update couldn't preserve sessions"
 msgstr "更新でセッションを維持できませんでした"
 
@@ -14408,9 +14287,6 @@ msgstr "命名指示を更新"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "{0}の命名指示を更新"
-
-msgid "Update Required"
-msgstr "アップデートが必要です"
 
 msgid "update the branch prefix"
 msgstr "ブランチのプレフィックスを更新する"
@@ -15227,14 +15103,8 @@ msgstr "サブスクリプションはそれに応じて調整されます。"
 msgid "Your Superset download is starting."
 msgstr "Supersetのダウンロードを開始しています。"
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "ターミナルセッションは中断されません。"
-
 msgid "Your tokens"
 msgstr "あなたのトークン"
-
-msgid "Your version: {currentVersion}"
-msgstr "現在のバージョン: {currentVersion}"
 
 msgid "Zap"
 msgstr "稲妻"

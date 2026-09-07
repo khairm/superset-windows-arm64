@@ -107,6 +107,7 @@ FROZEN_GATE_PATHS=(
   scripts/check-feature-markers.mjs
   scripts/check-no-bundled-skills.mjs
   scripts/check-cloud-severance.mjs
+  scripts/check-i18n-catalogs.sh
   scripts/cloud-severance-allowlist.tsv
   scripts/verify-renderer-guards.sh
   scripts/verify-packaged-natives.sh

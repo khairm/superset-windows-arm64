@@ -175,14 +175,6 @@ msgstr "{0, plural, one {# resultado neste host} other {# resultados neste host}
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {# resultado} other {# resultados}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {# agente em execução — ocultar detalhes} other {# agentes em execução — ocultar detalhes}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {# agente em execução — mostrar detalhes} other {# agentes em execução — mostrar detalhes}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {# sessão em execução} other {# sessões em execução}}"
@@ -278,10 +270,6 @@ msgstr "{0} {actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} pendente"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "Ações de {0}"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0} atrás de você"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0} desenvolvedores estão classificados por uso de agentes. Seus últimos 30 dias já estão contabilizados, apenas ocultos. Apenas contagens de tokens e nomes de modelos, sem nomes de repositórios, caminhos de arquivos ou prompts."
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0} desativado"
 
@@ -640,9 +627,6 @@ msgstr "{months}mês"
 
 msgid "{months}mo ago"
 msgstr "há {months}mês"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "{myFailedCount} das suas automações falharam na última execução"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {Especifique pelo menos uma pessoa, ou escolha {choice}.} sender {Especifique pelo menos um remetente, ou escolha {choice}.} other {Especifique pelo menos um item, ou escolha {choice}.}}"
@@ -1052,9 +1036,6 @@ msgstr "Um panorama do que está em andamento, do que vem a seguir e para onde a
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "A maioria das mudanças em produção é mesclada sem ninguém ler o diff."
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "É necessária uma nova versão do Superset para continuar. Atualize para a versão mais recente."
-
 msgid "A process is still running in this tab"
 msgstr "Ainda há um processo rodando nesta aba"
 
@@ -1310,9 +1291,6 @@ msgstr "Resolver comentários com um agente"
 
 msgid "Address Unreachable"
 msgstr "Endereço inacessível"
-
-msgid "Adds skills to your agents"
-msgstr "Adiciona skills aos seus agentes"
 
 msgid "Admin"
 msgstr "Administrador"
@@ -1763,9 +1741,6 @@ msgstr "Chave de API revogada"
 msgid "API keys"
 msgstr "Chaves de API"
 
-msgid "API Keys"
-msgstr "Chaves de API"
-
 msgid "API-equivalent"
 msgstr "equivalente em API"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "Arquivar"
+
+msgid "Archive workspace"
+msgstr "Arquivar área de trabalho"
 
 msgid "Archived"
 msgstr "Arquivadas"
@@ -2030,17 +2008,11 @@ msgstr "Título da automação"
 msgid "Automations"
 msgstr "Automações"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "Automações ({myFailedCount} falhando)"
-
 msgid "Automations & event triggers"
 msgstr "Automações e gatilhos de evento"
 
 msgid "Automations docs"
 msgstr "Documentação de automações"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "Automações, {myFailedCount} falhando"
 
 msgid "Autonomous"
 msgstr "Autônomo"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "Ao entrar, você concorda com nossos\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "Ao entrar, você concorda com nossos <0>Termos de Serviço</0> e <1>Política de Privacidade</1>"
-
 msgid "by spend"
 msgstr "por gasto"
 
@@ -2633,23 +2602,8 @@ msgstr "Sessão de chat não encontrada"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "Superfícies de chat: mensagens, raciocínio, sugestões"
 
-msgid "Chat v3"
-msgstr "Chat v3"
-
 msgid "Check again"
 msgstr "Verificar novamente"
-
-msgid "Check for Update"
-msgstr "Verificar atualização"
-
-msgid "Check for updates"
-msgstr "Verificar atualizações"
-
-msgid "Check for Updates"
-msgstr "Verificar atualizações"
-
-msgid "Check for Updates..."
-msgstr "Verificar atualizações..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "Acompanhe os agentes em execução e leia o que eles alteraram direto do seu celular."
@@ -3466,12 +3420,6 @@ msgstr "Continuar com outro agente"
 msgid "Continue with another agent…"
 msgstr "Continuar com outro agente…"
 
-msgid "Continue with GitHub"
-msgstr "Continuar com o GitHub"
-
-msgid "Continue with Google"
-msgstr "Continuar com o Google"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "Controle como sua máquina local pode ser acessada de fora"
 
@@ -3802,9 +3750,6 @@ msgstr "Não foi possível fazer a captura de tela"
 msgid "Could not update plugin"
 msgstr "Não foi possível atualizar o plugin"
 
-msgid "Could not update skill"
-msgstr "Não foi possível atualizar a skill"
-
 msgid "Could not update the branch"
 msgstr "Não foi possível atualizar a branch"
 
@@ -3883,9 +3828,6 @@ msgstr "Não foi possível ler o contexto deste terminal."
 
 msgid "Couldn't read usage history from this host."
 msgstr "Não foi possível ler o histórico de uso deste host."
-
-msgid "Couldn't remove the local sign-in"
-msgstr "Não foi possível remover o login local"
 
 msgid "Couldn't restart terminals"
 msgstr "Não foi possível reiniciar os terminais"
@@ -4606,9 +4548,6 @@ msgstr "Diretório"
 msgid "Disable"
 msgstr "Desativar"
 
-msgid "Disable skill"
-msgstr "Desativar skill"
-
 msgid "Disabled"
 msgstr "Desativado"
 
@@ -4798,8 +4737,8 @@ msgstr "Baixar para macOS"
 msgid "Download image"
 msgstr "Baixar imagem"
 
-msgid "Download Manually"
-msgstr "Baixar manualmente"
+msgid "Download Latest Release"
+msgstr "Baixar a versão mais recente"
 
 msgid "Download starter"
 msgstr "Baixar modelo inicial"
@@ -4819,9 +4758,6 @@ msgstr "Baixar o arquivo do tema"
 
 msgid "downloaded"
 msgstr "baixada"
-
-msgid "Downloading..."
-msgstr "Baixando..."
 
 msgid "Downloads"
 msgstr "Downloads"
@@ -5037,9 +4973,6 @@ msgstr "Ativar merge automático"
 
 msgid "Enable relay access…"
 msgstr "Habilitar acesso ao relay…"
-
-msgid "Enable skill"
-msgstr "Ativar skill"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "Ativado — os servidores são escritos nas suas configurações de agente."
@@ -5335,18 +5268,11 @@ msgstr "Falha ao trocar a branch base"
 msgid "Failed to change role"
 msgstr "Falha ao alterar o cargo"
 
-msgid "Failed to check for updates: {message}"
-msgstr "Falha ao verificar atualizações: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "Falha ao verificar atualizações. Tente novamente mais tarde."
 
 msgid "Failed to clear"
 msgstr "Falha ao apagar"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "Falha ao limpar o status do agente: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "Falha ao limpar o histórico do terminal"
@@ -5374,10 +5300,6 @@ msgstr "Falha ao conectar ao Slack. Tente novamente."
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "Falha ao copiar o nome da branch: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "Falha ao copiar o markdown: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "Falha ao mover as áreas de trabalho: {0}"
 msgid "Failed to open {name}"
 msgstr "Falha ao abrir {name}"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "Falha ao abrir o arquivo: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "Falha ao abrir no {app}: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "Falha ao abrir uma nova janela: {message}"
 
 msgid "Failed to open project"
 msgstr "Falha ao abrir o projeto"
+
+msgid "Failed to open releases page: {message}"
+msgstr "Falha ao abrir a página de versões: {message}"
 
 msgid "Failed to open task"
 msgstr "Falha ao abrir a tarefa"
@@ -5579,6 +5500,9 @@ msgstr "Falha ao fazer push da branch"
 
 msgid "Failed to record page version"
 msgstr "Falha ao registrar a versão da página"
+
+msgid "Failed to refresh changes"
+msgstr "Falha ao atualizar as alterações"
 
 msgid "Failed to remove"
 msgstr "Falha ao remover"
@@ -5644,10 +5568,6 @@ msgstr "Falha ao repetir a automação"
 
 msgid "Failed to reveal in Finder"
 msgstr "Falha ao mostrar no Finder"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Falha ao mostrar no Finder: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Falha ao mostrar no Finder: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "De"
 
 msgid "from {price}/user/mo"
 msgstr "a partir de {price}/usuário/mês"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "Front matter oculto — mude para Markdown para editá-lo"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "Front matter oculto — mude para a visualização Markdown para editá-lo"
@@ -6823,12 +6740,6 @@ msgstr "Inspecionando {0}"
 msgid "Install"
 msgstr "Instalar"
 
-msgid "Install & restart"
-msgstr "Instalar e reiniciar"
-
-msgid "Install & Restart"
-msgstr "Instalar e reiniciar"
-
 msgid "Install failed"
 msgstr "Falha na instalação"
 
@@ -6853,9 +6764,6 @@ msgstr "Instalados"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "instalado em {0}"
-
-msgid "Installing..."
-msgstr "Instalando..."
 
 msgid "Instructions"
 msgstr "Instruções"
@@ -7090,6 +6998,9 @@ msgstr "Só minhas"
 
 msgid "just now"
 msgstr "agora mesmo"
+
+msgid "Kanban"
+msgstr "Kanban"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "Vincular issue"
 msgid "Link pull request"
 msgstr "Vincular pull request"
 
-msgid "Link task"
-msgstr "Vincular tarefa"
-
 msgid "Linked {slug} to workspace"
 msgstr "{slug} vinculada à área de trabalho"
 
@@ -7707,9 +7615,6 @@ msgstr "Gerencie a identidade visual e os membros da sua organização."
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "Gerencie sua assinatura e o faturamento no app de desktop."
 
-msgid "Managed"
-msgstr "Gerenciada"
-
 msgid "Managed by your organization admin."
 msgstr "Gerenciado pelo administrador da sua organização."
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "Superfície de escrita em markdown com prévia"
-
-msgid "Markdown copied"
-msgstr "Markdown copiado"
 
 msgid "Markdown style"
 msgstr "Estilo de markdown"
@@ -8950,6 +8852,10 @@ msgstr "O Notion não está configurado neste ambiente."
 msgid "now"
 msgstr "agora"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "agora"
+
 msgid "Now"
 msgstr "Agora"
 
@@ -9169,9 +9075,6 @@ msgstr "Abrir alterações"
 
 msgid "Open Changes"
 msgstr "Abrir alterações"
-
-msgid "Open Chat v3"
-msgstr "Abrir o Chat v3"
 
 msgid "Open Command Palette"
 msgstr "Abrir a paleta de comandos"
@@ -10131,8 +10034,8 @@ msgstr "Prévia"
 msgid "Preview {filename}"
 msgstr "Pré-visualizar {filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "Prévia de aviso: bloqueante (atualização obrigatória)"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "Prévia de aviso: bloqueante (rebaixado para alerta)"
 
 msgid "Preview notice: info"
 msgstr "Prévia de aviso: informação"
@@ -10970,9 +10873,6 @@ msgstr "obrigatório"
 msgid "Required"
 msgstr "Obrigatório"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "Versão necessária: {minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "Reservado pelo sistema"
 
@@ -11136,9 +11036,6 @@ msgstr "Restaurar esta versão?"
 msgid "Restored"
 msgstr "Restaurado"
 
-msgid "Restoring your session"
-msgstr "Restaurando sua sessão"
-
 msgid "Restoring..."
 msgstr "Restaurando..."
 
@@ -11193,9 +11090,6 @@ msgstr "Retorna"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "Comandos reutilizáveis que abrem em terminais. Os comandos de setup, execução e teardown do projeto são configurados como scripts de ciclo de vida."
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "Instruções reutilizáveis que seus agentes adotam automaticamente"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "Execuções de terminal reutilizáveis. Clique em um script para editar ou arraste para reordenar. Os comandos de setup, execução e teardown do projeto são scripts de ciclo de vida."
@@ -11419,6 +11313,9 @@ msgstr "Executa um comando local na sua máquina"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "Houve falhas no início da semana, mas nada está falhando agora"
+
+msgid "Runs in {masterLabel}"
+msgstr "Roda em {masterLabel}"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "As execuções chegam em uma área de trabalho. Revise o diff e mescle o que estiver bom."
@@ -12319,9 +12216,6 @@ msgstr "Login expirado"
 msgid "Sign-in expired — run"
 msgstr "Login expirado — execute"
 
-msgid "Sign-in failed"
-msgstr "Falha no login"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "Conectado como <0>{userName}</0>"
 
@@ -12387,15 +12281,6 @@ msgstr "Tamanho"
 
 msgid "Skeleton"
 msgstr "Skeleton"
-
-msgid "Skill"
-msgstr "Skill"
-
-msgid "Skills"
-msgstr "Skills"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "As skills vêm com o plugin do Superset e são mantidas atualizadas automaticamente em todos os agentes que você usa. Clique em uma para pré-visualizar."
 
 msgid "Skip"
 msgstr "Pular"
@@ -12889,9 +12774,6 @@ msgstr "Componentes do Superset"
 msgid "Superset Components"
 msgstr "Componentes do Superset"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "O Superset não conseguiu concluir o login. Tente novamente."
-
 msgid "Superset CPU"
 msgstr "CPU do Superset"
 
@@ -12948,9 +12830,6 @@ msgstr "O Superset é a bancada para a transição de F3 para F4: agentes em par
 
 msgid "Superset isn't on Windows yet"
 msgstr "Por enquanto o Superset é só para Mac"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "O Superset pode reconectar sua conta depois de reiniciar. Tente sair novamente."
 
 msgid "Superset memory"
 msgstr "Memória do Superset"
@@ -13295,6 +13174,9 @@ msgstr "Scripts de terminal"
 msgid "Terminal session creation failed."
 msgstr "Falha ao criar a sessão de terminal."
 
+msgid "Terminal session did not close"
+msgstr "A sessão de terminal não foi encerrada"
+
 msgid "Terminal session killed"
 msgstr "Sessão de terminal encerrada"
 
@@ -13466,6 +13348,9 @@ msgstr "O futuro lar de configurações de agentes, prompts e guias de configura
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "O host não está conectado ao relay do Superset. Se for este dispositivo, ative \"Permitir acesso remoto a este dispositivo via relay\" em Configurações > Acesso remoto e tente novamente."
 
+msgid "The host will keep retrying."
+msgstr "O host vai continuar tentando."
+
 msgid "The human reads every line before it merges."
 msgstr "A pessoa lê cada linha antes do merge."
 
@@ -13583,9 +13468,6 @@ msgstr "A fábrica de software autônoma"
 
 msgid "The server could not be found"
 msgstr "Não foi possível encontrar o servidor"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "O link de login estava incompleto. Tente novamente."
 
 msgid "The site's certificate authority is not trusted"
 msgstr "A autoridade certificadora do site não é confiável"
@@ -14390,9 +14272,6 @@ msgstr "Atualização disponível"
 msgid "Update Branch"
 msgstr "Atualizar branch"
 
-msgid "Update check failed. Please try again."
-msgstr "Falha ao verificar atualizações. Tente novamente."
-
 msgid "Update couldn't preserve sessions"
 msgstr "A atualização não conseguiu preservar as sessões"
 
@@ -14408,9 +14287,6 @@ msgstr "Atualizar as instruções de nomenclatura"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "Atualizar as instruções de nomenclatura de {0}"
-
-msgid "Update Required"
-msgstr "Atualização necessária"
 
 msgid "update the branch prefix"
 msgstr "atualizar o prefixo da branch"
@@ -15227,14 +15103,8 @@ msgstr "Sua assinatura será ajustada conforme isso."
 msgid "Your Superset download is starting."
 msgstr "O download do Superset está começando."
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "Suas sessões de terminal não serão interrompidas."
-
 msgid "Your tokens"
 msgstr "Seus tokens"
-
-msgid "Your version: {currentVersion}"
-msgstr "Sua versão: {currentVersion}"
 
 msgid "Zap"
 msgstr "Raio"

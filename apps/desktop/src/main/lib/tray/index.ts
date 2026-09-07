@@ -274,9 +274,7 @@ async function updateTrayMenu(): Promise<void> {
 		{
 			// (CLOUD-SEVERANCE-P1) Was "Check for Updates" → the now-permanent
 			// no-op checkForUpdatesInteractive(). Opens the FORK's releases page.
-			// Left untranslated on purpose: fork-only string, no upstream catalog
-			// entry to translate it with.
-			label: "Download Latest Release",
+			label: i18n._(msg({ message: "Download Latest Release" })),
 			click: () => {
 				void shell.openExternal(RELEASES_URL);
 			},

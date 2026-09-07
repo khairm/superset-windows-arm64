@@ -175,14 +175,6 @@ msgstr "{0, plural, one {# resultaat op deze host} other {# resultaten op deze h
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {# resultaat} other {# resultaten}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {# actieve agent — details verbergen} other {# actieve agents — details verbergen}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {# actieve agent — details tonen} other {# actieve agents — details tonen}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {# sessie actief} other {# sessies actief}}"
@@ -278,10 +270,6 @@ msgstr "{0} {actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} in behandeling"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "Acties voor {0}"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0} achter je"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0} developers zijn gerangschikt op agentgebruik. Je laatste 30 dagen zijn al meegeteld, alleen verborgen. Alleen tokenaantallen en modelnamen, geen repo-namen, bestandspaden of prompts."
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0} uitgeschakeld"
 
@@ -640,9 +627,6 @@ msgstr "{months}mnd"
 
 msgid "{months}mo ago"
 msgstr "{months}mnd geleden"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "Bij {myFailedCount} van je automatiseringen is de laatste run mislukt"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {Geef minstens één persoon op, of kies {choice}.} sender {Geef minstens één afzender op, of kies {choice}.} other {Geef minstens één item op, of kies {choice}.}}"
@@ -1052,9 +1036,6 @@ msgstr "Een blik op wat er loopt, wat er hierna komt en waar {company} naartoe g
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "Een meerderheid van de productiewijzigingen merget zonder dat een mens de diff leest."
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "Er is een nieuwe versie van Superset nodig om verder te gaan. Werk bij naar de nieuwste versie."
-
 msgid "A process is still running in this tab"
 msgstr "Er draait nog een proces in dit tabblad"
 
@@ -1310,9 +1291,6 @@ msgstr "Opmerkingen afhandelen met agent"
 
 msgid "Address Unreachable"
 msgstr "Adres onbereikbaar"
-
-msgid "Adds skills to your agents"
-msgstr "Voegt skills toe aan je agents"
 
 msgid "Admin"
 msgstr "Beheerder"
@@ -1763,9 +1741,6 @@ msgstr "API-sleutel ingetrokken"
 msgid "API keys"
 msgstr "API-sleutels"
 
-msgid "API Keys"
-msgstr "API-sleutels"
-
 msgid "API-equivalent"
 msgstr "API-equivalent"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "Archiveren"
+
+msgid "Archive workspace"
+msgstr "Werkruimte archiveren"
 
 msgid "Archived"
 msgstr "Gearchiveerd"
@@ -2030,17 +2008,11 @@ msgstr "Titel van automatisering"
 msgid "Automations"
 msgstr "Automatiseringen"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "Automatiseringen ({myFailedCount} mislukt)"
-
 msgid "Automations & event triggers"
 msgstr "Automatiseringen en event-triggers"
 
 msgid "Automations docs"
 msgstr "Documentatie over automatiseringen"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "Automatiseringen, {myFailedCount} mislukt"
 
 msgid "Autonomous"
 msgstr "Autonoom"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "Door in te loggen ga je akkoord met onze\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "Door in te loggen ga je akkoord met onze <0>servicevoorwaarden</0> en het <1>privacybeleid</1>"
-
 msgid "by spend"
 msgstr "op uitgaven"
 
@@ -2633,23 +2602,8 @@ msgstr "Chatsessie niet gevonden"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "Chatoppervlakken: berichten, redeneren, suggesties"
 
-msgid "Chat v3"
-msgstr "Chat v3"
-
 msgid "Check again"
 msgstr "Opnieuw controleren"
-
-msgid "Check for Update"
-msgstr "Controleren op update"
-
-msgid "Check for updates"
-msgstr "Controleren op updates"
-
-msgid "Check for Updates"
-msgstr "Controleren op updates"
-
-msgid "Check for Updates..."
-msgstr "Controleren op updates..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "Bekijk lopende agents en lees vanaf je telefoon wat ze hebben gewijzigd."
@@ -3466,12 +3420,6 @@ msgstr "Doorgaan met een andere agent"
 msgid "Continue with another agent…"
 msgstr "Doorgaan met een andere agent…"
 
-msgid "Continue with GitHub"
-msgstr "Doorgaan met GitHub"
-
-msgid "Continue with Google"
-msgstr "Doorgaan met Google"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "Bepaal hoe je lokale machine van buitenaf bereikbaar is"
 
@@ -3802,9 +3750,6 @@ msgstr "Kan geen screenshot maken"
 msgid "Could not update plugin"
 msgstr "Kan plugin niet bijwerken"
 
-msgid "Could not update skill"
-msgstr "Kan skill niet bijwerken"
-
 msgid "Could not update the branch"
 msgstr "Kan de branch niet bijwerken"
 
@@ -3883,9 +3828,6 @@ msgstr "De context van deze terminal kon niet worden gelezen."
 
 msgid "Couldn't read usage history from this host."
 msgstr "Kan de gebruiksgeschiedenis van deze host niet lezen."
-
-msgid "Couldn't remove the local sign-in"
-msgstr "Kan de lokale login niet verwijderen"
 
 msgid "Couldn't restart terminals"
 msgstr "Kan terminals niet herstarten"
@@ -4606,9 +4548,6 @@ msgstr "Map"
 msgid "Disable"
 msgstr "Uitschakelen"
 
-msgid "Disable skill"
-msgstr "Skill uitschakelen"
-
 msgid "Disabled"
 msgstr "Uitgeschakeld"
 
@@ -4798,8 +4737,8 @@ msgstr "Download voor macOS"
 msgid "Download image"
 msgstr "Afbeelding downloaden"
 
-msgid "Download Manually"
-msgstr "Handmatig downloaden"
+msgid "Download Latest Release"
+msgstr "Nieuwste versie downloaden"
 
 msgid "Download starter"
 msgstr "Startbestand downloaden"
@@ -4819,9 +4758,6 @@ msgstr "Themabestand downloaden"
 
 msgid "downloaded"
 msgstr "gedownload"
-
-msgid "Downloading..."
-msgstr "Downloaden..."
 
 msgid "Downloads"
 msgstr "Downloads"
@@ -5037,9 +4973,6 @@ msgstr "Auto-merge inschakelen"
 
 msgid "Enable relay access…"
 msgstr "Relaytoegang inschakelen…"
-
-msgid "Enable skill"
-msgstr "Skill inschakelen"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "Ingeschakeld — servers worden in je agentconfiguraties geschreven."
@@ -5335,18 +5268,11 @@ msgstr "Wijzigen van basisbranch mislukt"
 msgid "Failed to change role"
 msgstr "Wijzigen van rol mislukt"
 
-msgid "Failed to check for updates: {message}"
-msgstr "Controleren op updates mislukt: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "Controleren op updates mislukt. Probeer het later opnieuw."
 
 msgid "Failed to clear"
 msgstr "Wissen mislukt"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "Wissen van agentstatus mislukt: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "Wissen van terminalgeschiedenis mislukt"
@@ -5374,10 +5300,6 @@ msgstr "Verbinden met Slack mislukt. Probeer het opnieuw."
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "Kopiëren van branchnaam mislukt: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "Kopiëren van markdown mislukt: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "Verplaatsen van werkruimtes mislukt: {0}"
 msgid "Failed to open {name}"
 msgstr "Openen van {name} mislukt"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "Openen van bestand mislukt: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "Openen in {app} mislukt: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "Openen van nieuw venster mislukt: {message}"
 
 msgid "Failed to open project"
 msgstr "Openen van project mislukt"
+
+msgid "Failed to open releases page: {message}"
+msgstr "Openen van versiepagina mislukt: {message}"
 
 msgid "Failed to open task"
 msgstr "Openen van taak mislukt"
@@ -5579,6 +5500,9 @@ msgstr "Pushen van branch mislukt"
 
 msgid "Failed to record page version"
 msgstr "Vastleggen van paginaversie mislukt"
+
+msgid "Failed to refresh changes"
+msgstr "Vernieuwen van wijzigingen mislukt"
 
 msgid "Failed to remove"
 msgstr "Verwijderen mislukt"
@@ -5644,10 +5568,6 @@ msgstr "Opnieuw uitvoeren van automatisering mislukt"
 
 msgid "Failed to reveal in Finder"
 msgstr "Tonen in Finder mislukt"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Tonen in Finder mislukt: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Tonen in Finder mislukt: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "Van"
 
 msgid "from {price}/user/mo"
 msgstr "vanaf {price}/gebruiker/mnd"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "Front matter verborgen — schakel over naar Markdown om die te bewerken"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "Front matter verborgen — schakel over naar de Markdown-weergave om die te bewerken"
@@ -6823,12 +6740,6 @@ msgstr "{0} inspecteren"
 msgid "Install"
 msgstr "Installeren"
 
-msgid "Install & restart"
-msgstr "Installeren en herstarten"
-
-msgid "Install & Restart"
-msgstr "Installeren en herstarten"
-
 msgid "Install failed"
 msgstr "Installeren mislukt"
 
@@ -6853,9 +6764,6 @@ msgstr "Geïnstalleerd"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "geïnstalleerd {0}"
-
-msgid "Installing..."
-msgstr "Installeren..."
 
 msgid "Instructions"
 msgstr "Instructies"
@@ -7090,6 +6998,9 @@ msgstr "Alleen ik"
 
 msgid "just now"
 msgstr "zojuist"
+
+msgid "Kanban"
+msgstr "Kanban"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "Issue koppelen"
 msgid "Link pull request"
 msgstr "Pull request koppelen"
 
-msgid "Link task"
-msgstr "Taak koppelen"
-
 msgid "Linked {slug} to workspace"
 msgstr "{slug} gekoppeld aan werkruimte"
 
@@ -7707,9 +7615,6 @@ msgstr "Beheer de branding en leden van je organisatie."
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "Beheer je abonnement en facturering in de desktop-app."
 
-msgid "Managed"
-msgstr "Beheerd"
-
 msgid "Managed by your organization admin."
 msgstr "Beheerd door de beheerder van je organisatie."
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "Markdown-schrijfoppervlak met preview"
-
-msgid "Markdown copied"
-msgstr "Markdown gekopieerd"
 
 msgid "Markdown style"
 msgstr "Markdown-stijl"
@@ -8950,6 +8852,10 @@ msgstr "Notion is niet geconfigureerd voor deze omgeving."
 msgid "now"
 msgstr "nu"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "nu"
+
 msgid "Now"
 msgstr "Nu"
 
@@ -9169,9 +9075,6 @@ msgstr "Wijzigingen openen"
 
 msgid "Open Changes"
 msgstr "Wijzigingen openen"
-
-msgid "Open Chat v3"
-msgstr "Chat v3 openen"
 
 msgid "Open Command Palette"
 msgstr "Opdrachtenpalet openen"
@@ -10131,8 +10034,8 @@ msgstr "Preview"
 msgid "Preview {filename}"
 msgstr "Voorbeeld van {filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "Meldingsvoorbeeld: blokkerend (update vereist)"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "Meldingsvoorbeeld: blokkerend (verlaagd naar waarschuwing)"
 
 msgid "Preview notice: info"
 msgstr "Meldingsvoorbeeld: info"
@@ -10970,9 +10873,6 @@ msgstr "verplicht"
 msgid "Required"
 msgstr "Verplicht"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "Vereiste versie: {minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "Gereserveerd door het OS"
 
@@ -11136,9 +11036,6 @@ msgstr "Deze versie herstellen?"
 msgid "Restored"
 msgstr "Hersteld"
 
-msgid "Restoring your session"
-msgstr "Je sessie wordt hersteld"
-
 msgid "Restoring..."
 msgstr "Herstellen..."
 
@@ -11193,9 +11090,6 @@ msgstr "Geeft terug"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "Herbruikbare commando's die in terminals starten. Setup-, run- en teardown-commando's van projecten configureer je als lifecycle-scripts."
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "Herbruikbare instructies die je agents automatisch oppikken"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "Herbruikbare terminalstarts. Klik op een script om het te bewerken of sleep om te herordenen. Setup-, run- en teardown-commando's van projecten zijn lifecycle-scripts."
@@ -11419,6 +11313,9 @@ msgstr "Voert een lokaal commando uit op je machine"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "Eerder deze week zijn runs mislukt, maar er mislukt nu niets"
+
+msgid "Runs in {masterLabel}"
+msgstr "Draait in {masterLabel}"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "Runs komen in een werkruimte terecht. Bekijk de diff, merge wat goed is."
@@ -12319,9 +12216,6 @@ msgstr "Login verlopen"
 msgid "Sign-in expired — run"
 msgstr "Login verlopen — voer"
 
-msgid "Sign-in failed"
-msgstr "Inloggen mislukt"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "Ingelogd als <0>{userName}</0>"
 
@@ -12387,15 +12281,6 @@ msgstr "Grootte"
 
 msgid "Skeleton"
 msgstr "Skeleton"
-
-msgid "Skill"
-msgstr "Skill"
-
-msgid "Skills"
-msgstr "Skills"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "Skills worden met de Superset-plugin meegeleverd en blijven automatisch up-to-date in elke agent die je gebruikt. Klik op een skill voor een voorbeeld."
 
 msgid "Skip"
 msgstr "Overslaan"
@@ -12889,9 +12774,6 @@ msgstr "Superset-componenten"
 msgid "Superset Components"
 msgstr "Superset-componenten"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset kon het inloggen niet voltooien. Probeer het opnieuw."
-
 msgid "Superset CPU"
 msgstr "CPU van Superset"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset is de werkbank voor de overgang van F3 naar F4: parallelle agen
 
 msgid "Superset isn't on Windows yet"
 msgstr "Superset is voorlopig alleen voor Mac"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "Superset logt je na een herstart mogelijk weer in. Probeer opnieuw uit te loggen."
 
 msgid "Superset memory"
 msgstr "Geheugen van Superset"
@@ -13295,6 +13174,9 @@ msgstr "Terminalscripts"
 msgid "Terminal session creation failed."
 msgstr "Aanmaken van terminalsessie mislukt."
 
+msgid "Terminal session did not close"
+msgstr "Terminalsessie is niet gesloten"
+
 msgid "Terminal session killed"
 msgstr "Terminalsessie beëindigd"
 
@@ -13466,6 +13348,9 @@ msgstr "De toekomstige plek voor herbruikbare Superset-agentconfigs, prompts en 
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "De host is niet verbonden met de Superset-relay. Als het dit apparaat is, zet dan \"Externe toegang via de relay toegang geven tot dit apparaat\" aan bij Instellingen > Externe toegang en probeer het opnieuw."
 
+msgid "The host will keep retrying."
+msgstr "De host blijft het proberen."
+
 msgid "The human reads every line before it merges."
 msgstr "De mens leest elke regel voordat het merget."
 
@@ -13583,9 +13468,6 @@ msgstr "De zelfrijdende softwarefabriek"
 
 msgid "The server could not be found"
 msgstr "De server is niet gevonden"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "De inloglink was onvolledig. Probeer het opnieuw."
 
 msgid "The site's certificate authority is not trusted"
 msgstr "De certificaatautoriteit van de site wordt niet vertrouwd"
@@ -14390,9 +14272,6 @@ msgstr "Update beschikbaar"
 msgid "Update Branch"
 msgstr "Branch bijwerken"
 
-msgid "Update check failed. Please try again."
-msgstr "Controleren op updates mislukt. Probeer het opnieuw."
-
 msgid "Update couldn't preserve sessions"
 msgstr "Update kon sessies niet behouden"
 
@@ -14408,9 +14287,6 @@ msgstr "Naamgevingsinstructies bijwerken"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "Naamgevingsinstructies bijwerken voor {0}"
-
-msgid "Update Required"
-msgstr "Update vereist"
 
 msgid "update the branch prefix"
 msgstr "de branchprefix bijwerken"
@@ -15227,14 +15103,8 @@ msgstr "Je abonnement wordt hierop aangepast."
 msgid "Your Superset download is starting."
 msgstr "Je Superset-download start."
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "Je terminalsessies worden niet onderbroken."
-
 msgid "Your tokens"
 msgstr "Je tokens"
-
-msgid "Your version: {currentVersion}"
-msgstr "Jouw versie: {currentVersion}"
 
 msgid "Zap"
 msgstr "Bliksem"

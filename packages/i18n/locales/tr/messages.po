@@ -175,14 +175,6 @@ msgstr "{0, plural, one {Bu host'ta # sonuç} other {Bu host'ta # sonuç}}"
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {# sonuç} other {# sonuç}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {# çalışan ajan — ayrıntıları gizle} other {# çalışan ajan — ayrıntıları gizle}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {# çalışan ajan — ayrıntıları göster} other {# çalışan ajan — ayrıntıları göster}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {# oturum çalışıyor} other {# oturum çalışıyor}}"
@@ -278,10 +270,6 @@ msgstr "{0} {actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} bekliyor"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "{0} eylemleri"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0} arkanızda"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0} geliştirici ajan kullanımına göre sıralanıyor. Son 30 gününüz zaten sayılıyor, yalnızca gizli. Yalnızca token sayıları ve model adları; repo adları, dosya yolları veya prompt'lar yok."
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0} devre dışı bırakıldı"
 
@@ -640,9 +627,6 @@ msgstr "{months}ay"
 
 msgid "{months}mo ago"
 msgstr "{months}ay önce"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "Otomasyonlarınızdan {myFailedCount} tanesi son çalıştırmasında başarısız oldu"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {En az bir kişi belirtin veya {choice} seçeneğini seçin.} sender {En az bir gönderen belirtin veya {choice} seçeneğini seçin.} other {En az bir öğe belirtin veya {choice} seçeneğini seçin.}}"
@@ -1052,9 +1036,6 @@ msgstr "Devam eden işlere, sırada olanlara ve {company} şirketinin gittiği y
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "Üretim değişikliklerinin çoğu, hiçbir insan farkı okumadan birleşir."
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "Devam etmek için Superset'in yeni bir sürümü gerekiyor. Lütfen en son sürüme güncelleyin."
-
 msgid "A process is still running in this tab"
 msgstr "Bu sekmede hâlâ bir süreç çalışıyor"
 
@@ -1310,9 +1291,6 @@ msgstr "Yorumları ajanla ele al"
 
 msgid "Address Unreachable"
 msgstr "Adrese erişilemiyor"
-
-msgid "Adds skills to your agents"
-msgstr "Ajanlarınıza beceri ekler"
 
 msgid "Admin"
 msgstr "Yönetici"
@@ -1763,9 +1741,6 @@ msgstr "API anahtarı iptal edildi"
 msgid "API keys"
 msgstr "API anahtarları"
 
-msgid "API Keys"
-msgstr "API anahtarları"
-
 msgid "API-equivalent"
 msgstr "API eşdeğeri"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "Arşivle"
+
+msgid "Archive workspace"
+msgstr "Çalışma alanını arşivle"
 
 msgid "Archived"
 msgstr "Arşivlenmiş"
@@ -2030,17 +2008,11 @@ msgstr "Otomasyon başlığı"
 msgid "Automations"
 msgstr "Otomasyonlar"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "Otomasyonlar ({myFailedCount} başarısız)"
-
 msgid "Automations & event triggers"
 msgstr "Otomasyonlar ve olay tetikleyicileri"
 
 msgid "Automations docs"
 msgstr "Otomasyon belgeleri"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "Otomasyonlar, {myFailedCount} başarısız"
 
 msgid "Autonomous"
 msgstr "Otonom"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "Oturum açarak şunları kabul edersiniz:\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "Oturum açarak <0>Hizmet Şartları</0> ve <1>Gizlilik Politikası</1> belgelerimizi kabul etmiş olursunuz"
-
 msgid "by spend"
 msgstr "harcamaya göre"
 
@@ -2633,23 +2602,8 @@ msgstr "Sohbet oturumu bulunamadı"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "Sohbet yüzeyleri: mesajlar, akıl yürütme, öneriler"
 
-msgid "Chat v3"
-msgstr "Chat v3"
-
 msgid "Check again"
 msgstr "Yeniden denetle"
-
-msgid "Check for Update"
-msgstr "Güncelleme denetle"
-
-msgid "Check for updates"
-msgstr "Güncellemeleri denetle"
-
-msgid "Check for Updates"
-msgstr "Güncellemeleri denetle"
-
-msgid "Check for Updates..."
-msgstr "Güncellemeleri denetle..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "Çalışan ajanları telefonunuzdan kontrol edin ve neyi değiştirdiklerini okuyun."
@@ -3466,12 +3420,6 @@ msgstr "Başka bir ajanla devam et"
 msgid "Continue with another agent…"
 msgstr "Başka bir ajanla devam et…"
 
-msgid "Continue with GitHub"
-msgstr "GitHub ile devam et"
-
-msgid "Continue with Google"
-msgstr "Google ile devam et"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "Yerel makinenize dışarıdan nasıl erişileceğini kontrol edin"
 
@@ -3802,9 +3750,6 @@ msgstr "Ekran görüntüsü alınamadı"
 msgid "Could not update plugin"
 msgstr "Eklenti güncellenemedi"
 
-msgid "Could not update skill"
-msgstr "Beceri güncellenemedi"
-
 msgid "Could not update the branch"
 msgstr "Dal güncellenemedi"
 
@@ -3883,9 +3828,6 @@ msgstr "Bu terminalin bağlamı okunamadı."
 
 msgid "Couldn't read usage history from this host."
 msgstr "Bu host'tan kullanım geçmişi okunamadı."
-
-msgid "Couldn't remove the local sign-in"
-msgstr "Yerel oturum kaydı kaldırılamadı"
 
 msgid "Couldn't restart terminals"
 msgstr "Terminaller yeniden başlatılamadı"
@@ -4606,9 +4548,6 @@ msgstr "Dizin"
 msgid "Disable"
 msgstr "Devre dışı bırak"
 
-msgid "Disable skill"
-msgstr "Beceriyi devre dışı bırak"
-
 msgid "Disabled"
 msgstr "Devre dışı"
 
@@ -4798,8 +4737,8 @@ msgstr "macOS için indir"
 msgid "Download image"
 msgstr "Görseli indir"
 
-msgid "Download Manually"
-msgstr "Elle indir"
+msgid "Download Latest Release"
+msgstr "En son sürümü indir"
 
 msgid "Download starter"
 msgstr "Başlangıç dosyasını indir"
@@ -4819,9 +4758,6 @@ msgstr "Tema dosyasını indir"
 
 msgid "downloaded"
 msgstr "indirildi"
-
-msgid "Downloading..."
-msgstr "İndiriliyor..."
 
 msgid "Downloads"
 msgstr "İndirilenler"
@@ -5037,9 +4973,6 @@ msgstr "Otomatik birleştirmeyi etkinleştir"
 
 msgid "Enable relay access…"
 msgstr "Röle erişimini etkinleştir…"
-
-msgid "Enable skill"
-msgstr "Beceriyi etkinleştir"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "Etkin — sunucular ajan yapılandırmalarınıza yazılır."
@@ -5335,18 +5268,11 @@ msgstr "Temel dal değiştirilemedi"
 msgid "Failed to change role"
 msgstr "Rol değiştirilemedi"
 
-msgid "Failed to check for updates: {message}"
-msgstr "Güncellemeler denetlenemedi: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "Güncellemeler denetlenemedi. Lütfen daha sonra yeniden deneyin."
 
 msgid "Failed to clear"
 msgstr "Temizlenemedi"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "Ajan durumu temizlenemedi: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "Terminal geçmişi temizlenemedi"
@@ -5374,10 +5300,6 @@ msgstr "Slack'e bağlanılamadı. Lütfen yeniden deneyin."
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "Dal adı kopyalanamadı: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "Markdown kopyalanamadı: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "Çalışma alanları taşınamadı: {0}"
 msgid "Failed to open {name}"
 msgstr "{name} açılamadı"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "Dosya açılamadı: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "{app} ile açılamadı: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "Yeni pencere açılamadı: {message}"
 
 msgid "Failed to open project"
 msgstr "Proje açılamadı"
+
+msgid "Failed to open releases page: {message}"
+msgstr "Sürümler sayfası açılamadı: {message}"
 
 msgid "Failed to open task"
 msgstr "Görev açılamadı"
@@ -5579,6 +5500,9 @@ msgstr "Dal push edilemedi"
 
 msgid "Failed to record page version"
 msgstr "Sayfa sürümü kaydedilemedi"
+
+msgid "Failed to refresh changes"
+msgstr "Değişiklikler yenilenemedi"
 
 msgid "Failed to remove"
 msgstr "Kaldırılamadı"
@@ -5644,10 +5568,6 @@ msgstr "Otomasyon yeniden denenemedi"
 
 msgid "Failed to reveal in Finder"
 msgstr "Finder'da gösterilemedi"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Finder'da gösterilemedi: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Finder'da gösterilemedi: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "Kaynak"
 
 msgid "from {price}/user/mo"
 msgstr "başlangıç: {price}/kullanıcı/ay"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "Front matter gizli — düzenlemek için Markdown'a geçin"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "Front matter gizli — düzenlemek için Markdown görünümüne geçin"
@@ -6823,12 +6740,6 @@ msgstr "{0} inceleniyor"
 msgid "Install"
 msgstr "Kur"
 
-msgid "Install & restart"
-msgstr "Kur ve yeniden başlat"
-
-msgid "Install & Restart"
-msgstr "Kur ve yeniden başlat"
-
 msgid "Install failed"
 msgstr "Kurulum başarısız"
 
@@ -6853,9 +6764,6 @@ msgstr "Kurulu"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "kuruldu: {0}"
-
-msgid "Installing..."
-msgstr "Kuruluyor..."
 
 msgid "Instructions"
 msgstr "Yönergeler"
@@ -7090,6 +6998,9 @@ msgstr "Yalnızca ben"
 
 msgid "just now"
 msgstr "az önce"
+
+msgid "Kanban"
+msgstr "Kanban"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "Issue bağla"
 msgid "Link pull request"
 msgstr "Pull request bağla"
 
-msgid "Link task"
-msgstr "Görev bağla"
-
 msgid "Linked {slug} to workspace"
 msgstr "{slug} çalışma alanına bağlandı"
 
@@ -7707,9 +7615,6 @@ msgstr "Kuruluşunuzun marka görünümünü ve üyelerini yönetin."
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "Aboneliğinizi ve faturalandırmanızı masaüstü uygulamasından yönetin."
 
-msgid "Managed"
-msgstr "Yönetilen"
-
 msgid "Managed by your organization admin."
 msgstr "Kuruluş yöneticiniz tarafından yönetiliyor."
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "Önizlemeli markdown yazma yüzeyi"
-
-msgid "Markdown copied"
-msgstr "Markdown kopyalandı"
 
 msgid "Markdown style"
 msgstr "Markdown stili"
@@ -8950,6 +8852,10 @@ msgstr "Notion bu ortam için yapılandırılmamış."
 msgid "now"
 msgstr "şimdi"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "şimdi"
+
 msgid "Now"
 msgstr "Şimdi"
 
@@ -9169,9 +9075,6 @@ msgstr "Değişiklikleri aç"
 
 msgid "Open Changes"
 msgstr "Değişiklikleri aç"
-
-msgid "Open Chat v3"
-msgstr "Chat v3'ü aç"
 
 msgid "Open Command Palette"
 msgstr "Komut paletini aç"
@@ -10131,8 +10034,8 @@ msgstr "Önizleme"
 msgid "Preview {filename}"
 msgstr "Önizle: {filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "Bildirim önizlemesi: engelleyici (güncelleme gerekli)"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "Bildirim önizlemesi: engelleyici (uyarıya düşürüldü)"
 
 msgid "Preview notice: info"
 msgstr "Bildirim önizlemesi: bilgi"
@@ -10970,9 +10873,6 @@ msgstr "gerekli"
 msgid "Required"
 msgstr "Gerekli"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "Gerekli sürüm: {minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "İşletim sistemi tarafından ayrılmış"
 
@@ -11136,9 +11036,6 @@ msgstr "Bu sürüm geri yüklensin mi?"
 msgid "Restored"
 msgstr "Geri yüklendi"
 
-msgid "Restoring your session"
-msgstr "Oturumunuz geri yükleniyor"
-
 msgid "Restoring..."
 msgstr "Geri yükleniyor..."
 
@@ -11193,9 +11090,6 @@ msgstr "Döndürür"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "Terminallerde başlatılan yeniden kullanılabilir komutlar. Proje kurulum, çalıştırma ve kapatma komutları yaşam döngüsü betikleri olarak yapılandırılır."
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "Ajanlarınızın otomatik olarak aldığı yeniden kullanılabilir yönergeler"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "Yeniden kullanılabilir terminal başlatmaları. Düzenlemek için bir betiğe tıklayın veya sıralamak için sürükleyin. Proje kurulum, çalıştırma ve kapatma komutları yaşam döngüsü betikleridir."
@@ -11419,6 +11313,9 @@ msgstr "Makinenizde yerel bir komut çalıştırır"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "Bu hafta daha önce çalıştırmalar başarısız oldu, ancak şu anda başarısız olan yok"
+
+msgid "Runs in {masterLabel}"
+msgstr "{masterLabel} içinde çalışır"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "Çalıştırmalar bir çalışma alanına düşer. Farkı inceleyin, iyi olanı birleştirin."
@@ -12319,9 +12216,6 @@ msgstr "Oturum süresi doldu"
 msgid "Sign-in expired — run"
 msgstr "Oturum süresi doldu — bu host'ta bir terminalde"
 
-msgid "Sign-in failed"
-msgstr "Oturum açılamadı"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "<0>{userName}</0> olarak oturum açıldı"
 
@@ -12387,15 +12281,6 @@ msgstr "Boyut"
 
 msgid "Skeleton"
 msgstr "İskelet"
-
-msgid "Skill"
-msgstr "Beceri"
-
-msgid "Skills"
-msgstr "Beceriler"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "Beceriler Superset eklentisiyle gelir ve kullandığınız her ajanda otomatik olarak güncel tutulur. Önizlemek için birine tıklayın."
 
 msgid "Skip"
 msgstr "Atla"
@@ -12889,9 +12774,6 @@ msgstr "Superset bileşenleri"
 msgid "Superset Components"
 msgstr "Superset Bileşenleri"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset oturum açmayı tamamlayamadı. Lütfen yeniden deneyin."
-
 msgid "Superset CPU"
 msgstr "Superset CPU"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset, F3'ten F4'e geçişin tezgâhıdır: yalıtılmış çalışma
 
 msgid "Superset isn't on Windows yet"
 msgstr "Superset şimdilik yalnızca Mac'te"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "Superset yeniden başlattıktan sonra sizi tekrar oturuma alabilir. Lütfen yeniden oturum kapatmayı deneyin."
 
 msgid "Superset memory"
 msgstr "Superset belleği"
@@ -13295,6 +13174,9 @@ msgstr "Terminal betikleri"
 msgid "Terminal session creation failed."
 msgstr "Terminal oturumu oluşturulamadı."
 
+msgid "Terminal session did not close"
+msgstr "Terminal oturumu kapanmadı"
+
 msgid "Terminal session killed"
 msgstr "Terminal oturumu sonlandırıldı"
 
@@ -13466,6 +13348,9 @@ msgstr "Yeniden kullanılabilir Superset ajan yapılandırmaları, istemleri ve 
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "Host, Superset rölesine bağlı değil. Bu cihazsa Ayarlar > Uzaktan erişim bölümünde \"Uzaktan erişimnın bu cihaza röle üzerinden erişmesine izin ver\" seçeneğini açıp yeniden deneyin."
 
+msgid "The host will keep retrying."
+msgstr "Host denemeye devam edecek."
+
 msgid "The human reads every line before it merges."
 msgstr "İnsan, birleştirilmeden önce her satırı okur."
 
@@ -13583,9 +13468,6 @@ msgstr "Kendi kendini süren yazılım fabrikası"
 
 msgid "The server could not be found"
 msgstr "Sunucu bulunamadı"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "Oturum açma bağlantısı eksikti. Lütfen yeniden deneyin."
 
 msgid "The site's certificate authority is not trusted"
 msgstr "Sitenin sertifika yetkilisine güvenilmiyor"
@@ -14390,9 +14272,6 @@ msgstr "Güncelleme mevcut"
 msgid "Update Branch"
 msgstr "Dalı güncelle"
 
-msgid "Update check failed. Please try again."
-msgstr "Güncelleme denetimi başarısız. Lütfen yeniden deneyin."
-
 msgid "Update couldn't preserve sessions"
 msgstr "Güncelleme oturumları koruyamadı"
 
@@ -14408,9 +14287,6 @@ msgstr "Adlandırma yönergelerini güncelle"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "{0} için adlandırma yönergelerini güncelle"
-
-msgid "Update Required"
-msgstr "Güncelleme gerekli"
 
 msgid "update the branch prefix"
 msgstr "dal ön ekini güncelleme"
@@ -15227,14 +15103,8 @@ msgstr "Aboneliğiniz buna göre düzenlenecek."
 msgid "Your Superset download is starting."
 msgstr "Superset indirmeniz başlıyor."
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "Terminal oturumlarınız kesintiye uğramaz."
-
 msgid "Your tokens"
 msgstr "Token'larınız"
-
-msgid "Your version: {currentVersion}"
-msgstr "Sürümünüz: {currentVersion}"
 
 msgid "Zap"
 msgstr "Şimşek"

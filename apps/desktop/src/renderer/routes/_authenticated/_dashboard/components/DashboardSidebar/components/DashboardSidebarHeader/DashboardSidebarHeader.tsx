@@ -354,7 +354,6 @@ export function DashboardSidebarHeader({
 								type="button"
 								onClick={handleKanbanClick}
 								aria-label={t({
-									id: "dashboard.sidebar.header.kanbanRailAriaLabel",
 									message: "Kanban",
 								})}
 								aria-current={isKanbanOpen ? "page" : undefined}
@@ -369,7 +368,7 @@ export function DashboardSidebarHeader({
 							</button>
 						</TooltipTrigger>
 						<TooltipContent side="right">
-							<Trans id="dashboard.sidebar.header.kanbanTooltip">Kanban</Trans>
+							<Trans>Kanban</Trans>
 						</TooltipContent>
 					</Tooltip>
 
@@ -588,7 +587,6 @@ export function DashboardSidebarHeader({
 				type="button"
 				onClick={handleKanbanClick}
 				aria-label={t({
-					id: "dashboard.sidebar.header.kanbanAriaLabel",
 					message: "Kanban",
 				})}
 				aria-current={isKanbanOpen ? "page" : undefined}
@@ -604,7 +602,7 @@ export function DashboardSidebarHeader({
 					strokeWidth={1.5}
 				/>
 				<span className="flex-1 text-left">
-					<Trans id="dashboard.sidebar.header.kanban">Kanban</Trans>
+					<Trans>Kanban</Trans>
 				</span>
 			</button>
 

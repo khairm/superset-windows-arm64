@@ -5,7 +5,7 @@ import { i18n } from "@superset/i18n";
 export function formatResetIn(resetsAt: Date, now: Date = new Date()): string {
 	const diffMs = resetsAt.getTime() - now.getTime();
 	if (diffMs <= 0) {
-		return i18n._(msg({ message: "now" }));
+		return i18n._(msg({ message: "now", context: "countdown" }));
 	}
 
 	const totalMinutes = Math.ceil(diffMs / 60_000);
@@ -54,7 +54,7 @@ export function formatResetCompact(
 	const remainingMs = Math.min(Math.max(resetMs - now, 0), windowMs);
 	const totalSeconds = Math.floor(remainingMs / 1000);
 	if (totalSeconds <= 0) {
-		return i18n._(msg({ id: "settings.usage.resetIn.now", message: "now" }));
+		return i18n._(msg({ message: "now", context: "countdown" }));
 	}
 
 	const days = Math.floor(totalSeconds / 86_400);

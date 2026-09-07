@@ -102,6 +102,31 @@ jobs:
         uses: ./.github/actions/arm64-build
         with:
           gh-token: ${{ github.token }}
+      # (I18N-CATALOG-GATE) THE catalog enforcement point, in the WORKFLOW for
+      # the same reason as the severance gate below: a mid-run (BUILD-REPAIR)
+      # agent can rewrite .github/actions/** and scripts/**, but not this file.
+      # Freezing only the script would have been theatre — a repair could have
+      # deleted its invocation and left the frozen script sitting unused.
+      #
+      # Regenerating the catalogs is the ONLY check that works here. At 1.26.0
+      # the English text is the message id and the production macro emits
+      # id-only, so a call site missing from the catalog renders as a hashed id
+      # (OGXtL8), not as English: no source-only scan can see that.
+      #
+      # Threat model, stated rather than implied: this is drift detection, not
+      # tamper-proofing. It deliberately does NOT pin PATH the way the severance
+      # step does, because it needs the bun the setup step put there. A repair
+      # that shadows `bun` defeats it; a repair that forgets to regenerate
+      # catalogs does not, and that is the failure this exists for.
+      - name: Enforce i18n catalog consistency (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: bash scripts/check-i18n-catalogs.sh
+
       # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
       # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
       # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the
@@ -407,6 +432,31 @@ jobs:
         uses: ./.github/actions/arm64-build
         with:
           gh-token: ${{ github.token }}
+      # (I18N-CATALOG-GATE) THE catalog enforcement point, in the WORKFLOW for
+      # the same reason as the severance gate below: a mid-run (BUILD-REPAIR)
+      # agent can rewrite .github/actions/** and scripts/**, but not this file.
+      # Freezing only the script would have been theatre — a repair could have
+      # deleted its invocation and left the frozen script sitting unused.
+      #
+      # Regenerating the catalogs is the ONLY check that works here. At 1.26.0
+      # the English text is the message id and the production macro emits
+      # id-only, so a call site missing from the catalog renders as a hashed id
+      # (OGXtL8), not as English: no source-only scan can see that.
+      #
+      # Threat model, stated rather than implied: this is drift detection, not
+      # tamper-proofing. It deliberately does NOT pin PATH the way the severance
+      # step does, because it needs the bun the setup step put there. A repair
+      # that shadows `bun` defeats it; a repair that forgets to regenerate
+      # catalogs does not, and that is the failure this exists for.
+      - name: Enforce i18n catalog consistency (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: bash scripts/check-i18n-catalogs.sh
+
       # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
       # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
       # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the
@@ -709,6 +759,31 @@ jobs:
         uses: ./.github/actions/arm64-build
         with:
           gh-token: ${{ github.token }}
+      # (I18N-CATALOG-GATE) THE catalog enforcement point, in the WORKFLOW for
+      # the same reason as the severance gate below: a mid-run (BUILD-REPAIR)
+      # agent can rewrite .github/actions/** and scripts/**, but not this file.
+      # Freezing only the script would have been theatre — a repair could have
+      # deleted its invocation and left the frozen script sitting unused.
+      #
+      # Regenerating the catalogs is the ONLY check that works here. At 1.26.0
+      # the English text is the message id and the production macro emits
+      # id-only, so a call site missing from the catalog renders as a hashed id
+      # (OGXtL8), not as English: no source-only scan can see that.
+      #
+      # Threat model, stated rather than implied: this is drift detection, not
+      # tamper-proofing. It deliberately does NOT pin PATH the way the severance
+      # step does, because it needs the bun the setup step put there. A repair
+      # that shadows `bun` defeats it; a repair that forgets to regenerate
+      # catalogs does not, and that is the failure this exists for.
+      - name: Enforce i18n catalog consistency (frozen — cannot be repaired away)
+        shell: bash
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: bash scripts/check-i18n-catalogs.sh
+
       # (CLOUD-SEVERANCE-P1) THE severance enforcement point. It lives in the
       # WORKFLOW, not in .github/actions/arm64-build, because a workflow file is
       # frozen for the whole run: a mid-run (BUILD-REPAIR) agent can rewrite the

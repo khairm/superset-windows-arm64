@@ -175,14 +175,6 @@ msgstr "{0, plural, one {이 호스트에서 결과 #개} other {이 호스트�
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {결과 #개} other {결과 #개}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {실행 중인 에이전트 #개 — 세부 정보 숨기기} other {실행 중인 에이전트 #개 — 세부 정보 숨기기}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {실행 중인 에이전트 #개 — 세부 정보 표시} other {실행 중인 에이전트 #개 — 세부 정보 표시}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {세션 #개 실행 중} other {세션 #개 실행 중}}"
@@ -278,10 +270,6 @@ msgstr "{0} {actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} 대기 중"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "{0} 작업"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0} 차이로 뒤"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0}명의 개발자가 에이전트 사용량으로 순위에 올라 있습니다. 최근 30일 사용량은 이미 집계되어 있고 숨겨져 있을 뿐입니다. 토큰 수와 모델 이름만 공개되며 저장소 이름, 파일 경로, 프롬프트는 포함되지 않습니다."
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0} 비활성화됨"
 
@@ -640,9 +627,6 @@ msgstr "{months}개월"
 
 msgid "{months}mo ago"
 msgstr "{months}개월 전"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "내 자동화 {myFailedCount}개가 마지막 실행에 실패했습니다"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {사람을 한 명 이상 지정하거나 {choice} 옵션을 선택하세요.} sender {발신자를 한 명 이상 지정하거나 {choice} 옵션을 선택하세요.} other {항목을 하나 이상 지정하거나 {choice} 옵션을 선택하세요.}}"
@@ -1052,9 +1036,6 @@ msgstr "진행 중인 작업, 다음 순서, 그리고 {company}이(가) 향하�
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "프로덕션 변경의 과반이 사람이 차이를 읽지 않은 채 머지됩니다."
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "계속하려면 새 버전의 Superset이 필요합니다. 최신 버전으로 업데이트해 주세요."
-
 msgid "A process is still running in this tab"
 msgstr "이 탭에서 프로세스가 아직 실행 중입니다"
 
@@ -1310,9 +1291,6 @@ msgstr "에이전트로 코멘트 처리"
 
 msgid "Address Unreachable"
 msgstr "주소에 연결할 수 없음"
-
-msgid "Adds skills to your agents"
-msgstr "에이전트에 스킬을 추가합니다"
 
 msgid "Admin"
 msgstr "관리자"
@@ -1763,9 +1741,6 @@ msgstr "API 키가 해지되었습니다"
 msgid "API keys"
 msgstr "API 키"
 
-msgid "API Keys"
-msgstr "API 키"
-
 msgid "API-equivalent"
 msgstr "API 환산"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "보관"
+
+msgid "Archive workspace"
+msgstr "워크스페이스 보관"
 
 msgid "Archived"
 msgstr "보관됨"
@@ -2030,17 +2008,11 @@ msgstr "자동화 제목"
 msgid "Automations"
 msgstr "자동화"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "자동화 ({myFailedCount}개 실패)"
-
 msgid "Automations & event triggers"
 msgstr "자동화 및 이벤트 트리거"
 
 msgid "Automations docs"
 msgstr "자동화 문서"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "자동화, {myFailedCount}개 실패"
 
 msgid "Autonomous"
 msgstr "자율"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "로그인하면 다음에 동의하게 됩니다\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "로그인하면 <0>서비스 약관</0>과 <1>개인정보 처리방침</1>에 동의하는 것으로 간주됩니다"
-
 msgid "by spend"
 msgstr "지출 기준"
 
@@ -2633,23 +2602,8 @@ msgstr "채팅 세션을 찾을 수 없습니다"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "채팅 화면: 메시지, 추론, 제안"
 
-msgid "Chat v3"
-msgstr "Chat v3"
-
 msgid "Check again"
 msgstr "다시 확인"
-
-msgid "Check for Update"
-msgstr "업데이트 확인"
-
-msgid "Check for updates"
-msgstr "업데이트 확인"
-
-msgid "Check for Updates"
-msgstr "업데이트 확인"
-
-msgid "Check for Updates..."
-msgstr "업데이트 확인..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "휴대폰에서 실행 중인 에이전트를 확인하고 무엇을 변경했는지 읽어보세요."
@@ -3466,12 +3420,6 @@ msgstr "다른 에이전트로 계속하기"
 msgid "Continue with another agent…"
 msgstr "다른 에이전트로 계속하기…"
 
-msgid "Continue with GitHub"
-msgstr "GitHub로 계속하기"
-
-msgid "Continue with Google"
-msgstr "Google로 계속하기"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "외부에서 로컬 머신에 접근하는 방식을 제어합니다"
 
@@ -3802,9 +3750,6 @@ msgstr "스크린샷을 찍을 수 없습니다"
 msgid "Could not update plugin"
 msgstr "플러그인을 업데이트할 수 없습니다"
 
-msgid "Could not update skill"
-msgstr "스킬을 업데이트할 수 없습니다"
-
 msgid "Could not update the branch"
 msgstr "브랜치를 업데이트할 수 없습니다"
 
@@ -3883,9 +3828,6 @@ msgstr "이 터미널의 컨텍스트를 읽을 수 없습니다."
 
 msgid "Couldn't read usage history from this host."
 msgstr "이 호스트에서 사용량 기록을 읽지 못했습니다."
-
-msgid "Couldn't remove the local sign-in"
-msgstr "로컬 로그인 정보를 제거하지 못했습니다"
 
 msgid "Couldn't restart terminals"
 msgstr "터미널을 다시 시작하지 못했습니다"
@@ -4606,9 +4548,6 @@ msgstr "디렉터리"
 msgid "Disable"
 msgstr "비활성화"
 
-msgid "Disable skill"
-msgstr "스킬 비활성화"
-
 msgid "Disabled"
 msgstr "비활성화됨"
 
@@ -4798,8 +4737,8 @@ msgstr "macOS용 다운로드"
 msgid "Download image"
 msgstr "이미지 다운로드"
 
-msgid "Download Manually"
-msgstr "수동으로 다운로드"
+msgid "Download Latest Release"
+msgstr "최신 릴리스 다운로드"
 
 msgid "Download starter"
 msgstr "스타터 다운로드"
@@ -4819,9 +4758,6 @@ msgstr "테마 파일 다운로드"
 
 msgid "downloaded"
 msgstr "다운로드됨"
-
-msgid "Downloading..."
-msgstr "다운로드 중..."
 
 msgid "Downloads"
 msgstr "다운로드"
@@ -5037,9 +4973,6 @@ msgstr "자동 머지 활성화"
 
 msgid "Enable relay access…"
 msgstr "릴레이 접근 활성화…"
-
-msgid "Enable skill"
-msgstr "스킬 활성화"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "활성화됨 — 서버가 에이전트 설정에 기록됩니다."
@@ -5335,18 +5268,11 @@ msgstr "기준 브랜치를 변경하지 못했습니다"
 msgid "Failed to change role"
 msgstr "역할을 변경하지 못했습니다"
 
-msgid "Failed to check for updates: {message}"
-msgstr "업데이트를 확인하지 못했습니다: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "업데이트 확인에 실패했습니다. 잠시 후 다시 시도해 주세요."
 
 msgid "Failed to clear"
 msgstr "지우지 못했습니다"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "에이전트 상태를 지우지 못했습니다: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "터미널 기록을 지우지 못했습니다"
@@ -5374,10 +5300,6 @@ msgstr "Slack에 연결하지 못했습니다. 다시 시도해 주세요."
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "브랜치 이름을 복사하지 못했습니다: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "markdown을 복사하지 못했습니다: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "워크스페이스를 옮기지 못했습니다: {0}"
 msgid "Failed to open {name}"
 msgstr "{name}을(를) 열지 못했습니다"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "파일을 열지 못했습니다: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "{app}에서 열지 못했습니다: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "새 창을 열지 못했습니다: {message}"
 
 msgid "Failed to open project"
 msgstr "프로젝트를 열지 못했습니다"
+
+msgid "Failed to open releases page: {message}"
+msgstr "릴리스 페이지를 열지 못했습니다: {message}"
 
 msgid "Failed to open task"
 msgstr "작업을 열지 못했습니다"
@@ -5579,6 +5500,9 @@ msgstr "브랜치를 푸시하지 못했습니다"
 
 msgid "Failed to record page version"
 msgstr "페이지 버전을 기록하지 못했습니다"
+
+msgid "Failed to refresh changes"
+msgstr "변경 사항을 새로 고치지 못했습니다"
 
 msgid "Failed to remove"
 msgstr "제거하지 못했습니다"
@@ -5644,10 +5568,6 @@ msgstr "자동화를 다시 시도하지 못했습니다"
 
 msgid "Failed to reveal in Finder"
 msgstr "Finder에서 표시하지 못했습니다"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Finder에 표시하지 못했습니다: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Finder에서 표시하지 못했습니다: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "기존 위치"
 
 msgid "from {price}/user/mo"
 msgstr "사용자당 월 {price}부터"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "프런트매터 숨김 — 편집하려면 Markdown으로 전환하세요"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "front matter 숨김 — 편집하려면 Markdown 보기로 전환하세요"
@@ -6823,12 +6740,6 @@ msgstr "{0} 검사 중"
 msgid "Install"
 msgstr "설치"
 
-msgid "Install & restart"
-msgstr "설치 후 재시작"
-
-msgid "Install & Restart"
-msgstr "설치 후 재시작"
-
 msgid "Install failed"
 msgstr "설치 실패"
 
@@ -6853,9 +6764,6 @@ msgstr "설치됨"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "{0}에 설치됨"
-
-msgid "Installing..."
-msgstr "설치 중..."
 
 msgid "Instructions"
 msgstr "지침"
@@ -7090,6 +6998,9 @@ msgstr "나만"
 
 msgid "just now"
 msgstr "방금"
+
+msgid "Kanban"
+msgstr "칸반"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "이슈 연결"
 msgid "Link pull request"
 msgstr "풀 리퀘스트 연결"
 
-msgid "Link task"
-msgstr "작업 연결"
-
 msgid "Linked {slug} to workspace"
 msgstr "{slug}을(를) 워크스페이스에 연결했습니다"
 
@@ -7707,9 +7615,6 @@ msgstr "조직의 브랜딩과 멤버를 관리합니다."
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "구독과 결제는 데스크톱 앱에서 관리합니다."
 
-msgid "Managed"
-msgstr "관리됨"
-
 msgid "Managed by your organization admin."
 msgstr "조직 관리자가 관리합니다."
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "미리 보기가 있는 마크다운 작성 표면"
-
-msgid "Markdown copied"
-msgstr "Markdown 복사됨"
 
 msgid "Markdown style"
 msgstr "마크다운 스타일"
@@ -8950,6 +8852,10 @@ msgstr "이 환경에는 Notion이 설정되어 있지 않습니다."
 msgid "now"
 msgstr "방금"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "지금"
+
 msgid "Now"
 msgstr "현재"
 
@@ -9169,9 +9075,6 @@ msgstr "변경 열기"
 
 msgid "Open Changes"
 msgstr "변경 열기"
-
-msgid "Open Chat v3"
-msgstr "Chat v3 열기"
 
 msgid "Open Command Palette"
 msgstr "명령 팔레트 열기"
@@ -10131,8 +10034,8 @@ msgstr "미리 보기"
 msgid "Preview {filename}"
 msgstr "{filename} 미리보기"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "알림 미리보기: 차단(업데이트 필요)"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "알림 미리보기: 차단 (경고로 완화됨)"
 
 msgid "Preview notice: info"
 msgstr "알림 미리보기: 정보"
@@ -10970,9 +10873,6 @@ msgstr "필수"
 msgid "Required"
 msgstr "필수"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "필요한 버전: {minimumVersion} 이상"
-
 msgid "Reserved by OS"
 msgstr "OS에서 예약됨"
 
@@ -11136,9 +11036,6 @@ msgstr "이 버전을 복원할까요?"
 msgid "Restored"
 msgstr "복원됨"
 
-msgid "Restoring your session"
-msgstr "세션을 복원하는 중"
-
 msgid "Restoring..."
 msgstr "복원하는 중..."
 
@@ -11193,9 +11090,6 @@ msgstr "반환값"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "터미널에서 실행되는 재사용 가능한 명령입니다. 프로젝트 설정, 실행, 정리 명령은 라이프사이클 스크립트로 설정합니다."
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "에이전트가 자동으로 가져다 쓰는 재사용 가능한 지침"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "재사용 가능한 터미널 실행입니다. 스크립트를 클릭하면 편집하고, 끌어서 순서를 바꿉니다. 프로젝트 설정, 실행, 정리 명령은 라이프사이클 스크립트입니다."
@@ -11419,6 +11313,9 @@ msgstr "내 컴퓨터에서 로컬 명령을 실행합니다"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "이번 주 초에 실행이 실패했지만 지금은 실패 중인 항목이 없습니다"
+
+msgid "Runs in {masterLabel}"
+msgstr "{masterLabel}에서 실행"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "실행 결과는 워크스페이스에 도착합니다. 차이를 검토하고 괜찮은 것만 머지하세요."
@@ -12319,9 +12216,6 @@ msgstr "로그인 만료됨"
 msgid "Sign-in expired — run"
 msgstr "로그인이 만료되었습니다 — 다음 명령을 실행하세요:"
 
-msgid "Sign-in failed"
-msgstr "로그인 실패"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "<0>{userName}</0>(으)로 로그인됨"
 
@@ -12387,15 +12281,6 @@ msgstr "크기"
 
 msgid "Skeleton"
 msgstr "스켈레톤"
-
-msgid "Skill"
-msgstr "스킬"
-
-msgid "Skills"
-msgstr "스킬"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "스킬은 Superset 플러그인에 포함되어 있으며 사용하는 모든 에이전트에서 자동으로 최신 상태로 유지됩니다. 미리 보려면 클릭하세요."
 
 msgid "Skip"
 msgstr "건너뛰기"
@@ -12889,9 +12774,6 @@ msgstr "Superset 컴포넌트"
 msgid "Superset Components"
 msgstr "Superset 컴포넌트"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset이 로그인을 완료하지 못했습니다. 다시 시도해 주세요."
-
 msgid "Superset CPU"
 msgstr "Superset CPU"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset은 F3에서 F4로 넘어가는 전환기를 위한 작업대입
 
 msgid "Superset isn't on Windows yet"
 msgstr "현재 Superset은 Mac에서만 사용할 수 있습니다"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "재시작 후 Superset이 다시 로그인할 수 있습니다. 로그아웃을 다시 시도해 주세요."
 
 msgid "Superset memory"
 msgstr "Superset 메모리"
@@ -13295,6 +13174,9 @@ msgstr "터미널 스크립트"
 msgid "Terminal session creation failed."
 msgstr "터미널 세션을 만들지 못했습니다."
 
+msgid "Terminal session did not close"
+msgstr "터미널 세션이 닫히지 않았습니다"
+
 msgid "Terminal session killed"
 msgstr "터미널 세션을 종료했습니다"
 
@@ -13466,6 +13348,9 @@ msgstr "재사용 가능한 Superset 에이전트 설정, 프롬프트, 셋업 �
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "호스트가 Superset 릴레이에 연결되어 있지 않습니다. 이 기기라면 설정 > 원격 액세스에서 \"원격 액세스가 릴레이를 통해 이 기기에 접근하도록 허용\"을 켠 뒤 다시 시도하세요."
 
+msgid "The host will keep retrying."
+msgstr "호스트가 계속 재시도합니다."
+
 msgid "The human reads every line before it merges."
 msgstr "사람이 머지 전에 모든 줄을 읽습니다."
 
@@ -13583,9 +13468,6 @@ msgstr "자율 주행 소프트웨어 공장"
 
 msgid "The server could not be found"
 msgstr "서버를 찾을 수 없습니다"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "로그인 링크가 완전하지 않습니다. 다시 시도해 주세요."
 
 msgid "The site's certificate authority is not trusted"
 msgstr "사이트의 인증 기관을 신뢰할 수 없습니다"
@@ -14390,9 +14272,6 @@ msgstr "업데이트 있음"
 msgid "Update Branch"
 msgstr "브랜치 업데이트"
 
-msgid "Update check failed. Please try again."
-msgstr "업데이트 확인에 실패했습니다. 다시 시도해 주세요."
-
 msgid "Update couldn't preserve sessions"
 msgstr "업데이트가 세션을 유지하지 못했습니다"
 
@@ -14408,9 +14287,6 @@ msgstr "이름 지정 지침 업데이트"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "{0}의 이름 지정 지침 업데이트"
-
-msgid "Update Required"
-msgstr "업데이트 필요"
 
 msgid "update the branch prefix"
 msgstr "브랜치 접두사를 업데이트할"
@@ -15227,14 +15103,8 @@ msgstr "구독 요금이 그에 맞게 조정됩니다."
 msgid "Your Superset download is starting."
 msgstr "Superset 다운로드가 시작됩니다."
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "터미널 세션은 중단되지 않습니다."
-
 msgid "Your tokens"
 msgstr "내 토큰"
-
-msgid "Your version: {currentVersion}"
-msgstr "현재 버전: {currentVersion}"
 
 msgid "Zap"
 msgstr "번개"

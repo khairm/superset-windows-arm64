@@ -274,9 +274,10 @@ export function createApplicationMenu() {
 					// Relabelled rather than removed: users look for an update entry
 					// here, and a silent dead menu item is worse than none. This
 					// opens the FORK's releases page, which is where a newer build
-					// actually comes from. Left untranslated on purpose: the string is
-					// fork-only, so no upstream catalog carries it.
-					label: "Download Latest Release...",
+					// actually comes from. No trailing ellipsis: it opens a browser
+					// rather than a dialog, and dropping it shares one catalog entry
+					// with the tray and the command palette.
+					label: i18n._(msg({ message: "Download Latest Release" })),
 					click: () => {
 						void shell.openExternal(RELEASES_URL);
 					},

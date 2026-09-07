@@ -175,14 +175,6 @@ msgstr "{0, plural, one {此主機上#個結果} other {此主機上#個結果}}
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {#個結果} other {#個結果}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {#個執行中的代理程式，隱藏詳情} other {#個執行中的代理程式，隱藏詳情}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {#個執行中的代理程式，顯示詳情} other {#個執行中的代理程式，顯示詳情}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {#個會話執行中} other {#個會話執行中}}"
@@ -278,10 +270,6 @@ msgstr "{0}{actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1}待更新"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "{0}的操作"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "落後你 {0}"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "已有 {0} 位開發者依 agent 用量排名。你最近 30 天的資料已計入，只是尚未公開。僅包含 token 數量與模型名稱，不含儲存庫名稱、檔案路徑或提示詞。"
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0}已停用"
 
@@ -640,9 +627,6 @@ msgstr "{months}個月"
 
 msgid "{months}mo ago"
 msgstr "{months}個月前"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "你有{myFailedCount}個自動化上次執行失敗"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {請至少指定一個人員，或選擇{choice}。} sender {請至少指定一個寄件者，或選擇{choice}。} other {請至少指定一個項目，或選擇{choice}。}}"
@@ -1052,9 +1036,6 @@ msgstr "看看有什麼正在進行、接下來做什麼，以及{company}要走
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "多數生產變更在無人閱讀差異的情況下合併。"
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "需要新版本的Superset才能繼續。請更新到最新版本。"
-
 msgid "A process is still running in this tab"
 msgstr "此分頁中仍有處理程序在執行"
 
@@ -1310,9 +1291,6 @@ msgstr "用代理程式處理評論"
 
 msgid "Address Unreachable"
 msgstr "地址無法存取"
-
-msgid "Adds skills to your agents"
-msgstr "為你的代理程式新增技能"
 
 msgid "Admin"
 msgstr "管理員"
@@ -1763,9 +1741,6 @@ msgstr "API金鑰已吊銷"
 msgid "API keys"
 msgstr "API金鑰"
 
-msgid "API Keys"
-msgstr "API金鑰"
-
 msgid "API-equivalent"
 msgstr "按API價折算"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "歸檔"
+
+msgid "Archive workspace"
+msgstr "歸檔工作區"
 
 msgid "Archived"
 msgstr "已歸檔"
@@ -2030,17 +2008,11 @@ msgstr "自動化標題"
 msgid "Automations"
 msgstr "自動化"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "自動化（{myFailedCount}個失敗）"
-
 msgid "Automations & event triggers"
 msgstr "自動化與事件觸發"
 
 msgid "Automations docs"
 msgstr "自動化文件"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "自動化，{myFailedCount}個失敗"
 
 msgid "Autonomous"
 msgstr "自主"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "登入即表示你同意我們的\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "登入即表示你同意我們的<0>服務條款</0>和<1>隱私政策</1>"
-
 msgid "by spend"
 msgstr "按花費"
 
@@ -2633,23 +2602,8 @@ msgstr "未找到聊天會話"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "聊天介面：訊息、推理、建議"
 
-msgid "Chat v3"
-msgstr "聊天v3"
-
 msgid "Check again"
 msgstr "重新檢查"
-
-msgid "Check for Update"
-msgstr "檢查更新"
-
-msgid "Check for updates"
-msgstr "檢查更新"
-
-msgid "Check for Updates"
-msgstr "檢查更新"
-
-msgid "Check for Updates..."
-msgstr "檢查更新..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "在手機上查看執行中的 agent，並閱讀它們變更了哪些內容。"
@@ -3466,12 +3420,6 @@ msgstr "換一個代理程式繼續"
 msgid "Continue with another agent…"
 msgstr "換一個代理程式繼續…"
 
-msgid "Continue with GitHub"
-msgstr "使用GitHub繼續"
-
-msgid "Continue with Google"
-msgstr "使用Google繼續"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "控制這台機器如何從外部存取"
 
@@ -3802,9 +3750,6 @@ msgstr "無法截圖"
 msgid "Could not update plugin"
 msgstr "無法更新外掛"
 
-msgid "Could not update skill"
-msgstr "無法更新技能"
-
 msgid "Could not update the branch"
 msgstr "無法更新分支"
 
@@ -3883,9 +3828,6 @@ msgstr "無法讀取這個終端的上下文。"
 
 msgid "Couldn't read usage history from this host."
 msgstr "無法從此主機讀取用量歷史。"
-
-msgid "Couldn't remove the local sign-in"
-msgstr "無法移除本地登入"
 
 msgid "Couldn't restart terminals"
 msgstr "無法重啟終端"
@@ -4606,9 +4548,6 @@ msgstr "目錄"
 msgid "Disable"
 msgstr "停用"
 
-msgid "Disable skill"
-msgstr "停用技能"
-
 msgid "Disabled"
 msgstr "已停用"
 
@@ -4798,8 +4737,8 @@ msgstr "下載macOS版"
 msgid "Download image"
 msgstr "下載圖片"
 
-msgid "Download Manually"
-msgstr "手動下載"
+msgid "Download Latest Release"
+msgstr "下載最新版本"
 
 msgid "Download starter"
 msgstr "下載模板"
@@ -4819,9 +4758,6 @@ msgstr "下載主題檔案"
 
 msgid "downloaded"
 msgstr "已下載"
-
-msgid "Downloading..."
-msgstr "正在下載..."
 
 msgid "Downloads"
 msgstr "下載"
@@ -5037,9 +4973,6 @@ msgstr "啟用自動合併"
 
 msgid "Enable relay access…"
 msgstr "啟用中繼存取…"
-
-msgid "Enable skill"
-msgstr "啟用技能"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "已啟用，伺服器會寫入你的代理程式配置。"
@@ -5335,18 +5268,11 @@ msgstr "更改基準分支失敗"
 msgid "Failed to change role"
 msgstr "更改角色失敗"
 
-msgid "Failed to check for updates: {message}"
-msgstr "檢查更新失敗：{message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "檢查更新失敗。請稍後重試。"
 
 msgid "Failed to clear"
 msgstr "清除失敗"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "清除代理程式狀態失敗：{0}"
 
 msgid "Failed to clear terminal history"
 msgstr "清除終端歷史失敗"
@@ -5374,10 +5300,6 @@ msgstr "連線Slack失敗。請重試。"
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "複製分支名失敗：{0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "複製Markdown失敗：{0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "移動工作區失敗：{0}"
 msgid "Failed to open {name}"
 msgstr "開啟{name}失敗"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "開啟檔案失敗：{0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "在{app}中開啟失敗：{message}"
 
@@ -5554,6 +5472,9 @@ msgstr "開啟新視窗失敗：{message}"
 
 msgid "Failed to open project"
 msgstr "開啟專案失敗"
+
+msgid "Failed to open releases page: {message}"
+msgstr "開啟版本頁面失敗：{message}"
 
 msgid "Failed to open task"
 msgstr "開啟任務失敗"
@@ -5579,6 +5500,9 @@ msgstr "推送分支失敗"
 
 msgid "Failed to record page version"
 msgstr "記錄頁面版本失敗"
+
+msgid "Failed to refresh changes"
+msgstr "重新整理更改失敗"
 
 msgid "Failed to remove"
 msgstr "移除失敗"
@@ -5644,10 +5568,6 @@ msgstr "重試自動化失敗"
 
 msgid "Failed to reveal in Finder"
 msgstr "在Finder中顯示失敗"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "在Finder中顯示失敗：{0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "在Finder中顯示失敗：{reason}"
@@ -6132,9 +6052,6 @@ msgstr "從"
 
 msgid "from {price}/user/mo"
 msgstr "{price}/使用者/月起"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "已隱藏front matter，切換到Markdown可編輯"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "已隱藏front matter — 切換到Markdown檢視進行編輯"
@@ -6823,12 +6740,6 @@ msgstr "正在檢查{0}"
 msgid "Install"
 msgstr "安裝"
 
-msgid "Install & restart"
-msgstr "安裝並重啟"
-
-msgid "Install & Restart"
-msgstr "安裝並重啟"
-
 msgid "Install failed"
 msgstr "安裝失敗"
 
@@ -6853,9 +6764,6 @@ msgstr "已安裝"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "安裝於{0}"
-
-msgid "Installing..."
-msgstr "正在安裝..."
 
 msgid "Instructions"
 msgstr "說明"
@@ -7090,6 +6998,9 @@ msgstr "僅我的"
 
 msgid "just now"
 msgstr "剛剛"
+
+msgid "Kanban"
+msgstr "看板"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "關聯議題"
 msgid "Link pull request"
 msgstr "關聯拉取請求"
 
-msgid "Link task"
-msgstr "關聯任務"
-
 msgid "Linked {slug} to workspace"
 msgstr "已將{slug}關聯到工作區"
 
@@ -7707,9 +7615,6 @@ msgstr "管理組織的品牌形象和成員。"
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "在桌面應用程式中管理你的訂閱和帳單。"
 
-msgid "Managed"
-msgstr "託管"
-
 msgid "Managed by your organization admin."
 msgstr "由你所在組織的管理員管理。"
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "帶預覽的markdown編輯介面"
-
-msgid "Markdown copied"
-msgstr "Markdown已複製"
 
 msgid "Markdown style"
 msgstr "Markdown樣式"
@@ -8950,6 +8852,10 @@ msgstr "目前環境未配置Notion。"
 msgid "now"
 msgstr "剛剛"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "現在"
+
 msgid "Now"
 msgstr "現在"
 
@@ -9169,9 +9075,6 @@ msgstr "開啟更改"
 
 msgid "Open Changes"
 msgstr "開啟更改"
-
-msgid "Open Chat v3"
-msgstr "開啟Chat v3"
 
 msgid "Open Command Palette"
 msgstr "開啟命令面板"
@@ -10131,8 +10034,8 @@ msgstr "預覽"
 msgid "Preview {filename}"
 msgstr "預覽{filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "通知預覽：阻擋（需要更新）"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "通知預覽：阻擋（已降級為警告）"
 
 msgid "Preview notice: info"
 msgstr "通知預覽：資訊"
@@ -10970,9 +10873,6 @@ msgstr "必填"
 msgid "Required"
 msgstr "必填"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "所需版本：{minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "已被系統佔用"
 
@@ -11136,9 +11036,6 @@ msgstr "恢復這個版本？"
 msgid "Restored"
 msgstr "已恢復"
 
-msgid "Restoring your session"
-msgstr "正在恢復你的會話"
-
 msgid "Restoring..."
 msgstr "正在恢復..."
 
@@ -11193,9 +11090,6 @@ msgstr "返回值"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "在終端中啟動的可複用命令。專案的初始化、執行和清理命令配置為生命週期指令碼。"
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "代理程式會自動讀取的可複用說明"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "可複用的終端啟動項。點選指令碼可編輯，拖曳可重新排序。專案的初始化、執行和清理命令屬於生命週期指令碼。"
@@ -11419,6 +11313,9 @@ msgstr "在你的機器上執行本地命令"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "本週早些時候有執行失敗，但現在沒有失敗的"
+
+msgid "Runs in {masterLabel}"
+msgstr "在{masterLabel}中執行"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "執行結果會落在一個工作區裡。審查差異，把合適的合併進去。"
@@ -12319,9 +12216,6 @@ msgstr "登入已過期"
 msgid "Sign-in expired — run"
 msgstr "登入已過期——請執行"
 
-msgid "Sign-in failed"
-msgstr "登入失敗"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "已登入為<0>{userName}</0>"
 
@@ -12387,15 +12281,6 @@ msgstr "大小"
 
 msgid "Skeleton"
 msgstr "骨架屏"
-
-msgid "Skill"
-msgstr "技能"
-
-msgid "Skills"
-msgstr "技能"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "技能隨Superset外掛一起提供，並會在你使用的每個代理程式中自動保持最新。點選一個即可預覽。"
 
 msgid "Skip"
 msgstr "跳過"
@@ -12889,9 +12774,6 @@ msgstr "Superset 元件"
 msgid "Superset Components"
 msgstr "Superset元件"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset無法完成登入。請重試。"
-
 msgid "Superset CPU"
 msgstr "Superset CPU"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset是F3到F4這段過渡期的工作臺：隔離工作區裡的並
 
 msgid "Superset isn't on Windows yet"
 msgstr "Superset目前僅支援Mac"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "重啟後Superset可能會重新登入。請再次嘗試登出。"
 
 msgid "Superset memory"
 msgstr "Superset記憶體"
@@ -13295,6 +13174,9 @@ msgstr "終端指令碼"
 msgid "Terminal session creation failed."
 msgstr "終端會話建立失敗。"
 
+msgid "Terminal session did not close"
+msgstr "終端會話未關閉"
+
 msgid "Terminal session killed"
 msgstr "終端會話已終止"
 
@@ -13466,6 +13348,9 @@ msgstr "未來可重複使用的 Superset 代理設定、提示詞與設定指�
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "該主機沒有連線到Superset中繼。如果就是此裝置，請在「設定>遠端存取」中開啟「允許遠端存取通過中繼存取此裝置」，然後重試。"
 
+msgid "The host will keep retrying."
+msgstr "主機將持續重試。"
+
 msgid "The human reads every line before it merges."
 msgstr "合併前人類會逐行閱讀。"
 
@@ -13583,9 +13468,6 @@ msgstr "自動駕駛的軟體工廠"
 
 msgid "The server could not be found"
 msgstr "找不到伺服器"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "登入連結不完整。請重試。"
 
 msgid "The site's certificate authority is not trusted"
 msgstr "該站點的證書頒發機構不受信任"
@@ -14390,9 +14272,6 @@ msgstr "有可用更新"
 msgid "Update Branch"
 msgstr "更新分支"
 
-msgid "Update check failed. Please try again."
-msgstr "檢查更新失敗。請重試。"
-
 msgid "Update couldn't preserve sessions"
 msgstr "更新無法保留會話"
 
@@ -14408,9 +14287,6 @@ msgstr "更新命名規則"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "更新{0}的命名規則"
-
-msgid "Update Required"
-msgstr "需要更新"
 
 msgid "update the branch prefix"
 msgstr "更新分支字首"
@@ -15227,14 +15103,8 @@ msgstr "你的訂閱將相應調整。"
 msgid "Your Superset download is starting."
 msgstr "您的 Superset 下載即將開始。"
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "你的終端會話不會被中斷。"
-
 msgid "Your tokens"
 msgstr "你的 token 數"
-
-msgid "Your version: {currentVersion}"
-msgstr "你的版本：{currentVersion}"
 
 msgid "Zap"
 msgstr "閃電"

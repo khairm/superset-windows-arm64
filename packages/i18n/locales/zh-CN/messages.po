@@ -175,14 +175,6 @@ msgstr "{0, plural, one {此主机上#个结果} other {此主机上#个结果}}
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {#个结果} other {#个结果}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {#个运行中的智能体，隐藏详情} other {#个运行中的智能体，隐藏详情}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {#个运行中的智能体，显示详情} other {#个运行中的智能体，显示详情}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {#个会话运行中} other {#个会话运行中}}"
@@ -278,10 +270,6 @@ msgstr "{0}{actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1}待更新"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "{0}的操作"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "落后你{0}"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "已有{0}位开发者按agent用量排名。你最近30天的数据已计入，只是尚未公开。仅包含token数量和模型名称，不含仓库名、文件路径或提示词。"
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "{0}已停用"
 
@@ -640,9 +627,6 @@ msgstr "{months}个月"
 
 msgid "{months}mo ago"
 msgstr "{months}个月前"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "你有{myFailedCount}个自动化上次运行失败"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {请至少指定一个人员，或选择{choice}。} sender {请至少指定一个发件人，或选择{choice}。} other {请至少指定一个条目，或选择{choice}。}}"
@@ -1052,9 +1036,6 @@ msgstr "看看有什么正在进行、接下来做什么，以及{company}要走
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "多数生产变更在无人阅读差异的情况下合并。"
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "需要新版本的Superset才能继续。请更新到最新版本。"
-
 msgid "A process is still running in this tab"
 msgstr "此标签页中仍有进程在运行"
 
@@ -1310,9 +1291,6 @@ msgstr "用智能体处理评论"
 
 msgid "Address Unreachable"
 msgstr "地址无法访问"
-
-msgid "Adds skills to your agents"
-msgstr "为你的智能体添加技能"
 
 msgid "Admin"
 msgstr "管理员"
@@ -1763,9 +1741,6 @@ msgstr "API密钥已吊销"
 msgid "API keys"
 msgstr "API密钥"
 
-msgid "API Keys"
-msgstr "API密钥"
-
 msgid "API-equivalent"
 msgstr "按API价折算"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "归档"
+
+msgid "Archive workspace"
+msgstr "归档工作区"
 
 msgid "Archived"
 msgstr "已归档"
@@ -2030,17 +2008,11 @@ msgstr "自动化标题"
 msgid "Automations"
 msgstr "自动化"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "自动化（{myFailedCount}个失败）"
-
 msgid "Automations & event triggers"
 msgstr "自动化与事件触发"
 
 msgid "Automations docs"
 msgstr "自动化文档"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "自动化，{myFailedCount}个失败"
 
 msgid "Autonomous"
 msgstr "自主"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "登录即表示你同意我们的\n"
 "<0>服务条款</0>和<1>隐私政策</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "登录即表示你同意我们的<0>服务条款</0>和<1>隐私政策</1>"
-
 msgid "by spend"
 msgstr "按花费"
 
@@ -2633,23 +2602,8 @@ msgstr "未找到聊天会话"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "聊天界面：消息、推理、建议"
 
-msgid "Chat v3"
-msgstr "聊天v3"
-
 msgid "Check again"
 msgstr "重新检查"
-
-msgid "Check for Update"
-msgstr "检查更新"
-
-msgid "Check for updates"
-msgstr "检查更新"
-
-msgid "Check for Updates"
-msgstr "检查更新"
-
-msgid "Check for Updates..."
-msgstr "检查更新..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "在手机上查看运行中的智能体，并了解它们改动了什么。"
@@ -3466,12 +3420,6 @@ msgstr "换一个智能体继续"
 msgid "Continue with another agent…"
 msgstr "换一个智能体继续…"
 
-msgid "Continue with GitHub"
-msgstr "使用GitHub继续"
-
-msgid "Continue with Google"
-msgstr "使用Google继续"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "控制这台机器如何从外部访问"
 
@@ -3802,9 +3750,6 @@ msgstr "无法截图"
 msgid "Could not update plugin"
 msgstr "无法更新插件"
 
-msgid "Could not update skill"
-msgstr "无法更新技能"
-
 msgid "Could not update the branch"
 msgstr "无法更新分支"
 
@@ -3883,9 +3828,6 @@ msgstr "无法读取该终端的上下文。"
 
 msgid "Couldn't read usage history from this host."
 msgstr "无法从此主机读取用量历史。"
-
-msgid "Couldn't remove the local sign-in"
-msgstr "无法移除本地登录"
 
 msgid "Couldn't restart terminals"
 msgstr "无法重启终端"
@@ -4606,9 +4548,6 @@ msgstr "目录"
 msgid "Disable"
 msgstr "停用"
 
-msgid "Disable skill"
-msgstr "停用技能"
-
 msgid "Disabled"
 msgstr "已停用"
 
@@ -4798,8 +4737,8 @@ msgstr "下载macOS版"
 msgid "Download image"
 msgstr "下载图片"
 
-msgid "Download Manually"
-msgstr "手动下载"
+msgid "Download Latest Release"
+msgstr "下载最新版本"
 
 msgid "Download starter"
 msgstr "下载模板"
@@ -4819,9 +4758,6 @@ msgstr "下载主题文件"
 
 msgid "downloaded"
 msgstr "已下载"
-
-msgid "Downloading..."
-msgstr "正在下载..."
 
 msgid "Downloads"
 msgstr "下载"
@@ -5037,9 +4973,6 @@ msgstr "启用自动合并"
 
 msgid "Enable relay access…"
 msgstr "启用中继访问…"
-
-msgid "Enable skill"
-msgstr "启用技能"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "已启用，服务器会写入你的智能体配置。"
@@ -5335,18 +5268,11 @@ msgstr "更改基准分支失败"
 msgid "Failed to change role"
 msgstr "更改角色失败"
 
-msgid "Failed to check for updates: {message}"
-msgstr "检查更新失败：{message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "检查更新失败。请稍后重试。"
 
 msgid "Failed to clear"
 msgstr "清除失败"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "清除智能体状态失败：{0}"
 
 msgid "Failed to clear terminal history"
 msgstr "清除终端历史失败"
@@ -5374,10 +5300,6 @@ msgstr "连接Slack失败。请重试。"
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "复制分支名失败：{0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "复制Markdown失败：{0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "移动工作区失败：{0}"
 msgid "Failed to open {name}"
 msgstr "打开{name}失败"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "打开文件失败：{0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "在{app}中打开失败：{message}"
 
@@ -5554,6 +5472,9 @@ msgstr "打开新窗口失败：{message}"
 
 msgid "Failed to open project"
 msgstr "打开项目失败"
+
+msgid "Failed to open releases page: {message}"
+msgstr "打开版本页面失败：{message}"
 
 msgid "Failed to open task"
 msgstr "打开任务失败"
@@ -5579,6 +5500,9 @@ msgstr "推送分支失败"
 
 msgid "Failed to record page version"
 msgstr "记录页面版本失败"
+
+msgid "Failed to refresh changes"
+msgstr "刷新更改失败"
 
 msgid "Failed to remove"
 msgstr "移除失败"
@@ -5644,10 +5568,6 @@ msgstr "重试自动化失败"
 
 msgid "Failed to reveal in Finder"
 msgstr "在Finder中显示失败"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "在Finder中显示失败：{0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "在Finder中显示失败：{reason}"
@@ -6132,9 +6052,6 @@ msgstr "从"
 
 msgid "from {price}/user/mo"
 msgstr "{price}/用户/月起"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "已隐藏front matter，切换到Markdown可编辑"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "已隐藏front matter — 切换到Markdown视图进行编辑"
@@ -6823,12 +6740,6 @@ msgstr "正在检查{0}"
 msgid "Install"
 msgstr "安装"
 
-msgid "Install & restart"
-msgstr "安装并重启"
-
-msgid "Install & Restart"
-msgstr "安装并重启"
-
 msgid "Install failed"
 msgstr "安装失败"
 
@@ -6853,9 +6764,6 @@ msgstr "已安装"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "安装于{0}"
-
-msgid "Installing..."
-msgstr "正在安装..."
 
 msgid "Instructions"
 msgstr "说明"
@@ -7090,6 +6998,9 @@ msgstr "仅我的"
 
 msgid "just now"
 msgstr "刚刚"
+
+msgid "Kanban"
+msgstr "看板"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "关联议题"
 msgid "Link pull request"
 msgstr "关联拉取请求"
 
-msgid "Link task"
-msgstr "关联任务"
-
 msgid "Linked {slug} to workspace"
 msgstr "已将{slug}关联到工作区"
 
@@ -7707,9 +7615,6 @@ msgstr "管理组织的品牌形象和成员。"
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "在桌面应用中管理你的订阅和账单。"
 
-msgid "Managed"
-msgstr "托管"
-
 msgid "Managed by your organization admin."
 msgstr "由你所在组织的管理员管理。"
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "带预览的markdown编辑界面"
-
-msgid "Markdown copied"
-msgstr "Markdown已复制"
 
 msgid "Markdown style"
 msgstr "Markdown样式"
@@ -8950,6 +8852,10 @@ msgstr "当前环境未配置Notion。"
 msgid "now"
 msgstr "刚刚"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "现在"
+
 msgid "Now"
 msgstr "现在"
 
@@ -9169,9 +9075,6 @@ msgstr "打开更改"
 
 msgid "Open Changes"
 msgstr "打开更改"
-
-msgid "Open Chat v3"
-msgstr "打开Chat v3"
 
 msgid "Open Command Palette"
 msgstr "打开命令面板"
@@ -10131,8 +10034,8 @@ msgstr "预览"
 msgid "Preview {filename}"
 msgstr "预览{filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "通知预览：阻塞（需要更新）"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "通知预览：阻塞（已降级为警告）"
 
 msgid "Preview notice: info"
 msgstr "通知预览：信息"
@@ -10970,9 +10873,6 @@ msgstr "必填"
 msgid "Required"
 msgstr "必填"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "所需版本：{minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "已被系统占用"
 
@@ -11136,9 +11036,6 @@ msgstr "恢复这个版本？"
 msgid "Restored"
 msgstr "已恢复"
 
-msgid "Restoring your session"
-msgstr "正在恢复你的会话"
-
 msgid "Restoring..."
 msgstr "正在恢复..."
 
@@ -11193,9 +11090,6 @@ msgstr "返回值"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "在终端中启动的可复用命令。项目的初始化、运行和清理命令配置为生命周期脚本。"
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "智能体会自动读取的可复用说明"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "可复用的终端启动项。点击脚本可编辑，拖动可重新排序。项目的初始化、运行和清理命令属于生命周期脚本。"
@@ -11419,6 +11313,9 @@ msgstr "在你的机器上运行本地命令"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "本周早些时候有运行失败，但现在没有失败的"
+
+msgid "Runs in {masterLabel}"
+msgstr "在{masterLabel}中运行"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "运行结果会落在一个工作区里。审查差异，把合适的合并进去。"
@@ -12319,9 +12216,6 @@ msgstr "登录已过期"
 msgid "Sign-in expired — run"
 msgstr "登录已过期——请运行"
 
-msgid "Sign-in failed"
-msgstr "登录失败"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "已登录为<0>{userName}</0>"
 
@@ -12387,15 +12281,6 @@ msgstr "大小"
 
 msgid "Skeleton"
 msgstr "骨架屏"
-
-msgid "Skill"
-msgstr "技能"
-
-msgid "Skills"
-msgstr "技能"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "技能随Superset插件一起提供，并会在你使用的每个智能体中自动保持最新。点击一个即可预览。"
 
 msgid "Skip"
 msgstr "跳过"
@@ -12889,9 +12774,6 @@ msgstr "Superset 组件"
 msgid "Superset Components"
 msgstr "Superset组件"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset无法完成登录。请重试。"
-
 msgid "Superset CPU"
 msgstr "Superset CPU"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset是F3到F4这段过渡期的工作台：隔离工作区里的并
 
 msgid "Superset isn't on Windows yet"
 msgstr "Superset暂不支持Windows"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "重启后Superset可能会重新登录。请再次尝试退出登录。"
 
 msgid "Superset memory"
 msgstr "Superset内存"
@@ -13295,6 +13174,9 @@ msgstr "终端脚本"
 msgid "Terminal session creation failed."
 msgstr "终端会话创建失败。"
 
+msgid "Terminal session did not close"
+msgstr "终端会话未关闭"
+
 msgid "Terminal session killed"
 msgstr "终端会话已终止"
 
@@ -13466,6 +13348,9 @@ msgstr "未来用于存放可复用的 Superset 智能体配置、提示词与�
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "该主机没有连接到Superset中继。如果就是此设备，请在“设置>远程访问”中打开“允许通过中继远程访问本设备”，然后重试。"
 
+msgid "The host will keep retrying."
+msgstr "主机将继续重试。"
+
 msgid "The human reads every line before it merges."
 msgstr "合并前人类会逐行阅读。"
 
@@ -13583,9 +13468,6 @@ msgstr "自动驾驶的软件工厂"
 
 msgid "The server could not be found"
 msgstr "找不到服务器"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "登录链接不完整。请重试。"
 
 msgid "The site's certificate authority is not trusted"
 msgstr "该站点的证书颁发机构不受信任"
@@ -14390,9 +14272,6 @@ msgstr "有可用更新"
 msgid "Update Branch"
 msgstr "更新分支"
 
-msgid "Update check failed. Please try again."
-msgstr "检查更新失败。请重试。"
-
 msgid "Update couldn't preserve sessions"
 msgstr "更新无法保留会话"
 
@@ -14408,9 +14287,6 @@ msgstr "更新命名规则"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "更新{0}的命名规则"
-
-msgid "Update Required"
-msgstr "需要更新"
 
 msgid "update the branch prefix"
 msgstr "更新分支前缀"
@@ -15227,14 +15103,8 @@ msgstr "你的订阅将相应调整。"
 msgid "Your Superset download is starting."
 msgstr "Superset 下载即将开始。"
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "你的终端会话不会被中断。"
-
 msgid "Your tokens"
 msgstr "你的token数"
-
-msgid "Your version: {currentVersion}"
-msgstr "你的版本：{currentVersion}"
 
 msgid "Zap"
 msgstr "闪电"

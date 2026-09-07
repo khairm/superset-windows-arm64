@@ -175,14 +175,6 @@ msgstr "{0, plural, one {# kết quả trên host này} other {# kết quả tr�
 msgid "{0, plural, one {# result} other {# results}}"
 msgstr "{0, plural, one {# kết quả} other {# kết quả}}"
 
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — hide details} other {# running agents — hide details}}"
-msgstr "{0, plural, one {# agent đang chạy — ẩn chi tiết} other {# agent đang chạy — ẩn chi tiết}}"
-
-#. placeholder {0}: agents.length
-msgid "{0, plural, one {# running agent — show details} other {# running agents — show details}}"
-msgstr "{0, plural, one {# agent đang chạy — hiện chi tiết} other {# agent đang chạy — hiện chi tiết}}"
-
 #. placeholder {0}: aliveCount ?? 0
 msgid "{0, plural, one {# session running} other {# sessions running}}"
 msgstr "{0, plural, one {# phiên đang chạy} other {# phiên đang chạy}}"
@@ -278,10 +270,6 @@ msgstr "{0} {actorVerb}"
 msgid "{0} → {1} pending"
 msgstr "{0} → {1} đang chờ"
 
-#. placeholder {0}: skill.name
-msgid "{0} actions"
-msgstr "Hành động {0}"
-
 #. placeholder {0}: formatTokens(me.tokens - below.tokens)
 msgid "{0} behind you"
 msgstr "{0} phía sau bạn"
@@ -291,7 +279,6 @@ msgid "{0} developers are ranked by agent usage. Your last 30 days are already c
 msgstr "{0} nhà phát triển được xếp hạng theo mức dùng agent. 30 ngày qua của bạn đã được tính, chỉ là đang ẩn. Chỉ số lượng token và tên mô hình, không có tên repo, đường dẫn tệp hay prompt."
 
 #. placeholder {0}: displayName(variables.name)
-#. placeholder {0}: variables.name
 msgid "{0} disabled"
 msgstr "Đã tắt {0}"
 
@@ -640,9 +627,6 @@ msgstr "{months} tháng"
 
 msgid "{months}mo ago"
 msgstr "{months} tháng trước"
-
-msgid "{myFailedCount} of your automations failed their last run"
-msgstr "{myFailedCount} tự động hóa của bạn thất bại ở lần chạy gần nhất"
 
 msgid "{noun, select, person {Specify at least one person, or choose {choice}.} sender {Specify at least one sender, or choose {choice}.} other {Specify at least one entry, or choose {choice}.}}"
 msgstr "{noun, select, person {Hãy chỉ định ít nhất một người, hoặc chọn {choice}.} sender {Hãy chỉ định ít nhất một người gửi, hoặc chọn {choice}.} other {Hãy chỉ định ít nhất một mục, hoặc chọn {choice}.}}"
@@ -1052,9 +1036,6 @@ msgstr "Một cái nhìn về những gì đang làm, những gì sắp tới v�
 msgid "A majority of production changes merge without any human reading the diff."
 msgstr "Phần lớn thay đổi lên production được merge mà không ai đọc diff."
 
-msgid "A new version of Superset is required to continue. Please update to the latest version."
-msgstr "Cần phiên bản Superset mới để tiếp tục. Vui lòng cập nhật lên phiên bản mới nhất."
-
 msgid "A process is still running in this tab"
 msgstr "Vẫn còn một tiến trình đang chạy trong tab này"
 
@@ -1310,9 +1291,6 @@ msgstr "Xử lý bình luận bằng agent"
 
 msgid "Address Unreachable"
 msgstr "Không tới được địa chỉ"
-
-msgid "Adds skills to your agents"
-msgstr "Thêm skill cho các agent của bạn"
 
 msgid "Admin"
 msgstr "Admin"
@@ -1763,9 +1741,6 @@ msgstr "Đã thu hồi khóa API"
 msgid "API keys"
 msgstr "Khóa API"
 
-msgid "API Keys"
-msgstr "Khóa API"
-
 msgid "API-equivalent"
 msgstr "quy đổi theo API"
 
@@ -1819,6 +1794,9 @@ msgstr "apps/web/src/app/design/components/LayoutSection/LayoutSection.tsx"
 
 msgid "Archive"
 msgstr "Lưu trữ"
+
+msgid "Archive workspace"
+msgstr "Lưu trữ workspace"
 
 msgid "Archived"
 msgstr "Đã lưu trữ"
@@ -2030,17 +2008,11 @@ msgstr "Tiêu đề tự động hóa"
 msgid "Automations"
 msgstr "Tự động hóa"
 
-msgid "Automations ({myFailedCount} failing)"
-msgstr "Tự động hóa ({myFailedCount} đang lỗi)"
-
 msgid "Automations & event triggers"
 msgstr "Tự động hóa & trigger sự kiện"
 
 msgid "Automations docs"
 msgstr "Tài liệu tự động hóa"
-
-msgid "Automations, {myFailedCount} failing"
-msgstr "Tự động hóa, {myFailedCount} đang lỗi"
 
 msgid "Autonomous"
 msgstr "Tự chủ"
@@ -2412,9 +2384,6 @@ msgid "By signing in, you agree to our\n"
 msgstr "Khi đăng nhập, bạn đồng ý với\n"
 "<0>Terms of Service</0> and <1>Privacy Policy</1>"
 
-msgid "By signing in, you agree to our <0>Terms of Service</0> and <1>Privacy Policy</1>"
-msgstr "Khi đăng nhập, bạn đồng ý với <0>Điều khoản dịch vụ</0> và <1>Chính sách quyền riêng tư</1> của chúng tôi"
-
 msgid "by spend"
 msgstr "theo chi tiêu"
 
@@ -2633,23 +2602,8 @@ msgstr "Không tìm thấy phiên chat"
 msgid "Chat surfaces: messages, reasoning, suggestions"
 msgstr "Các bề mặt chat: tin nhắn, suy luận, gợi ý"
 
-msgid "Chat v3"
-msgstr "Chat v3"
-
 msgid "Check again"
 msgstr "Kiểm tra lại"
-
-msgid "Check for Update"
-msgstr "Kiểm tra cập nhật"
-
-msgid "Check for updates"
-msgstr "Kiểm tra cập nhật"
-
-msgid "Check for Updates"
-msgstr "Kiểm tra cập nhật"
-
-msgid "Check for Updates..."
-msgstr "Kiểm tra cập nhật..."
 
 msgid "Check on running agents and read what they changed from your phone."
 msgstr "Theo dõi các agent đang chạy và xem chúng đã thay đổi những gì ngay trên điện thoại."
@@ -3466,12 +3420,6 @@ msgstr "Tiếp tục với agent khác"
 msgid "Continue with another agent…"
 msgstr "Tiếp tục với agent khác…"
 
-msgid "Continue with GitHub"
-msgstr "Tiếp tục với GitHub"
-
-msgid "Continue with Google"
-msgstr "Tiếp tục với Google"
-
 msgid "Control how your local machine is reachable from elsewhere"
 msgstr "Kiểm soát cách máy cục bộ của bạn có thể được truy cập từ bên ngoài"
 
@@ -3802,9 +3750,6 @@ msgstr "Không thể chụp màn hình"
 msgid "Could not update plugin"
 msgstr "Không thể cập nhật plugin"
 
-msgid "Could not update skill"
-msgstr "Không thể cập nhật skill"
-
 msgid "Could not update the branch"
 msgstr "Không thể cập nhật nhánh"
 
@@ -3883,9 +3828,6 @@ msgstr "Không đọc được ngữ cảnh của terminal này."
 
 msgid "Couldn't read usage history from this host."
 msgstr "Không đọc được lịch sử sử dụng từ host này."
-
-msgid "Couldn't remove the local sign-in"
-msgstr "Không thể xóa phiên đăng nhập cục bộ"
 
 msgid "Couldn't restart terminals"
 msgstr "Không thể khởi động lại terminal"
@@ -4606,9 +4548,6 @@ msgstr "Thư mục"
 msgid "Disable"
 msgstr "Tắt"
 
-msgid "Disable skill"
-msgstr "Tắt skill"
-
 msgid "Disabled"
 msgstr "Đã tắt"
 
@@ -4798,8 +4737,8 @@ msgstr "Tải cho macOS"
 msgid "Download image"
 msgstr "Tải ảnh xuống"
 
-msgid "Download Manually"
-msgstr "Tải xuống thủ công"
+msgid "Download Latest Release"
+msgstr "Tải bản phát hành mới nhất"
 
 msgid "Download starter"
 msgstr "Tải bản mẫu"
@@ -4819,9 +4758,6 @@ msgstr "Tải tệp chủ đề"
 
 msgid "downloaded"
 msgstr "đã tải"
-
-msgid "Downloading..."
-msgstr "Đang tải xuống..."
 
 msgid "Downloads"
 msgstr "Tải xuống"
@@ -5037,9 +4973,6 @@ msgstr "Bật tự động merge"
 
 msgid "Enable relay access…"
 msgstr "Bật truy cập relay…"
-
-msgid "Enable skill"
-msgstr "Bật skill"
 
 msgid "Enabled — servers are written into your agent configs."
 msgstr "Đã bật — các server được ghi vào cấu hình agent của bạn."
@@ -5335,18 +5268,11 @@ msgstr "Không thể đổi nhánh gốc"
 msgid "Failed to change role"
 msgstr "Không thể đổi vai trò"
 
-msgid "Failed to check for updates: {message}"
-msgstr "Không thể kiểm tra cập nhật: {message}"
-
 msgid "Failed to check for updates. Please try again later."
 msgstr "Không thể kiểm tra cập nhật. Vui lòng thử lại sau."
 
 msgid "Failed to clear"
 msgstr "Không thể xóa"
-
-#. placeholder {0}: errorMessage(error, "Unknown error")
-msgid "Failed to clear agent status: {0}"
-msgstr "Không thể xóa trạng thái agent: {0}"
 
 msgid "Failed to clear terminal history"
 msgstr "Không thể xóa lịch sử terminal"
@@ -5374,10 +5300,6 @@ msgstr "Không thể kết nối tới Slack. Vui lòng thử lại."
 #. placeholder {0}: errorMessage(error, "Unknown error")
 msgid "Failed to copy branch name: {0}"
 msgstr "Không thể sao chép tên nhánh: {0}"
-
-#. placeholder {0}: errorMessage( err, t({ message: "Unknown error", }), )
-msgid "Failed to copy markdown: {0}"
-msgstr "Không thể sao chép markdown: {0}"
 
 #. placeholder {0}: error.message
 #. placeholder {0}: errorMessage(error, "Unknown error")
@@ -5531,10 +5453,6 @@ msgstr "Không thể di chuyển workspace: {0}"
 msgid "Failed to open {name}"
 msgstr "Không thể mở {name}"
 
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to open file: {0}"
-msgstr "Không thể mở tệp: {0}"
-
 msgid "Failed to open in {app}: {message}"
 msgstr "Không thể mở trong {app}: {message}"
 
@@ -5554,6 +5472,9 @@ msgstr "Không thể mở cửa sổ mới: {message}"
 
 msgid "Failed to open project"
 msgstr "Không thể mở dự án"
+
+msgid "Failed to open releases page: {message}"
+msgstr "Không thể mở trang phát hành: {message}"
 
 msgid "Failed to open task"
 msgstr "Không thể mở tác vụ"
@@ -5579,6 +5500,9 @@ msgstr "Không thể push nhánh"
 
 msgid "Failed to record page version"
 msgstr "Không thể ghi nhận phiên bản trang"
+
+msgid "Failed to refresh changes"
+msgstr "Không thể làm mới thay đổi"
 
 msgid "Failed to remove"
 msgstr "Không thể gỡ"
@@ -5644,10 +5568,6 @@ msgstr "Không thể thử lại tự động hóa"
 
 msgid "Failed to reveal in Finder"
 msgstr "Không thể hiện trong Finder"
-
-#. placeholder {0}: errorMessage( error, t({ message: "Unknown error", }), )
-msgid "Failed to reveal in Finder: {0}"
-msgstr "Không thể hiện trong Finder: {0}"
 
 msgid "Failed to reveal in Finder: {reason}"
 msgstr "Không thể hiện trong Finder: {reason}"
@@ -6132,9 +6052,6 @@ msgstr "Từ"
 
 msgid "from {price}/user/mo"
 msgstr "từ {price}/người/tháng"
-
-msgid "Front matter hidden — switch to Markdown to edit it"
-msgstr "Front matter đang ẩn — chuyển sang Markdown để sửa"
 
 msgid "Front matter hidden — switch to the Markdown view to edit it"
 msgstr "Đã ẩn front matter — hãy chuyển sang chế độ xem Markdown để sửa"
@@ -6823,12 +6740,6 @@ msgstr "Đang kiểm tra {0}"
 msgid "Install"
 msgstr "Cài đặt"
 
-msgid "Install & restart"
-msgstr "Cài đặt & khởi động lại"
-
-msgid "Install & Restart"
-msgstr "Cài đặt & khởi động lại"
-
 msgid "Install failed"
 msgstr "Cài đặt thất bại"
 
@@ -6853,9 +6764,6 @@ msgstr "Đã cài"
 #. placeholder {0}: record.installedAt.slice(0, 10)
 msgid "installed {0}"
 msgstr "đã cài {0}"
-
-msgid "Installing..."
-msgstr "Đang cài đặt..."
 
 msgid "Instructions"
 msgstr "Hướng dẫn"
@@ -7090,6 +6998,9 @@ msgstr "Chỉ mình tôi"
 
 msgid "just now"
 msgstr "vừa xong"
+
+msgid "Kanban"
+msgstr "Kanban"
 
 msgid "Kbd"
 msgstr "Kbd"
@@ -7413,9 +7324,6 @@ msgstr "Liên kết issue"
 msgid "Link pull request"
 msgstr "Liên kết pull request"
 
-msgid "Link task"
-msgstr "Liên kết tác vụ"
-
 msgid "Linked {slug} to workspace"
 msgstr "Đã liên kết {slug} với workspace"
 
@@ -7707,9 +7615,6 @@ msgstr "Quản lý nhận diện thương hiệu và thành viên của tổ ch�
 msgid "Manage your subscription and billing in the desktop app."
 msgstr "Quản lý gói đăng ký và thanh toán trong ứng dụng máy tính."
 
-msgid "Managed"
-msgstr "Được quản lý"
-
 msgid "Managed by your organization admin."
 msgstr "Do admin tổ chức của bạn quản lý."
 
@@ -7739,9 +7644,6 @@ msgstr "Markdown"
 
 msgid "Markdown authoring surface with preview"
 msgstr "Bề mặt soạn markdown kèm xem trước"
-
-msgid "Markdown copied"
-msgstr "Đã sao chép Markdown"
 
 msgid "Markdown style"
 msgstr "Kiểu markdown"
@@ -8950,6 +8852,10 @@ msgstr "Notion chưa được cấu hình cho môi trường này."
 msgid "now"
 msgstr "vừa xong"
 
+msgctxt "countdown"
+msgid "now"
+msgstr "bây giờ"
+
 msgid "Now"
 msgstr "Hiện tại"
 
@@ -9169,9 +9075,6 @@ msgstr "Mở thay đổi"
 
 msgid "Open Changes"
 msgstr "Mở thay đổi"
-
-msgid "Open Chat v3"
-msgstr "Mở Chat v3"
 
 msgid "Open Command Palette"
 msgstr "Mở bảng lệnh"
@@ -10131,8 +10034,8 @@ msgstr "Xem trước"
 msgid "Preview {filename}"
 msgstr "Xem trước {filename}"
 
-msgid "Preview notice: blocking (update required)"
-msgstr "Xem trước thông báo: chặn (bắt buộc cập nhật)"
+msgid "Preview notice: blocking (downgraded to a warning)"
+msgstr "Xem trước thông báo: chặn (hạ xuống thành cảnh báo)"
 
 msgid "Preview notice: info"
 msgstr "Xem trước thông báo: thông tin"
@@ -10970,9 +10873,6 @@ msgstr "bắt buộc"
 msgid "Required"
 msgstr "Bắt buộc"
 
-msgid "Required version: {minimumVersion}+"
-msgstr "Phiên bản yêu cầu: {minimumVersion}+"
-
 msgid "Reserved by OS"
 msgstr "Hệ điều hành đã dùng"
 
@@ -11136,9 +11036,6 @@ msgstr "Khôi phục phiên bản này?"
 msgid "Restored"
 msgstr "Đã khôi phục"
 
-msgid "Restoring your session"
-msgstr "Đang khôi phục phiên của bạn"
-
 msgid "Restoring..."
 msgstr "Đang khôi phục..."
 
@@ -11193,9 +11090,6 @@ msgstr "Trả về"
 
 msgid "Reusable commands that launch in terminals. Project setup, run, and teardown commands are configured as lifecycle scripts."
 msgstr "Các lệnh dùng lại được, chạy trong terminal. Lệnh thiết lập, chạy và dọn dẹp của dự án được cấu hình như script vòng đời."
-
-msgid "Reusable instructions your agents pick up automatically"
-msgstr "Hướng dẫn tái sử dụng mà agent của bạn tự nhận"
 
 msgid "Reusable terminal launches. Click a script to edit or drag to reorder. Project setup, run, and teardown commands are lifecycle scripts."
 msgstr "Các lệnh terminal dùng lại được. Nhấp vào một script để sửa hoặc kéo để sắp xếp lại. Lệnh thiết lập, chạy và dọn dẹp của dự án là script vòng đời."
@@ -11419,6 +11313,9 @@ msgstr "Chạy một lệnh cục bộ trên máy bạn"
 
 msgid "Runs failed earlier this week, but nothing is failing right now"
 msgstr "Có lần chạy thất bại đầu tuần này, nhưng hiện không có gì đang lỗi"
+
+msgid "Runs in {masterLabel}"
+msgstr "Chạy trong {masterLabel}"
 
 msgid "Runs land in a workspace. Review the diff, merge what's good."
 msgstr "Kết quả chạy nằm trong một workspace. Xem diff, merge những gì tốt."
@@ -12319,9 +12216,6 @@ msgstr "Đăng nhập đã hết hạn"
 msgid "Sign-in expired — run"
 msgstr "Đăng nhập đã hết hạn — hãy chạy"
 
-msgid "Sign-in failed"
-msgstr "Đăng nhập thất bại"
-
 msgid "Signed in as <0>{userName}</0>"
 msgstr "Đang đăng nhập với <0>{userName}</0>"
 
@@ -12387,15 +12281,6 @@ msgstr "Kích thước"
 
 msgid "Skeleton"
 msgstr "Skeleton"
-
-msgid "Skill"
-msgstr "Skill"
-
-msgid "Skills"
-msgstr "Skill"
-
-msgid "Skills ship with the Superset plugin and are kept up to date automatically in every agent you use. Click one to preview it."
-msgstr "Skill đi kèm plugin Superset và được tự động cập nhật trong mọi agent bạn dùng. Nhấp vào một skill để xem trước."
 
 msgid "Skip"
 msgstr "Bỏ qua"
@@ -12889,9 +12774,6 @@ msgstr "Các thành phần Superset"
 msgid "Superset Components"
 msgstr "Component của Superset"
 
-msgid "Superset could not complete sign-in. Please try again."
-msgstr "Superset không hoàn tất được việc đăng nhập. Vui lòng thử lại."
-
 msgid "Superset CPU"
 msgstr "CPU của Superset"
 
@@ -12948,9 +12830,6 @@ msgstr "Superset là bàn làm việc cho bước chuyển F3 sang F4: agent ch�
 
 msgid "Superset isn't on Windows yet"
 msgstr "Hiện Superset chỉ có trên Mac"
-
-msgid "Superset may sign you back in after restart. Please try signing out again."
-msgstr "Superset có thể đăng nhập lại cho bạn sau khi khởi động lại. Vui lòng thử đăng xuất lần nữa."
 
 msgid "Superset memory"
 msgstr "Bộ nhớ của Superset"
@@ -13295,6 +13174,9 @@ msgstr "Script terminal"
 msgid "Terminal session creation failed."
 msgstr "Không tạo được phiên terminal."
 
+msgid "Terminal session did not close"
+msgstr "Phiên terminal chưa đóng"
+
 msgid "Terminal session killed"
 msgstr "Đã kết thúc phiên terminal"
 
@@ -13466,6 +13348,9 @@ msgstr "Nơi sẽ chứa các cấu hình agent, prompt và hướng dẫn thi�
 msgid "The host isn't connected to the Superset relay. If it's this device, turn on \"Allow remote access to this device via relay\" in Settings > Remote Access, then try again."
 msgstr "Host chưa kết nối tới relay của Superset. Nếu đó là thiết bị này, hãy bật \"Cho phép truy cập từ xa vào thiết bị này qua relay\" trong Cài đặt > Truy cập từ xa, rồi thử lại."
 
+msgid "The host will keep retrying."
+msgstr "Host sẽ tiếp tục thử lại."
+
 msgid "The human reads every line before it merges."
 msgstr "Con người đọc từng dòng trước khi merge."
 
@@ -13583,9 +13468,6 @@ msgstr "Nhà máy phần mềm tự vận hành"
 
 msgid "The server could not be found"
 msgstr "Không tìm thấy server"
-
-msgid "The sign-in link was incomplete. Please try again."
-msgstr "Liên kết đăng nhập không đầy đủ. Vui lòng thử lại."
 
 msgid "The site's certificate authority is not trusted"
 msgstr "Tổ chức cấp chứng chỉ của trang không được tin cậy"
@@ -14390,9 +14272,6 @@ msgstr "Có bản cập nhật"
 msgid "Update Branch"
 msgstr "Cập nhật nhánh"
 
-msgid "Update check failed. Please try again."
-msgstr "Kiểm tra cập nhật thất bại. Vui lòng thử lại."
-
 msgid "Update couldn't preserve sessions"
 msgstr "Bản cập nhật không giữ được các phiên"
 
@@ -14408,9 +14287,6 @@ msgstr "Cập nhật quy tắc đặt tên"
 #. placeholder {0}: selectedProject.name
 msgid "Update naming instructions for {0}"
 msgstr "Cập nhật quy tắc đặt tên cho {0}"
-
-msgid "Update Required"
-msgstr "Cần cập nhật"
 
 msgid "update the branch prefix"
 msgstr "cập nhật tiền tố nhánh"
@@ -15227,14 +15103,8 @@ msgstr "Gói đăng ký của bạn sẽ được điều chỉnh tương ứng.
 msgid "Your Superset download is starting."
 msgstr "Bản tải xuống Superset của bạn đang bắt đầu."
 
-msgid "Your terminal sessions won't be interrupted."
-msgstr "Các phiên terminal của bạn sẽ không bị gián đoạn."
-
 msgid "Your tokens"
 msgstr "Token của bạn"
-
-msgid "Your version: {currentVersion}"
-msgstr "Phiên bản của bạn: {currentVersion}"
 
 msgid "Zap"
 msgstr "Tia chớp"

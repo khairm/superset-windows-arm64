@@ -210,12 +210,19 @@ export const BackgroundTerminalsButton = memo(
 				// Clearing its background marker would hide a running terminal
 				// from the only surface that lists them.
 				if (result.status !== "disposed") {
-					toast.warning("Terminal session did not close", {
-						description:
-							"reason" in result
-								? String(result.reason)
-								: "The host will keep retrying.",
-					});
+					toast.warning(
+						t({
+							message: "Terminal session did not close",
+						}),
+						{
+							description:
+								"reason" in result
+									? String(result.reason)
+									: t({
+											message: "The host will keep retrying.",
+										}),
+						},
+					);
 					return;
 				}
 				clearTerminalBackgroundMarker(workspaceId, terminalId);
