@@ -1,0 +1,126 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "34a6bad70eb4",
+  "session_id": "8b622f00-1d97-4aaa-afd4-011f810e5d3b",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-07T01:29:08.7420082Z",
+  "branch": "i18n-catalog-refresh",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    ".github/actions/arm64-build/action.yml",
+    "FEATURES.md",
+    "apps/desktop/src/renderer/lib/formatResetTime/formatResetTime.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx",
+    "packages/i18n/locales/cs/messages.po",
+    "packages/i18n/locales/cs/messages.ts",
+    "packages/i18n/locales/de/messages.po",
+    "packages/i18n/locales/de/messages.ts",
+    "packages/i18n/locales/en/messages.po",
+    "packages/i18n/locales/en/messages.ts",
+    "packages/i18n/locales/es/messages.po",
+    "packages/i18n/locales/es/messages.ts",
+    "packages/i18n/locales/fr/messages.po",
+    "packages/i18n/locales/fr/messages.ts",
+    "packages/i18n/locales/id/messages.po",
+    "packages/i18n/locales/id/messages.ts",
+    "packages/i18n/locales/it/messages.po",
+    "packages/i18n/locales/it/messages.ts",
+    "packages/i18n/locales/ja/messages.po",
+    "packages/i18n/locales/ja/messages.ts",
+    "packages/i18n/locales/ko/messages.po",
+    "packages/i18n/locales/ko/messages.ts",
+    "packages/i18n/locales/nl/messages.po",
+    "packages/i18n/locales/nl/messages.ts",
+    "packages/i18n/locales/pl/messages.po",
+    "packages/i18n/locales/pl/messages.ts",
+    "packages/i18n/locales/pt-BR/messages.po",
+    "packages/i18n/locales/pt-BR/messages.ts",
+    "packages/i18n/locales/ru/messages.po",
+    "packages/i18n/locales/ru/messages.ts",
+    "packages/i18n/locales/tr/messages.po",
+    "packages/i18n/locales/tr/messages.ts",
+    "packages/i18n/locales/vi/messages.po",
+    "packages/i18n/locales/vi/messages.ts",
+    "packages/i18n/locales/zh-CN/messages.po",
+    "packages/i18n/locales/zh-CN/messages.ts",
+    "packages/i18n/locales/zh-TW/messages.po",
+    "packages/i18n/locales/zh-TW/messages.ts",
+    "scripts/ci-repair.sh"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5-1",
+  "turn_id": "b661955b22da",
+  "token_usage": {
+    "input_tokens": 330,
+    "cache_creation_tokens": 478370,
+    "cache_read_tokens": 27724445,
+    "output_tokens": 111912,
+    "api_call_count": 165
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01JkT2NvT9qyDYvq3S98XGty",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "simplify"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b661955b22da",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 515,
+        "end": 516,
+        "entry_ids": [
+          "43647c2f-bfe4-40de-b2df-d0758fd3fa4d"
+        ],
+        "tool_use_id": "toolu_01JkT2NvT9qyDYvq3S98XGty"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01JkT2NvT9qyDYvq3S98XGty"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: simplify",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-07T01:29:08.6917362Z",
+    "agent_lines": 0,
+    "agent_removed": 601290,
+    "human_added": 213,
+    "human_modified": 258394,
+    "human_removed": 0,
+    "total_committed": 258607,
+    "total_lines_changed": 859909,
+    "agent_percentage": 69.92484088432613,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
