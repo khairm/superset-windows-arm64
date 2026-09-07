@@ -29,8 +29,26 @@ if [ ! -f package.json ]; then
 	exit 1
 fi
 
-if ! git diff --quiet -- packages/i18n/locales ||
-	[ -n "$(git status --porcelain -- packages/i18n/locales)" ]; then
+# `git diff --quiet` trusts the index's stat cache. Regenerating rewrites all 34
+# catalogs, so every one is stat-dirty afterwards, and on a checkout that wrote
+# them with CRLF that alone was reported as a difference even though the content
+# matched after normalisation — the gate's first run failed a build over line
+# endings. Refreshing makes the comparison about content. (.gitattributes now
+# pins the catalogs to LF as well; this is the belt to that's braces, because a
+# stale stat entry is not specific to line endings.)
+catalogs_are_clean() {
+	# Whole index, no pathspec: `git update-index --refresh` takes file
+	# arguments rather than a pathspec, and a form it rejects would be swallowed
+	# by the `|| true` below and refresh nothing — which is how the first
+	# version of this still failed a build over stale stat entries. Exit status
+	# is non-zero whenever anything needed updating, so it is deliberately
+	# ignored; the answer comes from the comparison that follows.
+	git update-index -q --really-refresh >/dev/null 2>&1 || true
+	git diff --quiet -- packages/i18n/locales &&
+		[ -z "$(git status --porcelain -- packages/i18n/locales)" ]
+}
+
+if ! catalogs_are_clean; then
 	echo "::error::(I18N-CATALOG-GATE) packages/i18n/locales is already dirty before extraction; refusing to run so the result cannot be attributed to this gate"
 	git status --porcelain -- packages/i18n/locales
 	exit 1
@@ -67,9 +85,9 @@ if [ -e locales ]; then
 	exit 1
 fi
 
-if ! git diff --quiet -- packages/i18n/locales ||
-	[ -n "$(git status --porcelain -- packages/i18n/locales)" ]; then
+if ! catalogs_are_clean; then
 	echo "::error::(I18N-CATALOG-GATE) the committed catalogs do not match what the source extracts to. A message missing from the catalog renders as its hashed id (e.g. OGXtL8) in a production build. Run 'bun run check:i18n', fill in any new translations, and commit packages/i18n/locales."
+	git status --porcelain -- packages/i18n/locales
 	git --no-pager diff --stat -- packages/i18n/locales
 	git --no-pager diff -- packages/i18n/locales | head -n 200
 	exit 1

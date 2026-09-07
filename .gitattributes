@@ -4,3 +4,12 @@
 # would put a \r in the shebang/commands and break bash on Windows — defeating
 # the (HOOK-FORK-DIET) reliability work. core.autocrlf=true must not touch them.
 *.sh text eol=lf
+
+# Lingui rewrites every catalog with LF. With core.autocrlf=true a Windows
+# checkout hands it CRLF instead, so each regeneration rewrites all 34 files
+# and leaves them stat-dirty — which made (I18N-CATALOG-GATE) report drift on
+# a tree whose content was identical. Pinning the catalogs to LF makes
+# "regenerate, then diff" mean the same thing on a maintainer's machine and
+# on the runner.
+packages/i18n/locales/**/messages.po text eol=lf
+packages/i18n/locales/**/messages.ts text eol=lf
