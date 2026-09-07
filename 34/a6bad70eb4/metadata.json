@@ -8,42 +8,7 @@
     ".github/actions/arm64-build/action.yml",
     "FEATURES.md",
     "apps/desktop/src/renderer/lib/formatResetTime/formatResetTime.ts",
-    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx",
-    "packages/i18n/locales/cs/messages.po",
-    "packages/i18n/locales/cs/messages.ts",
-    "packages/i18n/locales/de/messages.po",
-    "packages/i18n/locales/de/messages.ts",
-    "packages/i18n/locales/en/messages.po",
-    "packages/i18n/locales/en/messages.ts",
-    "packages/i18n/locales/es/messages.po",
-    "packages/i18n/locales/es/messages.ts",
-    "packages/i18n/locales/fr/messages.po",
-    "packages/i18n/locales/fr/messages.ts",
-    "packages/i18n/locales/id/messages.po",
-    "packages/i18n/locales/id/messages.ts",
-    "packages/i18n/locales/it/messages.po",
-    "packages/i18n/locales/it/messages.ts",
-    "packages/i18n/locales/ja/messages.po",
-    "packages/i18n/locales/ja/messages.ts",
-    "packages/i18n/locales/ko/messages.po",
-    "packages/i18n/locales/ko/messages.ts",
-    "packages/i18n/locales/nl/messages.po",
-    "packages/i18n/locales/nl/messages.ts",
-    "packages/i18n/locales/pl/messages.po",
-    "packages/i18n/locales/pl/messages.ts",
-    "packages/i18n/locales/pt-BR/messages.po",
-    "packages/i18n/locales/pt-BR/messages.ts",
-    "packages/i18n/locales/ru/messages.po",
-    "packages/i18n/locales/ru/messages.ts",
-    "packages/i18n/locales/tr/messages.po",
-    "packages/i18n/locales/tr/messages.ts",
-    "packages/i18n/locales/vi/messages.po",
-    "packages/i18n/locales/vi/messages.ts",
-    "packages/i18n/locales/zh-CN/messages.po",
-    "packages/i18n/locales/zh-CN/messages.ts",
-    "packages/i18n/locales/zh-TW/messages.po",
-    "packages/i18n/locales/zh-TW/messages.ts",
-    "scripts/ci-repair.sh"
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarHeader/DashboardSidebarHeader.tsx"
   ],
   "sessions": [
     {
@@ -54,10 +19,10 @@
     }
   ],
   "token_usage": {
-    "input_tokens": 330,
-    "cache_creation_tokens": 478370,
-    "cache_read_tokens": 27724445,
-    "output_tokens": 111912,
-    "api_call_count": 165
+    "input_tokens": 356,
+    "cache_creation_tokens": 488498,
+    "cache_read_tokens": 31759908,
+    "output_tokens": 116943,
+    "api_call_count": 178
   }
 }
