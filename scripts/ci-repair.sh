@@ -444,8 +444,8 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
       #    the value of that key and can never masquerade as a step.
       #  - the step is located by its INVOCATION, not its name. A name is
       #    cosmetic; anchoring on the script path means the thing we find is the
-      #    thing that executes. The name is still checked, as a secondary signal
-      #    so a rename reports itself clearly instead of as a generic diff.
+      #    thing that executes. The whole step, including its name, is compared
+      #    against the pre-repair sha.
       #  - the BASE side is read from a git blob at the pre-repair sha, never
       #    from the working tree the agent just edited.
       #  - the workflow file is checked the same way, because a workflow edit
@@ -591,7 +591,7 @@ if violations:
 print(json.dumps(steps, sort_keys=True, indent=2, default=str))
 PYEOF
       }
-      assert_severance_step_unchanged() { # $1 = path, $2 = expected name substring, $3 = label
+      assert_severance_step_unchanged() { # $1 = path, $2 = label
         local base_copy base_steps head_steps rc
         base_copy="$STATE_DIR/$(echo "$1" | tr '/' '_').base"
         if ! git show "$BASE_SHA:$1" > "$base_copy" 2>/dev/null; then
@@ -623,25 +623,19 @@ PYEOF
           exit 1
         fi
         if [ "$head_steps" = "[]" ]; then
-          echo "::error::(BUILD-REPAIR) repair removed the cloud-severance step from $1 ($3) — forbidden. Failing loud."
-          exit 1
-        fi
-        # Secondary signal only: identity below catches a rename anyway, but
-        # naming it makes the failure self-explanatory.
-        if ! printf '%s\n' "$head_steps" | grep -qF -- "$2"; then
-          echo "::error::(BUILD-REPAIR) the cloud-severance step in $1 was RENAMED (expected a step named '$2') — forbidden. Failing loud."
+          echo "::error::(BUILD-REPAIR) repair removed the cloud-severance step from $1 ($2) — forbidden. Failing loud."
           exit 1
         fi
         if [ "$base_steps" != "$head_steps" ]; then
-          echo "::error::(BUILD-REPAIR) repair modified the $3 step in $1 — forbidden (that step is how severance is enforced). Diff:"
+          echo "::error::(BUILD-REPAIR) repair modified the $2 step in $1 — forbidden (that step is how severance is enforced). Diff:"
           diff <(printf '%s\n' "$base_steps") <(printf '%s\n' "$head_steps") || true
           exit 1
         fi
       }
       assert_severance_step_unchanged ".github/actions/arm64-build/action.yml" \
-        "Verify cloud severance" "cloud-severance verify"
+        "cloud-severance verify"
       assert_severance_step_unchanged ".github/workflows/build-arm64.yml" \
-        "Enforce cloud severance" "cloud-severance enforcement"
+        "pre-publish release gates"
       # Exactly one invocation in the build action, so a second weakened copy
       # cannot shadow it. Interpreter-agnostic for the same reason the anchor
       # is: what matters is the script being invoked, not how node is spelled.
