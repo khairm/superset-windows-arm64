@@ -4,6 +4,7 @@ import type {
 } from "@dnd-kit/core";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo } from "react";
+import { DeleteProjectDialog } from "renderer/routes/_authenticated/components/DeleteProjectDialog";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import type { DashboardSidebarProject } from "../../types";
 import { getProjectChildrenWorkspaces } from "../../utils/projectChildren";
@@ -42,13 +43,19 @@ export function DashboardSidebarProjectSection({
 	);
 
 	const {
+		canDeleteProject,
 		cancelRename,
 		confirmImportWorktrees,
-		confirmRemoveFromSidebar,
 		deleteSection,
 		emptyRecycleBin,
 		handleImportWorktrees,
 		handleNewSection,
+		hideProject,
+		isDeleteDialogOpen,
+		leaveProjectIfActive,
+		openDeleteDialog,
+		projectHostIds,
+		setIsDeleteDialogOpen,
 		handleNewWorkspace,
 		handleOpenInFinder,
 		handleOpenSettings,
@@ -127,6 +134,18 @@ export function DashboardSidebarProjectSection({
 			onEmptyBin: emptyRecycleBin,
 		},
 	];
+
+	const deleteProjectDialog = canDeleteProject && (
+		<DeleteProjectDialog
+			open={isDeleteDialogOpen}
+			onOpenChange={setIsDeleteDialogOpen}
+			projectId={project.id}
+			projectName={project.name}
+			hostIds={projectHostIds}
+			onDeleted={leaveProjectIfActive}
+		/>
+	);
+
 	// Rendered only while open so the checkbox state resets per invocation.
 	const importWorktreesDialog = importableWorktrees && (
 		<ImportWorktreesDialog
@@ -150,7 +169,8 @@ export function DashboardSidebarProjectSection({
 				onImportWorktrees={handleImportWorktrees}
 				onOpenInFinder={handleOpenInFinder}
 				onOpenSettings={handleOpenSettings}
-				onRemoveFromSidebar={confirmRemoveFromSidebar}
+				onHide={hideProject}
+				onDelete={canDeleteProject ? openDeleteDialog : null}
 				onRename={startRename}
 			>
 				<div className="mt-1 first:mt-0">
@@ -166,6 +186,7 @@ export function DashboardSidebarProjectSection({
 						onToggleCollapse={() => onToggleCollapse(project.id)}
 					/>
 					{importWorktreesDialog}
+					{deleteProjectDialog}
 				</div>
 			</DashboardSidebarProjectContextMenu>
 		);
@@ -181,7 +202,8 @@ export function DashboardSidebarProjectSection({
 				onImportWorktrees={handleImportWorktrees}
 				onOpenInFinder={handleOpenInFinder}
 				onOpenSettings={handleOpenSettings}
-				onRemoveFromSidebar={confirmRemoveFromSidebar}
+				onHide={hideProject}
+				onDelete={canDeleteProject ? openDeleteDialog : null}
 				onRename={startRename}
 				showSnoozed={project.showSnoozed}
 				showArchived={project.showArchived}
@@ -260,6 +282,7 @@ export function DashboardSidebarProjectSection({
 				)}
 			</AnimatePresence>
 			{importWorktreesDialog}
+			{deleteProjectDialog}
 		</div>
 	);
 }

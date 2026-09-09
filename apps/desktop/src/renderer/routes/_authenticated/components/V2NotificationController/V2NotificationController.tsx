@@ -17,6 +17,7 @@ import {
 	HostNotificationSubscriber,
 	type HostNotificationWorkspaceState,
 } from "./components/HostNotificationSubscriber";
+import { getNotificationWorkspaceName } from "./lib/getNotificationWorkspaceName";
 import { markV2AgentLifecycleTargetSeen } from "./lib/lifecycleEvents";
 
 // Diagnostic logging for the agent-status-dots pipeline. Emitted via
@@ -40,6 +41,7 @@ interface WorkspaceHostRow {
 	workspaceId: string;
 	organizationId: string;
 	hostId: string;
+	type: "main" | "worktree" | "session";
 	name: string;
 	branch: string;
 }
@@ -86,6 +88,7 @@ export function V2NotificationController() {
 				workspaceId: workspace.id,
 				organizationId: workspace.organizationId,
 				hostId: workspace.hostId,
+				type: workspace.type,
 				name: workspace.name,
 				branch: workspace.branch,
 			})),
@@ -271,8 +274,7 @@ function getNotificationWorkspaceStatesById({
 	for (const workspace of workspaceHosts) {
 		statesById.set(workspace.workspaceId, {
 			workspaceId: workspace.workspaceId,
-			workspaceName:
-				workspace.name.trim() || workspace.branch.trim() || "Workspace",
+			workspaceName: getNotificationWorkspaceName(workspace),
 			paneLayout: paneLayoutsByWorkspaceId.get(workspace.workspaceId) ?? null,
 		});
 	}

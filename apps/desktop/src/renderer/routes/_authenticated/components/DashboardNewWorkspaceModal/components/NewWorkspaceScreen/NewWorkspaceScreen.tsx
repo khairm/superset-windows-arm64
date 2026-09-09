@@ -50,7 +50,6 @@ import { track } from "renderer/lib/analytics";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
-import { SupersetIcon } from "renderer/routes/_authenticated/onboarding/providers/components/SupersetIcon";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { newWorkspaceAttachmentPaths } from "renderer/stores/new-workspace-attachments";
@@ -100,6 +99,7 @@ import { AttachmentCard } from "./components/AttachmentCard";
 import { SamplePromptCards } from "./components/SamplePromptCards";
 import { SamplePrompts } from "./components/SamplePrompts";
 import { PROMPT_PLACEHOLDERS } from "./components/SamplePrompts/constants";
+import { SupersetIcon } from "./components/SupersetIcon";
 import { useSamplePromptSelection } from "./hooks/useSamplePromptSelection";
 
 /** Nested prefixes of one fixed pool — only the form factor varies by arm. */
@@ -505,9 +505,11 @@ export function NewWorkspaceScreen({
 		EFFORT_STORAGE_KEY,
 		effortSupport ? selectedPresetId : null,
 	);
-	// Codex's top two efforts only exist on its GPT-5.6 models, so the offered
-	// list follows the model picker. A remembered effort the current model
-	// rejects stays stored but shows (and launches) as the agent default.
+	// Codex's top two efforts only exist on its GPT-5.6 models and cursor-agent
+	// has a ladder for only some models, so the offered list follows the model
+	// picker and the control disappears when there is nothing to offer. A
+	// remembered effort the current model rejects stays stored but shows (and
+	// launches) as the agent default.
 	const effortOptions = useMemo(
 		() =>
 			selectedPresetId
@@ -908,7 +910,7 @@ export function NewWorkspaceScreen({
 										triggerClassName={`${PILL_BUTTON_CLASS} px-1.5 gap-1 text-foreground w-auto max-w-[160px]`}
 									/>
 								)}
-								{effortSupport && (
+								{effortSupport && effortOptions.length > 0 && (
 									<AgentModelSelect
 										models={effortOptions}
 										value={selectedEffort}

@@ -2,7 +2,7 @@ import { useLingui } from "@lingui/react/macro";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { LuClipboardList, LuFile, LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { getChangesetFileKey } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
@@ -58,6 +58,8 @@ interface WorkspaceSidebarProps {
 	selectedDiffTarget?: SelectedDiffTarget;
 	pendingReveal?: PendingReveal | null;
 	workspaceId: string;
+	/** Run button rendered by the page, hosted in the sidebar's top strip. */
+	runButton: ReactNode;
 }
 
 export function WorkspaceSidebar({
@@ -69,6 +71,7 @@ export function WorkspaceSidebar({
 	selectedDiffTarget,
 	pendingReveal,
 	workspaceId,
+	runButton,
 }: WorkspaceSidebarProps) {
 	const { t } = useLingui();
 	const gitStatus = useWorkspaceGitStatus();
@@ -224,8 +227,10 @@ export function WorkspaceSidebar({
 			ref={containerRef}
 			className="isolate flex h-full w-full min-h-0 flex-col overflow-hidden bg-background"
 		>
-			{/* (NON-GIT WORKSPACE) the header's actions are all git-shaped. */}
-			{isGitRepo && <PRActionHeader workspaceId={workspaceId} />}
+			{/* (NON-GIT WORKSPACE) no longer gated: the strip's git-shaped actions
+			    moved to the top bar and the pane tab bar upstream, leaving a drag
+			    region plus the run button, both of which a non-git folder needs. */}
+			<PRActionHeader runButton={runButton} />
 			<SidebarHeader
 				tabs={tabs}
 				activeTab={activeTabDef.id}

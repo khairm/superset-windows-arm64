@@ -3,9 +3,11 @@ import {
 	applyAutomaticSnoozeReturn,
 	applyWorkspaceExitCleanup,
 	cancelWorkspaceExitCleanup,
-	removeProjectFromSidebarState,
+	ensureSidebarProjectRecord,
+	hideProjectFromSidebarState,
 	resolveSidebarRowProjectId,
 	type SidebarWorkspaceRow,
+	setSidebarProjectHidden,
 	tombstoneSidebarWorkspaceRecord,
 } from "./sidebarMutations";
 
@@ -70,6 +72,30 @@ function localStateRow(
 	};
 }
 
+type ProjectRow = {
+	projectId: string;
+	createdAt: Date;
+	isCollapsed: boolean;
+	isHidden: boolean;
+	tabOrder: number;
+	defaultOpenInApp: string | null;
+};
+
+function projectRow(
+	projectId: string,
+	overrides: Partial<ProjectRow> = {},
+): ProjectRow {
+	return {
+		projectId,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		isCollapsed: false,
+		isHidden: false,
+		tabOrder: 1,
+		defaultOpenInApp: null,
+		...overrides,
+	};
+}
+
 function makeCollections() {
 	return {
 		v2WorkspaceLocalState: makeCollection<LocalStateRow>(
@@ -79,9 +105,7 @@ function makeCollections() {
 			sectionId: string;
 			projectId: string;
 		}>((row) => row.sectionId),
-		v2SidebarProjects: makeCollection<{ projectId: string }>(
-			(row) => row.projectId,
-		),
+		v2SidebarProjects: makeCollection<ProjectRow>((row) => row.projectId),
 	};
 }
 
@@ -89,14 +113,19 @@ type Collections = ReturnType<typeof makeCollections>;
 
 // The functions accept the real `AppCollections` Pick; our fakes implement the
 // touched subset, so cast through the parameter type.
-function asRemoveArg(collections: Collections) {
+function asProjectArg(collections: Collections) {
 	return collections as unknown as Parameters<
-		typeof removeProjectFromSidebarState
+		typeof setSidebarProjectHidden
 	>[0];
 }
 function asTombstoneArg(collections: Collections) {
 	return collections as unknown as Parameters<
 		typeof tombstoneSidebarWorkspaceRecord
+	>[0];
+}
+function asHideArg(collections: Collections) {
+	return collections as unknown as Parameters<
+		typeof hideProjectFromSidebarState
 	>[0];
 }
 
@@ -106,8 +135,88 @@ const LOCAL_HOST = "host-local";
 const ME = "user-me";
 const PLACEMENT = { machineId: LOCAL_HOST, currentUserId: ME };
 
-describe("removeProjectFromSidebarState", () => {
-	it("tombstones the project's worktrees — existing rows and row-less ones — and deletes sections and the project record", () => {
+describe("setSidebarProjectHidden", () => {
+	it("flips only the hidden flag, leaving placement, sections and workspace rows intact", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { tabOrder: 3, isCollapsed: true }),
+		);
+		collections.v2SidebarSections.insert({
+			sectionId: "sec-1",
+			projectId: "proj-1",
+		});
+		collections.v2WorkspaceLocalState.insert(
+			localStateRow("ws-1", "proj-1", { sectionId: "sec-1", pinnedAt: 5 }),
+		);
+
+		setSidebarProjectHidden(asProjectArg(collections), "proj-1", true);
+
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			isHidden: true,
+			tabOrder: 3,
+			isCollapsed: true,
+		});
+		expect(collections.v2SidebarSections.get("sec-1")).toBeDefined();
+		expect(
+			collections.v2WorkspaceLocalState.get("ws-1")?.sidebarState,
+		).toMatchObject({ sectionId: "sec-1", pinnedAt: 5, isHidden: false });
+
+		setSidebarProjectHidden(asProjectArg(collections), "proj-1", false);
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(false);
+	});
+
+	it("is a no-op for a project with no placement row", () => {
+		const collections = makeCollections();
+		setSidebarProjectHidden(asProjectArg(collections), "proj-missing", true);
+		expect(collections.v2SidebarProjects.state.size).toBe(0);
+	});
+});
+
+describe("ensureSidebarProjectRecord", () => {
+	it("reveals a hidden project instead of inserting a second row", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { isHidden: true, tabOrder: 7 }),
+		);
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1");
+
+		expect(collections.v2SidebarProjects.state.size).toBe(1);
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			isHidden: false,
+			tabOrder: 7,
+		});
+	});
+
+	it("inserts a visible row ahead of existing projects when none exists", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(projectRow("proj-1", { tabOrder: 1 }));
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-2");
+
+		const inserted = collections.v2SidebarProjects.get("proj-2");
+		expect(inserted?.isHidden).toBe(false);
+		expect(inserted?.tabOrder).toBeLessThan(1);
+	});
+
+	it("leaves a visible row untouched", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { tabOrder: 4, isCollapsed: true }),
+		);
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1");
+
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			tabOrder: 4,
+			isCollapsed: true,
+			isHidden: false,
+		});
+	});
+});
+
+describe("hideProjectFromSidebarState", () => {
+	it("tombstones the project's worktrees — existing rows and row-less ones — deletes its sections and hides the project row", () => {
 		const collections = makeCollections();
 		// Explicitly-placed worktree (has a visible local-state row).
 		collections.v2WorkspaceLocalState.insert(
@@ -134,11 +243,13 @@ describe("removeProjectFromSidebarState", () => {
 			sectionId: "sec-1",
 			projectId: "proj-1",
 		});
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { tabOrder: 3, isCollapsed: true }),
+		);
 
 		const cleaned: string[] = [];
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -156,12 +267,18 @@ describe("removeProjectFromSidebarState", () => {
 				.isHidden,
 		).toBe(true);
 		expect(collections.v2SidebarSections.get("sec-1")).toBeUndefined();
-		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
+		// The project row survives, flagged: order, collapse state and
+		// defaultOpenInApp come back untouched when it is shown again.
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			isHidden: true,
+			tabOrder: 3,
+			isCollapsed: true,
+		});
 		// Only the pre-existing row had live runtimes to tear down.
 		expect(cleaned).toEqual(["ws-placed"]);
 	});
 
-	it("tombstones the project's mains too so a passive route mount can't resurrect the removed project (REMOVE-STICKY)", () => {
+	it("tombstones the project's mains too so a passive route mount can't resurrect the hidden project (REMOVE-STICKY)", () => {
 		const collections = makeCollections();
 		collections.v2WorkspaceLocalState.insert(
 			localStateRow("ws-main", "proj-1"),
@@ -182,10 +299,10 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -202,14 +319,14 @@ describe("removeProjectFromSidebarState", () => {
 			collections.v2WorkspaceLocalState.get("ws-main-rowless")?.sidebarState
 				.isHidden,
 		).toBe(true);
-		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(true);
 	});
 
 	it("tombstones a main-workspace row with its pin cleared", () => {
-		// Mains are tombstoned like every other row on project removal
-		// ((REMOVE-STICKY) tightening); the tombstone clears pinnedAt so the
-		// row can't linger as a pinned invisible orphan. The master's return
-		// path is (MASTER-ALWAYS-ACTIVE): re-adding the project resurfaces it.
+		// Mains are tombstoned like every other row when the project is hidden
+		// ((REMOVE-STICKY)); the tombstone clears pinnedAt so the row can't
+		// linger as a pinned invisible orphan. The master's return path is
+		// (MASTER-ALWAYS-ACTIVE): showing the project resurfaces it.
 		const collections = makeCollections();
 		collections.v2WorkspaceLocalState.insert(
 			localStateRow("ws-main", "proj-1", { pinnedAt: 1753000000000 }),
@@ -223,10 +340,10 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -236,7 +353,7 @@ describe("removeProjectFromSidebarState", () => {
 		const row = collections.v2WorkspaceLocalState.get("ws-main");
 		expect(row?.sidebarState.pinnedAt).toBeNull();
 		// Tombstoned: hidden until (MASTER-ALWAYS-ACTIVE) resurfaces it when
-		// the project row returns to the sidebar.
+		// the project row is visible in the sidebar again.
 		expect(row?.sidebarState.isHidden).toBe(true);
 	});
 
@@ -254,10 +371,10 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -271,9 +388,9 @@ describe("removeProjectFromSidebarState", () => {
 
 	it("tombstones a row-less remote worktree this user created, even if its host is offline (#7100)", () => {
 		const collections = makeCollections();
-		// No local-state row: the reconciler would re-place it (recreating the
+		// No local-state row: the reconciler would re-place it (revealing the
 		// project row) the moment its host answers — even a host that is offline
-		// at removal time — so the tombstone must be written regardless of host.
+		// at hide time — so the tombstone must be written regardless of host.
 		const workspaces: SidebarWorkspaceRow[] = [
 			{
 				id: "ws-remote-mine",
@@ -283,11 +400,11 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: ME,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		const cleaned: string[] = [];
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -330,10 +447,10 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: "user-teammate",
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
-		removeProjectFromSidebarState(
-			asRemoveArg(collections),
+		hideProjectFromSidebarState(
+			asHideArg(collections),
 			workspaces,
 			"proj-1",
 			PLACEMENT,
@@ -349,6 +466,30 @@ describe("removeProjectFromSidebarState", () => {
 		expect(
 			collections.v2WorkspaceLocalState.get("ws-local-theirs")?.sidebarState
 				.isHidden,
+		).toBe(true);
+	});
+
+	it("keeps the dismissals when the project is shown again — only the project's own flag clears", () => {
+		// The (REMOVE-STICKY) guarantee, end to end: revealing the project (Undo,
+		// an explicit open, or one new worktree reaching
+		// ensureSidebarProjectRecord) must not bring back the threads hidden
+		// with it.
+		const collections = makeCollections();
+		collections.v2WorkspaceLocalState.insert(localStateRow("ws-1", "proj-1"));
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
+
+		hideProjectFromSidebarState(
+			asHideArg(collections),
+			[],
+			"proj-1",
+			PLACEMENT,
+			noopCleanup,
+		);
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1");
+
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(false);
+		expect(
+			collections.v2WorkspaceLocalState.get("ws-1")?.sidebarState.isHidden,
 		).toBe(true);
 	});
 });

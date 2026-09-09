@@ -45,9 +45,9 @@ export type HiddenMainSidebarRow = HiddenMainSidebarState & {
  * A hidden main renders NOWHERE: the active lane skips it (isHidden), and the
  * Archived section skips it too (`isWorkspaceArchived` has `&& type !== "main"`,
  * so a main without `archivedAt` is never archived). Rows in that state are
- * produced by whole-project removal and by pre-(MASTER-ARCHIVE-ONLY) master-card
- * removes, and there is no surface left to recover them from — hence a
- * reconciler rather than a user action.
+ * produced by hiding a whole project and by pre-(MASTER-ARCHIVE-ONLY)
+ * master-card removes, and there is no surface left to recover them from —
+ * hence a reconciler rather than a user action.
  *
  * The predicate, in order:
  *  - a known machine (`machineId`), and the workspace is a `main` on it;
@@ -65,14 +65,22 @@ export type HiddenMainSidebarRow = HiddenMainSidebarState & {
  * completed, archived, snoozed or already-active main falls out for free, and a
  * future bucket inserted ahead of "hidden" excludes itself automatically.
  *
- * This deliberately overrides (REMOVE-STICKY) for mains only: re-adding a
- * removed project resurrects its master. Removing the project still removes it
- * (its `v2SidebarProjects` row is gone, so the predicate is false).
+ * This deliberately overrides (REMOVE-STICKY) for mains only: showing a hidden
+ * project again resurrects its master. Hiding the project still hides it — a
+ * HIDDEN `v2SidebarProjects` row counts as absent here, the same way the
+ * display path reads it (`useDashboardSidebarData` drops hidden projects before
+ * building `sidebarProjectIds`), so the predicate is false for as long as the
+ * project is hidden. Reading a hidden row as present would undo the tombstones
+ * `hideProjectFromSidebarState` just wrote AND reveal the project itself, since
+ * surfacing a main runs `ensureWorkspaceInSidebar`.
  */
 export function selectHiddenMainsToSurface(
 	localWorkspaces: readonly LocalWorkspaceForPlacement[],
 	localStateRows: readonly HiddenMainSidebarRow[],
-	sidebarProjectRows: readonly { projectId: string }[],
+	sidebarProjectRows: readonly {
+		projectId: string;
+		isHidden?: boolean | null;
+	}[],
 	machineId: string | null,
 	nowMs: number,
 ): Array<{ id: string; projectId: string }> {
@@ -82,7 +90,9 @@ export function selectHiddenMainsToSurface(
 		localStateRows.map((row) => [row.workspaceId, row]),
 	);
 	const sidebarProjectIds = new Set(
-		sidebarProjectRows.map((row) => row.projectId),
+		sidebarProjectRows
+			.filter((row) => !row.isHidden)
+			.map((row) => row.projectId),
 	);
 
 	return localWorkspaces.flatMap(

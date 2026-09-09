@@ -2,7 +2,6 @@ import { router } from "../index";
 import { agentToolingRouter } from "./agent-tooling";
 import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
-import { authRouter } from "./auth";
 import { browserRouter } from "./browser/browser";
 import { claudeAccountsRouter } from "./claude-accounts/claude-accounts";
 // (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
@@ -44,7 +43,6 @@ export const appRouter = router({
 	agents: agentsRouter,
 	agentTooling: agentToolingRouter,
 	attachments: attachmentsRouter,
-	auth: authRouter,
 	browser: browserRouter,
 	claudeAccounts: claudeAccountsRouter,
 	health: healthRouter,

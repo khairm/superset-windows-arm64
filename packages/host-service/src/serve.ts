@@ -6,6 +6,7 @@ import { createApp } from "./app";
 import { startCompanionBridgeIfEnabled } from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
+import { installConsoleTimestamps } from "./log-timestamps";
 import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
 import { PskHostAuthProvider } from "./providers/host-auth";
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
 	// packages/shared/src/windows-user-env.ts.
 	await applyWindowsUserEnvToProcess();
 
+	installConsoleTimestamps();
 	initSentry({ organizationId: env.ORGANIZATION_ID });
 	console.log(
 		`[host-service] starting (org=${env.ORGANIZATION_ID}, port=${env.PORT}, NODE_ENV=${process.env.NODE_ENV ?? "unset"})`,

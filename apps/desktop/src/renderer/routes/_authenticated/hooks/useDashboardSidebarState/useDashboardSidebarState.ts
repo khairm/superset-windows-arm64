@@ -56,8 +56,10 @@ import {
 	applyWorkspaceExitCleanup,
 	cancelWorkspaceExitCleanup,
 	createEmptyPaneLayout,
-	removeProjectFromSidebarState,
+	ensureSidebarProjectRecord,
+	hideProjectFromSidebarState,
 	resolveSidebarRowProjectId,
+	setSidebarProjectHidden,
 	tombstoneSidebarWorkspaceRecord,
 	workspaceExitCleanupState,
 } from "./sidebarMutations";
@@ -229,26 +231,6 @@ function writeProjectTopLevelOrder(
 		collections.v2SidebarSections.update(item.id, (draft) => {
 			draft.tabOrder = tabOrder;
 		});
-	});
-}
-
-function ensureSidebarProjectRecord(
-	collections: Pick<AppCollections, "v2SidebarProjects">,
-	projectId: string,
-): void {
-	if (collections.v2SidebarProjects.get(projectId)) {
-		return;
-	}
-
-	collections.v2SidebarProjects.insert({
-		projectId,
-		createdAt: new Date(),
-		// Prepend, matching new workspaces: the project you just added is
-		// the one you're about to work in.
-		tabOrder: getPrependTabOrder([
-			...collections.v2SidebarProjects.state.values(),
-		]),
-		isCollapsed: false,
 	});
 }
 
@@ -736,15 +718,15 @@ export function useDashboardSidebarState() {
 
 	// (REMOVE-STICKY) Placement for PASSIVE workspace route mounts (session
 	// restore, the kanban collapse-split, background navigation). Unlike
-	// ensureWorkspaceInSidebar it must never undo an explicit "Remove project
-	// from sidebar": it does NOT re-insert the project's sidebar row (the full
-	// ensure did — a restored route silently resurrected a removed project on
-	// the next launch), and it never touches an existing local-state row (so a
-	// hidden/removed row stays put — only an EXPLICIT open pulls a hidden main
+	// ensureWorkspaceInSidebar it must never undo an explicit "Hide from
+	// Sidebar": it does NOT reveal the project's sidebar row (the full ensure
+	// does — a restored route silently resurrected a hidden project on the next
+	// launch), and it never touches an existing local-state row (so a
+	// hidden/dismissed row stays put — only an EXPLICIT open pulls a hidden main
 	// back). A genuinely new (row-less) workspace still gets its local-state
 	// row, because pane-layout persistence updates that row in place and needs
 	// it to exist; the row alone renders nothing while the project row is
-	// absent.
+	// hidden.
 	const placeWorkspaceFromPassiveMount = useCallback(
 		(workspaceId: string, projectId: string) => {
 			if (collections.v2WorkspaceLocalState.get(workspaceId)) return;
@@ -863,55 +845,42 @@ export function useDashboardSidebarState() {
 		],
 	);
 
-	const moveWorkspaceToSectionAtIndex = useCallback(
-		(
-			workspaceId: string,
-			projectId: string | null,
-			sectionId: string,
-			index: number,
-		) => {
-			const existing = collections.v2WorkspaceLocalState.get(workspaceId);
-			if (!existing) return;
-			// Same rule as moveWorkspaceToSection: the tag comes from the key;
-			// members are found through the shared resolver, not the pointer.
+	/**
+	 * Writes one folder's full member order. The caller hands over exactly the
+	 * rows the folder holds, so nothing is re-derived from the collection:
+	 * membership lives in host tags, and a row that just left this folder in the
+	 * same commit still carries its tag until the optimistic write lands. Deriving
+	 * siblings from those tags pulled the departed row back in and renumbered it,
+	 * so a drop landed somewhere other than the preview.
+	 */
+	const setSectionWorkspaceOrder = useCallback(
+		(projectId: string | null, sectionId: string, workspaceIds: string[]) => {
+			// Same rule as moveWorkspaceToSection: the tag comes from the key.
 			const targetTag = parseSidebarFolderKey(sectionId)?.tag ?? null;
-			if (targetTag !== null) {
-				const folderIndex = getProjectFolderIndex(
-					collections,
-					hostWorkspaces,
-					tagFolderContext,
-					projectId,
-				);
-				writeWorkspaceTags(
-					workspaceId,
-					applyFolderTagChange(
-						getHostWorkspaceTags(hostWorkspaces, workspaceId),
-						folderIndex.keys(),
-						targetTag,
-					),
-				);
-			}
-			const siblings = Array.from(
-				collections.v2WorkspaceLocalState.state.values(),
-			)
-				.filter(
-					(item) =>
-						item.sidebarState.projectId === projectId &&
-						isSidebarWorkspaceVisible(item) &&
-						item.workspaceId !== workspaceId &&
-						getEffectiveSectionId(
+			const folderIndex =
+				targetTag !== null
+					? getProjectFolderIndex(
 							collections,
 							hostWorkspaces,
 							tagFolderContext,
-							item,
-						) === sectionId,
-				)
-				.sort((a, b) => a.sidebarState.tabOrder - b.sidebarState.tabOrder);
-			const reordered = [...siblings];
-			reordered.splice(index, 0, existing);
-			reordered.forEach((item, i) => {
-				collections.v2WorkspaceLocalState.update(item.workspaceId, (draft) => {
-					draft.sidebarState.tabOrder = i + 1;
+							projectId,
+						)
+					: null;
+			workspaceIds.forEach((workspaceId, index) => {
+				if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+				if (targetTag !== null && folderIndex) {
+					const currentTags = getHostWorkspaceTags(hostWorkspaces, workspaceId);
+					const nextTags = applyFolderTagChange(
+						currentTags,
+						folderIndex.keys(),
+						targetTag,
+					);
+					if (nextTags.join("\n") !== currentTags.join("\n")) {
+						writeWorkspaceTags(workspaceId, nextTags);
+					}
+				}
+				collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+					draft.sidebarState.tabOrder = index + 1;
 					draft.sidebarState.sectionId = targetTag !== null ? null : sectionId;
 					draft.sidebarState.projectId = projectId;
 					draft.sidebarState.isHidden = false;
@@ -1377,9 +1346,19 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
-	const removeProjectFromSidebar = useCallback(
-		(projectId: string) => {
-			removeProjectFromSidebarState(
+	// (REMOVE-STICKY) Hiding is not display-only: it tombstones every workspace
+	// of the project so the threads the user dismissed with it do not flood
+	// back the next time anything reveals the project (an explicit open, or a
+	// single new worktree from the CLI). Showing it again only clears the
+	// project's own flag — the dismissals are sticky, exactly as they were when
+	// this action removed the project row outright.
+	const setProjectHidden = useCallback(
+		(projectId: string, hidden: boolean) => {
+			if (!hidden) {
+				setSidebarProjectHidden(collections, projectId, false);
+				return;
+			}
+			hideProjectFromSidebarState(
 				collections,
 				hostWorkspaces,
 				projectId,
@@ -1736,8 +1715,8 @@ export function useDashboardSidebarState() {
 		placeWorkspaceFromPassiveMount,
 		hideWorkspaceInSidebar,
 		moveWorkspaceToSection,
-		moveWorkspaceToSectionAtIndex,
-		removeProjectFromSidebar,
+		setSectionWorkspaceOrder,
+		setProjectHidden,
 		reorderPinnedWorkspaces,
 		reorderProjectChildren,
 		removeWorkspaceFromSidebar,

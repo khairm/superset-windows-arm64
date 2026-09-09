@@ -19,6 +19,7 @@ const disableWinSigning = process.env.SUPERSET_DISABLE_WIN_SIGNING === "1";
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
+const tokenizersArm64Path = "node_modules/@anush008/tokenizers-win32-arm64-msvc";
 const dmgBackgroundPath = join(
 	pkg.resources,
 	"build/installer/background.tiff",
@@ -65,11 +66,23 @@ const config: Configuration = {
 
 	// Extra resources placed outside asar archive (accessible via process.resourcesPath)
 	extraResources: [
-			{
-				from: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
-				to: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
-				filter: ["**/*"],
-			},
+		// The win32-arm64 tokenizers native, injected by
+		// scripts/materialize-native-closure.sh. Present only while bun.lock
+		// still resolves @anush008/tokenizers — upstream reaches it transitively
+		// (mastracode -> @mastra/fastembed) and has dropped that chain before.
+		// electron-builder fails the pack on an extraResources `from` that does
+		// not exist, so the entry follows the injection instead of asserting it;
+		// the materialize step is the one that fails loud when the dependency is
+		// there and the prebuild is not.
+		...(existsSync(tokenizersArm64Path)
+			? [
+					{
+						from: tokenizersArm64Path,
+						to: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
+						filter: ["**/*"],
+					},
+				]
+			: []),
 		// Database migrations - must be outside asar for drizzle-orm to read
 		{
 			from: "dist/resources/migrations",

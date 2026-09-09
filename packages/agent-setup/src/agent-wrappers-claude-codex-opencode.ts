@@ -91,6 +91,11 @@ export function getClaudeGlobalSettingsJsonPath(): string {
 // DOES clear permission, but only because the agent session itself ended (the
 // question dies with it) — not a false mid-turn clear.
 //
+// desktop-v1.27.0 adds SubagentStart / SubagentStop upstream. They are NOT
+// registered here for the same reason: the subagent roster and the yellow
+// subagent-hold are superset-notify.py's, and a raw notify.sh passthrough for
+// those events is exactly what (CLAUDE-STOP-UNHOOKED) exists to keep out.
+//
 // Entries for the unregistered events are still stripped from an installed
 // settings.json on every merge (managed-json-hooks strips managed commands
 // from EVERY event, including ones we no longer manage), so a profile written
@@ -177,12 +182,16 @@ export function getCodexGlobalHooksJsonPath(): string {
 	return path.join(os.homedir(), ".codex", "hooks.json");
 }
 
+// SubagentStart/SubagentStop fire for spawn_agent children (multi_agent is
+// on by default); the notify script forwards them to the subagent roster.
 const CODEX_MANAGED_EVENTS: Record<string, { matcher?: string }> = {
 	SessionStart: {},
 	SessionEnd: {},
 	UserPromptSubmit: {},
 	Stop: {},
 	Interrupt: {},
+	SubagentStart: {},
+	SubagentStop: {},
 };
 
 function codexHooksSpec(

@@ -1,5 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
+	readSubagentSearch,
+	type SubagentLinkSearchParams,
+} from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
+import {
 	V2WorkspaceView,
 	type WorkspaceSearch,
 } from "./components/V2WorkspaceView";
@@ -20,10 +24,13 @@ export const Route = createFileRoute(
 	"/_authenticated/_dashboard/v2-workspace/$workspaceId/",
 )({
 	component: V2WorkspacePage,
-	validateSearch: (raw: Record<string, unknown>): WorkspaceSearch => ({
+	validateSearch: (
+		raw: Record<string, unknown>,
+	): WorkspaceSearch & SubagentLinkSearchParams => ({
 		tabId: parseNonEmptyString(raw.tabId),
 		terminalId: parseNonEmptyString(raw.terminalId),
 		focusRequestId: parseNonEmptyString(raw.focusRequestId),
+		...readSubagentSearch(raw),
 		openUrl: parseNonEmptyString(raw.openUrl),
 		openUrlTarget: parseOpenUrlTarget(raw.openUrlTarget),
 		openUrlRequestId: parseNonEmptyString(raw.openUrlRequestId),

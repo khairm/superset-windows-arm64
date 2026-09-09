@@ -599,31 +599,68 @@ has "tokenizers payload from another Release: says why" "$(cat "$LOG")" \
 eq "tokenizers payload from another Release keeps the installed copy" "$(app_marker "$TOK_REL")" "previous"
 eq "tokenizers payload from another Release mutates nothing in the packaged tree" "$(app_leftovers)" "0"
 
+# Neither companion is guaranteed to be in the graph: the app reaches libsql
+# and @anush008/tokenizers transitively through upstream's agent stack, and an
+# upstream release that drops that chain leaves the registry-less win32-arm64
+# platform package with nothing to load it. The lockfile's "not present" answer
+# is a SKIP — the rest of the run still happens — and a copy an earlier build
+# installed is moved out of the packaged tree rather than shipped for a
+# dependency nothing loads. The two are asked separately: one going does not
+# take the other with it.
+echo "== a companion the lockfile no longer resolves is skipped, not shipped =="
+tmp_stale() { find "$FIX/tmp" -maxdepth 1 -name "$1*.stale" 2>/dev/null | wc -l | tr -d ' '; }
+
 build_fixture previous; seed_app_current
 rm -f "$BWHY/libsql.out"
 run_mat
-if [ "$rc" -ne 0 ]; then ok "libsql absent from bun.lock: fatal"; else no "libsql absent from bun.lock: fatal"; fi
-has "libsql absent from bun.lock: says why" "$(cat "$LOG")" \
-  "cannot resolve libsql's locked version"
-eq "libsql absent from bun.lock keeps the installed copies" \
-  "$(app_marker "$LSQ_REL")$(app_marker "$TOK_REL")" "previousprevious"
-# Both lock lookups sit beside the ABI check, ahead of the store payloads: a
-# lockfile this build cannot read writes nothing at all, not even the payload
-# repair that has nothing to do with the companion packages.
-eq "libsql absent from bun.lock never reaches the store payloads" \
-  "$(marker "better-sqlite3@12.11.1+0123456789abcdef" better-sqlite3)" "previous"
+LOGTXT="$(cat "$LOG")"
+eq "libsql absent from bun.lock: rc" "$rc" 0
+has "libsql absent from bun.lock: says why" "$LOGTXT" \
+  "libsql is not in bun.lock"
+eq "libsql absent from bun.lock removes the copy from the packaged tree" \
+  "$(app_marker "$LSQ_REL")" ""
+eq "libsql absent from bun.lock parks that copy outside the packaged tree" \
+  "$(tmp_stale libsql)" "1"
+eq "libsql absent from bun.lock leaves nothing under apps/desktop/node_modules" \
+  "$(app_leftovers)" "0"
+# The other companion is untouched by it, and so is the payload repair.
+eq "libsql absent from bun.lock still injects the tokenizers native" \
+  "$(arch_of "$FIX/$TOK_REL/tokenizers.win32-arm64-msvc.node")" "64aa"
+eq "libsql absent from bun.lock still repairs the store payloads" \
+  "$(marker "better-sqlite3@12.11.1+0123456789abcdef" better-sqlite3)" ""
 
 build_fixture previous; seed_app_current
 rm -f "$BWHY/@anush008+tokenizers.out"
 run_mat
-if [ "$rc" -ne 0 ]; then ok "@anush008/tokenizers absent from bun.lock: fatal"; else no "@anush008/tokenizers absent from bun.lock: fatal"; fi
-has "@anush008/tokenizers absent from bun.lock: says why" "$(cat "$LOG")" \
-  "cannot resolve @anush008/tokenizers's locked version"
-# Resolved up front together, so the libsql half does not get to succeed on a
-# run the tokenizers half cannot finish.
-eq "@anush008/tokenizers absent from bun.lock keeps the installed copies" \
+LOGTXT="$(cat "$LOG")"
+eq "@anush008/tokenizers absent from bun.lock: rc" "$rc" 0
+has "@anush008/tokenizers absent from bun.lock: says why" "$LOGTXT" \
+  "@anush008/tokenizers is not in bun.lock"
+eq "@anush008/tokenizers absent from bun.lock removes the copy from the packaged tree" \
+  "$(app_marker "$TOK_REL")" ""
+eq "@anush008/tokenizers absent from bun.lock parks that copy outside the packaged tree" \
+  "$(tmp_stale tokenizers)" "1"
+eq "@anush008/tokenizers absent from bun.lock leaves nothing under apps/desktop/node_modules" \
+  "$(app_leftovers)" "0"
+eq "@anush008/tokenizers absent from bun.lock keeps the libsql copy it resolved" \
+  "$(app_marker "$LSQ_REL")" "previous"
+eq "@anush008/tokenizers absent from bun.lock still repairs the store payloads" \
+  "$(marker "better-sqlite3@12.11.1+0123456789abcdef" better-sqlite3)" ""
+
+# Absent is the ONLY skippable answer. A lockfile this build cannot read must
+# never pass for a dependency that is gone, or a build that needs the native
+# ships without it — and, sitting beside the ABI check ahead of everything
+# else, it writes nothing at all.
+build_fixture previous; seed_app_current
+printf 'error: lockfile is corrupt\n' > "$BWHY/libsql.out"
+printf '1\n' > "$BWHY/libsql.rc"
+run_mat
+if [ "$rc" -ne 0 ]; then ok "unreadable lockfile: fatal"; else no "unreadable lockfile: fatal"; fi
+has "unreadable lockfile: says why" "$(cat "$LOG")" \
+  "cannot tell whether libsql is in bun.lock"
+eq "unreadable lockfile keeps the installed copies" \
   "$(app_marker "$LSQ_REL")$(app_marker "$TOK_REL")" "previousprevious"
-eq "@anush008/tokenizers absent from bun.lock never reaches the store payloads" \
+eq "unreadable lockfile never reaches the store payloads" \
   "$(marker "better-sqlite3@12.11.1+0123456789abcdef" better-sqlite3)" "previous"
 
 echo "== a failed rollback parks the rescued copy outside the packaged tree =="
@@ -645,6 +682,7 @@ VERIFY="$TMP/verify"
 VAPP="$VERIFY/release/win-arm64-unpacked"
 VTOK="$VAPP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node"
 VPTY="$VAPP/resources/app.asar.unpacked/node_modules/@lydell/node-pty-win32-arm64"
+VINJ="$VERIFY/node_modules/@anush008/tokenizers-win32-arm64-msvc"
 build_verify_tree() { # the layout electron-builder.ts pins, every native ARM64
   rm -rf "$VERIFY"
   mkdir -p "$(dirname "$VTOK")" "$VPTY"
@@ -652,6 +690,12 @@ build_verify_tree() { # the layout electron-builder.ts pins, every native ARM64
   mkpe "$VTOK" arm64
   mkpe "$VPTY/conpty.node" arm64
   mkpe "$VPTY/conpty_console_list.node" arm64
+  # What the gate follows is the injection, not the dependency: the tokenizers
+  # native is asserted exactly when materialize put one in this project's
+  # node_modules, which is the same condition electron-builder.ts's
+  # extraResources entry reads.
+  mkdir -p "$VINJ"
+  mkpe "$VINJ/tokenizers.win32-arm64-msvc.node" arm64
 }
 run_verify() { # stdout+stderr -> $LOG, rc -> $rc
   LOG="$TMP/verify.log"
@@ -682,6 +726,14 @@ if [ "$rc" -ne 0 ]; then ok "x64 conpty binary: fatal"; else no "x64 conpty bina
 build_verify_tree; rm -f "$VTOK"
 run_verify
 if [ "$rc" -ne 0 ]; then ok "missing tokenizers native: fatal"; else no "missing tokenizers native: fatal"; fi
+
+# The other half of that condition: nothing was injected because nothing in
+# bun.lock loads it, so nothing is missing from the package either.
+build_verify_tree; rm -rf "$VINJ" "$(dirname "$VTOK")"
+run_verify
+eq "an uninjected tokenizers native is not demanded: rc" "$rc" 0
+has "an uninjected tokenizers native says it was skipped" "$(cat "$LOG")" \
+  "SKIP @anush008/tokenizers-win32-arm64-msvc"
 
 eq "the real node_modules/.bun was never written" \
   "$(ls "$REAL_STORE" 2>/dev/null | wc -l)" "$STORE_BEFORE"

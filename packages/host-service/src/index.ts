@@ -34,6 +34,10 @@ export { captureFatalStartupError, initSentry } from "./sentry";
 export { startTerminalReaper } from "./terminal/reaper";
 export { startStaleWorkingSweep } from "./terminal-agents/stale-working-sweep";
 export type {
+	SubagentTranscript,
+	SubagentTranscriptEntry,
+} from "./terminal-agents";
+export type {
 	DeleteInProgressCause,
 	TeardownFailureCause,
 } from "./trpc/error-types";

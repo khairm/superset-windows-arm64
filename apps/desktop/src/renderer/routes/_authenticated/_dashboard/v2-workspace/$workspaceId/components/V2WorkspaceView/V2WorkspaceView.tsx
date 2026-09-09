@@ -23,7 +23,6 @@ import {
 } from "renderer/stores/workspace-sidebar-state";
 import { useWorkspace } from "../../../providers/WorkspaceProvider";
 import { useAutoAdoptBackgroundSessions } from "../../hooks/useAutoAdoptBackgroundSessions";
-import { useBrowserShellInteractionPassthrough } from "../../hooks/useBrowserShellInteractionPassthrough";
 import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
 import { useConsumeAutomationRunLink } from "../../hooks/useConsumeAutomationRunLink";
 import { useConsumeOpenUrlRequest } from "../../hooks/useConsumeOpenUrlRequest";
@@ -32,6 +31,7 @@ import { useDefaultPaneActions } from "../../hooks/useDefaultPaneActions";
 import { useDirtyTabCloseGuard } from "../../hooks/useDirtyTabCloseGuard";
 import { usePaneRegistry } from "../../hooks/usePaneRegistry";
 import { renderBrowserTabIcon } from "../../hooks/usePaneRegistry/components/BrowserPane";
+import { useShellInteractionPassthrough } from "../../hooks/useShellInteractionPassthrough";
 import { useV2PresetExecution } from "../../hooks/useV2PresetExecution";
 import { useV2TerminalLauncher } from "../../hooks/useV2TerminalLauncher";
 import { useV2WorkspacePaneLayout } from "../../hooks/useV2WorkspacePaneLayout";
@@ -48,6 +48,7 @@ import { AddTabMenu } from "../AddTabMenu";
 import { BackgroundTerminalsButton } from "../BackgroundTerminalsButton";
 import { V2NotificationStatusIndicator } from "../V2NotificationStatusIndicator";
 import { V2PresetsBar } from "../V2PresetsBar";
+import { V2WorkspaceOpenInButton } from "../V2WorkspaceOpenInButton";
 import { V2WorkspaceRunButton } from "../V2WorkspaceRunButton";
 import { WorkspaceBranchLabel } from "../WorkspaceBranchLabel";
 import { WorkspaceEmptyState } from "../WorkspaceEmptyState";
@@ -255,7 +256,7 @@ function V2WorkspaceCenter({
 	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
 	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
 	const { onSidebarResizeDragging, onWorkspaceInteractionStateChange } =
-		useBrowserShellInteractionPassthrough({ sidebarOpen });
+		useShellInteractionPassthrough({ sidebarOpen });
 	const handleSidebarResizingChange = useCallback(
 		(resizing: boolean) => {
 			setIsSidebarResizing(resizing);
@@ -422,6 +423,14 @@ function V2WorkspaceCenter({
 											store={store}
 										/>
 									)}
+									{/* Upstream moved Open-in out of the sidebar's PR header so
+									    it no longer depends on the sidebar being open (#7167),
+									    landing it in the chrome cluster beside the sidebar
+									    toggle. The fork's equivalent cluster is this tab-bar
+									    trailing row, and the button is built for it: without an
+									    @container ancestor its branch label stays hidden, so it
+									    renders compact. */}
+									<V2WorkspaceOpenInButton workspaceId={workspaceId} />
 									{tabBarTrailingExtra}
 								</>
 							)}
@@ -453,6 +462,12 @@ function V2WorkspaceCenter({
 						>
 							<WorkspaceSidebar
 								workspaceId={workspaceId}
+								// Upstream's PR header hosts the run button now that Open-in
+								// has left it. The fork already gives that button a permanent
+								// home in the strip below the tab bar, where it stays reachable
+								// with the sidebar closed — passing it here too would render it
+								// twice, so the header keeps its slot empty.
+								runButton={null}
 								onSelectFile={openFilePaneFromTreeClick}
 								onSelectDiffFile={openDiffPane}
 								onOpenComment={openCommentPane}

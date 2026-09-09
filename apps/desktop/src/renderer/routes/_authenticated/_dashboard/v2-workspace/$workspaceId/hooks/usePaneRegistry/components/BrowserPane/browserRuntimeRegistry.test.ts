@@ -15,6 +15,11 @@ mock.module("renderer/lib/trpc-client", () => ({
 	},
 }));
 
+(
+	document.documentElement as unknown as Record<string, unknown>
+).toggleAttribute = mock(() => {});
+
+const { pointerPassthrough } = await import("renderer/lib/pointer-passthrough");
 const { browserRuntimeRegistry } = await import("./browserRuntimeRegistry");
 
 describe("browserRuntimeRegistry detached persistence", () => {
@@ -24,6 +29,7 @@ describe("browserRuntimeRegistry detached persistence", () => {
 		const onPersist = (state: { url: string }) => persisted.push(state.url);
 		const entry = {
 			webview: { style: { visibility: "visible" } },
+			overlay: { style: { visibility: "visible" } },
 			state: {},
 			onPersist,
 			webContentsId: null,
@@ -52,6 +58,7 @@ describe("browserRuntimeRegistry detached persistence", () => {
 	test("hidden-webview eviction spares panes with a live CDP session", async () => {
 		const makeEntry = (lastUsedAt: number) => ({
 			webview: { remove: () => {}, style: { visibility: "hidden" } },
+			overlay: { remove: () => {}, style: { visibility: "hidden" } },
 			state: {},
 			onPersist: null,
 			webContentsId: null,
@@ -99,6 +106,7 @@ describe("browserRuntimeRegistry detached persistence", () => {
 		const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 		const entry = {
 			webview: { remove: () => {} },
+			overlay: { remove: () => {} },
 			onPersist: () => {},
 			detachHandlers: () => {},
 			resizeObserver: { disconnect: () => {} },
@@ -120,5 +128,89 @@ describe("browserRuntimeRegistry detached persistence", () => {
 			errorSpy.mockRestore();
 			registryInternals.entries.delete(paneId);
 		}
+	});
+});
+
+describe("browserRuntimeRegistry pointer passthrough", () => {
+	test("mirrors the passthrough state onto visible webviews only", () => {
+		const makeEntry = (visible: boolean) => ({
+			webview: { style: { pointerEvents: "auto" } },
+			overlay: { style: {} },
+			visible,
+		});
+		const shown = makeEntry(true);
+		const parked = makeEntry(false);
+		const registryInternals = browserRuntimeRegistry as unknown as {
+			entries: Map<string, ReturnType<typeof makeEntry>>;
+		};
+		registryInternals.entries.set("passthrough-shown", shown);
+		registryInternals.entries.set("passthrough-parked", parked);
+
+		try {
+			pointerPassthrough.set("test-gesture", true);
+			expect(shown.webview.style.pointerEvents).toBe("none");
+			expect(parked.webview.style.pointerEvents).toBe("auto");
+
+			pointerPassthrough.set("test-gesture", false);
+			expect(shown.webview.style.pointerEvents).toBe("auto");
+		} finally {
+			pointerPassthrough.set("test-gesture", false);
+			registryInternals.entries.delete("passthrough-shown");
+			registryInternals.entries.delete("passthrough-parked");
+		}
+	});
+});
+
+describe("browserRuntimeRegistry overlay layer", () => {
+	const makeEntry = () => ({
+		webview: { style: {} as Record<string, string> },
+		overlay: { style: {} as Record<string, string> },
+		placeholder: {
+			getBoundingClientRect: () => ({
+				top: 40,
+				left: 300,
+				width: 800,
+				height: 600,
+			}),
+		},
+		resizeObserver: { disconnect: () => {} },
+		visible: true,
+		lastUsedAt: 1,
+	});
+	const registryInternals = browserRuntimeRegistry as unknown as {
+		entries: Map<string, ReturnType<typeof makeEntry>>;
+		updateLayout: (entry: ReturnType<typeof makeEntry>) => void;
+	};
+
+	test("mirrors the placeholder rect onto the overlay as well as the webview", () => {
+		const entry = makeEntry();
+		registryInternals.updateLayout(entry);
+		for (const style of [entry.webview.style, entry.overlay.style]) {
+			expect(style.top).toBe("40px");
+			expect(style.left).toBe("300px");
+			expect(style.width).toBe("800px");
+			expect(style.height).toBe("600px");
+		}
+	});
+
+	test("hides the overlay with the webview on detach", () => {
+		const paneId = "overlay-detach-pane";
+		const entry = makeEntry();
+		entry.overlay.style.visibility = "visible";
+		registryInternals.entries.set(paneId, entry);
+		try {
+			browserRuntimeRegistry.detach(paneId);
+			expect(entry.webview.style.visibility).toBe("hidden");
+			expect(entry.overlay.style.visibility).toBe("hidden");
+			expect(browserRuntimeRegistry.getOverlayContainer(paneId)).toBe(
+				entry.overlay as unknown as HTMLElement,
+			);
+		} finally {
+			registryInternals.entries.delete(paneId);
+		}
+	});
+
+	test("reports no overlay for an unknown pane", () => {
+		expect(browserRuntimeRegistry.getOverlayContainer("nope")).toBeNull();
 	});
 });

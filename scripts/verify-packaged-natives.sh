@@ -37,8 +37,22 @@ need_arm64() { # $1 = file, $2 = label
 }
 m="$(pearch "$APP/Superset.exe")"
 [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
-need_arm64 "$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node" \
-  "@anush008/tokenizers-win32-arm64-msvc"
+# The tokenizers native is supplied only while bun.lock still resolves
+# @anush008/tokenizers (upstream reaches it transitively through
+# mastracode -> @mastra/fastembed, and has dropped that chain before). What is
+# asserted here is the INVARIANT, not the dependency: whatever
+# scripts/materialize-native-closure.sh injected into this project's
+# node_modules must be in the package and must be ARM64. That source dir is the
+# same condition electron-builder.ts's extraResources entry follows, so the
+# three steps skip together or none of them do — the loud failure for a
+# dependency that IS present and a prebuild that is not belongs to materialize,
+# which owns the lockfile question.
+if [ -d "node_modules/@anush008/tokenizers-win32-arm64-msvc" ]; then
+  need_arm64 "$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node" \
+    "@anush008/tokenizers-win32-arm64-msvc"
+else
+  echo "SKIP @anush008/tokenizers-win32-arm64-msvc (not injected — nothing in bun.lock loads it)"
+fi
 # The terminal's two conpty binaries. electron-builder's `win.files` puts the
 # package inside app.asar and `asarUnpack` extracts it beside it — the unpacked
 # copy is the one the app loads, and its path is fixed by that config, not by

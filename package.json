@@ -46,6 +46,7 @@
 		"release:cli": "bun scripts/release/cli.ts",
 		"release:canary": "./scripts/release-canary.sh",
 		"check:versions": "bun scripts/release/check-versions.ts",
+		"check:plugins": "bun scripts/check-plugins.ts",
 		"check:i18n": "bun run --cwd packages/i18n check",
 		"typecheck:release": "tsc -p scripts/release/tsconfig.json",
 		"test:release": "bun test scripts/release",
@@ -92,6 +93,7 @@
 	"patchedDependencies": {
 		"@xterm/addon-webgl@0.20.0-beta.297": "patches/@xterm%2Faddon-webgl@0.20.0-beta.297.patch",
 		"metro@0.84.4": "patches/metro@0.84.4.patch",
-		"node-pty@1.2.0-beta.14": "patches/node-pty@1.2.0-beta.14.patch"
+		"node-pty@1.2.0-beta.14": "patches/node-pty@1.2.0-beta.14.patch",
+		"@xterm/xterm@6.1.0-beta.302": "patches/@xterm%2Fxterm@6.1.0-beta.302.patch"
 	}
 }

@@ -1,5 +1,6 @@
 import type { DetectedPort } from "@superset/port-scanner";
 import type { AgentIdentity } from "@superset/shared/agent-identity";
+import type { WorkspaceTagAssignment } from "@superset/shared/workspace-tags";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
 import type { AgentLifecycleEventType } from "./map-event-type.ts";
 
@@ -152,8 +153,18 @@ export interface WorkspaceSnapshot {
 	 * writes (rename, tags, PR link).
 	 */
 	lastActivityAt: number | null;
-	/** Normalized, sorted tag set; sidebar folders derive from it. */
+	/**
+	 * Every tag on the workspace, normalized and sorted, whoever applied it.
+	 * Consumers that know who they are read `tagAssignments` instead.
+	 */
 	tags: string[];
+	/**
+	 * Each tag with the user who applied it. Tags are personal (see
+	 * `isWorkspaceTagVisibleTo`): a client keeps the ones it can see and
+	 * derives its sidebar folders from those. Absent from hosts that predate
+	 * the field.
+	 */
+	tagAssignments?: WorkspaceTagAssignment[];
 }
 
 export interface WorkspaceChangedMessage {
@@ -276,6 +287,10 @@ export interface ClaudeAccountWarningMessage {
 export interface EventBusErrorMessage {
 	type: "error";
 	message: string;
+	/** Set on command rejections a client can act on. */
+	code?: "git-watch-cap";
+	/** The workspace whose command was rejected. */
+	workspaceId?: string;
 }
 
 export interface PageWatchChangedMessage {
@@ -313,6 +328,22 @@ export interface FsUnwatchCommand {
 }
 
 /**
+ * Register interest in a workspace's `git:changed` events, driving
+ * `GitWatcher`'s refcounted registration (see #6729) — a workspace with no
+ * `git:watch` interest from any client, and no internal host-service
+ * subscriber, is never watched.
+ */
+export interface GitWatchCommand {
+	type: "git:watch";
+	workspaceId: string;
+}
+
+export interface GitUnwatchCommand {
+	type: "git:unwatch";
+	workspaceId: string;
+}
+
+/**
  * Targeted watch on one file the recursive workspace watcher can't see
  * (inside a pruned subtree — gitignored build dir, node_modules, nested
  * repo). Sent by the renderer for every open document; the server installs a
@@ -335,4 +366,6 @@ export type ClientMessage =
 	| FsWatchCommand
 	| FsUnwatchCommand
 	| FsWatchFileCommand
-	| FsUnwatchFileCommand;
+	| FsUnwatchFileCommand
+	| GitWatchCommand
+	| GitUnwatchCommand;

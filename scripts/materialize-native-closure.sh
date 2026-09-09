@@ -16,7 +16,11 @@
 # runtime packaging/validate (the collector skips them: not in any required
 # `dependencies`): @libsql/win32-arm64-msvc and
 # @anush008/tokenizers-win32-arm64-msvc (the latter is fastembed's tokenizer;
-# upstream publishes no win-arm64 build — khairm/tokenizers-windows-arm64 does).
+# upstream publishes no win-arm64 build — khairm/libsql-windows-arm64 and
+# khairm/tokenizers-windows-arm64 do). Each is supplied ONLY while bun.lock
+# still resolves the package that loads it (libsql, @anush008/tokenizers):
+# upstream reaches both transitively through its agent stack, and those
+# dependencies have come and gone.
 # Platform pkgs (@lydell/node-pty, @ast-grep/napi, @parcel/watcher win32-arm64)
 # resolve via bun graph + copy:native-modules already.
 #
@@ -47,10 +51,32 @@ APPNM="$ROOT/apps/desktop/node_modules"
 # a binary against a version half of it never asked for. Demanded here, beside
 # the ABI, so a lockfile this build cannot read fails before anything at all is
 # written. Why the version and not just the file: see check_companion_source.
-LIBSQL_LOCKED="$(bun_locked_version_one libsql)" \
-  || { echo "[mat] cannot resolve libsql's locked version — refusing to judge the @libsql/win32-arm64-msvc prebuild against nothing"; exit 1; }
-TOKENIZERS_LOCKED="$(bun_locked_version_one @anush008/tokenizers)" \
-  || { echo "[mat] cannot resolve @anush008/tokenizers's locked version — refusing to judge the @anush008/tokenizers-win32-arm64-msvc prebuild against nothing"; exit 1; }
+# Both companions may legitimately be absent: they arrive transitively through
+# upstream's agent stack (libsql via mastracode/@mastra, tokenizers via
+# mastracode -> @mastra/fastembed), and an upstream release that drops that
+# chain leaves nothing to load the win32-arm64 platform package. rc 1 is the
+# lockfile's "not present" answer and the ONLY skippable one; an unreadable
+# lockfile stays fatal rather than passing for an absent dependency. Sections 2
+# and 3 below are skipped on an empty *_LOCKED, so the ARM64 build starts being
+# supplied again the moment the dependency returns.
+LIBSQL_LOCKED=""
+lsq_rc=0
+bun_locked_versions_all libsql >/dev/null || lsq_rc=$?
+case "$lsq_rc" in
+  0) LIBSQL_LOCKED="$(bun_locked_version_one libsql)" \
+       || { echo "[mat] cannot resolve libsql's locked version — refusing to judge the @libsql/win32-arm64-msvc prebuild against nothing"; exit 1; } ;;
+  1) echo "[mat] libsql is not in bun.lock — nothing loads the win32-arm64 libsql native, skipping it" ;;
+  *) echo "[mat] cannot tell whether libsql is in bun.lock — refusing to decide the @libsql/win32-arm64-msvc injection on an unreadable lockfile"; exit 1 ;;
+esac
+TOKENIZERS_LOCKED=""
+tok_rc=0
+bun_locked_versions_all @anush008/tokenizers >/dev/null || tok_rc=$?
+case "$tok_rc" in
+  0) TOKENIZERS_LOCKED="$(bun_locked_version_one @anush008/tokenizers)" \
+       || { echo "[mat] cannot resolve @anush008/tokenizers's locked version — refusing to judge the @anush008/tokenizers-win32-arm64-msvc prebuild against nothing"; exit 1; } ;;
+  1) echo "[mat] @anush008/tokenizers is not in bun.lock — nothing loads the win32-arm64 tokenizers native, skipping it" ;;
+  *) echo "[mat] cannot tell whether @anush008/tokenizers is in bun.lock — refusing to decide the @anush008/tokenizers-win32-arm64-msvc injection on an unreadable lockfile"; exit 1 ;;
+esac
 
 # The machine bytes of a PE image, as od prints them (little-endian, so ARM64
 # reads 64aa) — or nothing at all when the file is not a PE image this can read.
@@ -320,25 +346,38 @@ companion_dest_current() { # $1 = dest dir, $2 = package name, $3 = expected ver
 }
 
 LSQ="$APPNM/@libsql/win32-arm64-msvc"
-[ -n "${LIBSQL_ARM64_DIR:-}" ] && [ -f "$LIBSQL_ARM64_DIR/index.node" ] || { echo "[mat] LIBSQL_ARM64_DIR missing index.node"; exit 1; }
-check_companion_source "$LIBSQL_ARM64_DIR" @libsql/win32-arm64-msvc index.node "$LIBSQL_LOCKED"
-if companion_dest_current "$LSQ" @libsql/win32-arm64-msvc "$LIBSQL_LOCKED" index.node; then
-  echo "[mat] @libsql/win32-arm64-msvc already present ($LIBSQL_LOCKED)"
+if [ -z "$LIBSQL_LOCKED" ]; then
+  # Nothing in the graph loads it (see the resolution above). Any copy left by
+  # an earlier build would be packaged and verified as if it were still wanted,
+  # so it goes — parked under $ROOT/tmp rather than deleted outright, on the
+  # same rule as every other swap here.
+  if [ -e "$LSQ" ]; then
+    mkdir -p "$ROOT/tmp"
+    mv "$LSQ" "$ROOT/tmp/libsql-win32-arm64-msvc.$$.stale" \
+      || { echo "[mat] @libsql/win32-arm64-msvc: a stale copy is installed and cannot be moved out of $APPNM — it would be packaged for a dependency nothing loads"; exit 1; }
+    echo "[mat] @libsql/win32-arm64-msvc: removed a stale copy (the dependency is gone from bun.lock)"
+  fi
 else
-  # Same staged swap as the store payloads above: build the whole copy beside
-  # the target and check it there, so a half-copied or non-ARM64 source never
-  # costs us the usable copy that was already installed.
-  mkdir -p "$APPNM/@libsql"
-  MAT_STAGE="$(mktemp -d "$APPNM/@libsql/.mat-stage-XXXXXX")" \
-    || { echo "[mat] @libsql/win32-arm64-msvc: cannot create a staging dir under $APPNM/@libsql"; exit 1; }
-  cp -r "$LIBSQL_ARM64_DIR/." "$MAT_STAGE/" \
-    || { echo "[mat] @libsql/win32-arm64-msvc: copy from $LIBSQL_ARM64_DIR failed — existing copy left untouched"; exit 1; }
-  [ -f "$MAT_STAGE/package.json" ] \
-    || { echo "[mat] @libsql/win32-arm64-msvc: staged copy has no package.json — existing copy left untouched"; exit 1; }
-  [ "$(pearch "$MAT_STAGE/index.node")" = 64aa ] \
-    || { echo "[mat] @libsql/win32-arm64-msvc: staged index.node is not ARM64 — existing copy left untouched"; exit 1; }
-  swap_into_place "$LSQ" "@libsql/win32-arm64-msvc" "$ROOT/tmp"
-  echo "[mat] @libsql/win32-arm64-msvc <- $LIBSQL_ARM64_DIR ($LIBSQL_LOCKED)"
+  [ -n "${LIBSQL_ARM64_DIR:-}" ] && [ -f "$LIBSQL_ARM64_DIR/index.node" ] || { echo "[mat] LIBSQL_ARM64_DIR missing index.node"; exit 1; }
+  check_companion_source "$LIBSQL_ARM64_DIR" @libsql/win32-arm64-msvc index.node "$LIBSQL_LOCKED"
+  if companion_dest_current "$LSQ" @libsql/win32-arm64-msvc "$LIBSQL_LOCKED" index.node; then
+    echo "[mat] @libsql/win32-arm64-msvc already present ($LIBSQL_LOCKED)"
+  else
+    # Same staged swap as the store payloads above: build the whole copy beside
+    # the target and check it there, so a half-copied or non-ARM64 source never
+    # costs us the usable copy that was already installed.
+    mkdir -p "$APPNM/@libsql"
+    MAT_STAGE="$(mktemp -d "$APPNM/@libsql/.mat-stage-XXXXXX")" \
+      || { echo "[mat] @libsql/win32-arm64-msvc: cannot create a staging dir under $APPNM/@libsql"; exit 1; }
+    cp -r "$LIBSQL_ARM64_DIR/." "$MAT_STAGE/" \
+      || { echo "[mat] @libsql/win32-arm64-msvc: copy from $LIBSQL_ARM64_DIR failed — existing copy left untouched"; exit 1; }
+    [ -f "$MAT_STAGE/package.json" ] \
+      || { echo "[mat] @libsql/win32-arm64-msvc: staged copy has no package.json — existing copy left untouched"; exit 1; }
+    [ "$(pearch "$MAT_STAGE/index.node")" = 64aa ] \
+      || { echo "[mat] @libsql/win32-arm64-msvc: staged index.node is not ARM64 — existing copy left untouched"; exit 1; }
+    swap_into_place "$LSQ" "@libsql/win32-arm64-msvc" "$ROOT/tmp"
+    echo "[mat] @libsql/win32-arm64-msvc <- $LIBSQL_ARM64_DIR ($LIBSQL_LOCKED)"
+  fi
 fi
 
 # --- 3. Supply @anush008/tokenizers-win32-arm64-msvc (registry has none;
@@ -353,22 +392,36 @@ fi
 # from a rebuild that fixed a crash. The payload is two files, so it is simply
 # re-staged from the verified prebuild every run rather than interrogated. The
 # swap is the same one: the old copy only dies once the new one is in place.
-TOK="$APPNM/@anush008/tokenizers-win32-arm64-msvc"
-[ -n "${TOKENIZERS_ARM64_DIR:-}" ] && [ -f "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" ] || { echo "[mat] TOKENIZERS_ARM64_DIR missing tokenizers.win32-arm64-msvc.node"; exit 1; }
-check_companion_source "$TOKENIZERS_ARM64_DIR" @anush008/tokenizers-win32-arm64-msvc tokenizers.win32-arm64-msvc.node "$TOKENIZERS_LOCKED"
-# Copy only the two files the platform package needs — never cp -r the source
-# dir (it may also hold the downloaded tarball/checksum; this dir is shipped
-# verbatim by electron-builder extraResources with a **/* filter). Staged
-# beside the target and checked there, so a failed copy keeps the old one.
-mkdir -p "$APPNM/@anush008"
-MAT_STAGE="$(mktemp -d "$APPNM/@anush008/.mat-stage-XXXXXX")" \
-  || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: cannot create a staging dir under $APPNM/@anush008"; exit 1; }
-cp "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" "$MAT_STAGE/tokenizers.win32-arm64-msvc.node" \
-  || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: copy of the .node failed — existing copy left untouched"; exit 1; }
-cp "$TOKENIZERS_ARM64_DIR/package.json" "$MAT_STAGE/package.json" \
-  || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: copy of package.json failed — existing copy left untouched"; exit 1; }
-[ "$(pearch "$MAT_STAGE/tokenizers.win32-arm64-msvc.node")" = 64aa ] \
-  || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: staged tokenizers.win32-arm64-msvc.node is not ARM64 — existing copy left untouched"; exit 1; }
-swap_into_place "$TOK" "@anush008/tokenizers-win32-arm64-msvc" "$ROOT/tmp"
-echo "[mat] @anush008/tokenizers-win32-arm64-msvc <- $TOKENIZERS_ARM64_DIR ($TOKENIZERS_LOCKED)"
+if [ -z "$TOKENIZERS_LOCKED" ]; then
+  # Nothing in the graph loads it (see the resolution above). Any copy left by
+  # an earlier build would be packaged and verified as if it were still wanted,
+  # so it goes — parked under $ROOT/tmp rather than deleted outright, on the
+  # same rule as every other swap here.
+  TOK="$APPNM/@anush008/tokenizers-win32-arm64-msvc"
+  if [ -e "$TOK" ]; then
+    mkdir -p "$ROOT/tmp"
+    mv "$TOK" "$ROOT/tmp/tokenizers-win32-arm64-msvc.$$.stale" \
+      || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: a stale copy is installed and cannot be moved out of $APPNM — it would be packaged for a dependency nothing loads"; exit 1; }
+    echo "[mat] @anush008/tokenizers-win32-arm64-msvc: removed a stale copy (the dependency is gone from bun.lock)"
+  fi
+else
+  TOK="$APPNM/@anush008/tokenizers-win32-arm64-msvc"
+  [ -n "${TOKENIZERS_ARM64_DIR:-}" ] && [ -f "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" ] || { echo "[mat] TOKENIZERS_ARM64_DIR missing tokenizers.win32-arm64-msvc.node"; exit 1; }
+  check_companion_source "$TOKENIZERS_ARM64_DIR" @anush008/tokenizers-win32-arm64-msvc tokenizers.win32-arm64-msvc.node "$TOKENIZERS_LOCKED"
+  # Copy only the two files the platform package needs — never cp -r the source
+  # dir (it may also hold the downloaded tarball/checksum; this dir is shipped
+  # verbatim by electron-builder extraResources with a **/* filter). Staged
+  # beside the target and checked there, so a failed copy keeps the old one.
+  mkdir -p "$APPNM/@anush008"
+  MAT_STAGE="$(mktemp -d "$APPNM/@anush008/.mat-stage-XXXXXX")" \
+    || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: cannot create a staging dir under $APPNM/@anush008"; exit 1; }
+  cp "$TOKENIZERS_ARM64_DIR/tokenizers.win32-arm64-msvc.node" "$MAT_STAGE/tokenizers.win32-arm64-msvc.node" \
+    || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: copy of the .node failed — existing copy left untouched"; exit 1; }
+  cp "$TOKENIZERS_ARM64_DIR/package.json" "$MAT_STAGE/package.json" \
+    || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: copy of package.json failed — existing copy left untouched"; exit 1; }
+  [ "$(pearch "$MAT_STAGE/tokenizers.win32-arm64-msvc.node")" = 64aa ] \
+    || { echo "[mat] @anush008/tokenizers-win32-arm64-msvc: staged tokenizers.win32-arm64-msvc.node is not ARM64 — existing copy left untouched"; exit 1; }
+  swap_into_place "$TOK" "@anush008/tokenizers-win32-arm64-msvc" "$ROOT/tmp"
+  echo "[mat] @anush008/tokenizers-win32-arm64-msvc <- $TOKENIZERS_ARM64_DIR ($TOKENIZERS_LOCKED)"
+fi
 echo "[mat] minimal native repair complete"

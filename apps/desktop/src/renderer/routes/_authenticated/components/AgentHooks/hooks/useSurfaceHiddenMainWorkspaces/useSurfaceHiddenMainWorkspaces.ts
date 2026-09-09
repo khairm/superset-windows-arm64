@@ -68,6 +68,9 @@ export function useSurfaceHiddenMainWorkspaces(): void {
 		[collections],
 	);
 
+	// `isHidden` comes along because a hidden project is not in the sidebar for
+	// this predicate's purposes ((REMOVE-STICKY): its mains stay tombstoned
+	// until the user shows the project again).
 	const { data: sidebarProjectRows = [], isReady: sidebarProjectsReady } =
 		useLiveQuery(
 			(query) =>
@@ -75,6 +78,7 @@ export function useSurfaceHiddenMainWorkspaces(): void {
 					.from({ sidebarProject: collections.v2SidebarProjects })
 					.select(({ sidebarProject }) => ({
 						projectId: sidebarProject.projectId,
+						isHidden: sidebarProject.isHidden,
 					})),
 			[collections],
 		);

@@ -56,6 +56,10 @@
 			"types": "./src/sentry.ts",
 			"default": "./src/sentry.ts"
 		},
+		"./sentry-throttle": {
+			"types": "./src/sentry-throttle.ts",
+			"default": "./src/sentry-throttle.ts"
+		},
 		"./slash-commands": {
 			"types": "./src/slash-commands.ts",
 			"default": "./src/slash-commands.ts"
@@ -67,6 +71,10 @@
 		"./dev-credentials": {
 			"types": "./src/dev-credentials.ts",
 			"default": "./src/dev-credentials.ts"
+		},
+		"./dev-app-profile": {
+			"types": "./src/dev-app-profile.ts",
+			"default": "./src/dev-app-profile.ts"
 		},
 		"./desktop-notices": {
 			"types": "./src/desktop-notices.ts",
@@ -204,10 +212,6 @@
 			"types": "./src/tunnel-protocol.ts",
 			"default": "./src/tunnel-protocol.ts"
 		},
-		"./tunnel-v2-protocol": {
-			"types": "./src/tunnel-v2-protocol.ts",
-			"default": "./src/tunnel-v2-protocol.ts"
-		},
 		"./port-forward-mux": {
 			"types": "./src/port-forward-mux.ts",
 			"default": "./src/port-forward-mux.ts"
@@ -263,6 +267,10 @@
 		"./terminal-session-handoff": {
 			"types": "./src/terminal-session-handoff.ts",
 			"default": "./src/terminal-session-handoff.ts"
+		},
+		"./theme-colors": {
+			"types": "./src/themes/types.ts",
+			"default": "./src/themes/types.ts"
 		}
 	},
 	"scripts": {

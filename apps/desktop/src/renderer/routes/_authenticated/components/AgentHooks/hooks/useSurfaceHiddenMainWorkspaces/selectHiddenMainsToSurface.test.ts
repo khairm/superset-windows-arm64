@@ -34,7 +34,10 @@ function rows(
 function surface(
 	workspaces: readonly LocalWorkspaceForPlacement[],
 	localStateRows: readonly HiddenMainSidebarRow[],
-	sidebarProjectRows: readonly { projectId: string }[] = [{ projectId: "p1" }],
+	sidebarProjectRows: readonly {
+		projectId: string;
+		isHidden?: boolean | null;
+	}[] = [{ projectId: "p1" }],
 	machineId: string | null = MACHINE,
 ): Array<{ id: string; projectId: string }> {
 	return selectHiddenMainsToSurface(
@@ -222,12 +225,11 @@ describe("selectHiddenMainsToSurface — only the 'hidden' bucket is repaired", 
 	});
 });
 
-describe("selectHiddenMainsToSurface — remove-project interaction", () => {
-	// removeProjectFromSidebarState tombstones EVERY row of the project first and
-	// deletes the v2SidebarProjects row last. This is the shape after the
-	// tombstone loop but before the project row goes: mains, worktrees and
-	// sessions all hidden, project row still present. It is also exactly what a
-	// later RE-ADD of the project recreates.
+describe("selectHiddenMainsToSurface — hide-project interaction", () => {
+	// hideProjectFromSidebarState tombstones EVERY row of the project and then
+	// flags the v2SidebarProjects row hidden. This is the shape it leaves
+	// behind: mains, worktrees and sessions all hidden, project row present but
+	// hidden. Showing the project again clears only that flag.
 	const tombstoned = rows(
 		["main-1", HIDDEN],
 		["wt-1", HIDDEN],
@@ -239,16 +241,24 @@ describe("selectHiddenMainsToSurface — remove-project interaction", () => {
 		{ ...MAIN, id: "sess-1", type: "session" },
 	];
 
-	it("keeps the whole project removed while its sidebar row is gone", () => {
+	it("keeps the whole project hidden while its sidebar row is hidden", () => {
+		// A hidden project row is NOT the sidebar: surfacing a main here would
+		// run ensureWorkspaceInSidebar and reveal the project the user hid.
+		expect(
+			surface(workspaces, tombstoned, [{ projectId: "p1", isHidden: true }]),
+		).toEqual([]);
+	});
+
+	it("keeps the whole project hidden while its sidebar row is gone", () => {
 		expect(surface(workspaces, tombstoned, [])).toEqual([]);
 	});
 
-	it("resurrects ONLY the master once the project is back in the sidebar", () => {
+	it("resurrects ONLY the master once the project is shown again", () => {
 		// (MASTER-ALWAYS-ACTIVE) deliberately overrides (REMOVE-STICKY) for mains.
-		// The tombstoned worktree and session stay removed.
-		expect(surface(workspaces, tombstoned)).toEqual([
-			{ id: "main-1", projectId: "p1" },
-		]);
+		// The tombstoned worktree and session stay dismissed.
+		expect(
+			surface(workspaces, tombstoned, [{ projectId: "p1", isHidden: false }]),
+		).toEqual([{ id: "main-1", projectId: "p1" }]);
 	});
 });
 
