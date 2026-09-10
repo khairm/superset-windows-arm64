@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "aa50c6d0f18f",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 31,
+  "files_touched": [
+    ".gitattributes",
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md",
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/components/DashboardNewWorkspaceModal/components/DashboardNewWorkspaceForm/components/DevicePicker/DevicePicker.tsx",
+    "packages/i18n/README.md",
+    "packages/i18n/lingui.config.ts",
+    "packages/i18n/scripts/backfill-upstream-translations.ts",
+    "packages/i18n/test/backfill-upstream-translations.test.ts",
+    "packages/i18n/tsconfig.json",
+    "scripts/check-i18n-catalogs.sh",
+    "scripts/ci-repair.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/aa/50c6d0f18f/0/metadata.json",
+      "transcript": "/aa/50c6d0f18f/0/full.jsonl",
+      "content_hash": "/aa/50c6d0f18f/0/content_hash.txt",
+      "prompt": "/aa/50c6d0f18f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2265835,
+    "cache_creation_tokens": 300996,
+    "cache_read_tokens": 49216666,
+    "output_tokens": 99316,
+    "api_call_count": 325
+  }
+}
