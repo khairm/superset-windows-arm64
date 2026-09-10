@@ -13,3 +13,10 @@
 # on the runner.
 packages/i18n/locales/**/messages.po text eol=lf
 packages/i18n/locales/**/messages.ts text eol=lf
+
+# Upstream's plugin bundle is written with fs.writeFileSync, i.e. LF, and its
+# gate re-renders the file and compares bytes. With core.autocrlf=true a Windows
+# checkout would hand that compare CRLF and it could never match, the same
+# failure shape as the Lingui catalogs above. The file does not exist here yet,
+# so this rule sits inert until an upstream merge brings it in.
+packages/shared/src/plugins/manifests.generated.ts text eol=lf

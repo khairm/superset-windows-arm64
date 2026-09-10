@@ -40,3 +40,12 @@ CI runs the same command on a clean checkout and additionally fails if the
 regenerated catalogs differ from what was committed. Nothing on CI fills
 translations, so a PR with untranslated strings stays red until its author
 fills them. Never hand-edit `locales/en/messages.po`; it is derived from source.
+
+There is exactly one exception, and it invents nothing. The nightly upstream
+merge runs `scripts/backfill-upstream-translations.ts`, which copies the
+translation upstream already ships for a message into the entry extraction left
+empty for it, verbatim, from the same locale's catalog in the upstream commit
+being merged. It only ever fills empty entries, so a translation the fork wrote
+stays; a message upstream does not have, or has only fuzzy, obsolete or
+untranslated, fails the merge and waits for a human. Nothing in it runs on a
+normal PR.

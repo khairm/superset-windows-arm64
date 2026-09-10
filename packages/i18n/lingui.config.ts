@@ -46,7 +46,19 @@ export default defineConfig({
 				"<rootDir>/../../packages/shared/src",
 				"<rootDir>/src",
 			],
-			exclude: ["**/node_modules/**", "**/*.test.*", "**/*.stories.*"],
+			// (I18N-UPSTREAM-BACKFILL) Excludes are matched against the CWD the
+			// CLI runs in, which is this package — so a bare pattern never
+			// reaches the cross-app roots above and upstream's
+			// `<Trans id="greeting" />` test fixture extracted as a real
+			// message no locale could ever translate. The root-anchored twins
+			// cover the whole repo; the bare ones stay for this package.
+			exclude: [
+				"**/node_modules/**",
+				"**/*.test.*",
+				"**/*.stories.*",
+				"<rootDir>/../../**/*.test.*",
+				"<rootDir>/../../**/*.stories.*",
+			],
 		},
 	],
 });

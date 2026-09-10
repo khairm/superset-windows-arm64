@@ -109,6 +109,11 @@ FROZEN_GATE_PATHS=(
   scripts/check-no-bundled-skills.mjs
   scripts/check-cloud-severance.mjs
   scripts/check-i18n-catalogs.sh
+  packages/i18n/scripts/backfill-upstream-translations.ts
+  # The backfill reads its include roots, excludes and locale list from here, so
+  # the config carries the same authority as the script: widening an exclude is
+  # how a repair makes a catalog failure disappear without translating anything.
+  packages/i18n/lingui.config.ts
   scripts/cloud-severance-allowlist.tsv
   scripts/verify-renderer-guards.sh
   scripts/verify-packaged-natives.sh

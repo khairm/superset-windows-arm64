@@ -684,6 +684,28 @@ jobs:
             round=$((round+1))
           done
 
+          # --- (I18N-UPSTREAM-BACKFILL) bring the Lingui catalogs back in step -
+          # The build's (I18N-CATALOG-GATE) re-extracts and fails on any diff, so
+          # the catalogs have to be right in the commit made below — after the
+          # last AI pass, so a string an adapt round touched is caught too.
+          # Extraction adds every new upstream string to all sixteen locales with
+          # an empty msgstr and `compile --strict` rejects that, which is what
+          # turned one new upstream word into a red night. The backfill copies the
+          # translation upstream already ships for that exact message out of the
+          # tag being merged, pinned to its commit so a moved tag cannot change
+          # what gets copied. It invents nothing and overwrites no translation the
+          # fork already carries; a fork-only string upstream has never seen fails
+          # here, loudly, with the baseline untouched. The second extract proves
+          # the filled catalogs are what extraction produces, not a state only
+          # this step can reach.
+          echo "::group::(I18N-UPSTREAM-BACKFILL) regenerate + backfill Lingui catalogs"
+          UPSTREAM_SHA=$(git rev-parse --verify "refs/upstream-tags/$NEWTAG^{commit}")
+          (cd packages/i18n && node_modules/.bin/lingui extract --clean --overwrite --workers 1)
+          bun packages/i18n/scripts/backfill-upstream-translations.ts "$UPSTREAM_SHA"
+          (cd packages/i18n && node_modules/.bin/lingui extract --clean --overwrite --workers 1)
+          (cd packages/i18n && node_modules/.bin/lingui compile --strict --workers 1)
+          echo "::endgroup::"
+
           # --- record new baseline + commit the merge -------------------------
           # (NIGHTLY-INTEGRITY) The release tag is derived SOLELY from
           # apps/desktop/package.json by the build — if the merged version
@@ -712,6 +734,12 @@ jobs:
           printf '%s\n' "$NEWTAG" > .fork/upstream-baseline.txt
           git add -A
           git commit -m "merge upstream ${NEWTAG}" -m "Auto-merged by nightly-merge; conflicts resolved and clean refactors ported by Opus where needed; all FEATURES.md markers verified present; merged delta passed the bounded (MERGE-SEMANTIC-GATE)/(MERGE-ADAPT) review loop."
+          # (I18N-UPSTREAM-BACKFILL) The build runs this same gate on the
+          # candidate. Run it here too, so a catalog that does not match its
+          # source fails the merge job with the baseline untouched instead of
+          # burning a build — and so a rehearsal proves it. It refuses to run on a
+          # dirty catalog tree, which is why it comes after the commit.
+          bash scripts/check-i18n-catalogs.sh
           # (CANDIDATE-IDEMPOTENT-PUSH) The candidate is a disposable CI branch:
           # re-derived from main each run, consumed by `build`, deleted by
           # `advance` ON SUCCESS only. A FAILED build never reaches `advance`, so

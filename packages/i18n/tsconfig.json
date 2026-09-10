@@ -5,6 +5,6 @@
 		"lib": ["ES2022", "DOM"],
 		"types": ["bun-types"]
 	},
-	"include": ["src", "locales", "test", "lingui.config.ts"],
+	"include": ["src", "locales", "scripts", "test", "lingui.config.ts"],
 	"exclude": ["node_modules"]
 }

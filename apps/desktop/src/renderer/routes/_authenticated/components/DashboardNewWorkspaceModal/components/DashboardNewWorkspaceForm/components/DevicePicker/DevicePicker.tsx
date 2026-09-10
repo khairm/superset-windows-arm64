@@ -25,6 +25,10 @@ import { FormPickerTrigger } from "../../PromptGroup/components/FormPickerTrigge
 import { CLOUD_HOST_ID } from "./constants";
 import { useWorkspaceHostOptions } from "./hooks/useWorkspaceHostOptions";
 
+// Upstream declares CLOUD_HOST_ID in this file and imports it from here, so the
+// re-export is what keeps those callers resolving across a merge (see below).
+export { CLOUD_HOST_ID } from "./constants";
+
 function OnlineDot({ online }: { online: boolean }) {
 	const { t } = useLingui();
 	return (
