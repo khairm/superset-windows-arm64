@@ -1,24 +1,29 @@
 #!/usr/bin/env node
-// (REFERR-GATE) Narrow ReferenceError-class typecheck gate.
+// (REFERR-GATE) Narrow build-breaking typecheck gate.
 //
 // The fork's build is esbuild-only (no type gate by design — the tree carries
-// known, accepted type debt). But one class of diagnostic is ALWAYS a runtime
-// bug in shipped code: "cannot find name" — a bare identifier esbuild happily
-// bundles that throws ReferenceError at runtime. The v1.14.0 nightly merge
-// shipped exactly that (layout.tsx kept fork code referencing a variable an
-// upstream hunk renamed; git merged the hunk CLEANLY so the AI resolver never
-// saw it, and every v2 workspace view crashed at render).
+// known, accepted type debt). But two classes of diagnostic are never debt.
 //
-// This gate runs tsc per shipped package and fails ONLY on that class:
+// 1. "cannot find name": a bare identifier esbuild happily bundles that throws
+//    ReferenceError at runtime. The v1.14.0 nightly merge shipped exactly that
+//    (layout.tsx kept fork code referencing a variable an upstream hunk
+//    renamed; git merged the hunk CLEANLY so the AI resolver never saw it, and
+//    every v2 workspace view crashed at render).
+// 2. "cannot redeclare block-scoped variable": two declarations of one name in
+//    one scope, which a merge produces when fork and upstream each add their
+//    own copy of an import or a const. It is a hard compile error, not debt.
+//
+// This gate runs tsc per shipped package and fails ONLY on those classes:
 //   TS2304 cannot find name
 //   TS2552 cannot find name (did-you-mean)
 //   TS2662 cannot find name (instance member, static access)
 //   TS2663 cannot find name (static member, instance access)
 //   TS18004 shorthand property needs a value in scope
-// The known type debt contains ZERO of these codes, so the gate cannot
-// false-abort on it. Deliberately per-package direct tsc, NOT `turbo
-// typecheck` — the turbo graph is blocked by unrelated upstream debt
-// (@superset/pty-daemon build:types).
+//   TS2451 cannot redeclare block-scoped variable
+// The known type debt contains ZERO of these codes (measured across all seven
+// scopes below, TS2451 included), so the gate cannot false-abort on it.
+// Deliberately per-package direct tsc, NOT `turbo typecheck` — the turbo graph
+// is blocked by unrelated upstream debt (@superset/pty-daemon build:types).
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -39,7 +44,7 @@ const PACKAGE_DIRS = [
 	"packages/workspace-client",
 ];
 
-const DANGEROUS = /error TS(2304|2552|2662|2663|18004):/;
+const DANGEROUS = /error TS(2304|2451|2552|2662|2663|18004):/;
 
 let failed = false;
 for (const dir of PACKAGE_DIRS) {
@@ -88,7 +93,7 @@ for (const dir of PACKAGE_DIRS) {
 	if (hits.length > 0) {
 		failed = true;
 		console.error(
-			`FAIL ${dir} (${secs}s) — ${hits.length} ReferenceError-class diagnostic(s):`,
+			`FAIL ${dir} (${secs}s) — ${hits.length} build-breaking diagnostic(s):`,
 		);
 		for (const line of hits) {
 			console.error(`::error::(REFERR-GATE) ${dir}: ${line.trim()}`);
@@ -103,10 +108,10 @@ for (const dir of PACKAGE_DIRS) {
 
 if (failed) {
 	console.error(
-		"::error::(REFERR-GATE) cannot-find-name diagnostics found — a bare identifier would throw ReferenceError in the shipped bundle. Fix before building.",
+		"::error::(REFERR-GATE) cannot-find-name or duplicate-declaration diagnostics found — a bare identifier would throw ReferenceError in the shipped bundle, and a redeclared name does not compile at all. Fix before building.",
 	);
 	process.exit(1);
 }
 console.log(
-	"(REFERR-GATE) clean — no ReferenceError-class diagnostics in shipped packages.",
+	"(REFERR-GATE) clean — no cannot-find-name or duplicate-declaration diagnostics in shipped packages.",
 );

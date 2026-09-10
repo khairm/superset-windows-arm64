@@ -318,8 +318,51 @@ jobs:
             ':(exclude).fork/**' > "$FORK_DELTA_FILE"
           echo "Fork-owned / fork-modified files eligible for proactive porting:"
           cat "$FORK_DELTA_FILE"
+          # Defined HERE, ahead of the port pass, because both the port agent
+          # and the adapt agent record UNRESOLVED BLOCKERS, and the semantic
+          # review reads the open ones before every verdict. Under `set -u` a
+          # prompt built before the assignment would kill the job.
+          ADAPT_FINDINGS_FILE="$RUNNER_TEMP/merge-adapt-findings.txt"
+          ADAPT_DIAGS_FILE="$RUNNER_TEMP/merge-adapt-referr-diags.txt"
+          # Blocker lifecycle. A fixer agent (port / adapt) is TOLD about the
+          # inbox only, and told to append; the workflow drains the inbox into
+          # the open-blocker record after each fixer run, so a blocker a fixer
+          # failed to fix is out of the prompt's reach by the next round. That
+          # much is instruction-level, NOT enforced — both files sit under
+          # $RUNNER_TEMP at paths the workflow itself discloses, and only the
+          # review run is hash-checked against rewriting the record. The record
+          # is retired ONLY by a fresh, independent review naming a blocker
+          # verbatim in its verdict, which is what stops a genuinely-repaired
+          # blocker from poisoning every later round. A still-open record can
+          # never reach 'VERDICT: OK'.
+          NEW_BLOCKERS_FILE="$RUNNER_TEMP/merge-new-blockers.txt"
+          ADAPT_BLOCKERS_FILE="$RUNNER_TEMP/merge-open-blockers.txt"
+          rm -f "$ADAPT_FINDINGS_FILE" "$ADAPT_DIAGS_FILE"
+          # (BLOCKER-LIFECYCLE:drain) begin — extracted verbatim and executed by
+          # scripts/nightly-merge-blockers.test.sh; keep self-contained.
+          : > "$NEW_BLOCKERS_FILE"
+          : > "$ADAPT_BLOCKERS_FILE"
+          drain_new_blockers() {
+            [ -s "$NEW_BLOCKERS_FILE" ] || return 0
+            # Truncating the inbox is what makes a drop permanent, so nothing
+            # may be truncated that was not understood. Any non-blank line
+            # without the required prefix is a fixer writing the file some
+            # other way — its content is unknowable, so the inbox is left
+            # exactly as written and the night aborts rather than discard it.
+            MALFORMED=$(grep -v '^[[:space:]]*$' "$NEW_BLOCKERS_FILE" | grep -v '^UNRESOLVED BLOCKER: ' || true)
+            if [ -n "$MALFORMED" ]; then
+              echo "::error::(MERGE-ADAPT) the blocker inbox holds line(s) without the required 'UNRESOLVED BLOCKER: ' prefix — refusing to drain, because truncating it would discard them. Inbox left intact. Baseline untouched."
+              printf '%s\n' "$MALFORMED"
+              exit 1
+            fi
+            grep '^UNRESOLVED BLOCKER: ' "$NEW_BLOCKERS_FILE" >> "$ADAPT_BLOCKERS_FILE" || true
+            : > "$NEW_BLOCKERS_FILE"
+            echo "(MERGE-ADAPT) open unresolved blockers after this run:"
+            cat "$ADAPT_BLOCKERS_FILE"
+          }
+          # (BLOCKER-LIFECYCLE:drain) end
           HEAD_BEFORE_PORT=$(git rev-parse HEAD)
-          PORT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. The previous upstream baseline is ${BASE}. Both upstream trees are available at refs/upstream-tags/${BASE} and refs/upstream-tags/${NEWTAG}. Your job is to find fork-owned files listed in ${FORK_DELTA_FILE} that reference upstream APIs, symbols, modules, collections, or providers that CHANGED between those tags — renamed/deleted/moved exports, changed signatures, removed collections/providers — and PORT the fork code to upstream's new API and intent so every fork feature keeps working. Use read-only commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>', 'git show', and grep to understand the refactor. If upstream renamed or privatized an export the fork imports, rewire the fork call site to the new mechanism or deliberately re-export the required mechanism; if upstream deleted a collection the fork queries, migrate the fork query to upstream's replacement data source. HARD RULES: edit ONLY files listed in ${FORK_DELTA_FILE}; never edit .github/workflows/**; never delete a fork feature or weaken any FEATURES.md marker; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit; do NOT run git merge / checkout / restore; if nothing needs porting, change nothing and stop. Output nothing."
+          PORT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. The previous upstream baseline is ${BASE}. Both upstream trees are available at refs/upstream-tags/${BASE} and refs/upstream-tags/${NEWTAG}. Your job is to find fork-owned files listed in ${FORK_DELTA_FILE} that reference upstream APIs, symbols, modules, collections, or providers that CHANGED between those tags — renamed/deleted/moved exports, changed signatures, removed collections/providers — and PORT the fork code to upstream's new API and intent so every fork feature keeps working. Use read-only commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>', 'git show', and grep to understand the refactor. If upstream renamed or privatized an export the fork imports, rewire the fork call site to the new mechanism or deliberately re-export the required mechanism; if upstream deleted a collection the fork queries, migrate the fork query to upstream's replacement data source. HARD RULES: edit ONLY files listed in ${FORK_DELTA_FILE}; never edit .github/workflows/**; never delete a fork feature or weaken any FEATURES.md marker; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit; do NOT run git merge / checkout / restore; if nothing needs porting, change nothing and stop. If you observe a REAL blocker you are not allowed to fix — an actual compile or parse failure in a file outside ${FORK_DELTA_FILE}, NOT the accepted non-gating tsc type debt this tree carries — never ignore it and never edit outside the allowlist to hide it: append one line describing it to the file at ${NEW_BLOCKERS_FILE}, starting with 'UNRESOLVED BLOCKER: ', so the later review and repair rounds pick it up. Never read or write any other blocker file. Output nothing."
           run_claude "merge-adapt-port" "$PORT_PROMPT" || true
           if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_PORT" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             echo "::error::(MERGE-ADAPT) the proactive port run committed or destroyed the merge state — refusing to trust it. Baseline untouched."
@@ -330,6 +373,7 @@ jobs:
           # --no-overlay can then drop it with the rest of the fork-owned tree.
           git add -A
           git checkout --no-overlay HEAD -- .github/workflows
+          drain_new_blockers
           echo "::endgroup::"
 
           # --- dependency-consistency gate + lock regen (LOCK-REGEN) ----------
@@ -388,13 +432,16 @@ jobs:
           # costing a red night + manual recovery (desktop-v1.15.1
           # useChangesTab incident: the resolver took upstream's rewritten
           # import block, kept the fork's JSX, dropped Button/Tooltip/cn).
-          # Repair is scoped HARD to cannot-find-name diagnostics; anything
-          # still dirty after 2 attempts aborts exactly as before (the build
+          # Repair is scoped HARD to what the gate reports: cannot-find-name
+          # diagnostics (additive fixes only) and TS2451 duplicate declarations
+          # (the one narrow case where reconciling two declarations into one is
+          # allowed, both intents preserved). Anything still dirty after 2
+          # attempts aborts exactly as before (the build
           # would have rejected it anyway — this just moves the gate earlier
           # and adds a bounded fix loop). --ignore-scripts keeps the linux
           # install pure-JS resolution (no native/postinstall platform quirks,
           # the reason this job deliberately avoids a full install elsewhere).
-          echo "::group::(REFERR-REPAIR) ReferenceError gate + bounded AI repair"
+          echo "::group::(REFERR-REPAIR) build-breaking typecheck gate + bounded AI repair"
           bun install --frozen-lockfile --ignore-scripts
           REFERRLOG="$RUNNER_TEMP/referr.log"
           run_referr_gate() {
@@ -419,7 +466,7 @@ jobs:
               echo "::error::(REFERR-REPAIR) gate failed without diagnostics — checker infrastructure problem, not repairable. Log above. Baseline untouched."
               exit 1
             fi
-            REPAIR_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG}. The typecheck gate found cannot-find-name diagnostics — identifiers that would throw ReferenceError at runtime, almost always imports dropped during conflict resolution. Diagnostics: ${DIAGS} — Fix ONLY these diagnostics, and ONLY by ADDING code: add the missing import lines (match how the same symbols are imported elsewhere in this repo, e.g. @superset/ui/*) or restore the dropped declaration. NEVER delete, comment out, or rewrite existing code, JSX, or use-sites to silence a diagnostic — removing the code that uses the identifier is feature loss and is forbidden. Do NOT touch any file not named in the diagnostics. After editing each file run 'git add <file>'. Do NOT commit. Output nothing."
+            REPAIR_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG}. The typecheck gate found build-breaking diagnostics. Diagnostics: ${DIAGS} — Fix ONLY these diagnostics, and ONLY in the files they name. Two kinds appear here, with different rules. (1) CANNOT FIND NAME (TS2304/TS2552/TS2662/TS2663/TS18004): identifiers that would throw ReferenceError at runtime, almost always imports dropped during conflict resolution. Fix these ONLY by ADDING code: add the missing import lines (match how the same symbols are imported elsewhere in this repo, e.g. @superset/ui/*) or restore the dropped declaration. Read the file's existing imports first and extend them — never add a second import of a symbol the file already imports, which would only trade this error for a duplicate-declaration one. (2) CANNOT REDECLARE BLOCK-SCOPED VARIABLE (TS2451): one name declared twice in one scope, which a merge produces when the fork and upstream each add their own copy of an import or a const. This is the ONE case where you may remove code, and only in this narrow way: reconcile the duplicates into a SINGLE declaration that preserves BOTH intents — every symbol either side imported, and the value the surviving declaration must hold — and leaves every existing use-site working unchanged. NEVER delete, comment out, or rewrite existing code, JSX, or use-sites to silence a diagnostic — removing the code that uses an identifier, or dropping one side of a duplicate whose symbols are still used, is feature loss and is forbidden. Do NOT touch any file not named in the diagnostics. After editing each file run 'git add <file>'. Do NOT commit. Output nothing."
             echo "::group::claude referr-repair attempt $attempt"
             run_claude "referr-repair" "$REPAIR_PROMPT" || true
             echo "::endgroup::"
@@ -427,7 +474,7 @@ jobs:
             attempt=$((attempt+1))
           done
           if [ "$REFERR_RC" -ne 0 ]; then
-            echo "::error::(REFERR-REPAIR) cannot-find-name diagnostics persist after repair attempts — aborting (the build would reject this tree). Recovery: fix locally and re-baseline. Baseline untouched."
+            echo "::error::(REFERR-REPAIR) build-breaking diagnostics persist after repair attempts — aborting (the build would reject this tree). Recovery: fix locally and re-baseline. Baseline untouched."
             exit 1
           fi
           if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_REPAIR" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
@@ -483,7 +530,8 @@ jobs:
 
           # --- (MERGE-SEMANTIC-GATE) bounded review/adapt/re-verify loop -------
           # The marker gate only proves feature TOKENS still exist, and the
-          # build's (REFERR-GATE) only catches cannot-find-name diagnostics. A
+          # build's (REFERR-GATE) only catches cannot-find-name and duplicate-
+          # declaration diagnostics. A
           # cleanly-merging upstream hunk can still SEMANTICALLY break a fork
           # feature with zero conflicts — v1.14.2 dropped sidebar state fields,
           # while v1.16.0 deleted/privatized APIs still used by fork-only files.
@@ -493,10 +541,7 @@ jobs:
           # Three review rounds / two repairs is the hard bound. No verdict,
           # reviewer mutation, deleted marker, or final BREAKAGE fails closed.
           REVIEW_FILE="$RUNNER_TEMP/merge-review.txt"
-          ADAPT_FINDINGS_FILE="$RUNNER_TEMP/merge-adapt-findings.txt"
-          ADAPT_DIAGS_FILE="$RUNNER_TEMP/merge-adapt-referr-diags.txt"
-          rm -f "$ADAPT_DIAGS_FILE"
-          REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. (5) If the file at ${WFDELTA_FILE} is non-empty, read it — it is upstream's CI/workflow delta we deliberately did NOT merge (.github/workflows is fork-owned). If it moves BUILD-RELEVANT logic into upstream CI (a codegen/generate step, a newly required env var, a packaging/signing step) that our fork's own build workflow would now silently miss, append one line per item after the verdict: 'CI-NOTE: <what upstream CI now does that the fork build may need>'. CI-NOTEs alone never change the verdict. Rules: do NOT edit ANY repository file; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
+          REVIEW_PROMPT="IMPORTANT: Do NOT enter plan mode. You are reviewing an ALREADY-RESOLVED, staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. Your ONLY job is to decide whether the merged result SEMANTICALLY breaks any fork feature. Steps: (1) Read FEATURES.md — the fork feature manifest (feature descriptions + marker tokens). (2) Run 'git --no-pager diff --cached --name-only' to list every file the merge changed. (3) For each changed file that participates in a fork feature — it contains a FEATURES.md marker token, or it is in the blast radius of one (e.g. a projection/select/mapping that a feature's fields flow through, a component a feature's props pass through, a hook a feature's guard lives in) — read the staged diff ('git --no-pager diff --cached -- <file>') AND the surrounding file content, and verify the fork behaviour still works end-to-end: fork-added fields still projected/carried, fork branches and guards still reachable, fork props still passed, fork call sites still invoked. An upstream refactor that preserves behaviour is fine; flag only real breakage. (4) Write your verdict to the file at ${REVIEW_FILE} — the FIRST line must be exactly 'VERDICT: OK' or 'VERDICT: BREAKAGE'; for BREAKAGE add one line per finding: '<file> — <feature/marker> — <what broke>'. (5) If the file at ${WFDELTA_FILE} is non-empty, read it — it is upstream's CI/workflow delta we deliberately did NOT merge (.github/workflows is fork-owned). If it moves BUILD-RELEVANT logic into upstream CI (a codegen/generate step, a newly required env var, a packaging/signing step) that our fork's own build workflow would now silently miss, append one line per item after the verdict: 'CI-NOTE: <what upstream CI now does that the fork build may need>'. CI-NOTEs alone never change the verdict. (6) Before you decide, read the file at ${ADAPT_FINDINGS_FILE} if it exists and is non-empty, and the file at ${ADAPT_DIAGS_FILE} if it exists and is non-empty. They hold the findings and deterministic gate diagnostics a PREVIOUS adaptation round was told to fix. Check every entry against the CURRENT tree. You may NOT return 'VERDICT: OK' while any of them is still unresolved. (7) Read the file at ${ADAPT_BLOCKERS_FILE} if it is non-empty — one line per blocker an earlier round recorded as unresolved, each starting with 'UNRESOLVED BLOCKER: '. Verify EVERY line against the CURRENT tree yourself. For each one you PROVE is now fixed (or was never real), append a line 'BLOCKER RESOLVED: <that line copied verbatim, prefix included>'; the workflow retires exactly the lines you echo verbatim and nothing else, so a paraphrase leaves the blocker open. Never guess, and never retire a line you did not check. Any line you do not retire is still open, and you may NOT return 'VERDICT: OK' while one is open — an open BLOCKER is BREAKAGE and must be listed as a finding. A BLOCKER means an actual compile or parse failure, or a diagnostic the configured gates fail on; the accepted non-gating tsc type debt this tree carries is NOT a blocker and must never be reported as one. Rules: do NOT edit ANY repository file; the ONLY file you may write is ${REVIEW_FILE} — never write to the findings, diagnostics or blocker files; do NOT run git add / commit / checkout / merge / restore; only read files, run read-only git diff/log/show commands, and write the verdict file. Output nothing else."
           MAX_REVIEW_ROUNDS=3
           round=1
           while [ $round -le $MAX_REVIEW_ROUNDS ]; do
@@ -506,6 +551,7 @@ jobs:
             # The reviewer must not modify the tree; snapshot the work-tree state
             # and refuse to continue if the review run changed ANYTHING.
             STATUS_BEFORE=$(git status --porcelain=v1 | sha256sum)
+            BLOCKERS_BEFORE=$(sha256sum < "$ADAPT_BLOCKERS_FILE")
             attempt=1
             while [ $attempt -le 2 ]; do
               echo "::group::claude review attempt $attempt"
@@ -515,8 +561,13 @@ jobs:
               attempt=$((attempt+1))
             done
             STATUS_AFTER=$(git status --porcelain=v1 | sha256sum)
+            BLOCKERS_AFTER=$(sha256sum < "$ADAPT_BLOCKERS_FILE")
             if [ "$STATUS_BEFORE" != "$STATUS_AFTER" ]; then
               echo "::error::(MERGE-SEMANTIC-GATE) the review run modified the work tree — refusing to trust or commit it. Baseline untouched."
+              exit 1
+            fi
+            if [ "$BLOCKERS_BEFORE" != "$BLOCKERS_AFTER" ]; then
+              echo "::error::(MERGE-SEMANTIC-GATE) the review run rewrote the open-blocker record instead of naming retirements in its verdict — refusing to trust it. Baseline untouched."
               exit 1
             fi
             if ! [ -s "$REVIEW_FILE" ] || ! head -1 "$REVIEW_FILE" | grep -qE '^VERDICT: (OK|BREAKAGE)$'; then
@@ -525,14 +576,34 @@ jobs:
             fi
             echo "--- review verdict ---"
             cat "$REVIEW_FILE"
+            # (BLOCKER-LIFECYCLE:retire-gate) begin — extracted verbatim and
+            # executed by scripts/nightly-merge-blockers.test.sh; keep self-contained.
+            # Retire only the open blockers THIS review echoed back verbatim
+            # after proving them fixed, then refuse any OK that still leaves one
+            # open. Retirement runs before the verdict is judged so a BREAKAGE
+            # round can clear a repaired blocker while flagging something else.
+            RETIRED_FILE="$RUNNER_TEMP/merge-retired-blockers.txt"
+            sed -n 's/^BLOCKER RESOLVED: //p' "$REVIEW_FILE" > "$RETIRED_FILE"
+            if [ -s "$RETIRED_FILE" ] && [ -s "$ADAPT_BLOCKERS_FILE" ]; then
+              grep -vxF -f "$RETIRED_FILE" "$ADAPT_BLOCKERS_FILE" > "$ADAPT_BLOCKERS_FILE.keep" || true
+              mv "$ADAPT_BLOCKERS_FILE.keep" "$ADAPT_BLOCKERS_FILE"
+              echo "(MERGE-ADAPT) blockers this review verified as fixed and retired:"
+              cat "$RETIRED_FILE"
+            fi
             if head -1 "$REVIEW_FILE" | grep -q '^VERDICT: OK$'; then
               if [ -s "$ADAPT_DIAGS_FILE" ]; then
-                echo "::error::(MERGE-ADAPT) semantic review is OK but the prior adaptation left deterministic ReferenceError diagnostics — refusing to ship. Baseline untouched."
+                echo "::error::(MERGE-ADAPT) semantic review is OK but the prior adaptation left deterministic build-breaking diagnostics — refusing to ship. Baseline untouched."
+                exit 1
+              fi
+              if [ -s "$ADAPT_BLOCKERS_FILE" ]; then
+                echo "::error::(MERGE-ADAPT) semantic review is OK but blockers recorded by an earlier round are still open and unretired — refusing to ship. Baseline untouched."
+                cat "$ADAPT_BLOCKERS_FILE"
                 exit 1
               fi
               echo "::endgroup::"
               break
             fi
+            # (BLOCKER-LIFECYCLE:retire-gate) end
             echo "::endgroup::"
 
             if [ $round -eq $MAX_REVIEW_ROUNDS ]; then
@@ -540,10 +611,22 @@ jobs:
               exit 1
             fi
 
-            # Pass every finding (all verdict lines after line 1) to a separate
-            # repair agent. If the previous adaptation introduced cannot-find-
-            # name diagnostics, carry those exact diagnostics into this repair.
-            tail -n +2 "$REVIEW_FILE" > "$ADAPT_FINDINGS_FILE"
+            # Pass every finding (all verdict lines after line 1, minus this
+            # round's retirements) to a separate repair agent, plus every
+            # blocker still open and any build-breaking diagnostics the previous
+            # adaptation left. The findings file is scratch, rebuilt each round;
+            # the open-blocker record is what survives, so a round whose verdict
+            # never mentions an older blocker can no longer drop it.
+            # (BLOCKER-LIFECYCLE:findings) begin — extracted verbatim and
+            # executed by scripts/nightly-merge-blockers.test.sh; keep self-contained.
+            tail -n +2 "$REVIEW_FILE" | grep -v '^BLOCKER RESOLVED: ' > "$ADAPT_FINDINGS_FILE" || true
+            if [ -s "$ADAPT_BLOCKERS_FILE" ]; then
+              {
+                echo
+                echo "BLOCKERS RECORDED BY EARLIER ROUNDS AND STILL OPEN:"
+                cat "$ADAPT_BLOCKERS_FILE"
+              } >> "$ADAPT_FINDINGS_FILE"
+            fi
             if [ -s "$ADAPT_DIAGS_FILE" ]; then
               {
                 echo
@@ -551,11 +634,12 @@ jobs:
                 cat "$ADAPT_DIAGS_FILE"
               } >> "$ADAPT_FINDINGS_FILE"
             fi
+            # (BLOCKER-LIFECYCLE:findings) end
             FINDINGS=$(cat "$ADAPT_FINDINGS_FILE")
             echo "::group::(MERGE-ADAPT) repair round $round"
             HEAD_BEFORE_ADAPT=$(git rev-parse HEAD)
             PACKAGE_JSON_BEFORE_ADAPT=$(git diff HEAD -- package.json '**/package.json' | sha256sum)
-            ADAPT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. An independent semantic review found the fork-feature breakages below. Fix EACH finding by porting the fork code to upstream's new API and intent. You may use read-only git commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>' and 'git show' plus grep to understand the upstream refactor. FINDINGS: ${FINDINGS} HARD RULES: never delete, disable, comment out, or stub a fork feature to silence a finding; edit only files needed for these findings; never touch .github/workflows/**; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit. Output nothing."
+            ADAPT_PROMPT="IMPORTANT: Do NOT enter plan mode. You are inside a git repository holding a staged, uncommitted merge of upstream superset tag ${NEWTAG} into our Windows-ARM64 fork. An independent semantic review found the fork-feature breakages below. Fix EACH finding by porting the fork code to upstream's new API and intent. You may use read-only git commands such as 'git diff refs/upstream-tags/${BASE} refs/upstream-tags/${NEWTAG} -- <path>' and 'git show' plus grep to understand the upstream refactor. FINDINGS: ${FINDINGS} Those findings may include deterministic gate diagnostics and blockers still open from earlier rounds as well as review findings. A BLOCKER means an actual compile or parse failure, or a diagnostic the configured gates fail on — the accepted non-gating tsc type debt this tree carries is NOT a blocker and must be left alone. Fix EVERY blocker named above in this one pass, not only the first. If fixing one exposes another PROVEN blocker in a file the findings do not name, you may fix that too, under the same hard rules, when it is genuinely required for the named ones to resolve. If a real blocker cannot be fixed within these rules, leave the code alone and append one line describing it to the file at ${NEW_BLOCKERS_FILE}, starting with 'UNRESOLVED BLOCKER: ' — never ignore it and never silence it. That file is append-only and is the ONLY blocker file you may write: never rewrite or delete a line anywhere to claim a fix, and do NOT re-report a blocker you actually fixed — the next independent review re-checks every open blocker against the tree and retires the ones it can prove are gone. HARD RULES: never delete, disable, comment out, or stub a fork feature to silence a finding; never weaken, remove or rename a marker token tracked in FEATURES.md; never change the version field of any package.json; never touch .github/workflows/**; edit only files needed for these findings and their blockers; prefer minimal, surgical ports; after editing each file run 'git add <file>'; do NOT commit. Output nothing."
             run_claude "merge-adapt-round-$round" "$ADAPT_PROMPT" || true
             if [ "$(git rev-parse HEAD)" != "$HEAD_BEFORE_ADAPT" ] || ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
               echo "::error::(MERGE-ADAPT) repair round $round committed or destroyed the merge state — refusing to trust it. Baseline untouched."
@@ -565,6 +649,7 @@ jobs:
             # Stage first so --no-overlay also drops untracked workflow files.
             git add -A
             git checkout --no-overlay HEAD -- .github/workflows
+            drain_new_blockers
             PACKAGE_JSON_AFTER_ADAPT=$(git diff HEAD -- package.json '**/package.json' | sha256sum)
             if [ "$PACKAGE_JSON_BEFORE_ADAPT" != "$PACKAGE_JSON_AFTER_ADAPT" ]; then
               if ! run_lock_regen; then
@@ -585,15 +670,15 @@ jobs:
             if [ "$REFERR_RC" -ne 0 ]; then
               DIAGS=$(grep -F '(REFERR-GATE)' "$REFERRLOG" | head -40 || true)
               if [ -z "$DIAGS" ]; then
-                echo "::error::(MERGE-ADAPT) repair made the ReferenceError checker fail without actionable diagnostics — aborting. Baseline untouched."
+                echo "::error::(MERGE-ADAPT) repair made the typecheck gate fail without actionable diagnostics — aborting. Baseline untouched."
                 exit 1
               fi
               if [ $round -ge $((MAX_REVIEW_ROUNDS - 1)) ]; then
-                echo "::error::(MERGE-ADAPT) the final available repair introduced/preserved ReferenceError diagnostics — aborting. Baseline untouched."
+                echo "::error::(MERGE-ADAPT) the final available repair introduced/preserved build-breaking diagnostics — aborting. Baseline untouched."
                 exit 1
               fi
               printf '%s\n' "$DIAGS" > "$ADAPT_DIAGS_FILE"
-              echo "(MERGE-ADAPT) carrying ReferenceError diagnostics into the next repair round."
+              echo "(MERGE-ADAPT) carrying build-breaking diagnostics into the next repair round."
             fi
             echo "::endgroup::"
             round=$((round+1))

@@ -16,9 +16,10 @@ name: Build Windows ARM64 (vendored fork)
 # Why the split matters: workflow YAML is frozen when a run starts and
 # GITHUB_TOKEN cannot push .github/workflows changes — but .github/actions/**
 # and scripts/** are ordinary repo files, checked out per attempt, so the
-# repair AI can fix ~everything mid-run. Workflow-YAML fixes need the
-# WORKFLOW_PUSH_TOKEN secret (fine-grained PAT, Contents+Workflows write) and
-# take effect the NEXT run.
+# repair AI can fix ~everything mid-run. A repair may never edit workflow YAML
+# at all: .github/workflows is a FROZEN path and any edit fails the repair, so
+# a workflow-YAML fix is always a deliberate maintainer commit, in effect from
+# the next run.
 
 on:
   workflow_dispatch:
@@ -53,6 +54,21 @@ on:
 permissions:
   contents: write
   actions: read # repair jobs download this run's failed-job logs
+
+# One pin for both repair jobs below. Keep it equal to EVERY other fork-owned
+# bun pin — the build's own in .github/actions/arm64-build/action.yml and the
+# nightly's (LOCK-REGEN) one in .github/workflows/nightly-merge.yml. A repair
+# agent that resolves the lockfile with a different bun verifies against a tree
+# the build won't build.
+env:
+  BUN_VERSION: '1.3.14'
+  # Both repair jobs' `timeout-minutes:`, restated where ci-repair.sh can read
+  # it — the runner exposes no job-deadline variable, and the agent step needs
+  # one to size its install and advisory bounds so the validate+push step below
+  # always gets the job's last minutes. Keep it EQUAL to `timeout-minutes:` on
+  # repair-1 and repair-2. Too small only makes the bounds pessimistic; too
+  # large is the dangerous direction, handing out minutes the job does not have.
+  REPAIR_JOB_TIMEOUT_MINUTES: '90'
 
 jobs:
   build-attempt-1:
@@ -306,6 +322,18 @@ jobs:
       repaired: ${{ steps.repair.outputs.repaired }}
       sha: ${{ steps.repair.outputs.sha }}
     steps:
+      # (CI-INTEGRITY) The FIRST thing this job does. The runner exposes no
+      # job-deadline variable, so this stamp plus REPAIR_JOB_TIMEOUT_MINUTES is
+      # the deadline ci-repair.sh sizes its install and advisory-gate bounds
+      # against. Taken before checkout and toolchain setup so that a slow or
+      # stalled one is spent out of THOSE bounds, never out of the reserve the
+      # validate+push step at the end of this job depends on. A step output,
+      # not a file: the runner owns it, so the repair agent cannot move its own
+      # deadline.
+      - name: Record job clock (frozen)
+        id: jobclock
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
       # persist-credentials:false — the AI step must run credential-less
       # (build logs are untrusted input to it); the push step uses an
       # ephemeral URL-embedded token instead.
@@ -319,6 +347,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # The repair agent installs dependencies (ci-repair.sh agent) so it can
+      # run the (REFERR-GATE) over its own edits instead of editing blind. The
+      # pin is BUN_VERSION above: the agent must resolve the lockfile with the
+      # same bun the build does (its ubuntu --ignore-scripts install is still
+      # not the packaging install the build runs).
+      - name: Setup Bun (match the build's pinned version)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       # (CI-INTEGRITY) Recorded BEFORE the AI step, as a step OUTPUT rather than
       # a file: the runner owns step outputs, so an agent with shell access
       # cannot rewrite this the way it could a path under the workspace or
@@ -343,6 +380,9 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ROUND: '1'
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+          # This job's clock, from the frozen first step; the deadline it feeds
+          # is that plus REPAIR_JOB_TIMEOUT_MINUTES (workflow env).
+          REPAIR_JOB_STARTED_EPOCH: ${{ steps.jobclock.outputs.epoch }}
         run: bash scripts/ci-repair.sh agent
       - name: Validate + push repair
         id: repair
@@ -636,6 +676,18 @@ jobs:
       repaired: ${{ steps.repair.outputs.repaired }}
       sha: ${{ steps.repair.outputs.sha }}
     steps:
+      # (CI-INTEGRITY) The FIRST thing this job does. The runner exposes no
+      # job-deadline variable, so this stamp plus REPAIR_JOB_TIMEOUT_MINUTES is
+      # the deadline ci-repair.sh sizes its install and advisory-gate bounds
+      # against. Taken before checkout and toolchain setup so that a slow or
+      # stalled one is spent out of THOSE bounds, never out of the reserve the
+      # validate+push step at the end of this job depends on. A step output,
+      # not a file: the runner owns it, so the repair agent cannot move its own
+      # deadline.
+      - name: Record job clock (frozen)
+        id: jobclock
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Checkout repair branch
         uses: actions/checkout@v5
         with:
@@ -646,6 +698,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # The repair agent installs dependencies (ci-repair.sh agent) so it can
+      # run the (REFERR-GATE) over its own edits instead of editing blind. The
+      # pin is BUN_VERSION above: the agent must resolve the lockfile with the
+      # same bun the build does (its ubuntu --ignore-scripts install is still
+      # not the packaging install the build runs).
+      - name: Setup Bun (match the build's pinned version)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       # (CI-INTEGRITY) Recorded BEFORE the AI step, as a step OUTPUT rather than
       # a file: the runner owns step outputs, so an agent with shell access
       # cannot rewrite this the way it could a path under the workspace or
@@ -670,6 +731,9 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ROUND: '2'
           REPAIR_BRANCH: ${{ inputs.repair_branch || github.ref_name }}
+          # This job's clock, from the frozen first step; the deadline it feeds
+          # is that plus REPAIR_JOB_TIMEOUT_MINUTES (workflow env).
+          REPAIR_JOB_STARTED_EPOCH: ${{ steps.jobclock.outputs.epoch }}
         run: bash scripts/ci-repair.sh agent
       - name: Validate + push repair
         id: repair

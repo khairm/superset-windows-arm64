@@ -5,6 +5,7 @@
 #
 #   ci-repair.sh collect   REPO RUN_ID GH_TOKEN REPAIR_BRANCH [EXPECTED_SHA]
 #   ci-repair.sh agent     CLAUDE_CODE_OAUTH_TOKEN ROUND REPAIR_BRANCH
+#                          REPAIR_JOB_STARTED_EPOCH REPAIR_JOB_TIMEOUT_MINUTES
 #   ci-repair.sh push      REPO RUN_ID ROUND REPAIR_BRANCH PUSH_TOKEN HAS_WORKFLOW_PAT
 #
 # collect: assert the checkout is exactly the sha the failed attempt built,
@@ -239,20 +240,37 @@ case "$MODE" in
     #
     # gh >= 2.84 refuses to emit a response containing terminal escape
     # sequences unless --allow-escape-sequences is passed, and a build log
-    # ALWAYS contains them (every coloured compiler line). Without the flag
-    # this exits non-zero and the whole repair loop dies before the agent ever
-    # reads the failure — observed on run 32175828565, where the collect step
-    # failed with "the response contains terminal escape sequences" and
-    # attempts 2 and 3 were skipped. The flag does not exist on older gh, so it
-    # is probed rather than assumed: hardcoding it would break the loop on any
-    # runner image that has not rolled forward yet.
-    GH_ESCAPE_FLAG=""
-    if gh api --help 2>&1 | grep -q -- "--allow-escape-sequences"; then
-      GH_ESCAPE_FLAG="--allow-escape-sequences"
-    fi
-    # shellcheck disable=SC2086 # deliberately unquoted: empty means "no flag"
-    gh api $GH_ESCAPE_FLAG "repos/$REPO/actions/jobs/$FAILED_JOB_ID/logs" > "$STATE_DIR/build-failure-full.log" || {
+    # ALWAYS contains them (every coloured compiler line). That killed the
+    # whole repair loop before the agent ever read the failure: observed on run
+    # 32175828565, where the collect step failed with "the response contains
+    # terminal escape sequences" and attempts 2 and 3 were skipped. The flag
+    # does not exist on older gh, so probing for it made the download depend on
+    # which gh version the runner image happens to carry. curl does not
+    # interpret the payload at all, so the log is fetched directly instead.
+    #
+    # This route answers with a redirect to a short-lived blob URL on a
+    # different host, hence --location. curl's DEFAULT behaviour of dropping
+    # the Authorization header on a cross-host redirect is exactly what we
+    # want: --location-trusted would hand GH_TOKEN to the blob host and must
+    # never be used here.
+    # --max-time bounds ONE attempt, so --retry 3 alone could stack into ~12
+    # minutes of a job that also has to run an agent. --retry-max-time closes
+    # the window for STARTING another attempt; an attempt already in flight
+    # still runs to its own --max-time, so the honest ceiling is ~2x180s, not
+    # 180s flat.
+    curl --fail --silent --show-error --location \
+      --proto '=https' --proto-redir '=https' \
+      --retry 3 --retry-delay 2 --retry-max-time 180 --max-time 180 \
+      -H "Authorization: Bearer $GH_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -o "$STATE_DIR/build-failure-full.log" \
+      "https://api.github.com/repos/$REPO/actions/jobs/$FAILED_JOB_ID/logs" || {
       echo "::error::(BUILD-REPAIR) could not download logs for failed job $FAILED_JOB_ID"; exit 1; }
+    if [ ! -s "$STATE_DIR/build-failure-full.log" ]; then
+      echo "::error::(BUILD-REPAIR) downloaded an EMPTY log for failed job $FAILED_JOB_ID; there is nothing for the repair agent to diagnose. Failing loud."
+      exit 1
+    fi
     # Bound what the agent reads: errors first, then the tail for context.
     {
       echo "===== failed step(s): ${FAILED_STEPS:-<unknown>} ====="
@@ -278,6 +296,75 @@ case "$MODE" in
     FROZEN_LIST=$(printf '%s, ' "${FROZEN_GATE_PATHS[@]}" FEATURES.md)
     FROZEN_LIST="${FROZEN_LIST%, }"
 
+    # Wall-clock envelope for the two non-AI things this step does. The repair
+    # job is killed at its timeout-minutes, and when that happens the NEXT step
+    # (validate + push) never runs — so a round that spends the job's last
+    # minutes here throws away a repair the agent already finished. Both the
+    # install below and the advisory gate at the end are therefore bounded
+    # against the runner-recorded job clock, always leaving validate + push its
+    # reserve. The AI call between them is deliberately NOT bounded here: its
+    # budget is the job timeout, unchanged by this block.
+    #
+    # The reserve is validate + push's own budget and nothing else: the clock
+    # is stamped by this job's FIRST step, so a slow checkout or toolchain
+    # setup is already inside the elapsed time measured here instead of being
+    # assumed away. That step runs a handful of git and node calls; 5 minutes
+    # is its ceiling with room to spare. The kill grace is subtracted on top:
+    # a command that ignores TERM at its bound runs on until KILL, so a budget
+    # handed out without allowing for it would spend the reserve it protects.
+    # The install cap is a ceiling on ONE call, not an allocation — those 600s
+    # come out of the same job budget the AI call and the gate share.
+    REPAIR_PUSH_RESERVE_SECONDS=300
+    REPAIR_KILL_GRACE_SECONDS=30
+    REPAIR_INSTALL_MAX_SECONDS=600
+    REPAIR_GATE_MIN_SECONDS=300
+
+    # Seconds this step may still use before validate + push must start, with
+    # the kill grace already deducted, so a bound built from it cannot overrun
+    # into the reserve. Prints nothing and returns 1 when the workflow passed
+    # no timing envelope, so callers can say "unknown" instead of guessing one.
+    repair_seconds_left() {
+      local start="${REPAIR_JOB_STARTED_EPOCH:-}" mins="${REPAIR_JOB_TIMEOUT_MINUTES:-}"
+      case "$start" in '' | *[!0-9]*) return 1 ;; esac
+      case "$mins" in '' | *[!0-9]*) return 1 ;; esac
+      printf '%s' "$((start + mins * 60 - $(date +%s) - REPAIR_PUSH_RESERVE_SECONDS - REPAIR_KILL_GRACE_SECONDS))"
+    }
+
+    # Dependencies BEFORE the agent runs. Without node_modules the repair agent
+    # cannot run the (REFERR-GATE) over its own edits, so every round was a
+    # blind edit judged only by the next 40-minute build attempt.
+    #
+    # A failure here is REPORTED to the agent, never fatal, and deliberately
+    # does not skip the AI call: a broken lockfile or a bad dependency edit is
+    # itself one of the commonest root causes, and refusing to run the agent
+    # would leave exactly that class unrepairable.
+    INSTALL_LOG="$STATE_DIR/repair-install.log"
+    INSTALL_BUDGET="$REPAIR_INSTALL_MAX_SECONDS"
+    if LEFT=$(repair_seconds_left) && [ "$LEFT" -lt "$INSTALL_BUDGET" ]; then
+      INSTALL_BUDGET="$LEFT"
+    fi
+    INSTALL_RC=0
+    if [ "$INSTALL_BUDGET" -le 0 ]; then
+      INSTALL_STATUS="SKIPPED (no time left in this job before validate+push must start)"
+      echo "::warning::(BUILD-REPAIR) repair-round dependency install SKIPPED — no time left in this job. The agent is told and still runs."
+    else
+      timeout --kill-after="$REPAIR_KILL_GRACE_SECONDS" "$INSTALL_BUDGET" bun install --frozen-lockfile --ignore-scripts > "$INSTALL_LOG" 2>&1 || INSTALL_RC=$?
+      case "$INSTALL_RC" in
+        0)
+          INSTALL_STATUS="SUCCEEDED"
+          echo "(BUILD-REPAIR) repair-round dependency install succeeded; log at $INSTALL_LOG"
+          ;;
+        124 | 137)
+          INSTALL_STATUS="TIMED OUT after ${INSTALL_BUDGET}s"
+          echo "::warning::(BUILD-REPAIR) repair-round dependency install hit its ${INSTALL_BUDGET}s bound and was killed. The agent is told and may repair it; log at $INSTALL_LOG"
+          ;;
+        *)
+          INSTALL_STATUS="FAILED (exit $INSTALL_RC)"
+          echo "::warning::(BUILD-REPAIR) repair-round dependency install failed (exit $INSTALL_RC). The agent is told and may repair it; log at $INSTALL_LOG"
+          ;;
+      esac
+    fi
+
     REPAIR_PROMPT="IMPORTANT: Do NOT enter plan mode. You are the CI build-repair agent for the superset-windows-arm64 vendored fork (a Windows ARM64 fork of superset-sh/superset; see AGENTS.md for architecture). Build attempt $ROUND of the Windows ARM64 installer FAILED. The failed job's log is at: $LOG_FILE — read it, find the root cause, and fix it in this working tree (branch $REPAIR_BRANCH, currently checked out).
 
 Rules:
@@ -292,7 +379,13 @@ Rules:
 - Respect the fork's live footguns listed in AGENTS.md (no sync fs at startup, screenReaderMode stays false, WS_NO_BUFFER_UTIL, pipeline-free hook templates).
 - You have NO git credentials in this step by design. Do NOT run git commit, git push, or any other git state-changing command; leave your edits in the working tree — a separate validated step commits and pushes.
 - If the log shows an infrastructure-only failure (runner outage, network flake, rate limit) with NOTHING to fix in the repo, create the file .fork/repair-retry-only (content: one line explaining why) and change nothing else — the harness will retry the build as-is.
-When done, stop. Output a one-paragraph summary of the root cause and your fix."
+- Fix every blocker the log shows, not only the first error in it.
+
+A dependency install was ATTEMPTED for you before this prompt with 'bun install --frozen-lockfile --ignore-scripts'. Result: ${INSTALL_STATUS}. Full output: $INSTALL_LOG.
+- If that install FAILED, treat it as a blocker to repair (a broken lockfile or a bad dependency edit is one of the commonest root causes) and re-run 'bun install --frozen-lockfile --ignore-scripts' yourself to confirm your fix.
+- VERIFY BEFORE YOU STOP: once dependencies are installed, run 'node scripts/check-dangerous-diagnostics.mjs'. That is the (REFERR-GATE) the next build attempt runs; fix every diagnostic it reports and re-run it until it is clean.
+- State plainly in your summary what you actually verified: gate clean, gate still reporting diagnostics, or verification impossible because dependencies would not install. NEVER claim the build passes — only the next Windows build attempt can decide that.
+When done, stop. Output a one-paragraph summary of the root cause, your fix, and what you verified."
 
     # Pessimistic rc FIRST: the AI-unavailable path aborts mid-call, so the
     # record has to be on disk before the call, not after it. This channel —
@@ -316,6 +409,43 @@ When done, stop. Output a one-paragraph summary of the root cause and your fix."
     # nonzero exit with an untouched tree is claude infra, not "no fix found".
     echo "$CLAUDE_RC" > "$STATE_DIR/claude-rc"
     [ "$CLAUDE_RC" -eq 0 ] || echo "::warning::(BUILD-REPAIR) claude exited $CLAUDE_RC (unclassified) — push step will fail loud if the tree is untouched."
+
+    # Advisory only: say what this round actually verified instead of logging
+    # "repaired" on faith. Re-derived from the tree, NOT from INSTALL_RC: the
+    # agent may have repaired a failed install, and a stale status would hide a
+    # real verdict. The precondition is the local compiler itself rather than a
+    # node_modules directory, which a half-finished install leaves behind
+    # without one — BOTH the package entrypoint and the .bin shim `bunx tsc`
+    # actually resolves, because an unpacked package with no shim linked is
+    # exactly the half-done shape that would send the gate to the network.
+    # This never decides the push, and a clean gate is not a passing build —
+    # the next attempt on Windows is the authority.
+    if [ -f .fork/repair-retry-only ] || [ -f .fork/repair-diagnosis.md ]; then
+      echo "(BUILD-REPAIR) agent declared retry-only or a frozen-path diagnosis — no tree to verify, skipping the advisory gate."
+    elif [ ! -f node_modules/typescript/bin/tsc ] || [ ! -e node_modules/.bin/tsc ]; then
+      echo "::warning::(BUILD-REPAIR) advisory verification UNAVAILABLE: this tree has no local TypeScript compiler the gate would resolve (needs both node_modules/typescript/bin/tsc and the node_modules/.bin/tsc shim), so the gate's 'bunx tsc' would pull some arbitrary version off the network and judge the repair with a compiler the build never uses. Nothing was checked beyond the agent's own report."
+    elif ! GATE_BUDGET=$(repair_seconds_left); then
+      echo "::warning::(BUILD-REPAIR) advisory verification UNAVAILABLE: this step was given no job timing envelope (REPAIR_JOB_STARTED_EPOCH / REPAIR_JOB_TIMEOUT_MINUTES), and an unbounded check could outrun the job and take the finished repair down with it."
+    elif [ "$GATE_BUDGET" -lt "$REPAIR_GATE_MIN_SECONDS" ]; then
+      echo "::warning::(BUILD-REPAIR) advisory verification UNAVAILABLE: headroom left in this job before validate+push must start is ${GATE_BUDGET}s, below the ${REPAIR_GATE_MIN_SECONDS}s minimum window this step allocates before starting the gate at all. That floor is an allocation, not a measurement of how long the gate takes. The repair itself is unaffected."
+    else
+      GATE_LOG="$STATE_DIR/repair-referr-gate.log"
+      GATE_RC=0
+      # Bounded so the gate can never eat the job: the check runs tsc once per
+      # package with a 15-minute timeout EACH, which alone can outlast the whole
+      # repair job. --kill-after escalates to KILL if tsc ignores the TERM, and
+      # the redirect to a file (not a pipe this shell holds) means a straggling
+      # grandchild cannot keep the step open either.
+      timeout --kill-after="$REPAIR_KILL_GRACE_SECONDS" "$GATE_BUDGET" node scripts/check-dangerous-diagnostics.mjs > "$GATE_LOG" 2>&1 || GATE_RC=$?
+      case "$GATE_RC" in
+        0) echo "(BUILD-REPAIR) advisory: the (REFERR-GATE) is CLEAN on the repaired tree. The build itself is unverified here." ;;
+        # Exit 1 is every way the gate fails, not just reported diagnostics: a
+        # tsc it could not spawn and a compiler that failed without emitting
+        # any diagnostics land here too. Say only what is known.
+        1) echo "::warning::(BUILD-REPAIR) advisory: the (REFERR-GATE) did not pass on the repaired tree — see the log for what it reported. The next attempt re-runs it and may fail. Log at $GATE_LOG" ;;
+        *) echo "::warning::(BUILD-REPAIR) advisory verification UNAVAILABLE: the (REFERR-GATE) did not finish within its ${GATE_BUDGET}s bound (exit $GATE_RC). The agent's repair stands and the next attempt runs the gate for real. Log at $GATE_LOG" ;;
+      esac
+    fi
     ;;
 
   push)

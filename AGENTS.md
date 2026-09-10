@@ -32,7 +32,8 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   conflicted files, then a `(MERGE-ADAPT)` proactive port pass adapts fork-only
   callers to cleanly-merging upstream API refactors. Deterministic gates follow
   (FEATURES.md marker survival, dependency/lock consistency, `(REFERR-GATE)`
-  cannot-find-name check), then a bounded `(MERGE-SEMANTIC-GATE)` review →
+  cannot-find-name + duplicate-declaration check), then a bounded
+  `(MERGE-SEMANTIC-GATE)` review →
   adapt → fresh-review loop (max 3 reviews / 2 repairs). Green all the way =
   build (with its own repair loop), publish the Release, advance the baseline
   to the BUILT sha; ANY unrepaired failure hard-aborts with the baseline
@@ -73,14 +74,15 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 - **One version, ever** — exactly one Release per upstream version, tagged
   `desktop-v<version>`, rebuilt in place; no betas/prereleases.
 - **No build-time type/test gate except `(REFERR-GATE)`** — the tree carries
-  accepted type debt; only cannot-find-name diagnostics fail the build.
+  accepted type debt; only cannot-find-name (TS2304/2552/2662/2663/18004) and
+  duplicate block-scoped declaration (TS2451) diagnostics fail the build. It
+  is not a parse or type gate: everything else tsc reports stays allowed.
   Validate + e2e locally before relying on a release.
 - **Everything is AI-touchable** (needs `CLAUDE_CODE_OAUTH_TOKEN`): the nightly
   merge resolves/ports/reviews, and the build self-repairs via `(BUILD-REPAIR)`.
-  Workflow YAML self-repair additionally needs the `WORKFLOW_PUSH_TOKEN` secret
-  (fine-grained PAT, Contents+Workflows write) and only takes effect the NEXT
-  run — workflow files are frozen once a run starts, which is why all step
-  logic lives in `.github/actions/` + `scripts/` (repairable mid-run).
+  Workflow YAML is the one exception — no repair may edit it (frozen path), and
+  GitHub freezes it once a run starts anyway, which is why all step logic lives
+  in `.github/actions/` + `scripts/` (repairable mid-run).
   Rate-limited/unparsable AI output aborts rather than ships.
 
 ## Custom features / overrides
@@ -169,9 +171,12 @@ In brief:
 - `.github/workflows` is fork-owned and CI's `GITHUB_TOKEN` can never push
   workflow changes — nightly-merge restores the dir mid-merge
   (`(WORKFLOW-FORK-OWNED)`); add upstream workflows only by deliberate local
-  commit with a user token. `(BUILD-REPAIR)` pushes that touch workflow files
-  use `WORKFLOW_PUSH_TOKEN` (also the advance job's push credential, since a
-  repaired candidate may carry workflow commits into main).
+  commit with a user token. A `(BUILD-REPAIR)` agent can never edit a workflow
+  file itself (`.github/workflows` is a FROZEN path and any edit fails the
+  repair); the repair push and the advance push still use
+  `WORKFLOW_PUSH_TOKEN` (fine-grained PAT, Contents+Workflows write) when it is
+  set, because a candidate branch can carry workflow commits from the merge
+  half into main.
 - Never assert upstream-derived incidental names (Rollup chunk filenames, file
   hashes, ordering) in fork-owned gates — assert the invariant over the whole
   artifact set (`SCREENREADER-GUARD-DRIFT`: a chunk rename blocked 3 nightlies).
