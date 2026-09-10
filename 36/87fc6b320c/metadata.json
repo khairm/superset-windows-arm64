@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "3687fc6b320c",
+  "strategy": "manual-commit",
+  "branch": "fix-nightly-repair-completeness",
+  "checkpoints_count": 39,
+  "files_touched": [
+    ".github/actions/arm64-build/action.yml",
+    ".github/workflows/build-arm64.yml",
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md",
+    "FEATURES.md",
+    "scripts/check-dangerous-diagnostics.mjs",
+    "scripts/check-dangerous-diagnostics.test.sh",
+    "scripts/ci-repair-agent.test.sh",
+    "scripts/ci-repair-collect.test.sh",
+    "scripts/ci-repair.sh",
+    "scripts/nightly-merge-blockers.test.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/36/87fc6b320c/0/metadata.json",
+      "transcript": "/36/87fc6b320c/0/full.jsonl",
+      "content_hash": "/36/87fc6b320c/0/content_hash.txt",
+      "prompt": "/36/87fc6b320c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 604905,
+    "cache_creation_tokens": 300996,
+    "cache_read_tokens": 21193754,
+    "output_tokens": 70427,
+    "api_call_count": 185
+  }
+}
