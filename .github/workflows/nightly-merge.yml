@@ -266,6 +266,11 @@ jobs:
           done
           git checkout --no-overlay HEAD -- .github/workflows
 
+          # (NO-BUNDLED-SKILLS) plugins/superset is retired in this fork. Delete it
+          # here — clean upstream adds AND unmerged stages — so the resolver below
+          # never sees a path it could argue its way into keeping.
+          git rm -r -f --ignore-unmatch -- plugins/superset
+
           CONFLICTS=$(git diff --name-only --diff-filter=U || true)
           if [ -n "$CONFLICTS" ]; then
             echo "::group::conflicts to resolve"; echo "$CONFLICTS"; echo "::endgroup::"
@@ -285,6 +290,36 @@ jobs:
             fi
           else
             echo "Clean merge — no conflicts."
+          fi
+
+          # (NO-BUNDLED-SKILLS) The plugin directory is gone; drop its marketplace
+          # listing too — ONLY that entry, so an upstream marketplace that later
+          # lists other plugins keeps them. Runs after resolution so the JSON is
+          # marker-free, and refuses to guess at a shape it does not recognise.
+          # Entry identity mirrors scripts/check-no-bundled-skills.mjs — change both.
+          MARKETPLACE_PRUNED=$(node <<'NODE'
+          const fs = require("node:fs");
+          const FILE = ".claude-plugin/marketplace.json";
+          if (!fs.existsSync(FILE)) process.exit(0);
+          const raw = fs.readFileSync(FILE, "utf8");
+          const data = JSON.parse(raw);
+          if (!data || !Array.isArray(data.plugins)) {
+            throw new Error(`${FILE}: expected a root object with a "plugins" array`);
+          }
+          if (data.plugins.some((e) => !e || typeof e !== "object" || Array.isArray(e))) {
+            throw new Error(`${FILE}: expected every "plugins" entry to be an object`);
+          }
+          const kept = data.plugins.filter((e) => e.name !== "superset" && e.source !== "./plugins/superset");
+          if (kept.length === data.plugins.length) process.exit(0);
+          const indent = /\n([\t ]+)\S/.exec(raw)?.[1] ?? "\t";
+          const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+          fs.writeFileSync(FILE, JSON.stringify({ ...data, plugins: kept }, null, indent).replace(/\n/g, eol) + eol);
+          process.stdout.write("pruned");
+          NODE
+          )
+          if [ -n "$MARKETPLACE_PRUNED" ]; then
+            echo "(NO-BUNDLED-SKILLS) dropped the retired Superset entry from .claude-plugin/marketplace.json"
+            git add -- .claude-plugin/marketplace.json
           fi
 
           # (MERGE-ADAPT) Snapshot the legitimate post-resolution manifest diff:
@@ -308,10 +343,13 @@ jobs:
           # Opus the fork-delta file set plus both upstream trees so it can port
           # those call sites before the deterministic gates and semantic review.
           echo "::group::(MERGE-ADAPT) proactive port pass"
+          # The deleted plugins/superset still differs from the upstream tag, so
+          # exclude it: an allowlist entry is an invitation to recreate it.
           FORK_DELTA_FILE="$RUNNER_TEMP/fork-delta-files.txt"
           git diff --name-only --cached "refs/upstream-tags/$NEWTAG" -- \
             . \
             ':(exclude).github/workflows/**' \
+            ':(exclude)plugins/superset/**' \
             ':(exclude)bun.lock' \
             ':(exclude)FEATURES.md' \
             ':(exclude)AGENTS.md' \

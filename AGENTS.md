@@ -69,7 +69,9 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   merge or the run aborts; never ship a partial fork.
 - **v2-only, forever** — the v2 cloud/host-service stack is pinned on; never v1.
 - **No bundled Superset skills** — never package or inject them; remove only
-  marker-proven legacy copies. Keep hooks and user-owned skills.
+  marker-proven legacy copies. Keep hooks and user-owned skills. The nightly
+  merge deletes `plugins/superset` before conflict resolution so the resolver
+  cannot keep it, then prunes only its `marketplace.json` entry afterwards.
 - **No phone-home to upstream (phase 1)** — upstream's telemetry, auto-update
   and desktop-notice channels are deliberately SEVERED as of cloud severance
   phase 1 (`(CLOUD-SEVERANCE-P1)`, `(EGRESS-FENCE)`): dead PostHog/Sentry keys,
