@@ -1,0 +1,143 @@
+we need to fix this so the auto updater / ai agent can handle any new changes / make a judgement right? what do you think?
+
+---
+
+continue please
+
+---
+
+<agent-message from="review-astra">
+No findings. SHIP for the staged one-line fix at C:/Users/khair/Code Projects/fork-superset-windows-arm64/scripts/ci-repair.sh:644. New substring matches all three workflow enforcement names at lines 143, 473, 800 and the composite-action reference at line 134; the action's own 'Verify cloud severance' name still matches its separate assertion. Script anchor, YAML parser with duplicate-key rejection, base/head full-step comparison including job/index, placement checks and single action-invocation check are unchanged. Removing, renaming, relocating or weakening an existing anchored step still fails. Recursive searches across scripts/ and .github/ found no other stale 'Enforce cloud severance' assertions. bash -n and staged diff --check pass. No unit tests run. HEAD and origin/main both match live origin/main via read-only ls-remote. AGENTS.md's incidental-name warning concerns upstream-derived artifact names; this is an existing deliberate freeze of a fork-owned step, not a new MAJOR defect. Eliminating its secondary name check would exceed the requested minimal fix.
+</agent-message>
+
+---
+
+<agent-message from="rereview-astra">
+SHIP. The staged diff only removes the expected-name argument and grep, shifts both diagnostic uses to $2, updates both call sites, and corrects the invocation-selection comment. I traced rename/edit rejection through full canonical step equality, relocation rejection through preserved job/index plus publishing placement checks, and removal rejection through placement or empty-selection checks. Workflow edits also fail earlier through FROZEN_GATE_PATHS. Searches across scripts/ and .github/ found no remaining hardcoded old-name assertion. Staged bash -n and git diff --cached --check passed. Local HEAD and origin/main both match the live remote main SHA 216cc22f5ad055ef01b868c8385a55f34c03ab26, checked with read-only ls-remote. No files changed and no unit tests run.
+</agent-message>
+
+---
+
+Make sure you use Opus sub-agents to do all your work, break the work into pieces for them if large. They are effectively free. Parallelise them as much as possible. Tell them to keep code amount minimal. Have Fable and Astra, and Opus agents review any plans and have Astra and opus review code work against the plan. There are architect agents for plan reviewing and code review agents for code reviewing. Save your context Any finished agents remove them to keep statusbar clean. Speak to me only in plain English business terms. You do pure co-ordination of agents. Sub-agents have a tendency to go off track or overstep their mark and over engineer, keep them in line. You are the enforcer. Every single UX/app behaviour or schema change goes through me, apart from new indexes. 
+
+it failed again after your work.. why? the general principle is that the AI that does the work to fix it in the run should have the ability to completely fix anything and ensure that a build works/goes through...
+
+---
+
+<agent-message from="repair-plan-astra">
+Code-grounded review currently supports scope, with required precision. 'Observed compile blockers' must exclude accepted non-gating tsc debt; otherwise broad repair wording silently creates a full type gate. Nightly REVIEW_PROMPT currently restricts ONLY semantic fork breakage and ignores prior ADAPT_DIAGS_FILE until after OK, so explicitly require reading carried findings/diagnostics and BREAKAGE for any known unresolved build blocker even without a feature marker. REFERR prompt currently forbids every rewrite/delete, so carve TS2451 reconciliation explicitly while preserving missing-name additive-only rules. Collector/Linux mechanics review pending design agent response. Fetched origin/main b4d76afe12; checkout is one commit behind, containing only prior guard name correction.
+</agent-message>
+
+---
+
+<task-notification>
+<summary>Goal check-in: background work still running</summary>
+</task-notification>
+<system-reminder>
+Goal check-in: «keep going and test it works by running the workflow on gh until it works» is still active, and evaluation has been deferred for 60 min because background work is still running:
+- b2dzd3qkr · monitor · nightly run 34528925532 job transitions until terminal
+Check on their progress (e.g. read their output). If they are progressing, say so briefly and keep waiting; if they are stuck or no longer needed, fix or stop them and continue toward the goal.
+</system-reminder>
+
+---
+
+<agent-message from="native-code-opus">
+Native-compat review verdict: FIX-FIRST, not PASS. 1 MAJOR + 2 MINOR. Do not treat the code half as PASS yet.
+
+Reviewed: HEAD 99f22763badfd28daf87b8e551cd1abaf8dd8fcf, working-tree diff hash 1dfbf2db173a21a0166828c03e9c26e67f3fd622 (7 files: AGENTS.md, apps/desktop/electron-builder.ts, scripts/bun-locked-versions.sh, scripts/bun-locked-versions.test.sh, scripts/fetch-native-prebuilds.sh, scripts/materialize-native-closure.sh, scripts/verify-packaged-natives.sh). Re-hash before acting; drift invalidates this.
+
+[MAJOR] C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\scripts\validate-native-runtime.ts:351
+Defect: libsql's optional path is not honoured by the step that runs right after materialize; three unconditional libsql demands survive.
+Failure: upstream drops libsql -> fetch skips, materialize deletes apps\desktop\node_modules\@libsql\win32-arm64-msvc, then .github\actions\arm64-build\action.yml:98-107 runs `bun run validate:native-runtime`, which hard-fails at assertExists("libsql/package.json"). Also line 366 via requiredMaterializedNodeModules (apps\desktop\runtime-dependencies.ts:74 `materialize: ["libsql"]`) and line 393 getPlatformLibsqlCandidates demanding @libsql/win32-arm64-msvc. The skip only works if the same upstream merge also strips libsql from those upstream-owned files. Tokenizers is clean — only 5 files reference tokenizers-win32-arm64-msvc, 4 changed here.
+Fix: gate all three on the same proven-absence signal, or record the upstream dependency in AGENTS.md.
+
+[MINOR] scripts/bun-locked-versions.sh:147 — the optionalPeers comment and its test fixture assert a bun.lock shape bun never emits. Real entries write an optional peer in BOTH peerDependencies ("pkg": "range", matching the `"$pkg":` needle) and optionalPeers (bun.lock:1399,1471,1587,1743), so such a mention is rc 2 fatal, not the rc 1 the comment promises. Fixture omits the peerDependencies line, so that test proves nothing.
+
+[MINOR] AGENTS.md:197 — "omits the packaged resource... flips the packaged-closure gate" holds for TOKENIZERS_ARM64_DIR only; LIBSQL_ARM64_DIR has no builder or verify-gate counterpart.
+
+Clean: fetch rc plumbing, set-and-empty vs unset in electron-builder.ts and verify-packaged-natives.sh, drop_injected_companion path allowlist + symlink/non-dir refusal, staged-swap and store-payload paths untouched, node-pty and Superset.exe assertions unchanged, ROOT and grep-rc handling, alias/`npm:`/canonical-tuple anchoring, electron positive control resolves exactly once.
+
+Tests not run — read-only review.
+</agent-message>
+
+---
+
+<agent-message from="native-code-opus">
+Env boundary proven safe — no sentinel needed. But 2 of 3 agreed edits are missing from 5e6e261a and one new AGENTS.md sentence is factually wrong. Still FIX-FIRST.
+
+ENV PROOF (Git Bash -> child, Node v22.23.1, this machine):
+- bash inline `VAR= node` -> {has:true, val:"", typ:"string"}
+- bash `export VAR=""` then node (the fetch script's actual shape) -> same
+- unset contrast -> {has:false, typeof undefined}
+- bash -> cmd.exe -> node -> `string/""`; unset via cmd -> `undefined`
+- bash -> bun -> `string`
+npx here is a Bourne-Again shell script (/c/Program Files/nodejs/npx), so CI's `npx electron-builder` under `shell: bash` is bash->node, already covered.
+Set-and-empty survives every chain that matters on Windows and stays distinguishable from unset. `process.env.TOKENIZERS_ARM64_DIR === ""` is sound. Recommendation: no sentinel, no new bools.
+
+Untested link, stated plainly: the runner reading `NAME=` from $GITHUB_ENV into the next step. Runner-side, not reproducible locally. Safe to leave unproven because losing the empty fails LOUD — tokenizersRemoved goes false, electron-builder includes an extraResources entry whose source materialize just deleted and errors, and the verify gate demands the native and fails. If you want it proven, one echo in the "Validate native runtime" step suffices: `echo "TOKENIZERS_ARM64_DIR=[${TOKENIZERS_ARM64_DIR+set}][${TOKENIZERS_ARM64_DIR-unset}]"`.
+
+RECHECK of 5e6e261a16704386f909658aa5905520fe890582 (working-tree diff on HEAD 99f22763ba, same 7 files):
+- CLOSED: AGENTS.md now scopes the resource omission and gate flip to tokenizers.
+- NOT LANDED: scripts/bun-locked-versions.sh:147 optionalPeers comment is unchanged.
+- NOT LANDED: scripts/bun-locked-versions.test.sh optionalPeers fixture is unchanged (still the bare-array-only shape bun never emits).
+- NEW [MINOR] AGENTS.md:201 — the sentence "libsql ships inside the app, so deleting its injected copy is the whole of its skip" is false and replaced the note you asked for. validate-native-runtime.ts still demands libsql three times (351, 366 via runtime-dependencies.ts:74, 393). A reader trusting it concludes the fork handles libsql removal end-to-end. Needs the agreed backstop note instead.
+
+Exact replacement text for all three is with native-cleanup. Coverage: these three regions plus the env boundary only. Mastracode consumer guard is not in this hash and I have not reviewed it.
+</agent-message>
+
+---
+
+<agent-message from="native-code-opus">
+Opus PASS on 983ba59d15760e03ce80db7694538f7c47d95569 — native-cleanup is clear to run the suite, push and dispatch. No findings.
+
+Hash verified against my own tree (HEAD 99f22763badfd28daf87b8e551cd1abaf8dd8fcf, same 7 files).
+
+All three of my MINORs closed:
+- scripts/bun-locked-versions.sh:147-153 comment now correct about the double-spelled optional peer.
+- scripts/bun-locked-versions.test.sh adds the shape bun really writes, asserting rc 2.
+- AGENTS.md:195-208 records the libsql required-runtime backstop and "Never weaken the validator to make a skip pass". The false "whole of its skip" sentence is gone. validate-native-runtime.ts and runtime-dependencies.ts untouched.
+
+Guard (Astra's MAJOR) verified, no gap. _blv_consumers_gone reuses the already-cleared lockfile probe, never `bun why`. Zero-consumer path is byte-identical to the pre-guard path (checked the `set -u` + empty `"$@"` trap: only breaks on bash <=4.3, CI is 5.x). Naming only mastracode is not incomplete — any package whose lockfile entry DECLARES @anush008/tokenizers (fastembed at bun.lock:4923) is already caught by the package probe itself; mastracode covers the top-of-chain case the probe cannot see. libsql passing no consumers is sound for the same reason.
+
+fetch_companion /simplify refactor checked argument by argument against the old twin blocks: same order, same interpolated filenames, repo, dispatch input and member file, same error and skip text. One inert rename (tok-dl -> tokenizers-dl); no other tracked reference to either name.
+
+Not covered, stated plainly: the unit suite has not been run (native-cleanup runs it once now); the $GITHUB_ENV runner link for the empty value stays unproven-but-fail-loud as I reported earlier.
+
+SHIP.
+</agent-message>
+
+---
+
+<agent-message from="native-code-opus">
+Opus PASS on 983ba59d15760e03ce80db7694538f7c47d95569 — sent to native-finish-ship. No findings. Both code reviews now agree.
+
+Note on the confusion: I was never stale. My previous turn already rechecked 983ba59d, not 5e6e261a — I computed the hash in my own tree before reviewing. The messages crossed.
+
+All four verified on this hash:
+- Consumer guard scripts/bun-locked-versions.sh:197-229 plus caller arity. Zero-consumer path is byte-identical to the pre-guard path; naming only mastracode is not a gap, because any package whose lockfile entry declares @anush008/tokenizers (fastembed at bun.lock:4923) is already caught by the package probe itself.
+- Peer comment 147-153 — accurate.
+- Real peer fixture — bare-array case as rc 1, double-spelled shape as rc 2.
+- AGENTS.md 195-208 — libsql backstop recorded, "Never weaken the validator to make a skip pass", false sentence gone, validator and inventory untouched.
+- Plus the /simplify fetch_companion refactor, which was inside my cleared area: checked argument by argument against the old twin blocks, behaviour identical, one inert directory rename.
+
+Outstanding, unchanged: the unit suite runs once now (native-finish-ship's), and the $GITHUB_ENV empty-value link stays unproven-but-fail-loud. Your call to skip the echo probe is fine by me — losing the empty fails loud twice over.
+
+SHIP.
+</agent-message>
+
+---
+
+<agent-message from="native-code-opus">
+Opus PASS on 0b64103548dd1bb2a56388fec39ae57df253543e — sent to native-finish-ship. No blocker. Both code reviews agree on this hash.
+
+Hash confirmed in my own tree; same 7 files; validate-native-runtime.ts and runtime-dependencies.ts untouched. Reviewed only the four drifts, nothing re-reviewed.
+
+- Consumer guard now probes the graph before the lockfile. Strictly additive: rc 1 falls through to the lock probe I already cleared, rc 0 and rc 2 are fatal. It closes a real case my earlier arity analysis left open. Zero-consumer callers (libsql) are byte-for-byte unchanged, and there is no production impact today since consumers are only probed on the absence path.
+- Peer comment: grep line byte-identical, and the new wording is the better claim — it says the peerDependencies key is what matches, without asserting bun always writes both spellings.
+- Tests: I traced all three consumer cases against the fixtures rather than the titles. The graph case fires on the graph probe, the alias case on the lock probe, the pre-existing case still fires where it did, and build_fixture's rm -rf prevents the mastracode fixture leaking into the later both-absent skip case.
+- AGENTS.md: all three facts I required survive, including "never weaken it to make a skip pass". For the record I still read three demands in validate-native-runtime.ts (351, 366 via runtime-dependencies.ts:74, 393), but dropping the count loses nothing load-bearing and I am not re-litigating it.
+
+Outstanding and unchanged: the unit suite runs once now (native-finish-ship's), and the $GITHUB_ENV empty-value link stays unproven-but-fail-loud. No objection to skipping the echo probe.
+
+SHIP.
+</agent-message>
