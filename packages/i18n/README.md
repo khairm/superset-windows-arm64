@@ -43,9 +43,10 @@ fills them. Never hand-edit `locales/en/messages.po`; it is derived from source.
 
 There is exactly one exception, and it invents nothing. The nightly upstream
 merge runs `scripts/backfill-upstream-translations.ts`, which copies the
-translation upstream already ships for a message into the entry extraction left
-empty for it, verbatim, from the same locale's catalog in the upstream commit
-being merged. It only ever fills empty entries, so a translation the fork wrote
-stays; a message upstream does not have, or has only fuzzy, obsolete or
+translation a pinned donor already ships for a message into the entry extraction
+left empty for it, verbatim, from the same locale's catalog. Two donors are
+asked in order: the fork's own pre-merge commit, then the upstream commit being
+merged. It only ever fills empty entries, so a translation the fork wrote stays;
+a message neither donor has, or that both have only fuzzy, obsolete or
 untranslated, fails the merge and waits for a human. Nothing in it runs on a
 normal PR.

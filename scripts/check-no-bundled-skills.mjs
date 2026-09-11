@@ -35,6 +35,7 @@ const SOURCE_ROOTS = [
 	"apps/desktop/src/renderer",
 	"apps/desktop/vite",
 	"packages/cli/scripts",
+	"packages/cli/src",
 	"packages/host-service/src",
 	"packages/shared/src/plugins",
 ];

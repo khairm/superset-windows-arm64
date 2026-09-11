@@ -25,8 +25,9 @@
 #
 # One class of failure IS handled without a human, and it is not that:
 # packages/i18n/scripts/backfill-upstream-translations.ts, run by the nightly
-# merge before the candidate commit, copies upstream's OWN translation for a
-# message verbatim out of the tag being merged. Exact msgid+context or it fails.
+# merge before the candidate commit, copies a pinned donor's OWN translation for
+# a message verbatim — the fork's pre-merge commit first, then the tag being
+# merged. Exact msgid+context or it fails.
 # See (I18N-UPSTREAM-BACKFILL) in FEATURES.md. This script is unchanged by it
 # and still fails on anything that copy could not reach.
 set -euo pipefail

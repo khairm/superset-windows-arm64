@@ -39,9 +39,10 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   `(MERGE-SEMANTIC-GATE)` review → adapt → fresh-review loop (max 5 reviews /
   4 repairs, under GitHub's default 360-minute job cap). After the last AI pass
   it regenerates the Lingui catalogs and fills any entry extraction left empty
-  with upstream's own translation for that exact message, read from the pinned
-  tag commit (`(I18N-UPSTREAM-BACKFILL)`: nothing invented, no existing
-  translation touched, anything unfillable fails loud). Green all the way =
+  with a pinned donor's own translation for that exact message — the fork's
+  pre-merge commit first, then the upstream tag commit
+  (`(I18N-UPSTREAM-BACKFILL)`: nothing invented, no existing
+  translation touched, anything neither donor has fails loud). Green all the way =
   build (with its own repair loop), publish the Release, advance the baseline
   to the BUILT sha; ANY unrepaired failure hard-aborts with the baseline
   untouched → fix locally with the maintainer and re-baseline. A
@@ -57,7 +58,7 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
   `scripts/check-dangerous-diagnostics.mjs` (REFERR gate),
   `scripts/check-feature-markers.mjs` (standalone marker gate),
   `scripts/check-no-bundled-skills.mjs` (blocks bundled Superset skills),
-  `packages/i18n/scripts/backfill-upstream-translations.ts` (upstream translation backfill),
+  `packages/i18n/scripts/backfill-upstream-translations.ts` (translation backfill, fork donor then upstream),
   `scripts/ci-repair.sh` (build-repair engine),
   `scripts/ai-run.sh` ((AI-UNAVAILABLE) classification + shared Claude CLI wrapper),
   `scripts/ai-streak.sh` ((AI-UNAVAILABLE) green no-op + consecutive-blocked-night
