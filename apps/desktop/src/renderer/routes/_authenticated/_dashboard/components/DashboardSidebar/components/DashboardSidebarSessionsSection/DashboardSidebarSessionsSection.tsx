@@ -1,10 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { LuPlus } from "react-icons/lu";
+import { useOpenNewSession } from "renderer/hooks/useOpenNewWorkspace";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState";
 import type { SessionSectionFlag } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
-import { useOpenNewSessionModal } from "renderer/stores/new-workspace-modal";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import {
 	dropZoneId,
@@ -70,7 +70,7 @@ export function DashboardSidebarSessionsSection({
 	onToggleSectionCollapse,
 }: DashboardSidebarSessionsSectionProps) {
 	const { t } = useLingui();
-	const openNewSessionModal = useOpenNewSessionModal();
+	const openNewSession = useOpenNewSession();
 	const { preferences, setSessionSectionFlag, toggleSessionSectionFlag } =
 		useV2UserPreferences();
 	const { restoreWorkspace, unsnoozeAllInProject, unarchiveWorkspaces } =
@@ -193,7 +193,7 @@ export function DashboardSidebarSessionsSection({
 									})}
 									onClick={(event) => {
 										event.stopPropagation();
-										openNewSessionModal();
+										openNewSession();
 									}}
 									onKeyDown={(event) => event.stopPropagation()}
 									className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-fill-hover hover:text-foreground"

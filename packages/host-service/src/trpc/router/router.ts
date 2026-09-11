@@ -2,7 +2,6 @@ import { router } from "../index";
 import { agentToolingRouter } from "./agent-tooling";
 import { agentsRouter } from "./agents";
 import { attachmentsRouter } from "./attachments";
-import { authRouter } from "./auth";
 import { browserRouter } from "./browser/browser";
 import { claudeAccountsRouter } from "./claude-accounts/claude-accounts";
 // (COMPANION-ROUTER-MOUNT) fork-only: the desktop-side pairing + panic surface.
@@ -31,6 +30,7 @@ import { settingsRouter } from "./settings";
 // and without this mount the mirror is never written and every consumer
 // silently falls back to the uncurated `host.db` set.
 import { sidebarMirrorRouter } from "./sidebar-mirror";
+import { systemRouter } from "./system";
 import { tagFoldersRouter } from "./tag-folders";
 import { terminalRouter } from "./terminal";
 import { terminalAgentsRouter } from "./terminal-agents";
@@ -44,7 +44,6 @@ export const appRouter = router({
 	agents: agentsRouter,
 	agentTooling: agentToolingRouter,
 	attachments: attachmentsRouter,
-	auth: authRouter,
 	browser: browserRouter,
 	claudeAccounts: claudeAccountsRouter,
 	health: healthRouter,
@@ -65,6 +64,7 @@ export const appRouter = router({
 	settings: settingsRouter,
 	// (SIDEBAR-MIRROR) fork-only.
 	sidebarMirror: sidebarMirrorRouter,
+	system: systemRouter,
 	terminal: terminalRouter,
 	terminalAgents: terminalAgentsRouter,
 	usage: usageRouter,

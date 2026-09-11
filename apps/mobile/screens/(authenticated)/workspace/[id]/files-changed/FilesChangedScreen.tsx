@@ -22,6 +22,7 @@ import { tokenizeCode } from "@/components/ai-elements/code-block";
 import { Icon } from "@/components/ui/icon";
 import { Text } from "@/components/ui/text";
 import { useWorkspaceHost } from "@/hooks/useWorkspaceHost";
+import { errorCopy } from "@/lib/errors";
 import { getHostServiceClientByUrl } from "@/lib/host-service/client";
 import { posthog } from "@/lib/posthog";
 import {
@@ -61,7 +62,6 @@ import {
 	DIFF_LINE_HEIGHT,
 	ESTIMATED_CHAR_WIDTH,
 	GUTTER_WIDTH,
-	HUNK_ROW_HEIGHT,
 } from "./utils/diffMetrics";
 
 const MAX_HIGHLIGHT_BYTES = 200_000;
@@ -424,7 +424,7 @@ export function FilesChangedScreen() {
 									t({
 										message: "Could not delete file",
 									}),
-									cause instanceof Error ? cause.message : String(cause),
+									errorCopy(cause),
 								);
 							});
 					},
@@ -528,17 +528,6 @@ export function FilesChangedScreen() {
 							onDelete={deleteFile}
 							onToggleViewed={onToggleViewed}
 						/>
-					);
-				case "hunk":
-					return (
-						<View
-							className="bg-sky-500/10 justify-center px-3"
-							style={{ height: HUNK_ROW_HEIGHT }}
-						>
-							<Text className="text-sky-300/80 font-mono text-[12px]">
-								{item.header}
-							</Text>
-						</View>
 					);
 				case "segment":
 					return (

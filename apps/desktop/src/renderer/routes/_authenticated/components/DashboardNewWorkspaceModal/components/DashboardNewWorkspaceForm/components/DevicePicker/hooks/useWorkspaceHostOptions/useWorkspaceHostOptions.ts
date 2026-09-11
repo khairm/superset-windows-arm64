@@ -1,5 +1,10 @@
 import { useLingui } from "@lingui/react/macro";
+import {
+	deriveHostVersionState,
+	type HostVersionState,
+} from "@superset/shared/host-version";
 import { useMemo } from "react";
+import { useAppVersion } from "renderer/hooks/host-version/useHostVersionState";
 import { useActiveOrganizationId } from "renderer/lib/local-identity";
 import { useHostsPresence } from "renderer/hooks/useHostsPresence";
 import { authClient } from "renderer/lib/auth-client";
@@ -10,6 +15,8 @@ export interface WorkspaceHostOption {
 	id: string;
 	name: string;
 	isOnline: boolean;
+	version: string | null;
+	versionState: HostVersionState;
 }
 
 interface UseWorkspaceHostOptionsResult {
@@ -30,6 +37,7 @@ export function useWorkspaceHostOptions(): UseWorkspaceHostOptionsResult {
 	const { t } = useLingui();
 	const { data: session } = authClient.useSession();
 	const { machineId, activeHostUrl } = useLocalHostService();
+	const appVersion = useAppVersion();
 
 	// (CLOUD-SEVERANCE-P2) Frozen local organization and the one local user.
 	const activeOrganizationId = useActiveOrganizationId();
@@ -58,6 +66,7 @@ export function useWorkspaceHostOptions(): UseWorkspaceHostOptionsResult {
 				machineId: host.machineId,
 				name: host.name,
 				isOnline: host.isOnline,
+				version: host.version,
 			}));
 	}, [activeOrganizationId, currentUserId, hostMemberRows, hostRows]);
 
@@ -77,7 +86,7 @@ export function useWorkspaceHostOptions(): UseWorkspaceHostOptionsResult {
 			presence
 				? accessibleHosts.map((host) => ({
 						...host,
-						isOnline: presence.get(host.machineId) ?? host.isOnline,
+						isOnline: presence.get(host.machineId)?.online ?? host.isOnline,
 					}))
 				: accessibleHosts,
 		[accessibleHosts, presence],
@@ -97,9 +106,11 @@ export function useWorkspaceHostOptions(): UseWorkspaceHostOptionsResult {
 					id: host.machineId,
 					name: host.name,
 					isOnline: host.isOnline ?? false,
+					version: host.version,
+					versionState: deriveHostVersionState(host.version, appVersion),
 				}))
 				.sort((a, b) => a.name.localeCompare(b.name)),
-		[hostsWithPresence, machineId],
+		[hostsWithPresence, machineId, appVersion],
 	);
 
 	// Always surface the local device, even if its host row hasn't loaded yet —

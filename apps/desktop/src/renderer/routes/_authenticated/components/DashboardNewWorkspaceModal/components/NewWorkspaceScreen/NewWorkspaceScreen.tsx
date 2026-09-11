@@ -44,13 +44,13 @@ import { useAgentLaunchPreferences } from "renderer/hooks/useAgentLaunchPreferen
 import { useAgentModelPreference } from "renderer/hooks/useAgentModelPreference";
 import { useAgentModePreference } from "renderer/hooks/useAgentModePreference";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+import { useSelectedHostProjectIds } from "renderer/hooks/useSelectedHostProjectIds";
 import { useV2AgentChoices } from "renderer/hooks/useV2AgentChoices";
 import { CLOUD_AGENT_CHOICES } from "renderer/hooks/useV2AgentChoices/cloud-agent-choices";
 import { track } from "renderer/lib/analytics";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { showHostServiceUnavailableToast } from "renderer/lib/host-service-unavailable";
-import { SupersetIcon } from "renderer/routes/_authenticated/onboarding/providers/components/SupersetIcon";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { newWorkspaceAttachmentPaths } from "renderer/stores/new-workspace-attachments";
@@ -63,7 +63,10 @@ import {
 } from "renderer/stores/new-workspace-width";
 import { useV2WorkspaceCreateDefaultsStore } from "renderer/stores/v2-workspace-create-defaults";
 import { useDashboardNewWorkspaceDraft } from "../../DashboardNewWorkspaceDraftContext";
-import { BRANCH_ONLY_TARGET } from "../../hooks/useMasterWorkspaceTarget";
+import {
+	getMasterMissingAgentRefusal,
+	useMasterWorkspaceTarget,
+} from "../../hooks/useMasterWorkspaceTarget";
 import {
 	type PromptCardsVariant,
 	useNewWorkspacePromptCardsVariant,
@@ -94,12 +97,12 @@ import {
 	PILL_BUTTON_CLASS,
 	type WorkspaceCreateAgent,
 } from "../DashboardNewWorkspaceForm/PromptGroup/types";
-import { useSelectedHostProjectIds } from "../DashboardNewWorkspaceModalContent/hooks/useSelectedHostProjectIds";
 import { SymmetricResizeHandles } from "../SymmetricResizeHandles";
 import { AttachmentCard } from "./components/AttachmentCard";
 import { SamplePromptCards } from "./components/SamplePromptCards";
 import { SamplePrompts } from "./components/SamplePrompts";
 import { PROMPT_PLACEHOLDERS } from "./components/SamplePrompts/constants";
+import { SupersetIcon } from "./components/SupersetIcon";
 import { useSamplePromptSelection } from "./hooks/useSamplePromptSelection";
 
 /** Nested prefixes of one fixed pool — only the form factor varies by arm. */
@@ -120,18 +123,19 @@ interface NewWorkspaceScreenProps {
 	preSelectedProjectId: string | null;
 	/** Open with "No project" (session) preselected. */
 	preSelectedSession?: boolean;
+	/** Open targeting this host instead of the remembered one. */
+	preSelectedHostId?: string | null;
 }
 
 /**
- * Experiment test arm (new-workspace-screen flag): a purpose-built full-screen
- * take on workspace creation for new users — heading, sample prompts, and a
- * minimal composer. Independent of the control modal's PromptGroup so the two
- * arms can evolve separately.
+ * The v2 workspace-creation surface: heading, sample prompts, and a minimal
+ * composer, filling the window rather than a dialog.
  */
 export function NewWorkspaceScreen({
 	isOpen,
 	preSelectedProjectId,
 	preSelectedSession = false,
+	preSelectedHostId = null,
 }: NewWorkspaceScreenProps) {
 	const { t } = useLingui();
 	const navigate = useNavigate();
@@ -369,16 +373,30 @@ export function NewWorkspaceScreen({
 	} = useLinkedContext(draft.linkedIssues, updateDraft);
 
 	// Restore the last-used launch host once per mount, like the modal does.
+	// A host named in the URL (the sidebar's Cloud "+") wins, and applies when
+	// it arrives rather than only at mount — this screen stays mounted across
+	// navigations to it.
 	const appliedPersistedHostRef = useRef(false);
+	const appliedPreSelectedHostRef = useRef<string | null>(null);
 	useEffect(() => {
-		if (!isOpen || appliedPersistedHostRef.current) return;
+		if (!isOpen) return;
+		if (
+			preSelectedHostId &&
+			preSelectedHostId !== appliedPreSelectedHostRef.current
+		) {
+			appliedPreSelectedHostRef.current = preSelectedHostId;
+			appliedPersistedHostRef.current = true;
+			updateDraft({ hostId: preSelectedHostId });
+			return;
+		}
+		if (appliedPersistedHostRef.current) return;
 		appliedPersistedHostRef.current = true;
 		const persistedHostId =
 			useV2WorkspaceCreateDefaultsStore.getState().lastHostId;
 		if (typeof persistedHostId === "string") {
 			updateDraft({ hostId: persistedHostId });
 		}
-	}, [isOpen, updateDraft]);
+	}, [isOpen, preSelectedHostId, updateDraft]);
 
 	// Reset baseBranch on project or host change, defaulting to the user's
 	// last selected branch for that project — the draft store is global, so a
@@ -505,9 +523,11 @@ export function NewWorkspaceScreen({
 		EFFORT_STORAGE_KEY,
 		effortSupport ? selectedPresetId : null,
 	);
-	// Codex's top two efforts only exist on its GPT-5.6 models, so the offered
-	// list follows the model picker. A remembered effort the current model
-	// rejects stays stored but shows (and launches) as the agent default.
+	// Codex's top two efforts only exist on its GPT-5.6 models and cursor-agent
+	// has a ladder for only some models, so the offered list follows the model
+	// picker and the control disappears when there is nothing to offer. A
+	// remembered effort the current model rejects stays stored but shows (and
+	// launches) as the agent default.
 	const effortOptions = useMemo(
 		() =>
 			selectedPresetId
@@ -563,6 +583,24 @@ export function NewWorkspaceScreen({
 		linkedPR: draft.linkedPR,
 		linkedIssues: draft.linkedIssues,
 	});
+	// ── Master mode (MASTER-PLUS-LAUNCH) ─────────────────────────────
+	// A resolved local NON-GIT single-repo project has nothing to branch: the
+	// agent runs in the project's own master workspace instead. Everything
+	// branch-shaped comes off the form and submit takes the master path.
+	//
+	// This used to be the modal's alone, with this screen deliberately pinned
+	// to BRANCH_ONLY_TARGET while both surfaces existed. Upstream has since
+	// deleted the modal and made this screen the only new-workspace surface,
+	// so the resolver lives here or the feature has no reachable call site at
+	// all.
+	const masterTarget = useMasterWorkspaceTarget(
+		projectId,
+		draft.hostId ?? machineId,
+		selectedProject?.name ?? null,
+	);
+	const masterLabel =
+		masterTarget.mode === "master" ? masterTarget.masterLabel : null;
+	const isMasterMode = masterLabel !== null;
 	const { submitWorkspace: createWorkspace, isCreating } = useSubmitWorkspace(
 		projectId,
 		selectedAgent,
@@ -571,22 +609,20 @@ export function NewWorkspaceScreen({
 		modeSupport ? selectedMode : null,
 		uploadAttachments,
 		promptContext,
-		// (MASTER-PLUS-LAUNCH) This screen keeps the branch flow for every
-		// project, deliberately: a non-git submit here still gets the loud
-		// server rejection it gets today. Master mode is the modal's alone.
-		BRANCH_ONLY_TARGET,
+		masterTarget,
 	);
 
 	const { otherHosts } = useWorkspaceHostOptions();
 	const submitBlocker = useMemo<string | null>(() => {
+		const selectedHostId = draft.hostId ?? machineId;
+		// A cloud workspace is provisioned by the API from the one cloud repo:
+		// no host whose readiness could block it, and no project either — the
+		// picker is hidden for cloud, so requiring one is unanswerable.
+		if (selectedHostId === CLOUD_HOST_ID) return null;
 		if (!projectId && !draft.isSession)
 			return t({
 				message: "Select a project",
 			});
-		const selectedHostId = draft.hostId ?? machineId;
-		// A cloud workspace is provisioned on submit, so there is no host whose
-		// readiness could block it.
-		if (selectedHostId === CLOUD_HOST_ID) return null;
 		if (!selectedHostId)
 			return t({
 				message: "No active host",
@@ -602,14 +638,36 @@ export function NewWorkspaceScreen({
 				message: "Host service is not running",
 			});
 		}
+		// (MASTER-PLUS-LAUNCH) Checked LAST: a dead host is the more actionable
+		// thing to say, and master mode cannot resolve without one anyway.
+		if (masterTarget.mode === "loading") return "Checking project…";
+		if (masterTarget.mode === "blocked") return masterTarget.reason;
+		// (MASTER-PLUS-LAUNCH) In master mode a prompt with no agent has nowhere
+		// to go — the one authored rule lives in `getMasterMissingAgentRefusal`,
+		// and the submit hook re-checks it there too.
+		if (isMasterMode && masterLabel) {
+			const refusal = getMasterMissingAgentRefusal({
+				hasAgent: selectedAgent !== "none",
+				prompt: draft.prompt,
+				hasAttachments: visibleFiles.length > 0,
+				masterLabel,
+			});
+			if (refusal) return refusal;
+		}
 		return null;
 	}, [
 		projectId,
 		draft.isSession,
 		draft.hostId,
+		draft.prompt,
 		machineId,
 		activeHostUrl,
 		otherHosts,
+		masterTarget,
+		isMasterMode,
+		masterLabel,
+		selectedAgent,
+		visibleFiles,
 		t,
 	]);
 
@@ -701,7 +759,11 @@ export function NewWorkspaceScreen({
 			{/* no-drag + clear of the page's window-drag strip (which ends at
 			    right-12) so the button actually receives clicks. */}
 			<div className="no-drag absolute right-3 top-2.5 z-10 flex items-center gap-0.5">
-				{selectedProject && !needsSetup && (
+				{/* (MASTER-PLUS-LAUNCH) No workspace is created and no branch is
+				    cut in master mode, so AI naming has nothing to name and the
+				    gear that configures it goes with the rest of the
+				    branch-shaped UI. */}
+				{selectedProject && !needsSetup && !isMasterMode && (
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button
@@ -908,7 +970,7 @@ export function NewWorkspaceScreen({
 										triggerClassName={`${PILL_BUTTON_CLASS} px-1.5 gap-1 text-foreground w-auto max-w-[160px]`}
 									/>
 								)}
-								{effortSupport && (
+								{effortSupport && effortOptions.length > 0 && (
 									<AgentModelSelect
 										models={effortOptions}
 										value={selectedEffort}
@@ -971,23 +1033,28 @@ export function NewWorkspaceScreen({
 										<GoIssueOpened className="size-3.5" />
 									</PromptInputButton>
 								</GitHubIssueLinkCommand>
-								<PRLinkCommand
-									onSelect={setLinkedPR}
-									projectId={projectId}
-									hostId={draft.hostId}
-									tooltipLabel={t({
-										message: "Link pull request",
-									})}
-								>
-									<PromptInputButton
-										aria-label={t({
+								{/* (MASTER-PLUS-LAUNCH) A PR checkout needs a branch to
+								    check out into; master mode has none, so the trigger
+								    goes rather than offering something submit refuses. */}
+								{!isMasterMode && (
+									<PRLinkCommand
+										onSelect={setLinkedPR}
+										projectId={projectId}
+										hostId={draft.hostId}
+										tooltipLabel={t({
 											message: "Link pull request",
 										})}
-										className={`${PILL_BUTTON_CLASS} w-[22px]`}
 									>
-										<LuGitPullRequest className="size-3.5" />
-									</PromptInputButton>
-								</PRLinkCommand>
+										<PromptInputButton
+											aria-label={t({
+												message: "Link pull request",
+											})}
+											className={`${PILL_BUTTON_CLASS} w-[22px]`}
+										>
+											<LuGitPullRequest className="size-3.5" />
+										</PromptInputButton>
+									</PRLinkCommand>
+								)}
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<PromptInputButton
@@ -1059,7 +1126,8 @@ export function NewWorkspaceScreen({
 									<LuGitPullRequest className="size-3 shrink-0" />
 									<Trans>based off PR #{draft.linkedPR.prNumber}</Trans>
 								</span>
-							) : draft.isSession ? null : (
+							) : /* (MASTER-PLUS-LAUNCH) Nothing is branched off anything. */
+							draft.isSession || isMasterMode ? null : (
 								<CompareBaseBranchPicker {...pickerProps} />
 							)}
 						</div>

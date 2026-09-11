@@ -17,6 +17,9 @@ export const dashboardSidebarProjectSchema = z.object({
 	// order. Local-only like every other sidebar preference; legacy rows lack the
 	// key and read back undefined, so the data hook heals it to false.
 	isPinned: z.boolean().default(false),
+	// Hidden keeps every placement row (sections, pins, order) so unhiding
+	// restores the project exactly as it was — unlike a deleted row.
+	isHidden: z.boolean().default(false),
 	tabOrder: z.number().int().default(0),
 	defaultOpenInApp: z.string().nullable().default(null),
 	// Per-project reveal state for the Snoozed / Archived sections. Each

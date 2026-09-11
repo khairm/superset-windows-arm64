@@ -56,8 +56,10 @@ import {
 	applyWorkspaceExitCleanup,
 	cancelWorkspaceExitCleanup,
 	createEmptyPaneLayout,
+	ensureSidebarProjectRecord,
 	removeProjectFromSidebarState,
 	resolveSidebarRowProjectId,
+	setSidebarProjectHidden,
 	tombstoneSidebarWorkspaceRecord,
 	workspaceExitCleanupState,
 } from "./sidebarMutations";
@@ -229,26 +231,6 @@ function writeProjectTopLevelOrder(
 		collections.v2SidebarSections.update(item.id, (draft) => {
 			draft.tabOrder = tabOrder;
 		});
-	});
-}
-
-function ensureSidebarProjectRecord(
-	collections: Pick<AppCollections, "v2SidebarProjects">,
-	projectId: string,
-): void {
-	if (collections.v2SidebarProjects.get(projectId)) {
-		return;
-	}
-
-	collections.v2SidebarProjects.insert({
-		projectId,
-		createdAt: new Date(),
-		// Prepend, matching new workspaces: the project you just added is
-		// the one you're about to work in.
-		tabOrder: getPrependTabOrder([
-			...collections.v2SidebarProjects.state.values(),
-		]),
-		isCollapsed: false,
 	});
 }
 
@@ -863,55 +845,42 @@ export function useDashboardSidebarState() {
 		],
 	);
 
-	const moveWorkspaceToSectionAtIndex = useCallback(
-		(
-			workspaceId: string,
-			projectId: string | null,
-			sectionId: string,
-			index: number,
-		) => {
-			const existing = collections.v2WorkspaceLocalState.get(workspaceId);
-			if (!existing) return;
-			// Same rule as moveWorkspaceToSection: the tag comes from the key;
-			// members are found through the shared resolver, not the pointer.
+	/**
+	 * Writes one folder's full member order. The caller hands over exactly the
+	 * rows the folder holds, so nothing is re-derived from the collection:
+	 * membership lives in host tags, and a row that just left this folder in the
+	 * same commit still carries its tag until the optimistic write lands. Deriving
+	 * siblings from those tags pulled the departed row back in and renumbered it,
+	 * so a drop landed somewhere other than the preview.
+	 */
+	const setSectionWorkspaceOrder = useCallback(
+		(projectId: string | null, sectionId: string, workspaceIds: string[]) => {
+			// Same rule as moveWorkspaceToSection: the tag comes from the key.
 			const targetTag = parseSidebarFolderKey(sectionId)?.tag ?? null;
-			if (targetTag !== null) {
-				const folderIndex = getProjectFolderIndex(
-					collections,
-					hostWorkspaces,
-					tagFolderContext,
-					projectId,
-				);
-				writeWorkspaceTags(
-					workspaceId,
-					applyFolderTagChange(
-						getHostWorkspaceTags(hostWorkspaces, workspaceId),
-						folderIndex.keys(),
-						targetTag,
-					),
-				);
-			}
-			const siblings = Array.from(
-				collections.v2WorkspaceLocalState.state.values(),
-			)
-				.filter(
-					(item) =>
-						item.sidebarState.projectId === projectId &&
-						isSidebarWorkspaceVisible(item) &&
-						item.workspaceId !== workspaceId &&
-						getEffectiveSectionId(
+			const folderIndex =
+				targetTag !== null
+					? getProjectFolderIndex(
 							collections,
 							hostWorkspaces,
 							tagFolderContext,
-							item,
-						) === sectionId,
-				)
-				.sort((a, b) => a.sidebarState.tabOrder - b.sidebarState.tabOrder);
-			const reordered = [...siblings];
-			reordered.splice(index, 0, existing);
-			reordered.forEach((item, i) => {
-				collections.v2WorkspaceLocalState.update(item.workspaceId, (draft) => {
-					draft.sidebarState.tabOrder = i + 1;
+							projectId,
+						)
+					: null;
+			workspaceIds.forEach((workspaceId, index) => {
+				if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
+				if (targetTag !== null && folderIndex) {
+					const currentTags = getHostWorkspaceTags(hostWorkspaces, workspaceId);
+					const nextTags = applyFolderTagChange(
+						currentTags,
+						folderIndex.keys(),
+						targetTag,
+					);
+					if (nextTags.join("\n") !== currentTags.join("\n")) {
+						writeWorkspaceTags(workspaceId, nextTags);
+					}
+				}
+				collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+					draft.sidebarState.tabOrder = index + 1;
 					draft.sidebarState.sectionId = targetTag !== null ? null : sectionId;
 					draft.sidebarState.projectId = projectId;
 					draft.sidebarState.isHidden = false;
@@ -1377,6 +1346,16 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
+	const setProjectHidden = useCallback(
+		(projectId: string, hidden: boolean) => {
+			setSidebarProjectHidden(collections, projectId, hidden);
+		},
+		[collections],
+	);
+
+	// (REMOVE-STICKY) The destructive twin of `setProjectHidden`: deletes the
+	// project row AND tombstones every workspace of the project, so nothing a
+	// passive mount or a later worktree does brings the dismissed rows back.
 	const removeProjectFromSidebar = useCallback(
 		(projectId: string) => {
 			removeProjectFromSidebarState(
@@ -1736,10 +1715,11 @@ export function useDashboardSidebarState() {
 		placeWorkspaceFromPassiveMount,
 		hideWorkspaceInSidebar,
 		moveWorkspaceToSection,
-		moveWorkspaceToSectionAtIndex,
-		removeProjectFromSidebar,
+		setSectionWorkspaceOrder,
+		setProjectHidden,
 		reorderPinnedWorkspaces,
 		reorderProjectChildren,
+		removeProjectFromSidebar,
 		removeWorkspaceFromSidebar,
 		reorderProjects,
 		reorderWorkspaces,

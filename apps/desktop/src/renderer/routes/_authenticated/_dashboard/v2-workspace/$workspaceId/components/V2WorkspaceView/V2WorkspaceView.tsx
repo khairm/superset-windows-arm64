@@ -23,7 +23,6 @@ import {
 } from "renderer/stores/workspace-sidebar-state";
 import { useWorkspace } from "../../../providers/WorkspaceProvider";
 import { useAutoAdoptBackgroundSessions } from "../../hooks/useAutoAdoptBackgroundSessions";
-import { useBrowserShellInteractionPassthrough } from "../../hooks/useBrowserShellInteractionPassthrough";
 import { useClearActivePaneAttention } from "../../hooks/useClearActivePaneAttention";
 import { useConsumeAutomationRunLink } from "../../hooks/useConsumeAutomationRunLink";
 import { useConsumeOpenUrlRequest } from "../../hooks/useConsumeOpenUrlRequest";
@@ -32,6 +31,7 @@ import { useDefaultPaneActions } from "../../hooks/useDefaultPaneActions";
 import { useDirtyTabCloseGuard } from "../../hooks/useDirtyTabCloseGuard";
 import { usePaneRegistry } from "../../hooks/usePaneRegistry";
 import { renderBrowserTabIcon } from "../../hooks/usePaneRegistry/components/BrowserPane";
+import { useShellInteractionPassthrough } from "../../hooks/useShellInteractionPassthrough";
 import { useV2PresetExecution } from "../../hooks/useV2PresetExecution";
 import { useV2TerminalLauncher } from "../../hooks/useV2TerminalLauncher";
 import { useV2WorkspacePaneLayout } from "../../hooks/useV2WorkspacePaneLayout";
@@ -255,7 +255,7 @@ function V2WorkspaceCenter({
 	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
 	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
 	const { onSidebarResizeDragging, onWorkspaceInteractionStateChange } =
-		useBrowserShellInteractionPassthrough({ sidebarOpen });
+		useShellInteractionPassthrough({ sidebarOpen });
 	const handleSidebarResizingChange = useCallback(
 		(resizing: boolean) => {
 			setIsSidebarResizing(resizing);

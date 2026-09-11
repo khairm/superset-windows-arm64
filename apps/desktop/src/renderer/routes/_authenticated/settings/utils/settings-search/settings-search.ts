@@ -67,9 +67,6 @@ export const SETTING_ITEM_ID = {
 	LINKS_SIDEBAR_FILE: "links-sidebar-file",
 	LINKS_PORT: "links-port",
 
-	MODELS_ANTHROPIC: "models-anthropic",
-	MODELS_OPENAI: "models-openai",
-
 	EXPERIMENTAL_SUPERSET_V2: "experimental-superset-v2",
 	EXPERIMENTAL_V1_MIGRATION: "experimental-v1-migration",
 	EXPERIMENTAL_INLINE_WORKSPACE_PORTS: "experimental-inline-workspace-ports",
@@ -111,6 +108,7 @@ export const SETTING_ITEM_ID = {
 	HOST_INVITE_MEMBER: "host-invite-member",
 	HOST_MEMBER_ROLE: "host-member-role",
 	HOST_WORKTREE_LOCATION: "host-worktree-location",
+	HOST_SERVICE_VERSION: "host-service-version",
 	HOST_DELETE: "host-delete",
 } as const;
 
@@ -222,9 +220,6 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.LINKS_SIDEBAR_FILE]: "v2",
 	[SETTING_ITEM_ID.LINKS_PORT]: "v2",
 
-	[SETTING_ITEM_ID.MODELS_ANTHROPIC]: "shared",
-	[SETTING_ITEM_ID.MODELS_OPENAI]: "shared",
-
 	[SETTING_ITEM_ID.EXPERIMENTAL_SUPERSET_V2]: "shared",
 	[SETTING_ITEM_ID.EXPERIMENTAL_V1_MIGRATION]: "v2",
 	[SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS]: "v2",
@@ -265,6 +260,7 @@ export const SETTING_ITEM_VARIANT: Record<SettingItemId, SettingVariant> = {
 	[SETTING_ITEM_ID.HOST_INVITE_MEMBER]: "shared",
 	[SETTING_ITEM_ID.HOST_MEMBER_ROLE]: "shared",
 	[SETTING_ITEM_ID.HOST_WORKTREE_LOCATION]: "v2",
+	[SETTING_ITEM_ID.HOST_SERVICE_VERSION]: "v2",
 	[SETTING_ITEM_ID.HOST_DELETE]: "shared",
 };
 
@@ -1324,44 +1320,6 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 		],
 	},
 	{
-		id: SETTING_ITEM_ID.MODELS_ANTHROPIC,
-		section: "models",
-		title: "Anthropic Model Auth",
-		description: "Connect Anthropic for workspace naming and small model tasks",
-		keywords: [
-			"models",
-			"anthropic",
-			"claude",
-			"oauth",
-			"api key",
-			"auth",
-			"workspace naming",
-			"auto name",
-			"ai",
-			"autocomplete",
-			"auto complete",
-		],
-	},
-	{
-		id: SETTING_ITEM_ID.MODELS_OPENAI,
-		section: "models",
-		title: "OpenAI Model Auth",
-		description: "Connect OpenAI for workspace naming and other model tasks",
-		keywords: [
-			"models",
-			"openai",
-			"gpt",
-			"oauth",
-			"api key",
-			"auth",
-			"workspace naming",
-			"auto name",
-			"ai",
-			"autocomplete",
-			"auto complete",
-		],
-	},
-	{
 		id: SETTING_ITEM_ID.EXPERIMENTAL_SUPERSET_V2,
 		section: "experimental",
 		title: "Try Superset Version 2 (Early Access)",
@@ -1892,6 +1850,26 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"folder",
 			"storage",
 			"default",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.HOST_SERVICE_VERSION,
+		section: "hosts",
+		title: "Host service",
+		description:
+			"The host service version running on a host, and update it when it is behind this app",
+		keywords: [
+			"host",
+			"hosts",
+			"version",
+			"update",
+			"upgrade",
+			"outdated",
+			"behind",
+			"restart",
+			"host service",
+			"machine",
+			"device",
 		],
 	},
 	{

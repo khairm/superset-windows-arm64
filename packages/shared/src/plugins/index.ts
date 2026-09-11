@@ -1,3 +1,8 @@
+export * from "./manifests.generated";
+
+export const DEFAULT_MARKETPLACE = "superset";
+export const DEFAULT_MARKETPLACE_REPO = "superset-sh/superset";
+export const DEFAULT_MARKETPLACE_REF = "main";
 /**
  * The curated plugin catalog the desktop Plugins page renders and installs
  * from. Static for the MVP — each entry is shaped as a pre-resolved plugin
@@ -61,6 +66,19 @@ export interface PluginCatalogEntry {
 	 * is tracked by the materialization ledger, not the name.
 	 */
 	mcpServers: Record<string, PluginMcpServerConfig>;
+	/** Names of skills the plugin bundles (Codex manifests point `skills` at a directory; a resolved entry lists them). */
+	skills?: readonly string[];
+	auth?: readonly {
+		type: "oauth2" | "api_key";
+		label?: string | null;
+		inputs?: readonly {
+			name: string;
+			label?: string;
+			placeholder?: string;
+			required?: boolean;
+			secret?: boolean;
+		}[];
+	}[];
 	/** Curation attribute, not manifest vocabulary: surfaces in Featured. */
 	featured?: boolean;
 }
@@ -186,6 +204,7 @@ export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
 		version: "1.0.0",
 		description: "Plan and build products",
 		interface: { displayName: "Linear", category: "Productivity" },
+		auth: [{ type: "oauth2" }],
 		mcpServers: {
 			linear: { type: "http", url: "https://mcp.linear.app/mcp" },
 		},
@@ -196,6 +215,7 @@ export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
 		version: "1.0.0",
 		description: "Work with issues, pull requests, and repos",
 		interface: { displayName: "GitHub", category: "Developer tools" },
+		auth: [{ type: "oauth2" }],
 		mcpServers: {
 			github: { type: "http", url: "https://api.githubcopilot.com/mcp/" },
 		},

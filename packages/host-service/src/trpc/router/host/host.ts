@@ -1,13 +1,10 @@
 import os from "node:os";
-import hostServicePackageJson from "@superset/host-service/package.json" with {
-	type: "json",
-};
 import { getHostId, getHostName } from "@superset/shared/host-info";
+import {
+	getHostInstallSource,
+	HOST_SERVICE_VERSION,
+} from "../../../install-source";
 import { protectedProcedure, router } from "../../index";
-
-// Auto-derived from this package's package.json so callers can report exactly
-// which bundled host-service build is currently serving requests.
-const HOST_SERVICE_VERSION: string = hostServicePackageJson.version;
 
 /**
  * (CLOUD-SEVERANCE-P2) The organization, locally.
@@ -36,8 +33,10 @@ export const hostRouter = router({
 			hostId: getHostId(),
 			hostName: getHostName(),
 			version: HOST_SERVICE_VERSION,
+			installSource: getHostInstallSource(),
 			organization,
 			platform: os.platform(),
+			arch: os.arch(),
 			uptime: process.uptime(),
 		};
 	}),

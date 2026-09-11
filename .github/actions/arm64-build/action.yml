@@ -56,6 +56,27 @@ runs:
         # regenerate it (bun install --lockfile-only) and recommit.
         bun install --frozen-lockfile
 
+    # The compiled Lingui catalogs (packages/i18n/locales/*/messages.ts) are
+    # generated, not committed. Upstream materializes them from
+    # scripts/postinstall.sh; this fork's cross-platform scripts/postinstall.mjs
+    # does too, but the install step above sets SUPERSET_POSTINSTALL_RUNNING=1,
+    # which disables postinstall entirely. So build them explicitly here —
+    # BEFORE the (REFERR-GATE) tsc pass and compile:app, both of which resolve
+    # `@superset/i18n` down to `../locales/en/messages`. apps/desktop's
+    # `precompile:app` hook runs this again; it is idempotent and cheap.
+    - name: Build Lingui catalogs
+      shell: bash
+      run: bun run --filter=@superset/i18n build
+
+    # Upstream's ci.yml gates on this: a change under plugins/<name>/ that was
+    # never published leaves .agent-marketplace.json and
+    # packages/shared/src/plugins/manifests.generated.ts out of sync with the
+    # plugin source, and the generated bundle is what the API resolves against.
+    # Nothing in this fork's build ran it, so a stale manifest shipped unnoticed.
+    - name: Verify plugin manifests are published
+      shell: bash
+      run: bun run check:plugins
+
     # (REFERR-GATE) Fail on two narrow diagnostic classes ONLY: cannot-find-name
     # (TS2304/2552/2662/2663/18004) — bare identifiers esbuild bundles fine but
     # that throw ReferenceError at runtime — and duplicate block-scoped

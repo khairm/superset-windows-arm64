@@ -6,19 +6,24 @@ import { createApp } from "./app";
 import { startCompanionBridgeIfEnabled } from "./companion";
 import { getSupervisor, startDaemonBootstrap } from "./daemon";
 import { env } from "./env";
+import { installConsoleTimestamps } from "./log-timestamps";
 import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
 import { PskHostAuthProvider } from "./providers/host-auth";
 import { provisionAgentIntegrations } from "./runtime/agent-provisioning";
 import { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
 import { applyLoginShellEnvToProcess } from "./runtime/login-shell-env";
+import { detachFromLaunchDirectory } from "./runtime/working-directory";
 import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
+import { configureSelfUpdater } from "./self-update";
 import { captureFatalStartupError, initSentry } from "./sentry";
 import { startTerminalBaseEnvResolution } from "./terminal/env";
 import { startTerminalReaper } from "./terminal/reaper";
 import { startStaleWorkingSweep } from "./terminal-agents/stale-working-sweep";
 
 async function main(): Promise<void> {
+	installConsoleTimestamps();
+
 	// (WIN-USER-ENV) Awaited FIRST, before anything below reads an env-gated
 	// flag — `startCompanionBridgeIfEnabled` most of all. Standalone/CLI entry:
 	// nothing merged this env before us. Rationale and semantics:
@@ -26,6 +31,11 @@ async function main(): Promise<void> {
 	await applyWindowsUserEnvToProcess();
 
 	initSentry({ organizationId: env.ORGANIZATION_ID });
+
+	// Before anything spawns a worker thread or a child process: a host
+	// started from a workspace outlives that directory (HOST-SERVICE-5D).
+	detachFromLaunchDirectory();
+
 	console.log(
 		`[host-service] starting (org=${env.ORGANIZATION_ID}, port=${env.PORT}, NODE_ENV=${process.env.NODE_ENV ?? "unset"})`,
 	);
@@ -184,6 +194,26 @@ async function main(): Promise<void> {
 	});
 	installUpgradeSocketGuard(server);
 	injectWebSocket(server);
+
+	// Standalone only: this process owns its listener and relay socket, so it
+	// can hand the port to a successor build (system.update). The desktop
+	// entry never registers this and its host-service stays non-updatable.
+	configureSelfUpdater({
+		stopServing: async () => {
+			// (CLOUD-SEVERANCE-P2) Upstream cancels its relay registration here
+			// first; this fork never dials one, so the listener is all there is
+			// to hand over.
+			const httpServer = server as unknown as {
+				closeAllConnections?: () => void;
+				close: (callback: () => void) => void;
+			};
+			httpServer.closeAllConnections?.();
+			await Promise.race([
+				new Promise<void>((resolve) => httpServer.close(() => resolve())),
+				new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
+			]);
+		},
+	});
 }
 
 void main().catch(async (error) => {

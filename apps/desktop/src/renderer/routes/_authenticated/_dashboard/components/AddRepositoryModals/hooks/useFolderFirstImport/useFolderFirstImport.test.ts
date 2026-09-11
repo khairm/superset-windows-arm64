@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-// Static import so the real store loads (with real react) before the partial
-// "react" mock below registers.
+import * as reactActual from "react";
+// Static imports so the real modules are captured before the mocks below
+// replace them.
+import * as hostServiceClientActual from "renderer/lib/host-service-client";
+import * as projectsActual from "renderer/react-query/projects";
+import * as localHostServiceActual from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import * as gitInitConfirmActual from "renderer/stores/git-init-confirm";
 
 const hostUrl = "http://host-service";
@@ -41,9 +45,8 @@ const requestGitInitMock = mock(async () => false);
 // is process-global with no unmock, so every file bun loads afterwards
 // inherits it — and any of them that touches `React.createContext` (via
 // posthog-js/react, among others) dies on import.
-const realReact = await import("react");
 mock.module("react", () => ({
-	...realReact,
+	...reactActual,
 	useCallback: <T extends (...args: never[]) => unknown>(callback: T) =>
 		callback,
 }));
@@ -59,6 +62,7 @@ mock.module("renderer/lib/electron-trpc", () => ({
 }));
 
 mock.module("renderer/lib/host-service-client", () => ({
+	...hostServiceClientActual,
 	getHostServiceClientByUrl: () => ({
 		project: {
 			findByPath: { query: findByPathMock },
@@ -69,12 +73,14 @@ mock.module("renderer/lib/host-service-client", () => ({
 }));
 
 mock.module("renderer/react-query/projects", () => ({
+	...projectsActual,
 	useFinalizeProjectSetup: () => finalizeSetupMock,
 }));
 
 mock.module(
 	"renderer/routes/_authenticated/providers/LocalHostServiceProvider",
 	() => ({
+		...localHostServiceActual,
 		useLocalHostService: () => ({
 			activeHostUrl: hostUrl,
 			waitForHostReady: async () => hostUrl,

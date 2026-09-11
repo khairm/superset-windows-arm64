@@ -82,6 +82,7 @@ export async function adoptExistingWorktree(
 		organizationId: ctx.organizationId,
 		clientMachineId: ctx.clientMachineId,
 		claudeAccounts: ctx.claudeAccounts,
+		userId: ctx.userId,
 	};
 
 	if (existingWorkspaceId) {

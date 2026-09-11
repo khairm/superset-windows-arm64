@@ -5,6 +5,8 @@ import {
 	fileOriginalKey,
 	fileResponsePolicy,
 	injectScriptTag,
+	injectStyleTag,
+	PAGE_THEME_CSS,
 	type PageManifest,
 	type PageTicketClaims,
 	pageAssetResponsePolicy,
@@ -15,6 +17,7 @@ import {
 	parsePageManifest,
 	RUNTIME_SCRIPT_PATH,
 	servedVersionOf,
+	THEME_STYLESHEET_PATH,
 	THUMBNAIL_FILENAME,
 	TICKET_QUERY_PARAM,
 	verifyFileTicket,
@@ -145,10 +148,11 @@ async function servePage(c: Context<AppContext>): Promise<Response> {
 	});
 
 	if (!isHtml) return new Response(object.body, { headers });
-	return new Response(
+	const document = injectStyleTag(
 		injectScriptTag(await object.text(), RUNTIME_SCRIPT_PATH),
-		{ headers },
+		PAGE_THEME_CSS,
 	);
+	return new Response(document, { headers });
 }
 
 async function serveThumbnail(c: Context<AppContext>): Promise<Response> {
@@ -426,6 +430,13 @@ app.get(RUNTIME_SCRIPT_PATH, (c) =>
 	}),
 );
 
+app.get(THEME_STYLESHEET_PATH, (c) =>
+	c.body(PAGE_THEME_CSS, 200, {
+		"Content-Type": "text/css; charset=utf-8",
+		"Cache-Control": "public, max-age=300",
+	}),
+);
+
 // Relative references resolve against the directory the document was
 // served from, so slashless forms redirect — never a second address — and a
 // private document lives under its ticket segment (`/versions/3/~<ticket>/`)
@@ -457,7 +468,6 @@ app.notFound(() => notFound());
 // Exceptions only; no-op until SENTRY_DSN is set.
 const sentryOptions = (env: UsercontentEnv): Sentry.CloudflareOptions => ({
 	dsn: env.SENTRY_DSN,
-	tracesSampleRate: 0,
 	sendDefaultPii: false,
 	integrations: (defaults) =>
 		defaults.filter((integration) => integration.name !== "Console"),

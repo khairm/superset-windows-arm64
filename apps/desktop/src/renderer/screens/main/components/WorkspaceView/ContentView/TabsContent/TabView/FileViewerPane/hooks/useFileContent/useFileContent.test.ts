@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+// Static import so the real module is captured before the mock below replaces it.
+import * as reactActual from "react";
 
 let rawQueryResult: {
 	data?: {
@@ -23,9 +25,8 @@ const emptyUseQuery = mock(() => ({ data: undefined, isLoading: false }));
 // is process-global with no unmock, so every file bun loads afterwards
 // inherits it — and any of them that touches `React.createContext` (via
 // posthog-js/react, among others) dies on import.
-const realReact = await import("react");
 mock.module("react", () => ({
-	...realReact,
+	...reactActual,
 	useMemo: <T>(factory: () => T) => factory(),
 }));
 

@@ -94,8 +94,13 @@ export {
 	writeSharedDisabledAgentIds,
 } from "./disabled-agent-hooks";
 export {
+	installedPluginsFilePath,
+	readInstalledPluginSources,
+} from "./installed-plugins";
+export {
 	readExternallyConfiguredMcpServers,
 	type SyncManagedMcpServersOptions,
 	syncManagedMcpServers,
 } from "./managed-mcp-servers";
 export { getBinDir, resolveSupersetHomeDir } from "./paths";
+export { writeFileIfChanged } from "./write-file-if-changed";

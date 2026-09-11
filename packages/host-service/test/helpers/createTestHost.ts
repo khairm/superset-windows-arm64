@@ -31,12 +31,11 @@ export interface TestHostOptions {
 	githubTokenSource?: TokenSource | null;
 	/**
 	 * Fake-runtime overrides typed as `unknown` so tests only need to
-	 * implement the methods they exercise — the real surfaces (Octokit,
-	 * ChatService) are far too large to stub fully.
+	 * implement the methods they exercise — the real surface (Octokit) is
+	 * far too large to stub fully.
 	 */
 	githubFactory?: () => Promise<unknown>;
 	execGh?: (args: string[], options?: unknown) => Promise<unknown>;
-	chatService?: unknown;
 }
 
 export interface TestHost {
@@ -123,7 +122,6 @@ export async function createTestHost(
 				async () => {
 					throw new Error("execGh not configured in test");
 				},
-		chatService: options.chatService as CreateAppOptions["chatService"],
 	};
 
 	const result = createApp(createOptions);

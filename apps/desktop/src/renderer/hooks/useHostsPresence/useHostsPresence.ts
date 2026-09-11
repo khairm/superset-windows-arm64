@@ -19,8 +19,14 @@ export interface HostPresenceTarget {
 	machineId: string;
 }
 
+export interface HostPresence {
+	online: boolean;
+	/** Relay timestamp of the host's last keepalive; null if never seen. */
+	lastSeenAt: number | null;
+}
+
 export function useHostsPresence(
 	_targets: HostPresenceTarget[],
-): Map<string, boolean> | null {
+): Map<string, HostPresence> | null {
 	return null;
 }

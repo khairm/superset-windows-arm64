@@ -116,6 +116,14 @@ export type DashboardSidebarProjectChild =
 			section: DashboardSidebarSection;
 	  };
 
+/** A project hidden from the sidebar on this device; shown only in the restore list. */
+export interface DashboardSidebarHiddenProject {
+	id: string;
+	name: string;
+	iconUrl: string | null;
+	color: string | null;
+}
+
 export interface DashboardSidebarProject {
 	id: string;
 	name: string;
@@ -149,4 +157,19 @@ export interface DashboardSidebarProject {
 	// (RECYCLE-BIN) reveal + collapse for the per-project Recycle Bin section.
 	showDeleted: boolean;
 	deletedCollapsed: boolean;
+}
+
+export type DashboardSidebarGithubHoldReason =
+	| "unreachable"
+	| "rate-limited"
+	| "auth";
+
+/**
+ * Why a host's PR sweep is paused. Mirrors the host-service gate status:
+ * existing PR chips stay, new pull requests cannot be detected until `until`.
+ */
+export interface DashboardSidebarGithubStatus {
+	reason: DashboardSidebarGithubHoldReason;
+	since: number;
+	until: number;
 }

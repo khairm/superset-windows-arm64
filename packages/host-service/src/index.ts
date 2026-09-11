@@ -29,10 +29,15 @@ export type { HostAuthProvider } from "./providers/host-auth";
 export { PskHostAuthProvider } from "./providers/host-auth";
 export { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
 export type { GitCredentialProvider, GitFactory } from "./runtime/git";
+export { detachFromLaunchDirectory } from "./runtime/working-directory";
 export { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 export { captureFatalStartupError, initSentry } from "./sentry";
 export { startTerminalReaper } from "./terminal/reaper";
 export { startStaleWorkingSweep } from "./terminal-agents/stale-working-sweep";
+export type {
+	SubagentTranscript,
+	SubagentTranscriptEntry,
+} from "./terminal-agents";
 export type {
 	DeleteInProgressCause,
 	TeardownFailureCause,

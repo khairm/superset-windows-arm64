@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
+import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
 import { useQuickCreateWorkspace } from "renderer/hooks/useQuickCreateWorkspace";
 import { useHotkey } from "renderer/hotkeys";
 import { DEFAULT_SETTINGS_ROUTE } from "renderer/lib/cloud-severed-routes";
@@ -27,7 +28,6 @@ import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSide
 import { DeleteWorkspaceDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
 import { usePortsDisplayMode } from "renderer/stores/inline-workspace-ports";
-import { useOpenNewWorkspaceModal } from "renderer/stores/new-workspace-modal";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { syncPersistedStoreAcrossWindows } from "renderer/stores/syncPersistedStoreAcrossWindows";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
@@ -62,7 +62,7 @@ type DeleteTarget = {
 function DashboardLayout() {
 	const navigate = useNavigate();
 	const location = useLocation();
-	const openNewWorkspaceModal = useOpenNewWorkspaceModal();
+	const openNewWorkspace = useOpenNewWorkspace();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const portsDisplayMode = usePortsDisplayMode();
 	const { workspaces: hostWorkspaces } = useHostWorkspaces();
@@ -161,7 +161,7 @@ function DashboardLayout() {
 		}
 	});
 	useHotkey("NEW_WORKSPACE", () =>
-		openNewWorkspaceModal(
+		openNewWorkspace(
 			currentWorkspace?.projectId ?? currentV2Workspace?.projectId ?? undefined,
 		),
 	);

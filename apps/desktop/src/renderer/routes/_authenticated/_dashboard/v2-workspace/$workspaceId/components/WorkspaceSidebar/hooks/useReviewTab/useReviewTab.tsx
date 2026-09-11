@@ -20,6 +20,7 @@ type V2ThreadsData = RouterOutputs["git"]["getPullRequestThreads"];
 interface UseReviewTabParams {
 	workspaceId: string;
 	onOpenComment?: (comment: CommentPaneData) => void;
+	onOpenPullRequest?: (prNumber: number) => void;
 	onOpenInDiff?: (
 		path: string,
 		line?: number,
@@ -31,6 +32,7 @@ interface UseReviewTabParams {
 export function useReviewTab({
 	workspaceId,
 	onOpenComment,
+	onOpenPullRequest,
 	onOpenInDiff,
 }: UseReviewTabParams): SidebarTabDefinition {
 	const { t } = useLingui();
@@ -100,6 +102,7 @@ export function useReviewTab({
 			isError={prQuery.isError}
 			isCommentsLoading={threadsQuery.isLoading}
 			onOpenComment={onOpenComment}
+			onOpenPullRequest={onOpenPullRequest}
 			onOpenInDiff={onOpenInDiff}
 		/>
 	);

@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { syncManagedMcpServers } from "@superset/agent-setup";
 import { settings } from "@superset/local-db";
 import {
@@ -5,7 +7,10 @@ import {
 	type InstalledPlugin,
 	type PluginMcpServerConfig,
 } from "@superset/shared/plugins";
+import log from "electron-log/main";
+import { resolveBundledCliPath } from "main/lib/bundled-cli";
 import { localDb } from "main/lib/local-db";
+import { createSerialQueue } from "main/lib/serial-queue";
 
 /**
  * Installed-plugin state and its materialization into agent configs. State
@@ -15,6 +20,33 @@ import { localDb } from "main/lib/local-db";
  * installed set, so installs and uninstalls both land on app restart even if
  * a mid-session sync was missed.
  */
+
+const execFileAsync = promisify(execFile);
+
+const pluginCliQueue = createSerialQueue();
+
+function queuePluginCli(args: string[]): Promise<void> {
+	return pluginCliQueue(() => runPluginCli(args));
+}
+
+async function runPluginCli(args: string[]): Promise<void> {
+	const cli = resolveBundledCliPath();
+	if (!cli) {
+		log.warn("[plugins] no bundled CLI; skills were not provisioned");
+		return;
+	}
+
+	try {
+		await execFileAsync(cli, ["plugins", ...args, "--json"], {
+			timeout: 60_000,
+		});
+	} catch (error) {
+		log.warn(
+			`[plugins] ${args.join(" ")} failed; skills may be stale:`,
+			error instanceof Error ? error.message : error,
+		);
+	}
+}
 
 export function getInstalledPlugins(): InstalledPlugin[] {
 	return localDb.select().from(settings).get()?.installedPlugins ?? [];
@@ -58,18 +90,20 @@ export function installPlugin(name: string): InstalledPlugin[] | null {
 	if (!plugin) return null;
 
 	const installed = getInstalledPlugins();
-	const next = installed.some((entry) => entry.name === name)
-		? installed
-		: [
-				...installed,
-				{
-					name: plugin.name,
-					version: plugin.version,
-					installedAt: new Date().toISOString(),
-				},
-			];
+	const existing = installed.find((entry) => entry.name === name);
+	const record: InstalledPlugin = {
+		name: plugin.name,
+		version: plugin.version,
+		installedAt: existing?.installedAt ?? new Date().toISOString(),
+		...(existing?.enabled === false ? { enabled: false } : {}),
+	};
+	const next = existing
+		? installed.map((entry) => (entry.name === name ? record : entry))
+		: [...installed, record];
+
 	saveInstalledPlugins(next);
 	syncInstalledPluginMcpServers();
+	void queuePluginCli(["install", name, "--update"]);
 	return next;
 }
 
@@ -77,6 +111,7 @@ export function uninstallPlugin(name: string): InstalledPlugin[] {
 	const next = getInstalledPlugins().filter((entry) => entry.name !== name);
 	saveInstalledPlugins(next);
 	syncInstalledPluginMcpServers();
+	void queuePluginCli(["uninstall", name]);
 	return next;
 }
 
@@ -109,5 +144,9 @@ export function setPluginEnabled(
 			: installed;
 	saveInstalledPlugins(next);
 	syncInstalledPluginMcpServers();
+	// installed_plugins.json is the only `enabled` flag provisioning reads, and
+	// local-db is not it: without this the skills stay materialized while the
+	// MCP servers are reaped, leaving the plugin half on.
+	void queuePluginCli([enabled ? "enable" : "disable", name]);
 	return next;
 }

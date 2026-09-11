@@ -1,5 +1,6 @@
 import type { DetectedPort } from "@superset/port-scanner";
 import type { AgentIdentity } from "@superset/shared/agent-identity";
+import type { WorkspaceTagAssignment } from "@superset/shared/workspace-tags";
 import type { FsWatchEvent } from "@superset/workspace-fs/host";
 import type { AgentLifecycleEventType } from "./map-event-type.ts";
 
@@ -65,27 +66,28 @@ export interface AgentBindingsChangedMessage {
  *   signal at all, so nothing could invalidate the terminal list and the
  *   session never got a pane.
  * - "exit": the PTY process ended (existing behaviour).
+ * - "resumed": the agent session moved to another terminal.
  * - "command-start" / "command-end": a foreground command began / finished in
  *   the shell, detected from OSC 133 C/D markers (shell-running blue dot). These
  *   are NOT agent statuses — they drive a separate render-only axis.
  */
+interface TerminalLifecycleBase {
+	type: "terminal:lifecycle";
+	workspaceId: string;
+	terminalId: string;
+	occurredAt: number;
+}
+
 export type TerminalLifecycleMessage =
-	| {
-			type: "terminal:lifecycle";
-			workspaceId: string;
-			terminalId: string;
+	| (TerminalLifecycleBase & {
 			eventType: "created";
 			/**
 			 * True when the session attached to a PTY that was already running
 			 * (host-service restart adoption) rather than spawning a new one.
 			 */
 			adopted: boolean;
-			occurredAt: number;
-	  }
-	| {
-			type: "terminal:lifecycle";
-			workspaceId: string;
-			terminalId: string;
+	  })
+	| (TerminalLifecycleBase & {
 			eventType: "exit";
 			exitCode: number;
 			signal: number;
@@ -102,23 +104,29 @@ export type TerminalLifecycleMessage =
 			 * one; consumers that merely stop showing a live pane may act on it.
 			 */
 			confirmed?: boolean;
-			occurredAt: number;
-	  }
-	| {
-			type: "terminal:lifecycle";
-			workspaceId: string;
-			terminalId: string;
+	  })
+	| (TerminalLifecycleBase & {
 			eventType: "command-start";
-			occurredAt: number;
-	  }
-	| {
-			type: "terminal:lifecycle";
-			workspaceId: string;
-			terminalId: string;
+	  })
+	| (TerminalLifecycleBase & {
 			eventType: "command-end";
 			exitCode: number | null;
-			occurredAt: number;
-	  };
+	  })
+	/**
+	 * The agent session that was running in `terminalId` now lives in
+	 * `resumedTerminalId`. Panes still pointed at the dead terminal follow
+	 * it there instead of showing an exited shell.
+	 */
+	| (TerminalLifecycleBase & {
+			eventType: "resumed";
+			resumedTerminalId: string;
+			label: string;
+	  });
+
+/** `Omit` that keeps a union a union instead of collapsing it. */
+export type DistributiveOmit<T, K extends keyof T> = T extends unknown
+	? Omit<T, K>
+	: never;
 
 export interface PortChangedMessage {
 	type: "port:changed";
@@ -152,8 +160,18 @@ export interface WorkspaceSnapshot {
 	 * writes (rename, tags, PR link).
 	 */
 	lastActivityAt: number | null;
-	/** Normalized, sorted tag set; sidebar folders derive from it. */
+	/**
+	 * Every tag on the workspace, normalized and sorted, whoever applied it.
+	 * Consumers that know who they are read `tagAssignments` instead.
+	 */
 	tags: string[];
+	/**
+	 * Each tag with the user who applied it. Tags are personal (see
+	 * `isWorkspaceTagVisibleTo`): a client keeps the ones it can see and
+	 * derives its sidebar folders from those. Absent from hosts that predate
+	 * the field.
+	 */
+	tagAssignments?: WorkspaceTagAssignment[];
 }
 
 export interface WorkspaceChangedMessage {
@@ -276,6 +294,10 @@ export interface ClaudeAccountWarningMessage {
 export interface EventBusErrorMessage {
 	type: "error";
 	message: string;
+	/** Set on command rejections a client can act on. */
+	code?: "git-watch-cap";
+	/** The workspace whose command was rejected. */
+	workspaceId?: string;
 }
 
 export interface PageWatchChangedMessage {
@@ -313,6 +335,22 @@ export interface FsUnwatchCommand {
 }
 
 /**
+ * Register interest in a workspace's `git:changed` events, driving
+ * `GitWatcher`'s refcounted registration (see #6729) — a workspace with no
+ * `git:watch` interest from any client, and no internal host-service
+ * subscriber, is never watched.
+ */
+export interface GitWatchCommand {
+	type: "git:watch";
+	workspaceId: string;
+}
+
+export interface GitUnwatchCommand {
+	type: "git:unwatch";
+	workspaceId: string;
+}
+
+/**
  * Targeted watch on one file the recursive workspace watcher can't see
  * (inside a pruned subtree — gitignored build dir, node_modules, nested
  * repo). Sent by the renderer for every open document; the server installs a
@@ -335,4 +373,6 @@ export type ClientMessage =
 	| FsWatchCommand
 	| FsUnwatchCommand
 	| FsWatchFileCommand
-	| FsUnwatchFileCommand;
+	| FsUnwatchFileCommand
+	| GitWatchCommand
+	| GitUnwatchCommand;

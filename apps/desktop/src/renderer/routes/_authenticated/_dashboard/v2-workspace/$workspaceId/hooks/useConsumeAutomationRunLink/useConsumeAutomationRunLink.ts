@@ -18,7 +18,9 @@ interface UseConsumeAutomationRunLinkArgs {
  * When the workspace is opened via a deep link from an automation run
  * (`?terminalId=...`), ensure the corresponding pane is present and focused.
  * The underlying session already exists on the host-service from the
- * dispatcher — we just re-adopt it in the pane store.
+ * dispatcher — we just re-adopt it in the pane store. A run whose agent was
+ * since relaunched into a fresh terminal (an account-switch restart) is
+ * followed to that terminal, so the link still lands on the conversation.
  */
 export function useConsumeAutomationRunLink({
 	store,
@@ -36,6 +38,32 @@ export function useConsumeAutomationRunLink({
 			refetchOnWindowFocus: false,
 		},
 	);
+	const linkedTerminalIsLive =
+		terminalId != null &&
+		terminalSessionsQuery.isSuccess &&
+		terminalSessionBelongsToWorkspace({
+			sessions: terminalSessionsQuery.data.sessions,
+			terminalId,
+			workspaceId,
+		});
+	// Only a dead link is worth a successor lookup — the live case is the
+	// common one and needs nothing more than the session list.
+	const successorQuery = workspaceTrpc.terminalAgents.resumedSuccessor.useQuery(
+		{ workspaceId, terminalId: terminalId ?? "" },
+		{
+			enabled:
+				terminalId != null &&
+				terminalSessionsQuery.isSuccess &&
+				!linkedTerminalIsLive,
+			refetchOnWindowFocus: false,
+		},
+	);
+	// undefined = still resolving; null = nothing to open.
+	const targetTerminalId = linkedTerminalIsLive
+		? terminalId
+		: successorQuery.isSuccess
+			? (successorQuery.data?.terminalId ?? null)
+			: undefined;
 	useEffect(() => {
 		if (!paneLayoutReady) return;
 		consumeTabAutomationRunLink({
@@ -48,7 +76,9 @@ export function useConsumeAutomationRunLink({
 	}, [store, tabId, focusRequestId, paneLayoutReady]);
 
 	useEffect(() => {
-		if (!paneLayoutReady) return;
+		// `undefined` means the successor lookup is still resolving; consuming
+		// the link now would burn its key before we know where it points.
+		if (!paneLayoutReady || targetTerminalId === undefined) return;
 		consumeTerminalAutomationRunLink({
 			store,
 			workspaceId,
@@ -57,6 +87,7 @@ export function useConsumeAutomationRunLink({
 			focusRequestId,
 			terminalSessionsReady: terminalSessionsQuery.isSuccess,
 			terminalSessions: terminalSessionsQuery.data?.sessions,
+			resumedTerminalId: targetTerminalId,
 			consumedKeys: consumedRef.current,
 		});
 	}, [
@@ -65,6 +96,7 @@ export function useConsumeAutomationRunLink({
 		focusRequestId,
 		terminalSessionsQuery.isSuccess,
 		terminalSessionsQuery.data,
+		targetTerminalId,
 		workspaceId,
 		paneLayoutReady,
 	]);
@@ -108,6 +140,7 @@ export function consumeTerminalAutomationRunLink({
 	focusRequestId,
 	terminalSessionsReady,
 	terminalSessions,
+	resumedTerminalId,
 	consumedKeys,
 }: AutomationRunLinkBaseArgs & {
 	workspaceId: string;
@@ -116,6 +149,12 @@ export function consumeTerminalAutomationRunLink({
 	terminalSessions:
 		| Array<{ terminalId: string; workspaceId: string }>
 		| undefined;
+	/**
+	 * Where the run's agent lives now when the linked terminal is gone — an
+	 * account-switch restart relaunches it into a fresh terminal. `null` when
+	 * nothing resumed it; omitted by callers that do not look one up.
+	 */
+	resumedTerminalId?: string | null;
 }): boolean {
 	if (!paneLayoutReady || !terminalId || !terminalSessionsReady) return false;
 	if (!terminalSessions) {
@@ -135,8 +174,12 @@ export function consumeTerminalAutomationRunLink({
 			workspaceId,
 		})
 	) {
+		if (resumedTerminalId) {
+			focusOrAddTerminalPane(store, resumedTerminalId);
+			return true;
+		}
 		console.warn(
-			"[automation-run-link] Ignoring terminal link for another workspace",
+			"[automation-run-link] Ignoring terminal link: not in this workspace and not resumed elsewhere",
 			{ terminalId, workspaceId },
 		);
 		return true;

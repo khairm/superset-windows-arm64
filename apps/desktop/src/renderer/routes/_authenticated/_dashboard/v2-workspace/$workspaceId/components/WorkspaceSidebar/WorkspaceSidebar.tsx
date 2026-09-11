@@ -2,7 +2,7 @@ import { useLingui } from "@lingui/react/macro";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { LuClipboardList, LuFile, LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
 import { getChangesetFileKey } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
@@ -52,23 +52,29 @@ interface WorkspaceSidebarProps {
 		changeKey?: string,
 	) => void;
 	onOpenComment?: (comment: CommentPaneData) => void;
+	/** Opens the linked PR's summary pane; the Review tab's title falls back to GitHub without it. */
+	onOpenPullRequest?: (prNumber: number) => void;
 	onSearch?: () => void;
 	selectedFilePath?: string;
 	/** The diff pane's current file, highlighted in the Changes tab. */
 	selectedDiffTarget?: SelectedDiffTarget;
 	pendingReveal?: PendingReveal | null;
 	workspaceId: string;
+	/** Run button rendered by the page, hosted in the sidebar's top strip. */
+	runButton: ReactNode;
 }
 
 export function WorkspaceSidebar({
 	onSelectFile,
 	onSelectDiffFile,
 	onOpenComment,
+	onOpenPullRequest,
 	onSearch,
 	selectedFilePath,
 	selectedDiffTarget,
 	pendingReveal,
 	workspaceId,
+	runButton,
 }: WorkspaceSidebarProps) {
 	const { t } = useLingui();
 	const gitStatus = useWorkspaceGitStatus();
@@ -138,6 +144,7 @@ export function WorkspaceSidebar({
 	const reviewTab = useReviewTab({
 		workspaceId,
 		onOpenComment,
+		onOpenPullRequest,
 		onOpenInDiff: onSelectDiffFile
 			? (path, line, openInNewTab, side) => {
 					// Force annotations on so the user lands on the comment, not an empty line.
@@ -224,8 +231,10 @@ export function WorkspaceSidebar({
 			ref={containerRef}
 			className="isolate flex h-full w-full min-h-0 flex-col overflow-hidden bg-background"
 		>
-			{/* (NON-GIT WORKSPACE) the header's actions are all git-shaped. */}
-			{isGitRepo && <PRActionHeader workspaceId={workspaceId} />}
+			{/* (NON-GIT WORKSPACE) The strip no longer carries git-shaped actions
+			    — the PR badge moved to the top bar — so it renders for a non-git
+			    workspace too; only the git TABS below stay gated. */}
+			<PRActionHeader runButton={runButton} />
 			<SidebarHeader
 				tabs={tabs}
 				activeTab={activeTabDef.id}

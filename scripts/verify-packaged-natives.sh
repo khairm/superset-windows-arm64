@@ -35,6 +35,29 @@ need_arm64() { # $1 = file, $2 = label
     echo "::error::$2 missing/!ARM64 at $1"; fail=1
   fi
 }
+# Assert a packaged platform PACKAGE shipped, and that every native payload in
+# it is ARM64. Directory-and-contents rather than one pinned file: the .node
+# inside is an upstream-chosen name (SCREENREADER-GUARD-DRIFT), but "the
+# win32-arm64 package is in the installer, with a loadable binary in it" is the
+# invariant. The bare-`find` sweep further down only rejects a win32-arm64
+# .node that IS there and is wrong; an empty or absent package passes it
+# silently, which is exactly the hole this closes.
+need_arm64_pkg() { # $1 = dir, $2 = label
+  local n=0 f a
+  if [ ! -d "$1" ]; then
+    echo "::error::$2 missing at $1"; fail=1; return
+  fi
+  while IFS= read -r f; do
+    n=$((n + 1))
+    a="$(pearch "$f")"
+    [ "$a" = 64aa ] || { echo "::error::$2 payload not ARM64: $f (0x$a)"; fail=1; }
+  done < <(find "$1" -name '*.node' 2>/dev/null)
+  if [ "$n" = 0 ]; then
+    echo "::error::$2 packaged with no .node payload at $1"; fail=1
+  else
+    echo "OK  $2 packaged ($n .node, ARM64)"
+  fi
+}
 m="$(pearch "$APP/Superset.exe")"
 [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
 TOK_RES="resources/node_modules/@anush008/tokenizers-win32-arm64-msvc"
@@ -65,6 +88,17 @@ for f in conpty.node conpty_console_list.node; do
   need_arm64 "$APP/resources/app.asar.unpacked/node_modules/@lydell/node-pty-win32-arm64/$f" \
     "@lydell/node-pty-win32-arm64/$f"
 done
+# The arch-specific @ast-grep/napi binding. Upstream made this the native its
+# own packaged-artifact check watches once duckdb and libsql left the desktop
+# dependencies, and it is what copy-native-modules materializes for the target;
+# apps/desktop/scripts/validate-native-runtime.ts already demands it BEFORE
+# electron-builder runs, so nothing until now proved it survived into the
+# installer. Its location is pinned by runtime-dependencies.ts
+# (`copyWholeModule("@ast-grep")` + the `napi*` asarUnpack glob), not by a
+# bundler.
+need_arm64_pkg \
+  "$APP/resources/app.asar.unpacked/node_modules/@ast-grep/napi-win32-arm64-msvc" \
+  "@ast-grep/napi-win32-arm64-msvc"
 while IFS= read -r f; do
   case "$f" in
     *darwin*|*linux*|*musl*|*win32-ia32*|*win32-x64*|*win32_x64*|*win32_ia32*) continue ;;

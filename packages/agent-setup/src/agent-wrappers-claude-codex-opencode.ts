@@ -24,7 +24,7 @@ import { getOpenCodeConfigDir, getOpenCodePluginDir } from "./paths";
 export const OPENCODE_PLUGIN_FILE = "superset-notify.js";
 
 const OPENCODE_PLUGIN_SIGNATURE = "// Superset opencode plugin";
-const OPENCODE_PLUGIN_VERSION = "v9";
+const OPENCODE_PLUGIN_VERSION = "v10";
 export const OPENCODE_PLUGIN_MARKER = `${OPENCODE_PLUGIN_SIGNATURE} ${OPENCODE_PLUGIN_VERSION}`;
 
 /**
@@ -177,12 +177,16 @@ export function getCodexGlobalHooksJsonPath(): string {
 	return path.join(os.homedir(), ".codex", "hooks.json");
 }
 
+// SubagentStart/SubagentStop fire for spawn_agent children (multi_agent is
+// on by default); the notify script forwards them to the subagent roster.
 const CODEX_MANAGED_EVENTS: Record<string, { matcher?: string }> = {
 	SessionStart: {},
 	SessionEnd: {},
 	UserPromptSubmit: {},
 	Stop: {},
 	Interrupt: {},
+	SubagentStart: {},
+	SubagentStop: {},
 };
 
 function codexHooksSpec(

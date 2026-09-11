@@ -20,7 +20,7 @@ import { getHooksDir } from "./paths";
 export const CURSOR_HOOK_SCRIPT_NAME = "cursor-hook.sh";
 
 const CURSOR_HOOK_SIGNATURE = "# Superset cursor hook";
-const CURSOR_HOOK_VERSION = "v7";
+const CURSOR_HOOK_VERSION = "v8";
 export const CURSOR_HOOK_MARKER = `${CURSOR_HOOK_SIGNATURE} ${CURSOR_HOOK_VERSION}`;
 
 interface CursorHookEntry {
@@ -56,7 +56,15 @@ const CURSOR_MANAGED_EVENT_ARGS: Record<string, string> = {
 	stop: "Stop",
 	beforeShellExecution: "PermissionRequest",
 	beforeMCPExecution: "PermissionRequest",
+	postToolUse: "Start",
+	postToolUseFailure: "Start",
 };
+
+// Only Shell and MCP calls have a before-hook above that parks the terminal
+// on PermissionRequest, so only their completions need to move it back to
+// Start. File tools stay out: a subagent's read would otherwise post its own
+// session id over the parent terminal's.
+const CURSOR_POST_TOOL_MATCHER = "^(Shell|MCP:.+)$";
 
 function cursorHooksSpec(
 	hookScriptPath: string,
@@ -74,7 +82,20 @@ function cursorHooksSpec(
 		desiredEntriesByEvent: Object.fromEntries(
 			Object.entries(CURSOR_MANAGED_EVENT_ARGS).map(([eventName, arg]) => {
 				const command = buildAgentHookCommand(hookScriptPath, arg);
-				return [eventName, command ? [{ command }] : []];
+				return [
+					eventName,
+					command
+						? [
+								{
+									command,
+									...(eventName === "postToolUse" ||
+									eventName === "postToolUseFailure"
+										? { matcher: CURSOR_POST_TOOL_MATCHER }
+										: {}),
+								},
+							]
+						: [],
+				];
 			}),
 		),
 		cleanEntry: (entry) =>

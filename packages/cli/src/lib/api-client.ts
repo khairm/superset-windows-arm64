@@ -4,6 +4,44 @@ import type { TRPCClient } from "@trpc/client";
 export type ApiClient = TRPCClient<AppRouter>;
 
 /**
+ * A non-JSON error response from whatever sits in front of an HTTP API:
+ * Vercel's 413 page, a gateway's HTML 502. tRPC would otherwise report these
+ * as "Failed to parse JSON" and drop the status, leaving the user nothing to
+ * act on. The body keeps its non-empty lines (Vercel's includes the request
+ * id). Kept under (CLOUD-SEVERANCE-P2) because it is transport-shaped, not
+ * cloud-shaped: it names no host, and the feedback command still classifies
+ * its own HTTP failures with it.
+ */
+export class ApiHttpError extends Error {
+	constructor(
+		public readonly status: number,
+		public readonly statusText: string,
+		public readonly body: string,
+	) {
+		super(`HTTP ${status} ${statusText}: ${body}`.trimEnd());
+		this.name = "ApiHttpError";
+	}
+}
+
+const MAX_ERROR_BODY_CHARS = 300;
+
+export async function fetchRejectingNonJsonErrors(
+	input: string | URL | Request,
+	init?: RequestInit,
+): Promise<Response> {
+	const response = await fetch(input, init);
+	const contentType = response.headers.get("content-type") ?? "";
+	if (response.ok || contentType.includes("json")) return response;
+	const body = (await response.text())
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.join(" / ")
+		.slice(0, MAX_ERROR_BODY_CHARS);
+	throw new ApiHttpError(response.status, response.statusText, body);
+}
+
+/**
  * (CLOUD-SEVERANCE-P2) The CLI's cloud client, severed.
  *
  * Commands that only ever needed this machine — `ws`, `terminals`, `agents`,

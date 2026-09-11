@@ -3,8 +3,10 @@ import {
 	applyAutomaticSnoozeReturn,
 	applyWorkspaceExitCleanup,
 	cancelWorkspaceExitCleanup,
+	ensureSidebarProjectRecord,
 	removeProjectFromSidebarState,
 	resolveSidebarRowProjectId,
+	setSidebarProjectHidden,
 	type SidebarWorkspaceRow,
 	tombstoneSidebarWorkspaceRecord,
 } from "./sidebarMutations";
@@ -70,6 +72,30 @@ function localStateRow(
 	};
 }
 
+type ProjectRow = {
+	projectId: string;
+	createdAt: Date;
+	isCollapsed: boolean;
+	isHidden: boolean;
+	tabOrder: number;
+	defaultOpenInApp: string | null;
+};
+
+function projectRow(
+	projectId: string,
+	overrides: Partial<ProjectRow> = {},
+): ProjectRow {
+	return {
+		projectId,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		isCollapsed: false,
+		isHidden: false,
+		tabOrder: 1,
+		defaultOpenInApp: null,
+		...overrides,
+	};
+}
+
 function makeCollections() {
 	return {
 		v2WorkspaceLocalState: makeCollection<LocalStateRow>(
@@ -79,9 +105,7 @@ function makeCollections() {
 			sectionId: string;
 			projectId: string;
 		}>((row) => row.sectionId),
-		v2SidebarProjects: makeCollection<{ projectId: string }>(
-			(row) => row.projectId,
-		),
+		v2SidebarProjects: makeCollection<ProjectRow>((row) => row.projectId),
 	};
 }
 
@@ -92,6 +116,11 @@ type Collections = ReturnType<typeof makeCollections>;
 function asRemoveArg(collections: Collections) {
 	return collections as unknown as Parameters<
 		typeof removeProjectFromSidebarState
+	>[0];
+}
+function asProjectArg(collections: Collections) {
+	return collections as unknown as Parameters<
+		typeof setSidebarProjectHidden
 	>[0];
 }
 function asTombstoneArg(collections: Collections) {
@@ -105,6 +134,86 @@ const noopCleanup = () => {};
 const LOCAL_HOST = "host-local";
 const ME = "user-me";
 const PLACEMENT = { machineId: LOCAL_HOST, currentUserId: ME };
+
+describe("setSidebarProjectHidden", () => {
+	it("flips only the hidden flag, leaving placement, sections and workspace rows intact", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { tabOrder: 3, isCollapsed: true }),
+		);
+		collections.v2SidebarSections.insert({
+			sectionId: "sec-1",
+			projectId: "proj-1",
+		});
+		collections.v2WorkspaceLocalState.insert(
+			localStateRow("ws-1", "proj-1", { sectionId: "sec-1", pinnedAt: 5 }),
+		);
+
+		setSidebarProjectHidden(asProjectArg(collections), "proj-1", true);
+
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			isHidden: true,
+			tabOrder: 3,
+			isCollapsed: true,
+		});
+		expect(collections.v2SidebarSections.get("sec-1")).toBeDefined();
+		expect(
+			collections.v2WorkspaceLocalState.get("ws-1")?.sidebarState,
+		).toMatchObject({ sectionId: "sec-1", pinnedAt: 5, isHidden: false });
+
+		setSidebarProjectHidden(asProjectArg(collections), "proj-1", false);
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(false);
+	});
+
+	it("is a no-op for a project with no placement row", () => {
+		const collections = makeCollections();
+		setSidebarProjectHidden(asProjectArg(collections), "proj-missing", true);
+		expect(collections.v2SidebarProjects.state.size).toBe(0);
+	});
+});
+
+describe("ensureSidebarProjectRecord", () => {
+	it("reveals a hidden project instead of inserting a second row", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { isHidden: true, tabOrder: 7 }),
+		);
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1");
+
+		expect(collections.v2SidebarProjects.state.size).toBe(1);
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			isHidden: false,
+			tabOrder: 7,
+		});
+	});
+
+	it("inserts a visible row ahead of existing projects when none exists", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(projectRow("proj-1", { tabOrder: 1 }));
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-2");
+
+		const inserted = collections.v2SidebarProjects.get("proj-2");
+		expect(inserted?.isHidden).toBe(false);
+		expect(inserted?.tabOrder).toBeLessThan(1);
+	});
+
+	it("leaves a visible row untouched", () => {
+		const collections = makeCollections();
+		collections.v2SidebarProjects.insert(
+			projectRow("proj-1", { tabOrder: 4, isCollapsed: true }),
+		);
+
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1");
+
+		expect(collections.v2SidebarProjects.get("proj-1")).toMatchObject({
+			tabOrder: 4,
+			isCollapsed: true,
+			isHidden: false,
+		});
+	});
+});
 
 describe("removeProjectFromSidebarState", () => {
 	it("tombstones the project's worktrees — existing rows and row-less ones — and deletes sections and the project record", () => {
@@ -134,7 +243,7 @@ describe("removeProjectFromSidebarState", () => {
 			sectionId: "sec-1",
 			projectId: "proj-1",
 		});
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		const cleaned: string[] = [];
 		removeProjectFromSidebarState(
@@ -182,7 +291,7 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		removeProjectFromSidebarState(
 			asRemoveArg(collections),
@@ -223,7 +332,7 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		removeProjectFromSidebarState(
 			asRemoveArg(collections),
@@ -254,7 +363,7 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: null,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		removeProjectFromSidebarState(
 			asRemoveArg(collections),
@@ -283,7 +392,7 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: ME,
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		const cleaned: string[] = [];
 		removeProjectFromSidebarState(
@@ -330,7 +439,7 @@ describe("removeProjectFromSidebarState", () => {
 				createdByUserId: "user-teammate",
 			},
 		];
-		collections.v2SidebarProjects.insert({ projectId: "proj-1" });
+		collections.v2SidebarProjects.insert(projectRow("proj-1"));
 
 		removeProjectFromSidebarState(
 			asRemoveArg(collections),

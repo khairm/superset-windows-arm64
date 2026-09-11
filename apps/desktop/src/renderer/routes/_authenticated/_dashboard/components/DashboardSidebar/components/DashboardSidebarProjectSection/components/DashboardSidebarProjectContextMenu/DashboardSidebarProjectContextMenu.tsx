@@ -13,6 +13,7 @@ import {
 	LuArchive,
 	LuClock,
 	LuEye,
+	LuEyeOff,
 	LuFolderInput,
 	LuFolderOpen,
 	LuFolderPlus,
@@ -41,7 +42,11 @@ interface DashboardSidebarProjectContextMenuProps {
 	onImportWorktrees: () => void;
 	onOpenInFinder: () => void;
 	onOpenSettings: () => void;
+	onHide: () => void;
+	/** (REMOVE-STICKY) Destructive twin of Hide — confirmed by the caller. */
 	onRemoveFromSidebar: () => void;
+	/** Null when the user cannot delete (not an organization owner). */
+	onDelete: (() => void) | null;
 	onRename: () => void;
 	onToggleSnoozed?: () => void;
 	onToggleArchived?: () => void;
@@ -61,7 +66,9 @@ export function DashboardSidebarProjectContextMenu({
 	onImportWorktrees,
 	onOpenInFinder,
 	onOpenSettings,
+	onHide,
 	onRemoveFromSidebar,
+	onDelete,
 	onRename,
 	onToggleSnoozed,
 	onToggleArchived,
@@ -143,10 +150,20 @@ export function DashboardSidebarProjectContextMenu({
 					</>
 				)}
 				<ContextMenuSeparator />
+				<ContextMenuItem onSelect={onHide}>
+					<LuEyeOff className="size-4 mr-2" />
+					<Trans>Hide from Sidebar</Trans>
+				</ContextMenuItem>
 				<ContextMenuItem onSelect={onRemoveFromSidebar}>
 					<LuX className="size-4 mr-2" />
 					<Trans>Remove from Sidebar</Trans>
 				</ContextMenuItem>
+				{onDelete ? (
+					<ContextMenuItem variant="destructive" onSelect={onDelete}>
+						<LuTrash2 className="size-4 mr-2" />
+						<Trans>Delete Project…</Trans>
+					</ContextMenuItem>
+				) : null}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

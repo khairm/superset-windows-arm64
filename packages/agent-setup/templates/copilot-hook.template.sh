@@ -43,6 +43,12 @@ printf '{}\n'
 # SUPERSET_* vars.
 [ -n "$SUPERSET_TERMINAL_ID" ] || [ -n "$SUPERSET_TAB_ID" ] || exit 0
 
+# The wrapper's identity, or copilot when launched without one. Another
+# agent's identity means copilot is running under it (a tool call), which is
+# not this terminal's lifecycle.
+AGENT_ID="${SUPERSET_AGENT_ID:-copilot}"
+[ "$AGENT_ID" = "copilot" ] || exit 0
+
 V1_EVENT_TYPE="$EVENT_TYPE"
 case "$V1_EVENT_TYPE" in
   SessionStart) V1_EVENT_TYPE="Start" ;;
@@ -64,7 +70,7 @@ json_escape() {
 if [ -n "$SUPERSET_TERMINAL_ID" ]; then
   json_escape "$SUPERSET_TERMINAL_ID"; E_TERMINAL_ID="$JSON_ESCAPED"
   json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
-  json_escape "$SUPERSET_AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
+  json_escape "$AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
   json_escape "$HOOK_SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
   PAYLOAD="{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
 
@@ -119,7 +125,7 @@ curl -sG "http://127.0.0.1:${SUPERSET_PORT:-{{DEFAULT_PORT}}}/hook/complete" \
   --data-urlencode "hookSessionId=$HOOK_SESSION_ID" \
   --data-urlencode "eventType=$V1_EVENT_TYPE" \
   --data-urlencode "rawEventType=$EVENT_TYPE" \
-  --data-urlencode "agentId=$SUPERSET_AGENT_ID" \
+  --data-urlencode "agentId=$AGENT_ID" \
   --data-urlencode "env=$SUPERSET_ENV" \
   --data-urlencode "version=$SUPERSET_HOOK_VERSION" \
   > /dev/null 2>&1
