@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "32c3730994f4",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 16,
+  "files_touched": [
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/32/c3730994f4/0/metadata.json",
+      "transcript": "/32/c3730994f4/0/full.jsonl",
+      "content_hash": "/32/c3730994f4/0/content_hash.txt",
+      "prompt": "/32/c3730994f4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4125108,
+    "cache_creation_tokens": 300996,
+    "cache_read_tokens": 91569818,
+    "output_tokens": 126545,
+    "api_call_count": 471
+  }
+}
