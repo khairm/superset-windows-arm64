@@ -30,11 +30,14 @@ re-applying changes. `.fork/upstream-baseline.txt` records the upstream
 - **Nightly merge.** `.github/workflows/nightly-merge.yml` (02:13 UTC): when
   upstream publishes a newer `desktop-v*` tag, git merges it; Opus 5 resolves
   conflicted files, then a `(MERGE-ADAPT)` proactive port pass adapts fork-only
-  callers to cleanly-merging upstream API refactors. Deterministic gates follow
+  callers to cleanly-merging upstream API refactors, given the fork files this
+  merge deleted and the files it added as evidence (`(MERGE-PORT-CONTEXT)`); any
+  edit it makes outside its allowlist is logged and handed to the semantic
+  review. Deterministic gates follow
   (FEATURES.md marker survival, dependency/lock consistency, `(REFERR-GATE)`
   cannot-find-name + duplicate-declaration check), then a bounded
-  `(MERGE-SEMANTIC-GATE)` review →
-  adapt → fresh-review loop (max 3 reviews / 2 repairs). After the last AI pass
+  `(MERGE-SEMANTIC-GATE)` review → adapt → fresh-review loop (max 5 reviews /
+  4 repairs, under GitHub's default 360-minute job cap). After the last AI pass
   it regenerates the Lingui catalogs and fills any entry extraction left empty
   with upstream's own translation for that exact message, read from the pinned
   tag commit (`(I18N-UPSTREAM-BACKFILL)`: nothing invented, no existing
