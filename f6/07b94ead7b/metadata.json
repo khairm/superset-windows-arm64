@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "f607b94ead7b",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 26,
+  "files_touched": [
+    ".github/workflows/nightly-merge.yml",
+    "AGENTS.md",
+    "FEATURES.md",
+    "packages/i18n/README.md",
+    "packages/i18n/scripts/backfill-upstream-translations.ts",
+    "packages/i18n/test/backfill-upstream-translations.test.ts",
+    "scripts/check-i18n-catalogs.sh",
+    "scripts/check-no-bundled-skills.mjs",
+    "scripts/check-no-bundled-skills.test.sh",
+    "scripts/ci-repair.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f6/07b94ead7b/0/metadata.json",
+      "transcript": "/f6/07b94ead7b/0/full.jsonl",
+      "content_hash": "/f6/07b94ead7b/0/content_hash.txt",
+      "prompt": "/f6/07b94ead7b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7369259,
+    "cache_creation_tokens": 300996,
+    "cache_read_tokens": 173654810,
+    "output_tokens": 157879,
+    "api_call_count": 685
+  }
+}
