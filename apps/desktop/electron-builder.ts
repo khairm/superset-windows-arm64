@@ -16,6 +16,14 @@ const currentYear = new Date().getFullYear();
 const author = pkg.author?.name ?? pkg.author;
 const productName = pkg.productName;
 const disableWinSigning = process.env.SUPERSET_DISABLE_WIN_SIGNING === "1";
+// The fork injects @anush008/tokenizers-win32-arm64-msvc for fastembed's
+// tokenizer, which publishes no win-arm64 build. Upstream is free to stop
+// depending on @anush008/tokenizers, and scripts/fetch-native-prebuilds.sh sets
+// TOKENIZERS_ARM64_DIR to the empty string ONLY after bun.lock confirmed that
+// happened. That exact value — set and empty — is what omits the resource here;
+// an unset variable (any build not driven by that script) still includes it, so
+// a missing required artifact stays the loud electron-builder failure it is.
+const tokenizersRemoved = process.env.TOKENIZERS_ARM64_DIR === "";
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
@@ -65,11 +73,15 @@ const config: Configuration = {
 
 	// Extra resources placed outside asar archive (accessible via process.resourcesPath)
 	extraResources: [
-			{
-				from: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
-				to: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
-				filter: ["**/*"],
-			},
+		...(tokenizersRemoved
+			? []
+			: [
+					{
+						from: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
+						to: "node_modules/@anush008/tokenizers-win32-arm64-msvc",
+						filter: ["**/*"],
+					},
+				]),
 		// Database migrations - must be outside asar for drizzle-orm to read
 		{
 			from: "dist/resources/migrations",

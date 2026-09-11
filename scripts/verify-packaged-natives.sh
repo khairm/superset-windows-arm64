@@ -37,8 +37,24 @@ need_arm64() { # $1 = file, $2 = label
 }
 m="$(pearch "$APP/Superset.exe")"
 [ "$m" = 64aa ] && echo "OK  Superset.exe ARM64" || { echo "::error::Superset.exe not ARM64 (0x$m)"; fail=1; }
-need_arm64 "$APP/resources/node_modules/@anush008/tokenizers-win32-arm64-msvc/tokenizers.win32-arm64-msvc.node" \
-  "@anush008/tokenizers-win32-arm64-msvc"
+TOK_RES="resources/node_modules/@anush008/tokenizers-win32-arm64-msvc"
+# TOKENIZERS_ARM64_DIR set-and-EMPTY is the one thing that turns this assertion
+# around: scripts/fetch-native-prebuilds.sh writes it that way only after
+# bun.lock itself confirmed nothing resolves @anush008/tokenizers any more, so
+# there is no native to ship. Then the demand becomes the opposite one — the
+# packaged tree must NOT hold a copy an earlier build left behind. Unset (this
+# gate run outside that step) or a real path still demands the native, so a
+# missing variable can never quietly excuse a missing binary.
+if [ "${TOKENIZERS_ARM64_DIR+set}" = set ] && [ -z "$TOKENIZERS_ARM64_DIR" ]; then
+  if [ -e "$APP/$TOK_RES" ] || [ -L "$APP/$TOK_RES" ]; then
+    echo "::error::bun.lock resolves no @anush008/tokenizers, but the package is still in the installer at $APP/$TOK_RES"; fail=1
+  else
+    echo "OK  @anush008/tokenizers-win32-arm64-msvc absent (bun.lock resolves nothing that loads it)"
+  fi
+else
+  need_arm64 "$APP/$TOK_RES/tokenizers.win32-arm64-msvc.node" \
+    "@anush008/tokenizers-win32-arm64-msvc"
+fi
 # The terminal's two conpty binaries. electron-builder's `win.files` puts the
 # package inside app.asar and `asarUnpack` extracts it beside it — the unpacked
 # copy is the one the app loads, and its path is fixed by that config, not by

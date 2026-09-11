@@ -192,7 +192,19 @@ In brief:
   other consumers needed, and a tag/ABI from one the app never links to ships a
   binary it cannot load. Ask `bun why` (via `scripts/bun-locked-versions.sh`),
   then touch only the store dirs matching that version exactly (`key@ver`,
-  `key@ver+<16 hex>`).
+  `key@ver+<16 hex>`). The two companion packages (`libsql`,
+  `@anush008/tokenizers`) are OPTIONAL: upstream may drop either, and
+  `bun_locked_version_optional` skips one only once `bun.lock` itself confirms
+  it is gone — any mention there contradicting `bun why` is fatal, so is a
+  named consumer that survives it (`mastracode` for the tokenizer), and so is a
+  positive control that says the search stopped working. A proven skip deletes
+  the injected copy and exports an EMPTY `*_ARM64_DIR`; an unset variable still
+  demands the native. Only `@anush008/tokenizers` reads that empty value
+  further: it is what drops the `extraResources` entry and flips the
+  packaged-closure gate to demanding its absence. A libsql skip additionally
+  needs the upstream change that drops the dependency to retire libsql's
+  required runtime inventory, and `validate-native-runtime.ts` stays strict —
+  never weaken it to make a skip pass.
 
 ## Accepted limitations
 
