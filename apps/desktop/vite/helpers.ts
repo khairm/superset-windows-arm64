@@ -121,11 +121,10 @@ export function linguiMacroPlugin(): Plugin {
  */
 function connectSrcOrigins(): string {
 	const origins = [
-		process.env.NEXT_PUBLIC_API_URL || "https://api.superset.sh",
-		process.env.RELAY_URL || "https://relay.superset.sh",
-		process.env.REALTIME_URL || "https://realtime.superset.sh",
-		process.env.SANDBOX_GATE_ORIGIN ||
-			"https://*.sandbox.supersetusercontent.com",
+		process.env.NEXT_PUBLIC_API_URL || "https://api.cloud-severed.invalid",
+		process.env.RELAY_URL || "https://relay.cloud-severed.invalid",
+		process.env.REALTIME_URL || "https://realtime.cloud-severed.invalid",
+		process.env.SANDBOX_GATE_ORIGIN || "https://sandbox.cloud-severed.invalid",
 	];
 	return [
 		...new Set(origins.flatMap((url) => [url, url.replace(/^http/, "ws")])),

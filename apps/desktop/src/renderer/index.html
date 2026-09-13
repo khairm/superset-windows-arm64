@@ -36,10 +36,12 @@
         here either, for the same reason: the page pane renders what main serves
         it under superset-page:, and fetching a page body from someone else's
         host is exactly the egress this phase removes. Upstream now collects its
-        cloud origins into a build-time `%CONNECT_SRC_ORIGINS%` placeholder that
-        `htmlEnvTransformPlugin` interpolates; this directive deliberately does
-        not carry that placeholder, because interpolating it would bake every
-        one of those origins straight back into the shipped CSP.
+        cloud origins into a build-time placeholder that `htmlEnvTransformPlugin`
+        interpolates; this directive deliberately does not carry that
+        placeholder, because interpolating it would bake every one of those
+        origins straight back into the shipped CSP. Its name is not spelled out
+        anywhere in this file either: the plugin replaces the token everywhere,
+        comments included, and this comment ships in the built index.html.
       - img-src 'self' data: blob: https: http:: Allow images from any source (needed for favicons, browser pane webview content, page thumbnails, and file attachment previews)
       - media-src 'self' data: blob:: Allow <video>/<audio> from blob + data URIs (file preview); without this, media falls back to default-src 'self' and blob video won't play
       - font-src 'self': Allow fonts from same origin
