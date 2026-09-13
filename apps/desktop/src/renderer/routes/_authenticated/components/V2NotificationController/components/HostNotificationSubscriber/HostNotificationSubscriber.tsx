@@ -31,6 +31,7 @@ import { subscribeTerminalTitleListeners } from "../../lib/terminalTitleListener
 export interface HostNotificationWorkspaceState {
 	workspaceId: string;
 	workspaceName: string;
+	projectName?: string;
 	paneLayout: WorkspaceState<PaneViewerData> | null;
 }
 
@@ -245,6 +246,7 @@ export function HostNotificationSubscriber({
 			handleV2AgentLifecycleEvent({
 				workspaceId,
 				workspaceName: workspace.workspaceName,
+				projectName: workspace.projectName,
 				payload,
 				paneLayout: workspace.paneLayout,
 				volume,

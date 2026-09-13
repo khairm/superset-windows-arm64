@@ -55,6 +55,10 @@ const hookInput = z
 		terminalId: z.string().optional(),
 		eventType: z.string().optional(),
 		agent: agentIdentityInput,
+		preview: z
+			.string()
+			.transform((value) => value.slice(0, 4000))
+			.optional(),
 		subagent: subagentInput,
 	})
 	.extend(companionHookFields)
@@ -332,12 +336,14 @@ export const notificationsRouter = router({
 		}
 
 		const agent = normalizeAgentIdentity(input.agent);
+		const preview = trimOrUndefined(input.preview);
 
 		ctx.eventBus.broadcastAgentLifecycle({
 			workspaceId: terminalSession.originWorkspaceId,
 			eventType,
 			terminalId: input.terminalId,
 			...(agent ? { agent } : {}),
+			...(preview ? { preview } : {}),
 			occurredAt,
 		});
 

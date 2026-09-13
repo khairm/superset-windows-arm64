@@ -10,9 +10,10 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { AppState, Linking } from "react-native";
+import { AppState } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { withUniwind } from "uniwind";
+import { useOpenLink } from "@/hooks/useOpenLink";
 import { getHostAuthToken, getRelayUrl } from "@/lib/host/client";
 import { ensureSandboxAccess, isSandboxHost } from "@/lib/sandbox-access";
 import {
@@ -140,6 +141,9 @@ export const TerminalWebView = forwardRef<
 	onTapRef.current = onTap;
 	const onScrollChangeRef = useRef(onScrollChange);
 	onScrollChangeRef.current = onScrollChange;
+	const openLink = useOpenLink({ workspaceId });
+	const openLinkRef = useRef(openLink);
+	openLinkRef.current = openLink;
 
 	// Parsing the ~400KB generated module is deferred to first mount instead of
 	// app startup (expo-router requires route modules eagerly).
@@ -162,7 +166,6 @@ export const TerminalWebView = forwardRef<
 	// re-mint rather than reuse the URL that worked last time.
 	const buildDialUrl = useCallback(
 		async (seq: string): Promise<string> => {
-			const token = await getHostAuthToken();
 			const query = [
 				`workspaceId=${encodeURIComponent(workspaceId)}`,
 				"themeType=dark",
@@ -170,16 +173,16 @@ export const TerminalWebView = forwardRef<
 				// asks for the bytes it missed, "new" for the ring tail,
 				// "none" to reanchor without overwriting restored content.
 				`seq=${encodeURIComponent(seq)}`,
-				`token=${encodeURIComponent(token)}`,
 			];
 			const path = `/terminal/${encodeURIComponent(terminalId)}`;
 			if (isSandboxHost(host.machineId)) {
 				// A browser can't put a header on a WebSocket upgrade, so the
-				// provider's edge reads its token from the query string here.
+				// sandbox's host-service reads its token from the query string.
 				const access = await ensureSandboxAccess(host.machineId);
-				query.push(`bl_preview_token=${encodeURIComponent(access.token)}`);
+				query.push(`token=${encodeURIComponent(access.token)}`);
 				return `${access.url.replace(/^http/, "ws")}${path}?${query.join("&")}`;
 			}
+			query.push(`token=${encodeURIComponent(await getHostAuthToken())}`);
 			const base = getRelayUrl().replace(/^http/, "ws");
 			const routingKey = buildHostRoutingKey(
 				host.organizationId,
@@ -270,7 +273,7 @@ export const TerminalWebView = forwardRef<
 			} else if (message.type === "control") {
 				onControlRef.current(message.message);
 			} else if (message.type === "openUrl") {
-				void Linking.openURL(message.url).catch(() => {});
+				openLinkRef.current(message.url);
 			} else if (message.type === "copy") {
 				void Clipboard.setStringAsync(message.text).then(
 					() => onCopiedRef.current?.(),

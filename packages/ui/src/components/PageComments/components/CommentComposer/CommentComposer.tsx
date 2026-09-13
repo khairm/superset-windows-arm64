@@ -1,8 +1,9 @@
 "use client";
 
-import { Trans, useLingui } from "@lingui/react/macro";
+import { useLingui } from "@lingui/react/macro";
 import { SendHorizontal } from "lucide-react";
 import { type Ref, useState } from "react";
+import { isEnterSubmit } from "../../../../lib/keyboard";
 import { cn } from "../../../../lib/utils";
 import { Button } from "../../../ui/button";
 import { Textarea } from "../../../ui/textarea";
@@ -54,7 +55,7 @@ export function CommentComposer({
 				}}
 				onBlur={() => setFocused(false)}
 				onKeyDown={(event) => {
-					if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+					if (isEnterSubmit(event)) {
 						event.preventDefault();
 						submit();
 					}
@@ -65,18 +66,15 @@ export function CommentComposer({
 						: t({ message: "Write a comment…" })
 				}
 				className={cn(
-					"resize-none rounded-none border-0 bg-transparent p-3.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent",
-					open ? "min-h-[68px]" : "min-h-11 py-3",
+					"resize-none rounded-none border-0 bg-transparent p-3 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent",
+					open ? "min-h-[52px]" : "min-h-9 py-2",
 				)}
 			/>
 			{open ? (
-				<div className="flex items-center gap-2.5 px-3.5 pb-3.5">
-					<span className="text-muted-foreground text-xs">
-						<Trans>⌘↵ to send</Trans>
-					</span>
+				<div className="flex items-center gap-2 px-3 pb-2.5">
 					<Button
 						size="icon"
-						className="ml-auto size-8 rounded-lg"
+						className="ml-auto size-7 rounded-md"
 						onClick={submit}
 						aria-label={
 							isReply
@@ -85,7 +83,7 @@ export function CommentComposer({
 						}
 						disabled={value.trim().length === 0}
 					>
-						<SendHorizontal className="size-4" />
+						<SendHorizontal className="size-3.5" />
 					</Button>
 				</div>
 			) : null}

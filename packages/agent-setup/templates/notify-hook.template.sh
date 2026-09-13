@@ -42,6 +42,23 @@ json_field() {
   fi
 }
 
+# (HOOK-FORK-DIET) Same extraction, but keeping the value's SURROUNDING QUOTES
+# and its escape sequences exactly as they arrived, so it can be spliced into
+# the outgoing payload without being decoded and re-encoded. Unlike json_field
+# this one understands `\"` inside the value, which a preview (an assistant
+# message) routinely carries. Upstream reads it with a printf|grep|head|sed
+# pipeline — four forks per key tried, on events that include PreToolUse,
+# which fires every few seconds; that is the exact fork volume the diet
+# exists to remove. The wire value is byte-for-byte the same.
+json_raw_string() {
+  local re="\"$1\"[[:blank:]]*:[[:blank:]]*(\"(\\\\.|[^\"\\\\])*\")"
+  if [[ $2 =~ $re ]]; then
+    JSON_RAW_STRING="${BASH_REMATCH[1]}"
+  else
+    JSON_RAW_STRING=""
+  fi
+}
+
 # Which agent this event belongs to. A Superset wrapper exports
 # SUPERSET_AGENT_ID for the process it launches (first-wins, so a CLI an
 # agent runs from a tool call keeps the terminal's identity), and every
@@ -283,12 +300,30 @@ case "$V1_EVENT_TYPE" in
     ;;
 esac
 
+PREVIEW_FIELD=""
+PREVIEW_KEYS="last_assistant_message last-assistant-message message"
+case "$EVENT_TYPE" in
+  StopFailure|stop_failure|Failed|failed) PREVIEW_KEYS="error_details error_message message last_assistant_message last-assistant-message" ;;
+  PermissionRequest|Notification|notification|PreToolUse|preToolUse|pre_tool_use|exec_approval_request|apply_patch_approval_request|request_user_input) PREVIEW_KEYS="message last_assistant_message last-assistant-message" ;;
+esac
+case "$EVENT_TYPE" in
+  Stop|stop|Interrupt|AfterAgent|agent-turn-complete|task_complete|post_agent|post_agent_turn|StopFailure|stop_failure|Failed|failed|PermissionRequest|Notification|notification|PreToolUse|preToolUse|pre_tool_use|exec_approval_request|apply_patch_approval_request|request_user_input)
+    for PREVIEW_KEY in $PREVIEW_KEYS; do
+      json_raw_string "$PREVIEW_KEY" "$INPUT"; PREVIEW_VALUE="$JSON_RAW_STRING"
+      if [ -n "$PREVIEW_VALUE" ] && [ "$PREVIEW_VALUE" != '""' ]; then
+        PREVIEW_FIELD=",\"preview\":$PREVIEW_VALUE"
+        break
+      fi
+    done
+    ;;
+esac
+
 if [ -n "$SUPERSET_TERMINAL_ID" ]; then
   json_escape "$SUPERSET_TERMINAL_ID"; E_TERMINAL_ID="$JSON_ESCAPED"
   json_escape "$EVENT_TYPE"; E_EVENT_TYPE="$JSON_ESCAPED"
   json_escape "$AGENT_ID"; E_AGENT_ID="$JSON_ESCAPED"
   json_escape "$SESSION_ID"; E_SESSION_ID="$JSON_ESCAPED"
-  dispatch_to_host "{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}}}"
+  dispatch_to_host "{\"json\":{\"terminalId\":\"$E_TERMINAL_ID\",\"eventType\":\"$E_EVENT_TYPE\",\"agent\":{\"agentId\":\"$E_AGENT_ID\",\"sessionId\":\"$E_SESSION_ID\"}$PREVIEW_FIELD}}"
   [ "$HOOK_ACCEPTED" = "1" ] && exit 0
   # Delivered somewhere (2xx) but no host owned the terminal: keep the
   # pre-existing "any 2xx wins" behavior and skip the v1 fallback.

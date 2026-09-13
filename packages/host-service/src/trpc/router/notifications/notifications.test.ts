@@ -25,6 +25,7 @@ interface BroadcastedAgentLifecycleEvent {
 	eventType: AgentLifecycleEventType;
 	terminalId: string;
 	agent?: AgentIdentity;
+	preview?: string;
 	occurredAt: number;
 }
 
@@ -711,4 +712,16 @@ describe("(ONE-BUZZ-UNTIL-READ) lifecycle instants are monotonic per terminal", 
 		expect(terminalAgentStore.get("terminal-1")?.lastEventAt).toBe(5_001);
 		expect(broadcastAgentLifecycle.mock.calls[1]?.[0].occurredAt).toBe(5_001);
 	});
+});
+
+it("broadcasts a bounded preview with the lifecycle event", async () => {
+	const { ctx, broadcastAgentLifecycle } = createContext("workspace-1");
+	await notificationsRouter.createCaller(ctx).hook({
+		terminalId: "terminal-1",
+		eventType: "Stop",
+		preview: "x".repeat(5000),
+	});
+	expect(broadcastAgentLifecycle.mock.calls[0]?.[0].preview).toBe(
+		"x".repeat(4000),
+	);
 });

@@ -32,10 +32,10 @@ import { InitGitDialog } from "renderer/react-query/projects/InitGitDialog";
 import { DaemonAutoUpdateFailureDialog } from "renderer/routes/_authenticated/components/DaemonAutoUpdateFailureDialog";
 import { DiffThemeSync } from "renderer/routes/_authenticated/components/DiffThemeSync";
 import { LeaderboardAutoPublish } from "renderer/routes/_authenticated/components/LeaderboardAutoPublish";
-import { LeaderboardFirstRunDialog } from "renderer/routes/_authenticated/components/LeaderboardFirstRunDialog";
 // (CLOUD-SEVERANCE-P2) `PendingDeletionScreen` is deliberately NOT imported:
 // the gate that rendered it is removed below, and an import with no render
 // site is how a merge quietly wires a cloud-only screen back up.
+import { RealtimeNudges } from "renderer/routes/_authenticated/components/RealtimeNudges";
 import { StarNagObserver } from "renderer/routes/_authenticated/components/StarNagObserver";
 import {
 	V1AutoMigration,
@@ -308,7 +308,7 @@ function AuthenticatedLayout() {
 								<DockBadgeController />
 								<StarNagObserver />
 								<LeaderboardAutoPublish />
-								<LeaderboardFirstRunDialog />
+								<RealtimeNudges />
 								<DaemonAutoUpdateFailureDialog />
 								<Outlet />
 								<V1ImportModal />

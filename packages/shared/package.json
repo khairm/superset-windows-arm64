@@ -28,6 +28,18 @@
 			"types": "./src/cloud-agent-launch.ts",
 			"default": "./src/cloud-agent-launch.ts"
 		},
+		"./cloud-environments": {
+			"types": "./src/cloud-environments.ts",
+			"default": "./src/cloud-environments.ts"
+		},
+		"./attachment-limits": {
+			"types": "./src/attachment-limits.ts",
+			"default": "./src/attachment-limits.ts"
+		},
+		"./agent-credentials": {
+			"types": "./src/agent-credentials.ts",
+			"default": "./src/agent-credentials.ts"
+		},
 		"./constants": {
 			"types": "./src/constants.ts",
 			"default": "./src/constants.ts"
@@ -44,6 +56,10 @@
 			"types": "./src/git-hook-tolerance.ts",
 			"default": "./src/git-hook-tolerance.ts"
 		},
+		"./github-stars": {
+			"types": "./src/github-stars.ts",
+			"default": "./src/github-stars.ts"
+		},
 		"./integrations": {
 			"types": "./src/integrations.ts",
 			"default": "./src/integrations.ts"
@@ -51,6 +67,10 @@
 		"./plugins": {
 			"types": "./src/plugins/index.ts",
 			"default": "./src/plugins/index.ts"
+		},
+		"./sandbox-gate": {
+			"types": "./src/sandbox-gate.ts",
+			"default": "./src/sandbox-gate.ts"
 		},
 		"./sentry": {
 			"types": "./src/sentry.ts",
@@ -232,6 +252,14 @@
 			"types": "./src/host-routing.ts",
 			"default": "./src/host-routing.ts"
 		},
+		"./realtime": {
+			"types": "./src/realtime.ts",
+			"default": "./src/realtime.ts"
+		},
+		"./verify-jwt": {
+			"types": "./src/verify-jwt.ts",
+			"default": "./src/verify-jwt.ts"
+		},
 		"./install-update-lock": {
 			"types": "./src/install-update-lock.ts",
 			"default": "./src/install-update-lock.ts"
@@ -293,6 +321,7 @@
 		"culori": "4.0.2",
 		"drizzle-orm": "0.45.2",
 		"friendly-words": "1.3.1",
+		"jose": "6.2.2",
 		"rrule": "2.8.1",
 		"semver": "7.7.4",
 		"zod": "4.4.3"

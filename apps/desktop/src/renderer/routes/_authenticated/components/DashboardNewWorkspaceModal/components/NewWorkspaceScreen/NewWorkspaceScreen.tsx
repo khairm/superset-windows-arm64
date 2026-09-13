@@ -485,25 +485,11 @@ export function NewWorkspaceScreen({
 	const { selectedAgent, setSelectedAgent } =
 		useAgentLaunchPreferences<WorkspaceCreateAgent>({
 			agentStorageKey: AGENT_STORAGE_KEY,
-			defaultAgent: "none",
-			fallbackAgent: "none",
+			defaultAgent: selectableAgentIds[0] ?? "none",
+			fallbackAgent: selectableAgentIds[0] ?? "none",
 			validAgents: ["none", ...selectableAgentIds],
 			agentsReady: v2AgentsFetched,
 		});
-
-	// Same "none" → first-agent promotion as the control modal: new users land
-	// here with no stored preference, and the screen must not default to no agent.
-	useEffect(() => {
-		if (!v2AgentsFetched) return;
-		if (selectedAgent !== "none") return;
-		const stored =
-			typeof window !== "undefined"
-				? window.localStorage.getItem(AGENT_STORAGE_KEY)
-				: null;
-		if (stored === "none") return;
-		const first = selectableAgentIds[0];
-		if (first) setSelectedAgent(first);
-	}, [v2AgentsFetched, selectableAgentIds, selectedAgent, setSelectedAgent]);
 
 	const selectedPresetId = useMemo(() => {
 		const agent = v2Agents.find((candidate) => candidate.id === selectedAgent);
@@ -758,7 +744,14 @@ export function NewWorkspaceScreen({
 			</AnimatePresence>
 			{/* no-drag + clear of the page's window-drag strip (which ends at
 			    right-12) so the button actually receives clicks. */}
-			<div className="no-drag absolute right-3 top-2.5 z-10 flex items-center gap-0.5">
+			<div
+				className="no-drag absolute top-2.5 z-10 flex items-center gap-0.5"
+				// Clear of the window-controls overlay on Windows and Linux; zero
+				// extra where there is none.
+				style={{
+					right: "calc(0.75rem + (100vw - env(titlebar-area-width, 100vw)))",
+				}}
+			>
 				{/* (MASTER-PLUS-LAUNCH) No workspace is created and no branch is
 				    cut in master mode, so AI naming has nothing to name and the
 				    gear that configures it goes with the rest of the

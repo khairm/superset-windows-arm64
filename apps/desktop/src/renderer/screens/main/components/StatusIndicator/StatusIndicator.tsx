@@ -39,9 +39,9 @@ const STATUS_CONFIG = {
 		tooltip: "Agent failed",
 	},
 	working: {
-		pingColor: "bg-amber-400",
+		pingColor: "",
 		dotColor: "bg-amber-500",
-		pulse: true,
+		pulse: false,
 		tooltip: "Agent working",
 	},
 	review: {
@@ -78,14 +78,14 @@ interface StatusIndicatorProps {
 /**
  * Visual indicator for pane/workspace status.
  * - Red pulsing: needs user input (permission), or agent failed
- * - Amber pulsing: agent working
+ * - Amber static: agent working
  * - Green static: ready for review
  */
 export function StatusIndicator({ status, className }: StatusIndicatorProps) {
 	const config = STATUS_CONFIG[status];
 
 	return (
-		<span className={cn("relative flex size-2 shrink-0", className)}>
+		<span className={cn("relative flex size-1.5 shrink-0", className)}>
 			{config.pulse && (
 				<span
 					className={cn(
@@ -96,7 +96,7 @@ export function StatusIndicator({ status, className }: StatusIndicatorProps) {
 			)}
 			<span
 				className={cn(
-					"relative inline-flex size-2 rounded-full",
+					"relative inline-flex size-full rounded-full",
 					config.dotColor,
 				)}
 			/>

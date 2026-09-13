@@ -84,7 +84,10 @@ async function main(): Promise<void> {
 			dbPath: env.HOST_DB_PATH,
 			cloudApiUrl: env.SUPERSET_API_URL,
 			migrationsFolder: env.HOST_MIGRATIONS_FOLDER,
-			allowedOrigins: env.CORS_ORIGINS ?? [],
+			allowedOrigins:
+				env.SUPERSET_HOST_RUN_MODE === "sandbox"
+					? "*"
+					: (env.CORS_ORIGINS ?? []),
 			browserBridge: resolveBrowserBridgeFromEnv(env),
 		},
 		providers: {

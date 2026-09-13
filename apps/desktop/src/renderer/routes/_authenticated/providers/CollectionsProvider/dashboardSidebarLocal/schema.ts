@@ -118,8 +118,6 @@ const changesFilterSchema = z.discriminatedUnion("kind", [
 
 export type ChangesFilter = z.infer<typeof changesFilterSchema>;
 
-export type ChangesViewMode = "folders" | "tree";
-
 const workspaceRunStateSchema = z.enum([
 	"running",
 	"stopped-by-user",
@@ -170,7 +168,6 @@ export const workspaceLocalStateSchema = z.object({
 		// `${projectId}:${tag}` key (written by move-into-derived-folder).
 		sectionId: z.string().min(1).nullable().default(null),
 		changesFilter: changesFilterSchema.default({ kind: "all" }),
-		changesViewMode: z.enum(["folders", "tree"]).default("folders"),
 		activeTab: WORKSPACE_SIDEBAR_TAB_SCHEMA.default("changes"),
 		// `isHidden` doubles as the ARCHIVED flag — an archived thread is hidden
 		// from the active lane and surfaced under the project's Archived section.
@@ -262,7 +259,6 @@ const SIDEBAR_STATE_DEFAULTS = {
 	tabOrder: 0,
 	sectionId: null,
 	changesFilter: { kind: "all" },
-	changesViewMode: "folders",
 	activeTab: "changes",
 	isHidden: false,
 	archivedAt: null,
@@ -467,6 +463,8 @@ const DEFAULT_FOLDER_LINKS: FolderTierMap = {
 // in-app tab, "external" = system browser.
 const DEFAULT_PORT_OPEN_ACTION: LinkAction = "external";
 
+const DEFAULT_PAGE_OPEN_ACTION: LinkAction = "pane";
+
 function isSameLinkTierMap(a: LinkTierMap, b: LinkTierMap): boolean {
 	return (
 		a.plain === b.plain &&
@@ -486,6 +484,10 @@ function isCompleteLinkTierMap(
 		"metaShift" in value
 	);
 }
+
+const changesViewModeSchema = z.enum(["folders", "tree"]);
+
+export type ChangesViewMode = z.infer<typeof changesViewModeSchema>;
 
 const sidebarProjectSortModeSchema = z.enum(["manual", "active", "created"]);
 
@@ -507,12 +509,14 @@ export const v2UserPreferencesSchema = z.object({
 	sidebarFileLinks: linkTierMapSchema.default(DEFAULT_SIDEBAR_FILE_LINKS),
 	folderLinks: folderTierMapSchema.default(DEFAULT_FOLDER_LINKS),
 	portOpenAction: linkActionSchema.default(DEFAULT_PORT_OPEN_ACTION),
+	pageOpenAction: linkActionSchema.default(DEFAULT_PAGE_OPEN_ACTION),
 	terminalPresetsInitialized: z.boolean().default(false),
 	rightSidebarOpen: z.boolean().default(true),
 	rightSidebarTab: z.enum(["changes", "files"]).default("changes"),
 	rightSidebarWidth: z.number().default(340),
 	deleteLocalBranch: z.boolean().default(false),
 	showPresetsBar: z.boolean().default(true),
+	changesViewMode: changesViewModeSchema.default("folders"),
 	/**
 	 * (SESSION-LIFECYCLE) Reveal/collapse flags for the top-level Snoozed
 	 * Sessions / Archived Sessions subsections. Sessions have no project row, so
@@ -563,12 +567,14 @@ export const DEFAULT_V2_USER_PREFERENCES: V2UserPreferencesRow = {
 	sidebarFileLinks: DEFAULT_SIDEBAR_FILE_LINKS,
 	folderLinks: DEFAULT_FOLDER_LINKS,
 	portOpenAction: DEFAULT_PORT_OPEN_ACTION,
+	pageOpenAction: DEFAULT_PAGE_OPEN_ACTION,
 	terminalPresetsInitialized: false,
 	rightSidebarOpen: true,
 	rightSidebarTab: "changes",
 	rightSidebarWidth: 340,
 	deleteLocalBranch: false,
 	showPresetsBar: true,
+	changesViewMode: "folders",
 	showSnoozedSessions: false,
 	showArchivedSessions: false,
 	snoozedSessionsCollapsed: false,

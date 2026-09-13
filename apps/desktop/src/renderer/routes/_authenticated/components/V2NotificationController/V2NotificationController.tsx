@@ -2,6 +2,7 @@ import type { WorkspaceState } from "@superset/panes";
 import { buildHostRoutingKey } from "@superset/shared/host-routing";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Fragment, useEffectEvent, useMemo } from "react";
+import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
@@ -43,6 +44,7 @@ interface WorkspaceHostRow {
 	hostId: string;
 	type: "main" | "worktree" | "session";
 	name: string;
+	projectName?: string;
 	branch: string;
 }
 
@@ -78,6 +80,7 @@ type ElectronNotificationEvent =
  */
 export function V2NotificationController() {
 	const collections = useCollections();
+	const { projects } = useHostProjects();
 	const { machineId, activeHostUrl } = useLocalHostService();
 	const relayUrl = useRelayUrl();
 	const visibleWorkspaceIds = useVisibleSidebarWorkspaceIds();
@@ -90,9 +93,12 @@ export function V2NotificationController() {
 				hostId: workspace.hostId,
 				type: workspace.type,
 				name: workspace.name,
+				projectName: projects.find(
+					(project) => project.id === workspace.projectId,
+				)?.name,
 				branch: workspace.branch,
 			})),
-		[hostWorkspaces],
+		[hostWorkspaces, projects],
 	);
 	const { data: allLocalWorkspaceRows = [] } = useLiveQuery(
 		(q) =>
@@ -260,7 +266,7 @@ function getNotificationWorkspaceStatesById({
 		]),
 	);
 
-	const statesById = new Map(
+	const statesById = new Map<string, HostNotificationWorkspaceState>(
 		localWorkspaceRows.map((row) => [
 			row.workspaceId,
 			{
@@ -275,6 +281,7 @@ function getNotificationWorkspaceStatesById({
 		statesById.set(workspace.workspaceId, {
 			workspaceId: workspace.workspaceId,
 			workspaceName: getNotificationWorkspaceName(workspace),
+			projectName: workspace.projectName,
 			paneLayout: paneLayoutsByWorkspaceId.get(workspace.workspaceId) ?? null,
 		});
 	}

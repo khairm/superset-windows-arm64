@@ -1,4 +1,3 @@
-import { plural } from "@lingui/core/macro";
 import { useLingui } from "@lingui/react/macro";
 import LiveActivity, {
 	type AgentRow,
@@ -23,13 +22,12 @@ export interface LiveActivityProject {
 }
 
 /**
- * Structural, not `HostWorkspaceItem`: the hook needs four fields and binding
+ * Structural, not `HostWorkspaceItem`: the hook needs three fields and binding
  * it to the host row would couple this surface to the whole schema for no gain.
  */
 export interface LiveActivityWorkspace {
 	id: string;
 	name: string;
-	branch?: string | null;
 	projectId?: string | null;
 }
 
@@ -96,7 +94,7 @@ export function useAgentLiveActivity({
 				all.push({
 					id: terminal.terminalId,
 					workspaceId,
-					branch: workspace.branch ?? workspace.name,
+					name: workspace.name,
 					project: project?.name ?? "",
 					status: statusWord[terminal.attention],
 					state: terminal.attention,
@@ -119,20 +117,8 @@ export function useAgentLiveActivity({
 		const ranked = orderRows(all);
 		const shown = ranked.slice(0, MAX_ROWS);
 		const hidden = ranked.length - shown.length;
-		const needing = all.filter((row) => row.state === "permission").length;
 
 		const snapshot: AgentSnapshot = {
-			// The card renders these verbatim — no pluralisation layer sits below
-			// a pre-formatted string, so "1 agents working" would ship as-is.
-			headline: needing
-				? `${plural(needing, { one: "# needs you", other: "# need you" })} · ${plural(
-						total,
-						{ one: "# agent", other: "# agents" },
-					)}`
-				: plural(total, {
-						one: "# agent working",
-						other: "# agents working",
-					}),
 			rows: shown,
 			totalCount: total,
 			topState: shown[0]?.state ?? "working",

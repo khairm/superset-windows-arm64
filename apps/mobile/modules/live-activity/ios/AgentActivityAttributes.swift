@@ -15,7 +15,7 @@ struct AgentActivityAttributes: ActivityAttributes {
 		/// The workspace the terminal belongs to. The app has no /terminal
 		/// route — a session is reached as /workspace/<id>?tab=<terminalId>.
 		var workspaceId: String
-		var branch: String
+		var name: String
 		/// Only used to draw the initial when there is no cached icon.
 		var project: String
 		/// Filename inside the App Group container, or nil to draw the initial.
@@ -40,8 +40,6 @@ struct AgentActivityAttributes: ActivityAttributes {
 	}
 
 	struct ContentState: Codable, Hashable {
-		/// "1 needs you · 4 agents". Pre-translated.
-		var headline: String
 		/// Ranked by the shared STATUS_PRIORITY, then recency. Attention
 		/// states are never truncated; only `working` rows are.
 		var rows: [AgentRow]
@@ -52,7 +50,7 @@ struct AgentActivityAttributes: ActivityAttributes {
 		var totalCount: Int
 		/// Most urgent state in the fleet — tints the Dynamic Island.
 		var topState: String
-		/// Shown instead of the headline once ActivityKit marks the activity
+		/// Shown in the card's footer once ActivityKit marks the activity
 		/// stale. The flag itself is ActivityKit's (`context.isStale`), driven
 		/// by the staleDate we pass on every update — a field of our own could
 		/// never be set, because by definition nothing is updating us.

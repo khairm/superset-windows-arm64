@@ -132,6 +132,35 @@ applied — duplicated output on a resize during heavy output.
    running callbacks once one of them disposes the terminal. Still present on
    upstream master.
 
+4. `CompositionHelper` (also `src/browser/input/CompositionHelper.ts`): IME
+   preedit text uses the terminal renderer's cell width and Unicode service,
+   instead of the browser's font advance. Some Nerd Font Mono CJK glyphs have
+   a one-cell advance but draw across two cells, so the old clipped overlay
+   showed only half a syllable. Each Unicode cell now gets an explicit width;
+   combining characters stay together and an isolated left-to-right run keeps
+   the existing right-edge scrolling behavior. Backported from
+   [xterm.js #6162](https://github.com/xtermjs/xterm.js/pull/6162), production
+   commit `86fe1ee9f94a6d92a35538191d38d39c7b0c5395` (not yet released).
+   The readable source matches upstream; both shipped bundles carry the same
+   helper and Unicode-service injection. Existing buffer/disposal bundle code
+   is preserved. No font substitution or dependency upgrade is involved.
+
+**IME removal condition:** Follow-up: [Superset #7490](https://github.com/superset-sh/superset/issues/7490). Track [upstream fix #6162](https://github.com/xtermjs/xterm.js/pull/6162)
+and [upstream issue #6161](https://github.com/xtermjs/xterm.js/issues/6161).
+An upstream merge alone is not enough: wait for a published xterm version
+containing the fix and upgrade Superset's pinned dependency to that version.
+Then regenerate this patch, removing only the `CompositionHelper` source and
+both runtime-bundle IME hunks (including their Unicode-service import/injection).
+Keep the independent `WriteBuffer` and `RenderDebouncer` fixes until each is
+also supplied upstream. Keep the behavioral IME tests and rerun the D2Coding
+before/after case against the upgraded package; do not drop coverage just
+because the implementation moved upstream.
+
+**IME evidence:** [PR #7488 actual-bundle before/after verification](https://app.superset.sh/page/pr-7488-verified-actual-xterm-bundles-before-and-a-nqp4nv).
+The parent commit's patched xterm bundles and this PR's shipped bundles were
+compared in the real desktop app. The input uses CDP IME events, not a physical
+keyboard/input-method session.
+
 **Guard tests:** `apps/desktop/src/xterm-flushsync-patch.test.ts` asserts the
 hunk 1–2 markers in both bundles and reproduces the failure against the real
 build: an image chunk plus a text chunk, then `resize()`, must not throw and
@@ -141,20 +170,29 @@ hunk 3: markers, then a real terminal opened under happy-dom with a
 joiner-holding addon, disposed with a viewport sync queued — no frame may be
 scheduled and nothing may throw.
 
+`apps/desktop/src/xterm-ime-patch.test.ts` exercises composition events against
+both installed bundles: CJK cell widths, combining and supplementary characters,
+right-edge constraints, font resizing, clearing preedit, and committing once.
+
 **Regenerating after a version bump** (~10 min), unless upstream has absorbed
 it (check `WriteBuffer.flushSync` for `_asyncPending` or an equivalent guard,
-and `RenderDebouncer.dispose` for a disposed flag or callback clearing; drop
+`RenderDebouncer.dispose` for a disposed flag or callback clearing, and
+`CompositionHelper` for Unicode-aware cell layout; drop
 whichever hunks upstream carries, and delete the patch, the
-`patchedDependencies` entry, and the tests only once both are gone):
+`patchedDependencies` entry, and the tests only once all are gone):
 
 ```bash
 bun patch @xterm/xterm@<new-version>
-# edit node_modules/@xterm/xterm per the three changes above — in both lib
+# edit node_modules/@xterm/xterm per the four changes above — in both lib
 # bundles find `flushSync(){` and the `if(<promise>){...}` branch inside
 # `_innerWrite`, and the class holding `_runRefreshCallbacks(){`; mirror the
 # edits in src/common/input/WriteBuffer.ts and src/browser/RenderDebouncer.ts
+# For composition, port the upstream CompositionHelper source and transpile
+# that helper into both bundles, retaining their surrounding code. Add the
+# IUnicodeService constructor injection (index 6) and UnicodeService import;
+# bundled module identifiers vary between versions. Check both bundle tests.
 bun patch --commit 'node_modules/@xterm/xterm'
-bun test apps/desktop/src/xterm-flushsync-patch.test.ts apps/desktop/src/xterm-render-debouncer-patch.test.ts
+bun test apps/desktop/src/xterm-flushsync-patch.test.ts apps/desktop/src/xterm-render-debouncer-patch.test.ts apps/desktop/src/xterm-ime-patch.test.ts
 ```
 
 ## trpc-electron (`trpc-electron@<version>.patch`)
@@ -277,3 +315,48 @@ ports on the spawn attributes it already builds in `pty_posix_spawn`
 (`posix_spawnattr_setexceptionports_np`). If node-pty ships that, the pty side
 no longer needs the patch, but `host-service-coordinator.ts` still needs a
 port-clearing exec trampoline; keep the patched helper (or ship our own) for it.
+
+## react-native-screens (`react-native-screens@<version>.patch`)
+
+**Why:** on iOS, a form sheet screen (`presentation: "formSheet"`) finds the
+`ScrollView` in its content on every layout pass and sizes it to the sheet's
+frame. When a sheet is replaced by a pushed screen (`router.replace` from the
+pull-requests sheet), Fabric recycles the sheet's `UIScrollView` into the new
+screen, and the dismissed sheet still gets one more layout pass *after* it has
+been invalidated: it finds that recycled scroll view down its old subview chain
+and sizes it to the sheet again. The PR screen came up with its scroll view at
+464pt (the `[0.5]` detent), everything below the fold unpainted and untappable,
+and every later screen that reused that scroll view instance did the same.
+Upstream #4091 (in 4.26.0) only removes the KVO observer in `invalidate`; the
+layout-pass path is untouched and still present on `4.28-stable` as of
+2026-09-12. Diagnosed with `NSLog` in `correctScrollViewFrame:` and
+`invalidateImpl`: the correction to 464pt logs 4ms after the sheet's
+invalidate, on the same scroll view pointer the new screen had just laid out at
+956pt.
+
+**What it changes** (`ios/RNSScreen.mm`): an `_invalidated` flag set in
+`invalidateImpl`; `applyFrameCorrectionForDescendantScrollView` returns early
+once it is set. Reproduced unpatched on 4.27.0 (latest stable, 2026-09-12) in
+the same flow, so bumping alone does not fix it. 4.27.0 already declares an
+`invalidated` property on `RNSScreenView` (set in `invalidateImpl`, used only
+for transition progress and header config), so a regenerated patch for 4.27+
+must not add the ivar again — only the early return is needed.
+
+**Guard test:** `apps/mobile/react-native-screens-sheet-patch.test.ts`.
+
+**Regenerating after a version bump** (~2 min, plus a native rebuild to verify):
+
+```bash
+bun patch react-native-screens@<new-version>
+# in node_modules/react-native-screens/ios/RNSScreen.mm, return early from
+# applyFrameCorrectionForDescendantScrollView when `_invalidated` is set.
+# Before 4.27.0 only: also add `BOOL _invalidated;` to the RNSScreenView ivar
+# block and set `_invalidated = YES;` first thing in invalidateImpl (4.27.0+
+# already has both; adding the ivar again fails to compile).
+bun patch --commit 'node_modules/react-native-screens'
+bun test apps/mobile/react-native-screens-sheet-patch.test.ts
+```
+
+Verify in the simulator: open a workspace with two PRs, tap the PR chip, tap a
+row, go back, reopen the sheet, tap the other row. The second PR must show its
+description and the Files row without scrolling.

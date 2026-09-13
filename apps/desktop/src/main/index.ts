@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import log from "electron-log/main";
 import { installWindowsChildProcessPatch } from "./lib/windows-child-process-patch";
@@ -16,6 +17,7 @@ import { settings } from "@superset/local-db";
 import {
 	devAppProfileDirName,
 	isDevAppProfileDirName,
+	workspaceDevAppProfileDirName,
 } from "@superset/shared/dev-app-profile";
 import { getHostId, getHostName } from "@superset/shared/host-info";
 import {
@@ -38,6 +40,7 @@ import { initAppState } from "./lib/app-state";
 import { requestAppleEventsAccess } from "./lib/apple-events-permission";
 import { isUpdateReadyToInstall, setupAutoUpdater } from "./lib/auto-updater";
 import { startBrowserBridge } from "./lib/browser/browser-bridge";
+import { browserManager } from "./lib/browser/browser-manager";
 import { downloadManager } from "./lib/browser/download-manager";
 import { installBundledCliShim } from "./lib/bundled-cli";
 import { installDevRunnerExit } from "./lib/dev-runner-exit";
@@ -88,17 +91,23 @@ void applyShellEnvToProcess().catch((error) => {
 	console.error("[main] Failed to apply shell environment:", error);
 });
 
-// Dev mode: label the app with the workspace name so multiple worktrees are
-// distinguishable. This also moves `app.getPath("userData")`, so the workspace
-// gets its own Chromium profile — see sweepDevAppProfiles for the reaping.
+// Keep the readable dock label separate from the stable storage identity.
 if (IS_DEV) {
+	const profilePath = path.join(
+		app.getPath("appData"),
+		workspaceDevAppProfileDirName({
+			workspaceId: process.env.SUPERSET_WORKSPACE_ID,
+			appPath: app.getAppPath(),
+		}),
+	);
+	mkdirSync(profilePath, { recursive: true });
+	app.setPath("userData", profilePath);
+	app.setPath("sessionData", profilePath);
 	const workspaceName = resolveDevWorkspaceName();
 	const profileName = workspaceName
 		? devAppProfileDirName(workspaceName)
 		: undefined;
-	// A name carrying a path separator would make Electron nest userData inside
-	// a directory neither the sweep nor teardown can ever reap. Keep the
-	// default profile instead — a shared dock label beats an unreclaimable one.
+	// Retain the existing validation for the display label.
 	if (profileName && isDevAppProfileDirName(profileName)) {
 		app.setName(profileName);
 	} else if (profileName) {
@@ -137,6 +146,10 @@ async function processDeepLink(url: string): Promise<void> {
 	const target = getFocusedOrLastWindow();
 	target?.webContents.send("deep-link-navigate", path);
 }
+
+browserManager.on("deep-link", (url: string) => {
+	void processDeepLink(url);
+});
 
 function findDeepLinkInArgv(argv: string[]): string | undefined {
 	return argv.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://`));
@@ -213,6 +226,10 @@ app.on("open-url", async (event, url) => {
 
 let isQuitting = false;
 let skipQuitConfirmation = false;
+// A second quit request while the confirmation is open would open a second
+// dialog on top of the first — the overlay close button on Linux makes that
+// easy to trigger.
+let quitConfirmationOpen = false;
 let forceFullCleanup = false;
 
 export function setSkipQuitConfirmation(): void {
@@ -254,6 +271,16 @@ function getConfirmOnQuitSetting(): boolean {
 	}
 }
 
+// macOS keeps running without windows (dock and tray reopen it); elsewhere a
+// windowless app is an invisible process nothing brings back.
+app.on("window-all-closed", () => {
+	if (process.platform === "darwin") return;
+	// The last window's close already asked; with no window left there is
+	// nothing a cancelled confirmation could keep.
+	skipQuitConfirmation = true;
+	app.quit();
+});
+
 app.on("before-quit", async (event) => {
 	if (isQuitting) return;
 
@@ -265,6 +292,8 @@ app.on("before-quit", async (event) => {
 		getConfirmOnQuitSetting()
 	) {
 		event.preventDefault();
+		if (quitConfirmationOpen) return;
+		quitConfirmationOpen = true;
 
 		try {
 			const { response } = await dialog.showMessageBox({
@@ -283,12 +312,14 @@ app.on("before-quit", async (event) => {
 				),
 			});
 
+			quitConfirmationOpen = false;
 			if (response === 1) {
 				return;
 			}
 		} catch (error) {
 			console.error("[main] Quit confirmation dialog failed:", error);
 		}
+		quitConfirmationOpen = false;
 	}
 
 	isQuitting = true;

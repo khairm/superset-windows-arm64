@@ -10,9 +10,11 @@ import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useZoomFactor } from "renderer/hooks/useZoomFactor";
 import { useHotkey } from "renderer/hotkeys";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { AppMenuButton } from "renderer/routes/_authenticated/_dashboard/components/AppMenuButton";
 import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
 import { TopBarPortsDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/TopBarPortsDropdown";
+import { WindowControlsInset } from "renderer/routes/_authenticated/_dashboard/components/WindowControlsInset";
 import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { useLocalChatEnabled } from "renderer/stores/local-chat";
@@ -194,16 +196,6 @@ function V2WorkspaceCenter({
 		setRightSidebarOpen,
 	});
 
-	const paneRegistry = usePaneRegistry({
-		onOpenFile: openFilePane,
-		onRevealPath: revealPath,
-		launcher,
-		store,
-	});
-	const defaultContextMenuActions = useDefaultContextMenuActions({
-		paneRegistry,
-		launcher,
-	});
 	const {
 		openDiffPane,
 		addTerminalTab,
@@ -217,6 +209,19 @@ function V2WorkspaceCenter({
 		newTabPresets,
 		executePreset,
 		setRightSidebarOpen,
+		pageOpenAction: v2UserPreferences.pageOpenAction,
+	});
+	const paneRegistry = usePaneRegistry({
+		onOpenDiff: openDiffPane,
+		onOpenComment: openCommentPane,
+		onOpenFile: openFilePane,
+		onRevealPath: revealPath,
+		launcher,
+		store,
+	});
+	const defaultContextMenuActions = useDefaultContextMenuActions({
+		paneRegistry,
+		launcher,
 	});
 	const hostTarget = useWorkspaceHostTarget(workspaceId);
 	const isSandbox =
@@ -399,6 +404,7 @@ function V2WorkspaceCenter({
 													enabled={isMac}
 													className="flex items-center gap-1.5 px-1"
 												>
+													{!isMac && <AppMenuButton />}
 													<SidebarToggle />
 													<NavigationControls />
 												</ZoomStable>
@@ -423,6 +429,7 @@ function V2WorkspaceCenter({
 										/>
 									)}
 									{tabBarTrailingExtra}
+									{!isMac && !sidebarOpen && <WindowControlsInset />}
 								</>
 							)}
 							renderEmptyState={() => (

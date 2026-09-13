@@ -223,6 +223,25 @@ export const createBrowserRouter = () => {
 				});
 			}),
 
+		// The guest WebContents gained focus — Electron's signal for focus
+		// moving between WebContents in the same window, which is what a click
+		// into the page does. Clicking anywhere else in a pane activates it via
+		// a host mousedown handler; this is that same activation for a click
+		// the webview swallowed before it ever reached the host DOM.
+		onPaneFocus: publicProcedure
+			.input(z.object({ paneId: z.string() }))
+			.subscription(({ input }) => {
+				return observable<void>((emit) => {
+					const handler = () => {
+						emit.next();
+					};
+					browserManager.on(`pane-focus:${input.paneId}`, handler);
+					return () => {
+						browserManager.off(`pane-focus:${input.paneId}`, handler);
+					};
+				});
+			}),
+
 		// Renderer-registered canonical chords the main process should suppress in
 		// the focused guest and forward for replay (override/layout-aware).
 		setForwardableChords: publicProcedure
@@ -267,8 +286,8 @@ export const createBrowserRouter = () => {
 		}),
 
 		// External open requests (CLI/agents via the browser bridge). A global
-		// renderer hook consumes these and routes them through the same
-		// openUrl search-param flow the ports sidebar uses.
+		// renderer hook opens them in the background, navigating only when
+		// the caller explicitly requests that the browser be shown.
 		onOpenRequest: publicProcedure.subscription(() => {
 			return observable<BrowserOpenRequest>((emit) => {
 				const handler = (request: BrowserOpenRequest) => {

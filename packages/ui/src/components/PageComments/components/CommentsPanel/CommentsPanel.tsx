@@ -1,7 +1,7 @@
 "use client";
 
 import { Trans, useLingui } from "@lingui/react/macro";
-import { formatDate } from "@superset/i18n/format";
+import { useFormat } from "@superset/i18n/react";
 import { differenceInCalendarDays } from "date-fns";
 import { X } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -22,6 +22,8 @@ export function CommentsPanel({
 	header,
 	className,
 }: CommentsPanelProps) {
+	const { formatDate } = useFormat();
+
 	const { t } = useLingui();
 	const {
 		threads,
@@ -90,7 +92,7 @@ export function CommentsPanel({
 		>
 			{header ? <div className="border-b p-3">{header}</div> : null}
 
-			<div className="flex items-center gap-2 px-3 py-2.5">
+			<div className="flex items-center gap-2 px-3 py-2">
 				<span className="font-medium text-sm">
 					<Trans>All comments</Trans>
 				</span>
@@ -133,9 +135,9 @@ export function CommentsPanel({
 						</Trans>
 					</p>
 				) : (
-					<div className="flex flex-col gap-3">
+					<div className="flex flex-col gap-2">
 						{groupByDay(anchored).map((group) => (
-							<div key={group.day} className="flex flex-col gap-2">
+							<div key={group.day} className="flex flex-col gap-1.5">
 								<span className="px-1.5 text-muted-foreground text-xs">
 									{dayLabel(group.day)}
 								</span>
@@ -146,7 +148,7 @@ export function CommentsPanel({
 						))}
 
 						{unanchored.length > 0 ? (
-							<div className="flex flex-col gap-2">
+							<div className="flex flex-col gap-1.5">
 								<div className="px-1.5">
 									<span className="font-medium text-[10px] text-muted-foreground uppercase tracking-wide">
 										<Trans>Not on this version</Trans>

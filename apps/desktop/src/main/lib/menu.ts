@@ -6,6 +6,15 @@ import { env } from "main/env.main";
 import { resetTerminalStateDev } from "main/lib/terminal/dev-reset";
 import { RELEASES_URL } from "shared/auto-update";
 import {
+	// (CLOUD-SEVERANCE-P1) Imported, not deleted: upstream 1.29 added a SECOND
+	// "Check for Updates..." item (the app menu's non-darwin branch), which
+	// merged in cleanly while this file's import list no longer carried the
+	// name — a ReferenceError behind a menu click, and a (REFERR-GATE) TS2304.
+	// The fork keeps `checkForUpdatesInteractive` exported and returns from it
+	// unconditionally (`FORK_AUTO_UPDATE_DISABLED`), so wiring the new item to
+	// it is the disabled-updater state this phase specifies rather than a live
+	// check. The Help menu's own item stays the fork's Releases link below.
+	checkForUpdatesInteractive,
 	simulateDownloading,
 	simulateError,
 	simulateUpdateReady,
@@ -65,6 +74,33 @@ export function createApplicationMenu() {
 						BrowserWindow.getFocusedWindow()?.close();
 					},
 				},
+				// macOS keeps these in the application menu, which only it has.
+				...(process.platform === "darwin"
+					? []
+					: ([
+							{ type: "separator" },
+							{
+								label: i18n._(msg({ message: "Settings..." })),
+								accelerator: openSettingsAccelerator,
+								click: () => {
+									menuEmitter.emit("open-settings");
+								},
+							},
+							{
+								label: i18n._(msg({ message: "Check for Updates..." })),
+								click: () => {
+									checkForUpdatesInteractive();
+								},
+							},
+							{ type: "separator" },
+							{ role: "quit" },
+							{
+								label: i18n._(msg({ message: "Quit Superset Completely" })),
+								click: () => {
+									void confirmAndQuitCompletely();
+								},
+							},
+						] satisfies Electron.MenuItemConstructorOptions[])),
 			],
 		},
 		{

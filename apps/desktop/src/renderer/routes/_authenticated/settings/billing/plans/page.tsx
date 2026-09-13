@@ -3,6 +3,7 @@ import { msg } from "@lingui/core/macro";
 import { Trans, useLingui } from "@lingui/react/macro";
 import { i18n } from "@superset/i18n";
 import { rawErrorMessage } from "@superset/i18n/errors";
+import { resolveCurrentPlan } from "@superset/shared/billing";
 import { Badge } from "@superset/ui/badge";
 import { Button } from "@superset/ui/button";
 import { toast } from "@superset/ui/sonner";
@@ -14,7 +15,6 @@ import { Fragment, useState } from "react";
 import { HiArrowLeft, HiArrowUpRight, HiCheck } from "react-icons/hi2";
 import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
 import { env } from "renderer/env.renderer";
-import { resolveCurrentPlan } from "renderer/hooks/useCurrentPlan";
 import { track } from "renderer/lib/analytics";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
@@ -196,21 +196,21 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
 			},
 			{
 				label: msg({
+					message: "GitHub integration",
+				}),
+				values: [true, true, true],
+			},
+			{
+				label: msg({
 					message: "Remote access",
 				}),
 				values: [null, true, true],
-				badge: {
-					label: msg({
-						message: "Beta",
-					}),
-					variant: "default",
-				},
 			},
 			{
 				label: msg({
 					message: "Automations",
 				}),
-				values: [true, true, true],
+				values: [null, true, true],
 			},
 			{
 				label: msg({
@@ -223,12 +223,6 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
 					}),
 					variant: "secondary",
 				},
-			},
-			{
-				label: msg({
-					message: "GitHub integration",
-				}),
-				values: [true, true, true],
 			},
 			{
 				label: msg({

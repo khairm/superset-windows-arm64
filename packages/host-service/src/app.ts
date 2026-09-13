@@ -44,6 +44,7 @@ import {
 	TerminalAgentStore,
 } from "./terminal-agents";
 import { appRouter } from "./trpc/router";
+import { gitStatusStore } from "./trpc/router/git/utils/git-status-store";
 import { provisionSelectedAccounts } from "./trpc/router/usage/account-provisioning";
 import {
 	execGh as defaultExecGh,
@@ -63,7 +64,13 @@ export interface CreateAppOptions {
 		dbPath: string;
 		cloudApiUrl: string;
 		migrationsFolder: string;
-		allowedOrigins: string[];
+		/**
+		 * Origins the renderer may call from. A sandbox answers `*`: its URL
+		 * is reached directly from the desktop, whose origin differs per
+		 * install, and the bearer token — never a cookie — is what gates it,
+		 * so a wildcard grants no ambient authority.
+		 */
+		allowedOrigins: string | string[];
 		/** Loopback surface for driving desktop browser panes; desktop-only. */
 		browserBridge?: BrowserBridgeConfig;
 	};
@@ -152,7 +159,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 	// GitWatcher is the single source of truth for `.git/` and worktree fs
 	// activity per workspace. Both EventBus (broadcasts to clients) and the
 	// pull-requests runtime (event-driven branch sync) subscribe to it.
-	const gitWatcher = new GitWatcher(db, filesystem);
+	const gitWatcher = new GitWatcher(db, filesystem, (workspaceId, watched) => {
+		if (watched) gitStatusStore.attach(workspaceId);
+		else gitStatusStore.drop(workspaceId);
+	});
+	gitWatcher.onChanged((event) => {
+		gitStatusStore.recordChange(event.workspaceId, event.paths);
+	});
 	gitWatcher.start();
 	// Per-workspace branch/HEAD/upstream reads run in the worker pool: the
 	// PR-sync loop fires them for every workspace on each watcher event and

@@ -5,7 +5,7 @@ import UIKit
 struct AgentRowRecord: Record {
   @Field var id: String = ""
   @Field var workspaceId: String = ""
-  @Field var branch: String = ""
+  @Field var name: String = ""
   @Field var project: String = ""
   @Field var iconFile: String? = nil
   @Field var status: String = ""
@@ -16,7 +16,6 @@ struct AgentRowRecord: Record {
 }
 
 struct AgentSnapshotRecord: Record {
-  @Field var headline: String = ""
   @Field var rows: [AgentRowRecord] = []
   @Field var more: String? = nil
   @Field var totalCount: Int = 0
@@ -31,10 +30,9 @@ private func contentState(
   from snapshot: AgentSnapshotRecord
 ) -> AgentActivityAttributes.ContentState {
   AgentActivityAttributes.ContentState(
-    headline: snapshot.headline,
     rows: snapshot.rows.map {
       AgentActivityAttributes.AgentRow(
-        id: $0.id, workspaceId: $0.workspaceId, branch: $0.branch, project: $0.project, iconFile: $0.iconFile,
+        id: $0.id, workspaceId: $0.workspaceId, name: $0.name, project: $0.project, iconFile: $0.iconFile,
         status: $0.status, state: $0.state, elapsed: $0.elapsed, isQuiet: $0.isQuiet)
     },
     more: snapshot.more,
@@ -118,20 +116,12 @@ public final class LiveActivityModule: Module {
       return activity.id
     }
 
-    AsyncFunction("update") { (id: String, snapshot: AgentSnapshotRecord, alert: String?) in
+    AsyncFunction("update") { (id: String, snapshot: AgentSnapshotRecord) in
       guard let activity = Activity<AgentActivityAttributes>.activities.first(where: { $0.id == id })
       else { return }
       let stale = snapshot.staleAfterSeconds > 0
         ? Date().addingTimeInterval(snapshot.staleAfterSeconds) : nil
-      let content = ActivityContent(state: contentState(from: snapshot), staleDate: stale)
-      if let alert {
-        await activity.update(
-          content,
-          alertConfiguration: AlertConfiguration(
-            title: "\(alert)", body: "\(snapshot.headline)", sound: .default))
-      } else {
-        await activity.update(content)
-      }
+      await activity.update(ActivityContent(state: contentState(from: snapshot), staleDate: stale))
     }
 
     AsyncFunction("endAll") {

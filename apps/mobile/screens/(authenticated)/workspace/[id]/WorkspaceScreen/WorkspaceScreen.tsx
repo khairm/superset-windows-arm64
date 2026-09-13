@@ -46,6 +46,7 @@ import { useAgentIconUris } from "@/screens/(authenticated)/hooks/useAgentIconUr
 import { useAppReviewPrompt } from "@/screens/(authenticated)/hooks/useAppReviewPrompt";
 import { useCreateTerminalWorkspace } from "@/screens/(authenticated)/hooks/useCreateTerminalWorkspace";
 import { useSlashCommands } from "@/screens/(authenticated)/hooks/useSlashCommands";
+import { workspaceDraftKey } from "@/screens/(authenticated)/stores/composerDraftsStore";
 import { useLastSessionTabStore } from "@/screens/(authenticated)/stores/lastSessionTabStore";
 import { usePendingWorkspaceCreatesStore } from "@/screens/(authenticated)/stores/pendingWorkspaceCreatesStore";
 import { useTerminalSeenStore } from "@/screens/(authenticated)/stores/terminalSeenStore";
@@ -551,6 +552,60 @@ export function WorkspaceScreen() {
 		[t],
 	);
 
+	// Press and hold a tab → Rename. The prompt lives here rather than in the
+	// composer for the same reason the close confirm does: a context menu
+	// cannot take text, and the name belongs to the host, not to the strip.
+	const renameTerminal = useCallback(
+		(terminalId: string, title: string) => {
+			if (!workspace || !hostUrl) return;
+			void getHostServiceClientByUrl(hostUrl)
+				.terminal.rename.mutate({
+					terminalId,
+					workspaceId: workspace.id,
+					title,
+				})
+				.catch((cause: unknown) =>
+					Alert.alert(
+						t({
+							message: "Could not rename the session",
+						}),
+						errorCopy(cause),
+					),
+				)
+				.finally(invalidateTerminals);
+		},
+		[workspace, hostUrl, invalidateTerminals, t],
+	);
+
+	const promptRenameTerminal = useCallback(
+		(terminalId: string) => {
+			const row = rows.find((candidate) => candidate.terminalId === terminalId);
+			Alert.prompt(
+				t({
+					message: "Rename session",
+				}),
+				t({
+					message:
+						"Leave it empty to go back to the name the terminal reports.",
+				}),
+				[
+					{
+						text: t({ message: "Cancel" }),
+						style: "cancel",
+					},
+					{
+						text: t({ message: "Save" }),
+						onPress: (value?: string) =>
+							renameTerminal(terminalId, value ?? ""),
+					},
+				],
+				"plain-text",
+				row?.customTitle ?? "",
+			);
+		},
+		[rows, renameTerminal, t],
+	);
+
 	// Press and hold a tab → Copy session ID. The pasteboard write lands here
 	// rather than natively so it shares the header notice every other copy on
 	// this screen already uses.
@@ -641,10 +696,12 @@ export function WorkspaceScreen() {
 		host !== null &&
 		!hostCompatibility.incompatible;
 
+	// The host resolves its own worktree; a path here is only the signal that
+	// there is one to write into yet.
 	const attachmentTarget = useMemo(
 		() =>
 			id && hostUrl && workspace?.worktreePath
-				? { workspaceId: id, hostUrl, worktreePath: workspace.worktreePath }
+				? { workspaceId: id, hostUrl, draftKey: workspaceDraftKey(id) }
 				: null,
 		[id, hostUrl, workspace],
 	);
@@ -928,6 +985,7 @@ export function WorkspaceScreen() {
 					sessionTabs={cloud && !workspace ? [] : sessionTabs}
 					onSessionTabPress={pickTerminal}
 					onSessionTabClose={confirmCloseTerminal}
+					onSessionTabRename={promptRenameTerminal}
 					onSessionTabCopyId={copyTerminalId}
 					onNewSessionPress={openAddMenu}
 					onAllSessionsPress={openSessions}

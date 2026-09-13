@@ -67,6 +67,12 @@ export const env = createEnv({
 				message:
 					"SUPERSET_HOST_RUN_MODE=sandbox disables host authentication and is refused by this fork, which has no edge to authenticate for (see FEATURES.md, (CLOUD-SEVERANCE-P2)).",
 			}),
+		/**
+		 * Sandbox mode only: the workspace this sandbox serves, and the public
+		 * key that verifies the access tokens the API signs for it. There is
+		 * no edge in front of a sandbox, so these are its whole access control.
+		 */
+		SUPERSET_SANDBOX_WORKSPACE_ID: z.string().min(1).optional(),
 	},
 	runtimeEnv: process.env,
 	emptyStringAsUndefined: true,

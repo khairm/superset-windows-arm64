@@ -132,30 +132,37 @@ export function useHostWorkspacesSource(
 	// (KANBAN-HOST-SOURCE) Absence authority below needs to know the host list
 	// is HYDRATED from its LIVE source — `useKnownHosts` only exposes
 	// `settled`, which an IndexedDB snapshot alone satisfies. Upstream moved
-	// the host list off the Electric `v2Hosts` collection onto the cloud
-	// `v2Host.list` query, so read that query here (same query key, so
-	// react-query shares the one fetch) and apply the same org-consistency
-	// test `useKnownHosts` uses for its own live readiness: the key carries no
-	// org, so right after a switch a non-empty response with no row for the
-	// active org is a foreign read, not an answer. An unhydrated `[]` must
+	// the host list off the Electric `v2Hosts` collection onto the cloud host
+	// roster query, so read that query here — the SAME procedure and the SAME
+	// input `useKnownHosts` passes, because sharing the one fetch is the point
+	// and any divergence in either makes this a second, independently-hydrating
+	// query key. (Upstream 1.29 renamed the procedure `v2Host.list` ->
+	// `host.roster` and gave it an org input; reading the pre-rename alias here
+	// would have split the key.) The org-consistency test `useKnownHosts` uses
+	// for its own live readiness is kept: a non-empty response with no row for
+	// the active org is a foreign read, not an answer. An unhydrated `[]` must
 	// never claim "no other hosts".
-	const { data: hostRows } = cloudTrpc.v2Host.list.useQuery();
+	const { data: hostRows } = cloudTrpc.host.roster.useQuery(
+		{ organizationId: knownHostsOrgId ?? "" },
+		{ enabled: knownHostsOrgId !== null },
+	);
 	const hostsReady =
 		hostRows !== undefined &&
 		(hostRows.length === 0 ||
 			hostRows.some((host) => host.organizationId === knownHostsOrgId));
 	const { targets: sandboxes, isReady: sandboxesReady } = useSandboxAccess();
 
-	// Only the open workspace's sandbox is a host here. The provider suspends a
-	// sandbox after ~15s without an inbound request and this poll counts as
-	// one, so every sandbox in the fan-out is one kept awake (and billed) for
-	// as long as the app is open. The sidebar renders cloud rows from the cloud
-	// row, so nothing else needs a sandbox's served rows.
+	// Only the open workspace's sandbox is a host here, and only once it has a
+	// running session: a stopped sandbox's URL answers nothing until the open
+	// workspace's own access wakes it and re-addresses it, and polling it
+	// before then is a stream of failed requests. The sidebar renders cloud
+	// rows from the cloud row, so nothing else needs a sandbox's served rows.
 	const { workspaceId: openWorkspaceId } = useParams({ strict: false });
 	const openSandbox = useMemo(
 		() =>
-			sandboxes.find((sandbox) => sandbox.workspaceId === openWorkspaceId) ??
-			null,
+			sandboxes.find(
+				(sandbox) => sandbox.workspaceId === openWorkspaceId && sandbox.running,
+			) ?? null,
 		[sandboxes, openWorkspaceId],
 	);
 

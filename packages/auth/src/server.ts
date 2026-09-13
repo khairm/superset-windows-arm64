@@ -251,6 +251,7 @@ export const auth = betterAuth({
 		google: {
 			clientId: env.GOOGLE_CLIENT_ID,
 			clientSecret: env.GOOGLE_CLIENT_SECRET,
+			prompt: "select_account",
 		},
 		apple: {
 			clientId: env.APPLE_CLIENT_ID,
@@ -397,7 +398,7 @@ export const auth = betterAuth({
 				definePayload: async ({
 					user,
 				}: {
-					user: { id: string; email: string };
+					user: { id: string };
 					session: Record<string, unknown>;
 				}) => {
 					const userMemberships = await db.query.members.findMany({
@@ -407,7 +408,7 @@ export const auth = betterAuth({
 					const organizationIds = [
 						...new Set(userMemberships.map((m) => m.organizationId)),
 					];
-					return { sub: user.id, email: user.email, organizationIds };
+					return { sub: user.id, organizationIds };
 				},
 			},
 		}),
@@ -1267,6 +1268,30 @@ export const auth = betterAuth({
 						(cancellationDetails ?? stripeSubscription.cancellation_details)
 							?.reason === "payment_failed";
 
+					if (
+						subscription.plan === "pro" &&
+						!dueToPaymentFailure &&
+						stripeSubscription.canceled_at
+					) {
+						try {
+							await qstash.publishJSON({
+								url: `${env.NEXT_PUBLIC_API_URL}/api/integrations/stripe/jobs/cancellation-feedback`,
+								body: {
+									stripeSubscriptionId: stripeSubscription.id,
+									canceledAt: stripeSubscription.canceled_at,
+								},
+								delay: 2700,
+								retries: 3,
+								deduplicationId: `pro-cancellation-feedback-${stripeSubscription.id}-${stripeSubscription.canceled_at}`,
+							});
+						} catch (error) {
+							console.error(
+								"[stripe/cancellation-feedback] Failed to queue feedback:",
+								error,
+							);
+						}
+					}
+
 					await resend.batch.send(
 						recipients.map((recipient) => ({
 							from: "Superset <noreply@superset.sh>",
@@ -1620,7 +1645,6 @@ export type User = typeof auth.$Infer.Session.user;
  */
 export async function mintUserJwt(args: {
 	userId: string;
-	email?: string;
 	organizationIds: string[];
 	scope?: string;
 	runId?: string;
@@ -1633,7 +1657,6 @@ export async function mintUserJwt(args: {
 		body: {
 			payload: {
 				sub: args.userId,
-				email: args.email,
 				organizationIds: args.organizationIds,
 				scope: args.scope,
 				runId: args.runId,

@@ -1,6 +1,6 @@
+import type { I18n } from "@lingui/core";
 import { msg } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
-import { i18n } from "@superset/i18n";
 import { formatCount, formatTokens, formatUsd } from "../../utils/formatUsage";
 import { MeterBar } from "../MeterBar";
 
@@ -94,6 +94,7 @@ export function ModelBars({
 
 export function toUserRows(
 	models: Array<{ provider: string; model: string; users: number }>,
+	i18n: I18n,
 ): ModelBarRow[] {
 	return models.map((model) => ({
 		provider: model.provider,
@@ -103,7 +104,10 @@ export function toUserRows(
 			...msg({
 				message: "{formatted} {count, plural, one {dev} other {devs}}",
 			}),
-			values: { formatted: formatCount(model.users), count: model.users },
+			values: {
+				formatted: formatCount(model.users, i18n.locale),
+				count: model.users,
+			},
 		}),
 	}));
 }
@@ -113,14 +117,15 @@ export function toSpendRows(
 		provider: string;
 		model: string;
 		usd: string;
-		tokens: number;
+		tokens: string;
 	}>,
+	locale: string,
 ): ModelBarRow[] {
 	return models.map((model) => ({
 		provider: model.provider,
 		model: model.model,
 		value: Number.parseFloat(model.usd) || 0,
-		display: formatUsd(model.usd),
+		display: formatUsd(model.usd, locale),
 	}));
 }
 
@@ -129,13 +134,14 @@ export function toTokenRows(
 		provider: string;
 		model: string;
 		usd: string;
-		tokens: number;
+		tokens: string;
 	}>,
+	locale: string,
 ): ModelBarRow[] {
 	return models.map((model) => ({
 		provider: model.provider,
 		model: model.model,
-		value: model.tokens,
-		display: formatTokens(model.tokens),
+		value: Number(model.tokens),
+		display: formatTokens(model.tokens, locale),
 	}));
 }

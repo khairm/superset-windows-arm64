@@ -1,7 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { rawErrorMessage } from "@superset/i18n/errors";
-import { formatPrice } from "@superset/i18n/format";
-import { isPaymentFailingStatus } from "@superset/shared/billing";
+import { useFormat } from "@superset/i18n/react";
+import {
+	isPaymentFailingStatus,
+	resolveCurrentPlan,
+} from "@superset/shared/billing";
 import { Button } from "@superset/ui/button";
 import { toast } from "@superset/ui/sonner";
 import { Link } from "@tanstack/react-router";
@@ -9,7 +12,6 @@ import { useState } from "react";
 import { HiArrowRight } from "react-icons/hi2";
 import { env } from "renderer/env.renderer";
 import { useActiveOrganizationId } from "renderer/hooks/useActiveOrganizationId";
-import { resolveCurrentPlan } from "renderer/hooks/useCurrentPlan";
 import { track } from "renderer/lib/analytics";
 import { authClient } from "renderer/lib/auth-client";
 import { cloudTrpc } from "renderer/lib/cloud-trpc";
@@ -33,6 +35,8 @@ interface BillingOverviewProps {
 }
 
 export function BillingOverview({ visibleItems }: BillingOverviewProps) {
+	const { formatPrice } = useFormat();
+
 	const { t } = useLingui();
 	const { data: session } = authClient.useSession();
 	const utils = cloudTrpc.useUtils();

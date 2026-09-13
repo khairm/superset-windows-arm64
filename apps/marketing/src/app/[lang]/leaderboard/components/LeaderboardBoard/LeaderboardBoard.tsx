@@ -48,7 +48,7 @@ export function LeaderboardBoard({
 	headerLink,
 	pixelClassName,
 }: LeaderboardBoardProps) {
-	const { t } = useLingui();
+	const { t, i18n } = useLingui();
 	const [metric, setMetric] = useState<LeaderboardMetric>("tokens");
 	const [selection, setSelection] = useState<RangeSelection>({ period: "30d" });
 	const [standings, setStandings] = useState(initialStandings);
@@ -226,13 +226,13 @@ export function LeaderboardBoard({
 							label: t({
 								message: "Tokens",
 							}),
-							value: formatTokens(totals.tokens),
+							value: formatTokens(totals.tokens, i18n.locale),
 						},
 						{
 							label: t({
 								message: "Cost",
 							}),
-							value: formatUsd(totals.usd),
+							value: formatUsd(totals.usd, i18n.locale),
 							hint: t({
 								message: "API-equivalent",
 							}),
@@ -242,9 +242,10 @@ export function LeaderboardBoard({
 								message: "Cache read",
 							}),
 							value: `${
-								totals.tokens > 0
+								Number(totals.tokens) > 0
 									? Math.round(
-											((stats?.tokenSplit.cachedInput ?? 0) / totals.tokens) *
+											(Number(stats?.tokenSplit.cachedInput ?? 0) /
+												Number(totals.tokens)) *
 												100,
 										)
 									: 0
@@ -269,7 +270,7 @@ export function LeaderboardBoard({
 					latest={new Date()}
 				/>
 				<span className="font-mono text-[0.62rem] uppercase tracking-[0.12em] text-muted-foreground/70">
-					{range ? formatDayRange(range) : <Trans>All time</Trans>}
+					{range ? formatDayRange(range, i18n.locale) : <Trans>All time</Trans>}
 				</span>
 			</div>
 

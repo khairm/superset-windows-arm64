@@ -66,6 +66,20 @@ function localHostMemberRow() {
 }
 
 const LOCAL_ANSWERS: Record<string, () => unknown> = {
+	/**
+	 * The host registry answers under BOTH names upstream currently serves.
+	 * `host.roster` / `host.listMembers` are the canonical procedures as of
+	 * upstream 1.29, which moved the `v2-host` router under `host` and left
+	 * `v2Host.*` behind as a dated compatibility alias (see `root.ts`). Keying
+	 * only on the old names is what a rename costs here: the path is the whole
+	 * lookup, so an unanswered procedure is indistinguishable from a severed
+	 * one and rejects — which emptied the known-host roster and, with it, the
+	 * device picker that intersects against `listMembers`. Both names are
+	 * answered rather than just the new pair because the alias is still live
+	 * and still called; when upstream drops it the dead key costs one entry.
+	 */
+	"host.roster": () => [localHostRow()],
+	"host.listMembers": () => [localHostMemberRow()],
 	"v2Host.list": () => [localHostRow()],
 	"v2Host.listMembers": () => [localHostMemberRow()],
 	/**

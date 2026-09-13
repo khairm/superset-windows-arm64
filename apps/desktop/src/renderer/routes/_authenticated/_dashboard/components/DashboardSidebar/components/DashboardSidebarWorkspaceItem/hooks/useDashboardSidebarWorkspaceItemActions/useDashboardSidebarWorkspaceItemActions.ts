@@ -1,10 +1,7 @@
 import { useLingui } from "@lingui/react/macro";
 import type { AppRouter } from "@superset/host-service";
 import { errorMessage } from "@superset/i18n/errors";
-import {
-	normalizeWorkspaceTags,
-	SESSIONS_TAG_SCOPE,
-} from "@superset/shared/workspace-tags";
+import { normalizeWorkspaceTags } from "@superset/shared/workspace-tags";
 import { toast } from "@superset/ui/sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
@@ -33,11 +30,7 @@ import {
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
-import {
-	applyFolderTagChange,
-	buildSidebarFolderKey,
-	mintFolderTag,
-} from "renderer/routes/_authenticated/utils/workspaceTagFolders";
+import { applyFolderTagChange } from "renderer/routes/_authenticated/utils/workspaceTagFolders";
 // (RECYCLE-BIN) Upstream's `useDeleteWorkspaceIntent` is deliberately NOT
 // imported: Delete soft-deletes into the bin, and the destroy dialog is only
 // reachable from inside it via `useDestroyWorkspaceIntent`.
@@ -417,16 +410,8 @@ export function useDashboardSidebarWorkspaceItemActions({
 	};
 
 	const handleCreateSection = () => {
-		if (projectId === null) {
-			if (!isSessionWorkspace) return;
-			const tag = mintFolderTag("New group", sessionGroupTags);
-			void workspaceActions.updateWorkspace(workspaceId, {
-				tags: applyFolderTagChange(currentWorkspaceTags, sessionGroupTags, tag),
-			});
-			requestSectionRename(buildSidebarFolderKey(SESSIONS_TAG_SCOPE, tag));
-			return;
-		}
-		const sectionId = createSection(projectId);
+		if (projectId === null && !isSessionWorkspace) return;
+		const sectionId = createSection(projectId, { workspaceIds: [workspaceId] });
 		moveWorkspaceToSection(workspaceId, projectId, sectionId);
 		requestSectionRename(sectionId);
 	};

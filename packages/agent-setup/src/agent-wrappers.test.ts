@@ -26,7 +26,7 @@ let mockedHomeDir = path.join(TEST_ROOT, "home");
 
 mock.module("./notify-hook", () => ({
 	NOTIFY_SCRIPT_NAME: "notify.sh",
-	NOTIFY_SCRIPT_MARKER: "# Superset agent notification hook v15",
+	NOTIFY_SCRIPT_MARKER: "# Superset agent notification hook v17",
 	getNotifyScriptPath: () => path.join(TEST_HOOKS_DIR, "notify.sh"),
 	getNotifyScriptContent: () => "#!/bin/bash\nexit 0\n",
 	createNotifyScript: () => {},
@@ -73,6 +73,11 @@ const {
 	getCodexGlobalHooksJsonContent,
 	getCursorHooksJsonContent,
 	getCopilotHookScriptPath,
+	getDevinConfigJsonContent,
+	getMuseManagedHooksContent,
+	getMuseSettingsJsonContent,
+	getMuseSettingsJsonWithoutManagedHooks,
+	MUSE_HOOK_ENV_VARS,
 	getDroidSettingsJsonContent,
 	GEMINI_HOOK_MARKER,
 	getAmpGlobalPluginPath,
@@ -130,9 +135,9 @@ describe("agent-wrappers opencode", () => {
 	beforeEach(() => {
 		delete (
 			globalThis as typeof globalThis & {
-				__supersetOpencodeNotifyPluginV10?: boolean;
+				__supersetOpencodeNotifyPluginV11?: boolean;
 			}
-		).__supersetOpencodeNotifyPluginV10;
+		).__supersetOpencodeNotifyPluginV11;
 	});
 
 	afterEach(() => {
@@ -141,6 +146,48 @@ describe("agent-wrappers opencode", () => {
 		} else {
 			process.env.SUPERSET_TERMINAL_ID = originalTerminalId;
 		}
+	});
+
+	it("reports a session error as Failed with its error message", async () => {
+		process.env.SUPERSET_TERMINAL_ID = "terminal-1";
+		const { SupersetNotifyPlugin } = await loadOpenCodePlugin();
+		const notifications: unknown[] = [];
+		const hooks = await SupersetNotifyPlugin({
+			$: (
+				_parts: TemplateStringsArray,
+				_notifyPath: string,
+				payload: string,
+			) => {
+				notifications.push(JSON.parse(payload));
+			},
+			client: { session: { list: async () => ({ data: [{ id: "root" }] }) } },
+		});
+		await hooks.event({
+			event: {
+				type: "session.status",
+				properties: { sessionID: "root", status: { type: "busy" } },
+			},
+		});
+		await hooks.event({
+			event: {
+				type: "session.error",
+				properties: {
+					sessionID: "root",
+					error: { data: { message: "Provider unavailable" } },
+				},
+			},
+		});
+		await hooks.event({
+			event: { type: "session.idle", properties: { sessionID: "root" } },
+		});
+		expect(notifications).toEqual([
+			{ hook_event_name: "Start", session_id: "root" },
+			{
+				hook_event_name: "Failed",
+				session_id: "root",
+				message: "Provider unavailable",
+			},
+		]);
 	});
 
 	it.each([
@@ -1356,6 +1403,137 @@ describe("agent-wrappers claude settings.json", () => {
 		rmSync(TEST_ROOT, { recursive: true, force: true });
 	});
 
+	it("writes Muse hooks as a managed file with Claude-shaped events", () => {
+		const parsed = JSON.parse(getMuseManagedHooksContent()) as {
+			hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+		};
+		expect(Object.keys(parsed.hooks).sort()).toEqual(
+			[
+				"PermissionRequest",
+				"PostToolUse",
+				"SessionEnd",
+				"SessionStart",
+				"Stop",
+				"StopFailure",
+				"UserPromptSubmit",
+			].sort(),
+		);
+		for (const entries of Object.values(parsed.hooks)) {
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.hooks[0]?.command).toBe(
+				getManagedNotifyHookCommand("muse"),
+			);
+		}
+	});
+
+	it("points Muse settings.json at the managed hooks file and allowlists Superset's env", () => {
+		const managed = "/Users/me/.superset/hooks/muse/hooks.json";
+		const content = getMuseSettingsJsonContent(
+			JSON.stringify({
+				schema_version: 1,
+				tui: { theme: "dark" },
+				managed_hooks_env_vars: ["MY_VAR"],
+			}),
+			managed,
+		);
+		const parsed = JSON.parse(requireContent(content)) as Record<
+			string,
+			unknown
+		>;
+		expect(parsed.tui).toEqual({ theme: "dark" });
+		expect(parsed.managed_hooks_path).toBe(managed);
+		expect(parsed.managed_hooks_env_vars).toEqual([
+			"MY_VAR",
+			...MUSE_HOOK_ENV_VARS,
+		]);
+		// A missing file becomes a fresh document Muse will accept.
+		const fresh = JSON.parse(
+			requireContent(getMuseSettingsJsonContent(null, managed)),
+		) as Record<string, unknown>;
+		expect(fresh.schema_version).toBe(1);
+	});
+
+	it("never replaces a managed_hooks_path Superset does not own", () => {
+		expect(
+			getMuseSettingsJsonContent(
+				JSON.stringify({
+					schema_version: 1,
+					managed_hooks_path: "/etc/muse/hooks.json",
+				}),
+				"/Users/me/.superset/hooks/muse/hooks.json",
+			),
+		).toBeNull();
+		// A previous Superset home (dev data, another install) is ours to replace.
+		expect(
+			getMuseSettingsJsonContent(
+				JSON.stringify({
+					managed_hooks_path: "/tmp/w/superset-dev-data/hooks/muse/hooks.json",
+				}),
+				"/Users/me/.superset/hooks/muse/hooks.json",
+			),
+		).not.toBeNull();
+	});
+
+	it("removes only Superset's pointer and env names from Muse settings.json", () => {
+		const after = getMuseSettingsJsonWithoutManagedHooks(
+			JSON.stringify({
+				schema_version: 1,
+				tui: { theme: "dark" },
+				managed_hooks_path: "/Users/me/.superset/hooks/muse/hooks.json",
+				managed_hooks_env_vars: ["MY_VAR", ...MUSE_HOOK_ENV_VARS],
+			}),
+		);
+		expect(JSON.parse(requireContent(after))).toEqual({
+			schema_version: 1,
+			tui: { theme: "dark" },
+			managed_hooks_env_vars: ["MY_VAR"],
+		});
+		expect(
+			getMuseSettingsJsonWithoutManagedHooks(
+				JSON.stringify({
+					schema_version: 1,
+					managed_hooks_path: "/etc/muse/hooks.json",
+				}),
+			),
+		).toBeNull();
+	});
+
+	it("creates Devin config.json with its schema version and Claude-shaped hooks", () => {
+		const notifyPath = "/tmp/.superset/hooks/notify.sh";
+		const content = requireContent(getDevinConfigJsonContent(notifyPath));
+		const parsed = JSON.parse(content) as {
+			version?: number;
+			hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+		};
+		expect(parsed.version).toBe(1);
+		for (const eventName of [
+			"SessionStart",
+			"SessionEnd",
+			"UserPromptSubmit",
+			"Stop",
+			"PostToolUse",
+			"PermissionRequest",
+		]) {
+			const entries = parsed.hooks[eventName];
+			expect(entries).toHaveLength(1);
+			expect(entries?.[0]?.hooks[0]?.command).toBe(
+				getManagedNotifyHookCommand("devin"),
+			);
+		}
+		// Devin drops the whole hooks block on an unknown event name, so only
+		// names it accepts may appear.
+		expect(Object.keys(parsed.hooks).sort()).toEqual(
+			[
+				"PermissionRequest",
+				"PostToolUse",
+				"SessionEnd",
+				"SessionStart",
+				"Stop",
+				"UserPromptSubmit",
+			].sort(),
+		);
+	});
+
 	it("creates Claude settings.json with hooks when no file exists", () => {
 		const notifyPath = "/tmp/.superset/hooks/notify.sh";
 		const content = getClaudeGlobalSettingsJsonContent(notifyPath);
@@ -1660,8 +1838,14 @@ describe("agent-wrappers codex hooks.json", () => {
 			).toBe(true);
 		}
 
-		expect(parsed.hooks.PreToolUse).toBeUndefined();
-		expect(parsed.hooks.PostToolUse).toBeUndefined();
+		for (const eventName of ["PreToolUse", "PostToolUse"]) {
+			expect(parsed.hooks[eventName]).toEqual([
+				{
+					matcher: "^request_user_input$",
+					hooks: [{ type: "command", command: expectedCommand }],
+				},
+			]);
+		}
 	});
 
 	it("preserves user hooks when merging", () => {
@@ -1723,7 +1907,7 @@ describe("agent-wrappers codex hooks.json", () => {
 
 		const parsed = JSON.parse(content);
 
-		// Preserves user hooks (including PreToolUse/PostToolUse which we don't manage)
+		// Preserves user hooks, including tool hooks alongside our scoped entries.
 		expect(
 			parsed.hooks.Stop.some((def: { hooks: Array<{ command: string }> }) =>
 				def.hooks.some(
@@ -1780,25 +1964,13 @@ describe("agent-wrappers codex hooks.json", () => {
 			).toBe(true);
 		}
 
-		// Does NOT inject managed hooks for PreToolUse/PostToolUse
-		expect(
-			parsed.hooks.PreToolUse.some(
-				(def: { hooks: Array<{ command: string }> }) =>
-					def.hooks.some(
-						(hook: { command: string }) =>
-							hook.command === expectedManagedCommand,
-					),
-			),
-		).toBe(false);
-		expect(
-			parsed.hooks.PostToolUse.some(
-				(def: { hooks: Array<{ command: string }> }) =>
-					def.hooks.some(
-						(hook: { command: string }) =>
-							hook.command === expectedManagedCommand,
-					),
-			),
-		).toBe(false);
+		for (const eventName of ["PreToolUse", "PostToolUse"]) {
+			expect(parsed.hooks[eventName]).toHaveLength(2);
+			expect(parsed.hooks[eventName]).toContainEqual({
+				matcher: "^request_user_input$",
+				hooks: [{ type: "command", command: expectedManagedCommand }],
+			});
+		}
 	});
 
 	it("replaces stale Codex hook commands from old superset paths", () => {
@@ -2064,8 +2236,8 @@ describe("vibe hooks.toml", () => {
 		const out = getVibeHooksTomlContent("");
 		expect(out).toContain(VIBE_HOOKS_MARKER_START);
 		expect(out).toContain(VIBE_HOOKS_MARKER_END);
-		expect(out).toContain('type = "before_tool"');
-		expect(out).toContain('type = "post_agent_turn"');
+		expect(out).toContain('type = "pre_tool"');
+		expect(out).toContain('type = "post_agent"');
 		expect(out).toContain("SUPERSET_HOOK_HARNESS=vibe");
 	});
 	it("preserves user hooks and is idempotent", () => {
@@ -2101,8 +2273,8 @@ describe("vibe hooks.toml", () => {
 		expect(out).toContain('name = "mine"');
 		expect(out.split(VIBE_HOOKS_MARKER_START).length - 1).toBe(1);
 		expect(out.split(VIBE_HOOKS_MARKER_END).length - 1).toBe(1);
-		expect(out.split('type = "before_tool"').length - 1).toBe(1);
-		expect(out.split('type = "post_agent_turn"').length - 1).toBe(1);
+		expect(out.split('type = "pre_tool"').length - 1).toBe(1);
+		expect(out.split('type = "post_agent"').length - 1).toBe(1);
 	});
 	it("preserves user hooks that follow an orphaned start marker", () => {
 		// End marker lost to a hand-edit/crash, with a user hook AFTER our block.

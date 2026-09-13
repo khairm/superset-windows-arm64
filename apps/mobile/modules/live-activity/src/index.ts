@@ -5,7 +5,7 @@ export interface AgentRow {
 	id: string;
 	/** Workspace the terminal belongs to; the deep link's real target. */
 	workspaceId: string;
-	branch: string;
+	name: string;
 	project: string;
 	/** Filename returned by `cacheIcon`, or omitted to draw the initial. */
 	iconFile?: string;
@@ -22,7 +22,6 @@ export interface AgentRow {
 }
 
 export interface AgentSnapshot {
-	headline: string;
 	rows: AgentRow[];
 	more?: string;
 	/** Every agent, not just the rows that fit on the card. */
@@ -60,11 +59,7 @@ interface LiveActivityModule {
 	/** Downloads, downscales and caches a project icon into the App Group. */
 	cacheIcon: (key: string, url: string) => Promise<string>;
 	start: (snapshot: AgentSnapshot) => Promise<string>;
-	update: (
-		id: string,
-		snapshot: AgentSnapshot,
-		alert?: string | null,
-	) => Promise<void>;
+	update: (id: string, snapshot: AgentSnapshot) => Promise<void>;
 	endAll: () => Promise<void>;
 }
 

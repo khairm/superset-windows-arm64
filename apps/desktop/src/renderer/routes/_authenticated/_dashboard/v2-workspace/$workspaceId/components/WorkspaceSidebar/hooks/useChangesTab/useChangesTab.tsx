@@ -9,15 +9,13 @@ import { RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { LuGitCompareArrows } from "react-icons/lu";
 import { useIsGitRepo } from "renderer/hooks/host-service/useIsGitRepo";
+import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useChangeset } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useChangeset";
 import { useOpenInExternalEditor } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useOpenInExternalEditor";
 import { useSidebarDiffRef } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useSidebarDiffRef";
 import { useWorkspaceGitStatus } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/providers/WorkspaceGitStatusProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
-import type {
-	ChangesFilter,
-	ChangesViewMode,
-} from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
+import type { ChangesFilter } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/schema";
 import { toAbsoluteWorkspacePath } from "shared/absolute-paths";
 import type { SidebarTabDefinition } from "../../types";
 import {
@@ -76,8 +74,9 @@ export function useChangesTab({
 	const filter: ChangesFilter = localState?.sidebarState?.changesFilter ?? {
 		kind: "all",
 	};
-	const viewMode: ChangesViewMode =
-		localState?.sidebarState?.changesViewMode ?? "folders";
+	const { preferences, setChangesViewMode: setViewMode } =
+		useV2UserPreferences();
+	const viewMode = preferences.changesViewMode;
 
 	const baseBranchQuery = workspaceTrpc.git.getBaseBranch.useQuery(
 		{ workspaceId },
@@ -110,16 +109,6 @@ export function useChangesTab({
 			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				draft.sidebarState.changesFilter = next;
-			});
-		},
-		[collections, workspaceId],
-	);
-
-	const setViewMode = useCallback(
-		(next: ChangesViewMode) => {
-			if (!collections.v2WorkspaceLocalState.get(workspaceId)) return;
-			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-				draft.sidebarState.changesViewMode = next;
 			});
 		},
 		[collections, workspaceId],

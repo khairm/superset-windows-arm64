@@ -240,8 +240,11 @@ type TerminalClientMessage =
 	// Whether this client is actually showing the terminal right now — its pane
 	// is on screen and its app is foregrounded. Distinct from keyboard focus: a
 	// visible unfocused pane still has to render at the right size. Only visible
-	// clients constrain the PTY size. A client that never sends this counts as
-	// visible, so builds predating the message keep their existing sizing.
+	// clients constrain the PTY size. A hidden client keeps receiving output
+	// until the PTY changes size; from then on the bytes are laid out for a
+	// width it does not have, so they are withheld and it is repainted when it
+	// comes back. A client that never sends this counts as visible, so builds
+	// predating the message keep their existing behaviour.
 	| { type: "visible"; visible: boolean }
 	// Answer to the host's `ping`. A client that has answered once and then
 	// goes silent is dropped, which is the only way a half-open socket (a phone
@@ -367,7 +370,10 @@ const WS_SEND_BUFFER_CAP_BYTES = 8 * 1024 * 1024;
 // the size minimum, which pins every other client at phone width. TCP
 // keepalive would take hours. So the host pings each client at the
 // application level and drops one that answered before but has now missed
-// CLIENT_PONG_MISS_LIMIT pings in a row (30–45s of silence).
+// CLIENT_PONG_MISS_LIMIT pings in a row (30–45s of silence). A client that
+// said it is off screen is exempt: a backgrounded phone's page is suspended,
+// so its silence is expected, and it already sits outside the size minimum,
+// so dropping it would only force a redial when it comes back.
 const CLIENT_PING_INTERVAL_MS = 15_000;
 const CLIENT_PONG_MISS_LIMIT = 2;
 const SOCKET_OPEN = 1;
@@ -400,6 +406,8 @@ const socketLiveness = new WeakMap<
 	TerminalSocket,
 	{ answered: boolean; unansweredPings: number }
 >();
+/** Sockets that dialed with `?seq=`; only these can be told their position. */
+const seqSockets = new WeakSet<TerminalSocket>();
 let clientPingIntervalMs = CLIENT_PING_INTERVAL_MS;
 let clientLivenessSweep: ReturnType<typeof setInterval> | null = null;
 
@@ -573,7 +581,14 @@ interface TerminalSession {
 	exitCode: number;
 	exitSignal: number;
 	listed: boolean;
+	/** Last title the shell reported over OSC. Lives and dies with the process. */
 	title: string | null;
+	/**
+	 * The name the user gave this session, mirrored from `custom_title`. It
+	 * outranks `title` everywhere a session is named, so a session keeps its
+	 * name while the shell retitles itself underneath.
+	 */
+	customTitle: string | null;
 	titleScanState: TerminalTitleScanState;
 	/**
 	 * Bus for lifecycle broadcasts. Kept on the session so dispose (which
@@ -680,6 +695,15 @@ interface TerminalSession {
 	/** Bumped on every client resize; guards the nudge's delayed restore. */
 	resizeGeneration: number;
 	/**
+	 * Stream position of the last PTY resize. A resize is a sync boundary:
+	 * bytes before and after it were laid out for different widths, so a
+	 * client anchored at or before it cannot be caught up exactly — it
+	 * reanchors and the program repaints. Clients attached and on screen at
+	 * the time saw the resize in-band and are unaffected. -1 until the first
+	 * resize.
+	 */
+	lastResizeSeq: number;
+	/**
 	 * Sockets whose client currently holds keyboard focus. The PTY receives
 	 * the AGGREGATE (any focused socket) — so an unfocused duplicate pane
 	 * attaching can't tell the program the focused pane lost focus (tmux's
@@ -697,10 +721,13 @@ interface TerminalSession {
 	/**
 	 * Sockets whose client said it is off screen. Absence means visible, so a
 	 * client that never sends the message keeps constraining the size as it
-	 * always has. Hidden clients are excluded from the minimum: a backgrounded
-	 * phone must not hold the PTY narrow for whoever is actually looking.
+	 * always has. Hidden clients are excluded from the minimum — a backgrounded
+	 * phone must not hold the PTY narrow for whoever is actually looking. They
+	 * keep receiving output (null) until the PTY changes size, which records
+	 * the stream position where their copy diverged; from there they are
+	 * withheld and get a reanchor on return.
 	 */
-	hiddenSockets: Set<TerminalSocket>;
+	hiddenSockets: Map<TerminalSocket, number | null>;
 
 	/**
 	 * Tail of the in-flight follow-up send (writeFramedInputToSession).
@@ -1049,7 +1076,10 @@ export interface TerminalSessionSummary {
 	exited: boolean;
 	exitCode: number;
 	attached: boolean;
+	/** What to show: the user's name if set, else the shell's OSC title. */
 	title: string | null;
+	/** The user's name on its own — null when the session has never been named. */
+	customTitle: string | null;
 }
 
 /**
@@ -1121,7 +1151,8 @@ export function listTerminalSessions(
 			exited: session.exited,
 			exitCode: session.exitCode,
 			attached: pruneAndCountOpenSockets(session) > 0,
-			title: session.title,
+			title: sessionDisplayTitle(session),
+			customTitle: session.customTitle,
 		}));
 }
 
@@ -1140,7 +1171,7 @@ export function listTerminalSessions(
  * daemon session joined to an active workspace-owned row. Dispose-stamped
  * rows are scheduled kills awaiting the reaper — never resurfaced. A session
  * only the daemon knows has never been attached in this process's lifetime,
- * hence `attached: false, title: null`.
+ * hence `attached: false` and no OSC title — only the name it was given.
  */
 export async function listLiveTerminalSessions(
 	db: HostDb,
@@ -1181,6 +1212,7 @@ export async function listLiveTerminalSessions(
 			originWorkspaceId: terminalSessions.originWorkspaceId,
 			status: terminalSessions.status,
 			createdAt: terminalSessions.createdAt,
+			customTitle: terminalSessions.customTitle,
 			disposeRequestedAt: terminalSessions.disposeRequestedAt,
 		})
 		.from(terminalSessions)
@@ -1204,7 +1236,10 @@ export async function listLiveTerminalSessions(
 			exited: false,
 			exitCode: 0,
 			attached: false,
-			title: null,
+			// No OSC title to fall back on — this process has never watched
+			// this session's output — but the name it was given is durable.
+			title: row.customTitle,
+			customTitle: row.customTitle,
 		});
 	}
 	return merged;
@@ -1730,10 +1765,61 @@ function broadcastMessage(
 	return sent;
 }
 
+/**
+ * What this session is called: the user's name if it has one, else whatever
+ * the shell last reported. The single place that precedence is decided —
+ * clients are handed the answer, never the two inputs.
+ */
+function sessionDisplayTitle(session: TerminalSession): string | null {
+	return session.customTitle ?? session.title;
+}
+
+/**
+ * Announce the display title if what just changed actually changed it. A
+ * named session swallows the shell's retitles this way: it still tracks them
+ * (clearing the name falls back to the latest one) but nothing is announced.
+ */
+function broadcastDisplayTitle(
+	session: TerminalSession,
+	before: string | null,
+) {
+	const after = sessionDisplayTitle(session);
+	if (before === after) return;
+	broadcastMessage(session, { type: "title", title: after });
+}
+
 function setSessionTitle(session: TerminalSession, title: string | null) {
 	if (session.title === title) return;
+	const before = sessionDisplayTitle(session);
 	session.title = title;
-	broadcastMessage(session, { type: "title", title });
+	broadcastDisplayTitle(session, before);
+}
+
+/**
+ * Give a session a name, or clear it with null. The db row is the truth —
+ * a session with no pane, or none in this process's memory at all, is named
+ * just the same — and any live session is caught up so attached clients
+ * (this desktop, a phone) see it without waiting for their next poll.
+ */
+export function renameTerminalSession({
+	terminalId,
+	customTitle,
+	db,
+}: {
+	terminalId: string;
+	customTitle: string | null;
+	db: HostDb;
+}): void {
+	db.update(terminalSessions)
+		.set({ customTitle })
+		.where(eq(terminalSessions.id, terminalId))
+		.run();
+
+	const session = sessions.get(terminalId);
+	if (!session || session.customTitle === customTitle) return;
+	const before = sessionDisplayTitle(session);
+	session.customTitle = customTitle;
+	broadcastDisplayTitle(session, before);
 }
 
 function bufferOutput(session: TerminalSession, data: Uint8Array) {
@@ -1853,7 +1939,10 @@ function answerDsrCursorQueries(session: TerminalSession, count: number) {
 function deliverOutput(session: TerminalSession, bytes: Uint8Array) {
 	session.modeTracker.feed(bytes);
 	retainOutput(session, bytes);
-	if (broadcastBytes(session, bytes) === 0) {
+	// The legacy FIFO stands in for a client that has nobody attached, not
+	// for one withheld from hidden clients: the sweep may also have detached
+	// closed sockets, so check what remains rather than what was sent.
+	if (broadcastBytes(session, bytes) === 0 && session.sockets.size === 0) {
 		bufferOutput(session, bytes);
 	}
 }
@@ -1980,6 +2069,16 @@ function applyEffectiveDims(
 	if (!next) return;
 	const changed = next.cols !== session.cols || next.rows !== session.rows;
 	if (!changed && !options.force) return;
+	if (changed) {
+		session.lastResizeSeq = session.outputSeq;
+		// Whatever follows is laid out for the new size; hidden clients still
+		// in step stop being so here.
+		for (const [socket, divergedAt] of session.hiddenSockets) {
+			if (divergedAt === null) {
+				session.hiddenSockets.set(socket, session.outputSeq);
+			}
+		}
+	}
 	session.resizeGeneration += 1;
 	session.pty.resize(next.cols, next.rows);
 	session.modeTracker.resize(next.cols, next.rows);
@@ -1997,6 +2096,30 @@ function releaseSocketDims(session: TerminalSession, ws: TerminalSocket) {
 	const wasHidden = session.hiddenSockets.delete(ws);
 	// A hidden client was already outside the minimum, so nothing moved.
 	if (hadDims && !wasHidden) applyEffectiveDims(session);
+}
+
+/**
+ * A client back on screen after its output was withheld: the PTY changed
+ * size while it was away, so what it missed was laid out for a width it does
+ * not have. It is told its new position and nothing else, and the program
+ * repaints — the resize its return causes delivers the SIGWINCH, or a nudge
+ * does when the size does not move. A legacy client cannot be told where it
+ * is; the repaint is all it can use anyway.
+ */
+function resumeHiddenSocket(session: TerminalSession, ws: TerminalSocket) {
+	if (seqSockets.has(ws)) {
+		sendMessage(ws, {
+			type: "synced",
+			epoch: session.epoch,
+			seq: session.outputSeq,
+			mode: "reanchor",
+		});
+	}
+	const next = effectiveDims(session);
+	const dimsUnchanged =
+		next === null || (next.cols === session.cols && next.rows === session.rows);
+	applyEffectiveDims(session);
+	if (dimsUnchanged) nudgeRepaint(session);
 }
 
 /**
@@ -2022,10 +2145,10 @@ function pingSocket(ws: TerminalSocket) {
 }
 
 /**
- * Drop every attached client that answered a ping before and has now missed
- * CLIENT_PONG_MISS_LIMIT in a row, then ping the rest. Detaching first means
- * the PTY grows back immediately; the socket is destroyed rather than closed
- * because a half-open peer never completes the close handshake.
+ * Drop every attached on-screen client that answered a ping before and has
+ * now missed CLIENT_PONG_MISS_LIMIT in a row, then ping the rest. Detaching
+ * first means the PTY grows back immediately; the socket is destroyed rather
+ * than closed because a half-open peer never completes the close handshake.
  */
 function sweepClientLiveness() {
 	for (const session of sessions.values()) {
@@ -2033,6 +2156,11 @@ function sweepClientLiveness() {
 			if (ws.readyState !== SOCKET_OPEN) continue;
 			const liveness = socketLiveness.get(ws);
 			if (!liveness) continue;
+			if (session.hiddenSockets.has(ws)) {
+				// Expected silence; count from zero when it is back on screen.
+				liveness.unansweredPings = 0;
+				continue;
+			}
 			if (
 				liveness.answered &&
 				liveness.unansweredPings >= CLIENT_PONG_MISS_LIMIT
@@ -2131,6 +2259,9 @@ function broadcastBytes(session: TerminalSession, bytes: Uint8Array): number {
 			}
 			continue;
 		}
+		// A hidden client whose copy diverged at a resize: these bytes are laid
+		// out for a width it does not have. `visible` reanchors it.
+		if (typeof session.hiddenSockets.get(socket) === "number") continue;
 		// A renderer that can't keep up lets its send buffer grow without bound.
 		// Drop it past the cap rather than buffer forever; it reconnects and
 		// replays the tail. Returning this chunk as "not sent" routes it to the
@@ -2218,6 +2349,7 @@ function sendSeqAttach(
 		request.kind === "anchor" &&
 		request.epoch === session.epoch &&
 		request.seq >= session.retainedStartSeq &&
+		request.seq > session.lastResizeSeq &&
 		request.seq <= session.outputSeq;
 
 	if (exact) {
@@ -2248,9 +2380,10 @@ function sendSeqAttach(
 	}
 
 	// Unknown/unrecoverable position ("none", epoch mismatch, gap beyond the
-	// ring). The client's existing screen beats anything we could synthesize —
-	// never overwrite it (#6290). Re-anchor at the live head and ask the
-	// program to repaint itself.
+	// ring, or an anchor from before the PTY last resized — those bytes were
+	// laid out for another width). The client's existing screen beats
+	// anything we could synthesize — never overwrite it (#6290). Re-anchor at
+	// the live head and ask the program to repaint itself.
 	sendMessage(socket, {
 		type: "synced",
 		epoch: session.epoch,
@@ -3915,6 +4048,16 @@ async function createTerminalSessionUnlocked(
 		throw error;
 	}
 
+	// Read back rather than default to null: relaunching into the same
+	// terminal id (adoption, an agent resume) must keep the name it was given,
+	// and the conflict update above deliberately leaves the column alone.
+	const customTitle =
+		db
+			.select({ customTitle: terminalSessions.customTitle })
+			.from(terminalSessions)
+			.where(eq(terminalSessions.id, terminalId))
+			.get()?.customTitle ?? null;
+
 	// Determine shell readiness support. Adopted sessions are already past
 	// shell startup, so treat them as immediately ready — the OSC 133;A
 	// marker has already flown by and we don't want to gate writes on it.
@@ -3982,6 +4125,7 @@ async function createTerminalSessionUnlocked(
 		exitSignal: 0,
 		listed,
 		title: null,
+		customTitle,
 		titleScanState: createTerminalTitleScanState(),
 		eventBus,
 		shellReadyState: shellSupportsReady
@@ -4013,9 +4157,10 @@ async function createTerminalSessionUnlocked(
 		retainedStartSeq: 0,
 		pendingRepaintNudge: null,
 		resizeGeneration: 0,
+		lastResizeSeq: -1,
 		focusedSockets: new Set(),
 		clientDims: new Map(),
-		hiddenSockets: new Set(),
+		hiddenSockets: new Map(),
 	};
 	reclaimSession = session;
 	const overwrittenSession = sessions.get(terminalId);
@@ -4424,7 +4569,7 @@ export function registerWorkspaceTerminalRoute({
 					.where(eq(terminalSessions.id, terminalId))
 					.run();
 
-				sendMessage(ws, { type: "title", title: session.title });
+				sendMessage(ws, { type: "title", title: sessionDisplayTitle(session) });
 				if (seqRequest.kind === "legacy") {
 					// Pre-seq contract: `?replay=0` means "my xterm already has
 					// the scrollback". Adoption now always pulls the daemon ring
@@ -4436,6 +4581,7 @@ export function registerWorkspaceTerminalRoute({
 					}
 					replayBuffer(session, ws);
 				} else {
+					seqSockets.add(ws);
 					sendSeqAttach(session, ws, seqRequest);
 				}
 				if (session.exited) {
@@ -4712,9 +4858,14 @@ export function registerWorkspaceTerminalRoute({
 
 					if (message.type === "visible") {
 						if (message.visible) {
+							const divergedAt = session.hiddenSockets.get(ws);
 							session.hiddenSockets.delete(ws);
-						} else {
-							session.hiddenSockets.add(ws);
+							if (typeof divergedAt === "number") {
+								resumeHiddenSocket(session, ws);
+								return;
+							}
+						} else if (!session.hiddenSockets.has(ws)) {
+							session.hiddenSockets.set(ws, null);
 						}
 						// Going hidden releases this client's size constraint;
 						// coming back re-imposes it.

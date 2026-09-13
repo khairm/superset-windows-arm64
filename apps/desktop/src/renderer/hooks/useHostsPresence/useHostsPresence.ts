@@ -9,9 +9,14 @@
  * to the severed tRPC link, so leaving it would have kept a live poll to
  * `relay.superset.sh` running behind a transport everyone assumed was dead.
  *
- * Returning null is the contract every call site already handles: it means
- * "no presence information", and each one falls back to the host row's own
- * `isOnline`.
+ * desktop-v1.29.0 upstream deleted this hook outright and moved presence onto
+ * the host event bus inside `useKnownHosts`, so every call site this module
+ * once had is gone and its barrel went with them: nothing imports it, and
+ * nothing may. The module is kept ONLY as the record of the severance the
+ * manifest row describes — the decision that the relay poll must never come
+ * back, on a path a future merge would otherwise re-add without anyone
+ * noticing. Returning null was the contract the old call sites handled; it is
+ * kept so a re-import is inert rather than a live poll.
  */
 
 export interface HostPresenceTarget {
