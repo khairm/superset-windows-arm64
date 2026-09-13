@@ -117,6 +117,7 @@ FROZEN_GATE_PATHS=(
   scripts/cloud-severance-allowlist.tsv
   scripts/verify-renderer-guards.sh
   scripts/verify-packaged-natives.sh
+  scripts/publish-arm64-release.sh
   scripts/materialize-native-closure.sh
   # Which VERSION of a native gets fetched, materialized and copied carries the
   # same authority as the frozen scripts it feeds: fetch-native-prebuilds
