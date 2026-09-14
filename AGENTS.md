@@ -124,8 +124,9 @@ In brief:
 - **Exiting a card closes its runtime** — Completed, Archive, Snooze and Recycle
   Bin clear the workspace's tabs, dispose its terminals and release its pinned
   Claude account, for every card type and entry point. Worktree and branch
-  untouched; a restored thread comes back empty. Snooze's account release is
-  permanent even though the snooze is not: the thread returns Following.
+  untouched; a restored thread comes back empty and pins to the machine default
+  on return, or when pending cleanup settles. New workspaces pin too; explicit
+  adopt stays Following. An unavailable default warns and forces Following, clearing stale pins without the Pi.
   Renderer and host teardown wait until the exit row is durably saved. The host
   half is retried from a persisted `runtimeCleanupPendingAt` stamp until
   the OWNING host confirms a teardown or the workspace is authoritatively

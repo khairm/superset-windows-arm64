@@ -36,6 +36,7 @@ export interface AdoptExistingWorktreeArgs {
 	taskId?: string;
 	/** Applied only when a NEW row is inserted; adopted rows keep their tags. */
 	tags?: string[];
+	skipClaudeAccountPin?: boolean;
 }
 
 export interface AdoptExistingWorktreeResult {
@@ -74,6 +75,7 @@ export async function adoptExistingWorktree(
 		idempotencyId,
 		taskId,
 		tags,
+		skipClaudeAccountPin,
 	} = args;
 	const store: InsertWorkspaceStoreContext = {
 		db: ctx.db,
@@ -114,6 +116,7 @@ export async function adoptExistingWorktree(
 			name: workspaceName,
 			taskId: taskId ?? null,
 			tags,
+			skipClaudeAccountPin,
 		});
 		return {
 			workspace: toCloudShape(inserted, ctx.organizationId),
@@ -188,6 +191,7 @@ export async function adoptExistingWorktree(
 			name: workspaceName,
 			taskId: taskId ?? null,
 			tags,
+			skipClaudeAccountPin,
 		});
 	} catch (err) {
 		throw new TRPCError({

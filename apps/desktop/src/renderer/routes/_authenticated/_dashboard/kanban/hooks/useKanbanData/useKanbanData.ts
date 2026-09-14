@@ -139,6 +139,7 @@ export function useKanbanData(): UseKanbanDataResult {
 	// post-migration branch invisible to the board.
 	const {
 		workspaces: workspaceRows,
+		cache: hostWorkspacesCache,
 		isReady: workspacesReady,
 		isAbsenceAuthoritative,
 	} = useHostWorkspaces();
@@ -497,7 +498,10 @@ export function useKanbanData(): UseKanbanDataResult {
 							() => persistCardCompletedAt(cardId, completedAt),
 						),
 					uncompleteWorkspace: (workspaceId) =>
-						uncompleteWorkspaceInSidebar(collections, workspaceId),
+						uncompleteWorkspaceInSidebar(collections, workspaceId, {
+							workspaces: workspaceRows,
+							cache: hostWorkspacesCache,
+						}),
 					setCardCompletedAt: persistCardCompletedAt,
 				},
 			);
@@ -521,6 +525,7 @@ export function useKanbanData(): UseKanbanDataResult {
 		isReady,
 		collections,
 		workspaceRows,
+		hostWorkspacesCache,
 		workspaceById,
 		isAbsenceAuthoritative,
 		localStateByWorkspace,

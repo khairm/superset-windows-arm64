@@ -4,9 +4,10 @@ import {
 	decideCleanupOutcome,
 	describeCleanupToast,
 	type HostRetirementOutcome,
-	isCleanupStampCurrent,
 	type HostRetirementReply,
+	isCleanupStampCurrent,
 	resolveRetirementCallUrl,
+	shouldPinAfterSettle,
 } from "./cleanupDecisions";
 
 function owner(
@@ -288,5 +289,62 @@ describe("describeCleanupToast", () => {
 		expect(describeCleanupToast({ blocked: 0, waiting: 2 })?.title).toBe(
 			"Still closing 2 workspaces",
 		);
+	});
+});
+
+describe("shouldPinAfterSettle", () => {
+	const returned = {
+		outcome: "abandon",
+		stampAfter: null,
+		verdict: "confirmed",
+		ownerReleasedAccount: true,
+		bucket: "active",
+	} as const;
+
+	it("pins an auto-return after its pending cleanup clears", () => {
+		expect(shouldPinAfterSettle({ ...returned, outcome: "clear" })).toBe(true);
+	});
+
+	it("repairs a late account release after an explicit return", () => {
+		expect(shouldPinAfterSettle(returned)).toBe(true);
+	});
+
+	it("does not pin when the owner did not release an account", () => {
+		expect(
+			shouldPinAfterSettle({ ...returned, ownerReleasedAccount: false }),
+		).toBe(false);
+	});
+
+	it("does not pin when a newer exit owns the pending stamp", () => {
+		expect(shouldPinAfterSettle({ ...returned, stampAfter: 456 })).toBe(false);
+	});
+
+	it.each([
+		"unreachable",
+		"owner-failed",
+	] as const)("does not pin after %s", (verdict) => {
+		for (const outcome of ["clear", "retry", "abandon"] as const) {
+			expect(shouldPinAfterSettle({ ...returned, verdict, outcome })).toBe(
+				false,
+			);
+		}
+	});
+
+	it("does not pin while cleanup needs a retry", () => {
+		expect(shouldPinAfterSettle({ ...returned, outcome: "retry" })).toBe(false);
+	});
+
+	it.each([
+		"snoozed",
+		"archived",
+		"hidden",
+		"completed",
+		"deleted",
+	] as const)("does not pin a %s card", (bucket) => {
+		for (const outcome of ["clear", "abandon"] as const) {
+			expect(shouldPinAfterSettle({ ...returned, bucket, outcome })).toBe(
+				false,
+			);
+		}
 	});
 });

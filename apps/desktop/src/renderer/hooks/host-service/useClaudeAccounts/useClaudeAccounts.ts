@@ -2,8 +2,10 @@ import type { AppRouter } from "@superset/host-service";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
+import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider";
 import {
 	claudeWorkspaceAccountStateQueryKey,
+	claudeWorkspaceAccountStatesQueryKey,
 	updateClaudeWorkspaceAccountStateCaches,
 } from "./claudeAccountCache";
 
@@ -111,4 +113,25 @@ export function useSetClaudeWorkspaceAccount(
 			);
 		},
 	});
+}
+
+export async function pinWorkspaceToMachineDefault(
+	hostUrl: string,
+	workspaceId: string,
+	opts?: { onlyIfFollowing?: boolean },
+): Promise<void> {
+	await getHostServiceClientByUrl(
+		hostUrl,
+	).claudeAccounts.pinWorkspaceToMachineDefault.mutate({
+		workspaceId,
+		...opts,
+	});
+	await Promise.all([
+		electronQueryClient.invalidateQueries({
+			queryKey: claudeWorkspaceAccountStateQueryKey(hostUrl, workspaceId),
+		}),
+		electronQueryClient.invalidateQueries({
+			queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
+		}),
+	]);
 }

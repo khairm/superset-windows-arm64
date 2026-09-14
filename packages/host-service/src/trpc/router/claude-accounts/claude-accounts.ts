@@ -18,6 +18,13 @@ export const claudeAccountsRouter = router({
 	getWorkspaceStates: protectedProcedure.query(({ ctx }) =>
 		ctx.claudeAccounts.getWorkspaceStates(),
 	),
+	pinWorkspaceToMachineDefault: protectedProcedure
+		.input(workspaceInput.extend({ onlyIfFollowing: z.boolean().optional() }))
+		.mutation(({ ctx, input }) =>
+			ctx.claudeAccounts.pinWorkspaceToMachineDefault(input.workspaceId, {
+				onlyIfFollowing: input.onlyIfFollowing,
+			}),
+		),
 	setWorkspaceAccount: protectedProcedure
 		.input(
 			workspaceInput.extend({

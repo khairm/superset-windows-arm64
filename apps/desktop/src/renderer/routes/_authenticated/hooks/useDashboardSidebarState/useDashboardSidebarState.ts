@@ -6,9 +6,9 @@ import {
 	tagFolderScope,
 } from "@superset/shared/workspace-tags";
 import type { WritableDeep } from "@tanstack/db";
-import type { HostShapedWorkspace } from "renderer/hooks/host-workspaces/useHostWorkspaces";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
+import type { HostShapedWorkspace } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import { authClient } from "renderer/lib/auth-client";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { isMissingProcedureError } from "renderer/lib/isMissingProcedureError";
@@ -23,10 +23,6 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import { kanbanCardsStorageKey } from "renderer/routes/_authenticated/providers/CollectionsProvider/collectionStorageKeys";
 import type { AppCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider/collections";
 import {
-	persistWorkspaceExitMutation,
-	type WorkspaceExitMutation,
-} from "renderer/routes/_authenticated/providers/CollectionsProvider/workspaceExitPersistence";
-import {
 	APP_LAUNCH_ID,
 	getNextTabOrder,
 	getPrependTabOrder,
@@ -34,6 +30,10 @@ import {
 	isSidebarWorkspaceVisible,
 	type WorkspaceLocalStateDraft,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+import {
+	persistWorkspaceExitMutation,
+	type WorkspaceExitMutation,
+} from "renderer/routes/_authenticated/providers/CollectionsProvider/workspaceExitPersistence";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import {
@@ -52,6 +52,10 @@ import {
 } from "renderer/routes/_authenticated/utils/workspaceTagFolders";
 import { PROJECT_CUSTOM_COLORS } from "shared/constants/project-colors";
 import {
+	pinActiveWorkspace,
+	type WorkspacePinTarget,
+} from "./pinActiveWorkspace";
+import {
 	applyAutomaticSnoozeReturn,
 	applyWorkspaceExitCleanup,
 	cancelWorkspaceExitCleanup,
@@ -63,7 +67,6 @@ import {
 	tombstoneSidebarWorkspaceRecord,
 	workspaceExitCleanupState,
 } from "./sidebarMutations";
-
 import { getNewGroupTabOrder } from "./utils/getNewGroupTabOrder";
 
 /** The per-project reveal/collapse booleans on the sidebar project row. */
@@ -490,14 +493,15 @@ export function completeWorkspaceInSidebar(
 	}
 	if (hostWorkspace.type === "main") return false;
 
-	const additionalMutations: readonly WorkspaceExitMutation[] = persistCardIntent
-		? [
-				{
-					storageKey: kanbanCardsStorageKey(collections.activeOrganizationId),
-					mutate: persistCardIntent,
-				},
-			]
-		: [];
+	const additionalMutations: readonly WorkspaceExitMutation[] =
+		persistCardIntent
+			? [
+					{
+						storageKey: kanbanCardsStorageKey(collections.activeOrganizationId),
+						mutate: persistCardIntent,
+					},
+				]
+			: [];
 
 	if (!collections.v2WorkspaceLocalState.get(workspaceId)) {
 		if (hostWorkspace.projectId !== null) {
@@ -522,21 +526,27 @@ export function completeWorkspaceInSidebar(
 	// The caller's `completedAt` is the board's own record of when the card
 	// landed in Completed and can be older than this call, so the cleanup debt
 	// gets its own instant from `exitWorkspaceRow`.
-	exitWorkspaceRow(collections, workspaceId, (draft) => {
-		draft.sidebarState.completedAt = completedAt;
-		// isHidden too, so raw-visibility consumers (notifications, ports,
-		// accessible-list "in sidebar") treat it like an archived row. The bucket
-		// classifier checks completedAt first, so it never appears under Archived.
-		draft.sidebarState.isHidden = true;
-		draft.sidebarState.archivedAt = null;
-		applyAutomaticSnoozeReturn(draft.sidebarState);
-	}, additionalMutations);
+	exitWorkspaceRow(
+		collections,
+		workspaceId,
+		(draft) => {
+			draft.sidebarState.completedAt = completedAt;
+			// isHidden too, so raw-visibility consumers (notifications, ports,
+			// accessible-list "in sidebar") treat it like an archived row. The bucket
+			// classifier checks completedAt first, so it never appears under Archived.
+			draft.sidebarState.isHidden = true;
+			draft.sidebarState.archivedAt = null;
+			applyAutomaticSnoozeReturn(draft.sidebarState);
+		},
+		additionalMutations,
+	);
 	return true;
 }
 
 export function uncompleteWorkspaceInSidebar(
 	collections: Pick<AppCollections, "v2WorkspaceLocalState">,
 	workspaceId: string,
+	pinTarget: WorkspacePinTarget,
 ): boolean {
 	if (!collections.v2WorkspaceLocalState.get(workspaceId)) return false;
 	collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
@@ -545,6 +555,7 @@ export function uncompleteWorkspaceInSidebar(
 		draft.sidebarState.archivedAt = null;
 		cancelWorkspaceExitCleanup(draft.sidebarState);
 	});
+	pinActiveWorkspace(collections, workspaceId, pinTarget);
 	return true;
 }
 
@@ -552,6 +563,13 @@ export function useDashboardSidebarState() {
 	const collections = useCollections();
 	const { workspaces: hostWorkspaces, cache: hostWorkspacesCache } =
 		useHostWorkspaces();
+	// Keep activation callbacks stable: the snooze-return effect depends on them.
+	const pinTargetRef = useRef<WorkspacePinTarget>({
+		workspaces: hostWorkspaces,
+		cache: hostWorkspacesCache,
+	});
+	pinTargetRef.current.workspaces = hostWorkspaces;
+	pinTargetRef.current.cache = hostWorkspacesCache;
 	const { activeHostUrl, machineId } = useLocalHostService();
 	const { data: session } = authClient.useSession();
 	const currentUserId = session?.user.id ?? null;
@@ -1520,6 +1538,7 @@ export function useDashboardSidebarState() {
 			collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
 				applyAutomaticSnoozeReturn(draft.sidebarState);
 			});
+			pinActiveWorkspace(collections, workspaceId, pinTargetRef.current);
 		},
 		[collections],
 	);
@@ -1531,6 +1550,7 @@ export function useDashboardSidebarState() {
 				applyAutomaticSnoozeReturn(draft.sidebarState);
 				cancelWorkspaceExitCleanup(draft.sidebarState);
 			});
+			pinActiveWorkspace(collections, workspaceId, pinTargetRef.current);
 		},
 		[collections],
 	);
@@ -1567,6 +1587,7 @@ export function useDashboardSidebarState() {
 					draft.sidebarState.archivedAt = null;
 					cancelWorkspaceExitCleanup(draft.sidebarState);
 				});
+				pinActiveWorkspace(collections, workspaceId, pinTargetRef.current);
 			}
 		},
 		[collections],
@@ -1679,6 +1700,7 @@ export function useDashboardSidebarState() {
 				applyAutomaticSnoozeReturn(draft.sidebarState);
 				cancelWorkspaceExitCleanup(draft.sidebarState);
 			});
+			pinActiveWorkspace(collections, workspaceId, pinTargetRef.current);
 		},
 		[collections],
 	);
@@ -1708,7 +1730,11 @@ export function useDashboardSidebarState() {
 
 	const uncompleteWorkspace = useCallback(
 		(workspaceId: string) =>
-			uncompleteWorkspaceInSidebar(collections, workspaceId),
+			uncompleteWorkspaceInSidebar(
+				collections,
+				workspaceId,
+				pinTargetRef.current,
+			),
 		[collections],
 	);
 

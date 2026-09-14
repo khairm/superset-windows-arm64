@@ -41,14 +41,24 @@ export async function retireWorkspaceRuntime(
 		ownerHostUrl: string | null;
 		absenceAuthoritative: boolean;
 	},
-): Promise<RetirementVerdict> {
+): Promise<{
+	verdict: RetirementVerdict;
+	settledAtUrl: string | null;
+	ownerReleasedAccount: boolean;
+}> {
 	const others = new Set(targets.localUrls);
 	if (targets.ownerHostUrl !== null) others.delete(targets.ownerHostUrl);
 	const urls = [
 		...(targets.ownerHostUrl === null ? [] : [targets.ownerHostUrl]),
 		...others,
 	];
-	if (urls.length === 0) return "unreachable";
+	if (urls.length === 0) {
+		return {
+			verdict: "unreachable",
+			settledAtUrl: null,
+			ownerReleasedAccount: false,
+		};
+	}
 
 	const replies = await Promise.all(
 		urls.map(async (url): Promise<HostRetirementReply> => {
@@ -75,11 +85,29 @@ export async function retireWorkspaceRuntime(
 		}),
 	);
 	const hasOwnerTarget = targets.ownerHostUrl !== null;
-	return classifyRetirement({
+	const verdict = classifyRetirement({
 		owner: hasOwnerTarget ? (replies[0] ?? null) : null,
 		others: hasOwnerTarget ? replies.slice(1) : replies,
 		absenceProven:
 			targets.absenceAuthoritative &&
 			replies.every((reply) => reply.kind === "answered"),
 	});
+	// (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE) The broadcast can discover the owner.
+	const hostReplies = urls.map((url, index) => ({
+		url,
+		reply: replies[index],
+	}));
+	const settledAtUrl = hostReplies.find(
+		({ reply }) => reply?.kind === "answered" && reply.outcome.foundWorkspace,
+	)?.url;
+	return {
+		verdict,
+		settledAtUrl: settledAtUrl ?? null,
+		ownerReleasedAccount: hostReplies.some(
+			({ reply }) =>
+				reply?.kind === "answered" &&
+				reply.outcome.foundWorkspace &&
+				reply.outcome.accountReleased,
+		),
+	};
 }

@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm";
 import {
 	type ClaudeTestWorld,
 	createClaudeTestWorld,
+	managedCredentials,
 	seedWorkspace,
 	servePiFake,
 	WORKSPACE_IDS,
@@ -97,6 +98,27 @@ function statusOf(world: ClaudeTestWorld, terminalId: string): string {
 }
 
 describe("workspace runtime retirement", () => {
+	test("retirement followed by activation pins the machine default", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		const retirement = service.retireWorkspaceRuntime(id);
+		const activation = service.pinWorkspaceToMachineDefault(id);
+		await Promise.all([retirement, activation]);
+		expect(slugOf(world, id)).toBe("claude123");
+	});
+
+	test("an immediate re-exit waits for activation then releases its pin", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		const activation = service.pinWorkspaceToMachineDefault(id);
+		const retirement = service.retireWorkspaceRuntime(id);
+		const [, result] = await Promise.all([activation, retirement]);
+		expect(result.accountReleased).toBe(true);
+		expect(slugOf(world, id)).toBeNull();
+	});
+
 	test("stops every terminal and unpins while the Pi is unavailable", async () => {
 		const { world, service, pi } = await setupService();
 		const workspaceId = WORKSPACE_IDS[0];

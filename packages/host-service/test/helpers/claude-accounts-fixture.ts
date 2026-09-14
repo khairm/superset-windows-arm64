@@ -55,6 +55,7 @@ export function createFakeClaudeAccountsService(
 		profileDirFor: () => "",
 		configDirCandidatesFor: () => [],
 		setWorkspaceAccount: async () => {},
+		pinWorkspaceToMachineDefault: async () => {},
 		retireWorkspaceRuntime: async () => ({
 			foundWorkspace: false,
 			terminated: [],

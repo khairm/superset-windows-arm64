@@ -1,5 +1,6 @@
 import type { AppRouter } from "@superset/host-service";
 import type { inferRouterOutputs } from "@trpc/server";
+import type { SidebarWorkspaceBucket } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal/sidebarVisibility";
 
 /**
  * (WORKTREE-EXIT-CLEANUP) One host's answer, taken from the host-service router
@@ -184,4 +185,24 @@ export function describeCleanupToast(counts: {
 
 function plural(count: number): string {
 	return `${count} workspace${count === 1 ? "" : "s"}`;
+}
+
+/** (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE) Repair a return overtaken by retirement. */
+export function shouldPinAfterSettle(args: {
+	outcome: CleanupVerdict;
+	stampAfter: number | null;
+	verdict: RetirementVerdict;
+	ownerReleasedAccount: boolean;
+	bucket: SidebarWorkspaceBucket;
+}): boolean {
+	// An active outcome === "clear" reaches here only via auto-return:
+	// applyAutomaticSnoozeReturn keeps the pending cleanup stamp.
+	return (
+		args.bucket === "active" &&
+		args.verdict === "confirmed" &&
+		(args.outcome === "clear" ||
+			(args.outcome === "abandon" &&
+				args.stampAfter === null &&
+				args.ownerReleasedAccount))
+	);
 }
