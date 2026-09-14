@@ -94,6 +94,10 @@ export interface ClaudeAccountsService {
 	profileDirFor(workspaceId: string): string;
 	configDirCandidatesFor(workspaceId: string): string[];
 	setWorkspaceAccount(workspaceId: string, slug: string | null): Promise<void>;
+	pinWorkspaceToMachineDefault(
+		workspaceId: string,
+		opts?: { onlyIfFollowing?: boolean },
+	): Promise<void>;
 	retireWorkspaceRuntime(
 		workspaceId: string,
 	): Promise<WorkspaceRuntimeRetirement>;
@@ -365,6 +369,58 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		return [...new Set(candidates)];
 	}
 
+	/** (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE) Activation never fails for account reasons. */
+	async pinWorkspaceToMachineDefault(
+		workspaceId: string,
+		opts: { onlyIfFollowing?: boolean } = {},
+	): Promise<void> {
+		await this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.requireWorkspace(workspaceId);
+			try {
+				if (!this.managed) return;
+				const identity = await this.readGlobalIdentityOrWarn(workspaceId);
+				if (!identity) return;
+				if (identity.kind === "tray") {
+					if (opts.onlyIfFollowing && row.claudeAccountSlug !== null) return;
+					const slug = identity.slug;
+					try {
+						await this.setWorkspaceAccountLocked(workspaceId, slug);
+						return;
+					} catch (error) {
+						this.deps.log.warn(
+							"Could not pin the machine default on activation",
+							{ workspaceId, slug, error },
+						);
+					}
+				} else {
+					this.deps.log.warn("No machine default to pin on activation", {
+						workspaceId,
+					});
+				}
+				if (!opts.onlyIfFollowing && row.claudeAccountSlug !== null) {
+					// Active workspaces retain Following/last-good credentials, without Pi validation.
+					const credentials = await this.credentialsForFollowingLaunch(
+						workspaceId,
+						identity,
+					);
+					this.credentialCache.delete(workspaceId);
+					await this.applyWorkspaceAccountTransition(workspaceId, {
+						desiredSlug: null,
+						...credentials,
+						ensureProfile: { worktreePath: row.worktreePath },
+						database: { kind: "set", currentSlug: row.claudeAccountSlug },
+						cause: "system",
+					});
+				}
+			} catch (error) {
+				this.deps.log.warn("Claude account activation failed", {
+					workspaceId,
+					error,
+				});
+			}
+		});
+	}
+
 	async setWorkspaceAccount(
 		workspaceId: string,
 		slug: string | null,
@@ -374,118 +430,125 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"Claude account switching is not configured on this host",
 			);
 		}
-		await this.withWorkspaceLock(workspaceId, async () => {
-			const row = this.requireWorkspace(workspaceId);
-			if (slug !== null) validateAccountSlug(slug);
-			let roster: PiAccount[] | null = null;
-			let rosterUnavailable = false;
-			try {
-				roster = await this.fetchPiAccounts();
-			} catch (error) {
-				if (
-					this.accountsFailureExceededGrace() ||
-					(slug !== null && this.tokenFailureExceededGrace(slug))
-				) {
-					if (slug === null) {
-						throw new Error(
-							"Cannot switch this workspace to Following while the Pi is unavailable",
-							{ cause: error },
-						);
-					}
-					throw error;
-				}
-				rosterUnavailable = true;
-				roster = this.pi.getAccountsLastGood();
-				if (slug !== null && !roster) throw error;
-				this.deps.log.info(
-					"Accepting Claude account change during the Pi outage grace period",
-					{ workspaceId, slug },
-				);
-			}
-			let credentialTransition: CredentialTransition;
-			let switchQueued = false;
-			if (slug !== null) {
-				const account = roster ? findClaudeAccount(roster, slug) : undefined;
-				if (!account)
-					throw new Error(`Claude account ${slug} is not in the Pi roster`);
-				const accountHealth = accountHealthMessage(
-					account,
-					`Claude account '${slug}'`,
-				);
-				if (accountHealth) throw new Error(accountHealth);
-				if (rosterUnavailable && row.claudeAccountSlug === slug) return;
-				if (rosterUnavailable) {
-					credentialTransition = { credentialAction: "keep" };
-					switchQueued = true;
-				} else {
-					try {
-						const token = await this.fetchPiToken(slug);
-						credentialTransition = {
-							credentialAction: "write",
-							credentials: credentialsFromToken(token),
-						};
-					} catch (error) {
-						if (this.tokenFailureExceededGrace(slug)) throw error;
-						credentialTransition = { credentialAction: "keep" };
-						switchQueued = true;
-					}
-				}
-				if (switchQueued) {
-					this.tokenBackoffs.delete(slug);
-					this.deps.log.info(
-						"Queued Claude account credentials until the Pi recovers",
-						{ workspaceId, slug },
-					);
-				}
-			} else {
-				let identity: GlobalIdentity;
-				try {
-					identity = await this.profiles.readGlobalIdentity();
-				} catch (error) {
-					this.setWarningCause(
-						workspaceId,
-						"machine-default",
-						"The machine-default Claude credentials are unreadable. The account change was not saved.",
-					);
+		await this.withWorkspaceLock(workspaceId, () =>
+			this.setWorkspaceAccountLocked(workspaceId, slug),
+		);
+	}
+
+	private async setWorkspaceAccountLocked(
+		workspaceId: string,
+		slug: string | null,
+	): Promise<void> {
+		const row = this.requireWorkspace(workspaceId);
+		if (slug !== null) validateAccountSlug(slug);
+		let roster: PiAccount[] | null = null;
+		let rosterUnavailable = false;
+		try {
+			roster = await this.fetchPiAccounts();
+		} catch (error) {
+			if (
+				this.accountsFailureExceededGrace() ||
+				(slug !== null && this.tokenFailureExceededGrace(slug))
+			) {
+				if (slug === null) {
 					throw new Error(
-						"Cannot switch this workspace to Following while the machine-default Claude credentials are unreadable",
+						"Cannot switch this workspace to Following while the Pi is unavailable",
 						{ cause: error },
 					);
 				}
-				credentialTransition =
-					identity.kind === "absent"
-						? { credentialAction: "keep" }
-						: {
-								credentialAction: "write",
-								credentials: identity.credentials,
-							};
+				throw error;
+			}
+			rosterUnavailable = true;
+			roster = this.pi.getAccountsLastGood();
+			if (slug !== null && !roster) throw error;
+			this.deps.log.info(
+				"Accepting Claude account change during the Pi outage grace period",
+				{ workspaceId, slug },
+			);
+		}
+		let credentialTransition: CredentialTransition;
+		let switchQueued = false;
+		if (slug !== null) {
+			const account = roster ? findClaudeAccount(roster, slug) : undefined;
+			if (!account)
+				throw new Error(`Claude account ${slug} is not in the Pi roster`);
+			const accountHealth = accountHealthMessage(
+				account,
+				`Claude account '${slug}'`,
+			);
+			if (accountHealth) throw new Error(accountHealth);
+			if (rosterUnavailable && row.claudeAccountSlug === slug) return;
+			if (rosterUnavailable) {
+				credentialTransition = { credentialAction: "keep" };
+				switchQueued = true;
+			} else {
+				try {
+					const token = await this.fetchPiToken(slug);
+					credentialTransition = {
+						credentialAction: "write",
+						credentials: credentialsFromToken(token),
+					};
+				} catch (error) {
+					if (this.tokenFailureExceededGrace(slug)) throw error;
+					credentialTransition = { credentialAction: "keep" };
+					switchQueued = true;
+				}
+			}
+			if (switchQueued) {
+				this.tokenBackoffs.delete(slug);
+				this.deps.log.info(
+					"Queued Claude account credentials until the Pi recovers",
+					{ workspaceId, slug },
+				);
+			}
+		} else {
+			let identity: GlobalIdentity;
+			try {
+				identity = await this.profiles.readGlobalIdentity();
+			} catch (error) {
 				this.setWarningCause(
 					workspaceId,
 					"machine-default",
-					identity.kind === "absent"
-						? "The machine default is signed out. This workspace will keep its last-good token."
-						: null,
+					"The machine-default Claude credentials are unreadable. The account change was not saved.",
+				);
+				throw new Error(
+					"Cannot switch this workspace to Following while the machine-default Claude credentials are unreadable",
+					{ cause: error },
 				);
 			}
-			if (row.claudeAccountSlug !== slug) {
-				this.credentialCache.delete(workspaceId);
-			}
-			await this.applyWorkspaceAccountTransition(workspaceId, {
-				desiredSlug: slug,
-				...credentialTransition,
-				ensureProfile: { worktreePath: row.worktreePath },
-				database: { kind: "set", currentSlug: row.claudeAccountSlug },
-				cause: "manual",
-			});
-			if (switchQueued && slug !== null) {
-				this.setWarningCause(
-					workspaceId,
-					"account-switch",
-					pendingSwitchMessage(slug),
-				);
-			}
-			this.latchManaged();
+			credentialTransition =
+				identity.kind === "absent"
+					? { credentialAction: "keep" }
+					: {
+							credentialAction: "write",
+							credentials: identity.credentials,
+						};
+			this.setWarningCause(
+				workspaceId,
+				"machine-default",
+				identity.kind === "absent"
+					? "The machine default is signed out. This workspace will keep its last-good token."
+					: null,
+			);
+		}
+		if (row.claudeAccountSlug !== slug) {
+			this.credentialCache.delete(workspaceId);
+		}
+		await this.applyWorkspaceAccountTransition(workspaceId, {
+			desiredSlug: slug,
+			...credentialTransition,
+			ensureProfile: { worktreePath: row.worktreePath },
+			database: { kind: "set", currentSlug: row.claudeAccountSlug },
+			cause: "manual",
 		});
+		if (switchQueued && slug !== null) {
+			this.setWarningCause(
+				workspaceId,
+				"account-switch",
+				pendingSwitchMessage(slug),
+			);
+		}
+		this.latchManaged();
 	}
 
 	/**
@@ -1464,8 +1527,12 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private async credentialsForFollowingLaunch(
 		workspaceId: string,
+		preReadIdentity?: GlobalIdentity | null,
 	): Promise<CredentialTransition> {
-		const identity = await this.readGlobalIdentityOrWarn(workspaceId);
+		const identity =
+			preReadIdentity === undefined
+				? await this.readGlobalIdentityOrWarn(workspaceId)
+				: preReadIdentity;
 		if (!identity || identity.kind === "absent") {
 			return { credentialAction: "keep" };
 		}

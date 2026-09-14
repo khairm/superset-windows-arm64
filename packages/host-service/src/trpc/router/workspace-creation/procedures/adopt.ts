@@ -87,6 +87,7 @@ export const adopt = protectedProcedure
 			workspaceName: input.workspaceName,
 			baseBranch: input.baseBranch,
 			existingWorkspaceId: input.existingWorkspaceId,
+			skipClaudeAccountPin: true,
 		});
 
 		return {

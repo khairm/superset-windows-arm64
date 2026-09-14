@@ -4,9 +4,10 @@ export {
 	decideCleanupOutcome,
 	describeCleanupToast,
 	type HostRetirementOutcome,
-	isCleanupStampCurrent,
 	type HostRetirementReply,
+	isCleanupStampCurrent,
 	type RetirementVerdict,
 	resolveRetirementCallUrl,
+	shouldPinAfterSettle,
 } from "./cleanupDecisions";
 export { retireWorkspaceRuntime } from "./retireWorkspaceRuntime";

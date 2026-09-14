@@ -51,6 +51,7 @@ function fromStoredTagCreator(stored: string): string | null {
 export interface InsertWorkspaceStoreContext extends WorkspaceStoreContext {
 	claudeAccounts: {
 		mintProfileForNewWorkspace(workspaceId: string): Promise<void>;
+		pinWorkspaceToMachineDefault(workspaceId: string): Promise<void>;
 	};
 }
 
@@ -245,6 +246,7 @@ export interface InsertLocalWorkspaceValues {
 	taskId?: string | null;
 	createdByUserId?: string | null;
 	claudeAccountSlug?: string | null;
+	skipClaudeAccountPin?: boolean;
 	tags?: string[];
 }
 
@@ -303,6 +305,11 @@ export async function insertLocalWorkspace(
 	}
 	emitWorkspaceChanged(ctx, "created", row);
 	trackWorkspaceEvent(ctx, "workspace_created", row);
+	// (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE) Publish creation before waiting for the Pi.
+	if (!values.skipClaudeAccountPin) {
+		await ctx.claudeAccounts.pinWorkspaceToMachineDefault(id);
+		return getLocalWorkspace(ctx.db, id) ?? row;
+	}
 	return row;
 }
 

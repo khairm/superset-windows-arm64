@@ -11,6 +11,8 @@ import * as schema from "../src/db/schema";
 import { projects, workspaces } from "../src/db/schema";
 import type { EventBus } from "../src/events";
 import { ensureMainWorkspaceStrict } from "../src/trpc/router/project/utils/ensure-main-workspace";
+import { adoptExistingWorktree } from "../src/trpc/router/workspace-creation/shared/adopt-existing-worktree";
+import type { HostServiceContext } from "../src/types";
 import { insertLocalWorkspace } from "../src/workspaces/local-workspace-store";
 import { createFakeClaudeAccountsService } from "./helpers/claude-accounts-fixture";
 
@@ -70,9 +72,67 @@ function makeCtx(db: HostDb) {
 		organizationId: ORG_ID,
 		clientMachineId: "m1",
 		eventBus,
-		claudeAccounts: createFakeClaudeAccountsService(),
+		claudeAccounts: createFakeClaudeAccountsService({
+			pinWorkspaceToMachineDefault: mock(async (workspaceId: string) => {
+				expect(eventBus.broadcastWorkspaceChanged).toHaveBeenCalled();
+				db.update(workspaces)
+					.set({ claudeAccountSlug: "claude123" })
+					.where(eq(workspaces.id, workspaceId))
+					.run();
+			}),
+		}),
 	};
 }
+
+describe("insertLocalWorkspace account activation", () => {
+	for (const skipClaudeAccountPin of [undefined, true]) {
+		test(`pins after broadcast and returns current state unless opted out: ${skipClaudeAccountPin}`, async () => {
+			const ctx = makeCtx(makeDb());
+			const row = await insertLocalWorkspace(ctx, {
+				projectId: "p-1",
+				worktreePath: REPO_PATH,
+				branch: "feature",
+				name: "feature",
+				skipClaudeAccountPin,
+			});
+			expect(row.claudeAccountSlug).toBe(
+				skipClaudeAccountPin === true ? null : "claude123",
+			);
+			expect(
+				ctx.claudeAccounts.pinWorkspaceToMachineDefault,
+			).toHaveBeenCalledTimes(skipClaudeAccountPin === true ? 0 : 1);
+		});
+	}
+});
+
+describe("explicit adoption account opt-out", () => {
+	for (const existingWorkspaceId of [
+		undefined,
+		"11111111-1111-4111-8111-111111111111",
+	]) {
+		test(`keeps newly adopted rows Following: ${existingWorkspaceId}`, async () => {
+			const ctx = makeCtx(makeDb());
+			const { workspace } = await adoptExistingWorktree({
+				ctx: ctx as unknown as HostServiceContext,
+				git: {} as never,
+				projectId: "p-1",
+				branch: "adopted",
+				worktreePath: "/adopted",
+				workspaceName: "adopted",
+				existingWorkspaceId,
+				skipClaudeAccountPin: true,
+			});
+			expect(
+				ctx.db.query.workspaces
+					.findFirst({ where: eq(workspaces.id, workspace.id) })
+					.sync()?.claudeAccountSlug,
+			).toBeNull();
+			expect(
+				ctx.claudeAccounts.pinWorkspaceToMachineDefault,
+			).not.toHaveBeenCalled();
+		});
+	}
+});
 
 describe("ensureMainWorkspaceStrict", () => {
 	test("creates the main row when none exists", async () => {
@@ -87,6 +147,7 @@ describe("ensureMainWorkspaceStrict", () => {
 			.sync();
 		expect(row?.type).toBe("main");
 		expect(row?.projectId).toBe("p-1");
+		expect(row?.claudeAccountSlug).toBe("claude123");
 	});
 
 	test("idempotent: a second call returns the same main, never a duplicate", async () => {
@@ -95,6 +156,9 @@ describe("ensureMainWorkspaceStrict", () => {
 		const first = await ensureMainWorkspaceStrict(ctx, "p-1", REPO_PATH);
 		const second = await ensureMainWorkspaceStrict(ctx, "p-1", REPO_PATH);
 		expect(second.id).toBe(first.id);
+		expect(
+			ctx.claudeAccounts.pinWorkspaceToMachineDefault,
+		).toHaveBeenCalledTimes(1);
 		expect(
 			db
 				.select()

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -185,6 +185,214 @@ describe("Claude transcript config directories", () => {
 			if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
 			else process.env.CLAUDE_CONFIG_DIR = previous;
 		}
+	});
+});
+
+describe("Claude account activation", () => {
+	test("pins the tray default through the manual transition", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		await service.pinWorkspaceToMachineDefault(id);
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude123");
+		expect(world.events).toContainEqual(
+			expect.objectContaining({
+				type: "claude-account-state-changed",
+				workspaceId: id,
+				cause: "manual",
+				slug: "claude123",
+			}),
+		);
+	});
+
+	for (const staleSlug of [null, "claude456"]) {
+		test(`missing default leaves Following and warns, starting at ${staleSlug}`, async () => {
+			const { world, service } = await setupService();
+			const { id } = await seedWorkspace(world, {
+				claudeAccountSlug: staleSlug,
+			});
+			await expect(
+				service.pinWorkspaceToMachineDefault(id),
+			).resolves.toBeUndefined();
+			expect((await service.getWorkspaceState(id)).slug).toBeNull();
+			expect(
+				world.log.warnEntries.some(
+					(entry) =>
+						entry.message === "No machine default to pin on activation",
+				),
+			).toBe(true);
+		});
+	}
+
+	test("forcing Following while signed out preserves last-good credentials", async () => {
+		const { world, service, pi } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await service.setWorkspaceAccount(id, "claude456");
+		const path = join(service.profileDirFor(id), ".credentials.json");
+		const before = await readFile(path, "utf8");
+		pi.setAvailable(false);
+		await service.pinWorkspaceToMachineDefault(id);
+		expect((await service.getWorkspaceState(id)).slug).toBeNull();
+		expect(await readFile(path, "utf8")).toBe(before);
+	});
+
+	for (const defaultKind of ["dead", "missing"] as const) {
+		test(`unusable ${defaultKind} default clears a stale pin`, async () => {
+			const { world, service, pi } = await setupService();
+			const { id } = await seedWorkspace(world, {
+				claudeAccountSlug: "claude456",
+			});
+			await writeGlobalCredentials(world, managedCredentials("claude123"));
+			pi.setAccounts(
+				defaultKind === "dead"
+					? [wireAccount("claude123", { dead: true })]
+					: [],
+			);
+			await service.pinWorkspaceToMachineDefault(id);
+			expect((await service.getWorkspaceState(id)).slug).toBeNull();
+			expect(
+				JSON.parse(
+					await readFile(
+						join(service.profileDirFor(id), ".credentials.json"),
+						"utf8",
+					),
+				).trayManagedAccount,
+			).toBe("claude123");
+			expect(
+				world.log.warnEntries.some((entry) => entry.fields?.workspaceId === id),
+			).toBe(true);
+		});
+	}
+
+	test("queues the default during Pi grace while keeping last-good credentials", async () => {
+		const { world, service, pi } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await service.setWorkspaceAccount(id, "claude456");
+		const path = join(service.profileDirFor(id), ".credentials.json");
+		const before = await readFile(path, "utf8");
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		pi.setAvailable(false);
+		await service.pinWorkspaceToMachineDefault(id);
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude123");
+		expect(await readFile(path, "utf8")).toBe(before);
+		expect((await service.getWorkspaceState(id)).warning?.message).toContain(
+			"waiting for the Pi",
+		);
+	});
+
+	for (const staleSlug of [null, "claude456"]) {
+		test(`past Pi grace warns and leaves Following, starting at ${staleSlug}`, async () => {
+			let now = 1_000_000;
+			const { world, service, pi } = await setupService({ now: () => now });
+			const { id } = await seedWorkspace(world, {
+				claudeAccountSlug: staleSlug,
+			});
+			await writeGlobalCredentials(world, managedCredentials("claude123"));
+			await service.getRoster();
+			pi.setAvailable(false);
+			await service.getRoster();
+			now += PI_FAILURE_GRACE_MS;
+			await expect(
+				service.pinWorkspaceToMachineDefault(id),
+			).resolves.toBeUndefined();
+			expect((await service.getWorkspaceState(id)).slug).toBeNull();
+			expect(
+				world.log.warnEntries.some((entry) => entry.fields?.workspaceId === id),
+			).toBe(true);
+		});
+	}
+
+	test("identity read failure warns without changing the pin", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world, {
+			claudeAccountSlug: "claude456",
+		});
+		const read = spyOn(
+			ClaudeProfileManager.prototype,
+			"readGlobalIdentity",
+		).mockRejectedValue(new Error("identity unreadable"));
+		try {
+			await expect(
+				service.pinWorkspaceToMachineDefault(id),
+			).resolves.toBeUndefined();
+			expect((await service.getWorkspaceState(id)).slug).toBe("claude456");
+			expect(
+				world.log.warnEntries.some((entry) => entry.fields?.workspaceId === id),
+			).toBe(true);
+		} finally {
+			read.mockRestore();
+		}
+	});
+
+	test("credential write failure warns without rejecting activation", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await service.mintProfileForNewWorkspace(id);
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		const write = spyOn(
+			ClaudeProfileManager.prototype,
+			"writeCredentials",
+		).mockRejectedValue(new Error("write failed"));
+		try {
+			await expect(
+				service.pinWorkspaceToMachineDefault(id),
+			).resolves.toBeUndefined();
+			expect((await service.getWorkspaceState(id)).slug).toBeNull();
+			expect(
+				world.log.warnEntries.some((entry) => entry.fields?.workspaceId === id),
+			).toBe(true);
+		} finally {
+			write.mockRestore();
+		}
+	});
+
+	test("onlyIfFollowing preserves a pin even when no default is available", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world, {
+			claudeAccountSlug: "claude456",
+		});
+		await service.pinWorkspaceToMachineDefault(id, { onlyIfFollowing: true });
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude456");
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		await service.pinWorkspaceToMachineDefault(id, { onlyIfFollowing: true });
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude456");
+	});
+
+	test("a manual switch already in flight wins over onlyIfFollowing", async () => {
+		const { world, service } = await setupService();
+		const { id } = await seedWorkspace(world);
+		await writeGlobalCredentials(world, managedCredentials("claude123"));
+		const manual = service.setWorkspaceAccount(id, "claude456");
+		const settle = service.pinWorkspaceToMachineDefault(id, {
+			onlyIfFollowing: true,
+		});
+		await Promise.all([manual, settle]);
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude456");
+	});
+
+	test("missing workspace rejects", async () => {
+		const { service } = await setupService();
+		await expect(
+			service.pinWorkspaceToMachineDefault(WORKSPACE_IDS[0]),
+		).rejects.toThrow(`Workspace ${WORKSPACE_IDS[0]} does not exist`);
+	});
+
+	test("unmanaged hosts do not change existing pins", async () => {
+		const world = await createClaudeTestWorld();
+		worlds.push(world);
+		const { id } = await seedWorkspace(world, {
+			claudeAccountSlug: "claude456",
+		});
+		const service = createClaudeAccountsService({
+			db: world.db,
+			dbPath: world.dbPath,
+			emit: () => {},
+			log: world.log,
+		});
+		services.push(service);
+		await service.pinWorkspaceToMachineDefault(id);
+		expect((await service.getWorkspaceState(id)).slug).toBe("claude456");
+		expect(world.log.warnEntries).toHaveLength(0);
 	});
 });
 
@@ -566,6 +774,32 @@ describe("Claude account service transitions", () => {
 });
 
 describe("Claude automatic fallback safeguards", () => {
+	test("a pin matching the default is suppressed until the tray rotates", async () => {
+		const { world, service } = await setupFallbackService({
+			roster: [
+				wireAccount("claude12", { five_pct: 95 }),
+				wireAccount("claude456"),
+			],
+			workspaceSlugs: ["claude12"],
+		});
+		expect((await service.getWorkspaceState(WORKSPACE_IDS[0])).slug).toBe(
+			"claude12",
+		);
+		expect(
+			world.events.some(
+				(event) =>
+					event.type === "claude-account-state-changed" &&
+					event.cause === "auto-fallback",
+			),
+		).toBe(false);
+		await writeGlobalCredentials(world, managedCredentials("claude456"));
+		await waitFor(
+			async () =>
+				(await service.getWorkspaceState(WORKSPACE_IDS[0])).slug === null,
+			"pin did not fall back after the tray rotated",
+		);
+	});
+
 	test("suppresses the whole pass when the machine default is missing from the roster", async () => {
 		const { world } = await setupFallbackService({
 			roster: [wireAccount("claude123", { five_pct: 95 })],

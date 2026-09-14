@@ -3,6 +3,7 @@ import { peekConnectionStatus } from "@superset/workspace-client";
 import { isNull, not } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { HostWorkspaceItem } from "renderer/hooks/host-workspaces/useHostWorkspaces";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { getLocalHostServiceUrls } from "renderer/lib/host-service-client";
 import {
@@ -12,8 +13,11 @@ import {
 	type RetirementVerdict,
 	resolveRetirementCallUrl,
 	retireWorkspaceRuntime,
+	shouldPinAfterSettle,
 } from "renderer/lib/workspace-exit-cleanup";
+import { pinActiveWorkspace } from "renderer/routes/_authenticated/hooks/useDashboardSidebarState/pinActiveWorkspace";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { getWorkspaceSidebarBucket } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { waitForWorkspaceExitPersistence } from "renderer/routes/_authenticated/providers/CollectionsProvider/workspaceExitPersistence";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import {
@@ -28,6 +32,7 @@ const CLEANUP_TOAST_ID = "workspace-exit-cleanup";
 
 /** Where a pending workspace's retirement call has to be sent. */
 interface CleanupTarget {
+	workspaceType: HostWorkspaceItem["type"] | null;
 	/** The owning host's URL, or null while that owner is unreachable. */
 	ownerHostUrl: string | null;
 	/** The owner is a cloud sandbox: reachable, but never worth waking. */
@@ -103,16 +108,18 @@ export function useWorkspaceExitCleanup(): void {
 				reopenUrls: reachable,
 			};
 		}
-		const hostIds = new Map(
-			workspaces.map((workspace) => [workspace.id, workspace.hostId] as const),
+		const workspacesById = new Map(
+			workspaces.map((workspace) => [workspace.id, workspace] as const),
 		);
 		let owned = false;
 		for (const workspaceId of pendingWorkspaceIds) {
-			const hostId = hostIds.get(workspaceId) ?? null;
+			const workspace = workspacesById.get(workspaceId);
+			const hostId = workspace?.hostId ?? null;
 			const ownerHostUrl =
 				hostId === null ? null : cache.resolveHostUrl(hostId);
 			const isSandbox = hostId !== null && cache.isSandboxHost(hostId);
 			resolved.set(workspaceId, {
+				workspaceType: workspace?.type ?? null,
 				ownerHostUrl,
 				isSandbox,
 				// Only asked when no host claims the workspace at all: a row that
@@ -123,7 +130,7 @@ export function useWorkspaceExitCleanup(): void {
 				// `v2-workspace-local-state-${organizationId}`), so a pending row
 				// can only ever belong to the org this window is in.
 				absenceAuthoritative:
-					!hostIds.has(workspaceId) && isAbsenceAuthoritative(null),
+					!workspacesById.has(workspaceId) && isAbsenceAuthoritative(null),
 			});
 			if (ownerHostUrl === null) continue;
 			owned = true;
@@ -195,34 +202,64 @@ export function useWorkspaceExitCleanup(): void {
 						return;
 					}
 					const target = targetsRef.current.get(workspaceId);
-					const verdict = await retireWorkspaceRuntime(workspaceId, {
-						localUrls: localUrls ?? [],
-						// Resolved HERE rather than in the memo above, because whether a
-						// sandbox is awake is a live fact: the user may have opened that
-						// cloud workspace since the routing was worked out.
-						ownerHostUrl:
-							target === undefined
-								? null
-								: resolveRetirementCallUrl({
-										ownerHostUrl: target.ownerHostUrl,
-										isSandbox: target.isSandbox,
-										isAwake: isHostSocketOpen(target.ownerHostUrl),
-									}),
-						// Only a complete local enumeration can prove absence: a host
-						// we never listed is a host that could still own the row.
-						absenceAuthoritative:
-							localUrls !== null && target?.absenceAuthoritative === true,
-					});
+					const { verdict, settledAtUrl, ownerReleasedAccount } =
+						await retireWorkspaceRuntime(workspaceId, {
+							localUrls: localUrls ?? [],
+							// Resolved HERE rather than in the memo above, because whether a
+							// sandbox is awake is a live fact: the user may have opened that
+							// cloud workspace since the routing was worked out.
+							ownerHostUrl:
+								target === undefined
+									? null
+									: resolveRetirementCallUrl({
+											ownerHostUrl: target.ownerHostUrl,
+											isSandbox: target.isSandbox,
+											isAwake: isHostSocketOpen(target.ownerHostUrl),
+										}),
+							// Only a complete local enumeration can prove absence: a host
+							// we never listed is a host that could still own the row.
+							absenceAuthoritative:
+								localUrls !== null && target?.absenceAuthoritative === true,
+						});
 					verdicts.set(workspaceId, verdict);
+					const stampAfter = readCleanupStamp(collections, workspaceId);
 					const outcome = decideCleanupOutcome({
 						stampBefore,
-						stampAfter: readCleanupStamp(collections, workspaceId),
+						stampAfter,
 						verdict,
 					});
-					if (outcome !== "clear") return;
-					collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
-						draft.sidebarState.runtimeCleanupPendingAt = null;
-					});
+					if (outcome === "clear") {
+						collections.v2WorkspaceLocalState.update(workspaceId, (draft) => {
+							draft.sidebarState.runtimeCleanupPendingAt = null;
+						});
+					}
+					const row = collections.v2WorkspaceLocalState.get(workspaceId);
+					// (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE) A late retirement may unpin a returned card.
+					if (
+						row &&
+						settledAtUrl !== null &&
+						shouldPinAfterSettle({
+							outcome,
+							stampAfter,
+							verdict,
+							ownerReleasedAccount,
+							bucket: getWorkspaceSidebarBucket(
+								row.sidebarState,
+								Date.now(),
+								target?.workspaceType,
+							),
+						})
+					) {
+						pinActiveWorkspace(
+							collections,
+							workspaceId,
+							{
+								workspaceType: target?.workspaceType ?? null,
+								isSandbox: target?.isSandbox === true,
+							},
+							{ hostUrl: settledAtUrl, onlyIfFollowing: true },
+						);
+					}
 				}),
 			);
 			showCleanupToast(collections, pendingIdsRef.current, verdicts, () => {
