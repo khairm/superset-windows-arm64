@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
+	displayFablePct,
 	FIVE_HOUR_WINDOW_MS,
 	formatUsagePct,
+	isWeeklyExhausted,
 	usagePaceLevel,
 	WEEKLY_WINDOW_MS,
 } from "./claudeUsagePace";
@@ -81,6 +83,49 @@ describe("usagePaceLevel", () => {
 		const halfWeek = resetsIn(WEEKLY_WINDOW_MS / 2);
 		expect(usagePaceLevel(50, halfWeek, WEEKLY_WINDOW_MS, NOW)).toBe("green");
 		expect(usagePaceLevel(81, halfWeek, WEEKLY_WINDOW_MS, NOW)).toBe("red");
+		expect(usagePaceLevel(100, halfWeek, WEEKLY_WINDOW_MS, NOW)).toBe("red");
+	});
+});
+
+describe("isWeeklyExhausted", () => {
+	it.each([
+		null,
+		0,
+		99.5,
+		99.99,
+	])("does not exhaust raw usage %s", (percent) => {
+		expect(isWeeklyExhausted(percent, resetsIn(WEEKLY_WINDOW_MS), NOW)).toBe(
+			false,
+		);
+	});
+
+	it.each([100, 125])("exhausts raw usage %s until reset", (percent) => {
+		expect(isWeeklyExhausted(percent, resetsIn(WEEKLY_WINDOW_MS), NOW)).toBe(
+			true,
+		);
+		expect(isWeeklyExhausted(percent, null, NOW)).toBe(true);
+	});
+
+	it("keeps exhaustion when the reset timestamp is invalid", () => {
+		expect(isWeeklyExhausted(100, "not-a-date", NOW)).toBe(true);
+	});
+
+	it.each([
+		0, -1, -60_000,
+	])("clears exhaustion at or after reset %s", (remaining) => {
+		expect(isWeeklyExhausted(100, resetsIn(remaining), NOW)).toBe(false);
+	});
+});
+
+describe("displayFablePct", () => {
+	it("caps present Fable usage when weekly usage is exhausted", () => {
+		expect(displayFablePct(true, 40)).toBe(100);
+		expect(displayFablePct(true, null)).toBeNull();
+	});
+
+	it("preserves Fable usage when weekly usage is not exhausted", () => {
+		expect(displayFablePct(false, 40)).toBe(40);
+		expect(displayFablePct(false, null)).toBeNull();
 	});
 });
 

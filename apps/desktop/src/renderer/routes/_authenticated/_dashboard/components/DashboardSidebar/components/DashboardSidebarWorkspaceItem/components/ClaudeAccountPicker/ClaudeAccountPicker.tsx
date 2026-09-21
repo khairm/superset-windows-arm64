@@ -21,8 +21,10 @@ import { useWorkspaceHostUrl } from "renderer/hooks/host-service/useWorkspaceHos
 import { useNow } from "renderer/hooks/useNow";
 import { formatResetCompact } from "renderer/lib/formatResetTime";
 import {
+	displayFablePct,
 	FIVE_HOUR_WINDOW_MS,
 	formatUsagePct,
+	isWeeklyExhausted,
 	USAGE_PACE_CLASS,
 	usagePaceLevel,
 	WEEKLY_WINDOW_MS,
@@ -77,12 +79,18 @@ function ResetSpan({
 
 const METRICS_CLASS =
 	"flex items-center gap-1 whitespace-nowrap text-[11px] tabular-nums text-muted-foreground";
+const DIMMED_CLASS = "opacity-50";
+const METRIC_GROUP_CLASS = "inline-flex items-center gap-1";
 
 function AccountMetrics({
 	account,
+	fablePct,
+	dimmed,
 	now,
 }: {
 	account: ClaudeAccount;
+	fablePct: number | null;
+	dimmed: boolean;
 	now: number;
 }) {
 	if (account.dead) {
@@ -97,34 +105,38 @@ function AccountMetrics({
 	}
 	return (
 		<div className={METRICS_CLASS}>
-			5h
-			<PctSpan
-				percent={account.fivePct}
-				resetsAt={account.fiveResetsAt}
-				windowMs={FIVE_HOUR_WINDOW_MS}
-				now={now}
-			/>
-			<ResetSpan
-				resetsAt={account.fiveResetsAt}
-				windowMs={FIVE_HOUR_WINDOW_MS}
-				now={now}
-			/>
-			| all:
-			<PctSpan
-				percent={account.sevenPct}
-				resetsAt={account.sevenResetsAt}
-				windowMs={WEEKLY_WINDOW_MS}
-				now={now}
-			/>
-			• fable:
-			{/* Fable shares the weekly boundary: the Pi emits matching stamps and
-			    fableResetsAt is not shipped to the app. */}
-			<PctSpan
-				percent={account.fablePct}
-				resetsAt={account.sevenResetsAt}
-				windowMs={WEEKLY_WINDOW_MS}
-				now={now}
-			/>
+			<span className={cn(METRIC_GROUP_CLASS, dimmed && DIMMED_CLASS)}>
+				5h
+				<PctSpan
+					percent={account.fivePct}
+					resetsAt={account.fiveResetsAt}
+					windowMs={FIVE_HOUR_WINDOW_MS}
+					now={now}
+				/>
+				<ResetSpan
+					resetsAt={account.fiveResetsAt}
+					windowMs={FIVE_HOUR_WINDOW_MS}
+					now={now}
+				/>
+			</span>
+			<span className={cn(METRIC_GROUP_CLASS, dimmed && DIMMED_CLASS)}>
+				| all:
+				<PctSpan
+					percent={account.sevenPct}
+					resetsAt={account.sevenResetsAt}
+					windowMs={WEEKLY_WINDOW_MS}
+					now={now}
+				/>
+				• fable:
+				{/* Fable shares the weekly boundary: the Pi emits matching stamps and
+				    fableResetsAt is not shipped to the app. */}
+				<PctSpan
+					percent={fablePct}
+					resetsAt={account.sevenResetsAt}
+					windowMs={WEEKLY_WINDOW_MS}
+					now={now}
+				/>
+			</span>
 			<ResetSpan
 				resetsAt={account.sevenResetsAt}
 				windowMs={WEEKLY_WINDOW_MS}
@@ -134,7 +146,7 @@ function AccountMetrics({
 	);
 }
 
-function AccountRow({
+export function AccountRow({
 	account,
 	trayDefaultSlug,
 	selectedSlug,
@@ -149,18 +161,33 @@ function AccountRow({
 	now: number;
 	onSelect: (slug: string) => void;
 }) {
+	const exhausted = isWeeklyExhausted(
+		account.sevenPct,
+		account.sevenResetsAt,
+		now,
+	);
+	const disabled = account.dead || !account.enabled || isPending;
+	const dimmed = exhausted && !disabled;
+	const fablePct = displayFablePct(exhausted, account.fablePct);
 	return (
 		<ContextMenuItem
 			// A pinned-but-tray-hidden account stays listed but is not a valid
 			// switch target — the host rejects disabled accounts.
-			disabled={account.dead || !account.enabled || isPending}
+			disabled={disabled}
 			onSelect={() => onSelect(account.slug)}
 			className="grid grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-x-2"
 		>
-			<span className="flex w-4 shrink-0 items-center">
+			<span
+				className={cn("flex w-4 shrink-0 items-center", dimmed && DIMMED_CLASS)}
+			>
 				{selectedSlug === account.slug && <LuCheck className="size-3.5" />}
 			</span>
-			<span className="flex min-w-0 items-center gap-2">
+			<span
+				className={cn(
+					"flex min-w-0 items-center gap-2",
+					dimmed && DIMMED_CLASS,
+				)}
+			>
 				<span className="min-w-0 truncate font-medium">{account.slug}</span>
 				{trayDefaultSlug === account.slug && (
 					<Badge
@@ -171,7 +198,12 @@ function AccountRow({
 					</Badge>
 				)}
 			</span>
-			<AccountMetrics account={account} now={now} />
+			<AccountMetrics
+				account={account}
+				fablePct={fablePct}
+				dimmed={dimmed}
+				now={now}
+			/>
 		</ContextMenuItem>
 	);
 }

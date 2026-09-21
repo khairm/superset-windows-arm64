@@ -10,6 +10,27 @@ export const USAGE_PACE_CLASS: Record<UsagePaceLevel, string> = {
 	red: "text-red-500",
 };
 
+/** Use raw usage, and stop treating a stale reading as exhausted at reset. */
+export function isWeeklyExhausted(
+	sevenPct: number | null,
+	sevenResetsAt: string | null,
+	now: number,
+): boolean {
+	if (sevenPct === null || sevenPct < 100) return false;
+	if (sevenResetsAt) {
+		const reset = Date.parse(sevenResetsAt);
+		if (Number.isFinite(reset) && reset <= now) return false;
+	}
+	return true;
+}
+
+export function displayFablePct(
+	exhausted: boolean,
+	fablePct: number | null,
+): number | null {
+	return exhausted && fablePct !== null ? 100 : fablePct;
+}
+
 /** The percent as displayed, so the colour always bands the number on screen. */
 function displayPct(usedPct: number): number {
 	return Math.min(999, Math.round(usedPct));

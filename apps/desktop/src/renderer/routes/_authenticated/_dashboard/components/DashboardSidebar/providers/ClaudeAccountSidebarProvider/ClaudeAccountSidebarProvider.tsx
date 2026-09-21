@@ -15,7 +15,9 @@ import {
 } from "renderer/hooks/host-service/useClaudeAccounts";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import {
+	displayFablePct,
 	FIVE_HOUR_WINDOW_MS,
+	isWeeklyExhausted,
 	type UsagePaceLevel,
 	usagePaceLevel,
 	WEEKLY_WINDOW_MS,
@@ -139,44 +141,52 @@ export function ClaudeAccountSidebarProvider({
 	const entries = useMemo(() => {
 		const now = Date.now();
 		const accountsBySlug = new Map(
-			(roster.data?.accounts ?? []).map((account) => [
-				account.slug,
-				{
-					slug: account.slug,
-					fivePct: account.fivePct,
-					sevenPct: account.sevenPct,
-					fablePct: account.fablePct,
-					fivePace:
-						account.fivePct === null
-							? null
-							: usagePaceLevel(
-									account.fivePct,
-									account.fiveResetsAt,
-									FIVE_HOUR_WINDOW_MS,
-									now,
-								),
-					sevenPace:
-						account.sevenPct === null
-							? null
-							: usagePaceLevel(
-									account.sevenPct,
-									account.sevenResetsAt,
-									WEEKLY_WINDOW_MS,
-									now,
-								),
-					// Fable shares the weekly reset boundary; the roster does not
-					// carry a separate fableResetsAt.
-					fablePace:
-						account.fablePct === null
-							? null
-							: usagePaceLevel(
-									account.fablePct,
-									account.sevenResetsAt,
-									WEEKLY_WINDOW_MS,
-									now,
-								),
-				},
-			]),
+			(roster.data?.accounts ?? []).map((account) => {
+				const exhausted = isWeeklyExhausted(
+					account.sevenPct,
+					account.sevenResetsAt,
+					now,
+				);
+				const fablePct = displayFablePct(exhausted, account.fablePct);
+				return [
+					account.slug,
+					{
+						slug: account.slug,
+						fivePct: account.fivePct,
+						sevenPct: account.sevenPct,
+						fablePct,
+						fivePace:
+							account.fivePct === null
+								? null
+								: usagePaceLevel(
+										account.fivePct,
+										account.fiveResetsAt,
+										FIVE_HOUR_WINDOW_MS,
+										now,
+									),
+						sevenPace:
+							account.sevenPct === null
+								? null
+								: usagePaceLevel(
+										account.sevenPct,
+										account.sevenResetsAt,
+										WEEKLY_WINDOW_MS,
+										now,
+									),
+						// Fable shares the weekly reset boundary; the roster does not
+						// carry a separate fableResetsAt.
+						fablePace:
+							fablePct === null
+								? null
+								: usagePaceLevel(
+										fablePct,
+										account.sevenResetsAt,
+										WEEKLY_WINDOW_MS,
+										now,
+									),
+					},
+				] as const;
+			}),
 		);
 		return new Map(
 			workspaceIds.map((workspaceId) => {
