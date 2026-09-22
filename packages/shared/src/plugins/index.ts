@@ -395,7 +395,14 @@ export const PLUGIN_CATALOG: readonly PluginCatalogEntry[] = [
 	},
 ];
 
-export const SUPERSET_API_URL = "https://api.superset.sh";
+/**
+ * (CLOUD-SEVERANCE-P2) Upstream points this at the cloud data plane. This
+ * fork has no account and no data plane, so it points at `.invalid`, which
+ * DNS guarantees never resolves — the same second line of defence the other
+ * severed cloud defaults use. The constant stays because
+ * `pluginProxyMcpServers` still builds a URL from it.
+ */
+export const SUPERSET_API_URL = "https://api.cloud-severed.invalid";
 
 /**
  * Where an agent reaches a plugin whose tools run on someone's credential.
