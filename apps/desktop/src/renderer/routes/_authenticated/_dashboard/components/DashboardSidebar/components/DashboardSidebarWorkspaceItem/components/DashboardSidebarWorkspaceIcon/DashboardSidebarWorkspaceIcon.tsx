@@ -91,7 +91,9 @@ export function DashboardSidebarWorkspaceIcon({
 		}
 
 		if (hostType === "local-device") {
-			if (workspaceType === "main") {
+			// Upstream's "local" is desktop-v1.30.1's rename of the checkout row;
+			// the fork's master row still carries "main" and gets the same icon.
+			if (workspaceType === "local" || workspaceType === "main") {
 				return (
 					<CgLaptop className={cn("size-4 transition-colors", iconColor)} />
 				);

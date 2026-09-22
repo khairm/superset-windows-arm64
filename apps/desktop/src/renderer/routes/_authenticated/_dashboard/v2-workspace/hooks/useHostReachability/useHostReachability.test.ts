@@ -1,21 +1,20 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-const NativeWebSocket = globalThis.WebSocket;
-const nativeFetch = globalThis.fetch;
-const NativeResponse = globalThis.Response;
-const NativeEvent = globalThis.Event;
-const NativeMessageEvent = globalThis.MessageEvent;
-const NativeEventTarget = globalThis.EventTarget;
+import { nativeWebGlobals } from "~/test-setup";
+
+const previousWebGlobals = {
+	WebSocket: globalThis.WebSocket,
+	fetch: globalThis.fetch,
+	Response: globalThis.Response,
+	Event: globalThis.Event,
+	MessageEvent: globalThis.MessageEvent,
+	EventTarget: globalThis.EventTarget,
+};
+const NativeResponse = nativeWebGlobals.Response;
 const alreadyRegistered = GlobalRegistrator.isRegistered;
 if (!alreadyRegistered) GlobalRegistrator.register();
-globalThis.WebSocket = NativeWebSocket;
-globalThis.fetch = nativeFetch;
-// partysocket may already be loaded by another suite and extends the native
-// EventTarget. Its dynamically created events must stay in that same realm.
-globalThis.Event = NativeEvent;
-globalThis.MessageEvent = NativeMessageEvent;
-globalThis.EventTarget = NativeEventTarget;
+Object.assign(globalThis, nativeWebGlobals);
 (
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,6 +28,7 @@ const { useHostReachability } = await import("./useHostReachability");
 afterEach(cleanup);
 afterAll(async () => {
 	if (!alreadyRegistered) await GlobalRegistrator.unregister();
+	Object.assign(globalThis, previousWebGlobals);
 });
 
 test("a slow handshake completes while the degraded notice is showing", async () => {

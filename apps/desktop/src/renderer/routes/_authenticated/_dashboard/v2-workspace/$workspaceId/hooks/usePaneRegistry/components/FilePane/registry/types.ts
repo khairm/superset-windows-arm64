@@ -1,6 +1,7 @@
 import type { MessageDescriptor } from "@lingui/core";
 import { i18n } from "@superset/i18n";
 import type { ComponentType } from "react";
+import type { LinkAction } from "renderer/lib/clickPolicy";
 import type { SharedFileDocument } from "../../../../../state/fileDocumentStore";
 
 export type FileMeta = {
@@ -56,6 +57,11 @@ export interface ViewProps {
 	 * gestures that would fight the host's scrolling. Defaults to false.
 	 */
 	embedded?: boolean;
+	/**
+	 * Opens a clicked link in the host's panes. Hosts without a pane store
+	 * omit it and links fall back to the system browser.
+	 */
+	onOpenUrl?: (url: string, action: LinkAction) => void;
 }
 
 export function resolveViewLabel(view: FileView, filePath: string): string {

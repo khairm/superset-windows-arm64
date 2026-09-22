@@ -7,6 +7,8 @@ Superset Pages gives your agents a way to present designs, reports, and analysis
 
 Your teammates can talk directly to your agent. You no longer have to copy feedback from a review into an agent session and carry the result back.
 
+![A Superset Page presenting a cloud signup design review, with a comment pinned to the headline](/images/pages-design-review.png)
+
 ## The Design Loop
 
 1. **Create.** Ask an agent to build a design doc, report, or proposal and publish it as a Page.
@@ -53,6 +55,8 @@ Keep the host and agent session running for automatic feedback delivery. If the 
 
 The agent can change the page, answer a question in the thread, or leave feedback open when it needs more discussion. When it makes a change, it republishes the page, replies with what changed, and resolves the feedback it addressed.
 
+![A pinned comment asking for a white cloud icon, the agent's reply confirming the update in version 4, and a follow-up being drafted](/images/pages-agent-feedback.png)
+
 ## Keep Iterating on the Same Page
 
 Publish the same source path from the same workspace to create a new version of the existing page. Your team keeps using the same link, and earlier versions remain in version history.
@@ -66,6 +70,8 @@ If the source moved or you're publishing from another workspace, pass the existi
 ```bash
 superset pages publish design.html --page <page-id> --label "Updated onboarding flow"
 ```
+
+Publishing from outside a workspace works too, but there's no path for a later publish to resolve against: every run creates a separate page unless you pass `--page`. The publish tells you when that happened and prints the command to reuse.
 
 Republishing preserves the page's visibility. You can also inspect version history or retrieve a published version:
 

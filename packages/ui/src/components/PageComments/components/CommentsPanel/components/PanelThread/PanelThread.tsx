@@ -1,11 +1,11 @@
 "use client";
 
 import { Plural } from "@lingui/react/macro";
+import { isOptimisticId } from "@superset/shared/page-comments";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../../../../../../lib/utils";
 import { Button } from "../../../../../ui/button";
 import type { CommentThread } from "../../../../providers/CommentProvider";
-import { isOptimisticId } from "../../../../utils/optimisticId";
 import { CommentComposer } from "../../../CommentComposer";
 import { CommentList } from "../../../CommentList";
 
@@ -56,7 +56,7 @@ export function PanelThread({
 		>
 			<CommentList
 				thread={{ ...thread, comments: head }}
-				anchorText={thread.anchor.text || undefined}
+				anchorText={thread.anchor?.text || undefined}
 				onAnchorClick={onSelect}
 				{...listProps}
 			/>

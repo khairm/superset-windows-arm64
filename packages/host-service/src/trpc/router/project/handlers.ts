@@ -72,7 +72,12 @@ export interface CreateResult {
  *   2. Local DB project row (host-minted UUID)
  *   3. Local main workspace (ensureMainWorkspaceStrict)
  *
- * A failure in 2–3 unwinds locally.
+ * Upstream desktop-v1.30.1 dropped step 3 — a project there starts with zero
+ * workspaces and the user creates a local or worktree one when they open it.
+ * This fork keeps it: (MASTER-ALWAYS-ACTIVE) guarantees every project's master
+ * row is in the sidebar and (MASTER-PLUS-LAUNCH) launches agents into it, so
+ * the master has to exist from the moment the project does. A failure in 2–3
+ * unwinds locally.
  */
 async function persistFromResolved(
 	ctx: HostServiceContext,

@@ -21,6 +21,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { track } from "@/lib/analytics";
+import { useIsMobileLaunched } from "../../providers/MobileLaunchProvider";
 import { Soc2Badge } from "../Soc2Badge";
 import { SocialLinks } from "../SocialLinks";
 
@@ -48,6 +49,11 @@ interface FooterLink {
 	label: ReactNode;
 	external?: boolean;
 }
+
+const MOBILE_LINK: FooterLink = {
+	href: "/mobile",
+	label: <Trans>Mobile</Trans>,
+};
 
 const PRODUCT_LINKS: FooterLink[] = [
 	{
@@ -153,6 +159,7 @@ const LEGAL_LINKS: FooterLink[] = [
 ];
 
 export function Footer({ locale }: { locale?: SupportedLocale }) {
+	const isMobileLaunched = useIsMobileLaunched();
 	const pathname = usePathname();
 	// Named local so the copyright message extracts as `{year}`, not `{0}`.
 	const year = new Date().getFullYear();
@@ -190,7 +197,18 @@ export function Footer({ locale }: { locale?: SupportedLocale }) {
 						<FooterLanguageSwitcher locale={locale} />
 					</div>
 
-					<FooterColumn title={<Trans>Product</Trans>} links={PRODUCT_LINKS} />
+					<FooterColumn
+						title={<Trans>Product</Trans>}
+						links={
+							isMobileLaunched
+								? [
+										...PRODUCT_LINKS.slice(0, 1),
+										MOBILE_LINK,
+										...PRODUCT_LINKS.slice(1),
+									]
+								: PRODUCT_LINKS
+						}
+					/>
 					<FooterColumn title={<Trans>Company</Trans>} links={COMPANY_LINKS} />
 					<FooterColumn
 						title={<Trans>Resources</Trans>}

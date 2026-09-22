@@ -11,8 +11,10 @@ import { SeveredApiAuthProvider } from "./providers/auth";
 import { LocalGitCredentialProvider } from "./providers/git";
 import { PskHostAuthProvider } from "./providers/host-auth";
 import { provisionAgentIntegrations } from "./runtime/agent-provisioning";
+import { processStartedAt, recordBootStamp } from "./runtime/boot-stamps";
 import { resolveBrowserBridgeFromEnv } from "./runtime/browser-bridge/env";
 import { applyLoginShellEnvToProcess } from "./runtime/login-shell-env";
+import { startSandboxCredentialRefresh } from "./runtime/sandbox-credential-refresh";
 import { detachFromLaunchDirectory } from "./runtime/working-directory";
 import { installProcessSafetyNet, installUpgradeSocketGuard } from "./safety";
 import { configureSelfUpdater } from "./self-update";
@@ -30,6 +32,7 @@ async function main(): Promise<void> {
 	// packages/shared/src/windows-user-env.ts.
 	await applyWindowsUserEnvToProcess();
 
+	recordBootStamp("host.process.start", processStartedAt());
 	initSentry({ organizationId: env.ORGANIZATION_ID });
 
 	// Before anything spawns a worker thread or a child process: a host
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
 		injectWebSocket,
 		db,
 		launchSandboxAgent,
+		resumeCrashedAgents,
 		claudeAccounts,
 		terminalAgentStore,
 		eventBus,
@@ -145,12 +149,24 @@ async function main(): Promise<void> {
 			? `[${info.address}]`
 			: info.address;
 		console.log(`[host-service] listening on http://${address}:${info.port}`);
+		recordBootStamp("host.listening");
 
 		startTerminalReaper(db, eventBus);
 		// A cloud workspace created with an agent starts it now: the pty daemon
 		// and event bus are up, and a person opening the workspace sees the
 		// agent's terminal the way they would on their own machine.
 		void launchSandboxAgent();
+		// A stop keeps the disk and drops every process, so nothing else on the
+		// box will notice that its agents are gone.
+		if (env.SUPERSET_HOST_RUN_MODE === "sandbox") void resumeCrashedAgents();
+		const sandboxWorkspaceId = process.env.SUPERSET_SANDBOX_WORKSPACE_ID;
+		if (env.SUPERSET_HOST_RUN_MODE === "sandbox" && sandboxWorkspaceId) {
+			startSandboxCredentialRefresh({
+				apiUrl: env.SUPERSET_API_URL,
+				workspaceId: sandboxWorkspaceId,
+				hostSecret: env.HOST_SERVICE_SECRET,
+			});
+		}
 
 		// (STALE-WORKING-SWEEP) fork-only backstop: a terminal whose LAST hook
 		// event resolved to a working hold and that then goes silent has no

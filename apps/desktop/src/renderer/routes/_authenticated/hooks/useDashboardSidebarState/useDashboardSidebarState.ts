@@ -717,11 +717,17 @@ export function useDashboardSidebarState() {
 	);
 
 	const ensureWorkspaceInSidebar = useCallback(
-		(workspaceId: string, projectId: string | null) => {
+		(
+			workspaceId: string,
+			projectId: string | null,
+			{ revealProject = true }: { revealProject?: boolean } = {},
+		) => {
 			// Sessions (null projectId) have no project placement row — the
 			// Sessions section renders unconditionally.
 			if (projectId !== null) {
-				ensureSidebarProjectRecord(collections, projectId);
+				ensureSidebarProjectRecord(collections, projectId, {
+					reveal: revealProject,
+				});
 			}
 			ensureSidebarWorkspaceRecord(
 				collections,
@@ -939,7 +945,6 @@ export function useDashboardSidebarState() {
 				tagFolderContext,
 				projectId,
 			);
-			const folders = [...folderIndex.values()];
 			const sources = workspaceIds.flatMap((workspaceId) => {
 				const workspace = collections.v2WorkspaceLocalState.get(workspaceId);
 				if (!workspace || workspace.sidebarState.projectId !== projectId)
@@ -955,17 +960,15 @@ export function useDashboardSidebarState() {
 						{ tabOrder: workspace.sidebarState.tabOrder, isGrouped: false },
 					];
 				}
-				const folder =
-					folders.find((item) => item.sectionId === sourceSectionId) ??
-					collections.v2SidebarSections.get(sourceSectionId);
+				// Anchor only on a row this lane owns and renumbers. A folder
+				// without one carries an order from outside the lane — the
+				// derived floor, or a host tag setting — which must not become
+				// the basis of an order we persist.
+				const folder = collections.v2SidebarSections.get(sourceSectionId);
 				return folder ? [{ tabOrder: folder.tabOrder, isGrouped: true }] : [];
 			});
 			const tabOrder = getNewGroupTabOrder(
 				sources,
-				[
-					...topLevelItems.map((item) => item.tabOrder),
-					...folders.map((item) => item.tabOrder),
-				],
 				getNextTabOrder(topLevelItems),
 			);
 
@@ -1400,9 +1403,11 @@ export function useDashboardSidebarState() {
 		[collections],
 	);
 
-	// (REMOVE-STICKY) The destructive twin of `setProjectHidden`: deletes the
-	// project row AND tombstones every workspace of the project, so nothing a
-	// passive mount or a later worktree does brings the dismissed rows back.
+	// (REMOVE-STICKY) The destructive twin of `setProjectHidden`: hides the
+	// project row AND tombstones every workspace of the project plus its
+	// sections, so nothing a passive mount or a later worktree does brings the
+	// dismissed rows back. The row itself is kept (hidden) because a row-LESS
+	// project is re-placed by `usePlaceProjectsInSidebar`.
 	const removeProjectFromSidebar = useCallback(
 		(projectId: string) => {
 			removeProjectFromSidebarState(

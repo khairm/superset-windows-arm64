@@ -485,3 +485,53 @@ describe("terminalRuntimeRegistry eviction cleanup", () => {
 		}
 	});
 });
+
+describe("terminal replacement history", () => {
+	test("distinguishes session death from transport termination and bounds restored history", () => {
+		const serialize = mock(() => "previous output");
+		const previous = {
+			transport: { sessionEnded: false, _terminated: true },
+			runtime: { serializeAddon: { serialize } },
+		};
+		const replacement: { initialBuffer?: string } = {};
+		const internals = terminalRuntimeRegistry as unknown as {
+			getEntry: () => typeof previous;
+			getOrCreateEntry: () => typeof replacement;
+		};
+		const getEntry = spyOn(internals, "getEntry").mockReturnValue(previous);
+		const getOrCreate = spyOn(internals, "getOrCreateEntry").mockReturnValue(
+			replacement,
+		);
+		try {
+			expect(terminalRuntimeRegistry.isSessionEnded("old", "pane")).toBe(false);
+			terminalRuntimeRegistry.prepareReplacement(
+				"old",
+				"pane",
+				"New shell",
+			)("new");
+			expect(getOrCreate).not.toHaveBeenCalled();
+			previous.transport.sessionEnded = true;
+			expect(terminalRuntimeRegistry.isSessionEnded("old", "pane")).toBe(true);
+			const apply = terminalRuntimeRegistry.prepareReplacement(
+				"old",
+				"pane",
+				"New shell",
+			);
+			expect(getOrCreate).not.toHaveBeenCalled();
+			getEntry.mockReturnValue(undefined as unknown as typeof previous);
+			apply("new");
+			expect(serialize).toHaveBeenCalledWith({
+				scrollback: 1000,
+				excludeAltBuffer: true,
+				excludeModes: true,
+			});
+			expect(getOrCreate).toHaveBeenCalledWith("new", "pane");
+			expect(replacement.initialBuffer).toBe(
+				"previous output\r\n\x1b[0mNew shell\r\n",
+			);
+		} finally {
+			getEntry.mockRestore();
+			getOrCreate.mockRestore();
+		}
+	});
+});

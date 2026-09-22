@@ -27,7 +27,7 @@ export function RemoveFromSidebarMount() {
 		// (MASTER-ARCHIVE-ONLY)
 		// "Remove from Sidebar" ARCHIVES every thread (recoverable, session +
 		// worktree intact): it reappears under the project's Archived section.
-		// This now includes MASTER / non-git master cards (target.isMain) — they
+		// This now includes MASTER / non-git master cards — they
 		// previously HID (hideWorkspaceInSidebar sets isHidden WITHOUT archivedAt →
 		// the "hidden" bucket → vanishes, resurrecting only on reopen), so an
 		// accidental remove felt like data loss. A main with archivedAt is a

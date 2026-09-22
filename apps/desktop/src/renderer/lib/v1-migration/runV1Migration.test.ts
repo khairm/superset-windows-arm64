@@ -8,6 +8,7 @@ import type {
 	V1WorktreeRow,
 } from "./ipc";
 import type { V1LedgerOutcome, V1LedgerRow } from "./ledger";
+import { planV2SurfacePass } from "./pass";
 import { runV1Migration } from "./runV1Migration";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ interface HostWorkspace {
 	id: string;
 	projectId: string;
 	branch: string;
+	type?: "local" | "worktree";
 }
 
 class FakeHost {
@@ -36,6 +38,10 @@ class FakeHost {
 	diskBranches = new Map<string, Set<string>>();
 	/** repoPath → error message create/setup should throw (broken repos). */
 	brokenRepos = new Map<string, string>();
+	/** Repo paths that no longer exist on disk (findByPath 400s). */
+	missingPaths = new Set<string>();
+	/** Existing folders that are not git repos (findByPath → needsGitInit). */
+	nonGitPaths = new Set<string>();
 	/** Throw the next N adopt calls (transient host fault). */
 	adoptFaults = 0;
 	tagFaults = 0;
@@ -58,6 +64,12 @@ class FakeHost {
 			project: {
 				findByPath: {
 					query: async ({ repoPath }: { repoPath: string }) => {
+						if (this.missingPaths.has(repoPath)) {
+							throw new Error(`Path does not exist: ${repoPath}`);
+						}
+						if (this.nonGitPaths.has(repoPath)) {
+							return { candidates: [], cloudErrors: [], needsGitInit: true };
+						}
 						const local = this.projects.find((p) => p.repoPath === repoPath);
 						return {
 							candidates: local ? [{ id: local.id, source: "local-path" }] : [],
@@ -73,13 +85,7 @@ class FakeHost {
 							throw new Error(this.brokenRepos.get(project.repoPath));
 						}
 						this.mutations.push({ kind: "project.setup", args: projectId });
-						const main = this.workspaces.find(
-							(w) => w.projectId === projectId && w.branch === "main",
-						);
-						return {
-							mainWorkspaceId: main?.id ?? null,
-							repoPath: project.repoPath,
-						};
+						return { repoPath: project.repoPath };
 					},
 				},
 				create: {
@@ -93,20 +99,16 @@ class FakeHost {
 						if (this.brokenRepos.has(mode.repoPath)) {
 							throw new Error(this.brokenRepos.get(mode.repoPath));
 						}
+						if (this.nonGitPaths.has(mode.repoPath)) {
+							throw new Error(`Not a git repository: ${mode.repoPath}`);
+						}
 						this.mutations.push({ kind: "project.create", args: name });
 						const project = { id: this.id("v2p"), repoPath: mode.repoPath };
 						this.projects.push(project);
-						const main = {
-							tags: [],
-							id: this.id("v2w"),
-							projectId: project.id,
-							branch: "main",
-						};
-						this.workspaces.push(main);
 						return {
 							projectId: project.id,
-							mainWorkspaceId: main.id,
 							repoPath: project.repoPath,
+							created: true,
 						};
 					},
 				},
@@ -178,6 +180,26 @@ class FakeHost {
 					},
 				},
 			},
+			workspaces: {
+				createLocal: {
+					mutate: async (args: {
+						projectId: string;
+						checkout: "local";
+						name: string;
+					}) => {
+						this.mutations.push({ kind: "workspaces.create", args });
+						const row: HostWorkspace = {
+							tags: [],
+							id: this.id("v2w"),
+							projectId: args.projectId,
+							branch: "main",
+							type: "local",
+						};
+						this.workspaces.push(row);
+						return { workspace: row, alreadyExists: false };
+					},
+				},
+			},
 			workspaceCreation: {
 				listProjectWorktrees: {
 					query: async ({ projectId }: { projectId: string }) => {
@@ -186,7 +208,10 @@ class FakeHost {
 							? (this.diskBranches.get(project.repoPath) ?? new Set())
 							: new Set<string>();
 						return {
-							worktrees: [...branches].map((branch) => ({ branch })),
+							worktrees: [...branches].map((branch) => ({
+								branch,
+								isMainWorktree: branch === "main",
+							})),
 						};
 					},
 				},
@@ -199,6 +224,13 @@ class FakeHost {
 						if (this.adoptFaults > 0) {
 							this.adoptFaults--;
 							throw new Error("host transient adopt failure");
+						}
+						const owner = this.projects.find((p) => p.id === args.projectId);
+						if (!owner) throw new Error("Project is not set up on this host");
+						if (this.missingPaths.has(owner.repoPath)) {
+							throw new Error(
+								"Project directory is no longer a directory on disk",
+							);
 						}
 						this.mutations.push({ kind: "workspaceCreation.adopt", args });
 						const existing = this.workspaces.find(
@@ -300,6 +332,14 @@ const workspace = (
 	worktreeId: string | null = null,
 ): V1WorkspaceRow => ({ id, projectId, worktreeId, name: id, branch });
 
+const runOnV1 = (ipc: FakeIpc, host: FakeHost) =>
+	runV1Migration({
+		organizationId: "org",
+		hostClient: host.client(),
+		ipc,
+		reconcileWithHost: true,
+	});
+
 const run = (ipc: FakeIpc, host: FakeHost) =>
 	runV1Migration({ organizationId: "org", hostClient: host.client(), ipc });
 
@@ -320,8 +360,8 @@ describe("runV1Migration scenarios", () => {
 
 		const first = await run(ipc, host);
 		expect(first.projects.migrated).toBe(2);
-		expect(first.workspaces.migrated).toBe(1); // feat adopted
-		expect(first.workspaces.linked).toBe(1); // main pre-created by the import
+		expect(first.workspaces.migrated).toBe(2); // feat adopted, main-repo workspace created as local
+		expect(first.workspaces.linked).toBe(0);
 		expect(first.workspaces.skipped).toBe(1); // stale: no worktree on disk
 		expect(first.gateComplete).toBe(true); // skips don't block (F1)
 
@@ -330,6 +370,70 @@ describe("runV1Migration scenarios", () => {
 		expect(host.mutations.length).toBe(mutationsAfterFirst); // zero new mutations
 		expect(second.workspaces.skipped).toBe(1); // stale re-skips, still non-blocking
 		expect(second.gateComplete).toBe(true);
+	});
+
+	test("pre-account v1 data on a machine already on v2: every workspace reaches the board", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [project("p1", "/repo/a")];
+		ipc.worktrees = [
+			{ id: "wt1", path: "/trees/feat-a", baseBranch: "main" },
+			{ id: "wt2", path: "/trees/feat-b", baseBranch: "main" },
+		];
+		ipc.workspaces = [
+			workspace("w-main", "p1", "main"),
+			workspace("w-feat-a", "p1", "feat-a", "wt1"),
+			workspace("w-feat-b", "p1", "feat-b", "wt2"),
+		];
+		host.diskBranches.set("/repo/a", new Set(["main", "feat-a", "feat-b"]));
+		// File -> Open Project on v2 already made the project and its default
+		// "main" workspace; the ledger is empty because no pass ever ran.
+		host.projects.push({ id: "v2p-open", repoPath: "/repo/a" });
+		host.workspaces.push({
+			tags: [],
+			id: "v2w-open",
+			projectId: "v2p-open",
+			branch: "main",
+			type: "local",
+		});
+		expect(
+			planV2SurfacePass({
+				followUpPending: false,
+				migrationComplete: false,
+				hasV1Data: ipc.projects.length + ipc.workspaces.length > 0,
+			}),
+		).toBe("full");
+
+		const adopted: string[] = [];
+		const first = await runV1Migration({
+			organizationId: "org",
+			hostClient: host.client(),
+			ipc,
+			onWorkspaceAdopted: (id) => adopted.push(id),
+		});
+
+		expect(first.projects.linked).toBe(1);
+		expect(host.projects).toHaveLength(1);
+		expect(first.workspaces.linked).toBe(1);
+		expect(first.workspaces.migrated).toBe(2);
+		expect(first.gateComplete).toBe(true);
+
+		const board = await host.client().workspace.list.query();
+		expect(
+			board
+				.filter((w) => w.projectId === "v2p-open")
+				.map((w) => w.branch)
+				.sort(),
+		).toEqual(["feat-a", "feat-b", "main"]);
+		expect(adopted).toHaveLength(2);
+		for (const v1Id of ["w-main", "w-feat-a", "w-feat-b"]) {
+			expect(ipc.ledger.get(`workspace\0${v1Id}`)?.v2Id).toBeTruthy();
+		}
+
+		const mutationsAfterFirst = host.mutations.length;
+		await run(ipc, host);
+		expect(host.mutations.length).toBe(mutationsAfterFirst);
+		expect(host.workspaces).toHaveLength(3);
 	});
 
 	test("custom v1 color and hide-image carry over; defaults do not", async () => {
@@ -354,7 +458,7 @@ describe("runV1Migration scenarios", () => {
 		expect(host.mutations.filter((m) => m.kind === "project.setIcon")).toEqual([
 			{
 				kind: "project.setIcon",
-				args: { projectId: "v2p-5", icon: "none" },
+				args: { projectId: "v2p-3", icon: "none" },
 			},
 		]);
 	});
@@ -434,6 +538,142 @@ describe("runV1Migration scenarios", () => {
 		expect(ipc.ledger.get("project\0p1")?.status).toBe("success");
 	});
 
+	test("repo whose path is gone is skipped, not failed: gate completes; restoring the path imports it later", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [
+			project("good", "/repo/good"),
+			project("gone", "/repo/gone"),
+		];
+		ipc.workspaces = [workspace("w-gone", "gone", "feat")];
+		host.missingPaths.add("/repo/gone");
+
+		const first = await run(ipc, host);
+		expect(first.projects.migrated).toBe(1);
+		expect(first.projects.failed).toBe(0);
+		expect(first.projects.skipped).toBe(1);
+		expect(first.workspaces.failed).toBe(0);
+		expect(first.workspaces.skipped).toBe(1);
+		expect(first.gateComplete).toBe(true);
+		expect(ipc.ledger.get("project\0gone")).toMatchObject({
+			status: "skipped",
+			reason: "repo-path-missing",
+		});
+
+		host.missingPaths.clear(); // user restored the folder
+		const second = await run(ipc, host);
+		expect(second.projects.migrated).toBe(1);
+		expect(ipc.ledger.get("project\0gone")?.status).toBe("success");
+	});
+
+	test("folder that is no longer a git repo is skipped without a create call", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [project("plain", "/repo/plain")];
+		host.nonGitPaths.add("/repo/plain");
+
+		const summary = await run(ipc, host);
+		expect(summary.projects.skipped).toBe(1);
+		expect(summary.projects.failed).toBe(0);
+		expect(summary.gateComplete).toBe(true);
+		expect(host.mutations).toHaveLength(0);
+		expect(ipc.ledger.get("project\0plain")).toMatchObject({
+			status: "skipped",
+			reason: "not-a-git-repo",
+		});
+	});
+
+	test("on v1, a ledger row pointing at a project the host no longer has is re-imported, not trusted", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [project("p1", "/repo/a")];
+		ipc.worktrees = [{ id: "wt1", path: "/trees/feat", baseBranch: "main" }];
+		ipc.workspaces = [workspace("w-feat", "p1", "feat", "wt1")];
+		host.diskBranches.set("/repo/a", new Set(["feat"]));
+
+		const first = await runOnV1(ipc, host);
+		expect(first.gateComplete).toBe(true);
+		const staleV2Id = ipc.ledger.get("project\0p1")?.v2Id;
+		expect(staleV2Id).toBeTruthy();
+
+		// host.db wiped or rebuilt: the v2 project id in the ledger is gone.
+		host.projects = [];
+		host.workspaces = [];
+
+		const second = await runOnV1(ipc, host);
+		expect(second.projects.migrated).toBe(1);
+		expect(second.workspaces.failed).toBe(0);
+		expect(second.workspaces.migrated).toBe(1);
+		expect(second.gateComplete).toBe(true);
+		expect(ipc.ledger.get("project\0p1")?.v2Id).not.toBe(staleV2Id);
+		expect(host.projects).toHaveLength(1);
+	});
+
+	test("on v1, a re-imported project gets its v1 preferences applied again", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [
+			{ ...project("p1", "/repo/a"), worktreeBaseDir: "/trees/custom" },
+		];
+		await runOnV1(ipc, host);
+		const setsBefore = host.mutations.filter(
+			(m) => m.kind === "project.setWorktreeBaseDir",
+		);
+		expect(setsBefore).toHaveLength(1);
+
+		host.projects = [];
+		host.workspaces = [];
+		await runOnV1(ipc, host);
+
+		const newV2Id = ipc.ledger.get("project\0p1")?.v2Id ?? "";
+		expect(newV2Id).not.toBe("");
+		const sets = host.mutations.filter(
+			(m) => m.kind === "project.setWorktreeBaseDir",
+		);
+		expect(sets).toHaveLength(2);
+		expect((sets[1]?.args as { projectId: string }).projectId).toBe(newV2Id);
+		expect(ipc.ledger.get("settings\0project-prefs:p1")?.v2Id).toBe(newV2Id);
+	});
+
+	test("after the flip, a project the user deleted on v2 is not re-imported", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [project("p1", "/repo/a")];
+		ipc.worktrees = [{ id: "wt1", path: "/trees/feat", baseBranch: "main" }];
+		ipc.workspaces = [workspace("w-feat", "p1", "feat", "wt1")];
+		host.diskBranches.set("/repo/a", new Set(["feat"]));
+		await runOnV1(ipc, host);
+
+		host.projects = [];
+		host.workspaces = [];
+
+		const followUp = await run(ipc, host); // v2 follow-up pass
+		expect(followUp.projects.migrated).toBe(0);
+		expect(followUp.workspaces.migrated).toBe(0);
+		expect(host.projects).toHaveLength(0);
+	});
+
+	test("workspace of an imported project whose directory vanished is skipped, not failed", async () => {
+		const ipc = new FakeIpc();
+		const host = new FakeHost();
+		ipc.projects = [project("p1", "/repo/a")];
+		host.diskBranches.set("/repo/a", new Set(["feat"]));
+		await runOnV1(ipc, host);
+
+		ipc.worktrees = [{ id: "wt1", path: "/trees/feat", baseBranch: "main" }];
+		ipc.workspaces = [workspace("w-feat", "p1", "feat", "wt1")];
+		host.missingPaths.add("/repo/a"); // repo deleted after the import
+
+		const summary = await runOnV1(ipc, host);
+		expect(summary.workspaces.failed).toBe(0);
+		expect(summary.workspaces.skipped).toBe(1);
+		expect(summary.gateComplete).toBe(true);
+		expect(ipc.ledger.get("workspace\0w-feat")).toMatchObject({
+			status: "skipped",
+			reason: "repo-path-missing",
+		});
+	});
+
 	test("no v1 data: gate trivially complete, zero mutations", async () => {
 		const ipc = new FakeIpc();
 		const host = new FakeHost();
@@ -466,6 +706,7 @@ const ALLOWED_MUTATIONS = new Set([
 	"project.setBranchPrefix",
 	"settings.branchPrefix.set",
 	"workspaceCreation.adopt",
+	"workspaces.create",
 ]);
 
 describe("runV1Migration invariants (seeded fuzz)", () => {
@@ -555,6 +796,8 @@ describe("v1 groups to tags", () => {
 		const host = new FakeHost();
 		ipc.projects = [project("p", "/repo")];
 		ipc.workspaces = [{ ...workspace("w", "p", "main"), sectionId: "g" }];
+		// The repo root is always a worktree on its checked-out branch.
+		host.diskBranches.set("/repo", new Set(["main"]));
 		await run(ipc, host); // Backfill a migration that finished before groups existed.
 		ipc.groups = [
 			{

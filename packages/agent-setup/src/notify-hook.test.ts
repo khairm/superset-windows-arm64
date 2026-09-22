@@ -115,7 +115,7 @@ function writeHookManifest(home: string, orgId: string, endpoint: string) {
 
 describe("getNotifyScriptContent", () => {
 	it("bumps the notify hook marker when hook semantics change", () => {
-		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v17");
+		expect(NOTIFY_SCRIPT_MARKER).toBe("# Superset agent notification hook v19");
 	});
 
 	it("forwards hooks fired inside a subagent (agent_id present) to the host roster only", async () => {
@@ -277,7 +277,7 @@ describe("getNotifyScriptContent", () => {
 		// (HOOK-FORK-DIET) escaping is parameter expansion, so the payload
 		// interpolates pre-escaped variables instead of command substitutions.
 		expect(script).toContain(
-			'dispatch_to_host "{\\"json\\":{\\"terminalId\\":\\"$E_TERMINAL_ID\\",\\"eventType\\":\\"$E_EVENT_TYPE\\",\\"agent\\":{\\"agentId\\":\\"$E_AGENT_ID\\",\\"sessionId\\":\\"$E_SESSION_ID\\"}$PREVIEW_FIELD}}"',
+			'dispatch_to_host "{\\"json\\":{\\"terminalId\\":\\"$E_TERMINAL_ID\\",\\"eventType\\":\\"$E_EVENT_TYPE\\",\\"agent\\":{\\"agentId\\":\\"$E_AGENT_ID\\",\\"sessionId\\":\\"$E_SESSION_ID\\"}$PREVIEW_FIELD$ACCOUNT_FIELD$LAUNCH_FIELD$ATTRIBUTION_FIELD}}"',
 		);
 		// One dispatcher serves both the agent and subagent payloads.
 		expect(script.split('dispatch_to_host "').length - 1).toBe(2);
@@ -869,4 +869,62 @@ it.each([
 	} finally {
 		host.stop();
 	}
+});
+
+describe("session login metadata", () => {
+	it("reports the launch profile and identifier without sending an API key", async () => {
+		const host = fakeHostService(false);
+		try {
+			await runNotifyHookAsync(
+				{ hook_event_name: "SessionStart" },
+				{
+					SUPERSET_AGENT_ID: "claude",
+					SUPERSET_AGENT_LAUNCH_ID: "123-start",
+					SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN: "terminal-scoped-token",
+					SUPERSET_HOST_AGENT_HOOK_URL: host.url,
+					CLAUDE_CONFIG_DIR: '/profile/with "quotes"',
+					ANTHROPIC_API_KEY: "secret-must-stay-local",
+					ANTHROPIC_AUTH_TOKEN: "",
+					ANTHROPIC_BASE_URL: "",
+					CLAUDE_CODE_USE_BEDROCK: "",
+					CLAUDE_CODE_USE_VERTEX: "",
+					CLAUDE_CODE_USE_FOUNDRY: "",
+				},
+			);
+			expect(host.requests[0]?.json).toMatchObject({
+				launchId: "123-start",
+				attributionToken: "terminal-scoped-token",
+				accountProfile: '/profile/with "quotes"',
+				apiKey: true,
+			});
+			expect(JSON.stringify(host.requests)).not.toContain(
+				"secret-must-stay-local",
+			);
+		} finally {
+			host.stop();
+		}
+	});
+	it("does not attribute custom provider traffic to a subscription login", async () => {
+		const host = fakeHostService(false);
+		try {
+			await runNotifyHookAsync(
+				{ hook_event_name: "SessionStart" },
+				{
+					SUPERSET_AGENT_ID: "codex",
+					SUPERSET_HOST_AGENT_HOOK_URL: host.url,
+					OPENAI_BASE_URL: "https://custom.example",
+					OPENAI_API_KEY: "secret-must-stay-local",
+				},
+			);
+			expect(host.requests[0]?.json).toMatchObject({
+				accountProfile: "__unverified__",
+				apiKey: false,
+			});
+			expect(JSON.stringify(host.requests)).not.toContain(
+				"secret-must-stay-local",
+			);
+		} finally {
+			host.stop();
+		}
+	});
 });

@@ -7,6 +7,7 @@ import {
 	TbLoader2,
 	TbRefresh,
 } from "react-icons/tb";
+import { OpenBrowserPageInAppButton } from "renderer/components/OpenBrowserPageInAppButton";
 import { suspendAncestorDragForTextSelection } from "renderer/lib/dnd";
 import { UrlSuggestions } from "./components/UrlSuggestions";
 import { useUrlAutocomplete } from "./hooks/useUrlAutocomplete";
@@ -116,7 +117,7 @@ export function BrowserToolbar({
 	);
 
 	return (
-		<div className="flex h-full flex-1 min-w-0 items-center px-2">
+		<div className="@container/browser-toolbar flex h-full flex-1 min-w-0 items-center px-2">
 			<div className="flex items-center gap-0.5 shrink-0">
 				<button
 					type="button"
@@ -201,6 +202,7 @@ export function BrowserToolbar({
 					/>
 				)}
 			</div>
+			<OpenBrowserPageInAppButton currentUrl={currentUrl} />
 		</div>
 	);
 }

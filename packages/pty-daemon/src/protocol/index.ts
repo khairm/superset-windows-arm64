@@ -20,6 +20,7 @@ export type {
 	OpenOkMessage,
 	OutputMessage,
 	PrepareUpgradeMessage,
+	ReplayCompleteMessage,
 	ResizeMessage,
 	ServerMessage,
 	SessionInfo,

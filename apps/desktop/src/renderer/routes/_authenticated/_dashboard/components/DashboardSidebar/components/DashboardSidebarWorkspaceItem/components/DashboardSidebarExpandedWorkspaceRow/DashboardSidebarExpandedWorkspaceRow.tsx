@@ -183,12 +183,10 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 		// minus would remove the project's anchor row. Removal stays available via
 		// the context menu.
 		const isLocalMainWorkspace = isMainWorkspace && hostType === "local-device";
-		const workspaceKindTitle = isMainWorkspace
-			? "Main workspace"
-			: "Worktree workspace";
-		const workspaceKindDescription = isMainWorkspace
-			? "Uses the repository checkout on this host"
-			: "Isolated copy for parallel development";
+		// Upstream's "local" kind and this fork's master row are the same thing to
+		// a reader: both ARE the project's checkout rather than a worktree of it,
+		// so they share the hover-card copy below.
+		const isLocalWorkspace = workspace.type === "local" || isMainWorkspace;
 
 		return (
 			<div
@@ -323,10 +321,10 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 								) : (
 									<>
 										<p className="text-xs font-medium">
-											{isMainWorkspace ? (
-												workspaceKindTitle
-											) : hostType === "local-device" ? (
+											{isLocalWorkspace ? (
 												<Trans>Local workspace</Trans>
+											) : hostType === "local-device" ? (
+												<Trans>Worktree on this device</Trans>
 											) : hostType === "remote-device" ? (
 												hostIsOnline === false ? (
 													<Trans>Remote workspace — device offline</Trans>
@@ -338,8 +336,11 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 											)}
 										</p>
 										<p className="text-xs text-muted-foreground">
-											{isMainWorkspace ? (
-												workspaceKindDescription
+											{isLocalWorkspace ? (
+												<Trans>
+													Shares the project's checkout — files, git index and
+													branch — with its other local workspaces
+												</Trans>
 											) : hostType === "local-device" ? (
 												<Trans>Running on this device</Trans>
 											) : hostType === "remote-device" ? (
@@ -400,6 +401,14 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 							<div className="flex min-w-0 items-center gap-1.5">
 								<WorkspaceNameMarquee
 									name={name || branch}
+									prefix={
+										pinnedContext
+											? (pinnedContext.projectName ??
+												t({
+													message: "Session",
+												}))
+											: undefined
+									}
 									forceActive={isFocused}
 									className={cn(
 										"text-[13px] leading-tight transition-colors",
@@ -538,7 +547,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 													}}
 													className="flex items-center justify-center text-muted-foreground hover:text-foreground"
 													aria-label={t({
-														message: "Close workspace",
+														message: "Delete workspace",
 													})}
 												>
 													<HiMiniXMark className="size-3.5" />
@@ -547,7 +556,7 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 											<TooltipContent side="top">
 												<HotkeyLabel
 													label={t({
-														message: "Close workspace",
+														message: "Delete workspace",
 													})}
 													id={isActive ? "CLOSE_WORKSPACE" : undefined}
 												/>

@@ -18,6 +18,7 @@ import {
 	isEventBusReopen,
 	loadHostWorkspacesSnapshot,
 	mergeHostWorkspaces,
+	normalizeServedWorkspaceRow,
 	saveHostWorkspacesSnapshot,
 	toHostWorkspaceItem,
 } from "./useHostWorkspaces.utils";
@@ -244,8 +245,9 @@ export function useHostWorkspacesSource(
 			queryFn: async (): Promise<HostWorkspaceRow[]> => {
 				if (!target.hostUrl) return [];
 				const client = getHostServiceClientByUrl(target.hostUrl);
-				const served =
-					(await client.workspace.list.query()) as HostWorkspaceRow[];
+				const served = (
+					(await client.workspace.list.query()) as HostWorkspaceRow[]
+				).map(normalizeServedWorkspaceRow);
 				setLiveAnsweredHostIds((prev) =>
 					prev.has(target.machineId)
 						? prev
@@ -288,7 +290,9 @@ export function useHostWorkspacesSource(
 				const rows = (await client.workspace.list.query({
 					includeArchived: true,
 				})) as HostWorkspaceRow[];
-				return rows.filter((row) => row.archivedAt != null);
+				return rows
+					.filter((row) => row.archivedAt != null)
+					.map(normalizeServedWorkspaceRow);
 			},
 		})),
 	});

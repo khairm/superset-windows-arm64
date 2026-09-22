@@ -14,8 +14,15 @@ import type { WorkspaceForPlacement } from "../usePlaceWorktreesInSidebar/select
  */
 export type LocalWorkspaceForPlacement = Pick<
 	WorkspaceForPlacement,
-	"id" | "projectId" | "type" | "hostId"
->;
+	"id" | "projectId" | "hostId"
+> & {
+	/**
+	 * Upstream desktop-v1.30.1 retired "main" from the placement union when it
+	 * retired the main-workspace concept; the fork's master row still carries
+	 * it, and it is the whole predicate below.
+	 */
+	type: WorkspaceForPlacement["type"] | "main";
+};
 
 /**
  * The classifier-relevant half of a `v2WorkspaceLocalState` row. Every field is
@@ -38,6 +45,16 @@ export type HiddenMainSidebarRow = HiddenMainSidebarState & {
 };
 
 /**
+ * A `v2SidebarProjects` row as the hook's live query selects it. `isHidden` is
+ * optional and nullable for the same reason the state fields above are: rows
+ * persisted before the flag existed read back undefined.
+ */
+export type SidebarProjectVisibilityRow = {
+	projectId: string;
+	isHidden?: boolean | null;
+};
+
+/**
  * (MASTER-ALWAYS-ACTIVE) Chooses which master ("main") workspaces are stuck in
  * the legacy "hidden" bucket and must be returned to the ACTIVE sidebar list.
  * Kept free of React so it can be unit-tested directly.
@@ -51,12 +68,13 @@ export type HiddenMainSidebarRow = HiddenMainSidebarState & {
  *
  * The predicate, in order:
  *  - a known machine (`machineId`), and the workspace is a `main` on it;
- *  - it has a project, and that project is in the user's sidebar — the shared
- *    `isLocalMainWorkspaceInSidebarScope` gate, so this stays an exact
- *    complement of `isAutoIncludedLocalMainWorkspace`;
- *  - a local-state ROW EXISTS. Row-LESS mains are NOT ours: they surface
- *    through `isAutoIncludedLocalMainWorkspace` and must never be selected here
- *    (inserting a row for one would take them out of that gated path);
+ *  - it has a project, and that project is VISIBLE in the user's sidebar — the
+ *    shared `isLocalMainWorkspaceInSidebarScope` gate, fed only the project
+ *    rows that are not `isHidden`;
+ *  - a local-state ROW EXISTS. Row-LESS mains are NOT ours: `usePlaceWorktreesInSidebar`
+ *    places every local workspace, masters included, so one is only ever
+ *    momentarily row-less and must never be selected here (inserting a row for
+ *    one would take it out of the placement path);
  *  - and the row buckets as "hidden".
  *
  * State is read ONLY through `getWorkspaceSidebarBucket`, never raw
@@ -67,12 +85,15 @@ export type HiddenMainSidebarRow = HiddenMainSidebarState & {
  *
  * This deliberately overrides (REMOVE-STICKY) for mains only: re-adding a
  * removed project resurrects its master. Removing the project still removes it
- * (its `v2SidebarProjects` row is gone, so the predicate is false).
+ * — `removeProjectFromSidebarState` marks the project's `v2SidebarProjects`
+ * row hidden (it cannot delete it: upstream's `usePlaceProjectsInSidebar`
+ * re-places row-less projects), and a hidden project row is NOT in scope here,
+ * so the predicate is false for as long as the project stays removed.
  */
 export function selectHiddenMainsToSurface(
 	localWorkspaces: readonly LocalWorkspaceForPlacement[],
 	localStateRows: readonly HiddenMainSidebarRow[],
-	sidebarProjectRows: readonly { projectId: string }[],
+	sidebarProjectRows: readonly SidebarProjectVisibilityRow[],
 	machineId: string | null,
 	nowMs: number,
 ): Array<{ id: string; projectId: string }> {
@@ -82,7 +103,9 @@ export function selectHiddenMainsToSurface(
 		localStateRows.map((row) => [row.workspaceId, row]),
 	);
 	const sidebarProjectIds = new Set(
-		sidebarProjectRows.map((row) => row.projectId),
+		sidebarProjectRows
+			.filter((row) => row.isHidden !== true)
+			.map((row) => row.projectId),
 	);
 
 	return localWorkspaces.flatMap(
@@ -97,8 +120,8 @@ export function selectHiddenMainsToSurface(
 				return [];
 			}
 
-			// Row-less mains belong to isAutoIncludedLocalMainWorkspace — leave them
-			// alone; they are already visible and writing a row would change owner.
+			// Row-less mains belong to the placement reconciler — leave them alone;
+			// writing a row here would change owner.
 			const row = rowsByWorkspaceId.get(workspace.id);
 			if (row === undefined) return [];
 

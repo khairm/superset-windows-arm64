@@ -18,6 +18,7 @@ export function openPullRequestPaneInStore(
 	for (const tab of state.tabs) {
 		for (const pane of Object.values(tab.panes)) {
 			if (pane.kind !== "pull-request") continue;
+			if ((pane.data as PullRequestPaneData).projectId) continue;
 			if ((pane.data as PullRequestPaneData).prNumber !== prNumber) {
 				state.setPaneData({ paneId: pane.id, data: data as PaneViewerData });
 			}

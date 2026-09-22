@@ -37,8 +37,9 @@ export const workspaceProvider: CommandProvider = {
 
 		if (!context.workspace) return [quickCreate];
 		const workspace = context.workspace;
+		// (MASTER-ARCHIVE-ONLY) A master card is archive-only, so the palette
+		// never offers Delete for one.
 		const isMain = workspace.workspaceType === "main";
-
 		const commands: Command[] = [
 			{
 				id: "workspace.new",
@@ -81,11 +82,9 @@ export const workspaceProvider: CommandProvider = {
 						workspaceId: workspace.id,
 						workspaceName: workspace.name,
 						projectId: workspace.projectId ?? "",
-						isMain,
 					}),
 			});
 		}
-
 		if (!isMain) {
 			commands.push({
 				id: `workspace.delete:${workspace.id}`,

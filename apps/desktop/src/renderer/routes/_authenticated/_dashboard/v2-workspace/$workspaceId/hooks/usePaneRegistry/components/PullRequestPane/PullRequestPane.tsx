@@ -5,7 +5,6 @@ import { PullRequestDetailHeader } from "renderer/routes/_authenticated/_dashboa
 import { PullRequestSummaryContent } from "renderer/routes/_authenticated/_dashboard/pull-requests/components/PullRequestSummaryContent";
 import { usePullRequestDetail } from "renderer/routes/_authenticated/_dashboard/pull-requests/hooks/usePullRequestDetail";
 import { resolvePullRequestDetail } from "renderer/routes/_authenticated/_dashboard/pull-requests/utils/resolvePullRequestDetail";
-import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import { normalizeThreadsToComments } from "../../../../components/CommentsSection/utils/normalizeThreadsToComments";
 import type { CommentPaneData, PullRequestPaneData } from "../../../../types";
 import {
@@ -13,6 +12,7 @@ import {
 	useReviewCommentNavigation,
 } from "../../../useReviewCommentNavigation";
 import { PullRequestComments } from "./components/PullRequestComments";
+import { usePullRequestPaneProject } from "./hooks/usePullRequestPaneProject";
 
 interface PullRequestPaneProps {
 	data: PullRequestPaneData;
@@ -25,12 +25,20 @@ export function PullRequestPane({
 	onOpenDiff,
 	onOpenComment,
 }: PullRequestPaneProps) {
-	const { workspace, hostUrl } = useWorkspace();
-	const projectId = workspace.projectId;
+	const {
+		workspace,
+		projectId,
+		hostId,
+		hostUrl,
+		isWorkspaceProject,
+		isReady,
+		hasProject,
+	} = usePullRequestPaneProject(data.projectId);
 	const linkedPR = workspaceTrpc.git.getPullRequest.useQuery({
 		workspaceId: workspace.id,
 	});
-	const hasMatchingPR = linkedPR.data?.number === data.prNumber;
+	const hasMatchingPR =
+		isWorkspaceProject && linkedPR.data?.number === data.prNumber;
 	const threads = workspaceTrpc.git.getPullRequestThreads.useQuery(
 		{ workspaceId: workspace.id },
 		{
@@ -41,10 +49,10 @@ export function PullRequestPane({
 	);
 	const comments = useMemo(
 		() =>
-			threads.data
+			hasMatchingPR && threads.data
 				? normalizeThreadsToComments(threads.data, linkedPR.data?.url)
 				: [],
-		[threads.data, linkedPR.data?.url],
+		[hasMatchingPR, threads.data, linkedPR.data?.url],
 	);
 	const onOpenInDiff = useReviewCommentNavigation(workspace.id, onOpenDiff);
 	const detail = usePullRequestDetail({
@@ -55,10 +63,8 @@ export function PullRequestPane({
 	const resolved = resolvePullRequestDetail({
 		prNumber: data.prNumber,
 		projectId,
-		// The workspace's project is the one its host serves; there's no
-		// project list to wait on the way the Pull requests screen does.
-		areProjectsReady: true,
-		hasProject: true,
+		areProjectsReady: isReady,
+		hasProject,
 		hostUrl,
 		isLoading: detail.isLoading,
 		error: detail.error,
@@ -71,7 +77,7 @@ export function PullRequestPane({
 			<div className="flex shrink-0 flex-col border-b border-border pt-3">
 				<PullRequestDetailHeader
 					projectId={projectId}
-					hostId={workspace.hostId}
+					hostId={hostId}
 					hostUrl={hostUrl}
 					prNumber={data.prNumber}
 					data={detail.data}

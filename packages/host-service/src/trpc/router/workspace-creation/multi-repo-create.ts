@@ -28,7 +28,10 @@ import {
 import { findWorktreeAtPath } from "./shared/branch-search";
 import { startCommandTerminal } from "./shared/command-terminal";
 import { enablePushAutoSetupRemote } from "./shared/git-config";
-import type { requireLocalProject } from "./shared/local-project";
+import {
+	getProjectWorktreesFolder,
+	type requireLocalProject,
+} from "./shared/local-project";
 import { startSetupTerminalIfPresent } from "./shared/setup-terminal";
 import {
 	addWorktreeWithSparseCheckout,
@@ -317,7 +320,7 @@ async function runCreate(args: {
 	const worktreeBaseDir =
 		localProject.worktreeBaseDir ?? getHostWorktreeBaseDir(ctx);
 	const containerPath = safeResolveWorktreePath(
-		localProject.id,
+		getProjectWorktreesFolder(ctx, localProject),
 		branch,
 		worktreeBaseDir,
 	);

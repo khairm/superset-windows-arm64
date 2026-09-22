@@ -5,6 +5,7 @@ import {
 	getAgentModelSupport,
 	getAgentModeSupport,
 } from "@superset/shared/agent-models";
+import { startableCloudEnvironments } from "@superset/shared/cloud-environments";
 import {
 	PromptInput,
 	PromptInputButton,
@@ -74,6 +75,7 @@ import {
 import { DevicePicker } from "../DashboardNewWorkspaceForm/components/DevicePicker";
 import { CLOUD_HOST_ID } from "../DashboardNewWorkspaceForm/components/DevicePicker/constants";
 import { useWorkspaceHostOptions } from "../DashboardNewWorkspaceForm/components/DevicePicker/hooks/useWorkspaceHostOptions";
+import { CheckoutPickerPill } from "../DashboardNewWorkspaceForm/PromptGroup/components/CheckoutPickerPill";
 import { CompareBaseBranchPicker } from "../DashboardNewWorkspaceForm/PromptGroup/components/CompareBaseBranchPicker";
 import { EnvironmentPickerPill } from "../DashboardNewWorkspaceForm/PromptGroup/components/EnvironmentPickerPill";
 import { GitHubIssueLinkCommand } from "../DashboardNewWorkspaceForm/PromptGroup/components/GitHubIssueLinkCommand";
@@ -86,6 +88,7 @@ import { useBranchPickerController } from "../DashboardNewWorkspaceForm/PromptGr
 import { useLinkedContext } from "../DashboardNewWorkspaceForm/PromptGroup/hooks/useLinkedContext";
 import { useSubmitWorkspace } from "../DashboardNewWorkspaceForm/PromptGroup/hooks/useSubmitWorkspace";
 import {
+	CLOUD_UPLOAD_TARGET,
 	useFileIdsForHost,
 	useUploadAttachments,
 } from "../DashboardNewWorkspaceForm/PromptGroup/hooks/useUploadAttachments";
@@ -103,6 +106,7 @@ import { SamplePromptCards } from "./components/SamplePromptCards";
 import { SamplePrompts } from "./components/SamplePrompts";
 import { PROMPT_PLACEHOLDERS } from "./components/SamplePrompts/constants";
 import { SupersetIcon } from "./components/SupersetIcon";
+import { useProjectPreselection } from "./hooks/useProjectPreselection";
 import { useSamplePromptSelection } from "./hooks/useSamplePromptSelection";
 
 /** Nested prefixes of one fixed pool — only the form factor varies by arm. */
@@ -159,10 +163,23 @@ export function NewWorkspaceScreen({
 		{ organizationId: activeOrganizationId ?? "" },
 		{ enabled: draft.hostId === CLOUD_HOST_ID && !!activeOrganizationId },
 	);
-	const environmentOptions = environmentsQuery.data ?? [];
+	const environmentOptions = startableCloudEnvironments(
+		environmentsQuery.data ?? [],
+	);
 	const selectedEnvironment =
 		environmentOptions.find((row) => row.id === draft.environmentId) ??
 		environmentOptions[0];
+	const cloudRepository = useMemo(() => {
+		if (draft.hostId !== CLOUD_HOST_ID) return null;
+		const primary = selectedEnvironment?.repositories?.[0];
+		return primary
+			? {
+					owner: primary.owner,
+					name: primary.name,
+					defaultBranch: primary.defaultBranch,
+				}
+			: null;
+	}, [draft.hostId, selectedEnvironment]);
 	const setLastProjectId = useV2WorkspaceCreateDefaultsStore(
 		(state) => state.setLastProjectId,
 	);
@@ -261,59 +278,19 @@ export function NewWorkspaceScreen({
 		[hostProjects, setUpProjectIds],
 	);
 
-	// Apply the URL preselection exactly once (ref-guarded like the control
-	// modal) — re-applying on every draft change would snap the picker back
-	// and make switching projects impossible.
-	const appliedPreSelectionRef = useRef<string | null>(null);
-	const appliedSessionPreselectionRef = useRef(false);
-	// Re-arm per intent so a second session-open cycle on a reused screen
-	// instance applies again.
-	useEffect(() => {
-		if (!preSelectedSession) appliedSessionPreselectionRef.current = false;
-	}, [preSelectedSession]);
-	useEffect(() => {
-		if (!preSelectedProjectId) appliedPreSelectionRef.current = null;
-	}, [preSelectedProjectId]);
-	useEffect(() => {
-		if (!isOpen || !areProjectsReady) return;
-		if (preSelectedSession && !appliedSessionPreselectionRef.current) {
-			appliedSessionPreselectionRef.current = true;
-			selectSession();
-			return;
-		}
-		const isValid = (id: string | null | undefined) =>
-			Boolean(id && projects.some((project) => project.id === id));
-		if (
-			preSelectedProjectId &&
-			preSelectedProjectId !== appliedPreSelectionRef.current &&
-			isValid(preSelectedProjectId)
-		) {
-			appliedPreSelectionRef.current = preSelectedProjectId;
-			selectProject(preSelectedProjectId);
-			return;
-		}
-		// An explicit "No project" (session) choice must survive project-list
-		// updates — never auto-select over it.
-		if (draft.isSession) return;
-		if (isValid(draft.selectedProjectId)) return;
-		const { lastProjectId } = useV2WorkspaceCreateDefaultsStore.getState();
-		updateDraft({
-			selectedProjectId: isValid(lastProjectId)
-				? lastProjectId
-				: (projects[0]?.id ?? null),
-		});
-	}, [
+	const isProjectPreselectionPending = useProjectPreselection({
 		isOpen,
 		areProjectsReady,
+		projects,
 		preSelectedProjectId,
 		preSelectedSession,
-		draft.selectedProjectId,
-		draft.isSession,
-		projects,
+		selectedProjectId: draft.selectedProjectId,
+		isSession: draft.isSession,
+		lastProjectId: useV2WorkspaceCreateDefaultsStore.getState().lastProjectId,
 		selectProject,
 		selectSession,
 		updateDraft,
-	]);
+	});
 
 	const storedComposerWidth = useNewWorkspaceWidthStore(
 		(state) => state.screenWidth,
@@ -450,8 +427,9 @@ export function NewWorkspaceScreen({
 		promptCardsVariant === null ? "rows" : PROMPT_LAYOUTS[promptCardsVariant];
 
 	// One signal drives both the prompt tier and the dismiss affordance: has
-	// this person shipped anything yet. `main` is auto-created for every new
-	// account, so it cannot count.
+	// this person shipped anything yet. Upstream reads that off the row count
+	// because nothing seeds a workspace there; this fork still mints a master
+	// per project, so a master cannot count.
 	const { workspaces: hostWorkspaces } = useHostWorkspaces();
 	const hasRealWorkspace = hostWorkspaces.some(
 		(workspace) => workspace.type !== "main",
@@ -538,6 +516,7 @@ export function NewWorkspaceScreen({
 	const { pickerProps } = useBranchPickerController({
 		projectId,
 		hostId: draft.hostId,
+		cloudRepository,
 		baseBranch: draft.baseBranch,
 		typedWorkspaceName: draft.workspaceName,
 		onBaseBranchChange: (branch, source) => {
@@ -554,11 +533,17 @@ export function NewWorkspaceScreen({
 	});
 
 	// ── Submit ───────────────────────────────────────────────────────
+	// A cloud workspace has no host to upload to, so its attachments go to
+	// cloud storage and the sandbox pulls them once it is up.
+	const uploadTarget =
+		(draft.hostId ?? machineId) === CLOUD_HOST_ID
+			? CLOUD_UPLOAD_TARGET
+			: launchHostUrl;
 	const uploadAttachments = useUploadAttachments({
 		files: attachments.files,
-		hostUrl: launchHostUrl,
+		hostUrl: uploadTarget,
 	});
-	const fileIdsForCurrentHost = useFileIdsForHost(launchHostUrl);
+	const fileIdsForCurrentHost = useFileIdsForHost(uploadTarget);
 	const visibleFiles = useMemo(() => {
 		const idSet = new Set(fileIdsForCurrentHost);
 		return attachments.files.filter((file) => idSet.has(file.id));
@@ -605,7 +590,7 @@ export function NewWorkspaceScreen({
 		// no host whose readiness could block it, and no project either — the
 		// picker is hidden for cloud, so requiring one is unanswerable.
 		if (selectedHostId === CLOUD_HOST_ID) return null;
-		if (!projectId && !draft.isSession)
+		if (isProjectPreselectionPending || (!selectedProject && !draft.isSession))
 			return t({
 				message: "Select a project",
 			});
@@ -642,7 +627,8 @@ export function NewWorkspaceScreen({
 		}
 		return null;
 	}, [
-		projectId,
+		isProjectPreselectionPending,
+		selectedProject,
 		draft.isSession,
 		draft.hostId,
 		draft.prompt,
@@ -1115,13 +1101,31 @@ export function NewWorkspaceScreen({
 								/>
 							)}
 							{draft.linkedPR ? (
-								<span className="flex items-center gap-1 text-xs text-muted-foreground">
-									<LuGitPullRequest className="size-3 shrink-0" />
-									<Trans>based off PR #{draft.linkedPR.prNumber}</Trans>
-								</span>
+								<>
+									<CheckoutPickerPill
+										checkout="worktree"
+										onSelectCheckout={() => {}}
+										disabled
+									/>
+									<span className="flex items-center gap-1 text-xs text-muted-foreground">
+										<LuGitPullRequest className="size-3 shrink-0" />
+										<Trans>based off PR #{draft.linkedPR.prNumber}</Trans>
+									</span>
+								</>
 							) : /* (MASTER-PLUS-LAUNCH) Nothing is branched off anything. */
-							draft.isSession || isMasterMode ? null : (
+							draft.isSession || isMasterMode ? null : draft.hostId ===
+								CLOUD_HOST_ID ? (
 								<CompareBaseBranchPicker {...pickerProps} />
+							) : (
+								<>
+									<CheckoutPickerPill
+										checkout={draft.checkout}
+										onSelectCheckout={(checkout) => updateDraft({ checkout })}
+									/>
+									{draft.checkout === "worktree" && (
+										<CompareBaseBranchPicker {...pickerProps} />
+									)}
+								</>
 							)}
 						</div>
 						{needsSetup && (

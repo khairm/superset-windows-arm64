@@ -149,7 +149,8 @@ export interface WorkspaceSnapshot {
 	projectId: string | null;
 	name: string;
 	branch: string;
-	type: "main" | "worktree" | "session";
+	/** "main" is the fork's master row; see the `workspaces.type` column. */
+	type: "main" | "local" | "worktree" | "session";
 	worktreePath: string;
 	taskId: string | null;
 	createdByUserId: string | null;

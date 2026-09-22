@@ -1,100 +1,12 @@
-import { msg } from "@lingui/core/macro";
-import { i18n } from "@superset/i18n";
-import { formatDate } from "@superset/i18n/format";
-
-/** Formats the time until a quota window resets, e.g. "2d 4h", "3h 12m", "14m". */
-export function formatResetIn(resetsAt: Date, now: Date = new Date()): string {
-	const diffMs = resetsAt.getTime() - now.getTime();
-	if (diffMs <= 0) {
-		return i18n._(msg({ message: "now", context: "countdown" }));
-	}
-
-	const totalMinutes = Math.ceil(diffMs / 60_000);
-	const days = Math.floor(totalMinutes / (60 * 24));
-	const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
-	const minutes = totalMinutes % 60;
-
-	if (days > 0) {
-		return hours > 0
-			? i18n._(
-					msg({
-						message: `${days}d ${hours}h`,
-					}),
-				)
-			: i18n._(msg({ message: `${days}d` }));
-	}
-	if (hours > 0) {
-		return minutes > 0
-			? i18n._(
-					msg({
-						message: `${hours}h ${minutes}m`,
-					}),
-				)
-			: i18n._(msg({ message: `${hours}h` }));
-	}
-	return i18n._(msg({ message: `${minutes}m` }));
-}
-
 /**
- * Compact countdown for tight surfaces, e.g. "6d17h", "4h0m", "45m", "now".
- * Units are floored and both are always shown; a reset further out than the
- * window is capped to it, so a skewed timestamp cannot print past the window.
- * Returns "" for a null or unparseable timestamp.
- * Same output format as the statusline countdown in
- * mk-skills/statusline/statusline.py — keep the two in sync.
+ * Upstream desktop-v1.30.1 moved this module to
+ * `renderer/utils/usage/formatResetIn`, which is where the implementation now
+ * lives (including the fork-only `formatResetCompact`). This path stays as the
+ * fork's own import surface — the Claude-account sidebar chip reaches the
+ * compact countdown through it.
  */
-export function formatResetCompact(
-	resetsAt: string | null,
-	windowMs: number,
-	now: number,
-): string {
-	if (resetsAt === null) return "";
-	const resetMs = Date.parse(resetsAt);
-	if (Number.isNaN(resetMs)) return "";
-
-	const remainingMs = Math.min(Math.max(resetMs - now, 0), windowMs);
-	const totalSeconds = Math.floor(remainingMs / 1000);
-	if (totalSeconds <= 0) {
-		return i18n._(msg({ message: "now", context: "countdown" }));
-	}
-
-	const days = Math.floor(totalSeconds / 86_400);
-	const hours = Math.floor((totalSeconds % 86_400) / 3_600);
-	const minutes = Math.floor((totalSeconds % 3_600) / 60);
-
-	if (days > 0) return `${days}d${hours}h`;
-	if (hours > 0) return `${hours}h${minutes}m`;
-	return `${minutes}m`;
-}
-
-/**
- * Full reset caption: countdown plus the absolute time — clock time when the
- * reset lands within 24h, date otherwise. e.g. "Resets in 2h 10m · 3:22 PM",
- * "Resets in 5d 13h · Aug 21".
- */
-export function formatResetLabel(
-	resetsAt: Date,
-	now: Date = new Date(),
-): string {
-	const diffMs = resetsAt.getTime() - now.getTime();
-	if (diffMs <= 0) {
-		return i18n._(msg({ message: "Resets now" }));
-	}
-
-	const within24h = diffMs < 24 * 60 * 60 * 1000;
-	const absolute = within24h
-		? formatDate(resetsAt, {
-				hour: "numeric",
-				minute: "2-digit",
-			})
-		: formatDate(resetsAt, {
-				month: "short",
-				day: "numeric",
-			});
-	const countdown = formatResetIn(resetsAt, now);
-	return i18n._(
-		msg({
-			message: `Resets in ${countdown} · ${absolute}`,
-		}),
-	);
-}
+export {
+	formatResetCompact,
+	formatResetIn,
+	formatResetLabel,
+} from "renderer/utils/usage/formatResetIn";

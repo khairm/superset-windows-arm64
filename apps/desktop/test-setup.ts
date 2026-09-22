@@ -11,9 +11,21 @@
  */
 import "../../scripts/test-preload.ts";
 import { beforeEach, mock } from "bun:test";
+import "@superset/workspace-client/relay-socket";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+
+// Partysocket subclasses EventTarget at import time; socket tests must use the
+// same native event realm even after another suite registers happy-dom.
+export const nativeWebGlobals = {
+	WebSocket: globalThis.WebSocket,
+	fetch: globalThis.fetch,
+	Response: globalThis.Response,
+	Event: globalThis.Event,
+	MessageEvent: globalThis.MessageEvent,
+	EventTarget: globalThis.EventTarget,
+};
 
 process.env.NODE_ENV = "test";
 process.env.SKIP_ENV_VALIDATION = "1";
@@ -94,7 +106,7 @@ beforeEach(() => {
 
 // Ensure window has addEventListener/removeEventListener for react-hotkeys-hook's IIFE
 if (typeof globalThis.window !== "undefined") {
-	const win = globalThis.window as Record<string, unknown>;
+	const win = globalThis.window;
 	if (!win.addEventListener) win.addEventListener = mock(() => {});
 	if (!win.removeEventListener) win.removeEventListener = mock(() => {});
 } else {

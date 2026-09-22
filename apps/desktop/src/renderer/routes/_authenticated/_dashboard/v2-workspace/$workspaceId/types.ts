@@ -53,9 +53,9 @@ export interface CommentPaneData {
 	line?: number;
 }
 
-/** The workspace's linked PR, shown as its summary (description, checks, merge). */
 export interface PullRequestPaneData {
 	prNumber: number;
+	projectId?: string;
 }
 
 export interface PagePaneData {
@@ -84,6 +84,27 @@ export interface SubagentPaneData {
 	agentId: AgentIdentityId;
 	agentType?: string;
 }
+
+export type WorkspaceSearchKey =
+	| "terminalId"
+	| "focusRequestId"
+	| "subagentTerminalId"
+	| "subagentId"
+	| "subagentAgentId"
+	| "subagentType"
+	| "openUrl"
+	| "openUrlTarget"
+	| "openUrlRequestId"
+	| "pageId"
+	| "pageSlug";
+
+/**
+ * Drops the search params a deep link arrived with, once the hook that owns
+ * them has acted. Router history is persisted with its search params and
+ * replayed at boot, so a link left in the URL fires again on every relaunch
+ * and on every Back onto that entry.
+ */
+export type ConsumeSearch = (keys: WorkspaceSearchKey[]) => void;
 
 export type PaneViewerData =
 	| FilePaneData

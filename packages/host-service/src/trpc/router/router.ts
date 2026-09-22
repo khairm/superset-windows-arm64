@@ -22,6 +22,7 @@ import { pageWatchRouter } from "./page-watch";
 import { portsRouter } from "./ports";
 import { projectRouter } from "./project";
 import { pullRequestsRouter } from "./pull-requests";
+import { sandboxRouter } from "./sandbox";
 import { settingsRouter } from "./settings";
 // (SIDEBAR-MIRROR) fork-only: the renderer's write door for its sidebar
 // curation. Registered against THIS file as well as the router directory for
@@ -61,6 +62,7 @@ export const appRouter = router({
 	tagFolders: tagFoldersRouter,
 	pageWatch: pageWatchRouter,
 	ports: portsRouter,
+	sandbox: sandboxRouter,
 	settings: settingsRouter,
 	// (SIDEBAR-MIRROR) fork-only.
 	sidebarMirror: sidebarMirrorRouter,

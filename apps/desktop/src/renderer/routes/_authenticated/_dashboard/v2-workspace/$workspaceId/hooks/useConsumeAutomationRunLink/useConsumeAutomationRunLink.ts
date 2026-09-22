@@ -2,7 +2,7 @@ import type { WorkspaceStore } from "@superset/panes";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useEffect, useRef } from "react";
 import type { StoreApi } from "zustand/vanilla";
-import type { PaneViewerData } from "../../types";
+import type { ConsumeSearch, PaneViewerData } from "../../types";
 import { focusOrAddTerminalPane } from "../../utils/focusTerminalPane";
 
 interface UseConsumeAutomationRunLinkArgs {
@@ -12,6 +12,7 @@ interface UseConsumeAutomationRunLinkArgs {
 	tabId: string | undefined;
 	terminalId: string | undefined;
 	focusRequestId: string | undefined;
+	consumeSearch?: ConsumeSearch;
 }
 
 /**
@@ -29,6 +30,7 @@ export function useConsumeAutomationRunLink({
 	tabId,
 	terminalId,
 	focusRequestId,
+	consumeSearch,
 }: UseConsumeAutomationRunLinkArgs): void {
 	const consumedRef = useRef<Set<string>>(new Set());
 	const terminalSessionsQuery = workspaceTrpc.terminal.list.useQuery(
@@ -79,7 +81,7 @@ export function useConsumeAutomationRunLink({
 		// `undefined` means the successor lookup is still resolving; consuming
 		// the link now would burn its key before we know where it points.
 		if (!paneLayoutReady || targetTerminalId === undefined) return;
-		consumeTerminalAutomationRunLink({
+		const consumed = consumeTerminalAutomationRunLink({
 			store,
 			workspaceId,
 			paneLayoutReady,
@@ -90,6 +92,8 @@ export function useConsumeAutomationRunLink({
 			resumedTerminalId: targetTerminalId,
 			consumedKeys: consumedRef.current,
 		});
+		// Drop the spent params so a reload does not re-open the pane.
+		if (consumed) consumeSearch?.(["terminalId"]);
 	}, [
 		store,
 		terminalId,
@@ -99,6 +103,7 @@ export function useConsumeAutomationRunLink({
 		targetTerminalId,
 		workspaceId,
 		paneLayoutReady,
+		consumeSearch,
 	]);
 }
 

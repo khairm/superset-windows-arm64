@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as os from "node:os";
 import { signalProcessTreeAndGroups } from "@superset/pty-daemon/process-tree";
 import { applyWindowsUserEnvToProcess } from "@superset/shared/windows-user-env";
+import { getManagedEnv } from "../runtime/sandbox-managed-env/sandbox-managed-env.ts";
 import { resolveConfiguredShell } from "./user-shell.ts";
 
 const SHELL_ENV_TIMEOUT_MS = 8_000;
@@ -320,11 +321,14 @@ export async function getStrictShellEnvironment(): Promise<
  * app inherits launchd's bare PATH, which has no Homebrew.
  */
 export async function getToolEnvironment(): Promise<Record<string, string>> {
-	return getStrictShellEnvironment().catch(() => {
+	const env = await getStrictShellEnvironment().catch(() => {
 		const env = { ...process.env } as Record<string, string>;
 		augmentPathForMacOS(env);
 		return env;
 	});
+	// The login-shell snapshot is cached and predates the control plane's
+	// push on a sandbox; the managed set wins over it, as it does in terminals.
+	return { ...env, ...getManagedEnv() };
 }
 
 export function clearStrictShellEnvCache(): void {

@@ -5,10 +5,13 @@ import {
 	buildDefaultAccountResolver,
 	buildWrapperScript,
 	createWrapper,
+	getManagedArtifactGuardHookCommand,
 	getManagedNotifyHookCommand,
+	isManagedArtifactGuardCommand,
 	isManagedNotifyCommand,
 	writeFileIfChanged,
 } from "./agent-wrappers-common";
+import { getArtifactGuardScriptPath } from "./artifact-guard-hook";
 import { getTemplatePath } from "./config";
 import {
 	buildNestedDesiredEntries,
@@ -58,6 +61,9 @@ export function getClaudeManagedHookCommand(): string {
 	return getManagedNotifyHookCommand("claude");
 }
 
+export const CLAUDE_ARTIFACT_GUARD_EVENT = "PreToolUse";
+export const CLAUDE_ARTIFACT_GUARD_MATCHER = "Artifact";
+
 /**
  * Returns the global Claude settings path used for native hook registration.
  */
@@ -103,19 +109,33 @@ const CLAUDE_MANAGED_EVENTS: Record<string, { matcher?: string }> = {
 
 function claudeHooksSpec(
 	notifyScriptPath: string,
+	artifactGuardScriptPath: string = getArtifactGuardScriptPath(),
 ): ManagedJsonHooksSpec<ClaudeHookDefinition> {
+	const desiredEntriesByEvent = buildNestedDesiredEntries<ClaudeHookDefinition>(
+		CLAUDE_MANAGED_EVENTS,
+		getClaudeManagedHookCommand(),
+	);
+	desiredEntriesByEvent[CLAUDE_ARTIFACT_GUARD_EVENT] = [
+		...(desiredEntriesByEvent[CLAUDE_ARTIFACT_GUARD_EVENT] ?? []),
+		{
+			matcher: CLAUDE_ARTIFACT_GUARD_MATCHER,
+			hooks: [
+				{ type: "command", command: getManagedArtifactGuardHookCommand() },
+			],
+		},
+	];
 	return {
 		fileLabel: "Claude settings.json",
 		agentLabel: "Claude",
 		getFilePath: getClaudeGlobalSettingsJsonPath,
 		eventsContainerKey: "hooks",
-		desiredEntriesByEvent: buildNestedDesiredEntries(
-			CLAUDE_MANAGED_EVENTS,
-			getClaudeManagedHookCommand(),
-		),
+		desiredEntriesByEvent,
 		cleanEntry: (definition) =>
-			cleanNestedHookDefinition(definition, (command) =>
-				isManagedNotifyCommand(command, notifyScriptPath),
+			cleanNestedHookDefinition(
+				definition,
+				(command) =>
+					isManagedNotifyCommand(command, notifyScriptPath) ||
+					isManagedArtifactGuardCommand(command, artifactGuardScriptPath),
 			),
 		dropEmptyContainerOnRemove: true,
 	};
@@ -186,7 +206,9 @@ const CODEX_MANAGED_EVENTS: Record<string, { matcher?: string }> = {
 	// A planning question blocks on user input; resume working after its answer.
 	// Match only this tool so ordinary tool calls never signal a waiting state.
 	PreToolUse: { matcher: "^request_user_input$" },
-	PostToolUse: { matcher: "^request_user_input$" },
+	// Reassert working state after any tool call so a cleared or missed Start
+	// self-heals during a turn, matching Claude's lifecycle behavior.
+	PostToolUse: { matcher: "*" },
 	Stop: {},
 	Interrupt: {},
 	SubagentStart: {},
@@ -290,14 +312,13 @@ export function getOpenCodePluginContent(notifyPath: string): string {
  * in ~/.claude/settings.json (createClaudeSettingsJson).
  */
 export function createClaudeWrapper(): void {
-	const script = buildWrapperScript(
-		"claude",
-		`${buildDefaultAccountResolver(
+	const script = buildWrapperScript("claude", `exec "$REAL_BIN" "$@"`, {
+		agentId: "claude",
+		beforeLaunch: buildDefaultAccountResolver(
 			"CLAUDE_CONFIG_DIR",
 			"default-claude-config-dir",
-		)}exec "$REAL_BIN" "$@"`,
-		{ agentId: "claude" },
-	);
+		),
+	});
 	createWrapper("claude", script);
 }
 
@@ -309,12 +330,15 @@ export function createCodexWrapper(): void {
 	const notifyPath = getNotifyScriptPath();
 	const script = buildWrapperScript(
 		"codex",
-		buildDefaultAccountResolver(
-			"CODEX_HOME",
-			"default-codex-home",
-			"SUPERSET_AMBIENT_CODEX_HOME",
-		) + buildCodexWrapperExecLine(notifyPath),
-		{ agentId: "codex" },
+		buildCodexWrapperExecLine(notifyPath),
+		{
+			agentId: "codex",
+			beforeLaunch: buildDefaultAccountResolver(
+				"CODEX_HOME",
+				"default-codex-home",
+				"SUPERSET_AMBIENT_CODEX_HOME",
+			),
+		},
 	);
 	createWrapper("codex", script);
 }

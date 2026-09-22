@@ -11,7 +11,7 @@ import {
 } from "@superset/ui/dropdown-menu";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	LuCheck,
 	LuCircle,
@@ -29,13 +29,16 @@ import {
 	useIsDarkTheme,
 } from "renderer/assets/app-icons/preset-icons";
 import { useClaudeAccountCapability } from "renderer/hooks/host-service/useClaudeAccounts";
-import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
-import { formatResetIn, formatResetLabel } from "renderer/lib/formatResetTime";
 import type {
 	UsageAccount,
 	UsageQuotaWindow,
-} from "../../hooks/useHostUsageQuota";
-import { useHostUsageQuota } from "../../hooks/useHostUsageQuota";
+} from "renderer/hooks/host-service/useHostUsageQuota";
+import { useHostUsageQuota } from "renderer/hooks/host-service/useHostUsageQuota";
+import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
+import {
+	formatResetIn,
+	formatResetLabel,
+} from "renderer/utils/usage/formatResetIn";
 import { useRemoveUsageAccount } from "../../hooks/useRemoveUsageAccount";
 import { useRestartAgentSessions } from "../../hooks/useRestartAgentSessions";
 import { useSetDefaultUsageAccount } from "../../hooks/useSetDefaultUsageAccount";
@@ -372,7 +375,17 @@ function AccountCard({
 	);
 }
 
-export function UsageView({ hostUrl }: { hostUrl: string | null }) {
+export function UsageView({
+	hostUrl,
+	focusedAccountKey,
+	focusedAgent,
+}: {
+	hostUrl: string | null;
+	focusedAccountKey?: string;
+	focusedAgent?: string;
+}) {
+	const focusRef = useRef<HTMLDivElement>(null);
+	const focusedOnce = useRef<string | null>(null);
 	const { t } = useLingui();
 	const quotaQuery = useHostUsageQuota(hostUrl);
 	const claudeAccountCapability = useClaudeAccountCapability(hostUrl);
@@ -393,6 +406,18 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 		useRestartAgentSessions(hostUrl);
 
 	const accounts = quotaQuery.data ?? [];
+	useEffect(() => {
+		const key = `${hostUrl}:${focusedAgent}:${focusedAccountKey}`;
+		if (
+			accounts.length > 0 &&
+			focusedOnce.current !== key &&
+			focusRef.current
+		) {
+			focusRef.current.scrollIntoView({ block: "center" });
+			focusRef.current.focus({ preventScroll: true });
+			focusedOnce.current = key;
+		}
+	}, [hostUrl, focusedAgent, focusedAccountKey, accounts]);
 	const isBusy = quotaQuery.isFetching || isRefreshing;
 
 	const showMadeDefaultToast = (
@@ -585,36 +610,52 @@ export function UsageView({ hostUrl }: { hostUrl: string | null }) {
 						) : (
 							<div className="grid gap-2 md:grid-cols-2">
 								{agentAccounts.map((account) => (
-									<AccountCard
+									<div
 										key={account.accountKey}
-										account={account}
-										onMakeDefault={
-											isManagedAgent(account.agent)
-												? () => makeDefaultAccount(account)
-												: null
+										ref={
+											account.accountKey === focusedAccountKey &&
+											(!focusedAgent || account.agent === focusedAgent)
+												? focusRef
+												: undefined
 										}
-										onSwitchSignIn={
-											isManagedAgent(account.agent)
-												? () => openSwitchSignIn(account)
-												: null
-										}
-										onRemove={
-											isManagedAgent(account.agent) &&
-											account.selection !== null
-												? () => setRemoveTarget(account)
-												: null
-										}
-										isSwitching={setDefault.isPending}
-										selectable={
-											isManagedAgent(agent) && agentAccounts.length > 1
-										}
-										showDefaultControl={
-											agent === "codex" ||
-											(claudeAccountCapability.isSuccess &&
-												claudeAccountCapability.data.managed === false)
-										}
-										hideEmails={hideEmails}
-									/>
+										tabIndex={-1}
+										className={cn(
+											"rounded-lg outline-none",
+											account.accountKey === focusedAccountKey &&
+												(!focusedAgent || account.agent === focusedAgent) &&
+												"ring-2 ring-ring ring-offset-2 ring-offset-background",
+										)}
+									>
+										<AccountCard
+											account={account}
+											onMakeDefault={
+												isManagedAgent(account.agent)
+													? () => makeDefaultAccount(account)
+													: null
+											}
+											onSwitchSignIn={
+												isManagedAgent(account.agent)
+													? () => openSwitchSignIn(account)
+													: null
+											}
+											onRemove={
+												isManagedAgent(account.agent) &&
+												account.selection !== null
+													? () => setRemoveTarget(account)
+													: null
+											}
+											isSwitching={setDefault.isPending}
+											selectable={
+												isManagedAgent(agent) && agentAccounts.length > 1
+											}
+											showDefaultControl={
+												agent === "codex" ||
+												(claudeAccountCapability.isSuccess &&
+													claudeAccountCapability.data.managed === false)
+											}
+											hideEmails={hideEmails}
+										/>
+									</div>
 								))}
 							</div>
 						)}

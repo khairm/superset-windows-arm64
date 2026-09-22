@@ -1,8 +1,10 @@
 import { Trans } from "@lingui/react/macro";
 import { useRef } from "react";
 import { TipTapMarkdownRenderer } from "renderer/components/MarkdownRenderer/components/TipTapMarkdownRenderer";
+import { LinkHoverHint } from "renderer/lib/clickPolicy";
 import { MarkdownSearch } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/TabView/FileViewerPane/components/MarkdownSearch";
 import { useMarkdownSearch } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/TabView/FileViewerPane/hooks/useMarkdownSearch";
+import { useLinkClickHint } from "../../../../../hooks/useLinkClickHint";
 import type { ViewProps } from "../../types";
 import { splitFrontMatter } from "./splitFrontMatter";
 
@@ -14,8 +16,11 @@ export function MarkdownPreviewView({
 	document,
 	filePath,
 	isActive,
+	showFrontMatterNote = true,
+	onOpenUrl,
 }: ViewProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
+	const { hint, showHint } = useLinkClickHint();
 	const search = useMarkdownSearch({
 		containerRef,
 		isFocused: isActive,
@@ -60,8 +65,11 @@ export function MarkdownPreviewView({
 					preserveSourceFormatting
 					onChange={(next) => document.setContent(frontMatter + next)}
 					onSave={() => void document.save()}
+					onOpenUrl={onOpenUrl}
+					onUnboundLinkClick={showHint}
 				/>
 			</div>
+			<LinkHoverHint hoverLabel={null} hoverPosition={null} clickHint={hint} />
 		</div>
 	);
 }

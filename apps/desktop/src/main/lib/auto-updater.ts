@@ -9,7 +9,10 @@ import { autoUpdater, type UpdateCheckResult } from "electron-updater";
 import { env } from "main/env.main";
 import { setSkipQuitConfirmation } from "main/index";
 import { appState } from "main/lib/app-state";
-import { isEnvironmentUpdateError } from "main/lib/update-error-classification";
+import {
+	isEnvironmentUpdateError,
+	isUpstreamServerError,
+} from "main/lib/update-error-classification";
 import { redactUpdateError } from "main/lib/update-error-redaction";
 import { gte, prerelease } from "semver";
 import {
@@ -112,6 +115,13 @@ function isNetworkError(error: Error | string): boolean {
 	return SILENT_ERROR_PATTERNS.some((pattern) => message.includes(pattern));
 }
 
+// What a scheduled check lets pass in silence: the transport failed, or the
+// feed host answered that it had. The interactive check keeps telling the user
+// about the second, since they asked.
+function isTransientError(error: Error): boolean {
+	return isNetworkError(error) || isUpstreamServerError(error);
+}
+
 // Free bytes on the volume backing the updater caches, which sit beside our app
 // data. Returns null when the volume can't be queried, so an unknown answer
 // never reads as "out of space".
@@ -129,6 +139,18 @@ function freeStagingBytes(): number | null {
 // `error` event, so the copy only needs to stop being unhandled.
 function releaseDownloadPromise(result: UpdateCheckResult | null): void {
 	result?.downloadPromise?.catch(() => {});
+}
+
+// Squirrel.Mac builds its update command disabled whenever DISABLE_UPDATE_CHECK
+// is present in the process environment, and answers every check with "The
+// command is disabled and cannot be executed". electron-updater only hands the
+// archive to Squirrel after downloading it, so on such a machine each check
+// downloads the whole release, fails, discards the cache, and repeats four
+// hours later. The desktop copies the user's login-shell environment into
+// process.env, so a shell export reaches Squirrel too. Honour the variable the
+// way Squirrel does and skip the check.
+function isUpdateCheckDisabledByEnvironment(): boolean {
+	return PLATFORM.IS_MAC && process.env.DISABLE_UPDATE_CHECK !== undefined;
 }
 
 let currentStatus: AutoUpdateStatus = AUTO_UPDATE_STATUS.IDLE;
@@ -225,6 +247,12 @@ export function checkForUpdates(): void {
 	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
 		return;
 	}
+	if (isUpdateCheckDisabledByEnvironment()) {
+		log.info(
+			"[auto-updater] Check skipped: DISABLE_UPDATE_CHECK is set in the environment",
+		);
+		return;
+	}
 	if (isUpdateReadyToInstall()) {
 		log.info(
 			`[auto-updater] Check skipped: ${currentVersion} is already staged and installs on restart`,
@@ -237,8 +265,11 @@ export function checkForUpdates(): void {
 		.checkForUpdates()
 		.then(releaseDownloadPromise)
 		.catch((error) => {
-			if (isNetworkError(error)) {
-				log.info("[auto-updater] Network unavailable, will retry later");
+			if (isTransientError(error)) {
+				log.info(
+					"[auto-updater] Update server unreachable, will retry later:",
+					error?.message,
+				);
 				emitStatus(AUTO_UPDATE_STATUS.IDLE);
 				return;
 			}
@@ -268,6 +299,20 @@ export function checkForUpdatesInteractive(): void {
 			message: i18n._(
 				msg({
 					message: "Auto-updates are only available on macOS and Linux.",
+				}),
+			),
+		});
+		return;
+	}
+
+	if (isUpdateCheckDisabledByEnvironment()) {
+		dialog.showMessageBox({
+			type: "info",
+			title: i18n._(msg({ message: "Updates" })),
+			message: i18n._(
+				msg({
+					message:
+						"Auto-updates are disabled by the DISABLE_UPDATE_CHECK environment variable.",
 				}),
 			),
 		});
@@ -456,8 +501,11 @@ export function setupAutoUpdater(): void {
 	autoUpdater.on("error", (error) => {
 		// Allow retry if Squirrel surfaces an error instead of actually quitting.
 		isInstalling = false;
-		if (isNetworkError(error)) {
-			log.info("[auto-updater] Network unavailable, will retry later");
+		if (isTransientError(error)) {
+			log.info(
+				"[auto-updater] Update server unreachable, will retry later:",
+				error?.message,
+			);
 			emitStatus(AUTO_UPDATE_STATUS.IDLE);
 			return;
 		}

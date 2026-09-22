@@ -362,7 +362,7 @@ export function createSidebarCuration(
 		workspaceVerdict(workspace) {
 			// The project gate first: a thread under a repo the user removed from
 			// the sidebar is not on their sidebar, whatever its own row says. This
-			// is also what reproduces `isAutoIncludedLocalMainWorkspace` — a `main`
+			// is also what reproduces the renderer's auto-include — a `main`
 			// workspace with NO row is auto-included exactly when its project is
 			// placed, which is precisely what this check asks.
 			if (!isInSidebar(placementOf(workspace))) {

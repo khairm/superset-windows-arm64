@@ -1,9 +1,26 @@
 import { isV2OnlyUser } from "@superset/shared/v2-only-user";
+import { useSyncExternalStore } from "react";
 import { authClient } from "renderer/lib/auth-client";
 import {
 	isV1ForcedFlipActive,
+	isV1MigrationComplete,
 	isV1MigrationCompleteAtBoot,
+	V1_MIGRATION_COMPLETED_EVENT,
 } from "renderer/lib/v1-migration/completion";
+
+function subscribeToMigrationCompletion(onChange: () => void): () => void {
+	window.addEventListener(V1_MIGRATION_COMPLETED_EVENT, onChange);
+	return () =>
+		window.removeEventListener(V1_MIGRATION_COMPLETED_EVENT, onChange);
+}
+
+/** Live marker read: re-renders the moment a pass completes this session. */
+function useIsV1MigrationCompleteNow(
+	organizationId: string | null | undefined,
+): boolean {
+	const read = () => isV1MigrationComplete(organizationId ?? null);
+	return useSyncExternalStore(subscribeToMigrationCompletion, read, read);
+}
 
 /**
  * True for accounts created on/after V2_ONLY_USER_CUTOFF — these users
@@ -22,8 +39,11 @@ export function useIsV2OnlyUser(): boolean {
  */
 export function useIsV1FlipLocked(): boolean {
 	const { data: session } = authClient.useSession();
+	const organizationId = session?.session?.activeOrganizationId;
+	const completedThisSession = useIsV1MigrationCompleteNow(organizationId);
 	return (
-		isV1MigrationCompleteAtBoot(session?.session?.activeOrganizationId) ||
+		isV1MigrationCompleteAtBoot(organizationId) ||
+		completedThisSession ||
 		isV1ForcedFlipActive()
 	);
 }

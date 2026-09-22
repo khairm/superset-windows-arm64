@@ -1,4 +1,4 @@
-import type { UsageAccount } from "../../../../hooks/useHostUsageQuota";
+import type { UsageAccount } from "renderer/hooks/host-service/useHostUsageQuota";
 
 export type QuotaAgent = UsageAccount["agent"];
 

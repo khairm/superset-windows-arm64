@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { SquareDashedMousePointer } from "lucide-react";
 import { useCallback } from "react";
+import { OpenBrowserPageInAppButton } from "renderer/components/OpenBrowserPageInAppButton";
 import type { PaneViewerData } from "../../../../../../types";
 import { browserRuntimeRegistry } from "../../browserRuntimeRegistry";
 import { designModeStore, useDesignModeState } from "../../designModeStore";
@@ -15,6 +16,7 @@ import { findBarStore } from "../../findBarStore";
 import { useBrowserState } from "../../hooks/useBrowserState";
 import { BrowserOverflowMenu } from "../BrowserOverflowMenu";
 import { BrowserToolbar } from "../BrowserToolbar";
+import { replaceBrowserPane } from "./utils/replaceBrowserPane";
 
 interface BrowserPaneToolbarProps {
 	ctx: RendererContext<PaneViewerData>;
@@ -52,7 +54,7 @@ export function BrowserPaneToolbar({ ctx }: BrowserPaneToolbarProps) {
 	const isBlankPage = !state.currentUrl || state.currentUrl === "about:blank";
 
 	return (
-		<div className="flex h-full w-full min-w-0 items-center justify-between">
+		<div className="@container/browser-toolbar flex h-full w-full min-w-0 items-center justify-between">
 			<BrowserToolbar
 				paneId={paneId}
 				currentUrl={state.currentUrl}
@@ -66,6 +68,12 @@ export function BrowserPaneToolbar({ ctx }: BrowserPaneToolbarProps) {
 				onNavigate={handleNavigate}
 			/>
 			<div className="flex shrink-0 items-center gap-1 pr-1.5">
+				<OpenBrowserPageInAppButton
+					currentUrl={state.currentUrl}
+					onOpenInPane={(newPane) =>
+						replaceBrowserPane(ctx.store, ctx.tab.id, paneId, newPane)
+					}
+				/>
 				<Tooltip disableHoverableContent>
 					<TooltipTrigger asChild>
 						<button

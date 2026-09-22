@@ -102,7 +102,8 @@ export interface CloudShapedWorkspace {
 	hostId: string;
 	name: string;
 	branch: string;
-	type: "main" | "worktree" | "session";
+	/** "main" is the fork's master row; see the `workspaces.type` column. */
+	type: "main" | "local" | "worktree" | "session";
 	createdByUserId: string | null;
 	taskId: string | null;
 	createdAt: Date;
@@ -242,7 +243,7 @@ export interface InsertLocalWorkspaceValues {
 	worktreePath: string;
 	branch: string;
 	name: string;
-	type?: "main" | "worktree" | "session";
+	type?: "main" | "local" | "worktree" | "session";
 	taskId?: string | null;
 	createdByUserId?: string | null;
 	claudeAccountSlug?: string | null;

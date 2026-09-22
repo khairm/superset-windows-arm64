@@ -3,7 +3,6 @@ import type {
 	AgentIdentityId,
 } from "@superset/shared/agent-catalog";
 import type { BranchPrefixMode } from "@superset/shared/workspace-launch";
-import { sql } from "drizzle-orm";
 import {
 	index,
 	integer,
@@ -254,8 +253,15 @@ export const workspaces = sqliteTable(
 		// backfill sweep targets these rows.
 		name: text().notNull().default(""),
 		claudeAccountSlug: text("claude_account_slug"),
+		// "local" shares the project's primary checkout (files, index, and
+		// the checked-out branch) with every other local workspace of that
+		// project; "worktree" owns an isolated checkout; "session" is
+		// project-less. "main" is this fork's master row — the project's
+		// always-present primary thread — kept alongside upstream's "local"
+		// because (MASTER-ALWAYS-ACTIVE) / (MASTER-ARCHIVE-ONLY) /
+		// (MASTER-PLUS-LAUNCH) all classify off it.
 		type: text()
-			.$type<"main" | "worktree" | "session">()
+			.$type<"main" | "local" | "worktree" | "session">()
 			.notNull()
 			.default("worktree"),
 		taskId: text("task_id"),
@@ -288,9 +294,6 @@ export const workspaces = sqliteTable(
 			table.upstreamBranch,
 		),
 		index("workspaces_pull_request_id_idx").on(table.pullRequestId),
-		uniqueIndex("workspaces_one_main_per_project")
-			.on(table.projectId)
-			.where(sql`type = 'main'`),
 	],
 );
 

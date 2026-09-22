@@ -188,6 +188,20 @@ describe("ensureSidebarProjectRecord", () => {
 		});
 	});
 
+	it("background placement preserves a hidden project's state", () => {
+		const collections = makeCollections();
+		const row = projectRow("proj-1", {
+			isHidden: true,
+			isCollapsed: true,
+			tabOrder: 7,
+		});
+		collections.v2SidebarProjects.insert(row);
+		ensureSidebarProjectRecord(asProjectArg(collections), "proj-1", {
+			reveal: false,
+		});
+		expect(collections.v2SidebarProjects.get("proj-1")).toEqual(row);
+	});
+
 	it("inserts a visible row ahead of existing projects when none exists", () => {
 		const collections = makeCollections();
 		collections.v2SidebarProjects.insert(projectRow("proj-1", { tabOrder: 1 }));
@@ -216,7 +230,7 @@ describe("ensureSidebarProjectRecord", () => {
 });
 
 describe("removeProjectFromSidebarState", () => {
-	it("tombstones the project's worktrees — existing rows and row-less ones — and deletes sections and the project record", () => {
+	it("tombstones the project's worktrees — existing rows and row-less ones — deletes sections and hides the project record", () => {
 		const collections = makeCollections();
 		// Explicitly-placed worktree (has a visible local-state row).
 		collections.v2WorkspaceLocalState.insert(
@@ -265,7 +279,10 @@ describe("removeProjectFromSidebarState", () => {
 				.isHidden,
 		).toBe(true);
 		expect(collections.v2SidebarSections.get("sec-1")).toBeUndefined();
-		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
+		// The project row is KEPT and hidden: usePlaceProjectsInSidebar re-places
+		// any project of this device's host that has no row at all, so deleting
+		// it would undo the removal on the next render.
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(true);
 		// Only the pre-existing row had live runtimes to tear down.
 		expect(cleaned).toEqual(["ws-placed"]);
 	});
@@ -311,7 +328,23 @@ describe("removeProjectFromSidebarState", () => {
 			collections.v2WorkspaceLocalState.get("ws-main-rowless")?.sidebarState
 				.isHidden,
 		).toBe(true);
-		expect(collections.v2SidebarProjects.get("proj-1")).toBeUndefined();
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(true);
+	});
+
+	it("keeps a hidden project row even when the project had none (REMOVE-STICKY)", () => {
+		// Without a row the reconciler would place the project again — and reveal
+		// it — so removal has to leave one behind, not merely hide an existing one.
+		const collections = makeCollections();
+
+		removeProjectFromSidebarState(
+			asRemoveArg(collections),
+			[],
+			"proj-1",
+			PLACEMENT,
+			noopCleanup,
+		);
+
+		expect(collections.v2SidebarProjects.get("proj-1")?.isHidden).toBe(true);
 	});
 
 	it("tombstones a main-workspace row with its pin cleared", () => {

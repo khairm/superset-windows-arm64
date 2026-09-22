@@ -1,8 +1,10 @@
 import type { MessageDescriptor } from "@lingui/core";
 import { msg } from "@lingui/core/macro";
 import { i18n } from "@superset/i18n";
+import { FEATURE_FLAGS } from "@superset/shared/constants";
 import { cn } from "@superset/ui/utils";
 import { Link, useMatchRoute } from "@tanstack/react-router";
+import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useMemo } from "react";
 import {
 	HiOutlineBeaker,
@@ -10,6 +12,7 @@ import {
 	HiOutlineChartBar,
 	HiOutlineCommandLine,
 	HiOutlineCpuChip,
+	HiOutlineDevicePhoneMobile,
 	HiOutlineFolder,
 	HiOutlineGlobeAlt,
 	HiOutlineLink,
@@ -17,7 +20,7 @@ import {
 	HiOutlineShieldCheck,
 	HiOutlineSparkles,
 } from "react-icons/hi2";
-import { LuGitBranch, LuKeyboard, LuKeyRound } from "react-icons/lu";
+import { LuGitBranch, LuKeyboard, LuKeyRound, LuLink } from "react-icons/lu";
 import { useHostsNeedingUpdateCount } from "renderer/hooks/host-version/useHostsNeedingUpdate";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { electronTrpc } from "renderer/lib/electron-trpc";
@@ -90,6 +93,12 @@ const SECTION_GROUPS: SectionGroup[] = [
 				}),
 				icon: <HiOutlineChartBar className="h-4 w-4" />,
 				fullWidth: true,
+			},
+			{
+				id: "/settings/mobile",
+				section: "mobile",
+				label: msg({ message: "Mobile" }),
+				icon: <HiOutlineDevicePhoneMobile className="h-4 w-4" />,
 			},
 		],
 	},
@@ -219,14 +228,18 @@ export const FULL_WIDTH_SECTION_PATHS: readonly string[] =
 	);
 
 export function GeneralSettings({ matchCounts }: GeneralSettingsProps) {
+	const mobileEnabled = useFeatureFlagEnabled(FEATURE_FLAGS.MOBILE_LAUNCH);
 	const matchRoute = useMatchRoute();
 	const hostsNeedingUpdate = useHostsNeedingUpdateCount();
 	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
 	const isMac = platform === "darwin";
 	const isV2CloudEnabled = useIsV2CloudEnabled();
+	const cloudWorkspacesEnabled =
+		useFeatureFlagEnabled(FEATURE_FLAGS.CLOUD_WORKSPACES) === true;
 	const allowedSections = useMemo(
-		() => getAllowedSectionsForVariant(isV2CloudEnabled),
-		[isV2CloudEnabled],
+		() =>
+			getAllowedSectionsForVariant(isV2CloudEnabled, cloudWorkspacesEnabled),
+		[isV2CloudEnabled, cloudWorkspacesEnabled],
 	);
 
 	return (
@@ -234,7 +247,9 @@ export function GeneralSettings({ matchCounts }: GeneralSettingsProps) {
 			{SECTION_GROUPS.map((group, groupIndex) => {
 				const platformItems = group.items.filter(
 					(item) =>
-						(!item.macOnly || isMac) && allowedSections.has(item.section),
+						(!item.macOnly || isMac) &&
+						(item.section !== "mobile" || mobileEnabled === true) &&
+						allowedSections.has(item.section),
 				);
 				const filteredItems = matchCounts
 					? platformItems.filter((item) => (matchCounts[item.section] ?? 0) > 0)

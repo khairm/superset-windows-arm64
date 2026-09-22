@@ -3,9 +3,11 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { terminalSessions, workspaces } from "../../../db/schema";
 import { mapEventType } from "../../../events";
+import { verifyAttributionToken } from "../../../terminal-agents/attribution-token";
 import type { HostServiceContext } from "../../../types";
 import { touchLocalWorkspaceActivity } from "../../../workspaces/local-workspace-store";
 import { publicProcedure, queryProcedure, router } from "../../index";
+import { captureSessionAccount } from "../usage/session-account/session-account";
 import {
 	type AgentStatusSnapshot,
 	buildAgentStatusSnapshot,
@@ -60,6 +62,10 @@ const hookInput = z
 			.transform((value) => value.slice(0, 4000))
 			.optional(),
 		subagent: subagentInput,
+		launchId: z.string().max(128).optional(),
+		accountProfile: z.string().max(4096).optional(),
+		apiKey: z.boolean().optional(),
+		attributionToken: z.string().max(128).optional(),
 	})
 	.extend(companionHookFields)
 	.extend(companionLifecycleFields);
@@ -381,7 +387,27 @@ export const notificationsRouter = router({
 			previousEventAtMs: previousBinding?.lastEventAt ?? null,
 		});
 
+		const prior = ctx.terminalAgentStore.get(input.terminalId);
+		const account =
+			verifyAttributionToken(input.terminalId, input.attributionToken) &&
+			eventType === "Attached" &&
+			input.accountProfile !== undefined &&
+			(!prior?.account ||
+				prior.agentId !== agent?.agentId ||
+				(input.launchId && input.launchId !== prior.launchId) ||
+				(agent?.sessionId &&
+					prior.agentSessionId &&
+					agent.sessionId !== prior.agentSessionId))
+				? await captureSessionAccount(
+						agent?.agentId,
+						input.accountProfile,
+						input.apiKey ?? false,
+					).catch(() => undefined)
+				: undefined;
+
 		ctx.terminalAgentStore.recordEvent({
+			account,
+			launchId: trimOrUndefined(input.launchId),
 			terminalId: input.terminalId,
 			workspaceId: terminalSession.originWorkspaceId,
 			eventType,

@@ -1,10 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { HostDb } from "../../db/index.ts";
-import { terminalSessions } from "../../db/schema.ts";
+import { terminalAgentBindings, terminalSessions } from "../../db/schema.ts";
 import type { EventBus } from "../../events/event-bus.ts";
 import { portManager } from "../../ports/port-manager.ts";
 import { markTerminalAgentBindingEnded } from "../../terminal-agents/persistence.ts";
 import { getDaemonClient } from "../daemon-client-singleton.ts";
+import { terminalLifecycleState } from "../lifecycle/lifecycle.ts";
 import { disposeSessionAndWait, isLiveTerminalSession } from "../terminal.ts";
 
 interface ReapResult {
@@ -58,7 +59,7 @@ export const STALE_ACTIVE_GRACE_MS = 60_000;
  * mounted in the reap pass — see `reapOrphanedSessions` for why this fork
  * corrects stale rows through the bounded two-pass reverse walk instead.
  */
-export function planStaleActiveRows({
+export function planMissingTerminalSessions({
 	aliveIds,
 	rowsById,
 	isLive,
@@ -70,8 +71,8 @@ export function planStaleActiveRows({
 	isLive: (terminalId: string) => boolean;
 	now: number;
 	graceMs?: number;
-}): { exited: string[]; disposed: string[] } {
-	const exited: string[] = [];
+}): { recoverable: string[]; disposed: string[] } {
+	const recoverable: string[] = [];
 	const disposed: string[] = [];
 	for (const [id, row] of rowsById) {
 		if (row.status !== "active") continue;
@@ -83,9 +84,9 @@ export function planStaleActiveRows({
 		// and one the user explicitly killed must not come back as a resume
 		// candidate.
 		if (row.disposeRequestedAt != null) disposed.push(id);
-		else exited.push(id);
+		else recoverable.push(id);
 	}
-	return { exited, disposed };
+	return { recoverable, disposed };
 }
 
 /**
@@ -95,12 +96,7 @@ export function planStaleActiveRows({
  * disposed), so retry it regardless of workspace liveness.
  */
 export function shouldReapRow(row: TerminalRow): boolean {
-	return (
-		row.status === "disposed" ||
-		row.status === "exited" ||
-		!row.originWorkspaceId ||
-		row.disposeRequestedAt != null
-	);
+	return terminalLifecycleState(row) !== "active" || !row.originWorkspaceId;
 }
 
 export interface PortScanSyncPlan {
@@ -150,7 +146,7 @@ export function planPortScanSync({
 		if (isLive(session.id)) continue;
 		const row = rowById.get(session.id);
 		if (!row?.originWorkspaceId) continue;
-		if (row.status !== "active") continue;
+		if (terminalLifecycleState(row) !== "active") continue;
 		register.push({
 			terminalId: session.id,
 			workspaceId: row.originWorkspaceId,
@@ -335,63 +331,84 @@ export function planStaleRowCorrection({
 }
 
 /**
- * Flip daemon-lost `active` rows to `exited` (or `disposed`, honoring a
- * pending dispose) so live-session reads stop offering ptys that no longer
- * exist, and stamp the exited rows' agent bindings "terminal-exited" — the
- * pty died under the agent, same as the pty exit callback — so their sessions
- * become resume candidates. One transaction: an `exited` row whose binding
- * kept its open stamp is unreachable afterwards (the sweep only revisits
- * `active` rows and an attach answers session-gone), so the session would
- * stay unresumable until the next boot's sweepDefunct. A `disposed` row's
- * binding was stamped by the dispose route and must not come back.
+ * Upstream's forward reconciliation of daemon-lost `active` rows: a row whose
+ * pty the daemon no longer owns has its agent binding stamped
+ * "terminal-exited" — the pty died under the agent, same as the pty exit
+ * callback — so the session becomes a resume candidate, and a row already
+ * carrying a dispose stamp is finished off as `disposed`. One transaction, each
+ * write fenced on the row still being the one that was planned.
+ *
+ * (BRIDGE-LIVENESS) (REAPER-CORRECTION-CAP) Exported and tested, but NOT
+ * mounted in the reap pass — see `reapOrphanedSessions` for why this fork
+ * corrects daemon-lost rows through the bounded two-pass reverse walk instead.
  */
-export function markStaleActiveRows(
+export function reconcileMissingTerminalSessions(
 	db: HostDb,
 	liveSessions: { id: string }[],
 	rowById: Map<string, TerminalRow>,
+	confirmedMissingIds?: ReadonlySet<string>,
 ): number {
 	const rowsById =
 		rowById.size > 0 || liveSessions.length > 0
 			? rowById
 			: loadTerminalRowsById(db);
-	const stale = planStaleActiveRows({
+	const stale = planMissingTerminalSessions({
 		aliveIds: new Set(liveSessions.map((session) => session.id)),
 		rowsById,
 		isLive: isLiveTerminalSession,
 		now: Date.now(),
 	});
-	if (stale.exited.length + stale.disposed.length === 0) return 0;
+	if (confirmedMissingIds)
+		stale.recoverable = stale.recoverable.filter((id) =>
+			confirmedMissingIds.has(id),
+		);
+	if (stale.recoverable.length + stale.disposed.length === 0) return 0;
 	const endedAt = Date.now();
 
-	const { exited, disposed } = db.transaction((tx) => {
-		const flip = (ids: string[], status: "exited" | "disposed") =>
-			ids.length === 0
+	const { recoverable, disposed } = db.transaction((tx) => {
+		let recoverable = 0;
+		for (const id of stale.recoverable) {
+			const current = tx.query.terminalSessions
+				.findFirst({ where: eq(terminalSessions.id, id) })
+				.sync();
+			if (
+				terminalLifecycleState(current) !== "active" ||
+				current?.createdAt !== rowsById.get(id)?.createdAt ||
+				isLiveTerminalSession(id)
+			)
+				continue;
+			markTerminalAgentBindingEnded(tx, id, "terminal-exited", endedAt);
+			recoverable += 1;
+		}
+		const disposed =
+			stale.disposed.length === 0
 				? []
 				: tx
 						.update(terminalSessions)
-						.set({ status, endedAt })
+						.set({ status: "disposed", endedAt })
 						.where(
 							and(
-								inArray(terminalSessions.id, ids),
+								inArray(terminalSessions.id, stale.disposed),
 								eq(terminalSessions.status, "active"),
+								isNotNull(terminalSessions.disposeRequestedAt),
 							),
 						)
 						.returning({ id: terminalSessions.id })
 						.all();
-		const exited = flip(stale.exited, "exited");
-		for (const { id } of exited) {
-			markTerminalAgentBindingEnded(tx, id, "terminal-exited", endedAt);
+		for (const { id } of disposed) {
+			const binding = tx.query.terminalAgentBindings
+				.findFirst({ where: eq(terminalAgentBindings.terminalId, id) })
+				.sync();
+			if (binding && binding.endedAt == null)
+				markTerminalAgentBindingEnded(tx, id, "disposed", endedAt);
 		}
-		return {
-			exited: exited.length,
-			disposed: flip(stale.disposed, "disposed").length,
-		};
+		return { recoverable, disposed: disposed.length };
 	});
 
-	const total = exited + disposed;
+	const total = recoverable + disposed;
 	if (total > 0) {
 		console.log(
-			`[host-service] terminal reaper: marked ${total} daemon-lost session(s) ended (${exited} exited, ${disposed} disposed)`,
+			`[host-service] terminal reaper: reconciled ${total} daemon-lost session(s) (${recoverable} recoverable, ${disposed} disposed)`,
 		);
 	}
 	return total;
@@ -429,10 +446,7 @@ function applyPortScanSync(
 async function runPortScanSync(db: HostDb) {
 	const daemon = await getDaemonClient();
 	const liveSessions = (await daemon.list()).filter((session) => session.alive);
-	const rowById =
-		liveSessions.length > 0
-			? loadTerminalRowsById(db)
-			: new Map<string, TerminalRow>();
+	const rowById = loadTerminalRowsById(db);
 	applyPortScanSync(liveSessions, rowById);
 	return { liveSessions, rowById };
 }
@@ -481,13 +495,13 @@ async function reapOrphanedSessions(
 	const { liveSessions, rowById } = await syncPortScans(db);
 
 	// (BRIDGE-LIVENESS) (REAPER-CORRECTION-CAP) Upstream reconciles rows stuck
-	// `active` for sessions the daemon no longer owns with a single-pass
-	// `markStaleActiveRows` sweep. This fork already does that job — with a
-	// two-pass rule, an age floor that also honours `lastAttachedAt`, a
+	// `active` for sessions the daemon no longer owns with its own
+	// `reconcileMissingTerminalSessions` sweep. This fork already does that job
+	// — with a two-pass rule, an age floor that also honours `lastAttachedAt`, a
 	// per-pass correction cap and a createdAt-fenced write — in the reverse
-	// walk at the end of this pass, so the unbounded sweep is deliberately NOT
-	// mounted: running both would let the single-pass writer condemn exactly
-	// the live terminals the cap exists to protect.
+	// walk at the end of this pass, so the upstream sweep is deliberately NOT
+	// mounted: its corrective binding writes are unbounded, and running both
+	// would condemn exactly the live terminals the cap exists to protect.
 
 	if (liveSessions.length === 0) {
 		rowlessPendingSecondPass.clear();

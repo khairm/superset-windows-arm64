@@ -24,7 +24,10 @@ import {
 	upsertTagFolderSetting,
 } from "../../../tag-folders";
 import { listUndisposedTerminalIdsByWorkspaceIds } from "../../../terminal/terminal";
-import { deleteLocalWorkspace } from "../../../workspaces/local-workspace-store";
+import {
+	deleteLocalWorkspace,
+	updateLocalWorkspace,
+} from "../../../workspaces/local-workspace-store";
 import { machineOnlyProcedure, protectedProcedure, router } from "../../index";
 import { removeMultiRepoProjectArtifacts } from "../workspace-cleanup/multi-repo-cleanup";
 import {
@@ -45,6 +48,7 @@ import {
 	addMultiRepoMember,
 	removeMultiRepoMember,
 } from "./multi-repo-members";
+import { listLiveLocalWorkspaces } from "./utils/create-local-workspace";
 import { ensureMainWorkspace } from "./utils/ensure-main-workspace";
 import { getGitHubRemotes } from "./utils/git-remote";
 import { persistLocalProject } from "./utils/persist-project";
@@ -929,6 +933,13 @@ export const projectRouter = router({
 					persistLocalProject(ctx, input.projectId, resolved, {
 						name: origin.name,
 					});
+					// Local workspaces are the checkout; when it moves, so do they.
+					for (const row of listLiveLocalWorkspaces(ctx, input.projectId)) {
+						if (row.worktreePath === resolved.repoPath) continue;
+						updateLocalWorkspace(ctx, row.id, {
+							worktreePath: resolved.repoPath,
+						});
+					}
 					const mainWorkspace = await ensureMainWorkspace(
 						ctx,
 						input.projectId,
@@ -949,8 +960,9 @@ export const projectRouter = router({
 	 *   1. Ownership check: an id this host doesn't serve is a no-op —
 	 *      never a legacy cloud delete.
 	 *
-	 *   2. Best-effort `git worktree remove` for each non-main local
-	 *      workspace so subsequent worktree commands aren't confused.
+	 *   2. Best-effort `git worktree remove` for each worktree workspace so
+	 *      subsequent worktree commands aren't confused. Local workspaces
+	 *      live on the repo itself and have nothing to remove.
 	 *
 	 *   3. Local DB rows (workspaces + project). A failure here surfaces as
 	 *      an error — the local table is what the UI lists from, so a
@@ -1053,7 +1065,13 @@ export const projectRouter = router({
 									}
 								} else {
 									for (const workspace of lockedWorkspaces) {
-										if (workspace.worktreePath === localProject.repoPath)
+										// A "local" workspace shares the project's primary
+										// checkout, so there is no worktree of its own to
+										// remove.
+										if (
+											workspace.type === "local" ||
+											workspace.worktreePath === localProject.repoPath
+										)
 											continue;
 										try {
 											const git = await ctx.git(localProject.repoPath);

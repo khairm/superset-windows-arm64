@@ -28,11 +28,11 @@ export function getVisibleSidebarWorkspaces<
  * with local-state rows: it has a project, it lives on this machine, and that
  * project is one the user added.
  *
- * Extracted because two callers need exactly this gate with OPPOSITE answers to
- * the row question. `isAutoIncludedLocalMainWorkspace` wants the row-LESS mains
- * (auto-included, never written to); `selectHiddenMainsToSurface` wants the
- * row-BACKED ones (repairable). They must stay exact complements, so the shared
- * conditions live here once rather than being written out twice.
+ * `selectHiddenMainsToSurface` asks it about the row-BACKED mains it repairs.
+ * Upstream desktop-v1.30.1 retired the row-LESS twin that used to share it —
+ * `usePlaceWorktreesInSidebar` writes a placement row for every local
+ * workspace now, masters included — so this is the one remaining caller and
+ * the gate stays here rather than being inlined into it.
  */
 export function isLocalMainWorkspaceInSidebarScope<
 	Workspace extends { hostId: string; projectId: string | null },
@@ -50,34 +50,6 @@ export function isLocalMainWorkspaceInSidebarScope<
 		workspace.projectId !== null &&
 		workspace.hostId === machineId &&
 		sidebarProjectIds.has(workspace.projectId)
-	);
-}
-
-/**
- * A `main` workspace is auto-included in the sidebar when the user hasn't
- * explicitly placed it (no local-state row), it lives on this machine, and its
- * project is one the user added to their sidebar. Shared by the sidebar tree
- * builder and the notification/ports visibility filters so they agree on what
- * "in the sidebar" means.
- */
-export function isAutoIncludedLocalMainWorkspace(
-	workspace: { id: string; hostId: string; projectId: string | null },
-	{
-		localStateWorkspaceIds,
-		sidebarProjectIds,
-		machineId,
-	}: {
-		localStateWorkspaceIds: ReadonlySet<string>;
-		sidebarProjectIds: ReadonlySet<string>;
-		machineId: string | null;
-	},
-): boolean {
-	return (
-		!localStateWorkspaceIds.has(workspace.id) &&
-		isLocalMainWorkspaceInSidebarScope(workspace, {
-			sidebarProjectIds,
-			machineId,
-		})
 	);
 }
 

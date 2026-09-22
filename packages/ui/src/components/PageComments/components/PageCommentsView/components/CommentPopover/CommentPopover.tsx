@@ -1,16 +1,21 @@
 "use client";
 
+import type { MessageDescriptor } from "@lingui/core";
+import {
+	isOptimisticId,
+	popoverPlacement,
+} from "@superset/shared/page-comments";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "../../../../../../lib/utils";
 import {
+	type CommentIntent,
 	type CommentThread,
 	useComments,
 } from "../../../../providers/CommentProvider";
-import { isOptimisticId } from "../../../../utils/optimisticId";
 import { CommentComposer } from "../../../CommentComposer";
 import { CommentList } from "../../../CommentList";
-import type { PinPoint } from "../../utils/pinLayout";
-import { popoverPlacement } from "./utils/popoverLayout";
+import { PIN_SIZE, type PinPoint } from "../../utils/pinLayout";
+import { ComposerActions } from "./components/ComposerActions";
 
 /** Stand-in until the card has rendered and can be measured. */
 const ESTIMATED_HEIGHT = 200;
@@ -26,6 +31,7 @@ interface CommentPopoverProps {
 	thread: CommentThread | null;
 	initialValue?: string;
 	onSubmit: (body: string) => void | Promise<void>;
+	onQuick?: (body: MessageDescriptor, intent?: CommentIntent | null) => void;
 	onEdit?: (commentId: string, body: string) => void | Promise<void>;
 	onToggleResolved?: () => void;
 	onDelete?: () => void;
@@ -38,6 +44,7 @@ export function CommentPopover({
 	thread,
 	initialValue,
 	onSubmit,
+	onQuick,
 	onEdit,
 	onToggleResolved,
 	onDelete,
@@ -72,15 +79,27 @@ export function CommentPopover({
 		};
 	}, [onDismiss, submitting]);
 
-	const { left, top, width } = popoverPlacement({ point, container, height });
+	const { left, top, width } = popoverPlacement({
+		point,
+		container,
+		height,
+		pinSize: PIN_SIZE,
+	});
 
 	return (
 		<div
 			ref={cardRef}
 			data-comment-ui=""
 			style={{ transform: `translate(${left}px, ${top}px)`, width }}
-			className="pointer-events-auto absolute top-0 left-0 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg"
+			className={cn(
+				"pointer-events-auto absolute top-0 left-0 rounded-lg border bg-popover text-popover-foreground shadow-lg",
+				thread && "overflow-hidden",
+			)}
 		>
+			{thread === null && onQuick ? (
+				<ComposerActions onQuick={onQuick} onDismiss={onDismiss} />
+			) : null}
+
 			{thread ? (
 				<CommentList
 					thread={thread}

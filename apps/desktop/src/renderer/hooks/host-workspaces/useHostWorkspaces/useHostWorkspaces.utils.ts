@@ -18,7 +18,13 @@ export type HostShapedWorkspace = Omit<
 > & {
 	/** Null for project-less "session" workspaces. */
 	projectId: string | null;
-	type: "main" | "worktree" | "session";
+	/**
+	 * "main" is this fork's master row — the project's always-present primary
+	 * thread — and is NOT upstream's pre-local-workspace legacy spelling here.
+	 * (MASTER-ALWAYS-ACTIVE) / (REMOVE-STICKY) / (MASTER-ARCHIVE-ONLY) /
+	 * (MASTER-PLUS-LAUNCH) all classify off it, so it must survive ingest.
+	 */
+	type: "main" | "local" | "worktree" | "session";
 	/**
 	 * Normalized, sorted tag set. Optional because a row served by an older
 	 * host — or restored from a pre-tags IndexedDB snapshot — carries the
@@ -181,12 +187,26 @@ export async function loadHostWorkspacesSnapshot(
 ): Promise<HostWorkspaceRow[] | undefined> {
 	if (!organizationId) return undefined;
 	try {
-		return await idbGet<HostWorkspaceRow[]>(
+		const rows = await idbGet<HostWorkspaceRow[]>(
 			snapshotKey(organizationId, machineId),
 		);
+		return rows?.map(normalizeServedWorkspaceRow);
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Upstream folded `type: "main"` into "local" here, because upstream retired
+ * the main-workspace concept in desktop-v1.30.1. This fork did not: "main" is
+ * the master row every master feature classifies off, and rewriting it to
+ * "local" on ingest would leave those call sites unreachable. The row is read
+ * exactly as the host served it.
+ */
+export function normalizeServedWorkspaceRow<
+	Row extends { type: HostShapedWorkspace["type"] },
+>(row: Row): Row {
+	return row;
 }
 
 export function saveHostWorkspacesSnapshot(
@@ -248,7 +268,7 @@ export function applyWorkspaceChangedEvent(
 		hostId: host.machineId,
 		name: snapshot.name,
 		branch: snapshot.branch,
-		type: snapshot.type,
+		type: normalizeServedWorkspaceRow(snapshot).type,
 		createdByUserId: snapshot.createdByUserId,
 		taskId: snapshot.taskId,
 		// Runtime-optional despite the payload type: an older host's events

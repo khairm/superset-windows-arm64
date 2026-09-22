@@ -60,7 +60,9 @@ function setNavigatorLanguages(languages: string[]) {
 	});
 }
 
-const { act, cleanup, render } = await import("@testing-library/react");
+const { act, cleanup, render, waitFor } = await import(
+	"@testing-library/react"
+);
 const { LanguageAwareI18nProvider } = await import(
 	"./LanguageAwareI18nProvider"
 );
@@ -152,7 +154,7 @@ describe("LanguageAwareI18nProvider", () => {
 		});
 		await flush();
 
-		expect(document.documentElement.lang).toBe("ja");
+		await waitFor(() => expect(document.documentElement.lang).toBe("ja"));
 	});
 
 	test("activates the persisted locale once the query succeeds", async () => {
@@ -168,7 +170,7 @@ describe("LanguageAwareI18nProvider", () => {
 		});
 		await flush();
 
-		expect(document.documentElement.lang).toBe("en");
+		await waitFor(() => expect(document.documentElement.lang).toBe("en"));
 	});
 
 	test("infers the OS locale only once the query genuinely resolves to no preference", async () => {
@@ -184,6 +186,6 @@ describe("LanguageAwareI18nProvider", () => {
 		});
 		await flush();
 
-		expect(document.documentElement.lang).toBe("ja");
+		await waitFor(() => expect(document.documentElement.lang).toBe("ja"));
 	});
 });

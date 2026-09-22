@@ -68,6 +68,10 @@ export function useSurfaceHiddenMainWorkspaces(): void {
 		[collections],
 	);
 
+	// `isHidden` comes along because a hidden project is out of scope: removing
+	// a project hides its row rather than deleting it (a row-less project is
+	// re-placed by `usePlaceProjectsInSidebar`), so hidden IS the removed state
+	// the selector must keep the master tombstoned for.
 	const { data: sidebarProjectRows = [], isReady: sidebarProjectsReady } =
 		useLiveQuery(
 			(query) =>
@@ -75,6 +79,7 @@ export function useSurfaceHiddenMainWorkspaces(): void {
 					.from({ sidebarProject: collections.v2SidebarProjects })
 					.select(({ sidebarProject }) => ({
 						projectId: sidebarProject.projectId,
+						isHidden: sidebarProject.isHidden,
 					})),
 			[collections],
 		);

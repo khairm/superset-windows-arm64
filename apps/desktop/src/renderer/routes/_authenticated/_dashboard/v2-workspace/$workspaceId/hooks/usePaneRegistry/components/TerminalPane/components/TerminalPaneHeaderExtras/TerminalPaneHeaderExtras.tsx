@@ -8,6 +8,7 @@ import {
 	terminalRichInputOpenStore,
 	useTerminalRichInputOpen,
 } from "../../richInputOpenStore";
+import { TerminalAccountUsage } from "./components/TerminalAccountUsage";
 import { TerminalConnectionIndicator } from "./components/TerminalConnectionIndicator";
 import { TerminalIdCopyMenu } from "./components/TerminalIdCopyMenu";
 import { TerminalPageWatchChip } from "./components/TerminalPageWatchChip";
@@ -18,6 +19,7 @@ interface TerminalPaneHeaderExtrasProps {
 	workspaceId: string;
 	terminalId: string;
 	terminalInstanceId: string;
+	onNewShell: () => Promise<void>;
 	onCreateNewAgentSession: (input: {
 		configId: string;
 		placement: "split-pane" | "new-tab";
@@ -40,6 +42,7 @@ export function TerminalPaneHeaderExtras({
 	terminalInstanceId,
 	onCreateNewAgentSession,
 	onOpenSubagent,
+	onNewShell,
 }: TerminalPaneHeaderExtrasProps) {
 	const { t } = useLingui();
 	const isOpen = useTerminalRichInputOpen();
@@ -55,6 +58,11 @@ export function TerminalPaneHeaderExtras({
 
 	return (
 		<div className="flex items-center gap-1">
+			<TerminalAccountUsage
+				key={`${workspaceId}:${terminalId}`}
+				workspaceId={workspaceId}
+				terminalId={terminalId}
+			/>
 			<TerminalSubagentsMenu
 				workspaceId={workspaceId}
 				terminalId={terminalId}
@@ -63,6 +71,7 @@ export function TerminalPaneHeaderExtras({
 			<TerminalConnectionIndicator
 				terminalId={terminalId}
 				terminalInstanceId={terminalInstanceId}
+				onNewShell={onNewShell}
 			/>
 			<TerminalPageWatchChip
 				workspaceId={workspaceId}

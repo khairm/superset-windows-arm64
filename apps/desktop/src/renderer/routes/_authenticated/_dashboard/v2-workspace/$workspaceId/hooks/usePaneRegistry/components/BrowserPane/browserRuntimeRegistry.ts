@@ -1,3 +1,4 @@
+import { attachBrowserViewportZoom } from "renderer/lib/browser-viewport-zoom";
 import { pointerPassthrough } from "renderer/lib/pointer-passthrough";
 import { selectRuntimesToEvict } from "renderer/lib/terminal/terminal-runtime-eviction";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
@@ -13,9 +14,8 @@ export interface BrowserRuntimeState {
 	canGoBack: boolean;
 	canGoForward: boolean;
 	/**
-	 * 1 = 100%. Set through our own zoom controls (no pinch/ctrl-scroll
-	 * support) and re-read from the webview after navigations — Chromium zoom
-	 * is per-origin, so a navigation can land on a different actual factor.
+	 * Chromium page zoom is per-origin, so navigation can change this factor.
+	 * Pinch magnification transforms the embedded surface separately.
 	 */
 	zoomFactor: number;
 }
@@ -270,6 +270,7 @@ class BrowserRuntimeRegistryImpl {
 		workspaceId: string,
 	): RegistryEntry {
 		const webview = document.createElement("webview") as Electron.WebviewTag;
+		const detachViewportZoom = attachBrowserViewportZoom(webview);
 		webview.setAttribute("partition", "persist:superset");
 		webview.setAttribute("allowpopups", "");
 		webview.style.position = "fixed";
@@ -461,6 +462,7 @@ class BrowserRuntimeRegistryImpl {
 		webview.addEventListener("destroyed", handleDestroyed);
 
 		entry.detachHandlers = () => {
+			detachViewportZoom();
 			webview.removeEventListener("dom-ready", handleDomReady);
 			webview.removeEventListener("did-start-loading", handleDidStartLoading);
 			webview.removeEventListener("did-stop-loading", handleDidStopLoading);

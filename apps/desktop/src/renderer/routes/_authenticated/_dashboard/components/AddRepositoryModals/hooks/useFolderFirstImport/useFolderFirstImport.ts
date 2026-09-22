@@ -116,7 +116,6 @@ export function useFolderFirstImport(options?: {
 				result = {
 					projectId: only.id,
 					repoPath: setupResult.repoPath,
-					mainWorkspaceId: setupResult.mainWorkspaceId,
 				};
 			} else {
 				// (NON-GIT WORKSPACE) Filesystem/git is the source of truth: probe the

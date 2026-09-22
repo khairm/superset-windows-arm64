@@ -190,9 +190,18 @@ export function tombstoneSidebarWorkspaceRecord(
 }
 
 /**
- * Removes a project from the sidebar. Deleting its `v2SidebarProjects` row is
- * what hides it: membership is explicit and display gates on it
- * (`buildDashboardSidebarProjects` drops any workspace whose project is absent).
+ * Removes a project from the sidebar. Its `v2SidebarProjects` row is KEPT and
+ * marked `isHidden`, which is what takes the project (and every workspace
+ * under it) off screen: the sidebar data hook drops hidden rows from the tree
+ * and lists them under "hidden projects" instead.
+ *
+ * The row used to be DELETED — absence was how the project stayed gone. That
+ * is no longer safe: upstream desktop-v1.30.1's `usePlaceProjectsInSidebar`
+ * reconciler re-places every project this device's host serves that has NO row
+ * at all, so a deleted row is re-inserted (revealed) on the next render and
+ * the removal undoes itself. A hidden row is exactly what upstream's own
+ * project removal leaves behind, and the reconciler reads any present row —
+ * hidden or not — as "already placed".
  *
  * EVERY workspace of the project is tombstoned so "removed" stays removed
  * (REMOVE-STICKY). A workspace with no local-state row would be re-placed by
@@ -214,18 +223,19 @@ export function tombstoneSidebarWorkspaceRecord(
  * re-inserted the project row and the whole project came back. Mains are now
  * tombstoned too (`isHidden`, no archivedAt — the legacy "hidden" bucket, not
  * Archived), passive mounts skip hidden rows, and an EXPLICIT open (Workspaces
- * page, project setup/import) still pulls a hidden main back to active.
- * Removing a project discards `defaultOpenInApp` (stored on the project row
- * and nowhere else); it resets to default on re-add.
+ * page, project setup/import) still pulls a hidden main back to active — as
+ * does showing the project again from the sidebar's hidden-projects list,
+ * which is the one surface the kept row adds. Nothing passive reveals it:
+ * background placement passes `reveal: false`.
  *
  * (MASTER-ALWAYS-ACTIVE) narrows how long a main stays tombstoned, and nothing
  * else. Mains are still tombstoned here exactly as described above, and
  * removing a project still removes them: the reconciler
- * (`useSurfaceHiddenMainWorkspaces`) gates on the project's `v2SidebarProjects`
- * row, which this function deletes, so its predicate is false the moment the
- * project is gone. But re-ADDING the project puts that row back, and the
- * reconciler then returns the project's master to the active lane on the next
- * render. Re-adding a removed project resurrects its master — by design, and a
+ * (`useSurfaceHiddenMainWorkspaces`) gates on a VISIBLE `v2SidebarProjects`
+ * row, and this function hides the project's, so its predicate is false the
+ * moment the project is gone. But re-ADDING the project reveals that row, and
+ * the reconciler then returns the project's master to the active lane on the
+ * next render. Re-adding a removed project resurrects its master — by design, and a
  * deliberate exception to (REMOVE-STICKY), which still holds for every worktree
  * and session. A master has no other surface to be recovered from, so the
  * alternative is a row the user can never reach again.
@@ -275,24 +285,31 @@ export function removeProjectFromSidebarState(
 		collections.v2SidebarSections.delete(sectionIds);
 	}
 
-	if (collections.v2SidebarProjects.get(projectId)) {
-		collections.v2SidebarProjects.delete(projectId);
-	}
+	// (REMOVE-STICKY) Hidden, never deleted — a row-less project is handed
+	// straight back by `usePlaceProjectsInSidebar` (see the note above). The
+	// row is ensured first so a removal can never leave the project row-less,
+	// and `reveal: false` keeps the ensure from un-hiding it.
+	ensureSidebarProjectRecord(collections, projectId, { reveal: false });
+	collections.v2SidebarProjects.update(projectId, (draft) => {
+		draft.isHidden = true;
+	});
 }
 
 /**
- * Puts a project in the sidebar. A hidden row counts as absent: every path
- * that would add the project (setting it up on this device, opening one of
- * its workspaces, an agent creating a worktree in it) reveals it again, the
- * same way re-adding a removed project used to.
+ * Puts a project in the sidebar. By default a hidden row counts as absent:
+ * a deliberate user action on the project (setting it up on this device,
+ * opening one of its workspaces) reveals it again, the same way re-adding a
+ * removed project used to. Background placement passes `reveal: false`: a
+ * workspace created by the CLI or an agent must not undo an explicit hide.
  */
 export function ensureSidebarProjectRecord(
 	collections: Pick<AppCollections, "v2SidebarProjects">,
 	projectId: string,
+	{ reveal = true }: { reveal?: boolean } = {},
 ): void {
 	const existing = collections.v2SidebarProjects.get(projectId);
 	if (existing) {
-		if (existing.isHidden) {
+		if (existing.isHidden && reveal) {
 			collections.v2SidebarProjects.update(projectId, (draft) => {
 				draft.isHidden = false;
 			});

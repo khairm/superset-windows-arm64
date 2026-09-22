@@ -6,8 +6,8 @@ import { LuCheck, LuCopy, LuMaximize2 } from "react-icons/lu";
 import { useCopyToClipboard } from "renderer/hooks/useCopyToClipboard";
 import { usePullRequestDetail } from "renderer/routes/_authenticated/_dashboard/pull-requests/hooks/usePullRequestDetail";
 import { usePullRequestsSplitViewStore } from "renderer/routes/_authenticated/_dashboard/pull-requests/stores/pullRequestsSplitViewStore";
-import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import type { PullRequestPaneData } from "../../../../../../types";
+import { usePullRequestPaneProject } from "../../hooks/usePullRequestPaneProject";
 
 interface PullRequestPaneHeaderExtrasProps {
 	data: PullRequestPaneData;
@@ -23,9 +23,8 @@ export function PullRequestPaneHeaderExtras({
 }: PullRequestPaneHeaderExtrasProps) {
 	const { t } = useLingui();
 	const navigate = useNavigate();
-	const { workspace, hostUrl } = useWorkspace();
+	const { projectId, hostUrl } = usePullRequestPaneProject(data.projectId);
 	const { copyToClipboard, copied } = useCopyToClipboard();
-	const projectId = workspace.projectId;
 	const detail = usePullRequestDetail({
 		projectId,
 		hostUrl,

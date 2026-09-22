@@ -30,7 +30,7 @@ import { getHostWorktreeBaseDir } from "../settings/worktree-location";
 import { isInsideSessionsRoot } from "../workspace-creation/shared/session-paths";
 import { isInsideProjectWorktreesRoot } from "../workspace-creation/shared/worktree-paths";
 import { cleanupGitOps, isIndeterminateGitTaskFailure } from "./git-ops";
-import { isMainWorkspace } from "./is-main-workspace";
+import { isLocalCheckoutWorkspace } from "./is-local-checkout-workspace";
 import {
 	deleteMultiRepoBranches,
 	destroyMultiRepoWorktrees,
@@ -84,13 +84,47 @@ type InspectResult =
 			reason: null;
 			hasChanges: boolean;
 			hasUnpushedCommits: boolean;
+			/** The files are the project's checkout: deleting drops only the
+			 * workspace record and its sessions. */
+			sharesProjectCheckout: boolean;
 	  }
 	| {
 			canDelete: false;
 			reason: string;
 			hasChanges: false;
 			hasUnpushedCommits: false;
+			sharesProjectCheckout: false;
 	  };
+
+export const MAIN_WORKSPACE_REASON =
+	"Main workspaces cannot be deleted. Remove them from the sidebar or remove the project from this host instead.";
+
+/**
+ * (MASTER-ARCHIVE-ONLY) A repo's master row can never be hard-removed — the
+ * sidebar archives it instead — so both delete entry points refuse it here
+ * rather than relying on the caller.
+ *
+ * Upstream desktop-v1.30.1 replaced the fork's `isMainWorkspace` with
+ * `isLocalCheckoutWorkspace`, which answers the ADJACENT question (are these
+ * files the project's own checkout?) and answers it `true` for a master as
+ * well, because a master's worktreePath IS the repo path. So the verdict is
+ * derived from that result: a `type === "main"` row is a master by record, and
+ * a checkout-sharing row that is NOT one of upstream's new `type === "local"`
+ * workspaces is a master by path — the pre-`type` rows the fork has always had
+ * to recognise. Upstream's own `local` kind keeps its new destroy path, which
+ * removes nothing from disk.
+ */
+function mainWorkspaceRefusalReason(
+	result: Awaited<ReturnType<typeof isLocalCheckoutWorkspace>>,
+): string | null {
+	const { local, sharesProjectCheckout } = result;
+	if (!local) return null;
+	if (local.type === "main") return MAIN_WORKSPACE_REASON;
+	if (sharesProjectCheckout && local.type !== "local") {
+		return MAIN_WORKSPACE_REASON;
+	}
+	return null;
+}
 
 export const workspaceCleanupRouter = router({
 	/**
@@ -109,23 +143,31 @@ export const workspaceCleanupRouter = router({
 	inspect: protectedProcedure
 		.input(z.object({ workspaceId: z.string() }))
 		.query(async ({ ctx, input, signal }): Promise<InspectResult> => {
-			const main = await isMainWorkspace(ctx, input.workspaceId);
-			if (main.isMain) {
+			const checkout = await isLocalCheckoutWorkspace(
+				ctx,
+				input.workspaceId,
+			);
+			const mainRefusal = mainWorkspaceRefusalReason(checkout);
+			if (mainRefusal) {
 				return {
 					canDelete: false,
-					reason: main.reason,
+					reason: mainRefusal,
 					hasChanges: false,
 					hasUnpushedCommits: false,
+					sharesProjectCheckout: false,
 				};
 			}
 
-			const { local, project } = main;
-			if (!local) {
+			const { local, project, sharesProjectCheckout } = checkout;
+			// Nothing on disk goes away with a local workspace, so there is
+			// no uncommitted or unpushed work to warn about losing.
+			if (!local || sharesProjectCheckout) {
 				return {
 					canDelete: true,
 					reason: null,
 					hasChanges: false,
 					hasUnpushedCommits: false,
+					sharesProjectCheckout,
 				};
 			}
 
@@ -162,6 +204,7 @@ export const workspaceCleanupRouter = router({
 					reason: null,
 					hasChanges: state.hasChanges,
 					hasUnpushedCommits: state.hasUnpushedCommits,
+					sharesProjectCheckout: false,
 				};
 			} catch {
 				return {
@@ -169,6 +212,7 @@ export const workspaceCleanupRouter = router({
 					reason: null,
 					hasChanges: false,
 					hasUnpushedCommits: false,
+					sharesProjectCheckout: false,
 				};
 			}
 		}),
@@ -209,7 +253,11 @@ export const workspaceCleanupRouter = router({
 	 *                            a toast and do NOT force-retry.
 	 *   - PRECONDITION_FAILED with `data.teardownFailure` → teardown
 	 *                            script failed; prompt force-retry
-	 *   - BAD_REQUEST          → main workspace; cannot be deleted
+	 *
+	 * A workspace on the project's own checkout (`type = "local"`, or any row
+	 * whose path is the repo) runs only steps 0, 3a and 5: its files are the
+	 * repository, shared with every other local workspace, so preflight,
+	 * teardown, worktree removal and branch deletion are all skipped.
 	 *   - PRECONDITION_FAILED  → no cloud API configured
 	 *   - pass-through         → cloud auth / network failure
 	 */
@@ -265,13 +313,16 @@ async function runDestroy(
 ) {
 	const warnings: string[] = [];
 
-	// `isMainWorkspace` already loads workspace + project rows from sqlite;
-	// thread them through to avoid duplicate sync queries downstream.
-	const main = await isMainWorkspace(ctx, input.workspaceId);
-	if (main.isMain) {
-		throw new TRPCError({ code: "BAD_REQUEST", message: main.reason });
+	// `isLocalCheckoutWorkspace` already loads workspace + project rows from
+	// sqlite; thread them through to avoid duplicate sync queries downstream.
+	const checkout = await isLocalCheckoutWorkspace(ctx, input.workspaceId);
+	// (MASTER-ARCHIVE-ONLY) Refused before the archive tombstone is written:
+	// a master leaves the sidebar by being archived, never destroyed.
+	const mainRefusal = mainWorkspaceRefusalReason(checkout);
+	if (mainRefusal) {
+		throw new TRPCError({ code: "BAD_REQUEST", message: mainRefusal });
 	}
-	const { local, project } = main;
+	const { local, project, sharesProjectCheckout } = checkout;
 
 	// (MULTI-REPO WORKSPACE) A multi-repo branch workspace's worktreePath is a
 	// CONTAINER folder holding one worktree per member repo; the project's
@@ -305,7 +356,12 @@ async function runDestroy(
 		// case). Missing/broken local state is handled by the cleanup phase.
 		// Sessions are standalone repos — the same dirty check applies even
 		// though they have no project row.
-		if (!input.force && local && (project || local.type === "session")) {
+		if (
+			!input.force &&
+			!sharesProjectCheckout &&
+			local &&
+			(project || local.type === "session")
+		) {
 			if (multiRepo) {
 				// (MULTI-REPO WORKSPACE) One dirty member blocks the whole
 				// container delete — the fan-out is all-or-nothing.
@@ -352,11 +408,19 @@ async function runDestroy(
 		// (potentially slow) script never delays the row leaving the UI; a
 		// blocking failure throws, the catch below un-archives, and the
 		// globally-mounted dialog re-opens with a force-retry.
-		if (input.teardownMode !== "skip" && local && project) {
-			// destroyWorkspace already holds this workspace's Claude lock. runTeardown
-			// awaits createTerminalSessionInternal, which re-enters that lock and then
-			// re-enters again while preparing the profile. This depends on the
-			// AsyncLocalStorage lease propagating through the unbroken await chain.
+		// A teardown script on the shared checkout would stop services every
+		// other local workspace on it is using.
+		//
+		// destroyWorkspace already holds this workspace's Claude lock. runTeardown
+		// awaits createTerminalSessionInternal, which re-enters that lock and then
+		// re-enters again while preparing the profile. This depends on the
+		// AsyncLocalStorage lease propagating through the unbroken await chain.
+		if (
+			input.teardownMode !== "skip" &&
+			!sharesProjectCheckout &&
+			local &&
+			project
+		) {
 			const teardown: TeardownResult = await runTeardown({
 				db: ctx.db,
 				workspaceId: input.workspaceId,
@@ -392,12 +456,13 @@ async function runDestroy(
 			const destroyResult = await runDestroyPhases(ctx, input, {
 				local,
 				project,
+				sharesProjectCheckout,
 				multiRepo,
 				warnings,
 			});
 			// Telemetry at the true commit: a failed destroy un-archives below and
 			// must not count, and a retried destroy must count exactly once.
-			if (local) trackWorkspaceDeleted(ctx, local);
+			if (marked && local) trackWorkspaceDeleted(ctx, local);
 			return destroyResult;
 		};
 		result = await ctx.claudeAccounts.withWorkspaceDeletion(
@@ -471,11 +536,13 @@ async function runDestroyPhases(
 	{
 		local,
 		project,
+		sharesProjectCheckout,
 		multiRepo,
 		warnings,
-	}: {
-		local: Awaited<ReturnType<typeof isMainWorkspace>>["local"];
-		project: Awaited<ReturnType<typeof isMainWorkspace>>["project"];
+	}: Pick<
+		Awaited<ReturnType<typeof isLocalCheckoutWorkspace>>,
+		"local" | "project" | "sharesProjectCheckout"
+	> & {
 		// (MULTI-REPO WORKSPACE) resolved once in runDestroy and threaded through
 		// so every git-touching phase below fans out over the same member set.
 		multiRepo: ReturnType<typeof readMultiRepoConfig>;
@@ -496,7 +563,10 @@ async function runDestroyPhases(
 		repoPath: string;
 		git: Awaited<ReturnType<typeof ctx.git>>;
 	}> = [];
-	if (local?.type === "session") {
+	if (sharesProjectCheckout) {
+		// The files are the repository itself; nothing on disk belongs to
+		// this workspace alone.
+	} else if (local?.type === "session") {
 		// Sessions are standalone repos in the managed sessions root — no
 		// `git worktree remove`, just delete the folder. The root guard is
 		// load-bearing: a corrupt worktreePath must never point rm -rf at
@@ -529,7 +599,7 @@ async function runDestroyPhases(
 			);
 		}
 	}
-	if (local && project && multiRepo) {
+	if (local && project && !sharesProjectCheckout && multiRepo) {
 		// Fork module: member worktree fan-out + container removal (verified
 		// against each member git's registry; locked members leave the
 		// container on disk).
@@ -541,7 +611,7 @@ async function runDestroyPhases(
 		);
 		worktreeRemoved = true;
 	}
-	if (local && project && !multiRepo) {
+	if (local && project && !sharesProjectCheckout && !multiRepo) {
 		worktreeRemoved = !existsSync(local.worktreePath);
 		if (!worktreeRemoved && isMissingDirectory(project.repoPath)) {
 			// The project repo was moved or deleted outside Superset: there is
@@ -559,7 +629,7 @@ async function runDestroyPhases(
 			if (
 				!isInsideProjectWorktreesRoot(
 					local.worktreePath,
-					project.id,
+					project,
 					worktreeBaseDir,
 				)
 			) {
@@ -648,7 +718,7 @@ async function runDestroyPhases(
 				if (
 					!isInsideProjectWorktreesRoot(
 						local.worktreePath,
-						project.id,
+						project,
 						worktreeBaseDir,
 					)
 				) {

@@ -722,6 +722,8 @@ export class GitWatcher {
 		// rescan re-probes and picks the workspace up when the dir returns.
 		if (!existsSync(worktreePath)) return;
 
+		if (this.filesystem.isWatchAttachBackingOff(worktreePath)) return;
+
 		// Resolve the `.git` directory. Failure here means the folder is not a
 		// git repo (NON-GIT WORKSPACE) — that must NOT skip the worktree-root fs
 		// watch below; only the `.git/`-specific watch is git-dependent. So we

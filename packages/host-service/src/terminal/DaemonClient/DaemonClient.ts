@@ -26,6 +26,8 @@ import {
 	type SessionMeta,
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@superset/pty-daemon/protocol";
+import type { TerminalModesSnapshot } from "@superset/pty-daemon/terminal-modes";
+import { ReplayCompletion } from "./utils/ReplayCompletion/index.ts";
 
 /**
  * The daemon didn't answer — the single enumeration of TRANSIENT daemon
@@ -57,11 +59,14 @@ export type Signal = "SIGINT" | "SIGTERM" | "SIGKILL" | "SIGHUP";
 
 export interface SubscribeCallbacks {
 	onOutput: (chunk: Buffer) => void;
+	onReplayComplete?: (modes: TerminalModesSnapshot) => void;
 	onExit: (info: ExitInfo) => void;
 }
 
 interface SessionCallbacks {
 	output: Set<(chunk: Buffer) => void>;
+	replayComplete: Set<(modes: TerminalModesSnapshot) => void>;
+	replay?: ReplayCompletion;
 	exit: Set<(info: ExitInfo) => void>;
 }
 
@@ -110,6 +115,7 @@ export class DaemonClient {
 	private daemonVersion = "";
 	private negotiated: number | null = null;
 	private connected = false;
+	private modeSnapshots = false;
 
 	constructor(opts: DaemonClientOptions) {
 		this.opts = opts;
@@ -137,6 +143,14 @@ export class DaemonClient {
 
 	get isConnected(): boolean {
 		return this.connected && this.socket !== null && !this.socket.destroyed;
+	}
+
+	get supportsModeSnapshots(): boolean {
+		return this.modeSnapshots;
+	}
+
+	waitForReplay(id: string): Promise<void> {
+		return this.callbacks.get(id)?.replay?.promise ?? Promise.resolve();
 	}
 
 	get version(): string {
@@ -286,30 +300,55 @@ export class DaemonClient {
 		// the sessions map was rebuilt). Callers that need history for such
 		// clients replay from the server-side cache instead (see terminal.ts
 		// replayBuffer).
+		if (!entry) {
+			entry = { output: new Set(), exit: new Set(), replayComplete: new Set() };
+			this.callbacks.set(id, entry);
+		}
+		if (cb.onReplayComplete) entry.replayComplete.add(cb.onReplayComplete);
+		entry.output.add(cb.onOutput);
+		entry.exit.add(cb.onExit);
 		if (!wasFirst && opts.replay) {
 			console.warn(
 				`[daemon-client] subscribe(${id}): ring replay unavailable on a repeat subscribe; joining live stream only`,
 			);
 		}
-		if (!entry) {
-			entry = { output: new Set(), exit: new Set() };
-			this.callbacks.set(id, entry);
-		}
-		entry.output.add(cb.onOutput);
-		entry.exit.add(cb.onExit);
-		if (wasFirst) {
-			this.send({
-				type: "subscribe",
-				id,
-				replay: opts.replay,
-			});
+		if (
+			wasFirst ||
+			(this.modeSnapshots &&
+				cb.onReplayComplete &&
+				entry.replay?.status === "ready")
+		) {
+			if (this.modeSnapshots) {
+				entry.replay = new ReplayCompletion(
+					5000,
+					new DaemonUnavailableError(`Replay timed out for ${id}`),
+				);
+			}
+			try {
+				this.send({
+					type: "subscribe",
+					id,
+					replay: wasFirst && opts.replay,
+					...(this.modeSnapshots ? { modeSnapshot: true } : {}),
+				});
+			} catch (error) {
+				entry.replay?.reject(error as Error);
+				this.callbacks.delete(id);
+				throw error;
+			}
 		}
 		return () => {
 			const e = this.callbacks.get(id);
 			if (!e) return;
+			if (cb.onReplayComplete) e.replayComplete.delete(cb.onReplayComplete);
 			e.output.delete(cb.onOutput);
 			e.exit.delete(cb.onExit);
 			if (e.output.size === 0 && e.exit.size === 0) {
+				if (e.replay) {
+					e.replay.reject(
+						new DaemonUnavailableError(`Unsubscribed during replay for ${id}`),
+					);
+				}
 				this.callbacks.delete(id);
 				this.send({ type: "unsubscribe", id });
 			}
@@ -317,9 +356,12 @@ export class DaemonClient {
 	}
 
 	async dispose(): Promise<void> {
-		this.connected = false;
 		const sock = this.socket;
+		this.connected = false;
 		this.socket = null;
+		this.rejectPendingReplays(
+			new DaemonUnavailableError("Disposed during replay"),
+		);
 		if (!sock || sock.destroyed) return;
 		await new Promise<void>((resolve) => {
 			sock.end(() => resolve());
@@ -347,6 +389,7 @@ export class DaemonClient {
 		if (ack.type !== "hello-ack") {
 			throw new Error(`daemon handshake unexpected reply: ${ack.type}`);
 		}
+		this.modeSnapshots = ack.supportsModeSnapshots === true;
 		this.daemonVersion = ack.daemonVersion;
 		this.negotiated = ack.protocol;
 	}
@@ -584,6 +627,20 @@ export class DaemonClient {
 		}
 		for (const frame of frames) {
 			const msg = frame.message as ServerMessage;
+			if (msg.type === "error" && msg.id) {
+				this.callbacks.get(msg.id)?.replay?.reject(new Error(msg.message));
+			}
+			if (msg.type === "replay-complete") {
+				const entry = this.callbacks.get(msg.id);
+				if (entry?.replay?.status !== "pending") continue;
+				try {
+					for (const cb of entry?.replayComplete ?? []) cb(msg.modes);
+					entry.replay.resolve();
+				} catch (error) {
+					entry?.replay?.reject(error as Error);
+				}
+				continue;
+			}
 			// Route session-keyed events to subscriber callbacks.
 			if (msg.type === "output" && this.callbacks.has(msg.id)) {
 				if (frame.payload) {
@@ -614,10 +671,19 @@ export class DaemonClient {
 		}
 	}
 
+	private rejectPendingReplays(error: Error): void {
+		for (const entry of this.callbacks.values()) {
+			entry.replay?.reject(error);
+		}
+	}
+
 	private onClose(err?: Error): void {
 		if (!this.connected && this.socket === null) return;
 		this.connected = false;
 		this.socket = null;
+		this.rejectPendingReplays(
+			err ?? new DaemonUnavailableError("Disconnected during replay"),
+		);
 		for (const cb of this.disconnectCbs) cb(err);
 	}
 }

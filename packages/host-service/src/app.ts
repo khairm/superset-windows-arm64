@@ -2,6 +2,12 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { trpcServer } from "@hono/trpc-server";
 import { Octokit } from "@octokit/rest";
 import { SUPERSET_USER_ID_HEADER } from "@superset/shared/host-routing";
+import { SANDBOX_PORTS } from "@superset/shared/sandbox-contract";
+
+/** One frame of a 1920x1200 display is ~9 MB; this is a stalled reader, not a burst. */
+const MAX_DISPLAY_BUFFER_BYTES = 32 * 1024 * 1024;
+const MAX_DISPLAY_PENDING = 64;
+
 import { TRPCError } from "@trpc/server";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
@@ -22,7 +28,6 @@ import type { ApiAuthProvider } from "./providers/auth";
 import type { HostAuthProvider } from "./providers/host-auth";
 import { runArchivedWorkspaceReconcile } from "./runtime/archived-workspace-reconcile";
 import { registerBrowserCdpRoute } from "./runtime/browser-bridge/browser-cdp-route";
-import { registerDesktopRoute } from "./runtime/desktop";
 import { WorkspaceFilesystemManager } from "./runtime/filesystem";
 import type { GitCredentialProvider } from "./runtime/git";
 import { createGitEnvResolver, createGitFactory } from "./runtime/git";
@@ -45,6 +50,10 @@ import {
 } from "./terminal-agents";
 import { appRouter } from "./trpc/router";
 import { gitStatusStore } from "./trpc/router/git/utils/git-status-store";
+import {
+	resumeCrashedAgentSessions,
+	resumeSessionDepsFor,
+} from "./trpc/router/terminal-agents/terminal-agents";
 import { provisionSelectedAccounts } from "./trpc/router/usage/account-provisioning";
 import {
 	execGh as defaultExecGh,
@@ -118,6 +127,7 @@ export interface CreateAppResult {
 	 * the first.
 	 */
 	launchSandboxAgent: () => Promise<void>;
+	resumeCrashedAgents: () => Promise<void>;
 	dispose: () => Promise<void>;
 }
 
@@ -293,16 +303,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 	};
 
 	// Startup sweeps run in the background so they don't block server
-	// startup. Ordering matters: the project backfill fills identity fields
-	// on pre-existing rows before the main-workspace sweep touches them.
+	// startup.
 	//
 	// None of them run in a sandbox. Every one repairs state a long-lived
 	// machine accumulates — rows that predate a column, a delete a previous
 	// process crashed out of — and a sandbox is provisioned fresh with exactly
 	// one project and one workspace, seeded by us, that no earlier build ever
-	// touched. There is nothing to recover, so the sweeps can only invent:
-	// the main-workspace sweep already added a phantom second workspace here
-	// before bootstrap started seeding `type='main'`.
+	// touched. There is nothing to recover, so the sweeps can only invent.
 	void (async () => {
 		if (process.env.SUPERSET_HOST_RUN_MODE === "sandbox") return;
 		await runProjectBackfill({
@@ -313,7 +320,9 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		});
 		// Backfill `kind='main'` workspaces for projects already set up before
 		// this column shipped. Idempotent — only does real work the first
-		// time after upgrade.
+		// time after upgrade. (MASTER-ALWAYS-ACTIVE): upstream retired this
+		// sweep with the main-workspace concept in desktop-v1.30.1; the fork
+		// keeps it, because a lost master has to be rebuildable.
 		await runMainWorkspaceSweep({
 			db,
 			git,
@@ -363,13 +372,60 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 	app.use("/desktop/*", wsAuth);
 	app.use("/fwd", wsAuth);
 
+	// websockify listens on loopback with no credential of its own, so the
+	// check that admits a pane is this route's. Sandboxes only: on a laptop
+	// this would forward a caller's bytes to whatever holds port 6080.
+	app.get(
+		"/desktop/websockify",
+		async (c, next) => {
+			if (process.env.SUPERSET_HOST_RUN_MODE !== "sandbox") {
+				return c.json({ error: "Not found" }, 404);
+			}
+			return next();
+		},
+		upgradeWebSocket(() => {
+			let upstream: WebSocket | null = null;
+			const pending: (string | ArrayBuffer)[] = [];
+			return {
+				onOpen: (_event, ws) => {
+					upstream = new WebSocket(
+						`ws://127.0.0.1:${SANDBOX_PORTS.desktop}/websockify`,
+						["binary"],
+					);
+					upstream.binaryType = "arraybuffer";
+					upstream.onopen = () => {
+						for (const message of pending.splice(0)) upstream?.send(message);
+					};
+					upstream.onmessage = (event) => {
+						// A pane that stopped reading (a laptop asleep, a stalled
+						// renderer) would otherwise grow this buffer without limit.
+						const raw = ws.raw as { bufferedAmount?: number } | undefined;
+						if ((raw?.bufferedAmount ?? 0) > MAX_DISPLAY_BUFFER_BYTES) {
+							ws.close(1013, "display backlog");
+							return;
+						}
+						ws.send(event.data as string | ArrayBuffer);
+					};
+					upstream.onclose = () => ws.close();
+					upstream.onerror = () => ws.close(1011, "display unreachable");
+				},
+				onMessage: (event) => {
+					const data = event.data as string | ArrayBuffer;
+					if (upstream?.readyState === WebSocket.OPEN) upstream.send(data);
+					else if (pending.length < MAX_DISPLAY_PENDING) pending.push(data);
+				},
+				onClose: () => upstream?.close(),
+				onError: () => upstream?.close(),
+			};
+		}),
+	);
+
 	registerEventBusRoute({ app, eventBus, upgradeWebSocket });
 	registerBrowserCdpRoute({
 		app,
 		upgradeWebSocket,
 		getBridge: () => config.browserBridge,
 	});
-	registerDesktopRoute({ app, upgradeWebSocket });
 	registerForwardMuxRoute({
 		app,
 		upgradeWebSocket,
@@ -495,6 +551,25 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		);
 	};
 
+	/** Same context the launcher above builds: a resume runs an agent. */
+	const resumeCrashedAgents = async () => {
+		const ctx = {
+			git,
+			credentials: providers.credentials,
+			github,
+			execGh,
+			api,
+			db,
+			runtime,
+			eventBus,
+			terminalAgentStore,
+			organizationId: config.organizationId,
+			isAuthenticated: true,
+			browserBridge: config.browserBridge,
+		} as HostServiceContext;
+		await resumeCrashedAgentSessions(resumeSessionDepsFor(ctx));
+	};
+
 	return {
 		app,
 		injectWebSocket,
@@ -507,6 +582,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		// in-memory session to broadcast from, and this is the only bus there is.
 		eventBus,
 		launchSandboxAgent,
+		resumeCrashedAgents,
 		dispose,
 	};
 }

@@ -42,12 +42,15 @@ export const V2WorkspaceRow = memo(function V2WorkspaceRow({
 
 	const { t } = useLingui();
 	const navigate = useNavigate();
-	const isMainWorkspace = workspace.type === "main";
 	// Upstream retired the DeletingWorkspacesProvider context in favour of this
 	// store; the fork's in-flight-delete row treatment (spinner, aria-busy,
 	// inert row) reads the same state from it.
 	const deletingIds = useDeletingWorkspacesStore((state) => state.deletingIds);
 	const deleting = deletingIds.has(workspace.id);
+	// Upstream's "local" kind and this fork's master row both ARE the project's
+	// checkout, so they share the laptop glyph and its label.
+	const isLocalWorkspace =
+		workspace.type === "local" || workspace.type === "main";
 	const DeviceIcon =
 		workspace.hostType === "local-device" ? LuLaptop : LuMonitor;
 	// The local device is the one running this app — it can't be offline from
@@ -150,7 +153,7 @@ export const V2WorkspaceRow = memo(function V2WorkspaceRow({
 				>
 					<WorkspaceStateGlyph workspace={workspace} />
 
-					{isMainWorkspace ? (
+					{isLocalWorkspace ? (
 						<Tooltip delayDuration={300}>
 							<TooltipTrigger asChild>
 								{/* The wrapping span (not the icon itself — react-icons
@@ -164,13 +167,13 @@ export const V2WorkspaceRow = memo(function V2WorkspaceRow({
 									<CgLaptop
 										className="size-3.5 shrink-0 text-muted-foreground"
 										aria-label={t({
-											message: "Main workspace",
+											message: "Local workspace",
 										})}
 									/>
 								</span>
 							</TooltipTrigger>
 							<TooltipContent side="top">
-								<Trans>Main workspace</Trans>
+								<Trans>Local workspace</Trans>
 							</TooltipContent>
 						</Tooltip>
 					) : null}

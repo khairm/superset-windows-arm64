@@ -783,3 +783,43 @@ describe("TerminalAgentStore", () => {
 		expect(lateArrival.persisted.has("t1")).toBe(true);
 	});
 });
+
+describe("session account attribution", () => {
+	it("launch changes discard the old login while native session discovery retains it", () => {
+		const store = new TerminalAgentStore();
+		const account = {
+			agent: "claude" as const,
+			selection: "/profile-a",
+			credentialKind: "subscription" as const,
+			identity: "identity-a",
+		};
+		store.recordEvent({
+			terminalId: "account-terminal",
+			workspaceId: "workspace",
+			agentId: "claude",
+			eventType: "Attached",
+			occurredAt: 100,
+			launchId: "first",
+			account,
+		});
+		store.recordEvent({
+			terminalId: "account-terminal",
+			workspaceId: "workspace",
+			agentId: "claude",
+			eventType: "Start",
+			occurredAt: 101,
+			launchId: "first",
+			agentSessionId: "native-session",
+		});
+		expect(store.get("account-terminal")?.account).toEqual(account);
+		store.recordEvent({
+			terminalId: "account-terminal",
+			workspaceId: "workspace",
+			agentId: "claude",
+			eventType: "Attached",
+			occurredAt: 200,
+			launchId: "second",
+		});
+		expect(store.get("account-terminal")?.account).toBeUndefined();
+	});
+});

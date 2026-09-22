@@ -27,6 +27,7 @@ import { countAgentPrsByDay } from "./history/agent-prs";
 import { fetchOpencodeAccounts } from "./opencode-quota";
 import { removeClaudeProfile, removeCodexHome } from "./profile-remove";
 import { discoverClaudeProfiles, discoverCodexHomes } from "./profiles";
+import { validateSessionAccount } from "./session-account/session-account";
 import type { UsageAccount } from "./types";
 
 /**
@@ -71,6 +72,35 @@ function getQuota(forceRefresh: boolean): Promise<UsageAccount[]> {
 }
 
 export const usageRouter = router({
+	sessionAccount: queryProcedure
+		.input(
+			z.object({
+				workspaceId: z.string(),
+				terminalId: z.string(),
+				startedAt: z.number(),
+			}),
+		)
+		.query(async ({ ctx, input }) => {
+			const binding = ctx.terminalAgentStore
+				.listByWorkspace(input.workspaceId)
+				.find(
+					(b) =>
+						b.terminalId === input.terminalId &&
+						b.startedAt === input.startedAt,
+				);
+			const snapshot = binding?.account;
+			if (!snapshot || !(await validateSessionAccount(snapshot))) return null;
+			return {
+				agent: snapshot.agent,
+				selection: snapshot.selection,
+				credentialKind: snapshot.credentialKind,
+				email: snapshot.email,
+				source:
+					snapshot.identity === "api-env"
+						? ("environment" as const)
+						: ("profile" as const),
+			};
+		}),
 	quota: queryProcedure
 		.meta({ timeoutMs: 15_000 })
 		.input(z.object({ forceRefresh: z.boolean().optional() }).optional())
