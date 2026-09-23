@@ -5206,6 +5206,9 @@ msgstr "diff в новой вкладке"
 msgid "Diff size"
 msgstr "Размер diff"
 
+msgid "Digital Product Designer"
+msgstr "Дизайнер цифровых продуктов"
+
 msgid "Direct"
 msgstr "Прямые"
 
@@ -5311,6 +5314,9 @@ msgstr "Discord, GitHub и открытые встречи."
 
 msgid "Discover and connect to development servers on your network."
 msgstr "Находить серверы разработки в вашей сети и подключаться к ним."
+
+msgid "Disk version"
+msgstr "Версия на диске"
 
 msgid "Dismiss"
 msgstr "Закрыть"
@@ -6478,6 +6484,9 @@ msgstr "Заведите тикет — получите проверенный 
 msgid "File actions"
 msgstr "Действия с файлом"
 
+msgid "File changed on disk"
+msgstr "Файл на диске изменён"
+
 msgid "File is too large to preview"
 msgstr "Файл слишком большой для предпросмотра"
 
@@ -7387,6 +7396,9 @@ msgstr "Люди пишут каждую строку. Инструменты к
 msgid "I already use an IDE like Cursor, is this for me?"
 msgstr "Я уже пользуюсь IDE вроде Cursor — это для меня?"
 
+msgid "I also love being able to spin up a local worktree environment on my Mac directly from my phone."
+msgstr "Ещё мне очень нравится, что я могу прямо с телефона запустить на своём Mac локальное окружение с рабочим деревом."
+
 msgid "I can be in a café with my coffee while the work keeps moving forward."
 msgstr "Я могу сидеть в кафе с чашкой кофе, а работа тем временем продолжается."
 
@@ -7923,6 +7935,9 @@ msgstr "Kbd"
 
 msgid "Keep docs fresh"
 msgstr "Держать документацию актуальной"
+
+msgid "Keep editing"
+msgstr "Продолжить редактирование"
 
 msgid "Keep waiting"
 msgstr "Продолжить ждать"
@@ -10719,6 +10734,9 @@ msgstr "Ночные и выходные прогоны завершаются �
 msgid "Overview"
 msgstr "Обзор"
 
+msgid "Overwrite file"
+msgstr "Перезаписать файл"
+
 #. placeholder {0}: ownerName ?? t({ message: "a teammate", })
 msgid "Owned by {0} — only they can edit this automation."
 msgstr "Владелец — {0}; изменять эту автоматизацию может только он."
@@ -11841,11 +11859,17 @@ msgstr "Перезагрузить"
 msgid "Reload app"
 msgstr "Перезагрузить приложение"
 
+msgid "Reload from disk"
+msgstr "Загрузить с диска"
+
 msgid "Reload Superset to refresh the workspace list."
 msgstr "Перезагрузите Superset, чтобы обновить список рабочих областей."
 
 msgid "Reload window"
 msgstr "Перезагрузить окно"
+
+msgid "Reloading discards your edits. Overwriting replaces the file on disk."
+msgstr "Загрузка с диска отменяет ваши правки. Перезапись заменяет файл на диске."
 
 msgid "Relocate"
 msgstr "Переместить"
@@ -17027,6 +17051,9 @@ msgstr "Ваши агенты, ваши аккаунты"
 
 msgid "Your browser doesn't report which chip you have, so this is the Apple Silicon build. On an Intel Mac, <0>get the Intel build</0> instead."
 msgstr "Ваш браузер не сообщает, какой у вас чип, поэтому это сборка для Apple Silicon. Если у вас Mac на Intel, лучше <0>скачайте сборку для Intel</0>."
+
+msgid "Your changes"
+msgstr "Ваши изменения"
 
 msgid "Your changes will be lost if you don't save them."
 msgstr "Изменения будут потеряны, если их не сохранить."

@@ -255,7 +255,7 @@ function V2WorkspaceCenter({
 		[openFilePane, setRightSidebarOpen],
 	);
 	const defaultPaneActions = useDefaultPaneActions({ launcher });
-	const onBeforeCloseTab = useDirtyTabCloseGuard();
+	const onBeforeCloseTab = useDirtyTabCloseGuard(store);
 
 	const sidebarWidth = v2UserPreferences.rightSidebarWidth ?? 340;
 	const [isSidebarResizing, setIsSidebarResizing] = useState(false);
