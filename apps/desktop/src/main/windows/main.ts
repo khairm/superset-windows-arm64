@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, renameSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { msg } from "@lingui/core/macro";
 import * as Sentry from "@sentry/electron/main";
@@ -596,74 +594,15 @@ export async function createPlatformWindow({
 	// blank-pane diagnostics survive a shipped build (no devtools session).
 	// Logging only -- never alters behaviour. Inserted deterministically by (W.1)
 	// because main.ts is AI-edited and a line-anchored hunk drifts.
-	window.webContents.on(
-		"console-message",
-		(_event, _level, message) => {
-			try {
-				if (typeof message === "string" && message.startsWith("[agent-dots]")) {
-					log.info(message);
-				} else if (
-					typeof message === "string" &&
-					message.startsWith("[render-dot]")
-				) {
-					// (render-dot) Persist renderer dot-render snapshots to a
-					// SEPARATE log so the actually-rendered colour can be matched
-					// against the watcher emit log by source key + workspaceId.
-					// Append-only with a simple ~2 MB rotation; never throws.
-					try {
-						const p = join(homedir(), ".superset", "agent-dot-render.log");
-						try {
-							if (statSync(p).size > 2 * 1024 * 1024) {
-								renameSync(p, `${p}.prev`);
-							}
-						} catch {
-							// no existing file to rotate
-						}
-						appendFileSync(p, `${new Date().toISOString()} ${message}\n`, "utf8");
-					} catch {
-						// never let render-dot logging crash the main process
-					}
-				}
-			} catch {
-				// never let logging crash the main process
-			}
-		},
-	);
-
-	// [WISPR-DIAG] Enable Electron's accessibility support so xterm's
-	// screenReaderMode:true (which adds aria-* to the hidden <textarea>) is
-	// actually visible to Windows UI Automation. Wispr Flow's voice input uses
-	// UIA (IUIAutomationValuePattern/TextPattern); without UIA exposure, ARIA on
-	// the textarea is invisible to it and injection silently no-ops — keyboard
-	// + Ctrl+V still work because they route through xterm's keydown listener
-	// and paste handler, not UIA. Electron only fully materializes its
-	// accessibility tree on Windows when this flag is set OR when a registered
-	// screen reader is detected (Wispr Flow does NOT register as a screen reader).
-	//
-	// NOTE: logs via electron-log `log.info` (NOT console.log). This snippet runs
-	// in the MAIN process; the (W.1) forwarder only relays RENDERER console
-	// messages to main.log, so a main-process console.log would never surface.
-	// `log` is in scope here — (W.1)/(AB) use it at this same anchor.
-	try {
-		const { app } = require("electron") as typeof import("electron");
-		log.info("[agent-dots] [wispr-diag] electron-accessibility-before " + JSON.stringify({
-			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
-			accessibilitySupportEnabled: (app as any).accessibilitySupportEnabled,
-			electronVersion: process.versions.electron,
-			chromeVersion: process.versions.chrome,
-			platform: process.platform,
-			arch: process.arch,
-		}));
-		if (typeof (app as any).setAccessibilitySupportEnabled === "function") {
-			(app as any).setAccessibilitySupportEnabled(true);
-			log.info("[agent-dots] [wispr-diag] setAccessibilitySupportEnabled(true) called");
+	// (WATCHER-ASYNC-IO)
+	window.webContents.on("console-message", (_event, _level, message) => {
+		if (typeof message === "string" && message.startsWith("[agent-dots]")) {
+			log.info(message);
 		}
-		log.info("[agent-dots] [wispr-diag] electron-accessibility-after " + JSON.stringify({
-			isAccessibilitySupportEnabled: typeof (app as any).isAccessibilitySupportEnabled === "function" ? (app as any).isAccessibilitySupportEnabled() : null,
-		}));
-	} catch (_e) {
-		try { log.info("[agent-dots] [wispr-diag] electron-accessibility-error " + String(_e)); } catch (_e2) { /* swallow */ }
-	}
+	});
+
+	// (WATCHER-ASYNC-IO)
+	app.setAccessibilitySupportEnabled(true);
 
 	ipcHandler?.attachWindow(window);
 	browserManager.registerHostWindow(window.webContents);

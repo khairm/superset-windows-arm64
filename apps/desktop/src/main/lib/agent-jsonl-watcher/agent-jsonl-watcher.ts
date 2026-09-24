@@ -2,6 +2,7 @@ import type EventEmitter from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import type { AgentLifecycleEvent } from "shared/notification-types";
 import { installPaneMapHook } from "./pane-map-hook";
@@ -70,31 +71,63 @@ const SUPERSET_PANE_MAP_DIR = path.join(
 	"session-pane-map",
 );
 
-// Diagnostic log. Set SUPERSET_AGENT_WATCHER_DEBUG=0 to disable. Logs
-// every line classification, state transition, and emit (with mapping)
-// so the user can share the file when debugging "wrong-colour-dot"
-// issues. Auto-rotates when the file exceeds ~2 MB.
+// (WATCHER-ASYNC-IO)
 const DEBUG_LOG_PATH = path.join(
 	os.homedir(),
 	".superset",
 	"agent-watcher-debug.log",
 );
 const DEBUG_MAX_BYTES = 2 * 1024 * 1024;
-const DEBUG_ENABLED = process.env.SUPERSET_AGENT_WATCHER_DEBUG !== "0";
-function dbg(kind: string, fields: Record<string, unknown>): void {
-	if (!DEBUG_ENABLED) return;
+const DEBUG_ENABLED = process.env.SUPERSET_AGENT_WATCHER_DEBUG === "1";
+const DEBUG_QUEUE_LIMIT = 256;
+const debugQueue: string[] = [];
+let debugWriting = false;
+let debugFailed = false;
+
+function isFileMissing(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function flushDebugQueue(): Promise<void> {
+	debugWriting = true;
 	try {
-		try {
-			const st = fs.statSync(DEBUG_LOG_PATH);
-			if (st.size > DEBUG_MAX_BYTES) {
-				fs.renameSync(DEBUG_LOG_PATH, DEBUG_LOG_PATH + ".prev");
+		while (debugQueue.length > 0) {
+			let size = 0;
+			try {
+				size = (await fs.promises.stat(DEBUG_LOG_PATH)).size;
+			} catch (error) {
+				if (!isFileMissing(error)) throw error;
 			}
-		} catch {}
-		const line = `${new Date().toISOString()} ${kind} ${JSON.stringify(fields)}\n`;
-		fs.appendFileSync(DEBUG_LOG_PATH, line, "utf8");
-	} catch {
-		// never let logging crash the watcher
+			if (size > DEBUG_MAX_BYTES) {
+				await fs.promises.rename(DEBUG_LOG_PATH, `${DEBUG_LOG_PATH}.prev`);
+			}
+			await fs.promises.appendFile(
+				DEBUG_LOG_PATH,
+				debugQueue.splice(0).join(""),
+				"utf8",
+			);
+		}
+	} catch (error) {
+		debugFailed = true;
+		debugQueue.length = 0;
+		console.error("[agent-watcher] Debug log writer failed", error);
+	} finally {
+		debugWriting = false;
 	}
+}
+
+function dbg(kind: string, fields: Record<string, unknown>): void {
+	if (!DEBUG_ENABLED || debugFailed) return;
+	if (debugQueue.length === DEBUG_QUEUE_LIMIT) debugQueue.shift();
+	debugQueue.push(
+		`${new Date().toISOString()} ${kind} ${JSON.stringify(fields)}\n`,
+	);
+	if (!debugWriting) void flushDebugQueue();
+}
+
+function dbgLine(sessionId: string | null, kind: string, line: string): void {
+	if (!DEBUG_ENABLED) return;
+	dbg("line", { sessionId, kind, snippet: line.slice(0, 160) });
 }
 
 // Monotonic event id for joining a watcher emit to the renderer-side
@@ -118,6 +151,9 @@ const POLL_DEBOUNCE_MS = 250;
 // event was also missed.
 const POLL_KNOWN_MS = 2500;
 const POLL_DISCOVER_MS = 12000;
+// (WATCHER-ASYNC-IO)
+const COLD_FILE_AGE_MS = 24 * 60 * 60 * 1000;
+const POLL_COLD_MS = 60_000;
 // How long after the last JSONL activity to consider an agent "done" with
 // the turn. End-of-turn isn't reliably marked in every session (only
 // ~3 of 8 Claude turns in the test corpus carried stop_reason:"end_turn"),
@@ -220,7 +256,14 @@ const SOURCES: AgentSource[] = [
 
 interface FileState {
 	offset: number;
-	leftover: string;
+	leftover: Buffer[];
+	skipPartialLine: boolean;
+	replayReset: boolean;
+	inFlight: Promise<void> | null;
+	trailingWork: boolean;
+	initialized: boolean;
+	identity: string | null;
+	nextPollAt: number;
 	cwd: string | null;
 	sessionId: string | null;
 	parser: AgentParser;
@@ -229,18 +272,13 @@ interface FileState {
 	 * re-read of THIS file is still outstanding; null otherwise. Everything the
 	 * tail contains that is stamped before it is pre-start history.
 	 *
-	 * It lives on the state rather than in a processFile local because arming the
+	 * It lives on the state rather than in a readFileStep local because arming the
 	 * tail REWINDS `offset` before the read that consumes it: if that read throws
 	 * (a Windows lock on a file Claude Code is writing is enough), the retry pass
 	 * is no longer `isFirstSeen`, so a pass-local flag recomputes as false and the
 	 * rewound offset would be re-read UNFENCED — arming auto-resume off an
 	 * hours-old api-error. Cleared by the first pass that actually consumes the
 	 * tail (i.e. advances the offset past it).
-	 *
-	 * ACCEPTED DEBT: this lifecycle is module-private and reads a hardcoded
-	 * CLAUDE_PROJECTS_DIR, so it has no test seam — any refactor of it MUST add
-	 * the arm -> throw-retry -> cwd-skip -> advance test the current structure
-	 * prevents.
 	 */
 	preStartFenceMs: number | null;
 }
@@ -273,6 +311,7 @@ interface PaneMapping {
 }
 
 interface WatcherDeps {
+	installPaneMapHook?: () => void;
 	notificationsEmitter: EventEmitter;
 	// (AUTO-RESUME) Forwarded when a Claude main session appends an API-error record.
 	// The auto-resume manager debounces + re-reads the transcript tail to confirm the
@@ -293,7 +332,78 @@ const watchers = new Map<string, fs.FSWatcher>();
 let scanTimer: NodeJS.Timeout | null = null;
 let pollKnownTimer: NodeJS.Timeout | null = null;
 let pollDiscoverTimer: NodeJS.Timeout | null = null;
+let seedRetryTimer: NodeJS.Timeout | null = null;
 let deps: WatcherDeps | null = null;
+// (WATCHER-ASYNC-IO)
+let generation = 0;
+let pollInFlight: Promise<void> | null = null;
+const IO_CONCURRENCY = 32;
+const READ_STEP_BYTES = 64 * 1024;
+const READ_CONCURRENCY = 4;
+interface ReadPool {
+	active: number;
+	waiting: Array<(acquired: boolean) => void>;
+}
+let readPool: ReadPool = { active: 0, waiting: [] };
+const PARSE_YIELD_LINES = 128;
+
+function isCurrent(run: number): boolean {
+	return deps !== null && generation === run;
+}
+
+function ownsFile(filePath: string, state: FileState, run: number): boolean {
+	return isCurrent(run) && fileStates.get(filePath) === state;
+}
+
+async function yieldAndOwns(
+	filePath: string,
+	state: FileState,
+	run: number,
+): Promise<boolean> {
+	await yieldToLoop();
+	return ownsFile(filePath, state, run);
+}
+
+function atYieldBoundary(lineIndex: number): boolean {
+	return lineIndex > 0 && lineIndex % PARSE_YIELD_LINES === 0;
+}
+
+function fileIdentity(stat: fs.Stats): string {
+	return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+}
+
+async function withReadSlot(
+	run: number,
+	read: () => Promise<void>,
+): Promise<void> {
+	const pool = readPool;
+	if (pool.active >= READ_CONCURRENCY) {
+		const acquired = await new Promise<boolean>((resolve) =>
+			pool.waiting.push(resolve),
+		);
+		if (!acquired) return;
+	} else {
+		pool.active++;
+	}
+	try {
+		if (isCurrent(run)) await read();
+	} finally {
+		pool.active--;
+		const next = pool.waiting.shift();
+		if (next) {
+			pool.active++;
+			next(true);
+		}
+	}
+}
+
+function nextColdPollAt(mtimeMs: number, now = Date.now()): number {
+	return now - mtimeMs > COLD_FILE_AGE_MS ? now + POLL_COLD_MS : 0;
+}
+
+function reportWatcherError(error: unknown): void {
+	console.error("[agent-watcher] I/O failed", error);
+}
 
 function normalizeCwd(cwd: string): string {
 	return cwd.replace(/\\/g, "/").toLowerCase();
@@ -331,56 +441,74 @@ function extractSessionIdFromFilename(filePath: string): string | null {
  * Superset-managed SessionStart hook (`superset-pane-map.py`). Returns
  * undefined if absent — the renderer falls back to cwd-based resolution.
  */
-function loadPaneMapping(sessionId: string): PaneMapping | undefined {
-	const file = path.join(SUPERSET_PANE_MAP_DIR, `${sessionId}.json`);
-	// Diagnostic-only state captured for the mapping_load dbg below. Never
-	// changes the return value or control flow.
-	let exists = false;
-	let mtimeMs: number | null = null;
-	let parseOk = false;
-	let result: PaneMapping | undefined;
-	try {
-		try {
-			const st = fs.statSync(file);
-			exists = true;
-			mtimeMs = st.mtimeMs;
-		} catch {
-			// missing or unstatable — leave diagnostic fields at defaults
-		}
-		const raw = fs.readFileSync(file, "utf8");
-		const parsed = JSON.parse(raw);
-		parseOk = true;
-		if (typeof parsed !== "object" || parsed === null) {
-			result = undefined;
-		} else {
-			result = {
-				paneId: typeof parsed.paneId === "string" ? parsed.paneId : undefined,
-				tabId: typeof parsed.tabId === "string" ? parsed.tabId : undefined,
-				terminalId:
-					typeof parsed.terminalId === "string" ? parsed.terminalId : undefined,
-				workspaceId:
-					typeof parsed.workspaceId === "string"
-						? parsed.workspaceId
-						: undefined,
-			};
-		}
-	} catch {
-		result = undefined;
+// (WATCHER-ASYNC-IO)
+const MAPPING_CACHE_LIMIT = 512;
+const MAPPING_CACHE_TTL_MS = 60_000;
+const mappingCache = new Map<
+	string,
+	{
+		signature: string;
+		mapping: PaneMapping;
+		expiresAt: number;
 	}
-	const missingFields: string[] = [];
-	if (!result?.paneId) missingFields.push("paneId");
-	if (!result?.terminalId) missingFields.push("terminalId");
-	if (!result?.workspaceId) missingFields.push("workspaceId");
-	dbg("mapping_load", {
-		sessionId,
-		mappingPath: file,
-		exists,
-		mtimeMs,
-		parseOk,
-		mapping: result ?? null,
-		missingFields,
-	});
-	return result;
+>();
+
+async function loadPaneMapping(
+	sessionId: string,
+	run = generation,
+): Promise<PaneMapping | undefined> {
+	const file = path.join(SUPERSET_PANE_MAP_DIR, `${sessionId}.json`);
+	try {
+		const stat = await fs.promises.stat(file);
+		if (!isCurrent(run)) return;
+		const now = Date.now();
+		for (const [key, entry] of mappingCache) {
+			if (entry.expiresAt > now) break;
+			mappingCache.delete(key);
+		}
+		const signature = `${fileIdentity(stat)}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+		const cached = mappingCache.get(file);
+		if (cached?.signature === signature) return cached.mapping;
+		const raw = await fs.promises.readFile(file, "utf8");
+		if (!isCurrent(run)) return;
+		const parsed = JSON.parse(raw);
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
+		) {
+			throw new Error(`Invalid pane mapping: ${file}`);
+		}
+		const mapping: PaneMapping = {};
+		for (const key of [
+			"paneId",
+			"tabId",
+			"terminalId",
+			"workspaceId",
+		] as const) {
+			const value: unknown = parsed[key];
+			if (value !== undefined && typeof value !== "string") {
+				throw new Error(`Invalid ${key} in pane mapping: ${file}`);
+			}
+			mapping[key] = value;
+		}
+		mappingCache.delete(file);
+		mappingCache.set(file, {
+			signature,
+			mapping,
+			expiresAt: now + MAPPING_CACHE_TTL_MS,
+		});
+		if (mappingCache.size > MAPPING_CACHE_LIMIT) {
+			const oldest = mappingCache.keys().next().value;
+			if (oldest !== undefined) mappingCache.delete(oldest);
+		}
+		return mapping;
+	} catch (error) {
+		if (!isCurrent(run)) return;
+		mappingCache.delete(file);
+		if (isFileMissing(error)) return;
+		throw error;
+	}
 }
 
 const SUBAGENT_RUNNING_DIR = path.join(
@@ -682,82 +810,186 @@ function scheduleIdleTimer(
 	sessionId: string | null,
 	cwd: string,
 	mapping: PaneMapping | undefined,
+	delayMs = IDLE_TIMEOUT_MS,
 ): void {
 	const { key, state: s } = getState(sessionId, cwd);
 	cancelIdleTimer(s);
+	const run = generation;
 	s.idleTimer = setTimeout(() => {
-		const current = lifecycleStates.get(key);
-		if (!current) return;
-		current.idleTimer = null;
-		// Only transition working → review on idle; if we ended on
-		// permission, the agent is genuinely blocked waiting on the user
-		// and the indicator should stay red.
-		if (current.lastStatus === "working") {
-			// Reload mapping — the Python SessionStart hook may have
-			// written the mapping file between schedule and fire. Using
-			// the closure's stale mapping would emit Stop with the wrong
-			// (or missing) paneId.
-			const freshMapping = sessionId ? loadPaneMapping(sessionId) : mapping;
-			current.lastStatus = "review";
-			current.lastEmittedHadMapping = !!(
-				freshMapping?.paneId || freshMapping?.terminalId
-			);
-			dbg("idle-timeout-fired", {
-				sessionId,
-				cwd,
-				from: "working",
-				to: "review",
-				timeoutMs: IDLE_TIMEOUT_MS,
-			});
-			emit("Stop", sessionId, cwd, freshMapping);
-		}
-	}, IDLE_TIMEOUT_MS);
+		void (async () => {
+			const current = lifecycleStates.get(key);
+			if (!isCurrent(run) || current !== s) return;
+			current.idleTimer = null;
+			// Only transition working → review on idle; if we ended on
+			// permission, the agent is genuinely blocked waiting on the user
+			// and the indicator should stay red.
+			if (current.lastStatus === "working") {
+				// Reload mapping — the Python SessionStart hook may have
+				// written the mapping file between schedule and fire. Using
+				// the closure's stale mapping would emit Stop with the wrong
+				// (or missing) paneId.
+				const freshMapping = sessionId
+					? await loadPaneMapping(sessionId, run)
+					: mapping;
+				if (
+					!isCurrent(run) ||
+					lifecycleStates.get(key) !== s ||
+					s.lastStatus !== "working" ||
+					s.idleTimer !== null
+				)
+					return;
+				current.lastStatus = "review";
+				current.lastEmittedHadMapping = !!(
+					freshMapping?.paneId || freshMapping?.terminalId
+				);
+				dbg("idle-timeout-fired", {
+					sessionId,
+					cwd,
+					from: "working",
+					to: "review",
+					timeoutMs: IDLE_TIMEOUT_MS,
+				});
+				emit("Stop", sessionId, cwd, freshMapping);
+			}
+		})().catch((error) => {
+			if (!isCurrent(run) || lifecycleStates.get(key) !== s) return;
+			reportWatcherError(error);
+			if (s.lastStatus === "working" && s.idleTimer === null) {
+				scheduleIdleTimer(sessionId, cwd, mapping, POLL_KNOWN_MS);
+			}
+		});
+	}, delayMs);
 }
 
+// (WATCHER-ASYNC-IO)
 function processFile(
 	filePath: string,
 	source: AgentSource,
 	seedOnly: boolean,
-): void {
+): Promise<void> {
+	const run = generation;
+	if (!isCurrent(run)) return Promise.resolve();
 	let state = fileStates.get(filePath);
-	const isFirstSeen = !state;
 	if (!state) {
 		state = {
 			offset: 0,
-			leftover: "",
+			leftover: [],
+			skipPartialLine: false,
+			replayReset: false,
 			cwd: null,
 			sessionId: extractSessionIdFromFilename(filePath),
 			parser: source.parser,
 			preStartFenceMs: null,
+			inFlight: null,
+			trailingWork: false,
+			initialized: false,
+			identity: null,
+			nextPollAt: 0,
 		};
 		fileStates.set(filePath, state);
 	}
-	if (isFirstSeen)
-		dbg("file-first-seen", { filePath, sessionId: state.sessionId, seedOnly });
-
-	let stat: fs.Stats;
-	try {
-		stat = fs.statSync(filePath);
-	} catch {
-		return;
+	if (state.inFlight) {
+		if (!seedOnly) state.trailingWork = true;
+		return state.inFlight;
 	}
+	const owned = state;
+	// (WATCHER-ASYNC-IO)
+	const requestedAtMs = Date.now();
+	owned.inFlight = withReadSlot(run, async () => {
+		let seed = seedOnly && !owned.trailingWork;
+		do {
+			const workPendingSinceMs = owned.trailingWork ? requestedAtMs : null;
+			owned.trailingWork = false;
+			try {
+				await readFileStep(
+					filePath,
+					source,
+					seed,
+					owned,
+					run,
+					workPendingSinceMs,
+				);
+			} catch (error) {
+				if (!ownsFile(filePath, owned, run)) return;
+				if (isFileMissing(error)) {
+					fileStates.delete(filePath);
+					return;
+				}
+				throw error;
+			}
+			seed = false;
+		} while (ownsFile(filePath, owned, run) && owned.trailingWork);
+	}).finally(() => {
+		if (ownsFile(filePath, owned, run)) owned.inFlight = null;
+	});
+	return owned.inFlight;
+}
+
+// (WATCHER-ASYNC-IO)
+function lineWrittenAfterFence(line: string, fenceMs: number): boolean {
+	const record = parseTranscriptRecord(line);
+	if (!record || typeof record.timestamp !== "string") return false;
+	const timestampMs = Date.parse(record.timestamp);
+	return Number.isFinite(timestampMs) && timestampMs >= fenceMs;
+}
+
+function splitChunkIntoLines(
+	chunk: Buffer,
+	leftover: Buffer[],
+): { lines: string[]; leftover: Buffer[] } {
+	const lines: string[] = [];
+	let pending = [...leftover];
+	let start = 0;
+	while (start < chunk.length) {
+		const end = chunk.indexOf(10, start);
+		if (end === -1) break;
+		if (pending.length === 0) {
+			lines.push(chunk.toString("utf8", start, end));
+		} else {
+			pending.push(chunk.subarray(start, end));
+			lines.push(Buffer.concat(pending).toString("utf8"));
+			pending = [];
+		}
+		start = end + 1;
+	}
+	if (start < chunk.length) pending.push(Buffer.from(chunk.subarray(start)));
+	return { lines, leftover: pending };
+}
+
+async function readFileStep(
+	filePath: string,
+	source: AgentSource,
+	seedOnly: boolean,
+	state: FileState,
+	run: number,
+	/**
+	 * (WATCHER-ASYNC-IO) When this pass was already carrying unread activity
+	 * before it acquired its reader slot, the time that activity was asked for;
+	 * null when nothing was pending. A first-seen subagent transcript that grew
+	 * while queued must read that growth instead of seeding past it, and its
+	 * fence has to predate the growth to admit it.
+	 */
+	workPendingSinceMs: number | null,
+): Promise<void> {
+	const readStartedAtMs = Date.now();
+	const stat = await fs.promises.stat(filePath);
+	if (!ownsFile(filePath, state, run)) return;
+	const changedDuringStat = state.trailingWork || workPendingSinceMs !== null;
+	const identity = fileIdentity(stat);
+	const replaced = state.identity !== null && state.identity !== identity;
+	const isFirstSeen = !state.initialized;
+	state.identity = identity;
 
 	// Background-subagent transcript (Task or workflow/TeamCreate)? It never
 	// drives its own dot; its activity is mirrored to the parent terminal.
 	const subagentParent = getSubagentParentSessionId(filePath);
-	// First sight of ANY subagent file (detected by the agent-* name, even if
-	// the parent session id can't be derived from a deeper-nested path): skip
-	// history unconditionally. Only FUTURE activity matters, and a discover-
-	// poll first-sight would otherwise read the whole file on the main thread
-	// — the (AN) big-read trap, which workflow subagent files (hundreds, up to
-	// ~600 KB each) would re-introduce.
-	if (isFirstSeen && isSubagentFile(filePath)) {
-		dbg("subagent-seed-skip", {
-			filePath,
-			parentSessionId: subagentParent,
-			size: stat.size,
-		});
+	// (AN) (WATCHER-ASYNC-IO)
+	const subagentChangedDuringStat =
+		isFirstSeen && subagentParent !== null && changedDuringStat;
+	if (isFirstSeen && isSubagentFile(filePath) && !subagentChangedDuringStat) {
 		state.offset = stat.size;
+		state.nextPollAt = nextColdPollAt(stat.mtimeMs);
+		state.initialized = true;
 		return;
 	}
 
@@ -771,48 +1003,49 @@ function processFile(
 	// anything written since we started, small enough never to stall the main
 	// thread on a multi-megabyte transcript at startup.
 	const startupGuard =
-		isFirstSeen && !seedOnly && isUnseededPreexistingFile(stat);
-	// Codex keeps the old blind seed: its parser matches raw substrings on lines
-	// that carry no timestamp, so there is nothing to fence a re-read against and
-	// replaying history would emit stale permission/stop transitions.
-	const fencedTailRead = startupGuard && source.parser.id === "claude";
+		isFirstSeen &&
+		(!seedOnly || state.trailingWork || stat.mtimeMs >= watcherStartedAtMs) &&
+		isUnseededPreexistingFile(stat);
+	// (WATCHER-ASYNC-IO)
+	let fencedTailRead = startupGuard || subagentChangedDuringStat;
 
 	// First time we've seen this file, and it is one the seed owns. Skip its
 	// history (the user already saw those state transitions) and start tailing
 	// from the current end-of-file. Before jumping, read enough of the header to
 	// cache cwd — for Codex the cwd lives only in the first session_meta entry, so
 	// we'd otherwise never see it once we'd skipped past.
-	if (isFirstSeen && (seedOnly || (startupGuard && !fencedTailRead))) {
+	const seedHistory =
+		seedOnly && (seedComplete || stat.birthtimeMs < watcherStartedAtMs);
+	if (
+		isFirstSeen &&
+		!subagentParent &&
+		(!fencedTailRead || source.parser.id === "codex") &&
+		(seedHistory || startupGuard)
+	) {
 		try {
-			const headerBytes = Math.min(8192, stat.size);
-			if (headerBytes > 0) {
-				const fd = fs.openSync(filePath, "r");
-				const buf = Buffer.allocUnsafe(headerBytes);
-				fs.readSync(fd, buf, 0, headerBytes, 0);
-				fs.closeSync(fd);
-				for (const line of buf.toString("utf8").split("\n")) {
-					const cwd = extractCwd(line);
-					if (cwd) {
-						state.cwd = cwd;
-						break;
-					}
-				}
-			}
-		} catch {
-			// Header read is best-effort; the regular processing path will
-			// retry cwd discovery on the next append.
+			const header = await readHeader(filePath, stat.size, run);
+			if (!ownsFile(filePath, state, run)) return;
+			state.cwd = extractCwd(header);
+		} catch (error) {
+			if (!ownsFile(filePath, state, run)) return;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM")
+				throw error;
+			reportWatcherError(error);
 		}
-		dbg("seed-skip", {
-			filePath,
-			sessionId: state.sessionId,
-			size: stat.size,
-			cwdFound: !!state.cwd,
-			// (WATCHER-BLUE-STOMP) false = a write beat the deferred seed scan to a
-			// file that already existed; we seeded it here instead of replaying it.
-			seedPass: seedOnly,
-		});
-		state.offset = stat.size;
-		return;
+		if (
+			fencedTailRead ||
+			(state.trailingWork &&
+				((source.parser.id === "codex" && changedDuringStat) ||
+					isUnseededPreexistingFile(stat)))
+		) {
+			fencedTailRead = true;
+		} else {
+			state.offset = stat.size;
+			state.nextPollAt = nextColdPollAt(stat.mtimeMs);
+			state.initialized = true;
+			return;
+		}
 	}
 
 	if (fencedTailRead) {
@@ -824,13 +1057,18 @@ function processFile(
 		state.offset = tailStart > 0 ? tailStart - 1 : 0;
 		// Persisted, because the rewind above outlives this pass if the read fails
 		// — see FileState.preStartFenceMs.
-		state.preStartFenceMs = watcherStartedAtMs;
+		state.skipPartialLine = state.offset > 0;
+		state.preStartFenceMs =
+			subagentChangedDuringStat ||
+			(source.parser.id === "codex" && !startupGuard)
+				? (workPendingSinceMs ?? readStartedAtMs)
+				: watcherStartedAtMs;
 		dbg("startup-guard-tail", {
 			filePath,
 			sessionId: state.sessionId,
 			size: stat.size,
 			fromOffset: state.offset,
-			fenceMs: watcherStartedAtMs,
+			fenceMs: state.preStartFenceMs,
 		});
 	}
 
@@ -843,8 +1081,7 @@ function processFile(
 	// carries questions and errors from turns that may still be live, so
 	// clearing `_main`, stamping `.mainstopped` or re-arming auto-resume off one
 	// would act on a turn that never ended.
-	let truncatedReset = false;
-	if (stat.size < state.offset) {
+	if (replaced || stat.size < state.offset) {
 		dbg("file-truncated", {
 			filePath,
 			sessionId: state.sessionId,
@@ -852,88 +1089,132 @@ function processFile(
 			newSize: stat.size,
 		});
 		state.offset = 0;
-		state.leftover = "";
-		truncatedReset = true;
+		state.leftover = [];
+		state.skipPartialLine = false;
+		state.replayReset = true;
 	}
-	if (stat.size === state.offset) return;
+	state.initialized = true;
+	state.nextPollAt = 0;
+	// (WATCHER-ASYNC-IO)
+	if (stat.size === state.offset) {
+		clearGuardsAtEof(state);
+		return;
+	}
 
-	const newOffset = stat.size;
-	let chunk: string;
+	// (WATCHER-ASYNC-IO)
+	let newOffset = state.offset;
+	let newLeftover = state.leftover;
+	let skipPartialLine = state.skipPartialLine;
+	let skippedCompleteLines = false;
+	const fh = await fs.promises.open(filePath, "r");
 	try {
-		const fd = fs.openSync(filePath, "r");
-		const buf = Buffer.allocUnsafe(newOffset - state.offset);
-		fs.readSync(fd, buf, 0, buf.length, state.offset);
-		fs.closeSync(fd);
-		chunk = state.leftover + buf.toString("utf8");
-	} catch {
-		return;
-	}
-
-	const allLines = chunk.split("\n");
-	const newLeftover = allLines.pop() ?? "";
-	const lines = allLines;
-
-	// (WATCHER-BLUE-STOMP) A startup-guard tail starts one byte BEFORE the cut, so
-	// its first element is either "" (the cut was on a record boundary) or the
-	// fragment the cut landed in. Drop it either way — never a whole record. Keyed
-	// on the persisted fence, not on `fencedTailRead`, so a retry pass after a
-	// failed read drops the same fragment instead of feeding it to the parsers.
-	if (state.preStartFenceMs !== null && state.offset > 0) lines.shift();
-
-	// Subagent transcript: mirror activity to the parent terminal (so it shows
-	// yellow while the subagent runs) and stop here — these files carry no cwd
-	// of their own, so they must bypass the own-cwd gate below.
-	if (subagentParent) {
-		state.offset = newOffset;
-		state.leftover = newLeftover;
-		// The tail (if one was armed) has been consumed; see below.
-		state.preStartFenceMs = null;
-		mirrorSubagentToParent(subagentParent, lines, state.parser);
-		return;
-	}
-
-	// Discover cwd from any line in this chunk. If no chunk line carries
-	// cwd, leave state.offset / state.leftover untouched so the same bytes
-	// are re-read on the next chunk — losing complete lines here would
-	// silently drop activity transitions. ~75% of entries include cwd in
-	// practice so this path is only exercised on metadata-only initial
-	// chunks.
-	if (!state.cwd) {
-		for (const line of lines) {
-			const cwd = extractCwd(line);
-			if (cwd) {
-				state.cwd = cwd;
-				break;
+		if (!ownsFile(filePath, state, run)) return;
+		while (newOffset < stat.size) {
+			const buf = Buffer.allocUnsafe(
+				Math.min(READ_STEP_BYTES, stat.size - newOffset),
+			);
+			const { bytesRead } = await fh.read(buf, 0, buf.length, newOffset);
+			if (!ownsFile(filePath, state, run)) return;
+			if (bytesRead === 0) break;
+			newOffset += bytesRead;
+			const { lines, leftover } = splitChunkIntoLines(
+				buf.subarray(0, bytesRead),
+				newLeftover,
+			);
+			newLeftover = leftover;
+			if (skipPartialLine && lines.length > 0) {
+				lines.shift();
+				skipPartialLine = false;
 			}
+			if (!subagentParent && !state.cwd) {
+				for (let i = 0; i < lines.length; i++) {
+					if (atYieldBoundary(i) && !(await yieldAndOwns(filePath, state, run)))
+						return;
+					const cwd = extractCwd(lines[i]);
+					if (cwd) {
+						state.cwd = cwd;
+						break;
+					}
+				}
+				if (state.cwd && skippedCompleteLines) {
+					newOffset = state.offset;
+					newLeftover = state.leftover;
+					skipPartialLine = state.skipPartialLine;
+					if (!(await yieldAndOwns(filePath, state, run))) return;
+					continue;
+				}
+				skippedCompleteLines ||= lines.length > 0;
+			}
+			if (subagentParent || state.cwd) {
+				const mapping =
+					state.sessionId && !subagentParent
+						? await loadPaneMapping(state.sessionId, run)
+						: undefined;
+				if (!ownsFile(filePath, state, run)) return;
+				if (subagentParent) {
+					await mirrorSubagentToParent(
+						subagentParent,
+						lines,
+						state.parser,
+						filePath,
+						state,
+						run,
+					);
+				} else {
+					await processLines(
+						filePath,
+						state,
+						run,
+						lines,
+						mapping,
+						newOffset - state.offset,
+					);
+				}
+				if (!ownsFile(filePath, state, run)) return;
+				// (WATCHER-ASYNC-IO)
+				state.offset = newOffset;
+				state.leftover = newLeftover;
+				state.skipPartialLine = skipPartialLine;
+			}
+			if (newOffset < stat.size && !(await yieldAndOwns(filePath, state, run)))
+				return;
 		}
-		if (!state.cwd) {
-			dbg("cwd-unknown-skip", {
-				filePath,
-				sessionId: state.sessionId,
-				lineCount: lines.length,
-			});
-			return;
-		}
+	} finally {
+		await fh.close();
 	}
+	if (!ownsFile(filePath, state, run)) return;
+	if (state.offset === stat.size) clearGuardsAtEof(state);
+}
 
-	const prevOffset = state.offset;
-	state.offset = newOffset;
-	state.leftover = newLeftover;
-	// (WATCHER-BLUE-STOMP) This pass judges the tail under the fence; the offset
-	// has now moved past it, so the next pass reads only post-start appends and
-	// must NOT be fenced (a fence that outlived its tail would suppress every
-	// live turn-end on this file for the rest of the session).
-	const preStartFenceMs = state.preStartFenceMs;
+/**
+ * (WATCHER-ASYNC-IO) Both guards describe content still waiting to be read, so
+ * reaching EOF retires them — including a truncation to zero bytes, which
+ * reaches EOF with nothing to read at all. Leaving the replay guard armed there
+ * would gate the next LIVE append's api-error out of auto-resume.
+ */
+function clearGuardsAtEof(state: FileState): void {
+	state.replayReset = false;
 	state.preStartFenceMs = null;
+}
+
+// (WATCHER-ASYNC-IO)
+async function processLines(
+	filePath: string,
+	state: FileState,
+	run: number,
+	lines: string[],
+	mapping: PaneMapping | undefined,
+	newBytes: number,
+): Promise<void> {
+	const truncatedReset = state.replayReset;
+	const preStartFenceMs = state.preStartFenceMs;
 	const cwd = state.cwd;
-	const mapping = state.sessionId
-		? loadPaneMapping(state.sessionId)
-		: undefined;
+	if (!cwd) throw new Error("Transcript batch has no cwd");
 	const { parser } = state;
 
 	// Claude dots are driven by the host-service POST hook (superset-notify.py);
 	// System 1 only mirrors background-subagent activity for Claude (handled
-	// above in the subagent branch of processFile). The JSONL lifecycle state
+	// above in the subagent branch of readFileStep). The JSONL lifecycle state
 	// machine below is therefore Codex-only — gated here at the single
 	// dispatch chokepoint so Claude main-agent lines never emit (which caused
 	// the live "stuck working" split-brain against the POST hook). The banned
@@ -979,7 +1260,10 @@ function processFile(
 			ageMs: number | null;
 			uuid: string | null;
 		}> = [];
-		for (const line of lines) {
+		for (let i = 0; i < lines.length; i++) {
+			if (atYieldBoundary(i) && !(await yieldAndOwns(filePath, state, run)))
+				return;
+			const line = lines[i];
 			if (!line) continue;
 			// (AUTO-RESUME) ANY api-error line is a candidate for auto-resume; the
 			// manager confirms turn-finality itself. Deliberately NOT replay-gated: it
@@ -1103,28 +1387,28 @@ function processFile(
 	const { sessionId } = state;
 	let unclassified = 0;
 	let sampleUnclassified = "";
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		if (atYieldBoundary(i) && !(await yieldAndOwns(filePath, state, run)))
+			return;
+		const line = lines[i];
 		if (!line) continue;
+		if (
+			preStartFenceMs !== null &&
+			!lineWrittenAfterFence(line, preStartFenceMs)
+		)
+			continue;
 		if (parser.isPermissionRequest(line)) {
-			dbg("line", {
-				sessionId,
-				kind: "permission",
-				snippet: line.slice(0, 160),
-			});
+			dbgLine(sessionId, "permission", line);
 			const { state: s } = getState(sessionId, cwd);
 			cancelIdleTimer(s);
 			transitionTo("permission", sessionId, cwd, mapping);
 		} else if (parser.isExplicitStop(line)) {
-			dbg("line", {
-				sessionId,
-				kind: "explicit-stop",
-				snippet: line.slice(0, 160),
-			});
+			dbgLine(sessionId, "explicit-stop", line);
 			const { state: s } = getState(sessionId, cwd);
 			cancelIdleTimer(s);
 			transitionTo("review", sessionId, cwd, mapping);
 		} else if (parser.isActivity(line)) {
-			dbg("line", { sessionId, kind: "activity", snippet: line.slice(0, 160) });
+			dbgLine(sessionId, "activity", line);
 			transitionTo("working", sessionId, cwd, mapping);
 			scheduleIdleTimer(sessionId, cwd, mapping);
 		} else {
@@ -1135,7 +1419,7 @@ function processFile(
 	dbg("chunk", {
 		sessionId,
 		filePath,
-		newBytes: newOffset - prevOffset,
+		newBytes,
 		lineCount: lines.length,
 		cwdKnown: !!cwd,
 		unclassified,
@@ -1151,11 +1435,22 @@ const pendingFiles = new Map<
 >();
 
 function schedulePerFileProcess(filePath: string, source: AgentSource): void {
+	if (!deps) return;
 	const existing = pendingFiles.get(filePath);
-	if (existing) clearTimeout(existing.timer);
-	const timer = setTimeout(() => {
+	if (existing) {
+		clearTimeout(existing.timer);
 		pendingFiles.delete(filePath);
-		processFile(filePath, source, false);
+	}
+	const state = fileStates.get(filePath);
+	if (state?.inFlight) {
+		state.trailingWork = true;
+		return;
+	}
+	const run = generation;
+	const timer = setTimeout(() => {
+		if (!isCurrent(run)) return;
+		pendingFiles.delete(filePath);
+		void processFile(filePath, source, false).catch(reportWatcherError);
 	}, POLL_DEBOUNCE_MS);
 	pendingFiles.set(filePath, { source, timer });
 }
@@ -1171,26 +1466,53 @@ function sourceForParser(parser: AgentParser): AgentSource | undefined {
  * ReadDirectoryChangesW drops on Windows. Routes through the same debounced
  * path as fs.watch so a real event + a poll for the same file coalesce.
  */
-function pollKnownFilesForGrowth(): void {
-	for (const [filePath, state] of fileStates) {
-		let st: fs.Stats;
-		try {
-			st = fs.statSync(filePath);
-		} catch {
-			continue;
-		}
-		if (st.size > state.offset) {
-			const source = sourceForParser(state.parser);
-			if (source) {
-				dbg("poll-grown", {
-					filePath,
-					sessionId: state.sessionId,
-					delta: st.size - state.offset,
-				});
-				schedulePerFileProcess(filePath, source);
+// (WATCHER-ASYNC-IO)
+function pollKnownFilesForGrowth(): Promise<void> {
+	if (pollInFlight) return pollInFlight;
+	const run = generation;
+	if (!isCurrent(run)) return Promise.resolve();
+	pollInFlight = (async () => {
+		const now = Date.now();
+		const failures: unknown[] = [];
+		const entries = [...fileStates].filter(
+			([, state]) => now >= state.nextPollAt,
+		);
+		for (let i = 0; i < entries.length; i += IO_CONCURRENCY) {
+			const results = await Promise.allSettled(
+				entries.slice(i, i + IO_CONCURRENCY).map(async ([filePath, state]) => {
+					if (!ownsFile(filePath, state, run)) return;
+					try {
+						const stat = await fs.promises.stat(filePath);
+						if (!ownsFile(filePath, state, run)) return;
+						if (
+							stat.size !== state.offset ||
+							fileIdentity(stat) !== state.identity
+						) {
+							state.nextPollAt = 0;
+							const source = sourceForParser(state.parser);
+							if (source) schedulePerFileProcess(filePath, source);
+						} else {
+							state.nextPollAt = nextColdPollAt(stat.mtimeMs, now);
+						}
+					} catch (error) {
+						if (!ownsFile(filePath, state, run)) return;
+						if (!isFileMissing(error)) throw error;
+						fileStates.delete(filePath);
+					}
+				}),
+			);
+			for (const result of results) {
+				if (result.status === "rejected") failures.push(result.reason);
 			}
+			await yieldToLoop();
+			if (!isCurrent(run)) return;
 		}
-	}
+		if (failures.length)
+			throw new AggregateError(failures, "Transcript stat sweep failed");
+	})().finally(() => {
+		if (isCurrent(run)) pollInFlight = null;
+	});
+	return pollInFlight;
 }
 
 // (AN) The startup seed scan and the discovery poll must never do BLOCKING
@@ -1215,7 +1537,7 @@ const SEED_SCAN_YIELD_EVERY = 25;
  *
  * The window it has to cover is the gap between fs.watch going live and the seed
  * reaching this file — ~1.2 s warm here — so a quarter megabyte is orders of
- * magnitude more than a session can write in it, while keeping the SYNCHRONOUS
+ * magnitude more than a session can write in it, while keeping each
  * read bounded. That bound is the point: an active transcript is routinely tens
  * of megabytes, and reading one whole on the main thread at startup is exactly
  * the blocking-I/O footgun that starved the renderer and left the window blank
@@ -1247,8 +1569,9 @@ let discoverInFlight = false;
  * A file created BEFORE the watcher started is by definition one the seed scan
  * owns. Codex seeds it (tail from EOF) instead of replaying it; Claude re-reads
  * a bounded tail under the pre-start fence, because tailing blind would swallow
- * the very append that woke us — see the startupGuard branch in processFile. The
- * seed walk's own `fileStates.has` check then skips the file either way.
+ * the very append that woke us — see the startupGuard branch in
+ * readFileStep. The seed walk's own `fileStates.has` check then skips the file
+ * either way.
  * A genuinely NEW file — created after we started watching — still processes from
  * offset 0 immediately, which is both correct and what makes a new session's
  * first lines visible.
@@ -1269,33 +1592,43 @@ function isUnseededPreexistingFile(stat: fs.Stats): boolean {
 async function walkJsonlAsync(
 	logsDir: string,
 	onFile: (full: string) => void | Promise<void>,
+	run: number,
 ): Promise<void> {
 	const stack: string[] = [logsDir];
+	const failures: unknown[] = [];
 	let n = 0;
-	while (stack.length > 0) {
+	while (isCurrent(run) && stack.length > 0) {
 		const dir = stack.pop();
 		if (dir === undefined) break;
 		let entries: fs.Dirent[];
 		try {
 			entries = await fs.promises.readdir(dir, { withFileTypes: true });
-		} catch {
+		} catch (error) {
+			if (!isCurrent(run)) return;
+			if (!isFileMissing(error)) failures.push(error);
 			continue;
 		}
 		for (const entry of entries) {
+			if (!isCurrent(run)) return;
 			const full = path.join(dir, entry.name);
 			if (entry.isDirectory()) {
 				stack.push(full);
 			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-				await onFile(full);
+				try {
+					await onFile(full);
+				} catch (error) {
+					if (!isCurrent(run)) return;
+					failures.push(error);
+				}
 				n += 1;
 				if (n % SEED_SCAN_YIELD_EVERY === 0) {
-					await new Promise<void>((resolve) => {
-						setImmediate(resolve);
-					});
+					await yieldToLoop();
 				}
 			}
 		}
 	}
+	if (isCurrent(run) && failures.length)
+		throw new AggregateError(failures, "Transcript scan failed");
 }
 
 function cwdForSession(sessionId: string): string | null {
@@ -1340,14 +1673,26 @@ function getSubagentParentSessionId(filePath: string): string | null {
  * main agent's next host-service POST Stop (it may linger yellow until then —
  * the safe direction). Leaves a watcher-known pending question (red) untouched.
  */
-function mirrorSubagentToParent(
+async function mirrorSubagentToParent(
 	parentSessionId: string,
 	lines: string[],
 	parser: AgentParser,
-): void {
+	filePath: string,
+	state: FileState,
+	run: number,
+): Promise<void> {
 	let active = false;
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		if (atYieldBoundary(i) && !(await yieldAndOwns(filePath, state, run)))
+			return;
+		const line = lines[i];
 		if (line && parser.isActivity(line)) {
+			// (WATCHER-ASYNC-IO)
+			if (state.preStartFenceMs !== null) {
+				const record = parseTranscriptRecord(line);
+				if (record && recordPredatesFence(record, state.preStartFenceMs))
+					continue;
+			}
 			active = true;
 			break;
 		}
@@ -1355,7 +1700,7 @@ function mirrorSubagentToParent(
 	if (!active) return;
 	const cwd = cwdForSession(parentSessionId);
 	if (!cwd) return; // parent not tracked yet — nothing to keep alive
-	const { state: s } = getState(parentSessionId, cwd);
+	const { key, state: s } = getState(parentSessionId, cwd);
 	if (s.lastStatus === "permission") return; // best-effort: don't stomp a watcher-known red
 	// The Claude parent dot is owned by the host-service POST hook; this watcher
 	// CANNOT observe POST-driven greens, so we must NOT dedup on our own stale
@@ -1365,83 +1710,97 @@ function mirrorSubagentToParent(
 	// overridden back to yellow. We NEVER green from here — the parent greens on
 	// the main agent's next POST Stop (it may linger yellow until the next turn;
 	// the safe direction, and never a timer).
-	const mapping = loadPaneMapping(parentSessionId);
+	const mapping = await loadPaneMapping(parentSessionId, run);
+	if (
+		!ownsFile(filePath, state, run) ||
+		lifecycleStates.get(key)?.lastStatus === "permission"
+	)
+		return;
 	s.lastStatus = "working";
 	s.lastEmittedHadMapping = !!(mapping?.paneId || mapping?.terminalId);
 	dbg("subagent-activity", { parentSessionId, cwd });
 	emit("SubagentActive", parentSessionId, cwd, mapping);
 }
 
+// (WATCHER-ASYNC-IO)
+async function readHeader(
+	filePath: string,
+	size: number,
+	run: number,
+): Promise<string> {
+	const fh = await fs.promises.open(filePath, "r");
+	try {
+		const buf = Buffer.allocUnsafe(Math.min(8192, size));
+		let offset = 0;
+		while (isCurrent(run) && offset < buf.length) {
+			const { bytesRead } = await fh.read(
+				buf,
+				offset,
+				buf.length - offset,
+				offset,
+			);
+			if (!isCurrent(run)) return "";
+			if (bytesRead === 0) break;
+			offset += bytesRead;
+		}
+		return buf.toString("utf8", 0, offset);
+	} finally {
+		await fh.close();
+	}
+}
+
 /**
- * Async, non-blocking equivalent of processFile(seedOnly=true) for a
- * first-seen file: stat + read only the 8 KB header (to cache cwd — Codex
- * stamps it only in the first session_meta entry) via fs.promises, then
- * start tailing from EOF so the file's history is never replayed. All I/O is
- * async, so the main thread is never blocked during the seed.
+ * Seed a first-seen file: cache its cwd from the 8 KB header (Codex stamps cwd
+ * only in the first session_meta entry), then tail from EOF so the history is
+ * never replayed. Files an earlier pass already tracks are left alone.
  */
 async function seedFileAsync(
 	filePath: string,
 	source: AgentSource,
 ): Promise<void> {
-	if (fileStates.has(filePath)) return;
-	let stat: fs.Stats;
-	try {
-		stat = await fs.promises.stat(filePath);
-	} catch {
-		return;
-	}
-	const state: FileState = {
-		offset: 0,
-		leftover: "",
-		cwd: null,
-		sessionId: extractSessionIdFromFilename(filePath),
-		parser: source.parser,
-		preStartFenceMs: null,
-	};
-	try {
-		const headerBytes = Math.min(8192, stat.size);
-		if (headerBytes > 0) {
-			const fh = await fs.promises.open(filePath, "r");
-			try {
-				const buf = Buffer.allocUnsafe(headerBytes);
-				await fh.read(buf, 0, headerBytes, 0);
-				for (const line of buf.toString("utf8").split("\n")) {
-					const cwd = extractCwd(line);
-					if (cwd) {
-						state.cwd = cwd;
-						break;
-					}
-				}
-			} finally {
-				await fh.close();
-			}
-		}
-	} catch {
-		// Header read is best-effort; the steady-state path retries cwd.
-	}
-	state.offset = stat.size;
-	fileStates.set(filePath, state);
-	dbg("seed-skip", {
-		filePath,
-		sessionId: state.sessionId,
-		size: stat.size,
-		cwdFound: !!state.cwd,
-	});
+	if (fileStates.get(filePath)?.initialized) return;
+	await processFile(filePath, source, true);
 }
 
-async function seedScanAllAsync(): Promise<void> {
+async function walkAllSources(
+	run: number,
+	errorMessage: string,
+	onFile: (filePath: string, source: AgentSource) => Promise<void>,
+): Promise<void> {
+	const failures: unknown[] = [];
 	for (const source of SOURCES) {
-		if (!fs.existsSync(source.logsDir)) {
-			dbg("watch-start", { logsDir: source.logsDir, exists: false });
-			continue;
+		if (!isCurrent(run)) return;
+		try {
+			await walkJsonlAsync(source.logsDir, (full) => onFile(full, source), run);
+		} catch (error) {
+			if (!isCurrent(run)) return;
+			if (error instanceof AggregateError) failures.push(...error.errors);
+			else failures.push(error);
 		}
-		let seeded = 0;
-		await walkJsonlAsync(source.logsDir, async (full) => {
-			await seedFileAsync(full, source);
-			seeded += 1;
-		});
-		dbg("watch-start", { logsDir: source.logsDir, exists: true, seeded });
 	}
+	if (failures.length) throw new AggregateError(failures, errorMessage);
+}
+
+function runSeedScan(run: number): void {
+	if (!isCurrent(run)) return;
+	void walkAllSources(run, "Transcript seed failed", seedFileAsync)
+		.then(() => {
+			if (!isCurrent(run)) return;
+			seedComplete = true;
+			pollDiscoverTimer = setInterval(() => {
+				if (isCurrent(run))
+					void discoverNewFilesAsync().catch(reportWatcherError);
+			}, POLL_DISCOVER_MS);
+		})
+		.catch((error) => {
+			if (!isCurrent(run)) return;
+			reportWatcherError(error);
+			seedRetryTimer = setTimeout(() => {
+				if (!isCurrent(run)) return;
+				seedRetryTimer = null;
+				runSeedScan(run);
+			}, POLL_KNOWN_MS);
+		});
 }
 
 /**
@@ -1454,17 +1813,19 @@ async function seedScanAllAsync(): Promise<void> {
  * the directory traversal never blocks the main thread.
  */
 async function discoverNewFilesAsync(): Promise<void> {
-	if (!seedComplete || discoverInFlight) return;
+	if (!deps || !seedComplete || discoverInFlight) return;
+	const run = generation;
 	discoverInFlight = true;
 	try {
-		for (const source of SOURCES) {
-			if (!fs.existsSync(source.logsDir)) continue;
-			await walkJsonlAsync(source.logsDir, (full) => {
-				if (!fileStates.has(full)) processFile(full, source, false);
-			});
-		}
+		await walkAllSources(
+			run,
+			"Transcript discovery failed",
+			async (full, source) => {
+				if (!fileStates.has(full)) await processFile(full, source, false);
+			},
+		);
 	} finally {
-		discoverInFlight = false;
+		if (isCurrent(run)) discoverInFlight = false;
 	}
 }
 
@@ -1474,6 +1835,8 @@ async function discoverNewFilesAsync(): Promise<void> {
  * notificationsEmitter.
  */
 export function startAgentJsonlWatcher(d: WatcherDeps): void {
+	stopAgentJsonlWatcher();
+	const run = generation;
 	deps = d;
 	watcherStartedAtMs = Date.now();
 
@@ -1481,21 +1844,18 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
 	// session id → Superset pane identity. Without this, the watcher can
 	// only resolve panes by cwd, which is ambiguous when two terminals
 	// in the same workspace cwd are running concurrent sessions.
-	installPaneMapHook();
+	(d.installPaneMapHook ?? installPaneMapHook)();
 
+	// (WATCHER-ASYNC-IO)
 	for (const source of SOURCES) {
-		if (!fs.existsSync(source.logsDir)) {
-			try {
-				fs.mkdirSync(source.logsDir, { recursive: true });
-			} catch {
-				// Agent may not be installed; that's fine — source idles.
-			}
-		}
-		try {
+		void (async () => {
+			await fs.promises.mkdir(source.logsDir, { recursive: true });
+			if (!isCurrent(run)) return;
 			const w = fs.watch(
 				source.logsDir,
 				{ recursive: true },
 				(_eventType, filename) => {
+					if (!isCurrent(run)) return;
 					// Steady-state: process only the changed .jsonl file. A
 					// full recursive scan over every Codex year/month/day
 					// archive on each append would block the main process
@@ -1510,21 +1870,28 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
 					// never replays the existing history).
 					if (scanTimer) return;
 					scanTimer = setTimeout(() => {
+						if (!isCurrent(run)) return;
 						scanTimer = null;
-						void discoverNewFilesAsync();
+						void discoverNewFilesAsync().catch(reportWatcherError);
 					}, POLL_DEBOUNCE_MS);
 				},
 			);
+			w.on("error", (error) => {
+				if (isCurrent(run)) reportWatcherError(error);
+			});
 			watchers.set(source.logsDir, w);
-		} catch (error) {
-			dbg("watch-fail", { logsDir: source.logsDir, error: String(error) });
-		}
+		})().catch((error) => {
+			if (isCurrent(run)) reportWatcherError(error);
+		});
 	}
 
 	// (AN) pollKnown re-stats only ALREADY-tracked files and reads their
 	// (small) growth delta, so it is safe to run from t=0 and preserves the
 	// (AK) trailing-append safety net for any session the user starts at once.
-	pollKnownTimer = setInterval(pollKnownFilesForGrowth, POLL_KNOWN_MS);
+	pollKnownTimer = setInterval(() => {
+		if (isCurrent(run))
+			void pollKnownFilesForGrowth().catch(reportWatcherError);
+	}, POLL_KNOWN_MS);
 
 	// (AN) Seed deferred + fully async so it never blocks window startup, and
 	// the discover poll is started ONLY after the seed has tailed every
@@ -1532,17 +1899,18 @@ export function startAgentJsonlWatcher(d: WatcherDeps): void {
 	// synchronously replays the entire multi-GB history (the real cause of the
 	// multi-minute blank-window cold start). Once seeded, pollDiscover only
 	// ever sees genuinely-new files.
-	setImmediate(() => {
-		void seedScanAllAsync().finally(() => {
-			seedComplete = true;
-			pollDiscoverTimer = setInterval(() => {
-				void discoverNewFilesAsync();
-			}, POLL_DISCOVER_MS);
-		});
-	});
+	setImmediate(() => runSeedScan(run));
 }
 
 export function stopAgentJsonlWatcher(): void {
+	// (WATCHER-ASYNC-IO)
+	generation += 1;
+	for (const cancel of readPool.waiting.splice(0)) cancel(false);
+	readPool = { active: 0, waiting: [] };
+	pollInFlight = null;
+	if (seedRetryTimer) clearTimeout(seedRetryTimer);
+	seedRetryTimer = null;
+	mappingCache.clear();
 	for (const w of watchers.values()) w.close();
 	watchers.clear();
 	if (scanTimer) {
@@ -1575,3 +1943,22 @@ export function stopAgentJsonlWatcher(): void {
 	discoverInFlight = false;
 	deps = null;
 }
+
+// (WATCHER-ASYNC-IO)
+export const agentJsonlWatcherTesting = {
+	processFile,
+	scheduleIdleTimer,
+	seedFileAsync,
+	pollKnownFilesForGrowth,
+	discoverNewFilesAsync,
+	loadPaneMapping,
+	fileStates,
+	mappingCache,
+	sources: SOURCES,
+	get seedComplete() {
+		return seedComplete;
+	},
+	get discoverTimerArmed() {
+		return pollDiscoverTimer !== null;
+	},
+};
