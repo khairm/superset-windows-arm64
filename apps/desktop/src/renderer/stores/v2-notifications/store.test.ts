@@ -509,7 +509,6 @@ describe("v2 notification store", () => {
 	 * from — and stop at the one map that is not a dot at all.
 	 */
 	describe("(MANUAL-DISMISS) clearWorkspaceStatuses", () => {
-
 		it("purges sources, BOTH blue maps and the manual mark for the workspace", () => {
 			const store = useV2NotificationStore.getState();
 			store.applySourceAxes(
@@ -589,5 +588,41 @@ describe("v2 notification store", () => {
 				"workspace-2",
 			);
 		});
+	});
+});
+
+// (NOTIF-STORE-DEBOUNCE)
+describe("notification persistence envelope", () => {
+	it("keeps all seven maps pending under the existing key and rehydrates synchronously", () => {
+		resetV2NotificationStoreForTest();
+		const store = useV2NotificationStore.getState();
+		store.setTerminalStatus("pending-agent", "workspace-1", "review", 100);
+		store.setTerminalShellRunning("plain-shell", "workspace-1", 101);
+		store.setTerminalBackgroundRunning("pending-agent", "workspace-1", 102);
+		store.markTerminalSeen("seen-agent", 103);
+		store.setManualUnread("workspace-2");
+		const before = useV2NotificationStore.getState();
+		const { name, storage } = useV2NotificationStore.persist.getOptions();
+		expect(name).toBe("v2-notification-dots");
+		if (!name || !storage) throw new Error("Missing notification storage");
+		const envelope = storage.getItem(name);
+		expect(envelope).toEqual({
+			version: 0,
+			state: {
+				sources: before.sources,
+				shellRunningTerminals: before.shellRunningTerminals,
+				backgroundRunningTerminals: before.backgroundRunningTerminals,
+				manualUnread: before.manualUnread,
+				terminalSeenAt: before.terminalSeenAt,
+				outstandingReadyAt: before.outstandingReadyAt,
+				agentTerminals: before.agentTerminals,
+			},
+		});
+		useV2NotificationStore.persist.rehydrate();
+		expect(useV2NotificationStore.getState().sources).toBe(before.sources);
+		expect(useV2NotificationStore.getState().outstandingReadyAt).toEqual({
+			"pending-agent": 100,
+		});
+		expect(useV2NotificationStore.persist.hasHydrated()).toBe(true);
 	});
 });

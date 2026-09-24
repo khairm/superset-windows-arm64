@@ -7,13 +7,14 @@ import {
 	getV2TerminalNotificationSource,
 	useV2NotificationStore,
 } from "renderer/stores/v2-notifications";
+import { notificationStateTransforms } from "renderer/stores/v2-notifications/store";
 import type { HostNotificationWorkspaceState } from "../components/HostNotificationSubscriber";
 import {
 	hasAcknowledgedRelaunchBoundary,
 	reportRelaunchBoundary,
 	reportTerminalSeen,
 } from "./companionAlertSync";
-import { markV2AgentLifecycleTargetSeen } from "./lifecycleEvents";
+import { replayV2AgentLifecycleState } from "./lifecycleEvents";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
 
 /**
@@ -31,7 +32,7 @@ import { resolveV2AgentStatusTransition } from "./statusTransitions";
  * AskUserQuestion).
  *
  * This is the repair. It is status-only by construction — it routes through
- * `markV2AgentLifecycleTargetSeen`, the same store path the live listener uses
+ * `replayV2AgentLifecycleState`, sharing the live listener's state transforms
  * MINUS the chime and native-notification path, because replaying hours of
  * history must never ring.
  *
@@ -454,6 +455,9 @@ export async function resyncAgentStatusFromHost({
 		return result;
 	}
 
+	// (NOTIF-STORE-DEBOUNCE)
+	let snapshotState = useV2NotificationStore.getState();
+	const acknowledgements: Array<() => void> = [];
 	const liveTerminalIds = new Set<string>();
 	// One reading for the whole pass — the repair cooldown is about epochs, not
 	// about the microseconds between rows. Monotonic, like every other elapsed
@@ -470,18 +474,8 @@ export async function resyncAgentStatusFromHost({
 
 		const source = getV2TerminalNotificationSource(row.terminalId);
 		const sourceKey = getV2NotificationSourceKey(source);
-		const preState = useV2NotificationStore.getState();
+		const preState = snapshotState;
 		const preEntry = preState.sources[sourceKey];
-		// (ONE-BUZZ-UNTIL-READ) Read BEFORE the replay and put back after it. The
-		// replay routes host rows through the live status path, so a row whose
-		// last event is a turn-end writes a `review` axis — and would therefore
-		// MINT an outstanding record for a finish this machine never saw arrive.
-		// The record is meant to mean "a device is holding this one"; a
-		// re-derivation of the past is not evidence of that, and the
-		// pending-permission row is the case that proves it (the replay greens it,
-		// the host never minted an alert for it, and the permission is re-latched
-		// a few lines below).
-		const preOutstanding = preState.outstandingReadyAt[row.terminalId] ?? null;
 
 		// A live event that landed while the snapshot was in flight — the user
 		// answering the question this row still calls pending, or a fresh
@@ -495,16 +489,10 @@ export async function resyncAgentStatusFromHost({
 		}
 
 		const apply = (payload: AgentLifecyclePayload) => {
-			markV2AgentLifecycleTargetSeen({
+			snapshotState = replayV2AgentLifecycleState(snapshotState, {
 				workspaceId: row.originWorkspaceId,
 				payload,
 				paneLayout: workspace.paneLayout,
-				// (ALERT-RETIRE-ON-EXIT) THIS IS THE REPLAY. The visible-clear hop
-				// must not fire from it: `row.lastEventAt` is not an alert's subject,
-				// and a relaunch replays every idle tab's resting turn-end. The
-				// repair path below is this file's only route to a read report, and
-				// it argues from durable seen marks instead.
-				fromReplay: true,
 			});
 		};
 
@@ -513,9 +501,6 @@ export async function resyncAgentStatusFromHost({
 			terminalId: row.terminalId,
 			occurredAt: row.lastEventAt,
 		});
-		useV2NotificationStore
-			.getState()
-			.restoreOutstandingReady(row.terminalId, preOutstanding);
 		result.applied++;
 
 		// (DOT-PERSIST) The dot store and `terminalSeenAt` both live in
@@ -544,14 +529,15 @@ export async function resyncAgentStatusFromHost({
 			preEntry === undefined &&
 			preState.terminalSeenAt[row.terminalId] === undefined;
 		if (seedColdStart) {
-			useV2NotificationStore
-				.getState()
-				.markTerminalSeen(row.terminalId, row.lastEventAt);
+			snapshotState = notificationStateTransforms.markTerminalSeen(
+				snapshotState,
+				row.terminalId,
+				row.lastEventAt,
+			);
 			result.seededSeen++;
 		}
 
-		const state = useV2NotificationStore.getState();
-		const seenAt = state.terminalSeenAt[row.terminalId];
+		const seenAt = snapshotState.terminalSeenAt[row.terminalId];
 		// The user has read at least as far as this row's last event. Durable
 		// (sessionStorage) and independent of anything the replay just wrote.
 		const alreadyReadThrough =
@@ -560,7 +546,7 @@ export async function resyncAgentStatusFromHost({
 		// it? Asked of the PURE resolver rather than read off the store, because
 		// the store's answer is not the same question.
 		//
-		// `markV2AgentLifecycleTargetSeen` routes the replay through
+		// `replayV2AgentLifecycleState` routes the replay through
 		// `targetVisible`, and a turn-end on a VISIBLE target clears the source
 		// instead of setting `review` (`statusTransitions.ts`). So for the single
 		// most common shape of this bug — the user cleared the dot, the mutation
@@ -607,8 +593,15 @@ export async function resyncAgentStatusFromHost({
 						: {},
 				targetVisible: false,
 			}).axes?.set.includes("review") === true;
-		if (alreadyReadThrough && state.sources[sourceKey]?.status === "review") {
-			state.clearSourceAttention(source, row.originWorkspaceId);
+		if (
+			alreadyReadThrough &&
+			snapshotState.sources[sourceKey]?.status === "review"
+		) {
+			snapshotState = notificationStateTransforms.clearSourceAttention(
+				snapshotState,
+				source,
+				row.originWorkspaceId,
+			);
 			result.skippedAlreadySeen++;
 		}
 
@@ -656,7 +649,7 @@ export async function resyncAgentStatusFromHost({
 		// is just as good: an outstanding record the seen mark already covers.
 		// The record's own instant is the subject, never `row.lastEventAt` — that
 		// has since moved on to an event no alert was ever minted for.
-		const outstandingAt = state.outstandingReadyAt[row.terminalId];
+		const outstandingAt = snapshotState.outstandingReadyAt[row.terminalId];
 		const repairSeenThroughAt = wouldRaiseReview
 			? row.lastEventAt
 			: outstandingAt !== undefined &&
@@ -674,21 +667,23 @@ export async function resyncAgentStatusFromHost({
 				// Fire-and-forget on the resync's own timeline — the reconciliation
 				// below must not wait on a network round trip — but the cooldown is
 				// only written once the answer is known.
-				void reportTerminalSeen({
-					workspaceId: row.originWorkspaceId,
-					terminalId: row.terminalId,
-					seenThroughAt: repairSeenThroughAt,
-				}).then((accepted) => {
-					recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
-					// Only a consumed report retires the record, and only up to the
-					// generation that was acknowledged — a finish that landed while
-					// this repair was in flight keeps its own. A dropped one stays
-					// standing for the next epoch, under the shorter retry cooldown.
-					if (accepted) {
-						useV2NotificationStore
-							.getState()
-							.clearOutstandingReady(row.terminalId, repairSeenThroughAt);
-					}
+				acknowledgements.push(() => {
+					void reportTerminalSeen({
+						workspaceId: row.originWorkspaceId,
+						terminalId: row.terminalId,
+						seenThroughAt: repairSeenThroughAt,
+					}).then((accepted) => {
+						recordRepairAttempt(repairKey, nowMonotonicMs, accepted);
+						// Only a consumed report retires the record, and only up to the
+						// generation that was acknowledged — a finish that landed while
+						// this repair was in flight keeps its own. A dropped one stays
+						// standing for the next epoch, under the shorter retry cooldown.
+						if (accepted) {
+							useV2NotificationStore
+								.getState()
+								.clearOutstandingReady(row.terminalId, repairSeenThroughAt);
+						}
+					});
 				});
 			} else {
 				result.seenRepairsDeferred++;
@@ -703,14 +698,13 @@ export async function resyncAgentStatusFromHost({
 				preEntry?.axes.permission !== undefined &&
 				preEntry.workspaceId === row.originWorkspaceId
 			) {
-				useV2NotificationStore
-					.getState()
-					.applySourceAxes(
-						source,
-						row.originWorkspaceId,
-						{ set: ["permission"], clear: [] },
-						preEntry.axes.permission,
-					);
+				snapshotState = notificationStateTransforms.applySourceAxes(
+					snapshotState,
+					source,
+					row.originWorkspaceId,
+					{ set: ["permission"], clear: [] },
+					preEntry.axes.permission,
+				);
 			}
 			result.unknownPermission++;
 		} else if (row.pendingPermission) {
@@ -764,14 +758,13 @@ export async function resyncAgentStatusFromHost({
 			// A newer local PermissionRequest is already safe — the occurredAt
 			// fence at the top of the loop skips the whole row when the store holds
 			// something fresher than `row.lastEventAt`.
-			useV2NotificationStore
-				.getState()
-				.applySourceAxes(
-					source,
-					row.originWorkspaceId,
-					{ set: [], clear: ["permission"] },
-					row.lastEventAt,
-				);
+			snapshotState = notificationStateTransforms.applySourceAxes(
+				snapshotState,
+				source,
+				row.originWorkspaceId,
+				{ set: [], clear: ["permission"] },
+				row.lastEventAt,
+			);
 			result.retractedPermission++;
 		}
 	}
@@ -815,12 +808,14 @@ export async function resyncAgentStatusFromHost({
 	// for the opposite reason (nothing left to send) and must keep its boundary:
 	// every seeding comparison above reads it.
 	if (hostSessionBoundary !== undefined) {
-		void reportRelaunchBoundary({
-			hostUrl,
-			boundaryMs: Math.floor(hostSessionBoundary),
-		}).then((accepted) => {
-			if (accepted || hasAcknowledgedRelaunchBoundary(hostUrl)) return;
-			hostSessionBoundaries.delete(hostUrl);
+		acknowledgements.push(() => {
+			void reportRelaunchBoundary({
+				hostUrl,
+				boundaryMs: Math.floor(hostSessionBoundary),
+			}).then((accepted) => {
+				if (accepted || hasAcknowledgedRelaunchBoundary(hostUrl)) return;
+				hostSessionBoundaries.delete(hostUrl);
+			});
 		});
 	}
 
@@ -831,7 +826,7 @@ export async function resyncAgentStatusFromHost({
 	// background-running blue have no other way back to false once their
 	// clearing event was destroyed. Terminals the host has never heard of are a
 	// different animal entirely and are skipped below.
-	const store = useV2NotificationStore.getState();
+	const preSweep = snapshotState;
 	const knownIds = new Set(knownTerminalIds);
 	// `knownTerminalIds` is the host's answer INTERSECTED with what we asked
 	// about, so an id we never asked about is absent from it by construction, not
@@ -840,7 +835,7 @@ export async function resyncAgentStatusFromHost({
 	const askedAboutIds = new Set(candidateTerminalIds);
 	const ghostTerminalIds: string[] = [];
 	const ownedTerminals = new Map<string, string>();
-	for (const entry of Object.values(store.sources)) {
+	for (const entry of Object.values(preSweep.sources)) {
 		if (entry.source.type !== "terminal") continue;
 		ownedTerminals.set(entry.source.id, entry.workspaceId);
 	}
@@ -849,7 +844,7 @@ export async function resyncAgentStatusFromHost({
 	// `BackgroundRunning` lifecycle event writes that map), so absence from an
 	// agent snapshot is evidence about it.
 	for (const [terminalId, entry] of Object.entries(
-		store.backgroundRunningTerminals,
+		preSweep.backgroundRunningTerminals,
 	)) {
 		if (!ownedTerminals.has(terminalId)) {
 			ownedTerminals.set(terminalId, entry.workspaceId);
@@ -878,7 +873,7 @@ export async function resyncAgentStatusFromHost({
 		}
 		const source = getV2TerminalNotificationSource(terminalId);
 		const sourceKey = getV2NotificationSourceKey(source);
-		const entry = store.sources[sourceKey];
+		const entry = preSweep.sources[sourceKey];
 		let touched = false;
 
 		if (
@@ -886,19 +881,26 @@ export async function resyncAgentStatusFromHost({
 			entry === beforeSources[sourceKey] &&
 			(entry.axes.permission !== undefined || entry.axes.working !== undefined)
 		) {
-			store.applySourceAxes(entry.source, entry.workspaceId, {
-				set: [],
-				clear: ["permission", "working"],
-			});
+			snapshotState = notificationStateTransforms.applySourceAxes(
+				snapshotState,
+				entry.source,
+				entry.workspaceId,
+				{ set: [], clear: ["permission", "working"] },
+				Date.now(),
+			);
 			touched = true;
 		}
 
-		const background = store.backgroundRunningTerminals[terminalId];
+		const background = preSweep.backgroundRunningTerminals[terminalId];
 		if (
 			background !== undefined &&
 			background === beforeBackground[terminalId]
 		) {
-			store.clearTerminalBackgroundRunning(terminalId);
+			snapshotState =
+				notificationStateTransforms.clearTerminalBackgroundRunning(
+					snapshotState,
+					terminalId,
+				);
 			touched = true;
 		}
 
@@ -908,18 +910,25 @@ export async function resyncAgentStatusFromHost({
 		// clearing it would extinguish a live `npm run dev` blue on every
 		// reconnect. The snapshot carries no command state, so that half stays
 		// unprovable and untouched.
-		const shell = store.shellRunningTerminals[terminalId];
+		const shell = preSweep.shellRunningTerminals[terminalId];
 		if (
 			shell !== undefined &&
 			shell === beforeShell[terminalId] &&
-			store.agentTerminals[terminalId]
+			preSweep.agentTerminals[terminalId]
 		) {
-			store.clearTerminalShellRunning(terminalId);
+			snapshotState = notificationStateTransforms.clearTerminalShellRunning(
+				snapshotState,
+				terminalId,
+			);
 			touched = true;
 		}
 
 		if (touched) result.cleared++;
 	}
+
+	// (NOTIF-STORE-DEBOUNCE)
+	useV2NotificationStore.setState(snapshotState);
+	for (const acknowledge of acknowledgements) acknowledge();
 
 	result.ghostsSkipped = ghostTerminalIds.length;
 	if (ghostTerminalIds.length > 0) {

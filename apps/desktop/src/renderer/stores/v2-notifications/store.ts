@@ -2,6 +2,7 @@ import type { Pane, Tab, WorkspaceState } from "@superset/panes";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMemo } from "react";
+import { createDebouncedSessionStorage } from "renderer/lib/debounced-session-storage";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 // (AY) DisplayStatus (ActivePaneStatus | "shell-running") is owned by the
 // StatusIndicator that renders it; the store consumes it as the render type for
@@ -12,14 +13,15 @@ import {
 	getHighestPriorityStatus,
 } from "shared/tabs-types";
 import { create } from "zustand";
-import { createJSONStorage, devtools, persist } from "zustand/middleware";
+import { devtools, persist } from "zustand/middleware";
 
 // Diagnostic logging for the agent-status-dots pipeline. console.info with
 // an "[agent-dots]" prefix so the main process forwarder persists it to
 // electron-log (main.log). Logging-only; flip NLOG to silence. NOTE: only
 // the mutators are instrumented — selectors (selectStatusForSourceKeys) are
 // hot and intentionally left untouched. See patches/notification-logging.patch.
-const NLOG = true;
+// (NOTIF-STORE-DEBOUNCE)
+const NLOG = false;
 function ndots(record: Record<string, unknown>): void {
 	if (!NLOG) return;
 	try {
@@ -260,7 +262,7 @@ export interface V2NotificationState {
 // sessionStorage is deliberate: it survives in-place reloads — the exact
 // failure — but clears on a real app restart, so dead terminals can't pin
 // stale dots across launches (and an app UPDATE can never rehydrate an old
-// schema). Only the three data maps persist; mutators come from the creator.
+// schema). Only the seven data maps persist; mutators come from the creator.
 /**
  * Everything in `map` that does NOT belong to `workspaceId`, plus whether
  * anything was actually dropped.
@@ -302,6 +304,7 @@ function logWorkspaceClear({
 	workspaceId: string;
 	shouldClear?: (source: V2NotificationStatusEntry) => boolean;
 }): void {
+	if (!NLOG) return;
 	const now = Date.now();
 	for (const [sourceKey, source] of Object.entries(
 		useV2NotificationStore.getState().sources,
@@ -319,19 +322,189 @@ function logWorkspaceClear({
 	}
 }
 
-/**
- * (MANUAL-DISMISS) Whether two axis maps hold the same latches at the same
- * instants. Used only to decide whether an `applySourceAxes` call is worth a
- * log line — never to skip a state write.
- */
-function axesEqual(a: V2AgentStatusAxes, b: V2AgentStatusAxes): boolean {
-	const keys = Object.keys(a) as V2AgentStatusAxis[];
-	if (keys.length !== Object.keys(b).length) return false;
-	for (const key of keys) {
-		if (a[key] !== b[key]) return false;
-	}
-	return true;
-}
+// (NOTIF-STORE-DEBOUNCE) The pure state transforms behind the store's
+// mutators, shared with the host-snapshot replay. Each returns the SAME state
+// object it was given when it changes nothing, so a no-op never publishes.
+export const notificationStateTransforms = {
+	markTerminalSeen(
+		state: V2NotificationState,
+		terminalId: string,
+		at: number,
+	): V2NotificationState {
+		const previousSeenAt = state.terminalSeenAt[terminalId];
+		const bumpSeen = previousSeenAt === undefined || previousSeenAt < at;
+		const sourceKey = getV2NotificationSourceKey(
+			getV2TerminalNotificationSource(terminalId),
+		);
+		const removesReview = state.sources[sourceKey]?.status === "review";
+		if (!bumpSeen && !removesReview) return state;
+		const next = { ...state };
+		if (bumpSeen)
+			next.terminalSeenAt = { ...state.terminalSeenAt, [terminalId]: at };
+		if (removesReview) {
+			const { [sourceKey]: _removed, ...sources } = state.sources;
+			next.sources = sources;
+		}
+		return next;
+	},
+	clearTerminalShellRunning(
+		state: V2NotificationState,
+		terminalId: string,
+	): V2NotificationState {
+		if (!state.shellRunningTerminals[terminalId]) return state;
+		const { [terminalId]: _removed, ...shellRunningTerminals } =
+			state.shellRunningTerminals;
+		return { ...state, shellRunningTerminals };
+	},
+	setTerminalBackgroundRunning(
+		state: V2NotificationState,
+		terminalId: string,
+		workspaceId: string,
+		occurredAt: number,
+	): V2NotificationState {
+		return {
+			...state,
+			backgroundRunningTerminals: {
+				...state.backgroundRunningTerminals,
+				// (BUS-RESYNC) Always a fresh object — see setTerminalShellRunning.
+				// Identity fencing in the resync sweep is only valid if EVERY write
+				// to this map replaces the entry.
+				[terminalId]: { workspaceId, occurredAt },
+			},
+		};
+	},
+	clearTerminalBackgroundRunning(
+		state: V2NotificationState,
+		terminalId: string,
+	): V2NotificationState {
+		if (!state.backgroundRunningTerminals[terminalId]) return state;
+		const { [terminalId]: _removed, ...backgroundRunningTerminals } =
+			state.backgroundRunningTerminals;
+		return { ...state, backgroundRunningTerminals };
+	},
+	markAgentTerminal(
+		state: V2NotificationState,
+		terminalId: string,
+	): V2NotificationState {
+		if (state.agentTerminals[terminalId]) return state;
+		return {
+			...state,
+			agentTerminals: { ...state.agentTerminals, [terminalId]: true as const },
+		};
+	},
+	clearSourceStatuses(
+		state: V2NotificationState,
+		sourceInputs: Iterable<V2NotificationSourceInput>,
+		workspaceId?: string,
+	): V2NotificationState {
+		const sourceKeys = new Set(
+			[...sourceInputs].map(getV2NotificationSourceKey),
+		);
+		if (sourceKeys.size === 0) return state;
+		const sources: Record<string, V2NotificationStatusEntry> = {};
+		let changed = false;
+		for (const [sourceKey, source] of Object.entries(state.sources)) {
+			if (
+				sourceKeys.has(sourceKey as V2NotificationSourceKey) &&
+				(!workspaceId || source.workspaceId === workspaceId)
+			) {
+				changed = true;
+				continue;
+			}
+			sources[sourceKey] = source;
+		}
+		return changed ? { ...state, sources } : state;
+	},
+	clearSourceAttention(
+		state: V2NotificationState,
+		source: V2NotificationSourceInput,
+		workspaceId?: string,
+	): V2NotificationState {
+		const sourceKey = getV2NotificationSourceKey(source);
+		const entry = state.sources[sourceKey];
+		if (
+			!entry ||
+			entry.status !== "review" ||
+			(workspaceId && entry.workspaceId !== workspaceId)
+		) {
+			return state;
+		}
+		const { [sourceKey]: _removed, ...sources } = state.sources;
+		return { ...state, sources };
+	},
+	applySourceAxes(
+		state: V2NotificationState,
+		source: V2NotificationSource,
+		workspaceId: string,
+		ops: V2AgentStatusAxisOps,
+		occurredAt: number,
+	): V2NotificationState {
+		const sourceKey = getV2NotificationSourceKey(source);
+		const prev = state.sources[sourceKey];
+		// (DOT-AXES) A different workspace's entry is only replaced when this
+		// workspace actually asserts an axis (the terminal was re-homed);
+		// clear-only ops must not reach across workspaces.
+		const foreign = prev !== undefined && prev.workspaceId !== workspaceId;
+		if (foreign && ops.set.length === 0) return state;
+		const axes: V2AgentStatusAxes = prev && !foreign ? { ...prev.axes } : {};
+		for (const axis of ops.clear) delete axes[axis];
+		for (const axis of ops.set) axes[axis] = occurredAt;
+		const status = deriveAgentStatus(axes);
+		const terminalId = sourceKey.startsWith(TERMINAL_SOURCE_PREFIX)
+			? sourceKey.slice(TERMINAL_SOURCE_PREFIX.length)
+			: null;
+		// (AGENT-SHELL-BLUE) Any agent-axis write for a terminal source —
+		// including a clear-to-null — proves an agent runs here.
+		const agentTerminals =
+			terminalId !== null && !state.agentTerminals[terminalId]
+				? { ...state.agentTerminals, [terminalId]: true as const }
+				: state.agentTerminals;
+		// (ONE-BUZZ-UNTIL-READ) A `review` SET is the moment a finish
+		// became outstanding on this machine. Recorded on the SET rather
+		// than derived from `status` because a red latched on top still
+		// leaves the phone holding the ready notification, and recorded
+		// here rather than read back off `sources` later because the very
+		// next `Start` deletes that entry while the notification lives on.
+		// A newer finish supersedes an older unreported one: the phone
+		// only ever shows the latest, so only the latest can be read.
+		let outstandingReadyAt = state.outstandingReadyAt;
+		if (terminalId !== null && ops.set.includes("review")) {
+			const previous = state.outstandingReadyAt[terminalId];
+			if (previous === undefined || previous < occurredAt) {
+				outstandingReadyAt = {
+					...state.outstandingReadyAt,
+					[terminalId]: occurredAt,
+				};
+			}
+		}
+		if (status === null) {
+			if (prev === undefined) {
+				return agentTerminals === state.agentTerminals &&
+					outstandingReadyAt === state.outstandingReadyAt
+					? state
+					: { ...state, agentTerminals, outstandingReadyAt };
+			}
+			const { [sourceKey]: _removed, ...sources } = state.sources;
+			return { ...state, sources, agentTerminals, outstandingReadyAt };
+		}
+		return {
+			...state,
+			agentTerminals,
+			outstandingReadyAt,
+			sources: {
+				...state.sources,
+				[sourceKey]: {
+					sourceKey,
+					source,
+					workspaceId,
+					status,
+					axes,
+					occurredAt,
+				},
+			},
+		};
+	},
+};
 
 export const useV2NotificationStore = create<V2NotificationState>()(
 	devtools(
@@ -356,32 +529,17 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					});
 				},
 				markTerminalSeen: (terminalId, at) => {
-					// (ALERT-CONTEXT-NAMES) Captured from inside the updater and read
-					// after it, because zustand's `set` is synchronous — the flag is
-					// decided by the same pass that decides the state, so the two can
-					// never disagree about whether a review entry was actually dropped.
+					// (ALERT-CONTEXT-NAMES) Decided inside the updater: zustand's `set`
+					// is synchronous, so the returned flag and the state it reports on
+					// can never disagree about whether a review entry was dropped.
 					let removedReview = false;
 					set((state) => {
-						const prev = state.terminalSeenAt[terminalId];
-						const bumpSeen = prev === undefined || prev < at;
-						const sourceKey = getV2NotificationSourceKey(
-							getV2TerminalNotificationSource(terminalId),
+						const next = notificationStateTransforms.markTerminalSeen(
+							state,
+							terminalId,
+							at,
 						);
-						const entry = state.sources[sourceKey];
-						let sources = state.sources;
-						if (entry && entry.status === "review") {
-							const { [sourceKey]: _removed, ...rest } = state.sources;
-							sources = rest;
-							removedReview = true;
-						}
-						if (!bumpSeen && sources === state.sources) return state;
-						const next: Partial<V2NotificationState> = {};
-						if (bumpSeen)
-							next.terminalSeenAt = {
-								...state.terminalSeenAt,
-								[terminalId]: at,
-							};
-						if (sources !== state.sources) next.sources = sources;
+						removedReview = next.sources !== state.sources;
 						return next;
 					});
 					return removedReview;
@@ -462,12 +620,12 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					}));
 				},
 				clearTerminalShellRunning: (terminalId) => {
-					set((state) => {
-						if (!state.shellRunningTerminals[terminalId]) return state;
-						const { [terminalId]: _removed, ...shellRunningTerminals } =
-							state.shellRunningTerminals;
-						return { shellRunningTerminals };
-					});
+					set((state) =>
+						notificationStateTransforms.clearTerminalShellRunning(
+							state,
+							terminalId,
+						),
+					);
 				},
 				backgroundRunningTerminals: {},
 				setTerminalBackgroundRunning: (
@@ -475,35 +633,27 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					workspaceId,
 					occurredAt = Date.now(),
 				) => {
-					set((state) => ({
-						backgroundRunningTerminals: {
-							...state.backgroundRunningTerminals,
-							// (BUS-RESYNC) Always a fresh object — see
-							// setTerminalShellRunning. Identity fencing in the resync sweep
-							// is only valid if EVERY write to this map replaces the entry.
-							[terminalId]: { workspaceId, occurredAt },
-						},
-					}));
+					set((state) =>
+						notificationStateTransforms.setTerminalBackgroundRunning(
+							state,
+							terminalId,
+							workspaceId,
+							occurredAt,
+						),
+					);
 				},
 				clearTerminalBackgroundRunning: (terminalId) => {
-					set((state) => {
-						if (!state.backgroundRunningTerminals[terminalId]) return state;
-						const { [terminalId]: _removed, ...backgroundRunningTerminals } =
-							state.backgroundRunningTerminals;
-						return { backgroundRunningTerminals };
-					});
+					set((state) =>
+						notificationStateTransforms.clearTerminalBackgroundRunning(
+							state,
+							terminalId,
+						),
+					);
 				},
 				agentTerminals: {},
 				markAgentTerminal: (terminalId) => {
 					set((state) =>
-						state.agentTerminals[terminalId]
-							? state
-							: {
-									agentTerminals: {
-										...state.agentTerminals,
-										[terminalId]: true as const,
-									},
-								},
+						notificationStateTransforms.markAgentTerminal(state, terminalId),
 					);
 				},
 				pruneAgentTerminal: (terminalId) => {
@@ -520,109 +670,15 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					ops,
 					occurredAt = Date.now(),
 				) => {
-					const sourceKey = getV2NotificationSourceKey(source);
-					const prev = useV2NotificationStore.getState().sources[sourceKey];
-					// (DOT-AXES) A different workspace's entry is only replaced when this
-					// workspace actually asserts an axis (the terminal was re-homed);
-					// clear-only ops must not reach across workspaces.
-					const foreign =
-						prev !== undefined && prev.workspaceId !== workspaceId;
-					if (foreign && ops.set.length === 0) return;
-					const axes: V2AgentStatusAxes =
-						prev && !foreign ? { ...prev.axes } : {};
-					for (const axis of ops.clear) delete axes[axis];
-					for (const axis of ops.set) axes[axis] = occurredAt;
-					const status = deriveAgentStatus(axes);
-					// (MANUAL-DISMISS) A REPLAY THAT CHANGED NOTHING GETS NO LINE. The
-					// 60s periodic resync runs this for every row of every workspace
-					// every minute, and the overwhelmingly common outcome is that the
-					// host agrees with what is already latched — which was costing a
-					// console.info per row per minute, forwarded to electron-log, for
-					// the life of the app.
-					//
-					// LOGGING ONLY. The `set()` below still runs: entry identity is a
-					// load-bearing staleness fence, so short-circuiting the write here
-					// would be a behaviour change, not a saving.
-					const unchanged =
-						prev !== undefined &&
-						!foreign &&
-						prev.status === status &&
-						axesEqual(prev.axes, axes);
-					if (!unchanged) {
-						ndots({
-							event: "store_mutation",
-							mutation: "applySourceAxes",
-							sourceKey,
+					set((state) =>
+						notificationStateTransforms.applySourceAxes(
+							state,
+							source,
 							workspaceId,
-							setAxes: ops.set,
-							clearAxes: ops.clear,
-							from: prev?.status ?? null,
-							to: status,
+							ops,
 							occurredAt,
-						});
-					}
-					set((state) => {
-						// (AGENT-SHELL-BLUE) Any agent-axis write for a terminal source —
-						// including a clear-to-null — proves an agent runs here.
-						const agentTerminals =
-							sourceKey.startsWith(TERMINAL_SOURCE_PREFIX) &&
-							!state.agentTerminals[
-								sourceKey.slice(TERMINAL_SOURCE_PREFIX.length)
-							]
-								? {
-										...state.agentTerminals,
-										[sourceKey.slice(TERMINAL_SOURCE_PREFIX.length)]:
-											true as const,
-									}
-								: state.agentTerminals;
-						// (ONE-BUZZ-UNTIL-READ) A `review` SET is the moment a finish
-						// became outstanding on this machine. Recorded on the SET rather
-						// than derived from `status` because a red latched on top still
-						// leaves the phone holding the ready notification, and recorded
-						// here rather than read back off `sources` later because the very
-						// next `Start` deletes that entry while the notification lives on.
-						// A newer finish supersedes an older unreported one: the phone
-						// only ever shows the latest, so only the latest can be read.
-						let outstandingReadyAt = state.outstandingReadyAt;
-						if (
-							sourceKey.startsWith(TERMINAL_SOURCE_PREFIX) &&
-							ops.set.includes("review")
-						) {
-							const terminalId = sourceKey.slice(TERMINAL_SOURCE_PREFIX.length);
-							const previous = state.outstandingReadyAt[terminalId];
-							if (previous === undefined || previous < occurredAt) {
-								outstandingReadyAt = {
-									...state.outstandingReadyAt,
-									[terminalId]: occurredAt,
-								};
-							}
-						}
-						if (status === null) {
-							if (!state.sources[sourceKey]) {
-								return agentTerminals === state.agentTerminals &&
-									outstandingReadyAt === state.outstandingReadyAt
-									? state
-									: { agentTerminals, outstandingReadyAt };
-							}
-							const { [sourceKey]: _removed, ...sources } = state.sources;
-							return { sources, agentTerminals, outstandingReadyAt };
-						}
-						return {
-							agentTerminals,
-							outstandingReadyAt,
-							sources: {
-								...state.sources,
-								[sourceKey]: {
-									sourceKey,
-									source,
-									workspaceId,
-									status,
-									axes,
-									occurredAt,
-								},
-							},
-						};
-					});
+						),
+					);
 				},
 				// Back-compat single-status setter for sequential writers (chat sources,
 				// manual unread). Translated to axis ops with the status's evidence
@@ -700,39 +756,22 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 					});
 				},
 				clearSourceStatuses: (sourceInputs, workspaceId) => {
-					set((state) => {
-						const sourceKeys = new Set(
-							[...sourceInputs].map(getV2NotificationSourceKey),
-						);
-						const sources: Record<string, V2NotificationStatusEntry> = {};
-						let changed = false;
-						for (const [sourceKey, source] of Object.entries(state.sources)) {
-							if (
-								sourceKeys.has(sourceKey as V2NotificationSourceKey) &&
-								(!workspaceId || source.workspaceId === workspaceId)
-							) {
-								changed = true;
-								continue;
-							}
-							sources[sourceKey] = source;
-						}
-						return changed ? { sources } : state;
-					});
+					set((state) =>
+						notificationStateTransforms.clearSourceStatuses(
+							state,
+							sourceInputs,
+							workspaceId,
+						),
+					);
 				},
 				clearSourceAttention: (source, workspaceId) => {
-					const sourceKey = getV2NotificationSourceKey(source);
-					set((state) => {
-						const entry = state.sources[sourceKey];
-						if (
-							!entry ||
-							entry.status !== "review" ||
-							(workspaceId && entry.workspaceId !== workspaceId)
-						) {
-							return state;
-						}
-						const { [sourceKey]: _removed, ...sources } = state.sources;
-						return { sources };
-					});
+					set((state) =>
+						notificationStateTransforms.clearSourceAttention(
+							state,
+							source,
+							workspaceId,
+						),
+					);
 				},
 				/**
 				 * (MANUAL-DISMISS) Drop EVERY axis this workspace can paint a dot
@@ -832,7 +871,11 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 			}),
 			{
 				name: "v2-notification-dots",
-				storage: createJSONStorage(() => window.sessionStorage),
+				// (NOTIF-STORE-DEBOUNCE)
+				storage: createDebouncedSessionStorage(() => window.sessionStorage, {
+					window,
+					document,
+				}),
 				partialize: (state) => ({
 					sources: state.sources,
 					shellRunningTerminals: state.shellRunningTerminals,
@@ -1385,49 +1428,4 @@ function getFilePathForPane(
 	if (!pane.data || typeof pane.data !== "object") return null;
 	const filePath = (pane.data as { filePath?: unknown }).filePath;
 	return typeof filePath === "string" && filePath ? filePath : null;
-}
-
-// (render-dot diagnostic) Snapshot every dot's ACTUALLY-rendered status once
-// per second into a SEPARATE log so it can be matched against the watcher's
-// emit log (~/.superset/agent-watcher-debug.log) by source key + workspaceId.
-// The store is the single source the StatusIndicator dots render from, so this
-// faithfully captures what the user sees. Renderer-only, started once per
-// window. Forwarded via console.info with a "[render-dot]" prefix that the
-// main process (main.ts) routes to ~/.superset/agent-dot-render.log. Never
-// throws; logs nothing when no sources exist (idle window).
-{
-	const w = globalThis as { __supersetDotRenderLog?: boolean };
-	if (typeof window !== "undefined" && !w.__supersetDotRenderLog) {
-		w.__supersetDotRenderLog = true;
-		setInterval(() => {
-			try {
-				const state = useV2NotificationStore.getState();
-				const dots = Object.entries(state.sources).map(([key, entry]) => ({
-					key,
-					workspaceId: entry.workspaceId,
-					status: entry.status,
-				}));
-				// (BA diagnostic) Also snapshot the SEPARATE blue axes — the agent
-				// `sources` snapshot above never showed these, so a never-set vs
-				// set-but-masked blue dot was indistinguishable from logs alone.
-				const bg = Object.entries(state.backgroundRunningTerminals).map(
-					([terminalId, entry]) => ({
-						terminalId,
-						workspaceId: entry.workspaceId,
-					}),
-				);
-				const shell = Object.entries(state.shellRunningTerminals).map(
-					([terminalId, entry]) => ({
-						terminalId,
-						workspaceId: entry.workspaceId,
-					}),
-				);
-				if (dots.length > 0 || bg.length > 0 || shell.length > 0) {
-					console.info(`[render-dot] ${JSON.stringify({ dots, bg, shell })}`);
-				}
-			} catch {
-				// never let diagnostics break the renderer
-			}
-		}, 1000);
-	}
 }

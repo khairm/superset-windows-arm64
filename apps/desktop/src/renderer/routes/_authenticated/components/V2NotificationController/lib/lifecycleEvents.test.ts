@@ -351,3 +351,40 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 		);
 	});
 });
+
+// (NOTIF-STORE-DEBOUNCE)
+describe("shared lifecycle state transform", () => {
+	it("replays without mutating or publishing the live store or inventing a phone finish", async () => {
+		const { replayV2AgentLifecycleState } = await import("./lifecycleEvents");
+		const before = useV2NotificationStore.getState();
+		const published = mock(() => {});
+		const unsubscribe = useV2NotificationStore.subscribe(published);
+		try {
+			const replayed = replayV2AgentLifecycleState(before, {
+				workspaceId: WORKSPACE,
+				payload: payload(),
+				paneLayout: null,
+			});
+			expect(replayed.sources[`terminal:${TERMINAL}`]?.status).toBe("review");
+			expect(replayed.outstandingReadyAt).toBe(before.outstandingReadyAt);
+			expect(useV2NotificationStore.getState()).toBe(before);
+			expect(before.sources).toEqual({});
+			expect(published).not.toHaveBeenCalled();
+			expect(seenCalls).toEqual([]);
+			markV2AgentLifecycleTargetSeen({
+				workspaceId: WORKSPACE,
+				payload: payload(),
+				paneLayout: null,
+				fromReplay: false,
+			});
+			expect(useV2NotificationStore.getState().sources).toEqual(
+				replayed.sources,
+			);
+			expect(
+				useV2NotificationStore.getState().outstandingReadyAt[TERMINAL],
+			).toBe(5_000);
+		} finally {
+			unsubscribe();
+		}
+	});
+});

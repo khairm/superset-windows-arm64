@@ -14,6 +14,10 @@ import {
 	useV2NotificationStore,
 	type V2NotificationSourceInput,
 } from "renderer/stores/v2-notifications";
+import {
+	notificationStateTransforms,
+	type V2NotificationState,
+} from "renderer/stores/v2-notifications/store";
 import { applyRememberedV2PaneSelection } from "renderer/stores/v2-pane-selection";
 import { reportTerminalSeen } from "./companionAlertSync";
 import { getV2NativeNotificationContent } from "./notificationContent";
@@ -28,7 +32,8 @@ import { resolveV2AgentStatusTransition } from "./statusTransitions";
 // console.info("[agent-dots] ...") so the main process forwarder persists
 // it to electron-log (main.log). Logging-only; flip NLOG to silence. See
 // patches/notification-logging.patch.
-const NLOG = true;
+// (NOTIF-STORE-DEBOUNCE)
+const NLOG = false;
 function ndots(record: Record<string, unknown>): void {
 	if (!NLOG) return;
 	try {
@@ -63,13 +68,10 @@ export function handleV2AgentLifecycleEvent({
 	volume: number;
 	muted: boolean;
 }): void {
-	const localPaneLayout = paneLayout
-		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
-		: paneLayout;
-	const target = resolveV2NotificationTarget({
+	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
 		payload,
-		paneLayout: localPaneLayout,
+		paneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
@@ -140,13 +142,10 @@ export function markV2AgentLifecycleTargetSeen({
 	 */
 	fromReplay: boolean;
 }): void {
-	const localPaneLayout = paneLayout
-		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
-		: paneLayout;
-	const target = resolveV2NotificationTarget({
+	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
 		payload,
-		paneLayout: localPaneLayout,
+		paneLayout,
 	});
 	updatePaneStatus({
 		workspaceId,
@@ -276,7 +275,7 @@ function updatePaneStatus({
 	// `byEvent` + `sessionId` here cross-reference agent-notify-hook.log's new
 	// `agentId` field: a Start with agentId="" and a fork's sessionId clearing
 	// the terminal's red is the smoking gun. Logging-only; no behaviour change.
-	{
+	if (NLOG) {
 		const sourceKey = getV2NotificationSourceKey(
 			getV2TerminalNotificationSource(target.terminalId),
 		);
@@ -308,21 +307,30 @@ function updatePaneStatus({
 		}
 	}
 
-	ndots({
-		event: "status_transition_computed",
-		// (BA diagnostic) carry the raw eventType — without it Stop and
-		// BackgroundRunning produce an identical transition log, hiding whether
-		// BackgroundRunning ever reaches the renderer at all.
-		eventType: payload.eventType,
-		targetVisible,
-		workspaceId,
-		terminalId: target.terminalId,
-		target,
-		clearSources: transition.clearSources,
-		axes: transition.axes,
-	});
+	if (NLOG)
+		ndots({
+			event: "status_transition_computed",
+			// (BA diagnostic) carry the raw eventType — without it Stop and
+			// BackgroundRunning produce an identical transition log, hiding whether
+			// BackgroundRunning ever reaches the renderer at all.
+			eventType: payload.eventType,
+			targetVisible,
+			workspaceId,
+			terminalId: target.terminalId,
+			target,
+			clearSources: transition.clearSources,
+			axes: transition.axes,
+		});
 
-	clearSources(workspaceId, transition.clearSources);
+	// (NOTIF-STORE-DEBOUNCE)
+	const next = applyV2AgentLifecycleTransition(store, {
+		workspaceId,
+		payload,
+		target,
+		transition,
+		fromReplay,
+	});
+	useV2NotificationStore.setState(next);
 
 	// (ALERT-RETIRE-ON-EXIT) THE VISIBLE-CLEAR HOP. A turn that ends while the
 	// user is LOOKING AT the pane never raises a green — `resolveV2AgentStatusTransition`
@@ -381,6 +389,84 @@ function updatePaneStatus({
 			seenThroughAt: payload.occurredAt,
 		});
 	}
+}
+
+// (NOTIF-STORE-DEBOUNCE)
+function resolveV2AgentLifecycleContext({
+	workspaceId,
+	payload,
+	paneLayout,
+}: {
+	workspaceId: string;
+	payload: AgentLifecyclePayload;
+	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+}) {
+	const localPaneLayout = paneLayout
+		? applyRememberedV2PaneSelection(workspaceId, paneLayout)
+		: paneLayout;
+	const target = resolveV2NotificationTarget({
+		workspaceId,
+		payload,
+		paneLayout: localPaneLayout,
+	});
+	return { localPaneLayout, target };
+}
+
+// (NOTIF-STORE-DEBOUNCE)
+export function replayV2AgentLifecycleState(
+	state: V2NotificationState,
+	{
+		workspaceId,
+		payload,
+		paneLayout,
+	}: {
+		workspaceId: string;
+		payload: AgentLifecyclePayload;
+		paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
+	},
+): V2NotificationState {
+	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
+		workspaceId,
+		payload,
+		paneLayout,
+	});
+	const transition = resolveV2AgentStatusTransition({
+		workspaceId,
+		payload,
+		statuses: state.sources,
+		targetVisible: isTargetInLayout(target, localPaneLayout),
+	});
+	return applyV2AgentLifecycleTransition(state, {
+		workspaceId,
+		payload,
+		target,
+		transition,
+		fromReplay: true,
+	});
+}
+
+function applyV2AgentLifecycleTransition(
+	state: V2NotificationState,
+	{
+		workspaceId,
+		payload,
+		target,
+		transition,
+		fromReplay,
+	}: {
+		workspaceId: string;
+		payload: AgentLifecyclePayload;
+		target: V2NotificationTarget;
+		transition: ReturnType<typeof resolveV2AgentStatusTransition>;
+		fromReplay: boolean;
+	},
+): V2NotificationState {
+	const outstandingReadyAt = state.outstandingReadyAt;
+	state = notificationStateTransforms.clearSourceStatuses(
+		state,
+		definedSources(transition.clearSources),
+		workspaceId,
+	);
 
 	// (AGENT-SHELL-BLUE) EVERY agent lifecycle payload that resolves to a
 	// terminal proves an agent runs there — including axes-null events like
@@ -388,12 +474,16 @@ function updatePaneStatus({
 	// idles at its initial prompt, the only) signal. The axis funnel also
 	// stamps this, but it never runs when transition.axes is null.
 	if (target.terminalId) {
-		store.markAgentTerminal(target.terminalId);
+		state = notificationStateTransforms.markAgentTerminal(
+			state,
+			target.terminalId,
+		);
 	}
 	if (transition.axes) {
 		// (DOT-AXES) axis-level apply: the store latches/unlatches the named
 		// axes and re-derives the rendered status as the highest active one.
-		store.applySourceAxes(
+		state = notificationStateTransforms.applySourceAxes(
+			state,
 			transition.axes.source,
 			workspaceId,
 			{ set: transition.axes.set, clear: transition.axes.clear },
@@ -423,12 +513,8 @@ function updatePaneStatus({
 	// stays SILENT on a replay, instead of this branch trying to guess which
 	// Stop to spectate.
 	if (payload.eventType === "BackgroundRunning") {
-		ndots({
-			event: "bg_axis_set",
-			workspaceId,
-			terminalId: payload.terminalId,
-		});
-		store.setTerminalBackgroundRunning(
+		state = notificationStateTransforms.setTerminalBackgroundRunning(
+			state,
 			payload.terminalId,
 			workspaceId,
 			payload.occurredAt,
@@ -442,19 +528,16 @@ function updatePaneStatus({
 		// background shell (live repro 2026-06-11). It asserts nothing about
 		// turn state, so it must spectate the blue axis too.
 	} else {
-		// (BA diagnostic) log when a NON-BackgroundRunning event wipes a live blue
-		// entry — names the culprit event (e.g. SubagentActive / Start) that
-		// clears the blue dot out from under a still-running background task.
-		if (store.backgroundRunningTerminals[payload.terminalId]) {
-			ndots({
-				event: "bg_axis_cleared",
-				workspaceId,
-				terminalId: payload.terminalId,
-				byEvent: payload.eventType,
-			});
-		}
-		store.clearTerminalBackgroundRunning(payload.terminalId);
+		state = notificationStateTransforms.clearTerminalBackgroundRunning(
+			state,
+			payload.terminalId,
+		);
 	}
+	// (ONE-BUZZ-UNTIL-READ) A replay re-derives history, and a row whose last
+	// event is a turn-end writes a `review` axis — which would MINT an
+	// outstanding record for a finish no device ever held.
+	if (fromReplay) state = { ...state, outstandingReadyAt };
+	return state;
 }
 
 function getCurrentWorkspaceId(): string | null {
@@ -543,11 +626,15 @@ function clearSources(
 	workspaceId: string,
 	sources: Array<V2NotificationSourceInput | null | undefined>,
 ): void {
-	const store = useV2NotificationStore.getState();
-	store.clearSourceStatuses(
-		sources.filter((source): source is V2NotificationSourceInput =>
-			Boolean(source),
-		),
-		workspaceId,
+	useV2NotificationStore
+		.getState()
+		.clearSourceStatuses(definedSources(sources), workspaceId);
+}
+
+function definedSources(
+	sources: Array<V2NotificationSourceInput | null | undefined>,
+): V2NotificationSourceInput[] {
+	return sources.filter((source): source is V2NotificationSourceInput =>
+		Boolean(source),
 	);
 }

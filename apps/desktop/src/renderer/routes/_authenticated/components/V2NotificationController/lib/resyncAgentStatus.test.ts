@@ -859,3 +859,114 @@ describe("(ALERT-RETIRE-ON-EXIT) the relaunch boundary report", () => {
 		expect(relaunchCalls).toHaveLength(2);
 	});
 });
+
+// (NOTIF-STORE-DEBOUNCE)
+describe("snapshot publication", () => {
+	it("publishes all rows and stale clears once without transient review records", async () => {
+		__resetColdStartForTest();
+		const store = useV2NotificationStore.getState();
+		store.setTerminalStatus("terminal-1", WORKSPACE, "permission", 1_000);
+		store.setTerminalStatus("stale-agent", WORKSPACE, "working", 1_000);
+		store.setTerminalBackgroundRunning("stale-agent", WORKSPACE, 1_000);
+		store.setTerminalShellRunning("stale-agent", WORKSPACE, 1_000);
+		store.setTerminalShellRunning("plain-shell", WORKSPACE, 1_000);
+		snapshotRows = [
+			row({ lastEventType: "Start", pendingPermission: null }),
+			row({ terminalId: "terminal-2", pendingPermission: true }),
+			row({ terminalId: "terminal-3", lastEventType: "BackgroundRunning" }),
+		];
+		knownTerminalIds = ["terminal-1", "stale-agent", "plain-shell"];
+		const published: ReturnType<typeof useV2NotificationStore.getState>[] = [];
+		const unsubscribe = useV2NotificationStore.subscribe((state) =>
+			published.push(state),
+		);
+		try {
+			await resyncAgentStatusFromHost({
+				hostUrl: HOST,
+				workspaces: workspaces(),
+			});
+			expect(published).toHaveLength(1);
+			const state = published[0];
+			if (!state) throw new Error("Snapshot was not published");
+			expect(state.sources["terminal:terminal-1"]?.status).toBe("permission");
+			expect(state.sources["terminal:terminal-2"]?.status).toBe("permission");
+			expect(state.backgroundRunningTerminals["terminal-3"]).toBeDefined();
+			expect(state.sources["terminal:stale-agent"]).toBeUndefined();
+			expect(state.backgroundRunningTerminals["stale-agent"]).toBeUndefined();
+			expect(state.shellRunningTerminals["stale-agent"]).toBeUndefined();
+			expect(state.shellRunningTerminals["plain-shell"]).toBeDefined();
+			expect(state.outstandingReadyAt).toEqual({});
+			expect(seenCalls).toEqual([]);
+		} finally {
+			unsubscribe();
+		}
+	});
+
+	it("keeps entries replaced by live events during the request", async () => {
+		__resetColdStartForTest();
+		const store = useV2NotificationStore.getState();
+		store.setTerminalStatus("terminal-1", WORKSPACE, "working", 1_000);
+		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, 1_000);
+		store.setTerminalShellRunning("terminal-1", WORKSPACE, 1_000);
+		snapshotRows = [];
+		const pending = resyncAgentStatusFromHost({
+			hostUrl: HOST,
+			workspaces: workspaces(),
+		});
+		store.setTerminalStatus("terminal-1", WORKSPACE, "working", 1_000);
+		store.setTerminalBackgroundRunning("terminal-1", WORKSPACE, 1_000);
+		store.setTerminalShellRunning("terminal-1", WORKSPACE, 1_000);
+		const latest = useV2NotificationStore.getState();
+		await pending;
+		const after = useV2NotificationStore.getState();
+		expect(after.sources["terminal:terminal-1"]).toBe(
+			latest.sources["terminal:terminal-1"],
+		);
+		expect(after.backgroundRunningTerminals["terminal-1"]).toBe(
+			latest.backgroundRunningTerminals["terminal-1"],
+		);
+		expect(after.shellRunningTerminals["terminal-1"]).toBe(
+			latest.shellRunningTerminals["terminal-1"],
+		);
+	});
+
+	it("publishes the complete snapshot before sending read acknowledgements", async () => {
+		__resetColdStartForTest();
+		seenThrough("terminal-1", 5_000);
+		snapshotRows = [
+			row(),
+			row({ terminalId: "terminal-2", lastEventType: "Start" }),
+		];
+		const publications: number[] = [];
+		const unsubscribe = useV2NotificationStore.subscribe((state) => {
+			if (state.sources["terminal:terminal-2"]?.status === "working")
+				publications.push(seenCalls.length);
+		});
+		try {
+			await resyncAgentStatusFromHost({
+				hostUrl: HOST,
+				workspaces: workspaces(),
+			});
+			expect(publications).toEqual([0]);
+			expect(seenCalls).toHaveLength(1);
+		} finally {
+			unsubscribe();
+		}
+	});
+
+	it("does not publish a discarded snapshot", async () => {
+		const published = mock(() => {});
+		const unsubscribe = useV2NotificationStore.subscribe(published);
+		try {
+			const result = await resyncAgentStatusFromHost({
+				hostUrl: HOST,
+				workspaces: workspaces(),
+				isCurrent: () => false,
+			});
+			expect(result?.discarded).toBe(true);
+			expect(published).not.toHaveBeenCalled();
+		} finally {
+			unsubscribe();
+		}
+	});
+});
