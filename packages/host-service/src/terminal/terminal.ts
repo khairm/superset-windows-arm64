@@ -36,6 +36,7 @@ import {
 } from "@superset/shared/terminal-title-scanner";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { ClaudeAccountsService } from "../claude-accounts";
 import { getManagedClaudeAccountsForLaunch } from "../claude-accounts-runtime";
 import { stampHumanInput } from "../companion/human-input.ts";
@@ -88,6 +89,7 @@ import {
 	recordShellReadyMarkerEvidence,
 } from "./shell-ready-evidence.ts";
 import {
+	type ClientScreen,
 	createModeTracker,
 	type ModeTracker,
 	type TerminalSnapshot,
@@ -2322,8 +2324,10 @@ function broadcastBytes(session: TerminalSession, bytes: Uint8Array): number {
  */
 function takeSynthesizedAttachBytes(
 	session: TerminalSession,
+	clientScreen: ClientScreen = "normal",
 ): Uint8Array | null {
-	const preamble = session.modeTracker.buildPreamble();
+	// (ALT-SNAPSHOT-RESTORE)
+	const preamble = session.modeTracker.buildPreamble(clientScreen);
 	const notice = session.restoredNoticePending ? SESSION_RESTORED_NOTICE : null;
 	session.restoredNoticePending = false;
 	if (!preamble && !notice) return null;
@@ -2367,11 +2371,9 @@ function sendSeqAttach(
 	session: TerminalSession,
 	socket: TerminalSocket,
 	request: Exclude<SeqAttachRequest, { kind: "legacy" }>,
+	clientScreen: ClientScreen | undefined,
 ) {
 	if (socket.readyState !== SOCKET_OPEN) return;
-
-	const synthesized = takeSynthesizedAttachBytes(session);
-	if (synthesized) sendBytes(socket, synthesized);
 
 	const exact =
 		request.kind === "anchor" &&
@@ -2379,6 +2381,13 @@ function sendSeqAttach(
 		request.seq >= session.retainedStartSeq &&
 		request.seq > session.lastResizeSeq &&
 		request.seq <= session.outputSeq;
+
+	// (ALT-SNAPSHOT-RESTORE)
+	const synthesized = takeSynthesizedAttachBytes(
+		session,
+		!exact && request.kind !== "new" ? clientScreen : undefined,
+	);
+	if (synthesized) sendBytes(socket, synthesized);
 
 	if (exact) {
 		sendMessage(socket, {
@@ -4652,6 +4661,16 @@ export function registerWorkspaceTerminalRoute({
 			const terminalId = c.req.param("terminalId") ?? "";
 			const requestedWorkspaceId = c.req.query("workspaceId") || null;
 			const seqRequest = parseSeqAttachParam(c.req.query("seq"));
+			// (ALT-SNAPSHOT-RESTORE)
+			const clientScreen = c.req.query("screen");
+			if (
+				clientScreen !== undefined &&
+				clientScreen !== "normal" &&
+				clientScreen !== "alternate" &&
+				clientScreen !== "alternate-1049"
+			) {
+				throw new HTTPException(400, { message: "Invalid terminal screen" });
+			}
 			// Optimistic pane creation: the renderer inserts the pane first and
 			// lets this attach create the session, so plain terminal creation
 			// never queues behind Chromium's 6-per-origin HTTP socket pool.
@@ -4690,7 +4709,7 @@ export function registerWorkspaceTerminalRoute({
 					replayBuffer(session, ws);
 				} else {
 					seqSockets.add(ws);
-					sendSeqAttach(session, ws, seqRequest);
+					sendSeqAttach(session, ws, seqRequest, clientScreen);
 				}
 				if (session.exited) {
 					sendMessage(ws, {

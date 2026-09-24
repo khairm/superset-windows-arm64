@@ -11,6 +11,7 @@ import {
 } from "bun:test";
 import * as relaySocketModule from "@superset/workspace-client/relay-socket";
 import type { Terminal as XTerm } from "@xterm/xterm";
+import { trackTerminalScreen } from "./terminal-snapshot";
 
 // The transport builds on createRelaySocket (partysocket) — reconnection,
 // backoff, and the relay preflight live inside the shared socket. We inject a
@@ -138,16 +139,40 @@ const originalRemoveEventListener = win?.removeEventListener;
 function createMockTerminal(
 	cols = 101,
 	rows = 27,
-): XTerm & { emitData(data: string): void; emitKey(): void } {
+): XTerm & {
+	emitData(data: string): void;
+	emitKey(): void;
+	setScreen(mode: 47 | 1047 | 1049 | null): void;
+} {
 	let onDataListener: ((data: string) => void) | null = null;
 	// (PUSH-PRESENCE) xterm's own "this came from a key event" signal, which the
 	// transport subscribes to so it can tell typing from a protocol reply. The
 	// mock carries no DOM element, which is also the real shape before
 	// `terminal.open()`.
 	let onKeyListener: (() => void) | null = null;
-	return {
+	const handlers = new Map<string, (params: number[]) => boolean>();
+	const terminal = {
 		cols,
 		rows,
+		parser: {
+			registerCsiHandler(
+				id: { final: string },
+				handler: (params: number[]) => boolean,
+			) {
+				handlers.set(id.final, handler);
+				return { dispose() {} };
+			},
+		},
+		setScreen(mode: 47 | 1047 | 1049 | null) {
+			handlers.get(mode === null ? "l" : "h")!([mode ?? 1049]);
+			(terminal.buffer.active as { type: string }).type =
+				mode === null ? "normal" : "alternate";
+		},
+		// (ALT-SNAPSHOT-RESTORE)
+		buffer: {
+			active: { type: "normal" },
+			onBufferChange: () => ({ dispose() {} }),
+		},
 		onData: (listener: (data: string) => void) => {
 			onDataListener = listener;
 			return { dispose() {} };
@@ -169,7 +194,13 @@ function createMockTerminal(
 			callback?.();
 		},
 		writeln() {},
-	} as unknown as XTerm & { emitData(data: string): void; emitKey(): void };
+	} as unknown as XTerm & {
+		emitData(data: string): void;
+		emitKey(): void;
+		setScreen(mode: 47 | 1047 | 1049 | null): void;
+	};
+	trackTerminalScreen(terminal);
+	return terminal;
 }
 
 /** Connect and drive the fake socket to a live, attached session. */
@@ -721,7 +752,7 @@ describe("terminal-ws-transport", () => {
 		expect(transport.logs).toHaveLength(0);
 	});
 
-	test("connect() after park dials a fresh socket anchored at the parked position", () => {
+	test("connect() after park dials a fresh socket anchored at the parked position", async () => {
 		const { transport, terminal, socket } = connectAttached();
 		socket.message(
 			JSON.stringify({ type: "synced", epoch: "e1", seq: 10, mode: "exact" }),
@@ -740,11 +771,125 @@ describe("terminal-ws-transport", () => {
 		expect(FakeRelaySocket.instances).toHaveLength(2);
 		const redial = FakeRelaySocket.instances.at(-1);
 		if (!redial) throw new Error("expected relay socket instance");
-		const buildUrl = redial.options.buildUrl as () => string;
-		expect(buildUrl()).toContain("seq=e1%3A13");
+		const buildUrl = redial.options.buildUrl as () => Promise<string>;
+		expect(await buildUrl()).toContain("seq=e1%3A13");
 		redial.open();
 		redial.message(JSON.stringify({ type: "attached", terminalId: "t1" }));
 		expect(transport.connectionState).toBe("open");
+	});
+
+	// (ALT-SNAPSHOT-RESTORE)
+	for (const [cols, rows] of [
+		[120, 32],
+		[90, 24],
+	]) {
+		test(`an evicted alternate-screen snapshot reanchors at ${cols}x${rows} without a renderer resize nudge`, async () => {
+			const sibling = connectAttached();
+			sibling.socket.message(
+				JSON.stringify({ type: "synced", epoch: "e1", seq: 42, mode: "exact" }),
+			);
+			const transport = createTransport();
+			transport._xtermHadContent = true;
+			const terminal = createMockTerminal(cols, rows);
+			terminal.setScreen(1049);
+			const write = mock(terminal.write);
+			terminal.write = write;
+			connect(transport, terminal, "ws://host/terminal/t1");
+			const socket = FakeRelaySocket.instances.at(-1);
+			if (!socket) throw new Error("expected restored socket");
+			const buildUrl = socket.options.buildUrl as () => Promise<string>;
+			expect(new URL(await buildUrl()).searchParams.get("seq")).toBe("none");
+			expect(new URL(await buildUrl()).searchParams.get("screen")).toBe(
+				"alternate-1049",
+			);
+			terminal.setScreen(null);
+			expect(new URL(await buildUrl()).searchParams.get("screen")).toBe(
+				"normal",
+			);
+			terminal.setScreen(1049);
+			socket.open();
+			socket.message(
+				JSON.stringify({
+					type: "synced",
+					epoch: "e1",
+					seq: 90,
+					mode: "reanchor",
+				}),
+			);
+			socket.message(JSON.stringify({ type: "attached", terminalId: "t1" }));
+			expect(
+				socket.sent
+					.map((data) => JSON.parse(data))
+					.filter((message) => message.type === "resize"),
+			).toEqual([{ type: "resize", cols, rows }]);
+			expect(write.mock.calls.map(([data]) => data)).toEqual(["", "", "", ""]);
+			expect(transport.seqAnchor).toEqual({ epoch: "e1", seq: 90 });
+			expect(sibling.transport.seqAnchor).toEqual({ epoch: "e1", seq: 42 });
+			expect(sibling.socket.closed).toBe(false);
+			disconnect(transport);
+			disconnect(sibling.transport);
+		});
+	}
+
+	test("dial waits for snapshot parsing and flushes queued output before sampling the screen", async () => {
+		const transport = createTransport();
+		transport._xtermHadContent = true;
+		const terminal = createMockTerminal();
+		const active = terminal.buffer.active as { type: "normal" | "alternate" };
+		const pending: Array<() => void> = [];
+		const writes: Array<string | Uint8Array> = [];
+		terminal.write = (data, done) => {
+			writes.push(data);
+			pending.push(() => {
+				if (data === "snapshot") terminal.setScreen(1049);
+				if (data instanceof Uint8Array) terminal.setScreen(null);
+				done?.();
+			});
+		};
+		terminal.write("snapshot");
+		connect(transport, terminal, "ws://host/terminal/t1");
+		const socket = FakeRelaySocket.instances.at(-1)!;
+		const buildUrl = socket.options.buildUrl as () => Promise<string>;
+		let resolved = false;
+		const firstDial = buildUrl().then((url) => {
+			resolved = true;
+			return url;
+		});
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		expect(active.type).toBe("normal");
+		while (pending.length) pending.shift()!();
+		expect(new URL(await firstDial).searchParams.get("screen")).toBe(
+			"alternate-1049",
+		);
+		transport._writeCoalescer!.push(new TextEncoder().encode("exit alternate"));
+		const secondDial = buildUrl();
+		expect(writes.at(-2)).toBeInstanceOf(Uint8Array);
+		expect(writes.at(-1)).toBe("");
+		while (pending.length) pending.shift()!();
+		expect(new URL(await secondDial).searchParams.get("screen")).toBe("normal");
+		disconnect(transport);
+	});
+
+	test("an evicted terminal that exited while parked clears its restored state", () => {
+		const onSessionEnded = mock(() => {});
+		const transport = createTransport({ onSessionEnded });
+		transport._xtermHadContent = true;
+		connect(transport, createMockTerminal(), "ws://host/terminal/t1");
+		const socket = FakeRelaySocket.instances.at(-1);
+		if (!socket) throw new Error("expected restored socket");
+		socket.open();
+		socket.message(
+			JSON.stringify({
+				type: "error",
+				code: "session-gone",
+				message: "Terminal session not found",
+			}),
+		);
+		expect(transport.sessionEnded).toBe(true);
+		expect(onSessionEnded).toHaveBeenCalledTimes(1);
+		expect(transport.seqAnchor).toBeNull();
+		disconnect(transport);
 	});
 
 	test("park refuses to disconnect a pre-seq host", () => {

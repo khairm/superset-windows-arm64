@@ -18,6 +18,7 @@ import {
 	resetAttachRetryState,
 	shouldSurfaceDiagnosis,
 } from "./attach-retry-diagnosis";
+import { getTerminalScreen } from "./terminal-snapshot";
 import {
 	classifyTerminalFailure,
 	type TerminalFailureClassification,
@@ -630,7 +631,10 @@ export function connect(
 	const socket = createRelaySocket({
 		// buildUrl/getToken read transport state live, so a URL swap or token
 		// rotation is picked up on the next dial without recreating the socket.
-		buildUrl: () => {
+		buildUrl: async () => {
+			// (ALT-SNAPSHOT-RESTORE)
+			transport._writeCoalescer?.flushSync();
+			await new Promise<void>((resolve) => terminal.write("", resolve));
 			let current = stripToken(transport.currentUrl ?? base);
 			// Legacy replay suppression — read by pre-seq hosts only.
 			if (transport._hasReceivedBytes) {
@@ -646,6 +650,11 @@ export function connect(
 				: transport._xtermHadContent || transport._hasReceivedBytes
 					? "none"
 					: "new";
+			current = appendQueryParam(
+				current,
+				"screen",
+				getTerminalScreen(terminal),
+			);
 			return appendQueryParam(current, "seq", seqValue);
 		},
 		getToken: () =>

@@ -1,4 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { createRequire } from "node:module";
+import { TerminalModes } from "@superset/pty-daemon/terminal-modes";
+import {
+	getTerminalScreen,
+	preserveSnapshotShellRendition,
+	trackTerminalScreen,
+} from "../../../../apps/desktop/src/renderer/lib/terminal/terminal-snapshot";
+import { HeadlessTerminal } from "./headless-xterm";
 import { createModeTracker } from "./terminal-mode-tracker";
 
 const enc = new TextEncoder();
@@ -300,5 +308,233 @@ describe("snapshot behind an alt screen", () => {
 		expect(text).toContain("line-1\n");
 		expect(text).toContain("line-40");
 		t.dispose();
+	});
+});
+
+// (ALT-SNAPSHOT-RESTORE)
+describe("serialized alternate-screen reanchor", () => {
+	const { SerializeAddon } = createRequire(
+		new URL("../../../../apps/desktop/package.json", import.meta.url),
+	)(
+		"@xterm/addon-serialize",
+	) as typeof import("../../../../apps/desktop/node_modules/@xterm/addon-serialize");
+	const write = (term: HeadlessTerminal, bytes: string | Uint8Array) =>
+		new Promise<void>((resolve) => term.write(bytes, resolve));
+	const text = (term: HeadlessTerminal) => {
+		const buffer = term.buffer.active;
+		return Array.from(
+			{ length: buffer.length },
+			(_, index) => buffer.getLine(index)?.translateToString(true) ?? "",
+		).join("\n");
+	};
+	const initial =
+		"\x1b[32;1mSHELL HISTORY\r\n$ tui\x1b[?1049h\x1b[31;3m\x1b[11;21HOLD TUI";
+	const cursor = (term: HeadlessTerminal) => ({
+		x: term.buffer.active.cursorX,
+		y: term.buffer.active.cursorY,
+	});
+	const cells = (term: HeadlessTerminal) => {
+		const buffer = term.buffer.active;
+		return Array.from({ length: buffer.length }, (_, y) =>
+			Array.from({ length: term.cols }, (_, x) => {
+				const cell = buffer.getLine(y)!.getCell(x)!;
+				return cell.getChars()
+					? [
+							cell.getChars(),
+							cell.getFgColor(),
+							cell.getBgColor(),
+							cell.isBold(),
+							cell.isItalic(),
+						]
+					: null;
+			}),
+		);
+	};
+
+	for (const cols of [80, 60]) {
+		for (const exited of [false, true]) {
+			test(`restored snapshot at ${cols} columns reconciles a ${exited ? "finished" : "live"} TUI`, async () => {
+				const host = createModeTracker(80, 24);
+				const original = new HeadlessTerminal({
+					cols: 80,
+					rows: 24,
+					allowProposedApi: true,
+				});
+				const serializer = new SerializeAddon();
+				original.loadAddon(serializer);
+				preserveSnapshotShellRendition(serializer);
+				await write(original, initial);
+				host.feed(enc.encode(initial));
+				const snapshot = serializer.serialize();
+				original.dispose();
+				const reference = new HeadlessTerminal({
+					cols: 80,
+					rows: 24,
+					allowProposedApi: true,
+				});
+				await write(reference, initial);
+				if (exited) {
+					host.feed(enc.encode("\x1b[?1049l"));
+					await write(reference, "\x1b[?1049l");
+				}
+				const restored = new HeadlessTerminal({
+					cols: 80,
+					rows: 24,
+					allowProposedApi: true,
+				});
+				try {
+					await write(restored, snapshot);
+					restored.resize(cols, 24);
+					host.resize(cols, 24);
+					reference.resize(cols, 24);
+					expect(restored.buffer.active.type).toBe("alternate");
+					const preamble = host.buildPreamble("alternate-1049");
+					if (!preamble) throw new Error("Missing reanchor preamble");
+					await write(restored, preamble);
+					expect(restored.buffer.active.type).toBe(
+						exited ? "normal" : "alternate",
+					);
+					if (exited) {
+						expect(cursor(restored)).toEqual(host.cursorPosition());
+						expect(cursor(restored)).toEqual({ x: 5, y: 1 });
+						await write(restored, "NEXT SHELL OUTPUT");
+						await write(reference, "NEXT SHELL OUTPUT");
+						expect(cursor(restored)).toEqual(cursor(reference));
+						expect(cells(restored)).toEqual(cells(reference));
+						expect(text(restored)).toContain("SHELL HISTORY");
+						expect(text(restored)).not.toContain("OLD TUI");
+						const output = Array.from(
+							{ length: 30 },
+							(_, i) => `\r\nSHELL LINE ${i}`,
+						).join("");
+						await write(restored, output);
+						expect(restored.buffer.normal.baseY).toBeGreaterThan(0);
+						expect(text(restored)).toContain("SHELL LINE 0");
+						expect(text(restored)).toContain("SHELL LINE 29");
+					} else {
+						expect(text(restored)).toContain("OLD TUI");
+						const repaint = "\x1b[2J\x1b[HFULL REDRAW";
+						host.feed(enc.encode(repaint));
+						await write(restored, repaint);
+						expect(text(restored).trimEnd()).toBe(host.snapshot().text);
+					}
+				} finally {
+					restored.dispose();
+					reference.dispose();
+					host.dispose();
+				}
+			});
+		}
+	}
+
+	test("normal-screen reanchor preserves current and saved cursor and rendition", async () => {
+		const host = createModeTracker(80, 24);
+		const restored = new HeadlessTerminal({
+			cols: 80,
+			rows: 24,
+			allowProposedApi: true,
+		});
+		const reference = new HeadlessTerminal({
+			cols: 80,
+			rows: 24,
+			allowProposedApi: true,
+		});
+		try {
+			const shell = "\x1b[35mhistory\x1b7\r\n\x1b[32;1m$ typing";
+			await write(restored, shell);
+			await write(reference, shell);
+			const preamble = host.buildPreamble("normal");
+			if (!preamble) throw new Error("Missing reanchor preamble");
+			await write(restored, preamble);
+			expect(cursor(restored)).toEqual(cursor(reference));
+			for (const output of ["NEXT", "\x1b8SAVED"]) {
+				await write(restored, output);
+				await write(reference, output);
+				expect(cursor(restored)).toEqual(cursor(reference));
+				expect(cells(restored)).toEqual(cells(reference));
+			}
+		} finally {
+			restored.dispose();
+			reference.dispose();
+			host.dispose();
+		}
+	});
+
+	for (const mode of [47, 1047, 1049]) {
+		for (const fromSnapshot of [false, true]) {
+			test(`${fromSnapshot ? "restored" : "live"} DEC${mode} reanchor preserves cursor and rendition`, async () => {
+				const host = createModeTracker(80, 24);
+				let viewer = new HeadlessTerminal({
+					cols: 80,
+					rows: 24,
+					allowProposedApi: true,
+				});
+				const reference = new HeadlessTerminal({
+					cols: 80,
+					rows: 24,
+					allowProposedApi: true,
+				});
+				try {
+					const serializer = new SerializeAddon();
+					viewer.loadAddon(serializer);
+					preserveSnapshotShellRendition(serializer);
+					const entry = `\x1b[35mSAVED\x1b7
+
+\x1b[32;1m$ tui\x1b[?${mode}h\x1b[31;3m\x1b[11;21HOLD TUI`;
+					host.feed(enc.encode(entry));
+					await write(viewer, entry);
+					await write(reference, entry);
+					if (fromSnapshot) {
+						const snapshot = serializer.serialize();
+						viewer.dispose();
+						viewer = new HeadlessTerminal({
+							cols: 80,
+							rows: 24,
+							allowProposedApi: true,
+						});
+						trackTerminalScreen(viewer);
+						await write(viewer, snapshot);
+					}
+					host.feed(enc.encode(`\x1b[?${mode}l`));
+					await write(reference, `\x1b[?${mode}l`);
+					host.resize(60, 24);
+					viewer.resize(60, 24);
+					reference.resize(60, 24);
+					const preamble = host.buildPreamble(getTerminalScreen(viewer));
+					if (!preamble) throw new Error("Missing reanchor preamble");
+					await write(viewer, preamble);
+					for (const output of ["NEXT", "\x1b8SAVED"]) {
+						await write(viewer, output);
+						await write(reference, output);
+						expect(cursor(viewer)).toEqual(cursor(reference));
+						expect(cells(viewer)).toEqual(cells(reference));
+					}
+				} finally {
+					viewer.dispose();
+					reference.dispose();
+					host.dispose();
+				}
+			});
+		}
+	}
+
+	test("daemon mode checkpoint, not the partial mirror, decides the screen", () => {
+		const daemon = new TerminalModes();
+		daemon.feed(enc.encode("\x1b[?1049h"));
+		const host = createModeTracker(80, 24);
+		try {
+			host.restoreModes(daemon.snapshot());
+			expect(dec.decode(host.buildPreamble("alternate-1049")!)).not.toContain(
+				"\x1b[?1049l",
+			);
+			daemon.feed(enc.encode("\x1b[?1049l"));
+			host.restoreModes(daemon.snapshot());
+			expect(dec.decode(host.buildPreamble("alternate-1049")!)).toStartWith(
+				"\x1b[?1049l",
+			);
+			expect(dec.decode(host.buildPreamble()!)).not.toContain("\x1b[?1049l");
+		} finally {
+			host.dispose();
+		}
 	});
 });

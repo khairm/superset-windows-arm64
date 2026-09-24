@@ -4,11 +4,18 @@ import {
 } from "@superset/pty-daemon/terminal-modes";
 import { HeadlessTerminal } from "./headless-xterm.ts";
 
+// (ALT-SNAPSHOT-RESTORE)
+export type ClientScreen = "normal" | "alternate" | "alternate-1049";
+const LEAVE_ALTERNATE: Record<Exclude<ClientScreen, "normal">, Uint8Array> = {
+	alternate: new TextEncoder().encode("\x1b[?47l"),
+	"alternate-1049": new TextEncoder().encode("\x1b[?1049l"),
+};
+
 export interface ModeTracker {
 	feed(bytes: Uint8Array): void;
 	restoreModes(snapshot: TerminalModesSnapshot): void;
 	resize(cols: number, rows: number): void;
-	buildPreamble(): Uint8Array | null;
+	buildPreamble(clientScreen?: ClientScreen): Uint8Array | null;
 	isBracketedPasteActive(): boolean;
 	isFocusReportingActive(): boolean;
 	/** Current cursor position on the mirrored screen, 0-based viewport coords. */
@@ -89,7 +96,17 @@ export function createModeTracker(
 
 	let flushScheduled = false;
 
-	const buildPreamble = () => modes.buildPreamble();
+	// (ALT-SNAPSHOT-RESTORE)
+	const buildPreamble = (clientScreen: ClientScreen = "normal") => {
+		const preamble = modes.buildPreamble();
+		if (clientScreen === "normal" || modes.snapshot().alternate)
+			return preamble;
+		const leave = LEAVE_ALTERNATE[clientScreen];
+		const combined = new Uint8Array(leave.byteLength + preamble.byteLength);
+		combined.set(leave);
+		combined.set(preamble, leave.byteLength);
+		return combined;
+	};
 
 	const snapshot = (maxLines?: number): TerminalSnapshot => {
 		const buffer = term.buffer.active;

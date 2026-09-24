@@ -56,6 +56,9 @@ const DROP_NOTICE = new TextEncoder().encode(
 	} MB behind\r\n`,
 );
 
+/** (COALESCER-HEAD) */
+const COMPACT_AFTER_DROPPED_SLOTS = 1024;
+
 export interface WriteCoalescer {
 	/** Queue PTY bytes for the next frame's write. */
 	push(chunk: Uint8Array): void;
@@ -72,7 +75,9 @@ export function createWriteCoalescer(
 	/** `done` is the emulator's write-completion callback: it has parsed the batch. */
 	write: (data: Uint8Array, done: () => void) => void,
 ): WriteCoalescer {
-	let pending: Uint8Array[] = [];
+	// (COALESCER-HEAD)
+	let pending: Array<Uint8Array | null> = [];
+	let pendingHead = 0;
 	let pendingBytes = 0;
 	let frameId: number | null = null;
 	let inFlight = 0;
@@ -92,14 +97,17 @@ export function createWriteCoalescer(
 	 * behind and permanently wrong.
 	 */
 	function dropOldest() {
-		let cut = 0;
-		let dropped = 0;
-		while (cut < pending.length && pendingBytes - dropped > MAX_BACKLOG_BYTES) {
-			dropped += (pending[cut] as Uint8Array).length;
-			cut++;
+		while (pendingHead < pending.length && pendingBytes > MAX_BACKLOG_BYTES) {
+			pendingBytes -= (pending[pendingHead] as Uint8Array).length;
+			pending[pendingHead++] = null;
 		}
-		pending.splice(0, cut);
-		pendingBytes -= dropped;
+		if (
+			pendingHead >= COMPACT_AFTER_DROPPED_SLOTS &&
+			pendingHead * 2 >= pending.length
+		) {
+			pending = pending.slice(pendingHead);
+			pendingHead = 0;
+		}
 		droppedSinceFlush = true;
 		if (dropping) return;
 		dropping = true;
@@ -131,27 +139,26 @@ export function createWriteCoalescer(
 			frameId = null;
 		}
 		if (pendingBytes === 0) return;
-		if (dropNoticeOwed) {
-			dropNoticeOwed = false;
-			// Prepended at flush rather than queued at the drop, because a
-			// later drop takes from the head and would eat the notice itself.
-			pending.unshift(DROP_NOTICE);
-			pendingBytes += DROP_NOTICE.length;
-		}
+		const prependNotice = dropNoticeOwed;
+		dropNoticeOwed = false;
 		if (!droppedSinceFlush) dropping = false;
 		droppedSinceFlush = false;
 		let batch: Uint8Array;
-		if (pending.length === 1) {
-			batch = pending[0] as Uint8Array;
+		if (pending.length - pendingHead === 1 && !prependNotice) {
+			batch = pending[pendingHead] as Uint8Array;
 		} else {
-			batch = new Uint8Array(pendingBytes);
-			let offset = 0;
-			for (const chunk of pending) {
+			const noticeBytes = prependNotice ? DROP_NOTICE.length : 0;
+			batch = new Uint8Array(pendingBytes + noticeBytes);
+			if (prependNotice) batch.set(DROP_NOTICE, 0);
+			let offset = noticeBytes;
+			for (let i = pendingHead; i < pending.length; i++) {
+				const chunk = pending[i] as Uint8Array;
 				batch.set(chunk, offset);
 				offset += chunk.length;
 			}
 		}
 		pending = [];
+		pendingHead = 0;
 		pendingBytes = 0;
 		inFlight++;
 		let drained = false;

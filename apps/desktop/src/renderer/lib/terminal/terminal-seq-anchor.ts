@@ -16,7 +16,8 @@ export interface TerminalSeqAnchor {
 export function persistSeqAnchor(
 	terminalId: string,
 	anchor: TerminalSeqAnchor | null,
-): void {
+): boolean {
+	// (ALT-SNAPSHOT-RESTORE)
 	const key = `${TERMINAL_SEQ_KEY_PREFIX}${terminalId}`;
 	try {
 		if (anchor) {
@@ -24,6 +25,7 @@ export function persistSeqAnchor(
 		} else {
 			localStorage.removeItem(key);
 		}
+		return true;
 	} catch {
 		// A failed write (quota) must not leave a STALE anchor paired with a
 		// newer snapshot — the next attach would skip bytes the pane never
@@ -31,7 +33,10 @@ export function persistSeqAnchor(
 		// works even under quota pressure.
 		try {
 			localStorage.removeItem(key);
-		} catch {}
+			return true;
+		} catch {
+			return false;
+		}
 	}
 }
 

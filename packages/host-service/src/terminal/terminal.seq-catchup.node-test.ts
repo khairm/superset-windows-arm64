@@ -29,6 +29,7 @@
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, before, test } from "node:test";
@@ -37,6 +38,11 @@ import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Server } from "@superset/pty-daemon";
 import { Hono } from "hono";
+import {
+	getTerminalScreen,
+	preserveSnapshotShellRendition,
+	trackTerminalScreen,
+} from "../../../../apps/desktop/src/renderer/lib/terminal/terminal-snapshot.ts";
 import { createDb, type HostDb } from "../db/index.ts";
 import { projects, workspaces } from "../db/schema.ts";
 import type { EventBus } from "../events/index.ts";
@@ -80,6 +86,7 @@ let httpServer: ReturnType<typeof serve>;
 // N KiB fast to blow past the catch-up ring.
 const TUI_SCRIPT = String.raw`
 stty -echo
+if [ "$1" = "alt" ]; then printf '\033[?1049h'; fi
 frame=0
 H=3
 FILLER='................................................'
@@ -144,6 +151,7 @@ while :; do
     ticks) ticks "$2" ;;
     setH) setH "$2" ;;
     blob) blob "$2" ;;
+    shell) printf '\033[?1049l'; exit 0 ;;
     quit) exit 0 ;;
   esac
 done
@@ -270,6 +278,7 @@ class SeqRenderer {
 			scrollback: 1000,
 			allowProposedApi: true,
 		});
+		trackTerminalScreen(this.term);
 	}
 
 	/**
@@ -286,8 +295,9 @@ class SeqRenderer {
 			options.seqOverride ??
 			(this.anchor ? `${this.anchor.epoch}:${this.anchor.seq}` : "new");
 		return new Promise((resolve, reject) => {
+			// (ALT-SNAPSHOT-RESTORE)
 			const ws = new WebSocket(
-				`ws://127.0.0.1:${httpPort}/terminal/${terminalId}?seq=${encodeURIComponent(seqValue)}`,
+				`ws://127.0.0.1:${httpPort}/terminal/${terminalId}?seq=${encodeURIComponent(seqValue)}&screen=${getTerminalScreen(this.term)}`,
 			);
 			ws.binaryType = "arraybuffer";
 			this.ws = ws;
@@ -1498,3 +1508,160 @@ test(
 		}
 	},
 );
+
+// (ALT-SNAPSHOT-RESTORE)
+const { SerializeAddon } = createRequire(
+	new URL("../../../../apps/desktop/package.json", import.meta.url),
+)(
+	"@xterm/addon-serialize",
+) as typeof import("../../../../apps/desktop/node_modules/@xterm/addon-serialize");
+
+async function rebuildSerializedRenderer(renderer: SeqRenderer, cols: number) {
+	await renderer.drain();
+	const serializer = new SerializeAddon();
+	renderer.term.loadAddon(serializer);
+	preserveSnapshotShellRendition(serializer);
+	const snapshot = serializer.serialize();
+	renderer.term.dispose();
+	renderer.term = new HeadlessTerminal({
+		cols: COLS,
+		rows: ROWS,
+		scrollback: 1000,
+		allowProposedApi: true,
+	});
+	trackTerminalScreen(renderer.term);
+	await new Promise<void>((resolve) => renderer.term.write(snapshot, resolve));
+	await renderer.drain();
+	renderer.term.resize(cols, ROWS);
+	renderer.anchor = null;
+}
+
+for (const cols of [COLS, 60]) {
+	test(
+		`alternate-screen restore at ${cols} columns reanchors and repaints every viewer`,
+		{ timeout: 60_000 },
+		async () => {
+			const terminalId = `seq-alt-${randomUUID().slice(0, 8)}`;
+			const session = await createTerminalSessionInternal({
+				terminalId,
+				workspaceId,
+				db,
+				listed: true,
+				cols: COLS,
+				rows: ROWS,
+				initialCommand: `exec bash '${path.join(TEST_HOME, "tui.sh")}' alt`,
+			});
+			if ("error" in session) assert.fail(session.error);
+			const parked = new SeqRenderer();
+			const witness = new SeqRenderer();
+			try {
+				await parked.connect(terminalId);
+				await parked.waitVisible("TUI READY");
+				await witness.connect(terminalId);
+				await witness.waitVisible("TUI READY");
+				await quiesce(parked);
+				assert.equal(parked.term.buffer.active.type, "alternate");
+				await parked.disconnect();
+				await rebuildSerializedRenderer(parked, cols);
+				const restoredScreen = visibleText(parked.term);
+				sendCommand(terminalId, "ticks 5");
+				await witness.waitVisible("INPUT 000005");
+				await quiesce(witness);
+
+				await parked.connect(terminalId, {
+					seqOverride: "none",
+					autoResize: false,
+				});
+				assert.equal((await parked.waitSynced()).mode, "reanchor");
+				await parked.drain();
+				assert.equal(parked.countedThisAttach, 0);
+				assert.equal(visibleText(parked.term), restoredScreen);
+				parked.sendResize(cols, ROWS);
+				await parked.waitVisible("FULL-REDRAW at frame 000005");
+				await witness.waitVisible("FULL-REDRAW at frame 000005");
+				await quiesce(parked);
+				await witness.drain();
+				assert.equal(visibleText(parked.term), visibleText(witness.term));
+				assert.equal(
+					visibleText(parked.term),
+					await trackerVisible(terminalId),
+				);
+				assert.equal(parked.term.buffer.active.type, "alternate");
+				parked.assertNoReset("restored viewer");
+				witness.assertNoReset("attached viewer");
+			} finally {
+				await parked.disconnect();
+				await witness.disconnect();
+				parked.dispose();
+				witness.dispose();
+				await disposeSessionAndWait(terminalId, db);
+			}
+		},
+	);
+}
+
+// (ALT-SNAPSHOT-RESTORE)
+test(
+	"restored alternate snapshot returns to a surviving parent shell",
+	{ timeout: 60_000 },
+	async () => {
+		const terminalId = `seq-alt-shell-${randomUUID().slice(0, 8)}`;
+		const session = await createTerminalSessionInternal({
+			terminalId,
+			workspaceId,
+			db,
+			listed: true,
+			cols: COLS,
+			rows: ROWS,
+			initialCommand: `bash '${path.join(TEST_HOME, "tui.sh")}' alt; printf '\\nSHELL READY\\n'`,
+		});
+		if ("error" in session) assert.fail(session.error);
+		const parked = new SeqRenderer();
+		const witness = new SeqRenderer();
+		try {
+			await parked.connect(terminalId);
+			await parked.waitVisible("TUI READY");
+			await witness.connect(terminalId);
+			await witness.waitVisible("TUI READY");
+			await quiesce(parked);
+			await parked.disconnect();
+			await rebuildSerializedRenderer(parked, COLS);
+			assert.equal(parked.term.buffer.active.type, "alternate");
+			sendCommand(terminalId, "shell");
+			await witness.waitVisible("SHELL READY");
+			assert.equal(witness.term.buffer.active.type, "normal");
+			await parked.connect(terminalId, {
+				seqOverride: "none",
+				autoResize: false,
+			});
+			assert.equal((await parked.waitSynced()).mode, "reanchor");
+			await parked.drain();
+			assert.equal(parked.term.buffer.active.type, "normal");
+			assert.ok(!visibleText(parked.term).includes("TUI READY"));
+			parked.sendResize(COLS, ROWS);
+			sendCommand(
+				terminalId,
+				"i=0; while [ $i -lt 40 ]; do printf '\\nSHELL-LINE-%s' \"$i\"; i=$((i + 1)); done",
+			);
+			await parked.waitVisible("SHELL-LINE-39");
+			await witness.waitVisible("SHELL-LINE-39");
+			assert.ok(parked.term.buffer.normal.baseY > 0);
+			parked.assertNoReset("shell restore");
+		} finally {
+			await parked.disconnect();
+			await witness.disconnect();
+			parked.dispose();
+			witness.dispose();
+			await disposeSessionAndWait(terminalId, db);
+		}
+	},
+);
+
+// (ALT-SNAPSHOT-RESTORE)
+test("rejects an invalid viewer screen before WebSocket upgrade", async () => {
+	const response = await fetch(
+		`http://127.0.0.1:${httpPort}/terminal/invalid-screen?seq=none&screen=invalid`,
+	);
+	assert.equal(response.status, 400);
+	assert.equal(await response.text(), "Invalid terminal screen");
+});

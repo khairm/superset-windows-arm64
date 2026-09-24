@@ -101,43 +101,15 @@ export function createTerminalKeyEventHandler(
 		) {
 			if (event.type === "keydown") {
 				event.preventDefault();
-				try {
-					console.log(
-						"[agent-dots] [wispr-diag] win-paste-intercept " +
-							JSON.stringify({
-								code: event.code,
-								key: event.key,
-								keyCode: event.keyCode,
-								shiftKey: event.shiftKey,
-								isTrusted: event.isTrusted,
-							}),
-					);
-				} catch (_e) {
-					/* never block on logging */
-				}
-				navigator.clipboard
-					.readText()
-					.then((clipText) => {
-						try {
-							console.log(
-								"[agent-dots] [wispr-diag] win-paste-readText " +
-									JSON.stringify({ ok: true, len: clipText ? clipText.length : 0 }),
-							);
-						} catch (_e) {
-							/* ignore */
-						}
+				// (WISPR-QUIET)
+				navigator.clipboard.readText().then(
+					(clipText) => {
 						if (clipText) terminal.paste(clipText);
-					})
-					.catch((err) => {
-						try {
-							console.log(
-								"[agent-dots] [wispr-diag] win-paste-readText " +
-									JSON.stringify({ ok: false, err: String(err) }),
-							);
-						} catch (_e) {
-							/* ignore */
-						}
-					});
+					},
+					(error) => {
+						console.error("[terminal] Clipboard read failed", error);
+					},
+				);
 			}
 			return false;
 		}

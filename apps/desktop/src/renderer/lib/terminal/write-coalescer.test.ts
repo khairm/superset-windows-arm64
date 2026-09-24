@@ -295,3 +295,78 @@ describe("createWriteCoalescer", () => {
 		expect(writes).toEqual(["after"]);
 	});
 });
+
+// (COALESCER-HEAD)
+describe("indexed backlog drops", () => {
+	test("keeps the ordered tail through repeated head compactions", async () => {
+		const term = fakeTerminal();
+		const coalescer = createWriteCoalescer(term.write);
+		coalescer.push(bytes("in flight"));
+		fireFrame();
+
+		const chunkBytes = 1024;
+		const retainedChunks = MAX_BACKLOG_BYTES / chunkBytes;
+		const totalChunks = retainedChunks * 4 + 37;
+		for (let index = 0; index < totalChunks; index++) {
+			const chunk = new Uint8Array(chunkBytes);
+			new DataView(chunk.buffer).setUint32(0, index);
+			coalescer.push(chunk);
+		}
+		expect(term.writes).toHaveLength(1);
+		await term.drain();
+		expect(term.writes).toHaveLength(2);
+		const batch = term.writes[1] as Uint8Array;
+		const noticeBytes = batch.length - MAX_BACKLOG_BYTES;
+		expect(noticeBytes).toBeGreaterThan(0);
+		expect(new TextDecoder().decode(batch.subarray(0, noticeBytes))).toMatch(
+			/^\r\n\[terminal\] dropped output.*\r\n$/,
+		);
+		const view = new DataView(batch.buffer, batch.byteOffset, batch.byteLength);
+		const indices = Array.from({ length: retainedChunks }, (_, index) =>
+			view.getUint32(noticeBytes + index * chunkBytes),
+		);
+		expect(indices).toEqual(
+			Array.from(
+				{ length: retainedChunks },
+				(_, index) => totalChunks - retainedChunks + index,
+			),
+		);
+
+		coalescer.push(bytes("after compaction"));
+		await term.drain();
+		fireFrame();
+		expect(new TextDecoder().decode(term.writes[2])).toBe("after compaction");
+	});
+
+	test("retains the notice after a drop empties the queue", async () => {
+		const term = fakeTerminal();
+		const coalescer = createWriteCoalescer(term.write);
+		coalescer.push(bytes("in flight"));
+		fireFrame();
+		coalescer.push(new Uint8Array(MAX_BACKLOG_BYTES + 1));
+		coalescer.flushSync();
+		expect(term.writes).toHaveLength(1);
+		coalescer.push(bytes("tail"));
+		await term.drain();
+		fireFrame();
+		expect(term.text()[1]).toContain("[terminal] dropped output");
+		expect(term.text()[1]).toEndWith("tail");
+	});
+
+	test("a forced flush waits for every callback before writing newer bytes", async () => {
+		const term = fakeTerminal();
+		const coalescer = createWriteCoalescer(term.write);
+		coalescer.push(bytes("first"));
+		fireFrame();
+		coalescer.push(new Uint8Array(MAX_BACKLOG_BYTES));
+		coalescer.push(bytes("second"));
+		coalescer.flushSync();
+		coalescer.push(bytes("third"));
+		fireFrame();
+		expect(term.writes).toHaveLength(2);
+		expect(term.text()[1]).toEndWith("second");
+		await term.drain();
+		fireFrame();
+		expect(term.text()[2]).toBe("third");
+	});
+});
