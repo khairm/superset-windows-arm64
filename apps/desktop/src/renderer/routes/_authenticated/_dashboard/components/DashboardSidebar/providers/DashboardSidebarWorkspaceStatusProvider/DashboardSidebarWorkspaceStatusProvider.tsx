@@ -16,11 +16,11 @@ import {
 	useDiffStats,
 } from "renderer/hooks/host-service/useDiffStats";
 import {
+	acquireTerminalAgentBindingsSubscription,
 	getTerminalAgentBindingsQueryKey,
 	type TerminalAgentBinding,
 } from "renderer/hooks/host-service/useTerminalAgentBindings";
 import { deriveTerminalAgentStatus } from "renderer/hooks/host-service/useTerminalAgentStatuses";
-import { getHostEventBus } from "renderer/lib/host-event-bus";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
@@ -232,46 +232,26 @@ export function DashboardSidebarWorkspaceStatusProvider({
 		combine: (results) => results.map((result) => result.data),
 	});
 
-	// One lifecycle subscription pass for the whole sidebar (the per-row
-	// hooks used to register these per workspace, several times over).
-	// Listeners are renderer-side only: registering one costs the host
-	// nothing, unlike a git watch.
-	//
-	// Deliberately no git:changed listener and no watchGit here. GitWatcher
-	// only watches a workspace while someone holds interest (#6729), and a
-	// sidebar row is not that someone: only the active row renders diff
-	// stats, and its live updates come from useDiffStats's own subscription
-	// below. Holding a watch for every listed row kept most of a heavy
-	// user's workspace population under a live .git watch (recursive fs
-	// watch + git fan-out on every change) for as long as the dashboard was
-	// open. Inactive rows' cached counts are refreshed on activation
-	// instead (see the effect after this one).
+	// (BINDINGS-COALESCE) Deliberately no git:changed listener and no watchGit
+	// here: GitWatcher only watches a workspace while someone holds interest
+	// (#6729), so a watch per listed row would keep most of a heavy user's
+	// workspaces under a live .git watch for as long as the dashboard is open.
+	// Only the active row renders diff stats, and useDiffStats below owns that
+	// subscription.
 	useEffect(() => {
-		const cleanups: Array<() => void> = [];
-		const retainedHostUrls = new Set<string>();
+		const releases: Array<() => void> = [];
 		for (const { workspaceId, hostUrl } of targets) {
 			if (!hostUrl) continue;
-			const bus = getHostEventBus(hostUrl);
-			if (!retainedHostUrls.has(hostUrl)) {
-				retainedHostUrls.add(hostUrl);
-				cleanups.push(bus.retain());
-			}
-			const invalidateBindings = () => {
-				void queryClient.invalidateQueries({
-					queryKey: getTerminalAgentBindingsQueryKey(workspaceId),
-				});
-			};
-			cleanups.push(bus.on("agent:lifecycle", workspaceId, invalidateBindings));
-			cleanups.push(
-				bus.on("agent:bindings-changed", workspaceId, invalidateBindings),
-			);
-			cleanups.push(
-				bus.on("terminal:lifecycle", workspaceId, invalidateBindings),
+			releases.push(
+				acquireTerminalAgentBindingsSubscription(
+					queryClient,
+					hostUrl,
+					workspaceId,
+				),
 			);
 		}
-
 		return () => {
-			for (const cleanup of cleanups) cleanup();
+			for (const release of releases) release();
 		};
 	}, [targets, queryClient]);
 
