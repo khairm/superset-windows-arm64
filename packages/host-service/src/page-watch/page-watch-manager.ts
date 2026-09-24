@@ -8,6 +8,8 @@ import type {
 	WatchedThread,
 } from "./types.ts";
 
+// (FORK-PAGE-WATCH-OFF)
+export const FORK_PAGE_WATCH_DISABLED: boolean = true;
 export const TICK_INTERVAL_MS = 5_000;
 export const IDLE_AFTER_MS = 5 * 60_000;
 export const IDLE_TICK_INTERVAL_MS = 60_000;
@@ -24,6 +26,7 @@ export interface PageWatchApi {
 }
 
 export interface PageWatchDeps {
+	disabled?: boolean;
 	api: PageWatchApi;
 	sendToTerminal(input: {
 		workspaceId: string;
@@ -40,6 +43,7 @@ export interface PageWatchDeps {
 
 export class PageWatchManager {
 	private readonly entries = new Map<string, PageWatchEntry>();
+	private readonly disabled: boolean;
 	private readonly deps: PageWatchDeps;
 	private readonly now: () => number;
 	private readonly setIntervalFn: typeof setInterval;
@@ -52,6 +56,7 @@ export class PageWatchManager {
 	private eventBus: EventBus | null = null;
 
 	constructor(deps: PageWatchDeps) {
+		this.disabled = deps.disabled ?? FORK_PAGE_WATCH_DISABLED;
 		this.deps = deps;
 		this.now = deps.now ?? Date.now;
 		this.setIntervalFn = deps.setIntervalFn ?? setInterval;
@@ -59,6 +64,7 @@ export class PageWatchManager {
 	}
 
 	subscribeToTerminalEvents(eventBus: EventBus): void {
+		if (this.disabled) return;
 		this.eventBus = eventBus;
 		this.removeTerminalListener?.();
 		this.removeTerminalListener = eventBus.onTerminalLifecycle((message) => {
@@ -68,6 +74,7 @@ export class PageWatchManager {
 	}
 
 	async assign(assignment: PageWatchAssignment): Promise<void> {
+		if (this.disabled) throw new Error("Page watching is disabled");
 		if (!this.deps.hasAgent(assignment.terminalId)) {
 			throw new Error(
 				"No agent is running in that terminal. A page is watched by an agent, not by a shell.",
@@ -100,6 +107,7 @@ export class PageWatchManager {
 	}
 
 	async unwatch(pageId: string): Promise<void> {
+		if (this.disabled) throw new Error("Page watching is disabled");
 		const entry = this.entries.get(pageId);
 		if (!entry) return;
 		this.entries.delete(pageId);

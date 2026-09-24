@@ -6,6 +6,7 @@ import { downloads } from "@superset/local-db";
 import { desc, eq, ne } from "drizzle-orm";
 import { app, session, shell } from "electron";
 import { localDb } from "../local-db";
+import { FORK_BROWSER_PANES_DISABLED } from "./browser-bridge";
 
 /** The partition the in-app browser pane (and app renderer) use. */
 const BROWSER_PARTITION = "persist:superset";
@@ -54,6 +55,8 @@ class DownloadManager extends EventEmitter {
 			.where(eq(downloads.state, "progressing"))
 			.run();
 
+		// (FORK-BROWSER-OFF)
+		if (FORK_BROWSER_PANES_DISABLED) return;
 		const ses = session.fromPartition(BROWSER_PARTITION);
 		const downloadDir = app.getPath("downloads");
 		ses.setDownloadPath(downloadDir);

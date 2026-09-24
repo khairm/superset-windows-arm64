@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createTRPCClient, httpBatchLink } from "@trpc/client";
 import SuperJSON from "superjson";
 import {
@@ -20,6 +20,8 @@ import {
 	MemoryGitCredentialProvider,
 } from "./fakes";
 import { createMigratedTestDb } from "./migrated-test-db";
+
+const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../drizzle");
 
 export interface TestHostOptions {
 	organizationId?: string;

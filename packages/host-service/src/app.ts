@@ -13,7 +13,11 @@ import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createSeveredApiClient } from "./api";
-import { createChatV3Mount, registerChatV3Routes } from "./chat-v3";
+import {
+	createChatV3Mount,
+	FORK_CHAT_V3_DISABLED,
+	registerChatV3Routes,
+} from "./chat-v3";
 import {
 	type ClaudeAccountsService,
 	createClaudeAccountsService,
@@ -23,7 +27,7 @@ import { createDb, type HostDb } from "./db";
 import { EventBus, GitWatcher, registerEventBusRoute } from "./events";
 import { agentIsBusy, PageWatchManager } from "./page-watch/index.ts";
 import { registerForwardMuxRoute } from "./ports/forward-mux-route";
-import { portManager } from "./ports/port-manager";
+import { FORK_PORT_SCAN_DISABLED, portManager } from "./ports/port-manager";
 import type { ApiAuthProvider } from "./providers/auth";
 import type { HostAuthProvider } from "./providers/host-auth";
 import { runArchivedWorkspaceReconcile } from "./runtime/archived-workspace-reconcile";
@@ -294,6 +298,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			return binding !== undefined && binding.endedAt === undefined;
 		},
 	});
+	// (FORK-PAGE-WATCH-OFF)
 	pageWatch.subscribeToTerminalEvents(eventBus);
 
 	const runtime = {
@@ -426,19 +431,25 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		upgradeWebSocket,
 		getBridge: () => config.browserBridge,
 	});
-	registerForwardMuxRoute({
-		app,
-		upgradeWebSocket,
-		getPortsByWorkspace: (workspaceId) =>
-			portManager.getPortsByWorkspace(workspaceId),
-	});
+	// (FORK-PORTS-OFF)
+	if (!FORK_PORT_SCAN_DISABLED) {
+		registerForwardMuxRoute({
+			app,
+			upgradeWebSocket,
+			getPortsByWorkspace: (workspaceId) =>
+				portManager.getPortsByWorkspace(workspaceId),
+		});
+	}
 	registerWorkspaceTerminalRoute({
 		app,
 		db,
 		eventBus,
 		upgradeWebSocket,
 	});
-	registerChatV3Routes({ app, db, mount: chatV3, upgradeWebSocket });
+	// (FORK-CHAT-V3-OFF)
+	if (!FORK_CHAT_V3_DISABLED) {
+		registerChatV3Routes({ app, db, mount: chatV3, upgradeWebSocket });
+	}
 
 	app.use(
 		"/trpc/*",

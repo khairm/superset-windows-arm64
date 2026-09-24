@@ -9,10 +9,6 @@ import {
 } from "renderer/hooks/useIsV2CloudEnabled";
 import { track } from "renderer/lib/analytics";
 import { HighlightText } from "renderer/routes/_authenticated/settings/components/HighlightText";
-import {
-	useInlineWorkspacePortsStore,
-	usePortsDisplayMode,
-} from "renderer/stores/inline-workspace-ports";
 import { useSettingsSearchQuery } from "renderer/stores/settings-state";
 import { useOpenV1ImportModal } from "renderer/stores/v1-import-modal";
 import { useV2LocalOverrideStore } from "renderer/stores/v2-local-override";
@@ -27,7 +23,6 @@ import {
 } from "../../../utils/settings-search";
 // (COMPANION-PAIRING-ENTRY) the seam that reaches the fork-only pairing surface.
 import { CompanionPairingSetting } from "./components/CompanionPairingSetting";
-import { LocalChatSetting } from "./components/LocalChatSetting";
 import { WaitForSetupBeforeAgentSetting } from "./components/WaitForSetupBeforeAgentSetting";
 
 interface ExperimentalSettingsProps {
@@ -47,10 +42,6 @@ export function ExperimentalSettings({
 		SETTING_ITEM_ID.EXPERIMENTAL_V1_MIGRATION,
 		visibleItems,
 	);
-	const showInlineWorkspacePorts = isItemVisible(
-		SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS,
-		visibleItems,
-	);
 	const showWorkspaceAgents = isItemVisible(
 		SETTING_ITEM_ID.EXPERIMENTAL_WORKSPACE_AGENTS,
 		visibleItems,
@@ -64,20 +55,11 @@ export function ExperimentalSettings({
 		SETTING_ITEM_ID.EXPERIMENTAL_WAIT_FOR_SETUP_BEFORE_AGENT,
 		visibleItems,
 	);
-	// (CLOUD-SEVERANCE-P2)
-	const showLocalChat = isItemVisible(
-		SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT,
-		visibleItems,
-	);
 	const isV2CloudEnabled = useIsV2CloudEnabled();
 	const isV2OnlyUser = useIsV2OnlyUser();
 	const isV1FlipLocked = useIsV1FlipLocked();
 	const setOptInV2 = useV2LocalOverrideStore((state) => state.setOptInV2);
 	const openV1ImportModal = useOpenV1ImportModal();
-	const portsDisplayMode = usePortsDisplayMode();
-	const setPortsDisplayMode = useInlineWorkspacePortsStore(
-		(state) => state.setMode,
-	);
 	const workspaceAgentsEnabled = useWorkspaceAgentsRowEnabled();
 	const setWorkspaceAgentsEnabled = useWorkspaceAgentsRowStore(
 		(state) => state.setEnabled,
@@ -171,39 +153,7 @@ export function ExperimentalSettings({
 						</Button>
 					</div>
 				)}
-				{showInlineWorkspacePorts && (
-					<div className="flex items-center justify-between gap-6">
-						<div className="min-w-0 flex-1 space-y-0.5">
-							<Label
-								htmlFor="inline-workspace-ports"
-								className="text-sm font-medium"
-							>
-								<HighlightText
-									text={t({
-										message: "Ports in top bar dropdown",
-									})}
-									query={searchQuery}
-								/>
-							</Label>
-							<p className="text-xs text-muted-foreground">
-								<HighlightText
-									text={t({
-										message:
-											"Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar.",
-									})}
-									query={searchQuery}
-								/>
-							</p>
-						</div>
-						<Switch
-							id="inline-workspace-ports"
-							checked={portsDisplayMode === "topbar"}
-							onCheckedChange={(checked) =>
-								setPortsDisplayMode(checked ? "topbar" : "inline")
-							}
-						/>
-					</div>
-				)}
+				{/* (FORK-PORTS-OFF) */}
 				{showWorkspaceAgents && (
 					<div className="flex items-center justify-between gap-6">
 						<div className="min-w-0 flex-1 space-y-0.5">
@@ -235,8 +185,7 @@ export function ExperimentalSettings({
 				{showWaitForSetupBeforeAgent && <WaitForSetupBeforeAgentSetting />}
 				{/* (COMPANION-PAIRING-ENTRY) */}
 				{showCompanionPairing && <CompanionPairingSetting />}
-				{/* (CLOUD-SEVERANCE-P2) the one chat surface that survived severance */}
-				{showLocalChat && <LocalChatSetting />}
+				{/* (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF) */}
 			</div>
 		</div>
 	);

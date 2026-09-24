@@ -86,7 +86,11 @@ function withPane(
 	fn(wc, scope.paneId, scope.workspaceId);
 }
 
+// (FORK-BROWSER-OFF)
+export const FORK_BROWSER_PANES_DISABLED: boolean = true;
+
 export async function startBrowserBridge(): Promise<void> {
+	if (FORK_BROWSER_PANES_DISABLED) return;
 	if (server) return;
 	const secret = randomBytes(32).toString("hex");
 	const app = express();

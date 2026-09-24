@@ -1,5 +1,6 @@
 import type { WorkspaceStore } from "@superset/panes";
 import { useCallback } from "react";
+import { FORK_CHAT_V3_DISABLED } from "renderer/fork-disabled-features";
 import type { V2UserPreferencesApi } from "renderer/hooks/useV2UserPreferences";
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
@@ -7,7 +8,6 @@ import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/provide
 import { useSettings } from "renderer/stores/settings";
 import type { StoreApi } from "zustand/vanilla";
 import type {
-	BrowserPaneData,
 	ChatV3PaneData,
 	CommentPaneData,
 	DiffFocusSide,
@@ -26,7 +26,6 @@ import {
 	getWorkspaceSidebarTab,
 	setWorkspaceSidebarTab,
 } from "../../utils/setWorkspaceSidebarTab";
-import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 
 export function useWorkspacePaneOpeners({
@@ -56,7 +55,6 @@ export function useWorkspacePaneOpeners({
 	) => void;
 	addTerminalTab: () => Promise<void>;
 	addChatV3Tab: () => void;
-	addBrowserTab: () => void;
 	openChangesPane: () => void;
 	/** Close the visible Changes pane, or open/focus one when none is showing. */
 	toggleChangesPane: () => void;
@@ -162,11 +160,9 @@ export function useWorkspacePaneOpeners({
 		}
 	}, [addBlankTerminalTab, executePreset, newTabPresets]);
 
-	// (CLOUD-SEVERANCE-P2) The cloud chat opener is gone with its pane. This
-	// one opens the LOCAL chat pane, and only reaches a caller when the user has
-	// switched it on — with the setting off, `usePaneRegistry` never registers
-	// `chat-v3`, so calling this would add a tab nothing can render.
+	// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
 	const addChatV3Tab = useCallback(() => {
+		if (FORK_CHAT_V3_DISABLED) throw new Error("Chat v3 is disabled");
 		store.getState().addTab({
 			panes: [
 				{
@@ -176,20 +172,6 @@ export function useWorkspacePaneOpeners({
 			],
 		});
 	}, [store]);
-
-	const defaultBrowserUrl = useDefaultBrowserUrl();
-	const addBrowserTab = useCallback(() => {
-		store.getState().addTab({
-			panes: [
-				{
-					kind: "browser",
-					data: {
-						url: defaultBrowserUrl,
-					} as BrowserPaneData,
-				},
-			],
-		});
-	}, [store, defaultBrowserUrl]);
 
 	const openCommentPane = useCallback(
 		(comment: CommentPaneData) => {
@@ -264,7 +246,6 @@ export function useWorkspacePaneOpeners({
 		openDiffPane,
 		addTerminalTab,
 		addChatV3Tab,
-		addBrowserTab,
 		openChangesPane,
 		toggleChangesPane,
 		openCommentPane,

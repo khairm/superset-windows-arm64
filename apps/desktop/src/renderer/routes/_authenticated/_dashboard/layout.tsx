@@ -7,6 +7,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
+import { FORK_PORT_SCAN_DISABLED } from "renderer/fork-disabled-features";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
 import { useQuickCreateWorkspace } from "renderer/hooks/useQuickCreateWorkspace";
@@ -20,12 +21,10 @@ import { KanbanReconciler } from "renderer/routes/_authenticated/_dashboard/comp
 import { WorkspaceExitCleanupReconciler } from "renderer/routes/_authenticated/_dashboard/components/WorkspaceExitCleanupReconciler";
 import { useDevSeedV2Sidebar } from "renderer/routes/_authenticated/hooks/useDevSeedV2Sidebar";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
-import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
 import { WorkspaceSidebar } from "renderer/screens/main/components/WorkspaceSidebar";
 import { DeleteWorkspaceDialog } from "renderer/screens/main/components/WorkspaceSidebar/WorkspaceListItem/components";
 import { useDeleteWorkspaceIntent } from "renderer/stores/delete-workspace-intent";
-import { usePortsDisplayMode } from "renderer/stores/inline-workspace-ports";
 import { useSidebarSectionsCollapseStore } from "renderer/stores/sidebar-sections-collapse";
 import { syncPersistedStoreAcrossWindows } from "renderer/stores/syncPersistedStoreAcrossWindows";
 import { useV2NotificationStore } from "renderer/stores/v2-notifications";
@@ -38,7 +37,6 @@ import {
 import { ContentBoundary } from "../components/ContentBoundary";
 import { AddRepositoryModals } from "./components/AddRepositoryModals";
 import { CrossVersionMismatchState } from "./components/CrossVersionMismatchState";
-import { RemotePortForwarder } from "./components/RemotePortForwarder";
 import { TopBar } from "./components/TopBar";
 
 export const Route = createFileRoute("/_authenticated/_dashboard")({
@@ -62,7 +60,6 @@ function DashboardLayout() {
 
 	const openNewWorkspace = useOpenNewWorkspace();
 	const isV2CloudEnabled = useIsV2CloudEnabled();
-	const portsDisplayMode = usePortsDisplayMode();
 	const { workspaces: hostWorkspaces } = useHostWorkspaces();
 	const quickCreateWorkspace = useQuickCreateWorkspace();
 	useDevSeedV2Sidebar();
@@ -126,17 +123,6 @@ function DashboardLayout() {
 				: null,
 		[hostWorkspaces, currentV2WorkspaceId],
 	);
-	const { machineId: localMachineId } = useLocalHostService();
-	// Forwarding needs port data only for a workspace on another machine;
-	// a local selection must not switch on cross-host port polling.
-	// machineId is "" until the device query answers; treat unknown as local
-	// rather than switching on cross-host polling for a workspace that may
-	// not be remote at all.
-	const selectedWorkspaceIsRemote =
-		currentV2Workspace != null &&
-		localMachineId !== "" &&
-		currentV2Workspace.hostId !== localMachineId;
-
 	const {
 		isOpen: isWorkspaceSidebarOpen,
 		toggleCollapsed: toggleWorkspaceSidebarCollapsed,
@@ -270,25 +256,10 @@ function DashboardLayout() {
 		((onNewWorkspaceRoute || onDashboardViewRoute) && sidebarOutsideColumn);
 
 	return (
-		// The single ports-data provider for both layout modes. It lives up here
-		// (not in the sidebar) because in topbar mode the pill renders inside
-		// subtrees that remount on workspace navigation (TopBar / the workspace
-		// tab bar) — the data must survive those remounts or the pill blinks out
-		// for the first empty-data frames. The inline chip in the sidebar reads
-		// the same context; polling stays off when nothing renders ports (v1, or
-		// a collapsed/closed sidebar in inline mode).
-		<DashboardSidebarPortsProvider
-			enabled={
-				isV2CloudEnabled &&
-				(portsDisplayMode === "topbar" ||
-					(isWorkspaceSidebarOpen && !isWorkspaceSidebarCollapsed()) ||
-					// Port forwarding follows the selected remote workspace and
-					// needs its port list even when no ports UI is on screen.
-					selectedWorkspaceIsRemote)
-			}
-		>
+		// (FORK-PORTS-OFF)
+		<DashboardSidebarPortsProvider enabled={!FORK_PORT_SCAN_DISABLED}>
 			<PortForwardsProvider>
-				<RemotePortForwarder />
+				{/* (FORK-PORTS-OFF) */}
 				<div className="flex h-full w-full overflow-hidden">
 					<CommandPaletteHost />
 					<KanbanReconciler />

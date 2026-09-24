@@ -60,7 +60,6 @@ import { AutoResumeController } from "./components/AutoResumeController/AutoResu
 import { DockBadgeController } from "./components/DockBadgeController";
 import { FileMenuListener } from "./components/FileMenuListener";
 import { GitInitConfirmDialog } from "./components/GitInitConfirmDialog";
-import { GlobalBrowserLifecycle } from "./components/GlobalBrowserLifecycle";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { V2NotificationController } from "./components/V2NotificationController";
 import { WindowTitle } from "./components/WindowTitle";
@@ -288,7 +287,7 @@ function AuthenticatedLayout() {
 		<DndProvider manager={dragDropManager}>
 			<CollectionsProvider>
 				<WindowTitle />
-				<GlobalBrowserLifecycle />
+				{/* (FORK-BROWSER-OFF) */}
 				<LocalHostServiceProvider>
 					{/* Above the workspace fan-out: it needs sandbox addresses to
 					    include them as hosts. (CLOUD-SEVERANCE-P2) Inert here —

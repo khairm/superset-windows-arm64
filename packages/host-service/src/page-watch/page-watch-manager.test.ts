@@ -34,6 +34,7 @@ function humanThread(id: string, at: number): WatchedThread {
 
 function harness(
 	options: {
+		disabled?: boolean;
 		threads?: WatchedThread[];
 		listThreads?: (pageId: string) => Promise<WatchedThread[]>;
 		alive?: Set<string>;
@@ -52,6 +53,7 @@ function harness(
 	let clock = T0;
 
 	const manager = new PageWatchManager({
+		disabled: options.disabled ?? false,
 		api: {
 			listThreads: options.listThreads ?? (async () => options.threads ?? []),
 			setWatch: async (pageId, agentId) => {
@@ -455,5 +457,19 @@ describe("PageWatchManager", () => {
 			await h.manager.tick();
 		}
 		expect(h.manager.list().map((w) => w.pageId)).toEqual(["page-2"]);
+	});
+});
+
+// (FORK-PAGE-WATCH-OFF)
+describe("disabled page watching", () => {
+	it("rejects assignments and unwatch without touching the API", async () => {
+		const h = harness({ disabled: true });
+		await expect(h.assign()).rejects.toThrow("Page watching is disabled");
+		await expect(h.manager.unwatch("page-1")).rejects.toThrow(
+			"Page watching is disabled",
+		);
+		expect(h.manager.list()).toEqual([]);
+		expect(h.setWatchCalls).toEqual([]);
+		expect(h.clearWatchCalls).toEqual([]);
 	});
 });

@@ -7,6 +7,7 @@ import {
 	type WorkspaceStore,
 } from "@superset/panes";
 import { useCallback, useEffect, useMemo, useRef } from "react";
+import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkey } from "renderer/hotkeys";
 import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
@@ -18,7 +19,7 @@ import type {
 	PaneViewerData,
 	TerminalPaneData,
 } from "../../types";
-import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
+import { DEFAULT_BROWSER_URL } from "../usePaneRegistry/components/BrowserPane/constants";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 
 export function useWorkspaceHotkeys({
@@ -43,7 +44,6 @@ export function useWorkspaceHotkeys({
 	onBeforeCloseTab?: WorkspaceProps<PaneViewerData>["onBeforeCloseTab"];
 }) {
 	const { setRightSidebarOpen } = useV2UserPreferences();
-	const defaultBrowserUrl = useDefaultBrowserUrl();
 	const visiblePresets = useMemo(
 		() => matchedPresets.filter((preset) => preset.pinnedToBar !== false),
 		[matchedPresets],
@@ -74,13 +74,15 @@ export function useWorkspaceHotkeys({
 	// the registry has a `chat-v3` renderer, leaving an empty rectangle the user
 	// cannot explain.
 
+	// (FORK-BROWSER-OFF)
 	useHotkey("NEW_BROWSER", () => {
+		if (FORK_BROWSER_PANES_DISABLED) return;
 		store.getState().addTab({
 			panes: [
 				{
 					kind: "browser",
 					data: {
-						url: defaultBrowserUrl,
+						url: DEFAULT_BROWSER_URL,
 					} as BrowserPaneData,
 				},
 			],
@@ -283,7 +285,9 @@ export function useWorkspaceHotkeys({
 		{ enabled: isSandbox },
 	);
 
+	// (FORK-BROWSER-OFF)
 	useHotkey("SPLIT_WITH_BROWSER", () => {
+		if (FORK_BROWSER_PANES_DISABLED) return;
 		const state = store.getState();
 		const active = state.getActivePane();
 		if (!active) return;
@@ -294,7 +298,7 @@ export function useWorkspaceHotkeys({
 			newPane: {
 				kind: "browser",
 				data: {
-					url: defaultBrowserUrl,
+					url: DEFAULT_BROWSER_URL,
 				} as BrowserPaneData,
 			},
 		});

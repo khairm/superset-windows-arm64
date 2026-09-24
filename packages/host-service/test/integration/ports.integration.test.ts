@@ -35,3 +35,33 @@ describe("ports router integration", () => {
 		).rejects.toBeInstanceOf(TRPCClientError);
 	});
 });
+
+// (FORK-PORTS-OFF)
+describe("disabled ports routes", () => {
+	let host: TestHost;
+
+	beforeEach(async () => {
+		host = await createTestHost();
+	});
+
+	afterEach(async () => {
+		await host?.dispose();
+	});
+
+	test("kill reports not killed and forwarding is not registered", async () => {
+		expect(
+			await host.trpc.ports.kill.mutate({
+				workspaceId: "workspace",
+				terminalId: "terminal",
+				port: 3000,
+			}),
+		).toEqual({ success: false, error: "Port scanning is disabled" });
+		const response = await host.fetch(
+			"http://host-service.test/fwd?workspaceId=workspace",
+			{
+				headers: { authorization: `Bearer ${host.psk}` },
+			},
+		);
+		expect(response.status).toBe(404);
+	});
+});

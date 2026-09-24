@@ -3,22 +3,14 @@ import { useMemo } from "react";
 import type { IconType } from "react-icons";
 import { BsTerminalPlus } from "react-icons/bs";
 import { LuGitCompareArrows, LuSearch } from "react-icons/lu";
-import { TbWorld } from "react-icons/tb";
 import { GitHubStarPill } from "renderer/components/GitHubStarPill";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import supersetEmptyStateWordmark from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/assets/superset-empty-state-wordmark.svg";
 import { EmptyTabActionButton } from "renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/components/EmptyTabActionButton";
 import { useTheme } from "renderer/stores/theme";
 
-// (CLOUD-SEVERANCE-P2) No chat tile here, and this is a deliberate divergence
-// from upstream rather than a merge that lost something: v1.23.0 offers an
-// "Open Chat v3" tile on this screen and the fork drops it on every merge.
-// The local chat pane is opt-in and unpromoted — its one entry point is the tab
-// menu, and only once the user has switched it on. An empty workspace is the
-// first thing a new user clicks, so it advertises terminal, browser and search
-// and nothing that is switched off.
+// (CLOUD-SEVERANCE-P2)
 interface WorkspaceEmptyStateProps {
-	onOpenBrowser: () => void;
 	/** Optional so the fork's thin route shim can omit it; the tile is hidden
 	 * when it is. */
 	onOpenChanges?: (() => void) | undefined;
@@ -35,7 +27,6 @@ interface WorkspaceEmptyStateAction {
 }
 
 export function WorkspaceEmptyState({
-	onOpenBrowser,
 	onOpenChanges,
 	onOpenQuickOpen,
 	onOpenTerminal,
@@ -43,7 +34,6 @@ export function WorkspaceEmptyState({
 	const { t } = useLingui();
 	const activeTheme = useTheme();
 	const { keys: newGroupDisplay } = useHotkeyDisplay("NEW_GROUP");
-	const { keys: newBrowserDisplay } = useHotkeyDisplay("NEW_BROWSER");
 	const { keys: quickOpenDisplay } = useHotkeyDisplay("QUICK_OPEN");
 	const { keys: openChangesDisplay } = useHotkeyDisplay("OPEN_DIFF_VIEWER");
 
@@ -58,15 +48,7 @@ export function WorkspaceEmptyState({
 				icon: BsTerminalPlus,
 				onClick: onOpenTerminal,
 			},
-			{
-				id: "browser",
-				label: t({
-					message: "Open Browser",
-				}),
-				display: newBrowserDisplay,
-				icon: TbWorld,
-				onClick: onOpenBrowser,
-			},
+			// (FORK-BROWSER-OFF)
 			...(onOpenChanges
 				? [
 						{
@@ -91,9 +73,7 @@ export function WorkspaceEmptyState({
 			},
 		],
 		[
-			newBrowserDisplay,
 			newGroupDisplay,
-			onOpenBrowser,
 			onOpenChanges,
 			onOpenQuickOpen,
 			onOpenTerminal,

@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import type { PageWatchStatus } from "../../../page-watch/index.ts";
+import { FORK_PAGE_WATCH_DISABLED } from "../../../page-watch/page-watch-manager.ts";
 import { protectedProcedure, router } from "../../index";
 
 const assignInputSchema = z.object({
@@ -18,10 +19,21 @@ const listInputSchema = z
 	.object({ workspaceId: z.string().min(1).optional() })
 	.optional();
 
+// (FORK-PAGE-WATCH-OFF)
+function assertPageWatchEnabled(): void {
+	if (FORK_PAGE_WATCH_DISABLED) {
+		throw new TRPCError({
+			code: "PRECONDITION_FAILED",
+			message: "Page watching is disabled",
+		});
+	}
+}
+
 export const pageWatchRouter = router({
 	assign: protectedProcedure
 		.input(assignInputSchema)
 		.mutation(async ({ ctx, input }): Promise<PageWatchStatus[]> => {
+			assertPageWatchEnabled();
 			try {
 				await ctx.runtime.pageWatch.assign(input);
 			} catch (error) {
@@ -36,6 +48,7 @@ export const pageWatchRouter = router({
 	unwatch: protectedProcedure
 		.input(pageInputSchema)
 		.mutation(async ({ ctx, input }): Promise<{ pageId: string }> => {
+			assertPageWatchEnabled();
 			await ctx.runtime.pageWatch.unwatch(input.pageId);
 			return { pageId: input.pageId };
 		}),
@@ -43,6 +56,8 @@ export const pageWatchRouter = router({
 	getAll: protectedProcedure
 		.input(listInputSchema)
 		.query(({ ctx, input }): PageWatchStatus[] =>
-			ctx.runtime.pageWatch.list(input?.workspaceId),
+			FORK_PAGE_WATCH_DISABLED
+				? []
+				: ctx.runtime.pageWatch.list(input?.workspaceId),
 		),
 });

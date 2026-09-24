@@ -43,7 +43,6 @@ import { useFolderFirstImport } from "renderer/routes/_authenticated/_dashboard/
 import { AppMenuButton } from "renderer/routes/_authenticated/_dashboard/components/AppMenuButton";
 import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
-import { TopBarPortsDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/TopBarPortsDropdown";
 import {
 	pullRequestsSearchFromFilters,
 	usePullRequestsFilterStore,
@@ -545,9 +544,7 @@ export function DashboardSidebarHeader({
 					{!isMac && <AppMenuButton />}
 					<SidebarToggle />
 					<NavigationControls />
-					{/* Lives here (persistent chrome) rather than the workspace tab
-					    bar, which remounts on every navigation. */}
-					<TopBarPortsDropdown align="start" />
+					{/* (FORK-PORTS-OFF) */}
 				</ZoomStable>
 				<div className="drag h-full min-w-0 flex-1" />
 			</div>

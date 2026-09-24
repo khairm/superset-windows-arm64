@@ -13,7 +13,6 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 import { AppMenuButton } from "renderer/routes/_authenticated/_dashboard/components/AppMenuButton";
 import { NavigationControls } from "renderer/routes/_authenticated/_dashboard/components/NavigationControls";
 import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/components/SidebarToggle";
-import { TopBarPortsDropdown } from "renderer/routes/_authenticated/_dashboard/components/TopBar/components/TopBarPortsDropdown";
 import { WindowControlsInset } from "renderer/routes/_authenticated/_dashboard/components/WindowControlsInset";
 import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
@@ -32,7 +31,6 @@ import { useDefaultContextMenuActions } from "../../hooks/useDefaultContextMenuA
 import { useDefaultPaneActions } from "../../hooks/useDefaultPaneActions";
 import { useDirtyTabCloseGuard } from "../../hooks/useDirtyTabCloseGuard";
 import { usePaneRegistry } from "../../hooks/usePaneRegistry";
-import { renderBrowserTabIcon } from "../../hooks/usePaneRegistry/components/BrowserPane";
 import { useShellInteractionPassthrough } from "../../hooks/useShellInteractionPassthrough";
 import { useV2PresetExecution } from "../../hooks/useV2PresetExecution";
 import { useV2TerminalLauncher } from "../../hooks/useV2TerminalLauncher";
@@ -200,7 +198,6 @@ function V2WorkspaceCenter({
 		openDiffPane,
 		addTerminalTab,
 		addChatV3Tab,
-		addBrowserTab,
 		openChangesPane,
 		openCommentPane,
 	} = useWorkspacePaneOpeners({
@@ -347,7 +344,7 @@ function V2WorkspaceCenter({
 							registry={paneRegistry}
 							paneActions={defaultPaneActions}
 							contextMenuActions={defaultContextMenuActions}
-							renderTabIcon={renderBrowserTabIcon}
+							renderTabIcon={undefined /* (FORK-BROWSER-OFF) */}
 							renderTabAccessory={(tab) => (
 								<V2NotificationStatusIndicator
 									sources={getV2NotificationSourcesForTab(tab)}
@@ -377,7 +374,6 @@ function V2WorkspaceCenter({
 									// chat pane, and it appears only once the user switches
 									// it on in Experimental settings.
 									onAddChatV3={isLocalChatEnabled ? addChatV3Tab : undefined}
-									onAddBrowser={addBrowserTab}
 									onAddChanges={openChangesPane}
 									onAddDesktop={isSandbox ? addDesktopTab : undefined}
 									showPresetsBar={showPresetsBar}
@@ -415,10 +411,7 @@ function V2WorkspaceCenter({
 							renderTabBarTrailing={() => (
 								<>
 									<WorkspaceBranchLabel branch={workspace.branch} />
-									{/* The expanded sidebar's header owns the ports pill; the
-									    tab bar only hosts it for the collapsed rail, where
-									    neither the header cluster nor the TopBar is visible. */}
-									{tabBarHostsChrome && <TopBarPortsDropdown />}
+									{/* (FORK-PORTS-OFF) */}
 									{/* Until the pane layout hydrates, tabs read as empty and
 									    every running terminal miscounts as "background", so the
 									    button would flash a bogus count on navigation. */}
@@ -434,7 +427,6 @@ function V2WorkspaceCenter({
 							)}
 							renderEmptyState={() => (
 								<WorkspaceEmptyState
-									onOpenBrowser={addBrowserTab}
 									onOpenQuickOpen={handleQuickOpen}
 									onOpenTerminal={addTerminalTab}
 								/>

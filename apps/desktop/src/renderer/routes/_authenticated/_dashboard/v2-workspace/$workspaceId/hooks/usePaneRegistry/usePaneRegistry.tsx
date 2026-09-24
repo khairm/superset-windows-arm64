@@ -32,6 +32,7 @@ import {
 	LuLink,
 	LuPower,
 } from "react-icons/lu";
+import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
 import { useWorkspaceHostTarget } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { FileIcon } from "renderer/lib/fileIcons";
@@ -96,6 +97,7 @@ import { TerminalPaneHeaderExtras } from "./components/TerminalPane/components/T
 import { TerminalPaneIcon } from "./components/TerminalPane/components/TerminalPaneIcon";
 import { TerminalSessionDropdown } from "./components/TerminalPane/components/TerminalSessionDropdown";
 import { terminalContextMenuLinkStore } from "./components/TerminalPane/contextMenuLinkStore";
+import { createDisabledPaneDefinition } from "./utils/disabledPaneDefinition";
 import { openInActions } from "./utils/openInActions";
 import { pagePaneLabel } from "./utils/pagePaneLabel";
 import { replaceEndedTerminal } from "./utils/replaceEndedTerminal";
@@ -688,43 +690,53 @@ export function usePaneRegistry({
 					];
 				},
 			},
-			browser: {
-				getIcon: () => <Globe className="size-3.5" />,
-				getTitle: (pane) => {
-					const data = pane.data as BrowserPaneData;
-					if (data.pageTitle) return data.pageTitle;
-					if (data.url && data.url !== "about:blank") {
-						try {
-							return new URL(data.url).host;
-						} catch {}
+			// (FORK-BROWSER-OFF)
+			...(FORK_BROWSER_PANES_DISABLED
+				? {
+						browser: createDisabledPaneDefinition(
+							t({ message: "Browser" }),
+							<Globe className="size-3.5" />,
+						),
 					}
-					return t({
-						message: "Browser",
-					});
-				},
-				renderPane: (ctx: RendererContext<PaneViewerData>) => (
-					<BrowserPane
-						ctx={ctx}
-						onCreateNewAgentSession={createNewAgentSession}
-						onFocusAgentTerminal={focusAgentTerminal}
-					/>
-				),
-				renderToolbar: (ctx: RendererContext<PaneViewerData>) => (
-					<BrowserPaneToolbar ctx={ctx} />
-				),
-				// Destruction handled by useGlobalBrowserLifecycle for now.
-				contextMenuActions: (_ctx, defaults) =>
-					defaults.map((d) =>
-						d.key === "close-pane"
-							? {
-									...d,
-									label: t({
-										message: "Close Browser",
-									}),
+				: {
+						browser: {
+							getIcon: () => <Globe className="size-3.5" />,
+							getTitle: (pane: { data: PaneViewerData }) => {
+								const data = pane.data as BrowserPaneData;
+								if (data.pageTitle) return data.pageTitle;
+								if (data.url && data.url !== "about:blank") {
+									try {
+										return new URL(data.url).host;
+									} catch {}
 								}
-							: d,
-					),
-			},
+								return t({
+									message: "Browser",
+								});
+							},
+							renderPane: (ctx: RendererContext<PaneViewerData>) => (
+								<BrowserPane
+									ctx={ctx}
+									onCreateNewAgentSession={createNewAgentSession}
+									onFocusAgentTerminal={focusAgentTerminal}
+								/>
+							),
+							renderToolbar: (ctx: RendererContext<PaneViewerData>) => (
+								<BrowserPaneToolbar ctx={ctx} />
+							),
+							// Destruction handled by useGlobalBrowserLifecycle for now.
+							contextMenuActions: (_ctx, defaults) =>
+								defaults.map((d) =>
+									d.key === "close-pane"
+										? {
+												...d,
+												label: t({
+													message: "Close Browser",
+												}),
+											}
+										: d,
+								),
+						},
+					}),
 			...(desktopUrl
 				? {
 						desktop: {
@@ -737,18 +749,7 @@ export function usePaneRegistry({
 						},
 					}
 				: {}),
-			// (CLOUD-SEVERANCE-P2) There is no `chat` renderer — v1.23.0 deleted the
-			// hosted chat pane upstream, which is where we had already got to. A
-			// saved layout still naming it falls through to the registry's
-			// "Unknown pane kind" placeholder, which the user can close.
-			//
-			// `chat-v3` below is the OTHER chat stack and is not the same thing: it
-			// drives the agent CLIs already installed on this machine and stores
-			// sessions in local SQLite. Upstream still gates it on a PostHog flag,
-			// which phase 1 pinned false forever; here it is a user setting,
-			// default off. Registered conditionally rather than rendered-and-hidden,
-			// so with the setting off nothing — hotkey, tab menu, or restored
-			// layout — can put one on screen.
+			// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
 			...(isLocalChatEnabled
 				? {
 						"chat-v3": {
@@ -785,7 +786,12 @@ export function usePaneRegistry({
 								),
 						},
 					}
-				: {}),
+				: {
+						"chat-v3": createDisabledPaneDefinition(
+							t({ message: "Chat" }),
+							<MessageSquare className="size-3.5" />,
+						),
+					}),
 			comment: {
 				getIcon: (ctx: RendererContext<PaneViewerData>) => {
 					const data = ctx.pane.data as CommentPaneData;

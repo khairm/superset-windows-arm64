@@ -619,6 +619,7 @@ if (!gotTheLock) {
 		// Must be listening before any host-service spawns: the child learns the
 		// bridge endpoint/secret from its env, so a late bridge means browser
 		// control stays dark until the next respawn.
+		// (FORK-BROWSER-OFF)
 		try {
 			await startBrowserBridge();
 		} catch (error) {

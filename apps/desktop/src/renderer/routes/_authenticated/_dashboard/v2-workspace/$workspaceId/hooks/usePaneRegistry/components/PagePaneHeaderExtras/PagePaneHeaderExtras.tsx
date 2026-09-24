@@ -5,6 +5,7 @@ import {
 	PageSharePopover,
 } from "@superset/ui/page-comments";
 import { Share2 } from "lucide-react";
+import { FORK_PAGE_WATCH_DISABLED } from "renderer/fork-disabled-features";
 import { usePageHeaderData } from "renderer/routes/_authenticated/_dashboard/hooks/usePageHeaderData";
 import type { PagePaneData } from "../../../../types";
 import { usePagePaneUi } from "../../hooks/usePagePaneUi";
@@ -39,7 +40,7 @@ export function PagePaneHeaderExtras({
 
 	return (
 		<>
-			{owned ? (
+			{!FORK_PAGE_WATCH_DISABLED && owned ? (
 				<PageWatcherMenu
 					workspaceId={workspaceId}
 					pageId={page?.id}

@@ -135,6 +135,8 @@ export type KillFn = (args: {
 }) => Promise<{ success: boolean; error?: string }>;
 
 export interface PortManagerOptions {
+	// (FORK-PORTS-OFF)
+	disabled?: boolean;
 	killFn: KillFn;
 }
 
@@ -151,11 +153,13 @@ export class PortManager extends EventEmitter {
 	private forceRequested = false;
 	/** Aborts any in-flight scan children (lsof/netstat) on teardown. */
 	private scanAbort: AbortController | null = null;
+	private readonly disabled: boolean;
 	private readonly killFn: KillFn;
 	private readonly detachedResolver = new DetachedProcessResolver();
 
 	constructor(options: PortManagerOptions) {
 		super();
+		this.disabled = options.disabled ?? false;
 		this.killFn = options.killFn;
 	}
 
@@ -169,6 +173,7 @@ export class PortManager extends EventEmitter {
 		workspaceId: string,
 		pid: number | null,
 	): void {
+		if (this.disabled) return;
 		const existing = this.sessions.get(terminalId);
 		if (
 			existing &&
@@ -204,6 +209,7 @@ export class PortManager extends EventEmitter {
 	 * fast scan cadence, and server-startup phrases trigger a prompt scan.
 	 */
 	checkOutputForHint(terminalId: string, data: string): void {
+		if (this.disabled) return;
 		const session = this.sessions.get(terminalId);
 		if (session) session.lastActivityAt = Date.now();
 		if (this.hintScanTimeout || this.scanRequested) return;
@@ -605,6 +611,7 @@ export class PortManager extends EventEmitter {
 	}
 
 	async forceScan(): Promise<void> {
+		if (this.disabled) return;
 		await this.scanAllSessions(true);
 	}
 
@@ -626,6 +633,9 @@ export class PortManager extends EventEmitter {
 		success: boolean;
 		error?: string;
 	}> {
+		if (this.disabled) {
+			return { success: false, error: "Port scanning is disabled" };
+		}
 		const key = this.makeKey(terminalId, port);
 		const detectedPort = this.ports.get(key);
 

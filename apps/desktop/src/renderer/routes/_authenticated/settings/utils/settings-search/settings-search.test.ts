@@ -127,3 +127,27 @@ describe("settings search - mobile rollout", () => {
 		).toBe(1);
 	});
 });
+
+// (FORK-PORTS-OFF) (FORK-CHAT-V3-OFF)
+describe("settings search - disabled features", () => {
+	it("does not advertise hidden settings in search or the Experimental section", () => {
+		for (const [query, id] of [
+			[
+				"Ports in top bar dropdown",
+				SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS,
+			],
+			["Local chat pane", SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT],
+		] as const) {
+			expect(getIds(searchSettings(query))).not.toContain(id);
+			for (const searchQuery of [query, ""]) {
+				expect(
+					getVisibleItemsForSection({
+						section: "experimental",
+						searchQuery,
+						isV2: true,
+					}),
+				).not.toContain(id);
+			}
+		}
+	});
+});

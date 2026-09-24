@@ -21,6 +21,9 @@ import type { Hono, MiddlewareHandler } from "hono";
 import type { HostDb } from "../db";
 import { createResolveCwd } from "./resolveCwd";
 
+// (FORK-CHAT-V3-OFF)
+export const FORK_CHAT_V3_DISABLED: boolean = true;
+
 export const CHAT_V3_TRPC_PATH = "/chat-v3/trpc";
 export const CHAT_V3_STREAM_PATH = "/chat-v3/sessions/:sessionId/stream";
 
@@ -62,6 +65,7 @@ export function createChatV3Mount(options: {
 	let built: ChatRuntime | null = null;
 
 	const runtime = (): ChatRuntime => {
+		if (FORK_CHAT_V3_DISABLED) throw new Error("Chat v3 is disabled");
 		if (built) return built;
 		built = createChatRuntime({
 			dataDir: dirname(options.dbPath),
@@ -89,6 +93,7 @@ export function registerChatV3Routes(options: {
 	trpcPath?: string;
 	streamPath?: string;
 }): void {
+	if (FORK_CHAT_V3_DISABLED) throw new Error("Chat v3 is disabled");
 	const resolveCwd = createResolveCwd(options.db);
 
 	const endpoint = options.trpcPath ?? CHAT_V3_TRPC_PATH;

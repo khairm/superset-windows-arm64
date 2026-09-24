@@ -1419,28 +1419,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"workspaces",
 		],
 	},
-	{
-		id: SETTING_ITEM_ID.EXPERIMENTAL_INLINE_WORKSPACE_PORTS,
-		section: "experimental",
-		title: "Ports in top bar dropdown",
-		description:
-			"Show detected ports as a dropdown in the top bar instead of a chip under each workspace",
-		keywords: [
-			"experimental",
-			"ports",
-			"port",
-			"inline",
-			"sidebar",
-			"topbar",
-			"top bar",
-			"dropdown",
-			"workspace",
-			"workspaces",
-			"dev server",
-			"toggle",
-			"switch",
-		],
-	},
+	// (FORK-PORTS-OFF)
 	{
 		id: SETTING_ITEM_ID.EXPERIMENTAL_WORKSPACE_AGENTS,
 		section: "experimental",
@@ -1461,28 +1440,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"switch",
 		],
 	},
-	// (CLOUD-SEVERANCE-P2) Findable by searching "chat" — which is the word a
-	// user will reach for after noticing the cloud chat pane is gone.
-	{
-		id: SETTING_ITEM_ID.EXPERIMENTAL_LOCAL_CHAT,
-		section: "experimental",
-		title: "Local chat pane",
-		description:
-			"Adds a Chat pane that drives the agent CLIs installed on this machine — sessions stay on this device",
-		keywords: [
-			"experimental",
-			"chat",
-			"local chat",
-			"pane",
-			"agent",
-			"cli",
-			"claude",
-			"codex",
-			"offline",
-			"toggle",
-			"switch",
-		],
-	},
+	// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
 	// (COMPANION-PAIRING-SEARCH)
 	{
 		id: SETTING_ITEM_ID.EXPERIMENTAL_COMPANION_PAIRING,

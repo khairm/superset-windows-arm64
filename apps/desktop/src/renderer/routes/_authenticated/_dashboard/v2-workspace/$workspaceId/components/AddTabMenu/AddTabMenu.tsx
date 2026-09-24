@@ -6,19 +6,13 @@ import {
 } from "@superset/ui/dropdown-menu";
 import { BsTerminalPlus } from "react-icons/bs";
 import { LuGitCompareArrows } from "react-icons/lu";
-import { TbDeviceDesktop, TbMessageCirclePlus, TbWorld } from "react-icons/tb";
+import { TbDeviceDesktop, TbMessageCirclePlus } from "react-icons/tb";
 import { HotkeyMenuShortcut } from "renderer/components/HotkeyMenuShortcut";
 
-// (CLOUD-SEVERANCE-P2) The cloud "Chat" entry is gone with its pane — v1.23.0
-// removed it upstream too. `onAddChatV3` is the LOCAL chat pane and stays
-// optional, but the condition behind it changed: upstream passes it on a
-// PostHog flag, this fork passes it only when the user has switched local chat
-// on in Experimental settings. Default off, so this menu offers exactly
-// Terminal and Browser until they do.
+// (CLOUD-SEVERANCE-P2)
 interface AddTabMenuProps {
 	onAddTerminal: () => void;
 	onAddChatV3?: (() => void) | undefined;
-	onAddBrowser: () => void;
 	onAddChanges: () => void;
 	onAddDesktop?: (() => void) | undefined;
 	showPresetsBar: boolean;
@@ -28,7 +22,6 @@ interface AddTabMenuProps {
 export function AddTabMenu({
 	onAddTerminal,
 	onAddChatV3,
-	onAddBrowser,
 	onAddChanges,
 	onAddDesktop,
 	showPresetsBar,
@@ -53,13 +46,7 @@ export function AddTabMenu({
 					</span>
 				</DropdownMenuItem>
 			)}
-			<DropdownMenuItem className="gap-2" onClick={onAddBrowser}>
-				<TbWorld className="size-4" />
-				<span>
-					<Trans>Browser</Trans>
-				</span>
-				<HotkeyMenuShortcut hotkeyId="NEW_BROWSER" />
-			</DropdownMenuItem>
+			{/* (FORK-BROWSER-OFF) */}
 			<DropdownMenuItem className="gap-2" onClick={onAddChanges}>
 				<LuGitCompareArrows className="size-4" />
 				<span>

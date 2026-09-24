@@ -5,7 +5,16 @@ import type { HostServiceContext } from "../../../types";
 import { getLocalWorkspace } from "../../../workspaces/local-workspace-store";
 import { protectedProcedure, router } from "../../index";
 
+// (FORK-BROWSER-OFF)
+const FORK_BROWSER_PANES_DISABLED: boolean = true;
+
 function requireBridge(ctx: HostServiceContext): BrowserBridgeClient {
+	if (FORK_BROWSER_PANES_DISABLED) {
+		throw new TRPCError({
+			code: "PRECONDITION_FAILED",
+			message: "Browser panes are disabled",
+		});
+	}
 	if (!ctx.browserBridge) {
 		throw new TRPCError({
 			code: "PRECONDITION_FAILED",
@@ -19,7 +28,11 @@ function requireBridge(ctx: HostServiceContext): BrowserBridgeClient {
 export const browserRouter = router({
 	list: protectedProcedure
 		.input(z.object({ workspaceId: z.string() }))
-		.query(({ ctx, input }) => requireBridge(ctx).listPanes(input.workspaceId)),
+		.query(({ ctx, input }) =>
+			FORK_BROWSER_PANES_DISABLED
+				? { panes: [] }
+				: requireBridge(ctx).listPanes(input.workspaceId),
+		),
 
 	open: protectedProcedure
 		.input(
@@ -88,11 +101,15 @@ export const browserRouter = router({
 	console: protectedProcedure
 		.input(z.object({ workspaceId: z.string(), paneId: z.string() }))
 		.query(({ ctx, input }) =>
-			requireBridge(ctx).console(input.workspaceId, input.paneId),
+			FORK_BROWSER_PANES_DISABLED
+				? { entries: [] }
+				: requireBridge(ctx).console(input.workspaceId, input.paneId),
 		),
 
 	importSources: protectedProcedure.query(({ ctx }) =>
-		requireBridge(ctx).importSources(),
+		FORK_BROWSER_PANES_DISABLED
+			? { sources: [] }
+			: requireBridge(ctx).importSources(),
 	),
 
 	importCookies: protectedProcedure

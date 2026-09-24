@@ -16,6 +16,7 @@ import {
 	LuRows2,
 	LuX,
 } from "react-icons/lu";
+import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
 import { useWorkspaceHostTarget } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
@@ -25,7 +26,7 @@ import type {
 	PaneViewerData,
 	TerminalPaneData,
 } from "../../types";
-import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
+import { DEFAULT_BROWSER_URL } from "../usePaneRegistry/components/BrowserPane/constants";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 
 export function useDefaultContextMenuActions({
@@ -43,7 +44,6 @@ export function useDefaultContextMenuActions({
 		"EQUALIZE_PANE_SPLITS",
 	).text;
 	const closePaneShortcut = useHotkeyDisplay("CLOSE_PANE").text;
-	const defaultBrowserUrl = useDefaultBrowserUrl();
 	const { workspace } = useWorkspace();
 	const host = useWorkspaceHostTarget(workspace.id);
 	const isSandbox = host.status === "ready" && host.kind === "sandbox";
@@ -86,25 +86,29 @@ export function useDefaultContextMenuActions({
 					});
 				},
 			},
-			{
-				key: "split-with-browser",
-				label: t({
-					message: "Split with New Browser",
-				}),
-				icon: <LuGlobe />,
-				shortcut:
-					splitWithBrowserShortcut !== "Unassigned"
-						? splitWithBrowserShortcut
-						: undefined,
-				onSelect: (ctx) => {
-					ctx.actions.split("right", {
-						kind: "browser",
-						data: {
-							url: defaultBrowserUrl,
-						} as BrowserPaneData,
-					});
-				},
-			},
+			...(!FORK_BROWSER_PANES_DISABLED
+				? [
+						{
+							key: "split-with-browser",
+							label: t({
+								message: "Split with New Browser",
+							}),
+							icon: <LuGlobe />,
+							shortcut:
+								splitWithBrowserShortcut !== "Unassigned"
+									? splitWithBrowserShortcut
+									: undefined,
+							onSelect: (ctx) => {
+								ctx.actions.split("right", {
+									kind: "browser",
+									data: {
+										url: DEFAULT_BROWSER_URL,
+									} as BrowserPaneData,
+								});
+							},
+						} satisfies ContextMenuActionConfig<PaneViewerData>,
+					]
+				: []),
 			...(isSandbox
 				? [
 						{
@@ -193,7 +197,6 @@ export function useDefaultContextMenuActions({
 			closePaneShortcut,
 			paneRegistry,
 			launcher,
-			defaultBrowserUrl,
 			t,
 			isSandbox,
 		],

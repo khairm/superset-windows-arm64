@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
+import { FORK_PAGE_WATCH_DISABLED } from "renderer/fork-disabled-features";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useWorkspaceEvent } from "../useWorkspaceEvent";
 import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";
@@ -26,7 +27,10 @@ export function usePageWatchers(
 	);
 
 	const enabled =
-		(options?.enabled ?? true) && Boolean(workspaceId) && Boolean(hostUrl);
+		!FORK_PAGE_WATCH_DISABLED &&
+		(options?.enabled ?? true) &&
+		Boolean(workspaceId) &&
+		Boolean(hostUrl);
 
 	const query = useQuery({
 		queryKey,

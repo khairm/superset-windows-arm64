@@ -1030,3 +1030,31 @@ describe("PortManager — detached servers (agent background processes)", () => 
 		expect(killed).toEqual([5001]);
 	});
 });
+
+// (FORK-PORTS-OFF)
+describe("disabled port scanning", () => {
+	it("keeps the API without registering or killing ports", async () => {
+		let killed = false;
+		const disabled = new PortManager({
+			disabled: true,
+			killFn: async () => {
+				killed = true;
+				return { success: true };
+			},
+		});
+		disabled.upsertSession("terminal", "workspace", 123);
+		disabled.checkOutputForHint("terminal", "listening on 3000");
+		await disabled.forceScan();
+		expect(disabled.getRegisteredTerminalIds()).toEqual([]);
+		expect(disabled.getAllPorts()).toEqual([]);
+		expect(
+			await disabled.killPort({
+				terminalId: "terminal",
+				workspaceId: "workspace",
+				port: 3000,
+			}),
+		).toEqual({ success: false, error: "Port scanning is disabled" });
+		expect(killed).toBe(false);
+		disabled.stopPeriodicScan();
+	});
+});

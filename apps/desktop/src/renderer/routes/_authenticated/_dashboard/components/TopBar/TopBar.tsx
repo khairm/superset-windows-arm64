@@ -15,7 +15,6 @@ import { WindowControlsInset } from "../WindowControlsInset";
 import { OpenInMenuButton } from "./components/OpenInMenuButton";
 import { ResourceConsumption } from "./components/ResourceConsumption";
 import { RightSidebarToggle } from "./components/RightSidebarToggle";
-import { TopBarPortsDropdown } from "./components/TopBarPortsDropdown";
 import { V2WorkspaceTitle } from "./components/V2WorkspaceTitle";
 
 export function TopBar() {
@@ -94,9 +93,7 @@ export function TopBar() {
 			    that should come back: it lists organizations from the cloud and its
 			    only working action would be a log-out that cannot happen. */}
 			<div className="flex items-center gap-3 h-full pr-4 shrink-0">
-				{/* When the expanded sidebar hosts the chrome, its header also hosts
-				    the ports pill — don't render a duplicate here. */}
-				{!sidebarHostsChrome && <TopBarPortsDropdown />}
+				{/* (FORK-PORTS-OFF) */}
 				{!isOnline && (
 					<div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
 						<HiOutlineWifi className="size-3.5" />
