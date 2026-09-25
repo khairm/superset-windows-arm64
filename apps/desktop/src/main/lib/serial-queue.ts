@@ -1,11 +1,21 @@
-export function createSerialQueue(): (
-	job: () => Promise<void>,
-) => Promise<void> {
+export interface SerialQueue {
+	<T>(job: () => Promise<T>): Promise<T>;
+	/** Settles once everything queued so far has, whether it threw or not. */
+	drained(): Promise<void>;
+}
+
+export function createSerialQueue(): SerialQueue {
 	let tail: Promise<void> = Promise.resolve();
 
-	return (job) => {
-		const next = tail.then(job);
-		tail = next.catch(() => undefined);
-		return next;
-	};
+	return Object.assign(
+		<T>(job: () => Promise<T>): Promise<T> => {
+			const next = tail.then(job);
+			tail = next.then(
+				() => undefined,
+				() => undefined,
+			);
+			return next;
+		},
+		{ drained: (): Promise<void> => tail },
+	);
 }

@@ -17,12 +17,11 @@ import {
 	createWsSink,
 	DEFAULT_MIGRATIONS_FOLDER,
 } from "@superset/chat-runtime";
+// (FORK-CHAT-V3-OFF)
+import { FORK_CHAT_V3_DISABLED } from "@superset/shared/fork-disabled-features";
 import type { Hono, MiddlewareHandler } from "hono";
 import type { HostDb } from "../db";
 import { createResolveCwd } from "./resolveCwd";
-
-// (FORK-CHAT-V3-OFF)
-export const FORK_CHAT_V3_DISABLED: boolean = true;
 
 export const CHAT_V3_TRPC_PATH = "/chat-v3/trpc";
 export const CHAT_V3_STREAM_PATH = "/chat-v3/sessions/:sessionId/stream";

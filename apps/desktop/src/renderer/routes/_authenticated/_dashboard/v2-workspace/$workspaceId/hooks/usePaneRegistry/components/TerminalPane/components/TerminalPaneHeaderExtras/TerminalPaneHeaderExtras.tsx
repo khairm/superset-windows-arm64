@@ -1,8 +1,8 @@
 import { useLingui } from "@lingui/react/macro";
+import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { SquarePen } from "lucide-react";
-import { FORK_PAGE_WATCH_DISABLED } from "renderer/fork-disabled-features";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import type { SubagentPaneData } from "../../../../../../types";
 import {

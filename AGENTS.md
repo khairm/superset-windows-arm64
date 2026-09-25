@@ -176,11 +176,14 @@ In brief:
   `packages/host-service/src/claude-accounts/`.
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
   local chat pane and port scanning are off behind one `const` each in
-  `apps/desktop/src/renderer/fork-disabled-features.ts`
+  `packages/shared/src/fork-disabled-features.ts`
   (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`,
-  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`) plus matching
-  host-service mount guards. Saved layouts still restore those panes, inert.
-  Flipping a const to `false` is the whole re-enable path.
+  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`), read by the renderer,
+  Electron main and the host-service from that one place. Saved layouts still
+  restore those panes, inert. Flipping a const to `false` is NOT the whole
+  re-enable path for browser or chat — their callers (`addBrowserTab`,
+  `onAddBrowser`, `LocalChatSetting`) were removed and must be restored from
+  upstream too. Page watch and ports come back on the const alone.
 - **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a

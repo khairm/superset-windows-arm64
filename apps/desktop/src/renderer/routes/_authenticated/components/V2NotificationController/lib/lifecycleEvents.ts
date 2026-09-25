@@ -4,6 +4,7 @@ import type {
 	TerminalLifecyclePayload,
 } from "@superset/workspace-client";
 import { isUserPresent } from "renderer/hooks/useUserPresent";
+import { agentDotsLog } from "renderer/lib/agent-dots-log";
 import { playRingtone } from "renderer/lib/ringtones/play";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -27,23 +28,6 @@ import {
 	type V2NotificationTarget,
 } from "./resolveV2NotificationTarget";
 import { resolveV2AgentStatusTransition } from "./statusTransitions";
-
-// Diagnostic logging for the agent-status-dots pipeline. Emitted via
-// console.info("[agent-dots] ...") so the main process forwarder persists
-// it to electron-log (main.log). Logging-only; flip NLOG to silence. See
-// patches/notification-logging.patch.
-// (NOTIF-STORE-DEBOUNCE)
-const NLOG = false;
-function ndots(record: Record<string, unknown>): void {
-	if (!NLOG) return;
-	try {
-		console.info(
-			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
-		);
-	} catch {
-		// never let logging crash the renderer
-	}
-}
 
 /**
  * Updates pane status indicators (working/review/permission/idle) and plays
@@ -78,8 +62,6 @@ export function handleV2AgentLifecycleEvent({
 		payload,
 		paneLayout: localPaneLayout,
 		target,
-		// News, not history — so the visible-clear hop is allowed to fire.
-		fromReplay: false,
 	});
 
 	// Only Stop and PermissionRequest deserve sound. Start fires per-prompt
@@ -127,20 +109,10 @@ export function markV2AgentLifecycleTargetSeen({
 	workspaceId,
 	payload,
 	paneLayout,
-	fromReplay,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
 	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
-	/**
-	 * (ALERT-RETIRE-ON-EXIT) Is this a RE-DERIVATION of history rather than news?
-	 *
-	 * The bus-resync replays each host binding through this same helper, so
-	 * without the flag the visible-clear hop below fires for events that already
-	 * happened — see the hop's own comment for what that costs. REQUIRED, not
-	 * defaulted: a new caller has to say which side of that line it is on.
-	 */
-	fromReplay: boolean;
 }): void {
 	const { localPaneLayout, target } = resolveV2AgentLifecycleContext({
 		workspaceId,
@@ -152,7 +124,6 @@ export function markV2AgentLifecycleTargetSeen({
 		payload,
 		paneLayout: localPaneLayout,
 		target,
-		fromReplay,
 	});
 }
 
@@ -236,13 +207,11 @@ function updatePaneStatus({
 	payload,
 	paneLayout,
 	target,
-	fromReplay,
 }: {
 	workspaceId: string;
 	payload: AgentLifecyclePayload;
 	paneLayout: WorkspaceState<PaneViewerData> | null | undefined;
 	target: V2NotificationTarget;
-	fromReplay: boolean;
 }): void {
 	const store = useV2NotificationStore.getState();
 	// VISIBLE MEANS WATCHED, NOT MERELY ON SCREEN. A turn ending on the active
@@ -254,12 +223,9 @@ function updatePaneStatus({
 	// worse half — the user came back to a chat with nothing marking it and a
 	// phone card nothing would ever take down.
 	//
-	// REPLAYS KEEP THE LAYOUT-ONLY TEST. A replay re-derives history: presence NOW
-	// says nothing about a finish that happened before the reconnect, and folding
-	// it in would raise a review dot on every pane the user is looking at.
-	const targetVisible = fromReplay
-		? isTargetInLayout(target, paneLayout)
-		: isTargetWatched(target, paneLayout);
+	// REPLAYS KEEP THE LAYOUT-ONLY TEST, and they never come through here:
+	// `replayV2AgentLifecycleState` is the replay entry point.
+	const targetVisible = isTargetWatched(target, paneLayout);
 	const transition = resolveV2AgentStatusTransition({
 		workspaceId,
 		payload,
@@ -267,60 +233,19 @@ function updatePaneStatus({
 		targetVisible,
 	});
 
-	// (RED-CLEAR diagnostic) Name the EXACT event that clears a still-active
-	// permission (AskUser/permission red) axis. A pending red must only clear on
-	// a genuine user answer (UserPromptSubmit -> Start). The open suspect: a
-	// background fork's PostToolUse (no agent_id) ALSO maps to Start and would
-	// prematurely flip a pending red -> yellow while the question is still open.
-	// `byEvent` + `sessionId` here cross-reference agent-notify-hook.log's new
-	// `agentId` field: a Start with agentId="" and a fork's sessionId clearing
-	// the terminal's red is the smoking gun. Logging-only; no behaviour change.
-	if (NLOG) {
-		const sourceKey = getV2NotificationSourceKey(
-			getV2TerminalNotificationSource(target.terminalId),
-		);
-		const prevEntry = store.sources[sourceKey];
-		const wasRed = prevEntry?.axes.permission !== undefined;
-		if (wasRed) {
-			const clearsViaAxes =
-				transition.axes?.clear.includes("permission") ?? false;
-			const clearsViaRemove = transition.clearSources.some(
-				(source) => getV2NotificationSourceKey(source) === sourceKey,
-			);
-			if (clearsViaAxes || clearsViaRemove) {
-				ndots({
-					event: "red_cleared",
-					byEvent: payload.eventType,
-					via: clearsViaAxes ? "axis-clear" : "source-remove",
-					terminalId: target.terminalId,
-					workspaceId,
-					sessionId:
-						(payload as { agent?: { sessionId?: string }; sessionId?: string })
-							.agent?.sessionId ??
-						(payload as { sessionId?: string }).sessionId ??
-						null,
-					targetVisible,
-					permissionSetAt: prevEntry?.axes.permission ?? null,
-					occurredAt: payload.occurredAt,
-				});
-			}
-		}
-	}
-
-	if (NLOG)
-		ndots({
-			event: "status_transition_computed",
-			// (BA diagnostic) carry the raw eventType — without it Stop and
-			// BackgroundRunning produce an identical transition log, hiding whether
-			// BackgroundRunning ever reaches the renderer at all.
-			eventType: payload.eventType,
-			targetVisible,
-			workspaceId,
-			terminalId: target.terminalId,
-			target,
-			clearSources: transition.clearSources,
-			axes: transition.axes,
-		});
+	agentDotsLog({
+		event: "status_transition_computed",
+		// (BA diagnostic) carry the raw eventType — without it Stop and
+		// BackgroundRunning produce an identical transition log, hiding whether
+		// BackgroundRunning ever reaches the renderer at all.
+		eventType: payload.eventType,
+		targetVisible,
+		workspaceId,
+		terminalId: target.terminalId,
+		target,
+		clearSources: transition.clearSources,
+		axes: transition.axes,
+	});
 
 	// (NOTIF-STORE-DEBOUNCE)
 	const next = applyV2AgentLifecycleTransition(store, {
@@ -328,7 +253,7 @@ function updatePaneStatus({
 		payload,
 		target,
 		transition,
-		fromReplay,
+		fromReplay: false,
 	});
 	useV2NotificationStore.setState(next);
 
@@ -361,22 +286,21 @@ function updatePaneStatus({
 	// BackgroundRunning shares their transition but mints nothing, so reporting
 	// it would broadcast a retraction for a finish that never happened.
 	//
-	// LIVE EVENTS ONLY. The bus-resync replays every host binding through this
-	// same function with the binding's `lastEventAt` as `occurredAt`, and a
-	// replay is not a read: (a) `lastEventAt` advances for events that mint no
-	// alert, so the hop would broadcast a retraction naming an instant no alert
-	// id was ever hashed from — a blind claim that can evict a real one from the
-	// phone's fixed-size window; and (b) a relaunch replays `lastEventType:
-	// "Failed"` on every open agent tab, and error cards are meant to SURVIVE a
-	// relaunch until the user looks. The repair path in `resyncAgentStatus` is
-	// where a replay may report a read, off durable seen marks and never off the
-	// mere fact that the pane is on screen.
+	// LIVE EVENTS ONLY. The bus-resync never reaches here — it replays through
+	// `replayV2AgentLifecycleState`, which has no hop — because a replay is not
+	// a read: (a) `lastEventAt` advances for events that mint no alert, so the
+	// hop would broadcast a retraction naming an instant no alert id was ever
+	// hashed from — a blind claim that can evict a real one from the phone's
+	// fixed-size window; and (b) a relaunch replays `lastEventType: "Failed"` on
+	// every open agent tab, and error cards are meant to SURVIVE a relaunch until
+	// the user looks. The repair path in `resyncAgentStatus` is where a replay may
+	// report a read, off durable seen marks and never off the mere fact that the
+	// pane is on screen.
 	//
 	// PRESENCE IS ALREADY IN `targetVisible` for a live event — see where it is
 	// computed. A pane on the active tab with the screen locked is the feature's
 	// primary scenario, and retracting there is both wrong and irreversible.
 	if (
-		!fromReplay &&
 		(payload.eventType === "Stop" || payload.eventType === "Failed") &&
 		transition.axes === null &&
 		target.terminalId.length > 0 &&

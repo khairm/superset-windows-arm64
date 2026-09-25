@@ -1,3 +1,4 @@
+import { FORK_PORT_SCAN_DISABLED } from "@superset/shared/fork-disabled-features";
 import {
 	createFileRoute,
 	Outlet,
@@ -7,7 +8,6 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { CommandPaletteHost } from "renderer/commandPalette";
 import { Redirect } from "renderer/components/Redirect";
-import { FORK_PORT_SCAN_DISABLED } from "renderer/fork-disabled-features";
 import { useIsV2CloudEnabled } from "renderer/hooks/useIsV2CloudEnabled";
 import { useOpenNewWorkspace } from "renderer/hooks/useOpenNewWorkspace";
 import { useQuickCreateWorkspace } from "renderer/hooks/useQuickCreateWorkspace";

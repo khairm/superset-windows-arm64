@@ -1109,6 +1109,11 @@ async function readFileStep(
 	const fh = await fs.promises.open(filePath, "r");
 	try {
 		if (!ownsFile(filePath, state, run)) return;
+		const mapping =
+			state.sessionId && !subagentParent
+				? await loadPaneMapping(state.sessionId, run)
+				: undefined;
+		if (!ownsFile(filePath, state, run)) return;
 		while (newOffset < stat.size) {
 			const buf = Buffer.allocUnsafe(
 				Math.min(READ_STEP_BYTES, stat.size - newOffset),
@@ -1146,11 +1151,6 @@ async function readFileStep(
 				skippedCompleteLines ||= lines.length > 0;
 			}
 			if (subagentParent || state.cwd) {
-				const mapping =
-					state.sessionId && !subagentParent
-						? await loadPaneMapping(state.sessionId, run)
-						: undefined;
-				if (!ownsFile(filePath, state, run)) return;
 				if (subagentParent) {
 					await mirrorSubagentToParent(
 						subagentParent,

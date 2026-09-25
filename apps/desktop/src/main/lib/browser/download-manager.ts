@@ -3,10 +3,10 @@ import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { downloads } from "@superset/local-db";
+import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import { desc, eq, ne } from "drizzle-orm";
 import { app, session, shell } from "electron";
 import { localDb } from "../local-db";
-import { FORK_BROWSER_PANES_DISABLED } from "./browser-bridge";
 
 /** The partition the in-app browser pane (and app renderer) use. */
 const BROWSER_PARTITION = "persist:superset";

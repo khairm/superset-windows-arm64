@@ -4,6 +4,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { Fragment, useEffectEvent, useMemo } from "react";
 import { useHostProjects } from "renderer/hooks/host-projects/useHostProjects";
 import { useRelayUrl } from "renderer/hooks/useRelayUrl";
+import { agentDotsLog } from "renderer/lib/agent-dots-log";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
@@ -20,23 +21,6 @@ import {
 } from "./components/HostNotificationSubscriber";
 import { getNotificationWorkspaceName } from "./lib/getNotificationWorkspaceName";
 import { markV2AgentLifecycleTargetSeen } from "./lib/lifecycleEvents";
-
-// Diagnostic logging for the agent-status-dots pipeline. Emitted via
-// console.info with an "[agent-dots]" prefix so the main process's
-// production console-message forwarder persists them to electron-log
-// (main.log). Flip to false to silence. Logging-only — never alters
-// behaviour. See patches/notification-logging.patch.
-const NLOG = true;
-function ndots(record: Record<string, unknown>): void {
-	if (!NLOG) return;
-	try {
-		console.info(
-			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
-		);
-	} catch {
-		// never let logging crash the renderer
-	}
-}
 
 interface WorkspaceHostRow {
 	workspaceId: string;
@@ -152,7 +136,7 @@ export function V2NotificationController() {
 			// records and may attach it to the payload in future. Read
 			// defensively without depending on the shared type.
 			const eventId = (data as { eventId?: string } | undefined)?.eventId;
-			ndots({
+			agentDotsLog({
 				event: "electron_agent_lifecycle_received",
 				eventId,
 				eventType: data?.eventType,
@@ -166,7 +150,7 @@ export function V2NotificationController() {
 				workspaceStatesCount: workspaceStatesById.size,
 			});
 			if (!data?.workspaceId || !data.terminalId) {
-				ndots({
+				agentDotsLog({
 					event: "electron_agent_lifecycle_drop",
 					reason: !data?.workspaceId
 						? "missing-workspaceId"
@@ -180,7 +164,7 @@ export function V2NotificationController() {
 			}
 			const workspace = workspaceStatesById.get(data.workspaceId);
 			if (!workspace) {
-				ndots({
+				agentDotsLog({
 					event: "electron_agent_lifecycle_drop",
 					reason: "workspace-not-loaded",
 					eventId,
@@ -205,8 +189,6 @@ export function V2NotificationController() {
 					occurredAt: Date.now(),
 				},
 				paneLayout: workspace.paneLayout,
-				// A live event off the Electron fallback, not a replay of history.
-				fromReplay: false,
 			});
 
 			// Statuses derive from host bindings, so the host must hear the

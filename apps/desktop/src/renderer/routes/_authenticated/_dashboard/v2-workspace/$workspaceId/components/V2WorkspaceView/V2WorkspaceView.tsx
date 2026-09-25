@@ -1,4 +1,5 @@
 import { Workspace } from "@superset/panes";
+import { FORK_CHAT_V3_DISABLED } from "@superset/shared/fork-disabled-features";
 import { workspaceTrpc } from "@superset/workspace-client";
 import { useMatchRoute } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
@@ -16,7 +17,6 @@ import { SidebarToggle } from "renderer/routes/_authenticated/_dashboard/compone
 import { WindowControlsInset } from "renderer/routes/_authenticated/_dashboard/components/WindowControlsInset";
 import { CommandPalette } from "renderer/screens/main/components/CommandPalette";
 import { ResizablePanel } from "renderer/screens/main/components/ResizablePanel";
-import { useLocalChatEnabled } from "renderer/stores/local-chat";
 import { getV2NotificationSourcesForTab } from "renderer/stores/v2-notifications";
 import {
 	COLLAPSED_WORKSPACE_SIDEBAR_WIDTH,
@@ -147,8 +147,6 @@ function V2WorkspaceCenter({
 		isLayoutReady,
 		isExitCleanupPending,
 	});
-	// (CLOUD-SEVERANCE-P2) Off by default; see `stores/local-chat`.
-	const isLocalChatEnabled = useLocalChatEnabled();
 	useClearActivePaneAttention({ store });
 	const launcher = useV2TerminalLauncher();
 	const {
@@ -373,7 +371,7 @@ function V2WorkspaceCenter({
 									// on. This is the fork's single entry point to the local
 									// chat pane, and it appears only once the user switches
 									// it on in Experimental settings.
-									onAddChatV3={isLocalChatEnabled ? addChatV3Tab : undefined}
+									onAddChatV3={FORK_CHAT_V3_DISABLED ? undefined : addChatV3Tab}
 									onAddChanges={openChangesPane}
 									onAddDesktop={isSandbox ? addDesktopTab : undefined}
 									showPresetsBar={showPresetsBar}

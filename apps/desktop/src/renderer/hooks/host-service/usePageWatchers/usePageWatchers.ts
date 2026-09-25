@@ -1,6 +1,6 @@
+import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
-import { FORK_PAGE_WATCH_DISABLED } from "renderer/fork-disabled-features";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useWorkspaceEvent } from "../useWorkspaceEvent";
 import { useWorkspaceHostUrl } from "../useWorkspaceHostUrl";

@@ -5,7 +5,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import log from "electron-log/main";
-import { SUPERSET_HOME_DIR } from "../app-environment";
+import {
+	SUPERSET_HOME_DIR,
+	SUPERSET_SENSITIVE_FILE_MODE,
+} from "../app-environment";
 
 // (HOOK-HTTP-DAEMON) Supervisor for the long-lived `superset-notify.py` that
 // serves Claude's lifecycle hooks over loopback HTTP.
@@ -67,13 +70,12 @@ function sleep(ms: number): Promise<void> {
 	});
 }
 
-async function pythonCandidatePaths(): Promise<string[]> {
+async function* pythonCandidatePaths(): AsyncGenerator<string> {
 	const separator = process.platform === "win32" ? ";" : ":";
 	const names =
 		process.platform === "win32"
 			? ["python.exe", "python3.exe"]
 			: ["python3", "python"];
-	const candidates: string[] = [];
 	for (const entry of (process.env.PATH ?? "").split(separator)) {
 		const dir = entry.trim().replace(/^"(.*)"$/, "$1");
 		if (!dir) continue;
@@ -82,10 +84,9 @@ async function pythonCandidatePaths(): Promise<string[]> {
 			// A zero-byte match is Windows' Store "app execution alias" stub,
 			// which opens the Microsoft Store instead of running anything.
 			const stat = await fs.promises.stat(candidate).catch(() => null);
-			if (stat?.isFile() && stat.size > 0) candidates.push(candidate);
+			if (stat?.isFile() && stat.size > 0) yield candidate;
 		}
 	}
-	return candidates;
 }
 
 function runPythonProbe(candidate: string): Promise<string | null> {
@@ -116,7 +117,7 @@ let pythonPathPromise: Promise<string | null> | null = null;
 
 export function resolvePythonPath(): Promise<string | null> {
 	pythonPathPromise ??= (async () => {
-		for (const candidate of await pythonCandidatePaths()) {
+		for await (const candidate of pythonCandidatePaths()) {
 			const version = await runPythonProbe(candidate);
 			if (version) {
 				log.info(`[notify-daemon] using python ${version} at ${candidate}`);
@@ -543,7 +544,9 @@ export class NotifyDaemon {
 async function writeOwnerOnly(file: string, contents: string): Promise<void> {
 	const pending = `${file}.pending`;
 	await fs.promises.rm(pending, { force: true });
-	await fs.promises.writeFile(pending, contents, { mode: 0o600 });
+	await fs.promises.writeFile(pending, contents, {
+		mode: SUPERSET_SENSITIVE_FILE_MODE,
+	});
 	await fs.promises.rename(pending, file);
 }
 
@@ -781,7 +784,7 @@ export async function carriedOrMintedSecret(
 		await fs.promises.mkdir(path.dirname(secretFile), { recursive: true });
 		await fs.promises.writeFile(secretFile, minted, {
 			flag: "wx",
-			mode: 0o600,
+			mode: SUPERSET_SENSITIVE_FILE_MODE,
 		});
 		return minted;
 	} catch (error) {

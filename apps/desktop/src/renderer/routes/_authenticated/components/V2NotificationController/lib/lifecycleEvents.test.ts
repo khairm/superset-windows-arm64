@@ -117,7 +117,6 @@ function fire(overrides: Partial<AgentLifecyclePayload> = {}): void {
 		workspaceId: WORKSPACE,
 		payload: payload(overrides),
 		paneLayout: layout,
-		fromReplay: false,
 	});
 }
 
@@ -197,7 +196,6 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 			workspaceId: WORKSPACE,
 			payload: payload({ terminalId: "terminal-2", occurredAt: 5_000 }),
 			paneLayout: layout,
-			fromReplay: false,
 		});
 		await settle();
 		expect(seenCalls).toEqual([]);
@@ -233,21 +231,22 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 * whose card is meant to survive a relaunch until the user looks.
 	 */
 	it("does NOT report on the replay path, however visible and focused", async () => {
-		markV2AgentLifecycleTargetSeen({
+		const { replayV2AgentLifecycleState } = await import("./lifecycleEvents");
+		let state = useV2NotificationStore.getState();
+		state = replayV2AgentLifecycleState(state, {
 			workspaceId: WORKSPACE,
 			payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
 			paneLayout: layout,
-			fromReplay: true,
 		});
-		markV2AgentLifecycleTargetSeen({
+		state = replayV2AgentLifecycleState(state, {
 			workspaceId: WORKSPACE,
 			payload: payload({ eventType: "Failed", occurredAt: 6_000 }),
 			paneLayout: layout,
-			fromReplay: true,
 		});
 		await settle();
 		expect(seenCalls).toEqual([]);
 		// And no local mark either — the replay is not evidence of a read.
+		expect(state.terminalSeenAt[TERMINAL]).toBeUndefined();
 		expect(
 			useV2NotificationStore.getState().terminalSeenAt[TERMINAL],
 		).toBeUndefined();
@@ -295,17 +294,20 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 	 * user is looking at, on every reconnect.
 	 */
 	it("still clears a REPLAYED turn end on the pane the user is looking at", async () => {
-		markV2AgentLifecycleTargetSeen({
-			workspaceId: WORKSPACE,
-			payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
-			paneLayout: layout,
-			fromReplay: true,
-		});
+		const { replayV2AgentLifecycleState } = await import("./lifecycleEvents");
+		const state = replayV2AgentLifecycleState(
+			useV2NotificationStore.getState(),
+			{
+				workspaceId: WORKSPACE,
+				payload: payload({ eventType: "Stop", occurredAt: 5_000 }),
+				paneLayout: layout,
+			},
+		);
 		await settle();
 		const key = getV2NotificationSourceKey(
 			getV2TerminalNotificationSource(TERMINAL),
 		);
-		expect(useV2NotificationStore.getState().sources[key]).toBeUndefined();
+		expect(state.sources[key]).toBeUndefined();
 		expect(seenCalls).toEqual([]);
 	});
 
@@ -322,7 +324,6 @@ describe("(ALERT-RETIRE-ON-EXIT) the visible-clear hop", () => {
 			workspaceId: WORKSPACE,
 			payload: payload({ terminalId: "terminal-2", occurredAt: 5_000 }),
 			paneLayout: layout,
-			fromReplay: false,
 		});
 		await settle();
 		expect(seenCalls).toEqual([]);
@@ -375,7 +376,6 @@ describe("shared lifecycle state transform", () => {
 				workspaceId: WORKSPACE,
 				payload: payload(),
 				paneLayout: null,
-				fromReplay: false,
 			});
 			expect(useV2NotificationStore.getState().sources).toEqual(
 				replayed.sources,

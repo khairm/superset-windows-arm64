@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createSerialQueue } from "../serial-queue";
 import {
 	adoptRunningNotifyDaemon,
 	awaitAdoptedNotifyDaemonExit,
@@ -322,6 +323,41 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 `;
+
+/**
+ * (HOOK-HTTP-DAEMON) The per-request values the notify script needs, and the
+ * request headers they travel in. Claude interpolates `$VAR` in a header value
+ * only for names listed in the entry's `allowedEnvVars`, so this one list is
+ * both the allowlist and the header set.
+ *
+ * SUPERSET_HOME_DIR is deliberately NOT here: Claude's http-hook sender throws
+ * ERR_INVALID_CHAR before sending when a header value holds a code point above
+ * U+00FF, and that value is a Windows profile path. The daemon reads it from
+ * its own environment instead, and reads the terminal's own root out of the
+ * transcript path in the payload, which is what keeps the manifest failover
+ * working for an instance whose terminals POST a daemon it did not start.
+ */
+const NOTIFY_HOOK_ENV_VARS = [
+	"SUPERSET_TERMINAL_ID",
+	"SUPERSET_AGENT_ID",
+	"SUPERSET_ORGANIZATION_ID",
+	"SUPERSET_HOST_AGENT_HOOK_URL",
+	"SUPERSET_AGENT_WATCHER_DEBUG",
+];
+
+function notifyHeaderForEnvVar(name: string): string {
+	const titled = name
+		.toLowerCase()
+		.split("_")
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join("-");
+	return `X-${titled}`;
+}
+
+/** The same map as a Python dict body, so the daemon cannot drift from it. */
+const NOTIFY_HOOK_PYTHON_HEADER_MAP = NOTIFY_HOOK_ENV_VARS.map(
+	(name) => `    "${name}": "${notifyHeaderForEnvVar(name).toLowerCase()}",`,
+).join("\n");
 
 // Exported for `pane-map-hook.test.ts`, which runs this exact source through a
 // real python3 so the dot/lifecycle decisions are tested as shipped.
@@ -3818,11 +3854,7 @@ _HOOK_PATH = "/superset-notify/hook"
 _HEALTH_PATH = "/superset-notify/health"
 _SECRET_HEADER = "x-superset-notify-secret"
 _HEADER_FOR_CTX_NAME = {
-    "SUPERSET_TERMINAL_ID": "x-superset-terminal-id",
-    "SUPERSET_AGENT_ID": "x-superset-agent-id",
-    "SUPERSET_ORGANIZATION_ID": "x-superset-organization-id",
-    "SUPERSET_HOST_AGENT_HOOK_URL": "x-superset-host-agent-hook-url",
-    "SUPERSET_AGENT_WATCHER_DEBUG": "x-superset-agent-watcher-debug",
+${NOTIFY_HOOK_PYTHON_HEADER_MAP}
 }
 # SUPERSET_HOME_DIR does NOT travel in a header: Claude interpolates it into one
 # and its sender throws ERR_INVALID_CHAR before the request leaves when a header
@@ -4371,36 +4403,6 @@ function notifyHookCommand(pythonPath: string | null): string {
 	return `${pythonInvocation(pythonPath)} "${escapeForJsonString(NOTIFY_SCRIPT_PATH)}"`;
 }
 
-/**
- * (HOOK-HTTP-DAEMON) The per-request values the notify script needs, and the
- * request headers they travel in. Claude interpolates `$VAR` in a header value
- * only for names listed in the entry's `allowedEnvVars`, so this one list is
- * both the allowlist and the header set.
- *
- * SUPERSET_HOME_DIR is deliberately NOT here: Claude's http-hook sender throws
- * ERR_INVALID_CHAR before sending when a header value holds a code point above
- * U+00FF, and that value is a Windows profile path. The daemon reads it from
- * its own environment instead, and reads the terminal's own root out of the
- * transcript path in the payload, which is what keeps the manifest failover
- * working for an instance whose terminals POST a daemon it did not start.
- */
-const NOTIFY_HOOK_ENV_VARS = [
-	"SUPERSET_TERMINAL_ID",
-	"SUPERSET_AGENT_ID",
-	"SUPERSET_ORGANIZATION_ID",
-	"SUPERSET_HOST_AGENT_HOOK_URL",
-	"SUPERSET_AGENT_WATCHER_DEBUG",
-];
-
-function notifyHeaderForEnvVar(name: string): string {
-	const titled = name
-		.toLowerCase()
-		.split("_")
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join("-");
-	return `X-${titled}`;
-}
-
 export type CommandTransport = { kind: "command"; pythonPath: string | null };
 export type NotifyTransport =
 	| CommandTransport
@@ -4900,6 +4902,12 @@ async function mergeSharedHookFiles(
 	}
 }
 
+// (HOOK-HTTP-DAEMON) Two writers touch the same `<file>.pending`, so each waits
+// out the ones queued before it. `drained()` is how a quit waits for every
+// hook-file write in flight — which is why the shared-file merge and the
+// command-transport restore queue here too, not just the profile mirror.
+const queueHookWrite = createSerialQueue();
+
 /** Queued, so it cannot interleave with a profile mirror's `.pending` writes. */
 function mergeAllHooks(
 	paneMapPython: string | null,
@@ -4940,21 +4948,6 @@ function mergeAllHooksSync(
 	});
 }
 
-// (HOOK-HTTP-DAEMON) Two writers touch the same `<file>.pending`, so each waits
-// out the ones queued before it. Awaiting the queue itself is how a quit waits
-// for every hook-file write in flight — which is why the shared-file merge and
-// the command-transport restore queue here too, not just the profile mirror.
-let hookWriteQueue: Promise<void> = Promise.resolve();
-
-function queueHookWrite<T>(write: () => Promise<T>): Promise<T> {
-	const queued = hookWriteQueue.then(write);
-	hookWriteQueue = queued.then(
-		() => undefined,
-		() => undefined,
-	);
-	return queued;
-}
-
 /**
  * (HOOK-HTTP-DAEMON) A Superset terminal on a Pi-capable host launches Claude
  * with `CLAUDE_CONFIG_DIR=<db-dir>/claude-profiles/<uuid>`, whose settings.json
@@ -4978,6 +4971,52 @@ export function mirrorHooksIntoProfiles(
 	);
 }
 
+const PROFILE_MIRROR_CONCURRENCY = 8;
+
+/**
+ * (HOOK-HTTP-DAEMON) What this process last left in each profile's
+ * settings.json, keyed by that file's path. The mirror re-runs on every
+ * transport hand-back and on the 60s resweep over the same hundreds of
+ * folders, and a copy nobody has touched since needs neither a read nor a
+ * write — its size, mtime and the transport it was written for answer the
+ * whole question from one stat.
+ */
+const mirroredProfiles = new Map<
+	string,
+	{ size: number; mtimeMs: number; rewriteKey: string; mirrored: boolean }
+>();
+
+function hookRewriteKey(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): string {
+	return JSON.stringify([paneMapPython, notify]);
+}
+
+function statOrNull(target: string): Promise<fs.Stats | null> {
+	return fs.promises.stat(target).then(
+		(stats) => stats,
+		() => null,
+	);
+}
+
+async function mapBounded<T>(
+	items: readonly T[],
+	limit: number,
+	fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+	let next = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(limit, items.length) }, async () => {
+			while (next < items.length) {
+				const index = next;
+				next += 1;
+				await fn(items[index] as T, index);
+			}
+		}),
+	);
+}
+
 async function mirrorProfiles(
 	paneMapPython: string | null,
 	notify: NotifyTransport | null,
@@ -4985,21 +5024,45 @@ async function mirrorProfiles(
 ): Promise<string[]> {
 	const dirs = profileDirs ?? (await claudeProfileDirsAsync());
 	const rewrite = hookRewrite(paneMapPython, notify);
-	const mirrored: string[] = [];
-	for (const profileDir of dirs) {
+	const mode = hookFileMode(notify);
+	const rewriteKey = hookRewriteKey(paneMapPython, notify);
+	// Index-keyed, so the bounded fan-out still answers in profile order.
+	const mirrored: (string | null)[] = dirs.map(() => null);
+	await mapBounded(dirs, PROFILE_MIRROR_CONCURRENCY, async (profileDir, i) => {
 		const settingsPath = path.join(profileDir, "settings.json");
-		if (!(await pathExists(settingsPath))) continue;
+		const before = await statOrNull(settingsPath);
+		if (!before) return;
+		const memo = mirroredProfiles.get(settingsPath);
+		// A wrong mode falls through to the rewrite rather than being chmodded
+		// here: that path already owns the failure reporting for it.
+		if (
+			memo &&
+			memo.rewriteKey === rewriteKey &&
+			memo.size === before.size &&
+			memo.mtimeMs === before.mtimeMs &&
+			(mode === undefined || (before.mode & 0o777) === mode)
+		) {
+			if (memo.mirrored) mirrored[i] = profileDir;
+			return;
+		}
 		// (HOOK-HTTP-DAEMON) A profile whose write did not land still reads the
 		// old transport, and naming it here would let its sessions speak for the
 		// new one: the traffic gate would call a working daemon unused.
-		const written = await rewriteHookFileAsync(
-			settingsPath,
-			rewrite,
-			hookFileMode(notify),
-		);
-		if (written) mirrored.push(profileDir);
-	}
-	return mirrored;
+		const written = await rewriteHookFileAsync(settingsPath, rewrite, mode);
+		const after = await statOrNull(settingsPath);
+		if (after) {
+			mirroredProfiles.set(settingsPath, {
+				size: after.size,
+				mtimeMs: after.mtimeMs,
+				rewriteKey,
+				mirrored: written,
+			});
+		} else {
+			mirroredProfiles.delete(settingsPath);
+		}
+		if (written) mirrored[i] = profileDir;
+	});
+	return mirrored.filter((dir): dir is string => dir !== null);
 }
 
 /**
@@ -5070,7 +5133,7 @@ function fallBackToCommandTransport(reason: CommandTransportReason): void {
 export async function stopNotifyHookDaemon(): Promise<void> {
 	cancelNotifyDaemonRun();
 	fallBackToCommandTransport("daemon-stopped");
-	await hookWriteQueue;
+	await queueHookWrite.drained();
 	await stopNotifyDaemon();
 }
 

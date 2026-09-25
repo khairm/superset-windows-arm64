@@ -1,7 +1,7 @@
+import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import type { PageWatchStatus } from "../../../page-watch/index.ts";
-import { FORK_PAGE_WATCH_DISABLED } from "../../../page-watch/page-watch-manager.ts";
 import { protectedProcedure, router } from "../../index";
 
 const assignInputSchema = z.object({

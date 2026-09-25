@@ -56,6 +56,10 @@
 			"types": "./src/constants.ts",
 			"default": "./src/constants.ts"
 		},
+		"./fork-disabled-features": {
+			"types": "./src/fork-disabled-features.ts",
+			"default": "./src/fork-disabled-features.ts"
+		},
 		"./format-scaled": {
 			"types": "./src/format-scaled.ts",
 			"default": "./src/format-scaled.ts"

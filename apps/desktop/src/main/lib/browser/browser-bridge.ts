@@ -10,6 +10,8 @@
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, Server } from "node:http";
+// (FORK-BROWSER-OFF)
+import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import log from "electron-log";
 import express, { type Request, type Response } from "express";
 import { type WebSocket, WebSocketServer } from "ws";
@@ -85,9 +87,6 @@ function withPane(
 	}
 	fn(wc, scope.paneId, scope.workspaceId);
 }
-
-// (FORK-BROWSER-OFF)
-export const FORK_BROWSER_PANES_DISABLED: boolean = true;
 
 export async function startBrowserBridge(): Promise<void> {
 	if (FORK_BROWSER_PANES_DISABLED) return;

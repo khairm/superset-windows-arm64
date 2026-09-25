@@ -1,11 +1,11 @@
 import { useLingui } from "@lingui/react/macro";
+import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
 import { Button } from "@superset/ui/button";
 import {
 	CommentModeButton,
 	PageSharePopover,
 } from "@superset/ui/page-comments";
 import { Share2 } from "lucide-react";
-import { FORK_PAGE_WATCH_DISABLED } from "renderer/fork-disabled-features";
 import { usePageHeaderData } from "renderer/routes/_authenticated/_dashboard/hooks/usePageHeaderData";
 import type { PagePaneData } from "../../../../types";
 import { usePagePaneUi } from "../../hooks/usePagePaneUi";

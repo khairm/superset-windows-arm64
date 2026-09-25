@@ -4427,15 +4427,19 @@ async function createTerminalSessionUnlocked(
 					// portManager.checkOutputForHint runs URL/port regexes on
 					// strings; the per-session StringDecoder buffers partial
 					// codepoints across chunks. This is a side branch — the
-					// transport above stays on bytes.
-					const hintText = session.portHintDecoder.write(
-						bytes instanceof Buffer
-							? bytes
-							: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-					);
-					// Runs even when the decoder buffers a partial codepoint into ""
-					// — the chunk is still output and must refresh the idle clock.
-					portManager.checkOutputForHint(terminalId, hintText);
+					// transport above stays on bytes. (FORK-PORTS-OFF) With scanning
+					// off the decode feeds a call that returns immediately, so the
+					// hot path skips it entirely.
+					if (portManager.wantsOutputHints()) {
+						const hintText = session.portHintDecoder.write(
+							bytes instanceof Buffer
+								? bytes
+								: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+						);
+						// Runs even when the decoder buffers a partial codepoint into ""
+						// — the chunk is still output and must refresh the idle clock.
+						portManager.checkOutputForHint(terminalId, hintText);
+					}
 
 					const dsrQueries = scanForDsrCursorQueries(session, bytes);
 					deliverOutput(session, bytes);

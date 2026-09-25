@@ -1043,6 +1043,7 @@ describe("disabled port scanning", () => {
 			},
 		});
 		disabled.upsertSession("terminal", "workspace", 123);
+		expect(disabled.wantsOutputHints()).toBe(false);
 		disabled.checkOutputForHint("terminal", "listening on 3000");
 		await disabled.forceScan();
 		expect(disabled.getRegisteredTerminalIds()).toEqual([]);
@@ -1056,5 +1057,13 @@ describe("disabled port scanning", () => {
 		).toEqual({ success: false, error: "Port scanning is disabled" });
 		expect(killed).toBe(false);
 		disabled.stopPeriodicScan();
+	});
+
+	it("asks for output hints while scanning is on", () => {
+		const enabled = new PortManager({
+			killFn: async () => ({ success: true }),
+		});
+		expect(enabled.wantsOutputHints()).toBe(true);
+		enabled.stopPeriodicScan();
 	});
 });

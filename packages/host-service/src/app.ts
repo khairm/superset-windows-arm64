@@ -8,16 +8,16 @@ import { SANDBOX_PORTS } from "@superset/shared/sandbox-contract";
 const MAX_DISPLAY_BUFFER_BYTES = 32 * 1024 * 1024;
 const MAX_DISPLAY_PENDING = 64;
 
+import {
+	FORK_CHAT_V3_DISABLED,
+	FORK_PORT_SCAN_DISABLED,
+} from "@superset/shared/fork-disabled-features";
 import { TRPCError } from "@trpc/server";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createSeveredApiClient } from "./api";
-import {
-	createChatV3Mount,
-	FORK_CHAT_V3_DISABLED,
-	registerChatV3Routes,
-} from "./chat-v3";
+import { createChatV3Mount, registerChatV3Routes } from "./chat-v3";
 import {
 	type ClaudeAccountsService,
 	createClaudeAccountsService,
@@ -27,7 +27,7 @@ import { createDb, type HostDb } from "./db";
 import { EventBus, GitWatcher, registerEventBusRoute } from "./events";
 import { agentIsBusy, PageWatchManager } from "./page-watch/index.ts";
 import { registerForwardMuxRoute } from "./ports/forward-mux-route";
-import { FORK_PORT_SCAN_DISABLED, portManager } from "./ports/port-manager";
+import { portManager } from "./ports/port-manager";
 import type { ApiAuthProvider } from "./providers/auth";
 import type { HostAuthProvider } from "./providers/host-auth";
 import { runArchivedWorkspaceReconcile } from "./runtime/archived-workspace-reconcile";

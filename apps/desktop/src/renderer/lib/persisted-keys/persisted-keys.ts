@@ -42,6 +42,9 @@ export const DEAD_KEYS: DeadKey[] = [
 	{ key: "leaderboard-auto-publish-v1", match: "exact" },
 	// Launch-time "join the leaderboard" prompt removed; joining lives in settings
 	{ key: "leaderboard-asked-v1", match: "exact" },
+	// (FORK-CHAT-V3-OFF) The v3 local chat pane is off and its settings row is
+	// gone, so nothing reads or writes this any more
+	{ key: "local-chat", match: "exact" },
 ];
 
 function matchesDeadKey(key: string): boolean {

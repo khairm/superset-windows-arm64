@@ -1,3 +1,5 @@
+// (FORK-PAGE-WATCH-OFF)
+import { FORK_PAGE_WATCH_DISABLED } from "@superset/shared/fork-disabled-features";
 import type { EventBus } from "../events/event-bus.ts";
 import { buildWatchPrompt } from "./buildPrompt.ts";
 import { selectThreadsToDeliver } from "./trigger.ts";
@@ -8,8 +10,6 @@ import type {
 	WatchedThread,
 } from "./types.ts";
 
-// (FORK-PAGE-WATCH-OFF)
-export const FORK_PAGE_WATCH_DISABLED: boolean = true;
 export const TICK_INTERVAL_MS = 5_000;
 export const IDLE_AFTER_MS = 5 * 60_000;
 export const IDLE_TICK_INTERVAL_MS = 60_000;

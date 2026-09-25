@@ -7,6 +7,10 @@ import type {
 	WorkspaceStore,
 } from "@superset/panes";
 import { FEATURE_FLAGS } from "@superset/shared/constants";
+import {
+	FORK_BROWSER_PANES_DISABLED,
+	FORK_CHAT_V3_DISABLED,
+} from "@superset/shared/fork-disabled-features";
 import { alert } from "@superset/ui/atoms/Alert";
 import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
@@ -32,7 +36,6 @@ import {
 	LuLink,
 	LuPower,
 } from "react-icons/lu";
-import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
 import { useWorkspaceHostTarget } from "renderer/hooks/host-service/useWorkspaceHostUrl";
 import { useHotkeyDisplay } from "renderer/hotkeys";
 import { FileIcon } from "renderer/lib/fileIcons";
@@ -47,7 +50,6 @@ import { terminalRuntimeRegistry } from "renderer/lib/terminal/terminal-runtime-
 import type { OpenFile } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
-import { useLocalChatEnabled } from "renderer/stores/local-chat";
 import { getV2NotificationSourcesForPane } from "renderer/stores/v2-notifications";
 import type { StoreApi } from "zustand/vanilla";
 import { V2NotificationStatusIndicator } from "../../components/V2NotificationStatusIndicator";
@@ -165,9 +167,6 @@ export function usePaneRegistry({
 	const { t } = useLingui();
 	const { workspace } = useWorkspace();
 	const workspaceId = workspace.id;
-	// (CLOUD-SEVERANCE-P1) `chat-v3` rides a fork user setting rather than
-	// upstream's CHAT_V3 PostHog flag, which is pinned false forever here.
-	const isLocalChatEnabled = useLocalChatEnabled();
 	const host = useWorkspaceHostTarget(workspaceId);
 	const desktopUrl =
 		host.status === "ready" && host.kind === "sandbox" ? host.desktopUrl : null;
@@ -750,7 +749,7 @@ export function usePaneRegistry({
 					}
 				: {}),
 			// (CLOUD-SEVERANCE-P2) (FORK-CHAT-V3-OFF)
-			...(isLocalChatEnabled
+			...(!FORK_CHAT_V3_DISABLED
 				? {
 						"chat-v3": {
 							getIcon: () => <MessageSquare className="size-3.5" />,
@@ -942,7 +941,6 @@ export function usePaneRegistry({
 		[
 			store,
 			workspaceId,
-			isLocalChatEnabled,
 			isPagesEnabled,
 			clearWorkspaceRunTerminal,
 			clearShortcut,

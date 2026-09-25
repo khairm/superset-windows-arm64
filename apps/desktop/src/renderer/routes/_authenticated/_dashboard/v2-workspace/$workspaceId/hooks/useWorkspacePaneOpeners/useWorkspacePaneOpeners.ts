@@ -1,6 +1,6 @@
 import type { WorkspaceStore } from "@superset/panes";
+import { FORK_CHAT_V3_DISABLED } from "@superset/shared/fork-disabled-features";
 import { useCallback } from "react";
-import { FORK_CHAT_V3_DISABLED } from "renderer/fork-disabled-features";
 import type { V2UserPreferencesApi } from "renderer/hooks/useV2UserPreferences";
 import { useWorkspace } from "renderer/routes/_authenticated/_dashboard/v2-workspace/providers/WorkspaceProvider";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";

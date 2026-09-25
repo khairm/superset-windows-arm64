@@ -6,8 +6,8 @@ import {
 	type WorkspaceProps,
 	type WorkspaceStore,
 } from "@superset/panes";
+import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
 import { useV2UserPreferences } from "renderer/hooks/useV2UserPreferences";
 import { useHotkey } from "renderer/hotkeys";
 import type { V2TerminalPresetRow } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
@@ -19,7 +19,7 @@ import type {
 	PaneViewerData,
 	TerminalPaneData,
 } from "../../types";
-import { DEFAULT_BROWSER_URL } from "../usePaneRegistry/components/BrowserPane/constants";
+import { useDefaultBrowserUrl } from "../useDefaultBrowserUrl";
 import type { TerminalLauncher } from "../useV2TerminalLauncher";
 
 export function useWorkspaceHotkeys({
@@ -44,6 +44,7 @@ export function useWorkspaceHotkeys({
 	onBeforeCloseTab?: WorkspaceProps<PaneViewerData>["onBeforeCloseTab"];
 }) {
 	const { setRightSidebarOpen } = useV2UserPreferences();
+	const defaultBrowserUrl = useDefaultBrowserUrl();
 	const visiblePresets = useMemo(
 		() => matchedPresets.filter((preset) => preset.pinnedToBar !== false),
 		[matchedPresets],
@@ -82,7 +83,7 @@ export function useWorkspaceHotkeys({
 				{
 					kind: "browser",
 					data: {
-						url: DEFAULT_BROWSER_URL,
+						url: defaultBrowserUrl,
 					} as BrowserPaneData,
 				},
 			],
@@ -298,7 +299,7 @@ export function useWorkspaceHotkeys({
 			newPane: {
 				kind: "browser",
 				data: {
-					url: DEFAULT_BROWSER_URL,
+					url: defaultBrowserUrl,
 				} as BrowserPaneData,
 			},
 		});

@@ -208,6 +208,15 @@ export class PortManager extends EventEmitter {
 	 * Called on every PTY output chunk: any output keeps the session on the
 	 * fast scan cadence, and server-startup phrases trigger a prompt scan.
 	 */
+	/**
+	 * (FORK-PORTS-OFF) Whether a caller should bother decoding PTY bytes to text
+	 * for `checkOutputForHint`. With scanning off that decode is pure cost on
+	 * every chunk of every terminal.
+	 */
+	wantsOutputHints(): boolean {
+		return !this.disabled;
+	}
+
 	checkOutputForHint(terminalId: string, data: string): void {
 		if (this.disabled) return;
 		const session = this.sessions.get(terminalId);

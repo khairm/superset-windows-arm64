@@ -2,6 +2,7 @@ import type { Pane, Tab, WorkspaceState } from "@superset/panes";
 import { eq } from "@tanstack/db";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMemo } from "react";
+import { AGENT_DOTS_LOG, agentDotsLog } from "renderer/lib/agent-dots-log";
 import { createDebouncedSessionStorage } from "renderer/lib/debounced-session-storage";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 // (AY) DisplayStatus (ActivePaneStatus | "shell-running") is owned by the
@@ -14,24 +15,6 @@ import {
 } from "shared/tabs-types";
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
-
-// Diagnostic logging for the agent-status-dots pipeline. console.info with
-// an "[agent-dots]" prefix so the main process forwarder persists it to
-// electron-log (main.log). Logging-only; flip NLOG to silence. NOTE: only
-// the mutators are instrumented — selectors (selectStatusForSourceKeys) are
-// hot and intentionally left untouched. See patches/notification-logging.patch.
-// (NOTIF-STORE-DEBOUNCE)
-const NLOG = false;
-function ndots(record: Record<string, unknown>): void {
-	if (!NLOG) return;
-	try {
-		console.info(
-			`[agent-dots] ${JSON.stringify({ ts: new Date().toISOString(), ...record })}`,
-		);
-	} catch {
-		// never let logging crash the renderer
-	}
-}
 
 export type V2NotificationPaneLike = Pick<Pane<unknown>, "kind" | "data">;
 export type V2NotificationTabLike = Pick<Tab<unknown>, "panes">;
@@ -304,13 +287,13 @@ function logWorkspaceClear({
 	workspaceId: string;
 	shouldClear?: (source: V2NotificationStatusEntry) => boolean;
 }): void {
-	if (!NLOG) return;
+	if (!AGENT_DOTS_LOG) return;
 	const now = Date.now();
 	for (const [sourceKey, source] of Object.entries(
 		useV2NotificationStore.getState().sources,
 	)) {
 		if (source.workspaceId !== workspaceId || !shouldClear(source)) continue;
-		ndots({
+		agentDotsLog({
 			event: "store_mutation",
 			mutation,
 			sourceKey,
@@ -735,7 +718,7 @@ export const useV2NotificationStore = create<V2NotificationState>()(
 				},
 				clearSourceStatus: (source, workspaceId) => {
 					const sourceKey = getV2NotificationSourceKey(source);
-					ndots({
+					agentDotsLog({
 						event: "store_mutation",
 						mutation: "clearSourceStatus",
 						sourceKey,

@@ -1,12 +1,11 @@
+// (FORK-BROWSER-OFF)
+import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { BrowserBridgeClient } from "../../../runtime/browser-bridge/browser-bridge-client";
 import type { HostServiceContext } from "../../../types";
 import { getLocalWorkspace } from "../../../workspaces/local-workspace-store";
 import { protectedProcedure, router } from "../../index";
-
-// (FORK-BROWSER-OFF)
-const FORK_BROWSER_PANES_DISABLED: boolean = true;
 
 function requireBridge(ctx: HostServiceContext): BrowserBridgeClient {
 	if (FORK_BROWSER_PANES_DISABLED) {

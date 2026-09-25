@@ -128,7 +128,7 @@ in the merge that drops it (the only legitimate way a marker leaves this list).
 | Notification dot persistence is debounced | notification dots persist all seven maps through a typed `sessionStorage` wrapper that batches writes at 250 ms with a 1 s ceiling and flushes on page exit or hide, instead of serialising every map on every dot change. Host resync publishes ONE snapshot rather than a stream, and mints no phone alerts while doing it; the noisy per-dot diagnostics are gone. THE COST IS EXPLICIT — a renderer crash can lose up to 1 s of dot changes, which the host's own resync then restores | `(NOTIF-STORE-DEBOUNCE)` |
 | Terminal-agent bindings invalidation coalesces | every terminal mounting its own bindings subscription meant N identical query invalidations per host event, each cancelling the last one's in-flight read. One owner per host now schedules a single trailing refresh for all of its subscribers, and the sidebar workspace-status provider deliberately keeps no `git:changed` listener of its own so it cannot race the same key | `(BINDINGS-COALESCE)` |
 | Diff-stats cold cache | the sidebar's per-workspace diff stats re-walked every worktree on every status poll. A cold walk is now recorded against the checkout identity that produced it (HEAD plus base ref), so a workspace nobody touched is answered from that record instead of walked again; only the cold walk tracks the paths it could not read, and a per-workspace limiter serialises the status snapshot against the batched diff-stats query so the two cannot duplicate each other's work. Base-ref freshness and repair are part of the identity, so a moved base branch invalidates the record rather than serving stale counts | `(DIFFSTATS-COLD-CACHE)` |
-| Unused upstream features are switched off | four upstream features this fork does not use were costing startup work, host-service mounts and background polling: in-app browser panes, page watchers, the v3 local chat pane, and port scanning. Each is gated by one `const` in `apps/desktop/src/renderer/fork-disabled-features.ts` (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`, `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`), with matching guards on the host-service side so the routers and managers are never mounted. The panes stay REACHABLE but inert — a saved layout referencing one restores a disabled placeholder rather than throwing — their entry points leave the tab menu, hotkeys, top bar and settings, and opening a URL falls back to the system browser. Flipping a switch to `false` is the whole re-enable path | `(FORK-BROWSER-OFF)`, `(FORK-PAGE-WATCH-OFF)`, `(FORK-CHAT-V3-OFF)`, `(FORK-PORTS-OFF)` |
+| Unused upstream features are switched off | four upstream features this fork does not use were costing startup work, host-service mounts and background polling: in-app browser panes, page watchers, the v3 local chat pane, and port scanning. Each is gated by one `const` in ONE module, `packages/shared/src/fork-disabled-features.ts` (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`, `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`), imported by the renderer, Electron main and the host-service alike so the routers and managers are never mounted either. The panes stay REACHABLE but inert — a saved layout referencing one restores a disabled placeholder rather than throwing — their entry points leave the tab menu, hotkeys, top bar and settings, and opening a URL falls back to the system browser. Flipping a switch to `false` is NOT the whole re-enable path: the browser and chat CALLERS were removed from this fork (`addBrowserTab`, `onAddBrowser`, `LocalChatSetting`, and the local-chat store behind it), so re-enabling either one also needs those restored from upstream. Page watch and port scanning have no removed callers and do come back on the const alone. The chat pane's orphaned `local-chat` localStorage key went to `DEAD_KEYS` with its writer, per the persisted-state policy in `apps/desktop/AGENTS.md` | `(FORK-BROWSER-OFF)`, `(FORK-PAGE-WATCH-OFF)`, `(FORK-CHAT-V3-OFF)`, `(FORK-PORTS-OFF)` |
 | Main-thread blocking-fs ratchet | `apps/desktop/src/no-main-process-blocking.test.ts` counts `statSync`/`readFileSync`/`readSync`/`openSync`/`appendFileSync`/`renameSync`/`existsSync` per file under `apps/desktop/src/main` and asserts EXACT counts against a checked-in baseline in both directions: a rise is a new blocking call site, a drop must lower the baseline so the ratchet only tightens. It sits beside the three upstream rules in that file (sync subprocess, sync recursive fs, in-process git) and is scoped to `main/` because that is the boot path the blank-window footgun is about. `main/git-task-worker.ts` is the only worker entry point under `main/` and has zero matches, so no exemption is listed | `(BLOCKING-FS-RATCHET)` |
 
 ## Machine-readable markers (the nightly gate reads this block)
@@ -449,23 +449,23 @@ setAccessibilitySupportEnabled	apps/desktop/src/main/windows/main.ts
 (DIFFSTATS-COLD-CACHE)	packages/host-service/src/runtime/git
 (DIFFSTATS-COLD-CACHE)	packages/host-service/src/workspaces
 (DIFFSTATS-COLD-CACHE)	packages/host-service/src/workers/tasks/git.ts
-(FORK-BROWSER-OFF)	apps/desktop/src/renderer/fork-disabled-features.ts
+(FORK-BROWSER-OFF)	packages/shared/src/fork-disabled-features.ts
 (FORK-BROWSER-OFF)	apps/desktop/src/main/lib/browser
 (FORK-BROWSER-OFF)	apps/desktop/src/main/index.ts
 (FORK-BROWSER-OFF)	apps/desktop/src/renderer/routes/_authenticated
 (FORK-BROWSER-OFF)	packages/host-service/src/trpc/router/browser
-(FORK-PAGE-WATCH-OFF)	apps/desktop/src/renderer/fork-disabled-features.ts
+(FORK-PAGE-WATCH-OFF)	packages/shared/src/fork-disabled-features.ts
 (FORK-PAGE-WATCH-OFF)	apps/desktop/test/integration/fork-disabled-features.integration.test.ts
 (FORK-PAGE-WATCH-OFF)	packages/host-service/src/page-watch
 (FORK-PAGE-WATCH-OFF)	packages/host-service/src/trpc/router/page-watch
 (FORK-PAGE-WATCH-OFF)	packages/host-service/src/app.ts
-(FORK-CHAT-V3-OFF)	apps/desktop/src/renderer/fork-disabled-features.ts
-(FORK-CHAT-V3-OFF)	apps/desktop/src/renderer/stores/local-chat.ts
+(FORK-CHAT-V3-OFF)	packages/shared/src/fork-disabled-features.ts
 (FORK-CHAT-V3-OFF)	apps/desktop/src/renderer/routes/_authenticated
+(FORK-CHAT-V3-OFF)	apps/desktop/src/renderer/lib/persisted-keys/persisted-keys.ts
 (FORK-CHAT-V3-OFF)	apps/desktop/test/integration/fork-disabled-features.integration.test.ts
 (FORK-CHAT-V3-OFF)	packages/host-service/src/chat-v3/mount.ts
 (FORK-CHAT-V3-OFF)	packages/host-service/src/app.ts
-(FORK-PORTS-OFF)	apps/desktop/src/renderer/fork-disabled-features.ts
+(FORK-PORTS-OFF)	packages/shared/src/fork-disabled-features.ts
 (FORK-PORTS-OFF)	apps/desktop/src/main/lib/terminal/port-manager.ts
 (FORK-PORTS-OFF)	apps/desktop/src/renderer/routes/_authenticated
 (FORK-PORTS-OFF)	apps/desktop/test/integration/fork-disabled-features.integration.test.ts

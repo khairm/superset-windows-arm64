@@ -1,5 +1,5 @@
 import { createWorkspaceStore, type WorkspaceState } from "@superset/panes";
-import { FORK_BROWSER_PANES_DISABLED } from "renderer/fork-disabled-features";
+import { FORK_BROWSER_PANES_DISABLED } from "@superset/shared/fork-disabled-features";
 import { preserveLocalPaneSelection } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/hooks/useV2WorkspacePaneLayout/utils/preserveLocalPaneSelection";
 import type { PaneViewerData } from "renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/types";
 import {
