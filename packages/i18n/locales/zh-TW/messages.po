@@ -6231,6 +6231,9 @@ msgstr "開啟任務失敗"
 msgid "Failed to open the billing portal"
 msgstr "開啟帳單門戶失敗"
 
+msgid "Failed to open URL in external browser"
+msgstr "在外部瀏覽器中開啟URL失敗"
+
 msgid "Failed to open worktree"
 msgstr "開啟worktree失敗"
 
@@ -10205,9 +10208,6 @@ msgstr "作為評論面板開啟"
 msgid "Open branch on GitHub"
 msgstr "在GitHub上開啟分支"
 
-msgid "Open Browser"
-msgstr "開啟瀏覽器"
-
 msgid "Open changes"
 msgstr "開啟更改"
 
@@ -11135,9 +11135,6 @@ msgstr "埠"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "埠 — {totalPortCount}個活動"
-
-msgid "Ports in top bar dropdown"
-msgstr "頂欄下拉選單中的埠"
 
 msgid "Position"
 msgstr "排名"
@@ -13460,9 +13457,6 @@ msgstr "顯示詳情"
 
 msgid "Show Details"
 msgstr "顯示詳情"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "在頂欄以下拉選單顯示檢測到的埠，而不是在側邊欄每個工作區下顯示標籤。"
 
 msgid "Show device toolbar"
 msgstr "顯示裝置工具列"

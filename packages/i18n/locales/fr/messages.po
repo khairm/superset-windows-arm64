@@ -6231,6 +6231,9 @@ msgstr "Échec de l'ouverture de la tâche"
 msgid "Failed to open the billing portal"
 msgstr "Échec de l'ouverture du portail de facturation"
 
+msgid "Failed to open URL in external browser"
+msgstr "Échec de l'ouverture de l'URL dans le navigateur externe"
+
 msgid "Failed to open worktree"
 msgstr "Échec de l'ouverture du worktree"
 
@@ -10205,9 +10208,6 @@ msgstr "Ouvrir comme panneau de commentaires"
 msgid "Open branch on GitHub"
 msgstr "Ouvrir la branche sur GitHub"
 
-msgid "Open Browser"
-msgstr "Ouvrir le navigateur"
-
 msgid "Open changes"
 msgstr "Ouvrir les modifications"
 
@@ -11135,9 +11135,6 @@ msgstr "Ports"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Ports — {totalPortCount} actifs"
-
-msgid "Ports in top bar dropdown"
-msgstr "Ports dans le menu de la barre supérieure"
 
 msgid "Position"
 msgstr "Position"
@@ -13460,9 +13457,6 @@ msgstr "Afficher les détails"
 
 msgid "Show Details"
 msgstr "Afficher les détails"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Afficher les ports détectés dans un menu déroulant de la barre supérieure plutôt que dans une puce sous chaque espace de travail de la barre latérale."
 
 msgid "Show device toolbar"
 msgstr "Afficher la barre d'appareils"

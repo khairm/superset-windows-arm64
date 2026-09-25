@@ -6231,6 +6231,9 @@ msgstr "Nepodařilo se otevřít úkol"
 msgid "Failed to open the billing portal"
 msgstr "Nepodařilo se otevřít fakturační portál"
 
+msgid "Failed to open URL in external browser"
+msgstr "Nepodařilo se otevřít URL v externím prohlížeči"
+
 msgid "Failed to open worktree"
 msgstr "Nepodařilo se otevřít worktree"
 
@@ -10205,9 +10208,6 @@ msgstr "Otevřít jako panel komentářů"
 msgid "Open branch on GitHub"
 msgstr "Otevřít větev na GitHubu"
 
-msgid "Open Browser"
-msgstr "Otevřít prohlížeč"
-
 msgid "Open changes"
 msgstr "Otevřít změny"
 
@@ -11135,9 +11135,6 @@ msgstr "Porty"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Porty — aktivních: {totalPortCount}"
-
-msgid "Ports in top bar dropdown"
-msgstr "Porty v nabídce horní lišty"
 
 msgid "Position"
 msgstr "Pozice"
@@ -13460,9 +13457,6 @@ msgstr "Zobrazit podrobnosti"
 
 msgid "Show Details"
 msgstr "Zobrazit podrobnosti"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Zobrazovat rozpoznané porty jako rozbalovací nabídku v horní liště místo čipu pod každým pracovním prostorem v postranním panelu."
 
 msgid "Show device toolbar"
 msgstr "Zobrazit panel zařízení"

@@ -6231,6 +6231,9 @@ msgstr "タスクを開けませんでした"
 msgid "Failed to open the billing portal"
 msgstr "請求ポータルを開けませんでした"
 
+msgid "Failed to open URL in external browser"
+msgstr "外部ブラウザでURLを開くのに失敗しました"
+
 msgid "Failed to open worktree"
 msgstr "ワークツリーを開けませんでした"
 
@@ -10205,9 +10208,6 @@ msgstr "コメントペインとして開く"
 msgid "Open branch on GitHub"
 msgstr "GitHubでブランチを開く"
 
-msgid "Open Browser"
-msgstr "ブラウザを開く"
-
 msgid "Open changes"
 msgstr "変更を開く"
 
@@ -11135,9 +11135,6 @@ msgstr "ポート"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "ポート — {totalPortCount}個がライブ"
-
-msgid "Ports in top bar dropdown"
-msgstr "トップバーのドロップダウンにポートを表示"
 
 msgid "Position"
 msgstr "掲載順位"
@@ -13460,9 +13457,6 @@ msgstr "詳細を表示"
 
 msgid "Show Details"
 msgstr "詳細を表示"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "検出したポートを、サイドバーの各ワークスペース下のチップではなくトップバーのドロップダウンに表示します。"
 
 msgid "Show device toolbar"
 msgstr "デバイスツールバーを表示"

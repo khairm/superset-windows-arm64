@@ -6231,6 +6231,9 @@ msgstr "Görev açılamadı"
 msgid "Failed to open the billing portal"
 msgstr "Faturalandırma portalı açılamadı"
 
+msgid "Failed to open URL in external browser"
+msgstr "URL harici tarayıcıda açılamadı"
+
 msgid "Failed to open worktree"
 msgstr "Worktree açılamadı"
 
@@ -10205,9 +10208,6 @@ msgstr "Yorum bölmesi olarak aç"
 msgid "Open branch on GitHub"
 msgstr "Dalı GitHub'da aç"
 
-msgid "Open Browser"
-msgstr "Tarayıcıyı aç"
-
 msgid "Open changes"
 msgstr "Değişiklikleri aç"
 
@@ -11135,9 +11135,6 @@ msgstr "Portlar"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Portlar — {totalPortCount} canlı"
-
-msgid "Ports in top bar dropdown"
-msgstr "Üst çubuk açılır menüsünde portlar"
 
 msgid "Position"
 msgstr "Konum"
@@ -13460,9 +13457,6 @@ msgstr "Ayrıntıları göster"
 
 msgid "Show Details"
 msgstr "Ayrıntıları göster"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Algılanan portları, kenar çubuğunda her çalışma alanının altındaki bir çip yerine üst çubukta açılır menü olarak göster."
 
 msgid "Show device toolbar"
 msgstr "Cihaz araç çubuğunu göster"

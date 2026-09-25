@@ -6231,6 +6231,9 @@ msgstr "Aufgabe konnte nicht geöffnet werden"
 msgid "Failed to open the billing portal"
 msgstr "Das Abrechnungsportal konnte nicht geöffnet werden"
 
+msgid "Failed to open URL in external browser"
+msgstr "Öffnen der URL im externen Browser fehlgeschlagen"
+
 msgid "Failed to open worktree"
 msgstr "Worktree konnte nicht geöffnet werden"
 
@@ -10205,9 +10208,6 @@ msgstr "Als Kommentarbereich öffnen"
 msgid "Open branch on GitHub"
 msgstr "Branch auf GitHub öffnen"
 
-msgid "Open Browser"
-msgstr "Browser öffnen"
-
 msgid "Open changes"
 msgstr "Änderungen öffnen"
 
@@ -11135,9 +11135,6 @@ msgstr "Ports"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Ports — {totalPortCount} aktiv"
-
-msgid "Ports in top bar dropdown"
-msgstr "Ports im Dropdown der oberen Leiste"
 
 msgid "Position"
 msgstr "Position"
@@ -13460,9 +13457,6 @@ msgstr "Details anzeigen"
 
 msgid "Show Details"
 msgstr "Details anzeigen"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Erkannte Ports als Dropdown in der oberen Leiste anzeigen statt als Chip unter jedem Arbeitsbereich in der Seitenleiste."
 
 msgid "Show device toolbar"
 msgstr "Geräteleiste anzeigen"

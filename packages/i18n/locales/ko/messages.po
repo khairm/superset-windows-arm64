@@ -6231,6 +6231,9 @@ msgstr "작업을 열지 못했습니다"
 msgid "Failed to open the billing portal"
 msgstr "결제 포털을 열지 못했습니다"
 
+msgid "Failed to open URL in external browser"
+msgstr "외부 브라우저에서 URL을 열지 못했습니다"
+
 msgid "Failed to open worktree"
 msgstr "worktree를 열지 못했습니다"
 
@@ -10205,9 +10208,6 @@ msgstr "코멘트 패널으로 열기"
 msgid "Open branch on GitHub"
 msgstr "GitHub에서 브랜치 열기"
 
-msgid "Open Browser"
-msgstr "브라우저 열기"
-
 msgid "Open changes"
 msgstr "변경 열기"
 
@@ -11135,9 +11135,6 @@ msgstr "포트"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "포트 — {totalPortCount}개 활성"
-
-msgid "Ports in top bar dropdown"
-msgstr "상단 바 드롭다운에 포트 표시"
 
 msgid "Position"
 msgstr "순위"
@@ -13460,9 +13457,6 @@ msgstr "상세 정보 보기"
 
 msgid "Show Details"
 msgstr "상세 정보 표시"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "감지된 포트를 사이드바의 워크스페이스마다 칩으로 표시하는 대신 상단 바 드롭다운으로 표시합니다."
 
 msgid "Show device toolbar"
 msgstr "기기 툴바 표시"

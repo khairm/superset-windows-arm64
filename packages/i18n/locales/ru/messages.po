@@ -6231,6 +6231,9 @@ msgstr "Не удалось открыть задачу"
 msgid "Failed to open the billing portal"
 msgstr "Не удалось открыть портал оплаты"
 
+msgid "Failed to open URL in external browser"
+msgstr "Не удалось открыть URL во внешнем браузере"
+
 msgid "Failed to open worktree"
 msgstr "Не удалось открыть worktree"
 
@@ -10205,9 +10208,6 @@ msgstr "Открыть как панель комментариев"
 msgid "Open branch on GitHub"
 msgstr "Открыть ветку на GitHub"
 
-msgid "Open Browser"
-msgstr "Открыть браузер"
-
 msgid "Open changes"
 msgstr "Открыть изменения"
 
@@ -11135,9 +11135,6 @@ msgstr "Порты"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Порты — активных: {totalPortCount}"
-
-msgid "Ports in top bar dropdown"
-msgstr "Порты в списке верхней панели"
 
 msgid "Position"
 msgstr "Позиция"
@@ -13460,9 +13457,6 @@ msgstr "Показать детали"
 
 msgid "Show Details"
 msgstr "Показать детали"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Показывать обнаруженные порты выпадающим списком в верхней панели вместо чипа под каждой рабочей областью в боковой панели."
 
 msgid "Show device toolbar"
 msgstr "Показать панель устройств"

@@ -6231,6 +6231,9 @@ msgstr "Không thể mở tác vụ"
 msgid "Failed to open the billing portal"
 msgstr "Không thể mở cổng thanh toán"
 
+msgid "Failed to open URL in external browser"
+msgstr "Không thể mở URL trong trình duyệt ngoài"
+
 msgid "Failed to open worktree"
 msgstr "Không thể mở worktree"
 
@@ -10205,9 +10208,6 @@ msgstr "Mở dạng khung bình luận"
 msgid "Open branch on GitHub"
 msgstr "Mở nhánh trên GitHub"
 
-msgid "Open Browser"
-msgstr "Mở trình duyệt"
-
 msgid "Open changes"
 msgstr "Mở thay đổi"
 
@@ -11135,9 +11135,6 @@ msgstr "Cổng"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Cổng — {totalPortCount} đang mở"
-
-msgid "Ports in top bar dropdown"
-msgstr "Cổng trong menu thả xuống trên thanh trên cùng"
 
 msgid "Position"
 msgstr "Vị trí"
@@ -13460,9 +13457,6 @@ msgstr "Hiện chi tiết"
 
 msgid "Show Details"
 msgstr "Hiện chi tiết"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Hiện các cổng phát hiện được dưới dạng menu thả xuống trên thanh trên cùng thay vì một chip dưới mỗi workspace ở thanh bên."
 
 msgid "Show device toolbar"
 msgstr "Hiện thanh công cụ thiết bị"

@@ -6231,6 +6231,9 @@ msgstr "Openen van taak mislukt"
 msgid "Failed to open the billing portal"
 msgstr "Openen van het facturatieportaal mislukt"
 
+msgid "Failed to open URL in external browser"
+msgstr "Openen van URL in externe browser mislukt"
+
 msgid "Failed to open worktree"
 msgstr "Openen van worktree mislukt"
 
@@ -10205,9 +10208,6 @@ msgstr "Openen als opmerkingenpaneel"
 msgid "Open branch on GitHub"
 msgstr "Branch openen op GitHub"
 
-msgid "Open Browser"
-msgstr "Browser openen"
-
 msgid "Open changes"
 msgstr "Wijzigingen openen"
 
@@ -11135,9 +11135,6 @@ msgstr "Poorten"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Poorten — {totalPortCount} actief"
-
-msgid "Ports in top bar dropdown"
-msgstr "Poorten in dropdown in de bovenbalk"
 
 msgid "Position"
 msgstr "Positie"
@@ -13460,9 +13457,6 @@ msgstr "Details tonen"
 
 msgid "Show Details"
 msgstr "Details tonen"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Toon gedetecteerde poorten als dropdown in de bovenbalk in plaats van als chip onder elke werkruimte in de zijbalk."
 
 msgid "Show device toolbar"
 msgstr "Apparaatbalk tonen"

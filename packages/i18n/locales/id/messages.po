@@ -6231,6 +6231,9 @@ msgstr "Gagal membuka tugas"
 msgid "Failed to open the billing portal"
 msgstr "Gagal membuka portal penagihan"
 
+msgid "Failed to open URL in external browser"
+msgstr "Gagal membuka URL di browser eksternal"
+
 msgid "Failed to open worktree"
 msgstr "Gagal membuka worktree"
 
@@ -10205,9 +10208,6 @@ msgstr "Buka sebagai panel komentar"
 msgid "Open branch on GitHub"
 msgstr "Buka branch di GitHub"
 
-msgid "Open Browser"
-msgstr "Buka Browser"
-
 msgid "Open changes"
 msgstr "Buka perubahan"
 
@@ -11135,9 +11135,6 @@ msgstr "Port"
 
 msgid "Ports — {totalPortCount} live"
 msgstr "Port — {totalPortCount} aktif"
-
-msgid "Ports in top bar dropdown"
-msgstr "Port di dropdown bilah atas"
 
 msgid "Position"
 msgstr "Posisi"
@@ -13460,9 +13457,6 @@ msgstr "Tampilkan detail"
 
 msgid "Show Details"
 msgstr "Tampilkan Detail"
-
-msgid "Show detected ports as a dropdown in the top bar instead of a chip under each workspace in the sidebar."
-msgstr "Tampilkan port yang terdeteksi sebagai dropdown di bilah atas, bukan sebagai chip di bawah tiap workspace di sidebar."
 
 msgid "Show device toolbar"
 msgstr "Tampilkan toolbar perangkat"
