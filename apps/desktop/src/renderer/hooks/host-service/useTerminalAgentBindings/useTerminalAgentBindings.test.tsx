@@ -9,14 +9,43 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 	globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const WORKSPACE_ID = "workspace-1";
 const HOST_A = "http://host-a";
 const HOST_B = "http://host-b";
 let hostUrl: string | null = HOST_A;
 let fetchBindings: (url: string) => Promise<Array<{ terminalId: string }>> =
 	async () => [];
-const fetchUrls: string[] = [];
+let fetchUrls: string[] = [];
 type Listener = (workspaceId: string, payload: unknown) => void;
+
+/**
+ * Every test owns a fresh workspace id, so a refresh still in flight when the
+ * previous test ended asks for a workspace this one does not know and is
+ * rejected by the mocked host client instead of being counted here.
+ */
+let workspaceCount = 0;
+let WORKSPACE_ID = "workspace-0";
+
+/**
+ * Fetch waits are promise-driven, never wall-clock: `fetchesReach` resolves the
+ * moment the mocked host client is asked for bindings for the nth time, so a
+ * loaded machine cannot turn a slow scheduler tick into a failure.
+ */
+let fetchWaiters: Array<{ target: number; resolve: () => void }> = [];
+
+function noteFetch(url: string) {
+	fetchUrls.push(url);
+	for (const waiter of fetchWaiters.splice(0)) {
+		if (fetchUrls.length >= waiter.target) waiter.resolve();
+		else fetchWaiters.push(waiter);
+	}
+}
+
+function whenFetches(target: number) {
+	if (fetchUrls.length >= target) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		fetchWaiters.push({ target, resolve });
+	});
+}
 
 class TestBus {
 	listeners = new Map<string, Set<Listener>>();
@@ -71,7 +100,7 @@ mock.module("renderer/lib/host-service-client", () => ({
 				query: ({ workspaceId }: { workspaceId: string }) => {
 					if (workspaceId !== WORKSPACE_ID)
 						throw new Error("unexpected workspace");
-					fetchUrls.push(url);
+					noteFetch(url);
 					return fetchBindings(url);
 				},
 			},
@@ -109,14 +138,31 @@ mock.module("renderer/stores/v2-notifications", () => ({
 		}),
 }));
 
-const { act, cleanup, render, waitFor } = await import(
+const { act, cleanup, configure, render, waitFor } = await import(
 	"@testing-library/react"
 );
+// Render assertions follow an awaited fetch, so they pass on waitFor's first
+// immediate check; the raised ceiling only covers a starved event loop.
+configure({ asyncUtilTimeout: 4_000 });
 const { useTerminalAgentBindings } = await import("./useTerminalAgentBindings");
 const { DashboardSidebarWorkspaceStatusProvider, useSidebarWorkspaceStatus } =
 	await import(
 		"renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/providers/DashboardSidebarWorkspaceStatusProvider/DashboardSidebarWorkspaceStatusProvider"
 	);
+
+/** Awaits the nth bindings fetch starting, with React updates inside `act`. */
+async function fetchesReach(target: number) {
+	await act(async () => {
+		await whenFetches(target);
+	});
+}
+
+/** Drains React Query's microtask notifications and React's effects. */
+async function flush() {
+	await act(async () => {
+		await Promise.resolve();
+	});
+}
 
 function SidebarRow() {
 	const entry = useSidebarWorkspaceStatus(WORKSPACE_ID);
@@ -163,7 +209,10 @@ function oneTerminalPerHost() {
 beforeEach(() => {
 	cleanup();
 	buses.clear();
-	fetchUrls.length = 0;
+	fetchUrls = [];
+	fetchWaiters = [];
+	workspaceCount++;
+	WORKSPACE_ID = `workspace-${workspaceCount}`;
 	hostUrl = HOST_A;
 	fetchBindings = async () => [];
 });
@@ -192,10 +241,12 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		expect(hostBus.retains).toBe(2);
 		expect(hostBus.releases).toBe(1);
 		expect(hostBus.listeners.size).toBe(3);
-		await waitFor(() => expect(fetchUrls).toHaveLength(1));
+		await fetchesReach(1);
+		expect(fetchUrls).toHaveLength(1);
 
 		act(() => hostBus.emit("agent:lifecycle"));
-		await waitFor(() => expect(fetchUrls).toHaveLength(2));
+		await fetchesReach(2);
+		expect(fetchUrls).toHaveLength(2);
 		view.unmount();
 		expect(hostBus.releases).toBe(2);
 		expect(hostBus.listeners.size).toBe(0);
@@ -225,7 +276,7 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 	test("moves the subscription when the workspace host changes", async () => {
 		const client = newClient();
 		const view = render(withClient(client, <Consumer />));
-		await waitFor(() => expect(fetchUrls).toHaveLength(1));
+		await fetchesReach(1);
 		const oldBus = bus(HOST_A);
 		hostUrl = HOST_B;
 		view.rerender(withClient(client, <Consumer />));
@@ -233,8 +284,11 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		expect(oldBus.listeners.size).toBe(0);
 		expect(bus(HOST_B).retains).toBe(1);
 
+		await fetchesReach(2);
+		expect(fetchUrls).toEqual([HOST_A, HOST_B]);
 		act(() => oldBus.emit("terminal:lifecycle"));
-		await waitFor(() => expect(fetchUrls).toEqual([HOST_A, HOST_B]));
+		await flush();
+		expect(fetchUrls).toEqual([HOST_A, HOST_B]);
 		view.unmount();
 		expect(bus(HOST_B).releases).toBe(1);
 	});
@@ -243,11 +297,13 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		const client = newClient();
 		oneTerminalPerHost();
 		const view = render(withClient(client, <Consumer />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe("old-terminal"),
 		);
 		hostUrl = HOST_B;
 		view.rerender(withClient(client, <Consumer />));
+		await fetchesReach(2);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe("new-terminal"),
 		);
@@ -259,14 +315,17 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		const client = newClient();
 		oneTerminalPerHost();
 		const view = render(withClient(client, <Consumer />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe("old-terminal"),
 		);
 		view.rerender(withClient(client, <Consumer enabled={false} />));
 		hostUrl = HOST_B;
 		view.rerender(withClient(client, <Consumer enabled={false} />));
+		await flush();
 		expect(fetchUrls).toEqual([HOST_A]);
 		view.rerender(withClient(client, <Consumer />));
+		await fetchesReach(2);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe("new-terminal"),
 		);
@@ -278,12 +337,14 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		const client = newClient();
 		oneTerminalPerHost();
 		const first = render(withClient(client, <Consumer />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(first.getByTestId("bindings").textContent).toBe("old-terminal"),
 		);
 		first.unmount();
 		hostUrl = HOST_B;
 		const remounted = render(withClient(client, <Consumer />));
+		await fetchesReach(2);
 		await waitFor(() =>
 			expect(remounted.getByTestId("bindings").textContent).toBe(
 				"new-terminal",
@@ -301,9 +362,11 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 		expect(hostBus.listeners.get(`agent:lifecycle:${WORKSPACE_ID}`)?.size).toBe(
 			2,
 		);
-		await waitFor(() => expect(fetchUrls).toHaveLength(2));
+		await fetchesReach(2);
+		expect(fetchUrls).toHaveLength(2);
 		act(() => hostBus.emit("agent:lifecycle"));
-		await waitFor(() => expect(fetchUrls).toHaveLength(4));
+		await fetchesReach(4);
+		expect(fetchUrls).toHaveLength(4);
 
 		first.unmount();
 		expect(hostBus.releases).toBe(1);
@@ -328,6 +391,7 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 			return Promise.resolve(requests === 1 ? [{ terminalId: "exited" }] : []);
 		};
 		const view = render(withClient(client, <Consumer />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe("exited"),
 		);
@@ -337,14 +401,16 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 				queryKey: ["terminal-agent-bindings", WORKSPACE_ID],
 			});
 		});
-		await waitFor(() => expect(requests).toBe(2));
+		await fetchesReach(2);
+		expect(requests).toBe(2);
 		act(() => bus(HOST_A).emit("terminal:lifecycle"));
 		expect(requests).toBe(2);
 		await act(async () => {
 			completeOld([{ terminalId: "exited" }]);
 			await externalRefresh;
 		});
-		await waitFor(() => expect(requests).toBe(3));
+		await fetchesReach(3);
+		expect(requests).toBe(3);
 		await waitFor(() =>
 			expect(view.getByTestId("bindings").textContent).toBe(""),
 		);
@@ -367,18 +433,21 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 			);
 		};
 		const first = render(withClient(client, <Consumer />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(first.getByTestId("bindings").textContent).toBe("old"),
 		);
 		const hostBus = bus(HOST_A);
 		act(() => hostBus.emit("agent:lifecycle"));
-		await waitFor(() => expect(requests).toBe(2));
+		await fetchesReach(2);
+		expect(requests).toBe(2);
 		act(() => hostBus.emit("terminal:lifecycle"));
 		first.unmount();
 		expect(hostBus.releases).toBe(1);
 		expect(hostBus.listeners.size).toBe(0);
 		await act(async () => completeOld([{ terminalId: "old" }]));
-		await waitFor(() => expect(requests).toBe(3));
+		await fetchesReach(3);
+		expect(requests).toBe(3);
 		const remounted = render(withClient(client, <Consumer />));
 		await waitFor(() =>
 			expect(remounted.getByTestId("bindings").textContent).toBe("new"),
@@ -403,6 +472,7 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 			);
 		};
 		const view = render(withClient(client, <WithSidebar />));
+		await fetchesReach(1);
 		await waitFor(() =>
 			expect(view.getByTestId("sidebar").textContent).toBe("old"),
 		);
@@ -412,14 +482,16 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 			1,
 		);
 		act(() => hostBus.emit("agent:lifecycle"));
-		await waitFor(() => expect(requests).toBe(2));
+		await fetchesReach(2);
+		expect(requests).toBe(2);
 		act(() => {
 			hostBus.emit("terminal:lifecycle");
 			hostBus.emit("agent:bindings-changed");
 		});
 		expect(requests).toBe(2);
 		await act(async () => completeOld([{ terminalId: "old" }]));
-		await waitFor(() => expect(requests).toBe(3));
+		await fetchesReach(3);
+		expect(requests).toBe(3);
 		await waitFor(() =>
 			expect(view.getByTestId("sidebar").textContent).toBe("new"),
 		);
@@ -441,17 +513,20 @@ describe("useTerminalAgentBindings (BINDINGS-COALESCE)", () => {
 			return Promise.resolve([]);
 		};
 		const view = render(withClient(client, <Consumer />));
-		await waitFor(() => expect(refreshes).toBe(1));
+		await fetchesReach(1);
+		expect(refreshes).toBe(1);
 		const hostBus = bus(HOST_A);
 		act(() => hostBus.emit("agent:lifecycle"));
-		await waitFor(() => expect(refreshes).toBe(2));
+		await fetchesReach(2);
+		expect(refreshes).toBe(2);
 		act(() => {
 			hostBus.emit("terminal:lifecycle");
 			hostBus.emit("agent:bindings-changed");
 		});
 		expect(refreshes).toBe(2);
 		await act(async () => completeFirst([]));
-		await waitFor(() => expect(refreshes).toBe(3));
+		await fetchesReach(3);
+		expect(refreshes).toBe(3);
 		expect(fetchUrls).toHaveLength(3);
 		view.unmount();
 	});

@@ -34,40 +34,47 @@ function fixture() {
 	return { collections, rows, initial };
 }
 
-describe("openBackgroundBrowser", () => {
+describe("openBackgroundBrowser (FORK-BROWSER-OFF)", () => {
+	function paneKinds(layout: WorkspaceState<PaneViewerData> | undefined) {
+		return (layout?.tabs ?? [])
+			.flatMap((tab) => Object.values(tab.panes))
+			.map((pane) => pane.kind);
+	}
+
 	for (const target of ["current-tab", "new-tab"] as const) {
-		test(`${target} adds an addressable browser without changing existing selections or another workspace`, () => {
+		test(`${target} refuses the open and leaves every workspace layout untouched`, () => {
 			const { collections, rows, initial } = fixture();
-			const paneId = openBackgroundBrowser({
-				collections,
-				workspaceId: "agent",
-				url: "https://example.com",
-				target,
-			});
-			const layout = rows.get("agent")?.paneLayout;
+			expect(() =>
+				openBackgroundBrowser({
+					collections,
+					workspaceId: "agent",
+					url: "https://example.com",
+					target,
+				}),
+			).toThrow("Browser panes are disabled in this fork");
+			expect(rows.get("agent")?.paneLayout).toEqual(initial);
 			expect(rows.get("user")?.paneLayout).toEqual(initial);
-			if (!layout) throw new Error("Missing layout");
-			expect(layout.activeTabId).toBe(initial.activeTabId);
-			expect(layout.tabs[0].activePaneId).toBe(initial.tabs[0].activePaneId);
-			const pane = layout.tabs
-				.flatMap((tab) => Object.values(tab.panes))
-				.find((pane) => pane.id === paneId);
-			expect(pane?.kind).toBe("browser");
-			expect(pane?.data).toEqual({ url: "https://example.com" });
-			expect(layout.tabs.length).toBe(target === "new-tab" ? 2 : 1);
+			expect(paneKinds(rows.get("agent")?.paneLayout)).not.toContain("browser");
 		});
 	}
-	test("successive opens return distinct panes and retain both new tabs", () => {
-		const { collections, rows } = fixture();
+
+	test("successive opens accumulate no tabs and no panes", () => {
+		const { collections, rows, initial } = fixture();
 		const request = {
 			collections,
 			workspaceId: "agent",
 			url: "https://example.com",
 			target: "new-tab" as const,
 		};
-		const first = openBackgroundBrowser(request);
-		const second = openBackgroundBrowser(request);
-		expect(first).not.toBe(second);
-		expect(rows.get("agent")?.paneLayout.tabs).toHaveLength(3);
+		expect(() => openBackgroundBrowser(request)).toThrow(
+			"Browser panes are disabled in this fork",
+		);
+		expect(() => openBackgroundBrowser(request)).toThrow(
+			"Browser panes are disabled in this fork",
+		);
+		const layout = rows.get("agent")?.paneLayout;
+		expect(layout).toEqual(initial);
+		expect(layout?.tabs).toHaveLength(1);
+		expect(paneKinds(layout)).not.toContain("browser");
 	});
 });
