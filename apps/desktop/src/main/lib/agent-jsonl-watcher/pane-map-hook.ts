@@ -4406,7 +4406,15 @@ function notifyHookCommand(pythonPath: string | null): string {
 export type CommandTransport = { kind: "command"; pythonPath: string | null };
 export type NotifyTransport =
 	| CommandTransport
-	| { kind: "http"; port: number; secret: string };
+	| {
+			kind: "http";
+			port: number;
+			secret: string;
+			// (HOOK-HTTP-DAEMON) The http transport still writes ONE command entry
+			// — SessionStart, which Claude Code refuses to run over http — so it
+			// carries the interpreter that entry needs.
+			pythonPath: string | null;
+	  };
 
 type HookSpec =
 	| { type: "command"; command: string }
@@ -4426,8 +4434,11 @@ interface HooksRoot {
 	[k: string]: unknown;
 }
 
-function notifyHookSpec(notify: NotifyTransport): HookSpec {
-	if (notify.kind === "command") {
+function notifyHookSpec(
+	notify: NotifyTransport,
+	commandOnly: boolean,
+): HookSpec {
+	if (notify.kind === "command" || commandOnly) {
 		return { type: "command", command: notifyHookCommand(notify.pythonPath) };
 	}
 	const headers: Record<string, string> = {
@@ -4700,8 +4711,20 @@ function withPaneMapHook(
 	return hooks;
 }
 
-/** Event -> optional matcher. Each is a SEPARATE entry under its event. */
-const NOTIFY_REGISTRATIONS: Array<{ event: string; matcher?: string }> = [
+/**
+ * Event -> optional matcher. Each is a SEPARATE entry under its event.
+ *
+ * (HOOK-HTTP-DAEMON) `commandOnly` pins an event to the per-event command
+ * transport even while the daemon is up, because Claude Code silently SKIPS an
+ * http hook on SessionStart and Setup (it filters those two events to command
+ * hooks and logs the skip at debug). An http SessionStart entry means that
+ * branch of superset-notify.py never runs at all.
+ */
+const NOTIFY_REGISTRATIONS: Array<{
+	event: string;
+	matcher?: string;
+	commandOnly?: true;
+}> = [
 	{ event: "UserPromptSubmit" },
 	{ event: "Stop" },
 	{ event: "SessionEnd" },
@@ -4731,7 +4754,8 @@ const NOTIFY_REGISTRATIONS: Array<{ event: string; matcher?: string }> = [
 	// crashed/reused session can't pin the dot; the compact source still runs
 	// the COMPACT-YELLOW finish logic. (Binding/Attached stays the passthrough's
 	// job — this hook returns None for non-compact, so it only does the cleanup.)
-	{ event: "SessionStart" },
+	// commandOnly: Claude Code refuses http hooks for this event.
+	{ event: "SessionStart", commandOnly: true },
 ];
 
 /**
@@ -4744,8 +4768,11 @@ const NOTIFY_REGISTRATIONS: Array<{ event: string; matcher?: string }> = [
  * registered for Claude. Claude-only: never merged into Codex.
  *
  * (HOOK-HTTP-DAEMON) The whole rewrite of Claude's `hooks` map, in memory:
- * `notify` decides the transport for all twelve entries at once, and every
- * co-located hook that is not ours stays where it was. Both transports are
+ * `notify` decides the transport for eleven of the twelve entries at once, and
+ * every co-located hook that is not ours stays where it was. SessionStart is the
+ * twelfth and stays a command entry in BOTH transports — Claude Code skips http
+ * hooks on that event — so a command SessionStart beside eleven http entries is
+ * the healthy daemon shape, not a half-finished downgrade. Both transports are
  * recognised by isNotifyHook, so a downgrade cleans the daemon entries and an
  * upgrade cleans the command entries. Mutates and returns the map it is given.
  *
@@ -4758,7 +4785,7 @@ export function withNotifyHooks(
 	hooks: Record<string, HookEntry[]>,
 	notify: NotifyTransport | null,
 ): Record<string, HookEntry[]> {
-	for (const { event, matcher } of NOTIFY_REGISTRATIONS) {
+	for (const { event, matcher, commandOnly } of NOTIFY_REGISTRATIONS) {
 		const existing = Array.isArray(hooks[event])
 			? (hooks[event] as HookEntry[])
 			: [];
@@ -4779,7 +4806,7 @@ export function withNotifyHooks(
 		);
 		cleaned.push({
 			...(matcher ? { matcher } : {}),
-			hooks: [notifyHookSpec(notify)],
+			hooks: [notifyHookSpec(notify, commandOnly === true)],
 		});
 		hooks[event] = cleaned;
 	}
@@ -5025,6 +5052,9 @@ async function mirrorProfiles(
 	const dirs = profileDirs ?? (await claudeProfileDirsAsync());
 	const rewrite = hookRewrite(paneMapPython, notify);
 	const mode = hookFileMode(notify);
+	// Windows reports 0o666 for a file chmodded 0o600, so the mode is not
+	// something the memo can compare there.
+	const memoChecksMode = mode !== undefined && process.platform !== "win32";
 	const rewriteKey = hookRewriteKey(paneMapPython, notify);
 	// Index-keyed, so the bounded fan-out still answers in profile order.
 	const mirrored: (string | null)[] = dirs.map(() => null);
@@ -5040,7 +5070,7 @@ async function mirrorProfiles(
 			memo.rewriteKey === rewriteKey &&
 			memo.size === before.size &&
 			memo.mtimeMs === before.mtimeMs &&
-			(mode === undefined || (before.mode & 0o777) === mode)
+			(!memoChecksMode || (before.mode & 0o777) === mode)
 		) {
 			if (memo.mirrored) mirrored[i] = profileDir;
 			return;
@@ -5189,6 +5219,7 @@ async function upgradeHooksToDaemon(
 		kind: "http",
 		port: daemon.port,
 		secret: daemon.secret,
+		pythonPath,
 	};
 	armCommandTransportFallback((reason) => {
 		clearProfileResweep();

@@ -119,9 +119,12 @@ In brief:
   ready-for-review, and terminal-agent failures.
 - **Hooks reach the app over HTTP** — `superset-notify.py` runs once as a
   supervised daemon on `127.0.0.1:46817` instead of one Python process per hook
-  event; the entries Superset writes into `settings.json` are `http` entries
-  with a 15 s timeout. Port, pid and per-boot secret in
-  `~/.superset/hooks/notify-daemon.json`. Events raised while the daemon is down
+  event; eleven of the twelve entries Superset writes into `settings.json` are
+  `http` entries with a 15 s timeout. SessionStart stays a `command` hook in both
+  transports because Claude Code rejects http hooks for that event. Port and pid
+  in `~/.superset/hooks/notify-daemon.json`, with a persistent per-install secret
+  in `notify-daemon.secret` (reused across launches so surviving Claude sessions
+  keep POSTing). Events raised while the daemon is down
   are LOST, not queued — the host's 60 s status resync recovers the dots.
 - **Auto-resume** — after an API failure, idle Claude terminals re-send
   automatically (bounded retries/budget, default-on, away-detection).

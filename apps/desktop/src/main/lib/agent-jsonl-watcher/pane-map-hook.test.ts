@@ -2831,6 +2831,7 @@ describe("superset-notify hook registration", () => {
 		kind: "http",
 		port: 46817,
 		secret: "registration-secret",
+		pythonPath: null,
 	};
 	const commandTransport: NotifyTransport = {
 		kind: "command",
@@ -2901,6 +2902,61 @@ describe("superset-notify hook registration", () => {
 		]);
 		expect(hooks.Notification?.[0]?.matcher).toBe("permission_prompt");
 		expect(hooks.PreToolUse?.[0]?.matcher).toBe("AskUserQuestion");
+	});
+
+	// Claude Code filters SessionStart (and Setup) to command hooks and silently
+	// skips an http one, so an http SessionStart entry means superset-notify.py
+	// never runs that branch: no manual-/compact green, no stale-.askq cleanup,
+	// no fresh team cache. Eleven http entries beside one command SessionStart is
+	// the healthy daemon shape.
+	it("keeps SessionStart on the command transport while the daemon serves the rest", () => {
+		const hooks = withNotifyHooks({}, httpTransport);
+		const sessionStart = specs(hooks, "SessionStart");
+
+		expect(sessionStart).toHaveLength(1);
+		expect(sessionStart[0]?.type).toBe("command");
+		expect(sessionStart[0]?.command).toContain("superset-notify.py");
+		for (const event of Object.keys(hooks).filter(
+			(name) => name !== "SessionStart",
+		)) {
+			expect(specs(hooks, event)[0]?.type).toBe("http");
+		}
+		expect(
+			Object.keys(hooks).filter((name) => name !== "SessionStart"),
+		).toHaveLength(11);
+
+		// A hand-back puts all twelve back on the command transport.
+		const handedBack = withNotifyHooks(hooks, commandTransport);
+		expect(Object.keys(handedBack)).toHaveLength(12);
+		for (const event of Object.keys(handedBack)) {
+			expect(specs(handedBack, event)).toHaveLength(1);
+			expect(specs(handedBack, event)[0]?.type).toBe("command");
+		}
+	});
+
+	// An upgrade inherited from a build that DID register SessionStart over http
+	// has to heal back to a command entry rather than keep both.
+	it("heals an older build's http SessionStart entry", () => {
+		const legacy = {
+			SessionStart: [
+				{
+					hooks: [
+						{
+							type: "http",
+							url: "http://127.0.0.1:46817/superset-notify/hook",
+						},
+					],
+				},
+			],
+		} as unknown as Record<string, HookEntry[]>;
+
+		const healed = specs(
+			withNotifyHooks(legacy, httpTransport),
+			"SessionStart",
+		);
+
+		expect(healed).toHaveLength(1);
+		expect(healed[0]?.type).toBe("command");
 	});
 
 	it("names exactly the headers the daemon parses", () => {
@@ -3210,8 +3266,12 @@ describe("superset-notify hook registration", () => {
 		]);
 		expect(specs(cleared, "UserPromptSubmit")).toEqual([]);
 		// An event whose only entry was ours goes back to having no key at all,
-		// rather than leaving an empty list behind in a user-owned file.
-		expect(Object.keys(cleared)).toEqual(["Stop"]);
+		// rather than leaving an empty list behind in a user-owned file. The
+		// command SessionStart entry stays for the same reason the Stop one above
+		// would have: its script is still on disk and still works.
+		expect(Object.keys(cleared)).toEqual(["Stop", "SessionStart"]);
+		expect(specs(cleared, "SessionStart")).toHaveLength(1);
+		expect(specs(cleared, "SessionStart")[0]?.type).toBe("command");
 		expect(
 			specs(
 				withNotifyHooks(withNotifyHooks({}, commandTransport), null),
@@ -3240,8 +3300,13 @@ describe("superset-notify hook registration", () => {
 
 		const hooks = readProfileHooks(profile);
 		expect(specs(hooks, "Stop")).toEqual([]);
-		expect(specs(hooks, "SessionStart")).toHaveLength(1);
+		// The notify SessionStart command entry, whose script the daemon's death
+		// says nothing about, plus pane-map.
+		expect(specs(hooks, "SessionStart")).toHaveLength(2);
 		expect(specs(hooks, "SessionStart")[0]?.command).toContain(
+			"superset-notify.py",
+		);
+		expect(specs(hooks, "SessionStart")[1]?.command).toContain(
 			"superset-pane-map.py",
 		);
 		expect(

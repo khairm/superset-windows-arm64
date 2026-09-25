@@ -70,12 +70,17 @@ interface BufferSerializer {
 export function preserveSnapshotShellRendition(addon: SerializeAddon): void {
 	const serializer = addon as unknown as BufferSerializer;
 	const serializeBuffer = serializer._serializeBufferByScrollback;
-	if (typeof serializeBuffer !== "function" || !serializer._terminal) {
-		throw new Error("Unsupported xterm snapshot serializer");
-	}
-	trackTerminalScreen(serializer._terminal);
+	// An upstream bump that reshapes the addon's private surface costs a
+	// snapshot, not the terminal: the throw belongs on the serialize path, which
+	// is the only thing that needs the shape, and not at terminal creation, which
+	// calls this for every pane.
+	const supported =
+		typeof serializeBuffer === "function" && Boolean(serializer._terminal);
 	const serialize = addon.serialize;
 	addon.serialize = function (options) {
+		if (!supported) {
+			throw new Error("Unsupported xterm snapshot serializer");
+		}
 		const content = serialize.call(this, options);
 		if (
 			options?.excludeAltBuffer ||
@@ -89,6 +94,8 @@ export function preserveSnapshotShellRendition(addon: SerializeAddon): void {
 			throw new Error("Unsupported xterm alternate snapshot");
 		return content.replace(boundary, `\x1b[?${mode}h\x1b[H`);
 	};
+	if (!supported) return;
+	trackTerminalScreen(serializer._terminal);
 	serializer._serializeBufferByScrollback = function (
 		term,
 		buffer,
