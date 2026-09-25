@@ -11,6 +11,11 @@
 //    type instead of bumping the number.
 //  - a file drops below its count → it was partially or fully fixed;
 //    LOWER or DELETE its entry so the ratchet only ever tightens.
+//
+// (BLOCKING-FS-RATCHET) — fork rule "sync fs read/stat/append" below. The
+// footgun it guards is measured, not theoretical: synchronous fs on the main
+// thread at startup starves the renderer's superset-app:// loader and the
+// window stays blank for minutes (AGENTS.md, Live footguns).
 
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -31,6 +36,11 @@ interface Rule {
 	pattern: RegExp;
 	/** Repo-relative (from src/) file → exact matching-line count allowed. */
 	allowedCounts: Record<string, number>;
+	/**
+	 * Optional narrowing: only files whose repo-relative path starts with one
+	 * of these prefixes are counted. Omitted = every scanned file.
+	 */
+	restrictTo?: string[];
 	advice: string;
 }
 
@@ -72,6 +82,67 @@ const RULES: Rule[] = [
 		},
 		advice:
 			"simple-git is async, but a client constructed here still pays the spawn syscall + stdout drain on the Electron main process — cost scales linearly with call volume (branch polls, sidebar rows). Async isn't enough for git; route it off-process: add a task type to changes/workers/git-task-types.ts and run it via runGitTask.",
+	},
+	{
+		// (BLOCKING-FS-RATCHET). Scoped to main/ — the Electron main entry point
+		// and everything it pulls in during boot. lib/trpc is request-time code
+		// already covered by the three rules above and carries a far larger sync
+		// fs inventory; widening this rule to it would need its own baseline.
+		//
+		// No worker exemption is listed because none is needed: the only worker
+		// entry point under main/ is main/git-task-worker.ts (it is the sole
+		// importer of node:worker_threads' parentPort there) and it contains zero
+		// matches, so exempting it would change nothing.
+		name: "sync fs read/stat/append (blocking main-thread fs)",
+		restrictTo: ["main/"],
+		pattern:
+			/\b(statSync|readFileSync|readSync|openSync|appendFileSync|renameSync|existsSync)\b/,
+		allowedCounts: {
+			"main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts": 4,
+			// DELIBERATELY 2 BELOW THE TREE (which has 7). The perf-ui-choking
+			// branch retired one readFileSync by folding mergeHook +
+			// mergeNotifyHook into rewriteHookFile, and that drop is banked here.
+			// It also ADDED two blocking calls this baseline refuses to bless: a
+			// renameSync (the .pending → settings.json atomic swap) and a third
+			// existsSync (the per-profile settings.json probe, which runs once per
+			// entry of claudeProfileDirs(), so its real cost scales with the number
+			// of Claude profile folders). Both sit on the hook-install path that
+			// runs during main boot. Resolve it, do not silence it: move them to
+			// node:fs/promises, or bump this to 7 in a commit that says the boot
+			// cost was measured and accepted.
+			"main/lib/agent-jsonl-watcher/pane-map-hook.ts": 5,
+			"main/lib/app-environment.ts": 2,
+			"main/lib/app-state/index.ts": 2,
+			"main/lib/auto-resume/config/config.ts": 1,
+			"main/lib/auto-resume/registry/registry.ts": 1,
+			"main/lib/browser/chrome-cookie-import.ts": 3,
+			"main/lib/browser/chrome-history-import.ts": 3,
+			"main/lib/browser/chromium-profiles.ts": 5,
+			"main/lib/browser/download-manager.ts": 3,
+			"main/lib/bundled-cli.ts": 9,
+			"main/lib/custom-ringtones.ts": 13,
+			"main/lib/dev-workspace-name.ts": 2,
+			"main/lib/dock-icon.ts": 3,
+			"main/lib/extensions/index.ts": 7,
+			"main/lib/host-db-workspace-name.ts": 3,
+			"main/lib/host-service-coordinator.ts": 3,
+			"main/lib/host-service-lock.ts": 5,
+			"main/lib/host-service-manifest.ts": 8,
+			"main/lib/local-db/index.ts": 4,
+			"main/lib/local-identity/local-org.ts": 9,
+			"main/lib/play-sound.ts": 2,
+			"main/lib/project-icons.ts": 3,
+			"main/lib/sound-paths.ts": 3,
+			"main/lib/static-ports/loader.ts": 4,
+			"main/lib/terminal-host/client.ts": 34,
+			"main/lib/terminal/env.ts": 4,
+			"main/lib/tray/index.ts": 4,
+			"main/lib/window-state/window-state.ts": 9,
+			"main/network-logger/index.ts": 7,
+			"main/terminal-host/index.ts": 10,
+		},
+		advice:
+			"Synchronous fs blocks the Electron main process for the whole syscall, and on the boot path that is what leaves the window blank: the renderer's superset-app:// loader is served from this same event loop, so every stat and read at startup delays first paint. Use node:fs/promises (await stat/readFile/rename/appendFile) and probe with a caught ENOENT instead of existsSync, which is a second syscall that races the open that follows it.",
 	},
 ];
 
@@ -132,7 +203,12 @@ describe("no new main-process blocking call sites", () => {
 	for (const rule of RULES) {
 		test(rule.name, () => {
 			const counts = new Map<string, number>();
-			for (const rel of files) {
+			const scoped = rule.restrictTo
+				? files.filter((rel) =>
+						rule.restrictTo?.some((prefix) => rel.startsWith(prefix)),
+					)
+				: files;
+			for (const rel of scoped) {
 				const contents = fs.readFileSync(path.join(SRC_DIR, rel), "utf-8");
 				const count = countMatchingLines(contents, rule.pattern);
 				if (count > 0) counts.set(rel, count);
