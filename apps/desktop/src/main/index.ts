@@ -36,6 +36,7 @@ import {
 } from "shared/constants";
 import { LOCAL_AUTH_TOKEN_PLACEHOLDER } from "shared/local-identity";
 import { sweepDevAppProfiles } from "./dev-app-profile-sweep";
+import { stopNotifyHookDaemon } from "./lib/agent-jsonl-watcher/pane-map-hook";
 import { initAppState } from "./lib/app-state";
 import { requestAppleEventsAccess } from "./lib/apple-events-permission";
 import { isUpdateReadyToInstall, setupAutoUpdater } from "./lib/auto-updater";
@@ -339,6 +340,8 @@ app.on("before-quit", async (event) => {
 		forceFullCleanup,
 		isUpdateInstalling: isUpdateReadyToInstall(),
 		stopHostServices: () => getHostServiceCoordinator().stopAll(),
+		// (HOOK-HTTP-DAEMON)
+		stopNotifyDaemon: stopNotifyHookDaemon,
 		teardownTerminalHost,
 		disposeTerminalHostClient,
 		shutdownPersistence: shutdownTanstackDbPersistence,

@@ -1,15 +1,30 @@
 import {
 	afterAll,
 	afterEach,
+	beforeAll,
 	beforeEach,
 	describe,
 	expect,
 	it,
 } from "bun:test";
+import childProcess from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { NOTIFY_SCRIPT } from "./pane-map-hook";
+import {
+	NOTIFY_HOOK_TIMEOUT_SECONDS,
+	notifyDaemonRunToken,
+} from "./notify-daemon";
+import {
+	armCommandTransportFallback,
+	type HookEntry,
+	mirrorHooksIntoProfiles,
+	NOTIFY_SCRIPT,
+	type NotifyTransport,
+	stopNotifyHookDaemon,
+	withNotifyHooks,
+} from "./pane-map-hook";
 
 // (DEFERRED-FAILURE) The notify hook's turn-end decisions live in embedded
 // Python, so they are exercised the way they ship: the real script, a real
@@ -554,9 +569,7 @@ describe("superset-notify teammate entry binding", () => {
 			"SubagentActive",
 		);
 
-		append([
-			{ tool_use_id: "tu-taskstop", type: "tool_result" },
-		]);
+		append([{ tool_use_id: "tu-taskstop", type: "tool_result" }]);
 		expect(await stopEntry("tIMPL", description)).toEqual({
 			eventType: "Stop",
 			lifecycleOutcome: "ready",
@@ -2083,4 +2096,1167 @@ describe("superset-notify hook endpoint failover", () => {
 		);
 		expect(recordsWithAction("posted")[0]?.deliveredUrl).toBe(live.url);
 	}, 30_000);
+});
+
+// (HOOK-HTTP-DAEMON) The daemon half: ONE long-lived python serving Claude's
+// native "http" hook entries. Everything below drives a real daemon over a real
+// loopback socket, because the transport IS the feature — validation, the
+// per-terminal FIFO and the bounded log rotation only exist in that process.
+describe("superset-notify http daemon", () => {
+	interface DaemonSink {
+		/** {terminalId, eventType} of every POST, in arrival order. */
+		hits: Array<{ terminalId: string; eventType: string; at: number }>;
+		url: string;
+		endpoint: string;
+		/** The most POSTs this sink ever had in flight at once. */
+		peak: () => number;
+	}
+
+	const sinks: Array<{ stop: (force?: boolean) => unknown }> = [];
+	let daemonHome = "";
+	let daemonPort = 0;
+	let daemon: childProcess.ChildProcess | null = null;
+	const SECRET = "daemon-suite-secret";
+
+	/**
+	 * Records every POST. `holdMs` keeps a request open — the first one, or
+	 * every one — so a test can read the gap between arrivals or how many
+	 * overlapped.
+	 */
+	function makeDaemonSink(
+		holdMs = 0,
+		hold: "first" | "every" = "first",
+	): DaemonSink {
+		const hits: DaemonSink["hits"] = [];
+		let served = 0;
+		let inFlight = 0;
+		let peak = 0;
+		const server = Bun.serve({
+			port: 0,
+			async fetch(request) {
+				const body = (await request.json()) as {
+					json?: { eventType?: string; terminalId?: string };
+				};
+				inFlight += 1;
+				peak = Math.max(peak, inFlight);
+				// Recorded on ARRIVAL, before the hold below: the FIFO test reads
+				// the gap between arrivals, not between completions.
+				hits.push({
+					at: Date.now(),
+					eventType: body.json?.eventType ?? "",
+					terminalId: body.json?.terminalId ?? "",
+				});
+				if (holdMs > 0 && (hold === "every" || served === 0)) {
+					await Bun.sleep(holdMs);
+				}
+				served += 1;
+				inFlight -= 1;
+				return Response.json({
+					result: { data: { json: { ignored: false, success: true } } },
+				});
+			},
+		});
+		sinks.push(server);
+		const endpoint = `http://127.0.0.1:${server.port}`;
+		return {
+			endpoint,
+			hits,
+			peak: () => peak,
+			url: `${endpoint}/trpc/notifications.hook`,
+		};
+	}
+
+	function deadDaemonEndpoint(): string {
+		const probe = Bun.serve({ fetch: () => new Response("x"), port: 0 });
+		const endpoint = `http://127.0.0.1:${probe.port}`;
+		probe.stop(true);
+		return endpoint;
+	}
+
+	function daemonManifest(organizationId: string, endpoint: string): void {
+		const dir = path.join(daemonHome, ".superset", "host", organizationId);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, "manifest.json"),
+			JSON.stringify({
+				authToken: "token",
+				endpoint,
+				organizationId,
+				pid: process.pid,
+				startedAt: Date.now(),
+			}),
+		);
+	}
+
+	function daemonLogPath(): string {
+		return path.join(daemonHome, ".superset", "agent-notify-hook.log");
+	}
+
+	function daemonLogActions(): string[] {
+		if (!fs.existsSync(daemonLogPath())) return [];
+		const actions: string[] = [];
+		for (const line of fs.readFileSync(daemonLogPath(), "utf-8").split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const record = JSON.parse(line) as { action?: unknown };
+				if (typeof record.action === "string") actions.push(record.action);
+			} catch {
+				// padding written by the rotation test
+			}
+		}
+		return actions;
+	}
+
+	async function daemonServed(): Promise<number> {
+		const response = await fetch(
+			`http://127.0.0.1:${daemonPort}/superset-notify/health`,
+			{ headers: { "X-Superset-Notify-Secret": SECRET } },
+		);
+		const body = (await response.json()) as { served?: number };
+		return body.served ?? -1;
+	}
+
+	/**
+	 * A status line read straight off the wire. Bun's `fetch` answers a refused
+	 * POST with ECONNRESET instead of the status the daemon sent often enough to
+	 * make a loaded machine's suite red, so every refusal is asserted on a socket
+	 * this test owns and closes itself.
+	 */
+	function rawStatus(
+		requestLine: string,
+		headers: Record<string, string>,
+		writeBody: (socket: net.Socket) => void,
+	): Promise<number> {
+		return new Promise((resolve, reject) => {
+			const lines = [requestLine, `Host: 127.0.0.1:${daemonPort}`];
+			for (const [name, value] of Object.entries(headers)) {
+				lines.push(`${name}: ${value}`);
+			}
+			let seen = "";
+			const socket = net.connect(daemonPort, "127.0.0.1", () => {
+				socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+				writeBody(socket);
+			});
+			socket.on("data", (chunk) => {
+				seen += String(chunk);
+			});
+			socket.on("error", reject);
+			socket.on("close", () => {
+				const status = /^HTTP\/1\.[01] (\d{3})/.exec(seen);
+				if (!status) {
+					reject(new Error(`no status line in ${JSON.stringify(seen)}`));
+					return;
+				}
+				resolve(Number(status[1]));
+			});
+		});
+	}
+
+	function rawPostStatus(
+		urlPath: string,
+		headers: Record<string, string>,
+		body: string,
+	): Promise<number> {
+		return rawStatus(
+			`POST ${urlPath} HTTP/1.1`,
+			{ ...headers, "Content-Length": String(Buffer.byteLength(body)) },
+			(socket) => socket.write(body),
+		);
+	}
+
+	/** A POST framed the way a streaming client sends it: no Content-Length. */
+	function postChunked(
+		payload: unknown,
+		overrides: Record<string, string> = {},
+	): Promise<number> {
+		const body = JSON.stringify(payload);
+		return rawStatus(
+			"POST /superset-notify/hook HTTP/1.1",
+			{ ...daemonHeaders(overrides), "Transfer-Encoding": "chunked" },
+			(socket) =>
+				socket.write(
+					`${Buffer.byteLength(body).toString(16)}\r\n${body}\r\n0\r\n\r\n`,
+				),
+		);
+	}
+
+	function daemonHeaders(
+		overrides: Record<string, string> = {},
+	): Record<string, string> {
+		return {
+			"Content-Type": "application/json",
+			"X-Superset-Agent-Id": "claude",
+			"X-Superset-Agent-Watcher-Debug": "1",
+			"X-Superset-Host-Agent-Hook-Url": "",
+			"X-Superset-Notify-Secret": SECRET,
+			"X-Superset-Organization-Id": "",
+			"X-Superset-Terminal-Id": "daemonterminal",
+			...overrides,
+		};
+	}
+
+	async function post(
+		payload: unknown,
+		overrides: Record<string, string> = {},
+		rawBody?: BodyInit,
+	): Promise<number> {
+		const response = await fetch(
+			`http://127.0.0.1:${daemonPort}/superset-notify/hook`,
+			{
+				body: rawBody ?? JSON.stringify(payload),
+				headers: daemonHeaders(overrides),
+				method: "POST",
+			},
+		);
+		return response.status;
+	}
+
+	beforeAll(async () => {
+		daemonHome = fs.mkdtempSync(path.join(root, "daemon-home-"));
+		const secretFile = path.join(daemonHome, "secret");
+		fs.writeFileSync(secretFile, SECRET);
+		const probe = Bun.serve({ fetch: () => new Response("x"), port: 0 });
+		daemonPort = probe.port ?? 0;
+		probe.stop(true);
+		if (!daemonPort) throw new Error("probe socket has no port");
+		// childProcess.spawn, not Bun.spawn: Bun's test runner reaps a Bun.spawn
+		// child as a "dangling process" between tests, which killed the daemon
+		// half way through the suite.
+		daemon = childProcess.spawn(
+			PYTHON,
+			[
+				"-I",
+				"-S",
+				scriptPath,
+				"--serve",
+				String(daemonPort),
+				"--secret-file",
+				secretFile,
+			],
+			{
+				env: {
+					...process.env,
+					HOME: daemonHome,
+					NO_PROXY: "*",
+					SUPERSET_AGENT_WATCHER_DEBUG: "1",
+					// The suite runs INSIDE Superset, whose own SUPERSET_HOME_DIR
+					// would point the manifest failover at this machine's live
+					// hosts. Scoped to the throwaway HOME instead.
+					SUPERSET_HOME_DIR: path.join(daemonHome, ".superset"),
+					TEMP: daemonHome,
+					TMP: daemonHome,
+					TMPDIR: daemonHome,
+					USERPROFILE: daemonHome,
+				},
+				stdio: [
+					"pipe",
+					fs.openSync(path.join(daemonHome, "daemon.stdout.log"), "a"),
+					fs.openSync(path.join(daemonHome, "daemon.stderr.log"), "a"),
+				],
+				windowsHide: true,
+			},
+		);
+		const deadline = Date.now() + 20_000;
+		for (;;) {
+			const ok = await fetch(
+				`http://127.0.0.1:${daemonPort}/superset-notify/health`,
+				{ headers: { "X-Superset-Notify-Secret": SECRET } },
+			)
+				.then((response) => response.status === 200)
+				.catch(() => false);
+			if (ok) break;
+			if (Date.now() > deadline) throw new Error("daemon never became healthy");
+			await Bun.sleep(100);
+		}
+	}, 40_000);
+
+	afterAll(() => {
+		// A daemon that dies mid-suite takes every later test with it, and the
+		// traceback it printed on the way out is the only thing that says why.
+		const stderrLog = path.join(daemonHome, "daemon.stderr.log");
+		const noise = fs.existsSync(stderrLog)
+			? fs
+					.readFileSync(stderrLog, "utf-8")
+					.split("\n")
+					.filter((line) => line.trim() && !line.startsWith("listening on "))
+			: [];
+		if (noise.length > 0) console.log(noise.join("\n"));
+		daemon?.kill();
+	});
+
+	afterEach(() => {
+		for (const sink of sinks.splice(0)) sink.stop(true);
+	});
+
+	it("delivers events for several terminals and orgs at once", async () => {
+		const orgA = makeDaemonSink();
+		const orgB = makeDaemonSink();
+		const plan = [
+			{ org: "orgconcurrenta", sink: orgA, terminal: "daemonconcurrent1" },
+			{ org: "orgconcurrenta", sink: orgA, terminal: "daemonconcurrent2" },
+			{ org: "orgconcurrentb", sink: orgB, terminal: "daemonconcurrent3" },
+			{ org: "orgconcurrentb", sink: orgB, terminal: "daemonconcurrent4" },
+		];
+		const statuses = await Promise.all(
+			plan.map(({ org, sink, terminal }) =>
+				post(
+					{ hook_event_name: "UserPromptSubmit", session_id: `s-${terminal}` },
+					{
+						"X-Superset-Host-Agent-Hook-Url": sink.url,
+						"X-Superset-Organization-Id": org,
+						"X-Superset-Terminal-Id": terminal,
+					},
+				),
+			),
+		);
+
+		expect(statuses).toEqual([204, 204, 204, 204]);
+		expect(orgA.hits.map((hit) => hit.terminalId).sort()).toEqual([
+			"daemonconcurrent1",
+			"daemonconcurrent2",
+		]);
+		expect(orgB.hits.map((hit) => hit.terminalId).sort()).toEqual([
+			"daemonconcurrent3",
+			"daemonconcurrent4",
+		]);
+		expect(
+			[...orgA.hits, ...orgB.hits].every((hit) => hit.eventType === "Start"),
+		).toBe(true);
+	}, 30_000);
+
+	it("serializes two events for the SAME terminal in arrival order", async () => {
+		// The first POST is held open past the second's arrival. Without the
+		// per-terminal FIFO both would reach the sink at once and the second
+		// decision would read marker state the first had not written yet.
+		const slow = makeDaemonSink(900);
+		const terminal = "daemonfifo";
+		const first = post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-fifo" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": slow.url,
+				"X-Superset-Terminal-Id": terminal,
+			},
+		);
+		await Bun.sleep(150);
+		const second = post(
+			{ hook_event_name: "Stop", session_id: "s-fifo" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": slow.url,
+				"X-Superset-Terminal-Id": terminal,
+			},
+		);
+
+		expect(await Promise.all([first, second])).toEqual([204, 204]);
+		expect(slow.hits.map((hit) => hit.eventType)).toEqual(["Start", "Stop"]);
+		const gap = (slow.hits[1]?.at ?? 0) - (slow.hits[0]?.at ?? 0);
+		expect(gap).toBeGreaterThan(500);
+	}, 30_000);
+
+	it("fails over to the org manifest when the host restarts onto a new port", async () => {
+		const restarted = makeDaemonSink();
+		daemonManifest("orgrestarted", restarted.endpoint);
+		const started = Date.now();
+
+		const status = await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-restart" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": `${deadDaemonEndpoint()}/trpc/notifications.hook`,
+				"X-Superset-Organization-Id": "orgrestarted",
+				"X-Superset-Terminal-Id": "daemonrestart",
+			},
+		);
+
+		expect(status).toBe(204);
+		expect(restarted.hits.map((hit) => hit.eventType)).toEqual(["Start"]);
+		expect(Date.now() - started).toBeLessThan(5_000);
+	}, 30_000);
+
+	it("answers 502 when nothing anywhere accepts the event", async () => {
+		const status = await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-unreachable" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": `${deadDaemonEndpoint()}/trpc/notifications.hook`,
+				"X-Superset-Organization-Id": "orgunreachable",
+				"X-Superset-Terminal-Id": "daemonunreachable",
+			},
+		);
+		expect(status).toBe(502);
+	}, 30_000);
+
+	it("answers 204 for an event it has nothing to deliver", async () => {
+		expect(
+			await post(
+				{ hook_event_name: "UserPromptSubmit", session_id: "s-noterm" },
+				{ "X-Superset-Terminal-Id": "" },
+			),
+		).toBe(204);
+		const live = makeDaemonSink();
+		expect(
+			await post(
+				{
+					hook_event_name: "PreToolUse",
+					session_id: "s-unmapped",
+					tool_name: "Read",
+				},
+				{
+					"X-Superset-Host-Agent-Hook-Url": live.url,
+					"X-Superset-Terminal-Id": "daemonunmapped",
+				},
+			),
+		).toBe(204);
+		expect(live.hits).toEqual([]);
+	}, 30_000);
+
+	it("rejects an unauthenticated or wrongly-keyed caller", async () => {
+		expect(
+			await rawPostStatus(
+				"/superset-notify/hook",
+				daemonHeaders({ "X-Superset-Notify-Secret": "no" }),
+				JSON.stringify({ hook_event_name: "Stop" }),
+			),
+		).toBe(401);
+		expect(
+			await rawPostStatus(
+				"/superset-notify/hook",
+				{ "Content-Type": "application/json" },
+				"{}",
+			),
+		).toBe(401);
+		const bareHealth = await fetch(
+			`http://127.0.0.1:${daemonPort}/superset-notify/health`,
+		);
+		expect(bareHealth.status).toBe(401);
+	}, 30_000);
+
+	it("rejects every malformed header rather than guessing at it", async () => {
+		const cases: Array<[string, Record<string, string>]> = [
+			["unknown x-superset header", { "X-Superset-Bogus": "1" }],
+			[
+				"path traversal in the terminal id",
+				{ "X-Superset-Terminal-Id": "../escape" },
+			],
+			["separator in the org id", { "X-Superset-Organization-Id": "a/b" }],
+			[
+				"non-loopback hook url",
+				{ "X-Superset-Host-Agent-Hook-Url": "http://example.com:80/x" },
+			],
+			[
+				"https hook url",
+				{ "X-Superset-Host-Agent-Hook-Url": "https://127.0.0.1:1/x" },
+			],
+			[
+				"portless hook url",
+				{ "X-Superset-Host-Agent-Hook-Url": "http://127.0.0.1/x" },
+			],
+			// Claude cannot carry a Windows profile path in a header value
+			// (ERR_INVALID_CHAR above U+00FF), so the daemon takes the home dir
+			// from its own environment and refuses the header outright.
+			[
+				"a home-dir header at all",
+				{ "X-Superset-Home-Dir": "C:/Users/someone/.superset" },
+			],
+		];
+		for (const [label, overrides] of cases) {
+			expect([
+				label,
+				await rawPostStatus(
+					"/superset-notify/hook",
+					daemonHeaders(overrides),
+					JSON.stringify({ hook_event_name: "Stop" }),
+				),
+			]).toEqual([label, 400]);
+		}
+	}, 30_000);
+
+	it("reads an unrecognised debug flag as the variable being unset", async () => {
+		const live = makeDaemonSink();
+		const status = await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-debugflag" },
+			{
+				"X-Superset-Agent-Watcher-Debug": "true",
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Terminal-Id": "daemondebugflag",
+			},
+		);
+		expect(status).toBe(204);
+		expect(live.hits.map((hit) => hit.eventType)).toEqual(["Start"]);
+	}, 30_000);
+
+	it("reads an uninterpolated $VAR as the variable being unset", async () => {
+		const live = makeDaemonSink();
+		const status = await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-placeholder" },
+			{
+				"X-Superset-Agent-Watcher-Debug": "$SUPERSET_AGENT_WATCHER_DEBUG",
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Organization-Id": "$SUPERSET_ORGANIZATION_ID",
+				"X-Superset-Terminal-Id": "daemonplaceholder",
+			},
+		);
+		expect(status).toBe(204);
+		expect(live.hits.map((hit) => hit.eventType)).toEqual(["Start"]);
+	}, 30_000);
+
+	it("rejects a body that is oversized, not UTF-8, or not a JSON object", async () => {
+		expect(
+			await post({ hook_event_name: "Stop", pad: "x".repeat(9_000_000) }),
+		).toBe(413);
+		expect(
+			await post(null, {}, new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x7d])),
+		).toBe(400);
+		expect(await post(null, {}, "{not json")).toBe(400);
+		expect(await post([1, 2, 3])).toBe(400);
+	}, 30_000);
+
+	// Claude POSTs the same hook input it used to write to stdin, and the stdin
+	// path had no size limit at all: tool_input and tool_response carry whole
+	// file contents, and the largest single tool result in this machine's own
+	// transcripts is 478KB. Refusing one loses the event for good.
+	it("accepts a hook body the size Claude's real tool results reach", async () => {
+		const live = makeDaemonSink();
+		const bulk = "x".repeat(500_000);
+
+		expect(
+			await post(
+				{
+					hook_event_name: "UserPromptSubmit",
+					prompt: bulk,
+					session_id: "s-bulky",
+				},
+				{
+					"X-Superset-Host-Agent-Hook-Url": live.url,
+					"X-Superset-Terminal-Id": "daemonbulky",
+				},
+			),
+		).toBe(204);
+		expect(live.hits.map((hit) => hit.terminalId)).toEqual(["daemonbulky"]);
+
+		expect(
+			await post(
+				{
+					hook_event_name: "PostToolUse",
+					session_id: "s-bulky",
+					tool_name: "Read",
+					tool_response: bulk,
+				},
+				{
+					"X-Superset-Host-Agent-Hook-Url": live.url,
+					"X-Superset-Terminal-Id": "daemonbulky",
+				},
+			),
+		).toBe(204);
+	}, 30_000);
+
+	it("refuses a relative transcript path instead of resolving it against its own cwd", async () => {
+		const live = makeDaemonSink();
+		const status = await post(
+			{
+				hook_event_name: "Stop",
+				session_id: "s-relative",
+				transcript_path: "relative/transcript.jsonl",
+			},
+			{
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Terminal-Id": "daemonrelative",
+			},
+		);
+		expect(status).toBe(400);
+		expect(live.hits).toEqual([]);
+	}, 30_000);
+
+	// SUPERSET_HOME_DIR cannot travel in a header, so an ADOPTED daemon's own
+	// environment names the OTHER instance's home. The terminal's transcript is
+	// what says whose host manifests to read.
+	it("fails over through the host root the terminal's own transcript names", async () => {
+		const otherInstance = makeDaemonSink();
+		const otherHome = path.join(
+			fs.mkdtempSync(path.join(root, "other-instance-")),
+			"superset-dev-data",
+		);
+		const organizationId = "orgotherinstance";
+		const manifestDir = path.join(otherHome, "host", organizationId);
+		fs.mkdirSync(manifestDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(manifestDir, "manifest.json"),
+			JSON.stringify({
+				authToken: "token",
+				endpoint: otherInstance.endpoint,
+				organizationId,
+				pid: process.pid,
+				startedAt: Date.now(),
+			}),
+		);
+
+		const status = await post(
+			{
+				hook_event_name: "UserPromptSubmit",
+				session_id: "s-other-instance",
+				transcript_path: path.join(
+					manifestDir,
+					"claude-profiles",
+					"6f1b2c3d-0000-4000-8000-00000000d1",
+					"projects",
+					"-c-work",
+					"session.jsonl",
+				),
+			},
+			{
+				"X-Superset-Host-Agent-Hook-Url": `${deadDaemonEndpoint()}/trpc/notifications.hook`,
+				"X-Superset-Organization-Id": organizationId,
+				"X-Superset-Terminal-Id": "daemonotherinstance",
+			},
+		);
+
+		expect(status).toBe(204);
+		expect(otherInstance.hits.map((hit) => hit.eventType)).toEqual(["Start"]);
+	}, 30_000);
+
+	// ThreadingHTTPServer caps neither threads nor connections, so a client that
+	// announces a body and then stalls has to be timed out at the socket or it
+	// parks a handler thread for the life of a process meant to run for days.
+	it("hangs up on a client that announces a body and then stalls", async () => {
+		const lines = [
+			"POST /superset-notify/hook HTTP/1.1",
+			`Host: 127.0.0.1:${daemonPort}`,
+			"Content-Length: 1048576",
+		];
+		for (const [name, value] of Object.entries(daemonHeaders())) {
+			lines.push(`${name}: ${value}`);
+		}
+
+		const closedAfterMs = await new Promise<number>((resolve) => {
+			const started = Date.now();
+			const socket = net.connect(daemonPort, "127.0.0.1", () => {
+				socket.write(`${lines.join("\r\n")}\r\n\r\n{`);
+			});
+			const hungUp = (): void => resolve(Date.now() - started);
+			socket.on("error", hungUp);
+			socket.on("close", hungUp);
+		});
+
+		expect(closedAfterMs).toBeGreaterThan(3_000);
+		expect(closedAfterMs).toBeLessThan(25_000);
+		// The thread it held is back, and the daemon is still serving.
+		expect(await post({ hook_event_name: "Stop" })).toBe(204);
+	}, 40_000);
+
+	it("404s any path but its own two", async () => {
+		expect(await rawPostStatus("/hook", daemonHeaders(), "{}")).toBe(404);
+	}, 30_000);
+
+	it("keeps rotating the debug log in a long-lived process, but bounded", async () => {
+		const live = makeDaemonSink();
+		const backup = `${daemonLogPath()}.1`;
+		fs.rmSync(backup, { force: true });
+		fs.mkdirSync(path.dirname(daemonLogPath()), { recursive: true });
+		fs.writeFileSync(daemonLogPath(), `${"x".repeat(1_100_000)}\n`);
+		// Past the rotation interval since whatever the tests above last
+		// checked: the daemon has already served every one of them, so the
+		// once-per-process check this replaced would never fire again.
+		await Bun.sleep(6_000);
+
+		await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-rotate-1" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Terminal-Id": "daemonrotate",
+			},
+		);
+
+		expect(fs.existsSync(backup)).toBe(true);
+		expect(fs.statSync(backup).size).toBeGreaterThan(1_000_000);
+		expect(fs.statSync(daemonLogPath()).size).toBeLessThan(100_000);
+		expect(daemonLogActions()).toContain("posted");
+
+		// And it is bounded: a second oversized log inside the interval is NOT
+		// re-checked, so the backup still holds the first one.
+		fs.writeFileSync(daemonLogPath(), `${"y".repeat(1_100_000)}\n`);
+		await post(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-rotate-2" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Terminal-Id": "daemonrotate",
+			},
+		);
+		expect(fs.readFileSync(backup, "utf-8").startsWith("x")).toBe(true);
+		expect(fs.existsSync(`${daemonLogPath()}.2`)).toBe(false);
+	}, 30_000);
+
+	it("accepts a body sent as chunks, and counts what it was sent", async () => {
+		const live = makeDaemonSink();
+		const before = await daemonServed();
+		expect(before).toBeGreaterThanOrEqual(0);
+
+		const status = await postChunked(
+			{ hook_event_name: "UserPromptSubmit", session_id: "s-chunked" },
+			{
+				"X-Superset-Host-Agent-Hook-Url": live.url,
+				"X-Superset-Terminal-Id": "daemonchunked",
+			},
+		);
+
+		expect(status).toBe(204);
+		expect(live.hits.map((hit) => hit.eventType)).toEqual(["Start"]);
+		// The count is the supervisor's proof that Claude is really POSTing.
+		expect(await daemonServed()).toBe(before + 1);
+	}, 30_000);
+
+	it("serves more terminals at once than its starting worker count", async () => {
+		const holding = makeDaemonSink(700, "every");
+		const terminals = ["a", "b", "c", "d", "e", "f", "g", "h"].map(
+			(suffix) => `daemonwide${suffix}`,
+		);
+
+		const statuses = await Promise.all(
+			terminals.map((terminal) =>
+				post(
+					{ hook_event_name: "UserPromptSubmit", session_id: `s-${terminal}` },
+					{
+						"X-Superset-Host-Agent-Hook-Url": holding.url,
+						"X-Superset-Terminal-Id": terminal,
+					},
+				),
+			),
+		);
+
+		expect(statuses).toEqual(terminals.map(() => 204));
+		expect(holding.hits).toHaveLength(terminals.length);
+		expect(holding.peak()).toBeGreaterThan(4);
+	}, 30_000);
+});
+
+// (HOOK-HTTP-DAEMON) The hook-entry rewrite, without a real ~/.claude.
+describe("superset-notify hook registration", () => {
+	const httpTransport: NotifyTransport = {
+		kind: "http",
+		port: 46817,
+		secret: "registration-secret",
+	};
+	const commandTransport: NotifyTransport = {
+		kind: "command",
+		pythonPath: null,
+	};
+
+	function specs(
+		hooks: Record<string, HookEntry[]>,
+		event: string,
+	): Array<Record<string, unknown>> {
+		return (hooks[event] ?? []).flatMap(
+			(entry) =>
+				(entry.hooks ?? []) as unknown as Array<Record<string, unknown>>,
+		);
+	}
+
+	function readProfileHooks(dir: string): Record<string, HookEntry[]> {
+		return (
+			JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")) as {
+				hooks: Record<string, HookEntry[]>;
+			}
+		).hooks;
+	}
+
+	function stopHeaders(): Record<string, string> {
+		return specs(withNotifyHooks({}, httpTransport), "Stop")[0]
+			?.headers as Record<string, string>;
+	}
+
+	it("registers one http entry per lifecycle event, keyed and env-scoped", () => {
+		const hooks = withNotifyHooks({}, httpTransport);
+
+		expect(Object.keys(hooks).sort()).toEqual([
+			"Notification",
+			"PostToolUse",
+			"PostToolUseFailure",
+			"PreCompact",
+			"PreToolUse",
+			"SessionEnd",
+			"SessionStart",
+			"Stop",
+			"StopFailure",
+			"SubagentStart",
+			"SubagentStop",
+			"UserPromptSubmit",
+		]);
+		expect(specs(hooks, "Stop")).toEqual([
+			{
+				allowedEnvVars: [
+					"SUPERSET_TERMINAL_ID",
+					"SUPERSET_AGENT_ID",
+					"SUPERSET_ORGANIZATION_ID",
+					"SUPERSET_HOST_AGENT_HOOK_URL",
+					"SUPERSET_AGENT_WATCHER_DEBUG",
+				],
+				headers: {
+					"X-Superset-Agent-Id": "$SUPERSET_AGENT_ID",
+					"X-Superset-Agent-Watcher-Debug": "$SUPERSET_AGENT_WATCHER_DEBUG",
+					"X-Superset-Host-Agent-Hook-Url": "$SUPERSET_HOST_AGENT_HOOK_URL",
+					"X-Superset-Notify-Secret": "registration-secret",
+					"X-Superset-Organization-Id": "$SUPERSET_ORGANIZATION_ID",
+					"X-Superset-Terminal-Id": "$SUPERSET_TERMINAL_ID",
+				},
+				timeout: 15,
+				type: "http",
+				url: "http://127.0.0.1:46817/superset-notify/hook",
+			},
+		]);
+		expect(hooks.Notification?.[0]?.matcher).toBe("permission_prompt");
+		expect(hooks.PreToolUse?.[0]?.matcher).toBe("AskUserQuestion");
+	});
+
+	it("names exactly the headers the daemon parses", () => {
+		// The two sides carry their own copy of the mapping; a header added on
+		// one side only would be silently dropped at the boundary.
+		const declared = Object.keys(stopHeaders()).map((name) =>
+			name.toLowerCase(),
+		);
+		const parsed = [
+			...new Set(
+				[...NOTIFY_SCRIPT.matchAll(/"(x-superset-[a-z-]+)"/g)].map(
+					(match) => match[1] ?? "",
+				),
+			),
+		];
+		expect(parsed.length).toBe(declared.length);
+		expect(parsed.sort()).toEqual(declared.sort());
+	});
+
+	it("replaces the old per-event command entries with daemon entries", () => {
+		const upgraded = withNotifyHooks(
+			withNotifyHooks({}, commandTransport),
+			httpTransport,
+		);
+		expect(specs(upgraded, "Stop")).toHaveLength(1);
+		expect(specs(upgraded, "Stop")[0]?.type).toBe("http");
+
+		const downgraded = withNotifyHooks(upgraded, commandTransport);
+		expect(specs(downgraded, "Stop")).toHaveLength(1);
+		expect(specs(downgraded, "Stop")[0]?.type).toBe("command");
+		expect(specs(downgraded, "Stop")[0]?.command).toContain(
+			"superset-notify.py",
+		);
+	});
+
+	it("leaves another tool's localhost hook alone", () => {
+		const foreign = {
+			Stop: [
+				{
+					hooks: [
+						{ type: "http", url: "http://127.0.0.1:46817/hook" },
+						{
+							type: "command",
+							command: "uv run python superset-ask-marker.py",
+						},
+					],
+				},
+			],
+		} as unknown as Record<string, HookEntry[]>;
+
+		const kept = specs(withNotifyHooks(foreign, httpTransport), "Stop");
+
+		expect(kept).toHaveLength(2);
+		expect(kept[0]?.url).toBe("http://127.0.0.1:46817/hook");
+		// The retired ask-marker hook IS ours, and is self-healed away.
+		expect(JSON.stringify(kept)).not.toContain("superset-ask-marker.py");
+	});
+
+	it("keeps the interpreter the daemon proved when it hands the hooks back", () => {
+		// The traffic gate and a quit say nothing about python, and `uv run`
+		// costs a resolve on every hook event for the rest of the run.
+		const command = specs(
+			withNotifyHooks({}, { kind: "command", pythonPath: "C:/python.exe" }),
+			"Stop",
+		)[0]?.command;
+
+		expect(command).toContain('"C:/python.exe" -I -S');
+		expect(command).not.toContain("uv run");
+		// Only a machine with no working interpreter falls back to uv.
+		expect(
+			specs(withNotifyHooks({}, commandTransport), "Stop")[0]?.command,
+		).toContain("uv run python");
+	});
+
+	it("rewrites the profile copies a running session actually reads", async () => {
+		const profilesRoot = fs.mkdtempSync(path.join(root, "claude-profiles-"));
+		const pinned = path.join(
+			profilesRoot,
+			"6f1b2c3d-0000-4000-8000-00000000c1",
+		);
+		const unminted = path.join(
+			profilesRoot,
+			"6f1b2c3d-0000-4000-8000-00000000c2",
+		);
+		fs.mkdirSync(pinned);
+		fs.mkdirSync(unminted);
+		fs.writeFileSync(
+			path.join(pinned, "settings.json"),
+			JSON.stringify({
+				hooks: {
+					SessionStart: [
+						{ hooks: [{ type: "command", command: "someone-elses-hook" }] },
+					],
+					Stop: [
+						{
+							hooks: [
+								{
+									type: "command",
+									command: "uv run python superset-notify.py",
+								},
+							],
+						},
+					],
+				},
+			}),
+		);
+
+		const mirrored = await mirrorHooksIntoProfiles(
+			"C:/python.exe",
+			httpTransport,
+			[pinned, unminted],
+		);
+
+		expect(mirrored).toEqual([pinned]);
+		const rewritten = JSON.parse(
+			fs.readFileSync(path.join(pinned, "settings.json"), "utf8"),
+		) as { hooks: Record<string, HookEntry[]> };
+		expect(specs(rewritten.hooks, "Stop")).toEqual([
+			{
+				allowedEnvVars: expect.any(Array),
+				headers: expect.any(Object),
+				timeout: 15,
+				type: "http",
+				url: "http://127.0.0.1:46817/superset-notify/hook",
+			},
+		]);
+		const sessionStart = specs(rewritten.hooks, "SessionStart");
+		expect(sessionStart[0]?.command).toBe("someone-elses-hook");
+		expect(sessionStart).toHaveLength(3);
+		expect(fs.existsSync(path.join(unminted, "settings.json"))).toBe(false);
+	});
+
+	// The mirror walks every Claude profile on the machine off the main thread,
+	// so the 60s resweep can land on top of a downgrade. Both write the same
+	// `<file>.pending`, and a profile left holding half a settings.json would
+	// cost every session under it every hook it has.
+	it("serializes overlapping profile mirrors instead of interleaving writes", async () => {
+		const profilesRoot = fs.mkdtempSync(path.join(root, "claude-mirror-race-"));
+		const profiles = ["a", "b", "c"].map((name) => {
+			const dir = path.join(
+				profilesRoot,
+				`6f1b2c3d-0000-4000-8000-0000000${name}`,
+			);
+			fs.mkdirSync(dir);
+			fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({}));
+			return dir;
+		});
+
+		const [first, second] = await Promise.all([
+			mirrorHooksIntoProfiles("C:/python.exe", httpTransport, profiles),
+			mirrorHooksIntoProfiles("C:/python.exe", commandTransport, profiles),
+		]);
+
+		expect(first).toEqual(profiles);
+		expect(second).toEqual(profiles);
+		for (const dir of profiles) {
+			const settings = JSON.parse(
+				fs.readFileSync(path.join(dir, "settings.json"), "utf8"),
+			) as { hooks: Record<string, HookEntry[]> };
+			// The LAST mirror queued is the one on disk, for every profile.
+			expect(specs(settings.hooks, "Stop")).toEqual([
+				{
+					command: expect.stringContaining("superset-notify.py"),
+					type: "command",
+				},
+			]);
+			expect(fs.existsSync(path.join(dir, "settings.json.pending"))).toBe(
+				false,
+			);
+		}
+	});
+
+	it("puts the hooks back on the command transport before the daemon dies", async () => {
+		// Claude's settings.json outlives the app: quitting with http entries
+		// aimed at a dead port costs every hook event a refused connection.
+		const reasons: string[] = [];
+		armCommandTransportFallback((reason) => reasons.push(reason));
+
+		await stopNotifyHookDaemon();
+		expect(reasons).toEqual(["daemon-stopped"]);
+
+		// ...and only once, so a downgrade that already happened is not undone.
+		await stopNotifyHookDaemon();
+		expect(reasons).toEqual(["daemon-stopped"]);
+	});
+
+	// A job still running when Claude has already timed out writes its response
+	// into a socket nobody is reading, which socketserver answers with a full
+	// traceback in the daemon log.
+	it("gives up on a slow job before Claude gives up on the request", () => {
+		const wait = Number(
+			/_JOB_WAIT_SECONDS = ([\d.]+)/.exec(NOTIFY_SCRIPT)?.[1],
+		);
+
+		expect(wait).toBeGreaterThan(0);
+		expect(wait).toBeLessThan(NOTIFY_HOOK_TIMEOUT_SECONDS);
+	});
+
+	// A profile the rewrite never reached still reads the old transport, and
+	// naming it here lets its sessions speak for the new one: the traffic gate
+	// reads no POSTs and tears a working daemon down for every other profile.
+	it("leaves a profile whose rewrite could not land out of the mirrored list", async () => {
+		const profilesRoot = fs.mkdtempSync(path.join(root, "claude-mirror-fail-"));
+		const [written, unparsable] = ["d1", "d2"].map((name) => {
+			const dir = path.join(
+				profilesRoot,
+				`6f1b2c3d-0000-4000-8000-000000000${name}`,
+			);
+			fs.mkdirSync(dir);
+			return dir;
+		}) as [string, string];
+		fs.writeFileSync(path.join(written, "settings.json"), "{}");
+		fs.writeFileSync(path.join(unparsable, "settings.json"), "{not json");
+
+		const mirrored = await mirrorHooksIntoProfiles(
+			"C:/python.exe",
+			httpTransport,
+			[written, unparsable],
+		);
+
+		expect(mirrored).toEqual([written]);
+	});
+
+	// The notify script itself did not land on disk (locked, EACCES), so the
+	// shared settings.json carries no notify entries: the profile copies must not
+	// grow twelve of their own aimed at a file that is missing or stale.
+	it("registers no notify entries in the profile copies without a notify script", async () => {
+		const profilesRoot = fs.mkdtempSync(
+			path.join(root, "claude-mirror-nonotify-"),
+		);
+		const fresh = path.join(
+			profilesRoot,
+			"6f1b2c3d-0000-4000-8000-0000000000e1",
+		);
+		const stale = path.join(
+			profilesRoot,
+			"6f1b2c3d-0000-4000-8000-0000000000e2",
+		);
+		fs.mkdirSync(fresh);
+		fs.mkdirSync(stale);
+		fs.writeFileSync(path.join(fresh, "settings.json"), "{}");
+		fs.writeFileSync(
+			path.join(stale, "settings.json"),
+			JSON.stringify({
+				hooks: {
+					Stop: [
+						{
+							hooks: [
+								{
+									type: "command",
+									command: "uv run python superset-notify.py",
+								},
+							],
+						},
+					],
+				},
+			}),
+		);
+
+		const mirrored = await mirrorHooksIntoProfiles("C:/python.exe", null, [
+			fresh,
+			stale,
+		]);
+
+		expect(mirrored).toEqual([fresh, stale]);
+		const freshHooks = readProfileHooks(fresh);
+		expect(Object.keys(freshHooks)).toEqual(["SessionStart"]);
+		expect(specs(freshHooks, "SessionStart")[0]?.command).toContain(
+			"superset-pane-map.py",
+		);
+		// An entry already there is left exactly as it was found.
+		expect(specs(readProfileHooks(stale), "Stop")).toEqual([
+			{ command: "uv run python superset-notify.py", type: "command" },
+		]);
+	});
+
+	// A quit inside the handshake has to invalidate the in-flight registration
+	// BEFORE the downgrade runs: a downgrade the upgrade then overwrites leaves
+	// every Claude session on the machine POSTing a port nothing serves.
+	it("cancels the registration run before it puts the hooks back", async () => {
+		const tokensWhenHandedBack: number[] = [];
+		armCommandTransportFallback(() =>
+			tokensWhenHandedBack.push(notifyDaemonRunToken()),
+		);
+		const before = notifyDaemonRunToken();
+
+		await stopNotifyHookDaemon();
+
+		expect(tokensWhenHandedBack).toEqual([before + 1]);
+	});
+
+	// A run that was force-killed leaves its http entries on disk. If the next
+	// launch cannot write the notify script, no daemon is started either, so
+	// those entries POST a port nothing serves for the whole run and every event
+	// aimed at it is lost. The command entries name a script that is still there.
+	it("strips a dead run's daemon entries when there is no transport", () => {
+		const stale = withNotifyHooks({}, httpTransport);
+		stale.Stop = [
+			...(stale.Stop ?? []),
+			{ hooks: [{ type: "command", command: "someone-elses-hook" }] },
+		];
+
+		const cleared = withNotifyHooks(stale, null);
+
+		expect(specs(cleared, "Stop")).toEqual([
+			{ command: "someone-elses-hook", type: "command" },
+		]);
+		expect(specs(cleared, "UserPromptSubmit")).toEqual([]);
+		// An event whose only entry was ours goes back to having no key at all,
+		// rather than leaving an empty list behind in a user-owned file.
+		expect(Object.keys(cleared)).toEqual(["Stop"]);
+		expect(
+			specs(
+				withNotifyHooks(withNotifyHooks({}, commandTransport), null),
+				"Stop",
+			).length,
+		).toBe(1);
+	});
+
+	it("clears a dead run's daemon entries out of the profile copies", async () => {
+		const profilesRoot = fs.mkdtempSync(
+			path.join(root, "claude-mirror-stalehttp-"),
+		);
+		const profile = path.join(
+			profilesRoot,
+			"6f1b2c3d-0000-4000-8000-0000000000e3",
+		);
+		fs.mkdirSync(profile);
+		fs.writeFileSync(
+			path.join(profile, "settings.json"),
+			JSON.stringify({ hooks: withNotifyHooks({}, httpTransport) }),
+		);
+
+		expect(
+			await mirrorHooksIntoProfiles("C:/python.exe", null, [profile]),
+		).toEqual([profile]);
+
+		const hooks = readProfileHooks(profile);
+		expect(specs(hooks, "Stop")).toEqual([]);
+		expect(specs(hooks, "SessionStart")).toHaveLength(1);
+		expect(specs(hooks, "SessionStart")[0]?.command).toContain(
+			"superset-pane-map.py",
+		);
+		expect(
+			fs.readFileSync(path.join(profile, "settings.json"), "utf-8"),
+		).not.toContain("/superset-notify/");
+	});
+
+	it("is idempotent across repeated merges", () => {
+		const once = JSON.stringify(withNotifyHooks({}, httpTransport));
+		const twice = JSON.stringify(
+			withNotifyHooks(
+				JSON.parse(once) as Record<string, HookEntry[]>,
+				httpTransport,
+			),
+		);
+		expect(twice).toBe(once);
+	});
 });

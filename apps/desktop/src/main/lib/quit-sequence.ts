@@ -16,6 +16,8 @@ export interface QuitCleanupDeps {
 	/** An update is downloaded/installing, so this quit hands off to Squirrel. */
 	isUpdateInstalling: boolean;
 	stopHostServices: () => void;
+	// (HOOK-HTTP-DAEMON)
+	stopNotifyDaemon: () => Promise<void>;
 	teardownTerminalHost: () => Promise<void>;
 	disposeTerminalHostClient: () => void;
 	shutdownPersistence: () => void;
@@ -31,6 +33,7 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 		forceFullCleanup,
 		isUpdateInstalling,
 		stopHostServices,
+		stopNotifyDaemon,
 		teardownTerminalHost,
 		disposeTerminalHostClient,
 		shutdownPersistence,
@@ -44,6 +47,7 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 
 	try {
 		stopHostServices();
+		await stopNotifyDaemon();
 		if (isDev || forceFullCleanup) {
 			await teardownTerminalHost();
 		} else if (isUpdateInstalling) {

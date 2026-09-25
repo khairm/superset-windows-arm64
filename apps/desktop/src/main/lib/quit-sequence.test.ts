@@ -11,6 +11,7 @@ interface Harness {
 	teardownTerminalHost: ReturnType<typeof mock>;
 	disposeTerminalHostClient: ReturnType<typeof mock>;
 	stopHostServices: ReturnType<typeof mock>;
+	stopNotifyDaemon: ReturnType<typeof mock>;
 	scheduled: Array<{ callback: () => void; delayMs: number }>;
 }
 
@@ -19,6 +20,7 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 	const teardownTerminalHost = mock(async () => {});
 	const disposeTerminalHostClient = mock(() => {});
 	const stopHostServices = mock(() => {});
+	const stopNotifyDaemon = mock(async () => {});
 	const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
 
 	const deps: QuitCleanupDeps = {
@@ -26,6 +28,7 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 		forceFullCleanup: false,
 		isUpdateInstalling: false,
 		stopHostServices,
+		stopNotifyDaemon,
 		teardownTerminalHost,
 		disposeTerminalHostClient,
 		shutdownPersistence: () => {},
@@ -44,6 +47,7 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 		teardownTerminalHost,
 		disposeTerminalHostClient,
 		stopHostServices,
+		stopNotifyDaemon,
 		scheduled,
 	};
 }

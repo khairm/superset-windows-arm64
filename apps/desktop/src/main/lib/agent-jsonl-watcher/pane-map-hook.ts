@@ -1,6 +1,26 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+	adoptRunningNotifyDaemon,
+	awaitAdoptedNotifyDaemonExit,
+	cancelNotifyDaemonRun,
+	claudeProfileDirs,
+	claudeProfileDirsAsync,
+	claudeTranscriptRoots,
+	ensureNotifyDaemon,
+	NOTIFY_DAEMON_PORT,
+	NOTIFY_HOOK_TIMEOUT_SECONDS,
+	NOTIFY_HOOK_URL_PATH,
+	NOTIFY_SECRET_HEADER,
+	notifyDaemonRunToken,
+	notifyHandBackToken,
+	notifyHookUrl,
+	resolvePythonPath,
+	SETTINGS_RELOAD_MS,
+	stopNotifyDaemon,
+	watchNotifyDaemonTraffic,
+} from "./notify-daemon";
 
 /**
  * Companion to `agent-jsonl-watcher.ts`: installs a tiny portable
@@ -33,13 +53,9 @@ const CODEX_HOOKS_PATH = path.join(os.homedir(), ".codex", "hooks.json");
 
 // Legacy AskUserQuestion deterministic-red hook. RETIRED: superset-notify.py
 // now owns the AskUserQuestion red (PreToolUse:AskUserQuestion). Only the
-// filename constant survives so mergeNotifyHook can self-heal away any stale
-// ask-marker hook a prior build registered; the script body, its writer, its
-// command builder, and its merge function were all deleted.
-// Still referenced by isAskMarkerHook below, which mergeNotifyHook uses to
-// self-heal (drop) any stale ask-marker hook left by a prior build — the
-// notify hook now owns the AskUserQuestion red. The ask-marker SCRIPT itself
-// is no longer written or registered.
+// filename constant survives, so isAskMarkerHook can self-heal away (drop) any
+// stale ask-marker hook a prior build registered; the script body, its writer,
+// its command builder, and its merge function were all deleted.
 const ASK_MARKER_SCRIPT_FILENAME = "superset-ask-marker.py";
 
 // Claude agent-status hook. A third Python hook POSTs each Claude lifecycle
@@ -397,12 +413,74 @@ import json
 import os
 import pathlib
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
-_ROTATED = set()
+# (HOOK-HTTP-DAEMON) The six per-request values, and the names they arrive
+# under on the CLI path. One long-lived daemon serves every terminal, so
+# nothing that varies per request may live in a module global or in
+# os.environ: both would leak one terminal's identity into another's decision.
+_CTX_NAMES = (
+    "SUPERSET_TERMINAL_ID",
+    "SUPERSET_AGENT_ID",
+    "SUPERSET_ORGANIZATION_ID",
+    "SUPERSET_HOST_AGENT_HOOK_URL",
+    "SUPERSET_HOME_DIR",
+    "SUPERSET_AGENT_WATCHER_DEBUG",
+)
+
+
+class _Ctx(object):
+    __slots__ = _CTX_NAMES + ("manifest_candidates", "transcript_home_dir")
+
+    def __init__(self, values):
+        for name in _CTX_NAMES:
+            setattr(self, name, values[name])
+        if not self.SUPERSET_AGENT_ID:
+            self.SUPERSET_AGENT_ID = "claude"
+        # Request-local: the companion strip-and-retry sweeps the same
+        # candidates a second time within ONE request, and only within one.
+        self.manifest_candidates = None
+        # (HOOK-HTTP-DAEMON) The home root of the INSTANCE that owns the
+        # terminal, read out of its transcript path; see _home_dir_of_transcript.
+        self.transcript_home_dir = ""
+
+
+def _ctx_from_environ():
+    return _Ctx({name: os.environ.get(name, "").strip() for name in _CTX_NAMES})
+
+
+# The ctx the calling thread is serving, so _log can read the debug flag
+# without every caller threading it through.
+_CURRENT = threading.local()
+
+
+def _log_suppressed():
+    ctx = getattr(_CURRENT, "ctx", None)
+    if ctx is not None:
+        return ctx.SUPERSET_AGENT_WATCHER_DEBUG == "0"
+    return os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0"
+
+
+class _InvalidRequest(ValueError):
+    # A caller-supplied value this hook refuses to act on. The daemon answers
+    # 400; the CLI path logs it and exits 0, because a hook that aborts the
+    # agent is worse than a lost dot.
+    pass
+
+
+# (HOOK-HTTP-DAEMON) One lock per log FILE: the two are appended from
+# unrelated code paths, so a shared lock would serialize every decision
+# append against every debug append on the hot path.
+_HOOK_LOG_LOCK = threading.Lock()
+_DECISION_LOG_LOCK = threading.Lock()
+_ROTATE_LOCK = threading.Lock()
+_ROTATE_INTERVAL_SECONDS = 5.0
+_ROTATE_CHECKED = {}
 
 
 def _rotate(log_path, backup_path):
@@ -413,19 +491,21 @@ def _rotate(log_path, backup_path):
     # on Windows when the target exists), so the old exists/unlink dance is
     # gone and a second rotation REPLACES the backup instead of failing.
     #
-    # Checked once per process per path. A hook process is short-lived and
-    # writes well under 10KB, so it cannot cross the 1MB line mid-run; stat()ing
-    # on every _log call only re-answered the same question. Best-effort: any
-    # failure leaves the log where it is. Never raises.
+    # (HOOK-HTTP-DAEMON) Re-checked at most once per _ROTATE_INTERVAL_SECONDS
+    # per path and serialized across workers, because the daemon outlives
+    # millions of events. Best-effort: any failure leaves the log where it is.
     key = str(log_path)
-    if key in _ROTATED:
-        return
-    _ROTATED.add(key)
-    try:
-        if log_path.stat().st_size > 1048576:
-            log_path.replace(backup_path)
-    except Exception:
-        pass
+    now = time.monotonic()
+    with _ROTATE_LOCK:
+        last = _ROTATE_CHECKED.get(key)
+        if last is not None and now - last < _ROTATE_INTERVAL_SECONDS:
+            return
+        _ROTATE_CHECKED[key] = now
+        try:
+            if log_path.stat().st_size > 1048576:
+                log_path.replace(backup_path)
+        except Exception:
+            pass
 
 
 def _log(record):
@@ -434,7 +514,7 @@ def _log(record):
     # Rotates at ~1MB with a single .log.1 backup (see _rotate). This runs on
     # EVERY hook event (not just terminal decisions), so without rotation it
     # grows without bound: a live install reached 508MB.
-    if os.environ.get("SUPERSET_AGENT_WATCHER_DEBUG") == "0":
+    if _log_suppressed():
         return
     try:
         record["ts"] = datetime.datetime.now().isoformat()
@@ -442,7 +522,8 @@ def _log(record):
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "agent-notify-hook.log"
         _rotate(log_path, log_dir / "agent-notify-hook.log.1")
-        with open(log_path, "a", encoding="utf-8") as h:
+        # (HOOK-HTTP-DAEMON) one whole line per append, across worker threads.
+        with _HOOK_LOG_LOCK, open(log_path, "a", encoding="utf-8") as h:
             h.write(json.dumps(record) + "\\n")
     except Exception:
         pass
@@ -454,8 +535,8 @@ def _decision_log(terminal_id, session_id, event_type, reason):
     # fact without reproducing it. Written ONLY at terminal decisions (Stop /
     # SubagentStop / StopFailure / manual-compact finish) — NOT on every
     # PostToolUse — so it stays cheap and bounded. Rotates at ~1MB via the
-    # shared _rotate (single .log.1 backup, checked once per process -- a
-    # process writes at most a handful of these lines).
+    # shared _rotate (single .log.1 backup, re-checked periodically: inside
+    # the daemon this function runs for the life of the app).
     # Best-effort: ANY failure here is swallowed so the hook
     # still POSTs even if logging breaks. Never raises.
     try:
@@ -471,7 +552,7 @@ def _decision_log(terminal_id, session_id, event_type, reason):
             + " eventType=" + str(event_type)
             + " " + str(reason)
         )
-        with open(log_path, "a", encoding="utf-8") as h:
+        with _DECISION_LOG_LOCK, open(log_path, "a", encoding="utf-8") as h:
             h.write(line + "\\n")
     except Exception:
         pass
@@ -2930,55 +3011,86 @@ def _manifest_pid_alive(pid):
         return True
 
 
-_MANIFEST_CANDIDATES = None
+def _home_dir_of_transcript(transcript_path):
+    # (HOOK-HTTP-DAEMON) The Superset home root of the instance that launched
+    # this terminal. SUPERSET_HOME_DIR cannot travel in a header (see
+    # _HEADER_FOR_CTX_NAME), and an ADOPTED daemon belongs to another instance
+    # whose own root holds none of this terminal's host manifests, so the
+    # terminal's transcript is what names the right one: the host-service pins
+    # every Claude session it launches to
+    # <home>/host/<org>/claude-profiles/<uuid>/projects/. A session that keeps
+    # Claude's default config dir has no such path and gets "" instead.
+    if not transcript_path:
+        return ""
+    parts = pathlib.PurePath(transcript_path).parts
+    for index in range(len(parts) - 5, 0, -1):
+        if (
+            parts[index] == "host"
+            and parts[index + 2] == "claude-profiles"
+            and parts[index + 4] == "projects"
+        ):
+            return str(pathlib.PurePath(*parts[:index]))
+    return ""
 
 
-def _manifest_candidate_urls(already_queued):
+def _manifest_candidate_urls(ctx, already_queued):
     # Every host-manifest URL worth trying, THIS terminal's org first and the
     # rest by name, minus anything in already_queued and minus manifests whose
     # writer pid is PROVEN dead. Any per-manifest problem skips that manifest
     # with a log line. Never raises.
     #
-    # Built at most ONCE per process and memoized: the companion
-    # strip-and-retry sweeps the same candidates a second time, and the glob +
-    # JSON parse + pid probe is the expensive half of a notify POST. The
-    # memoized answer ignores later already_queued arguments, which is safe
-    # because the env URL cannot change inside one hook process.
+    # (HOOK-HTTP-DAEMON) Built at most once per REQUEST and memoized on the
+    # ctx: the companion strip-and-retry sweeps the same candidates a second
+    # time, and the glob + JSON parse + pid probe is the expensive half of a
+    # notify POST. A process-wide memo would pin one terminal's org list onto
+    # every later request the daemon serves, and would never see a host that
+    # restarted onto a new port.
     #
-    # SUPERSET_HOME_DIR scopes the MANIFEST GLOB ONLY. Every marker path in this
+    # SUPERSET_HOME_DIR scopes the MANIFEST GLOB ONLY, alongside the root the
+    # terminal's own transcript names. Every marker path in this
     # script deliberately keeps using pathlib.Path.home(): the host-service reads
     # those markers at a HARDCODED homedir()
     # (packages/host-service/src/trpc/router/notifications/agent-status-snapshot.ts
     # :133-138), so unifying the two roots would write markers where the host
-    # never looks and silently break resync.
-    global _MANIFEST_CANDIDATES
-    if _MANIFEST_CANDIDATES is not None:
-        return _MANIFEST_CANDIDATES
+    # never looks and silently break resync. The daemon runs as the same user,
+    # so its Path.home() is that same root.
+    if ctx.manifest_candidates is not None:
+        return ctx.manifest_candidates
     urls = []
     seen_urls = set(already_queued)
     seen_paths = set()
     try:
-        home_dir = os.environ.get("SUPERSET_HOME_DIR")
-        if home_dir:
-            root = pathlib.Path(home_dir)
-        else:
-            root = pathlib.Path.home() / ".superset"
-        host_dir = root / "host"
+        # The terminal's OWN instance root first (transcript-derived, so it is
+        # right even when an adopted daemon's environment names another
+        # instance's), then the root this process runs under.
+        roots = []
+        for candidate_root in (
+            ctx.transcript_home_dir,
+            ctx.SUPERSET_HOME_DIR,
+        ):
+            if candidate_root:
+                candidate = pathlib.Path(candidate_root)
+                if candidate not in roots:
+                    roots.append(candidate)
+        if not roots:
+            roots.append(pathlib.Path.home() / ".superset")
         manifest_paths = []
-        # This terminal's OWN host first: env.ts:256-257 stamps the org id on
-        # every terminal it launches, so the common case probes one URL and
-        # stops. Other orgs' hosts answer "ignored":true -- harmless, but slow.
-        org_id = os.environ.get("SUPERSET_ORGANIZATION_ID")
-        if org_id:
-            manifest_paths.append(host_dir / org_id / "manifest.json")
-        try:
-            manifest_paths.extend(sorted(host_dir.glob("*/manifest.json")))
-        except Exception as glob_exc:
-            _log({
-                "action": "hook-candidate-glob-failed",
-                "hostDir": str(host_dir),
-                "error": str(glob_exc),
-            })
+        for root in roots:
+            host_dir = root / "host"
+            # This terminal's OWN host first: env.ts:256-257 stamps the org id on
+            # every terminal it launches, so the common case probes one URL and
+            # stops. Other orgs' hosts answer "ignored":true -- harmless, but slow.
+            org_id = ctx.SUPERSET_ORGANIZATION_ID
+            if org_id:
+                manifest_paths.append(host_dir / org_id / "manifest.json")
+            try:
+                manifest_paths.extend(sorted(host_dir.glob("*/manifest.json")))
+            except Exception as glob_exc:
+                _log({
+                    "action": "hook-candidate-glob-failed",
+                    "hostDir": str(host_dir),
+                    "error": str(glob_exc),
+                })
         for manifest_path in manifest_paths:
             # The own-org path is also matched by the glob above. Without this
             # it would be opened, parsed and pid-probed a second time.
@@ -3025,7 +3137,7 @@ def _manifest_candidate_urls(already_queued):
                 })
     except Exception as exc:
         _log({"action": "hook-candidates-failed", "error": str(exc)})
-    _MANIFEST_CANDIDATES = urls
+    ctx.manifest_candidates = urls
     return urls
 
 
@@ -3038,16 +3150,16 @@ class _HookCandidates:
     # manifest tail is enumerated only when a SECOND candidate is actually
     # asked for -- an accepted first POST never touches the disk at all.
     # RE-ITERABLE: the companion strip-and-retry sweeps the same candidates
-    # again, and _manifest_candidate_urls memoizes the tail so the second sweep
-    # costs nothing.
-    def __init__(self, env_url):
-        self._env_url = env_url
+    # again, and the ctx memoizes the tail so the second sweep costs nothing.
+    def __init__(self, ctx):
+        self._ctx = ctx
+        self._env_url = ctx.SUPERSET_HOST_AGENT_HOOK_URL
 
     def __iter__(self):
         if self._env_url:
             yield self._env_url
         for candidate in _manifest_candidate_urls(
-            [self._env_url] if self._env_url else []
+            self._ctx, [self._env_url] if self._env_url else []
         ):
             yield candidate
 
@@ -3346,8 +3458,13 @@ def _companion_resolved(payload, event, tool):
     return {"toolUseId": tool_use_id}
 
 
-def main():
-    payload = _read_payload()
+def handle(payload, ctx):
+    # (HOOK-HTTP-DAEMON) One hook event, start to finish, for the terminal ctx
+    # names. Returns "accepted" (a host took the event), "no-op" (nothing to
+    # deliver, or every reachable host disowned the terminal) or
+    # "delivery-failed" (nobody took it). Raises _InvalidRequest on a payload
+    # value it refuses to act on; every other failure path is swallowed by the
+    # helpers, because a broken hook must never abort the agent.
     session_id = (
         payload.get("session_id")
         or payload.get("sessionId")
@@ -3380,9 +3497,9 @@ def main():
     trigger = str(payload.get("trigger") or "").strip()
     source = str(payload.get("source") or "").strip()
 
-    url = os.environ.get("SUPERSET_HOST_AGENT_HOOK_URL", "").strip()
-    terminal_id = os.environ.get("SUPERSET_TERMINAL_ID", "").strip()
-    agent_id = (os.environ.get("SUPERSET_AGENT_ID") or "claude").strip()
+    url = ctx.SUPERSET_HOST_AGENT_HOOK_URL
+    terminal_id = ctx.SUPERSET_TERMINAL_ID
+    agent_id = ctx.SUPERSET_AGENT_ID
 
     # (TEAMMATE-IDLE) At the turn-end decision points, drop teammate-type
     # entries the transcript proves idle BEFORE any consumer (the split, the
@@ -3396,6 +3513,14 @@ def main():
     transcript_path = str(
         payload.get("transcript_path") or payload.get("transcriptPath") or ""
     ).strip()
+    # (HOOK-HTTP-DAEMON) The daemon's cwd is Electron's, not the terminal's, so
+    # a relative transcript path would name a different file here than it did
+    # for the agent that sent it. Refuse it rather than read the wrong one.
+    if transcript_path and not os.path.isabs(transcript_path):
+        raise _InvalidRequest(
+            "transcript_path is not absolute: " + transcript_path
+        )
+    ctx.transcript_home_dir = _home_dir_of_transcript(transcript_path)
     if event == "SessionStart" and source in ("startup", "clear"):
         _team_initialize_fresh_cache(transcript_path, terminal_id)
     team_note = []
@@ -3442,7 +3567,7 @@ def main():
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "action": "skip-no-terminal",
         })
-        return
+        return "no-op"
 
     # (PANE-MAP-UNSTEAL) the ending session's pane mapping must not outlive it
     # on this terminal (see _drop_pane_map_if_ours).
@@ -3486,14 +3611,14 @@ def main():
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "action": "skip-no-url",
         })
-        return
+        return "no-op"
     if event_type is None:
         _log({
             "event": event, "tool": tool, "mappedEventType": None,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
             "agentId": sub_agent_id, "action": "skip-unmapped",
         })
-        return
+        return "no-op"
 
     # (COMPANION-LIFECYCLE-ALERTS) Content-free producer identity, FRESH PER HOOK
     # INVOCATION. The lifecycle manager derives the USER-VISIBLE alert id from the
@@ -3566,7 +3691,7 @@ def main():
     # companionLifecycleEventId, which the sink dedupes, and dot broadcasts are
     # idempotent -- so re-POSTing to a host that already took the event costs
     # nothing, while a lost event costs a stuck dot.
-    candidates = _HookCandidates(url)
+    candidates = _HookCandidates(ctx)
     # Every url _deliver actually reached, across BOTH sweeps. candidates is
     # lazy, so this list -- not the candidate set -- is what the logs can name.
     tried = []
@@ -3616,7 +3741,7 @@ def main():
                     "responseBody": retry_outcome.body,
                     "error": retry_after,
                 })
-                return
+                return "no-op"
             _log({
                 "event": event, "tool": tool,
                 "mappedEventType": event_type,
@@ -3627,7 +3752,7 @@ def main():
                 "action": "companion-rejected-dot-posted",
                 "error": retry_after,
             })
-            return
+            return "accepted"
         except Exception as retry_exc:
             exc = retry_exc
 
@@ -3649,7 +3774,7 @@ def main():
                 "responseBody": outcome.body,
                 "companion": has_companion,
             })
-            return
+            return "no-op"
         _log({
             "event": event, "tool": tool, "mappedEventType": event_type,
             "terminalId": terminal_id, "sessionId": session_id, "url": url,
@@ -3659,7 +3784,7 @@ def main():
             "responseBody": outcome.body,
             "companion": has_companion,
         })
-        return
+        return "accepted"
 
     _log({
         "event": event, "tool": tool, "mappedEventType": event_type,
@@ -3679,32 +3804,618 @@ def main():
         "hook-post-failed candidates=" + ",".join(tried)
         + " error=" + str(exc),
     )
-    return
+    return "delivery-failed"
+
+
+# --- (HOOK-HTTP-DAEMON) supervised daemon mode ---------------------------
+# Delivery is NOT durable and is not claimed to be: an event that arrives
+# while the daemon is down or restarting is lost, exactly as a failed command
+# hook was. Recovery is unchanged -- the host's 60s agent-status resync and
+# the marker self-heal rebuild the dots -- and every non-2xx answer here is
+# non-blocking for Claude, so a lost event never stalls an agent.
+
+_HOOK_PATH = "/superset-notify/hook"
+_HEALTH_PATH = "/superset-notify/health"
+_SECRET_HEADER = "x-superset-notify-secret"
+_HEADER_FOR_CTX_NAME = {
+    "SUPERSET_TERMINAL_ID": "x-superset-terminal-id",
+    "SUPERSET_AGENT_ID": "x-superset-agent-id",
+    "SUPERSET_ORGANIZATION_ID": "x-superset-organization-id",
+    "SUPERSET_HOST_AGENT_HOOK_URL": "x-superset-host-agent-hook-url",
+    "SUPERSET_AGENT_WATCHER_DEBUG": "x-superset-agent-watcher-debug",
+}
+# SUPERSET_HOME_DIR does NOT travel in a header: Claude interpolates it into one
+# and its sender throws ERR_INVALID_CHAR before the request leaves when a header
+# value holds a code point above U+00FF, which a Windows profile path can. The
+# daemon reads it from its OWN environment, once, in _serve -- and because an
+# ADOPTED daemon's own environment is another instance's, the manifest glob also
+# takes the root the terminal's transcript names (_home_dir_of_transcript).
+_DAEMON_HOME_DIR = ""
+_ALLOWED_SUPERSET_HEADERS = frozenset(
+    [_SECRET_HEADER] + list(_HEADER_FOR_CTX_NAME.values())
+)
+# Claude sends the same hook input it wrote to stdin, and tool_input/tool_response
+# carry whole file contents: the largest single tool result in this machine's own
+# transcripts is 478KB, and the stdin path had no limit at all. The cap is an
+# abuse ceiling, not a filter -- refusing a real event loses it for good.
+_MAX_BODY_BYTES = 8388608
+_CHUNK_LINE_LIMIT = 8192
+_DRAIN_LIMIT_BYTES = 2 * _MAX_BODY_BYTES
+# A caller that has not proven the secret gets its status line, not a read of
+# whatever it feels like sending: one socket buffer's worth is drained, more is
+# refused unread and answered with a close the client may see as an RST.
+_UNAUTH_DRAIN_LIMIT_BYTES = 65536
+# socketserver puts this on the request socket. Without it a client that sends a
+# Content-Length and then stalls parks a handler thread for the life of the
+# daemon, and ThreadingHTTPServer caps neither threads nor connections.
+_REQUEST_TIMEOUT_SECONDS = 10.0
+_WORKER_COUNT = 4
+_WORKER_MAX = 16
+_QUEUE_DEPTH = 64
+# Under the hook timeout Claude registered: past that it has closed the socket,
+# and a response written into it is an error with nowhere to go.
+_JOB_WAIT_SECONDS = ${NOTIFY_HOOK_TIMEOUT_SECONDS - 1}.0
+_ID_MAX_LENGTH = 200
+_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789-_"
+)
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+class _Unauthorized(Exception):
+    pass
+
+
+class _NotFound(Exception):
+    pass
+
+
+class _TooLarge(Exception):
+    pass
+
+
+def _valid_identifier(value):
+    # Terminal/agent/org ids land in marker PATH SEGMENTS (_subagent_dir and
+    # friends), so a separator or a dot-dot here would escape the marker root.
+    return len(value) <= _ID_MAX_LENGTH and not set(value) - _ID_CHARS
+
+
+def _valid_hook_url(value):
+    if len(value) > 2048:
+        return False
+    # urlsplit is lazy: scheme parses eagerly, but host and port are properties
+    # that raise on a malformed authority, so they are read inside the guard.
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+        host = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme != "http" or port is None:
+        return False
+    return host in _LOOPBACK_HOSTS
+
+
+def _ctx_from_headers(headers):
+    for name in headers.keys():
+        lowered = name.lower()
+        if (
+            lowered.startswith("x-superset-")
+            and lowered not in _ALLOWED_SUPERSET_HEADERS
+        ):
+            raise _InvalidRequest("unexpected header " + lowered)
+    values = {}
+    for name, header in _HEADER_FOR_CTX_NAME.items():
+        present = headers.get_all(header) or []
+        if len(present) > 1:
+            raise _InvalidRequest("duplicate header " + header)
+        value = present[0].strip() if present else ""
+        # Claude interpolates "$VAR" for every name in allowedEnvVars; an
+        # UNSET variable is the one case that can come back uninterpolated,
+        # and it means exactly "not set".
+        if value == "$" + name:
+            value = ""
+        values[name] = value
+    for name in (
+        "SUPERSET_TERMINAL_ID",
+        "SUPERSET_AGENT_ID",
+        "SUPERSET_ORGANIZATION_ID",
+    ):
+        if values[name] and not _valid_identifier(values[name]):
+            raise _InvalidRequest("invalid " + name + ": " + values[name])
+    hook_url = values["SUPERSET_HOST_AGENT_HOOK_URL"]
+    if hook_url and not _valid_hook_url(hook_url):
+        raise _InvalidRequest("invalid SUPERSET_HOST_AGENT_HOOK_URL")
+    values["SUPERSET_HOME_DIR"] = _DAEMON_HOME_DIR
+    if values["SUPERSET_AGENT_WATCHER_DEBUG"] not in ("0", "1"):
+        values["SUPERSET_AGENT_WATCHER_DEBUG"] = ""
+    return _Ctx(values)
+
+
+class _Job(object):
+    __slots__ = ("payload", "ctx", "done", "outcome", "error")
+
+    def __init__(self, payload, ctx):
+        self.payload = payload
+        self.ctx = ctx
+        self.done = threading.Event()
+        self.outcome = None
+        self.error = None
+
+
+class _Dispatcher(object):
+    def __init__(self, worker_count, max_workers, queue_depth):
+        self._queue_depth = queue_depth
+        self._max_workers = max_workers
+        self._lock = threading.Lock()
+        self._queues = {}
+        self._ready = collections.deque()
+        self._busy = set()
+        self._wake = threading.Semaphore(0)
+        self._workers = 0
+        self._idle = 0
+        for _index in range(worker_count):
+            self._start_worker()
+
+    def _start_worker(self):
+        self._workers += 1
+        threading.Thread(
+            target=self._work,
+            name="notify-worker-" + str(self._workers),
+            daemon=True,
+        ).start()
+
+    def submit(self, job):
+        key = job.ctx.SUPERSET_TERMINAL_ID
+        with self._lock:
+            queue = self._queues.get(key)
+            if queue is None:
+                queue = collections.deque()
+                self._queues[key] = queue
+            if len(queue) >= self._queue_depth:
+                return False
+            queue.append(job)
+            if key not in self._busy and key not in self._ready:
+                self._ready.append(key)
+                self._wake.release()
+                if (
+                    len(self._ready) > self._idle
+                    and self._workers < self._max_workers
+                ):
+                    self._start_worker()
+        return True
+
+    def _work(self):
+        while True:
+            with self._lock:
+                self._idle += 1
+            self._wake.acquire()
+            with self._lock:
+                self._idle -= 1
+                key = self._ready.popleft()
+                self._busy.add(key)
+                job = self._queues[key].popleft()
+            try:
+                _CURRENT.ctx = job.ctx
+                job.outcome = handle(job.payload, job.ctx)
+            except Exception as error:
+                job.error = error
+            finally:
+                _CURRENT.ctx = None
+                job.done.set()
+                with self._lock:
+                    self._busy.discard(key)
+                    if self._queues[key]:
+                        self._ready.append(key)
+                        self._wake.release()
+                    else:
+                        del self._queues[key]
+
+
+def _daemon_classes():
+    # (HOOK-HTTP-DAEMON) Imported HERE, not at module scope: hmac (through
+    # hashlib and OpenSSL) plus http.server cost ~800ms of interpreter start on
+    # Windows ARM64, which the per-event CLI path would pay on every hook.
+    import hmac
+    import http.server
+
+    class _NotifyHandler(http.server.BaseHTTPRequestHandler):
+        server_version = "SupersetNotify"
+        sys_version = ""
+        timeout = _REQUEST_TIMEOUT_SECONDS
+
+        def log_request(self, code="-", size="-"):
+            # A line per response is what grew the old hook log to 508MB.
+            pass
+
+        def log_message(self, fmt, *args):
+            _log({"action": "daemon-http", "message": fmt % args})
+
+        def _respond(self, status, body=b""):
+            self.close_connection = True
+            try:
+                self.send_response(status)
+                self.send_header("Connection", "close")
+                if status != 204:
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if status != 204 and body:
+                    self.wfile.write(body)
+            except OSError as exc:
+                # A client that gave up and closed is how a slow request ends, and
+                # socketserver answers an escaping OSError with a full traceback.
+                _log({
+                    "action": "daemon-client-gone",
+                    "status": status,
+                    "error": type(exc).__name__ + ": " + str(exc),
+                })
+
+        def _authorize(self):
+            present = self.headers.get_all(_SECRET_HEADER) or []
+            if len(present) != 1:
+                raise _Unauthorized()
+            offered = present[0].strip().encode("utf-8", "replace")
+            if not hmac.compare_digest(offered, self.server.secret_bytes):
+                raise _Unauthorized()
+
+        def _content_length(self):
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                raise _InvalidRequest("no Content-Length")
+            try:
+                length = int(raw)
+            except ValueError:
+                raise _InvalidRequest("Content-Length is not an integer: " + raw)
+            if length < 0:
+                raise _InvalidRequest("negative Content-Length: " + raw)
+            return length
+
+        def _is_chunked(self):
+            raw = self.headers.get("Transfer-Encoding")
+            if raw is None:
+                return False
+            encoding = raw.strip().lower()
+            if encoding != "chunked":
+                raise _InvalidRequest("unsupported Transfer-Encoding: " + raw)
+            return True
+
+        def _read_chunked(self):
+            # A client is free to stream the body instead of measuring it, and
+            # http.server decodes no framing of its own.
+            data = bytearray()
+            while True:
+                line = self.rfile.readline(_CHUNK_LINE_LIMIT + 1)
+                if not line:
+                    raise _InvalidRequest("chunked body ended early")
+                try:
+                    size = int(line.split(b";", 1)[0].strip(), 16)
+                except ValueError:
+                    raise _InvalidRequest("bad chunk size: " + repr(line[:32]))
+                if size < 0:
+                    raise _InvalidRequest("negative chunk size")
+                if size == 0:
+                    break
+                if len(data) + size > _MAX_BODY_BYTES:
+                    raise _TooLarge(str(len(data) + size) + " bytes")
+                chunk = self.rfile.read(size)
+                if len(chunk) != size:
+                    raise _InvalidRequest("chunk shorter than its size")
+                data += chunk
+                if self.rfile.read(2) != b"\\r\\n":
+                    raise _InvalidRequest("chunk not terminated by CRLF")
+            while True:
+                trailer = self.rfile.readline(_CHUNK_LINE_LIMIT + 1)
+                if not trailer or trailer in (b"\\r\\n", b"\\n"):
+                    break
+            return bytes(data)
+
+        def _json_object(self, data):
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _InvalidRequest("body is not UTF-8: " + str(exc))
+            try:
+                payload = json.loads(text)
+            except ValueError as exc:
+                raise _InvalidRequest("body is not JSON: " + str(exc))
+            if not isinstance(payload, dict):
+                raise _InvalidRequest("body is not a JSON object")
+            return payload
+
+        def _drain(self, length, limit=_DRAIN_LIMIT_BYTES):
+            # An unread request body makes Windows answer our close with an RST,
+            # which throws away the status line the client came for. Only ever
+            # called for a body nothing has read yet: rfile.read blocks for the
+            # bytes it asks for, and a client waiting on our response will not
+            # send them or close, so draining an already-read body would hang.
+            # The socket timeout bounds the wait for a body a client announced
+            # and never finished sending.
+            if length <= 0 or length > limit:
+                self.close_connection = True
+                return
+            try:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 65536))
+                    if not chunk:
+                        return
+                    remaining -= len(chunk)
+            except Exception:
+                self.close_connection = True
+
+        def do_GET(self):
+            if self.path != _HEALTH_PATH:
+                self._respond(404)
+                return
+            try:
+                self._authorize()
+            except _Unauthorized:
+                self._respond(401)
+                return
+            self._respond(
+                200,
+                json.dumps({
+                    "ok": True,
+                    "pid": os.getpid(),
+                    "served": self.server.served_count(),
+                }).encode("utf-8"),
+            )
+
+        def do_POST(self):
+            length = -1
+            consumed = False
+            try:
+                chunked = self._is_chunked()
+                if not chunked:
+                    length = self._content_length()
+                if self.path != _HOOK_PATH:
+                    raise _NotFound(self.path)
+                self._authorize()
+                if length > _MAX_BODY_BYTES:
+                    raise _TooLarge(str(length) + " bytes")
+                data = self._read_chunked() if chunked else self.rfile.read(length)
+                consumed = True
+                if not chunked and len(data) != length:
+                    raise _InvalidRequest("body shorter than Content-Length")
+                ctx = _ctx_from_headers(self.headers)
+                payload = self._json_object(data)
+            except _NotFound:
+                self._drain(length, _UNAUTH_DRAIN_LIMIT_BYTES)
+                self._respond(404)
+                return
+            except _Unauthorized:
+                self._drain(length, _UNAUTH_DRAIN_LIMIT_BYTES)
+                self._respond(401)
+                return
+            except _TooLarge as too_large:
+                _log({"action": "daemon-body-too-large", "error": str(too_large)})
+                self._drain(length)
+                self._respond(413)
+                return
+            except _InvalidRequest as invalid:
+                _log({"action": "daemon-bad-request", "error": str(invalid)})
+                if not consumed:
+                    self._drain(length)
+                self._respond(400)
+                return
+            job = _Job(payload, ctx)
+            if not self.server.dispatcher.submit(job):
+                _log({
+                    "action": "daemon-queue-full",
+                    "terminalId": ctx.SUPERSET_TERMINAL_ID,
+                })
+                self._respond(503)
+                return
+            # Answers the supervisor's only question: is Claude POSTing at all?
+            self.server.note_served()
+            if not job.done.wait(_JOB_WAIT_SECONDS):
+                _log({
+                    "action": "daemon-job-timeout",
+                    "terminalId": ctx.SUPERSET_TERMINAL_ID,
+                })
+                self._respond(500)
+                return
+            if job.error is not None:
+                invalid = isinstance(job.error, _InvalidRequest)
+                _log({
+                    "action": "daemon-bad-request" if invalid else "daemon-job-error",
+                    "terminalId": ctx.SUPERSET_TERMINAL_ID,
+                    "error": type(job.error).__name__ + ": " + str(job.error),
+                })
+                self._respond(400 if invalid else 500)
+                return
+            if job.outcome == "delivery-failed":
+                self._respond(502)
+                return
+            self._respond(204)
+
+    class _NotifyServer(http.server.ThreadingHTTPServer):
+        # socketserver listens with a backlog of 5, and Windows REFUSES the
+        # sixth simultaneous connection outright instead of making it wait, so
+        # a burst of terminals would lose hooks at the accept queue.
+        request_queue_size = 64
+
+        def note_served(self):
+            with self.served_lock:
+                self.served += 1
+
+        def served_count(self):
+            with self.served_lock:
+                return self.served
+
+        # allow_reuse_address is TRUE on http.server's HTTPServer, and on Windows
+        # SO_REUSEADDR lets a second socket bind a port that is already LISTENING:
+        # two daemons would split the hook traffic and race each other's markers.
+        # On POSIX it only relaxes TIME_WAIT, which a relaunch within a minute of
+        # a served request needs to bind at all.
+        allow_reuse_address = os.name != "nt"
+        daemon_threads = True
+
+    return _NotifyHandler, _NotifyServer
+
+
+def _exit_when_parent_closes_stdin(server):
+    # Electron kills the daemon on quit, but a crashed or force-killed Electron
+    # cannot. Its end of our stdin pipe closes either way, and that EOF is the
+    # only parent-death signal that survives a hard kill on Windows.
+    def watch():
+        try:
+            sys.stdin.buffer.read(1)
+        except Exception:
+            pass
+        server.shutdown()
+
+    threading.Thread(target=watch, name="notify-parent-watch", daemon=True).start()
+
+
+def _serve(args):
+    if len(args) != 3 or args[1] != "--secret-file":
+        sys.stderr.write(
+            "usage: superset-notify.py --serve <port> --secret-file <path>\\n"
+        )
+        return 2
+    try:
+        port = int(args[0])
+    except ValueError:
+        sys.stderr.write("port is not an integer: " + args[0] + "\\n")
+        return 2
+    if port < 1 or port > 65535:
+        sys.stderr.write("port out of range: " + args[0] + "\\n")
+        return 2
+    try:
+        with open(args[2], "r", encoding="utf-8") as handle_:
+            secret = handle_.read().strip()
+    except OSError as exc:
+        sys.stderr.write("cannot read secret file: " + str(exc) + "\\n")
+        return 2
+    if not secret:
+        sys.stderr.write("secret file is empty: " + args[2] + "\\n")
+        return 2
+    global _DAEMON_HOME_DIR
+    daemon_home_dir = os.environ.get("SUPERSET_HOME_DIR", "").strip()
+    if daemon_home_dir and not os.path.isabs(daemon_home_dir):
+        sys.stderr.write(
+            "SUPERSET_HOME_DIR is not absolute: " + daemon_home_dir + "\\n"
+        )
+        return 2
+    _DAEMON_HOME_DIR = daemon_home_dir
+    handler_class, server_class = _daemon_classes()
+    try:
+        server = server_class(("127.0.0.1", port), handler_class)
+    except OSError as exc:
+        sys.stderr.write(
+            "cannot bind 127.0.0.1:" + str(port) + ": " + str(exc) + "\\n"
+        )
+        return 3
+    server.secret_bytes = secret.encode("utf-8")
+    server.served_lock = threading.Lock()
+    server.served = 0
+    server.dispatcher = _Dispatcher(_WORKER_COUNT, _WORKER_MAX, _QUEUE_DEPTH)
+    _exit_when_parent_closes_stdin(server)
+    sys.stderr.write("listening on 127.0.0.1:" + str(port) + "\\n")
+    sys.stderr.flush()
+    try:
+        server.serve_forever(poll_interval=0.5)
+    finally:
+        server.server_close()
+    return 0
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--serve":
+        return _serve(sys.argv[2:])
+    ctx = _ctx_from_environ()
+    _CURRENT.ctx = ctx
+    payload = _read_payload()
+    try:
+        handle(payload, ctx)
+    except _InvalidRequest as invalid:
+        _log({"action": "invalid-request", "error": str(invalid)})
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    # Only a failing exit raises SystemExit: the CLI hook path is also run
+    # under runpy by the cache-serialization test, whose wrapper has work to do
+    # after main() returns.
+    _exit_code = main()
+    if _exit_code:
+        sys.exit(_exit_code)
 `;
 
 function escapeForJsonString(p: string): string {
 	return p.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/**
+ * (HOOK-HTTP-DAEMON) The absolute interpreter, isolated (`-I`) and without
+ * site (`-S`). `uv run python` is the fallback for a machine where no python
+ * on PATH would actually execute.
+ */
+function pythonInvocation(pythonPath: string | null): string {
+	return pythonPath
+		? `"${escapeForJsonString(pythonPath)}" -I -S`
+		: "uv run python";
+}
+
 /** Hook command embedded in Claude's settings.json / Codex's hooks.json. */
-function hookCommand(): string {
-	return `uv run python "${escapeForJsonString(SCRIPT_PATH)}"`;
+function hookCommand(pythonPath: string | null): string {
+	return `${pythonInvocation(pythonPath)} "${escapeForJsonString(SCRIPT_PATH)}"`;
 }
 
 /** Hook command for the Claude agent-status notify script (Claude only). */
-function notifyHookCommand(): string {
-	return `uv run python "${escapeForJsonString(NOTIFY_SCRIPT_PATH)}"`;
+function notifyHookCommand(pythonPath: string | null): string {
+	return `${pythonInvocation(pythonPath)} "${escapeForJsonString(NOTIFY_SCRIPT_PATH)}"`;
 }
 
-interface HookSpec {
-	type: "command";
-	command: string;
+/**
+ * (HOOK-HTTP-DAEMON) The per-request values the notify script needs, and the
+ * request headers they travel in. Claude interpolates `$VAR` in a header value
+ * only for names listed in the entry's `allowedEnvVars`, so this one list is
+ * both the allowlist and the header set.
+ *
+ * SUPERSET_HOME_DIR is deliberately NOT here: Claude's http-hook sender throws
+ * ERR_INVALID_CHAR before sending when a header value holds a code point above
+ * U+00FF, and that value is a Windows profile path. The daemon reads it from
+ * its own environment instead, and reads the terminal's own root out of the
+ * transcript path in the payload, which is what keeps the manifest failover
+ * working for an instance whose terminals POST a daemon it did not start.
+ */
+const NOTIFY_HOOK_ENV_VARS = [
+	"SUPERSET_TERMINAL_ID",
+	"SUPERSET_AGENT_ID",
+	"SUPERSET_ORGANIZATION_ID",
+	"SUPERSET_HOST_AGENT_HOOK_URL",
+	"SUPERSET_AGENT_WATCHER_DEBUG",
+];
+
+function notifyHeaderForEnvVar(name: string): string {
+	const titled = name
+		.toLowerCase()
+		.split("_")
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join("-");
+	return `X-${titled}`;
 }
-interface HookEntry {
+
+export type CommandTransport = { kind: "command"; pythonPath: string | null };
+export type NotifyTransport =
+	| CommandTransport
+	| { kind: "http"; port: number; secret: string };
+
+type HookSpec =
+	| { type: "command"; command: string }
+	| {
+			type: "http";
+			url: string;
+			timeout: number;
+			headers: Record<string, string>;
+			allowedEnvVars: string[];
+	  };
+export interface HookEntry {
 	matcher?: string;
 	hooks?: HookSpec[];
 }
@@ -3713,22 +4424,57 @@ interface HooksRoot {
 	[k: string]: unknown;
 }
 
+function notifyHookSpec(notify: NotifyTransport): HookSpec {
+	if (notify.kind === "command") {
+		return { type: "command", command: notifyHookCommand(notify.pythonPath) };
+	}
+	const headers: Record<string, string> = {
+		[NOTIFY_SECRET_HEADER]: notify.secret,
+	};
+	for (const name of NOTIFY_HOOK_ENV_VARS) {
+		headers[notifyHeaderForEnvVar(name)] = `$${name}`;
+	}
+	return {
+		type: "http",
+		url: notifyHookUrl(notify.port),
+		timeout: NOTIFY_HOOK_TIMEOUT_SECONDS,
+		headers,
+		allowedEnvVars: [...NOTIFY_HOOK_ENV_VARS],
+	};
+}
+
+function hookSpecCommand(spec: unknown): string {
+	if (typeof spec !== "object" || spec === null) return "";
+	const command = (spec as { command?: unknown }).command;
+	return typeof command === "string" ? command : "";
+}
+
 function isPaneMapHook(spec: unknown): boolean {
-	if (typeof spec !== "object" || spec === null) return false;
-	const cmd = (spec as { command?: unknown }).command;
-	return typeof cmd === "string" && cmd.includes(SCRIPT_FILENAME);
+	return hookSpecCommand(spec).includes(SCRIPT_FILENAME);
 }
 
 function isAskMarkerHook(spec: unknown): boolean {
-	if (typeof spec !== "object" || spec === null) return false;
-	const cmd = (spec as { command?: unknown }).command;
-	return typeof cmd === "string" && cmd.includes(ASK_MARKER_SCRIPT_FILENAME);
+	return hookSpecCommand(spec).includes(ASK_MARKER_SCRIPT_FILENAME);
 }
 
+/**
+ * Ours, in either transport: the command form names the script file, the
+ * daemon form names our own URL path. Matching the path — never a bare
+ * `/hook` on loopback — is what keeps this from adopting some other tool's
+ * localhost hook as ours and deleting it on the next merge.
+ */
 function isNotifyHook(spec: unknown): boolean {
+	return (
+		hookSpecCommand(spec).includes(NOTIFY_SCRIPT_FILENAME) ||
+		isNotifyDaemonHook(spec)
+	);
+}
+
+/** Ours, in the daemon transport only. */
+function isNotifyDaemonHook(spec: unknown): boolean {
 	if (typeof spec !== "object" || spec === null) return false;
-	const cmd = (spec as { command?: unknown }).command;
-	return typeof cmd === "string" && cmd.includes(NOTIFY_SCRIPT_FILENAME);
+	const url = (spec as { url?: unknown }).url;
+	return typeof url === "string" && url.includes(NOTIFY_HOOK_URL_PATH);
 }
 
 /**
@@ -3791,69 +4537,193 @@ function writeNotifyScriptIfChanged(): boolean {
 	}
 }
 
-function mergeHook(filePath: string): void {
-	// Atomic-ish merge: read → mutate in memory → write. Wrapped in
-	// try/catch so a malformed settings file doesn't abort startup.
-	try {
-		let parsed: HooksRoot = {};
+/**
+ * Read → mutate in memory → write. A file that is not JSON, or not an object,
+ * is left exactly as its owner wrote it rather than stomped, and no failure
+ * here aborts startup.
+ *
+ * (HOOK-HTTP-DAEMON) The write lands through a rename, so an agent reading
+ * the file while the transport changes sees the old contents or the new
+ * one, never a truncated middle. `mode` is owner-only for a file that ends up
+ * holding the daemon secret.
+ */
+function mergedHookFile(
+	filePath: string,
+	existing: string | null,
+	rewrite: (root: HooksRoot) => void,
+): { merged: string; changed: boolean } | null {
+	let parsed: HooksRoot = {};
+	if (existing !== null) {
+		let candidate: unknown;
 		try {
-			const raw = fs.readFileSync(filePath, "utf8");
-			const candidate = JSON.parse(raw);
-			if (typeof candidate === "object" && candidate !== null) {
-				parsed = candidate as HooksRoot;
-			} else {
-				return; // not an object — leave it alone
-			}
+			candidate = JSON.parse(existing);
+		} catch (error) {
+			console.warn(
+				`[pane-map-hook] could not parse ${filePath}; skipping merge:`,
+				error,
+			);
+			return null;
+		}
+		if (typeof candidate !== "object" || candidate === null) return null;
+		parsed = candidate as HooksRoot;
+	}
+	rewrite(parsed);
+	const merged = JSON.stringify(parsed, null, 2);
+	return { changed: merged !== existing, merged };
+}
+
+function rewriteHookFile(
+	filePath: string,
+	rewrite: (root: HooksRoot) => void,
+	mode?: number,
+): void {
+	try {
+		let existing: string | null = null;
+		try {
+			existing = fs.readFileSync(filePath, "utf8");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-				// JSON parse error — don't stomp on user-edited file
 				console.warn(
-					`[pane-map-hook] could not parse ${filePath}; skipping merge:`,
+					`[pane-map-hook] could not read ${filePath}; skipping merge:`,
 					error,
 				);
 				return;
 			}
 		}
 
-		const hooks = parsed.hooks ?? {};
-		const existing = Array.isArray(hooks.SessionStart)
-			? hooks.SessionStart
-			: [];
-
-		// Drop only our hook commands from each entry, preserving any
-		// unrelated co-located hooks. Drop the whole entry only when
-		// nothing else is left inside its hooks list. Idempotent.
-		const cleaned: HookEntry[] = [];
-		for (const entry of existing) {
-			const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
-			const keptHooks = innerHooks.filter((spec) => !isPaneMapHook(spec));
-			if (keptHooks.length === innerHooks.length) {
-				cleaned.push(entry);
-			} else if (keptHooks.length > 0) {
-				cleaned.push({ ...entry, hooks: keptHooks });
-			}
-			// else: entry was wholly ours — drop it.
+		const outcome = mergedHookFile(filePath, existing, rewrite);
+		if (!outcome) return;
+		if (!outcome.changed) {
+			if (mode !== undefined) fs.chmodSync(filePath, mode);
+			return;
 		}
-		cleaned.push({
-			hooks: [{ type: "command", command: hookCommand() }],
-		});
-
-		hooks.SessionStart = cleaned;
-		parsed.hooks = hooks;
-
 		try {
 			fs.mkdirSync(path.dirname(filePath), { recursive: true });
 		} catch {
 			// best effort
 		}
-		fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2));
+		const pending = `${filePath}.pending`;
+		fs.writeFileSync(pending, outcome.merged, { mode });
+		if (mode !== undefined) fs.chmodSync(pending, mode);
+		fs.renameSync(pending, filePath);
 	} catch (error) {
 		console.warn(
-			`[pane-map-hook] failed to merge hook into ${filePath}:`,
+			`[pane-map-hook] failed to merge hooks into ${filePath}:`,
 			error,
 		);
 	}
 }
+
+// (HOOK-HTTP-DAEMON) The profile mirror walks every Claude profile on the
+// machine, so it runs off the main thread's synchronous path.
+async function rewriteHookFileAsync(
+	filePath: string,
+	rewrite: (root: HooksRoot) => void,
+	mode?: number,
+): Promise<boolean> {
+	try {
+		const existing = await fs.promises
+			.readFile(filePath, "utf8")
+			.catch((error: NodeJS.ErrnoException) => {
+				if (error.code === "ENOENT") return null;
+				throw error;
+			});
+
+		const outcome = mergedHookFile(filePath, existing, rewrite);
+		if (!outcome) return false;
+		if (!outcome.changed) {
+			if (mode !== undefined) await fs.promises.chmod(filePath, mode);
+			return true;
+		}
+		await fs.promises
+			.mkdir(path.dirname(filePath), { recursive: true })
+			.catch(() => {
+				// best effort
+			});
+		const pending = `${filePath}.pending`;
+		await fs.promises.writeFile(pending, outcome.merged, { mode });
+		if (mode !== undefined) await fs.promises.chmod(pending, mode);
+		await fs.promises.rename(pending, filePath);
+		return true;
+	} catch (error) {
+		console.warn(
+			`[pane-map-hook] failed to merge hooks into ${filePath}:`,
+			error,
+		);
+		return false;
+	}
+}
+
+/**
+ * Every entry with our own hook specs dropped out of it: co-located hooks that
+ * are not ours stay where they are, and an entry left with nothing goes. What
+ * makes a re-merge replace rather than append.
+ */
+function withoutOurSpecs(
+	entries: HookEntry[],
+	isOurs: (spec: unknown) => boolean,
+): HookEntry[] {
+	const cleaned: HookEntry[] = [];
+	for (const entry of entries) {
+		const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
+		const keptHooks = innerHooks.filter((spec) => !isOurs(spec));
+		if (keptHooks.length === innerHooks.length) {
+			cleaned.push(entry);
+		} else if (keptHooks.length > 0) {
+			cleaned.push({ ...entry, hooks: keptHooks });
+		}
+	}
+	return cleaned;
+}
+
+function withPaneMapHook(
+	hooks: Record<string, HookEntry[]>,
+	pythonPath: string | null,
+): Record<string, HookEntry[]> {
+	const entries = withoutOurSpecs(
+		Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [],
+		isPaneMapHook,
+	);
+	entries.push({
+		hooks: [{ type: "command", command: hookCommand(pythonPath) }],
+	});
+	hooks.SessionStart = entries;
+	return hooks;
+}
+
+/** Event -> optional matcher. Each is a SEPARATE entry under its event. */
+const NOTIFY_REGISTRATIONS: Array<{ event: string; matcher?: string }> = [
+	{ event: "UserPromptSubmit" },
+	{ event: "Stop" },
+	{ event: "SessionEnd" },
+	{ event: "Notification", matcher: "permission_prompt" },
+	{ event: "PreToolUse", matcher: "AskUserQuestion" },
+	{ event: "PostToolUse" },
+	// (CLAUDE-WORKING-UNHOOKED) own PostToolUseFailure too — notify.sh no longer
+	// raw-posts it (its host mapping -> Start bypassed the central red guard).
+	// _decide_event_type rewrites it to PostToolUse so a failed tool is guarded
+	// identically to a successful one (never stomps a pending AskUserQuestion red).
+	{ event: "PostToolUseFailure" },
+	// Background-subagent yellow-hold: keep the parent terminal working
+	// (yellow) while delegated subagents run after the main turn's Stop,
+	// and green only once the last one finishes. See _decide_event_type.
+	{ event: "SubagentStart" },
+	{ event: "SubagentStop" },
+	{ event: "StopFailure" }, // rate-limit/API-error abort: main-loop -> green; subagent-scoped (agent_id) -> self-scoped (STOPFAIL-SUBAGENT)
+	// (COMPACT-YELLOW) Context compaction shows working/yellow. PreCompact
+	// (manual /compact AND auto-compact) flips the dot to working at
+	// compaction start; SessionStart with source=compact fires at completion
+	// (manual -> green via the same decision as Stop, auto -> stay yellow,
+	// the live turn's Stop greens it later). See _decide_event_type.
+	{ event: "PreCompact" },
+	// (UNTAGGED-BG-RED) Unscoped (NOT matcher:"compact"): _decide_event_type's
+	// SessionStart branch clears the per-owner .askq dir on a NON-compact
+	// SessionStart (startup/resume/clear) so a stale question guard from a
+	// crashed/reused session can't pin the dot; the compact source still runs
+	// the COMPACT-YELLOW finish logic. (Binding/Attached stays the passthrough's
+	// job — this hook returns None for non-compact, so it only does the cleanup.)
+	{ event: "SessionStart" },
+];
 
 /**
  * Register the Claude agent-status notify script across the lifecycle hook
@@ -3863,110 +4733,75 @@ function mergeHook(filePath: string): void {
  * PreToolUse:AskUserQuestion entry (with an unscoped PostToolUse re-asserting
  * working on any tool completion) — so the ask-marker hook is no longer
  * registered for Claude. Claude-only: never merged into Codex.
+ *
+ * (HOOK-HTTP-DAEMON) The whole rewrite of Claude's `hooks` map, in memory:
+ * `notify` decides the transport for all twelve entries at once, and every
+ * co-located hook that is not ours stays where it was. Both transports are
+ * recognised by isNotifyHook, so a downgrade cleans the daemon entries and an
+ * upgrade cleans the command entries. Mutates and returns the map it is given.
+ *
+ * A null `notify` is the no-transport case — the notify script is not on disk,
+ * so nothing may be registered. It strips the daemon entries a crashed run left
+ * behind, because a loopback port nothing serves loses every event aimed at it,
+ * and keeps the command entries, whose script is still there and still works.
  */
-function mergeNotifyHook(filePath: string): void {
-	// Event -> optional matcher. Each is a SEPARATE entry under its event.
-	const registrations: Array<{ event: string; matcher?: string }> = [
-		{ event: "UserPromptSubmit" },
-		{ event: "Stop" },
-		{ event: "SessionEnd" },
-		{ event: "Notification", matcher: "permission_prompt" },
-		{ event: "PreToolUse", matcher: "AskUserQuestion" },
-		{ event: "PostToolUse" },
-		// (CLAUDE-WORKING-UNHOOKED) own PostToolUseFailure too — notify.sh no longer
-		// raw-posts it (its host mapping -> Start bypassed the central red guard).
-		// _decide_event_type rewrites it to PostToolUse so a failed tool is guarded
-		// identically to a successful one (never stomps a pending AskUserQuestion red).
-		{ event: "PostToolUseFailure" },
-		// Background-subagent yellow-hold: keep the parent terminal working
-		// (yellow) while delegated subagents run after the main turn's Stop,
-		// and green only once the last one finishes. See _decide_event_type.
-		{ event: "SubagentStart" },
-		{ event: "SubagentStop" },
-		{ event: "StopFailure" }, // rate-limit/API-error abort: main-loop -> green; subagent-scoped (agent_id) -> self-scoped (STOPFAIL-SUBAGENT)
-		// (COMPACT-YELLOW) Context compaction shows working/yellow. PreCompact
-		// (manual /compact AND auto-compact) flips the dot to working at
-		// compaction start; SessionStart with source=compact fires at completion
-		// (manual -> green via the same decision as Stop, auto -> stay yellow,
-		// the live turn's Stop greens it later). See _decide_event_type.
-		{ event: "PreCompact" },
-		// (UNTAGGED-BG-RED) Unscoped (NOT matcher:"compact"): _decide_event_type's
-		// SessionStart branch clears the per-owner .askq dir on a NON-compact
-		// SessionStart (startup/resume/clear) so a stale question guard from a
-		// crashed/reused session can't pin the dot; the compact source still runs
-		// the COMPACT-YELLOW finish logic. (Binding/Attached stays the passthrough's
-		// job — this hook returns None for non-compact, so it only does the cleanup.)
-		{ event: "SessionStart" },
-	];
-	try {
-		let parsed: HooksRoot = {};
-		try {
-			const raw = fs.readFileSync(filePath, "utf8");
-			const candidate = JSON.parse(raw);
-			if (typeof candidate === "object" && candidate !== null) {
-				parsed = candidate as HooksRoot;
-			} else {
-				return; // not an object — leave it alone
+export function withNotifyHooks(
+	hooks: Record<string, HookEntry[]>,
+	notify: NotifyTransport | null,
+): Record<string, HookEntry[]> {
+	for (const { event, matcher } of NOTIFY_REGISTRATIONS) {
+		const existing = Array.isArray(hooks[event])
+			? (hooks[event] as HookEntry[])
+			: [];
+		if (!notify) {
+			if (existing.length > 0) {
+				const kept = withoutOurSpecs(existing, isNotifyDaemonHook);
+				if (kept.length > 0) hooks[event] = kept;
+				else delete hooks[event];
 			}
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-				console.warn(
-					`[pane-map-hook] could not parse ${filePath}; skipping notify merge:`,
-					error,
-				);
-				return;
-			}
+			continue;
 		}
-
-		const hooks = parsed.hooks ?? {};
-		for (const { event, matcher } of registrations) {
-			const existing = Array.isArray(hooks[event])
-				? (hooks[event] as HookEntry[])
-				: [];
-			// Drop our notify hook commands (idempotent re-merge) AND any stale
-			// ask-marker hook from a prior build: superset-notify.py now owns the
-			// AskUserQuestion red, so the old ask-marker hook must stop firing
-			// after an upgrade (it wrote a marker nothing reads anymore).
-			// Co-located unrelated hooks are preserved.
-			const cleaned: HookEntry[] = [];
-			for (const entry of existing) {
-				const innerHooks = Array.isArray(entry.hooks) ? entry.hooks : [];
-				const keptHooks = innerHooks.filter(
-					(spec) => !isNotifyHook(spec) && !isAskMarkerHook(spec),
-				);
-				if (keptHooks.length === innerHooks.length) {
-					cleaned.push(entry);
-				} else if (keptHooks.length > 0) {
-					cleaned.push({ ...entry, hooks: keptHooks });
-				}
-				// else: entry was wholly ours — drop it.
-			}
-			cleaned.push({
-				...(matcher ? { matcher } : {}),
-				hooks: [{ type: "command", command: notifyHookCommand() }],
-			});
-			hooks[event] = cleaned;
-		}
-		parsed.hooks = hooks;
-
-		try {
-			fs.mkdirSync(path.dirname(filePath), { recursive: true });
-		} catch {
-			// best effort
-		}
-		fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2));
-	} catch (error) {
-		console.warn(
-			`[pane-map-hook] failed to merge notify hook into ${filePath}:`,
-			error,
+		// The stale ask-marker hook from a prior build counts as ours too:
+		// superset-notify.py owns the AskUserQuestion red now, and that hook
+		// only wrote a marker nothing reads anymore.
+		const cleaned = withoutOurSpecs(
+			existing,
+			(spec) => isNotifyHook(spec) || isAskMarkerHook(spec),
 		);
+		cleaned.push({
+			...(matcher ? { matcher } : {}),
+			hooks: [notifyHookSpec(notify)],
+		});
+		hooks[event] = cleaned;
 	}
+	return hooks;
 }
+
+/**
+ * (HOOK-HTTP-DAEMON) The http entries carry the daemon secret as a literal
+ * header value, because Claude's http hook sends headers and nothing else.
+ * Owner-only is as far as this reaches: the host-service copies this file into
+ * each Claude profile with the mode it finds here, but agent-setup's managed-hook
+ * pass then chmods those copies back to 0644 on POSIX. Same-user loopback is the
+ * accepted trust boundary for the secret.
+ */
+function hookFileMode(notify: NotifyTransport | null): number | undefined {
+	return notify?.kind === "http" ? 0o600 : undefined;
+}
+
+let hooksRegistered = false;
 
 /**
  * Install the pane-map script and register it as a SessionStart hook in
  * Claude's and Codex's hook config files. Idempotent — calling on every
  * app launch is safe.
+ *
+ * (HOOK-HTTP-DAEMON) Two passes. The first is the per-event command
+ * registration, so a session starting in the next moment has a working hook.
+ * The second swaps in daemon POSTs once the daemon is healthy, and reverts to
+ * the command transport if the daemon dies for good or Claude never POSTs to it.
+ * Both wait while another Superset instance is serving the daemon this home's
+ * hook entries point at, and run once that instance exits.
  */
 export function installPaneMapHook(): void {
 	// Skip hook registration entirely if the script didn't land on disk —
@@ -3978,11 +4813,288 @@ export function installPaneMapHook(): void {
 	// install the pane-map hook below. It OWNS the Claude AskUserQuestion red
 	// now, so the ask-marker hook is no longer registered for Claude.
 	const notifyOk = writeNotifyScriptIfChanged();
+	if (hooksRegistered) return;
+	hooksRegistered = true;
+	void registerHooks(notifyOk).catch((error) =>
+		console.warn("[pane-map-hook] hook registration failed:", error),
+	);
+}
+
+async function registerHooks(notifyOk: boolean): Promise<void> {
+	// (HOOK-HTTP-DAEMON) Two instances sharing a home can both find the port
+	// free -- the second looks while the first is still mid-handshake -- and the
+	// one that loses the bind has to go back to waiting the winner out rather
+	// than rewrite the registration the winner is serving. One token covers the
+	// whole run, including the writes an adoption wait that is still returning
+	// leads to, which a token sampled after it cannot see.
+	const token = notifyDaemonRunToken();
+	const cancelled = (): boolean => token !== notifyDaemonRunToken();
+	for (;;) {
+		if (cancelled()) return;
+		if (!(await waitOutAnotherInstancesDaemon())) return;
+		if (cancelled()) return;
+		mergeAllHooks(
+			null,
+			notifyOk ? { kind: "command", pythonPath: null } : null,
+		);
+		if (
+			(await upgradeHooksToDaemon(notifyOk, token)) !== "port-owned-elsewhere"
+		) {
+			return;
+		}
+	}
+}
+
+/**
+ * (HOOK-HTTP-DAEMON) False when this instance must leave the shared hook
+ * registration exactly where it is: THIS instance is quitting, and the other
+ * one is still serving the daemon those entries point at.
+ */
+async function waitOutAnotherInstancesDaemon(): Promise<boolean> {
+	const owner = await adoptRunningNotifyDaemon();
+	if (!owner) return true;
+	console.warn(
+		`[pane-map-hook] another Superset instance (pid ${owner.pid}) serves the notify daemon on 127.0.0.1:${NOTIFY_DAEMON_PORT}; leaving its hook registration and daemon alone until it exits`,
+	);
+	if (!(await awaitAdoptedNotifyDaemonExit(owner))) {
+		console.info(
+			`[pane-map-hook] shutting down while another Superset instance still serves the notify daemon on 127.0.0.1:${NOTIFY_DAEMON_PORT}; leaving its hook registration alone`,
+		);
+		return false;
+	}
+	console.info(
+		`[pane-map-hook] the notify daemon on 127.0.0.1:${NOTIFY_DAEMON_PORT} stopped answering; taking over its hook registration`,
+	);
+	return true;
+}
+
+function mergeAllHooks(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): void {
 	if (fs.existsSync(path.dirname(CLAUDE_SETTINGS_PATH))) {
-		mergeHook(CLAUDE_SETTINGS_PATH);
-		if (notifyOk) mergeNotifyHook(CLAUDE_SETTINGS_PATH);
+		rewriteHookFile(
+			CLAUDE_SETTINGS_PATH,
+			hookRewrite(paneMapPython, notify),
+			hookFileMode(notify),
+		);
 	}
 	if (fs.existsSync(path.dirname(CODEX_HOOKS_PATH))) {
-		mergeHook(CODEX_HOOKS_PATH);
+		rewriteHookFile(CODEX_HOOKS_PATH, (parsed) => {
+			parsed.hooks = withPaneMapHook(parsed.hooks ?? {}, paneMapPython);
+		});
 	}
+}
+
+// (HOOK-HTTP-DAEMON) Two mirrors write the same `<file>.pending`, so each waits
+// out the ones queued before it. Awaiting the queue itself is how a quit waits
+// for every mirror in flight.
+let hookMirrorQueue: Promise<void> = Promise.resolve();
+
+/**
+ * (HOOK-HTTP-DAEMON) A Superset terminal on a Pi-capable host launches Claude
+ * with `CLAUDE_CONFIG_DIR=<db-dir>/claude-profiles/<uuid>`, whose settings.json
+ * is the host-service's copy of `~/.claude/settings.json`. That copy is only
+ * refreshed at host-service start and at a terminal launch, so a session that
+ * already exists when the transport changes would keep the old one for the whole
+ * run: every transport change rewrites the copies itself. Returns the profiles
+ * it rewrote — the only ones whose sessions can speak for the transport.
+ *
+ * A machine with a Claude profile per workspace has hundreds of these, so the
+ * walk and every rewrite are awaited rather than synchronous: this runs while
+ * the renderer is still loading its assets off the same main thread.
+ */
+export function mirrorHooksIntoProfiles(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+	profileDirs?: readonly string[],
+): Promise<string[]> {
+	const mirror = hookMirrorQueue.then(() =>
+		mirrorProfiles(paneMapPython, notify, profileDirs),
+	);
+	hookMirrorQueue = mirror.then(
+		() => undefined,
+		() => undefined,
+	);
+	return mirror;
+}
+
+async function mirrorProfiles(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+	profileDirs: readonly string[] | undefined,
+): Promise<string[]> {
+	const dirs = profileDirs ?? (await claudeProfileDirsAsync());
+	const rewrite = hookRewrite(paneMapPython, notify);
+	const mirrored: string[] = [];
+	for (const profileDir of dirs) {
+		const settingsPath = path.join(profileDir, "settings.json");
+		if (!(await fileExists(settingsPath))) continue;
+		// (HOOK-HTTP-DAEMON) A profile whose write did not land still reads the
+		// old transport, and naming it here would let its sessions speak for the
+		// new one: the traffic gate would call a working daemon unused.
+		const written = await rewriteHookFileAsync(
+			settingsPath,
+			rewrite,
+			hookFileMode(notify),
+		);
+		if (written) mirrored.push(profileDir);
+	}
+	return mirrored;
+}
+
+/** The mirror the process `exit` handler runs, which has no tick left to await. */
+function mirrorHooksIntoProfilesSync(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): void {
+	const rewrite = hookRewrite(paneMapPython, notify);
+	for (const profileDir of claudeProfileDirs()) {
+		const settingsPath = path.join(profileDir, "settings.json");
+		if (!fs.existsSync(settingsPath)) continue;
+		rewriteHookFile(settingsPath, rewrite, hookFileMode(notify));
+	}
+}
+
+function hookRewrite(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): (parsed: HooksRoot) => void {
+	return (parsed) => {
+		parsed.hooks = withNotifyHooks(
+			withPaneMapHook(parsed.hooks ?? {}, paneMapPython),
+			notify,
+		);
+	};
+}
+
+function fileExists(file: string): Promise<boolean> {
+	return fs.promises.access(file).then(
+		() => true,
+		() => false,
+	);
+}
+
+export type CommandTransportReason =
+	| "daemon-unusable"
+	| "daemon-stopped"
+	| "process-exit";
+
+let commandTransportFallback:
+	| ((reason: CommandTransportReason) => void)
+	| null = null;
+let exitRestoreInstalled = false;
+
+export function armCommandTransportFallback(
+	fallback: (reason: CommandTransportReason) => void,
+): void {
+	commandTransportFallback = fallback;
+}
+
+function fallBackToCommandTransport(reason: CommandTransportReason): void {
+	const fallback = commandTransportFallback;
+	commandTransportFallback = null;
+	fallback?.(reason);
+}
+
+// (HOOK-HTTP-DAEMON) Claude runs with Superset closed, against the same
+// settings.json, so the hooks leave the daemon before the daemon dies. The
+// profile mirror is awaited here: a quit that returned before it finished would
+// leave those copies POSTing a port this process is about to close.
+export async function stopNotifyHookDaemon(): Promise<void> {
+	cancelNotifyDaemonRun();
+	fallBackToCommandTransport("daemon-stopped");
+	await hookMirrorQueue;
+	await stopNotifyDaemon();
+}
+
+type HookRegistration = "registered" | "cancelled" | "port-owned-elsewhere";
+
+let profileResweep: NodeJS.Timeout | null = null;
+
+function clearProfileResweep(): void {
+	if (profileResweep) clearTimeout(profileResweep);
+	profileResweep = null;
+}
+
+/**
+ * (HOOK-HTTP-DAEMON) Runs well after first paint — resolving the interpreter
+ * executes candidates and the handshake waits on a socket — and the only
+ * synchronous writes left are the two shared hook files, so neither the walk
+ * over this machine's Claude profiles nor its rewrites sit on the startup path.
+ *
+ * Events during a daemon outage are lost: Claude treats a refused hook POST as
+ * non-blocking and never retries it. The 60-second host resync and the notify
+ * script's marker self-heal are the recovery; no durable delivery is claimed.
+ */
+async function upgradeHooksToDaemon(
+	notifyOk: boolean,
+	token: number,
+): Promise<HookRegistration> {
+	// (HOOK-HTTP-DAEMON) Every write below is gated on the registration run's
+	// token: entries aimed at this daemon must never appear after quit cleanup
+	// has already put the hooks back and reported itself done.
+	const cancelled = (): boolean => token !== notifyDaemonRunToken();
+	const pythonPath = await resolvePythonPath();
+	if (cancelled()) return "cancelled";
+	const commandTransport: CommandTransport | null = notifyOk
+		? { kind: "command", pythonPath }
+		: null;
+	const handBack = notifyHandBackToken();
+	const daemon = notifyOk
+		? await ensureNotifyDaemon(NOTIFY_SCRIPT_PATH, () =>
+				fallBackToCommandTransport("daemon-unusable"),
+			)
+		: null;
+	if (cancelled()) return "cancelled";
+	if (!daemon) {
+		if (notifyOk && (await adoptRunningNotifyDaemon())) {
+			return "port-owned-elsewhere";
+		}
+		if (cancelled()) return "cancelled";
+		mergeAllHooks(pythonPath, commandTransport);
+		await mirrorHooksIntoProfiles(pythonPath, commandTransport);
+		return "registered";
+	}
+	const httpTransport: NotifyTransport = {
+		kind: "http",
+		port: daemon.port,
+		secret: daemon.secret,
+	};
+	armCommandTransportFallback((reason) => {
+		clearProfileResweep();
+		console.warn(`[pane-map-hook] notify transport back to command: ${reason}`);
+		mergeAllHooks(pythonPath, commandTransport);
+		if (reason === "process-exit") {
+			mirrorHooksIntoProfilesSync(pythonPath, commandTransport);
+			return;
+		}
+		void mirrorHooksIntoProfiles(pythonPath, commandTransport);
+	});
+	if (!exitRestoreInstalled) {
+		exitRestoreInstalled = true;
+		process.once("exit", () => fallBackToCommandTransport("process-exit"));
+	}
+	mergeAllHooks(pythonPath, httpTransport);
+	const upgradedProfiles = await mirrorHooksIntoProfiles(
+		pythonPath,
+		httpTransport,
+	);
+	if (cancelled()) return "cancelled";
+	// (HOOK-HTTP-DAEMON) Supervision can hand the hooks back while the mirror is
+	// still walking the profiles. The fallback has already rewritten them and
+	// cleared the resweep, so a resweep or a traffic watch armed here would aim
+	// those copies at a port nothing serves.
+	if (handBack !== notifyHandBackToken()) return "registered";
+	profileResweep = setTimeout(() => {
+		void mirrorHooksIntoProfiles(pythonPath, httpTransport);
+	}, SETTINGS_RELOAD_MS);
+	profileResweep.unref?.();
+	await watchNotifyDaemonTraffic(
+		daemon,
+		claudeTranscriptRoots(upgradedProfiles),
+		() => fallBackToCommandTransport("daemon-unusable"),
+		handBack,
+	);
+	return "registered";
 }
