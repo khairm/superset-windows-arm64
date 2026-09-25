@@ -4572,13 +4572,25 @@ function mergedHookFile(
 	return { changed: merged !== existing, merged };
 }
 
-function rewriteHookFile(
+/**
+ * The one synchronous rewrite left, and it is reached ONLY from the process
+ * `exit` handler, which has no tick left to await — every other caller goes
+ * through `rewriteHookFileAsync`, so nothing on the boot path blocks the main
+ * thread here any more.
+ *
+ * It restores entries in a file that is already there and never mints one,
+ * which is why it needs no separate existence probe: an absent hook file
+ * carries no daemon entries to restore. The atomic `.pending` swap stays —
+ * a torn `~/.claude/settings.json` would cost the user every hook they have,
+ * and at exit there is no async rename to swap it for.
+ */
+function rewriteHookFileSync(
 	filePath: string,
 	rewrite: (root: HooksRoot) => void,
 	mode?: number,
 ): void {
 	try {
-		let existing: string | null = null;
+		let existing: string;
 		try {
 			existing = fs.readFileSync(filePath, "utf8");
 		} catch (error) {
@@ -4587,8 +4599,8 @@ function rewriteHookFile(
 					`[pane-map-hook] could not read ${filePath}; skipping merge:`,
 					error,
 				);
-				return;
 			}
+			return;
 		}
 
 		const outcome = mergedHookFile(filePath, existing, rewrite);
@@ -4596,11 +4608,6 @@ function rewriteHookFile(
 		if (!outcome.changed) {
 			if (mode !== undefined) fs.chmodSync(filePath, mode);
 			return;
-		}
-		try {
-			fs.mkdirSync(path.dirname(filePath), { recursive: true });
-		} catch {
-			// best effort
 		}
 		const pending = `${filePath}.pending`;
 		fs.writeFileSync(pending, outcome.merged, { mode });
@@ -4833,10 +4840,11 @@ async function registerHooks(notifyOk: boolean): Promise<void> {
 		if (cancelled()) return;
 		if (!(await waitOutAnotherInstancesDaemon())) return;
 		if (cancelled()) return;
-		mergeAllHooks(
+		await mergeAllHooks(
 			null,
 			notifyOk ? { kind: "command", pythonPath: null } : null,
 		);
+		if (cancelled()) return;
 		if (
 			(await upgradeHooksToDaemon(notifyOk, token)) !== "port-owned-elsewhere"
 		) {
@@ -4868,28 +4876,84 @@ async function waitOutAnotherInstancesDaemon(): Promise<boolean> {
 	return true;
 }
 
-function mergeAllHooks(
+/**
+ * The two shared hook files, off the main thread end to end: the parent-directory
+ * probes and both rewrites await node:fs/promises, so a boot-path registration no
+ * longer stalls the renderer's `superset-app://` loader. A missing parent
+ * directory still means "this agent is not installed here" and is left alone.
+ */
+async function mergeSharedHookFiles(
 	paneMapPython: string | null,
 	notify: NotifyTransport | null,
-): void {
-	if (fs.existsSync(path.dirname(CLAUDE_SETTINGS_PATH))) {
-		rewriteHookFile(
+): Promise<void> {
+	if (await pathExists(path.dirname(CLAUDE_SETTINGS_PATH))) {
+		await rewriteHookFileAsync(
 			CLAUDE_SETTINGS_PATH,
 			hookRewrite(paneMapPython, notify),
 			hookFileMode(notify),
 		);
 	}
-	if (fs.existsSync(path.dirname(CODEX_HOOKS_PATH))) {
-		rewriteHookFile(CODEX_HOOKS_PATH, (parsed) => {
+	if (await pathExists(path.dirname(CODEX_HOOKS_PATH))) {
+		await rewriteHookFileAsync(CODEX_HOOKS_PATH, (parsed) => {
 			parsed.hooks = withPaneMapHook(parsed.hooks ?? {}, paneMapPython);
 		});
 	}
 }
 
-// (HOOK-HTTP-DAEMON) Two mirrors write the same `<file>.pending`, so each waits
+/** Queued, so it cannot interleave with a profile mirror's `.pending` writes. */
+function mergeAllHooks(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): Promise<void> {
+	return queueHookWrite(() => mergeSharedHookFiles(paneMapPython, notify));
+}
+
+/**
+ * The command-transport restore — shared files, then the profile copies — as ONE
+ * queued write. `stopNotifyHookDaemon` awaits the write queue in the same tick
+ * that triggers this, so a restore split across two queued jobs would leave the
+ * profile half outside what that quit waits for, and those copies would keep
+ * POSTing a port the process is about to close.
+ */
+function restoreCommandTransport(
+	paneMapPython: string | null,
+	notify: CommandTransport | null,
+): Promise<void> {
+	return queueHookWrite(async () => {
+		await mergeSharedHookFiles(paneMapPython, notify);
+		await mirrorProfiles(paneMapPython, notify, undefined);
+	});
+}
+
+/** The `exit`-handler twin: the same two files, with no tick left to await. */
+function mergeAllHooksSync(
+	paneMapPython: string | null,
+	notify: NotifyTransport | null,
+): void {
+	rewriteHookFileSync(
+		CLAUDE_SETTINGS_PATH,
+		hookRewrite(paneMapPython, notify),
+		hookFileMode(notify),
+	);
+	rewriteHookFileSync(CODEX_HOOKS_PATH, (parsed) => {
+		parsed.hooks = withPaneMapHook(parsed.hooks ?? {}, paneMapPython);
+	});
+}
+
+// (HOOK-HTTP-DAEMON) Two writers touch the same `<file>.pending`, so each waits
 // out the ones queued before it. Awaiting the queue itself is how a quit waits
-// for every mirror in flight.
-let hookMirrorQueue: Promise<void> = Promise.resolve();
+// for every hook-file write in flight — which is why the shared-file merge and
+// the command-transport restore queue here too, not just the profile mirror.
+let hookWriteQueue: Promise<void> = Promise.resolve();
+
+function queueHookWrite<T>(write: () => Promise<T>): Promise<T> {
+	const queued = hookWriteQueue.then(write);
+	hookWriteQueue = queued.then(
+		() => undefined,
+		() => undefined,
+	);
+	return queued;
+}
 
 /**
  * (HOOK-HTTP-DAEMON) A Superset terminal on a Pi-capable host launches Claude
@@ -4909,14 +4973,9 @@ export function mirrorHooksIntoProfiles(
 	notify: NotifyTransport | null,
 	profileDirs?: readonly string[],
 ): Promise<string[]> {
-	const mirror = hookMirrorQueue.then(() =>
+	return queueHookWrite(() =>
 		mirrorProfiles(paneMapPython, notify, profileDirs),
 	);
-	hookMirrorQueue = mirror.then(
-		() => undefined,
-		() => undefined,
-	);
-	return mirror;
 }
 
 async function mirrorProfiles(
@@ -4929,7 +4988,7 @@ async function mirrorProfiles(
 	const mirrored: string[] = [];
 	for (const profileDir of dirs) {
 		const settingsPath = path.join(profileDir, "settings.json");
-		if (!(await fileExists(settingsPath))) continue;
+		if (!(await pathExists(settingsPath))) continue;
 		// (HOOK-HTTP-DAEMON) A profile whose write did not land still reads the
 		// old transport, and naming it here would let its sessions speak for the
 		// new one: the traffic gate would call a working daemon unused.
@@ -4943,16 +5002,23 @@ async function mirrorProfiles(
 	return mirrored;
 }
 
-/** The mirror the process `exit` handler runs, which has no tick left to await. */
+/**
+ * The mirror the process `exit` handler runs, which has no tick left to await.
+ * The read itself skips a profile that has no settings.json, so this no longer
+ * probes for one per profile folder — on a machine carrying a Claude profile per
+ * workspace that probe was hundreds of blocking syscalls at quit.
+ */
 function mirrorHooksIntoProfilesSync(
 	paneMapPython: string | null,
 	notify: NotifyTransport | null,
 ): void {
 	const rewrite = hookRewrite(paneMapPython, notify);
 	for (const profileDir of claudeProfileDirs()) {
-		const settingsPath = path.join(profileDir, "settings.json");
-		if (!fs.existsSync(settingsPath)) continue;
-		rewriteHookFile(settingsPath, rewrite, hookFileMode(notify));
+		rewriteHookFileSync(
+			path.join(profileDir, "settings.json"),
+			rewrite,
+			hookFileMode(notify),
+		);
 	}
 }
 
@@ -4968,8 +5034,8 @@ function hookRewrite(
 	};
 }
 
-function fileExists(file: string): Promise<boolean> {
-	return fs.promises.access(file).then(
+function pathExists(target: string): Promise<boolean> {
+	return fs.promises.access(target).then(
 		() => true,
 		() => false,
 	);
@@ -5004,7 +5070,7 @@ function fallBackToCommandTransport(reason: CommandTransportReason): void {
 export async function stopNotifyHookDaemon(): Promise<void> {
 	cancelNotifyDaemonRun();
 	fallBackToCommandTransport("daemon-stopped");
-	await hookMirrorQueue;
+	await hookWriteQueue;
 	await stopNotifyDaemon();
 }
 
@@ -5052,7 +5118,7 @@ async function upgradeHooksToDaemon(
 			return "port-owned-elsewhere";
 		}
 		if (cancelled()) return "cancelled";
-		mergeAllHooks(pythonPath, commandTransport);
+		await mergeAllHooks(pythonPath, commandTransport);
 		await mirrorHooksIntoProfiles(pythonPath, commandTransport);
 		return "registered";
 	}
@@ -5064,18 +5130,21 @@ async function upgradeHooksToDaemon(
 	armCommandTransportFallback((reason) => {
 		clearProfileResweep();
 		console.warn(`[pane-map-hook] notify transport back to command: ${reason}`);
-		mergeAllHooks(pythonPath, commandTransport);
 		if (reason === "process-exit") {
+			// No tick is left to await here, so this half stays synchronous.
+			mergeAllHooksSync(pythonPath, commandTransport);
 			mirrorHooksIntoProfilesSync(pythonPath, commandTransport);
 			return;
 		}
-		void mirrorHooksIntoProfiles(pythonPath, commandTransport);
+		void restoreCommandTransport(pythonPath, commandTransport).catch((error) =>
+			console.warn("[pane-map-hook] command-transport restore failed:", error),
+		);
 	});
 	if (!exitRestoreInstalled) {
 		exitRestoreInstalled = true;
 		process.once("exit", () => fallBackToCommandTransport("process-exit"));
 	}
-	mergeAllHooks(pythonPath, httpTransport);
+	await mergeAllHooks(pythonPath, httpTransport);
 	const upgradedProfiles = await mirrorHooksIntoProfiles(
 		pythonPath,
 		httpTransport,

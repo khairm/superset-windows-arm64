@@ -51,6 +51,14 @@ const RULES: Rule[] = [
 		allowedCounts: {
 			// Cold daemon-recovery path only (connect failure / respawn).
 			"main/lib/terminal-host/client.ts": 2,
+			// (BLOCKING-FS-RATCHET) pre-existing fork debt at bdc2422944, inherited
+			// rather than written here: this file is byte-identical to upstream
+			// desktop-v1.30.2. The six matches are not call sites either — it
+			// monkey-patches node:child_process so every spawn variant defaults to
+			// windowsHide, so these lines bind and reassign the three sync
+			// variants and the blocking stays with whoever calls them. Delete this
+			// entry when upstream drops the patch, and never raise it.
+			"main/lib/windows-child-process-patch.ts": 6,
 		},
 		advice:
 			"Sync subprocesses freeze the Electron main process until the child exits — every electronTrpc response and IPC event queues behind it, so the whole app feels hung. Prefer async spawn/execFile: the caller awaits the same result, but main keeps serving while the child runs.",
@@ -61,6 +69,12 @@ const RULES: Rule[] = [
 		allowedCounts: {
 			// Workspace-setup copy, cold path.
 			"lib/trpc/routers/workspaces/utils/setup.ts": 2,
+			// (BLOCKING-FS-RATCHET) pre-existing fork debt at bdc2422944, inherited
+			// rather than written here: this file is byte-identical to upstream
+			// desktop-v1.30.2. The one match is the bare name in its node:fs import
+			// list, with no call anywhere in the file. Delete this entry when
+			// upstream drops the import, and never raise it.
+			"main/lib/local-identity/local-org.ts": 1,
 		},
 		advice:
 			"rmSync/cpSync walk the whole tree on the Electron main process — a large copy or delete stalls every electronTrpc response for seconds. Prefer `await rm/cp` from node:fs/promises: same result, but the walk runs on libuv's thread pool while main keeps serving.",
@@ -99,18 +113,16 @@ const RULES: Rule[] = [
 			/\b(statSync|readFileSync|readSync|openSync|appendFileSync|renameSync|existsSync)\b/,
 		allowedCounts: {
 			"main/lib/agent-jsonl-watcher/agent-jsonl-watcher.ts": 4,
-			// DELIBERATELY 2 BELOW THE TREE (which has 7). The perf-ui-choking
-			// branch retired one readFileSync by folding mergeHook +
-			// mergeNotifyHook into rewriteHookFile, and that drop is banked here.
-			// It also ADDED two blocking calls this baseline refuses to bless: a
-			// renameSync (the .pending → settings.json atomic swap) and a third
-			// existsSync (the per-profile settings.json probe, which runs once per
-			// entry of claudeProfileDirs(), so its real cost scales with the number
-			// of Claude profile folders). Both sit on the hook-install path that
-			// runs during main boot. Resolve it, do not silence it: move them to
-			// node:fs/promises, or bump this to 7 in a commit that says the boot
-			// cost was measured and accepted.
-			"main/lib/agent-jsonl-watcher/pane-map-hook.ts": 5,
+			// Two script-write reads on the install path, plus the read and the
+			// atomic-swap rename of the ONE synchronous hook rewrite left, which
+			// the process `exit` handler alone reaches — it has no tick to await,
+			// and a torn ~/.claude/settings.json would cost the user every hook
+			// they have. The boot path itself is now free of blocking fs here: the
+			// perf-ui-choking branch moved the shared-file merge and both
+			// directory probes to node:fs/promises and dropped the per-profile
+			// settings.json probe (its cost scaled with the number of Claude
+			// profile folders).
+			"main/lib/agent-jsonl-watcher/pane-map-hook.ts": 4,
 			"main/lib/app-environment.ts": 2,
 			"main/lib/app-state/index.ts": 2,
 			"main/lib/auto-resume/config/config.ts": 1,
