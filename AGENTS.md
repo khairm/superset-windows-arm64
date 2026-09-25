@@ -117,6 +117,12 @@ In brief:
   `superset-notify.py` POSTs with self-healing markers and persistence across
   renderer reloads; companion phone/watch alerts cover blocked questions,
   ready-for-review, and terminal-agent failures.
+- **Hooks reach the app over HTTP** — `superset-notify.py` runs once as a
+  supervised daemon on `127.0.0.1:46817` instead of one Python process per hook
+  event; the entries Superset writes into `settings.json` are `http` entries
+  with a 15 s timeout. Port, pid and per-boot secret in
+  `~/.superset/hooks/notify-daemon.json`. Events raised while the daemon is down
+  are LOST, not queued — the host's 60 s status resync recovers the dots.
 - **Auto-resume** — after an API failure, idle Claude terminals re-send
   automatically (bounded retries/budget, default-on, away-detection).
 - **Recycle Bin** — every delete entry point soft-deletes (30-day display
@@ -168,11 +174,29 @@ In brief:
   "Account ▸" menu show pace-coloured 5h/weekly/Fable percentages with reset
   countdowns, mirroring the tray. Glossary: `CONTEXT.md`. Module:
   `packages/host-service/src/claude-accounts/`.
+- **Unused upstream features hidden** — browser panes, page watchers, the v3
+  local chat pane and port scanning are off behind one `const` each in
+  `apps/desktop/src/renderer/fork-disabled-features.ts`
+  (`FORK_BROWSER_PANES_DISABLED`, `FORK_PAGE_WATCH_DISABLED`,
+  `FORK_CHAT_V3_DISABLED`, `FORK_PORT_SCAN_DISABLED`) plus matching
+  host-service mount guards. Saved layouts still restore those panes, inert.
+  Flipping a const to `false` is the whole re-enable path.
+- **Alternate-screen eviction is DEFERRED** — the snapshot-restore fixes
+  shipped; evicting an alternate-screen terminal from the live registry did
+  not. The exemption keeping those terminals resident is intentional, not a
+  gap to close; the blueprint for lifting it lives in the plan, not this tree.
 
 ## Live footguns (do NOT repeat)
 
 - No synchronous/blocking fs on the main thread at startup — the renderer's
   `superset-app://` loader starves and the window stays blank for minutes.
+  Ratcheted per file under `apps/desktop/src/main` by the fourth rule in
+  `apps/desktop/src/no-main-process-blocking.test.ts` (`(BLOCKING-FS-RATCHET)`):
+  exact counts, both directions, so a drop must lower the baseline too.
+- Never invoke `/simplify` or `/code-review` from a workflow implementer —
+  both fork background writers into the same worktree and race the edits the
+  implementer is making. The workflow's own cleanup and review stages replace
+  them.
 - Never re-enable xterm `screenReaderMode` (Wispr Flow regression); the build
   hard-fails if it is truthy in a renderer bundle.
 - Never let `ws` load native bufferutil/utf-8-validate in the host-service —
