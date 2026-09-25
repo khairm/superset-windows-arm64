@@ -11,6 +11,10 @@ import {
 	parseNumstat,
 	resolveBaseComparison,
 } from "./git-helpers";
+import {
+	createStatsCompleteness,
+	type StatsCompleteness,
+} from "./stats-completeness";
 
 export const MAX_UNTRACKED_STAT_FILES = 5_000;
 
@@ -64,21 +68,78 @@ export interface GitStatusSnapshotComputation {
 	snapshot: GitStatusSnapshot;
 	/** Resolved in the worker, scheduled by the process-wide coordinator. */
 	baseRefFetchTarget: BaseRefFetchTarget | null;
+	/** (DIFFSTATS-COLD-CACHE) Every stat the walk could not read, empty when
+	 * it read them all. Only a walk that tracks completeness fills it. */
+	incompleteStats: string[];
 }
 
+async function resolvesToCommit(git: SimpleGit, ref: string): Promise<boolean> {
+	const resolved = await git.raw([
+		"rev-parse",
+		"--verify",
+		"--quiet",
+		`${ref}^{commit}`,
+	]);
+	return resolved.trim().length > 0;
+}
+
+// (DIFFSTATS-COLD-CACHE) simple-git resolves a non-zero exit that printed no
+// stderr, which is how `merge-base` reports two histories with no common commit.
+async function hasComparableBase(
+	git: SimpleGit,
+	baseRef: string,
+): Promise<boolean> {
+	try {
+		const mergeBase = await git.raw(["merge-base", baseRef, "HEAD"]);
+		return mergeBase.trim().length > 0;
+	} catch (error) {
+		const [baseExists, headExists] = await Promise.all([
+			resolvesToCommit(git, baseRef),
+			resolvesToCommit(git, "HEAD"),
+		]);
+		if (baseExists && headExists) throw error;
+		return false;
+	}
+}
+
+// (DIFFSTATS-COLD-CACHE) A base with no common commit is an empty comparison,
+// not a lost stat; a merge-base failing for any other reason is a lost stat.
+async function readAgainstBase(
+	git: SimpleGit,
+	baseRef: string,
+	completeness: StatsCompleteness | undefined,
+): Promise<ChangedFile[]> {
+	if (completeness) {
+		try {
+			if (!(await hasComparableBase(git, baseRef))) return [];
+		} catch (error) {
+			completeness.degrade(`merge-base ${baseRef}`, error);
+			return [];
+		}
+	}
+	return getChangedFilesForDiff(git, [`${baseRef}...HEAD`], completeness);
+}
+
+// (DIFFSTATS-COLD-CACHE) `trackStatsCompleteness` costs one extra merge-base
+// probe; it never changes which files the snapshot lists.
 export async function getGitStatusSnapshot({
 	git,
 	worktreePath,
 	baseBranch,
+	trackStatsCompleteness = false,
 }: {
 	git: SimpleGit;
 	worktreePath: string;
 	baseBranch?: string;
+	trackStatsCompleteness?: boolean;
 }): Promise<GitStatusSnapshotComputation> {
+	const completeness = trackStatsCompleteness
+		? createStatsCompleteness()
+		: undefined;
 	const currentBranchName = (
 		await git.revparse(["--abbrev-ref", "HEAD"]).catch(() => "")
 	).trim();
-	const base = await resolveBaseComparison(git, baseBranch);
+	const base = await resolveBaseComparison(git, baseBranch, completeness);
 	const defaultBranchName = base?.branchName ?? null;
 	const baseRef = base?.baseRef ?? "HEAD";
 
@@ -112,16 +173,26 @@ export async function getGitStatusSnapshot({
 	// every file inside, so this stays cheap in large repos.
 	const ignoredPaths = parseIgnoredPaths(ignoredRaw);
 
-	const againstBase = await getChangedFilesForDiff(git, [`${baseRef}...HEAD`]);
+	const againstBase = await readAgainstBase(git, baseRef, completeness);
+
+	const readNumstat = async (args: string[]) =>
+		parseNumstat(
+			await git.raw(args).catch((error) => {
+				completeness?.degrade(args.join(" "), error);
+				return "";
+			}),
+		);
 
 	// Staged — use status.files index character for correct status. `-M` lets
 	// numstat collapse renamed entries without the tree-wide copy-source scan
 	// that `-C` performs.
-	const stagedNumstat = parseNumstat(
-		await git
-			.raw(["diff", "--numstat", "-z", "-M", "--cached"])
-			.catch(() => ""),
-	);
+	const stagedNumstat = await readNumstat([
+		"diff",
+		"--numstat",
+		"-z",
+		"-M",
+		"--cached",
+	]);
 	const staged: ChangedFile[] = [];
 	for (const file of status.files) {
 		const idx = file.index;
@@ -142,14 +213,13 @@ export async function getGitStatusSnapshot({
 		}
 	}
 
-	const unstagedNumstat = parseNumstat(
-		await git.raw(["diff", "--numstat", "-z"]).catch(() => ""),
-	);
+	const unstagedNumstat = await readNumstat(["diff", "--numstat", "-z"]);
 	const expandedUntracked = await expandUntrackedDirectories(
 		git,
 		status.files
 			.filter((file) => file.index === "?" && file.working_dir === "?")
 			.map((file) => file.path),
+		completeness,
 	);
 
 	const unstaged: ChangedFile[] = [];
@@ -194,7 +264,7 @@ export async function getGitStatusSnapshot({
 	}
 	const statsOmitted = untrackedFiles.length > MAX_UNTRACKED_STAT_FILES;
 	if (!statsOmitted) {
-		await countUntrackedFileLines(worktreePath, untrackedFiles);
+		await countUntrackedFileLines(worktreePath, untrackedFiles, completeness);
 	}
 
 	const hasDeletions = unstaged.some((file) => file.status === "deleted");
@@ -205,6 +275,7 @@ export async function getGitStatusSnapshot({
 				worktreePath,
 				untrackedFiles.map((file) => file.path),
 				hasDeletions,
+				completeness,
 			);
 
 	let mergedUnstaged = unstaged;
@@ -244,5 +315,6 @@ export async function getGitStatusSnapshot({
 			ignoredPaths,
 		},
 		baseRefFetchTarget: base?.fetchTarget ?? null,
+		incompleteStats: completeness?.incomplete ?? [],
 	};
 }

@@ -226,6 +226,10 @@ export async function resolveDefaultBranchName(
 export async function resolveUpstream(
 	git: SimpleGit,
 	branch: string,
+	// (DIFFSTATS-COLD-CACHE) An unset key exits non-zero with no stderr,
+	// which simple-git reports as empty output, so only a genuine config
+	// failure reaches here.
+	onFailure?: (error: unknown) => void,
 ): Promise<{ remote: string; remoteBranch: string } | null> {
 	try {
 		const [remote, merge] = await Promise.all([
@@ -236,7 +240,8 @@ export async function resolveUpstream(
 		const remoteName = remote.trim();
 		if (!remoteName || !remoteBranch) return null;
 		return { remote: remoteName, remoteBranch };
-	} catch {
+	} catch (error) {
+		onFailure?.(error);
 		return null;
 	}
 }

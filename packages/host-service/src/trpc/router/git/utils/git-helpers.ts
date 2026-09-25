@@ -1,11 +1,13 @@
 import {
 	copyFile,
+	lstat,
 	mkdtemp,
 	open,
 	readFile,
 	realpath,
 	rm,
 	stat,
+	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
@@ -19,6 +21,7 @@ import { mapConcurrent } from "../../../../lib/map-concurrent";
 import { resolveUpstream } from "../../../../runtime/git/refs";
 import { createUserSimpleGit } from "../../../../runtime/git/simple-git";
 import type { Branch, ChangedFile, FileStatus } from "../types";
+import type { StatsCompleteness } from "./stats-completeness";
 
 // Skip line counting for files larger than this — anything over a MB
 // of "source" is almost certainly a data file or accidental binary,
@@ -34,6 +37,15 @@ const UNTRACKED_IO_CONCURRENCY = 64;
 // per-file memory to this × UNTRACKED_IO_CONCURRENCY instead of the full
 // file size, and comfortably covers the 8KB binary sniff window.
 const UNTRACKED_READ_CHUNK_SIZE = 64 * 1024;
+
+// (DIFFSTATS-COLD-CACHE) A path git listed as untracked can be deleted before
+// the walk reaches it, several git round-trips later. It contributes no lines
+// and git's next status drops it, so it is not an incomplete stat; anything
+// else (EBUSY, EACCES, EIO) is.
+function isVanishedPath(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | null)?.code;
+	return code === "ENOENT" || code === "ENOTDIR";
+}
 
 /** Runs `fn` over `items` with at most `limit` in flight at once, returning
  * results in input order. Shared by any caller that needs to bound
@@ -57,6 +69,37 @@ export async function mapWithConcurrency<T, R>(
 	);
 	await Promise.all(workers);
 	return results;
+}
+
+/**
+ * `:(literal)` stops git from reading `[`, `*` and `?` in a path as glob
+ * syntax. Without it a pathspec for `app/[id]/page.tsx` also matches
+ * `app/i/page.tsx` — worktree paths the caller never named.
+ */
+export function literalPathspecs(paths: string[]): string[] {
+	return paths.map((path) => `:(literal)${path}`);
+}
+
+/** (DIFFSTATS-COLD-CACHE) Windows caps a command line at 32767 characters,
+ * which one pathspec per path reaches at a few hundred entries. A caller that
+ * cannot pass the pathspecs in a file splits them into runs of this size. */
+const MAX_PATHSPEC_ARGV_CHARS = 8_000;
+
+function chunkLiteralPathspecs(paths: string[]): string[][] {
+	const chunks: string[][] = [];
+	let chunk: string[] = [];
+	let chars = 0;
+	for (const pathspec of literalPathspecs(paths)) {
+		if (chunk.length > 0 && chars + pathspec.length > MAX_PATHSPEC_ARGV_CHARS) {
+			chunks.push(chunk);
+			chunk = [];
+			chars = 0;
+		}
+		chunk.push(pathspec);
+		chars += pathspec.length + 1;
+	}
+	if (chunk.length > 0) chunks.push(chunk);
+	return chunks;
 }
 
 /** Map git's single-letter status codes to GitHub-aligned FileStatus */
@@ -148,19 +191,27 @@ export function parseNameStatus(
 	return results;
 }
 
+/** (DIFFSTATS-COLD-CACHE) `--quiet` makes an unset `origin/HEAD` exit without
+ * writing stderr, which simple-git reports as empty output; only a genuine
+ * failure rejects, and then the base is unknown rather than absent. */
 export async function getDefaultBranchName(
 	git: SimpleGit,
+	completeness?: StatsCompleteness,
 ): Promise<string | null> {
+	let ref: string;
 	try {
-		const ref = await git.raw([
+		ref = await git.raw([
 			"symbolic-ref",
+			"--quiet",
 			"refs/remotes/origin/HEAD",
 			"--short",
 		]);
-		return ref.trim().replace(/^origin\//, "");
-	} catch {
+	} catch (error) {
+		completeness?.degrade("origin/HEAD", error);
 		return null;
 	}
+	const branchName = ref.trim().replace(/^origin\//, "");
+	return branchName === "" ? null : branchName;
 }
 
 /**
@@ -172,6 +223,7 @@ export async function getDefaultBranchName(
 export async function resolveBaseComparison(
 	git: SimpleGit,
 	explicitBranch?: string,
+	completeness?: StatsCompleteness,
 ): Promise<{
 	branchName: string;
 	baseRef: string;
@@ -179,9 +231,14 @@ export async function resolveBaseComparison(
 	// tracks another local branch and there is nothing to fetch.
 	fetchTarget: { remote: string; branch: string } | null;
 } | null> {
-	const branchName = explicitBranch ?? (await getDefaultBranchName(git));
+	const branchName =
+		explicitBranch ?? (await getDefaultBranchName(git, completeness));
 	if (!branchName) return null;
-	const upstream = await resolveUpstream(git, branchName);
+	// (DIFFSTATS-COLD-CACHE) unset tracking config resolves empty, so only a
+	// genuine config failure reaches here.
+	const upstream = await resolveUpstream(git, branchName, (error) =>
+		completeness?.degrade(`branch.${branchName} upstream`, error),
+	);
 	// Git encodes a branch tracking another local branch as
 	// `branch.<name>.remote = .` — in that case the merge target is
 	// already a bare branch name in this repo, not `./<name>`.
@@ -285,13 +342,15 @@ function isPathWithinWorktree(
 export async function countUntrackedFileLines(
 	worktreePath: string,
 	files: ChangedFile[],
+	completeness?: StatsCompleteness,
 ): Promise<void> {
 	if (files.length === 0) return;
 
 	let worktreeReal: string;
 	try {
 		worktreeReal = await realpath(worktreePath);
-	} catch {
+	} catch (error) {
+		completeness?.degrade("untracked line counts", error);
 		return;
 	}
 
@@ -360,8 +419,72 @@ export async function countUntrackedFileLines(
 			} finally {
 				await handle.close();
 			}
-		} catch {}
+		} catch (error) {
+			if (!isVanishedPath(error)) completeness?.degrade(file.path, error);
+		}
 	});
+}
+
+// (DIFFSTATS-COLD-CACHE) One argv entry per untracked path overruns the
+// 32767-character Windows command line at a few hundred files, so the
+// pathspecs travel in a file. `--pathspec-file-nul` settles the separator
+// only: glob magic still applies inside the file, so every entry carries the
+// same `:(literal)` the argv form had.
+async function runIntentToAdd(
+	tempGit: SimpleGit,
+	tempDir: string,
+	paths: string[],
+): Promise<void> {
+	const pathspecFile = join(tempDir, "pathspecs");
+	await writeFile(pathspecFile, `${literalPathspecs(paths).join("\0")}\0`);
+	await tempGit.raw([
+		"add",
+		"--intent-to-add",
+		`--pathspec-from-file=${pathspecFile}`,
+		"--pathspec-file-nul",
+	]);
+}
+
+// (DIFFSTATS-COLD-CACHE) `git add --intent-to-add` refuses the whole set when
+// one pathspec matches nothing, so a path that vanished since `git status`
+// listed it is recognised by re-checking the disk, never by git's wording.
+// `lstat`, because a dangling symlink is an untracked path git still lists.
+async function pathsStillOnDisk(
+	worktreePath: string,
+	paths: string[],
+): Promise<string[]> {
+	const present = await mapWithConcurrency(
+		paths,
+		UNTRACKED_IO_CONCURRENCY,
+		async (path) => {
+			try {
+				await lstat(resolve(worktreePath, path));
+				return true;
+			} catch (error) {
+				return !isVanishedPath(error);
+			}
+		},
+	);
+	return paths.filter((_, index) => present[index]);
+}
+
+// (DIFFSTATS-COLD-CACHE) A path git listed as untracked can be deleted
+// before the add runs, and one unmatched pathspec refuses the whole set.
+// Retrying with the survivors keeps every other rename in the walk.
+async function markIntentToAdd(
+	tempGit: SimpleGit,
+	worktreePath: string,
+	tempDir: string,
+	paths: string[],
+): Promise<void> {
+	try {
+		await runIntentToAdd(tempGit, tempDir, paths);
+	} catch (error) {
+		const surviving = await pathsStillOnDisk(worktreePath, paths);
+		if (surviving.length === paths.length) throw error;
+		if (surviving.length === 0) return;
+		await runIntentToAdd(tempGit, tempDir, surviving);
+	}
 }
 
 export interface DetectedRename {
@@ -378,30 +501,29 @@ export interface DetectedRename {
  * index to a temp file, marking untracked files intent-to-add against that
  * copy, and diffing. Real index is never mutated. Falls back to an empty
  * result on any error — caller still has the unrelated deleted+untracked
- * entries to display.
+ * entries to display — and reports the degradation to `completeness`.
+ * (DIFFSTATS-COLD-CACHE)
  */
 export async function detectUnstagedRenames(
 	git: SimpleGit,
 	worktreePath: string,
 	untrackedPaths: string[],
 	hasDeletions: boolean,
+	completeness?: StatsCompleteness,
 ): Promise<DetectedRename[]> {
 	if (untrackedPaths.length === 0) return [];
 	if (!hasDeletions) return [];
 
 	let indexPath: string;
-	try {
-		indexPath = (await git.raw(["rev-parse", "--git-path", "index"])).trim();
-		if (!indexPath) return [];
-		if (!isAbsolute(indexPath)) indexPath = resolve(worktreePath, indexPath);
-	} catch {
-		return [];
-	}
-
 	let tempDir: string;
 	try {
+		indexPath = (await git.raw(["rev-parse", "--git-path", "index"])).trim();
+		if (!indexPath) throw new Error("git reported no index path");
+		if (!isAbsolute(indexPath)) indexPath = resolve(worktreePath, indexPath);
 		tempDir = await mkdtemp(join(tmpdir(), "superset-renames-"));
-	} catch {
+	} catch (error) {
+		// (DIFFSTATS-COLD-CACHE)
+		completeness?.degrade("rename detection", error);
 		return [];
 	}
 
@@ -414,12 +536,7 @@ export async function detectUnstagedRenames(
 			GIT_INDEX_FILE: tempIndex,
 		});
 
-		await tempGit.raw([
-			"add",
-			"--intent-to-add",
-			"--",
-			...untrackedPaths.map((path) => `:(literal)${path}`),
-		]);
+		await markIntentToAdd(tempGit, worktreePath, tempDir, untrackedPaths);
 
 		const [nameStatusRaw, numstatRaw] = await Promise.all([
 			tempGit.raw(["diff", "--name-status", "-z", "-M"]),
@@ -449,7 +566,8 @@ export async function detectUnstagedRenames(
 			});
 		}
 		return result;
-	} catch {
+	} catch (error) {
+		completeness?.degrade("rename detection", error);
 		return [];
 	} finally {
 		await rm(tempDir, { recursive: true, force: true }).catch((error) => {
@@ -464,6 +582,7 @@ export async function detectUnstagedRenames(
 export async function getChangedFilesForDiff(
 	git: SimpleGit,
 	diffArgs: string[],
+	completeness?: StatsCompleteness,
 ): Promise<ChangedFile[]> {
 	try {
 		const [nameStatusRaw, numstatRaw] = await Promise.all([
@@ -482,7 +601,8 @@ export async function getChangedFilesForDiff(
 				deletions: (numstat.get(f.path) ?? { deletions: 0 }).deletions,
 				isBinary: (numstat.get(f.path) ?? { isBinary: false }).isBinary,
 			}));
-	} catch {
+	} catch (error) {
+		completeness?.degrade(`diff ${diffArgs.join(" ")}`, error);
 		return [];
 	}
 }
@@ -620,6 +740,7 @@ export async function loadFileDiffContent(
 export async function expandUntrackedDirectories(
 	git: SimpleGit,
 	untrackedPaths: string[],
+	completeness?: StatsCompleteness,
 ): Promise<Map<string, string[]>> {
 	const dirs = untrackedPaths.filter((path) => path.endsWith("/"));
 	const expanded = new Map<string, string[]>();
@@ -627,18 +748,26 @@ export async function expandUntrackedDirectories(
 
 	// `--exclude-standard` matches what status itself honours, including
 	// .gitignore files nested inside the untracked directory.
-	const raw = await git
-		.raw([
-			"ls-files",
-			"--others",
-			"--exclude-standard",
-			"-z",
-			"--",
-			...dirs.map((dir) => `:(literal)${dir}`),
-		])
-		.catch(() => "");
+	// (DIFFSTATS-COLD-CACHE) One run per argv-sized batch of pathspecs.
+	const listed: string[] = [];
+	for (const pathspecs of chunkLiteralPathspecs(dirs)) {
+		const raw = await git
+			.raw([
+				"ls-files",
+				"--others",
+				"--exclude-standard",
+				"-z",
+				"--",
+				...pathspecs,
+			])
+			.catch((error) => {
+				completeness?.degrade("untracked directory expansion", error);
+				return "";
+			});
+		listed.push(...raw.split("\0").filter(Boolean));
+	}
 
-	for (const path of raw.split("\0").filter(Boolean)) {
+	for (const path of listed) {
 		const dir = dirs.find((candidate) => path.startsWith(candidate));
 		if (!dir) continue;
 		const files = expanded.get(dir);

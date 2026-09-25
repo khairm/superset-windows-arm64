@@ -48,14 +48,30 @@ export interface GitTaskEnv {
 	[key: string]: string;
 }
 
+// (DIFFSTATS-COLD-CACHE)
 export const gitStatusSnapshotTask = defineWorkerTask<
-	{ worktreePath: string; baseBranch?: string; gitEnv: GitTaskEnv },
+	{
+		worktreePath: string;
+		baseBranch?: string;
+		gitEnv: GitTaskEnv;
+		trackStatsCompleteness?: boolean;
+	},
 	GitStatusSnapshotComputation
 >({
 	type: "git/getStatusSnapshot",
-	handler: async ({ worktreePath, baseBranch, gitEnv }) => {
+	handler: async ({
+		worktreePath,
+		baseBranch,
+		gitEnv,
+		trackStatsCompleteness,
+	}) => {
 		const git = createUserSimpleGit(worktreePath).env(gitEnv);
-		return getGitStatusSnapshot({ git, worktreePath, baseBranch });
+		return getGitStatusSnapshot({
+			git,
+			worktreePath,
+			baseBranch,
+			trackStatsCompleteness,
+		});
 	},
 });
 

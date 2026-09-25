@@ -14,6 +14,8 @@ import type { HostDb } from "../db";
 import { workspaces, workspaceTags } from "../db/schema";
 import type { EventBus } from "../events";
 import type { WorkspaceSnapshot } from "../events/types";
+// (DIFFSTATS-COLD-CACHE)
+import { gitStatusStore } from "../trpc/router/git/utils/git-status-store";
 import type { ApiClient } from "../types";
 
 export type HostWorkspaceRow = typeof workspaces.$inferSelect;
@@ -405,6 +407,8 @@ export function emitLocalWorkspaceDeleted(
 	ctx: WorkspaceStoreContext,
 	row: HostWorkspaceRow,
 ): void {
+	// (DIFFSTATS-COLD-CACHE)
+	gitStatusStore.forgetDeletedWorkspace(row.id);
 	ctx.eventBus.broadcastWorkspaceChanged({
 		workspaceId: row.id,
 		eventType: "deleted",
@@ -439,6 +443,8 @@ export function archiveLocalWorkspace(
 			.where(eq(workspaces.id, id))
 			.run();
 	}
+	// (DIFFSTATS-COLD-CACHE)
+	gitStatusStore.forgetDeletedWorkspace(id);
 	ctx.eventBus.broadcastWorkspaceChanged({
 		workspaceId: id,
 		eventType: "deleted",

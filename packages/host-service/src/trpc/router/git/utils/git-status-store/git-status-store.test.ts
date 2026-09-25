@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { Branch, ChangedFile } from "../../types";
+import {
+	MAX_COLD_ENTRIES,
+	MAX_COLD_RETAINED_FILES,
+} from "../diff-stats-limits";
 import type { GitStatusSnapshot } from "../git-status";
 import type { GitStatusPartial } from "../git-status-partial";
 import { GitStatusStore } from "./git-status-store";
@@ -27,6 +31,11 @@ function snapshot(unstaged: ChangedFile[] = []): GitStatusSnapshot {
 		unstaged,
 		ignoredPaths: [],
 	};
+}
+
+function repeatedFiles(count: number): GitStatusSnapshot {
+	const shared = file("f");
+	return snapshot(Array.from({ length: count }, () => shared));
 }
 
 function harness(options?: {
@@ -392,5 +401,279 @@ describe("GitStatusStore", () => {
 		]);
 		expect(h.calls.full).toBe(1);
 		expect(h.calls.partial).toBe(1);
+	});
+});
+
+// (DIFFSTATS-COLD-CACHE)
+describe("GitStatusStore cold reads", () => {
+	const coldCache = {
+		worktreePath: "repo-a",
+		directoryId: "identity-a",
+	};
+
+	test("coalesces misses, expires after 120 seconds, and awaits a fresh snapshot", async () => {
+		const clock = spyOn(Date, "now");
+		let now = 1_000;
+		clock.mockImplementation(() => now);
+		try {
+			const store = new GitStatusStore();
+			let complete: ((value: GitStatusSnapshot) => void) | undefined;
+			let calls = 0;
+			const input = {
+				workspaceId: "w",
+				baseBranch: null,
+				coldCache,
+				computeFull: () => {
+					calls++;
+					return new Promise<GitStatusSnapshot>((resolve) => {
+						complete = resolve;
+					});
+				},
+				computePartial: async () => {
+					throw new Error("partial must not run");
+				},
+			};
+			const first = store.read(input);
+			const concurrent = store.read(input);
+			await Promise.resolve();
+			expect(calls).toBe(1);
+			complete?.(snapshot([file("first")]));
+			expect((await first).unstaged[0]?.path).toBe("first");
+			expect((await concurrent).unstaged[0]?.path).toBe("first");
+			now += 119_999;
+			await store.read(input);
+			expect(calls).toBe(1);
+			now++;
+			const expired = store.read(input);
+			await Promise.resolve();
+			expect(calls).toBe(2);
+			complete?.(snapshot([file("fresh")]));
+			expect((await expired).unstaged[0]?.path).toBe("fresh");
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	test("does not cache failures and invalidates on changes, attach, drop, and identity change", async () => {
+		const store = new GitStatusStore();
+		const h = harness();
+		const input = { workspaceId: "w", baseBranch: null, coldCache, ...h };
+		await store.read(input);
+		await store.read(input);
+		expect(h.calls.full).toBe(1);
+		store.recordChange("w", []);
+		await store.read(input);
+		store.attach("w");
+		await store.read(input);
+		store.drop("w");
+		await store.read(input);
+		await store.read({
+			...input,
+			coldCache: { worktreePath: "repo-b", directoryId: "identity-b" },
+		});
+		await store.read({
+			...input,
+			coldCache: { worktreePath: "repo-b", directoryId: "identity-c" },
+		});
+		expect(h.calls.full).toBe(6);
+		await expect(
+			store.read({
+				...input,
+				computeFull: async () => {
+					throw new Error("git failed");
+				},
+				coldCache: { worktreePath: "repo-c", directoryId: "identity-c" },
+			}),
+		).rejects.toThrow("git failed");
+		await store.read({
+			...input,
+			coldCache: { worktreePath: "repo-c", directoryId: "identity-c" },
+		});
+		expect(h.calls.full).toBe(7);
+	});
+
+	test("a change in one workspace invalidates every workspace on its checkout", async () => {
+		const store = new GitStatusStore();
+		const h = harness();
+		const first = {
+			workspaceId: "first",
+			baseBranch: null,
+			coldCache: { worktreePath: "C:/checkout", directoryId: "same" },
+			...h,
+		};
+		const second = {
+			workspaceId: "second",
+			baseBranch: null,
+			coldCache: { worktreePath: "c:/checkout-alias", directoryId: "same" },
+			...h,
+		};
+		await store.read(first);
+		await store.read(second);
+		store.recordChange("first", undefined);
+		await store.read(second);
+		expect(h.calls.full).toBe(3);
+	});
+
+	test("retries a cold compute that never settles once its deadline passes", async () => {
+		const clock = spyOn(Date, "now");
+		let now = 5_000;
+		clock.mockImplementation(() => now);
+		try {
+			const store = new GitStatusStore();
+			let calls = 0;
+			const input = {
+				workspaceId: "wedged",
+				baseBranch: null,
+				coldCache,
+				computeFull: () => {
+					calls++;
+					return new Promise<GitStatusSnapshot>(() => {});
+				},
+				computePartial: async () => {
+					throw new Error("partial must not run");
+				},
+			};
+			void store.read(input);
+			await Promise.resolve();
+			now += 119_999;
+			void store.read(input);
+			await Promise.resolve();
+			expect(calls).toBe(1);
+			now++;
+			void store.read(input);
+			await Promise.resolve();
+			expect(calls).toBe(2);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	test("does not restore an in-flight entry invalidated by a mutation", async () => {
+		const store = new GitStatusStore();
+		let complete: ((value: GitStatusSnapshot) => void) | undefined;
+		const h = harness();
+		const input = { workspaceId: "w", baseBranch: null, coldCache, ...h };
+		const pending = store.read({
+			...input,
+			computeFull: () =>
+				new Promise<GitStatusSnapshot>((resolve) => {
+					complete = resolve;
+				}),
+		});
+		await Promise.resolve();
+		store.recordChange("w", undefined);
+		complete?.(snapshot([file("old")]));
+		await pending;
+		await store.read(input);
+		expect(h.calls.full).toBe(1);
+	});
+
+	test("serves a walk that could not read every stat without caching it", async () => {
+		const store = new GitStatusStore();
+		const h = harness({ full: () => snapshot([file("a.ts")]) });
+		let statsComplete = false;
+		const input = {
+			workspaceId: "w",
+			baseBranch: null,
+			coldCache,
+			statsComplete: () => statsComplete,
+			...h,
+		};
+
+		expect((await store.read(input)).unstaged.map((f) => f.path)).toEqual([
+			"a.ts",
+		]);
+		await store.read(input);
+		expect(h.calls.full).toBe(2);
+
+		statsComplete = true;
+		await store.read(input);
+		await store.read(input);
+		expect(h.calls.full).toBe(3);
+	});
+
+	test("bounds cold entries and evicts the least recently used", async () => {
+		const store = new GitStatusStore();
+		const h = harness();
+		const input = { baseBranch: null, coldCache, ...h };
+		for (let i = 0; i < MAX_COLD_ENTRIES; i++) {
+			await store.read({ ...input, workspaceId: `w${i}` });
+		}
+		await store.read({ ...input, workspaceId: "w0" });
+		await store.read({ ...input, workspaceId: "overflow" });
+		await store.read({ ...input, workspaceId: "w1" });
+		expect(h.calls.full).toBe(MAX_COLD_ENTRIES + 2);
+	});
+
+	test("keeps smaller cold entries when an oversized walk resolves", async () => {
+		const walks = { small: 0, oversized: 0 };
+		const base = {
+			baseBranch: null,
+			coldCache,
+			computePartial: async () => {
+				throw new Error("cold reads must not compute partial status");
+			},
+		};
+		const small = {
+			...base,
+			workspaceId: "small",
+			computeFull: async () => {
+				walks.small++;
+				return repeatedFiles(1);
+			},
+		};
+		const oversized = {
+			...base,
+			workspaceId: "oversized",
+			computeFull: async () => {
+				walks.oversized++;
+				return repeatedFiles(MAX_COLD_RETAINED_FILES + 1);
+			},
+		};
+		const store = new GitStatusStore();
+
+		await store.read(small);
+		await store.read(oversized);
+		await store.read(small);
+		await store.read(oversized);
+
+		expect(walks).toEqual({ small: 1, oversized: 2 });
+	});
+
+	test("evicts the least recently read cold entries over the file budget", async () => {
+		const twoFifths = Math.ceil(MAX_COLD_RETAINED_FILES * 0.4);
+		const walks = { a: 0, b: 0, c: 0 };
+		const base = {
+			baseBranch: null,
+			coldCache,
+			computePartial: async () => {
+				throw new Error("cold reads must not compute partial status");
+			},
+		};
+		const entry = (workspaceId: keyof typeof walks) => ({
+			...base,
+			workspaceId,
+			computeFull: async () => {
+				walks[workspaceId]++;
+				return repeatedFiles(twoFifths);
+			},
+		});
+		const a = entry("a");
+		const b = entry("b");
+		const c = entry("c");
+		const store = new GitStatusStore();
+
+		await store.read(a);
+		await store.read(b);
+		await store.read(a);
+		await store.read(c);
+		expect(walks).toEqual({ a: 1, b: 1, c: 1 });
+
+		await store.read(a);
+		await store.read(c);
+		expect(walks).toEqual({ a: 1, b: 1, c: 1 });
+
+		await store.read(b);
+		expect(walks).toEqual({ a: 1, b: 2, c: 1 });
 	});
 });

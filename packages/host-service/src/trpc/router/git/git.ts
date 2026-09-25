@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { pullRequests, workspaces } from "../../../db/schema";
 import { createGitEnvResolver } from "../../../runtime/git";
+import { resolveCheckoutIdentity } from "../../../runtime/git/checkout-identity";
 import { isGitRepo } from "../../../runtime/git/non-git";
 import { createUserSimpleGit } from "../../../runtime/git/simple-git";
 import type { HostServiceContext } from "../../../types";
@@ -36,9 +37,10 @@ import type {
 	PullRequestReviewThread,
 	PullRequestState,
 } from "./types";
-import { scheduleBaseRefFetch } from "./utils/base-ref-freshness";
+import { scheduleBaseRefRepair } from "./utils/base-ref-repair";
 import { rethrowEnvironmentalGitError } from "./utils/classify-git-error";
 import { gitConfigWrite } from "./utils/config-write";
+import { MAX_DIFF_STATS_BATCH } from "./utils/diff-stats-limits";
 import {
 	assertSafeRelativePath,
 	getDefaultBranchName,
@@ -129,12 +131,6 @@ async function removeFromWorktree(
 	await rm(join(worktreePath, relativePath), { recursive: true, force: true });
 }
 
-/** Upper bound for one getDiffStatsByWorkspaces call — a page's host rarely
- * has more than a few dozen workspaces; anything larger is a runaway caller. */
-export const MAX_DIFF_STATS_BATCH = 500;
-
-/** Limiter-admitted status snapshot; shared by getStatus and the batched
- * diff-stats query so both see identical numbers for a workspace. */
 /**
  * A mutation that rewrites the index or refs returns before the `.git/`
  * watcher event flushes, and the client refetches status immediately. Mark
@@ -144,6 +140,10 @@ function invalidateStatus(workspaceId: string): void {
 	gitStatusStore.recordChange(workspaceId, undefined);
 }
 
+/** Limiter-admitted status snapshot. getStatus and the batched diff-stats
+ * query compute separately (only the cold walk tracks the stats it could
+ * not read) and the limiter serializes them per workspace.
+ * (DIFFSTATS-COLD-CACHE) */
 function runStatusSnapshot(
 	ctx: Parameters<typeof resolveWorktreePath>[0] &
 		Pick<HostServiceContext, "credentials">,
@@ -151,9 +151,13 @@ function runStatusSnapshot(
 		workspaceId: string;
 		baseBranch?: string;
 		priority?: "foreground" | "background";
+		coldCache?: boolean;
 	},
 ) {
-	const requestKey = JSON.stringify({ baseBranch: input.baseBranch ?? null });
+	const requestKey = JSON.stringify({
+		baseBranch: input.baseBranch ?? null,
+		coldCache: input.coldCache === true,
+	});
 	return gitStatusRefreshLimiter.run({
 		workspaceId: input.workspaceId,
 		requestKey,
@@ -165,44 +169,76 @@ function runStatusSnapshot(
 			if (!(await isGitRepo(worktreePath))) {
 				return emptyGitStatusSnapshot();
 			}
-			const gitEnv = await resolveGitTaskEnv(ctx, worktreePath);
 			const workerPool = getHostWorkerPool();
+			let pendingGitEnv: ReturnType<typeof resolveGitTaskEnv> | undefined;
+			const resolveGitEnvOnce = () =>
+				(pendingGitEnv ??= resolveGitTaskEnv(ctx, worktreePath));
 
+			let incompleteStats: string[] = [];
 			const computeFull = async () => {
+				const walkStartedAt = Date.now();
+				const gitEnv = await resolveGitEnvOnce();
 				const result = await workerPool.run(
 					gitStatusSnapshotTask,
-					{ worktreePath, baseBranch: input.baseBranch, gitEnv },
+					{
+						worktreePath,
+						baseBranch: input.baseBranch,
+						gitEnv,
+						trackStatsCompleteness: input.coldCache === true,
+					},
 					{ timeoutMs: 15_000 },
 				);
+				incompleteStats = result.incompleteStats;
+				if (incompleteStats.length > 0) {
+					console.warn(
+						"[host-service:git] Diff stats incomplete; serving uncached",
+						{ workspaceId: input.workspaceId, incompleteStats },
+					);
+				}
 				if (result.baseRefFetchTarget) {
 					const target = result.baseRefFetchTarget;
 					const coordinatorGit = createUserSimpleGit(worktreePath).env(gitEnv);
 					// The coordinator maps live in this process, not in individual
 					// workers, so worktrees sharing one common Git dir share one TTL
 					// and in-flight fetch. The network fetch itself remains off-loop.
-					scheduleBaseRefFetch(coordinatorGit, worktreePath, target, () =>
-						workerPool.run(
-							gitFetchBaseRefTask,
-							{ worktreePath, target, gitEnv },
-							{
-								timeoutMs: 30_000,
-								strategy: "coalesce",
-								dedupeKey: `${worktreePath}:base-ref:${target.remote}/${target.branch}`,
-							},
-						),
-					);
+					void scheduleBaseRefRepair({
+						git: coordinatorGit,
+						worktreePath,
+						workspaceId: input.workspaceId,
+						baseBranch: input.baseBranch ?? null,
+						target,
+						walkStartedAt,
+						fetchBaseRef: () =>
+							workerPool.run(
+								gitFetchBaseRefTask,
+								{ worktreePath, target, gitEnv },
+								{
+									timeoutMs: 30_000,
+									strategy: "coalesce",
+									dedupeKey: `${worktreePath}:base-ref:${target.remote}/${target.branch}`,
+								},
+							),
+					});
 				}
 				return result.snapshot;
 			};
 
+			// (DIFFSTATS-COLD-CACHE) Foreground reads record the checkout too: a
+			// mutation drops every cold row on it, and the workspace being mutated is
+			// routinely the one only the Changes tab ever reads.
+			const checkout = await resolveCheckoutIdentity(worktreePath);
+			gitStatusStore.noteCheckoutIdentity(input.workspaceId, checkout);
+
 			return gitStatusStore.read({
 				workspaceId: input.workspaceId,
+				coldCache: input.coldCache ? checkout : undefined,
 				baseBranch: input.baseBranch ?? null,
 				computeFull,
-				computePartial: (paths) =>
+				statsComplete: () => incompleteStats.length === 0,
+				computePartial: async (paths) =>
 					workerPool.run(
 						gitStatusPartialTask,
-						{ worktreePath, paths, gitEnv },
+						{ worktreePath, paths, gitEnv: await resolveGitEnvOnce() },
 						{ timeoutMs: 15_000 },
 					),
 			});
@@ -371,14 +407,20 @@ export const gitRouter = router({
 							const snapshot = await runStatusSnapshot(ctx, {
 								workspaceId,
 								priority: "background",
+								coldCache: true,
 							});
 							workspaces.push({
 								workspaceId,
 								...sumSnapshotDiffStats(snapshot),
 							});
-						} catch {
+						} catch (error) {
 							// Missing worktree, wedged repo, etc. — omit the row rather
-							// than failing the whole batch.
+							// than failing the whole batch, and say which workspace lost
+							// its row.
+							console.warn("[host-service:git] Diff stats walk failed", {
+								workspaceId,
+								error,
+							});
 						}
 					}
 				},

@@ -2,9 +2,11 @@ import { access, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative } from "node:path";
 import type { SimpleGit } from "simple-git";
 import type { ChangedFile } from "../../types";
+// (DIFFSTATS-COLD-CACHE)
 import {
 	countUntrackedFileLines,
 	expandUntrackedDirectories,
+	literalPathspecs,
 	mapGitStatus,
 	parseNumstat,
 } from "../git-helpers";
@@ -25,16 +27,6 @@ export interface GitStatusPartial {
 	 */
 	ignoredPaths?: string[];
 	ignoredScope?: string[];
-}
-
-/**
- * `:(literal)` stops git from reading `[`, `*` and `?` in a path as glob
- * syntax. Without it a batch for `app/[id]/page.tsx` also matches
- * `app/i/page.tsx`, which the literal-prefix eviction below would then
- * leave in the snapshot as a duplicate row.
- */
-export function literalPathspecs(paths: string[]): string[] {
-	return paths.map((path) => `:(literal)${path}`);
 }
 
 export async function getGitStatusPartial({
