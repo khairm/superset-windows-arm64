@@ -586,6 +586,7 @@ export function notifyTrafficVerdict(input: {
 export interface ClaudeActivity {
 	lastAtMs(): number | null;
 	close(): void;
+	readonly watchedRoots: number;
 }
 
 /**
@@ -706,8 +707,8 @@ export async function watchClaudeActivity(
 	const close = () => {
 		for (const watcher of watchers) watcher.close();
 	};
-	try {
-		for (const root of roots) {
+	for (const root of roots) {
+		try {
 			if (!root.profileTree) {
 				await fs.promises.mkdir(root.dir, { recursive: true });
 			}
@@ -722,12 +723,14 @@ export async function watchClaudeActivity(
 				log.warn(`[notify-daemon] cannot watch ${root.dir}`, error),
 			);
 			watchers.push(watcher);
+		} catch (error) {
+			log.error(
+				`[notify-daemon] cannot watch ${root.dir}; the traffic gate runs on the remaining transcript roots`,
+				error,
+			);
 		}
-	} catch (error) {
-		close();
-		throw error;
 	}
-	return { lastAtMs: () => lastAtMs, close };
+	return { lastAtMs: () => lastAtMs, close, watchedRoots: watchers.length };
 }
 
 let daemon: NotifyDaemon | null = null;
@@ -900,6 +903,15 @@ export async function watchNotifyDaemonTraffic(
 	if (abandoned()) return;
 	const upgradedAtMs = Date.now();
 	const activity = await watchClaudeActivity(claudeTranscripts);
+	if (activity.watchedRoots === 0) {
+		activity.close();
+		log.error(
+			"[notify-daemon] no Claude transcript root can be watched, so http hook entries could never be proven; Claude hooks go back to the per-event command path",
+		);
+		onUnused();
+		await stopNotifyDaemon();
+		return;
+	}
 	let reportedUnproven = false;
 	let silentHealthPolls = 0;
 	try {

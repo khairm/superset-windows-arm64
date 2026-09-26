@@ -3090,9 +3090,9 @@ describe("superset-notify hook registration", () => {
 	});
 
 	// The mirror walks every Claude profile on the machine off the main thread,
-	// so the 60s resweep can land on top of a downgrade. Both write the same
-	// `<file>.pending`, and a profile left holding half a settings.json would
-	// cost every session under it every hook it has.
+	// so the delayed re-mirror can land on top of a downgrade. Both write the
+	// same `<file>.pending`, and a profile left holding half a settings.json
+	// would cost every session under it every hook it has.
 	it("serializes overlapping profile mirrors instead of interleaving writes", async () => {
 		const profilesRoot = fs.mkdtempSync(path.join(root, "claude-mirror-race-"));
 		const profiles = ["a", "b", "c"].map((name) => {

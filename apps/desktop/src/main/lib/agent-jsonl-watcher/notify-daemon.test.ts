@@ -1091,6 +1091,48 @@ describe("notify daemon traffic signal", () => {
 		}
 	}, 30_000);
 
+	// A profiles root can be deleted between the mirror walk and the watch being
+	// armed; an unwatchable root must not take the other roots down with it.
+	it("keeps watching the roots it can when a profile root has vanished", async () => {
+		const transcripts = fs.mkdtempSync(path.join(root, "surviving-"));
+		const vanished = path.join(root, "claude-profiles-vanished");
+		const activity = await watchClaudeActivity([
+			{ dir: transcripts, profileTree: false },
+			{ dir: vanished, profileTree: true, profiles: new Set(["anything"]) },
+		]);
+		try {
+			expect(activity.watchedRoots).toBe(1);
+
+			fs.writeFileSync(path.join(transcripts, "session.jsonl"), "{}\n");
+
+			expect(await until(() => activity.lastAtMs() !== null, 10_000)).toBe(
+				true,
+			);
+		} finally {
+			activity.close();
+		}
+	}, 30_000);
+
+	it("hands the hooks back when no transcript root can be watched", async () => {
+		const vanished = path.join(root, "claude-profiles-all-gone");
+		const activity = await watchClaudeActivity([
+			{ dir: vanished, profileTree: true, profiles: new Set(["anything"]) },
+		]);
+		activity.close();
+		expect(activity.watchedRoots).toBe(0);
+
+		let unused = 0;
+		await watchNotifyDaemonTraffic(
+			{ port: 1, secret: "secret-no-watchable-root", pid: 1 },
+			[{ dir: vanished, profileTree: true, profiles: new Set(["anything"]) }],
+			() => {
+				unused += 1;
+			},
+		);
+
+		expect(unused).toBe(1);
+	}, 30_000);
+
 	it("watches the default config dir plus the profiles that carry the http entries", () => {
 		const org = path.join(root, "host", "org-1", "claude-profiles");
 		const upgraded = [

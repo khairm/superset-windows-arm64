@@ -9,6 +9,11 @@
 /** Watchdog window for Squirrel to terminate the app itself during an install. */
 export const UPDATE_INSTALL_EXIT_GRACE_MS = 15_000;
 
+// (HOOK-HTTP-DAEMON) Bound on the quit-time hook restore, whose work scales
+// with this machine's Claude profile count. The main process's `exit` handler
+// rewrites synchronously whatever has not landed by then.
+export const NOTIFY_DAEMON_STOP_DEADLINE_MS = 1_500;
+
 export interface QuitCleanupDeps {
 	isDev: boolean;
 	/** Tray "Quit Completely": stop background services too. */
@@ -25,6 +30,19 @@ export interface QuitCleanupDeps {
 	forceExit: (code: number) => void;
 	scheduleTimer?: (callback: () => void, delayMs: number) => void;
 	logError?: (message: string, error: unknown) => void;
+}
+
+function settlesWithin(
+	work: Promise<void>,
+	deadlineMs: number,
+	scheduleTimer: (callback: () => void, delayMs: number) => void,
+): Promise<boolean> {
+	return Promise.race([
+		work.then(() => true),
+		new Promise<boolean>((resolve) => {
+			scheduleTimer(() => resolve(false), deadlineMs);
+		}),
+	]);
 }
 
 export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
@@ -47,7 +65,19 @@ export async function runQuitCleanup(deps: QuitCleanupDeps): Promise<void> {
 
 	try {
 		stopHostServices();
-		await stopNotifyDaemon();
+		const restored = await settlesWithin(
+			stopNotifyDaemon(),
+			NOTIFY_DAEMON_STOP_DEADLINE_MS,
+			scheduleTimer,
+		);
+		if (!restored) {
+			logError(
+				"[main] Quit-time hook restore did not finish in time; the exit handler completes it synchronously.",
+				new Error(
+					`stopNotifyDaemon exceeded ${NOTIFY_DAEMON_STOP_DEADLINE_MS}ms`,
+				),
+			);
+		}
 		if (isDev || forceFullCleanup) {
 			await teardownTerminalHost();
 		} else if (isUpdateInstalling) {

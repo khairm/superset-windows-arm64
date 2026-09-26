@@ -5000,14 +5000,7 @@ export function mirrorHooksIntoProfiles(
 
 const PROFILE_MIRROR_CONCURRENCY = 8;
 
-/**
- * (HOOK-HTTP-DAEMON) What this process last left in each profile's
- * settings.json, keyed by that file's path. The mirror re-runs on every
- * transport hand-back and on the 60s resweep over the same hundreds of
- * folders, and a copy nobody has touched since needs neither a read nor a
- * write — its size, mtime and the transport it was written for answer the
- * whole question from one stat.
- */
+// (HOOK-HTTP-DAEMON)
 const mirroredProfiles = new Map<
 	string,
 	{ size: number; mtimeMs: number; rewriteKey: string; mirrored: boolean }
@@ -5169,11 +5162,11 @@ export async function stopNotifyHookDaemon(): Promise<void> {
 
 type HookRegistration = "registered" | "cancelled" | "port-owned-elsewhere";
 
-let profileResweep: NodeJS.Timeout | null = null;
+let profileRemirrorOnce: NodeJS.Timeout | null = null;
 
-function clearProfileResweep(): void {
-	if (profileResweep) clearTimeout(profileResweep);
-	profileResweep = null;
+function clearProfileRemirrorOnce(): void {
+	if (profileRemirrorOnce) clearTimeout(profileRemirrorOnce);
+	profileRemirrorOnce = null;
 }
 
 /**
@@ -5222,7 +5215,7 @@ async function upgradeHooksToDaemon(
 		pythonPath,
 	};
 	armCommandTransportFallback((reason) => {
-		clearProfileResweep();
+		clearProfileRemirrorOnce();
 		console.warn(`[pane-map-hook] notify transport back to command: ${reason}`);
 		if (reason === "process-exit") {
 			// No tick is left to await here, so this half stays synchronous.
@@ -5246,13 +5239,13 @@ async function upgradeHooksToDaemon(
 	if (cancelled()) return "cancelled";
 	// (HOOK-HTTP-DAEMON) Supervision can hand the hooks back while the mirror is
 	// still walking the profiles. The fallback has already rewritten them and
-	// cleared the resweep, so a resweep or a traffic watch armed here would aim
-	// those copies at a port nothing serves.
+	// cleared the pending re-mirror, so a re-mirror or a traffic watch armed
+	// here would aim those copies at a port nothing serves.
 	if (handBack !== notifyHandBackToken()) return "registered";
-	profileResweep = setTimeout(() => {
+	profileRemirrorOnce = setTimeout(() => {
 		void mirrorHooksIntoProfiles(pythonPath, httpTransport);
 	}, SETTINGS_RELOAD_MS);
-	profileResweep.unref?.();
+	profileRemirrorOnce.unref?.();
 	await watchNotifyDaemonTraffic(
 		daemon,
 		claudeTranscriptRoots(upgradedProfiles),

@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
+	NOTIFY_DAEMON_STOP_DEADLINE_MS,
 	type QuitCleanupDeps,
 	runQuitCleanup,
 	UPDATE_INSTALL_EXIT_GRACE_MS,
@@ -13,6 +14,7 @@ interface Harness {
 	stopHostServices: ReturnType<typeof mock>;
 	stopNotifyDaemon: ReturnType<typeof mock>;
 	scheduled: Array<{ callback: () => void; delayMs: number }>;
+	scheduledAt(delayMs: number): Array<{ callback: () => void }>;
 }
 
 function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
@@ -49,6 +51,8 @@ function createHarness(overrides: Partial<QuitCleanupDeps> = {}): Harness {
 		stopHostServices,
 		stopNotifyDaemon,
 		scheduled,
+		scheduledAt: (delayMs) =>
+			scheduled.filter((timer) => timer.delayMs === delayMs),
 	};
 }
 
@@ -59,7 +63,7 @@ describe("runQuitCleanup", () => {
 		await runQuitCleanup(h.deps);
 
 		expect(h.forceExit).toHaveBeenCalledWith(0);
-		expect(h.scheduled).toHaveLength(0);
+		expect(h.scheduledAt(UPDATE_INSTALL_EXIT_GRACE_MS)).toHaveLength(0);
 	});
 
 	// Regression: #6048 — pressing "Update" closed the app without installing the
@@ -81,10 +85,9 @@ describe("runQuitCleanup", () => {
 
 		await runQuitCleanup(h.deps);
 
-		expect(h.scheduled).toHaveLength(1);
-		expect(h.scheduled[0].delayMs).toBe(UPDATE_INSTALL_EXIT_GRACE_MS);
+		expect(h.scheduledAt(UPDATE_INSTALL_EXIT_GRACE_MS)).toHaveLength(1);
 
-		h.scheduled[0].callback();
+		h.scheduledAt(UPDATE_INSTALL_EXIT_GRACE_MS)[0].callback();
 		expect(h.forceExit).toHaveBeenCalledWith(0);
 	});
 
@@ -118,6 +121,33 @@ describe("runQuitCleanup", () => {
 
 		await runQuitCleanup(h.deps);
 
+		expect(h.forceExit).toHaveBeenCalledWith(0);
+	});
+
+	// (HOOK-HTTP-DAEMON) The restore rewrites every Claude profile on this
+	// machine; one stuck fs op must not hold the quit open forever.
+	test("gives up on a hook restore that never settles and quits anyway", async () => {
+		const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+		const logError = mock((_message: string, _error: unknown) => {});
+		const h = createHarness({
+			forceFullCleanup: true,
+			stopNotifyDaemon: () => new Promise<void>(() => {}),
+			scheduleTimer: (callback, delayMs) => {
+				scheduled.push({ callback, delayMs });
+				if (delayMs === NOTIFY_DAEMON_STOP_DEADLINE_MS) callback();
+			},
+			logError,
+		});
+
+		await runQuitCleanup(h.deps);
+
+		expect(
+			scheduled.map((timer) => timer.delayMs).includes(
+				NOTIFY_DAEMON_STOP_DEADLINE_MS,
+			),
+		).toBe(true);
+		expect(logError).toHaveBeenCalled();
+		expect(h.teardownTerminalHost).toHaveBeenCalled();
 		expect(h.forceExit).toHaveBeenCalledWith(0);
 	});
 });
