@@ -38,6 +38,7 @@ import { createGitEnvResolver, createGitFactory } from "./runtime/git";
 import { runMainWorkspaceSweep } from "./runtime/main-workspace-sweep";
 import { runProjectBackfill } from "./runtime/project-backfill";
 import { PullRequestRuntimeManager } from "./runtime/pull-requests";
+import { createExitedWorkspaceFilterLoader } from "./runtime/pull-requests/exited-workspaces";
 import {
 	launchSandboxAgentOnce,
 	readSandboxIdentity,
@@ -203,6 +204,11 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 				},
 			);
 		},
+		// (PR-SWEEP-SKIPS-EXITED)
+		loadExitedWorkspaceFilter: createExitedWorkspaceFilterLoader({
+			db,
+			organizationId: config.organizationId,
+		}),
 	});
 	pullRequestRuntime.start();
 

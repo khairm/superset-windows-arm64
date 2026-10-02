@@ -152,6 +152,23 @@ export interface PullRequestRuntimeManagerOptions {
 	readWorkspaceRefs?: (worktreePath: string) => Promise<WorkspaceRefsSnapshot>;
 	/** Test seam for the missing-worktree gate. Defaults to `existsSync`. */
 	worktreeExists?: (worktreePath: string) => boolean;
+	// (PR-SWEEP-SKIPS-EXITED)
+	loadExitedWorkspaceFilter?: () => ExitedWorkspaceFilter;
+}
+
+type ExitedWorkspaceFilter = (workspace: {
+	id: string;
+	projectId: string | null;
+	type: string;
+}) => boolean;
+
+function logSweepFailure(sweep: string): (error: unknown) => void {
+	return (error) => {
+		console.error("[host-service:pull-request-runtime] Sweep failed", {
+			sweep,
+			error,
+		});
+	};
 }
 
 interface NormalizedRepoIdentity {
@@ -209,6 +226,7 @@ interface ProjectRefreshOptions {
 	bypassCache?: boolean;
 	/** Limit fetching and relinking to these workspaces; absent = whole project. */
 	workspaceIds?: string[];
+	sweep?: boolean;
 }
 
 interface PullRequestDetails {
@@ -273,6 +291,7 @@ export class PullRequestRuntimeManager {
 		worktreePath: string,
 	) => Promise<WorkspaceRefsSnapshot>;
 	private readonly worktreeExists: (worktreePath: string) => boolean;
+	private readonly loadExitedWorkspaceFilter: () => ExitedWorkspaceFilter;
 	// Worktrees deleted out from under us (external `rm`, crashed teardown).
 	// While a workspace is listed here, sync attempts cost one existsSync and
 	// spawn no git; the probe timer re-enters the normal sync path when the
@@ -291,6 +310,8 @@ export class PullRequestRuntimeManager {
 			options.readWorkspaceRefs ??
 			(async (worktreePath) => readWorkspaceRefs(await this.git(worktreePath)));
 		this.worktreeExists = options.worktreeExists ?? existsSync;
+		this.loadExitedWorkspaceFilter =
+			options.loadExitedWorkspaceFilter ?? (() => () => false);
 	}
 
 	start() {
@@ -304,8 +325,12 @@ export class PullRequestRuntimeManager {
 		// One initial sweep so workspaces that existed before this manager
 		// started have correct branch/sha/upstream rows even if no `.git/`
 		// activity has happened since the last process boot.
-		void this.syncWorkspaceBranches();
-		void this.refreshEligibleProjects();
+		void this.syncWorkspaceBranches().catch(
+			logSweepFailure("syncWorkspaceBranches"),
+		);
+		void this.refreshEligibleProjects().catch(
+			logSweepFailure("refreshEligibleProjects"),
+		);
 
 		// Steady-state: react to real `.git/` activity per workspace. Per-workspace
 		// debounce lives in `GitWatcher` (300 ms), and concurrent project refreshes
@@ -332,10 +357,14 @@ export class PullRequestRuntimeManager {
 		// per the comment above — the primary (not just backup) sync path for
 		// any workspace nobody currently holds a live git-watch on.
 		this.safetyNetTimer = setInterval(() => {
-			void this.syncWorkspaceBranches();
+			void this.syncWorkspaceBranches().catch(
+				logSweepFailure("syncWorkspaceBranches"),
+			);
 		}, SAFETY_NET_INTERVAL_MS);
 		this.projectRefreshTimer = setInterval(() => {
-			void this.refreshEligibleProjects();
+			void this.refreshEligibleProjects().catch(
+				logSweepFailure("refreshEligibleProjects"),
+			);
 		}, PROJECT_REFRESH_INTERVAL_MS);
 	}
 
@@ -646,15 +675,20 @@ export class PullRequestRuntimeManager {
 		// Session workspaces (null projectId) have no remote and no PRs, and
 		// archived workspaces are frozen. Filtered in JS: the unit-test fakes
 		// stub select().from().all() without a where() builder.
+		const isExited = this.loadExitedWorkspaceFilter();
 		const ids = this.db
 			.select({
 				id: workspaces.id,
 				projectId: workspaces.projectId,
+				type: workspaces.type,
 				archivedAt: workspaces.archivedAt,
 			})
 			.from(workspaces)
 			.all()
-			.filter((row) => row.projectId !== null && row.archivedAt == null);
+			.filter(
+				(row) =>
+					row.projectId !== null && row.archivedAt == null && !isExited(row), // (PR-SWEEP-SKIPS-EXITED-BRANCHES)
+			);
 
 		// Sequential to keep git subprocess concurrency bounded; matches the
 		// original sweep's behavior. refreshProject inside each sync still
@@ -857,9 +891,12 @@ export class PullRequestRuntimeManager {
 	}
 
 	private async refreshEligibleProjects(): Promise<void> {
+		const isExited = this.loadExitedWorkspaceFilter();
 		const rows = this.db
 			.select({
+				id: workspaces.id,
 				projectId: workspaces.projectId,
+				type: workspaces.type,
 				archivedAt: workspaces.archivedAt,
 			})
 			.from(workspaces)
@@ -867,16 +904,18 @@ export class PullRequestRuntimeManager {
 		// Session workspaces (null projectId) have no remote to sync; archived
 		// workspaces are frozen. Filtered in JS for the same fake-friendly
 		// reason as syncWorkspaceBranches.
-		const projectIds = [
-			...new Set(
-				rows
-					.filter((row) => row.archivedAt == null)
-					.map((row) => row.projectId)
-					.filter((id) => id !== null),
-			),
-		];
+		const workspaceIdsByProject = new Map<string, string[]>();
+		for (const row of rows) {
+			if (row.projectId === null || row.archivedAt != null) continue;
+			if (isExited(row)) continue; // (PR-SWEEP-SKIPS-EXITED-PROJECTS)
+			const workspaceIds = workspaceIdsByProject.get(row.projectId);
+			if (workspaceIds) workspaceIds.push(row.id);
+			else workspaceIdsByProject.set(row.projectId, [row.id]);
+		}
 		await Promise.all(
-			projectIds.map((projectId) => this.refreshProject(projectId)),
+			[...workspaceIdsByProject].map(([projectId, workspaceIds]) =>
+				this.refreshProject(projectId, { workspaceIds, sweep: true }),
+			),
 		);
 	}
 
@@ -887,7 +926,7 @@ export class PullRequestRuntimeManager {
 		// A scoped refresh and a full one are different work; only identical
 		// requests share an in-flight promise.
 		const inFlightKey = options.workspaceIds
-			? `${projectId}\0${[...options.workspaceIds].sort().join(",")}`
+			? `${projectId}\0${options.sweep ? "sweep\0" : ""}${[...options.workspaceIds].sort().join(",")}` // (PR-SWEEP-SKIPS-EXITED-SWEEP-KEY)
 			: projectId;
 		const existing = this.inFlightProjects.get(inFlightKey);
 		if (existing) {
@@ -1300,7 +1339,9 @@ export class PullRequestRuntimeManager {
 		if (this.holdRecoveryTimer) clearTimeout(this.holdRecoveryTimer);
 		this.holdRecoveryTimer = setTimeout(() => {
 			this.holdRecoveryTimer = null;
-			void this.refreshEligibleProjects();
+			void this.refreshEligibleProjects().catch(
+				logSweepFailure("refreshEligibleProjects"),
+			);
 		}, hold.holdMs + 1_000);
 		this.holdRecoveryTimer.unref?.();
 	}

@@ -226,6 +226,7 @@ interface SidebarProjectRowLike {
 	tabOrder: unknown;
 	isPinned: unknown;
 	isCollapsed: unknown;
+	isHidden: unknown;
 }
 
 /**
@@ -288,6 +289,7 @@ export function buildMirrorSnapshot(
 		.sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
 
 	const projects = sidebarProjectRows
+		.filter((row) => row.isHidden !== true) // (PR-SWEEP-SKIPS-EXITED)
 		.map((row): MirrorProjectRow | null => {
 			const projectId = toNullableId(row.projectId);
 			if (projectId === null) {
@@ -486,6 +488,7 @@ export function useSidebarMirrorSync(): void {
 						tabOrder: sidebarProject.tabOrder,
 						isPinned: sidebarProject.isPinned,
 						isCollapsed: sidebarProject.isCollapsed,
+						isHidden: sidebarProject.isHidden,
 					})),
 			[collections],
 		);

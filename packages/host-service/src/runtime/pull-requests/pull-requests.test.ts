@@ -1,16 +1,31 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, setSystemTime, test } from "bun:test";
+import {
+	afterAll,
+	beforeAll,
+	describe,
+	expect,
+	setSystemTime,
+	test,
+} from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import {
+	createGitFixture,
+	type GitFixture,
+} from "../../../test/helpers/git-fixture";
 import type { HostDb } from "../../db";
 import * as schema from "../../db/schema";
 import { pullRequests, workspaces } from "../../db/schema";
 import type { WorkspaceChangedMessage } from "../../events/types";
-import { PullRequestRuntimeManager } from "./pull-requests";
+import { createExitedWorkspaceFilterLoader } from "./exited-workspaces";
+import {
+	PullRequestRuntimeManager,
+	type PullRequestRuntimeManagerOptions,
+} from "./pull-requests";
 import { GitHubAvailabilityGate } from "./utils/github-availability";
 import type { WorkspaceRefsSnapshot } from "./utils/workspace-refs";
 
@@ -155,6 +170,7 @@ function createManager(
 			worktreePath: string,
 		) => Promise<WorkspaceRefsSnapshot>;
 		worktreeExists?: (worktreePath: string) => boolean;
+		loadExitedWorkspaceFilter?: PullRequestRuntimeManagerOptions["loadExitedWorkspaceFilter"];
 	} = {},
 ) {
 	return new PullRequestRuntimeManager({
@@ -179,6 +195,7 @@ function createManager(
 		// Seeded worktree paths are fabricated; default the disk gate open so
 		// sync-path tests exercise the git read, not the missing-dir skip.
 		worktreeExists: overrides.worktreeExists ?? (() => true),
+		loadExitedWorkspaceFilter: overrides.loadExitedWorkspaceFilter,
 	});
 }
 
@@ -2425,4 +2442,325 @@ describe("PullRequestRuntimeManager GitHub traffic", () => {
 		expect(manager.getGithubStatus()?.reason).toBe("auth");
 		expect(getWorkspace(db, "ws")?.pullRequestId).toBeNull();
 	});
+});
+
+describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () => {
+	const ORG = "org-1";
+	const MIRROR_STALE_MS = 21 * 60_000;
+	const GIT_SPAWN_TIMEOUT_MS = 30_000;
+
+	type LoadFilter = NonNullable<
+		PullRequestRuntimeManagerOptions["loadExitedWorkspaceFilter"]
+	>;
+
+	type MirrorFixture = {
+		lastFullSyncAtMs: number;
+		completed: string[];
+		live: string[];
+	};
+
+	// Real git repos: a fabricated path fails isGitRepo, which would make
+	// every "never swept" assertion below pass without the filter.
+	const fixtureById = new Map<string, GitFixture>();
+	beforeAll(async () => {
+		await Promise.all(
+			["ws-a", "ws-b"].map(async (id) => {
+				fixtureById.set(id, await createGitFixture());
+			}),
+		);
+	}, GIT_SPAWN_TIMEOUT_MS);
+	afterAll(() => {
+		for (const fixture of fixtureById.values()) fixture.dispose();
+	});
+
+	function dir(id: string): string {
+		const fixture = fixtureById.get(id);
+		if (fixture === undefined) throw new Error(`no fixture dir for ${id}`);
+		return fixture.repoPath;
+	}
+
+	function sweeps(manager: PullRequestRuntimeManager) {
+		return manager as unknown as {
+			syncWorkspaceBranches(): Promise<void>;
+			refreshEligibleProjects(): Promise<void>;
+		};
+	}
+
+	function seedMirror(db: HostDb, mirror: MirrorFixture) {
+		const syncedAtMs = mirror.lastFullSyncAtMs;
+		db.insert(schema.sidebarMirrorMeta)
+			.values({
+				id: 1,
+				lastFullSyncAtMs: mirror.lastFullSyncAtMs,
+				appLaunchId: "launch-1",
+				organizationId: ORG,
+				workspaceCount: mirror.completed.length + mirror.live.length,
+				projectCount: 1,
+			})
+			.run();
+		db.insert(schema.sidebarProjectState)
+			.values({ projectId: PROJECT_ID, syncedAtMs })
+			.run();
+		for (const workspaceId of [...mirror.completed, ...mirror.live]) {
+			db.insert(schema.sidebarWorkspaceState)
+				.values({
+					workspaceId,
+					projectId: PROJECT_ID,
+					completedAt: mirror.completed.includes(workspaceId)
+						? syncedAtMs
+						: null,
+					syncedAtMs,
+				})
+				.run();
+		}
+	}
+
+	function mirrorLoader(mirror: MirrorFixture) {
+		return (db: HostDb): LoadFilter => {
+			seedMirror(db, mirror);
+			return createExitedWorkspaceFilterLoader({ db, organizationId: ORG });
+		};
+	}
+
+	function createScenario(
+		workspaceIds: string[],
+		loader: (db: HostDb) => LoadFilter,
+		beforeGh: () => Promise<void> = async () => {},
+	) {
+		const db = createRealDb();
+		seedProject(db);
+		const idByDir = new Map<string, string>();
+		for (const id of workspaceIds) {
+			idByDir.set(dir(id), id);
+			seedWorkspace(db, {
+				id,
+				branch: `feat/${id}`,
+				headSha: "stale-sha",
+				upstreamOwner: REPO.owner,
+				upstreamRepo: REPO.name,
+				upstreamBranch: `feat/${id}`,
+				worktreePath: dir(id),
+			});
+		}
+		const refsReadPaths: string[] = [];
+		const ghArgs: string[] = [];
+		let gitCalls = 0;
+		const gh = routeGh(
+			Object.fromEntries(
+				workspaceIds.map((id, index) => [
+					`feat/${id}`,
+					makePrNode({
+						number: 9000 + index,
+						headRef: `feat/${id}`,
+						headSha: `sha-${id}`,
+					}),
+				]),
+			),
+		);
+		const manager = createManager(db, {
+			execGh: async (args) => {
+				ghArgs.push(args.join(" "));
+				await beforeGh();
+				return gh(args);
+			},
+			git: async () => {
+				gitCalls += 1;
+				throw new Error("no default branch in this fixture");
+			},
+			readWorkspaceRefs: async (worktreePath) => {
+				refsReadPaths.push(worktreePath);
+				const id = idByDir.get(worktreePath);
+				if (id === undefined)
+					throw new Error(`unknown worktree ${worktreePath}`);
+				return {
+					branch: `feat/${id}`,
+					headSha: `sha-${id}`,
+					upstream: {
+						owner: REPO.owner,
+						name: REPO.name,
+						branch: `feat/${id}`,
+					},
+				};
+			},
+			loadExitedWorkspaceFilter: loader(db),
+		});
+		return {
+			manager,
+			sweeps: sweeps(manager),
+			refsReadPaths,
+			ghTouched: (branch: string) =>
+				ghArgs.some((line) => line.includes(branch)),
+			headLookups: (branch: string) =>
+				ghArgs.filter((line) => line.includes("head=") && line.includes(branch))
+					.length,
+			ghArgs,
+			gitCalls: () => gitCalls,
+			resetCalls: () => {
+				refsReadPaths.length = 0;
+				ghArgs.length = 0;
+				gitCalls = 0;
+			},
+			cleanup: () => manager.stop(),
+		};
+	}
+
+	test(
+		"a completed card is never swept while its active sibling is, by both sweeps",
+		async () => {
+			const scenario = createScenario(
+				["ws-a", "ws-b"],
+				mirrorLoader({
+					lastFullSyncAtMs: Date.now(),
+					completed: ["ws-a"],
+					live: ["ws-b"],
+				}),
+			);
+			try {
+				await withSilencedWarnings(() =>
+					scenario.sweeps.syncWorkspaceBranches(),
+				);
+				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+				expect(scenario.ghTouched("feat/ws-b")).toBe(true);
+				expect(scenario.ghTouched("feat/ws-a")).toBe(false);
+
+				scenario.resetCalls();
+				// Past the 60 s PR cache, so ws-b's lookup reaches gh again.
+				setSystemTime(new Date(Date.now() + 61_000));
+				await withSilencedWarnings(() =>
+					scenario.sweeps.refreshEligibleProjects(),
+				);
+				expect(scenario.gitCalls()).toBeGreaterThan(0);
+				expect(scenario.ghTouched("feat/ws-b")).toBe(true);
+				expect(scenario.ghTouched("feat/ws-a")).toBe(false);
+			} finally {
+				setSystemTime();
+				scenario.cleanup();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
+
+	test(
+		"a project whose workspaces are all exited costs no git or GitHub call",
+		async () => {
+			const scenario = createScenario(
+				["ws-a"],
+				mirrorLoader({
+					lastFullSyncAtMs: Date.now(),
+					completed: ["ws-a"],
+					live: [],
+				}),
+			);
+			try {
+				await withSilencedWarnings(() =>
+					scenario.sweeps.refreshEligibleProjects(),
+				);
+				expect(scenario.gitCalls()).toBe(0);
+				expect(scenario.ghArgs).toEqual([]);
+			} finally {
+				scenario.cleanup();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
+
+	test(
+		"a mirror read failure rejects both sweeps before any work, and the next tick recovers",
+		async () => {
+			let mirrorReadable = false;
+			const scenario = createScenario(["ws-b"], () => () => {
+				if (!mirrorReadable) throw new Error("mirror read failed");
+				return () => false;
+			});
+			try {
+				await expect(scenario.sweeps.syncWorkspaceBranches()).rejects.toThrow(
+					"mirror read failed",
+				);
+				await expect(scenario.sweeps.refreshEligibleProjects()).rejects.toThrow(
+					"mirror read failed",
+				);
+				expect(scenario.refsReadPaths).toEqual([]);
+				expect(scenario.ghArgs).toEqual([]);
+
+				mirrorReadable = true;
+				await withSilencedWarnings(() =>
+					scenario.sweeps.refreshEligibleProjects(),
+				);
+				expect(scenario.ghTouched("feat/ws-b")).toBe(true);
+				await withSilencedWarnings(() =>
+					scenario.sweeps.syncWorkspaceBranches(),
+				);
+				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+			} finally {
+				scenario.cleanup();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
+
+	test(
+		"a mirror older than the age-out window filters nothing",
+		async () => {
+			const scenario = createScenario(
+				["ws-a"],
+				mirrorLoader({
+					lastFullSyncAtMs: Date.now() - MIRROR_STALE_MS,
+					completed: ["ws-a"],
+					live: [],
+				}),
+			);
+			try {
+				await withSilencedWarnings(() =>
+					scenario.sweeps.syncWorkspaceBranches(),
+				);
+				expect(scenario.refsReadPaths).toEqual([dir("ws-a")]);
+			} finally {
+				scenario.cleanup();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
+
+	test(
+		"an explicit refresh overlapping a sweep of a one-workspace project runs its own lookup",
+		async () => {
+			let releaseGh: () => void = () => {};
+			const ghGate = new Promise<void>((resolve) => {
+				releaseGh = () => resolve();
+			});
+			const scenario = createScenario(
+				["ws-b"],
+				mirrorLoader({
+					lastFullSyncAtMs: Date.now(),
+					completed: [],
+					live: ["ws-b"],
+				}),
+				() => ghGate,
+			);
+			try {
+				await withSilencedWarnings(async () => {
+					const sweep = scenario.sweeps.refreshEligibleProjects();
+					await waitFor(() => scenario.headLookups("feat/ws-b") > 0, 20_000);
+					expect(scenario.headLookups("feat/ws-b")).toBe(1);
+
+					const explicit = scenario.manager.refreshPullRequestsByWorkspaces([
+						"ws-b",
+					]);
+					await waitFor(() => scenario.refsReadPaths.length > 0, 20_000);
+					expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+					// One macrotask lets the explicit refresh reach its in-flight
+					// check while the sweep is still held at gh.
+					await new Promise((resolve) => setTimeout(resolve, 0));
+
+					releaseGh();
+					await Promise.all([sweep, explicit]);
+				});
+				expect(scenario.headLookups("feat/ws-b")).toBe(2);
+			} finally {
+				releaseGh();
+				scenario.cleanup();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
 });

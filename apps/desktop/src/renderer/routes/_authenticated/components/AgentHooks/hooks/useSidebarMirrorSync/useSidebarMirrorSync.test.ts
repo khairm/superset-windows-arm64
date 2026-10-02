@@ -40,6 +40,7 @@ function projectRow(overrides: Record<string, unknown> = {}) {
 		tabOrder: 0,
 		isPinned: false,
 		isCollapsed: false,
+		isHidden: false,
 		...overrides,
 	};
 }
@@ -92,6 +93,24 @@ describe("buildMirrorSnapshot", () => {
 			[projectRow()],
 		);
 		expect(signatureOf(clean)).toBe(signatureOf(withJunk));
+	});
+
+	test("(PR-SWEEP-SKIPS-EXITED) omits a project the user hid, and keeps one whose hidden flag is false, absent or corrupt", () => {
+		const snapshot = buildMirrorSnapshot(
+			[localStateRow()],
+			[
+				projectRow({ projectId: "p-hidden", isHidden: true }),
+				projectRow({ projectId: "p-shown", isHidden: false }),
+				projectRow({ projectId: "p-absent", isHidden: undefined }),
+				projectRow({ projectId: "p-corrupt", isHidden: "yes" }),
+			],
+		);
+		expect(snapshot.projects.map((row) => row.projectId)).toEqual([
+			"p-absent",
+			"p-corrupt",
+			"p-shown",
+		]);
+		expect(snapshot.droppedRows).toBe(0);
 	});
 });
 
