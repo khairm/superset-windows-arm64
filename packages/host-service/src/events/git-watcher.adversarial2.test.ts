@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
+	BATCH_MAX_WAIT_MS,
 	DEBOUNCE_MS,
 	GIT_DIR_DEBOUNCE_MS,
 	type GitChangedEvent,
@@ -45,7 +46,7 @@ describe("round 2: flush deadline", () => {
 		jest.useRealTimers();
 	});
 
-	test("a steady worktree stream every 100 ms for 5 s flushes at least every ~1 s, each scoped", () => {
+	test("(GIT-LAUNCH-BUDGET-G) a steady worktree stream every 100 ms for 5 s flushes at least every ~2 s, each scoped", () => {
 		const watcher = createWatcher();
 		const events: Array<{ at: number; event: GitChangedEvent }> = [];
 		let now = 0;
@@ -55,10 +56,10 @@ describe("round 2: flush deadline", () => {
 			jest.advanceTimersByTime(100);
 			now += 100;
 		}
-		expect(events.length).toBeGreaterThanOrEqual(4);
+		expect(events.length).toBeGreaterThanOrEqual(2);
 		let last = 0;
 		for (const { at, event } of events) {
-			expect(at - last).toBeLessThanOrEqual(GIT_DIR_DEBOUNCE_MS + 100);
+			expect(at - last).toBeLessThanOrEqual(BATCH_MAX_WAIT_MS + 100);
 			expect(event.paths).toBeDefined();
 			last = at;
 		}
@@ -95,15 +96,17 @@ describe("round 2: flush deadline", () => {
 		const watcher = createWatcher();
 		const events: GitChangedEvent[] = [];
 		watcher.onChanged((e) => events.push(e));
-		// Events at 0, 250, 500, 750 keep the 300 ms trailing window from closing.
-		for (let t = 0; t < GIT_DIR_DEBOUNCE_MS; t += 250) {
+		// Events every 250 ms keep the 300 ms trailing window from closing.
+		for (let t = 0; t < BATCH_MAX_WAIT_MS; t += 250) {
 			internals(watcher).addWorktreePaths("w", [`p${t}`]);
 			jest.advanceTimersByTime(249);
 			expect(events).toHaveLength(0);
 			jest.advanceTimersByTime(1);
 		}
 		expect(events).toHaveLength(1);
-		expect(events[0]?.paths).toEqual(["p0", "p250", "p500", "p750"]);
+		expect(events[0]?.paths).toEqual(
+			Array.from({ length: BATCH_MAX_WAIT_MS / 250 }, (_, i) => `p${i * 250}`),
+		);
 		jest.advanceTimersByTime(DEBOUNCE_MS * 2);
 		expect(events).toHaveLength(1);
 		expectIdle(watcher);
@@ -121,7 +124,7 @@ describe("round 2: flush deadline", () => {
 			}
 		});
 		// Hold the trailing window open so the hard deadline is what flushes.
-		for (let t = 0; t < GIT_DIR_DEBOUNCE_MS; t += 200) {
+		for (let t = 0; t < BATCH_MAX_WAIT_MS; t += 200) {
 			internals(watcher).addWorktreePaths("w", ["x"]);
 			jest.advanceTimersByTime(200);
 		}
@@ -208,7 +211,7 @@ describe("round 2: flush deadline", () => {
 				"refreshIgnoredDirs",
 			)
 			.mockImplementation(() => {});
-		for (let t = 0; t < GIT_DIR_DEBOUNCE_MS; t += 200) {
+		for (let t = 0; t < BATCH_MAX_WAIT_MS; t += 200) {
 			internals(watcher).addWorktreePaths("w", ["x"]);
 			jest.advanceTimersByTime(200);
 		}

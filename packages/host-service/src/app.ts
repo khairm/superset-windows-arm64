@@ -39,6 +39,7 @@ import { runMainWorkspaceSweep } from "./runtime/main-workspace-sweep";
 import { runProjectBackfill } from "./runtime/project-backfill";
 import { PullRequestRuntimeManager } from "./runtime/pull-requests";
 import { createExitedWorkspaceFilterLoader } from "./runtime/pull-requests/exited-workspaces";
+import { createPrSyncTrigger } from "./runtime/pull-requests/pr-sync-trigger";
 import {
 	launchSandboxAgentOnce,
 	readSandboxIdentity,
@@ -173,14 +174,25 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 	const filesystem = new WorkspaceFilesystemManager({ db });
 	// GitWatcher is the single source of truth for `.git/` and worktree fs
 	// activity per workspace. Both EventBus (broadcasts to clients) and the
-	// pull-requests runtime (event-driven branch sync) subscribe to it.
+	// pull-requests runtime (event-driven branch sync, rate-limited through
+	// prSyncTrigger) subscribe to it.
+	const prSyncTrigger = createPrSyncTrigger({
+		broadIntervalMs: 5_000,
+		fileOnlyIntervalMs: 30_000,
+	});
 	const gitWatcher = new GitWatcher(db, filesystem, (workspaceId, watched) => {
 		if (watched) gitStatusStore.attach(workspaceId);
-		else gitStatusStore.drop(workspaceId);
+		else {
+			gitStatusStore.drop(workspaceId);
+			prSyncTrigger.cancelWorkspace(workspaceId); // (GIT-LAUNCH-BUDGET-B-CANCEL)
+		}
 	});
 	gitWatcher.onChanged((event) => {
 		gitStatusStore.recordChange(event.workspaceId, event.paths);
 	});
+	const unsubscribePrSyncFeed = gitWatcher.onChanged(
+		(event) => prSyncTrigger.push(event), // (GIT-LAUNCH-BUDGET-B-FEED)
+	);
 	gitWatcher.start();
 	// Per-workspace branch/HEAD/upstream reads run in the worker pool: the
 	// PR-sync loop fires them for every workspace on each watcher event and
@@ -191,7 +203,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		execGh,
 		git,
 		github,
-		gitWatcher,
+		gitWatcher: prSyncTrigger, // (GIT-LAUNCH-BUDGET-B)
 		readWorkspaceRefs: async (worktreePath) => {
 			const gitEnv = await resolveGitEnv(worktreePath);
 			return getHostWorkerPool().run(
@@ -502,6 +514,12 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			pullRequestRuntime.stop();
 		} catch (err) {
 			console.warn("[host-service] pullRequestRuntime.stop failed:", err);
+		}
+		try {
+			unsubscribePrSyncFeed();
+			prSyncTrigger.dispose(); // (GIT-LAUNCH-BUDGET-B-DISPOSE)
+		} catch (err) {
+			console.warn("[host-service] prSyncTrigger.dispose failed:", err);
 		}
 		try {
 			pageWatch.stop();

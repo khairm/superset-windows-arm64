@@ -8,6 +8,7 @@ import type { HostDb } from "../db/index.ts";
 import { workspaces } from "../db/schema.ts";
 import type { WorkspaceFilesystemManager } from "../runtime/filesystem/index.ts";
 import { listGitIgnoredDirs } from "../runtime/git/index.ts";
+import { invalidateIsGitRepo } from "../runtime/git/non-git.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,6 +24,8 @@ export const DEBOUNCE_MS = 300;
  * `scheduleFlush`) so a rapid sequence can't starve the flush past this bound.
  */
 export const GIT_DIR_DEBOUNCE_MS = 1_000;
+
+export const BATCH_MAX_WAIT_MS = 2_000;
 
 /** Above this, clients are better served by one broad diff-cache invalidation
  * than hundreds of per-path invalidations. The null sentinel also lets the
@@ -405,7 +408,7 @@ export class GitWatcher {
 	private stopWatching(workspaceId: string): void {
 		const entry = this.watched.get(workspaceId);
 		if (entry) {
-			entry.watcher.close();
+			entry.watcher?.close(); // (GIT-LAUNCH-BUDGET-B-NULL-CLOSE)
 			entry.disposeWorktreeWatch();
 			this.watched.delete(workspaceId);
 			this.notifyWatchState(workspaceId, false);
@@ -526,7 +529,7 @@ export class GitWatcher {
 				paths: new Set(),
 				deadline: setTimeout(
 					() => this.flushBatch(workspaceId),
-					GIT_DIR_DEBOUNCE_MS,
+					BATCH_MAX_WAIT_MS, // (GIT-LAUNCH-BUDGET-G)
 				),
 			};
 			this.pendingBatches.set(workspaceId, batch);
@@ -816,6 +819,7 @@ export class GitWatcher {
 			// stopWatching; closing again is harmless).
 			watcher.close();
 			if (this.watched.get(workspaceId)?.watcher !== watcher) return;
+			invalidateIsGitRepo(worktreePath); // (GIT-LAUNCH-BUDGET-D)
 			this.stopWatching(workspaceId);
 		});
 

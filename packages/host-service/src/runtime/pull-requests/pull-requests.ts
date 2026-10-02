@@ -11,10 +11,11 @@ import {
 	workspaces,
 } from "../../db/schema";
 import type { EventBus } from "../../events/event-bus";
-import type { GitWatcher } from "../../events/git-watcher";
 import type { ExecGh } from "../../trpc/router/workspace-creation/utils/exec-gh";
-import { type GitFactory, resolveDefaultBranchName } from "../git";
+import type { GitFactory } from "../git";
 import { isGitRepo } from "../git/non-git";
+import { peekOriginHead, readOriginHead } from "../git/origin-head-cache";
+import type { PrSyncTrigger } from "./pr-sync-trigger";
 import {
 	GitHubAvailabilityGate,
 	type GitHubAvailabilityStatus,
@@ -145,7 +146,7 @@ export interface PullRequestRuntimeManagerOptions {
 	execGh: ExecGh;
 	git: GitFactory;
 	github: () => Promise<Octokit>;
-	gitWatcher: GitWatcher;
+	gitWatcher: Pick<PrSyncTrigger, "onChanged">; // (GIT-LAUNCH-BUDGET-B)
 	/** Override to run the per-workspace branch/HEAD/upstream read off the
 	 * event loop (app wiring passes a worker-pool-backed reader). Defaults
 	 * to reading in-process via `git`. */
@@ -241,7 +242,7 @@ export class PullRequestRuntimeManager {
 	private readonly execGh: ExecGh;
 	private readonly git: GitFactory;
 	private readonly github: () => Promise<Octokit>;
-	private readonly gitWatcher: GitWatcher;
+	private readonly gitWatcher: Pick<PrSyncTrigger, "onChanged">;
 	private safetyNetTimer: ReturnType<typeof setInterval> | null = null;
 	private projectRefreshTimer: ReturnType<typeof setInterval> | null = null;
 	private unsubscribeFromGitWatcher: (() => void) | null = null;
@@ -350,6 +351,19 @@ export class PullRequestRuntimeManager {
 		// `SAFETY_NET_INTERVAL_MS` sweep below instead of firing instantly —
 		// an accepted staleness tradeoff, not a gap to close by watching more.
 		this.unsubscribeFromGitWatcher = this.gitWatcher.onChanged((event) => {
+			if (event.trailing) {
+				const isExited = this.loadExitedWorkspaceFilter();
+				const workspace = this.db
+					.select({
+						id: workspaces.id,
+						projectId: workspaces.projectId,
+						type: workspaces.type,
+					})
+					.from(workspaces)
+					.where(eq(workspaces.id, event.workspaceId))
+					.get();
+				if (workspace && isExited(workspace)) return; // (GIT-LAUNCH-BUDGET-B-EXITED)
+			}
 			void this.enqueueWorkspaceSync(event.workspaceId);
 		});
 
@@ -1130,14 +1144,15 @@ export class PullRequestRuntimeManager {
 		return { ...identity, defaultBranch };
 	}
 
-	// Shared origin/HEAD resolver; a repo-open failure disables the guard
-	// rather than aborting the whole refresh.
+	// A repo-open failure disables the guard rather than aborting the whole
+	// refresh; an origin/HEAD read failure aborts it, so the guard never runs
+	// on a guessed branch. "main" stands in only for a proven-unset origin/HEAD.
 	private async resolveDefaultBranch(repoPath: string): Promise<string | null> {
-		try {
-			return await resolveDefaultBranchName(await this.git(repoPath));
-		} catch {
-			return null;
-		}
+		const cached = peekOriginHead(repoPath); // (GIT-LAUNCH-BUDGET-E)
+		if (cached !== undefined) return cached ?? "main";
+		const git = await this.git(repoPath).catch(() => null);
+		if (git === null) return null;
+		return (await readOriginHead(repoPath, git)) ?? "main";
 	}
 
 	// Guard: a workspace that merely tracks `origin/<default>` (branched off it,

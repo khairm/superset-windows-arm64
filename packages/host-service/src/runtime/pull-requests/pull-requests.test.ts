@@ -1,7 +1,9 @@
 import { Database } from "bun:sqlite";
 import {
 	afterAll,
+	afterEach,
 	beforeAll,
+	beforeEach,
 	describe,
 	expect,
 	setSystemTime,
@@ -21,7 +23,12 @@ import type { HostDb } from "../../db";
 import * as schema from "../../db/schema";
 import { pullRequests, workspaces } from "../../db/schema";
 import type { WorkspaceChangedMessage } from "../../events/types";
+import {
+	peekOriginHead,
+	resetOriginHeadCacheForTests,
+} from "../git/origin-head-cache";
 import { createExitedWorkspaceFilterLoader } from "./exited-workspaces";
+import { createPrSyncTrigger } from "./pr-sync-trigger";
 import {
 	PullRequestRuntimeManager,
 	type PullRequestRuntimeManagerOptions,
@@ -37,6 +44,15 @@ import type { WorkspaceRefsSnapshot } from "./utils/workspace-refs";
 const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../../drizzle");
 const PROJECT_ID = "project-1";
 const REPO = { owner: "base-owner", name: "base-repo" };
+
+// The origin/HEAD cache is module state keyed by repoPath, and every test
+// here shares repoPath "/repo".
+beforeEach(() => {
+	resetOriginHeadCacheForTests();
+});
+afterEach(() => {
+	resetOriginHeadCacheForTests();
+});
 
 function createRealDb(): HostDb {
 	const sqlite = new Database(":memory:");
@@ -171,6 +187,7 @@ function createManager(
 		) => Promise<WorkspaceRefsSnapshot>;
 		worktreeExists?: (worktreePath: string) => boolean;
 		loadExitedWorkspaceFilter?: PullRequestRuntimeManagerOptions["loadExitedWorkspaceFilter"];
+		gitWatcher?: PullRequestRuntimeManagerOptions["gitWatcher"];
 	} = {},
 ) {
 	return new PullRequestRuntimeManager({
@@ -190,7 +207,7 @@ function createManager(
 			((async () => {
 				throw new Error("octokit should not be used");
 			}) as never),
-		gitWatcher: { onChanged: () => () => {} } as never,
+		gitWatcher: overrides.gitWatcher ?? { onChanged: () => () => {} },
 		readWorkspaceRefs: overrides.readWorkspaceRefs,
 		// Seeded worktree paths are fabricated; default the disk gate open so
 		// sync-path tests exercise the git read, not the missing-dir skip.
@@ -1536,6 +1553,16 @@ describe("case-variant branch isolation", () => {
 // A workspace branched off `main` still tracks `origin/main`, so its upstream
 // branch is `main`; without the guard it links to any head=main PR.
 describe("default-branch guard", () => {
+	// A fabricated worktreePath fails isGitRepo, so the refresh would return
+	// before the guard ever runs.
+	let fixture: GitFixture;
+	beforeAll(async () => {
+		fixture = await createGitFixture();
+	}, 30_000);
+	afterAll(() => {
+		fixture.dispose();
+	});
+
 	test("does not link a workspace tracking origin/main to a head=main PR", async () => {
 		const db = createRealDb();
 		seedProject(db);
@@ -1555,6 +1582,7 @@ describe("default-branch guard", () => {
 			upstreamRepo: REPO.name,
 			upstreamBranch: "main",
 			pullRequestId: "pr-sync-main",
+			worktreePath: fixture.repoPath,
 		});
 		const manager = createManager(db, {
 			git: defaultBranchGit("main"),
@@ -1566,6 +1594,11 @@ describe("default-branch guard", () => {
 					title: "chore: sync main into feat/signal-pages",
 				}),
 			}),
+			readWorkspaceRefs: async () => ({
+				branch: "roshvan/mcp-1703-mcp-surface-area",
+				headSha: "workspace-sha",
+				upstream: { owner: REPO.owner, name: REPO.name, branch: "main" },
+			}),
 		});
 
 		await withSilencedWarnings(() =>
@@ -1573,7 +1606,7 @@ describe("default-branch guard", () => {
 		);
 
 		expect(getWorkspace(db, "ws")?.pullRequestId).toBeNull();
-	});
+	}, 30_000);
 
 	test("still links the workspace whose local branch is the default branch", async () => {
 		const db = createRealDb();
@@ -1585,6 +1618,7 @@ describe("default-branch guard", () => {
 			upstreamOwner: REPO.owner,
 			upstreamRepo: REPO.name,
 			upstreamBranch: "main",
+			worktreePath: fixture.repoPath,
 		});
 		const manager = createManager(db, {
 			git: defaultBranchGit("main"),
@@ -1596,6 +1630,11 @@ describe("default-branch guard", () => {
 					title: "chore: sync main into feat/signal-pages",
 				}),
 			}),
+			readWorkspaceRefs: async () => ({
+				branch: "main",
+				headSha: "main-sha",
+				upstream: { owner: REPO.owner, name: REPO.name, branch: "main" },
+			}),
 		});
 
 		await manager.refreshPullRequestsByWorkspaces(["ws-main"]);
@@ -1603,7 +1642,7 @@ describe("default-branch guard", () => {
 		expect(getWorkspace(db, "ws-main")?.pullRequestId).toBe(
 			getPrByNumber(db, 1522)?.id,
 		);
-	});
+	}, 30_000);
 
 	test("still links a fork PR whose head branch is named main", async () => {
 		const db = createRealDb();
@@ -1615,6 +1654,7 @@ describe("default-branch guard", () => {
 			upstreamOwner: "fork-owner",
 			upstreamRepo: "fork-repo",
 			upstreamBranch: "main",
+			worktreePath: fixture.repoPath,
 		});
 		const manager = createManager(db, {
 			git: defaultBranchGit("main"),
@@ -1628,6 +1668,11 @@ describe("default-branch guard", () => {
 					title: "Fork feature",
 				}),
 			}),
+			readWorkspaceRefs: async () => ({
+				branch: "quueli-main",
+				headSha: "fork-sha",
+				upstream: { owner: "fork-owner", name: "fork-repo", branch: "main" },
+			}),
 		});
 
 		await manager.refreshPullRequestsByWorkspaces(["ws-fork"]);
@@ -1635,7 +1680,137 @@ describe("default-branch guard", () => {
 		expect(getWorkspace(db, "ws-fork")?.pullRequestId).toBe(
 			getPrByNumber(db, 88)?.id,
 		);
-	});
+	}, 30_000);
+
+	test("a proven-unset origin/HEAD resolves to main, so a workspace tracking origin/main is not linked to a head=main PR", async () => {
+		const db = createRealDb();
+		seedProject(db);
+		seedPullRequest(db, {
+			id: "pr-sync-main",
+			prNumber: 1522,
+			headBranch: "main",
+			headSha: "main-sha",
+		});
+		seedWorkspace(db, {
+			id: "ws",
+			branch: "feat/ws",
+			headSha: "workspace-sha",
+			upstreamOwner: REPO.owner,
+			upstreamRepo: REPO.name,
+			upstreamBranch: "main",
+			pullRequestId: "pr-sync-main",
+			worktreePath: fixture.repoPath,
+		});
+		const manager = createManager(db, {
+			git: async () => ({
+				raw: async (args: string[]) => {
+					if (args[0] === "symbolic-ref") return "";
+					throw new Error(`unexpected git raw: ${args.join(" ")}`);
+				},
+			}),
+			execGh: routeGh({
+				main: makePrNode({
+					number: 1522,
+					headRef: "main",
+					headSha: "main-sha",
+				}),
+			}),
+			readWorkspaceRefs: async () => ({
+				branch: "feat/ws",
+				headSha: "workspace-sha",
+				upstream: { owner: REPO.owner, name: REPO.name, branch: "main" },
+			}),
+		});
+
+		await withSilencedWarnings(() =>
+			manager.refreshPullRequestsByWorkspaces(["ws"]),
+		);
+
+		expect(peekOriginHead("/repo")).toBeNull();
+		expect(getWorkspace(db, "ws")?.pullRequestId).toBeNull();
+	}, 30_000);
+
+	test("(GIT-LAUNCH-BUDGET-E) an origin/HEAD read failure aborts the refresh before any PR lookup; the next refresh links", async () => {
+		const originalWarn = console.warn;
+		const warnings: unknown[][] = [];
+		console.warn = (...args: unknown[]) => {
+			warnings.push(args);
+		};
+		try {
+			const db = createRealDb();
+			seedProject(db);
+			db.update(schema.projects)
+				.set({ repoPath: fixture.repoPath })
+				.where(eq(schema.projects.id, PROJECT_ID))
+				.run();
+			seedPullRequest(db, {
+				id: "pr-old",
+				prNumber: 1,
+				headBranch: "feat/ws",
+				headSha: "old-sha",
+			});
+			seedWorkspace(db, {
+				id: "ws",
+				branch: "feat/ws",
+				headSha: "sha-ws",
+				upstreamOwner: REPO.owner,
+				upstreamRepo: REPO.name,
+				upstreamBranch: "feat/ws",
+				pullRequestId: "pr-old",
+				worktreePath: fixture.repoPath,
+			});
+			let originHeadFails = true;
+			const ghCalls: string[] = [];
+			const gh = routeGh({
+				"feat/ws": makePrNode({
+					number: 77,
+					headRef: "feat/ws",
+					headSha: "sha-ws",
+				}),
+			});
+			const manager = createManager(db, {
+				git: async () => ({
+					raw: async (args: string[]) => {
+						if (args[0] !== "symbolic-ref") {
+							throw new Error(`unexpected git raw: ${args.join(" ")}`);
+						}
+						if (originHeadFails) throw new Error("git symbolic-ref timed out");
+						return "origin/main\n";
+					},
+				}),
+				execGh: async (args) => {
+					ghCalls.push(args.join(" "));
+					return gh(args);
+				},
+				readWorkspaceRefs: async () => ({
+					branch: "feat/ws",
+					headSha: "sha-ws",
+					upstream: { owner: REPO.owner, name: REPO.name, branch: "feat/ws" },
+				}),
+			});
+
+			await manager.refreshPullRequestsByWorkspaces(["ws"]);
+
+			expect(ghCalls).toEqual([]);
+			expect(getWorkspace(db, "ws")?.pullRequestId).toBe("pr-old");
+			const refreshFailure = warnings.find((args) =>
+				String(args[0]).includes("Project refresh failed"),
+			);
+			expect(
+				String((refreshFailure?.[1] as { error?: Error })?.error),
+			).toContain("git symbolic-ref timed out");
+
+			originHeadFails = false;
+			await manager.refreshPullRequestsByWorkspaces(["ws"]);
+
+			expect(ghCalls.length).toBeGreaterThan(0);
+			expect(getWorkspace(db, "ws")?.pullRequestId).toBe(
+				getPrByNumber(db, 77)?.id,
+			);
+		} finally {
+			console.warn = originalWarn;
+		}
+	}, 30_000);
 });
 
 type WorkspaceChangedEvent = Omit<WorkspaceChangedMessage, "type">;
@@ -2526,6 +2701,7 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		workspaceIds: string[],
 		loader: (db: HostDb) => LoadFilter,
 		beforeGh: () => Promise<void> = async () => {},
+		gitWatcher?: PullRequestRuntimeManagerOptions["gitWatcher"],
 	) {
 		const db = createRealDb();
 		seedProject(db);
@@ -2583,8 +2759,10 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 				};
 			},
 			loadExitedWorkspaceFilter: loader(db),
+			gitWatcher,
 		});
 		return {
+			db,
 			manager,
 			sweeps: sweeps(manager),
 			refsReadPaths,
@@ -2763,4 +2941,102 @@ describe("(PR-SWEEP-SKIPS-EXITED) sweeps skip workspaces off the sidebar", () =>
 		},
 		GIT_SPAWN_TIMEOUT_MS,
 	);
+
+	test(
+		"(GIT-LAUNCH-BUDGET-B) exiting a workspace whose watch stays active drops its queued trailing sync",
+		async () => {
+			const trigger = createPrSyncTrigger({
+				broadIntervalMs: 300,
+				fileOnlyIntervalMs: 300,
+			});
+			// Completed at start so the start-up sweeps skip it and every sync
+			// below comes from the trigger.
+			const scenario = createScenario(
+				["ws-b"],
+				mirrorLoader({
+					lastFullSyncAtMs: Date.now(),
+					completed: ["ws-b"],
+					live: [],
+				}),
+				undefined,
+				trigger,
+			);
+			const setCompletedAt = (completedAt: number | null) => {
+				scenario.db
+					.update(schema.sidebarWorkspaceState)
+					.set({ completedAt })
+					.where(eq(schema.sidebarWorkspaceState.workspaceId, "ws-b"))
+					.run();
+			};
+			let trailingFires = 0;
+			try {
+				await withSilencedWarnings(async () => {
+					scenario.manager.start();
+					trigger.onChanged((event) => {
+						if (event.trailing) trailingFires += 1;
+					});
+					setCompletedAt(null);
+					trigger.push({ workspaceId: "ws-b" });
+					trigger.push({ workspaceId: "ws-b" });
+					setCompletedAt(Date.now());
+					await waitFor(
+						() => trailingFires === 1 && scenario.headLookups("feat/ws-b") > 0,
+						20_000,
+					);
+					await waitFor(() => scenario.refsReadPaths.length > 1, 1_000);
+				});
+				expect(trailingFires).toBe(1);
+				expect(scenario.refsReadPaths).toEqual([dir("ws-b")]);
+				expect(scenario.headLookups("feat/ws-b")).toBe(1);
+			} finally {
+				scenario.cleanup();
+				trigger.dispose();
+			}
+		},
+		GIT_SPAWN_TIMEOUT_MS,
+	);
+});
+
+describe("(GIT-LAUNCH-BUDGET-B) the runtime runs on a PR-sync trigger, not the GitWatcher", () => {
+	test("start() and an event-driven sync touch nothing but onChanged", async () => {
+		const fixture = await createGitFixture();
+		const trigger = createPrSyncTrigger({
+			broadIntervalMs: 5_000,
+			fileOnlyIntervalMs: 30_000,
+		});
+		const db = createRealDb();
+		seedProject(db);
+		seedWorkspace(db, {
+			id: "ws",
+			branch: "feat/ws",
+			headSha: "sha-1",
+			worktreePath: fixture.repoPath,
+		});
+		let headSha = "sha-1";
+		let refsReads = 0;
+		const manager = createManager(db, {
+			gitWatcher: trigger,
+			readWorkspaceRefs: async () => {
+				refsReads += 1;
+				return { branch: "feat/ws", headSha, upstream: null };
+			},
+		});
+		try {
+			await withSilencedWarnings(async () => {
+				manager.start();
+				await waitFor(() => refsReads > 0, 20_000);
+				headSha = "sha-2";
+				trigger.push({ workspaceId: "ws", paths: ["src/a.ts"] });
+				await waitFor(
+					() => getWorkspace(db, "ws")?.headSha === "sha-2",
+					20_000,
+				);
+			});
+			expect(getWorkspace(db, "ws")?.headSha).toBe("sha-2");
+		} finally {
+			manager.stop();
+			trigger.dispose();
+			fixture.dispose();
+		}
+	}, 30_000);
 });

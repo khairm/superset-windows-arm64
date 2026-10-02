@@ -20,14 +20,21 @@ interface CacheEntry {
 }
 
 /**
- * Short-TTL cache. `git rev-parse` is cheap but `isGitRepo` is consulted by
- * many procedures; the TTL (not a permanent cache) means a folder that gets
- * `git init`'d — or de-init'd — mid-session is re-detected within a few
- * seconds. The filesystem/git is the source of truth for git-ness; we never
- * persist a flag.
+ * TTL cache split by answer. A "yes" is held for 60 s because `isGitRepo`
+ * guards many hot procedures and a repo rarely stops being one; a "no" (or a
+ * failed probe) is held for 5 s so a folder that gets `git init`'d mid-session
+ * is picked up quickly. A dying `.git` watcher drops a "yes" early through
+ * `invalidateIsGitRepo`. The filesystem/git is the source of truth for
+ * git-ness; we never persist a flag.
  */
-const CACHE_TTL_MS = 5_000;
+const IS_REPO_TTL_MS = 60_000; // (GIT-LAUNCH-BUDGET-D-TTL)
+const NOT_REPO_TTL_MS = 5_000; // (GIT-LAUNCH-BUDGET-D-TTL)
 const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<boolean>>();
+
+const checkIsRepo = (dirPath: string): Promise<boolean> =>
+	createUserSimpleGit(dirPath).checkIsRepo();
+let probe = checkIsRepo;
 
 /**
  * Normalize the cache key so the same directory is a single entry regardless
@@ -36,7 +43,7 @@ const cache = new Map<string, CacheEntry>();
  * `project.probePath` (raw renderer-supplied path) and `resolveNonGitFolder`
  * (already `resolve`d) would key the same folder twice and double the work.
  */
-function normalizeKey(dirPath: string): string {
+export function normalizeRepoPathKey(dirPath: string): string {
 	const resolved = resolve(dirPath);
 	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
@@ -53,23 +60,54 @@ function normalizeKey(dirPath: string): string {
  * `isGitRepoStrict` instead — see its comment.
  */
 export async function isGitRepo(dirPath: string): Promise<boolean> {
-	const key = normalizeKey(dirPath);
-	const now = Date.now();
+	const key = normalizeRepoPathKey(dirPath);
 	const hit = cache.get(key);
 	if (hit) {
-		if (hit.expiresAt > now) return hit.value;
+		if (hit.expiresAt > Date.now()) return hit.value;
 		// Evict expired on read so the Map can't grow unbounded in a
 		// long-lived host-service process.
 		cache.delete(key);
 	}
-	let value = false;
+	const pending = inFlight.get(key);
+	if (pending) return pending;
+	const probing = probeOrFalse(dirPath).then((value) => {
+		if (inFlight.get(key) !== probing) return value;
+		inFlight.delete(key);
+		cache.set(key, {
+			value,
+			expiresAt: Date.now() + (value ? IS_REPO_TTL_MS : NOT_REPO_TTL_MS),
+		});
+		return value;
+	});
+	inFlight.set(key, probing); // (GIT-LAUNCH-BUDGET-D-DEDUPE)
+	return probing;
+}
+
+async function probeOrFalse(dirPath: string): Promise<boolean> {
 	try {
-		value = await createUserSimpleGit(dirPath).checkIsRepo();
+		return await probe(dirPath);
 	} catch {
-		value = false;
+		return false;
 	}
-	cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
-	return value;
+}
+
+// (GIT-LAUNCH-BUDGET-D)
+export function invalidateIsGitRepo(dirPath: string): void {
+	const key = normalizeRepoPathKey(dirPath);
+	cache.delete(key);
+	inFlight.delete(key);
+}
+
+export function setIsGitRepoProbeForTests(
+	fn: (dirPath: string) => Promise<boolean>,
+): void {
+	probe = fn;
+}
+
+export function resetIsGitRepoCacheForTests(): void {
+	cache.clear();
+	inFlight.clear();
+	probe = checkIsRepo;
 }
 
 /**

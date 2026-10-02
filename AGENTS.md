@@ -163,6 +163,11 @@ In brief:
   date filters, promote-to-branch drag, sidebar Mark completed for active
   worktrees, frozen completed records, append-only daily JSON backups under
   `~/.superset/backups/kanban/`.
+- **Host git launch budget** — 5-minute PR/branch sweeps skip exited cards and
+  hidden projects via the sidebar mirror. Watcher PR sync runs at most every
+  5 s for .git, 30 s file-only; is-git-repo caches yes 60 s/no 5 s, origin/HEAD
+  10 min. Each host-main-thread git/gh launch blocks terminal I/O on Windows
+  ARM64; keep launches rare (`(PR-SWEEP-SKIPS-EXITED)`, `(GIT-LAUNCH-BUDGET)`).
 - **Per-workspace Claude accounts** — every local workspace on a Pi-capable
   host (push-key at `~/.usage-display/push-key.txt`) owns a Claude profile
   folder under `<db-dir>/claude-profiles/<uuid>`; sidebar right-click

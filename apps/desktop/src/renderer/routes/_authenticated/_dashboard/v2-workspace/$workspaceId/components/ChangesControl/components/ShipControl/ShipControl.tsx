@@ -86,9 +86,11 @@ export function ShipControl({
 	// surfacing that as a failure toast. Counted against the configured
 	// branch.<name>.base (the base createForWorkspace actually opens
 	// against) — measuring against the repo default gets stacked branches
-	// exactly backwards. Same 10s cadence as the PR/sync queries so
-	// committing (here or in a terminal) enables it promptly; both queries
-	// dedupe with the sidebar Changes tab's identical ones.
+	// exactly backwards. Polled every 30s; while the right sidebar or a diff
+	// pane is open, the workspace git-status subscription also refetches it on
+	// every path-less `git:changed` (any `.git/` activity, which every commit
+	// here or in a terminal produces). Both queries dedupe with the sidebar
+	// Changes tab's identical ones.
 	const baseBranchQuery = workspaceTrpc.git.getBaseBranch.useQuery(
 		{ workspaceId },
 		{ enabled: canCreatePr, staleTime: Number.POSITIVE_INFINITY },
@@ -100,7 +102,7 @@ export function ShipControl({
 		},
 		{
 			enabled: canCreatePr && baseBranchQuery.isSuccess,
-			refetchInterval: 10_000,
+			refetchInterval: 30_000, // (GIT-LAUNCH-BUDGET-H)
 			refetchOnWindowFocus: true,
 			staleTime: 10_000,
 		},
@@ -115,7 +117,7 @@ export function ShipControl({
 			toast.success(t({ message: "Committed" }));
 			setView(null);
 			setCommitMessage("");
-			// The 10s poll is too slow here: the face flips to Create PR
+			// The 30s poll is too slow here: the face flips to Create PR
 			// immediately and must not sit disabled on pre-commit data.
 			void commitsQuery.refetch();
 			onRefresh();
