@@ -1,0 +1,199 @@
+<task-notification>
+<task-id>afeb8e37bb2910ca5</task-id>
+<tool-use-id>toolu_013BFy3oCWaZMw8Qudsn7WwL</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\afeb8e37bb2910ca5.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix skip-exited review findings" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All five fixes are in the working tree. Nothing is committed or pushed.
+
+1. **Key collision:** `ProjectRefreshOptions` gains `sweep?: boolean`, and only `refreshEligibleProjects` sets it. A sweep's in-flight key is now `${projectId}\0sweep\0${sortedIds}`. An explicit refresh of a lone visible workspace no longer joins a sweep. The 5-minute tick and hold recovery still share a key. A new regression test runs a sweep held at gh, then an explicit bypass refresh, and expects 2 head lookups. Under the old key it would see 1 and fail with a clear assertion, not a timeout. I did not run it against the old code.
+2. **Timeouts:** every new test and the `beforeAll` take a `30_000` timeout. The ws-a and ws-b repos are created once in `beforeAll` and removed in `afterAll`. Test 1 now uses one manager: branch sweep, assert, reset the recorded calls, move the clock 61 s, then the project sweep. The 61 s jump is needed because ws-b's lookup would otherwise come from the 60 s PR cache and gh would never be called.
+3. **Duplicate type:** `exited-workspaces.ts` no longer exports `ExitedWorkspaceFilter`. Its loader returns `() =&gt; (workspace: WorkspaceCurationInput) =&gt; boolean`. The only named type is the one in `pull-requests.ts`, which has no fork-only imports.
+4. **Line move:** `const isExited = ...` in `syncWorkspaceBranches` now sits after upstream's comment, just above `const ids = this.db`.
+5. **Markers:** the filter lines carry `(PR-SWEEP-SKIPS-EXITED-BRANCHES)` and `(PR-SWEEP-SKIPS-EXITED-PROJECTS)`. The option field keeps `(PR-SWEEP-SKIPS-EXITED)`. FEATURES.md has a markers line for each new token, rooted at `pull-requests.ts`. I also listed all three tokens in the feature row's marker column, which you did not ask for. The plan records fixes 1 and 5 in one line each.
+
+**Test:** the single targeted run passed 5 of 5, including the regression test, in 1.41 s total. Bun's output did not show per-test times, so each one's duration is unknown. The total proves each is well under 5 s.
+
+**Gates:** the marker check passed with all 342 markers present. `tsc` in `packages/host-service` reports no errors in `pull-requests.ts`, `exited-workspaces.ts`, `app.ts` or the test file. It exits 2 because of errors in other files, which I did not check against main. Biome lint is clean, and biome format rewrapped one line in the test file.
+
+**Open gap:** the new `sweep` field and the `sweep\0` key segment carry no marker. A nightly merge could drop them without failing the gate. Only the regression test would catch it, and nightly CI does not run tests.
+
+Files:
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\pr-sweep-skips-exited.md`</result>
+<usage><subagent_tokens>150533</subagent_tokens><tool_uses>58</tool_uses><duration_ms>928250</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0b302509eb29636c</task-id>
+<tool-use-id>toolu_01ULBbRUeneJjqwRn5nmWzYC</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a0b302509eb29636c.output</output-file>
+<status>completed</status>
+<summary>Agent "Add marker on sweep key" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Tagged the sweep-key line in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts`.
+Added the marker entry and feature-row token in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md`; no other edits or commits.
+`  OK   (FORK-PORTS-OFF) (packages/port-scanner/src)`
+`  OK   (BLOCKING-FS-RATCHET) (apps/desktop/src/no-main-process-blocking.test.ts)`
+`All 343 feature markers present.`</result>
+<usage><subagent_tokens>48577</subagent_tokens><tool_uses>11</tool_uses><duration_ms>158251</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="ae51c91bec64fedc4">
+Reuse review is inspecting the supplied diff read-only. Has origin already been fetched and compared in this review session? I will avoid duplicating that fetch if you have done it.
+</agent-message>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+I am reviewing simplification only, read-only. Please confirm fetch/compare against origin is already done for this checkout so I do not change git metadata during the review.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>af45becb5abdc10b5</task-id>
+<tool-use-id>toolu_01MNpEzhocRD8Dpzy9RHeoeZ</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\af45becb5abdc10b5.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: efficiency" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts:15-47` reads both mirror tables even when meta already proves filtering is disabled. Cost is two unnecessary synchronous full-table reads and row allocations per sweep for stale, future-dated or other-org mirrors. Cheaper alternative is to evaluate the existing meta gates before loading workspace and project rows.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts:678,894` independently reloads and indexes the same mirror for the paired startup and five-minute sweeps. Cost is six synchronous queries and two sets of map allocations instead of three queries and one set on the latency-critical host thread. Cheaper alternative is to load one filter for each paired sweep invocation and pass it to both sweeps, while keeping hold recovery independently loaded.</result>
+<usage><subagent_tokens>68050</subagent_tokens><tool_uses>9</tool_uses><duration_ms>67378</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+Simplification review found only small cleanup opportunities: exited-workspaces.ts:17 rebuilds an already-compatible meta row; pull-requests.test.ts:2475 wraps and binds both methods when returning the typed manager would preserve this; test mirror fixture shape repeats at 2489 and 2519. No marker/comment removal suggested. I have not edited files or fetched. Awaiting your fetch/compare confirmation before final findings.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a94b031cd6be1b58d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a94b031cd6be1b58d.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: altitude" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts:929` — The `sweep` namespace patches incomplete refresh identity with caller identity. Cost: an extra fork-only flag and duplicate git/GitHub work when a sweep overlaps an otherwise identical cached watcher refresh. General change: key every in-flight refresh by project, workspace scope and `bypassCache`; remove `sweep` and retain the required marker.</result>
+<usage><subagent_tokens>65802</subagent_tokens><tool_uses>11</tool_uses><duration_ms>72425</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ae51c91bec64fedc4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ae51c91bec64fedc4.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: reuse" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts:13` duplicates the existing sidebar snapshot reader. Cost: a second 37-line reader maintains the same three tables and field mappings. Reuse `HostDbReader.readSidebarMirror` from `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\read-api.ts:368`; extract its implementation into a shared reader rather than open another connection.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts:2456` recreates real git fixture setup and cleanup. Cost: duplicated directory lifecycle code and a new synchronous process call. Use `createGitFixture()`, `.repoPath`, and `.dispose()` from `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\test\helpers\git-fixture.ts:19`.</result>
+<usage><subagent_tokens>81764</subagent_tokens><tool_uses>20</tool_uses><duration_ms>96346</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2afce0daf629201c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a2afce0daf629201c.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: simplification" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts`, line 17 | The meta object copies five fields without transforming them. Cost: an unnecessary allocation and field mapping to maintain. Simpler form: return `meta` directly; its schema row already satisfies `SidebarMirrorMetaRow`.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`, line 2475 | `sweeps()` creates a wrapper and binds both methods unnecessarily. Cost: another object and two bindings per scenario. Simpler form: return the manager with the existing narrow type assertion; `scenario.sweeps.method()` preserves the manager as `this`.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`, line 2519 | `mirrorLoader()` repeats the mirror fixture shape declared by `seedMirror()`. Cost: fixture changes require updating two declarations. Simpler form: define one `MirrorFixture` type for both functions.</result>
+<usage><subagent_tokens>79062</subagent_tokens><tool_uses>9</tool_uses><duration_ms>92535</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3c462e33f178fb51</task-id>
+<tool-use-id>toolu_018sSt4UdiUQkvDUtAF3T1if</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a3c462e33f178fb51.output</output-file>
+<status>completed</status>
+<summary>Agent "Revise git-launch-budget plan" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I revised `tmp/plans/git-launch-budget.md` against the four reviews of the "launch git less often" fix. I also updated the matching `.html`, because two facts the user sees changed. No code was changed.
+
+**Path:** `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-launch-budget.md`
+
+**Changes to UX or app behaviour beyond what the user approved:**
+1. **Branch status can't be read.** The commit, push and Create PR actions hide. One error toast with a Retry button appears each time reading starts to fail, and repeats replace it rather than stack. A linked PR still shows from saved data. This replaces today's silent "clean". It adds two new strings, which need translations in every locale.
+2. **Approved lag that was never true.** The tab-bar branch label already lags up to ~30 s today, because it reads the workspace list and branch syncs announce nothing. After this plan it lags up to ~37 s. The "≤5 s" the user approved never held. Fixing it needs a new announcement when the branch changes, which is outside this plan and is the user's call. The parent should log this.
+3. **Default-branch read failure.** When git fails to read a repo's default branch (a real failure, not an unset value), that project's PR refresh now stops before any PR matching or link write, and the failure is logged. Today it quietly assumes "main", which can attach the wrong PR. The "main" fallback stays only when git proves the default branch is unset.
+4. **Ignored-folder scan.**
+   - A scan skipped by the 60 s floor now runs once later instead of being dropped. Staleness is bounded at 60 s, at a cost of at most 1 scan a minute.
+   - If a scan finds fewer ignored folders than before, it re-checks the watcher and refreshes branch status in full, so edits made meanwhile show up.
+   - A failed scan keeps the previous list, logs once, and retries after 5 s. Today a failure quietly clears the list.
+   - Workspaces that aren't git repos are no longer scanned.
+5. **Lost `.git`.** When the git-folder watcher errors, the saved "is a repo" answer is dropped. So a deleted `.git` usually shows in the window well inside the approved 60 s.
+6. **Two more failures now show as errors.** The branch-status query used to hide two failures: reading the default branch and running `git remote`. Both now error the query.
+7. **Stricter status parsing.** If git's status output has an unexpected branch header or no branch name, the query errors instead of showing wrong numbers.
+
+**Other fixes, not behaviour changes:**
+- Both caches get reset functions for tests, plus a fake-probe hook for the repo cache. No test mocks a whole module anymore.
+- The PR-sync throttle can now cancel a single workspace. It is wired to the "workspace stopped being watched" signal, so it never syncs an exited card.
+- Each change gets its own feature-marker token. The ShipControl marker points at the exact file, since a `$` in the path is safe in both gates.
+- Two unused imports and one stale ShipControl comment get removed.
+- Test fixtures are fixed, including the watcher deadline tests that must keep the 1 s window for git-only batches.
+
+**Findings I rejected or only partly took:**
+- **Rebuilding the ignored-folder list on every git index change.** Rejected. Agents' `git status` rewrites the index constantly, so this would undo the saving from the 60 s floor. The deferred scan covers the force-add case within 60 s instead.
+- **A new on-screen Retry button inside the Changes control.** Rejected in favour of the existing toast-with-action pattern, which keeps the visible change smaller. The 10 s poll also keeps retrying on its own.
+- **Telling a too-many-files change apart from a real `.git` change.** Rejected: it needs a larger edit to an upstream file. Instead the plan documents that an agent writing more than 64 files a second moves PR sync into the 5 s class.
+- **Cancelling the throttle timer on exit by reading the database on every event.** Not used. Cancelling on unwatch needs no extra database read.</result>
+<usage><subagent_tokens>348178</subagent_tokens><tool_uses>25</tool_uses><duration_ms>705556</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="ae51c91bec64fedc4">
+Your no-fetch message arrived after my review finished. I had already fetched origin; HEAD and origin/main matched 0/0. No files were edited. Findings concern only additions in the supplied diff.
+</agent-message>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+Confirmed. I did not fetch or edit anything. Findings are limited to the supplied diff: unnecessary meta copying at exited-workspaces.ts:17, unnecessary bound-method wrapper at pull-requests.test.ts:2475, and duplicated fixture shape at pull-requests.test.ts:2519.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>ae51c91bec64fedc4</task-id>
+<tool-use-id>toolu_016zf3GPKUs1pUdz1tW7WEdx</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ae51c91bec64fedc4.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: reuse" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The no-fetch instruction arrived after I had fetched origin. Local main matched origin/main with zero differing commits. I edited no files. The two reuse findings apply only to additions in the supplied diff.</result>
+<usage><subagent_tokens>81953</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9787</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2afce0daf629201c</task-id>
+<tool-use-id>toolu_014F7TgqWtgTLBNaXKLL9feU</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a2afce0daf629201c.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: simplification" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Review stayed read-only and diff-only. No fetch or edits. The three simplification findings remain unchanged.</result>
+<usage><subagent_tokens>79251</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9203</duration_ms></usage>
+</task-notification>

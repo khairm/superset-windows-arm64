@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "b112c8566cd7",
+  "strategy": "manual-commit",
+  "branch": "pr-sweep-skips-exited-local",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.test.ts",
+    "apps/desktop/src/renderer/routes/_authenticated/components/AgentHooks/hooks/useSidebarMirrorSync/useSidebarMirrorSync.ts",
+    "packages/host-service/src/app.ts",
+    "packages/host-service/src/runtime/pull-requests/exited-workspaces.ts",
+    "packages/host-service/src/runtime/pull-requests/pull-requests.test.ts",
+    "packages/host-service/src/runtime/pull-requests/pull-requests.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b1/12c8566cd7/0/metadata.json",
+      "transcript": "/b1/12c8566cd7/0/full.jsonl",
+      "content_hash": "/b1/12c8566cd7/0/content_hash.txt",
+      "prompt": "/b1/12c8566cd7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 180,
+    "cache_creation_tokens": 402642,
+    "cache_read_tokens": 13144382,
+    "output_tokens": 91582,
+    "api_call_count": 71
+  }
+}
