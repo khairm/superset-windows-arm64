@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "5c3b2588907d",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 39,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/ChangesControl/components/ShipControl/ShipControl.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5c/3b2588907d/0/metadata.json",
+      "transcript": "/5c/3b2588907d/0/full.jsonl",
+      "content_hash": "/5c/3b2588907d/0/content_hash.txt",
+      "prompt": "/5c/3b2588907d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 488,
+    "cache_creation_tokens": 548920,
+    "cache_read_tokens": 50306191,
+    "output_tokens": 141680,
+    "api_call_count": 170
+  }
+}

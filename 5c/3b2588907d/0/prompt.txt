@@ -1,0 +1,653 @@
+<task-notification>
+<task-id>afeb8e37bb2910ca5</task-id>
+<tool-use-id>toolu_013BFy3oCWaZMw8Qudsn7WwL</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\afeb8e37bb2910ca5.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix skip-exited review findings" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All five fixes are in the working tree. Nothing is committed or pushed.
+
+1. **Key collision:** `ProjectRefreshOptions` gains `sweep?: boolean`, and only `refreshEligibleProjects` sets it. A sweep's in-flight key is now `${projectId}\0sweep\0${sortedIds}`. An explicit refresh of a lone visible workspace no longer joins a sweep. The 5-minute tick and hold recovery still share a key. A new regression test runs a sweep held at gh, then an explicit bypass refresh, and expects 2 head lookups. Under the old key it would see 1 and fail with a clear assertion, not a timeout. I did not run it against the old code.
+2. **Timeouts:** every new test and the `beforeAll` take a `30_000` timeout. The ws-a and ws-b repos are created once in `beforeAll` and removed in `afterAll`. Test 1 now uses one manager: branch sweep, assert, reset the recorded calls, move the clock 61 s, then the project sweep. The 61 s jump is needed because ws-b's lookup would otherwise come from the 60 s PR cache and gh would never be called.
+3. **Duplicate type:** `exited-workspaces.ts` no longer exports `ExitedWorkspaceFilter`. Its loader returns `() =&gt; (workspace: WorkspaceCurationInput) =&gt; boolean`. The only named type is the one in `pull-requests.ts`, which has no fork-only imports.
+4. **Line move:** `const isExited = ...` in `syncWorkspaceBranches` now sits after upstream's comment, just above `const ids = this.db`.
+5. **Markers:** the filter lines carry `(PR-SWEEP-SKIPS-EXITED-BRANCHES)` and `(PR-SWEEP-SKIPS-EXITED-PROJECTS)`. The option field keeps `(PR-SWEEP-SKIPS-EXITED)`. FEATURES.md has a markers line for each new token, rooted at `pull-requests.ts`. I also listed all three tokens in the feature row's marker column, which you did not ask for. The plan records fixes 1 and 5 in one line each.
+
+**Test:** the single targeted run passed 5 of 5, including the regression test, in 1.41 s total. Bun's output did not show per-test times, so each one's duration is unknown. The total proves each is well under 5 s.
+
+**Gates:** the marker check passed with all 342 markers present. `tsc` in `packages/host-service` reports no errors in `pull-requests.ts`, `exited-workspaces.ts`, `app.ts` or the test file. It exits 2 because of errors in other files, which I did not check against main. Biome lint is clean, and biome format rewrapped one line in the test file.
+
+**Open gap:** the new `sweep` field and the `sweep\0` key segment carry no marker. A nightly merge could drop them without failing the gate. Only the regression test would catch it, and nightly CI does not run tests.
+
+Files:
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\pr-sweep-skips-exited.md`</result>
+<usage><subagent_tokens>150533</subagent_tokens><tool_uses>58</tool_uses><duration_ms>928250</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0b302509eb29636c</task-id>
+<tool-use-id>toolu_01ULBbRUeneJjqwRn5nmWzYC</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a0b302509eb29636c.output</output-file>
+<status>completed</status>
+<summary>Agent "Add marker on sweep key" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Tagged the sweep-key line in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts`.
+Added the marker entry and feature-row token in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md`; no other edits or commits.
+`  OK   (FORK-PORTS-OFF) (packages/port-scanner/src)`
+`  OK   (BLOCKING-FS-RATCHET) (apps/desktop/src/no-main-process-blocking.test.ts)`
+`All 343 feature markers present.`</result>
+<usage><subagent_tokens>48577</subagent_tokens><tool_uses>11</tool_uses><duration_ms>158251</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="ae51c91bec64fedc4">
+Reuse review is inspecting the supplied diff read-only. Has origin already been fetched and compared in this review session? I will avoid duplicating that fetch if you have done it.
+</agent-message>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+I am reviewing simplification only, read-only. Please confirm fetch/compare against origin is already done for this checkout so I do not change git metadata during the review.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>af45becb5abdc10b5</task-id>
+<tool-use-id>toolu_01MNpEzhocRD8Dpzy9RHeoeZ</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\af45becb5abdc10b5.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: efficiency" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts:15-47` reads both mirror tables even when meta already proves filtering is disabled. Cost is two unnecessary synchronous full-table reads and row allocations per sweep for stale, future-dated or other-org mirrors. Cheaper alternative is to evaluate the existing meta gates before loading workspace and project rows.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts:678,894` independently reloads and indexes the same mirror for the paired startup and five-minute sweeps. Cost is six synchronous queries and two sets of map allocations instead of three queries and one set on the latency-critical host thread. Cheaper alternative is to load one filter for each paired sweep invocation and pass it to both sweeps, while keeping hold recovery independently loaded.</result>
+<usage><subagent_tokens>68050</subagent_tokens><tool_uses>9</tool_uses><duration_ms>67378</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+Simplification review found only small cleanup opportunities: exited-workspaces.ts:17 rebuilds an already-compatible meta row; pull-requests.test.ts:2475 wraps and binds both methods when returning the typed manager would preserve this; test mirror fixture shape repeats at 2489 and 2519. No marker/comment removal suggested. I have not edited files or fetched. Awaiting your fetch/compare confirmation before final findings.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a94b031cd6be1b58d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a94b031cd6be1b58d.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: altitude" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts:929` — The `sweep` namespace patches incomplete refresh identity with caller identity. Cost: an extra fork-only flag and duplicate git/GitHub work when a sweep overlaps an otherwise identical cached watcher refresh. General change: key every in-flight refresh by project, workspace scope and `bypassCache`; remove `sweep` and retain the required marker.</result>
+<usage><subagent_tokens>65802</subagent_tokens><tool_uses>11</tool_uses><duration_ms>72425</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ae51c91bec64fedc4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ae51c91bec64fedc4.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: reuse" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts:13` duplicates the existing sidebar snapshot reader. Cost: a second 37-line reader maintains the same three tables and field mappings. Reuse `HostDbReader.readSidebarMirror` from `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\companion\read-api.ts:368`; extract its implementation into a shared reader rather than open another connection.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts:2456` recreates real git fixture setup and cleanup. Cost: duplicated directory lifecycle code and a new synchronous process call. Use `createGitFixture()`, `.repoPath`, and `.dispose()` from `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\test\helpers\git-fixture.ts:19`.</result>
+<usage><subagent_tokens>81764</subagent_tokens><tool_uses>20</tool_uses><duration_ms>96346</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2afce0daf629201c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a2afce0daf629201c.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: simplification" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\exited-workspaces.ts`, line 17 | The meta object copies five fields without transforming them. Cost: an unnecessary allocation and field mapping to maintain. Simpler form: return `meta` directly; its schema row already satisfies `SidebarMirrorMetaRow`.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`, line 2475 | `sweeps()` creates a wrapper and binds both methods unnecessarily. Cost: another object and two bindings per scenario. Simpler form: return the manager with the existing narrow type assertion; `scenario.sweeps.method()` preserves the manager as `this`.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.test.ts`, line 2519 | `mirrorLoader()` repeats the mirror fixture shape declared by `seedMirror()`. Cost: fixture changes require updating two declarations. Simpler form: define one `MirrorFixture` type for both functions.</result>
+<usage><subagent_tokens>79062</subagent_tokens><tool_uses>9</tool_uses><duration_ms>92535</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3c462e33f178fb51</task-id>
+<tool-use-id>toolu_018sSt4UdiUQkvDUtAF3T1if</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a3c462e33f178fb51.output</output-file>
+<status>completed</status>
+<summary>Agent "Revise git-launch-budget plan" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I revised `tmp/plans/git-launch-budget.md` against the four reviews of the "launch git less often" fix. I also updated the matching `.html`, because two facts the user sees changed. No code was changed.
+
+**Path:** `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-launch-budget.md`
+
+**Changes to UX or app behaviour beyond what the user approved:**
+1. **Branch status can't be read.** The commit, push and Create PR actions hide. One error toast with a Retry button appears each time reading starts to fail, and repeats replace it rather than stack. A linked PR still shows from saved data. This replaces today's silent "clean". It adds two new strings, which need translations in every locale.
+2. **Approved lag that was never true.** The tab-bar branch label already lags up to ~30 s today, because it reads the workspace list and branch syncs announce nothing. After this plan it lags up to ~37 s. The "≤5 s" the user approved never held. Fixing it needs a new announcement when the branch changes, which is outside this plan and is the user's call. The parent should log this.
+3. **Default-branch read failure.** When git fails to read a repo's default branch (a real failure, not an unset value), that project's PR refresh now stops before any PR matching or link write, and the failure is logged. Today it quietly assumes "main", which can attach the wrong PR. The "main" fallback stays only when git proves the default branch is unset.
+4. **Ignored-folder scan.**
+   - A scan skipped by the 60 s floor now runs once later instead of being dropped. Staleness is bounded at 60 s, at a cost of at most 1 scan a minute.
+   - If a scan finds fewer ignored folders than before, it re-checks the watcher and refreshes branch status in full, so edits made meanwhile show up.
+   - A failed scan keeps the previous list, logs once, and retries after 5 s. Today a failure quietly clears the list.
+   - Workspaces that aren't git repos are no longer scanned.
+5. **Lost `.git`.** When the git-folder watcher errors, the saved "is a repo" answer is dropped. So a deleted `.git` usually shows in the window well inside the approved 60 s.
+6. **Two more failures now show as errors.** The branch-status query used to hide two failures: reading the default branch and running `git remote`. Both now error the query.
+7. **Stricter status parsing.** If git's status output has an unexpected branch header or no branch name, the query errors instead of showing wrong numbers.
+
+**Other fixes, not behaviour changes:**
+- Both caches get reset functions for tests, plus a fake-probe hook for the repo cache. No test mocks a whole module anymore.
+- The PR-sync throttle can now cancel a single workspace. It is wired to the "workspace stopped being watched" signal, so it never syncs an exited card.
+- Each change gets its own feature-marker token. The ShipControl marker points at the exact file, since a `$` in the path is safe in both gates.
+- Two unused imports and one stale ShipControl comment get removed.
+- Test fixtures are fixed, including the watcher deadline tests that must keep the 1 s window for git-only batches.
+
+**Findings I rejected or only partly took:**
+- **Rebuilding the ignored-folder list on every git index change.** Rejected. Agents' `git status` rewrites the index constantly, so this would undo the saving from the 60 s floor. The deferred scan covers the force-add case within 60 s instead.
+- **A new on-screen Retry button inside the Changes control.** Rejected in favour of the existing toast-with-action pattern, which keeps the visible change smaller. The 10 s poll also keeps retrying on its own.
+- **Telling a too-many-files change apart from a real `.git` change.** Rejected: it needs a larger edit to an upstream file. Instead the plan documents that an agent writing more than 64 files a second moves PR sync into the 5 s class.
+- **Cancelling the throttle timer on exit by reading the database on every event.** Not used. Cancelling on unwatch needs no extra database read.</result>
+<usage><subagent_tokens>348178</subagent_tokens><tool_uses>25</tool_uses><duration_ms>705556</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="ae51c91bec64fedc4">
+Your no-fetch message arrived after my review finished. I had already fetched origin; HEAD and origin/main matched 0/0. No files were edited. Findings concern only additions in the supplied diff.
+</agent-message>
+
+---
+
+<agent-message from="a2afce0daf629201c">
+Confirmed. I did not fetch or edit anything. Findings are limited to the supplied diff: unnecessary meta copying at exited-workspaces.ts:17, unnecessary bound-method wrapper at pull-requests.test.ts:2475, and duplicated fixture shape at pull-requests.test.ts:2519.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>ae51c91bec64fedc4</task-id>
+<tool-use-id>toolu_016zf3GPKUs1pUdz1tW7WEdx</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ae51c91bec64fedc4.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: reuse" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The no-fetch instruction arrived after I had fetched origin. Local main matched origin/main with zero differing commits. I edited no files. The two reuse findings apply only to additions in the supplied diff.</result>
+<usage><subagent_tokens>81953</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9787</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a2afce0daf629201c</task-id>
+<tool-use-id>toolu_014F7TgqWtgTLBNaXKLL9feU</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a2afce0daf629201c.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: simplification" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Review stayed read-only and diff-only. No fetch or edits. The three simplification findings remain unchanged.</result>
+<usage><subagent_tokens>79251</subagent_tokens><tool_uses>1</tool_uses><duration_ms>9203</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a7cc875e56ace4c20</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a7cc875e56ace4c20.output</output-file>
+<status>completed</status>
+<summary>Agent "Design function-level git offload" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Done. Both files are written and reviewed.
+
+**Paths**
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-offload.md` (agent-facing, 14 sections, file:line anchors)
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-offload.html` (user-facing, one before/after diagram, 4 questions)
+
+**Summary**
+1. Seam: every main-thread `ctx.git()` consumer uses only nine simple-git methods (`raw`, `revparse`, `status`, `getRemotes`, `remote`, `fetch`, `show`, `getConfig`, `checkIsRepo`); `status` is the one non-plain result (`isClean` is an own-property function, simple-git `index.js:2690`) and gets re-attached on main. `clone`/`add`/`env` exist only in `resolve-repo.ts` on direct clients and stay on main.
+2. Design: one generic worker task `git/run` {baseDir, env, method, args} behind a `createOffloadedGit` Proxy typed as `SimpleGit` (unsupported method throws loud; `then`/symbols return undefined), plus dedicated tasks for `gh` exec, `gh auth token`, `git credential fill` and ignored-dirs, all in one new leaf module `workers/tasks/launcher.ts`. Real child_process and simple-git run unmodified in the worker.
+3. gh failures cross as data (`code`, `killed`, `signal`, `stderr`) and are rebuilt as an Error, so `isGitHubUnreachableError` classifies exactly as today; a pool timeout has no `killed`, so no GitHub hold opens (the Opus blocker).
+4. Pool: a dedicated 4-slot `HostWorkerPool` over the existing `host-worker.js`, because a slot is held for a gh call's whole network wait, not just its spawn; the shared pool must stay free for status refreshes. Timeouts start at dispatch, so queue wait never eats a caller's budget.
+5. Fail loud: new `inlineFallback: "refuse"` option on `HostWorkerPool` closes all three inline paths (missing bundle, per-crash inline retry, crash-budget latch); 3 crashes in 60 s refuse git/gh with `EWORKERPOOL_DOWN` until restart, visible on `health.check`. Bun dev stays inline with one warning.
+6. Seven swallowing catches rethrow pool failures (`non-git.ts:66`, `utils.ts:7`, `ignored-dirs.ts:51`, credential provider, `git-watcher.ts:744`, `multi-repo-cleanup.ts:61/:84`, PR default-branch), so the latch never reads as "not a git repo".
+7. Timeouts: 30 s only for known-fast reads, 180 s for everything else; a pool timeout SIGKILLs the child via the existing cooperative shutdown, so no hung git on main ever again, and mutations are never replayed.
+8. Guards: a fork-only ratchet test (no `execFile("git"|"gh")` outside `workers/`, every `git.&lt;method&gt;(` on main in the allowlist), rule 4 of `no-main-loop-blocking.test.ts` deleted, 23 `(GIT-LAUNCHER)` markers, and a `scripts/verify-host-worker-bundle.sh` build gate because refuse mode makes a missing worker fatal.
+9. Tests run under Node 22 and Electron-as-node (Node 24.18): parity, unsupported method, git text intact, crash/latch policy, timeout kills child, gh fidelity, bun gate. Success = rerun `tmp/profile/capture.cjs`: main-thread spawn categories about 0 ms, GET p95 &lt; 50 ms, 0 timeouts.
+10. Builds after skip-exited and git-launch-budget (shared: `app.ts` dispose, `non-git.ts` catch, `git.ts` router). Open user questions are UX only: how the "git is off until restart" state is shown, whether single crashes surface, silent watcher fallback, bun-dev inline.</result>
+<usage><subagent_tokens>348689</subagent_tokens><tool_uses>74</tool_uses><duration_ms>2136209</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>wtqwqkq1o</task-id>
+<tool-use-id>toolu_015RJvdhk8GA5CDvA7KLnnbo</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\wtqwqkq1o.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Four architect re-reviews of the revised git-launch-budget plan" completed</summary>
+<result>[{"reviewer":"architect-fable","verdict":"revise","findings":[{"severity":"MINOR","title":"First-round BLOCKER/MAJOR status (part 1 of the task; status record, not a defect)","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-launch-budget.md (revision 2) vs C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\plan-reviews-2.json","failure":"Fable BLOCKER (E cache breaks skip-exited positive control): RESOLVED. Plan line 24 adds resetOriginHeadCacheForTests() in a beforeEach of pull-requests.test.ts; the positive control's git factory increments gitCalls before throwing (pull-requests.test.ts:2565-2568) and plan line 44 returns null WITHOUT caching on a this.git rejection, so the counter still moves on the second sweep. Note the file imports only beforeAll/afterAll today (pull-requests.test.ts:3-9); the beforeEach import must be added.\nFable MAJOR (test 1 uses mock.module): RESOLVED. Probe seam setIsGitRepoProbeForTests + resetIsGitRepoCacheForTests, precedent resetManagedEnvForTests (sandbox-managed-env.ts:85); plan says no mock.module.\nFable MAJOR (test F cannot engage floor with /nowhere): RESOLVED. Test 7 uses a real git init dir with non-null gitDir and asserts internals (lastRefreshAt, refreshing, deferred timer); failure path goes through the real helper.\nAstra MAJOR (failed default-branch read attaches wrong PR): RESOLVED. Read failures propagate out of resolveDefaultBranch to refreshProject's catch (pull-requests.ts WT :937-946); 'main' only for a proven-unset origin/HEAD, verified empirically: git 2.54 `symbolic-ref --quiet` exits 1 with empty stderr when unset and 128 with stderr without --quiet; simple-git 3.36.0 isTaskError = exitCode &amp;&amp; stdErr.length (dist/esm/index.js:4375-4376). Test 3 added.\nAstra MAJOR (trailing timer survives exit): RESOLVED. cancelWorkspace wired to the watch-state callback (app.ts WT :177-180) on watched=false; test 4 covers exit before deadline and fresh state on rewatch.\nAstra MAJOR (ignored-dir failures become 60 s entries): RESOLVED. listGitIgnoredDirsOrThrow; failure keeps dirs, leaves lastRefreshAt, sets retryAfter, logs once per transition; non-git (gitDir null) skipped.\nSol MAJOR (floor hides newly tracked edits indefinitely): RESOLVED WITH A DOCUMENTED TRADE. Index events do not bypass the floor (deliberate, plan line 79) but the deferred refresh bounds the force-add case at 60 s and a shrink triggers re-prune plus broad refresh. See finding 2 below for a defect in that shrink rule.\nSol MAJOR (pending timers survive exit): RESOLVED (same as Astra).\nSol MAJOR (default-branch read failure disables guard): RESOLVED (same as Astra); test uses a unique repoPath and cold cache.\nSol MAJOR (rejecting the sync query still hides failure in the desktop): C-TIED, DEFERRED with C, not assessed tonight.\nOpus MAJOR (E cache leaks between tests): RESOLVED (same as Fable BLOCKER).\nOpus MAJOR (F timed-out ls-files cached 60 s, never logged): RESOLVED (same as Astra 3); invalidation table row corrected.\nOpus MAJOR (tab-bar &lt;=5 s claim): RESOLVED. UX change 2 states the real bound; verified WORKSPACES_FALLBACK_REFETCH_INTERVAL_MS = 30_000 at useHostWorkspaces.ts:28 and :232.","fix":"None. Status record for the orchestrator."},{"severity":"MAJOR","title":"F shrink rule fires on every ignored-dir deletion and triggers a full native watcher swap plus a second ls-files and a broad refresh","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-launch-budget.md:76; C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\workspace-fs\\src\\watch.ts:750-761 and :589-595; C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\filesystem\\filesystem.ts:97-101","failure":"Plan line 76: 'If the new set dropped any previous entry (shrank), take the existing rulesChanged path: refreshWatcherIgnores + markGitDirDirty'. `git ls-files --others --ignored --directory` only lists dirs that exist, so `rm -rf dist` (every clean build, every `bun install` that replaces a dir) drops `dist` from the listing and F classes that as a shrink. refreshWatcherIgnores -&gt; FsWatcherManager.refreshIgnores (watch.ts:750-761) then runs computeNestedRepoRelDirs AND computeGitIgnoredRelDirs (a second `git ls-files` spawn), finds the pruned prefix `dist` absent from the fresh set, and does a full native unsubscribe + re-attach of the recursive worktree watcher (:770-790), with a swap gap; markGitDirDirty then emits a broad git:changed (worker status refresh, renderer status/diff refetch, and B's 5 s broad class). Today this path only runs on a .gitignore/info/exclude edit. The pruned prefixes are passed to the native watcher as ignore globs (watch.ts:589-595), so a deleted-then-recreated `dist/` stays natively pruned with no swap needed; the swap buys nothing for a deletion. Bounded only by the 60 s floor, so a build loop pays a native re-attach plus two extra git spawns per minute, which eats the ~9 ls-files/min F is meant to save.","fix":"Narrow the shrink test: a dropped dir counts as a shrink only when `existsSync(join(worktreePath, dir))` is still true (that is exactly the force-add / became-partially-tracked case Sol raised). A dir that is gone needs neither re-prune nor broad refresh; when it reappears it is still in the stale set until the next listing, which is today's behaviour. git-watcher.ts already uses existsSync at :720, so no new idiom. Add to test 7: delete a cached ignored dir, flush after +61 s, assert refreshWatcherIgnores and markGitDirDirty were NOT called; force-add a file inside a cached ignored dir, flush after +61 s, assert both WERE called."},{"severity":"MAJOR","title":"F: retryAfter vs force is unstated; the existing .finally re-run can spin git ls-files on the failure path","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-launch-budget.md:74-77; C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\events\\git-watcher.ts:510-517","failure":"The existing .finally (git-watcher.ts:510-517) re-runs `refreshIgnoredDirs(workspaceId, worktreePath, true)` whenever `state.rulesChanged` is true after a refresh settles. Revision 2 adds 'restore state.rulesChanged ||= rulesChanged' on failure (line 77). The plan's floor bullet is explicitly `!force &amp;&amp; ...` (line 74) but the retryAfter bullet (line 75, 'Also skip while Date.now() &lt; state.retryAfter') does not say whether `force` bypasses it. If an implementer makes `force` bypass both, as it does for the floor, then a failing listing with rulesChanged set spins: fail -&gt; finally sees rulesChanged -&gt; force refresh -&gt; fail -&gt; ..., one `git ls-files` after another (each up to the 3 s timeout, ignored-dirs.ts:10) until the listing succeeds. That is an unbounded spawn loop on exactly the overload case (timeouts under event-loop stalls) that F exists to tame. Test 7's failure case pre-seeds `dirs` but not `rulesChanged`, so the loop path is untested.","fix":"State in F that `retryAfter` is checked before `force` is consulted: `force` bypasses only the floor, never retryAfter, and the .finally re-run is therefore held until retryAfter passes (the restored rulesChanged is consumed by the next flush after it, which bypasses the floor as today). Add to test 7: failure with `rulesChanged` pre-set -&gt; exactly one listing spawn; a flush before retryAfter is skipped; a flush after it refreshes."},{"severity":"MINOR","title":"C scope split: no silent dependency found, but five explicit coupling points must be stripped for tonight's build","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-launch-budget.md:5-7 (UX change 1), :50 (E call site 2), :107-120 (markers block), :129 (test 5), :138 (build order step 1)","failure":"B, D, E, F, G, H stand on their own: peekOriginHead/readOriginHead and normalizeRep
+... (truncated 43769 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\wtqwqkq1o.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\subagents\workflows\wf_596ffb8c-683/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\workflows\scripts\re-review-git-launch-budget-wf_596ffb8c-683.js', resumeFromRunId: 'wf_596ffb8c-683'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>4</agent_count><agents_done>4</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>618538</subagent_tokens><tool_uses>187</tool_uses><duration_ms>1202153</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="a3f6561d9abba2ff3">
+Read-only build research found push to main triggers NOTHING: fork has only build-arm64 dispatch/workflow_call and nightly schedule/dispatch. Current origin/main and installed app are 1.30.2. Normal fork-only delivery is `gh workflow run build-arm64.yml --ref main -f publish=true -f repair_branch=main`, rebuilding desktop-v1.30.2 in place. Last 8 successful direct builds were 27m35s–36m39s, median about 30m; latest 31m22s. Publisher deletes/recreates both existing Release and tag at exact built SHA. No uploaded Actions installer artifact; Release asset Superset-1.30.2-arm64.exe, 374 MB. Nightly cron 02:13 UTC but recent actual starts ~08:22–08:47 UTC. A push after nightly checkout rejects nightly's final non-FF main advance AFTER Release publish. Direct dispatch refuses queued/active nightly at startup. Installer `/S /currentuser` closes install-directory processes itself; plain /S does not relaunch, so explicitly Start-Process Superset.exe after exit. Verified LIVE daemon PID 21852 executes outside install folder under C:\Users\khair\AppData\Local\Superset\pty-runtime\0.4.0-e41.10.3-342cd4baf610\superset-ptyd.exe, matching terminal-preservation design. More verification underway.
+</agent-message>
+
+---
+
+<agent-message from="a3f6561d9abba2ff3">
+Added verification/repair details. Build-repair DOES push validated repair commits to `repair_branch`, default dispatched branch; with --ref main / repair_branch=main it can advance main automatically. Inspect Actions repair-1/repair-2 + verdict built_sha, then `git fetch origin; git log --oneline <prebuild-sha>..origin/main`. Publisher retags desktop-v1.30.2 at successful attempt's exact built_sha. Version stays 1.30.2, so version alone cannot prove new code. No commit-SHA define in electron.vite.config.ts; it only embeds __APP_VERSION__. Strong proof: release tag SHA = verdict built_sha, downloaded exe SHA256 = Release asset digest, installed resources\app.asar SHA256 = app.asar extracted from that installer, and fresh Superset.exe/host-service.js process start times after installation. Exact future silent command: `$p=Start-Process -FilePath 'C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\Superset-1.30.2-arm64.exe' -ArgumentList '/S','/currentuser' -Wait -PassThru; if($p.ExitCode -ne 0){throw "Installer exited $($p.ExitCode)"}; Start-Process 'C:\Users\khair\AppData\Local\Programs\@supersetdesktop\Superset.exe'`. No need pre-close; NSIS silently accepts close and stops install-dir processes, preserving sidecar. Extract via 7-Zip two stages; determine app-<arch>.7z entry by `7z l`, don't assume chunk/native names. Plain /S does not relaunch; --force-run exists but explicit restart gives clear order.
+</agent-message>
+
+---
+
+<agent-message from="a3f6561d9abba2ff3">
+Small install-command precision: `oneClick.nsh` chooses per-user by default; /currentuser parsing belongs to assisted installer, so /currentuser is unnecessary for this one-click build. Use `-ArgumentList '/S'` alone. Current per-user install is found from registry. Installer version is app-builder-lib 26.8.1: it checks/kills all executables UNDER $INSTDIR when PowerShell is available, or matches Superset.exe otherwise. The live superset-ptyd.exe is protected in either branch because both its path and name differ. Terminal survival source is present today; host-service serve.ts only stops daemon at dev shutdown, production leaves it detached. Installed app is 1.30.2.0, local Node v22.23.1/Bun 1.3.14/7-Zip/NSIS cache already exist. Local packaging is feasible with same ordered action steps, but no PC build benchmark supports claiming faster than ~30min CI.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a3f6561d9abba2ff3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a3f6561d9abba2ff3.output</output-file>
+<status>completed</status>
+<summary>Agent "Find how to build and install" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Use the documented CI path. Successful builds took **28–37 minutes**, usually about 30 minutes; download and installation time is unmeasured.
+- A push to main triggers neither build-arm64 nor nightly-merge. Dispatch the build explicitly.
+- Current main and this PC carry **1.30.2**. Rebuilding `desktop-v1.30.2` in place is the normal fork-only path.
+- With `publish=true`, CI deletes/recreates the existing Release and tag at the successful build's exact commit. It publishes `Superset-1.30.2-arm64.exe`, currently 374 MB. There is no Actions installer artifact.
+- Nightly runs at **02:13 UTC**; recent scheduled starts slipped to about 08:22–08:47 UTC. It builds only when an upstream update needs merging.
+- Wait for any queued/running nightly before pushing. A competing push after nightly checkout can reject its final main update **after it publishes a Release**.
+- Direct builds refuse an already-active nightly. Their repair loop can push repair commits to main; inspect `repair-1`, `repair-2`, and the verdict's `built_sha`.
+
+Recommended future PowerShell sequence, from `C:\Users\khair\Code Projects\fork-superset-windows-arm64`, after review and tests:
+```powershell
+gh run list --workflow nightly-merge.yml -L 10 --json databaseId,status,conclusion
+git push origin HEAD:main
+gh workflow run build-arm64.yml --ref main -f publish=true -f repair_branch=main
+gh run list --workflow build-arm64.yml -L 3 --json databaseId,headSha,status,createdAt
+gh run watch RUN_ID --exit-status
+gh release download desktop-v1.30.2 --repo khairm/superset-windows-arm64 --pattern Superset-1.30.2-arm64.exe --dir "C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp" --clobber
+$p=Start-Process "C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\Superset-1.30.2-arm64.exe" -ArgumentList '/S' -Wait -PassThru
+if($p.ExitCode -ne 0){throw "Installer exited $($p.ExitCode)"}
+Start-Process "C:\Users\khair\AppData\Local\Programs\@supersetdesktop\Superset.exe"
+git fetch origin
+git log --oneline PREBUILD_SHA..origin/main
+git ls-remote origin refs/heads/main refs/tags/desktop-v1.30.2
+```
+Replace `RUN_ID` with the newly dispatched run and `PREBUILD_SHA` with main's commit before dispatch; proceed only after build success.
+The installer closes the app and host-service itself, preserves user data, and does not relaunch with `/S`; the explicit restart above is required.
+Running terminals are designed to survive. This PC's live daemon, PID 21852, runs outside the install folder at `C:\Users\khair\AppData\Local\Superset\pty-runtime\0.4.0-e41.10.3-342cd4baf610\superset-ptyd.exe`; never kill its process tree.
+Version remains 1.30.2, so it cannot prove replacement: verify Release tag SHA against verdict `built_sha`, installer SHA256 against its Release digest, and installed `C:\Users\khair\AppData\Local\Programs\@supersetdesktop\resources\app.asar` against the installer-extracted copy; confirm fresh app/host-service process start times.
+Local packaging is feasible: Node 22, native Bun 1.3.14, Git Bash, gh and 7-Zip are present; Windows packaging uses prebuilt natives rather than rebuilding them.
+Local commands follow `C:\Users\khair\Code Projects\fork-superset-windows-arm64\.github\actions\arm64-build\action.yml`: frozen Bun install, catalogs/icons, `compile:app`, native fetch/materialization, copy/validation, then `npx electron-builder --win --arm64 --publish never --config electron-builder.ts`; retain its environment settings and gates.
+No measured local build time supports choosing it over CI. The 180-minute build attempts and two possible 90-minute repairs can make a failed CI build much longer.
+Read-only research only; no build, dispatch, push, or installer execution performed.</result>
+<usage><subagent_tokens>98659</subagent_tokens><tool_uses>45</tool_uses><duration_ms>440372</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>w0pqo1vq2</task-id>
+<tool-use-id>toolu_01NxqNp4zSZFqnytmQnozYe5</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\w0pqo1vq2.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Four architect reviews of the function-level git/gh offload plan" completed</summary>
+<result>[{"reviewer":"architect-fable","verdict":"revise","findings":[{"severity":"MAJOR","title":"One FIFO queue mixes PR-sweep gh bursts with interactive git reads; the 4-slot sizing assumes a smooth 72 gh/min that the sweep does not produce","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md section 2d (\"4 slots give about 4 concurrent gh at ~2 s, roughly 120 gh/min with no queueing\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\pull-requests\\pull-requests.ts:1586-1595 (Promise.all over every wantedRefs entry, one gh per head) and :1482-1490 (two gh per PR in Promise.all); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\workers\\WorkerTaskRunner.ts:299-356 (strict FIFO drainQueue, one activeTaskId per slot)","failure":"fetchRepoPullRequests fires wantedRefs.size gh calls at once (a project with 20 tracked branches = 20 gh tasks in the same tick), and getCachedPullRequestDetails adds two more per PR. With 4 slots and ~2 s per gh, the launcher queue holds 16+ tasks for ~10 s. WorkerTaskRunner dispatches FIFO, so a user click that calls ctx.git(...).status() or isGitRepo during that window waits behind the whole burst (up to ~10 s) even though the pool timer only starts at dispatch. The plan's success criterion (GET p95 &lt; 50 ms) would pass because the HTTP loop is free, while the Changes pane's own query latency regresses to several seconds during every 5-minute sweep. No execGh caller wraps the call in an outer timer (grep of Promise.race/withTimeout/AbortSignal.timeout in pull-requests.ts, github-query.ts, search-pull-requests.ts, search-github-issues.ts, workspaces.ts found only the cloud-API race at workspaces.ts:569), so nothing abandons a queued gh, but nothing shortens the wait either. Raising GIT_LAUNCHER_THREADS to 6 (section 10) does not fix a 20-wide burst.","fix":"Give gh its own runner: construct two HostWorkerPool instances in runtime/git/launcher.ts over the same host-worker.js (name \"git-launcher\" for git/run, git/credentialFill, git/listIgnoredDirs; name \"gh-launcher\" for gh/exec, gh/authToken), each with its own refuse latch and metrics. Size the gh pool for the burst (start at 6, idle-reap 120 s) and keep the git pool at 4. Alternatively add a per-category admission limiter in exec-gh.ts so at most N gh are ever in the queue; the second pool is the smaller change because the class already exists and nothing in WorkerTaskRunner supports priority. Record queue depth per pool in the 2f metrics and set the section 10 pass criterion on the git pool's p95 queue wait, not the combined one."},{"severity":"MAJOR","title":"git/listIgnoredDirs task returns [] on git failure, which silently undoes git-launch-budget F that the build order says lands first","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md section 2b (\"git failure or timeout gives [] as today; pool failures throw\") and section 3 row for ignored-dirs.ts; C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-launch-budget.md section F (\"listGitIgnoredDirsOrThrow(rootPath) (no catch)\", \"Failure: keep previous dirs ... retryAfter ... Under the old code a timeout became [] silently\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\events\\git-watcher.ts:478-482 (state.dirs = new Set(dirs) on resolve)","failure":"Section 9 orders this plan after git-launch-budget. After F, git-watcher.ts calls listGitIgnoredDirsOrThrow and treats a rejection as \"keep the previous dirs, retry in 5 s, log once\". The offload plan was written against the pre-F body (ignored-dirs.ts:51-53 catch -&gt; []) and moves that catch into the worker task, so a 3 s inner timeout on a large repo resolves { dirs: [] } and F's code path sees a success: state.dirs becomes empty, lastRefreshAt is stamped, and the 60 s floor (F) keeps node_modules and every other ignored tree UNFILTERED for a minute. That is the watcher churn storm F exists to prevent, and the log line F adds on failure never fires because no failure is observed.","fix":"Make the task fail loud: the handler runs execFile with no catch and lets the error cross as a WorkerTaskError (its message carries the git text or the execFile timeout text). listGitIgnoredDirsOrThrow becomes the bare pool call and rethrows everything; listGitIgnoredDirs (FsWatcherManager's entry, packages/workspace-fs/src/watch.ts:716-726 already logs and returns []) keeps the catch -&gt; [] wrapper on the MAIN side, as F specifies. Update section 2b and the section 3 row to say the task never returns [] for a failure, and add a node-test case: a git shim that exits 128 makes listGitIgnoredDirsOrThrow reject and listGitIgnoredDirs resolve []."},{"severity":"MAJOR","title":"Section 3's catch-site enumeration is incomplete; one missed site lets a branch rename proceed on an indeterminate launcher failure","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\git\\git.ts:584-601 (ls-remote inside try, catch comment \"ls-remote failed, probably no remote, safe to rename\", then branch -m at :601); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\pull-requests\\pull-requests.ts:1100-1108 (git.remote get-url inside try, catch -&gt; return null) reached from performProjectRefresh at :959 BEFORE the isGitRepo filter at :983; C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md section 3 (seven sites) and 2c timeout table (ls-remote in the SHORT list)","failure":"(1) renameBranch: the plan puts ls-remote in the 30 s SHORT budget. ls-remote is a network call that today has no timeout. On a slow or captive network the pool timer fires, the slot retires, the catch at :597 swallows the WorkerTaskError as \"no remote\", and git branch -m renames a branch that has been pushed, exactly what the guard exists to refuse. The plan's own fail-closed rule (git-ops.ts:21-33, applied in section 3 to multi-repo-cleanup) is not applied to this mutation gate. (2) getProjectRepository: for a project without a stored repoOwner/repoName the catch at :1107 turns a single worker crash, timeout, or the DOWN latch into \"no GitHub remote\" and returns null, so the 5-minute sweep silently skips PR linking for that project with no log line. Section 3 lists resolveDefaultBranch (:1137) but not this site 30 lines above it in the same method, and performProjectRefresh reaches it before the isGitRepo rejection that section 3 relies on for loudness. The enumeration was done by hand; a grep for `catch` blocks and `.catch(() =&gt;` in every file in the 1a table (how these two were found) is the method the plan should have recorded.","fix":"Add both rows to section 3: git.ts:597 `if (isGitLauncherFailure(error)) throw error;` before the comment, and move ls-remote from the SHORT list to LONG alongside fetch (it is the only network command in the SHORT list). pull-requests.ts:1107 rethrows launcher failures so performProjectRefresh rejects into the existing refreshProject .catch log at :937-945 (\"Project refresh failed\") and retries next sweep. Re-run the enumeration mechanically (grep `catch` and `.catch(` across every file in table 1a plus refs.ts:50,:77,:217,:243, workspace-refs.ts:28-80, git-helpers.ts:209-212, search-branches.ts:63) and record in section 3 which sites were judged benign and why, so the next reviewer can check the list rather than redo it."},{"severity":"MAJOR","title":"Tests 5 and 6 cannot run on the target machine: the reused git/gh PATH shim is a #!/bin/sh script, which spawn() cannot execute on Windows","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md section 6 (\"The fixture repo and the PATH git shim that blocks on a sentinel come from host-
+... (truncated 60162 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\w0pqo1vq2.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\subagents\workflows\wf_de0f7735-747/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\workflows\scripts\review-git-offload-plan-wf_de0f7735-747.js', resumeFromRunId: 'wf_de0f7735-747'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>4</agent_count><agents_done>4</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>848669</subagent_tokens><tool_uses>304</tool_uses><duration_ms>1394849</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ac2545e7b7fd249c8</task-id>
+<tool-use-id>toolu_016WDW9KhhB39ZZ2d4TBwxL1</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ac2545e7b7fd249c8.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement git-launch-budget B/D/E/G/H" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I built B, D, E, G and H on top of the skip-exited commit, and C and F are not touched. The 35 new and changed tests pass, and all three gates are clean. Nothing is committed or pushed. The tree was clean when I started.
+
+**Files changed**
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\git\non-git.ts`: D. Yes is cached 60 s, no 5 s, one shared probe per folder, plus `invalidateIsGitRepo` and test hooks.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\git\origin-head-cache.ts` (new): E. origin/HEAD cached 10 min; a failed read propagates and is never cached.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pr-sync-trigger.ts` (new): B. Per-workspace rate limiter (5 s / 30 s); calls after dispose do nothing.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\pull-requests\pull-requests.ts`: E call site, and `gitWatcher` narrowed to `onChanged` only.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\events\git-watcher.ts`: G (2 s batch deadline), D invalidate on `.git` watcher error, and `watcher?.close()` so unwatching a workspace with no `.git` watcher still cancels its pending PR sync.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\app.ts`: B wiring (create, cancel on unwatch, feed, pass to runtime, dispose).
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\apps\desktop\src\renderer\routes\_authenticated\_dashboard\v2-workspace\$workspaceId\components\ChangesControl\components\ShipControl\ShipControl.tsx`: H. Poll every 30 s, comment reworded.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\FEATURES.md`: "Git launch budget" row plus 13 marker lines, one token per guarded edit.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-launch-budget.md`: the 3-line "Built tonight / Deferred" note.
+
+**Tests:** I ran them once, as one `bun test` over 5 files: 35 pass, 0 fail, 8.8 s total. Bun printed no per-test times, so only the total is available.
+- New: `non-git.test.ts` (7), `origin-head-cache.test.ts` (5), `pr-sync-trigger.test.ts` (6, plus 1 test of the no-`.git`-watcher unwatch case).
+- Changed: 9 deadline tests in `git-watcher.adversarial2.test.ts`.
+- `pull-requests.test.ts`: new E and B tests, plus the 5 skip-exited tests, which still pass. A `beforeEach` and `afterEach` now reset the origin/HEAD cache. The other 47 tests in that file were filtered out by the "new/changed only" rule.
+
+**Gates:** biome is clean on all 12 files and the marker gate reports 356/356 present. host-service tsc has 61 errors, all in files I did not touch.
+
+**Deviations**
+- `isGitRepo` still caches a failed probe as "no" for 5 s. The plan says to keep this, which conflicts with "never cache an error as a result".
+- The reviewers' wording fixes for the plan's D text were not applied, because only the 3-line note was asked for. The code half of that finding is done and tested: invalidating also drops the in-flight probe.
+- I did not take the optional suggestion to skip the refresh when the repo can't be opened. That case stays as today: the default-branch guard is off and the refresh continues.
+- The `?.close()` fix is tagged under B, not F, as the brief directed.
+- Desktop tsc was not run, since the ShipControl change is one number and a comment.
+
+The fork-specific comments on the new rate limiter may draw a review remark under the comments rule.</result>
+<usage><subagent_tokens>297750</subagent_tokens><tool_uses>127</tool_uses><duration_ms>1430198</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a6ecd2cba280ac5de</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a6ecd2cba280ac5de.output</output-file>
+<status>completed</status>
+<summary>Agent "Revise git-offload plan per reviews" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I revised `tmp/plans/git-offload.md` to rev 2 and updated the `.html` against the four reviews. Tonight's scope is now B/D/E/G/H only. No code changed and nothing was committed.
+
+**Files**
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-offload.md`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\git-offload.html`
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\plans\audit\` (new: `catch-audit.md`, `catch_sites.json`, and the scripts `catch_audit.py` and `write_audit.py`)
+
+**What changed**
+1. **Two lanes.** GitHub calls (`gh/exec`) get their own 6-slot pool. Git and token lookups keep a 4-slot pool, so a sweep's GitHub burst can't hold up a Changes read.
+2. **Bounded queues.** Reads wait at most 5 s in the git lane and 30 s in the GitHub lane. Caps are 32 and 64 queued reads. Expired or over-cap reads are rejected before they start, with no `killed`/`signal`, so they don't trigger a GitHub hold. Mutations are never dropped, merged or retried.
+3. **Refuse mode for all git/gh work.** This now includes the existing shared-pool git tasks (commit, push, removeWorktree and others). There is no inline retry and no main-thread fallback. Usage tasks keep today's behaviour. Two more safety pieces:
+   - The worker must report its task list at startup, which catches a stale `dist` bundle.
+   - If a worker can't be constructed, every queued task is rejected and removed.
+4. **Catch audit, done mechanically.**
+   - 285 catch sites scanned, 120 of them reachable from git/gh, each with a recorded verdict.
+   - 10 sites get an explicit rethrow. These are the ones where a swallowed failure gets cached, saved to the database, or gates a deletion.
+   - Everywhere else, a per-request failure context fails the whole request loudly and refuses any later git write in it. That covers the `renameBranch` and `setBaseBranch` cases.
+   - The PR runtime gets two write guards.
+5. **Timeout classes by argument form.**
+   - Short reads (30 s), medium reads (120 s), network reads such as `ls-remote` (180 s).
+   - Mutations (180 s): `fetch`, config and remote write forms, and any form not on the read list.
+   - Every pool timeout is logged.
+6. **Child processes and a write fence.**
+   - Workers report each child's process ID to the main thread, which kills it on timeout, crash or abrupt exit.
+   - A mutation that ends without a clear result blocks further writes to that folder until the process is confirmed gone.
+   - Test 6b-5/6 checks whether killing Git's launcher also stops the real git. If it doesn't, the plan switches to calling the real git binary directly.
+7. **Output budget.** The worker counts output bytes and rejects oversized results instead of truncating them. The ignored-dirs task now fails loudly inside the worker, and `[]` is returned only by the main-side wrapper for genuine git failures.
+8. **Tests that run on Windows.**
+   - Main-side logic is tested under bun with an injected pool.
+   - Worker behaviour is tested under Node and Electron-as-node against a freshly built test bundle, because the source files can't load under Node directly.
+   - No shell-script shims.
+9. **Gates instead of bun tests.** `check-git-launcher.mjs` handles multiline calls and aliases. `verify-host-worker-bundle.mjs` has a compiled mode and a packaged mode, and reads the `.asar` with a built-in parser. Both are frozen, wired into the build action, and need a maintainer commit to be added to the workflow and `ci-repair.sh`.
+10. **Smaller upstream footprint.** I dropped the edits to `no-main-loop-blocking.test.ts` and `smoke-test.sh`. Each separately removable edit gets its own marker token, and `tryRevParseGitRoot` is no longer exempted.
+
+**Questions for the user** (at the top of the plan)
+1. When git is switched off until restart, how should the app say so: a banner in Changes, a toast, a phone alert, or only the health status? Step 8 of the build waits on this answer.
+2. One helper crash now fails that request with an error instead of returning partial data. Show the error, or only log it?
+3. After a git write times out, block further writes to that folder until the old process has stopped, showing "a previous git operation is still finishing"? Reads keep working.
+4. When the helpers are overloaded, drop background reads that have waited more than 5 s (30 s for GitHub)? Writes you start are never dropped.
+5. Running from source under bun keeps git on the main thread with one warning. Fine for development only?</result>
+<usage><subagent_tokens>450460</subagent_tokens><tool_uses>22</tool_uses><duration_ms>644611</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>wzu4zhj4b</task-id>
+<tool-use-id>toolu_01DEQyrDok53wdX8ZiiJAkME</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\wzu4zhj4b.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Four code reviews of the uncommitted git-launch-budget B/D/E/G/H change" completed</summary>
+<result>[{"reviewer":"code-reviewer-fable","verdict":"ship","findings":[{"severity":"MINOR","title":"D marker covers one of three independent hunks in an upstream-owned file","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\git\\non-git.ts:29-36 (TTL split + inFlight), :62-78 (dedupe body), :81-86 (invalidateIsGitRepo, the only marked line); FEATURES.md markers block line 318","failure":"The plan calls non-git.ts a fork file, but at HEAD it is byte-identical to upstream desktop-v1.30.2 (git diff --stat desktop-v1.30.2 HEAD -- non-git.ts is empty), so the plan's own rule for upstream files (one token per changed line) applies and was not followed. A nightly merge that takes upstream's isGitRepo body (dropping the 60 s/5 s split and the in-flight dedupe) while keeping the appended invalidateIsGitRepo/normalizeRepoPathKey/test seams passes the marker gate. The REFERR gate does not catch it either: the only compile fallout is origin-head-cache.ts importing normalizeRepoPathKey, which is TS2305 (module has no exported member), not in the gated list.","fix":"Follow the B-CANCEL/B-FEED precedent: distinct sub-tokens on each hunk, e.g. (GIT-LAUNCH-BUDGET-D-TTL) on the IS_REPO_TTL_MS/NOT_REPO_TTL_MS lines and (GIT-LAUNCH-BUDGET-D-DEDUPE) on the inFlight.set line, each added to the FEATURES.md row and markers block rooted at non-git.ts. Correct the plan's 'fork file' note."},{"severity":"MINOR","title":"cancelWorkspace drops up to 30 s of pending sync on a non-exit unwatch","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\app.ts:186 (prSyncTrigger.cancelWorkspace in the watch-state callback); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\pull-requests\\pr-sync-trigger.ts:90-94","failure":"GitWatcher interest is a refcount, not an exit signal. Every mounted sidebar row holds a watch (DashboardSidebarWorkspaceItem.tsx:129 useIsGitRepo -&gt; useWorkspaceEvent('git:changed') -&gt; bus.watchGit), so a tab switch does not unwatch; but collapsing a tag group (DashboardSidebarGroupHeader isCollapsed unmounts its rows) or a renderer disconnect (event-bus.ts cleanupClient) drops a live workspace to zero and cancels its pending trailing timer. At HEAD every flush synced at once, so the last ~2 s were already synced by the time of unwatch; now up to 30 s of file-only changes (a push in a linked worktree is only seen through that class) wait for the re-watch catch-up emit or the 5-minute sweep. Bounded and self-healing (attachWatcher's markGitDirDirty fires immediately on the fresh trigger state), which is why this is MINOR, but it is a lag the plan's Risks section and FEATURES.md row do not state.","fix":"In the app.ts watch-state callback, when watched is false ask the already-wired exited filter (createExitedWorkspaceFilterLoader) and, for a non-exited workspace with a pending timer, fire it instead of cancelling (add a flushWorkspace to the trigger); otherwise document the up-to-5-minute lag on collapse/disconnect in FEATURES.md and the plan's Risks."},{"severity":"MINOR","title":"ShipControl comment overstates when the commit list is refetched","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\apps\\desktop\\src\\renderer\\routes\\_authenticated\\_dashboard\\v2-workspace\\$workspaceId\\components\\ChangesControl\\components\\ShipControl\\ShipControl.tsx:89-92","failure":"The reworded comment says the git-status subscription 'refetches the commit list on every git:changed'. useGitStatus.ts:71-85 invalidates listCommits only in the else branch, i.e. for events without paths; a file-only batch does not touch it. The practical claim ('a commit here or in a terminal') still holds because a commit always produces a .git event and toChangedEvent drops paths when hasGitDir is set, but the sentence as written is wrong.","fix":"Say 'on every path-less git:changed (any .git/ activity, which every commit produces)' or drop the mechanism and keep only 'a commit here or in a terminal refetches it while the sidebar or a diff pane is open'."},{"severity":"MINOR","title":"Pre-existing: the three default-branch guard tests fail, so E's guard-on path has no passing test (coverage note, not caused by this diff)","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\pull-requests\\pull-requests.test.ts:1554-1650","failure":"bun test -t 'default-branch guard' fails 3/3 in the working tree AND on a clean copy of HEAD (extracted to tmp and run there; copy removed). Cause: seedWorkspace defaults worktreePath to /repo/.worktrees/&lt;id&gt;, which performProjectRefresh's isGitRepo filter (pull-requests.ts:984) rejects, so the refresh returns before the guard runs. The new E test uses a real fixture path and does pass, and its second half (link after the read succeeds) proves the resolver feeds a working refresh, so it is meaningful. Coverage checked and clean: real git 2.54 'symbolic-ref --quiet --short refs/remotes/origin/HEAD' on a repo with no origin/HEAD exits 1 with 0 bytes of stderr (so simple-git 3.36.0 isTaskError = exitCode &amp;&amp; stdErr.length resolves '' and null is cached, not an error); no C/F code, markers or imports left in the tree (git.ts, ignored-dirs.ts, getPRFlowState/usePRFlowState untouched); node scripts/check-feature-markers.mjs passes (356 markers); biome clean on all 12 changed files; 68/68 tests pass across pr-sync-trigger, non-git, origin-head-cache and the three git-watcher files; trigger timing/cancel/dispose traced (no timer leak, dispose and close ordering in app.ts dispose correct, post-dispose calls silent); isGitRepo in-flight dedupe and invalidate-in-flight correct; origin/HEAD failures never cached and propagate to the existing 'Project refresh failed' warn; createGitFactory is async so the new .catch(() =&gt; null) matches the old try/await semantics; worktree-watch has a disposed guard so no event can reach the trigger after stopWatching; G keeps the 1 s .git-only window (scheduleFlush leading timer fires before the 2 s deadline); upstream-merge footprint is 3 one-line edits in git-watcher.ts, a type narrowing plus one method body in pull-requests.ts, and a 10-line app.ts wiring block.","fix":"Out of scope for this diff; fix separately by giving those three tests a real fixture worktreePath (as the new E test does) or a worktreeExists/isGitRepo seam."}]},{"reviewer":"code-reviewer-astra","verdict":"ship","findings":[]},{"reviewer":"code-reviewer-sol","verdict":"fix","findings":[{"severity":"MAJOR","title":"Exiting a workspace does not cancel its pending PR sync","where":"C:/Users/khair/Code Projects/fork-superset-windows-arm64/packages/host-service/src/app.ts:183-188","failure":"Queue a trailing sync, then Snooze or Archive the currently open workspace before the deadline. Those actions clear its tabs but do not navigate away. WorkspaceGitStatusProvider still holds a useIsGitRepo subscription, so the watcher stays active and this cancellation callback never runs. The timer then enters syncOneWorkspace, which checks only the host tombstone and ignores the sidebar exit state. Git reads continue after exit and changed refs can trigger PR relinking. A read-only reproduction recorded another refs read after the supplied exit filter became true. The cancellation test explicitly unwatches, so it misses this case.","fix":"Cancel pending automatic syncs when the workspace exits, independently of watcher interest. Also check the persisted exit state before executing a trailing automatic sync. Keep explicit user refreshes separate. Add a regression that exits a workspace while its git subscription remains active and asserts no delayed refs read or PR lookup."}]},{"reviewer":"code-reviewer-opus","verdict":"ship","findings":[{"severity":"MINOR","title":"Rewritten resolveDefaultBranch has no passing test for the path where the guard en
+... (truncated 2328 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\wzu4zhj4b.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\subagents\workflows\wf_237feabf-4c0/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\workflows\scripts\review-git-launch-budget-code-wf_237feabf-4c0.js', resumeFromRunId: 'wf_237feabf-4c0'}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>4</agent_count><agents_done>4</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>645024</subagent_tokens><tool_uses>240</tool_uses><duration_ms>1086365</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a1d81279a25b1160f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a1d81279a25b1160f.output</output-file>
+<status>completed</status>
+<summary>Agent "Simplify review: reuse (glb)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\git\non-git.test.ts:30` reimplements a deferred promise. Cost: 7 helper lines and manual resolver assignment. Use `Promise.withResolvers&lt;boolean&gt;()`, already used in `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\test\integration\local-workspace-relocation-race.integration.test.ts:15`.
+- `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\git\origin-head-cache.test.ts:79,94` repeats the same deferred-promise construction twice. Cost: two resolver placeholders and two constructor callbacks. Use `Promise.withResolvers&lt;string&gt;()` and pass `() =&gt; gate.promise` to `fakeGit`.
+
+No production-code reuse findings. Existing cache and throttle implementations do not provide drop-in replacements with the required behavior.</result>
+<usage><subagent_tokens>76480</subagent_tokens><tool_uses>17</tool_uses><duration_ms>111765</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ada52c4386bf3b5f1</task-id>
+<tool-use-id>toolu_01PNpyR8v8kSKcDtrSc4Z6R1</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\ada52c4386bf3b5f1.output</output-file>
+<status>completed</status>
+<summary>Agent "Apply simplify fixes (glb)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I applied all five cleanups. Nothing is committed, and production behaviour is unchanged.
+
+1. Bun 1.3.14 supports `Promise.withResolvers`. It now replaces the hand-rolled deferred promises: the `deferred()` helper in `non-git.test.ts` is gone, and so are both `let release` blocks in `origin-head-cache.test.ts`.
+2. The three cache-lifetime tests in `non-git.test.ts` are now one `test.each` over (label, probe answer, expected, TTL). Each row now also checks the first call's result.
+3. The unwatch test in `pr-sync-trigger.test.ts` queues the pending sync with two `trigger.push(FILE)` calls, then calls `unwatchWorkspace`. It drops the private-method cast, the refresh spy, the debounce timing and the `DEBOUNCE_MS` import. It still proves the queued sync never fires (`fires` stays `[0]` after advancing 60 s). One private cast stays because it is the only way to inject the workspace with no `.git` watcher.
+4. The read-failure test in `pull-requests.test.ts` now uses the "default-branch guard" suite's shared git fixture, so its own fixture and `dispose()` are gone.
+5. The comment in `pr-sync-trigger.ts` is down to the `(GIT-LAUNCH-BUDGET-B)` tag plus the GitWatcher shutdown constraint.
+
+Checks: the three unit test files gave 19 pass, 0 fail. The filtered `pull-requests.test.ts` run gave 12 pass, 0 fail. The feature marker gate reports all 359 markers present, and biome reports nothing on the five files.
+
+Files touched, under `C:\Users\khair\Code Projects\fork-superset-windows-arm64\packages\host-service\src\runtime\`:
+- `git\non-git.test.ts`
+- `git\origin-head-cache.test.ts`
+- `pull-requests\pr-sync-trigger.test.ts`
+- `pull-requests\pr-sync-trigger.ts`
+- `pull-requests\pull-requests.test.ts`</result>
+<usage><subagent_tokens>95674</subagent_tokens><tool_uses>27</tool_uses><duration_ms>287534</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="a5f54517f98243383">
+I will add the single AGENTS.md bullet, validate the allowed change paths, and make the one requested local commit without pushing. Please keep the working tree stable while I stage and commit.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>a5f54517f98243383</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\a5f54517f98243383.output</output-file>
+<status>completed</status>
+<summary>Agent "Commit glb + AGENTS.md note" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Committed `15829db6d9377312dc687aef448ee4739695b65b`. No push.
+`git status --short`: empty.
+`git log --oneline -3`:
+```text
+15829db6d9 perf(host-service): launch git and gh less often
+33e6528368 feat(host-service): 5-minute PR/branch sweeps skip exited workspaces
+f3b6c8545b fix(desktop): bound the quit-time hook restore; keep traffic gate alive past an unwatchable root
+```</result>
+<usage><subagent_tokens>37366</subagent_tokens><tool_uses>6</tool_uses><duration_ms>75162</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Fetched origin. origin/main is still f3b6c8545b5ebed3ca123fb5c4ba2e05b1e85397. Starting host-service and desktop suites once in parallel; scratch only under tmp/test-run.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>whz1t4qjv</task-id>
+<tool-use-id>toolu_016kGJRQvvTmp6gPHXm4vAJc</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\whz1t4qjv.output</output-file>
+<status>completed</status>
+<summary>Dynamic workflow "Four architect re-reviews of the revised git-offload plan (rev 2)" completed</summary>
+<result>[{"reviewer":"architect-fable","verdict":"revise","findings":[{"severity":"BLOCKER","title":"Workspace delete can drop uncommitted work: the destroy preflight and the delete-dialog inspect both swallow lane failures from env resolution and report \"clean\"","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md section 2e (\"getRemoteUrlCached builds its client with createSplitGit\", unconditional) and section 9 row \"Astra B6\" (\"its only lane reads (isGitRepo, env resolution) now reject before any deletion\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\workspace-cleanup\\workspace-cleanup.ts:370-400 (destroy dirty check: resolveGitEnv inside try; catch falls through to \"Continue\" unless isIndeterminateGitTaskFailure) and :143-215 (inspect query, catch at :209 returns hasChanges:false); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\workspace-cleanup\\git-ops.ts:31-34 (predicate matches only WorkerTaskAbortedError or WorkerTaskError named exactly \"WorkerTaskError\") and :43 (resolveGitEnv = createGitEnvResolver(ctx.credentials)); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\workspace-cleanup\\multi-repo-cleanup.ts:38-40, :62-65, :91-94 (catch-alls around ctx.git/status/rev-list); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\apps\\desktop\\src\\renderer\\routes\\_authenticated\\_dashboard\\components\\DashboardSidebar\\components\\DashboardSidebarDeleteDialog\\hooks\\useDestroyDialogState\\useDestroyDialogState.ts:142-143 (conflict -&gt; destroy({ force: true }))","failure":"Rev 3 routes getRemoteUrlCached through the git lane for EVERY env resolution, including the main factory used by mutations (createGitEnvResolver at runtime/git/git.ts:47-80 is shared; cleanupGitOps.resolveGitEnv calls it). R2 rethrows lane failures as EGITLANE_* classes or WorkerTaskError named WorkerCrashedError. The destroy mutation's catch (workspace-cleanup.ts:385-399) recognises neither: isIndeterminateGitTaskFailure only matches WorkerTaskAbortedError and WorkerTaskError named \"WorkerTaskError\" (git-ops.ts:31-34), so EGITLANE_DOWN/BUSY/QUEUE_EXPIRED/START/MISSING and a worker crash fall through to \"Can't read status ... Continue\" and the delete proceeds to worktree remove --force --force with no dirty check. Second, independent path: workspaceCleanup.inspect is a protectedProcedure QUERY, so the middleware hands it the split client; inspectMultiRepoWorkspace (multi-repo-cleanup.ts:62-65) and the single-repo branch (workspace-cleanup.ts:209) catch everything and return hasChanges:false; the dialog shows no warning, and if the mutation's own preflight then says CONFLICT the renderer silently retries with force:true (useDestroyDialogState.ts:142-143). Trigger: any env cache miss (5-min TTL) while the lane is busy during a sweep burst, after a crash, or once latched down. Rev 3 section 9 claims this class was removed; it was not. It is the catch-audit's own verdict-R rows (catch-audit.md:97-98) that rev 3 dropped from 2g, and catch-audit verdict T (line 8) depended on the taint middleware rev 3 removed. A heuristic count finds 11 router sites that await ctx.git()/resolveGitEnv() inside a try, 4 of them in workspace-cleanup.","fix":"(1) Parametrise createGitEnvResolver(provider, readRemoteUrl): createGitFactory (app.ts:152, every mutation, cleanupGitOps.resolveGitEnv) keeps today's main-thread remote get-url; only createSplitGitFactory passes the lane reader. Same cache map. Mutations then never reach a lane through ctx.git(). (2) Still add isGitLaneFailure to isIndeterminateGitTaskFailure (git-ops.ts:31-34) and rethrow lane failures at multi-repo-cleanup.ts:38, :62, :91 and workspace-cleanup.ts:209 as R7-R10 with marker tokens; inspect must fail loud, never answer clean, because the renderer force-retries on conflict. (3) Extend build step 7's audit criterion from \"writes inside the query\" to \"queries whose answer the renderer uses to gate a destructive mutation\", naming inspect as the known case, and restore the two catch-audit R rows to 2g. (4) Test: inspect and destroy with a lane that rejects EGITLANE_DOWN and a cold env cache: inspect rejects, destroy throws INTERNAL_SERVER_ERROR before any worktree remove."},{"severity":"MAJOR","title":"Question 1 is put to the user on a false premise: lane-down also stops commits, pushes and workspace creation once the isGitRepo and remote-URL caches expire","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md question 1 (\"Commits, pushes and workspace creation keep working (they never use the helpers)\"), section 2e (\"Global readers switch unconditionally\": isGitRepo, isGitRepoStrict, getRemoteUrlCached), 2g row R2 (\"env resolution fails, so a mutation fails before any write\"), section 9 rows \"Fable 2, Astra 10, Opus 27\" (\"writes never use the lanes\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\git\\git.ts:47-80 (shared env resolver) and :76-80 (main factory); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\runtime\\git\\non-git.ts:30-31 (60 s / 5 s TTLs); mutation guards at C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\workspaces\\workspaces.ts:669 and C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\trpc\\router\\workspace-creation\\procedures\\adopt.ts:33","failure":"Every mutation's ctx.git() resolves env through getRemoteUrlCached (lane, 5-min cache) and most git mutations are guarded by isGitRepo (lane, 60 s cache). After the latch trips, R1 and R2 reject, so within 60 s every guarded mutation fails and within 5 min every ctx.git() fails. The plan's own R2 row says so, section 9 says the opposite, and Q1 tells the user writes are unaffected. The user's choice of surface for the refusal state rests on that wrong statement.","fix":"Apply fix (1) from the BLOCKER so env resolution for mutations stays on main. Then rewrite Q1 and the section 9 rows honestly: \"while a lane is down, every procedure guarded by isGitRepo (most git mutations) fails loud within 60 s; commits/pushes that are not guarded still run\". If keeping isGitRepo on the lane for mutations is not acceptable, say in Q1 that the alternative is a main-thread probe for mutation callers, which is a fallback the user already rejected, and let the user pick."},{"severity":"MINOR","title":"R5 regresses the catch-audit's own verdict: a lane failure in the attach probe now drops the git-independent root watch and the Changes-pane attach","where":"C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\git-offload.md 2g row R5 (\"return before attaching anything\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\tmp\\plans\\audit\\catch-audit.md:20 (\"attach root watch with gitDir=null, add to gitDirPending, rescan re-probes\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\events\\git-watcher.ts:744-756 (gitDir=null keeps going; worktree watch \"always runs incl. non-git folders\"); C:\\Users\\khair\\Code Projects\\fork-superset-windows-arm64\\packages\\host-service\\src\\app.ts:183-189 (gitStatusStore.attach only on watched=true)","failure":"A transient lane failure (queue expiry during a boot burst, one crash) leaves the workspace with no file watching and no gitStatusStore attach for 30 s; under the latch, until restart. The root watch is not a git read, so refusing it is not what the user agreed to.","fix":"Use the catch-audit row as written: on a lane failure attach with gitDir=null, record the workspace in a gitDirPending set the 30 s rescan re-probes to upgrade to a .git watch, and log once per
+... (truncated 72505 chars, full result in C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\whz1t4qjv.output)</result>
+<diagnostics>Per-agent results: C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\subagents\workflows\wf_a1daf45f-3de/journal.jsonl — one {"type":"result",...} line per completed agent with its full return value.
+If the result above is empty or unexpected, Read this file BEFORE diagnosing — do not assume agents returned non-empty results.
+To re-run with edited post-processing: Workflow({scriptPath: 'C:\Users\khair\.superset\host\30e16b5a-e2af-4874-b126-acc7b3f17aa9\claude-profiles\a1db65bb-17f0-400d-8aa4-d655ac48cdef\projects\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\workflows\scripts\re-review-git-offload-wf_17723ae7-b5d.js', resumeFromRunId: 'wf_a1daf45f-3de', args: {"note":"rev3"}}) — agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>
+<usage><agent_count>4</agent_count><agents_done>4</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>714993</subagent_tokens><tool_uses>244</tool_uses><duration_ms>1477400</duration_ms></usage>
+</task-notification>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Both suites are running. Host-service is progressing through files. Desktop has printed nothing since git-init-confirm.test.ts for about 2.5 minutes. Baseline copy is prepared under tmp/test-run/baseline with node_modules junctions. No tracked changes.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Host-service currently has 119 failed tests plus 77 unhandled errors; it is still running. The older test/pull-requests-scaling.test.ts and test/pull-requests.test.ts each have two failures. The changed src/runtime/pull-requests/pull-requests.test.ts has 24 failures so far. Baseline reruns will decide which are new. Desktop currently has 34 failures and has had no output for five minutes, but its CPU counter is still increasing.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Desktop has resumed output and is now in useTerminalAgentBindings tests. Neither suite is hung. They have been running about seven minutes.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Baseline also has a junction to the existing packages/host-service/dist folder. Full-suite failures include stale host-worker artifact errors, so baseline must use that same artifact rather than change behavior by omitting it.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Both full suites are still progressing after roughly 9 minutes. Failures now include Windows symlink permissions, file locks, missing dependency patches, and stale worker-artifact errors. I will run only each suite's failed files at baseline after the full runs finish.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Requested sequential desktop reruns finished. formatResetLabel 'uses date beyond 24h' now passes. teardown 'returns error when teardown command fails' now passes; 'reads from user override when projectId is provided' still fails with expect(received).toBe(expected), and its earlier 5s timeout appears as an unhandled error. Ratchet still fails, flagging apps/desktop/src/main/lib/host-service-lock.ts at 4 < 5 allowed; archive baseline counts 5 because CRLF makes the comment-stripper retain the line '// Best-effort; openSync below surfaces a real failure.' Logs are tmp/test-run/desktop-check-again-*.log. Host-service full suite is still progressing.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Host-service full suite finished after 1,217 seconds: 1,623 pass, 330 fail, 141 errors, 1 skip, 6 todo across 257 files. Its failing files are now running at baseline. Desktop finished earlier at 8,064 pass / 131 fail / 45 errors in 679 seconds. I will remove the baseline after the host comparison finishes.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Correction to host-service wall time: the result file records 1,215 seconds, not 1,217. Bun itself reports 1,214.32s.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+The requested git diff for apps/desktop/src/main is empty, confirming neither commit touches it. Host full suite is finished, but its baseline rerun is still loading the PC. I will run the final teardown pair sequentially after that baseline run finishes, then remove the baseline.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+The baseline has reproduced all four older PR-sweep failures with the same test names: both test/pull-requests-scaling.test.ts failures and both test/pull-requests.test.ts failures. They are pre-existing under the requested rule, not new failures from these commits. Host baseline is still running.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Baseline reproduced all 24 failures in the changed packages/host-service/src/runtime/pull-requests/pull-requests.test.ts file with identical test names. Those are pre-existing too. The host baseline has reproduced 122 of 242 named failures so far and is still running.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+Host baseline has been running about eight minutes and has reproduced 160 of 242 named failures so far. It is still in git integration tests. The final low-load teardown pair will run after this process exits.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+The first six failed branch files also fail in isolated baseline runs. No branch-only suspect file has appeared. The PR-materialize target now fails at baseline with the exact same test name, so its initial NEW label was a comparison artefact. Baseline is currently on the status-snapshot file.
+</agent-message>
+
+---
+
+<agent-message from="aa9f6b8cec08fc5b2">
+A concrete failure mechanism is visible in C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\test-run\host-low-load-03.log: Bun times out beforeEach at 5 seconds, afterEach deletes the temp repo, and the still-running setup then gets ENOENT while writing file-165.ts and configuring git. The traversal test never reaches its path-validation assertion or isGitRepo. This explains the later missing-repo and file-lock errors without invoking our changes.
+</agent-message>
+
+---
+
+<agent-message from="abdc200c4f1c35a06">
+BEFORE is scheduled for 06:14:30–06:16:30 local, clear of :13/:18 sweeps. The 250 ms child-process count runs 06:14:30–06:17:30. Inspector remains off until capture starts. I preserved the old 10-second concurrent GET probe, not the earlier steady-lag script's different 2-second serial probe, so the requested comparison is like-for-like.
+</agent-message>
+
+---
+
+<agent-message from="abdc200c4f1c35a06">
+Capture is running normally, actual start 06:14:37 local; 230 GETs completed after 60 seconds. Preliminary machine load is 48–61% CPU and roughly 75–78 GiB committed out of 88 GiB. Expected inspector shutdown is around 06:16:40, then child counting ends around 06:17:31.
+</agent-message>
+
+---
+
+<agent-message from="abdc200c4f1c35a06">
+Inspector is OFF. Capture finished at 06:16:37; shutdown verification at 06:16:40 confirmed 9229 closed, PID 47392 alive, and the host answering HTTP 404 on the read-only probe. Counting runs until 06:17:31, then the existing analyser runs.
+</agent-message>
+
+---
+
+<task-notification>
+<task-id>abdc200c4f1c35a06</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>C:\Users\khair\AppData\Local\Temp\claude\C--Users-khair-Code-Projects-fork-superset-windows-arm64\e39fb26e-1ead-4087-9e96-7427b3f0f279\tasks\abdc200c4f1c35a06.output</output-file>
+<status>completed</status>
+<summary>Agent "Before-install measurement" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>BEFORE captured on 2 October, 06:14:37–06:16:37 BST, outside the expected sweep minute; host PID 47392.
+Inspector OFF, port 9229 closed, host responding HTTP 404 to the probe.
+Same method: 120-second profile, 200 µs sampling, concurrent GET every 250 ms, 10-second timeout.
+Machine load averaged 41.7% CPU; 751–793 processes; committed memory 74.6–77.3 GiB of 88.1 GiB.
+Nine claude.exe processes averaged 1.54% of total machine CPU, equivalent to 18.5% of one core.
+Main-thread native-spawn share **15.35%**, idle **82.66%**; earlier **77.46%** and **20.21%**.
+460 GETs: p50 **1.87 ms**, p95 **2,135 ms**, max **7,703 ms**, **0 timeouts**.
+Earlier GETs: p50 1,157 ms, p95 10,039 ms, max 10,104 ms, 104 timeouts.
+Host-parent git starts per minute **156 / 117 / 13**, averaging **95.3**; gh **107 / 0 / 0**, averaging **35.7**.
+Counting covered 06:14:31–06:17:31 with 720 polls; 250 ms polling can miss short-lived processes.
+The earlier profile crossed a sweep; these differences are not evidence of an installation improvement.
+Summary: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\profile\before\comparison.json`
+Profile: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\profile\before\host-service.cpuprofile`
+All 17 artifacts, including raw probes, process counts, scripts and verification: `C:\Users\khair\Code Projects\fork-superset-windows-arm64\tmp\profile\before\`</result>
+<usage><subagent_tokens>59929</subagent_tokens><tool_uses>40</tool_uses><duration_ms>724151</duration_ms></usage>
+</task-notification>
+
+---
+
+back
