@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "f1c4552e6e61",
+  "strategy": "manual-commit",
+  "branch": "pr-sweep-skips-exited-local",
+  "checkpoints_count": 14,
+  "files_touched": [
+    "FEATURES.md",
+    "apps/desktop/src/renderer/routes/_authenticated/_dashboard/v2-workspace/$workspaceId/components/ChangesControl/components/ShipControl/ShipControl.tsx",
+    "packages/host-service/src/app.ts",
+    "packages/host-service/src/events/git-watcher.adversarial2.test.ts",
+    "packages/host-service/src/events/git-watcher.ts",
+    "packages/host-service/src/runtime/git/non-git.test.ts",
+    "packages/host-service/src/runtime/git/non-git.ts",
+    "packages/host-service/src/runtime/git/origin-head-cache.test.ts",
+    "packages/host-service/src/runtime/git/origin-head-cache.ts",
+    "packages/host-service/src/runtime/pull-requests/pr-sync-trigger.test.ts",
+    "packages/host-service/src/runtime/pull-requests/pr-sync-trigger.ts",
+    "packages/host-service/src/runtime/pull-requests/pull-requests.test.ts",
+    "packages/host-service/src/runtime/pull-requests/pull-requests.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f1/c4552e6e61/0/metadata.json",
+      "transcript": "/f1/c4552e6e61/0/full.jsonl",
+      "content_hash": "/f1/c4552e6e61/0/content_hash.txt",
+      "prompt": "/f1/c4552e6e61/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 284,
+    "cache_creation_tokens": 475594,
+    "cache_read_tokens": 25025809,
+    "output_tokens": 115226,
+    "api_call_count": 107
+  }
+}
