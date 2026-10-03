@@ -20,7 +20,7 @@ import {
 	ShellUnresolvedError,
 } from "./windows-shell.ts";
 
-interface SessionShellResolverForTesting {
+export interface SessionShellResolverForTesting {
 	resolve: (baseEnv: Record<string, string>) => Promise<ShellResolution>;
 	adoptedShell: (baseEnv: Record<string, string>) => string | null;
 }
@@ -29,8 +29,10 @@ let sessionShellResolverForTesting: SessionShellResolverForTesting | undefined;
 
 export function __setSessionShellResolverForTesting(
 	resolver: SessionShellResolverForTesting | undefined,
-): void {
+): SessionShellResolverForTesting | undefined {
+	const previous = sessionShellResolverForTesting;
 	sessionShellResolverForTesting = resolver;
+	return previous;
 }
 
 // (PWSH-RESOLVE-WIRED)

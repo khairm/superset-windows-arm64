@@ -307,3 +307,23 @@ export async function resolveWindowsShell(
 	}
 	return { kind: "absent", shell: comspec, checked, skipped };
 }
+
+const CMD_FALLBACK_NOTICE_ENV = "SUPERSET_SHELL_FALLBACK_NOTICE";
+
+export function buildCmdFallbackLaunch(skipped: readonly string[]): {
+	argv: string[];
+	env: Record<string, string>;
+} {
+	const skippedText =
+		skipped.length > 0 ? ` Skipped PATH entries: ${skipped.join("; ")}.` : "";
+	const notice = `PowerShell 7 not found, using cmd.exe.${skippedText} Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.`;
+	return {
+		argv: [
+			"/K",
+			`echo(%${CMD_FALLBACK_NOTICE_ENV}%&set ${CMD_FALLBACK_NOTICE_ENV}=`,
+		],
+		env: {
+			[CMD_FALLBACK_NOTICE_ENV]: `\x1b[90m${notice.replace(/[\^&|<>"]/g, "^$&")}\x1b[0m`,
+		},
+	};
+}

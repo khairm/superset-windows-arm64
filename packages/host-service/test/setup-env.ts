@@ -2,6 +2,7 @@
 // bunfig, not the root one, so the guard has to be re-entered here — and this
 // package is where the pointer writers live.
 import "../../../scripts/test-preload.ts";
+import "./shell-resolver-hook.ts";
 
 // Populate the env vars `src/env.ts` validates at module load so test runtimes
 // that boot host-service via `createApp` (instead of `serve.ts`) can import

@@ -105,7 +105,7 @@ In brief:
   libsql, tokenizers; renderer CORS for `superset-app://`.
 - **Window controls** — native `titleBarOverlay` is the sole min/max/close on
   Windows, theme-matched; upstream's duplicates hidden.
-- **Windows behaviour fixes** — skip quit-confirm; cmd.exe fallback;
+- **Windows behaviour fixes** — skip quit-confirm; cmd.exe only on a clean pwsh absent;
   force-foreground; hidden-window watchdog; WebGL first-paint recovery; Wispr
   Flow accessibility/paste fix; fast non-blocking startup. pwsh found by async
   file checks only (aliases via lstat/readlink); an unclear check refuses the

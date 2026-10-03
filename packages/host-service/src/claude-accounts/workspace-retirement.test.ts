@@ -35,6 +35,7 @@ import {
 import { registerClaudeAccountsService } from "../claude-accounts-runtime";
 import { terminalSessions, workspaces } from "../db/schema";
 import { __setSessionShellResolverForTesting } from "../terminal/env";
+import type { SessionShellResolverForTesting } from "../terminal/shell-launch";
 import { createTerminalSessionInternal } from "../terminal/terminal";
 import {
 	beginWorkspaceRetirement,
@@ -49,9 +50,10 @@ import {
 const worlds: ClaudeTestWorld[] = [];
 const services: ClaudeAccountsService[] = [];
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
+let previousShellResolver: SessionShellResolverForTesting | undefined;
 
 beforeAll(() => {
-	__setSessionShellResolverForTesting({
+	previousShellResolver = __setSessionShellResolverForTesting({
 		resolve: async () => ({
 			kind: "found",
 			shell: "/bin/sh",
@@ -62,7 +64,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-	__setSessionShellResolverForTesting(undefined);
+	__setSessionShellResolverForTesting(previousShellResolver);
 });
 
 afterEach(async () => {

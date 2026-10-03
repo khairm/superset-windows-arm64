@@ -37,7 +37,11 @@ import type { HostDb } from "../db";
 import * as schema from "../db/schema";
 import { projects, workspaces } from "../db/schema";
 import { DaemonOpenError } from "./DaemonClient/index.ts";
-import type { ShellResolution } from "./windows-shell.ts";
+import type { SessionShellResolverForTesting } from "./shell-launch.ts";
+import {
+	buildCmdFallbackLaunch,
+	type ShellResolution,
+} from "./windows-shell.ts";
 
 const MIGRATIONS_FOLDER = resolve(import.meta.dir, "../../drizzle");
 
@@ -51,6 +55,10 @@ interface LifecycleEvent {
 
 const broadcasts: LifecycleEvent[] = [];
 const opened: string[] = [];
+const openedLaunches = new Map<
+	string,
+	{ argv: string[]; env: Record<string, string> }
+>();
 /** Ids the fake daemon reports as already-alive, driving the adopt path. */
 const aliveSessions = new Map<string, { pid: number }>();
 let openImpl: ((id: string) => Promise<{ pid: number }>) | null = null;
@@ -68,8 +76,12 @@ mock.module("./daemon-client-singleton.ts", () => ({
 	...realSingleton,
 	getDaemonClient: async () => ({
 		protocol: 0,
-		open: async (id: string) => {
+		open: async (
+			id: string,
+			meta: { argv: string[]; env: Record<string, string> },
+		) => {
 			opened.push(id);
+			openedLaunches.set(id, { argv: meta.argv, env: meta.env });
 			if (openImpl) return openImpl(id);
 			return { pid: 4242 };
 		},
@@ -116,9 +128,16 @@ const REFUSED: ShellResolution = {
 	code: "shell-unresolved",
 };
 
-function useResolver(resolve: () => Promise<ShellResolution>): void {
-	__setSessionShellResolverForTesting({ resolve, adoptedShell: () => null });
+function useResolver(
+	resolve: () => Promise<ShellResolution>,
+): SessionShellResolverForTesting | undefined {
+	return __setSessionShellResolverForTesting({
+		resolve,
+		adoptedShell: () => null,
+	});
 }
+
+let previousShellResolver: SessionShellResolverForTesting | undefined;
 
 let accountsManaged = false;
 const ensureProfileForLaunch = mock(async () => "/profiles/unused");
@@ -173,7 +192,7 @@ beforeAll(() => {
 		.values({ id: workspaceId, projectId, worktreePath, branch: "main" })
 		.run();
 	registerClaudeAccountsService(db, fakeClaudeAccounts);
-	useResolver(async () => FOUND);
+	previousShellResolver = useResolver(async () => FOUND);
 });
 
 afterEach(() => {
@@ -184,7 +203,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-	__setSessionShellResolverForTesting(undefined);
+	__setSessionShellResolverForTesting(previousShellResolver);
 	__resetSessionsForTesting();
 	for (const dir of [home, worktreePath]) {
 		try {
@@ -319,7 +338,6 @@ describe("(PWSH-RESOLVE) shell resolution in createTerminalSessionInternal", () 
 		expect(opened).not.toContain(terminalId);
 		expect(result.launchShellName).toBe("unknown");
 		expect(result.cdScanState).not.toBeNull();
-		expect(result.shellFallbackNoticePending).toBe(false);
 	});
 
 	test("a refused shell with no live session fails before the profile or the open", async () => {
@@ -344,7 +362,7 @@ describe("(PWSH-RESOLVE) shell resolution in createTerminalSessionInternal", () 
 		expect(ensureProfileForLaunch).not.toHaveBeenCalled();
 	});
 
-	test("an absent PowerShell leaves the cmd.exe notice pending", async () => {
+	test("an absent PowerShell launches cmd.exe printing the notice", async () => {
 		useResolver(async () => ({
 			kind: "absent",
 			shell: "/bin/sh",
@@ -361,7 +379,9 @@ describe("(PWSH-RESOLVE) shell resolution in createTerminalSessionInternal", () 
 		});
 
 		if ("error" in result) throw new Error(result.error);
-		expect(result.shellFallbackNoticePending).toBe(true);
+		expect(openedLaunches.get(terminalId)).toMatchObject(
+			buildCmdFallbackLaunch(["H:\\tools"]),
+		);
 	});
 
 	test("a dispose during resolution cancels both racing creates", async () => {

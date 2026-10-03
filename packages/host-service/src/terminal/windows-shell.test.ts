@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolveLaunchShell } from "./shell-launch.ts";
 import {
+	buildCmdFallbackLaunch,
 	resolveWindowsShell,
 	ShellUnresolvedError,
 	type WindowsShellFs,
@@ -222,5 +223,18 @@ describe("resolveLaunchShell", () => {
 				{ platform: "darwin", accountShell: null },
 			),
 		).toBe("/usr/local/bin/fish");
+	});
+});
+
+describe("buildCmdFallbackLaunch", () => {
+	test("cmd.exe echoes a caret-escaped dim notice, then clears its variable", () => {
+		const launch = buildCmdFallbackLaunch(["D:\\a & b", "E:\\c|d<e>^f"]);
+		expect(launch.argv).toEqual([
+			"/K",
+			"echo(%SUPERSET_SHELL_FALLBACK_NOTICE%&set SUPERSET_SHELL_FALLBACK_NOTICE=",
+		]);
+		expect(launch.env.SUPERSET_SHELL_FALLBACK_NOTICE).toBe(
+			"\x1b[90mPowerShell 7 not found, using cmd.exe. Skipped PATH entries: D:\\a ^& b; E:\\c^|d^<e^>^^f. Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.\x1b[0m",
+		);
 	});
 });

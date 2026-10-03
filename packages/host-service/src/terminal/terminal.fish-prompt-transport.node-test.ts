@@ -31,6 +31,7 @@ import {
 	disposeSessionAndWait,
 } from "./terminal.ts";
 import { __setAccountShellForTesting } from "./user-shell.ts";
+import "../../test/shell-resolver-hook.ts";
 
 function findOnPath(name: string): string | null {
 	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {

@@ -98,6 +98,7 @@ import {
 	type TerminalSnapshot,
 } from "./terminal-mode-tracker.ts";
 import { reconstructTerminalTranscript } from "./terminal-transcript.ts";
+import { buildCmdFallbackLaunch } from "./windows-shell.ts";
 import {
 	isWorkspaceLaunchFenced,
 	isWorkspaceRetirementActive,
@@ -369,14 +370,6 @@ const REPAINT_NUDGE_RESTORE_MS = 60;
 const SESSION_RESTORED_NOTICE = new TextEncoder().encode(
 	"\r\n\x1b[90m─── Session Contents Restored ───\x1b[0m\r\n\r\n",
 );
-
-function buildShellFallbackNotice(skipped: string[]): Uint8Array {
-	const skippedText =
-		skipped.length > 0 ? ` Skipped PATH entries: ${skipped.join("; ")}.` : "";
-	return new TextEncoder().encode(
-		`\x1b[90mPowerShell 7 not found, using cmd.exe.${skippedText} Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.\x1b[0m\r\n`,
-	);
-}
 // Cap on a single renderer socket's unflushed WebSocket send buffer. With no
 // ACK flow control, a renderer that stops draining (slow paint, pinned main
 // thread, dead tab) would let this buffer grow without bound → host OOM (the
@@ -599,8 +592,6 @@ interface TerminalSession {
 	 * attaches. Cleared on first replay.
 	 */
 	restoredNoticePending: boolean;
-	shellFallbackNoticePending: boolean;
-	shellFallbackSkipped: string[];
 	createdAt: number;
 	exited: boolean;
 	exitCode: number;
@@ -2386,22 +2377,12 @@ function takeSynthesizedAttachBytes(
 	const preamble = session.modeTracker.buildPreamble(clientScreen);
 	const notice = session.restoredNoticePending ? SESSION_RESTORED_NOTICE : null;
 	session.restoredNoticePending = false;
-	const fallbackNotice = session.shellFallbackNoticePending
-		? buildShellFallbackNotice(session.shellFallbackSkipped)
-		: null;
-	session.shellFallbackNoticePending = false;
-	const parts = [preamble, notice, fallbackNotice].filter(
-		(part): part is Uint8Array => part !== null,
-	);
-	if (parts.length === 0) return null;
+	if (!preamble && !notice) return null;
 	const combined = new Uint8Array(
-		parts.reduce((total, part) => total + part.byteLength, 0),
+		(preamble?.byteLength ?? 0) + (notice?.byteLength ?? 0),
 	);
-	let offset = 0;
-	for (const part of parts) {
-		combined.set(part, offset);
-		offset += part.byteLength;
-	}
+	if (preamble) combined.set(preamble, 0);
+	if (notice) combined.set(notice, preamble?.byteLength ?? 0);
 	return combined;
 }
 
@@ -4039,10 +4020,16 @@ async function createTerminalSessionUnlocked(
 		launchPlan = { kind: "refused", message: shellResolution.message };
 	} else {
 		const shell = shellResolution.shell;
+		const cmdFallback =
+			shellResolution.kind === "absent"
+				? buildCmdFallbackLaunch(shellResolution.skipped)
+				: null;
 		launchPlan = {
 			kind: "spawn",
 			shell,
-			argv: getShellLaunchArgs({ shell, supersetHomeDir }),
+			argv: cmdFallback
+				? cmdFallback.argv
+				: getShellLaunchArgs({ shell, supersetHomeDir }),
 			env: {
 				...buildV2TerminalEnv({
 					baseEnv,
@@ -4069,6 +4056,7 @@ async function createTerminalSessionUnlocked(
 				...resolveDefaultAccountTerminalEnv(db),
 				...(claudeProfileDir ? { CLAUDE_CONFIG_DIR: claudeProfileDir } : {}),
 				SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN: issueAttributionToken(terminalId),
+				...cmdFallback?.env,
 			},
 		};
 	}
@@ -4284,10 +4272,20 @@ async function createTerminalSessionUnlocked(
 			})
 			.run();
 	} catch (error) {
-		console.error(
-			"[terminal] create failed after the daemon PTY was open; closing it",
-			{ terminalId, workspaceId, isAdopted, error },
-		);
+		const cancelledByDispose = error instanceof DisposedDuringCreationError;
+		if (cancelledByDispose) {
+			if (!isAdopted) {
+				console.warn(
+					"[terminal] create cancelled by a dispose after the daemon PTY was open; closing it",
+					{ terminalId, workspaceId },
+				);
+			}
+		} else {
+			console.error(
+				"[terminal] create failed after the daemon PTY was open; closing it",
+				{ terminalId, workspaceId, isAdopted, error },
+			);
+		}
 		if (!isAdopted) {
 			// Only close what THIS call opened. An adopted PTY pre-dates us and
 			// may still be legitimately owned by an existing row.
@@ -4324,7 +4322,7 @@ async function createTerminalSessionUnlocked(
 		if (error instanceof WorkspaceRetiredDuringLaunchError) {
 			return { kind: "WORKSPACE_RETIRED", error: error.message };
 		}
-		if (error instanceof DisposedDuringCreationError) {
+		if (cancelledByDispose) {
 			return disposedDuringCreation(terminalId);
 		}
 		throw error;
@@ -4413,10 +4411,6 @@ async function createTerminalSessionUnlocked(
 		bufferBytes: 0,
 		// Adopted sessions kept a live shell — nothing was restored.
 		restoredNoticePending: restoredNotice && !isAdopted,
-		shellFallbackNoticePending:
-			shellResolution?.kind === "absent" && !isAdopted,
-		shellFallbackSkipped:
-			shellResolution?.kind === "absent" ? shellResolution.skipped : [],
 		createdAt,
 		exited: false,
 		exitCode: 0,
