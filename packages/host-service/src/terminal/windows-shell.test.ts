@@ -227,14 +227,43 @@ describe("resolveLaunchShell", () => {
 });
 
 describe("buildCmdFallbackLaunch", () => {
-	test("cmd.exe echoes a caret-escaped dim notice, then clears its variable", () => {
-		const launch = buildCmdFallbackLaunch(["D:\\a & b", "E:\\c|d<e>^f"]);
+	test("cmd.exe echoes a dim notice, then clears its variable", () => {
+		const launch = buildCmdFallbackLaunch([
+			"D:\\a & b",
+			"C:\\Program Files (x86)\\x",
+		]);
 		expect(launch.argv).toEqual([
 			"/K",
 			"echo(%SUPERSET_SHELL_FALLBACK_NOTICE%&set SUPERSET_SHELL_FALLBACK_NOTICE=",
 		]);
 		expect(launch.env.SUPERSET_SHELL_FALLBACK_NOTICE).toBe(
-			"\x1b[90mPowerShell 7 not found, using cmd.exe. Skipped PATH entries: D:\\a ^& b; E:\\c^|d^<e^>^^f. Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.\x1b[0m",
+			"\x1b[90mPowerShell 7 not found, using cmd.exe. Skipped PATH entries: D:\\a ? b; C:\\Program Files (x86)\\x. Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.\x1b[0m",
+		);
+	});
+
+	test("hostile PATH entries reach cmd.exe only as allow-listed text under the length cap", () => {
+		const hostile = [
+			"H:\\!X!",
+			"H:\\%X%",
+			"H:\\a\r\nset X=1",
+			"H:\\c^d & calc",
+			`H:\\${"x".repeat(5000)}`,
+		];
+		const skipped = [
+			...hostile,
+			...Array.from({ length: 20 - hostile.length }, (_, i) => `H:\\e${i}`),
+		];
+
+		const notice = buildCmdFallbackLaunch(skipped).env
+			.SUPERSET_SHELL_FALLBACK_NOTICE as string;
+
+		expect(notice.length).toBeLessThanOrEqual(1000);
+		expect(notice.startsWith("\x1b[90m")).toBe(true);
+		expect(notice.endsWith("\x1b[0m")).toBe(true);
+		const body = notice.slice("\x1b[90m".length, -"\x1b[0m".length);
+		expect(body).toMatch(/^[A-Za-z0-9 :\\/._()\-?,;]+$/);
+		expect(body).toContain(
+			`Skipped PATH entries: H:\\?X?; H:\\?X?; H:\\a??set X?1; H:\\c?d ? calc; H:\\${"x".repeat(114)}... and 15 more.`,
 		);
 	});
 });

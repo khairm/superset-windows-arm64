@@ -309,21 +309,39 @@ export async function resolveWindowsShell(
 }
 
 const CMD_FALLBACK_NOTICE_ENV = "SUPERSET_SHELL_FALLBACK_NOTICE";
+const NOTICE_MAX_ENTRIES = 5;
+const NOTICE_MAX_ENTRY_LENGTH = 120;
+
+function cmdSafeNoticeEntry(entry: string): string {
+	const safe = entry.replace(/[^A-Za-z0-9 :\\/._()-]/g, "?");
+	return safe.length > NOTICE_MAX_ENTRY_LENGTH
+		? `${safe.slice(0, NOTICE_MAX_ENTRY_LENGTH - 3)}...`
+		: safe;
+}
+
+function describeSkipped(skipped: readonly string[]): string {
+	if (skipped.length === 0) return "";
+	const shown = skipped
+		.slice(0, NOTICE_MAX_ENTRIES)
+		.map(cmdSafeNoticeEntry)
+		.join("; ");
+	const hidden = skipped.length - NOTICE_MAX_ENTRIES;
+	const more = hidden > 0 ? ` and ${hidden} more` : "";
+	return ` Skipped PATH entries: ${shown}${more}.`;
+}
 
 export function buildCmdFallbackLaunch(skipped: readonly string[]): {
 	argv: string[];
 	env: Record<string, string>;
 } {
-	const skippedText =
-		skipped.length > 0 ? ` Skipped PATH entries: ${skipped.join("; ")}.` : "";
-	const notice = `PowerShell 7 not found, using cmd.exe.${skippedText} Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.`;
+	const notice = `PowerShell 7 not found, using cmd.exe.${describeSkipped(skipped)} Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.`;
 	return {
 		argv: [
 			"/K",
 			`echo(%${CMD_FALLBACK_NOTICE_ENV}%&set ${CMD_FALLBACK_NOTICE_ENV}=`,
 		],
 		env: {
-			[CMD_FALLBACK_NOTICE_ENV]: `\x1b[90m${notice.replace(/[\^&|<>"]/g, "^$&")}\x1b[0m`,
+			[CMD_FALLBACK_NOTICE_ENV]: `\x1b[90m${notice}\x1b[0m`,
 		},
 	};
 }
