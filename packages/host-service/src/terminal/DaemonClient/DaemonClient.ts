@@ -45,6 +45,19 @@ export class DaemonUnavailableError extends Error {
 	}
 }
 
+// (PWSH-RESOLVE-SPAWN-CODE)
+export class DaemonOpenError extends Error {
+	readonly code: string | undefined;
+	readonly daemonMessage: string;
+
+	constructor(id: string, daemonMessage: string, code: string | undefined) {
+		super(`open ${id}: ${daemonMessage}`);
+		this.name = "DaemonOpenError";
+		this.code = code;
+		this.daemonMessage = daemonMessage;
+	}
+}
+
 export interface OpenResult {
 	id: string;
 	pid: number;
@@ -175,7 +188,8 @@ export class DaemonClient {
 			OPEN_TIMEOUT_MS,
 		);
 		if (reply.type === "open-ok") return { id, pid: reply.pid };
-		if (reply.type === "error") throw new Error(`open ${id}: ${reply.message}`);
+		if (reply.type === "error")
+			throw new DaemonOpenError(id, reply.message, reply.code);
 		throw new Error(`open ${id}: unexpected reply ${reply.type}`);
 	}
 

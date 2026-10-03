@@ -9,5 +9,6 @@ export type {
 export {
 	AcknowledgedInputError,
 	DaemonClient,
+	DaemonOpenError,
 	DaemonUnavailableError,
 } from "./DaemonClient.ts";

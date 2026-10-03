@@ -63,6 +63,7 @@ import {
 	AcknowledgedInputError,
 	type AcknowledgedInputFailureKind,
 	DaemonClient,
+	DaemonOpenError,
 	type Signal as DaemonSignal,
 	DaemonUnavailableError,
 } from "./DaemonClient/index.ts";
@@ -71,10 +72,12 @@ import {
 	onDaemonDisconnect,
 } from "./daemon-client-singleton.ts";
 import {
+	adoptedSessionShell,
 	buildV2TerminalEnv,
 	getShellLaunchArgs,
 	getTerminalBaseEnv,
-	resolveLaunchShell,
+	resolveSessionShell,
+	ShellUnresolvedError,
 	shellLaunchExpectsReadyMarker,
 	waitForTerminalBaseEnv,
 } from "./env.ts";
@@ -265,6 +268,11 @@ type TerminalClientMessage =
 // decoding. Control messages stay JSON. Replay (the buffered prefix sent
 // on attach) is a binary frame too; the renderer doesn't distinguish it
 // from live data.
+type TerminalRefusalCode =
+	| "session-gone"
+	| "shell-unresolved"
+	| "shell-spawn-failed";
+
 type TerminalServerMessage =
 	| { type: "attached"; terminalId: string }
 	// `code: "session-gone"` marks the session as permanently destroyed (not
@@ -276,7 +284,7 @@ type TerminalServerMessage =
 	| {
 			type: "error";
 			message: string;
-			code?: "session-gone" | "attach-retryable";
+			code?: TerminalRefusalCode | "attach-retryable";
 	  }
 	| { type: "exit"; exitCode: number; signal: number }
 	| { type: "title"; title: string | null }
@@ -361,6 +369,14 @@ const REPAINT_NUDGE_RESTORE_MS = 60;
 const SESSION_RESTORED_NOTICE = new TextEncoder().encode(
 	"\r\n\x1b[90m─── Session Contents Restored ───\x1b[0m\r\n\r\n",
 );
+
+function buildShellFallbackNotice(skipped: string[]): Uint8Array {
+	const skippedText =
+		skipped.length > 0 ? ` Skipped PATH entries: ${skipped.join("; ")}.` : "";
+	return new TextEncoder().encode(
+		`\x1b[90mPowerShell 7 not found, using cmd.exe.${skippedText} Install PowerShell 7, or set SUPERSET_TERMINAL_SHELL and restart the app.\x1b[0m\r\n`,
+	);
+}
 // Cap on a single renderer socket's unflushed WebSocket send buffer. With no
 // ACK flow control, a renderer that stops draining (slow paint, pinned main
 // thread, dead tab) would let this buffer grow without bound → host OOM (the
@@ -583,6 +599,8 @@ interface TerminalSession {
 	 * attaches. Cleared on first replay.
 	 */
 	restoredNoticePending: boolean;
+	shellFallbackNoticePending: boolean;
+	shellFallbackSkipped: string[];
 	createdAt: number;
 	exited: boolean;
 	exitCode: number;
@@ -746,6 +764,40 @@ const attachResolutions = new Map<
 >();
 const socketOwners = new WeakMap<TerminalSocket, TerminalSession>();
 
+// (PWSH-RESOLVE-FENCE)
+let lifecycleSeq = 0;
+const createsInFlight = new Map<string, number>();
+const lastDisposeSeq = new Map<string, number>();
+
+function beginCreateWork(terminalId: string): void {
+	createsInFlight.set(terminalId, (createsInFlight.get(terminalId) ?? 0) + 1);
+}
+
+function endCreateWork(terminalId: string): void {
+	const remaining = (createsInFlight.get(terminalId) ?? 0) - 1;
+	if (remaining > 0) {
+		createsInFlight.set(terminalId, remaining);
+		return;
+	}
+	createsInFlight.delete(terminalId);
+	lastDisposeSeq.delete(terminalId);
+}
+
+function disposedAfter(terminalId: string, seq: number): boolean {
+	const disposeSeq = lastDisposeSeq.get(terminalId);
+	return disposeSeq !== undefined && disposeSeq > seq;
+}
+
+function disposedDuringCreation(terminalId: string): CreateSessionError & {
+	code: "session-gone";
+} {
+	return {
+		kind: "SESSION_EXITED",
+		error: `Terminal session "${terminalId}" was disposed during creation.`,
+		code: "session-gone",
+	};
+}
+
 function cleanupDetachedSession(
 	session: TerminalSession,
 	reason: string,
@@ -799,7 +851,7 @@ async function resolveAttachSessionOnce({
 	eventBus?: EventBus;
 }): Promise<
 	| TerminalSession
-	| { error: string; code?: "session-gone"; transient?: boolean }
+	| { error: string; code?: TerminalRefusalCode; transient?: boolean }
 > {
 	const existing = sessions.get(terminalId);
 	if (existing) return existing;
@@ -807,9 +859,11 @@ async function resolveAttachSessionOnce({
 	const inFlight = attachResolutions.get(terminalId);
 	if (inFlight) return inFlight;
 
+	const attachSeq = ++lifecycleSeq;
+	beginCreateWork(terminalId);
 	const resolution = (async (): Promise<
 		| TerminalSession
-		| { error: string; code?: "session-gone"; transient?: boolean }
+		| { error: string; code?: TerminalRefusalCode; transient?: boolean }
 	> => {
 		const current = sessions.get(terminalId);
 		if (current) return current;
@@ -850,6 +904,7 @@ async function resolveAttachSessionOnce({
 			db,
 			eventBus,
 			adoptOnly: true,
+			cancelSeq: attachSeq,
 		});
 		if (!("error" in adopted)) {
 			const live = sessions.get(terminalId);
@@ -863,7 +918,7 @@ async function resolveAttachSessionOnce({
 		// Daemon unreachable ≠ PTY lost: the shell may still be alive behind the
 		// stall, so don't end agent bindings or respawn — let the renderer retry
 		// until the daemon answers.
-		if (adopted.transient) return adopted;
+		if (adopted.transient || adopted.code === "session-gone") return adopted;
 
 		// (DISPOSE-LIMBO) Re-read the stamp immediately before respawning. The
 		// respawn below is unconditional on "adopt found no live PTY" — which is
@@ -910,6 +965,7 @@ async function resolveAttachSessionOnce({
 			db,
 			eventBus,
 			restoredNotice: true,
+			cancelSeq: attachSeq,
 		});
 		if (!("error" in created)) {
 			const live = sessions.get(terminalId);
@@ -919,7 +975,7 @@ async function resolveAttachSessionOnce({
 			}
 		}
 		return created;
-	})();
+	})().finally(() => endCreateWork(terminalId));
 
 	attachResolutions.set(terminalId, resolution);
 	try {
@@ -2330,12 +2386,22 @@ function takeSynthesizedAttachBytes(
 	const preamble = session.modeTracker.buildPreamble(clientScreen);
 	const notice = session.restoredNoticePending ? SESSION_RESTORED_NOTICE : null;
 	session.restoredNoticePending = false;
-	if (!preamble && !notice) return null;
-	const combined = new Uint8Array(
-		(preamble?.byteLength ?? 0) + (notice?.byteLength ?? 0),
+	const fallbackNotice = session.shellFallbackNoticePending
+		? buildShellFallbackNotice(session.shellFallbackSkipped)
+		: null;
+	session.shellFallbackNoticePending = false;
+	const parts = [preamble, notice, fallbackNotice].filter(
+		(part): part is Uint8Array => part !== null,
 	);
-	if (preamble) combined.set(preamble, 0);
-	if (notice) combined.set(notice, preamble?.byteLength ?? 0);
+	if (parts.length === 0) return null;
+	const combined = new Uint8Array(
+		parts.reduce((total, part) => total + part.byteLength, 0),
+	);
+	let offset = 0;
+	for (const part of parts) {
+		combined.set(part, offset);
+		offset += part.byteLength;
+	}
 	return combined;
 }
 
@@ -3177,6 +3243,9 @@ export function disposeSessionAndWait(
 	db: HostDb,
 	eventBus?: EventBus,
 ): Promise<DisposeSessionResult> {
+	if (createsInFlight.has(terminalId)) {
+		lastDisposeSeq.set(terminalId, ++lifecycleSeq);
+	}
 	const inFlight = disposeResolutions.get(terminalId);
 	if (inFlight) return inFlight;
 
@@ -3608,6 +3677,7 @@ interface CreateTerminalSessionOptions {
 	 * above a brand-new shell.
 	 */
 	restoredNotice?: boolean;
+	cancelSeq?: number;
 }
 
 function resolveTerminalCwd(
@@ -3647,7 +3717,7 @@ type CreateSessionError = TerminalSessionError;
 // instead of retrying a request that can only fail.
 type CreateSessionResult =
 	| TerminalSession
-	| (CreateSessionError & { code?: "session-gone" });
+	| (CreateSessionError & { code?: TerminalRefusalCode });
 
 export function getPendingTerminalWorkspaceId(
 	terminalId: string,
@@ -3675,18 +3745,23 @@ export function createTerminalSessionInternal(
 			kind: "SESSION_WRONG_WORKSPACE",
 			error: mismatchError,
 		});
-	return lifecycleOperations.run(
-		options.terminalId,
-		() => createTerminalSessionLocked(options),
-		record ? undefined : options.workspaceId,
-	);
+	const createSeq = options.cancelSeq ?? ++lifecycleSeq;
+	beginCreateWork(options.terminalId);
+	return lifecycleOperations
+		.run(
+			options.terminalId,
+			() => createTerminalSessionLocked(options, createSeq),
+			record ? undefined : options.workspaceId,
+		)
+		.finally(() => endCreateWork(options.terminalId));
 }
 
 function createTerminalSessionLocked(
 	options: CreateTerminalSessionOptions,
+	createSeq: number,
 ): Promise<CreateSessionResult> {
 	const claudeAccounts = getManagedClaudeAccountsForLaunch(options.db);
-	if (!claudeAccounts) return createTerminalSessionUnlocked(options);
+	if (!claudeAccounts) return createTerminalSessionUnlocked(options, createSeq);
 	if (options.adoptOnly === true) {
 		// (DISPOSE-LIMBO) Adoption never spawns or changes a live PTY's environment.
 		// It must stay outside the workspace lock because disposal holds that lock
@@ -3694,7 +3769,7 @@ function createTerminalSessionLocked(
 		// on each other. The unlocked path rejects disposeRequestedAt rows, so a
 		// pending deletion cannot reactivate the terminal. Pre-upgrade PTYs keep
 		// their existing environment until their next managed spawn.
-		return createTerminalSessionUnlocked(options);
+		return createTerminalSessionUnlocked(options, createSeq);
 	}
 	// (WORKTREE-EXIT-CLEANUP) Refused BEFORE the lock, not inside it. A
 	// retirement holds this workspace's lock for its whole run — every terminal
@@ -3720,7 +3795,7 @@ function createTerminalSessionLocked(
 				error: workspaceRetiredError(options.workspaceId, options.terminalId),
 			});
 		}
-		return createTerminalSessionUnlocked(options, claudeAccounts);
+		return createTerminalSessionUnlocked(options, createSeq, claudeAccounts);
 	});
 }
 
@@ -3734,6 +3809,85 @@ function workspaceRetiredError(
 /** (WORKTREE-EXIT-CLEANUP) Thrown at the row insert, so the PTY this call
  * opened is closed by the cleanup that already guards that step. */
 class WorkspaceRetiredDuringLaunchError extends Error {}
+
+class DisposedDuringCreationError extends Error {}
+
+let loggedUnknownAdoptedShell = false;
+
+function adoptLiveDaemonSession({
+	db,
+	terminalId,
+	workspaceId,
+	found,
+	cols,
+	rows,
+}: {
+	db: HostDb;
+	terminalId: string;
+	workspaceId: string;
+	found: { pid: number; cols: number; rows: number };
+	cols: number;
+	rows: number;
+}):
+	| { adopted: true; pid: number; cols: number; rows: number }
+	| {
+			adopted: false;
+			refused: CreateSessionError & { code: "session-gone" };
+	  } {
+	// (DISPOSE-LIMBO) This fallback is an ADOPT wearing a create's
+	// clothes, and it must refuse a stamped row for the same reason
+	// the `adoptOnly` check in createTerminalSessionUnlocked does. It used to
+	// adopt happily: the upsert keeps the stamp (correct — `isAdopted`), so the
+	// call returned SUCCESS with a row that `shouldReapRow` marks for
+	// death and `listWorkspaceTerminalSessions` hides. The renderer
+	// painted a live pane over a process the reaper killed inside one
+	// interval, for a terminal it had just been told was created.
+	//
+	// Re-read rather than reusing `existingRecord`: that read happened
+	// before an `await`-heavy stretch (env resolution, shell resolution,
+	// daemon connect), which is exactly long enough for a dispose to
+	// land in between.
+	const pendingDisposeRow = db.query.terminalSessions
+		.findFirst({
+			where: eq(terminalSessions.id, terminalId),
+			columns: { disposeRequestedAt: true },
+		})
+		.sync();
+	if (pendingDisposeRow?.disposeRequestedAt != null) {
+		console.warn(
+			"[terminal] refusing to adopt an existing daemon session with a pending dispose",
+			{
+				terminalId,
+				workspaceId,
+				disposeRequestedAt: pendingDisposeRow.disposeRequestedAt,
+			},
+		);
+		// Returned SHAPED rather than thrown: the enclosing catch keeps
+		// only the message, and this refusal must carry
+		// `code: "session-gone"` like its two siblings in
+		// resolveAttachSessionOnce — without it the renderer transport
+		// does not mark the session ended and burns an extra reconnect
+		// cycle re-asking for a terminal the host already refused.
+		// The message matches the other two refusals verbatim.
+		return {
+			adopted: false,
+			refused: {
+				kind: "SESSION_EXITED",
+				error: `Terminal session "${terminalId}" is being disposed.`,
+				code: "session-gone",
+			},
+		};
+	}
+	console.log(
+		`[terminal] adopted existing daemon session ${terminalId} pid=${found.pid}`,
+	);
+	return {
+		adopted: true,
+		pid: found.pid,
+		cols: normalizeTerminalDimension(found.cols, MIN_TERMINAL_COLS, cols),
+		rows: normalizeTerminalDimension(found.rows, MIN_TERMINAL_ROWS, rows),
+	};
+}
 
 async function createTerminalSessionUnlocked(
 	{
@@ -3750,6 +3904,7 @@ async function createTerminalSessionUnlocked(
 		adoptOnly = false,
 		restoredNotice = false,
 	}: CreateTerminalSessionOptions,
+	createSeq: number,
 	claudeAccounts?: ClaudeAccountsService,
 ): Promise<CreateSessionResult> {
 	// (WORKTREE-EXIT-CLEANUP) The moment this launch began, re-read at the row
@@ -3855,44 +4010,68 @@ async function createTerminalSessionUnlocked(
 	// Use the preserved shell snapshot — never live process.env. Resolution
 	// runs in the background at startup so the server can listen immediately;
 	// wait for it here before the first PTY needs the snapshot.
-	const [claudeProfileDir] = await Promise.all([
-		claudeAccounts
-			? claudeAccounts.ensureProfileForLaunch(workspaceId)
-			: Promise.resolve(null),
-		waitForTerminalBaseEnv(),
-	]);
+	await waitForTerminalBaseEnv();
 	const baseEnv = getTerminalBaseEnv();
+	const shellResolution = adoptOnly ? null : await resolveSessionShell(baseEnv);
+	if (disposedAfter(terminalId, createSeq)) {
+		return disposedDuringCreation(terminalId);
+	}
+	const claudeProfileDir =
+		claudeAccounts && shellResolution?.kind !== "refused"
+			? await claudeAccounts.ensureProfileForLaunch(workspaceId)
+			: null;
 	// Fallback matters for hosts not spawned by the desktop (CLI/systemd):
 	// without it the wrapper paths, hook guard env, and shell bootstrap all
 	// silently disable (#6254).
 	const supersetHomeDir = resolveSupersetHomeDir();
-	const shell = resolveLaunchShell(baseEnv);
-	const shellArgs = getShellLaunchArgs({ shell, supersetHomeDir });
-	const ptyEnv = {
-		...buildV2TerminalEnv({
-			baseEnv,
+	let launchPlan:
+		| { kind: "adopt-only" }
+		| { kind: "refused"; message: string }
+		| {
+				kind: "spawn";
+				shell: string;
+				argv: string[];
+				env: Record<string, string>;
+		  };
+	if (shellResolution === null) {
+		launchPlan = { kind: "adopt-only" };
+	} else if (shellResolution.kind === "refused") {
+		launchPlan = { kind: "refused", message: shellResolution.message };
+	} else {
+		const shell = shellResolution.shell;
+		launchPlan = {
+			kind: "spawn",
 			shell,
-			supersetHomeDir,
-			organizationId: process.env.ORGANIZATION_ID || "",
-			themeType,
-			cwd,
-			terminalId,
-			workspaceId,
-			workspacePath: workspace.worktreePath,
-			rootPath,
-			supersetEnv:
-				process.env.NODE_ENV === "development" ? "development" : "production",
-			agentHookPort: process.env.SUPERSET_AGENT_HOOK_PORT || "",
-			agentHookVersion: process.env.SUPERSET_AGENT_HOOK_VERSION || "",
-			hostAgentHookUrl: getHostAgentHookUrl(),
-		}),
-		// Usage-tab default account: provider CLIs typed or preset-launched in
-		// this terminal run on the selected login. Baked at spawn as the fast
-		// path; the agent wrappers re-resolve later switches at launch time.
-		...resolveDefaultAccountTerminalEnv(db),
-		...(claudeProfileDir ? { CLAUDE_CONFIG_DIR: claudeProfileDir } : {}),
-		SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN: issueAttributionToken(terminalId),
-	};
+			argv: getShellLaunchArgs({ shell, supersetHomeDir }),
+			env: {
+				...buildV2TerminalEnv({
+					baseEnv,
+					shell,
+					supersetHomeDir,
+					organizationId: process.env.ORGANIZATION_ID || "",
+					themeType,
+					cwd,
+					terminalId,
+					workspaceId,
+					workspacePath: workspace.worktreePath,
+					rootPath,
+					supersetEnv:
+						process.env.NODE_ENV === "development"
+							? "development"
+							: "production",
+					agentHookPort: process.env.SUPERSET_AGENT_HOOK_PORT || "",
+					agentHookVersion: process.env.SUPERSET_AGENT_HOOK_VERSION || "",
+					hostAgentHookUrl: getHostAgentHookUrl(),
+				}),
+				// Usage-tab default account: provider CLIs typed or preset-launched in
+				// this terminal run on the selected login. Baked at spawn as the fast
+				// path; the agent wrappers re-resolve later switches at launch time.
+				...resolveDefaultAccountTerminalEnv(db),
+				...(claudeProfileDir ? { CLAUDE_CONFIG_DIR: claudeProfileDir } : {}),
+				SUPERSET_ACCOUNT_ATTRIBUTION_TOKEN: issueAttributionToken(terminalId),
+			},
+		};
+	}
 
 	let daemon: DaemonClient;
 	try {
@@ -3913,8 +4092,9 @@ async function createTerminalSessionUnlocked(
 	}
 	let openResult: { pid: number };
 	let isAdopted = false;
+	let openedShell: string | null = null;
 	try {
-		if (adoptOnly) {
+		if (launchPlan.kind === "adopt-only") {
 			const found = (await daemon.list()).find(
 				(s) => s.id === terminalId && s.alive,
 			);
@@ -3931,16 +4111,42 @@ async function createTerminalSessionUnlocked(
 			console.log(
 				`[terminal] adopted existing daemon session ${terminalId} pid=${found.pid}`,
 			);
+		} else if (launchPlan.kind === "refused") {
+			// (PWSH-RESOLVE-ADOPT)
+			const found = (await daemon.list()).find(
+				(s) => s.id === terminalId && s.alive,
+			);
+			if (!found) {
+				return {
+					kind: "TERMINAL_START_FAILED",
+					error: launchPlan.message,
+					code: "shell-unresolved",
+				};
+			}
+			const adoption = adoptLiveDaemonSession({
+				db,
+				terminalId,
+				workspaceId,
+				found,
+				cols,
+				rows,
+			});
+			if (!adoption.adopted) return adoption.refused;
+			openResult = { pid: adoption.pid };
+			isAdopted = true;
+			cols = adoption.cols;
+			rows = adoption.rows;
 		} else {
 			try {
 				openResult = await daemon.open(terminalId, {
-					shell,
-					argv: shellArgs,
+					shell: launchPlan.shell,
+					argv: launchPlan.argv,
 					cwd,
 					cols,
 					rows,
-					env: ptyEnv,
+					env: launchPlan.env,
 				});
+				openedShell = launchPlan.shell;
 			} catch (err) {
 				// After host-service restart the daemon may already own this
 				// session. Adopt it instead of looping forever on "session already
@@ -3952,62 +4158,29 @@ async function createTerminalSessionUnlocked(
 					const list = await daemon.list();
 					const found = list.find((s) => s.id === terminalId && s.alive);
 					if (!found) throw err;
-					// (DISPOSE-LIMBO) This fallback is an ADOPT wearing a create's
-					// clothes, and it must refuse a stamped row for the same reason
-					// the `adoptOnly` check above does. It used to adopt happily: the
-					// upsert below keeps the stamp (correct — `isAdopted`), so the
-					// call returned SUCCESS with a row that `shouldReapRow` marks for
-					// death and `listWorkspaceTerminalSessions` hides. The renderer
-					// painted a live pane over a process the reaper killed inside one
-					// interval, for a terminal it had just been told was created.
-					//
-					// Re-read rather than reusing `existingRecord`: that read happened
-					// before an `await`-heavy stretch (env resolution, shell probe,
-					// daemon connect), which is exactly long enough for a dispose to
-					// land in between.
-					const pendingDisposeRow = db.query.terminalSessions
-						.findFirst({
-							where: eq(terminalSessions.id, terminalId),
-							columns: { disposeRequestedAt: true },
-						})
-						.sync();
-					if (pendingDisposeRow?.disposeRequestedAt != null) {
-						console.warn(
-							"[terminal] refusing to adopt an existing daemon session with a pending dispose",
-							{
-								terminalId,
-								workspaceId,
-								disposeRequestedAt: pendingDisposeRow.disposeRequestedAt,
-							},
-						);
-						// Returned SHAPED rather than thrown: the enclosing catch keeps
-						// only the message, and this refusal must carry
-						// `code: "session-gone"` like its two siblings in
-						// resolveAttachSessionOnce — without it the renderer transport
-						// does not mark the session ended and burns an extra reconnect
-						// cycle re-asking for a terminal the host already refused.
-						// The message matches the other two refusals verbatim.
-						return {
-							kind: "SESSION_EXITED",
-							error: `Terminal session "${terminalId}" is being disposed.`,
-							code: "session-gone",
-						};
-					}
-					openResult = { pid: found.pid };
-					isAdopted = true;
-					cols = normalizeTerminalDimension(
-						found.cols,
-						MIN_TERMINAL_COLS,
+					const adoption = adoptLiveDaemonSession({
+						db,
+						terminalId,
+						workspaceId,
+						found,
 						cols,
-					);
-					rows = normalizeTerminalDimension(
-						found.rows,
-						MIN_TERMINAL_ROWS,
 						rows,
-					);
-					console.log(
-						`[terminal] adopted existing daemon session ${terminalId} pid=${found.pid}`,
-					);
+					});
+					if (!adoption.adopted) return adoption.refused;
+					openResult = { pid: adoption.pid };
+					isAdopted = true;
+					cols = adoption.cols;
+					rows = adoption.rows;
+				} else if (
+					err instanceof DaemonOpenError &&
+					err.code === "ESPAWN" &&
+					err.daemonMessage.startsWith("spawn failed (shell=")
+				) {
+					return {
+						kind: "TERMINAL_START_FAILED",
+						error: `Couldn't start ${launchPlan.shell}: ${err.daemonMessage}`,
+						code: "shell-spawn-failed",
+					};
 				} else {
 					throw err;
 				}
@@ -4073,6 +4246,10 @@ async function createTerminalSessionUnlocked(
 			throw new WorkspaceRetiredDuringLaunchError(
 				workspaceRetiredError(workspaceId, terminalId),
 			);
+		}
+		// (PWSH-RESOLVE-FENCE)
+		if (disposedAfter(terminalId, createSeq)) {
+			throw new DisposedDuringCreationError(terminalId);
 		}
 
 		db.insert(terminalSessions)
@@ -4147,6 +4324,9 @@ async function createTerminalSessionUnlocked(
 		if (error instanceof WorkspaceRetiredDuringLaunchError) {
 			return { kind: "WORKSPACE_RETIRED", error: error.message };
 		}
+		if (error instanceof DisposedDuringCreationError) {
+			return disposedDuringCreation(terminalId);
+		}
 		throw error;
 	}
 
@@ -4165,10 +4345,16 @@ async function createTerminalSessionUnlocked(
 	// marker has already flown by and we don't want to gate writes on it.
 	// Normalize the basename across separators and a Windows `.exe` suffix so
 	// `C:\...\pwsh.exe` / `/usr/bin/zsh` both resolve to a plain shell name.
-	const shellName = (shell.split(/[\\/]/).pop() || shell).replace(
-		/\.exe$/i,
-		"",
-	);
+	const launchShell = isAdopted ? adoptedSessionShell(baseEnv) : openedShell;
+	if (launchShell === null && !loggedUnknownAdoptedShell) {
+		loggedUnknownAdoptedShell = true;
+		console.log(
+			"[terminal] adopted terminals have an unknown shell on this platform; the command scanner stays on",
+		);
+	}
+	const shellName = launchShell
+		? (launchShell.split(/[\\/]/).pop() || launchShell).replace(/\.exe$/i, "")
+		: "unknown";
 	// PowerShell emits its OSC 133 markers via superset-pwsh-integration.ps1,
 	// which upstream's wrapper-file check does not model — keep pwsh/powershell
 	// name-based so the A-scan (and the blue-dot C/D scanner handoff) still
@@ -4177,15 +4363,17 @@ async function createTerminalSessionUnlocked(
 	// initial-command gate (which no longer has a timeout backstop).
 	const isPowerShellReady = shellName === "pwsh" || shellName === "powershell";
 	const shellSupportsReady =
+		launchShell !== null &&
 		!isAdopted &&
 		(isPowerShellReady ||
-			shellLaunchExpectsReadyMarker({ shell, supersetHomeDir }));
+			shellLaunchExpectsReadyMarker({ shell: launchShell, supersetHomeDir }));
 	// (AY) Instrument the OSC 133 C/D command scanner for the same marker-
 	// emitting shells (zsh/bash/fish/pwsh/powershell) — sh/ksh are excluded
 	// because their wrappers emit no markers. Adopted sessions get a fresh
 	// scanner too (commandRunning starts false): they miss an in-flight
 	// command's blue dot but self-heal on the next D/A.
-	const cdScannerSupported = SHELLS_WITH_READY_MARKER.has(shellName);
+	const cdScannerSupported =
+		launchShell === null || SHELLS_WITH_READY_MARKER.has(shellName);
 
 	let shellReadyResolve: (() => void) | null = null;
 	const shellReadyPromise = shellSupportsReady
@@ -4225,6 +4413,10 @@ async function createTerminalSessionUnlocked(
 		bufferBytes: 0,
 		// Adopted sessions kept a live shell — nothing was restored.
 		restoredNoticePending: restoredNotice && !isAdopted,
+		shellFallbackNoticePending:
+			shellResolution?.kind === "absent" && !isAdopted,
+		shellFallbackSkipped:
+			shellResolution?.kind === "absent" ? shellResolution.skipped : [],
 		createdAt,
 		exited: false,
 		exitCode: 0,
@@ -4252,7 +4444,7 @@ async function createTerminalSessionUnlocked(
 		// Adopted sessions have already run their initialCommand in the prior
 		// host-service lifetime — flag it as queued so we don't double-fire it.
 		initialCommandQueued: isAdopted,
-		launchShellName: basename(shell),
+		launchShellName: launchShell ? basename(launchShell) : "unknown",
 		portHintDecoder: new StringDecoder("utf8"),
 		modeTracker,
 		adoptionReplaySettled: Promise.resolve(),
@@ -4726,7 +4918,7 @@ export function registerWorkspaceTerminalRoute({
 			};
 			const resolveSessionForAttach = async (): Promise<
 				| TerminalSession
-				| { error: string; code?: "session-gone"; transient?: boolean }
+				| { error: string; code?: TerminalRefusalCode; transient?: boolean }
 			> => {
 				const lifecycleRecord = db.query.terminalSessions
 					.findFirst({ where: eq(terminalSessions.id, terminalId) })
@@ -4853,6 +5045,15 @@ export function registerWorkspaceTerminalRoute({
 					})().catch((error) => {
 						console.error("[terminal] unexpected error during attach", error);
 						if (ws.readyState !== SOCKET_OPEN) return;
+						if (error instanceof ShellUnresolvedError) {
+							sendMessage(ws, {
+								type: "error",
+								message: error.message,
+								code: "shell-unresolved",
+							});
+							ws.close(1011, toWsCloseReason(error.message));
+							return;
+						}
 						sendMessage(ws, {
 							type: "error",
 							message: "Internal terminal attach error",

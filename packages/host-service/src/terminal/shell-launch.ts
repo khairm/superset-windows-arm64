@@ -7,127 +7,59 @@
  * - VS Code: ZDOTDIR for zsh, --init-file for bash, --init-command for fish
  * - Kitty: KITTY_ORIG_ZDOTDIR for zsh, ENV for bash, XDG_DATA_DIRS for fish
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
 	type ResolveConfiguredShellOptions,
 	resolveConfiguredShell,
 } from "./user-shell.ts";
+import {
+	resolveWindowsShell,
+	type ShellResolution,
+	ShellUnresolvedError,
+} from "./windows-shell.ts";
 
-// Cached Windows shell path — resolved once per process lifetime.
-let _cachedWindowsShell: string | null | undefined = undefined;
-
-function getEnvCaseInsensitive(
-	env: Record<string, string>,
-	key: string,
-): string | undefined {
-	const upper = key.toUpperCase();
-	for (const [k, v] of Object.entries(env)) {
-		if (k.toUpperCase() === upper) return v;
-	}
-	return undefined;
+interface SessionShellResolverForTesting {
+	resolve: (baseEnv: Record<string, string>) => Promise<ShellResolution>;
+	adoptedShell: (baseEnv: Record<string, string>) => string | null;
 }
 
-function probePwshVersion(pwshPath: string): boolean {
-	try {
-		const result = execFileSync(
-			pwshPath,
-			["-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"],
-			{ timeout: 3000, encoding: "utf8", windowsHide: true },
-		);
-		const major = Number.parseInt(result.trim(), 10);
-		return Number.isInteger(major) && major >= 7;
-	} catch {
-		return false;
-	}
+let sessionShellResolverForTesting: SessionShellResolverForTesting | undefined;
+
+export function __setSessionShellResolverForTesting(
+	resolver: SessionShellResolverForTesting | undefined,
+): void {
+	sessionShellResolverForTesting = resolver;
 }
 
-function resolveWindowsShell(baseEnv: Record<string, string>): string {
-	if (_cachedWindowsShell !== undefined) {
-		return _cachedWindowsShell ?? (getEnvCaseInsensitive(baseEnv, "COMSPEC") || "cmd.exe");
+// (PWSH-RESOLVE-WIRED)
+export async function resolveSessionShell(
+	baseEnv: Record<string, string>,
+	options?: ResolveConfiguredShellOptions,
+): Promise<ShellResolution> {
+	if (sessionShellResolverForTesting) {
+		return sessionShellResolverForTesting.resolve(baseEnv);
 	}
-
-	// Explicit override — honor any shell the user asked for (including powershell.exe).
-	const override = process.env.SUPERSET_TERMINAL_SHELL;
-	if (override && existsSync(override)) {
-		_cachedWindowsShell = override;
-		return override;
+	if ((options?.platform ?? process.platform) === "win32") {
+		return resolveWindowsShell(baseEnv, process.env.SUPERSET_TERMINAL_SHELL);
 	}
+	return {
+		kind: "found",
+		shell: resolveConfiguredShell(baseEnv, options),
+		source: "configured",
+	};
+}
 
-	const programFiles = getEnvCaseInsensitive(baseEnv, "ProgramFiles") || process.env.ProgramFiles || "C:\\Program Files";
-	const systemRoot = getEnvCaseInsensitive(baseEnv, "SystemRoot") || process.env.SystemRoot || "C:\\Windows";
-
-	// Known real pwsh.exe install paths (prefer over PATH aliases).
-	const directCandidates: string[] = [
-		path.join(programFiles, "PowerShell", "7", "pwsh.exe"),
-		path.join(programFiles, "PowerShell", "7-preview", "pwsh.exe"),
-	];
-
-	// Windows Store (WindowsApps) installs.
-	const windowsAppsDir = path.join(programFiles, "WindowsApps");
-	try {
-		const entries = readdirSync(windowsAppsDir).filter(
-			(e) => e.startsWith("Microsoft.PowerShell_") && e.endsWith("8wekyb3d8bbwe"),
-		);
-		for (const entry of entries.sort().reverse()) {
-			directCandidates.push(path.join(windowsAppsDir, entry, "pwsh.exe"));
-		}
-	} catch {
-		// EPERM or missing — try via PowerShell probe below
-		try {
-			const result = execFileSync(
-				path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-				[
-					"-NoProfile",
-					"-NonInteractive",
-					"-Command",
-					"Get-AppxPackage Microsoft.PowerShell | Sort-Object Version -Descending | ForEach-Object { Join-Path $_.InstallLocation 'pwsh.exe' } | Select-Object -First 1",
-				],
-				{ timeout: 5000, encoding: "utf8", windowsHide: true },
-			);
-			const candidate = result.trim();
-			if (candidate) directCandidates.push(candidate);
-		} catch {
-			// PowerShell not available or failed
-		}
+export function adoptedSessionShell(
+	baseEnv: Record<string, string>,
+	options?: ResolveConfiguredShellOptions,
+): string | null {
+	if (sessionShellResolverForTesting) {
+		return sessionShellResolverForTesting.adoptedShell(baseEnv);
 	}
-
-	// Search PATH for pwsh (only accept pwsh.exe, never powershell.exe).
-	const pathEnv = getEnvCaseInsensitive(baseEnv, "PATH") || process.env.PATH || "";
-	const pathExt = (getEnvCaseInsensitive(baseEnv, "PATHEXT") || ".COM;.EXE;.BAT").split(";");
-	for (const dir of pathEnv.split(path.delimiter)) {
-		if (!dir) continue;
-		for (const ext of pathExt) {
-			const candidate = path.join(dir, `pwsh${ext}`);
-			if (existsSync(candidate)) {
-				const base = path.basename(candidate).toLowerCase();
-				// Skip app-execution-alias (LocalAppData\Microsoft\WindowsApps\pwsh.exe) — last resort.
-				const localAppData = process.env.LOCALAPPDATA || "";
-				const isAlias = localAppData && candidate.startsWith(path.join(localAppData, "Microsoft", "WindowsApps"));
-				if (!isAlias && (base === "pwsh.exe" || base === "pwsh")) {
-					directCandidates.push(candidate);
-				}
-			}
-		}
-	}
-
-	// Try each candidate in order, validate with version probe.
-	for (const candidate of directCandidates) {
-		if (!existsSync(candidate)) continue;
-		// Reject any candidate that resolves to powershell.exe (legacy Windows PowerShell).
-		const base = path.basename(candidate).toLowerCase();
-		if (base === "powershell.exe" || base === "powershell") continue;
-		if (probePwshVersion(candidate)) {
-			_cachedWindowsShell = candidate;
-			return candidate;
-		}
-	}
-
-	// No pwsh found — fall back to COMSPEC (cmd.exe). Do NOT use powershell.exe.
-	_cachedWindowsShell = null;
-	return getEnvCaseInsensitive(baseEnv, "COMSPEC") || "cmd.exe";
+	if ((options?.platform ?? process.platform) === "win32") return null;
+	return resolveLaunchShell(baseEnv, options);
 }
 
 /** Does not default to /bin/zsh — falls back to /bin/sh (POSIX-guaranteed). */
@@ -135,8 +67,8 @@ export function resolveLaunchShell(
 	baseEnv: Record<string, string>,
 	options?: ResolveConfiguredShellOptions,
 ): string {
-	if (process.platform === "win32") {
-		return resolveWindowsShell(baseEnv);
+	if ((options?.platform ?? process.platform) === "win32") {
+		throw new ShellUnresolvedError("use resolveSessionShell");
 	}
 	return resolveConfiguredShell(baseEnv, options);
 }
