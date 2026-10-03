@@ -491,29 +491,32 @@ export class GitWatcher {
 			? Promise.resolve<string[]>([])
 			: this.listIgnoredDirs(worktreePath);
 		void listing
-			.then(async (dirs) => {
-				if (!stillCurrent()) return;
-				state.dirs = new Set(dirs);
-				state.lastRefreshAt = Date.now();
-				state.failureLogged = false;
-				if (rulesChanged) await this.applyRuleChange(workspaceId, stillCurrent);
-			})
-			.catch(async (error) => {
-				// (HOST-LAUNCH-IGNORED-FAIL)
-				if (!stillCurrent()) return;
-				if (!state.failureLogged) {
-					state.failureLogged = true;
-					console.error("[git-watcher] ignored-dir refresh failed", {
-						workspaceId,
-						error,
-					});
-				}
-				state.lastRefreshAt = Date.now();
-				if (rulesChanged) {
-					state.dirs = new Set();
-					await this.applyRuleChange(workspaceId, stillCurrent);
-				}
-			})
+			.then(
+				async (dirs) => {
+					if (!stillCurrent()) return;
+					state.dirs = new Set(dirs);
+					state.lastRefreshAt = Date.now();
+					state.failureLogged = false;
+					if (rulesChanged)
+						await this.applyRuleChange(workspaceId, stillCurrent);
+				},
+				async (error) => {
+					// (HOST-LAUNCH-IGNORED-FAIL)
+					if (!stillCurrent()) return;
+					if (!state.failureLogged) {
+						state.failureLogged = true;
+						console.error("[git-watcher] ignored-dir refresh failed", {
+							workspaceId,
+							error,
+						});
+					}
+					state.lastRefreshAt = Date.now();
+					if (rulesChanged) {
+						state.dirs = new Set();
+						await this.applyRuleChange(workspaceId, stillCurrent);
+					}
+				},
+			)
 			.finally(() => {
 				state.refreshing = false;
 				// Rules changed again while this refresh ran (e.g. a branch
