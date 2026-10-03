@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { resolveLaunchShell } from "./shell-launch.ts";
 import {
 	buildCmdFallbackLaunch,
@@ -266,4 +267,45 @@ describe("buildCmdFallbackLaunch", () => {
 			`Skipped PATH entries: H:\\?X?; H:\\?X?; H:\\a??set X?1; H:\\c?d ? calc; H:\\${"x".repeat(114)}... and 15 more.`,
 		);
 	});
+
+	test.skipIf(process.platform !== "win32")(
+		"real cmd.exe prints the notice without expanding PATH, then clears its variable",
+		() => {
+			const comspec = process.env.ComSpec;
+			if (!comspec) throw new Error("ComSpec is not set");
+			const launch = buildCmdFallbackLaunch([
+				"H:\\!PATH!",
+				"H:\\%PATH%",
+				"H:\\a\r\necho %PATH%",
+				"H:\\c^ & set PATH",
+				"H:\\d))(",
+				...Array.from({ length: 20 }, (_, i) => `H:\\${"x".repeat(300)}${i}`),
+			]);
+
+			const result = spawnSync(
+				comspec,
+				[
+					"/D",
+					"/V:ON",
+					"/C",
+					`"${launch.argv[1]}&set SUPERSET_SHELL_FALLBACK_NOTICE"`,
+				],
+				{
+					env: { PATH: "C:\\superset-path-sentinel", ...launch.env },
+					encoding: "utf8",
+					windowsVerbatimArguments: true,
+				},
+			);
+
+			expect(result.stdout).toBe(
+				`${launch.env.SUPERSET_SHELL_FALLBACK_NOTICE}\r\n`,
+			);
+			expect(`${result.stdout}${result.stderr}`).not.toContain(
+				"superset-path-sentinel",
+			);
+			expect(result.stderr).toContain(
+				"Environment variable SUPERSET_SHELL_FALLBACK_NOTICE not defined",
+			);
+		},
+	);
 });
