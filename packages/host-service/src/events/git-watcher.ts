@@ -7,7 +7,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { HostDb } from "../db/index.ts";
 import { workspaces } from "../db/schema.ts";
 import type { WorkspaceFilesystemManager } from "../runtime/filesystem/index.ts";
-import { listGitIgnoredDirs } from "../runtime/git/index.ts";
+import { listGitIgnoredDirsForRefresh } from "../runtime/git/ignored-dirs-refresh.ts";
 import { invalidateIsGitRepo } from "../runtime/git/non-git.ts";
 
 const execFileAsync = promisify(execFile);
@@ -262,6 +262,7 @@ interface IgnoredDirsState {
 	 * watcher's attach-time prune went stale (a dir was UN-ignored).
 	 */
 	rulesChanged: boolean;
+	failureLogged: boolean;
 }
 
 /**
@@ -314,15 +315,20 @@ export class GitWatcher {
 	private rescanTimer: ReturnType<typeof setInterval> | null = null;
 	private closed = false;
 	private readonly onWatchStateChange: GitWatchStateListener;
+	private readonly listIgnoredDirs: (rootPath: string) => Promise<string[]>;
 
 	constructor(
 		db: HostDb,
 		filesystem: WorkspaceFilesystemManager,
 		onWatchStateChange: GitWatchStateListener = () => {},
+		listIgnoredDirs: (
+			rootPath: string,
+		) => Promise<string[]> = listGitIgnoredDirsForRefresh,
 	) {
 		this.db = db;
 		this.filesystem = filesystem;
 		this.onWatchStateChange = onWatchStateChange;
+		this.listIgnoredDirs = listIgnoredDirs;
 	}
 
 	start(): void {
@@ -444,6 +450,7 @@ export class GitWatcher {
 				refreshing: false,
 				lastRefreshAt: 0,
 				rulesChanged: false,
+				failureLogged: false,
 			};
 			this.ignoredDirs.set(workspaceId, state);
 		}
@@ -475,40 +482,41 @@ export class GitWatcher {
 			Date.now() - state.lastRefreshAt < IGNORED_DIRS_REFRESH_MIN_MS
 		)
 			return;
+		const skipListing = entry.gitDir === null; // (HOST-LAUNCH-IGNORED-SKIP-NONGIT)
+		if (skipListing && !state.rulesChanged) return;
 		state.refreshing = true;
 		const rulesChanged = state.rulesChanged;
 		state.rulesChanged = false;
-		void listGitIgnoredDirs(worktreePath)
-			.then(async (dirs) => {
-				if (!stillCurrent()) return;
-				state.dirs = new Set(dirs);
-				state.lastRefreshAt = Date.now();
-				if (rulesChanged) {
-					// Ignore rules changed: a dir may have been UN-ignored, leaving
-					// the native watcher's attach-time prune stale (events for that
-					// dir silently suppressed until restart). refreshIgnores
-					// re-derives the set and swaps the subscription only when it
-					// actually shrank; after a swap, force one broad status refresh
-					// to cover anything written during the swap gap.
-					const swapped = await this.filesystem
-						.refreshWatcherIgnores(workspaceId)
-						.catch((error) => {
-							console.error("[git-watcher] watcher ignore refresh failed", {
-								workspaceId,
-								error,
-							});
-							return false;
-						});
+		const listing = skipListing
+			? Promise.resolve<string[]>([])
+			: this.listIgnoredDirs(worktreePath);
+		void listing
+			.then(
+				async (dirs) => {
 					if (!stillCurrent()) return;
-					if (swapped) this.markGitDirDirty(workspaceId);
-				}
-			})
-			.catch((error) => {
-				console.error("[git-watcher] ignored-dir refresh failed", {
-					workspaceId,
-					error,
-				});
-			})
+					state.dirs = new Set(dirs);
+					state.lastRefreshAt = Date.now();
+					state.failureLogged = false;
+					if (rulesChanged)
+						await this.applyRuleChange(workspaceId, stillCurrent);
+				},
+				async (error) => {
+					// (HOST-LAUNCH-IGNORED-FAIL)
+					if (!stillCurrent()) return;
+					if (!state.failureLogged) {
+						state.failureLogged = true;
+						console.error("[git-watcher] ignored-dir refresh failed", {
+							workspaceId,
+							error,
+						});
+					}
+					state.lastRefreshAt = Date.now();
+					if (rulesChanged) {
+						state.dirs = new Set();
+						await this.applyRuleChange(workspaceId, stillCurrent);
+					}
+				},
+			)
 			.finally(() => {
 				state.refreshing = false;
 				// Rules changed again while this refresh ran (e.g. a branch
@@ -519,6 +527,30 @@ export class GitWatcher {
 					this.refreshIgnoredDirs(workspaceId, worktreePath, true);
 				}
 			});
+	}
+
+	/**
+	 * Ignore rules changed: a dir may have been UN-ignored, leaving the native
+	 * watcher's attach-time prune stale (events for that dir silently
+	 * suppressed until restart). refreshIgnores re-derives the set and swaps
+	 * the subscription only when it actually shrank; after a swap, force one
+	 * broad status refresh to cover anything written during the swap gap.
+	 */
+	private async applyRuleChange(
+		workspaceId: string,
+		stillCurrent: () => boolean,
+	): Promise<void> {
+		const swapped = await this.filesystem
+			.refreshWatcherIgnores(workspaceId)
+			.catch((error) => {
+				console.error("[git-watcher] watcher ignore refresh failed", {
+					workspaceId,
+					error,
+				});
+				return false;
+			});
+		if (!stillCurrent()) return;
+		if (swapped) this.markGitDirDirty(workspaceId);
 	}
 
 	private getOrCreateBatch(workspaceId: string): PendingBatch {

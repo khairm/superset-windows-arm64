@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	jest,
+	setSystemTime,
+	spyOn,
+	test,
+} from "bun:test";
 import {
 	collectWorktreeBatchPaths,
 	DEBOUNCE_MS,
@@ -379,5 +388,140 @@ describe("GitWatcher adaptive debounce", () => {
 
 		jest.advanceTimersByTime(DEBOUNCE_MS);
 		expect(events).toEqual([{ workspaceId: "workspace-1" }]);
+	});
+});
+
+describe("(HOST-LAUNCH-IGNORED-FAIL) GitWatcher ignored-dir refresh", () => {
+	const WORKSPACE = "workspace-1";
+	const WORKTREE = "/repo";
+	const T0 = new Date("2026-10-03T12:00:00Z").getTime();
+	const PAST_THE_FLOOR_MS = 6_000;
+
+	interface RefreshInternals {
+		watched: Map<string, unknown>;
+		refreshIgnoredDirs(workspaceId: string, worktreePath: string): void;
+		getOrCreateIgnoredDirsState(workspaceId: string): {
+			dirs: ReadonlySet<string>;
+			rulesChanged: boolean;
+			refreshing: boolean;
+		};
+	}
+
+	let errors: ReturnType<typeof spyOn<Console, "error">>;
+	beforeEach(() => {
+		errors = spyOn(console, "error").mockImplementation(() => {});
+	});
+	afterEach(() => {
+		errors.mockRestore();
+		setSystemTime();
+	});
+
+	test.each<{
+		name: string;
+		gitDir: string | null;
+		rulesChanged: boolean;
+		listings: Array<"ok" | "fail">;
+		refreshes: number;
+		ruleRefreshes: number;
+		logged: number;
+		dirs: string[];
+	}>([
+		{
+			name: "a non-git workspace with no rule change never lists",
+			gitDir: null,
+			rulesChanged: false,
+			listings: [],
+			refreshes: 1,
+			ruleRefreshes: 0,
+			logged: 0,
+			dirs: ["dist"],
+		},
+		{
+			name: "a non-git workspace with a rule change re-derives the prune without listing",
+			gitDir: null,
+			rulesChanged: true,
+			listings: [],
+			refreshes: 1,
+			ruleRefreshes: 1,
+			logged: 0,
+			dirs: [],
+		},
+		{
+			name: "failures with no rule change keep the set and log once per streak",
+			gitDir: "/repo/.git",
+			rulesChanged: false,
+			listings: ["fail", "fail"],
+			refreshes: 2,
+			ruleRefreshes: 0,
+			logged: 1,
+			dirs: ["dist"],
+		},
+		{
+			name: "a success ends the failure streak, so the next failure logs again",
+			gitDir: "/repo/.git",
+			rulesChanged: false,
+			listings: ["fail", "ok", "fail"],
+			refreshes: 3,
+			ruleRefreshes: 0,
+			logged: 2,
+			dirs: ["out"],
+		},
+		{
+			name: "a failure after a rule change clears the set and re-derives the prune once",
+			gitDir: "/repo/.git",
+			rulesChanged: true,
+			listings: ["fail"],
+			refreshes: 1,
+			ruleRefreshes: 1,
+			logged: 1,
+			dirs: [],
+		},
+	])("$name", async (scenario) => {
+		let listingCalls = 0;
+		let ruleRefreshes = 0;
+		const watcher = new GitWatcher(
+			{} as unknown as ConstructorParameters<typeof GitWatcher>[0],
+			{
+				refreshWatcherIgnores: async () => {
+					ruleRefreshes += 1;
+					return false;
+				},
+			} as unknown as ConstructorParameters<typeof GitWatcher>[1],
+			() => {},
+			() => {
+				const outcome = scenario.listings[listingCalls];
+				listingCalls += 1;
+				return outcome === "ok"
+					? Promise.resolve(["out"])
+					: Promise.reject(new Error("ls-files failed"));
+			},
+		);
+		const inner = watcher as unknown as RefreshInternals;
+		inner.watched.set(WORKSPACE, {
+			workspaceId: WORKSPACE,
+			worktreePath: WORKTREE,
+			gitDir: scenario.gitDir,
+			watcher: null,
+			disposeWorktreeWatch: () => {},
+		});
+		const state = inner.getOrCreateIgnoredDirsState(WORKSPACE);
+		state.dirs = new Set(["dist"]);
+		state.rulesChanged = scenario.rulesChanged;
+
+		for (let step = 0; step < scenario.refreshes; step += 1) {
+			setSystemTime(new Date(T0 + step * PAST_THE_FLOOR_MS));
+			inner.refreshIgnoredDirs(WORKSPACE, WORKTREE);
+			while (state.refreshing) {
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+		}
+
+		const refreshFailures = errors.mock.calls.filter(
+			([message]) => message === "[git-watcher] ignored-dir refresh failed",
+		);
+		expect(listingCalls).toBe(scenario.listings.length);
+		expect(ruleRefreshes).toBe(scenario.ruleRefreshes);
+		expect(refreshFailures.length).toBe(scenario.logged);
+		expect([...state.dirs].sort()).toEqual(scenario.dirs);
 	});
 });

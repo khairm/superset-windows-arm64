@@ -22,32 +22,42 @@ const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
  * files (e.g. `.env`) are deliberately excluded — files stay watched so an
  * open gitignored file still live-reloads.
  *
- * Returns [] for non-git roots, timeouts, and every other failure — callers
- * degrade to the static ignore list, never block on this.
+ * Rejects for non-git roots, timeouts, and every other failure.
+ */
+export async function listGitIgnoredDirsOrThrow(
+	rootPath: string,
+): Promise<string[]> {
+	const { stdout } = await execFileAsync(
+		"git",
+		[
+			"-C",
+			rootPath,
+			"ls-files",
+			"--others",
+			"--ignored",
+			"--exclude-standard",
+			"--directory",
+			"-z",
+		],
+		{ timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
+	);
+	const dirs: string[] = [];
+	for (const entry of stdout.split("\0")) {
+		if (!entry.endsWith("/")) continue;
+		dirs.push(entry.slice(0, -1));
+		if (dirs.length >= MAX_IGNORED_DIRS) break;
+	}
+	return dirs;
+}
+
+/**
+ * `listGitIgnoredDirsOrThrow`, but [] for non-git roots, timeouts, and every
+ * other failure — callers degrade to the static ignore list, never block on
+ * this.
  */
 export async function listGitIgnoredDirs(rootPath: string): Promise<string[]> {
 	try {
-		const { stdout } = await execFileAsync(
-			"git",
-			[
-				"-C",
-				rootPath,
-				"ls-files",
-				"--others",
-				"--ignored",
-				"--exclude-standard",
-				"--directory",
-				"-z",
-			],
-			{ timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
-		);
-		const dirs: string[] = [];
-		for (const entry of stdout.split("\0")) {
-			if (!entry.endsWith("/")) continue;
-			dirs.push(entry.slice(0, -1));
-			if (dirs.length >= MAX_IGNORED_DIRS) break;
-		}
-		return dirs;
+		return await listGitIgnoredDirsOrThrow(rootPath);
 	} catch {
 		return [];
 	}

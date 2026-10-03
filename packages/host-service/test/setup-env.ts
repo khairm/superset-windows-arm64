@@ -2,6 +2,8 @@
 // bunfig, not the root one, so the guard has to be re-entered here — and this
 // package is where the pointer writers live.
 import "../../../scripts/test-preload.ts";
+import * as os from "node:os";
+import * as path from "node:path";
 
 // Populate the env vars `src/env.ts` validates at module load so test runtimes
 // that boot host-service via `createApp` (instead of `serve.ts`) can import
@@ -14,3 +16,7 @@ process.env.HOST_DB_PATH ??= "/tmp/host-service-test.db";
 process.env.HOST_MIGRATIONS_FOLDER ??= "/tmp/host-service-test-migrations";
 process.env.AUTH_TOKEN ??= "test-auth-token";
 process.env.SUPERSET_API_URL ??= "http://localhost:0";
+process.env.SUPERSET_HOST_WORKER_SCRIPT_PATH ??= path.join(
+	os.tmpdir(),
+	"superset-no-host-worker.js",
+);

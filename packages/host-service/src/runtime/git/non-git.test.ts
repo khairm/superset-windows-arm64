@@ -4,6 +4,7 @@ import {
 	describe,
 	expect,
 	setSystemTime,
+	spyOn,
 	test,
 } from "bun:test";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import {
 	invalidateIsGitRepo,
 	isGitRepo,
+	probeIsGitRepo,
 	resetIsGitRepoCacheForTests,
 	setIsGitRepoProbeForTests,
 } from "./non-git";
@@ -48,7 +50,7 @@ describe("(GIT-LAUNCH-BUDGET-D) isGitRepo cache", () => {
 	});
 
 	test.each<[string, () => Promise<boolean>, boolean, number]>([
-		["a yes", async () => true, true, 60_000],
+		["a yes", async () => true, true, 5 * 60_000],
 		["a no", async () => false, false, 5_000],
 		[
 			"a failed probe",
@@ -92,5 +94,37 @@ describe("(GIT-LAUNCH-BUDGET-D) isGitRepo cache", () => {
 		expect(await stale).toBe(true);
 		expect(await isGitRepo(DIR)).toBe(false);
 		expect(calls()).toBe(2);
+	});
+});
+
+describe("(HOST-LAUNCH-DISK-NO-ISREPO) probeIsGitRepo", () => {
+	test("a disk answer of absent is a no without launching git", async () => {
+		let gitChecks = 0;
+		const isRepo = await probeIsGitRepo(DIR, {
+			entryProbe: async () => "absent",
+			gitCheck: async () => {
+				gitChecks += 1;
+				return true;
+			},
+		});
+		expect(isRepo).toBe(false);
+		expect(gitChecks).toBe(0);
+	});
+
+	test("a throwing disk probe is logged and git decides", async () => {
+		const logged = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const isRepo = await probeIsGitRepo(DIR, {
+				entryProbe: async () => {
+					throw new Error("probe bug");
+				},
+				gitCheck: async () => true,
+			});
+			expect(isRepo).toBe(true);
+			expect(logged).toHaveBeenCalledTimes(1);
+			expect(logged.mock.calls[0]?.[0]).toBe("[non-git] disk probe threw");
+		} finally {
+			logged.mockRestore();
+		}
 	});
 });
