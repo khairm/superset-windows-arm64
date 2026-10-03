@@ -196,6 +196,9 @@ In brief:
   shipped; evicting an alternate-screen terminal from the live registry did
   not. The exemption keeping those terminals resident is intentional, not a
   gap to close; the blueprint for lifting it lives in the plan, not this tree.
+- **Idle redraw budget**: agent spinners share one 80 ms ticker and
+  agent-status dots use finite pings (red re-arms on one shared 30 s ticker);
+  per-instance timers or infinite pings keep the idle window redrawing.
 
 ## Live footguns (do NOT repeat)
 

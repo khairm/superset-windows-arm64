@@ -1,5 +1,6 @@
 import { cn } from "@superset/ui/utils";
 import type { ActivePaneStatus } from "shared/tabs-types";
+import { RedPing } from "./components/RedPing";
 
 // Re-export for consumers
 export type { ActivePaneStatus } from "shared/tabs-types";
@@ -29,13 +30,13 @@ const STATUS_CONFIG = {
 	permission: {
 		pingColor: "bg-red-400",
 		dotColor: "bg-red-500",
-		pulse: true,
+		pulse: "repeating",
 		tooltip: "Needs input",
 	},
 	failed: {
 		pingColor: "bg-red-400",
 		dotColor: "bg-red-500",
-		pulse: true,
+		pulse: "repeating",
 		tooltip: "Agent failed",
 	},
 	working: {
@@ -54,7 +55,7 @@ const STATUS_CONFIG = {
 	"shell-running": {
 		pingColor: "bg-blue-400",
 		dotColor: "bg-blue-500",
-		pulse: true,
+		pulse: "once",
 		tooltip: "Command running",
 	},
 	// (BA) background-running: the turn ended but a cloud/background session is
@@ -62,12 +63,17 @@ const STATUS_CONFIG = {
 	"background-running": {
 		pingColor: "bg-blue-400",
 		dotColor: "bg-blue-500",
-		pulse: true,
+		pulse: "once",
 		tooltip: "Cloud session running",
 	},
 } as const satisfies Record<
 	DisplayStatus,
-	{ pingColor: string; dotColor: string; pulse: boolean; tooltip: string }
+	{
+		pingColor: string;
+		dotColor: string;
+		pulse: "repeating" | "once" | false;
+		tooltip: string;
+	}
 >;
 
 interface StatusIndicatorProps {
@@ -86,10 +92,14 @@ export function StatusIndicator({ status, className }: StatusIndicatorProps) {
 
 	return (
 		<span className={cn("relative flex size-1.5 shrink-0", className)}>
-			{config.pulse && (
+			{config.pulse === "repeating" && (
+				<RedPing key={status} className={config.pingColor} />
+			)}
+			{config.pulse === "once" && (
 				<span
+					key={status}
 					className={cn(
-						"absolute inline-flex h-full w-full animate-ping rounded-full opacity-75",
+						"absolute inline-flex h-full w-full animate-ping-finite rounded-full opacity-75",
 						config.pingColor,
 					)}
 				/>
