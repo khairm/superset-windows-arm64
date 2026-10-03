@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.7.7",
+  "checkpoint_id": "6cb0685cc32c",
+  "strategy": "manual-commit",
+  "branch": "typing-perf-bundle",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "packages/host-service/src/runtime/git/git-entry-probe.ts",
+    "packages/host-service/src/runtime/git/ignored-dirs-refresh.ts",
+    "packages/host-service/src/runtime/git/non-git.ts",
+    "packages/host-service/src/runtime/git/origin-head-cache.ts",
+    "packages/host-service/src/terminal/terminal.created-event.test.ts",
+    "packages/host-service/src/terminal/terminal.ts",
+    "packages/host-service/src/terminal/windows-shell.test.ts",
+    "packages/host-service/src/terminal/windows-shell.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6c/b0685cc32c/0/metadata.json",
+      "transcript": "/6c/b0685cc32c/0/full.jsonl",
+      "content_hash": "/6c/b0685cc32c/0/content_hash.txt",
+      "prompt": "/6c/b0685cc32c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 890,
+    "cache_creation_tokens": 2153517,
+    "cache_read_tokens": 96379331,
+    "output_tokens": 329330,
+    "api_call_count": 315
+  }
+}
