@@ -164,6 +164,12 @@
 	--color-fill-selected: var(--fill-selected);
 }
 
+@utility animate-ping-finite {
+	animation: var(--animate-ping);
+	animation-iteration-count: 3;
+	animation-fill-mode: forwards;
+}
+
 @layer base {
 	* {
 		@apply border-border antialiased;

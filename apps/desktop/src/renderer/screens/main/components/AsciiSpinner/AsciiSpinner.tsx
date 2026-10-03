@@ -1,11 +1,9 @@
 import { cn } from "@superset/ui/utils";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
+import { spinnerTicker } from "renderer/lib/shared-ticker";
 
 /** Braille-based spinner frames for a smooth animation */
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/** Animation interval in milliseconds */
-const FRAME_INTERVAL = 80;
 
 interface AsciiSpinnerProps {
 	className?: string;
@@ -16,22 +14,17 @@ interface AsciiSpinnerProps {
  * Replaces the folder icon when an agent is working.
  */
 export function AsciiSpinner({ className }: AsciiSpinnerProps) {
-	const [frameIndex, setFrameIndex] = useState(0);
-
-	useEffect(() => {
-		const interval = setInterval(() => {
-			setFrameIndex((prev) => (prev + 1) % SPINNER_FRAMES.length);
-		}, FRAME_INTERVAL);
-
-		return () => clearInterval(interval);
-	}, []);
+	const epoch = useSyncExternalStore(
+		spinnerTicker.subscribe,
+		spinnerTicker.getSnapshot,
+	);
 
 	return (
 		<span
 			className={cn("text-amber-500 font-mono select-none", className)}
 			aria-hidden="true"
 		>
-			{SPINNER_FRAMES[frameIndex]}
+			{SPINNER_FRAMES[epoch % SPINNER_FRAMES.length]}
 		</span>
 	);
 }
