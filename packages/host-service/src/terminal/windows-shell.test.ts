@@ -90,7 +90,6 @@ describe("resolveWindowsShell", () => {
 		});
 		expect(await resolveWindowsShell(BASE_ENV, undefined, fs)).toMatchObject({
 			kind: "refused",
-			code: "shell-unresolved",
 		});
 	});
 

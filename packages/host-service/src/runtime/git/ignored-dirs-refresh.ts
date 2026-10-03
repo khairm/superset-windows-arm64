@@ -16,7 +16,9 @@ export async function listGitIgnoredDirsForRefresh(
 		);
 	} catch (error) {
 		if (signal.aborted) {
-			throw new Error("ignored-dir listing exceeded 10 s (queue + run)");
+			throw new Error(
+				`ignored-dir listing exceeded ${REFRESH_LISTING_BUDGET_MS / 1000} s (queue + run)`,
+			);
 		}
 		throw error;
 	}

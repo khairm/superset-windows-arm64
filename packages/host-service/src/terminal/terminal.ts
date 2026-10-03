@@ -3810,7 +3810,12 @@ function adoptLiveDaemonSession({
 	cols: number;
 	rows: number;
 }):
-	| { adopted: true; pid: number; cols: number; rows: number }
+	| {
+			adopted: true;
+			openResult: { pid: number };
+			cols: number;
+			rows: number;
+	  }
 	| {
 			adopted: false;
 			refused: CreateSessionError & { code: "session-gone" };
@@ -3864,10 +3869,14 @@ function adoptLiveDaemonSession({
 	);
 	return {
 		adopted: true,
-		pid: found.pid,
+		openResult: { pid: found.pid },
 		cols: normalizeTerminalDimension(found.cols, MIN_TERMINAL_COLS, cols),
 		rows: normalizeTerminalDimension(found.rows, MIN_TERMINAL_ROWS, rows),
 	};
+}
+
+async function findLiveDaemonSession(daemon: DaemonClient, terminalId: string) {
+	return (await daemon.list()).find((s) => s.id === terminalId && s.alive);
 }
 
 async function createTerminalSessionUnlocked(
@@ -4081,11 +4090,18 @@ async function createTerminalSessionUnlocked(
 	let openResult: { pid: number };
 	let isAdopted = false;
 	let openedShell: string | null = null;
+	const adoptFound = (found: { pid: number; cols: number; rows: number }) =>
+		adoptLiveDaemonSession({
+			db,
+			terminalId,
+			workspaceId,
+			found,
+			cols,
+			rows,
+		});
 	try {
 		if (launchPlan.kind === "adopt-only") {
-			const found = (await daemon.list()).find(
-				(s) => s.id === terminalId && s.alive,
-			);
+			const found = await findLiveDaemonSession(daemon, terminalId);
 			if (!found) {
 				return {
 					kind: "SESSION_NOT_ACTIVE",
@@ -4101,9 +4117,7 @@ async function createTerminalSessionUnlocked(
 			);
 		} else if (launchPlan.kind === "refused") {
 			// (PWSH-RESOLVE-ADOPT)
-			const found = (await daemon.list()).find(
-				(s) => s.id === terminalId && s.alive,
-			);
+			const found = await findLiveDaemonSession(daemon, terminalId);
 			if (!found) {
 				return {
 					kind: "TERMINAL_START_FAILED",
@@ -4111,19 +4125,9 @@ async function createTerminalSessionUnlocked(
 					code: "shell-unresolved",
 				};
 			}
-			const adoption = adoptLiveDaemonSession({
-				db,
-				terminalId,
-				workspaceId,
-				found,
-				cols,
-				rows,
-			});
+			const adoption = adoptFound(found);
 			if (!adoption.adopted) return adoption.refused;
-			openResult = { pid: adoption.pid };
-			isAdopted = true;
-			cols = adoption.cols;
-			rows = adoption.rows;
+			({ adopted: isAdopted, openResult, cols, rows } = adoption);
 		} else {
 			try {
 				openResult = await daemon.open(terminalId, {
@@ -4143,22 +4147,11 @@ async function createTerminalSessionUnlocked(
 				// subscribe-with-replay below.
 				const msg = err instanceof Error ? err.message : String(err);
 				if (msg.includes("session already exists")) {
-					const list = await daemon.list();
-					const found = list.find((s) => s.id === terminalId && s.alive);
+					const found = await findLiveDaemonSession(daemon, terminalId);
 					if (!found) throw err;
-					const adoption = adoptLiveDaemonSession({
-						db,
-						terminalId,
-						workspaceId,
-						found,
-						cols,
-						rows,
-					});
+					const adoption = adoptFound(found);
 					if (!adoption.adopted) return adoption.refused;
-					openResult = { pid: adoption.pid };
-					isAdopted = true;
-					cols = adoption.cols;
-					rows = adoption.rows;
+					({ adopted: isAdopted, openResult, cols, rows } = adoption);
 				} else if (
 					err instanceof DaemonOpenError &&
 					err.code === "ESPAWN" &&

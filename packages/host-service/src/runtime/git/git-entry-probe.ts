@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import * as path from "node:path";
+import { normalizeRepoPathKey } from "./repo-path-key";
 
 export type GitEntryProbeResult = "present" | "absent" | "unknown";
 
@@ -112,10 +113,9 @@ export function findGitEntryUpTree(
 	) {
 		return Promise.resolve("unknown");
 	}
-	if (isUncPath(dirPath)) return Promise.resolve("unknown");
 	const logical = path.resolve(dirPath);
 	if (isUncPath(logical)) return Promise.resolve("unknown");
-	const key = isWin32 ? logical.toLowerCase() : logical;
+	const key = normalizeRepoPathKey(logical);
 
 	const existing = pending.get(key);
 	if (existing) {

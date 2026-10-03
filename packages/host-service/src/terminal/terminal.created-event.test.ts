@@ -125,7 +125,6 @@ const REFUSED_MESSAGE = "PowerShell 7 could not be checked";
 const REFUSED: ShellResolution = {
 	kind: "refused",
 	message: REFUSED_MESSAGE,
-	code: "shell-unresolved",
 };
 
 function useResolver(

@@ -1,5 +1,5 @@
 import type { SimpleGit } from "simple-git";
-import { normalizeRepoPathKey } from "./non-git";
+import { normalizeRepoPathKey } from "./repo-path-key";
 
 const ORIGIN_HEAD_TTL_MS = 600_000;
 

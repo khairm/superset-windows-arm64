@@ -12,7 +12,7 @@ export type ShellSource =
 export type ShellResolution =
 	| { kind: "found"; shell: string; source: ShellSource }
 	| { kind: "absent"; shell: string; checked: string[]; skipped: string[] }
-	| { kind: "refused"; message: string; code: "shell-unresolved" };
+	| { kind: "refused"; message: string };
 
 export class ShellUnresolvedError extends Error {
 	readonly code = "shell-unresolved" as const;
@@ -40,13 +40,13 @@ type FileCheck =
 	| { kind: "absent" }
 	| { kind: "unclear"; reason: string };
 
-const RESTART_HINT = "Fix it and restart the app.";
+const RESTART_HINT = "Restart the app.";
 const STORE_FAMILIES = [
 	"Microsoft.PowerShell_8wekyb3d8bbwe",
 	"Microsoft.PowerShellPreview_8wekyb3d8bbwe",
 ];
 
-export function getEnvCaseInsensitive(
+function getEnvCaseInsensitive(
 	env: Record<string, string>,
 	key: string,
 ): string | undefined {
@@ -64,11 +64,11 @@ function errorCode(error: unknown): string {
 }
 
 function isDrivePath(p: string): boolean {
-	return path.win32.isAbsolute(p) && /^[A-Za-z]:[\\/]/.test(p);
+	return /^[A-Za-z]:[\\/]/.test(p);
 }
 
 function isFullPath(p: string): boolean {
-	return isDrivePath(p) || (path.win32.isAbsolute(p) && p.startsWith("\\\\"));
+	return isDrivePath(p) || p.startsWith("\\\\");
 }
 
 function isInsideWindowsApps(p: string): boolean {
@@ -147,12 +147,12 @@ function checkFile(candidate: string, fs: WindowsShellFs): Promise<FileCheck> {
 
 function refuse(message: string): ShellResolution {
 	console.error(`[terminal] shell refused: ${message}`);
-	return { kind: "refused", message, code: "shell-unresolved" };
+	return { kind: "refused", message };
 }
 
 function refuseMissingEnv(name: string): ShellResolution {
 	return refuse(
-		`Can't look for PowerShell 7: the ${name} environment variable is not set. Restart the app.`,
+		`Can't look for PowerShell 7: the ${name} environment variable is not set. ${RESTART_HINT}`,
 	);
 }
 
@@ -173,18 +173,18 @@ async function resolveOverride(
 ): Promise<ShellResolution> {
 	if (!isFullPath(override)) {
 		return refuse(
-			`SUPERSET_TERMINAL_SHELL must be a full path, got "${override}". ${RESTART_HINT}`,
+			`SUPERSET_TERMINAL_SHELL must be a full path, got "${override}". Fix it. ${RESTART_HINT}`,
 		);
 	}
 	const check = await checkFile(override, fs);
 	if (check.kind === "found") return found(override, "override");
 	if (check.kind === "absent") {
 		return refuse(
-			`SUPERSET_TERMINAL_SHELL points to a missing file: ${override}. ${RESTART_HINT}`,
+			`SUPERSET_TERMINAL_SHELL points to a missing file: ${override}. Fix it. ${RESTART_HINT}`,
 		);
 	}
 	return refuse(
-		`SUPERSET_TERMINAL_SHELL could not be checked: ${override} (${check.reason}). ${RESTART_HINT}`,
+		`SUPERSET_TERMINAL_SHELL could not be checked: ${override} (${check.reason}). Fix it. ${RESTART_HINT}`,
 	);
 }
 
@@ -229,7 +229,7 @@ export async function resolveWindowsShell(
 
 	if (!isDrivePath(programFiles)) {
 		return refuse(
-			`Can't look for PowerShell 7: ProgramFiles is not a drive path (${programFiles}). Restart the app.`,
+			`Can't look for PowerShell 7: ProgramFiles is not a drive path (${programFiles}). ${RESTART_HINT}`,
 		);
 	}
 	const { kept, skipped } = splitPathEntries(
@@ -287,14 +287,14 @@ export async function resolveWindowsShell(
 
 	if (unclear.length > 0) {
 		return refuse(
-			`PowerShell 7 could not be checked, so this terminal was not started: ${unclear.join("; ")}. Fix the path or set SUPERSET_TERMINAL_SHELL, then restart the app.`,
+			`PowerShell 7 could not be checked, so this terminal was not started: ${unclear.join("; ")}. Fix the path or set SUPERSET_TERMINAL_SHELL. ${RESTART_HINT}`,
 		);
 	}
 
 	const comspec = getEnvCaseInsensitive(baseEnv, "COMSPEC");
 	if (!comspec) {
 		return refuse(
-			"PowerShell 7 not found and the COMSPEC environment variable is not set. Restart the app.",
+			`PowerShell 7 not found and the COMSPEC environment variable is not set. ${RESTART_HINT}`,
 		);
 	}
 	if (!loggedAbsent) {
