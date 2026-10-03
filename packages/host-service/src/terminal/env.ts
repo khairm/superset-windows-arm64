@@ -11,12 +11,17 @@ export type {
 	ShellLaunchParams,
 } from "./shell-launch.ts";
 export {
+	__setSessionShellResolverForTesting,
+	adoptedSessionShell,
 	getShellBootstrapEnv,
 	getShellLaunchArgs,
 	getSupersetShellPaths,
 	resolveLaunchShell,
+	resolveSessionShell,
 	shellLaunchExpectsReadyMarker,
 } from "./shell-launch.ts";
+export type { ShellResolution } from "./windows-shell.ts";
+export { ShellUnresolvedError } from "./windows-shell.ts";
 
 import fs from "node:fs";
 import os from "node:os";

@@ -678,6 +678,45 @@ describe("terminal-ws-transport", () => {
 		).toHaveLength(0);
 	});
 
+	for (const code of ["shell-unresolved", "shell-spawn-failed"]) {
+		test(`(PWSH-RESOLVE) a ${code} error writes a red line and stops retrying`, () => {
+			const onSessionEnded = mock(() => {});
+			const transport = createTransport({ onSessionEnded });
+			const terminal = createMockTerminal();
+			const lines: string[] = [];
+			(terminal as unknown as { writeln: (s: string) => void }).writeln = (
+				s: string,
+			) => {
+				lines.push(s);
+			};
+			connect(transport, terminal, "ws://host/terminal/t1");
+			const socket = FakeRelaySocket.instances.at(-1);
+			if (!socket) throw new Error("expected relay socket instance");
+			socket.open();
+
+			socket.message(
+				JSON.stringify({
+					type: "error",
+					message: "PowerShell 7 could not be checked",
+					code,
+				}),
+			);
+
+			expect(lines).toEqual([
+				"\r\n\x1b[31m[terminal] PowerShell 7 could not be checked\x1b[0m",
+			]);
+			expect(socket.closed).toBe(true);
+			expect(socket.reconnectCount).toBe(0);
+			expect(transport.sessionEnded).toBe(false);
+			expect(onSessionEnded).not.toHaveBeenCalled();
+			expect(
+				transport.logs.filter((l) =>
+					l.message.includes("Reconnecting (attempt"),
+				),
+			).toHaveLength(0);
+		});
+	}
+
 	test("a plain server error does not mark the session ended", () => {
 		const onSessionEnded = mock(() => {});
 		const transport = createTransport({ onSessionEnded });

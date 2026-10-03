@@ -9,7 +9,14 @@
  * that refusal, and these tests hold both behaviours together.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	describe,
+	expect,
+	test,
+} from "bun:test";
 import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
@@ -27,6 +34,8 @@ import {
 } from "../../test/helpers/claude-accounts-fixture";
 import { registerClaudeAccountsService } from "../claude-accounts-runtime";
 import { terminalSessions, workspaces } from "../db/schema";
+import { __setSessionShellResolverForTesting } from "../terminal/env";
+import type { SessionShellResolverForTesting } from "../terminal/shell-launch";
 import { createTerminalSessionInternal } from "../terminal/terminal";
 import {
 	beginWorkspaceRetirement,
@@ -41,6 +50,22 @@ import {
 const worlds: ClaudeTestWorld[] = [];
 const services: ClaudeAccountsService[] = [];
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
+let previousShellResolver: SessionShellResolverForTesting | undefined;
+
+beforeAll(() => {
+	previousShellResolver = __setSessionShellResolverForTesting({
+		resolve: async () => ({
+			kind: "found",
+			shell: "/bin/sh",
+			source: "configured",
+		}),
+		adoptedShell: () => null,
+	});
+});
+
+afterAll(() => {
+	__setSessionShellResolverForTesting(previousShellResolver);
+});
 
 afterEach(async () => {
 	for (const service of services.splice(0)) service.stop();

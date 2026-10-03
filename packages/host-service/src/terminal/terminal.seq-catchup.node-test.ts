@@ -62,6 +62,7 @@ import {
 	writeInputToSession,
 } from "./terminal.ts";
 import { __setAccountShellForTesting } from "./user-shell.ts";
+import "../../test/shell-resolver-hook.ts";
 
 type Headless = HeadlessTerminal;
 

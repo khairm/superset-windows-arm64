@@ -827,6 +827,17 @@ function attachSocketListeners(
 				socket.close();
 				return;
 			}
+			// (PWSH-RESOLVE-SHOWN)
+			if (
+				message.code === "shell-unresolved" ||
+				message.code === "shell-spawn-failed"
+			) {
+				transport._terminated = true;
+				transport._writeCoalescer?.flushSync();
+				terminal.writeln(`\r\n\x1b[31m[terminal] ${message.message}\x1b[0m`);
+				socket.close();
+				return;
+			}
 			// Any other error may be transient (e.g. a daemon-open timeout while the
 			// pty-daemon is stalled). The server closes the socket after this frame;
 			// let that close drive the normal reconnect/backoff path instead of

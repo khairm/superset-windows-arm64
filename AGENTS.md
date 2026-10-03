@@ -105,9 +105,13 @@ In brief:
   libsql, tokenizers; renderer CORS for `superset-app://`.
 - **Window controls** — native `titleBarOverlay` is the sole min/max/close on
   Windows, theme-matched; upstream's duplicates hidden.
-- **Windows behaviour fixes** — skip quit-confirm; cmd.exe fallback;
+- **Windows behaviour fixes** — skip quit-confirm; cmd.exe only on a clean pwsh absent;
   force-foreground; hidden-window watchdog; WebGL first-paint recovery; Wispr
-  Flow accessibility/paste fix; fast non-blocking startup.
+  Flow accessibility/paste fix; fast non-blocking startup. pwsh found by async
+  file checks only (aliases via lstat/readlink); an unclear check refuses the
+  terminal visibly, never cmd.exe; PATH/override changes need an app restart;
+  never change pty-daemon code for this, it cannot upgrade without killing
+  terminals.
 - **Agent status dots (Claude + Codex)** — per-terminal + workspace-rollup dot:
   red = needs input, yellow = working (incl. subagents/teammates/compaction/
   codex-companion holds), green = ready for review, blue = shell/background/

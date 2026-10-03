@@ -34,6 +34,7 @@ import {
 	disposeSessionAndWait,
 } from "./terminal.ts";
 import { __setAccountShellForTesting } from "./user-shell.ts";
+import "../../test/shell-resolver-hook.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEST_HOME = path.join(os.tmpdir(), `host-svc-ungated-${process.pid}`);

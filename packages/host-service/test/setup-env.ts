@@ -4,6 +4,7 @@
 import "../../../scripts/test-preload.ts";
 import * as os from "node:os";
 import * as path from "node:path";
+import "./shell-resolver-hook.ts";
 
 // Populate the env vars `src/env.ts` validates at module load so test runtimes
 // that boot host-service via `createApp` (instead of `serve.ts`) can import
