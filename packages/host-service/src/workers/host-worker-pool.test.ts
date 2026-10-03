@@ -10,6 +10,7 @@ import {
 	gitWorktreeRemoveTask,
 	gitWorktreeStateTask,
 } from "./tasks/git.ts";
+import { WorkerTaskRunner } from "./WorkerTaskRunner.ts";
 
 const WORKER_ENTRY = path.resolve(import.meta.dirname, "host-worker.ts");
 const CRASH_WORKER = path.resolve(
@@ -399,4 +400,29 @@ describe("HostWorkerPool", () => {
 			"unknown worker task type",
 		);
 	});
+
+	test("(HOST-LAUNCH-IGNORED-REGISTRY) the worker registry lists ignored dirs", async () => {
+		const rootPath = fs.mkdtempSync(
+			path.join(os.tmpdir(), "host-worker-ignored-"),
+		);
+		fixtureDirs.push(rootPath);
+		execFileSync("git", ["init", "-q"], { cwd: rootPath, stdio: "pipe" });
+		fs.writeFileSync(path.join(rootPath, ".gitignore"), "build/\n");
+		fs.mkdirSync(path.join(rootPath, "build"));
+		fs.writeFileSync(path.join(rootPath, "build", "out.txt"), "x\n");
+
+		const runner = new WorkerTaskRunner({
+			workerScriptPath: WORKER_ENTRY,
+			concurrency: 1,
+		});
+		try {
+			const dirs = await withTimeout(
+				runner.runTask<string[]>("git/listIgnoredDirs", { rootPath }),
+				15_000,
+			);
+			expect(dirs).toEqual(["build"]);
+		} finally {
+			await runner.dispose();
+		}
+	}, 20_000);
 });

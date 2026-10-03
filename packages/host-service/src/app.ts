@@ -531,6 +531,11 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 		} catch (err) {
 			console.warn("[host-service] chatV3.dispose failed:", err);
 		}
+		try {
+			gitWatcher.close();
+		} catch (err) {
+			console.warn("[host-service] gitWatcher.close failed:", err);
+		}
 		// Retire the host-worker threads (and reap their in-flight git
 		// children) here rather than leaving them to process.exit(): exit joins
 		// every Worker, and a worker wedged in native code hangs that join
@@ -550,11 +555,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 			eventBus.close();
 		} catch (err) {
 			console.warn("[host-service] eventBus.close failed:", err);
-		}
-		try {
-			gitWatcher.close();
-		} catch (err) {
-			console.warn("[host-service] gitWatcher.close failed:", err);
 		}
 		if (ownsDb) {
 			try {

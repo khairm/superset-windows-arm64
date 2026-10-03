@@ -5,6 +5,7 @@
 import { parentPort } from "node:worker_threads";
 import type { WorkerTaskDefinition } from "./define-worker-task.ts";
 import { gitTasks } from "./tasks/git.ts";
+import { gitReadTasks } from "./tasks/git-reads.ts";
 import { usageTasks } from "./tasks/usage.ts";
 import { killAndReapTrackedChildren } from "./worker-child-tracker.ts";
 import {
@@ -20,7 +21,8 @@ if (!parentPort) {
 
 // biome-ignore lint/suspicious/noExplicitAny: heterogenous task registry; typing is enforced at the defineWorkerTask/run() boundary
 const registry = new Map<string, WorkerTaskDefinition<any, unknown>>();
-for (const def of [...gitTasks, ...usageTasks]) {
+// (HOST-LAUNCH-IGNORED-REGISTRY)
+for (const def of [...gitTasks, ...usageTasks, ...gitReadTasks]) {
 	if (registry.has(def.type)) {
 		throw new Error(`duplicate worker task type: ${def.type}`);
 	}

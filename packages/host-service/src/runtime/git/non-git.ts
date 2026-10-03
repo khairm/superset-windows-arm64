@@ -1,4 +1,8 @@
 import { resolve } from "node:path";
+import {
+	findGitEntryUpTree,
+	type GitEntryProbeResult,
+} from "./git-entry-probe";
 import { createUserSimpleGit } from "./simple-git";
 
 /**
@@ -20,21 +24,40 @@ interface CacheEntry {
 }
 
 /**
- * TTL cache split by answer. A "yes" is held for 60 s because `isGitRepo`
+ * TTL cache split by answer. A "yes" is held for 5 min because `isGitRepo`
  * guards many hot procedures and a repo rarely stops being one; a "no" (or a
  * failed probe) is held for 5 s so a folder that gets `git init`'d mid-session
  * is picked up quickly. A dying `.git` watcher drops a "yes" early through
  * `invalidateIsGitRepo`. The filesystem/git is the source of truth for
  * git-ness; we never persist a flag.
  */
-const IS_REPO_TTL_MS = 60_000; // (GIT-LAUNCH-BUDGET-D-TTL)
+const IS_REPO_TTL_MS = 5 * 60_000; // (GIT-LAUNCH-BUDGET-D-TTL)
 const NOT_REPO_TTL_MS = 5_000; // (GIT-LAUNCH-BUDGET-D-TTL)
 const cache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<boolean>>();
 
 const checkIsRepo = (dirPath: string): Promise<boolean> =>
 	createUserSimpleGit(dirPath).checkIsRepo();
-let probe = checkIsRepo;
+
+export async function probeIsGitRepo(
+	dir: string,
+	deps: {
+		entryProbe: (dir: string) => Promise<GitEntryProbeResult>;
+		gitCheck: (dir: string) => Promise<boolean>;
+	} = { entryProbe: findGitEntryUpTree, gitCheck: checkIsRepo },
+): Promise<boolean> {
+	let entry: GitEntryProbeResult;
+	try {
+		entry = await deps.entryProbe(dir);
+	} catch (error) {
+		console.error("[non-git] disk probe threw", { dir, error });
+		return deps.gitCheck(dir);
+	}
+	if (entry === "absent") return false; // (HOST-LAUNCH-DISK-NO-ISREPO)
+	return deps.gitCheck(dir);
+}
+
+let probe: (dirPath: string) => Promise<boolean> = probeIsGitRepo;
 
 /**
  * Normalize the cache key so the same directory is a single entry regardless
@@ -107,7 +130,7 @@ export function setIsGitRepoProbeForTests(
 export function resetIsGitRepoCacheForTests(): void {
 	cache.clear();
 	inFlight.clear();
-	probe = checkIsRepo;
+	probe = probeIsGitRepo;
 }
 
 /**
