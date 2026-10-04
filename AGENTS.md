@@ -189,7 +189,12 @@ In brief:
   the Pi owns all real credential lineages. The sidebar chip and the
   "Account ▸" menu show pace-coloured 5h/weekly/Fable percentages with reset
   countdowns, mirroring the tray. Glossary: `CONTEXT.md`. Module:
-  `packages/host-service/src/claude-accounts/`.
+  `packages/host-service/src/claude-accounts/`. Per-worktree Auto-switch (off =
+  never auto-falls back, even dead) and one Schedule switch per worktree in
+  host.db `claude_account_schedules`: fires even with Auto-switch off, target
+  must be enabled and alive, temporary failures retry 30 min, red in the menu;
+  a pick that changes the account or card-exit retire cancels; fallback waits
+  10 min after a fire.
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
   local chat pane and port scanning are off behind one `const` each in
   `packages/shared/src/fork-disabled-features.ts`
