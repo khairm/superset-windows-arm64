@@ -37,6 +37,7 @@ import { DashboardSidebarWorkspaceDetails } from "../DashboardSidebarWorkspaceDe
 import { DashboardSidebarWorkspaceDiffStats } from "../DashboardSidebarWorkspaceDiffStats";
 import { DashboardSidebarWorkspaceIcon } from "../DashboardSidebarWorkspaceIcon";
 import { DashboardSidebarWorkspaceChips } from "./components/DashboardSidebarWorkspaceChips";
+import { SnoozeRemainingBadge } from "./components/SnoozeRemainingBadge";
 
 const PR_STATE_LABEL: Record<
 	DashboardSidebarWorkspacePullRequest["state"],
@@ -147,9 +148,6 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 			pendingTransaction,
 		} = workspace;
 		const isPending = pendingTransaction?.type === "insert";
-		// Precomputed in the data hook from the live tick (so it counts down).
-		const snoozeRemaining =
-			sectionState === "snoozed" ? (workspace.snoozeRemainingLabel ?? "") : "";
 		const localRef = useRef<HTMLDivElement>(null);
 		const navigate = useNavigate();
 		// Drives the name's hover-reveal for keyboard users: the row, not the
@@ -422,10 +420,12 @@ export const DashboardSidebarExpandedWorkspaceRow = forwardRef<
 										<Trans>, selected</Trans>
 									</span>
 								)}
-								{snoozeRemaining && (
-									<span className="ml-auto shrink-0 text-[10px] tabular-nums text-amber-500/80">
-										{snoozeRemaining}
-									</span>
+								{/* (SNOOZE-BADGE-LEAF) */}
+								{sectionState === "snoozed" && (
+									<SnoozeRemainingBadge
+										snoozeUntil={workspace.snoozeUntil}
+										snoozeLaunchId={workspace.snoozeLaunchId}
+									/>
 								)}
 								{hostType === "local-device" && (
 									<ClaudeAccountIndicator workspaceId={workspace.id} />

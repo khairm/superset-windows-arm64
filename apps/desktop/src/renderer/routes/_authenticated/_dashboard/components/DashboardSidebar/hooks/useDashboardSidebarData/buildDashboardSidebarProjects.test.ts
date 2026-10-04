@@ -449,25 +449,9 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 			],
 			variant: "snoozed",
 			machineId: MACHINE_ID,
-			nowMs: NOW,
 		});
 
 		expect(rows.map((row) => row.id)).toEqual(["sooner", "later", "launch"]);
-	});
-
-	it("labels remaining snooze time from the passed tick", () => {
-		const [soon, launch] = buildDashboardSidebarInactiveSessionWorkspaces({
-			sessionSidebarWorkspaces: [
-				makeInactiveSession({ id: "soon", snoozeUntil: NOW + 3 * 3_600_000 }),
-				makeInactiveSession({ id: "launch", snoozeLaunchId: APP_LAUNCH_ID }),
-			],
-			variant: "snoozed",
-			machineId: MACHINE_ID,
-			nowMs: NOW,
-		});
-
-		expect(soon.snoozeRemainingLabel).toBe("3h");
-		expect(launch.snoozeRemainingLabel).toBe("launch");
 	});
 
 	it("orders archived sessions most-recently-archived first", () => {
@@ -479,7 +463,6 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 			],
 			variant: "archived",
 			machineId: MACHINE_ID,
-			nowMs: NOW,
 		});
 
 		expect(rows.map((row) => row.id)).toEqual(["newest", "middle", "old"]);
@@ -494,7 +477,6 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 			],
 			variant: "archived",
 			machineId: MACHINE_ID,
-			nowMs: NOW,
 		});
 
 		expect(row.projectId).toBeNull();
@@ -520,7 +502,6 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 				],
 				variant: "archived",
 				machineId: MACHINE_ID,
-				nowMs: NOW,
 			});
 
 			expect(rows.map((row) => row.id)).toEqual(["session-1"]);
@@ -554,7 +535,6 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 				],
 				variant: "deleted",
 				machineId: MACHINE_ID,
-				nowMs: NOW,
 			});
 
 			expect(rows.map((row) => row.id)).toEqual(["newest", "middle", "old"]);
@@ -573,7 +553,6 @@ describe("session lifecycle subsections (SESSION-LIFECYCLE)", () => {
 				],
 				variant: "deleted",
 				machineId: MACHINE_ID,
-				nowMs: NOW,
 			});
 
 			// Nothing is ever dropped — retention is a DISPLAY filter the section

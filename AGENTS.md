@@ -212,6 +212,9 @@ In brief:
 - **Idle redraw budget**: agent spinners share one 80 ms ticker and
   agent-status dots use finite pings (red re-arms on one shared 30 s ticker);
   per-instance timers or infinite pings keep the idle window redrawing.
+  No per-minute state in `useDashboardSidebarData`: snooze badges and wake
+  share one 60 s ticker, and the sidebar renders only on a due tick
+  (`(SNOOZE-WAKE-TICK)`).
 
 ## Live footguns (do NOT repeat)
 

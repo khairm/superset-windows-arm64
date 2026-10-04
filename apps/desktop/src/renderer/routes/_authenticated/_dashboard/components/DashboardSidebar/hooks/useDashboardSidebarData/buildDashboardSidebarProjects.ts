@@ -1,5 +1,4 @@
 import { SESSIONS_TAG_SCOPE } from "@superset/shared/workspace-tags";
-import { formatSnoozeRemaining } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import {
 	getProjectFolderTagIndex,
 	resolveWorkspaceSectionId,
@@ -353,12 +352,10 @@ export function buildDashboardSidebarInactiveSessionWorkspaces({
 	sessionSidebarWorkspaces,
 	variant,
 	machineId,
-	nowMs,
 }: {
 	sessionSidebarWorkspaces: SidebarInactiveWorkspaceInput[];
 	variant: SidebarSessionLifecycleVariant;
 	machineId: string;
-	nowMs: number;
 }): DashboardSidebarWorkspace[] {
 	const rows = sessionSidebarWorkspaces.flatMap(
 		(workspace): DashboardSidebarWorkspace[] => {
@@ -385,11 +382,6 @@ export function buildDashboardSidebarInactiveSessionWorkspaces({
 					snoozeLaunchId: workspace.snoozeLaunchId,
 					archivedAt: workspace.archivedAt,
 					deletedAt: workspace.deletedAt,
-					snoozeRemainingLabel: formatSnoozeRemaining(
-						workspace.snoozeUntil,
-						workspace.snoozeLaunchId,
-						nowMs,
-					),
 				},
 			];
 		},

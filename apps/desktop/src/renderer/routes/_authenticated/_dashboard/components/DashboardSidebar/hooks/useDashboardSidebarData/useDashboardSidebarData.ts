@@ -10,7 +10,6 @@ import { useDashboardSidebarState } from "renderer/routes/_authenticated/hooks/u
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
 import {
 	APP_LAUNCH_ID,
-	formatSnoozeRemaining,
 	getWorkspaceSidebarBucket,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
@@ -28,6 +27,7 @@ import type {
 	DashboardSidebarSection,
 	DashboardSidebarWorkspace,
 } from "../../types";
+import { useSnoozeWake } from "../useSnoozeWake";
 // The project tree itself is still built INLINE below (computedGroups): the
 // extracted builder has no notion of the fork's Snoozed / Archived / Recycle
 // Bin buckets or the just-returned highlight. Only upstream's pinned and
@@ -429,23 +429,11 @@ export function useDashboardSidebarData() {
 		[hostsByMachineId, rawSidebarWorkspaces, workspaceTransactionsById],
 	);
 
-	// Re-evaluate snooze expiry on a coarse timer so a snoozed thread pops back
-	// into the active lane shortly after its deadline. The ticker only runs while
-	// at least one row carries a snooze, so an idle sidebar isn't churning.
-	const [nowMs, setNowMs] = useState(() => Date.now());
-	// Gate the ticker on a TIMED snooze only. An "until next launch" snooze has no
-	// wall-clock deadline (it clears on relaunch via APP_LAUNCH_ID), so counting it
-	// here would keep the interval running forever doing nothing.
-	const hasPendingSnooze = useMemo(
-		() =>
-			rawSidebarWorkspaces.some((workspace) => workspace.snoozeUntil != null),
-		[rawSidebarWorkspaces],
-	);
-	useEffect(() => {
-		if (!hasPendingSnooze) return;
-		const interval = setInterval(() => setNowMs(Date.now()), 60_000);
-		return () => clearInterval(interval);
-	}, [hasPendingSnooze]);
+	// (SNOOZE-WAKE-TICK) this hook renders on the shared snooze ticker only when a
+	// deadline is due; nowMs is re-read on that tick and on any row change.
+	const wakeEpoch = useSnoozeWake(rawSidebarWorkspaces);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-read the clock on row change and on a due tick
+	const nowMs = useMemo(() => Date.now(), [rawSidebarWorkspaces, wakeEpoch]);
 
 	// Ids whose snooze expired by TIMER (not via manual "Unsnooze now") — only
 	// these flash the just-returned highlight when they re-enter the active lane.
@@ -668,8 +656,8 @@ export function useDashboardSidebarData() {
 
 	// Keep the latest hover-target inputs in a ref so refreshWorkspacePullRequest
 	// keeps a STABLE identity. Its inputs derive from the nowMs partition, so
-	// without this it would change every 60s tick and churn the onWorkspaceHover
-	// prop on every memoised row.
+	// without this it would change on every due snooze tick and churn the
+	// onWorkspaceHover prop on every memoised row.
 	const pullRequestRefreshInputsRef = useRef({
 		visibleSidebarWorkspaces,
 		pullRequestQueryTargets,
@@ -925,11 +913,6 @@ export function useDashboardSidebarData() {
 				// (RECYCLE-BIN) carried so the Recycle Bin section can sort by it and
 				// apply the retention "Show all" filter.
 				deletedAt: workspace.deletedAt ?? null,
-				snoozeRemainingLabel: formatSnoozeRemaining(
-					workspace.snoozeUntil,
-					workspace.snoozeLaunchId,
-					nowMs,
-				),
 			};
 		};
 
@@ -1049,7 +1032,6 @@ export function useDashboardSidebarData() {
 		});
 	}, [
 		machineId,
-		nowMs,
 		justReturnedIds,
 		pullRequestsByWorkspaceId,
 		sidebarProjects,
@@ -1075,17 +1057,15 @@ export function useDashboardSidebarData() {
 	const sessionWorkspaces = sessions.workspaces;
 
 	// (SESSION-LIFECYCLE) Rows for the top-level Snoozed Sessions / Archived
-	// Sessions subsections. `nowMs` is the same coarse tick that expires snoozes,
-	// so the remaining-time badge counts down with it.
+	// Sessions subsections.
 	const computedSnoozedSessionWorkspaces = useMemo<DashboardSidebarWorkspace[]>(
 		() =>
 			buildDashboardSidebarInactiveSessionWorkspaces({
 				sessionSidebarWorkspaces: sessionSnoozedRows,
 				variant: "snoozed",
 				machineId,
-				nowMs,
 			}),
-		[machineId, nowMs, sessionSnoozedRows],
+		[machineId, sessionSnoozedRows],
 	);
 	const snoozedSessionWorkspaces = useJsonStable(
 		computedSnoozedSessionWorkspaces,
@@ -1099,9 +1079,8 @@ export function useDashboardSidebarData() {
 				sessionSidebarWorkspaces: sessionArchivedRows,
 				variant: "archived",
 				machineId,
-				nowMs,
 			}),
-		[machineId, nowMs, sessionArchivedRows],
+		[machineId, sessionArchivedRows],
 	);
 	const archivedSessionWorkspaces = useJsonStable(
 		computedArchivedSessionWorkspaces,
@@ -1116,9 +1095,8 @@ export function useDashboardSidebarData() {
 				sessionSidebarWorkspaces: sessionDeletedRows,
 				variant: "deleted",
 				machineId,
-				nowMs,
 			}),
-		[machineId, nowMs, sessionDeletedRows],
+		[machineId, sessionDeletedRows],
 	);
 	const deletedSessionWorkspaces = useJsonStable(
 		computedDeletedSessionWorkspaces,

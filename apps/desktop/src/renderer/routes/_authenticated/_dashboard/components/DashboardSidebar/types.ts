@@ -63,9 +63,6 @@ export interface DashboardSidebarWorkspace {
 	// (RECYCLE-BIN) Soft-delete timestamp — populated for items rendered inside
 	// the Recycle Bin section (used for sort + the retention "Show all" filter).
 	deletedAt?: number | null;
-	/** Precomputed "time left" label for a snoozed row (e.g. "3d"), derived in
-	 * the data hook from the live tick so the badge actually counts down. */
-	snoozeRemainingLabel?: string;
 	/** Set briefly on an active row that just auto-returned from snooze, to
 	 * drive a subtle one-shot "just returned" highlight. */
 	justReturned?: boolean;
