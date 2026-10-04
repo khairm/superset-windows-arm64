@@ -1043,22 +1043,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		if (targetSlug !== null) {
 			const row = this.findWorkspace(workspaceId);
 			if (!row) return { kind: "settled" };
-			let installed: ManagedCredentials | null;
-			try {
-				installed = await this.readProfileCredentialsForCache(
-					workspaceId,
-					undefined,
-					true,
-				);
-			} catch (error) {
-				if (!isFsError(error)) throw error;
-				return retryOutcome("profile-unavailable", error.message);
-			}
+			const read = await this.readScheduleProfile(workspaceId);
+			if ("retry" in read) return read.retry;
 			const halted = this.scheduleHalted(schedule);
 			if (halted) return halted;
 			const plannedNoop = isOnScheduleTarget(
 				row.claudeAccountSlug,
-				installed,
+				read.installed,
 				targetSlug,
 			);
 			try {
@@ -1133,14 +1124,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		if (halted) return halted;
 		if (piFailure !== null) return this.failSchedule(schedule, piFailure);
 		if (targetSlug === null) return this.commitDefaultSchedule(schedule, row);
-		const installed = await this.readProfileCredentialsForCache(
-			workspaceId,
-			undefined,
-			true,
-		);
+		const read = await this.readScheduleProfile(workspaceId);
+		if ("retry" in read) return read.retry;
 		const installedHalted = this.scheduleHalted(schedule);
 		if (installedHalted) return installedHalted;
-		if (isOnScheduleTarget(row.claudeAccountSlug, installed, targetSlug)) {
+		if (isOnScheduleTarget(row.claudeAccountSlug, read.installed, targetSlug)) {
 			return this.consumeNoopSchedule(schedule);
 		}
 		if (!token) return { kind: "replan" };
@@ -1150,6 +1138,25 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			targetSlug,
 			credentialsFromToken(token),
 		);
+	}
+
+	private async readScheduleProfile(
+		workspaceId: string,
+	): Promise<
+		{ installed: ManagedCredentials | null } | { retry: ScheduleFireOutcome }
+	> {
+		try {
+			return {
+				installed: await this.readProfileCredentialsForCache(
+					workspaceId,
+					undefined,
+					true,
+				),
+			};
+		} catch (error) {
+			if (!hasFsErrorCode(error, ["EPERM", "EBUSY"])) throw error;
+			return { retry: retryOutcome("profile-unavailable", errorText(error)) };
+		}
 	}
 
 	private async commitDefaultSchedule(
@@ -2554,7 +2561,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		try {
 			await this.profiles.deleteProfileDir(workspaceId);
 		} catch (error) {
-			if (!isBusyFsError(error)) throw error;
+			if (!hasFsErrorCode(error, ["EBUSY"])) throw error;
 			const retryIds = [
 				...terminalIds,
 				...listUndisposedTerminalIdsByWorkspaceId(workspaceId, this.deps.db),
@@ -2878,20 +2885,11 @@ function sameAccessToken(
 	);
 }
 
-function isFsError(error: unknown): error is NodeJS.ErrnoException {
-	return (
-		error instanceof Error &&
-		typeof (error as NodeJS.ErrnoException).code === "string"
-	);
-}
-
-function isBusyFsError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as NodeJS.ErrnoException).code === "EBUSY"
-	);
+function hasFsErrorCode(error: unknown, codes: readonly string[]): boolean {
+	if (typeof error !== "object" || error === null || !("code" in error)) {
+		return false;
+	}
+	return typeof error.code === "string" && codes.includes(error.code);
 }
 
 export function createClaudeAccountsService(

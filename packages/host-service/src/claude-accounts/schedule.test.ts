@@ -40,6 +40,12 @@ const services: ClaudeAccountsService[] = [];
 const servers: Array<{ stop(closeActiveConnections?: boolean): void }> = [];
 const spies: Array<{ mockRestore(): void }> = [];
 
+function fsError(code: string): NodeJS.ErrnoException {
+	return Object.assign(new Error(`${code}: profile check failed, lstat`), {
+		code,
+	});
+}
+
 afterEach(async () => {
 	for (const spy of spies.splice(0)) spy.mockRestore();
 	for (const service of services.splice(0)) service.stop();
@@ -657,7 +663,10 @@ describe("scheduled switch retries and failures", () => {
 		expect(await readFile(credentialsPath(service, id), "utf8")).toBe("");
 	});
 
-	test("an unexpected error fails as error at once, with no retry", async () => {
+	test.each([
+		["an unexpected error", new Error("disk exploded")],
+		["EACCES reading the profile", fsError("EACCES")],
+	])("%s fails as error at once, with no retry", async (_label, failure) => {
 		let now = Date.now();
 		const { world, pi } = await createScheduleWorld();
 		const id = await seedPinned(world, { slug: B, installed: B });
@@ -674,7 +683,7 @@ describe("scheduled switch retries and failures", () => {
 			spyOn(
 				ClaudeProfileManager.prototype,
 				"profileExists",
-			).mockRejectedValueOnce(new Error("disk exploded")),
+			).mockRejectedValueOnce(failure),
 		);
 
 		await timer.fire();
@@ -682,13 +691,16 @@ describe("scheduled switch retries and failures", () => {
 		expect(scheduleRow(world, id)).toMatchObject({
 			status: "failed",
 			failure: "error",
-			lastError: "disk exploded",
+			lastError: failure.message,
 		});
 		expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
 		expect(timer.armed).toBeNull();
 	});
 
-	test("a transient fs error reading the profile stays pending as profile-unavailable", async () => {
+	test.each([
+		["the pre-lock profile read", "EPERM", 0],
+		["the commit profile read", "EBUSY", 1],
+	] as const)("%s hitting %s stays pending as profile-unavailable", async (_read, code, readsBefore) => {
 		let now = Date.now();
 		const { world, pi } = await createScheduleWorld();
 		const id = await seedPinned(world, { slug: B, installed: B });
@@ -698,18 +710,19 @@ describe("scheduled switch retries and failures", () => {
 		const fireAt = now + MINUTE;
 		await service.scheduleSwitch(id, { kind: "account", slug: A }, fireAt);
 		now = fireAt;
-		spies.push(
-			spyOn(
-				ClaudeProfileManager.prototype,
-				"profileExists",
-			).mockRejectedValueOnce(
-				Object.assign(new Error("EPERM: operation not permitted, lstat"), {
-					code: "EPERM",
-				}),
-			),
+		const failure = fsError(code);
+		const profileExists = spyOn(
+			ClaudeProfileManager.prototype,
+			"profileExists",
 		);
+		spies.push(profileExists);
+		for (let read = 0; read < readsBefore; read++) {
+			profileExists.mockResolvedValueOnce(true);
+		}
+		profileExists.mockRejectedValueOnce(failure);
 
 		await timer.fire();
+		expect(profileExists).toHaveBeenCalledTimes(readsBefore + 1);
 		expect(scheduleRow(world, id)?.status).toBe("pending");
 
 		now = fireAt + WINDOW;
@@ -717,7 +730,7 @@ describe("scheduled switch retries and failures", () => {
 		expect(scheduleRow(world, id)).toMatchObject({
 			status: "failed",
 			failure: "profile-unavailable",
-			lastError: "EPERM: operation not permitted, lstat",
+			lastError: failure.message,
 		});
 		expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
 	});
