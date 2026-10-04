@@ -62,8 +62,12 @@ export const realScheduleTimer: ScheduleTimer = (run, delayMs) => {
 	return () => clearTimeout(handle);
 };
 
+export function scheduleDeadline(fireAt: number): number {
+	return fireAt + SCHEDULE_WINDOW_MS;
+}
+
 export function scheduleExpired(fireAt: number, now: number): boolean {
-	return now >= fireAt + SCHEDULE_WINDOW_MS;
+	return now >= scheduleDeadline(fireAt);
 }
 
 export function decideSchedule(
@@ -71,7 +75,7 @@ export function decideSchedule(
 	attempt: ScheduleAttemptState | undefined,
 	now: number,
 ): ScheduleDecision {
-	const deadline = schedule.fireAt + SCHEDULE_WINDOW_MS;
+	const deadline = scheduleDeadline(schedule.fireAt);
 	if (attempt !== undefined && now < attempt.nextAttemptAt) {
 		return { kind: "wait", wakeAt: attempt.nextAttemptAt };
 	}
@@ -85,6 +89,11 @@ export function decideSchedule(
 	}
 	if (now < schedule.fireAt) return { kind: "wait", wakeAt: schedule.fireAt };
 	return { kind: "attempt" };
+}
+
+export interface PendingDecision {
+	schedule: DueSchedule;
+	decision: ScheduleDecision;
 }
 
 export interface ScheduleRunnerDeps {
@@ -109,29 +118,20 @@ export class ScheduleRunner {
 
 	constructor(private readonly deps: ScheduleRunnerDeps) {}
 
-	poke(): void {
-		this.arm();
-	}
-
 	stop(): void {
 		this.stopped = true;
 		this.disarm();
 	}
 
-	private arm(): void {
+	/** `planned` replaces the re-read and must exclude schedules launched since it was decided. */
+	poke(planned?: readonly PendingDecision[]): void {
 		this.disarm();
 		if (this.stopped) return;
 		try {
 			if (!this.deps.isActive()) return;
 			const now = this.deps.now();
 			let wakeAt = Number.POSITIVE_INFINITY;
-			for (const schedule of this.deps.listPending()) {
-				if (this.inFlight.has(schedule.scheduleId)) continue;
-				const decision = decideSchedule(
-					schedule,
-					this.attempts.get(schedule.scheduleId),
-					now,
-				);
+			for (const { decision } of planned ?? this.pendingDecisions(now)) {
 				wakeAt = Math.min(
 					wakeAt,
 					decision.kind === "wait" ? decision.wakeAt : now,
@@ -160,36 +160,49 @@ export class ScheduleRunner {
 		this.disarmTimer = null;
 	}
 
+	private pendingDecisions(now: number): PendingDecision[] {
+		const decided: PendingDecision[] = [];
+		for (const schedule of this.deps.listPending()) {
+			if (this.inFlight.has(schedule.scheduleId)) continue;
+			decided.push({
+				schedule,
+				decision: decideSchedule(
+					schedule,
+					this.attempts.get(schedule.scheduleId),
+					now,
+				),
+			});
+		}
+		return decided;
+	}
+
 	/** Attempts run concurrently across schedules, never twice for one schedule_id. */
 	private async runPass(): Promise<void> {
 		this.disarmTimer = null;
 		if (this.stopped) return;
 		const launched: Promise<void>[] = [];
+		let planned: PendingDecision[] | undefined;
 		try {
 			if (!this.deps.isActive()) return;
-			const schedules = this.deps.listPending();
-			const pendingIds = new Set(
-				schedules.map((schedule) => schedule.scheduleId),
+			const decided = this.pendingDecisions(this.deps.now());
+			const decidedIds = new Set(
+				decided.map(({ schedule }) => schedule.scheduleId),
 			);
 			for (const scheduleId of this.attempts.keys()) {
-				if (!pendingIds.has(scheduleId)) this.attempts.delete(scheduleId);
-			}
-			const now = this.deps.now();
-			for (const schedule of schedules) {
-				if (this.inFlight.has(schedule.scheduleId)) continue;
-				const decision = decideSchedule(
-					schedule,
-					this.attempts.get(schedule.scheduleId),
-					now,
-				);
-				if (decision.kind !== "wait") {
-					launched.push(this.launch(schedule, decision));
+				if (!decidedIds.has(scheduleId) && !this.inFlight.has(scheduleId)) {
+					this.attempts.delete(scheduleId);
 				}
 			}
+			const waiting: PendingDecision[] = [];
+			for (const entry of decided) {
+				if (entry.decision.kind === "wait") waiting.push(entry);
+				else launched.push(this.launch(entry.schedule, entry.decision));
+			}
+			planned = waiting;
 		} catch (error) {
 			this.deps.log.error("Claude scheduled switch pass failed", { error });
 		} finally {
-			this.arm();
+			this.poke(planned);
 		}
 		await Promise.all(launched);
 	}
@@ -212,7 +225,7 @@ export class ScheduleRunner {
 			);
 		} finally {
 			this.inFlight.delete(schedule.scheduleId);
-			this.arm();
+			this.poke();
 		}
 	}
 
@@ -271,7 +284,7 @@ export class ScheduleRunner {
 					schedule,
 					Math.min(
 						now + FAILED_ATTEMPT_RETRY_MS,
-						schedule.fireAt + SCHEDULE_WINDOW_MS,
+						scheduleDeadline(schedule.fireAt),
 					),
 					outcome.failure,
 				);

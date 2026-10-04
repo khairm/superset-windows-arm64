@@ -60,6 +60,7 @@ const GLOBAL_WARNING_KEY = "__global__";
 const WORKSPACE_REFRESH_CONCURRENCY = 6;
 const ROSTER_REFRESH_EVERY_TICKS = 5;
 const SILENT_WORKSPACE_CAUSES = new Set(["renewal"]);
+const AUTO_SWITCH_OFF_HOLD = "auto-switch is off";
 
 export interface ClaudeAccountsServiceDeps {
 	db: HostDb;
@@ -183,6 +184,10 @@ interface AccountTransitionBase {
 type AccountTransition = AccountTransitionBase & CredentialTransition;
 
 type WorkspaceRow = typeof workspaces.$inferSelect;
+type ScheduleWorkspace = Pick<
+	WorkspaceRow,
+	"claudeAccountSlug" | "worktreePath"
+>;
 
 /** The pre-change credentials file could not be captured (empty or unreadable). */
 class CredentialCaptureError extends Error {
@@ -225,6 +230,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		ManagedCredentials | null
 	>();
 	private readonly warningCauses = new Map<string, Map<string, string>>();
+	private fallbackHolds = new Map<string, string>();
 
 	constructor(private readonly deps: ClaudeAccountsServiceDeps) {
 		this.profiles = new ClaudeProfileManager(deps.dbPath, deps.log);
@@ -783,15 +789,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			);
 		}
 		this.schedules.poke();
-		return {
-			status: "pending",
-			scheduleId,
-			target:
-				targetSlug === null
-					? { kind: "default" }
-					: { kind: "account", slug: targetSlug },
-			fireAt,
-		};
+		return toScheduleView({ workspaceId, ...pending });
 	}
 
 	async clearScheduledSwitch(
@@ -817,7 +815,9 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	async getWorkspaceState(
 		workspaceId: string,
 	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">> {
-		this.requireWorkspace(workspaceId);
+		if (!isWorkspaceUuid(workspaceId)) {
+			throw new Error(`Invalid workspace UUID: ${workspaceId}`);
+		}
 		const [found] = this.selectWorkspaceStates(eq(workspaces.id, workspaceId));
 		if (!found) throw new Error(`Workspace ${workspaceId} does not exist`);
 		const { workspaceId: _workspaceId, ...state } = found;
@@ -1040,50 +1040,52 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		const { workspaceId, targetSlug } = schedule;
 		let token: ClaudeAccessToken | null = null;
 		let piFailure: unknown = null;
-		if (targetSlug !== null) {
-			const row = this.findWorkspace(workspaceId);
-			if (!row) return { kind: "settled" };
-			const read = await this.readScheduleProfile(workspaceId);
-			if ("retry" in read) return read.retry;
-			const halted = this.scheduleHalted(schedule);
-			if (halted) return halted;
-			const plannedNoop = isOnScheduleTarget(
-				row.claudeAccountSlug,
-				read.installed,
-				targetSlug,
-			);
-			try {
-				const roster = await this.pi.fetchAccounts();
-				this.recordAccountsSuccess();
-				const rosterHalted = this.scheduleHalted(schedule);
-				if (rosterHalted) return rosterHalted;
-				const account = findClaudeAccount(roster, targetSlug);
-				const unavailable = account
-					? accountHealthMessage(account, `Claude account '${targetSlug}'`)
-					: `Claude account '${targetSlug}' is not in the Pi roster`;
-				if (unavailable) {
-					return retryOutcome("target-unavailable", unavailable);
-				}
-				if (!plannedNoop) {
-					token = await this.pi.fetchToken(targetSlug);
-					this.recordTokenSuccess(targetSlug);
-					const tokenHalted = this.scheduleHalted(schedule);
-					if (tokenHalted) return tokenHalted;
-				}
-			} catch (error) {
-				if (error instanceof PiRequestError && error.retryable) {
-					return retryOutcome("pi-unavailable", error.message);
-				}
-				piFailure = error;
-			}
-		}
 		try {
+			if (targetSlug !== null) {
+				const row = this.findWorkspace(workspaceId);
+				if (!row) return { kind: "settled" };
+				const [read, roster] = await Promise.allSettled([
+					this.readScheduleProfile(workspaceId),
+					this.pi.fetchAccounts(),
+				]);
+				if (roster.status === "fulfilled") this.recordAccountsSuccess();
+				if (read.status === "rejected") throw read.reason;
+				if ("retry" in read.value) return read.value.retry;
+				this.throwIfHalted(schedule);
+				const plannedNoop = isOnScheduleTarget(
+					row.claudeAccountSlug,
+					read.value.installed,
+					targetSlug,
+				);
+				try {
+					if (roster.status === "rejected") throw roster.reason;
+					const account = findClaudeAccount(roster.value, targetSlug);
+					const unavailable = account
+						? accountHealthMessage(account, `Claude account '${targetSlug}'`)
+						: `Claude account '${targetSlug}' is not in the Pi roster`;
+					if (unavailable) {
+						return retryOutcome("target-unavailable", unavailable);
+					}
+					if (!plannedNoop) {
+						token = await this.pi.fetchToken(targetSlug);
+						this.recordTokenSuccess(targetSlug);
+						this.throwIfHalted(schedule);
+					}
+				} catch (error) {
+					if (error instanceof ScheduleHaltedError) throw error;
+					if (error instanceof PiRequestError && error.retryable) {
+						return retryOutcome("pi-unavailable", error.message);
+					}
+					piFailure = error;
+				}
+			}
 			return await this.withWorkspaceLock(
 				workspaceId,
 				() => this.commitSchedule(schedule, token, piFailure),
 				{ tryOnly: true },
 			);
 		} catch (error) {
+			if (error instanceof ScheduleHaltedError) return error.outcome;
 			if (error instanceof WorkspaceLockBusyError) {
 				return piFailure === null
 					? { kind: "busy" }
@@ -1099,20 +1101,26 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		piFailure: unknown,
 	): Promise<ScheduleFireOutcome> {
 		const { workspaceId, scheduleId, targetSlug } = schedule;
-		const row = this.findWorkspace(workspaceId);
-		const current = this.deps.db
+		const row = this.deps.db
 			.select({
+				archivedAt: workspaces.archivedAt,
+				claudeAccountSlug: workspaces.claudeAccountSlug,
+				worktreePath: workspaces.worktreePath,
 				scheduleId: claudeAccountSchedules.scheduleId,
 				status: claudeAccountSchedules.status,
 			})
-			.from(claudeAccountSchedules)
-			.where(eq(claudeAccountSchedules.workspaceId, workspaceId))
+			.from(workspaces)
+			.leftJoin(
+				claudeAccountSchedules,
+				eq(claudeAccountSchedules.workspaceId, workspaces.id),
+			)
+			.where(eq(workspaces.id, workspaceId))
 			.get();
 		if (
 			!row ||
 			row.archivedAt !== null ||
-			current?.scheduleId !== scheduleId ||
-			current.status !== "pending"
+			row.scheduleId !== scheduleId ||
+			row.status !== "pending"
 		) {
 			this.deps.log.info(
 				"Scheduled Claude account switch was replaced or cancelled before it fired",
@@ -1120,14 +1128,12 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			);
 			return { kind: "settled" };
 		}
-		const halted = this.scheduleHalted(schedule);
-		if (halted) return halted;
+		this.throwIfHalted(schedule);
 		if (piFailure !== null) return this.failSchedule(schedule, piFailure);
 		if (targetSlug === null) return this.commitDefaultSchedule(schedule, row);
 		const read = await this.readScheduleProfile(workspaceId);
 		if ("retry" in read) return read.retry;
-		const installedHalted = this.scheduleHalted(schedule);
-		if (installedHalted) return installedHalted;
+		this.throwIfHalted(schedule);
 		if (isOnScheduleTarget(row.claudeAccountSlug, read.installed, targetSlug)) {
 			return this.consumeNoopSchedule(schedule);
 		}
@@ -1161,7 +1167,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private async commitDefaultSchedule(
 		schedule: DueSchedule,
-		row: WorkspaceRow,
+		row: ScheduleWorkspace,
 	): Promise<ScheduleFireOutcome> {
 		if (row.claudeAccountSlug === null) {
 			return this.consumeNoopSchedule(schedule);
@@ -1172,8 +1178,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		} catch (error) {
 			return retryOutcome("default-unavailable", errorText(error));
 		}
-		const halted = this.scheduleHalted(schedule);
-		if (halted) return halted;
+		this.throwIfHalted(schedule);
 		if (identity.kind === "absent") {
 			return retryOutcome(
 				"default-unavailable",
@@ -1185,7 +1190,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	private async switchForSchedule(
 		schedule: DueSchedule,
-		row: WorkspaceRow,
+		row: ScheduleWorkspace,
 		desiredSlug: string | null,
 		credentials: ManagedCredentials,
 	): Promise<ScheduleFireOutcome> {
@@ -1358,6 +1363,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return { kind: "expired" };
 		}
 		return null;
+	}
+
+	private throwIfHalted(schedule: DueSchedule): void {
+		const halted = this.scheduleHalted(schedule);
+		if (halted) throw new ScheduleHaltedError(halted);
 	}
 
 	private clearScheduleAndCooldown(workspaceId: string): void {
@@ -1812,15 +1822,22 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			pinnedSlug: string;
 			reason: string;
 		}> = [];
+		const holds = new Map<string, string>();
 		for (const row of rows) {
 			const slug = row.claudeAccountSlug;
 			if (slug === null) continue;
 			const hold = this.fallbackHold(row);
 			if (hold) {
-				this.deps.log.info(`Claude auto-fallback suppressed: ${hold}`, {
-					workspaceId: row.id,
-					slug,
-				});
+				holds.set(row.id, hold);
+				const unchangedOffHold =
+					hold === AUTO_SWITCH_OFF_HOLD &&
+					this.fallbackHolds.get(row.id) === hold;
+				if (!unchangedOffHold) {
+					this.deps.log.info(`Claude auto-fallback suppressed: ${hold}`, {
+						workspaceId: row.id,
+						slug,
+					});
+				}
 				continue;
 			}
 			if (slug === identity.slug) {
@@ -1860,6 +1877,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				reason: evaluation.reason,
 			});
 		}
+		this.fallbackHolds = holds;
 		if (candidates.length === 0) return;
 
 		for (const candidate of candidates) {
@@ -1974,7 +1992,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private fallbackHold(
 		row: Pick<WorkspaceRow, "claudeAutoSwitch" | "claudeScheduleFiredAt">,
 	): string | null {
-		if (!row.claudeAutoSwitch) return "auto-switch is off";
+		if (!row.claudeAutoSwitch) return AUTO_SWITCH_OFF_HOLD;
 		if (
 			row.claudeScheduleFiredAt !== null &&
 			this.now() - row.claudeScheduleFiredAt < SCHEDULE_FALLBACK_COOLDOWN_MS
@@ -2496,13 +2514,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			.sync();
 	}
 
-	private requireWorkspace(workspaceId: string) {
+	private requireWorkspace(workspaceId: string): WorkspaceRow {
 		if (!isWorkspaceUuid(workspaceId)) {
 			throw new Error(`Invalid workspace UUID: ${workspaceId}`);
 		}
-		const row = this.deps.db.query.workspaces
-			.findFirst({ where: eq(workspaces.id, workspaceId) })
-			.sync();
+		const row = this.findWorkspace(workspaceId);
 		if (!row) throw new Error(`Workspace ${workspaceId} does not exist`);
 		return row;
 	}

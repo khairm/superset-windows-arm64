@@ -941,17 +941,28 @@ describe("Claude automatic fallback safeguards", () => {
 		const ticksAfterStart = suppressedTicks();
 		expect(ticksAfterStart).toBeGreaterThanOrEqual(1);
 
-		await writeGlobalCredentials(
-			world,
-			managedCredentials("claude12", {
-				accessToken: "claude12-default-token",
-				refreshToken: "real-token-stays-global",
-			}),
-		);
-		await waitFor(
-			() => suppressedTicks() > ticksAfterStart,
-			"a second keep-fresh tick did not run",
-		);
+		const readTriggers = spyOn(FallbackPolicy.prototype, "readTriggers");
+		try {
+			// The third tick only starts once the second, and its fallback pass, finished.
+			await waitFor(
+				async () => {
+					if (readTriggers.mock.calls.length >= 2) return true;
+					await writeGlobalCredentials(
+						world,
+						managedCredentials("claude12", {
+							accessToken: "claude12-default-token",
+							refreshToken: "real-token-stays-global",
+						}),
+					);
+					return false;
+				},
+				"two more keep-fresh ticks did not run",
+				5_000,
+			);
+		} finally {
+			readTriggers.mockRestore();
+		}
+		expect(suppressedTicks()).toBe(ticksAfterStart);
 
 		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
 		expect(state).toMatchObject({
