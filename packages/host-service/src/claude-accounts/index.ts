@@ -171,7 +171,10 @@ interface AccountTransitionBase {
 		| {
 				kind: "set";
 				currentSlug: string | null;
-				schedule?: { consume: string };
+				schedule?: {
+					consume: string;
+					halted: () => ScheduleFireOutcome | null;
+				};
 		  }
 		| { kind: "compare-and-set"; expectedSlug: string };
 	cause: ClaudeAccountStateChangedMessage["cause"];
@@ -186,6 +189,13 @@ class CredentialCaptureError extends Error {
 	constructor(cause: unknown) {
 		super(errorText(cause), { cause });
 		this.name = "CredentialCaptureError";
+	}
+}
+
+class ScheduleHaltedError extends Error {
+	constructor(readonly outcome: ScheduleFireOutcome) {
+		super(`Scheduled Claude account switch halted (${outcome.kind})`);
+		this.name = "ScheduleHaltedError";
 	}
 }
 
@@ -233,7 +243,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			listPending: () => this.listPendingSchedules(),
 			fire: (schedule) => this.fireSchedule(schedule),
 			expire: (schedule, lastFailure) =>
-				this.expireSchedule(schedule, lastFailure),
+				this.markScheduleFailedUnderLock(
+					schedule,
+					lastFailure?.failure ?? "not-run",
+					lastFailure?.message ?? null,
+				),
+			fail: (schedule, error) =>
+				this.markScheduleFailedUnderLock(schedule, "error", errorText(error)),
 		});
 	}
 
@@ -437,7 +453,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					if (opts.onlyIfFollowing && row.claudeAccountSlug !== null) return;
 					const slug = identity.slug;
 					try {
-						await this.setWorkspaceAccountLocked(workspaceId, slug);
+						validateAccountSlug(slug);
+						await this.setWorkspaceAccountLocked(row, slug);
 						return;
 					} catch (error) {
 						this.deps.log.warn(
@@ -489,16 +506,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			if (slug !== row.claudeAccountSlug) {
 				this.clearScheduleAndCooldown(workspaceId);
 			}
-			await this.setWorkspaceAccountLocked(workspaceId, slug);
+			await this.setWorkspaceAccountLocked(row, slug);
 		});
 	}
 
 	private async setWorkspaceAccountLocked(
-		workspaceId: string,
+		row: WorkspaceRow,
 		slug: string | null,
 	): Promise<void> {
-		const row = this.requireWorkspace(workspaceId);
-		if (slug !== null) validateAccountSlug(slug);
+		const workspaceId = row.id;
 		let roster: PiAccount[] | null = null;
 		let rosterUnavailable = false;
 		try {
@@ -1071,7 +1087,11 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				{ tryOnly: true },
 			);
 		} catch (error) {
-			if (error instanceof WorkspaceLockBusyError) return { kind: "busy" };
+			if (error instanceof WorkspaceLockBusyError) {
+				return piFailure === null
+					? { kind: "busy" }
+					: { kind: "failed", error: piFailure };
+			}
 			throw error;
 		}
 	}
@@ -1167,11 +1187,21 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				database: {
 					kind: "set",
 					currentSlug: row.claudeAccountSlug,
-					schedule: { consume: scheduleId },
+					schedule: {
+						consume: scheduleId,
+						halted: () => this.scheduleHalted(schedule),
+					},
 				},
 				cause: "scheduled",
 			});
 		} catch (error) {
+			if (error instanceof ScheduleHaltedError) {
+				this.deps.log.info(
+					"Scheduled Claude account switch halted before it committed",
+					{ workspaceId, scheduleId, outcome: error.outcome.kind },
+				);
+				return error.outcome;
+			}
 			if (error instanceof CredentialCaptureError) {
 				return retryOutcome("profile-unavailable", error.message);
 			}
@@ -1252,27 +1282,32 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		return { kind: "settled" };
 	}
 
-	private async expireSchedule(
+	private async markScheduleFailedUnderLock(
 		schedule: DueSchedule,
-		lastFailure: ScheduleAttemptFailure | null,
+		failure: ClaudeScheduleFailure,
+		lastError: string | null,
 	): Promise<"settled" | "busy"> {
-		const failure = lastFailure?.failure ?? "not-run";
 		try {
 			await this.withWorkspaceLock(
 				schedule.workspaceId,
 				async () => {
-					if (
-						this.markScheduleFailed(
-							schedule,
-							failure,
-							lastFailure?.message ?? null,
-						)
-					) {
-						this.deps.log.warn("Scheduled Claude account switch expired", {
-							workspaceId: schedule.workspaceId,
-							scheduleId: schedule.scheduleId,
-							failure,
-						});
+					if (!this.markScheduleFailed(schedule, failure, lastError)) return;
+					const context = {
+						workspaceId: schedule.workspaceId,
+						scheduleId: schedule.scheduleId,
+						failure,
+						lastError,
+					};
+					if (failure === "error") {
+						this.deps.log.error(
+							"Scheduled Claude account switch failed",
+							context,
+						);
+					} else {
+						this.deps.log.warn(
+							"Scheduled Claude account switch expired",
+							context,
+						);
 					}
 				},
 				{ tryOnly: true },
@@ -2271,7 +2306,23 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		} catch (error) {
 			throw new CredentialCaptureError(error);
 		}
+		const scheduleHalted =
+			transition.database.kind === "set"
+				? transition.database.schedule?.halted
+				: undefined;
+		const haltedBeforeWrite = scheduleHalted?.();
+		if (haltedBeforeWrite) throw new ScheduleHaltedError(haltedBeforeWrite);
 		await this.applyCredentialTransition(workspaceId, transition);
+		const haltedAfterWrite = scheduleHalted?.();
+		if (haltedAfterWrite) {
+			const halt = new ScheduleHaltedError(haltedAfterWrite);
+			await this.restoreCredentialStateAfterDatabaseFailure(
+				workspaceId,
+				priorCredentialState,
+				halt,
+			);
+			throw halt;
+		}
 		let updated: { id: string } | undefined;
 		try {
 			if (transition.database.kind === "set") {

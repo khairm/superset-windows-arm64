@@ -175,10 +175,6 @@ export function useScheduleClaudeSwitch(
 				workspaceId,
 			);
 		},
-		onError: (error) =>
-			toast.error("Couldn't schedule the switch", {
-				description: error.message,
-			}),
 	});
 }
 

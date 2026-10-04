@@ -397,7 +397,7 @@ export function ClaudeAccountMenu({
 	const selectedSlug = following ? null : state.slug;
 
 	const chooseAccount = (slug: string | null) => {
-		if (setAccount.isPending || slug === selectedSlug) return;
+		if (setAccount.isPending) return;
 		setAccount.mutate(slug, {
 			onError: (error) =>
 				toast.error("Couldn't change workspace account", {
@@ -407,7 +407,15 @@ export function ClaudeAccountMenu({
 	};
 	const scheduleAt = (target: ClaudeScheduleTarget, fireAt: number) => {
 		if (scheduleSwitch.isPending) return;
-		scheduleSwitch.mutate({ target, fireAt });
+		scheduleSwitch.mutate(
+			{ target, fireAt },
+			{
+				onError: (error) =>
+					toast.error("Couldn't schedule the switch", {
+						description: error.message,
+					}),
+			},
+		);
 	};
 	const clear = (scheduleId: string) => {
 		if (clearSchedule.isPending) return;

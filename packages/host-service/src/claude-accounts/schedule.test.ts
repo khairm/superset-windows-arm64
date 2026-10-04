@@ -396,6 +396,59 @@ describe("scheduled Claude account switch fire", () => {
 			expect(workspaceRow(world, id).claudeScheduleFiredAt).toBe(now);
 		});
 	}
+
+	for (const scenario of [
+		{ outcome: "Following consumes as a no-op", slug: null, signedIn: true },
+		{ outcome: "pinned switches to Following", slug: B, signedIn: true },
+		{
+			outcome: "signed out fails as default-unavailable",
+			slug: B,
+			signedIn: false,
+		},
+	] as const) {
+		test(`Default (tray): ${scenario.outcome}`, async () => {
+			let now = Date.now();
+			const { world, pi } = await createScheduleWorld(
+				scenario.signedIn ? { defaultSlug: DEFAULT } : {},
+			);
+			const id = await seedPinned(world, {
+				slug: scenario.slug,
+				installed: scenario.slug ?? DEFAULT,
+			});
+			const fireAt = now + MINUTE;
+			seedSchedule(world, id, { targetSlug: null, fireAt });
+			const { service, timer } = await startService(world, pi, {
+				now: () => now,
+			});
+
+			now = fireAt;
+			await timer.fire();
+
+			if (!scenario.signedIn) {
+				expect(scheduleRow(world, id)?.status).toBe("pending");
+				now = fireAt + WINDOW;
+				await timer.fire();
+				expect(scheduleRow(world, id)).toMatchObject({
+					status: "failed",
+					failure: "default-unavailable",
+					lastError: "The machine default is signed out",
+				});
+				expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
+				return;
+			}
+			expect(scheduleRow(world, id)).toBeUndefined();
+			expect(workspaceRow(world, id)).toMatchObject({
+				claudeAccountSlug: null,
+				claudeScheduleFiredAt: fireAt,
+			});
+			expect(scheduledStateChanges(world, id)).toHaveLength(
+				scenario.slug === null ? 0 : 1,
+			);
+			if (scenario.slug !== null) {
+				expect(await installedAccount(service, id)).toBe(DEFAULT);
+			}
+		});
+	}
 });
 
 describe("scheduled switch and the fallback cooldown", () => {
@@ -576,6 +629,65 @@ describe("scheduled switch retries and failures", () => {
 		expect(controlsChanges(world, id)).toHaveLength(1);
 	});
 
+	test("an empty profile login file stays pending, then expires as profile-unavailable", async () => {
+		let now = Date.now();
+		const { world, pi } = await createScheduleWorld();
+		const id = await seedPinned(world, { slug: B, installed: B });
+		const { service, timer } = await startService(world, pi, {
+			now: () => now,
+		});
+		const fireAt = now + MINUTE;
+		await service.scheduleSwitch(id, { kind: "account", slug: A }, fireAt);
+		await writeFile(credentialsPath(service, id), "", "utf8");
+		now = fireAt;
+
+		await timer.fire();
+		expect(scheduleRow(world, id)?.status).toBe("pending");
+
+		now = fireAt + WINDOW;
+		await timer.fire();
+		expect(scheduleRow(world, id)).toMatchObject({
+			status: "failed",
+			failure: "profile-unavailable",
+		});
+		expect(scheduleRow(world, id)?.lastError).toContain(
+			"Claude credentials file is empty",
+		);
+		expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
+		expect(await readFile(credentialsPath(service, id), "utf8")).toBe("");
+	});
+
+	test("an unexpected error fails as error at once, with no retry", async () => {
+		let now = Date.now();
+		const { world, pi } = await createScheduleWorld();
+		const id = await seedPinned(world, { slug: B, installed: B });
+		const { service, timer } = await startService(world, pi, {
+			now: () => now,
+		});
+		await service.scheduleSwitch(
+			id,
+			{ kind: "account", slug: A },
+			now + MINUTE,
+		);
+		now += MINUTE;
+		spies.push(
+			spyOn(
+				ClaudeProfileManager.prototype,
+				"profileExists",
+			).mockRejectedValueOnce(new Error("disk exploded")),
+		);
+
+		await timer.fire();
+
+		expect(scheduleRow(world, id)).toMatchObject({
+			status: "failed",
+			failure: "error",
+			lastError: "disk exploded",
+		});
+		expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
+		expect(timer.armed).toBeNull();
+	});
+
 	test("a host started more than 30 minutes late fails it as not-run", async () => {
 		const scheduledAt = Date.now();
 		const { world, pi } = await createScheduleWorld();
@@ -714,6 +826,94 @@ describe("scheduled switch races", () => {
 			claudeScheduleFiredAt: null,
 		});
 		expect(scheduledStateChanges(world, id)).toHaveLength(0);
+	});
+
+	for (const halt of ["stop", "expiry"] as const) {
+		test(`a ${halt} during the credential write restores the credentials without consuming`, async () => {
+			let now = Date.now();
+			const { world, pi } = await createScheduleWorld();
+			const id = await seedPinned(world, { slug: B, installed: B });
+			const { service, timer } = await startService(world, pi, {
+				now: () => now,
+			});
+			const fireAt = now + MINUTE;
+			await service.scheduleSwitch(id, { kind: "account", slug: A }, fireAt);
+			now = fireAt;
+			const before = await readFile(credentialsPath(service, id), "utf8");
+			let haltedAfterWrite = false;
+			const write = ClaudeProfileManager.prototype.writeCredentials;
+			spies.push(
+				spyOn(
+					ClaudeProfileManager.prototype,
+					"writeCredentials",
+				).mockImplementationOnce(async function (
+					this: ClaudeProfileManager,
+					profileDir: string,
+					credentials: ManagedCredentials,
+				) {
+					await write.call(this, profileDir, credentials);
+					if (halt === "stop") service.stop();
+					else now = fireAt + WINDOW;
+					haltedAfterWrite = true;
+				}),
+			);
+
+			await timer.fire();
+
+			expect(haltedAfterWrite).toBe(true);
+			expect(await readFile(credentialsPath(service, id), "utf8")).toBe(before);
+			expect(workspaceRow(world, id)).toMatchObject({
+				claudeAccountSlug: B,
+				claudeScheduleFiredAt: null,
+			});
+			expect(scheduledStateChanges(world, id)).toHaveLength(0);
+			if (halt === "stop") {
+				expect(scheduleRow(world, id)?.status).toBe("pending");
+				expect(timer.armed).toBeNull();
+			} else {
+				expect(scheduleRow(world, id)).toMatchObject({
+					status: "failed",
+					failure: "not-run",
+					lastError: null,
+				});
+			}
+		});
+	}
+
+	test("a slow fire does not hold back another workspace's due schedule", async () => {
+		let now = Date.now();
+		const { world, pi } = await createScheduleWorld();
+		const slow = await seedPinned(world, { slug: B, installed: B });
+		const fast = await seedPinned(world, { slug: B, installed: B });
+		const { service, timer } = await startService(world, pi, {
+			now: () => now,
+		});
+		await service.scheduleSwitch(
+			slow,
+			{ kind: "account", slug: A },
+			now + MINUTE,
+		);
+		await service.scheduleSwitch(
+			fast,
+			{ kind: "account", slug: C },
+			now + 2 * MINUTE,
+		);
+		now += MINUTE;
+		const token = holdNextTokenFetch();
+
+		const slowPass = timer.fire();
+		expect(await token.requested).toBe(A);
+		now += MINUTE;
+		await timer.fire();
+
+		expect(scheduleRow(world, fast)).toBeUndefined();
+		expect(workspaceRow(world, fast).claudeAccountSlug).toBe(C);
+		expect(scheduleRow(world, slow)?.status).toBe("pending");
+
+		token.release(A);
+		await slowPass;
+		expect(scheduleRow(world, slow)).toBeUndefined();
+		expect(workspaceRow(world, slow).claudeAccountSlug).toBe(A);
 	});
 });
 
@@ -998,6 +1198,21 @@ describe("scheduleSwitch refusals", () => {
 			expect(scheduleRow(world, id)).toBeUndefined();
 		});
 	}
+});
+
+describe("setAutoSwitch", () => {
+	test("is refused while Following", async () => {
+		const now = Date.now();
+		const { world, pi } = await createScheduleWorld();
+		const id = await seedPinned(world, { slug: null });
+		const { service } = await startService(world, pi, { now: () => now });
+		const before = workspaceRow(world, id).claudeAutoSwitch;
+
+		await expect(service.setAutoSwitch(id, !before)).rejects.toThrow(
+			"Auto-switch applies only to a pinned account",
+		);
+		expect(workspaceRow(world, id).claudeAutoSwitch).toBe(before);
+	});
 });
 
 describe("scheduled switch and the token failure clock", () => {
