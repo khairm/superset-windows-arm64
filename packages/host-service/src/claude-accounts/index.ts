@@ -1044,22 +1044,19 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			if (targetSlug !== null) {
 				const row = this.findWorkspace(workspaceId);
 				if (!row) return { kind: "settled" };
-				const [read, roster] = await Promise.allSettled([
-					this.readScheduleProfile(workspaceId),
-					this.pi.fetchAccounts(),
-				]);
-				if (roster.status === "fulfilled") this.recordAccountsSuccess();
-				if (read.status === "rejected") throw read.reason;
-				if ("retry" in read.value) return read.value.retry;
+				const read = await this.readScheduleProfile(workspaceId);
+				if ("retry" in read) return read.retry;
 				this.throwIfHalted(schedule);
 				const plannedNoop = isOnScheduleTarget(
 					row.claudeAccountSlug,
-					read.value.installed,
+					read.installed,
 					targetSlug,
 				);
 				try {
-					if (roster.status === "rejected") throw roster.reason;
-					const account = findClaudeAccount(roster.value, targetSlug);
+					const roster = await this.pi.fetchAccounts();
+					this.recordAccountsSuccess();
+					this.throwIfHalted(schedule);
+					const account = findClaudeAccount(roster, targetSlug);
 					const unavailable = account
 						? accountHealthMessage(account, `Claude account '${targetSlug}'`)
 						: `Claude account '${targetSlug}' is not in the Pi roster`;
