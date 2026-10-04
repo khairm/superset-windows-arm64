@@ -147,6 +147,8 @@ under the path root in the merged tree; absence = fail.
 (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE)	apps/desktop/src/renderer/lib/workspace-exit-cleanup
 (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE)	apps/desktop/src/renderer/routes/_authenticated/hooks/useDashboardSidebarState
 (CLAUDE-ACCOUNT-PIN-ON-ACTIVATE)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/WorkspaceExitCleanupReconciler
+0036_fork_claude_account_controls	packages/host-service/drizzle/meta/_journal.json
+claude_account_schedules	packages/host-service/drizzle/0036_fork_claude_account_controls.sql
 npm:@lydell/node-pty	packages
 bun-windows-arm64	apps/desktop/scripts
 titleBarOverlay	apps/desktop/src/main

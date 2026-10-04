@@ -3,7 +3,9 @@ import type {
 	AgentIdentityId,
 } from "@superset/shared/agent-catalog";
 import type { BranchPrefixMode } from "@superset/shared/workspace-launch";
+import { sql } from "drizzle-orm";
 import {
+	check,
 	index,
 	integer,
 	primaryKey,
@@ -253,6 +255,11 @@ export const workspaces = sqliteTable(
 		// backfill sweep targets these rows.
 		name: text().notNull().default(""),
 		claudeAccountSlug: text("claude_account_slug"),
+		// (CLAUDE-ACCOUNT-AUTO-SWITCH)
+		claudeAutoSwitch: integer("claude_auto_switch", { mode: "boolean" })
+			.notNull()
+			.default(true),
+		claudeScheduleFiredAt: integer("claude_schedule_fired_at"),
 		// "local" shares the project's primary checkout (files, index, and
 		// the checked-out branch) with every other local workspace of that
 		// project; "worktree" owns an isolated checkout; "session" is
@@ -294,6 +301,33 @@ export const workspaces = sqliteTable(
 			table.upstreamBranch,
 		),
 		index("workspaces_pull_request_id_idx").on(table.pullRequestId),
+	],
+);
+
+// (CLAUDE-ACCOUNT-SCHEDULE)
+export const claudeAccountSchedules = sqliteTable(
+	"claude_account_schedules",
+	{
+		workspaceId: text("workspace_id")
+			.primaryKey()
+			.references(() => workspaces.id, { onDelete: "cascade" }),
+		scheduleId: text("schedule_id").notNull(),
+		targetSlug: text("target_slug"),
+		fireAt: integer("fire_at").notNull(),
+		status: text().$type<"pending" | "failed">().notNull(),
+		failedAt: integer("failed_at"),
+		failure: text(),
+		lastError: text("last_error"),
+	},
+	(table) => [
+		check(
+			"claude_account_schedules_status_check",
+			sql`${table.status} IN ('pending', 'failed')`,
+		),
+		check(
+			"claude_account_schedules_failed_check",
+			sql`(${table.status} = 'failed') = (${table.failedAt} IS NOT NULL AND ${table.failure} IS NOT NULL)`,
+		),
 	],
 );
 

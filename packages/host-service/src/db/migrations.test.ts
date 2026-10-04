@@ -148,4 +148,58 @@ describe("host.db migrations", () => {
 
 		expect(new Set(whens).size).toBe(whens.length);
 	});
+
+	test("the fork's claude account controls land on fresh and existing databases", () => {
+		const expectControls = (sqlite: Database) => {
+			const columns = sqlite.prepare("PRAGMA table_info(workspaces)").all() as {
+				name: string;
+				notnull: number;
+				dflt_value: string | null;
+			}[];
+			expect(
+				columns.find((c) => c.name === "claude_auto_switch"),
+			).toMatchObject({ notnull: 1, dflt_value: "1" });
+			expect(
+				columns.find((c) => c.name === "claude_schedule_fired_at"),
+			).toMatchObject({ notnull: 0, dflt_value: null });
+			expect(tables(sqlite)).toContain("claude_account_schedules");
+			expect(
+				sqlite
+					.prepare("PRAGMA foreign_key_list(claude_account_schedules)")
+					.all(),
+			).toMatchObject([
+				{
+					table: "workspaces",
+					from: "workspace_id",
+					to: "id",
+					on_delete: "CASCADE",
+				},
+			]);
+		};
+
+		const fresh = open();
+		runMigrations(drizzle(fresh), MIGRATIONS_FOLDER);
+		expectControls(fresh);
+
+		const existing = open();
+		runMigrations(
+			drizzle(existing),
+			folderWithout({ omit: [], through: "0035_local_workspaces" }),
+		);
+		existing.exec(
+			"INSERT INTO projects (id, repo_path, created_at) VALUES ('p1', '/repo', 1)",
+		);
+		existing.exec(
+			"INSERT INTO workspaces (id, project_id, worktree_path, branch, created_at) VALUES ('w1', 'p1', '/repo', 'main', 1)",
+		);
+		runMigrations(drizzle(existing), MIGRATIONS_FOLDER);
+		expectControls(existing);
+		expect(
+			existing
+				.prepare(
+					"SELECT claude_auto_switch, claude_schedule_fired_at FROM workspaces WHERE id = 'w1'",
+				)
+				.get(),
+		).toEqual({ claude_auto_switch: 1, claude_schedule_fired_at: null });
+	});
 });

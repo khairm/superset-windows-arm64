@@ -258,6 +258,14 @@ In brief:
   needs the upstream change that drops the dependency to retire libsql's
   required runtime inventory, and `validate-native-runtime.ts` stays strict —
   never weaken it to make a skip pass.
+- Fork host.db migrations: hand-written additions-only SQL, `0NNN_fork_*` tag
+  appended to `packages/host-service/drizzle/meta/_journal.json`, no snapshot.
+  Never `drizzle-kit generate` in the fork: the latest snapshot is upstream's
+  and lacks fork tables, so it re-adds them and the host stops starting.
+  `runMigrations` keys on the set of journal `when` values, so a nightly merge
+  must keep both journal entries with their original `when`. An upstream
+  rebuild of `workspaces` drops fork columns from existing DBs;
+  `src/db/migrations.test.ts` asserts the fork columns after a full-folder run.
 
 ## Accepted limitations
 

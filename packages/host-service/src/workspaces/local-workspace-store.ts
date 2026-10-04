@@ -322,7 +322,6 @@ export interface UpdateLocalWorkspacePatch {
 	worktreePath?: string;
 	taskId?: string | null;
 	projectId?: string;
-	claudeAccountSlug?: string | null;
 	/**
 	 * Full replacement of the acting user's tag set (`ctx.userId`); already-
 	 * normalized by the caller. Other users' tags on the workspace are
