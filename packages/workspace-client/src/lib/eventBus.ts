@@ -25,6 +25,7 @@ type EventType =
 	| "tag-folders:changed"
 	| "claude-account-state-changed"
 	| "claude-account-warning"
+	| "claude-account-controls-changed"
 	| "page-watch:changed";
 
 interface FsEventsPayload {
@@ -180,6 +181,16 @@ export type ClaudeAccountWarningPayload = Omit<
 	"type" | "workspaceId"
 >;
 
+type ClaudeAccountControlsChangedMessage = Extract<
+	ServerMessage,
+	{ type: "claude-account-controls-changed" }
+>;
+
+export type ClaudeAccountControlsChangedPayload = Omit<
+	ClaudeAccountControlsChangedMessage,
+	"type" | "workspaceId"
+>;
+
 export interface PageWatchChangedPayload {
 	occurredAt: number;
 }
@@ -228,12 +239,17 @@ type EventListener<T extends EventType> = T extends "fs:events"
 														workspaceId: string | null,
 														payload: ClaudeAccountWarningPayload,
 													) => void
-												: T extends "page-watch:changed"
+												: T extends "claude-account-controls-changed"
 													? (
 															workspaceId: string,
-															payload: PageWatchChangedPayload,
+															payload: ClaudeAccountControlsChangedPayload,
 														) => void
-													: never;
+													: T extends "page-watch:changed"
+														? (
+																workspaceId: string,
+																payload: PageWatchChangedPayload,
+															) => void
+														: never;
 
 interface ListenerEntry {
 	type: EventType;
@@ -440,6 +456,7 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 			message.type === "workspace:create-settled" ||
 			message.type === "claude-account-state-changed" ||
 			message.type === "claude-account-warning" ||
+			message.type === "claude-account-controls-changed" ||
 			message.type === "page-watch:changed"
 				? message.workspaceId
 				: message.type === "project:changed"
@@ -530,6 +547,12 @@ function handleMessage(state: ConnectionState, data: unknown): void {
 		} else if (message.type === "claude-account-warning") {
 			const { type: _type, workspaceId: _workspaceId, ...payload } = message;
 			(entry.callback as EventListener<"claude-account-warning">)(
+				message.workspaceId,
+				payload,
+			);
+		} else if (message.type === "claude-account-controls-changed") {
+			const { type: _type, workspaceId: _workspaceId, ...payload } = message;
+			(entry.callback as EventListener<"claude-account-controls-changed">)(
 				message.workspaceId,
 				payload,
 			);

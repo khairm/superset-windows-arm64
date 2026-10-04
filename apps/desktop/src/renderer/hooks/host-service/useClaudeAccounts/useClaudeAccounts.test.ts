@@ -12,73 +12,71 @@ const HOST_URL = "http://localhost:1234";
 const EXISTING_WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 const NEW_WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 
+const FOLLOWING: ClaudeWorkspaceAccountState = {
+	state: "following",
+	slug: null,
+	warning: null,
+	autoSwitch: true,
+	schedule: null,
+};
+
 describe("updateClaudeWorkspaceAccountStateCaches", () => {
-	test("appends a new workspace to an existing host snapshot", () => {
+	test("invalidates instead of inventing a missing workspace entry", () => {
 		const queryClient = new QueryClient();
-		queryClient.setQueryData(claudeWorkspaceAccountStatesQueryKey(HOST_URL), [
-			{
-				workspaceId: EXISTING_WORKSPACE_ID,
-				state: "following",
-				slug: null,
-				warning: null,
-			},
+		const statesKey = claudeWorkspaceAccountStatesQueryKey(HOST_URL);
+		const existing = { ...FOLLOWING, workspaceId: EXISTING_WORKSPACE_ID };
+		queryClient.setQueryData<ClaudeWorkspaceAccountStates>(statesKey, [
+			existing,
 		]);
 
 		updateClaudeWorkspaceAccountStateCaches(
 			queryClient,
 			HOST_URL,
 			NEW_WORKSPACE_ID,
-			(current) => current,
-			{ state: "pinned", slug: "work", warning: null },
+			(current) => ({ ...current, state: "pinned", slug: "work" }),
 		);
 
 		expect(
-			queryClient.getQueryData<ClaudeWorkspaceAccountStates>(
-				claudeWorkspaceAccountStatesQueryKey(HOST_URL),
-			),
-		).toEqual([
-			{
-				workspaceId: EXISTING_WORKSPACE_ID,
-				state: "following",
-				slug: null,
-				warning: null,
-			},
-			{
-				workspaceId: NEW_WORKSPACE_ID,
-				state: "pinned",
-				slug: "work",
-				warning: null,
-			},
-		]);
+			queryClient.getQueryData<ClaudeWorkspaceAccountStates>(statesKey),
+		).toEqual([existing]);
+		expect(queryClient.getQueryState(statesKey)?.isInvalidated).toBe(true);
 		expect(
-			queryClient.getQueryData<ClaudeWorkspaceAccountState>(
+			queryClient.getQueryData(
 				claudeWorkspaceAccountStateQueryKey(HOST_URL, NEW_WORKSPACE_ID),
 			),
-		).toEqual({ state: "pinned", slug: "work", warning: null });
+		).toBeUndefined();
 	});
 
-	test("reports a missing entry when no fallback state is available", () => {
+	test("updates an existing entry in both caches without invalidating", () => {
 		const queryClient = new QueryClient();
-		queryClient.setQueryData(
-			claudeWorkspaceAccountStatesQueryKey(HOST_URL),
-			[],
+		const statesKey = claudeWorkspaceAccountStatesQueryKey(HOST_URL);
+		const stateKey = claudeWorkspaceAccountStateQueryKey(
+			HOST_URL,
+			EXISTING_WORKSPACE_ID,
 		);
+		queryClient.setQueryData<ClaudeWorkspaceAccountStates>(statesKey, [
+			{ ...FOLLOWING, workspaceId: EXISTING_WORKSPACE_ID },
+		]);
+		queryClient.setQueryData<ClaudeWorkspaceAccountState>(stateKey, FOLLOWING);
 
-		const found = updateClaudeWorkspaceAccountStateCaches(
+		const warning = {
+			kind: "credential-health",
+			message: "Sign in again",
+		} as const;
+		updateClaudeWorkspaceAccountStateCaches(
 			queryClient,
 			HOST_URL,
-			NEW_WORKSPACE_ID,
-			(current) => ({
-				...current,
-				warning: { kind: "credential-health", message: "Sign in again" },
-			}),
+			EXISTING_WORKSPACE_ID,
+			(current) => ({ ...current, warning }),
 		);
 
-		expect(found).toBe(false);
 		expect(
-			queryClient.getQueryData<ClaudeWorkspaceAccountStates>(
-				claudeWorkspaceAccountStatesQueryKey(HOST_URL),
-			),
-		).toEqual([]);
+			queryClient.getQueryData<ClaudeWorkspaceAccountState>(stateKey),
+		).toEqual({ ...FOLLOWING, warning });
+		expect(
+			queryClient.getQueryData<ClaudeWorkspaceAccountStates>(statesKey),
+		).toEqual([{ ...FOLLOWING, warning, workspaceId: EXISTING_WORKSPACE_ID }]);
+		expect(queryClient.getQueryState(statesKey)?.isInvalidated).toBe(false);
+		expect(queryClient.getQueryState(stateKey)?.isInvalidated).toBe(false);
 	});
 });

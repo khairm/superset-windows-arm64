@@ -96,6 +96,8 @@ describe("sidebar account display mapping", () => {
 				state: "pinned",
 				slug: "work",
 				warning: null,
+				autoSwitch: true,
+				schedule: null,
 			},
 		]);
 		client.setQueryData(claudeAccountRosterQueryKey(hostUrl), {

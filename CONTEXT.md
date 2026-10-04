@@ -31,7 +31,15 @@ The placeholder written in place of a real refresh token so no PC-side process c
 The background renewal that keeps every workspace profile folder's access token valid before it expires.
 
 **Auto-fallback**:
-A pinned workspace whose account crosses the trigger lines flips to Following, permanently (no re-pin when the account's window resets).
+A pinned workspace whose account crosses the trigger lines flips to Following, permanently (no re-pin when the account's window resets), only while Auto-switch is on, and not within 10 minutes of a scheduled switch firing.
+
+**Auto-switch**:
+Per-workspace flag. On: a pinned workspace may auto-fallback. Off: it stays pinned until the user changes it, even if its account dies.
+_Avoid_: auto-fallback toggle
+
+**Scheduled switch**:
+One pending timed account change per workspace, to an account or to Following. Fires if the target is enabled and alive; temporary failures retry for 30 minutes, then it stays failed until dismissed, replaced, or cleared by a user pick that changes the account or by card-exit cleanup.
+_Avoid_: timer, reminder
 
 **Card exit**:
 Marking a workspace Completed, Archived, Snoozed or deleted to the Recycle Bin closes its tabs and terminals and releases its account to Following without removing its worktree or branch. A returning thread pins to the machine default on return or when pending cleanup settles, and stays Following if no default is available.

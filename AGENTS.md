@@ -189,7 +189,12 @@ In brief:
   the Pi owns all real credential lineages. The sidebar chip and the
   "Account ▸" menu show pace-coloured 5h/weekly/Fable percentages with reset
   countdowns, mirroring the tray. Glossary: `CONTEXT.md`. Module:
-  `packages/host-service/src/claude-accounts/`.
+  `packages/host-service/src/claude-accounts/`. Per-worktree Auto-switch (off =
+  never auto-falls back, even dead) and one Schedule switch per worktree in
+  host.db `claude_account_schedules`: fires even with Auto-switch off, target
+  must be enabled and alive, temporary failures retry 30 min, red in the menu;
+  a pick that changes the account or card-exit retire cancels; fallback waits
+  10 min after a fire.
 - **Unused upstream features hidden** — browser panes, page watchers, the v3
   local chat pane and port scanning are off behind one `const` each in
   `packages/shared/src/fork-disabled-features.ts`
@@ -258,6 +263,14 @@ In brief:
   needs the upstream change that drops the dependency to retire libsql's
   required runtime inventory, and `validate-native-runtime.ts` stays strict —
   never weaken it to make a skip pass.
+- Fork host.db migrations: hand-written additions-only SQL, `0NNN_fork_*` tag
+  appended to `packages/host-service/drizzle/meta/_journal.json`, no snapshot.
+  Never `drizzle-kit generate` in the fork: the latest snapshot is upstream's
+  and lacks fork tables, so it re-adds them and the host stops starting.
+  `runMigrations` keys on the set of journal `when` values, so a nightly merge
+  must keep both journal entries with their original `when`. An upstream
+  rebuild of `workspaces` drops fork columns from existing DBs;
+  `src/db/migrations.test.ts` asserts the fork columns after a full-folder run.
 
 ## Accepted limitations
 

@@ -94,9 +94,15 @@ const tokenEnvelopeSchema = z
 	.strict();
 
 export class PiRequestError extends Error {
-	constructor(message: string, options?: ErrorOptions) {
+	readonly retryable: boolean;
+
+	constructor(
+		message: string,
+		{ retryable, ...options }: ErrorOptions & { retryable: boolean },
+	) {
 		super(message, options);
 		this.name = "PiRequestError";
+		this.retryable = retryable;
 	}
 }
 
@@ -201,6 +207,7 @@ export class PiClient {
 		if (!parsed.success) {
 			throw new PiRequestError(
 				`Pi /accounts response failed validation: ${z.prettifyError(parsed.error)}`,
+				{ retryable: false },
 			);
 		}
 		const accounts = parsed.data.map(
@@ -234,17 +241,20 @@ export class PiClient {
 		if (!parsed.success) {
 			throw new PiRequestError(
 				`Pi token response for ${slug} failed validation: ${z.prettifyError(parsed.error)}`,
+				{ retryable: false },
 			);
 		}
 		if (parsed.data.account !== slug) {
 			throw new PiRequestError(
 				`Pi token response account ${parsed.data.account} did not match requested account ${slug}`,
+				{ retryable: false },
 			);
 		}
 		const oauth = parsed.data.claude_ai_oauth;
 		if (oauth.expiresAt - Date.now() < MIN_TOKEN_VALIDITY_MS) {
 			throw new PiRequestError(
 				`Pi token for ${slug} has less than 30 minutes of validity`,
+				{ retryable: true },
 			);
 		}
 		const token: ClaudeAccessToken = {
@@ -269,13 +279,14 @@ export class PiClient {
 			this.cachedPushKey = null;
 			throw new PiRequestError(
 				`Cannot read Claude account push key at ${this.pushKeyPath}`,
-				{ cause: error },
+				{ cause: error, retryable: false },
 			);
 		}
 		if (!metadata.isFile()) {
 			this.cachedPushKey = null;
 			throw new PiRequestError(
 				`Claude account push key path is not a file: ${this.pushKeyPath}`,
+				{ retryable: false },
 			);
 		}
 		if (
@@ -292,7 +303,7 @@ export class PiClient {
 			this.cachedPushKey = null;
 			throw new PiRequestError(
 				`Cannot read Claude account push key at ${this.pushKeyPath}`,
-				{ cause: error },
+				{ cause: error, retryable: false },
 			);
 		}
 		const value = rawKey.replace(/^﻿/, "").trim();
@@ -300,6 +311,7 @@ export class PiClient {
 			this.cachedPushKey = null;
 			throw new PiRequestError(
 				`Claude account push key at ${this.pushKeyPath} is empty`,
+				{ retryable: false },
 			);
 		}
 		this.cachedPushKey = {
@@ -319,7 +331,10 @@ export class PiClient {
 				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch (error) {
-			throw new PiRequestError(`Pi request ${path} failed`, { cause: error });
+			throw new PiRequestError(`Pi request ${path} failed`, {
+				cause: error,
+				retryable: true,
+			});
 		}
 		if (response.status === 401 || response.status === 403) {
 			this.cachedPushKey = null;
@@ -327,6 +342,7 @@ export class PiClient {
 		if (!response.ok) {
 			throw new PiRequestError(
 				`Pi request ${path} returned HTTP ${response.status}`,
+				{ retryable: response.status === 429 || response.status >= 500 },
 			);
 		}
 		try {
@@ -335,6 +351,7 @@ export class PiClient {
 			this.log.error("Pi returned invalid JSON", { path, error });
 			throw new PiRequestError(`Pi request ${path} returned invalid JSON`, {
 				cause: error,
+				retryable: false,
 			});
 		}
 	}

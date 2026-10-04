@@ -282,7 +282,7 @@ export interface ClaudeAccountStateChangedMessage {
 	workspaceId: string;
 	state: "following" | "pinned";
 	slug: string | null;
-	cause: "manual" | "auto-fallback" | "system";
+	cause: "manual" | "auto-fallback" | "system" | "scheduled";
 }
 
 export interface ClaudeAccountWarningMessage {
@@ -291,6 +291,12 @@ export interface ClaudeAccountWarningMessage {
 	kind: "credential-health";
 	message: string;
 	active: boolean;
+}
+
+// (CLAUDE-ACCOUNT-SCHEDULE)
+export interface ClaudeAccountControlsChangedMessage {
+	type: "claude-account-controls-changed";
+	workspaceId: string;
 }
 
 export interface EventBusErrorMessage {
@@ -320,6 +326,7 @@ export type ServerMessage =
 	| ProjectChangedMessage
 	| ClaudeAccountStateChangedMessage
 	| ClaudeAccountWarningMessage
+	| ClaudeAccountControlsChangedMessage
 	| TagFoldersChangedMessage
 	| PageWatchChangedMessage
 	| EventBusErrorMessage;

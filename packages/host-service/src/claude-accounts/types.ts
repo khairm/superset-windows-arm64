@@ -1,4 +1,5 @@
 import type {
+	ClaudeAccountControlsChangedMessage,
 	ClaudeAccountStateChangedMessage,
 	ClaudeAccountWarningMessage,
 } from "../events/types";
@@ -13,7 +14,53 @@ export interface ClaudeAccountsLogger {
 
 export type ClaudeAccountEvent =
 	| ClaudeAccountStateChangedMessage
-	| ClaudeAccountWarningMessage;
+	| ClaudeAccountWarningMessage
+	| ClaudeAccountControlsChangedMessage;
+
+// (CLAUDE-ACCOUNT-SCHEDULE)
+export type ClaudeScheduleTarget =
+	| { kind: "account"; slug: string }
+	| { kind: "default" };
+
+/**
+ * Retried every 30 s until `fireAt + 30 min`; expiry then records the last
+ * one seen. `profile-unavailable`: the workspace's credentials file was empty
+ * or unreadable when the switch captured it; the 60 s tick rewrites it.
+ */
+export const CLAUDE_SCHEDULE_RETRYABLE_FAILURES = [
+	"target-unavailable",
+	"pi-unavailable",
+	"default-unavailable",
+	"profile-unavailable",
+] as const;
+
+/** `not-run`: expired with no attempt result. `error`: failed at once. */
+export const CLAUDE_SCHEDULE_FAILURES = [
+	...CLAUDE_SCHEDULE_RETRYABLE_FAILURES,
+	"not-run",
+	"error",
+] as const;
+
+export type ClaudeScheduleRetryableFailure =
+	(typeof CLAUDE_SCHEDULE_RETRYABLE_FAILURES)[number];
+export type ClaudeScheduleFailure = (typeof CLAUDE_SCHEDULE_FAILURES)[number];
+
+export type ClaudeScheduleView =
+	| {
+			status: "pending";
+			scheduleId: string;
+			target: ClaudeScheduleTarget;
+			fireAt: number;
+	  }
+	| {
+			status: "failed";
+			scheduleId: string;
+			target: ClaudeScheduleTarget;
+			fireAt: number;
+			failedAt: number;
+			failure: ClaudeScheduleFailure;
+			lastError: string | null;
+	  };
 
 export interface ClaudeAccountRosterEntry {
 	slug: string;

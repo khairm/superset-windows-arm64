@@ -62,10 +62,20 @@ export function createFakeClaudeAccountsService(
 			failed: [],
 			accountReleased: false,
 		}),
+		setAutoSwitch: async () => {},
+		scheduleSwitch: async (_workspaceId, target, fireAt) => ({
+			status: "pending",
+			scheduleId: randomUUID(),
+			target,
+			fireAt,
+		}),
+		clearScheduledSwitch: async () => {},
 		getWorkspaceState: async () => ({
 			state: "following",
 			slug: null,
 			warning: null,
+			autoSwitch: true,
+			schedule: null,
 		}),
 		getWorkspaceStates: async () => [],
 		getRoster: async () => ({ trayDefaultSlug: null, accounts: [] }),
@@ -210,21 +220,25 @@ export async function servePiFake(
 	await writeFile(pushKeyPath, "test-key\n", "utf8");
 	let available = true;
 	let tokenAvailable = true;
+	let failureStatus = 503;
+	let tokenLifetimeMs = 2 * 60 * 60 * 1000;
 	let currentAccounts = [...accounts];
 	const server = Bun.serve({
 		port: 0,
 		fetch(request) {
-			if (!available) return new Response(null, { status: 503 });
+			if (!available) return new Response(null, { status: failureStatus });
 			const path = new URL(request.url).pathname;
 			if (path === "/accounts") return Response.json(currentAccounts);
 			const slug = path.split("/")[2];
 			if (path.endsWith("/token") && slug) {
-				if (!tokenAvailable) return new Response(null, { status: 503 });
+				if (!tokenAvailable) {
+					return new Response(null, { status: failureStatus });
+				}
 				return Response.json({
 					account: slug,
 					claude_ai_oauth: {
 						accessToken: `${slug}-token`,
-						expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+						expiresAt: Date.now() + tokenLifetimeMs,
 					},
 				});
 			}
@@ -240,6 +254,12 @@ export async function servePiFake(
 		},
 		setTokenAvailable(next: boolean) {
 			tokenAvailable = next;
+		},
+		setFailureStatus(next: number) {
+			failureStatus = next;
+		},
+		setTokenLifetimeMs(next: number) {
+			tokenLifetimeMs = next;
 		},
 		setAccounts(next: readonly WireAccount[]) {
 			currentAccounts = [...next];
