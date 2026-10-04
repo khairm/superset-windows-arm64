@@ -1,25 +1,49 @@
-import { createContext, type ReactNode, useContext } from "react";
+import {
+	createContext,
+	type ReactNode,
+	useContext,
+	useLayoutEffect,
+	useState,
+} from "react";
 import {
 	type UseHostWorkspacesResult,
-	useHostWorkspacesSource,
+	useHostWorkspacesSourceWithActivity,
 } from "renderer/hooks/host-workspaces/useHostWorkspaces";
+import {
+	createWorkspaceActivityStore,
+	type WorkspaceActivityStore,
+} from "./utils/createWorkspaceActivityStore";
 
 const HostWorkspacesContext = createContext<UseHostWorkspacesResult | null>(
 	null,
 );
+
+const HostWorkspaceActivityStoreContext =
+	createContext<WorkspaceActivityStore | null>(null);
 
 /**
  * Runs the per-host workspace fan-out once (queries, event subscriptions,
  * IndexedDB snapshots) and shares the merged result — consumers must not
  * call the source hook unscoped or every call site would duplicate the
  * fan-out; single-host scoped calls are fine (they share query keys).
+ *
+ * (ACTIVITY-SPLIT) Agent activity travels in a separate store whose context
+ * value never changes, so an activity tick re-renders no workspace consumer.
  */
 export function HostWorkspacesProvider({ children }: { children: ReactNode }) {
-	const value = useHostWorkspacesSource();
+	const { result, activityById } = useHostWorkspacesSourceWithActivity();
+	const [activityStore] = useState(() =>
+		createWorkspaceActivityStore(activityById),
+	);
+	useLayoutEffect(() => {
+		activityStore.set(activityById);
+	}, [activityStore, activityById]);
 	return (
-		<HostWorkspacesContext.Provider value={value}>
-			{children}
-		</HostWorkspacesContext.Provider>
+		<HostWorkspaceActivityStoreContext.Provider value={activityStore}>
+			<HostWorkspacesContext.Provider value={result}>
+				{children}
+			</HostWorkspacesContext.Provider>
+		</HostWorkspaceActivityStoreContext.Provider>
 	);
 }
 
@@ -36,4 +60,14 @@ export function useHostWorkspaces(): UseHostWorkspacesResult {
 		);
 	}
 	return value;
+}
+
+export function useHostWorkspaceActivityStore(): WorkspaceActivityStore {
+	const store = useContext(HostWorkspaceActivityStoreContext);
+	if (!store) {
+		throw new Error(
+			"useHostWorkspaceActivityStore must be used within HostWorkspacesProvider",
+		);
+	}
+	return store;
 }

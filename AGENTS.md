@@ -258,6 +258,7 @@ In brief:
   needs the upstream change that drops the dependency to retire libsql's
   required runtime inventory, and `validate-native-runtime.ts` stays strict —
   never weaken it to make a skip pass.
+- Read workspace activity via `useHostWorkspaceActivityStore`, never from `useHostWorkspaces()` rows; keep `combine` on the projects/tag-folder `useQueries`; sort the sidebar inside `useSortedSidebarProjects`. A per-tick field, an uncombined `useQueries` or a render-time sort re-renders ~50 consumers and ~300 query hooks (`(ACTIVITY-SPLIT)`, `(STABLE-HOST-QUERIES)`).
 
 ## Accepted limitations
 

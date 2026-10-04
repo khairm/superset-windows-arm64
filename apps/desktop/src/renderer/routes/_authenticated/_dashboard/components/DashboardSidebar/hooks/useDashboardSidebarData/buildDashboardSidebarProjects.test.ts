@@ -72,7 +72,6 @@ function makeWorkspace(
 		taskId: null,
 		createdAt: DATE,
 		updatedAt: DATE,
-		lastActivityAt: null,
 		tabOrder: 1,
 		sectionId: null,
 		pinnedAt: null,

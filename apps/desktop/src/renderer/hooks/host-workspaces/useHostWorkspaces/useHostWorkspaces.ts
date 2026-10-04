@@ -11,6 +11,7 @@ import { useLocalHostService } from "renderer/routes/_authenticated/providers/Lo
 import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
 import {
 	applyWorkspaceChangedEvent,
+	collectWorkspaceActivity,
 	deriveHostWorkspacesQueryTargets,
 	getHostWorkspacesQueryKey,
 	type HostWorkspaceItem,
@@ -19,8 +20,11 @@ import {
 	loadHostWorkspacesSnapshot,
 	mergeHostWorkspaces,
 	normalizeServedWorkspaceRow,
+	reuseUnchangedActivity,
+	reuseUnchangedWorkspaceItems,
 	saveHostWorkspacesSnapshot,
 	toHostWorkspaceItem,
+	type WorkspaceActivityById,
 } from "./useHostWorkspaces.utils";
 
 export type { HostWorkspaceItem } from "./useHostWorkspaces.utils";
@@ -95,6 +99,18 @@ export interface UseHostWorkspacesResult {
 	cache: HostWorkspacesCacheOps;
 }
 
+export interface UseHostWorkspacesSourceWithActivityResult {
+	result: UseHostWorkspacesResult;
+	activityById: WorkspaceActivityById;
+}
+
+export function useHostWorkspacesSource(
+	scopedHostId?: string | null,
+	options?: { includeArchived?: boolean },
+): UseHostWorkspacesResult {
+	return useHostWorkspacesSourceWithActivity(scopedHostId, options).result;
+}
+
 /**
  * The workspace read path: `workspace.list` per host (local direct, remote
  * via relay), merged and live-updated from each host's `workspace:changed`
@@ -116,10 +132,10 @@ export interface UseHostWorkspacesResult {
  * archived rows. Tombstones append after live rows with
  * `archivedAt`/`archiveReason` set.
  */
-export function useHostWorkspacesSource(
+export function useHostWorkspacesSourceWithActivity(
 	scopedHostId?: string | null,
 	options?: { includeArchived?: boolean },
-): UseHostWorkspacesResult {
+): UseHostWorkspacesSourceWithActivityResult {
 	const includeArchived = options?.includeArchived ?? false;
 	const queryClient = useQueryClient();
 	const { activeHostUrl, machineId } = useLocalHostService();
@@ -405,9 +421,9 @@ export function useHostWorkspacesSource(
 		};
 	}, [targets, queryClient, includeArchived, currentUserId]);
 
-	const workspaces = useMemo(() => {
-		const merged = mergeHostWorkspaces({
-			hostResults: targets.map((target, index) => {
+	const hostResults = useMemo(
+		() =>
+			targets.map((target, index) => {
 				const query = queries[index];
 				const live = query?.data;
 				return {
@@ -416,7 +432,11 @@ export function useHostWorkspacesSource(
 					reachable: live !== undefined && !query?.isError,
 				};
 			}),
-		});
+		[targets, queries, snapshots],
+	);
+
+	const mergedWorkspaces = useMemo(() => {
+		const merged = mergeHostWorkspaces({ hostResults });
 		if (!includeArchived) return merged;
 		// Tombstones append after live rows; consumers dedupe by id, so a row
 		// mid-unarchive can't render twice.
@@ -433,7 +453,28 @@ export function useHostWorkspacesSource(
 			);
 		});
 		return [...merged, ...archived];
-	}, [targets, queries, includeArchived, archivedQueries, snapshots]);
+	}, [targets, hostResults, includeArchived, archivedQueries]);
+
+	// (STABLE-WORKSPACE-ROWS) Unchanged items and activity keep identity, so a
+	// refetch or an activity-only event re-renders no consumer.
+	const prevWorkspacesRef = useRef<HostWorkspaceItem[]>([]);
+	const workspaces = useMemo(() => {
+		const reused = reuseUnchangedWorkspaceItems(
+			prevWorkspacesRef.current,
+			mergedWorkspaces,
+		);
+		prevWorkspacesRef.current = reused;
+		return reused;
+	}, [mergedWorkspaces]);
+	const prevActivityRef = useRef<WorkspaceActivityById>(new Map());
+	const activityById = useMemo(() => {
+		const reused = reuseUnchangedActivity(
+			prevActivityRef.current,
+			collectWorkspaceActivity(hostResults),
+		);
+		prevActivityRef.current = reused;
+		return reused;
+	}, [hostResults]);
 
 	// Readiness reflects host-query settlement only. A scoped host that
 	// hasn't resolved to a target yet is still loading. Known-hosts
@@ -545,12 +586,24 @@ export function useHostWorkspacesSource(
 		};
 	}, [targets, queryClient]);
 
-	return {
-		workspaces,
-		isReady,
-		hostsSettled: knownHostsSettled,
-		isAuthoritative,
-		isAbsenceAuthoritative,
-		cache,
-	};
+	const result = useMemo<UseHostWorkspacesResult>(
+		() => ({
+			workspaces,
+			isReady,
+			hostsSettled: knownHostsSettled,
+			isAuthoritative,
+			isAbsenceAuthoritative,
+			cache,
+		}),
+		[
+			workspaces,
+			isReady,
+			knownHostsSettled,
+			isAuthoritative,
+			isAbsenceAuthoritative,
+			cache,
+		],
+	);
+
+	return { result, activityById };
 }

@@ -23,7 +23,6 @@ export function makeWorkspace(
 		behindCount: null,
 		createdAt: new Date("2026-01-01"),
 		updatedAt: new Date("2026-01-01"),
-		lastActivityAt: null,
 		taskId: null,
 		isPinned: false,
 		pendingTransaction: null,

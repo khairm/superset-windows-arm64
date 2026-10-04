@@ -35,7 +35,8 @@ export type HostShapedWorkspace = Omit<
 	 * Epoch ms of the newest agent lifecycle event, stamped by the host (it
 	 * never moves on metadata writes, unlike `updatedAt`). Optional for the
 	 * same reason as `tags`; null when the host predates the column. Merged
-	 * items (`HostWorkspaceItem`) always carry it, normalized to null.
+	 * items (`HostWorkspaceItem`) do not carry it: readers get it through
+	 * `useHostWorkspaceActivityStore`.
 	 */
 	lastActivityAt?: number | null;
 };
@@ -50,13 +51,14 @@ export interface HostWorkspaceRow extends HostShapedWorkspace {
 	/** Non-null = archived tombstone (only served on `includeArchived`). */
 	archivedAt?: number | null;
 	archiveReason?: "merged" | "deleted" | null;
+	projectName?: string | null;
 }
 
 /** Merged item returned by useHostWorkspaces. */
-export interface HostWorkspaceItem extends HostShapedWorkspace {
+export interface HostWorkspaceItem
+	extends Omit<HostShapedWorkspace, "lastActivityAt"> {
 	worktreePath?: string;
 	worktreeExists?: boolean;
-	lastActivityAt: number | null;
 	/** False when the host didn't answer. */
 	hostReachable: boolean;
 	/** Non-null = archived tombstone (only present on `includeArchived`). */
@@ -307,11 +309,19 @@ export function toHostWorkspaceItem(
 	row: HostWorkspaceRow,
 	hostReachable: boolean,
 ): HostWorkspaceItem {
+	const { lastActivityAt: _activity, projectName: _projectName, ...item } = row;
 	return {
-		...row,
-		lastActivityAt: row.lastActivityAt ?? null,
+		...item,
+		archivedAt: row.archivedAt ?? null,
+		archiveReason: row.archiveReason ?? null,
 		hostReachable,
 	};
+}
+
+export interface HostWorkspacesHostResult {
+	target: HostWorkspacesQueryTarget;
+	rows: HostWorkspaceRow[] | undefined;
+	reachable: boolean;
 }
 
 /**
@@ -321,11 +331,7 @@ export function toHostWorkspaceItem(
 export function mergeHostWorkspaces({
 	hostResults,
 }: {
-	hostResults: Array<{
-		target: HostWorkspacesQueryTarget;
-		rows: HostWorkspaceRow[] | undefined;
-		reachable: boolean;
-	}>;
+	hostResults: HostWorkspacesHostResult[];
 }): HostWorkspaceItem[] {
 	const items: HostWorkspaceItem[] = [];
 	const seenIds = new Set<string>();
@@ -340,4 +346,84 @@ export function mergeHostWorkspaces({
 	}
 
 	return items;
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return (
+		Array.isArray(value) && value.every((entry) => typeof entry === "string")
+	);
+}
+
+function isSameFieldValue(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (left instanceof Date && right instanceof Date) {
+		return Object.is(left.getTime(), right.getTime());
+	}
+	if (isStringArray(left) && isStringArray(right)) {
+		return (
+			left.length === right.length &&
+			left.every((entry, index) => entry === right[index])
+		);
+	}
+	return false;
+}
+
+function hasSameFields(left: object, right: object): boolean {
+	const leftKeys = Object.keys(left);
+	if (leftKeys.length !== Object.keys(right).length) return false;
+	return leftKeys.every(
+		(key) =>
+			Object.hasOwn(right, key) &&
+			isSameFieldValue(
+				(left as Record<string, unknown>)[key],
+				(right as Record<string, unknown>)[key],
+			),
+	);
+}
+
+/**
+ * (STABLE-WORKSPACE-ROWS) Keeps each previous item whose fields are all equal
+ * to its successor's, so a refetch (new `Date`s, new `tags` arrays) or a no-op
+ * event changes no identity. Returns `prev` itself when nothing changed.
+ */
+export function reuseUnchangedWorkspaceItems(
+	prev: HostWorkspaceItem[],
+	next: HostWorkspaceItem[],
+): HostWorkspaceItem[] {
+	const prevById = new Map(prev.map((item) => [item.id, item]));
+	const reused = next.map((item) => {
+		const previous = prevById.get(item.id);
+		return previous && hasSameFields(previous, item) ? previous : item;
+	});
+	return reused.length === prev.length &&
+		reused.every((item, index) => item === prev[index])
+		? prev
+		: reused;
+}
+
+export type WorkspaceActivityById = ReadonlyMap<string, number | null>;
+
+export function collectWorkspaceActivity(
+	hostResults: HostWorkspacesHostResult[],
+): WorkspaceActivityById {
+	const activityById = new Map<string, number | null>();
+	for (const result of hostResults) {
+		if (!result.rows) continue;
+		for (const row of result.rows) {
+			if (activityById.has(row.id)) continue;
+			activityById.set(row.id, row.lastActivityAt ?? null);
+		}
+	}
+	return activityById;
+}
+
+export function reuseUnchangedActivity(
+	prev: WorkspaceActivityById,
+	next: WorkspaceActivityById,
+): WorkspaceActivityById {
+	if (prev.size !== next.size) return next;
+	for (const [id, activity] of next) {
+		if (!prev.has(id) || !Object.is(prev.get(id), activity)) return next;
+	}
+	return prev;
 }
