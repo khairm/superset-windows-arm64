@@ -600,8 +600,9 @@ export class FsWatcherManager {
 			(relDir) => `${escapeGlobMagic(relDir)}/**`,
 		);
 		// (WATCHER-NATIVE-NAME-HITS) Windows native gets only the root instance
-		// of a `**/<name>/**` glob, so the scan's deeper hits go in as plain
-		// dirs to keep native from walking them.
+		// of a `**/<name>/**` glob. Native does not walk the tree at attach on
+		// Windows (`getTree(watcher, false)`); the scan's deeper hits go in as
+		// plain dirs to keep their events from crossing into JS.
 		const nameHitIgnores =
 			process.platform === "win32"
 				? prunedNameRelDirs
@@ -1094,12 +1095,16 @@ export class FsWatcherManager {
 			}
 		} catch (error) {
 			// (WATCHER-NO-NATIVE-GLOBS-TRIPWIRE) a missing root is expected here;
-			// a tripwire is a bug and must not retry silently.
+			// a tripwire is a bug: log it once and stop polling this root.
 			if (error instanceof NativeIgnoreTripwireError) {
 				console.error("[workspace-fs/watch] native ignore tripwire", {
 					absolutePath: state.absolutePath,
 					error,
 				});
+				if (state.recoveryTimer) {
+					clearInterval(state.recoveryTimer);
+					state.recoveryTimer = null;
+				}
 			}
 			return;
 		} finally {

@@ -70,15 +70,16 @@ export function splitIgnoreForNative(ignore: readonly string[]): {
 
 // (WATCHER-NO-NATIVE-GLOBS-TRIPWIRE) Unreachable from today's callers; fails
 // loud if a future edit would hand native a glob or a path that resolves to
-// the root, its parent or outside it (any of which ignores every event).
+// the root, its parent, a drive or outside it (any of which ignores every
+// event).
 export function assertNativeIgnoreSafe(nativeDirs: readonly string[]): void {
 	for (const dir of nativeDirs) {
+		const normalised = path.posix.normalize(dir).replace(/\/+$/, "");
 		if (
-			dir === "" ||
-			dir === "." ||
+			normalised === "" ||
+			normalised === "." ||
 			dir.split("/").includes("..") ||
-			path.win32.isAbsolute(dir) ||
-			dir.startsWith("/") ||
+			path.win32.parse(dir).root !== "" ||
 			dir.includes("\\") ||
 			GLOB_MAGIC.test(dir)
 		) {
@@ -90,11 +91,20 @@ export function assertNativeIgnoreSafe(nativeDirs: readonly string[]): void {
 export function nativeIgnoreForWindows(
 	ignore: readonly string[],
 	generation: number,
+	rootPath: string,
 ): { nativeDirs: string[]; jsGlobs: string[] } {
 	const { nativeDirs, jsGlobs } = splitIgnoreForNative(ignore);
 	if (generation > 1) {
 		nativeDirs.push(`.superset-watch-generation-${generation}`);
 	}
 	assertNativeIgnoreSafe(nativeDirs);
+	// Native builds event paths as `mDir + "\\" + name`, so under a root that
+	// already ends in a separator (`D:\`, `\\server\share\`) no plain dir
+	// prefix ever matches.
+	if (/[\\/]$/.test(path.win32.resolve(rootPath))) {
+		for (const dir of nativeDirs) {
+			jsGlobs.push(`${escapeGlobMagic(dir)}${DIR_CONTENTS}`);
+		}
+	}
 	return { nativeDirs, jsGlobs };
 }

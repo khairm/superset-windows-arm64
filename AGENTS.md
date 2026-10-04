@@ -259,9 +259,10 @@ In brief:
   required runtime inventory, and `validate-native-runtime.ts` stays strict —
   never weaken it to make a skip pass.
 - Never pass @parcel/watcher a glob on Windows: its std::regex aborts the
-  host-service on a ~290-char path. Plain dirs go native, globs filter in JS;
-  re-run the Windows watcher tests after any watcher merge
-  (`(WATCHER-NO-NATIVE-GLOBS)`).
+  host-service with 0xC0000409 on a ~290-char path (bun sees exit 9, the low
+  byte). Plain dirs go native, globs filter in JS; re-run the Windows watcher
+  tests after any watcher merge (`(WATCHER-NO-NATIVE-GLOBS)`). A
+  `fixture-error` line there is a broken test, not the crash.
 
 ## Accepted limitations
 

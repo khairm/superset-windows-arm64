@@ -36,7 +36,11 @@ async function subscribeWithoutNativeGlobs({
 	onEvents,
 	onError,
 }: NativeWatchRequest): Promise<NativeWatchSubscription> {
-	const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(ignore, generation);
+	const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(
+		ignore,
+		generation,
+		rootPath,
+	);
 	const isIgnored = createIgnoreMatcher(rootPath, jsGlobs);
 	const { subscribe: subscribeToFilesystem } = await import("@parcel/watcher");
 	const subscription = await subscribeToFilesystem(

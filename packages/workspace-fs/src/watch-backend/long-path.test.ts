@@ -27,10 +27,17 @@ interface ChildResult {
 	killed: boolean;
 }
 
-type Verdict = "setup failure" | "survived" | "timeout" | "crash" | "hang";
+type Verdict =
+	| "setup failure"
+	| "fixture error"
+	| "survived"
+	| "timeout"
+	| "crash"
+	| "hang";
 
 function verdictOf(result: ChildResult): Verdict {
 	if (result.killed) return "hang";
+	if (result.lines.includes("fixture-error")) return "fixture error";
 	if (!result.lines.includes("ready")) return "setup failure";
 	if (result.lines.includes("survived") && result.code === 0) return "survived";
 	if (result.lines.includes("timeout")) return "timeout";
@@ -154,6 +161,7 @@ describe.skipIf(process.platform !== "win32")(
 				const { nativeDirs } = nativeIgnoreForWindows(
 					await hostIgnoreList(),
 					2,
+					tmpdir(),
 				);
 				expectVerdict(await runNativeLeg(nativeDirs), "survived");
 			},
@@ -210,7 +218,8 @@ describe.skipIf(process.platform !== "win32")(
 					throw new Error("control no longer crashes: re-evaluate workaround");
 				}
 				expectVerdict(result, "crash");
-				expect(result.code).not.toBe(0);
+				// Bun keeps only the low byte of the 0xC0000409 fail-fast status.
+				expect(result.code).toBe(0x09);
 			},
 			TEST_TIMEOUT_MS,
 		);

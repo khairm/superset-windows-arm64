@@ -1,7 +1,8 @@
 "use strict";
 // Child of long-path.test.ts, run by the shipped Electron as node: one real
 // @parcel/watcher subscription with the given ignore list, then a 320-char
-// root-relative path. Prints `ready`, then `survived` or `timeout`.
+// root-relative path. Prints `ready`, then `survived` or `timeout`; a JS
+// error prints `fixture-error`.
 const fs = require("node:fs");
 const path = require("node:path");
 const watcher = require("@parcel/watcher");
@@ -62,6 +63,7 @@ async function main() {
 }
 
 main().catch((error) => {
+	process.stdout.write("fixture-error\n");
 	process.stderr.write(`${error.stack}\n`);
 	process.exit(1);
 });

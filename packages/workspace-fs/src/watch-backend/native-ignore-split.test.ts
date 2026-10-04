@@ -101,7 +101,11 @@ describe("nativeIgnoreForWindows", () => {
 			await managerIgnore({ useDefaultIgnores: false }),
 			await managerIgnore({}),
 		]) {
-			const { nativeDirs } = nativeIgnoreForWindows([...base, ...dynamic], 2);
+			const { nativeDirs } = nativeIgnoreForWindows(
+				[...base, ...dynamic],
+				2,
+				root,
+			);
 			const options = await nativeOptionsFor(root, nativeDirs);
 			expect(options.ignoreGlobs).toBeUndefined();
 			expect(options.ignorePaths?.length).toBe(nativeDirs.length);
@@ -150,18 +154,40 @@ describe("nativeIgnoreForWindows", () => {
 	});
 
 	test("adds the generation marker as a plain dir only", () => {
-		expect(nativeIgnoreForWindows(["**/.git/**"], 1)).toEqual({
+		expect(nativeIgnoreForWindows(["**/.git/**"], 1, "C:\\repo")).toEqual({
 			nativeDirs: [".git"],
 			jsGlobs: ["**/.git/**"],
 		});
-		expect(nativeIgnoreForWindows(["**/.git/**"], 3)).toEqual({
+		expect(nativeIgnoreForWindows(["**/.git/**"], 3, "C:\\repo")).toEqual({
 			nativeDirs: [".git", ".superset-watch-generation-3"],
 			jsGlobs: ["**/.git/**"],
 		});
 	});
 
+	test("filters plain dirs in JS too under a root ending in a separator", () => {
+		for (const root of ["D:\\", "\\\\server\\share"]) {
+			expect(nativeIgnoreForWindows([asDirIgnore("a/dist")], 2, root)).toEqual({
+				nativeDirs: ["a/dist", ".superset-watch-generation-2"],
+				jsGlobs: ["a/dist/**", ".superset-watch-generation-2/**"],
+			});
+		}
+	});
+
 	test("the tripwire rejects anything native could misread", () => {
-		for (const dir of ["", ".", "..", "a/../b", "C:/x", "/x", "a\\b", "a*"]) {
+		for (const dir of [
+			"",
+			".",
+			"./.",
+			"./",
+			"..",
+			"a/../b",
+			"C:",
+			"C:foo",
+			"C:/x",
+			"/x",
+			"a\\b",
+			"a*",
+		]) {
 			expect(() => assertNativeIgnoreSafe([dir])).toThrow(
 				NativeIgnoreTripwireError,
 			);
@@ -169,9 +195,11 @@ describe("nativeIgnoreForWindows", () => {
 		expect(() =>
 			assertNativeIgnoreSafe([".git", "a/dist", ".claude/worktrees", "a^b"]),
 		).not.toThrow();
-		expect(() => nativeIgnoreForWindows(["../x/**"], 1)).toThrow(
-			NativeIgnoreTripwireError,
-		);
+		for (const entry of ["../x/**", "././**"]) {
+			expect(() => nativeIgnoreForWindows([entry], 1, "C:\\repo")).toThrow(
+				NativeIgnoreTripwireError,
+			);
+		}
 	});
 
 	test.skipIf(process.platform !== "win32")(
@@ -233,6 +261,7 @@ describe("nativeIgnoreForWindows", () => {
 				const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(
 					[...base, ...prunedDirIgnores, ...nameHitIgnores],
 					2,
+					root,
 				);
 				const nativePaths =
 					(await nativeOptionsFor(root, nativeDirs)).ignorePaths ?? [];
