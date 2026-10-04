@@ -117,6 +117,10 @@ export function useSetClaudeWorkspaceAccount(
 				}),
 			);
 		},
+		onError: (error) =>
+			toast.error("Couldn't change workspace account", {
+				description: error.message,
+			}),
 	});
 }
 
@@ -151,6 +155,7 @@ export function useSetClaudeAutoSwitch(
 export function useScheduleClaudeSwitch(
 	hostUrl: string | null,
 	workspaceId: string,
+	{ inlineErrors = false }: { inlineErrors?: boolean } = {},
 ) {
 	const queryClient = useQueryClient();
 
@@ -174,6 +179,12 @@ export function useScheduleClaudeSwitch(
 				hostUrl,
 				workspaceId,
 			);
+		},
+		onError: (error) => {
+			if (inlineErrors) return;
+			toast.error("Couldn't schedule the switch", {
+				description: error.message,
+			});
 		},
 	});
 }

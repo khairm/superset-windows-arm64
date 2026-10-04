@@ -45,7 +45,9 @@ export function ClaudeScheduleTimeDialog({
 	onClose: () => void;
 }) {
 	const hostUrl = useWorkspaceHostUrl(workspaceId);
-	const scheduleSwitch = useScheduleClaudeSwitch(hostUrl, workspaceId);
+	const scheduleSwitch = useScheduleClaudeSwitch(hostUrl, workspaceId, {
+		inlineErrors: true,
+	});
 	const [text, setText] = useState(() =>
 		toClockInput(new Date(Date.now() + PREFILL_LEAD_MS)),
 	);

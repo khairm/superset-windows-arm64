@@ -8,7 +8,6 @@ import {
 	ContextMenuSubContent,
 	ContextMenuSubTrigger,
 } from "@superset/ui/context-menu";
-import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
 import type { ReactNode } from "react";
 import { LuCheck, LuUserRound } from "react-icons/lu";
@@ -398,24 +397,11 @@ export function ClaudeAccountMenu({
 
 	const chooseAccount = (slug: string | null) => {
 		if (setAccount.isPending) return;
-		setAccount.mutate(slug, {
-			onError: (error) =>
-				toast.error("Couldn't change workspace account", {
-					description: error.message,
-				}),
-		});
+		setAccount.mutate(slug);
 	};
 	const scheduleAt = (target: ClaudeScheduleTarget, fireAt: number) => {
 		if (scheduleSwitch.isPending) return;
-		scheduleSwitch.mutate(
-			{ target, fireAt },
-			{
-				onError: (error) =>
-					toast.error("Couldn't schedule the switch", {
-						description: error.message,
-					}),
-			},
-		);
+		scheduleSwitch.mutate({ target, fireAt });
 	};
 	const clear = (scheduleId: string) => {
 		if (clearSchedule.isPending) return;
