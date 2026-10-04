@@ -13,6 +13,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { ClaudeScheduleFailure } from "../claude-accounts/types";
 
 export const terminalSessions = sqliteTable(
 	"terminal_sessions",
@@ -316,7 +317,7 @@ export const claudeAccountSchedules = sqliteTable(
 		fireAt: integer("fire_at").notNull(),
 		status: text().$type<"pending" | "failed">().notNull(),
 		failedAt: integer("failed_at"),
-		failure: text(),
+		failure: text().$type<ClaudeScheduleFailure>(),
 		lastError: text("last_error"),
 	},
 	(table) => [

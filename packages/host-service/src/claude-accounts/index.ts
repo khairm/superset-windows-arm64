@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, watch } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, type SQL } from "drizzle-orm";
 import type { HostDb } from "../db";
-import { hostSettings, workspaces } from "../db/schema";
+import { claudeAccountSchedules, hostSettings, workspaces } from "../db/schema";
 import type { EventBus } from "../events";
+import type { ClaudeAccountStateChangedMessage } from "../events/types";
 import { mapConcurrent } from "../lib/map-concurrent";
 import { listUndisposedTerminalIdsByWorkspaceId } from "../terminal/terminal";
 import { beginWorkspaceRetirement } from "../terminal/workspace-launch-fence";
@@ -25,14 +26,18 @@ import {
 	credentialsFromToken,
 	isWorkspaceUuid,
 } from "./profile-manager";
-import type {
-	ClaudeAccessToken,
-	ClaudeAccountEvent,
-	ClaudeAccountRosterEntry,
-	ClaudeAccountsLogger,
-	GlobalIdentity,
-	ManagedCredentials,
-	PiAccount,
+import {
+	CLAUDE_SCHEDULE_FAILURES,
+	type ClaudeAccessToken,
+	type ClaudeAccountEvent,
+	type ClaudeAccountRosterEntry,
+	type ClaudeAccountsLogger,
+	type ClaudeScheduleFailure,
+	type ClaudeScheduleTarget,
+	type ClaudeScheduleView,
+	type GlobalIdentity,
+	type ManagedCredentials,
+	type PiAccount,
 } from "./types";
 
 const TICK_INTERVAL_MS = 60_000;
@@ -62,6 +67,8 @@ export interface WorkspaceClaudeAccountState {
 	state: "following" | "pinned";
 	slug: string | null;
 	warning: { kind: "credential-health"; message: string } | null;
+	autoSwitch: boolean;
+	schedule: ClaudeScheduleView | null;
 }
 
 export interface WorkspaceDeletionTarget {
@@ -101,6 +108,13 @@ export interface ClaudeAccountsService {
 	retireWorkspaceRuntime(
 		workspaceId: string,
 	): Promise<WorkspaceRuntimeRetirement>;
+	setAutoSwitch(workspaceId: string, enabled: boolean): Promise<void>;
+	scheduleSwitch(
+		workspaceId: string,
+		target: ClaudeScheduleTarget,
+		fireAt: number,
+	): Promise<ClaudeScheduleView>;
+	clearScheduledSwitch(workspaceId: string, scheduleId: string): Promise<void>;
 	getWorkspaceState(
 		workspaceId: string,
 	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">>;
@@ -144,7 +158,7 @@ interface AccountTransitionBase {
 	database?:
 		| { kind: "set"; currentSlug: string | null }
 		| { kind: "compare-and-set"; expectedSlug: string };
-	cause: "manual" | "auto-fallback" | "system";
+	cause: ClaudeAccountStateChangedMessage["cause"];
 }
 
 type AccountTransition = AccountTransitionBase & CredentialTransition;
@@ -615,27 +629,60 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		});
 	}
 
+	async setAutoSwitch(_workspaceId: string, _enabled: boolean): Promise<void> {
+		throw new Error("setAutoSwitch is not implemented");
+	}
+
+	async scheduleSwitch(
+		_workspaceId: string,
+		_target: ClaudeScheduleTarget,
+		_fireAt: number,
+	): Promise<ClaudeScheduleView> {
+		throw new Error("scheduleSwitch is not implemented");
+	}
+
+	async clearScheduledSwitch(
+		_workspaceId: string,
+		_scheduleId: string,
+	): Promise<void> {
+		throw new Error("clearScheduledSwitch is not implemented");
+	}
+
 	async getWorkspaceState(
 		workspaceId: string,
 	): Promise<Omit<WorkspaceClaudeAccountState, "workspaceId">> {
-		const row = this.requireWorkspace(workspaceId);
-		const { workspaceId: _workspaceId, ...state } = this.mapWorkspaceState(
-			workspaceId,
-			row.claudeAccountSlug,
-		);
+		this.requireWorkspace(workspaceId);
+		const [found] = this.selectWorkspaceStates(eq(workspaces.id, workspaceId));
+		if (!found) throw new Error(`Workspace ${workspaceId} does not exist`);
+		const { workspaceId: _workspaceId, ...state } = found;
 		return state;
 	}
 
 	async getWorkspaceStates(): Promise<WorkspaceClaudeAccountState[]> {
+		return this.selectWorkspaceStates(isNull(workspaces.archivedAt));
+	}
+
+	private selectWorkspaceStates(where: SQL): WorkspaceClaudeAccountState[] {
 		return this.deps.db
 			.select({
 				workspaceId: workspaces.id,
 				slug: workspaces.claudeAccountSlug,
+				autoSwitch: workspaces.claudeAutoSwitch,
+				schedule: claudeAccountSchedules,
 			})
 			.from(workspaces)
-			.where(isNull(workspaces.archivedAt))
+			.leftJoin(
+				claudeAccountSchedules,
+				eq(claudeAccountSchedules.workspaceId, workspaces.id),
+			)
+			.where(where)
 			.all()
-			.map((row) => this.mapWorkspaceState(row.workspaceId, row.slug));
+			.map((row) =>
+				this.mapWorkspaceState(row.workspaceId, row.slug, {
+					autoSwitch: row.autoSwitch,
+					schedule: row.schedule ? toScheduleView(row.schedule) : null,
+				}),
+			);
 	}
 
 	async getRoster(): Promise<{
@@ -2075,6 +2122,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private mapWorkspaceState(
 		workspaceId: string,
 		slug: string | null,
+		controls: Pick<WorkspaceClaudeAccountState, "autoSwitch" | "schedule">,
 	): WorkspaceClaudeAccountState {
 		const message = this.renderWarning(workspaceId);
 		return {
@@ -2082,6 +2130,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			state: slug === null ? "following" : "pinned",
 			slug,
 			warning: message ? { kind: "credential-health", message } : null,
+			...controls,
 		};
 	}
 
@@ -2102,6 +2151,41 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 		return this.janitor;
 	}
+}
+
+function toScheduleView(
+	row: typeof claudeAccountSchedules.$inferSelect,
+): ClaudeScheduleView {
+	const target: ClaudeScheduleTarget =
+		row.targetSlug === null
+			? { kind: "default" }
+			: { kind: "account", slug: row.targetSlug };
+	const base = { scheduleId: row.scheduleId, target, fireAt: row.fireAt };
+	if (row.status === "pending") return { status: "pending", ...base };
+	if (
+		row.status === "failed" &&
+		row.failedAt !== null &&
+		isScheduleFailure(row.failure)
+	) {
+		return {
+			status: "failed",
+			...base,
+			failedAt: row.failedAt,
+			failure: row.failure,
+			lastError: row.lastError,
+		};
+	}
+	throw new Error(
+		`Invalid Claude account schedule row for workspace ${row.workspaceId}: status ${row.status}, failure ${row.failure}`,
+	);
+}
+
+function isScheduleFailure(
+	value: string | null,
+): value is ClaudeScheduleFailure {
+	return (CLAUDE_SCHEDULE_FAILURES as readonly (string | null)[]).includes(
+		value,
+	);
 }
 
 function pendingSwitchMessage(slug: string): string {

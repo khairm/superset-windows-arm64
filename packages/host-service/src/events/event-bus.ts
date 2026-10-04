@@ -301,7 +301,12 @@ export class EventBus {
 	broadcastClaudeAccountEvent(
 		message: Extract<
 			ServerMessage,
-			{ type: "claude-account-state-changed" | "claude-account-warning" }
+			{
+				type:
+					| "claude-account-state-changed"
+					| "claude-account-warning"
+					| "claude-account-controls-changed";
+			}
 		>,
 	): void {
 		this.broadcast(message);
