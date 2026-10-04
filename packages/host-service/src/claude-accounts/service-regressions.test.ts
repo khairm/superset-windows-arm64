@@ -16,6 +16,7 @@ import {
 	writeGlobalCredentials,
 } from "../../test/helpers/claude-accounts-fixture";
 import { terminalSessions, workspaces } from "../db/schema";
+import { FallbackPolicy } from "./fallback";
 import {
 	type ClaudeAccountsService,
 	createClaudeAccountsService,
@@ -87,6 +88,8 @@ async function setupService(options: { now?: () => number } = {}) {
 async function setupFallbackService(options: {
 	roster: WireAccount[];
 	workspaceSlugs: string[];
+	autoSwitch?: boolean;
+	awaitInitialBackgroundWork?: boolean;
 	onEmit?: (
 		event: ClaudeTestWorld["events"][number],
 		world: ClaudeTestWorld,
@@ -115,6 +118,13 @@ async function setupFallbackService(options: {
 		const id = WORKSPACE_IDS[index];
 		if (!id) throw new Error(`No stable workspace UUID for index ${index}`);
 		const row = await seedWorkspace(world, { id, claudeAccountSlug: slug });
+		if (options.autoSwitch !== undefined) {
+			world.db
+				.update(workspaces)
+				.set({ claudeAutoSwitch: options.autoSwitch })
+				.where(eq(workspaces.id, id))
+				.run();
+		}
 		await manager.mintProfile(
 			row.id,
 			row.worktreePath,
@@ -131,7 +141,7 @@ async function setupFallbackService(options: {
 			options.onEmit?.(event, world);
 		},
 		log: world.log,
-		awaitInitialBackgroundWork: true,
+		awaitInitialBackgroundWork: options.awaitInitialBackgroundWork ?? true,
 		piBaseUrl: pi.baseUrl,
 		pushKeyPath: pi.pushKeyPath,
 	});
@@ -906,6 +916,110 @@ describe("Claude automatic fallback safeguards", () => {
 		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
 		expect(state.state).toBe("following");
 		expect(state.slug).toBeNull();
+	});
+
+	test("Auto-switch off keeps a dead pinned account pinned across ticks", async () => {
+		const deadRoster = [
+			wireAccount("claude12"),
+			wireAccount("claude123", {
+				dead: true,
+				dead_reason: "login expired",
+				five_pct: 95,
+			}),
+		];
+		const { world, service } = await setupFallbackService({
+			roster: deadRoster,
+			workspaceSlugs: ["claude123"],
+			autoSwitch: false,
+		});
+		const suppressedTicks = () =>
+			world.log.infoEntries.filter(
+				(entry) =>
+					entry.message ===
+					"Claude auto-fallback suppressed: auto-switch is off",
+			).length;
+		const ticksAfterStart = suppressedTicks();
+		expect(ticksAfterStart).toBeGreaterThanOrEqual(1);
+
+		await writeGlobalCredentials(
+			world,
+			managedCredentials("claude12", {
+				accessToken: "claude12-default-token",
+				refreshToken: "real-token-stays-global",
+			}),
+		);
+		await waitFor(
+			() => suppressedTicks() > ticksAfterStart,
+			"a second keep-fresh tick did not run",
+		);
+
+		const state = await service.getWorkspaceState(WORKSPACE_IDS[0]);
+		expect(state).toMatchObject({
+			state: "pinned",
+			slug: "claude123",
+			autoSwitch: false,
+		});
+		expect(state.warning?.message).toContain("needs re-login");
+		expect(
+			world.events.some(
+				(event) =>
+					event.type === "claude-account-state-changed" &&
+					event.cause === "auto-fallback",
+			),
+		).toBe(false);
+	});
+
+	test("Auto-switch turned off after evaluation discards the fallback", async () => {
+		let reachTriggerRead!: () => void;
+		const triggerReadReached = new Promise<void>((resolve) => {
+			reachTriggerRead = resolve;
+		});
+		let openGate!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		const readTriggers = spyOn(
+			FallbackPolicy.prototype,
+			"readTriggers",
+		).mockImplementationOnce(async () => {
+			reachTriggerRead();
+			await gate;
+			return { five: 80, seven: 80 };
+		});
+		try {
+			const { world, service } = await setupFallbackService({
+				roster: [
+					wireAccount("claude12"),
+					wireAccount("claude123", {
+						dead: true,
+						dead_reason: "login expired",
+						five_pct: 95,
+					}),
+				],
+				workspaceSlugs: ["claude123"],
+				awaitInitialBackgroundWork: false,
+			});
+			await triggerReadReached;
+			await service.setAutoSwitch(WORKSPACE_IDS[0], false);
+			openGate();
+			await waitFor(
+				() =>
+					world.log.infoEntries.some(
+						(entry) =>
+							entry.message ===
+							"Claude auto-fallback discarded: auto-switch is off",
+					),
+				"the locked fallback re-check did not discard the candidate",
+			);
+
+			expect(
+				world.db.query.workspaces
+					.findFirst({ where: eq(workspaces.id, WORKSPACE_IDS[0]) })
+					.sync()?.claudeAccountSlug,
+			).toBe("claude123");
+		} finally {
+			readTriggers.mockRestore();
+		}
 	});
 
 	test("does not fall back onto a dead machine-default account", async () => {

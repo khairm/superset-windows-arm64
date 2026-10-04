@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, type FSWatcher, watch } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { and, eq, isNull, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import type { HostDb } from "../db";
 import { claudeAccountSchedules, hostSettings, workspaces } from "../db/schema";
 import type { EventBus } from "../events";
@@ -18,7 +18,7 @@ import {
 	disposeTerminalIds,
 } from "./janitor";
 import { WorkspaceLockBusyError, WorkspaceLocks } from "./locks";
-import { PiClient, validateAccountSlug } from "./pi-client";
+import { PiClient, PiRequestError, validateAccountSlug } from "./pi-client";
 import {
 	BlankedCredentialsError,
 	ClaudeProfileManager,
@@ -26,6 +26,17 @@ import {
 	credentialsFromToken,
 	isWorkspaceUuid,
 } from "./profile-manager";
+import {
+	type DueSchedule,
+	realScheduleTimer,
+	SCHEDULE_FALLBACK_COOLDOWN_MS,
+	SCHEDULE_MAX_LEAD_MS,
+	type ScheduleAttemptFailure,
+	type ScheduleFireOutcome,
+	ScheduleRunner,
+	type ScheduleTimer,
+	scheduleExpired,
+} from "./schedule";
 import {
 	CLAUDE_SCHEDULE_FAILURES,
 	type ClaudeAccessToken,
@@ -60,6 +71,7 @@ export interface ClaudeAccountsServiceDeps {
 	pushKeyPath?: string;
 	awaitInitialBackgroundWork?: boolean;
 	now?: () => number;
+	scheduleTimer?: ScheduleTimer;
 }
 
 export interface WorkspaceClaudeAccountState {
@@ -156,18 +168,33 @@ interface AccountTransitionBase {
 	desiredSlug: string | null;
 	ensureProfile?: { worktreePath: string; knownExists?: boolean };
 	database?:
-		| { kind: "set"; currentSlug: string | null }
+		| {
+				kind: "set";
+				currentSlug: string | null;
+				schedule?: { consume: string };
+		  }
 		| { kind: "compare-and-set"; expectedSlug: string };
 	cause: ClaudeAccountStateChangedMessage["cause"];
 }
 
 type AccountTransition = AccountTransitionBase & CredentialTransition;
 
+type WorkspaceRow = typeof workspaces.$inferSelect;
+
+/** The pre-change credentials file could not be captured (empty or unreadable). */
+class CredentialCaptureError extends Error {
+	constructor(cause: unknown) {
+		super(errorText(cause), { cause });
+		this.name = "CredentialCaptureError";
+	}
+}
+
 class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private readonly locks = new WorkspaceLocks();
 	private readonly profiles: ClaudeProfileManager;
 	private readonly pi: PiClient;
 	private readonly fallback: FallbackPolicy;
+	private readonly schedules: ScheduleRunner;
 	private janitor: ClaudeProfileJanitor | null = null;
 	private dbInstanceId: string | null = null;
 	private configured = false;
@@ -198,6 +225,16 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				: {}),
 		});
 		this.fallback = new FallbackPolicy(deps.log);
+		this.schedules = new ScheduleRunner({
+			now: () => this.now(),
+			timer: deps.scheduleTimer ?? realScheduleTimer,
+			log: deps.log,
+			isActive: () => this.managed && !this.stopped,
+			listPending: () => this.listPendingSchedules(),
+			fire: (schedule) => this.fireSchedule(schedule),
+			expire: (schedule, lastFailure) =>
+				this.expireSchedule(schedule, lastFailure),
+		});
 	}
 
 	async start(): Promise<void> {
@@ -280,6 +317,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			});
 		}, TICK_INTERVAL_MS);
 		this.interval.unref();
+		this.schedules.poke();
 	}
 
 	private async runInitialBackgroundWork(
@@ -321,6 +359,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 
 	stop(): void {
 		this.stopped = true;
+		this.schedules.stop();
 		if (this.interval) clearInterval(this.interval);
 		this.interval = null;
 		this.credentialsWatcher?.close();
@@ -444,9 +483,14 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 				"Claude account switching is not configured on this host",
 			);
 		}
-		await this.withWorkspaceLock(workspaceId, () =>
-			this.setWorkspaceAccountLocked(workspaceId, slug),
-		);
+		await this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.requireWorkspace(workspaceId);
+			if (slug !== null) validateAccountSlug(slug);
+			if (slug !== row.claudeAccountSlug) {
+				this.clearScheduleAndCooldown(workspaceId);
+			}
+			await this.setWorkspaceAccountLocked(workspaceId, slug);
+		});
 	}
 
 	private async setWorkspaceAccountLocked(
@@ -593,6 +637,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					accountReleased: false,
 				};
 			}
+			this.clearScheduleAndCooldown(workspaceId);
 			// Opened before disposing: this and the row listing below are one
 			// synchronous step, so a launch in flight on this host either lands
 			// in that list or is refused at its own row insert. The window stays
@@ -629,23 +674,128 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		});
 	}
 
-	async setAutoSwitch(_workspaceId: string, _enabled: boolean): Promise<void> {
-		throw new Error("setAutoSwitch is not implemented");
+	async setAutoSwitch(workspaceId: string, enabled: boolean): Promise<void> {
+		await this.withWorkspaceLock(workspaceId, async () => {
+			const row = this.requireWorkspace(workspaceId);
+			if (row.claudeAccountSlug === null) {
+				throw new Error("Auto-switch applies only to a pinned account");
+			}
+			this.deps.db
+				.update(workspaces)
+				.set({ claudeAutoSwitch: enabled })
+				.where(eq(workspaces.id, workspaceId))
+				.run();
+		});
 	}
 
 	async scheduleSwitch(
-		_workspaceId: string,
-		_target: ClaudeScheduleTarget,
-		_fireAt: number,
+		workspaceId: string,
+		target: ClaudeScheduleTarget,
+		fireAt: number,
 	): Promise<ClaudeScheduleView> {
-		throw new Error("scheduleSwitch is not implemented");
+		if (!this.managed) {
+			throw new Error(
+				"Claude account switching is not configured on this host",
+			);
+		}
+		const row = this.requireWorkspace(workspaceId);
+		if (row.archivedAt !== null) {
+			throw new Error(`Workspace ${workspaceId} is archived`);
+		}
+		const now = this.now();
+		if (
+			!Number.isInteger(fireAt) ||
+			fireAt <= now ||
+			fireAt > now + SCHEDULE_MAX_LEAD_MS
+		) {
+			throw new Error(
+				"A scheduled switch must be set for a time within the next 25 hours",
+			);
+		}
+		let targetSlug: string | null = null;
+		if (target.kind === "default") {
+			if (row.claudeAccountSlug === null) {
+				throw new Error("This workspace already follows the tray default");
+			}
+		} else {
+			validateAccountSlug(target.slug);
+			const account = findClaudeAccount(
+				await this.fetchPiAccountsOrLastGood(),
+				target.slug,
+			);
+			if (!account) {
+				throw new Error(
+					`Claude account ${target.slug} is not in the Pi roster`,
+				);
+			}
+			if (!account.enabled) {
+				throw new Error(`Claude account '${target.slug}' is disabled`);
+			}
+			targetSlug = target.slug;
+		}
+		const scheduleId = randomUUID();
+		const pending = {
+			scheduleId,
+			targetSlug,
+			fireAt,
+			status: "pending" as const,
+			failedAt: null,
+			failure: null,
+			lastError: null,
+		};
+		const saved = this.deps.db.transaction((tx) => {
+			const live = tx
+				.select({ id: workspaces.id })
+				.from(workspaces)
+				.where(
+					and(eq(workspaces.id, workspaceId), isNull(workspaces.archivedAt)),
+				)
+				.get();
+			if (!live) return false;
+			tx.insert(claudeAccountSchedules)
+				.values({ workspaceId, ...pending })
+				.onConflictDoUpdate({
+					target: claudeAccountSchedules.workspaceId,
+					set: pending,
+				})
+				.run();
+			return true;
+		});
+		if (!saved) {
+			throw new Error(
+				`Workspace ${workspaceId} was removed or archived before the switch was scheduled`,
+			);
+		}
+		this.schedules.poke();
+		return {
+			status: "pending",
+			scheduleId,
+			target:
+				targetSlug === null
+					? { kind: "default" }
+					: { kind: "account", slug: targetSlug },
+			fireAt,
+		};
 	}
 
 	async clearScheduledSwitch(
-		_workspaceId: string,
-		_scheduleId: string,
+		workspaceId: string,
+		scheduleId: string,
 	): Promise<void> {
-		throw new Error("clearScheduledSwitch is not implemented");
+		if (!isWorkspaceUuid(workspaceId)) {
+			throw new Error(`Invalid workspace UUID: ${workspaceId}`);
+		}
+		const deleted = this.deps.db
+			.delete(claudeAccountSchedules)
+			.where(
+				and(
+					eq(claudeAccountSchedules.workspaceId, workspaceId),
+					eq(claudeAccountSchedules.scheduleId, scheduleId),
+				),
+			)
+			.returning({ workspaceId: claudeAccountSchedules.workspaceId })
+			.get();
+		if (deleted) this.emitControlsChanged(workspaceId);
 	}
 
 	async getWorkspaceState(
@@ -689,20 +839,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		trayDefaultSlug: string | null;
 		accounts: ClaudeAccountRosterEntry[];
 	}> {
-		let accounts: PiAccount[];
-		try {
-			accounts = await this.fetchPiAccounts();
-		} catch (error) {
-			const lastGood = this.pi.getAccountsLastGood();
-			if (!lastGood) throw error;
-			this.deps.log.warn(
-				"Serving last-good Claude account roster after Pi failure",
-				{
-					error,
-				},
-			);
-			accounts = lastGood;
-		}
+		const accounts = await this.fetchPiAccountsOrLastGood();
 		let trayDefaultSlug: string | null = null;
 		try {
 			const identity = await this.profiles.readGlobalIdentity();
@@ -769,7 +906,9 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 						deletionTargets.flatMap((target) => target.terminalIds),
 						disposalOptions,
 					);
-					return fn();
+					const result = await fn();
+					this.deleteSchedulesOfDeletedWorkspaces(workspaceIds);
+					return result;
 				}
 				const janitor = this.requireJanitor();
 				const preparedIds: string[] = [];
@@ -804,6 +943,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 					await this.clearDeletionMarkersOrThrow(rolledBackIds, error);
 					throw error;
 				}
+				this.deleteSchedulesOfDeletedWorkspaces(workspaceIds);
 
 				const deletions = await Promise.allSettled(
 					preparedIds.map((workspaceId) =>
@@ -854,6 +994,362 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		return this.locks.withLock(workspaceId, fn, opts);
 	}
 
+	private listPendingSchedules(): DueSchedule[] {
+		return this.deps.db
+			.select({
+				workspaceId: claudeAccountSchedules.workspaceId,
+				scheduleId: claudeAccountSchedules.scheduleId,
+				targetSlug: claudeAccountSchedules.targetSlug,
+				fireAt: claudeAccountSchedules.fireAt,
+				archivedAt: workspaces.archivedAt,
+			})
+			.from(claudeAccountSchedules)
+			.innerJoin(
+				workspaces,
+				eq(workspaces.id, claudeAccountSchedules.workspaceId),
+			)
+			.where(eq(claudeAccountSchedules.status, "pending"))
+			.orderBy(claudeAccountSchedules.fireAt)
+			.all()
+			.map(({ archivedAt, ...schedule }) => ({
+				...schedule,
+				archived: archivedAt !== null,
+			}));
+	}
+
+	/** Pi work runs outside the lock; every write is guarded by `schedule_id`. */
+	private async fireSchedule(
+		schedule: DueSchedule,
+	): Promise<ScheduleFireOutcome> {
+		const { workspaceId, targetSlug } = schedule;
+		let token: ClaudeAccessToken | null = null;
+		let piFailure: unknown = null;
+		if (targetSlug !== null) {
+			const row = this.findWorkspace(workspaceId);
+			if (!row) return { kind: "settled" };
+			const installed = await this.readProfileCredentialsForCache(
+				workspaceId,
+				undefined,
+				true,
+			);
+			const halted = this.scheduleHalted(schedule);
+			if (halted) return halted;
+			const plannedNoop = isOnScheduleTarget(
+				row.claudeAccountSlug,
+				installed,
+				targetSlug,
+			);
+			try {
+				const roster = await this.pi.fetchAccounts();
+				this.recordAccountsSuccess();
+				const rosterHalted = this.scheduleHalted(schedule);
+				if (rosterHalted) return rosterHalted;
+				const account = findClaudeAccount(roster, targetSlug);
+				const unavailable = account
+					? accountHealthMessage(account, `Claude account '${targetSlug}'`)
+					: `Claude account '${targetSlug}' is not in the Pi roster`;
+				if (unavailable) {
+					return retryOutcome("target-unavailable", unavailable);
+				}
+				if (!plannedNoop) {
+					token = await this.pi.fetchToken(targetSlug);
+					this.recordTokenSuccess(targetSlug);
+					const tokenHalted = this.scheduleHalted(schedule);
+					if (tokenHalted) return tokenHalted;
+				}
+			} catch (error) {
+				if (error instanceof PiRequestError && error.retryable) {
+					return retryOutcome("pi-unavailable", error.message);
+				}
+				piFailure = error;
+			}
+		}
+		try {
+			return await this.withWorkspaceLock(
+				workspaceId,
+				() => this.commitSchedule(schedule, token, piFailure),
+				{ tryOnly: true },
+			);
+		} catch (error) {
+			if (error instanceof WorkspaceLockBusyError) return { kind: "busy" };
+			throw error;
+		}
+	}
+
+	private async commitSchedule(
+		schedule: DueSchedule,
+		token: ClaudeAccessToken | null,
+		piFailure: unknown,
+	): Promise<ScheduleFireOutcome> {
+		const { workspaceId, scheduleId, targetSlug } = schedule;
+		const row = this.findWorkspace(workspaceId);
+		const current = this.deps.db
+			.select({
+				scheduleId: claudeAccountSchedules.scheduleId,
+				status: claudeAccountSchedules.status,
+			})
+			.from(claudeAccountSchedules)
+			.where(eq(claudeAccountSchedules.workspaceId, workspaceId))
+			.get();
+		if (
+			!row ||
+			row.archivedAt !== null ||
+			current?.scheduleId !== scheduleId ||
+			current.status !== "pending"
+		) {
+			this.deps.log.info(
+				"Scheduled Claude account switch was replaced or cancelled before it fired",
+				{ workspaceId, scheduleId },
+			);
+			return { kind: "settled" };
+		}
+		const halted = this.scheduleHalted(schedule);
+		if (halted) return halted;
+		if (piFailure !== null) return this.failSchedule(schedule, piFailure);
+		if (targetSlug === null) return this.commitDefaultSchedule(schedule, row);
+		const installed = await this.readProfileCredentialsForCache(
+			workspaceId,
+			undefined,
+			true,
+		);
+		const installedHalted = this.scheduleHalted(schedule);
+		if (installedHalted) return installedHalted;
+		if (isOnScheduleTarget(row.claudeAccountSlug, installed, targetSlug)) {
+			return this.consumeNoopSchedule(schedule);
+		}
+		if (!token) return { kind: "replan" };
+		return this.switchForSchedule(
+			schedule,
+			row,
+			targetSlug,
+			credentialsFromToken(token),
+		);
+	}
+
+	private async commitDefaultSchedule(
+		schedule: DueSchedule,
+		row: WorkspaceRow,
+	): Promise<ScheduleFireOutcome> {
+		if (row.claudeAccountSlug === null) {
+			return this.consumeNoopSchedule(schedule);
+		}
+		let identity: GlobalIdentity;
+		try {
+			identity = await this.profiles.readGlobalIdentity();
+		} catch (error) {
+			return retryOutcome("default-unavailable", errorText(error));
+		}
+		const halted = this.scheduleHalted(schedule);
+		if (halted) return halted;
+		if (identity.kind === "absent") {
+			return retryOutcome(
+				"default-unavailable",
+				"The machine default is signed out",
+			);
+		}
+		return this.switchForSchedule(schedule, row, null, identity.credentials);
+	}
+
+	private async switchForSchedule(
+		schedule: DueSchedule,
+		row: WorkspaceRow,
+		desiredSlug: string | null,
+		credentials: ManagedCredentials,
+	): Promise<ScheduleFireOutcome> {
+		const { workspaceId, scheduleId } = schedule;
+		let updated: boolean;
+		try {
+			updated = await this.applyWorkspaceAccountTransition(workspaceId, {
+				desiredSlug,
+				credentialAction: "write",
+				credentials,
+				ensureProfile: { worktreePath: row.worktreePath },
+				database: {
+					kind: "set",
+					currentSlug: row.claudeAccountSlug,
+					schedule: { consume: scheduleId },
+				},
+				cause: "scheduled",
+			});
+		} catch (error) {
+			if (error instanceof CredentialCaptureError) {
+				return retryOutcome("profile-unavailable", error.message);
+			}
+			return this.failSchedule(schedule, error);
+		}
+		if (!updated) {
+			this.deps.log.info(
+				"Scheduled Claude account switch was replaced or cancelled while it fired",
+				{ workspaceId, scheduleId },
+			);
+			return { kind: "settled" };
+		}
+		this.emitControlsChanged(workspaceId);
+		this.deps.log.info("Scheduled Claude account switch fired", {
+			workspaceId,
+			scheduleId,
+			slug: desiredSlug,
+		});
+		return { kind: "settled" };
+	}
+
+	private consumeNoopSchedule(schedule: DueSchedule): ScheduleFireOutcome {
+		const { workspaceId, scheduleId } = schedule;
+		if (!this.consumeSchedule(workspaceId, scheduleId, {})) {
+			this.deps.log.info(
+				"Scheduled Claude account switch was replaced or cancelled before it fired",
+				{ workspaceId, scheduleId },
+			);
+			return { kind: "settled" };
+		}
+		this.emitControlsChanged(workspaceId);
+		this.deps.log.info(
+			"Scheduled Claude account switch found the workspace already on its target",
+			{ workspaceId, scheduleId },
+		);
+		return { kind: "settled" };
+	}
+
+	/** Deletes the pending row first; the workspace write runs only if it hit. */
+	private consumeSchedule(
+		workspaceId: string,
+		scheduleId: string,
+		set: Partial<Pick<WorkspaceRow, "claudeAccountSlug">>,
+	): { id: string } | undefined {
+		const firedAt = this.now();
+		return this.deps.db.transaction((tx) => {
+			const consumed = tx
+				.delete(claudeAccountSchedules)
+				.where(
+					and(
+						eq(claudeAccountSchedules.workspaceId, workspaceId),
+						eq(claudeAccountSchedules.scheduleId, scheduleId),
+						eq(claudeAccountSchedules.status, "pending"),
+					),
+				)
+				.returning({ workspaceId: claudeAccountSchedules.workspaceId })
+				.get();
+			if (!consumed) return undefined;
+			return tx
+				.update(workspaces)
+				.set({ ...set, claudeScheduleFiredAt: firedAt })
+				.where(eq(workspaces.id, workspaceId))
+				.returning({ id: workspaces.id })
+				.get();
+		});
+	}
+
+	private failSchedule(
+		schedule: DueSchedule,
+		error: unknown,
+	): ScheduleFireOutcome {
+		this.deps.log.error("Scheduled Claude account switch failed", {
+			workspaceId: schedule.workspaceId,
+			scheduleId: schedule.scheduleId,
+			error,
+		});
+		this.markScheduleFailed(schedule, "error", errorText(error));
+		return { kind: "settled" };
+	}
+
+	private async expireSchedule(
+		schedule: DueSchedule,
+		lastFailure: ScheduleAttemptFailure | null,
+	): Promise<"settled" | "busy"> {
+		const failure = lastFailure?.failure ?? "not-run";
+		try {
+			await this.withWorkspaceLock(
+				schedule.workspaceId,
+				async () => {
+					if (
+						this.markScheduleFailed(
+							schedule,
+							failure,
+							lastFailure?.message ?? null,
+						)
+					) {
+						this.deps.log.warn("Scheduled Claude account switch expired", {
+							workspaceId: schedule.workspaceId,
+							scheduleId: schedule.scheduleId,
+							failure,
+						});
+					}
+				},
+				{ tryOnly: true },
+			);
+			return "settled";
+		} catch (error) {
+			if (error instanceof WorkspaceLockBusyError) return "busy";
+			throw error;
+		}
+	}
+
+	private markScheduleFailed(
+		schedule: DueSchedule,
+		failure: ClaudeScheduleFailure,
+		lastError: string | null,
+	): boolean {
+		const failed = this.deps.db
+			.update(claudeAccountSchedules)
+			.set({ status: "failed", failedAt: this.now(), failure, lastError })
+			.where(
+				and(
+					eq(claudeAccountSchedules.scheduleId, schedule.scheduleId),
+					eq(claudeAccountSchedules.status, "pending"),
+				),
+			)
+			.returning({ workspaceId: claudeAccountSchedules.workspaceId })
+			.get();
+		if (failed) this.emitControlsChanged(schedule.workspaceId);
+		return failed !== undefined;
+	}
+
+	private scheduleHalted(schedule: DueSchedule): ScheduleFireOutcome | null {
+		if (this.stopped) return { kind: "abandoned" };
+		if (scheduleExpired(schedule.fireAt, this.now())) {
+			return { kind: "expired" };
+		}
+		return null;
+	}
+
+	private clearScheduleAndCooldown(workspaceId: string): void {
+		const deleted = this.deps.db.transaction((tx) => {
+			const schedule = tx
+				.delete(claudeAccountSchedules)
+				.where(eq(claudeAccountSchedules.workspaceId, workspaceId))
+				.returning({ workspaceId: claudeAccountSchedules.workspaceId })
+				.get();
+			tx.update(workspaces)
+				.set({ claudeScheduleFiredAt: null })
+				.where(eq(workspaces.id, workspaceId))
+				.run();
+			return schedule !== undefined;
+		});
+		if (deleted) this.emitControlsChanged(workspaceId);
+	}
+
+	/** Never throws: a rethrow here would un-archive a destroyed worktree. */
+	private deleteSchedulesOfDeletedWorkspaces(
+		workspaceIds: readonly string[],
+	): void {
+		if (workspaceIds.length === 0) return;
+		try {
+			this.deps.db
+				.delete(claudeAccountSchedules)
+				.where(inArray(claudeAccountSchedules.workspaceId, [...workspaceIds]))
+				.run();
+		} catch (error) {
+			this.deps.log.warn(
+				"Workspace was deleted but its scheduled Claude account switch row remains; expiry retires it",
+				{ workspaceIds, error },
+			);
+		}
+	}
+
+	private emitControlsChanged(workspaceId: string): void {
+		this.deps.emit({ type: "claude-account-controls-changed", workspaceId });
+	}
+
 	private runTick(): Promise<void> {
 		if (!this.managed || this.stopped) return Promise.resolve();
 		if (this.tickInFlight) return this.tickInFlight;
@@ -895,6 +1391,8 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			.select({
 				id: workspaces.id,
 				claudeAccountSlug: workspaces.claudeAccountSlug,
+				claudeAutoSwitch: workspaces.claudeAutoSwitch,
+				claudeScheduleFiredAt: workspaces.claudeScheduleFiredAt,
 			})
 			.from(workspaces)
 			.where(isNull(workspaces.archivedAt))
@@ -1214,7 +1712,15 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	}
 
 	private async runFallbacks(
-		rows: Array<{ id: string; claudeAccountSlug: string | null }>,
+		rows: Array<
+			Pick<
+				WorkspaceRow,
+				| "id"
+				| "claudeAccountSlug"
+				| "claudeAutoSwitch"
+				| "claudeScheduleFiredAt"
+			>
+		>,
 		identity: GlobalIdentity | null,
 		roster: PiAccount[],
 		triggers: TrayTriggers,
@@ -1261,6 +1767,14 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		for (const row of rows) {
 			const slug = row.claudeAccountSlug;
 			if (slug === null) continue;
+			const hold = this.fallbackHold(row);
+			if (hold) {
+				this.deps.log.info(`Claude auto-fallback suppressed: ${hold}`, {
+					workspaceId: row.id,
+					slug,
+				});
+				continue;
+			}
 			if (slug === identity.slug) {
 				this.deps.log.info(
 					"Claude auto-fallback suppressed: pinned account is the machine default",
@@ -1328,6 +1842,13 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 							"Claude auto-fallback discarded: workspace account changed",
 							{ workspaceId },
 						);
+						return;
+					}
+					const hold = this.fallbackHold(row);
+					if (hold) {
+						this.deps.log.info(`Claude auto-fallback discarded: ${hold}`, {
+							workspaceId,
+						});
 						return;
 					}
 					let identity: GlobalIdentity;
@@ -1401,11 +1922,40 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		}
 	}
 
+	// (CLAUDE-ACCOUNT-AUTO-SWITCH)
+	private fallbackHold(
+		row: Pick<WorkspaceRow, "claudeAutoSwitch" | "claudeScheduleFiredAt">,
+	): string | null {
+		if (!row.claudeAutoSwitch) return "auto-switch is off";
+		if (
+			row.claudeScheduleFiredAt !== null &&
+			this.now() - row.claudeScheduleFiredAt < SCHEDULE_FALLBACK_COOLDOWN_MS
+		) {
+			return "a scheduled switch fired less than 10 minutes ago";
+		}
+		return null;
+	}
+
+	private async fetchPiAccountsOrLastGood(): Promise<PiAccount[]> {
+		try {
+			return await this.fetchPiAccounts();
+		} catch (error) {
+			const lastGood = this.pi.getAccountsLastGood();
+			if (!lastGood) throw error;
+			this.deps.log.warn(
+				"Serving last-good Claude account roster after Pi failure",
+				{
+					error,
+				},
+			);
+			return lastGood;
+		}
+	}
+
 	private async fetchPiAccounts(): Promise<PiAccount[]> {
 		try {
 			const accounts = await this.pi.fetchAccounts();
-			this.accountsFailureStartedAt = null;
-			this.setWarningCause(null, "pi-roster", null);
+			this.recordAccountsSuccess();
 			return accounts;
 		} catch (error) {
 			this.accountsFailureStartedAt ??= this.now();
@@ -1423,8 +1973,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	private async fetchPiToken(slug: string): Promise<ClaudeAccessToken> {
 		try {
 			const token = await this.pi.fetchToken(slug);
-			this.tokenFailureStartedAt.delete(slug);
-			this.updateTokenFailureWarning();
+			this.recordTokenSuccess(slug);
 			return token;
 		} catch (error) {
 			if (!this.tokenFailureStartedAt.has(slug)) {
@@ -1433,6 +1982,17 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			this.updateTokenFailureWarning();
 			throw error;
 		}
+	}
+
+	private recordAccountsSuccess(): void {
+		this.accountsFailureStartedAt = null;
+		this.setWarningCause(null, "pi-roster", null);
+	}
+
+	private recordTokenSuccess(slug: string): void {
+		this.tokenFailureStartedAt.delete(slug);
+		this.tokenBackoffs.delete(slug);
+		this.updateTokenFailureWarning();
 	}
 
 	private accountsFailureExceededGrace(): boolean {
@@ -1513,9 +2073,7 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			);
 		}
 		try {
-			const token = await this.fetchPiToken(slug);
-			this.tokenBackoffs.delete(slug);
-			return token;
+			return await this.fetchPiToken(slug);
 		} catch (error) {
 			const failures = (backoff?.failures ?? 0) + 1;
 			const delay = Math.min(
@@ -1705,19 +2263,30 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 			return true;
 		}
 
-		const priorCredentialState = await this.profiles.captureCredentialFileState(
-			this.profiles.profileDirFor(workspaceId),
-		);
+		let priorCredentialState: CredentialFileState;
+		try {
+			priorCredentialState = await this.profiles.captureCredentialFileState(
+				this.profiles.profileDirFor(workspaceId),
+			);
+		} catch (error) {
+			throw new CredentialCaptureError(error);
+		}
 		await this.applyCredentialTransition(workspaceId, transition);
 		let updated: { id: string } | undefined;
 		try {
 			if (transition.database.kind === "set") {
-				updated = this.deps.db
-					.update(workspaces)
-					.set({ claudeAccountSlug: transition.desiredSlug })
-					.where(eq(workspaces.id, workspaceId))
-					.returning({ id: workspaces.id })
-					.get();
+				const consume = transition.database.schedule?.consume;
+				updated =
+					consume === undefined
+						? this.deps.db
+								.update(workspaces)
+								.set({ claudeAccountSlug: transition.desiredSlug })
+								.where(eq(workspaces.id, workspaceId))
+								.returning({ id: workspaces.id })
+								.get()
+						: this.consumeSchedule(workspaceId, consume, {
+								claudeAccountSlug: transition.desiredSlug,
+							});
 			} else {
 				updated = this.deps.db
 					.update(workspaces)
@@ -1857,6 +2426,12 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		);
 	}
 
+	private findWorkspace(workspaceId: string): WorkspaceRow | undefined {
+		return this.deps.db.query.workspaces
+			.findFirst({ where: eq(workspaces.id, workspaceId) })
+			.sync();
+	}
+
 	private requireWorkspace(workspaceId: string) {
 		if (!isWorkspaceUuid(workspaceId)) {
 			throw new Error(`Invalid workspace UUID: ${workspaceId}`);
@@ -1983,7 +2558,10 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 	}
 
 	private latchManaged(): void {
-		if (!this.managed) this.managed = true;
+		if (!this.managed) {
+			this.managed = true;
+			this.schedules.poke();
+		}
 		this.persistManagedLatch();
 	}
 
@@ -2186,6 +2764,27 @@ function isScheduleFailure(
 	return (CLAUDE_SCHEDULE_FAILURES as readonly (string | null)[]).includes(
 		value,
 	);
+}
+
+function isOnScheduleTarget(
+	savedSlug: string | null,
+	installed: ManagedCredentials | null,
+	targetSlug: string,
+): boolean {
+	return (
+		savedSlug === targetSlug && installed?.trayManagedAccount === targetSlug
+	);
+}
+
+function retryOutcome(
+	failure: ScheduleAttemptFailure["failure"],
+	message: string,
+): ScheduleFireOutcome {
+	return { kind: "retry", failure: { failure, message } };
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function pendingSwitchMessage(slug: string): string {

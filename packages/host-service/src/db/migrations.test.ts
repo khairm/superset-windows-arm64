@@ -49,10 +49,14 @@ function folderWithout(options: { omit: string[]; through: string }): string {
 		(entry) => entry.tag === options.through,
 	);
 	expect(end).toBeGreaterThan(-1);
-	const entries = journal.entries
-		.slice(0, end + 1)
-		.filter((entry) => !options.omit.includes(entry.tag));
+	return folderOf(
+		journal.entries
+			.slice(0, end + 1)
+			.filter((entry) => !options.omit.includes(entry.tag)),
+	);
+}
 
+function folderOf(entries: Journal["entries"]): string {
 	const dir = mkdtempSync(join(tmpdir(), "host-migrations-"));
 	tempDirs.push(dir);
 	mkdirSync(join(dir, "meta"));
@@ -201,5 +205,57 @@ describe("host.db migrations", () => {
 				)
 				.get(),
 		).toEqual({ claude_auto_switch: 1, claude_schedule_fired_at: null });
+	});
+
+	test("later migrations preserve the fork's claude account controls", () => {
+		const journal = readJournal(MIGRATIONS_FOLDER);
+		const cutoff = journal.entries.find(
+			(entry) => entry.tag === "0035_local_workspaces",
+		);
+		if (!cutoff) throw new Error("0035_local_workspaces is not in the journal");
+		const sqlite = open();
+		runMigrations(
+			drizzle(sqlite),
+			folderOf(
+				journal.entries.filter(
+					(entry) =>
+						entry.when <= cutoff.when ||
+						entry.tag === "0036_fork_claude_account_controls",
+				),
+			),
+		);
+		sqlite.exec(
+			"INSERT INTO projects (id, repo_path, created_at) VALUES ('p1', '/repo', 1)",
+		);
+		sqlite.exec(
+			"INSERT INTO workspaces (id, project_id, worktree_path, branch, created_at, claude_auto_switch, claude_schedule_fired_at) VALUES ('w1', 'p1', '/repo', 'main', 1, 0, 1234)",
+		);
+		sqlite.exec(
+			"INSERT INTO claude_account_schedules (workspace_id, schedule_id, target_slug, fire_at, status, failed_at, failure, last_error) VALUES ('w1', 's1', 'claude123', 5678, 'failed', 9012, 'pi-unavailable', 'Pi request /accounts failed')",
+		);
+
+		runMigrations(drizzle(sqlite), MIGRATIONS_FOLDER);
+
+		expect(
+			sqlite
+				.prepare(
+					"SELECT claude_auto_switch, claude_schedule_fired_at FROM workspaces WHERE id = 'w1'",
+				)
+				.get(),
+		).toEqual({ claude_auto_switch: 0, claude_schedule_fired_at: 1234 });
+		expect(
+			sqlite.prepare("SELECT * FROM claude_account_schedules").all(),
+		).toEqual([
+			{
+				workspace_id: "w1",
+				schedule_id: "s1",
+				target_slug: "claude123",
+				fire_at: 5678,
+				status: "failed",
+				failed_at: 9012,
+				failure: "pi-unavailable",
+				last_error: "Pi request /accounts failed",
+			},
+		]);
 	});
 });
