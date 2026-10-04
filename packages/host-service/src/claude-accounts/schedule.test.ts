@@ -688,6 +688,40 @@ describe("scheduled switch retries and failures", () => {
 		expect(timer.armed).toBeNull();
 	});
 
+	test("a transient fs error reading the profile stays pending as profile-unavailable", async () => {
+		let now = Date.now();
+		const { world, pi } = await createScheduleWorld();
+		const id = await seedPinned(world, { slug: B, installed: B });
+		const { service, timer } = await startService(world, pi, {
+			now: () => now,
+		});
+		const fireAt = now + MINUTE;
+		await service.scheduleSwitch(id, { kind: "account", slug: A }, fireAt);
+		now = fireAt;
+		spies.push(
+			spyOn(
+				ClaudeProfileManager.prototype,
+				"profileExists",
+			).mockRejectedValueOnce(
+				Object.assign(new Error("EPERM: operation not permitted, lstat"), {
+					code: "EPERM",
+				}),
+			),
+		);
+
+		await timer.fire();
+		expect(scheduleRow(world, id)?.status).toBe("pending");
+
+		now = fireAt + WINDOW;
+		await timer.fire();
+		expect(scheduleRow(world, id)).toMatchObject({
+			status: "failed",
+			failure: "profile-unavailable",
+			lastError: "EPERM: operation not permitted, lstat",
+		});
+		expect(workspaceRow(world, id).claudeAccountSlug).toBe(B);
+	});
+
 	test("a host started more than 30 minutes late fails it as not-run", async () => {
 		const scheduledAt = Date.now();
 		const { world, pi } = await createScheduleWorld();

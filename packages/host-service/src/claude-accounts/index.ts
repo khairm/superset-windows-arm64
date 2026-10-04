@@ -1043,11 +1043,17 @@ class ClaudeAccountsServiceImpl implements ClaudeAccountsService {
 		if (targetSlug !== null) {
 			const row = this.findWorkspace(workspaceId);
 			if (!row) return { kind: "settled" };
-			const installed = await this.readProfileCredentialsForCache(
-				workspaceId,
-				undefined,
-				true,
-			);
+			let installed: ManagedCredentials | null;
+			try {
+				installed = await this.readProfileCredentialsForCache(
+					workspaceId,
+					undefined,
+					true,
+				);
+			} catch (error) {
+				if (!isFsError(error)) throw error;
+				return retryOutcome("profile-unavailable", error.message);
+			}
 			const halted = this.scheduleHalted(schedule);
 			if (halted) return halted;
 			const plannedNoop = isOnScheduleTarget(
@@ -2869,6 +2875,13 @@ function sameAccessToken(
 		left?.claudeAiOauth.accessToken === right.claudeAiOauth.accessToken &&
 		left.claudeAiOauth.expiresAt === right.claudeAiOauth.expiresAt &&
 		left.trayManagedAccount === right.trayManagedAccount
+	);
+}
+
+function isFsError(error: unknown): error is NodeJS.ErrnoException {
+	return (
+		error instanceof Error &&
+		typeof (error as NodeJS.ErrnoException).code === "string"
 	);
 }
 
