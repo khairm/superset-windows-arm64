@@ -1,5 +1,11 @@
 import { watch as probeNativeWatch } from "node:fs";
-import type { NativeWatchBackend } from "./types";
+import { createIgnoreMatcher } from "./ignore-matcher";
+import { nativeIgnoreForWindows } from "./native-ignore-split";
+import type {
+	NativeWatchBackend,
+	NativeWatchRequest,
+	NativeWatchSubscription,
+} from "./types";
 
 // Linux: @parcel/watcher's inotify backend starts on a thread and the caller
 // blocks until that thread signals it started. When inotify_init fails
@@ -21,10 +27,43 @@ function assertNativeWatchAvailable(dir: string): void {
 	probe.close();
 }
 
+// (WATCHER-NO-NATIVE-GLOBS) Windows: native gets plain dirs only (see
+// native-ignore-split.ts); globs are filtered here in JS.
+async function subscribeWithoutNativeGlobs({
+	rootPath,
+	ignore,
+	generation,
+	onEvents,
+	onError,
+}: NativeWatchRequest): Promise<NativeWatchSubscription> {
+	const { nativeDirs, jsGlobs } = nativeIgnoreForWindows(ignore, generation);
+	const isIgnored = createIgnoreMatcher(rootPath, jsGlobs);
+	const { subscribe: subscribeToFilesystem } = await import("@parcel/watcher");
+	const subscription = await subscribeToFilesystem(
+		rootPath,
+		(error, events) => {
+			if (error) onError(error);
+			const kept = events.filter((event) => !isIgnored(event.path, false));
+			if (kept.length > 0) onEvents(kept);
+		},
+		{ ignore: nativeDirs },
+	);
+	return { unsubscribe: () => subscription.unsubscribe() };
+}
+
 export const parcelWatchBackend: NativeWatchBackend = {
 	name: "parcel",
 	async subscribe({ rootPath, ignore, generation, onEvents, onError }) {
 		assertNativeWatchAvailable(rootPath);
+		if (process.platform === "win32") {
+			return subscribeWithoutNativeGlobs({
+				rootPath,
+				ignore,
+				generation,
+				onEvents,
+				onError,
+			});
+		}
 		// parcel dedupes native backends by (dir, ignore-set); a wedged backend
 		// from a dead stream (its unsubscribe can hang) would be silently
 		// joined and never deliver. The pattern matches nothing real — it only

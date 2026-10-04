@@ -20,6 +20,8 @@ import { ThrottledWorker } from "./throttled-worker";
 import type { FsWatchEvent } from "./types";
 import {
 	defaultWatchBackend,
+	escapeGlobMagic,
+	NativeIgnoreTripwireError,
 	type NativeWatchBackend,
 	type NativeWatchEvent,
 	type NativeWatchSubscription,
@@ -65,12 +67,7 @@ const OVERFLOW_BACKOFF_RESET_MS = 120_000;
 const PROBE_PREFIX = ".superset-watcher-probe-";
 const PROBE_TIMEOUT_MS = 4_000;
 
-// Backslash-escape every character picomatch (parcel's glob engine) treats as
-// magic, so an absolute path is matched literally when embedded in a glob.
-// Mirrors the metacharacter set `is-glob`/picomatch@2 recognize.
-function escapeGlobMagic(input: string): string {
-	return input.replace(/[\\*?{}()[\]!+@|^$]/g, (char) => `\\${char}`);
-}
+export { escapeGlobMagic };
 
 // Wall-clock budget for the nested-repo scan (bounds attach latency on a slow
 // or network-backed FS, where readdir latency — not directory count — is the
@@ -270,6 +267,7 @@ export interface FsWatcherManagerOptions {
 export class FsWatcherManager {
 	private readonly debounceMs: number;
 	private readonly ignore: string[];
+	private readonly anyDepthIgnoreNames: ReadonlySet<string>;
 	private readonly useDefaultIgnores: boolean;
 	private readonly listGitIgnoredDirs?: (rootPath: string) => Promise<string[]>;
 	private readonly backend: NativeWatchBackend;
@@ -309,6 +307,11 @@ export class FsWatcherManager {
 					]
 				: DEFAULT_IGNORE_PATTERNS;
 		this.ignore = [...new Set([...defaults, ...(options.ignore ?? [])])];
+		this.anyDepthIgnoreNames = new Set(
+			this.ignore
+				.map((pattern) => /^\*\*\/([^/*]+)\/\*\*$/.exec(pattern)?.[1])
+				.filter((name): name is string => name !== undefined),
+		);
 		this.listGitIgnoredDirs = options.listGitIgnoredDirs;
 		this.backend = options.backend ?? defaultWatchBackend();
 		this.filePathsMax = options.filePathsMax ?? FILE_PATHS_MAX;
@@ -582,10 +585,11 @@ export class FsWatcherManager {
 		// Gitignored dirs get the same treatment: repo-specific build output
 		// (`__pycache__`, `packages/*/lib`, …) that the static list can't know
 		// about is pruned via whatever git itself considers fully ignored.
-		const [nestedRepoRelDirs, gitIgnoredRelDirs] = await Promise.all([
-			this.computeNestedRepoRelDirs(realPath),
-			this.computeGitIgnoredRelDirs(realPath),
-		]);
+		const [{ nestedRepoRelDirs, prunedNameRelDirs }, gitIgnoredRelDirs] =
+			await Promise.all([
+				this.computeNestedRepoRelDirs(realPath),
+				this.computeGitIgnoredRelDirs(realPath),
+			]);
 		state.prunedRelPrefixes = [...nestedRepoRelDirs, ...gitIgnoredRelDirs];
 		// Root-relative escaped globs: parcel matches ignores relative to the
 		// watch root (its defaults are all `**/…`), so an absolute path never
@@ -595,8 +599,19 @@ export class FsWatcherManager {
 		const prunedDirIgnores = state.prunedRelPrefixes.map(
 			(relDir) => `${escapeGlobMagic(relDir)}/**`,
 		);
+		// (WATCHER-NATIVE-NAME-HITS) Windows native gets only the root instance
+		// of a `**/<name>/**` glob, so the scan's deeper hits go in as plain
+		// dirs to keep native from walking them.
+		const nameHitIgnores =
+			process.platform === "win32"
+				? prunedNameRelDirs
+						.filter((relDir) =>
+							this.anyDepthIgnoreNames.has(path.posix.basename(relDir)),
+						)
+						.map((relDir) => `${escapeGlobMagic(relDir)}/**`)
+				: [];
 
-		const ignore = [...this.ignore, ...prunedDirIgnores];
+		const ignore = [...this.ignore, ...prunedDirIgnores, ...nameHitIgnores];
 
 		// Subscribe to the resolved real path so kernel paths come back in a
 		// consistent form; we map them back to `state.absolutePath` in
@@ -668,7 +683,10 @@ export class FsWatcherManager {
 	 * scan we watch with whatever we found (an unpruned subtree degrades to the
 	 * pre-existing behavior, not a crash).
 	 */
-	private async computeNestedRepoRelDirs(realPath: string): Promise<string[]> {
+	private async computeNestedRepoRelDirs(realPath: string): Promise<{
+		nestedRepoRelDirs: string[];
+		prunedNameRelDirs: string[];
+	}> {
 		if (this.runningNestedRepoScans >= NESTED_REPO_SCAN_CONCURRENCY) {
 			await new Promise<void>((resolve) =>
 				this.waitingNestedRepoScans.push(resolve),
@@ -677,23 +695,31 @@ export class FsWatcherManager {
 			this.runningNestedRepoScans += 1;
 		}
 		try {
-			const { roots, truncated } = await findNestedRepoRoots(realPath, {
-				pruneDirNames: DEFAULT_IGNORE_DIR_NAMES,
-				deadlineMs: NESTED_REPO_SCAN_DEADLINE_MS,
-			});
+			const { roots, truncated, prunedDirs } = await findNestedRepoRoots(
+				realPath,
+				{
+					pruneDirNames: DEFAULT_IGNORE_DIR_NAMES,
+					deadlineMs: NESTED_REPO_SCAN_DEADLINE_MS,
+				},
+			);
 			if (truncated) {
 				console.warn(
 					"[workspace-fs/watch] nested-repo scan hit cap — some nested repos may still be watched",
 					{ absolutePath: realPath, found: roots.length },
 				);
 			}
-			return roots.map((root) => path.relative(realPath, root));
+			return {
+				nestedRepoRelDirs: roots.map((root) => path.relative(realPath, root)),
+				prunedNameRelDirs: prunedDirs.map((dir) =>
+					path.relative(realPath, dir).split(path.sep).join("/"),
+				),
+			};
 		} catch (error) {
 			console.error("[workspace-fs/watch] nested-repo scan failed", {
 				absolutePath: realPath,
 				error: toErrorMessage(error),
 			});
-			return [];
+			return { nestedRepoRelDirs: [], prunedNameRelDirs: [] };
 		} finally {
 			const next = this.waitingNestedRepoScans.shift();
 			if (next) next();
@@ -752,7 +778,7 @@ export class FsWatcherManager {
 		if (!state || !state.subscription || state.recoveryTimer) {
 			return false;
 		}
-		const [nestedRepoRelDirs, gitIgnoredRelDirs] = await Promise.all([
+		const [{ nestedRepoRelDirs }, gitIgnoredRelDirs] = await Promise.all([
 			this.computeNestedRepoRelDirs(state.realPath),
 			this.computeGitIgnoredRelDirs(state.realPath),
 		]);
@@ -1066,7 +1092,15 @@ export class FsWatcherManager {
 				await unsubscribeQuietly(deafSubscription);
 				return;
 			}
-		} catch {
+		} catch (error) {
+			// (WATCHER-NO-NATIVE-GLOBS-TRIPWIRE) a missing root is expected here;
+			// a tripwire is a bug and must not retry silently.
+			if (error instanceof NativeIgnoreTripwireError) {
+				console.error("[workspace-fs/watch] native ignore tripwire", {
+					absolutePath: state.absolutePath,
+					error,
+				});
+			}
 			return;
 		} finally {
 			state.recovering = false;

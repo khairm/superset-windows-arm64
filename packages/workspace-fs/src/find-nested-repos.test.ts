@@ -85,6 +85,21 @@ describe("findNestedRepoRoots", () => {
 		expect(roots).toEqual([]);
 	});
 
+	it("reports the directories it prunes by name", async () => {
+		const root = await createTempRoot();
+		await makeGitDir(root);
+		const worktrees = await mkdirp(root, "packages", "x", ".worktrees");
+		await makeGitWorktreeFile(path.join(worktrees, "w"));
+
+		const { prunedDirs } = await findNestedRepoRoots(root, {
+			pruneDirNames: DEFAULT_IGNORE_DIR_NAMES,
+		});
+
+		expect(new Set(prunedDirs)).toEqual(
+			new Set([path.join(root, ".git"), worktrees]),
+		);
+	});
+
 	it("reports truncation when the root cap is hit", async () => {
 		const root = await createTempRoot();
 		await makeGitWorktreeFile(path.join(root, "a"));

@@ -258,6 +258,10 @@ In brief:
   needs the upstream change that drops the dependency to retire libsql's
   required runtime inventory, and `validate-native-runtime.ts` stays strict —
   never weaken it to make a skip pass.
+- Never pass @parcel/watcher a glob on Windows: its std::regex aborts the
+  host-service on a ~290-char path. Plain dirs go native, globs filter in JS;
+  re-run the Windows watcher tests after any watcher merge
+  (`(WATCHER-NO-NATIVE-GLOBS)`).
 
 ## Accepted limitations
 

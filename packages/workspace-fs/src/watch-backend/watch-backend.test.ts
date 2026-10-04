@@ -214,4 +214,11 @@ describe("createIgnoreMatcher", () => {
 		expect(isIgnored("/repo/tsconfig.tsbuildinfo", false)).toBe(true);
 		expect(isIgnored("/elsewhere/node_modules/x", false)).toBe(false);
 	});
+
+	test("treats only real parent paths as outside the root", () => {
+		const isGitIgnored = createIgnoreMatcher("/repo", ["**/.git/**"]);
+		expect(isGitIgnored("/repo/..x/.git/HEAD", false)).toBe(true);
+		expect(isGitIgnored("/repo/..x/src/a.ts", false)).toBe(false);
+		expect(isGitIgnored("/repo/../x/.git/HEAD", false)).toBe(false);
+	});
 });
