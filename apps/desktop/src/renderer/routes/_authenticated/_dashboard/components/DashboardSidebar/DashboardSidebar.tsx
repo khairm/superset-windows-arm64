@@ -54,6 +54,7 @@ import { useDashboardSidebarData } from "./hooks/useDashboardSidebarData";
 import { useDashboardSidebarShortcuts } from "./hooks/useDashboardSidebarShortcuts";
 import { useMigrateLegacySidebarFolders } from "./hooks/useMigrateLegacySidebarFolders";
 import { useDashboardSidebarDnd } from "./hooks/useSidebarDnd";
+import { useSortedSidebarProjects } from "./hooks/useSortedSidebarProjects";
 import { ClaudeAccountSidebarProvider } from "./providers/ClaudeAccountSidebarProvider";
 import { DashboardSidebarDndProvider } from "./providers/DashboardSidebarDndProvider";
 import { DashboardSidebarHoverProvider } from "./providers/DashboardSidebarHoverProvider";
@@ -69,7 +70,6 @@ import type {
 } from "./types";
 import { filterDashboardSidebarProjects } from "./utils/filterDashboardSidebarProjects";
 import { getProjectChildrenWorkspaces } from "./utils/projectChildren";
-import { sortDashboardSidebarProjects } from "./utils/sortDashboardSidebarProjects";
 
 interface DashboardSidebarProps {
 	isCollapsed?: boolean;
@@ -317,13 +317,8 @@ export function DashboardSidebar({
 	// Sort, then filter, as derived views over the tiered manual order:
 	// `orderedGroups` and the persisted tabOrder stay untouched, so Manual
 	// restores the drag order exactly.
-	const sortedGroups = useMemo(
-		() =>
-			sortMode === "manual"
-				? orderedGroups
-				: sortDashboardSidebarProjects(orderedGroups, sortMode),
-		[sortMode, orderedGroups],
-	);
+	// (ACTIVITY-SPLIT) An activity tick that keeps the order renders nothing.
+	const sortedGroups = useSortedSidebarProjects(orderedGroups, sortMode);
 	const displayedGroups = useMemo(
 		() => filterDashboardSidebarProjects(sortedGroups, projectFilterQuery),
 		[sortedGroups, projectFilterQuery],

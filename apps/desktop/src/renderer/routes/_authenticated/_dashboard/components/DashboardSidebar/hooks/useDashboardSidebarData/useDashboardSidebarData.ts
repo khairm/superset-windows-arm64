@@ -396,7 +396,6 @@ export function useDashboardSidebarData() {
 						taskId: workspace.taskId,
 						createdAt: workspace.createdAt,
 						updatedAt: workspace.updatedAt,
-						lastActivityAt: workspace.lastActivityAt,
 						tabOrder: localState.tabOrder,
 						sectionId: localState.sectionId,
 						tags: workspace.tags,
@@ -851,10 +850,6 @@ export function useDashboardSidebarData() {
 				behindCount: null,
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
-				// The host's activity stamp, carried so the "Last active" project
-				// sort ranks this row by real agent activity instead of falling back
-				// to `updatedAt` (which moves on renames and bulk moves).
-				lastActivityAt: workspace.lastActivityAt,
 				taskId: workspace.taskId,
 				// Always false here — pinned rows were partitioned out above and
 				// render only in the Pinned section.
@@ -919,7 +914,6 @@ export function useDashboardSidebarData() {
 				behindCount: null,
 				createdAt: workspace.createdAt,
 				updatedAt: workspace.updatedAt,
-				lastActivityAt: workspace.lastActivityAt,
 				taskId: workspace.taskId,
 				// A snoozed / archived / soft-deleted row never renders in the Pinned
 				// section, so its pin state is irrelevant to the row it produces.

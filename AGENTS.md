@@ -271,6 +271,7 @@ In brief:
   must keep both journal entries with their original `when`. An upstream
   rebuild of `workspaces` drops fork columns from existing DBs;
   `src/db/migrations.test.ts` asserts the fork columns after a full-folder run.
+- Read workspace activity via `useHostWorkspaceActivityStore`, never from `useHostWorkspaces()` rows; keep `combine` on the projects/tag-folder `useQueries`; sort the sidebar inside `useSortedSidebarProjects`. A per-tick field, an uncombined `useQueries` or a render-time sort re-renders ~50 consumers and ~300 query hooks (`(ACTIVITY-SPLIT)`, `(STABLE-HOST-QUERIES)`).
 
 ## Accepted limitations
 

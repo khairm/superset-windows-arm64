@@ -1,4 +1,8 @@
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import {
+	type UseQueryResult,
+	useQueries,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useMemo } from "react";
 import { env } from "renderer/env.renderer";
 import { useKnownHosts } from "renderer/hooks/known-hosts/useKnownHosts";
@@ -15,6 +19,16 @@ import {
 } from "./useHostTagFolders.utils";
 
 const TAG_FOLDERS_FALLBACK_REFETCH_INTERVAL_MS = 60_000;
+
+// (STABLE-HOST-QUERIES) Module-level so `combine` keeps one reference: the
+// combined result then keeps its identity until a field read here changes.
+function toQueryStates(results: UseQueryResult<HostTagFolderSetting[]>[]) {
+	return results.map((result) => ({
+		data: result.data,
+		isSuccess: result.isSuccess,
+		isError: result.isError,
+	}));
+}
 
 export interface UseHostTagFoldersResult {
 	tagFolders: HostTagFolderSetting[];
@@ -85,6 +99,7 @@ export function useHostTagFolders(): UseHostTagFoldersResult {
 				return (await client.tagFolders.list.query()) as HostTagFolderSetting[];
 			},
 		})),
+		combine: toQueryStates,
 	});
 
 	// Live updates: refetch the owning host on its own tag-folders:changed.
