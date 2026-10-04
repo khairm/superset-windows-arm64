@@ -139,6 +139,13 @@ export function isWorkspaceSnoozed(
 	return typeof state.snoozeUntil === "number" && state.snoozeUntil > nowMs;
 }
 
+export function isSnoozeDue(
+	row: { snoozeUntil?: number | null },
+	nowMs: number,
+): boolean {
+	return typeof row.snoozeUntil === "number" && row.snoozeUntil <= nowMs;
+}
+
 export type SidebarWorkspaceBucket =
 	| "active"
 	| "snoozed"

@@ -11,6 +11,7 @@ import { useCollections } from "renderer/routes/_authenticated/providers/Collect
 import {
 	APP_LAUNCH_ID,
 	getWorkspaceSidebarBucket,
+	isSnoozeDue,
 } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
 import { useHostWorkspaces } from "renderer/routes/_authenticated/providers/HostWorkspacesProvider";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
@@ -448,9 +449,7 @@ export function useDashboardSidebarData() {
 			const staleLaunch =
 				workspace.snoozeLaunchId != null &&
 				workspace.snoozeLaunchId !== APP_LAUNCH_ID;
-			const expiredTimer =
-				typeof workspace.snoozeUntil === "number" &&
-				workspace.snoozeUntil <= nowMs;
+			const expiredTimer = isSnoozeDue(workspace, nowMs);
 			if (staleLaunch || expiredTimer) {
 				expiredIds.push(workspace.id);
 				// Timer expiry is an auto-return (flashes); a stale-launch return on

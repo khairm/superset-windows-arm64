@@ -535,6 +535,8 @@ createSharedTicker(30_000)	apps/desktop/src/renderer/lib/shared-ticker/tickers.t
 (SNOOZE-BADGE-LEAF)	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
 createSharedTicker(60_000)	apps/desktop/src/renderer/lib/shared-ticker/tickers.ts
 snoozeTicker.subscribe	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/hooks/useSnoozeWake/useSnoozeWake.ts
+snoozeTicker.subscribe	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/components/SnoozeRemainingBadge/SnoozeRemainingBadge.tsx
+<SnoozeRemainingBadge	apps/desktop/src/renderer/routes/_authenticated/_dashboard/components/DashboardSidebar/components/DashboardSidebarWorkspaceItem/components/DashboardSidebarExpandedWorkspaceRow/DashboardSidebarExpandedWorkspaceRow.tsx
 redPingTicker.subscribe	apps/desktop/src/renderer/screens/main/components/StatusIndicator/components/RedPing/RedPing.tsx
 epoch}	apps/desktop/src/renderer/screens/main/components/StatusIndicator/components/RedPing/RedPing.tsx
 animate-ping-finite	apps/desktop/src/renderer/screens/main/components/StatusIndicator/StatusIndicator.tsx

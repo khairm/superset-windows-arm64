@@ -5,10 +5,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { snoozeTicker } from "renderer/lib/shared-ticker";
-import {
-	hasDueSnooze,
-	hasTimedSnooze,
-} from "../useDashboardSidebarData/hasDueSnooze";
+import { hasDueSnooze, hasTimedSnooze } from "./hasDueSnooze";
 
 const noop = () => () => {};
 

@@ -1,3 +1,5 @@
+import { isSnoozeDue } from "renderer/routes/_authenticated/providers/CollectionsProvider/dashboardSidebarLocal";
+
 type SnoozeRow = { snoozeUntil?: number | null };
 
 export function hasTimedSnooze(rows: readonly SnoozeRow[]): boolean {
@@ -8,7 +10,5 @@ export function hasDueSnooze(
 	rows: readonly SnoozeRow[],
 	nowMs: number,
 ): boolean {
-	return rows.some(
-		(row) => typeof row.snoozeUntil === "number" && row.snoozeUntil <= nowMs,
-	);
+	return rows.some((row) => isSnoozeDue(row, nowMs));
 }
