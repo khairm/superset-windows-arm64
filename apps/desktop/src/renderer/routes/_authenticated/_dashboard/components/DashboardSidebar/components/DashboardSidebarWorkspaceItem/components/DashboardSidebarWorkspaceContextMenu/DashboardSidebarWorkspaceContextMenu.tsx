@@ -36,6 +36,7 @@ import {
 	LuUnlink,
 	LuX,
 } from "react-icons/lu";
+import type { ClaudeScheduleTarget } from "renderer/hooks/host-service/useClaudeAccounts";
 import {
 	SNOOZE_PRESET_OPTIONS,
 	type SnoozeDuration,
@@ -45,6 +46,7 @@ import { useProjectTagFolderSections } from "../../../../hooks/useProjectTagFold
 import { useDashboardSidebarHoverActions } from "../../../../providers/DashboardSidebarHoverProvider";
 import { useDashboardSidebarWorkspacePorts } from "../../../../providers/DashboardSidebarPortsProvider";
 import { ClaudeAccountPicker } from "../ClaudeAccountPicker";
+import { ClaudeScheduleTimeDialog } from "../ClaudeScheduleTimeDialog";
 
 /** Which reveal-able section a workspace row is rendered inside, if any. */
 export type WorkspaceSectionState = "snoozed" | "archived" | "deleted";
@@ -224,239 +226,257 @@ export function DashboardSidebarWorkspaceContextMenu({
 		if (isKillingPorts) return;
 		void killPorts(ports);
 	};
+	// (CLAUDE-ACCOUNT-SCHEDULE)
+	const [scheduleTarget, setScheduleTarget] =
+		useState<ClaudeScheduleTarget | null>(null);
 
 	return (
-		<ContextMenu onOpenChange={setContextMenuOpen}>
-			<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-			<ContextMenuContent onCloseAutoFocus={(event) => event.preventDefault()}>
-				<ClaudeAccountPicker workspaceId={workspaceId} />
-				<ContextMenuSeparator />
-				{/* A snoozed / archived / in-bin row isn't in the active lane, so the
+		<>
+			<ContextMenu onOpenChange={setContextMenuOpen}>
+				<ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+				<ContextMenuContent
+					onCloseAutoFocus={(event) => event.preventDefault()}
+				>
+					<ClaudeAccountPicker
+						workspaceId={workspaceId}
+						exited={isSectioned}
+						onRequestCustomTime={setScheduleTarget}
+					/>
+					<ContextMenuSeparator />
+					{/* A snoozed / archived / in-bin row isn't in the active lane, so the
 				Pinned section can't show it — offer Pin only on normal rows. */}
-				{!isSectioned && (
-					<ContextMenuItem onSelect={onTogglePin}>
-						{isPinned ? (
-							<>
-								<LuPinOff className="size-4 mr-2" />
-								<Trans>Unpin</Trans>
-							</>
-						) : (
-							<>
-								<LuPin className="size-4 mr-2" />
-								<Trans>Pin</Trans>
-							</>
-						)}
-					</ContextMenuItem>
-				)}
-				{onRename && (
-					<ContextMenuItem onSelect={onRename}>
-						<LuPencil className="size-4 mr-2" />
-						<Trans>Rename</Trans>
-					</ContextMenuItem>
-				)}
-				{isLocalWorkspace && (
-					<>
-						{onRename && <ContextMenuSeparator />}
-						<ContextMenuItem onSelect={onOpenInFinder}>
-							<LuFolderOpen className="size-4 mr-2" />
-							<Trans>Open in Finder</Trans>
-						</ContextMenuItem>
-						<ContextMenuItem onSelect={onCopyPath}>
-							<LuCopy className="size-4 mr-2" />
-							<Trans>Copy Path</Trans>
-						</ContextMenuItem>
-					</>
-				)}
-				{onPromoteToEnvironment && (
-					<>
-						<ContextMenuSeparator />
-						<ContextMenuItem onSelect={onPromoteToEnvironment}>
-							<LuBox className="h-4 w-4" />
-							<Trans>Save as environment</Trans>
-						</ContextMenuItem>
-					</>
-				)}
-				{/* (NON-GIT WORKSPACE) hide branch/git actions — the marker branch is
-				not a real ref, so copying it is meaningless. */}
-				{!isNonGit && (
-					<>
-						{!isLocalWorkspace && onRename && <ContextMenuSeparator />}
-						<ContextMenuItem onSelect={onCopyBranchName}>
-							<LuGitBranch className="size-4 mr-2" />
-							<Trans>Copy Branch Name</Trans>
-						</ContextMenuItem>
-					</>
-				)}
-				<ContextMenuItem onSelect={onCopyWorkspaceId}>
-					<LuHash className="size-4 mr-2" />
-					<Trans>Copy Workspace ID</Trans>
-				</ContextMenuItem>
-				{!isSectioned && (
-					<>
-						<ContextMenuSeparator />
-						<ContextMenuItem onSelect={onToggleUnread}>
-							{isUnread ? (
+					{!isSectioned && (
+						<ContextMenuItem onSelect={onTogglePin}>
+							{isPinned ? (
 								<>
-									<LuEye className="size-4 mr-2" />
-									<Trans>Mark as Read</Trans>
+									<LuPinOff className="size-4 mr-2" />
+									<Trans>Unpin</Trans>
 								</>
 							) : (
 								<>
-									<LuEyeOff className="size-4 mr-2" />
-									<Trans>Mark as Unread</Trans>
+									<LuPin className="size-4 mr-2" />
+									<Trans>Pin</Trans>
 								</>
 							)}
 						</ContextMenuItem>
-						{hasStatus && (
-							<ContextMenuItem onSelect={onClearStatus}>
-								<LuBellOff className="size-4 mr-2" />
-								<Trans>Clear Status</Trans>
+					)}
+					{onRename && (
+						<ContextMenuItem onSelect={onRename}>
+							<LuPencil className="size-4 mr-2" />
+							<Trans>Rename</Trans>
+						</ContextMenuItem>
+					)}
+					{isLocalWorkspace && (
+						<>
+							{onRename && <ContextMenuSeparator />}
+							<ContextMenuItem onSelect={onOpenInFinder}>
+								<LuFolderOpen className="size-4 mr-2" />
+								<Trans>Open in Finder</Trans>
 							</ContextMenuItem>
-						)}
-					</>
-				)}
-				{hasPullRequest && (
-					<ContextMenuItem onSelect={onRemovePullRequest}>
-						<LuUnlink className="size-4 mr-2" />
-						<Trans>Remove PR Link</Trans>
+							<ContextMenuItem onSelect={onCopyPath}>
+								<LuCopy className="size-4 mr-2" />
+								<Trans>Copy Path</Trans>
+							</ContextMenuItem>
+						</>
+					)}
+					{onPromoteToEnvironment && (
+						<>
+							<ContextMenuSeparator />
+							<ContextMenuItem onSelect={onPromoteToEnvironment}>
+								<LuBox className="h-4 w-4" />
+								<Trans>Save as environment</Trans>
+							</ContextMenuItem>
+						</>
+					)}
+					{/* (NON-GIT WORKSPACE) hide branch/git actions — the marker branch is
+				not a real ref, so copying it is meaningless. */}
+					{!isNonGit && (
+						<>
+							{!isLocalWorkspace && onRename && <ContextMenuSeparator />}
+							<ContextMenuItem onSelect={onCopyBranchName}>
+								<LuGitBranch className="size-4 mr-2" />
+								<Trans>Copy Branch Name</Trans>
+							</ContextMenuItem>
+						</>
+					)}
+					<ContextMenuItem onSelect={onCopyWorkspaceId}>
+						<LuHash className="size-4 mr-2" />
+						<Trans>Copy Workspace ID</Trans>
 					</ContextMenuItem>
-				)}
-				{canUseGroupActions && (
-					<>
-						<ContextMenuSeparator />
-						<ContextMenuItem onSelect={onCreateSection}>
-							<LuFolderPlus className="size-4 mr-2" />
-							<Trans>New group from workspace</Trans>
-						</ContextMenuItem>
-						<ContextMenuSub>
-							<ContextMenuSubTrigger>
-								<LuArrowRightLeft className="size-4 mr-2" />
-								<Trans>Move to group</Trans>
-							</ContextMenuSubTrigger>
-							<ContextMenuSubContent>
-								{sections.map((section) => (
-									<ContextMenuItem
-										key={section.id}
-										onSelect={() => onMoveToSection(section.id)}
-									>
-										{section.color && (
-											<span
-												className="size-2 shrink-0 rounded-full mr-2"
-												style={{ backgroundColor: section.color }}
-											/>
-										)}
-										{section.name}
-									</ContextMenuItem>
-								))}
-								{sections.length > 0 && <ContextMenuSeparator />}
-								<ContextMenuItem onSelect={onCreateSection}>
-									<LuFolderPlus className="size-4 mr-2" />
-									<Trans>Create new group</Trans>
-								</ContextMenuItem>
-							</ContextMenuSubContent>
-						</ContextMenuSub>
-						{isInSection && (
-							<ContextMenuItem onSelect={() => onMoveToSection(null)}>
-								<LuArrowUp className="size-4 mr-2" />
-								<Trans>Ungroup</Trans>
-							</ContextMenuItem>
-						)}
-					</>
-				)}
-				{/* (RECYCLE-BIN) An in-bin row offers only Restore + Delete permanently —
-				snooze/archive are meaningless once a thread is soft-deleted. */}
-				{sectionState === "deleted" ? (
-					<>
-						<ContextMenuSeparator />
-						{onRestore && (
-							<ContextMenuItem onSelect={onRestore}>
-								<LuRotateCcw className="size-4 mr-2" />
-								Restore
-							</ContextMenuItem>
-						)}
-						{onDeletePermanently && (
-							<ContextMenuItem
-								onSelect={onDeletePermanently}
-								className="text-destructive focus:text-destructive"
-							>
-								<LuTrash2 className="size-4 mr-2 text-destructive" />
-								Delete permanently
-							</ContextMenuItem>
-						)}
-					</>
-				) : (
-					<>
-						<ContextMenuSeparator />
-						{sectionState === "snoozed" ? (
-							<>
-								<ContextMenuItem onSelect={onUnsnooze}>
-									<LuUndo2 className="size-4 mr-2" />
-									Unsnooze now
-								</ContextMenuItem>
-								<SnoozeSubmenu label="Re-snooze" onSnooze={onSnooze} />
-								<ContextMenuItem onSelect={onArchive}>
-									<LuArchive className="size-4 mr-2" />
-									Archive
-								</ContextMenuItem>
-							</>
-						) : sectionState === "archived" ? (
-							<>
-								<ContextMenuItem onSelect={onUnarchive}>
-									<LuArchiveRestore className="size-4 mr-2" />
-									Unarchive
-								</ContextMenuItem>
-								<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
-							</>
-						) : (
-							<>
-								{onMarkCompleted && (
-									<ContextMenuItem onSelect={onMarkCompleted}>
-										<LuCircleCheck className="size-4 mr-2" />
-										Mark completed
-									</ContextMenuItem>
+					{!isSectioned && (
+						<>
+							<ContextMenuSeparator />
+							<ContextMenuItem onSelect={onToggleUnread}>
+								{isUnread ? (
+									<>
+										<LuEye className="size-4 mr-2" />
+										<Trans>Mark as Read</Trans>
+									</>
+								) : (
+									<>
+										<LuEyeOff className="size-4 mr-2" />
+										<Trans>Mark as Unread</Trans>
+									</>
 								)}
-								<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
-								<ContextMenuItem onSelect={onArchive}>
-									<LuArchive className="size-4 mr-2" />
-									Archive
-								</ContextMenuItem>
-							</>
-						)}
-						<ContextMenuSeparator />
-						{ports.length > 0 && (
-							<ContextMenuItem
-								onSelect={handleCloseAllPorts}
-								disabled={isKillingPorts}
-								variant="destructive"
-							>
-								<LuRadioTower className="size-4 mr-2" />
-								Close all ports
 							</ContextMenuItem>
-						)}
-						<ContextMenuItem onSelect={onRemoveFromSidebar}>
-							<LuX className="size-4 mr-2" />
-							Remove from Sidebar
+							{hasStatus && (
+								<ContextMenuItem onSelect={onClearStatus}>
+									<LuBellOff className="size-4 mr-2" />
+									<Trans>Clear Status</Trans>
+								</ContextMenuItem>
+							)}
+						</>
+					)}
+					{hasPullRequest && (
+						<ContextMenuItem onSelect={onRemovePullRequest}>
+							<LuUnlink className="size-4 mr-2" />
+							<Trans>Remove PR Link</Trans>
 						</ContextMenuItem>
-						{onDelete ? (
-							<>
-								<ContextMenuSeparator />
+					)}
+					{canUseGroupActions && (
+						<>
+							<ContextMenuSeparator />
+							<ContextMenuItem onSelect={onCreateSection}>
+								<LuFolderPlus className="size-4 mr-2" />
+								<Trans>New group from workspace</Trans>
+							</ContextMenuItem>
+							<ContextMenuSub>
+								<ContextMenuSubTrigger>
+									<LuArrowRightLeft className="size-4 mr-2" />
+									<Trans>Move to group</Trans>
+								</ContextMenuSubTrigger>
+								<ContextMenuSubContent>
+									{sections.map((section) => (
+										<ContextMenuItem
+											key={section.id}
+											onSelect={() => onMoveToSection(section.id)}
+										>
+											{section.color && (
+												<span
+													className="size-2 shrink-0 rounded-full mr-2"
+													style={{ backgroundColor: section.color }}
+												/>
+											)}
+											{section.name}
+										</ContextMenuItem>
+									))}
+									{sections.length > 0 && <ContextMenuSeparator />}
+									<ContextMenuItem onSelect={onCreateSection}>
+										<LuFolderPlus className="size-4 mr-2" />
+										<Trans>Create new group</Trans>
+									</ContextMenuItem>
+								</ContextMenuSubContent>
+							</ContextMenuSub>
+							{isInSection && (
+								<ContextMenuItem onSelect={() => onMoveToSection(null)}>
+									<LuArrowUp className="size-4 mr-2" />
+									<Trans>Ungroup</Trans>
+								</ContextMenuItem>
+							)}
+						</>
+					)}
+					{/* (RECYCLE-BIN) An in-bin row offers only Restore + Delete permanently —
+				snooze/archive are meaningless once a thread is soft-deleted. */}
+					{sectionState === "deleted" ? (
+						<>
+							<ContextMenuSeparator />
+							{onRestore && (
+								<ContextMenuItem onSelect={onRestore}>
+									<LuRotateCcw className="size-4 mr-2" />
+									Restore
+								</ContextMenuItem>
+							)}
+							{onDeletePermanently && (
 								<ContextMenuItem
-									onSelect={onDelete}
+									onSelect={onDeletePermanently}
 									className="text-destructive focus:text-destructive"
 								>
 									<LuTrash2 className="size-4 mr-2 text-destructive" />
-									{/* (RECYCLE-BIN) No keyboard-shortcut hint here: this "Delete"
+									Delete permanently
+								</ContextMenuItem>
+							)}
+						</>
+					) : (
+						<>
+							<ContextMenuSeparator />
+							{sectionState === "snoozed" ? (
+								<>
+									<ContextMenuItem onSelect={onUnsnooze}>
+										<LuUndo2 className="size-4 mr-2" />
+										Unsnooze now
+									</ContextMenuItem>
+									<SnoozeSubmenu label="Re-snooze" onSnooze={onSnooze} />
+									<ContextMenuItem onSelect={onArchive}>
+										<LuArchive className="size-4 mr-2" />
+										Archive
+									</ContextMenuItem>
+								</>
+							) : sectionState === "archived" ? (
+								<>
+									<ContextMenuItem onSelect={onUnarchive}>
+										<LuArchiveRestore className="size-4 mr-2" />
+										Unarchive
+									</ContextMenuItem>
+									<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
+								</>
+							) : (
+								<>
+									{onMarkCompleted && (
+										<ContextMenuItem onSelect={onMarkCompleted}>
+											<LuCircleCheck className="size-4 mr-2" />
+											Mark completed
+										</ContextMenuItem>
+									)}
+									<SnoozeSubmenu label="Snooze" onSnooze={onSnooze} />
+									<ContextMenuItem onSelect={onArchive}>
+										<LuArchive className="size-4 mr-2" />
+										Archive
+									</ContextMenuItem>
+								</>
+							)}
+							<ContextMenuSeparator />
+							{ports.length > 0 && (
+								<ContextMenuItem
+									onSelect={handleCloseAllPorts}
+									disabled={isKillingPorts}
+									variant="destructive"
+								>
+									<LuRadioTower className="size-4 mr-2" />
+									Close all ports
+								</ContextMenuItem>
+							)}
+							<ContextMenuItem onSelect={onRemoveFromSidebar}>
+								<LuX className="size-4 mr-2" />
+								Remove from Sidebar
+							</ContextMenuItem>
+							{onDelete ? (
+								<>
+									<ContextMenuSeparator />
+									<ContextMenuItem
+										onSelect={onDelete}
+										className="text-destructive focus:text-destructive"
+									>
+										<LuTrash2 className="size-4 mr-2 text-destructive" />
+										{/* (RECYCLE-BIN) No keyboard-shortcut hint here: this "Delete"
 									soft-deletes to the Recycle Bin, whereas the CLOSE_WORKSPACE
 									hotkey still opens the PERMANENT destroy dialog (see
 									_dashboard/layout.tsx) — advertising it beside a soft-delete
 									would point at a different, destructive action. */}
-									Delete
-								</ContextMenuItem>
-							</>
-						) : null}
-					</>
-				)}
-			</ContextMenuContent>
-		</ContextMenu>
+										Delete
+									</ContextMenuItem>
+								</>
+							) : null}
+						</>
+					)}
+				</ContextMenuContent>
+			</ContextMenu>
+			{scheduleTarget && (
+				<ClaudeScheduleTimeDialog
+					workspaceId={workspaceId}
+					target={scheduleTarget}
+					onClose={() => setScheduleTarget(null)}
+				/>
+			)}
+		</>
 	);
 }

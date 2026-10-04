@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useMemo } from "react";
 import {
 	claudeWorkspaceAccountStatesQueryKey,
+	invalidateClaudeWorkspaceAccountState,
 	updateClaudeWorkspaceAccountStateCaches,
 } from "renderer/hooks/host-service/useClaudeAccounts";
 import { getHostEventBus } from "renderer/lib/host-event-bus";
@@ -46,11 +47,6 @@ export function ClaudeAccountEventSubscriber({
 					state: payload.state,
 					slug: payload.slug,
 				}),
-				{
-					state: payload.state,
-					slug: payload.slug,
-					warning: null,
-				},
 			);
 
 			if (payload.cause !== "auto-fallback") return;
@@ -66,7 +62,7 @@ export function ClaudeAccountEventSubscriber({
 	const handleWarning = useEffectEvent(
 		(workspaceId: string | null, payload: ClaudeAccountWarningPayload) => {
 			if (workspaceId) {
-				const found = updateClaudeWorkspaceAccountStateCaches(
+				updateClaudeWorkspaceAccountStateCaches(
 					queryClient,
 					hostUrl,
 					workspaceId,
@@ -77,11 +73,6 @@ export function ClaudeAccountEventSubscriber({
 							: null,
 					}),
 				);
-				if (!found) {
-					void queryClient.invalidateQueries({
-						queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
-					});
-				}
 				return;
 			}
 
@@ -101,6 +92,15 @@ export function ClaudeAccountEventSubscriber({
 		},
 	);
 
+	// (CLAUDE-ACCOUNT-SCHEDULE)
+	const handleControlsChanged = useEffectEvent((workspaceId: string) => {
+		void invalidateClaudeWorkspaceAccountState(
+			queryClient,
+			hostUrl,
+			workspaceId,
+		);
+	});
+
 	useEffect(() => {
 		const bus = getHostEventBus(hostUrl);
 		const removeStateListener = bus.on(
@@ -113,11 +113,17 @@ export function ClaudeAccountEventSubscriber({
 			"*",
 			handleWarning,
 		);
+		const removeControlsListener = bus.on(
+			"claude-account-controls-changed",
+			"*",
+			handleControlsChanged,
+		);
 		const release = bus.retain();
 
 		return () => {
 			removeStateListener();
 			removeWarningListener();
+			removeControlsListener();
 			release();
 		};
 	}, [hostUrl]);

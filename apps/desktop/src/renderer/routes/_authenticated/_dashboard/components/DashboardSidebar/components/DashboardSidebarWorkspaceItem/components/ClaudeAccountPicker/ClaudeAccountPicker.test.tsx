@@ -1,6 +1,11 @@
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import type { ClaudeAccount } from "renderer/hooks/host-service/useClaudeAccounts";
+import type {
+	ClaudeAccount,
+	ClaudeAccountRoster,
+	ClaudeScheduleView,
+	ClaudeWorkspaceAccountState,
+} from "renderer/hooks/host-service/useClaudeAccounts";
 
 const alreadyRegistered = GlobalRegistrator.isRegistered;
 if (!alreadyRegistered) GlobalRegistrator.register();
@@ -11,10 +16,13 @@ if (!alreadyRegistered) GlobalRegistrator.register();
 const { act, cleanup, fireEvent, render, within } = await import(
 	"@testing-library/react"
 );
+const { QueryClient, QueryClientProvider } = await import(
+	"@tanstack/react-query"
+);
 const { ContextMenu, ContextMenuContent, ContextMenuTrigger } = await import(
 	"@superset/ui/context-menu"
 );
-const { AccountRow } = await import("./ClaudeAccountPicker");
+const { AccountRow, ClaudeAccountMenu } = await import("./ClaudeAccountPicker");
 
 const NOW = Date.parse("2026-09-21T12:00:00Z");
 const ACCOUNT: ClaudeAccount = Object.freeze({
@@ -31,8 +39,10 @@ const ACCOUNT: ClaudeAccount = Object.freeze({
 	sevenResetsAt: "2026-09-24T12:00:00Z",
 });
 
+const queryClients: InstanceType<typeof QueryClient>[] = [];
 afterEach(() => {
 	cleanup();
+	for (const client of queryClients.splice(0)) client.clear();
 	mock.restore();
 });
 afterAll(async () => {
@@ -143,5 +153,127 @@ describe("exhausted account picker row", () => {
 			fireEvent.click(row);
 		});
 		expect(onSelect).not.toHaveBeenCalled();
+	});
+});
+
+const FOLLOWING_STATE: ClaudeWorkspaceAccountState = {
+	state: "following",
+	slug: null,
+	warning: null,
+	autoSwitch: true,
+	schedule: null,
+};
+const PENDING_SCHEDULE: ClaudeScheduleView = {
+	status: "pending",
+	scheduleId: "33333333-3333-4333-8333-333333333333",
+	target: { kind: "account", slug: "work" },
+	fireAt: NOW + 60 * 60_000,
+};
+
+async function accountMenu({
+	state,
+	roster,
+	configured,
+}: {
+	state: ClaudeWorkspaceAccountState;
+	roster: ClaudeAccountRoster | undefined;
+	configured: boolean;
+}) {
+	const client = new QueryClient();
+	queryClients.push(client);
+	let view!: ReturnType<typeof render>;
+	await act(async () => {
+		view = render(
+			<QueryClientProvider client={client}>
+				<ContextMenu>
+					<ContextMenuTrigger>Workspace</ContextMenuTrigger>
+					<ContextMenuContent>
+						<ClaudeAccountMenu
+							hostUrl="http://localhost:1234"
+							workspaceId="11111111-1111-4111-8111-111111111111"
+							state={state}
+							roster={roster}
+							configured={configured}
+							exited={false}
+							onRequestCustomTime={() => {}}
+						/>
+					</ContextMenuContent>
+				</ContextMenu>
+			</QueryClientProvider>,
+		);
+	});
+	const ui = within(view.baseElement as HTMLElement);
+	await act(async () => {
+		fireEvent.contextMenu(ui.getByText("Workspace"));
+	});
+	await openSubmenu(ui, "Account");
+	return ui;
+}
+
+async function openSubmenu(ui: ReturnType<typeof within>, name: string) {
+	await act(async () => {
+		fireEvent.click(ui.getByRole("menuitem", { name }));
+	});
+}
+
+describe("account menu controls", () => {
+	test("greys Auto-switch, the Default target and an unknown reset while Following", async () => {
+		const ui = await accountMenu({
+			state: FOLLOWING_STATE,
+			roster: {
+				accounts: [{ ...ACCOUNT, fiveResetsAt: null }],
+				trayDefaultSlug: "work",
+			},
+			configured: true,
+		});
+
+		expect(
+			ui
+				.getByRole("menuitemcheckbox", { name: "Auto-switch" })
+				.hasAttribute("data-disabled"),
+		).toBe(true);
+		await openSubmenu(ui, "Schedule switch");
+		expect(
+			ui
+				.getByRole("menuitem", { name: "Default (tray)" })
+				.hasAttribute("data-disabled"),
+		).toBe(true);
+		await openSubmenu(ui, "work");
+		expect(
+			ui
+				.getByRole("menuitem", { name: "At its 5h reset (unknown)" })
+				.hasAttribute("data-disabled"),
+		).toBe(true);
+	});
+
+	test.each([
+		{ configured: true, unavailable: "Accounts unavailable" },
+		{ configured: false, unavailable: "Account credentials unavailable" },
+	])("shows the schedule and Cancel without a roster for %j", async ({
+		configured,
+		unavailable,
+	}) => {
+		const ui = await accountMenu({
+			state: {
+				...FOLLOWING_STATE,
+				state: "pinned",
+				slug: "work",
+				schedule: PENDING_SCHEDULE,
+			},
+			roster: undefined,
+			configured,
+		});
+
+		expect(ui.getByText(unavailable)).toBeTruthy();
+		expect(ui.getByText(/^Scheduled: work at /)).toBeTruthy();
+		const cancel = ui.getByRole("menuitem", {
+			name: "Cancel scheduled switch",
+		});
+		expect(cancel.hasAttribute("data-disabled")).toBe(false);
+		expect(
+			ui
+				.getByRole("menuitem", { name: "Schedule switch" })
+				.hasAttribute("data-disabled"),
+		).toBe(true);
 	});
 });

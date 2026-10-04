@@ -31,36 +31,45 @@ export function claudeWorkspaceAccountStatesQueryKey(hostUrl: string | null) {
 	return [...CLAUDE_WORKSPACE_ACCOUNT_STATES_QUERY_KEY, hostUrl] as const;
 }
 
+export function invalidateClaudeWorkspaceAccountState(
+	queryClient: QueryClient,
+	hostUrl: string,
+	workspaceId: string,
+): Promise<void> {
+	return Promise.all([
+		queryClient.invalidateQueries({
+			queryKey: claudeWorkspaceAccountStateQueryKey(hostUrl, workspaceId),
+		}),
+		queryClient.invalidateQueries({
+			queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
+		}),
+	]).then(() => undefined);
+}
+
 export function updateClaudeWorkspaceAccountStateCaches(
 	queryClient: QueryClient,
 	hostUrl: string,
 	workspaceId: string,
 	update: (current: ClaudeWorkspaceAccountState) => ClaudeWorkspaceAccountState,
-	missingState?: ClaudeWorkspaceAccountState,
-): boolean {
-	queryClient.setQueryData<ClaudeWorkspaceAccountState>(
-		claudeWorkspaceAccountStateQueryKey(hostUrl, workspaceId),
-		(current) => {
-			const base = current ?? missingState;
-			return base ? update(base) : current;
-		},
-	);
+): void {
+	const stateKey = claudeWorkspaceAccountStateQueryKey(hostUrl, workspaceId);
+	if (queryClient.getQueryData(stateKey) === undefined) {
+		void queryClient.invalidateQueries({ queryKey: stateKey });
+	} else {
+		queryClient.setQueryData<ClaudeWorkspaceAccountState>(
+			stateKey,
+			(current) => current && update(current),
+		);
+	}
 
+	const statesKey = claudeWorkspaceAccountStatesQueryKey(hostUrl);
 	let found = false;
-	queryClient.setQueryData<ClaudeWorkspaceAccountStates>(
-		claudeWorkspaceAccountStatesQueryKey(hostUrl),
-		(current) => {
-			if (!current) return current;
-			const states = current.map((state) => {
-				if (state.workspaceId !== workspaceId) return state;
-				found = true;
-				return { ...update(state), workspaceId };
-			});
-			if (!found && missingState) {
-				states.push({ ...update(missingState), workspaceId });
-			}
-			return states;
-		},
+	queryClient.setQueryData<ClaudeWorkspaceAccountStates>(statesKey, (current) =>
+		current?.map((state) => {
+			if (state.workspaceId !== workspaceId) return state;
+			found = true;
+			return { ...update(state), workspaceId };
+		}),
 	);
-	return found;
+	if (!found) void queryClient.invalidateQueries({ queryKey: statesKey });
 }
