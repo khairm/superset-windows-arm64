@@ -1,11 +1,12 @@
 import type { AppRouter } from "@superset/host-service";
+import { toast } from "@superset/ui/sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { electronQueryClient } from "renderer/providers/ElectronTRPCProvider";
 import {
 	claudeWorkspaceAccountStateQueryKey,
-	claudeWorkspaceAccountStatesQueryKey,
+	invalidateClaudeWorkspaceAccountState,
 	updateClaudeWorkspaceAccountStateCaches,
 } from "./claudeAccountCache";
 
@@ -15,6 +16,14 @@ export type ClaudeAccountCapability =
 	RouterOutputs["claudeAccounts"]["capability"];
 export type ClaudeAccountRoster = RouterOutputs["claudeAccounts"]["roster"];
 export type ClaudeAccount = ClaudeAccountRoster["accounts"][number];
+// (CLAUDE-ACCOUNT-SCHEDULE)
+export type ClaudeScheduleView =
+	RouterOutputs["claudeAccounts"]["scheduleSwitch"];
+export type ClaudeScheduleTarget = ClaudeScheduleView["target"];
+export type ClaudeScheduleFailure = Extract<
+	ClaudeScheduleView,
+	{ status: "failed" }
+>["failure"];
 
 export const CLAUDE_ACCOUNT_CAPABILITY_QUERY_KEY = [
 	"claude-account-capability",
@@ -104,14 +113,100 @@ export function useSetClaudeWorkspaceAccount(
 					...current,
 					state: slug === null ? "following" : "pinned",
 					slug,
+					schedule: slug === current.slug ? current.schedule : null,
 				}),
-				{
-					state: slug === null ? "following" : "pinned",
-					slug,
-					warning: null,
-				},
 			);
 		},
+	});
+}
+
+export function useSetClaudeAutoSwitch(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	const queryClient = useQueryClient();
+
+	return useMutation({
+		mutationFn: (enabled: boolean) => {
+			if (!hostUrl) throw new Error("Workspace host is unavailable.");
+			return getHostServiceClientByUrl(
+				hostUrl,
+			).claudeAccounts.setAutoSwitch.mutate({ workspaceId, enabled });
+		},
+		onSuccess: () => {
+			if (!hostUrl) return;
+			return invalidateClaudeWorkspaceAccountState(
+				queryClient,
+				hostUrl,
+				workspaceId,
+			);
+		},
+		onError: (error) =>
+			toast.error("Couldn't change auto-switch", {
+				description: error.message,
+			}),
+	});
+}
+
+export function useScheduleClaudeSwitch(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	const queryClient = useQueryClient();
+
+	return useMutation({
+		mutationFn: ({
+			target,
+			fireAt,
+		}: {
+			target: ClaudeScheduleTarget;
+			fireAt: number;
+		}) => {
+			if (!hostUrl) throw new Error("Workspace host is unavailable.");
+			return getHostServiceClientByUrl(
+				hostUrl,
+			).claudeAccounts.scheduleSwitch.mutate({ workspaceId, target, fireAt });
+		},
+		onSuccess: () => {
+			if (!hostUrl) return;
+			return invalidateClaudeWorkspaceAccountState(
+				queryClient,
+				hostUrl,
+				workspaceId,
+			);
+		},
+		onError: (error) =>
+			toast.error("Couldn't schedule the switch", {
+				description: error.message,
+			}),
+	});
+}
+
+export function useClearClaudeScheduledSwitch(
+	hostUrl: string | null,
+	workspaceId: string,
+) {
+	const queryClient = useQueryClient();
+
+	return useMutation({
+		mutationFn: (scheduleId: string) => {
+			if (!hostUrl) throw new Error("Workspace host is unavailable.");
+			return getHostServiceClientByUrl(
+				hostUrl,
+			).claudeAccounts.clearScheduledSwitch.mutate({ workspaceId, scheduleId });
+		},
+		onSuccess: () => {
+			if (!hostUrl) return;
+			return invalidateClaudeWorkspaceAccountState(
+				queryClient,
+				hostUrl,
+				workspaceId,
+			);
+		},
+		onError: (error) =>
+			toast.error("Couldn't cancel the scheduled switch", {
+				description: error.message,
+			}),
 	});
 }
 
@@ -126,12 +221,9 @@ export async function pinWorkspaceToMachineDefault(
 		workspaceId,
 		...opts,
 	});
-	await Promise.all([
-		electronQueryClient.invalidateQueries({
-			queryKey: claudeWorkspaceAccountStateQueryKey(hostUrl, workspaceId),
-		}),
-		electronQueryClient.invalidateQueries({
-			queryKey: claudeWorkspaceAccountStatesQueryKey(hostUrl),
-		}),
-	]);
+	await invalidateClaudeWorkspaceAccountState(
+		electronQueryClient,
+		hostUrl,
+		workspaceId,
+	);
 }

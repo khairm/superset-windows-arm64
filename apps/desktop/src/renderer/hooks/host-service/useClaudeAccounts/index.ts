@@ -5,6 +5,7 @@ export {
 	type ClaudeWorkspaceAccountStates,
 	claudeWorkspaceAccountStateQueryKey,
 	claudeWorkspaceAccountStatesQueryKey,
+	invalidateClaudeWorkspaceAccountState,
 	updateClaudeWorkspaceAccountStateCaches,
 } from "./claudeAccountCache";
 export {
@@ -13,10 +14,16 @@ export {
 	type ClaudeAccount,
 	type ClaudeAccountCapability,
 	type ClaudeAccountRoster,
+	type ClaudeScheduleFailure,
+	type ClaudeScheduleTarget,
+	type ClaudeScheduleView,
 	claudeAccountCapabilityQueryKey,
 	claudeAccountRosterQueryKey,
 	useClaudeAccountCapability,
 	useClaudeAccountRoster,
 	useClaudeWorkspaceAccountState,
+	useClearClaudeScheduledSwitch,
+	useScheduleClaudeSwitch,
+	useSetClaudeAutoSwitch,
 	useSetClaudeWorkspaceAccount,
 } from "./useClaudeAccounts";
